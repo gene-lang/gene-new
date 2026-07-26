@@ -126,7 +126,7 @@ Bucket 3, some entries gene-new-specific:
 
 | Value | Why not |
 |---|---|
-| **Capability values** (`Os/Exec`, `Fs/*`, `Net/Connect`, `Ffi/Load`, ...) | Authority must never round-trip through data. A deserialized payload must not be able to mint capabilities (§6). |
+| **Capability values** (`Os/Exec`, `$fs/*`, `$net/Connect`, `$ffi/Load`, ...) | Authority must never round-trip through data. A deserialized payload must not be able to mint capabilities (§6). |
 | **Cells and atomic cells** | Identity-equality values (`equality.nim` compares them by identity); a reconstructed cell is a *different* cell, which would silently break the round-trip guarantee and aliasing expectations. Serialize the *contents* explicitly (`(c ~ get)`); see §7 for the opt-in snapshot wrapper in full `write`. |
 | Closures (fns with captured scope), `fn!` values | Captured scopes reference live scope chains; snapshotting them is the fiber-continuation problem, out of scope. Top-level named fns serialize as refs (bucket 2). |
 | Channels, tasks, actor refs, streams/generators | Live scheduler state. `actor/snapshot` output (a data value) serializes fine; the actor itself does not. |

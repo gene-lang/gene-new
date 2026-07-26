@@ -140,7 +140,7 @@ Primary namespace: `log`.
 ```gene
 (import log [LogLevel new_logger new_file_logger
              info! warn! error! debug! trace!])
-(import Fs [WriteDir])
+(import $fs [WriteDir])
 
 (var logger
   (new_logger "app/http"
@@ -235,7 +235,7 @@ API rules:
   It can only emit through routes selected by the host, within its bound name
   subtree. Libraries should accept a logger from their application and call
   `child` rather than claiming a process-global name.
-- `new_file_logger` is the explicit exception: it requires `Fs/WriteDir` and
+- `new_file_logger` is the explicit exception: it requires `$fs/WriteDir` and
   returns a logger attenuated to one newly opened file sink. It does not alter
   global routes or other loggers. Its `^level`, `^format`, `^flush`, and
   `^payload` options follow the ordinary configuration vocabulary and it is
@@ -396,7 +396,7 @@ Rules:
 - File paths are resolved relative to the config file, not CWD.
 - In the CLI, selecting `--log-config` authorizes the trusted launcher to open
   the declared files. Untrusted Gene code cannot select that file.
-- A programmatic file sink requires an `Fs/WriteDir` capability and resolves
+- A programmatic file sink requires an `$fs/WriteDir` capability and resolves
   its path through that capability. Logger creation itself needs no filesystem
   authority.
 - Configuration is installed before entry-module execution begins and remains
@@ -424,7 +424,7 @@ Rules:
 
 - Opens once in append mode and owns the handle until logging shutdown.
 - Creates parent directories only through launcher authority or an explicit
-  `Fs/WriteDir` capability.
+  `$fs/WriteDir` capability.
 - Buffers writes. `^flush` supports `always`, `error`, and `close`; default is
   `error` (flush error-level records and flush everything on orderly close).
 - Rotation, retention, compression, multi-process file locking, and crash-safe

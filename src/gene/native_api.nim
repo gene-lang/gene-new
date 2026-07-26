@@ -455,7 +455,7 @@ proc geneLoadModule*(library: Value, name: string,
                      api: GeneApi = geneApi()): GeneResult =
   try:
     if library.kind != vkFfiLibrary:
-      raise newException(GeneError, "native module load expects an Ffi/Library")
+      raise newException(GeneError, "native module load expects an ffi/Library")
     if library.ffiLibraryClosed:
       raise newException(GeneError, "native module load library is closed")
     if name.len == 0:

@@ -45,7 +45,7 @@ Implementation status:
 - `store` (durable serde-backed persistence) — implemented with the shared
   `Store` protocol, `StoreError`, `store/sqlite`, `store/fs`, atomic
   hash-validated checkpoint generations (`checkpoint`/`load_checkpoint`),
-  owner-only storage, and `Fs/make_dir`/`Fs/remove`, per
+  owner-only storage, and `$fs/make_dir`/`$fs/remove`, per
   docs/persistence.md. The `crypto/sha256` helper used by manifests
   and content-addressed artifacts, `crypto/random_hex` for opaque credentials
   and tickets, `crypto/secure_equal?` for credential comparison without an
@@ -145,7 +145,7 @@ are unavailable. See [the logging proposal](logging.md) for the full
 schema and performance contract.
 
 When application-selected file output is required, `new_file_logger` takes an
-explicit `Fs/WriteDir`, logger name, and path and returns a direct one-file
+explicit `$fs/WriteDir`, logger name, and path and returns a direct one-file
 logger. It defaults to one reader-valid Gene data map per line. Pass
 `^format "json"` or `^format "jsonl"` only when JSON interoperability is
 required; `^format "text"` remains available for concise human lines. It does

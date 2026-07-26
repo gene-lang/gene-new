@@ -1873,7 +1873,7 @@ suite "vm — cooperative scheduler":
        "[(out ~ get) ($sleep 0) (out ~ get)]",
        "[0 nil 1]"
 
-  test "Fs/read_text_async returns an awaitable task":
+  test "$fs/read_text_async returns an awaitable task":
     let path = getTempDir() / "gene-read-text-async-test.txt"
     writeFile(path, "hello async")
     defer:
@@ -1881,12 +1881,12 @@ suite "vm — cooperative scheduler":
         removeFile(path)
     let scope = newGlobalScope()
     scope.define("path", newStr(path))
-    check run(compileSource("(await (Fs/read_text_async Fs/ReadDir path))"),
+    check run(compileSource("(await ($fs/read_text_async $fs/ReadDir path))"),
               scope).print() == "\"hello async\""
     expect GeneError:
-      discard run(compileSource("(Fs/read_text_async Fs/WriteDir path)"), scope)
+      discard run(compileSource("($fs/read_text_async $fs/WriteDir path)"), scope)
 
-  test "Fs/write_text_async returns an awaitable task":
+  test "$fs/write_text_async returns an awaitable task":
     let path = getTempDir() / "gene-write-text-async-test.txt"
     defer:
       if fileExists(path):
@@ -1894,21 +1894,21 @@ suite "vm — cooperative scheduler":
     let scope = newGlobalScope()
     scope.define("path", newStr(path))
     check run(compileSource(
-      "(await (Fs/write_text_async Fs/WriteDir path \"written async\"))"),
+      "(await ($fs/write_text_async $fs/WriteDir path \"written async\"))"),
       scope).kind == vkNil
     check readFile(path) == "written async"
     expect GeneError:
       discard run(compileSource(
-        "(Fs/write_text_async Fs/ReadDir path \"nope\")"), scope)
+        "($fs/write_text_async $fs/ReadDir path \"nope\")"), scope)
 
-  test "Net TCP async operations require connect authority":
+  test "net TCP async operations require connect authority":
     expect GeneError:
       discard run(compileSource(
-        "(Net/tcp_read_text_async Fs/ReadDir \"127.0.0.1\" 1 1 1)"),
+        "($net/tcp_read_text_async $fs/ReadDir \"127.0.0.1\" 1 1 1)"),
         newGlobalScope())
     expect GeneError:
       discard run(compileSource(
-        "(Net/tcp_write_text_async Fs/ReadDir \"127.0.0.1\" 1 \"x\" 1)"),
+        "($net/tcp_write_text_async $fs/ReadDir \"127.0.0.1\" 1 \"x\" 1)"),
         newGlobalScope())
 
   test "root channel waits can be unblocked by sleeping tasks":

@@ -77,7 +77,7 @@ their own namespaces, mirroring `db/sqlite/open` (review: no ambiguous
 
 ;; or, filesystem:
 (import store/fs [open : store_open])
-(var s (store_open fs ^root ".state"))      ; fs : Fs/ReadWriteDir capability
+(var s (store_open fs ^root ".state"))      ; fs : fs/ReadWriteDir capability
 
 (s ~ put key value)          ; ^mode data|full (default data)
 (s ~ get key)                ; raises StoreError ^kind missing on absence
@@ -133,7 +133,7 @@ Decisions, several from review:
     existing `db/sqlite` connection (review: take a `Db`, not a path — keeps
     the store layered and avoids a second sqlite authority story). **Works
     today with no new runtime**; the gateway is the proof. Ships first.
-  - `store/fs` — a directory of records (§4). Needs the small Fs surface in
+  - `store/fs` — a directory of records (§4). Needs the small fs surface in
     §4.1.
   - `store/postgres` later, free, over `db/postgres`.
 
@@ -154,7 +154,7 @@ envelope. Flat, **not** a directory tree (the prior repo's removed model):
 
 - **Key → filename** via `url/encode_component` (in stdlib), reversibly, so
   keys may contain `/`, `:`, spaces, unicode without escaping the directory,
-  and `keys` is `Fs/list_dir` + url-decode. Empty keys are rejected
+  and `keys` is `$fs/list_dir` + url-decode. Empty keys are rejected
   (`StoreError ^kind invalid_key`) — an empty key would produce a bare
   `.gene` file.
 - **No reserved names, no marker files** — a record is just a file. (The prior
@@ -177,18 +177,18 @@ envelope. Flat, **not** a directory tree (the prior repo's removed model):
 
 ### 4.1 Runtime gap (small, for the fs backend)
 
-Today `Fs/*` is only `read_text`/`write_text`/`list_dir` (+ async). The
-controlled-stop fs store needs two new `Fs/WriteDir`-gated natives beside
+Today `$fs/*` is only `read_text`/`write_text`/`list_dir` (+ async). The
+controlled-stop fs store needs two new `$fs/WriteDir`-gated natives beside
 them in `src/gene/stdlib.nim`:
 
 | New native | For |
 |---|---|
-| `Fs/make_dir` (mkdir -p) | create the store directory on `open` |
-| `Fs/remove` | `delete` / `clear` a record |
+| `$fs/make_dir` (mkdir -p) | create the store directory on `open` |
+| `$fs/remove` | `delete` / `clear` a record |
 
-`Fs/exists?` is convenient but optional (a failed `read_text` already signals
-absence). The shipped `Fs/make_dir`/`Fs/remove` follow the existing broad
-`Fs/*` path semantics; `store/fs` keeps record paths confined by composing the
+`$fs/exists?` is convenient but optional (a failed `read_text` already signals
+absence). The shipped `$fs/make_dir`/`$fs/remove` follow the existing broad
+`$fs/*` path semantics; `store/fs` keeps record paths confined by composing the
 caller-chosen root with a URL-encoded key that contains no path separators.
 The Store implements its own narrow same-directory replacement internally;
 it does not broaden the public filesystem capability surface with arbitrary
@@ -312,8 +312,8 @@ existing databases keep loading, and bespoke persistence code retires.
    reopen-after-close, restore-off-by-default.
 2. **Migrate the gateway** onto `store/sqlite` in `data` mode (§8) — proves
    the interface, keeps existing DBs loading, adds the resume flag.
-3. **Fs primitives.** `Fs/make_dir` + `Fs/remove` (+ optional `Fs/exists?`),
-   `Fs/WriteDir`-gated, path-confined (§4.1). Spec tests incl. path-escape
+3. **fs primitives.** `$fs/make_dir` + `$fs/remove` (+ optional `$fs/exists?`),
+   `$fs/WriteDir`-gated, path-confined (§4.1). Spec tests incl. path-escape
    rejection.
 4. **`store/fs`.** The directory backend: url-encoded keys, atomic writes,
    tolerant `keys`. Spec/e2e: the *same* suite as sqlite (interface parity)

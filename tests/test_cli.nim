@@ -101,8 +101,8 @@ suite "cli — gene run":
   test "main receives only explicitly granted named capabilities":
     let grantedMain = writeCliProgram("granted_main.gene",
       "(fn main [args, ^config : Capability] " &
-      "  (if (same? config Fs/ReadDir) 0 4))")
-    var ran = runGene(["run", grantedMain, "--grant", "config=Fs/ReadDir",
+      "  (if (same? config $fs/ReadDir) 0 4))")
+    var ran = runGene(["run", grantedMain, "--grant", "config=$fs/ReadDir",
                        "--", "arg"])
     check ran.exitCode == 0
 
@@ -151,7 +151,7 @@ suite "cli — gene run":
     writeFile(configPath,
       "{^sinks {^console {^type \"console\"}} ^targets [\"missing\"]}")
     let fixture = writeCliProgram("bad_logging_entry.gene",
-      "(import Fs [write_text WriteDir]) " &
+      "(import $fs [write_text WriteDir]) " &
       "(write_text WriteDir " & geneQuote(marker) & " \"ran\")")
     let ran = runGene(["run", "--log-config", configPath, fixture])
     check ran.exitCode == 1
@@ -4214,7 +4214,7 @@ catch {^message message}
 
     let fixture = writeCliProgram("agents_endpoint.gene", """
 (import $net/http [Server serve Response])
-(import Fs [write_text WriteDir])
+(import $fs [write_text WriteDir])
 (import $json [stringify])
 (import $str [join])
 (import gene/stream [to_stream map into])

@@ -397,7 +397,7 @@ Slash is also the reader spelling for qualified names in static contexts such as
 C/Int32
 Stream/next
 Color/red
-Fs/ReadDir
+$fs/ReadDir
 ```
 
 Context determines interpretation:
@@ -3663,9 +3663,9 @@ However, Gene should still use ordinary runtime capability values for external a
 Example filesystem capabilities:
 
 ```gene
-Fs/ReadDir
-Fs/WriteDir
-Fs/ReadWriteDir
+$fs/ReadDir
+$fs/WriteDir
+$fs/ReadWriteDir
 ```
 
 APIs require capability values explicitly:
@@ -3680,7 +3680,7 @@ There is no ambient filesystem authority in the intended runtime API.
 Entry points can receive granted capability values:
 
 ```gene
-(fn main [args : (List Str), ^config : Fs/ReadDir, ^logs : Fs/WriteDir] : Nil
+(fn main [args : (List Str), ^config : fs/ReadDir, ^logs : fs/WriteDir] : Nil
   ...)
 ```
 
@@ -3688,7 +3688,7 @@ For `gene run`, positional strings remain the first `main` argument. Named
 capabilities are injected only by explicit host grants:
 
 ```text
-gene run app.gene --grant config=Fs/ReadDir --grant logs=Fs/WriteDir -- args...
+gene run app.gene --grant config=$fs/ReadDir --grant logs=$fs/WriteDir -- args...
 ```
 
 Each grant expression is evaluated by the host in the loaded entry-module
@@ -4542,7 +4542,7 @@ Native types should normally expose opaque handles. Their internals belong to th
 Loading arbitrary native code is authority. Runtime library loading requires an explicit capability:
 
 ```gene
-(fn main [^native : Ffi/Load] : Nil
+(fn main [^native : ffi/Load] : Nil
   (var lib (ffi/open native "./plugin.so"))
   ...)
 ```
@@ -4551,7 +4551,7 @@ The returned library handle grants access only to that loaded library. Symbol lo
 
 Libraries linked or approved by the build/package manifest do not need runtime path authority. The manifest must record native dependencies and target-specific library names.
 
-Raw pointer manipulation may additionally require an `Ffi/Unsafe` capability in APIs that expose it. This is runtime authority evidence in MVP, not a static `^effects` row.
+Raw pointer manipulation may additionally require an `$ffi/Unsafe` capability in APIs that expose it. This is runtime authority evidence in MVP, not a static `^effects` row.
 
 ### 16.11 Callbacks and foreign threads
 
@@ -4598,7 +4598,7 @@ The first FFI milestone includes:
 - explicit typed C declarations;
 - basic opaque handles and `C/OwnedPtr` cleanup;
 - target-specific static/dynamic library names;
-- runtime `Ffi/Load` capability for arbitrary dynamic loading.
+- runtime `$ffi/Load` capability for arbitrary dynamic loading.
 
 Current implementation status: the interpreter has the native-call foundation,
 version-checked native module initializer lookup, root handles, generated
@@ -4812,7 +4812,7 @@ Prop print order should be deterministic. MVP recommendation: preserve source or
 19. Formatter/docs: deterministic printing, module docs, namespace docs, declaration streams, and import normalization reporting.
 20. Typed native compilation prototype: direct typed ABI, dynamic adapters, native-to-VM calls, primitive unboxing, and C backend experiment.
 21. Generated C FFI wrappers: ABI scalar types, strings, pointers, buffers, opaque handles, and ownership.
-22. Versioned native extension modules and runtime `Ffi/Load` capability.
+22. Versioned native extension modules and runtime `$ffi/Load` capability.
 23. Runtime capabilities as library values.
 24. Typed-module AOT, selective generic monomorphization, direct protocol calls, mixed native/bytecode stack traces, and native task-frame lowering.
 25. FFI structs, callbacks, foreign-thread attachment, rooted actor/channel sends, dynamic signatures, and broader ABI conformance.

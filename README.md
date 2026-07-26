@@ -75,7 +75,7 @@ participates in equality or hashing.
   a Nim-facing native API foundation (`GeneStatus`, `GeneCall`, value roots,
   `geneCall`, native module initializer/registration hooks, and opaque C pointer
   and slice constructors plus checked Buffer accessors, version-checked dynamic
-  native-module initializer lookup, and host-created `Ffi/Load` authority
+  native-module initializer lookup, and host-created `$ffi/Load` authority
   values, non-suspending rooted channel/actor send hooks for attached
   native code, native-created external-pending tasks with rooted
   completion/failure/cancellation settlement hooks, deterministic native
@@ -83,7 +83,7 @@ participates in equality or hashing.
   snapshots and handler upgrades for migration tooling,
   boxed `Buffer` values with checked element boundaries,
   explicit runtime FFI library loading through `ffi/open` and opaque
-  `Ffi/Library` handles,
+  `$ffi/Library` handles,
   list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, parser helpers
   `lex_all`/`read_one`/`read_all` with `Token`, `LexError`, and `ParseError`,
   a first typed native-compilation prototype for simple two-argument `Int`,
@@ -105,7 +105,7 @@ participates in equality or hashing.
   first-class `Env` values with explicit
   `eval node ^in env`, explicit Env imports/capabilities, `^policy`
   max-step limits with validation for reserved policy fields, opaque runtime
-  capability library values such as `Fs/ReadDir`, `gene run`
+  capability library values such as `$fs/ReadDir`, `gene run`
   entrypoint invocation, line-oriented
   `gene repl`, GIR disassembly via `gene compile`, module docs via `gene doc`,
   and built-ins
@@ -115,8 +115,8 @@ participates in equality or hashing.
   declarations Namespace/bindings Namespace/lookup Namespace/declarations
   Module/root_namespace Module/name Module/path Module/meta Module/declarations
   to_stream to_pairs_stream map filter take into Stream/has_next Stream/peek
-  Stream/next Stream/close Task/cancel Task/detach Fs/read_text_async
-  Fs/write_text_async Net/tcp_read_text_async Net/tcp_write_text_async sleep
+  Stream/next Stream/close Task/cancel Task/detach $fs/read_text_async
+  $fs/write_text_async $net/tcp_read_text_async $net/tcp_write_text_async sleep
   print println`).
 
   Stream helper functions `map`, `filter`, and `take` are lazy pull combinators.
@@ -170,12 +170,12 @@ participates in equality or hashing.
 > Native code can create external-pending tasks and settle them later through
 > rooted completion, failure, or cancellation hooks; root `await` treats those
 > tasks as external progress rather than scheduler deadlock, which is the first
-> async-I/O suspension hook for file/network/native operation backends. `Fs/read_text_async`
-> and `Fs/write_text_async` return tasks and, in threaded atomicArc builds with
+> async-I/O suspension hook for file/network/native operation backends. `$fs/read_text_async`
+> and `$fs/write_text_async` return tasks and, in threaded atomicArc builds with
 > workers enabled, perform text file I/O on the worker lane while the awaiting
-> Gene task is suspended. `Net/tcp_read_text_async` and
-> `Net/tcp_write_text_async` use the same path for bounded TCP connect/read and
-> connect/write operations with explicit `Net/Connect` authority. The worker
+> Gene task is suspended. `$net/tcp_read_text_async` and
+> `$net/tcp_write_text_async` use the same path for bounded TCP connect/read and
+> connect/write operations with explicit `$net/Connect` authority. The worker
 > async-I/O queue is bounded by `GENE_ASYNC_IO_MAX_QUEUE` (default 1024); a full
 > queue returns a failed task so producers receive an explicit backpressure
 > signal. Cancelling a queued async-I/O task settles it as cancelled and workers

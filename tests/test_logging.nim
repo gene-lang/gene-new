@@ -397,7 +397,7 @@ suite "structured logging":
     resetLogging()
     discard runLoggingSource(
       "(import $log [new_file_logger]) " &
-      "(import Fs [WriteDir]) " &
+      "(import $fs [WriteDir]) " &
       "(var logger (new_file_logger WriteDir \"app/direct\" " &
         loggingGeneQuote(path) & " ^flush \"close\")) " &
       "(logger ~ info \"direct\" ^payload {^x 1})")
@@ -418,7 +418,7 @@ suite "structured logging":
     resetLogging()
     discard runLoggingSource(
       "(import $log [new_file_logger]) " &
-      "(import Fs [WriteDir]) " &
+      "(import $fs [WriteDir]) " &
       "(var logger (new_file_logger WriteDir \"app/direct_json\" " &
         loggingGeneQuote(path) & " ^format \"json\" ^flush \"close\")) " &
       "(logger ~ info \"direct\" ^payload {^x 1})")
@@ -432,7 +432,7 @@ suite "structured logging":
   test "programmatic file logger rejects read-only authority":
     let result = runLoggingSource(
       "(import $log [new_file_logger]) " &
-      "(import Fs [ReadDir]) " &
+      "(import $fs [ReadDir]) " &
       "(try (new_file_logger ReadDir \"app/direct\" \"ignored.jsonl\") " &
       "  false catch _ true)")
     check result == TRUE

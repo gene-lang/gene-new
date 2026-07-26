@@ -129,7 +129,7 @@ Preferred forms:
 or, when the application creates the listener:
 
 ```gene
-(fn main [args : (List Str), ^net : Net/Listen] : Int
+(fn main [args : (List Str), ^net : net/Listen] : Int
   (var server
     (http/listen net
       ^host "0.0.0.0"
@@ -144,7 +144,7 @@ or, when the application creates the listener:
 Rules:
 
 ```text
-Net/Listen      authority to bind/listen on network addresses
+$net/Listen      authority to bind/listen on network addresses
 http/Server     authority to accept requests on one listener
 http/Running    authority/handle for a running background server
 ```
@@ -985,7 +985,7 @@ Capability delivery: capability injection into `main` is not yet designed
 (`docs/stdlib.md`: "Do not overload normal `gene run` until capability
 invocation is designed"). Phase 1 therefore ships with the §3 trusted-script
 convenience form (`http/listen ^host ... ^port ...` constructing its own
-capability), and switches `main` to injected `Net/Listen`/`http/Server` values
+capability), and switches `main` to injected `$net/Listen`/`http/Server` values
 once the launcher mechanism exists. The API shape does not change — only who
 constructs the capability.
 
@@ -1038,7 +1038,7 @@ For most applications:
     (else
       (http/text 404 "not found"))))
 
-(fn main [args : (List Str), ^net : Net/Listen] : Int
+(fn main [args : (List Str), ^net : net/Listen] : Int
   (var server
     (http/listen net ^host "0.0.0.0" ^port 8080))
 

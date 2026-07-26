@@ -586,7 +586,7 @@ Examples:
 or future explicit capability injection:
 
 ```gene
-(fn main [args, ^config : Fs/ReadDir, ^logs : Fs/WriteDir]
+(fn main [args, ^config : fs/ReadDir, ^logs : fs/WriteDir]
   ...)
 ```
 
@@ -679,8 +679,8 @@ Rules:
 - Hash native artifacts in the manifest.
 - Verify hashes before loading.
 - When the OS cannot load from memory, extract libraries into a content-addressed cache before loading.
-- Arbitrary dynamic loading requires an explicit `Ffi/Load` capability.
-- Raw pointer/unsafe FFI APIs may require `Ffi/Unsafe`.
+- Arbitrary dynamic loading requires an explicit `$ffi/Load` capability.
+- Raw pointer/unsafe FFI APIs may require `$ffi/Unsafe`.
 - Native artifacts should not change the logical identity of portable GIR modules.
 
 A standalone executable is target-specific even if its GIR modules are portable.
@@ -1094,7 +1094,7 @@ Builds should fail if:
 - Include target-specific native libraries.
 - Extract/load dynamic libs safely when memory loading is not supported.
 - Verify native artifact hashes.
-- Integrate with `Ffi/Load` capability.
+- Integrate with `$ffi/Load` capability.
 - Add target table support.
 
 ### Phase 5: Mixed native mode

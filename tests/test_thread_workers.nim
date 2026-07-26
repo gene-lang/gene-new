@@ -474,7 +474,7 @@ suite "threaded scheduler workers":
       check run(compileSource(
         "(scope " &
         "  (var out ($atomic_cell 0)) " &
-        "  (var read-task (Fs/read_text_async Fs/ReadDir path)) " &
+        "  (var read-task ($fs/read_text_async $fs/ReadDir path)) " &
         "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
         "  [(out ~ load) (await read-task)])"), scope).print() ==
@@ -491,7 +491,7 @@ suite "threaded scheduler workers":
     scope.define("path", newStr(path))
     var src = "(scope "
     for i in 0 ..< burst:
-      src.add "(var t" & $i & " (Fs/read_text_async Fs/ReadDir path)) "
+      src.add "(var t" & $i & " ($fs/read_text_async $fs/ReadDir path)) "
     src.add "["
     for i in 0 ..< burst:
       if i > 0:
@@ -518,9 +518,9 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "2":
       withGeneAsyncIoQueueSetting "0":
         check run(compileSource(
-          "(try (await (Fs/read_text_async Fs/ReadDir path)) " &
+          "(try (await ($fs/read_text_async $fs/ReadDir path)) " &
           " catch {^message m} m)"), scope).print() ==
-          "\"Fs/read_text_async failed: async I/O queue full\""
+          "\"fs/read_text_async failed: async I/O queue full\""
 
   test "root await drives worker-backed async file write":
     let path = getTempDir() / "gene-threaded-write-text-async-test.txt"
@@ -533,7 +533,7 @@ suite "threaded scheduler workers":
       check run(compileSource(
         "(scope " &
         "  (var out ($atomic_cell 0)) " &
-        "  (var write-task (Fs/write_text_async Fs/WriteDir path \"worker write\")) " &
+        "  (var write-task ($fs/write_text_async $fs/WriteDir path \"worker write\")) " &
         "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
         "  [(out ~ load) (await write-task)])"), scope).print() ==
@@ -553,7 +553,7 @@ suite "threaded scheduler workers":
       check run(compileSource(
         "(scope " &
         "  (var out ($atomic_cell 0)) " &
-        "  (var read-task (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
+        "  (var read-task ($net/tcp_read_text_async $net/Connect \"127.0.0.1\" port 64 1000)) " &
         "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
         "  [(out ~ load) (await read-task)])"), scope).print() ==
@@ -574,7 +574,7 @@ suite "threaded scheduler workers":
       check run(compileSource(
         "(scope " &
         "  (var out ($atomic_cell 0)) " &
-        "  (var write-task (Net/tcp_write_text_async Net/Connect \"127.0.0.1\" port \"worker tcp write\" 1000)) " &
+        "  (var write-task ($net/tcp_write_text_async $net/Connect \"127.0.0.1\" port \"worker tcp write\" 1000)) " &
         "  (var marker (spawn (out ~ store 1))) " &
         "  (await marker) " &
         "  [(out ~ load) (await write-task)])"), scope).print() ==
@@ -599,8 +599,8 @@ suite "threaded scheduler workers":
     withGeneWorkerSetting "1":
       check run(compileSource(
         "(scope " &
-        "  (var blocker (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
-        "  (var write-task (Fs/write_text_async Fs/WriteDir path \"cancelled write\")) " &
+        "  (var blocker ($net/tcp_read_text_async $net/Connect \"127.0.0.1\" port 64 1000)) " &
+        "  (var write-task ($fs/write_text_async $fs/WriteDir path \"cancelled write\")) " &
         "  (write-task ~ cancel) " &
         "  (await blocker))"), scope).print() ==
         "\"worker release\""
@@ -631,11 +631,11 @@ suite "threaded scheduler workers":
       withGeneAsyncIoQueueSetting "1":
         check run(compileSource(
           "(scope " &
-          "  (var blocker (Net/tcp_read_text_async Net/Connect \"127.0.0.1\" port 64 1000)) " &
+          "  (var blocker ($net/tcp_read_text_async $net/Connect \"127.0.0.1\" port 64 1000)) " &
           "  ($sleep 10) " &
-          "  (var cancelled (Fs/write_text_async Fs/WriteDir cancelledPath \"cancelled\")) " &
+          "  (var cancelled ($fs/write_text_async $fs/WriteDir cancelledPath \"cancelled\")) " &
           "  (cancelled ~ cancel) " &
-          "  (var next (Fs/write_text_async Fs/WriteDir nextPath \"next\")) " &
+          "  (var next ($fs/write_text_async $fs/WriteDir nextPath \"next\")) " &
           "  [(await blocker) (try (await next) catch {^message m} m)])"),
           scope).print() == "[\"worker release\" nil]"
     joinThread(serverThread)

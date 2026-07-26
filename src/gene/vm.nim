@@ -3370,9 +3370,9 @@ proc freezeRejectName(value: Value): string =
   of vkBuffer: "Buffer"
   of vkDeviceBuffer: "Device/Buffer"
   of vkCapability: "Capability"
-  of vkFfiLoad: "Ffi/Load"
-  of vkFfiLibrary: "Ffi/Library"
-  of vkFfiCallable: "Ffi/Callable"
+  of vkFfiLoad: "ffi/Load"
+  of vkFfiLibrary: "ffi/Library"
+  of vkFfiCallable: "ffi/Callable"
   else: $value.kind
 
 proc freezeValue(value: Value): Value =
@@ -4736,11 +4736,11 @@ proc biSleep(args: openArray[Value]): Value {.nimcall.} =
 
 proc requireFfiLoad(name: string, value: Value) =
   if value.kind != vkFfiLoad:
-    raise newException(GeneError, name & " expects an Ffi/Load capability")
+    raise newException(GeneError, name & " expects an ffi/Load capability")
 
 proc requireFfiLibrary(name: string, value: Value) =
   if value.kind != vkFfiLibrary:
-    raise newException(GeneError, name & " expects an Ffi/Library")
+    raise newException(GeneError, name & " expects an ffi/Library")
 
 proc unloadFfiLibrary(handle: pointer) {.nimcall.} =
   unloadLib(cast[LibHandle](handle))
@@ -4870,19 +4870,19 @@ proc biFfiBind(args: openArray[Value]): Value {.nimcall.} =
                  args[3], releaseName, releaseAddress)
 
 proc biFfiLibraryClose(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("Ffi/Library/close", args)
-  requireFfiLibrary("Ffi/Library/close", args[0])
+  requireOne("ffi/Library/close", args)
+  requireFfiLibrary("ffi/Library/close", args[0])
   args[0].closeFfiLibrary()
   NIL
 
 proc biFfiLibraryClosed(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("Ffi/Library/closed?", args)
-  requireFfiLibrary("Ffi/Library/closed?", args[0])
+  requireOne("ffi/Library/closed?", args)
+  requireFfiLibrary("ffi/Library/closed?", args[0])
   newBool(args[0].ffiLibraryClosed)
 
 proc biFfiLibraryPath(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("Ffi/Library/path", args)
-  requireFfiLibrary("Ffi/Library/path", args[0])
+  requireOne("ffi/Library/path", args)
+  requireFfiLibrary("ffi/Library/path", args[0])
   newStr(args[0].ffiLibraryPath)
 
 proc requireCPtr(name: string, value: Value) =
@@ -4905,19 +4905,19 @@ proc biCapabilityName(args: openArray[Value]): Value {.nimcall.} =
 proc requireFsReadDir(name: string, value: Value) =
   requireCapability(name, value)
   let cap = value.capabilityName
-  if cap != "Fs/ReadDir" and cap != "Fs/ReadWriteDir":
-    raise newException(GeneError, name & " expects Fs/ReadDir authority")
+  if cap != "fs/ReadDir" and cap != "fs/ReadWriteDir":
+    raise newException(GeneError, name & " expects fs/ReadDir authority")
 
 proc requireFsWriteDir(name: string, value: Value) =
   requireCapability(name, value)
   let cap = value.capabilityName
-  if cap != "Fs/WriteDir" and cap != "Fs/ReadWriteDir":
-    raise newException(GeneError, name & " expects Fs/WriteDir authority")
+  if cap != "fs/WriteDir" and cap != "fs/ReadWriteDir":
+    raise newException(GeneError, name & " expects fs/WriteDir authority")
 
 proc requireNetConnect(name: string, value: Value) =
   requireCapability(name, value)
-  if value.capabilityName != "Net/Connect":
-    raise newException(GeneError, name & " expects Net/Connect authority")
+  if value.capabilityName != "net/Connect":
+    raise newException(GeneError, name & " expects net/Connect authority")
 
 proc requirePort(name: string, value: Value): int =
   let raw = requireInt64(name, value)
@@ -4935,14 +4935,14 @@ proc completedReadTextTask(path: string): Value =
   try:
     newCompletedTask(newStr(readFile(path)))
   except CatchableError as e:
-    newFailedTask("Fs/read_text_async failed: " & e.msg)
+    newFailedTask("fs/read_text_async failed: " & e.msg)
 
 proc completedWriteTextTask(path, text: string): Value =
   try:
     writeFile(path, text)
     newCompletedTask(NIL)
   except CatchableError as e:
-    newFailedTask("Fs/write_text_async failed: " & e.msg)
+    newFailedTask("fs/write_text_async failed: " & e.msg)
 
 proc tcpReadText(host: string, port, maxBytes, timeoutMs: int): string =
   let socket = newSocket()
@@ -4957,7 +4957,7 @@ proc completedTcpReadTextTask(host: string, port, maxBytes,
   try:
     newCompletedTask(newStr(tcpReadText(host, port, maxBytes, timeoutMs)))
   except CatchableError as e:
-    newFailedTask("Net/tcp_read_text_async failed: " & e.msg)
+    newFailedTask("net/tcp_read_text_async failed: " & e.msg)
 
 proc tcpWriteText(host: string, port: int, text: string, timeoutMs: int) =
   let socket = newSocket()
@@ -4973,7 +4973,7 @@ proc completedTcpWriteTextTask(host: string, port: int, text: string,
     tcpWriteText(host, port, text, timeoutMs)
     newCompletedTask(NIL)
   except CatchableError as e:
-    newFailedTask("Net/tcp_write_text_async failed: " & e.msg)
+    newFailedTask("net/tcp_write_text_async failed: " & e.msg)
 
 proc asyncIoQueueFullTask(name: string): Value =
   newFailedTask(name & " failed: async I/O queue full")
@@ -4981,9 +4981,9 @@ proc asyncIoQueueFullTask(name: string): Value =
 proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
-      "Fs/read_text_async expects 2 arguments, got " & $args.len)
-  requireFsReadDir("Fs/read_text_async", args[0])
-  requireString("Fs/read_text_async path", args[1])
+      "fs/read_text_async expects 2 arguments, got " & $args.len)
+  requireFsReadDir("fs/read_text_async", args[0])
+  requireString("fs/read_text_async path", args[1])
   let path = args[1].strVal
   let task = newExternalTask()
   case enqueueAsyncReadText(path, task)
@@ -4992,15 +4992,15 @@ proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioUnavailable:
     completedReadTextTask(path)
   of aioQueueFull:
-    asyncIoQueueFullTask("Fs/read_text_async")
+    asyncIoQueueFullTask("fs/read_text_async")
 
 proc biFsWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
-      "Fs/write_text_async expects 3 arguments, got " & $args.len)
-  requireFsWriteDir("Fs/write_text_async", args[0])
-  requireString("Fs/write_text_async path", args[1])
-  requireString("Fs/write_text_async text", args[2])
+      "fs/write_text_async expects 3 arguments, got " & $args.len)
+  requireFsWriteDir("fs/write_text_async", args[0])
+  requireString("fs/write_text_async path", args[1])
+  requireString("fs/write_text_async text", args[2])
   let path = args[1].strVal
   let text = args[2].strVal
   let task = newExternalTask()
@@ -5010,19 +5010,19 @@ proc biFsWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioUnavailable:
     completedWriteTextTask(path, text)
   of aioQueueFull:
-    asyncIoQueueFullTask("Fs/write_text_async")
+    asyncIoQueueFullTask("fs/write_text_async")
 
 proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 5:
     raise newException(GeneError,
-      "Net/tcp_read_text_async expects 5 arguments, got " & $args.len)
-  requireNetConnect("Net/tcp_read_text_async", args[0])
-  requireString("Net/tcp_read_text_async host", args[1])
+      "net/tcp_read_text_async expects 5 arguments, got " & $args.len)
+  requireNetConnect("net/tcp_read_text_async", args[0])
+  requireString("net/tcp_read_text_async host", args[1])
   let host = args[1].strVal
-  let port = requirePort("Net/tcp_read_text_async port", args[2])
-  let maxBytes = requirePositiveInt("Net/tcp_read_text_async max_bytes",
+  let port = requirePort("net/tcp_read_text_async port", args[2])
+  let maxBytes = requirePositiveInt("net/tcp_read_text_async max_bytes",
                                     args[3])
-  let timeoutMs = requirePositiveInt("Net/tcp_read_text_async timeout_ms",
+  let timeoutMs = requirePositiveInt("net/tcp_read_text_async timeout_ms",
                                      args[4])
   let task = newExternalTask()
   case enqueueAsyncTcpReadText(host, port, maxBytes, timeoutMs, task)
@@ -5031,19 +5031,19 @@ proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioUnavailable:
     completedTcpReadTextTask(host, port, maxBytes, timeoutMs)
   of aioQueueFull:
-    asyncIoQueueFullTask("Net/tcp_read_text_async")
+    asyncIoQueueFullTask("net/tcp_read_text_async")
 
 proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 5:
     raise newException(GeneError,
-      "Net/tcp_write_text_async expects 5 arguments, got " & $args.len)
-  requireNetConnect("Net/tcp_write_text_async", args[0])
-  requireString("Net/tcp_write_text_async host", args[1])
+      "net/tcp_write_text_async expects 5 arguments, got " & $args.len)
+  requireNetConnect("net/tcp_write_text_async", args[0])
+  requireString("net/tcp_write_text_async host", args[1])
   let host = args[1].strVal
-  let port = requirePort("Net/tcp_write_text_async port", args[2])
-  requireString("Net/tcp_write_text_async text", args[3])
+  let port = requirePort("net/tcp_write_text_async port", args[2])
+  requireString("net/tcp_write_text_async text", args[3])
   let text = args[3].strVal
-  let timeoutMs = requirePositiveInt("Net/tcp_write_text_async timeout_ms",
+  let timeoutMs = requirePositiveInt("net/tcp_write_text_async timeout_ms",
                                      args[4])
   let task = newExternalTask()
   case enqueueAsyncTcpWriteText(host, port, text, timeoutMs, task)
@@ -5052,7 +5052,7 @@ proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioUnavailable:
     completedTcpWriteTextTask(host, port, text, timeoutMs)
   of aioQueueFull:
-    asyncIoQueueFullTask("Net/tcp_write_text_async")
+    asyncIoQueueFullTask("net/tcp_write_text_async")
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -5583,23 +5583,26 @@ proc buildBuiltins(app: Application): Scope =
                       newNativeFn("Runtime/gc_stats", biRuntimeGcStats))
   result.define("Runtime", newNamespace("Runtime", runtimeScope))
   let fsScope = newScope(result)
-  fsScope.define("ReadDir", newCapability("Fs/ReadDir"))
-  fsScope.define("WriteDir", newCapability("Fs/WriteDir"))
-  fsScope.define("ReadWriteDir", newCapability("Fs/ReadWriteDir"))
-  fsScope.define("read_text_async", newNativeFn("Fs/read_text_async",
+  fsScope.define("ReadDir", newCapability("fs/ReadDir"))
+  fsScope.define("WriteDir", newCapability("fs/WriteDir"))
+  fsScope.define("ReadWriteDir", newCapability("fs/ReadWriteDir"))
+  fsScope.define("read_text_async", newNativeFn("fs/read_text_async",
                                                 biFsReadTextAsync))
-  fsScope.define("write_text_async", newNativeFn("Fs/write_text_async",
+  fsScope.define("write_text_async", newNativeFn("fs/write_text_async",
                                                  biFsWriteTextAsync))
-  result.define("Fs", newNamespace("Fs", fsScope))
+  result.define("fs", newNamespace("fs", fsScope))
+  # `net` is created here with the socket capability and the raw TCP ops;
+  # `registerStdlibNamespaces` extends this same namespace with `http` and
+  # `http_client` rather than rebinding the name, so there is one `net`.
   let netScope = newScope(result)
-  netScope.define("Connect", newCapability("Net/Connect"))
+  netScope.define("Connect", newCapability("net/Connect"))
   netScope.define("tcp_read_text_async",
-                  newNativeFn("Net/tcp_read_text_async",
+                  newNativeFn("net/tcp_read_text_async",
                               biNetTcpReadTextAsync))
   netScope.define("tcp_write_text_async",
-                  newNativeFn("Net/tcp_write_text_async",
+                  newNativeFn("net/tcp_write_text_async",
                               biNetTcpWriteTextAsync))
-  result.define("Net", newNamespace("Net", netScope))
+  result.define("net", newNamespace("net", netScope))
   result.define("cell", newNativeFn("cell", biCell))
   result.defineBuiltinType(vkCell, "Cell", {
     "get": newNativeFn("Cell/get", biCellGet),
@@ -5627,19 +5630,19 @@ proc buildBuiltins(app: Application): Scope =
   let ffiScope = newScope(result)
   ffiScope.define("open", newNativeFn("ffi/open", biFfiOpen))
   ffiScope.define("bind", newNativeFn("ffi/bind", biFfiBind))
-  result.define("ffi", newNamespace("ffi", ffiScope))
-  let ffiTypeScope = newScope(result)
-  ffiTypeScope.define("Load", ffiTypeValue("Load"))
-  ffiTypeScope.define("Callable", ffiTypeValue("Callable"))
-  let ffiLibraryScope = newScope(ffiTypeScope)
+  # The FFI capability/type surface joins the same `ffi` namespace as the
+  # operations, rather than sitting beside it under an uppercase name.
+  ffiScope.define("Load", ffiTypeValue("Load"))
+  ffiScope.define("Callable", ffiTypeValue("Callable"))
+  let ffiLibraryScope = newScope(ffiScope)
   ffiLibraryScope.define("close",
-                         newNativeFn("Ffi/Library/close", biFfiLibraryClose))
+                         newNativeFn("ffi/Library/close", biFfiLibraryClose))
   ffiLibraryScope.define("closed?",
-                         newNativeFn("Ffi/Library/closed?", biFfiLibraryClosed))
+                         newNativeFn("ffi/Library/closed?", biFfiLibraryClosed))
   ffiLibraryScope.define("path",
-                         newNativeFn("Ffi/Library/path", biFfiLibraryPath))
-  ffiTypeScope.define("Library", newNamespace("Ffi/Library", ffiLibraryScope))
-  result.define("Ffi", newNamespace("Ffi", ffiTypeScope))
+                         newNativeFn("ffi/Library/path", biFfiLibraryPath))
+  ffiScope.define("Library", newNamespace("ffi/Library", ffiLibraryScope))
+  result.define("ffi", newNamespace("ffi", ffiScope))
   result.defineBuiltinType(vkTask, "Task", {
     "cancel": newNativeFn("Task/cancel", biTaskCancel),
     "detach": newNativeCallFn("Task/detach", biTaskDetach,
@@ -13745,7 +13748,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
       except CatchableError as e:
         if tryFailTask(req.task,
-                       "Fs/read_text_async failed: " & e.msg):
+                       "fs/read_text_async failed: " & e.msg):
           wakeTaskWaiters(req.task)
     of aioWriteText:
       try:
@@ -13754,7 +13757,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
       except CatchableError as e:
         if tryFailTask(req.task,
-                       "Fs/write_text_async failed: " & e.msg):
+                       "fs/write_text_async failed: " & e.msg):
           wakeTaskWaiters(req.task)
     of aioTcpReadText:
       try:
@@ -13766,7 +13769,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
       except CatchableError as e:
         if tryFailTask(req.task,
-                       "Net/tcp_read_text_async failed: " & e.msg):
+                       "net/tcp_read_text_async failed: " & e.msg):
           wakeTaskWaiters(req.task)
     of aioTcpWriteText:
       try:
@@ -13775,7 +13778,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
       except CatchableError as e:
         if tryFailTask(req.task,
-                       "Net/tcp_write_text_async failed: " & e.msg):
+                       "net/tcp_write_text_async failed: " & e.msg):
           wakeTaskWaiters(req.task)
 
   proc waitForSchedulerWorkerCandidate(s: SchedulerState) =
@@ -14497,9 +14500,9 @@ proc runtimeTypeExpr(value: Value): Value =
       else: value.cSliceTargetType
     typeNode("C/Slice", @[targetType])
   of vkCapability: newSym("Capability")
-  of vkFfiLoad: newSym("Ffi/Load")
-  of vkFfiLibrary: newSym("Ffi/Library")
-  of vkFfiCallable: newSym("Ffi/Callable")
+  of vkFfiLoad: newSym("ffi/Load")
+  of vkFfiLibrary: newSym("ffi/Library")
+  of vkFfiCallable: newSym("ffi/Callable")
   of vkLogger: newSym("Logger")
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
@@ -14974,11 +14977,11 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkDeviceBuffer)
   of "Capability":
     (true, value.kind == vkCapability)
-  of "Ffi/Load":
+  of "ffi/Load":
     (true, value.kind == vkFfiLoad)
-  of "Ffi/Library":
+  of "ffi/Library":
     (true, value.kind == vkFfiLibrary)
-  of "Ffi/Callable":
+  of "ffi/Callable":
     (true, value.kind == vkFfiCallable)
   of "Logger":
     (true, value.kind == vkLogger)
@@ -15102,8 +15105,8 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
         expr.body[1].kind == vkSymbol:
       if expr.body[0].isSymbol("C"):
         return newSym("C/" & expr.body[1].symVal)
-      if expr.body[0].isSymbol("Ffi"):
-        return newSym("Ffi/" & expr.body[1].symVal)
+      if expr.body[0].isSymbol("ffi"):
+        return newSym("ffi/" & expr.body[1].symVal)
       if expr.body[0].isSymbol("Device"):
         return newSym("Device/" & expr.body[1].symVal)
     if expr.head.isSymbol("path") and expr.body.len > 0 and scope != nil and

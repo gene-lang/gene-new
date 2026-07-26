@@ -2142,14 +2142,14 @@ suite "types — function boundaries":
               scope).print() == "(buffer C/Char 2)"
 
   test "FFI load capability gates runtime library loading":
-    ck "Ffi/Load", "(ffi_type Load)"
+    ck "$ffi/Load", "(ffi_type Load)"
 
     let scope = newGlobalScope()
     scope.define("native", newFfiLoadCapability())
-    check run(compileSource("((fn [cap : Ffi/Load] cap) native)"),
+    check run(compileSource("((fn [cap : ffi/Load] cap) native)"),
               scope).print() == "(ffi-load)"
     expect GeneError:
-      discard run(compileSource("((fn [cap : Ffi/Load] cap) nil)"), scope)
+      discard run(compileSource("((fn [cap : ffi/Load] cap) nil)"), scope)
     expect GeneError:
       discard run(compileSource("($ffi/open nil \"libmissing-gene-new\")"), scope)
     expect GeneError:
@@ -2165,12 +2165,12 @@ suite "types — function boundaries":
       check not lib.ffiLibraryClosed
 
       scope.define("lib", lib)
-      check run(compileSource("((fn [handle : Ffi/Library] handle) lib)"),
+      check run(compileSource("((fn [handle : ffi/Library] handle) lib)"),
                 scope).print() == "(ffi-library)"
       check run(compileSource("(var strlen " &
                               "  ($ffi/bind lib \"strlen\" [C/CStr] C/Size)) " &
                               "[(strlen \"hello\") " &
-                              " ((fn [f : Ffi/Callable] (f \"Ada\")) strlen) " &
+                              " ((fn [f : ffi/Callable] (f \"Ada\")) strlen) " &
                               " strlen]"),
                 scope).print() == "[5 3 (ffi-callable strlen)]"
       var dynBytes = [uint8(65), uint8(66), uint8(67)]
@@ -2243,7 +2243,7 @@ suite "types — function boundaries":
             "(($ffi/bind float-lib \"sqrtf\" [C/Float] C/Float) 1.0e50)"),
             scope)
         if floatLibName != libName:
-          check run(compileSource("(Ffi/Library/close float-lib)"),
+          check run(compileSource("($ffi/Library/close float-lib)"),
                     scope).print() == "nil"
       if symAddr(handle, "strcmp") != nil:
         check run(compileSource("(($ffi/bind lib \"strcmp\" " &
@@ -2437,11 +2437,11 @@ suite "types — function boundaries":
                                 " (C/close owned-dup) " &
                                 " (C/closed? owned-dup)]"),
                   scope).print() == "[false nil true]"
-      check run(compileSource("(Ffi/Library/closed? lib)"),
+      check run(compileSource("($ffi/Library/closed? lib)"),
                 scope).print() == "false"
-      check run(compileSource("(Ffi/Library/path lib)"), scope).strVal == libName
-      check run(compileSource("(Ffi/Library/close lib)"), scope).print() == "nil"
-      check run(compileSource("(Ffi/Library/closed? lib)"),
+      check run(compileSource("($ffi/Library/path lib)"), scope).strVal == libName
+      check run(compileSource("($ffi/Library/close lib)"), scope).print() == "nil"
+      check run(compileSource("($ffi/Library/closed? lib)"),
                 scope).print() == "true"
       expect GeneError:
         discard run(compileSource("(strlen \"closed\")"), scope)

@@ -141,7 +141,7 @@
              slice_bytes])
 (import gene/stream [to_stream map filter take into each])
 (import gene/parse [parse_int read_all ParseError])
-(import Fs [read_text write_text exists? remove list_dir real_path
+(import $fs [read_text write_text exists? remove list_dir real_path
             ReadDir WriteDir ReadWriteDir])
 (import $net/http_client [Http stream HttpClientError])
 (import $db/sqlite [open : sqlite_open DbError])

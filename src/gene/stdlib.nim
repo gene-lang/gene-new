@@ -475,7 +475,7 @@ include ./http_server
 
 # --- os: environment, subprocess, and line input (examples/ai_agent/design.md §3,§6) ---
 #
-# Host authority is capability-gated exactly like Fs/Net: `os/get_env` needs an
+# Host authority is capability-gated exactly like fs/Net: `os/get_env` needs an
 # `Os/Env` value and `os/exec`/`os/exec_stdio` need `Os/Exec`, so a launcher can
 # hand out env+file access without shell access. Errors are the typed `OsError`.
 
@@ -2201,7 +2201,7 @@ proc biHttpClientStart(name: string, streaming: bool,
                        args: openArray[Value], call: ptr NativeCall): Value =
   let scope = if call == nil: nil else: call[].dispatchScope
   if args.len != 1 or args[0].kind != vkCapability or
-      args[0].capabilityName != "Net/Http":
+      args[0].capabilityName != "net/Http":
     raiseHttpClientError(name & " expects Http authority", scope)
   var httpMethod = "GET"
   var url = ""
@@ -4734,76 +4734,76 @@ proc biReplRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 
 proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "Fs/read_text expects (Fs/ReadDir, path)")
+    raise newException(GeneError, "fs/read_text expects (fs/ReadDir, path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("Fs/read_text", args[0])
-  requireStr("Fs/read_text path", args[1])
+  requireFsReadDir("fs/read_text", args[0])
+  requireStr("fs/read_text path", args[1])
   try:
     newStr(readFile(args[1].strVal))
   except IOError as e:
-    raiseOsError("Fs/read_text: " & e.msg, scope)
+    raiseOsError("fs/read_text: " & e.msg, scope)
     NIL
 
 proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 3:
-    raise newException(GeneError, "Fs/write_text expects (Fs/WriteDir, path, text)")
+    raise newException(GeneError, "fs/write_text expects (fs/WriteDir, path, text)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsWriteDir("Fs/write_text", args[0])
-  requireStr("Fs/write_text path", args[1])
-  requireStr("Fs/write_text text", args[2])
+  requireFsWriteDir("fs/write_text", args[0])
+  requireStr("fs/write_text path", args[1])
+  requireStr("fs/write_text text", args[2])
   try:
     writeFile(args[1].strVal, args[2].strVal)
   except IOError as e:
-    raiseOsError("Fs/write_text: " & e.msg, scope)
+    raiseOsError("fs/write_text: " & e.msg, scope)
   NIL
 
 proc biFsExists(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "Fs/exists? expects (Fs/ReadDir, path)")
-  requireFsReadDir("Fs/exists?", args[0])
-  requireStr("Fs/exists? path", args[1])
+    raise newException(GeneError, "fs/exists? expects (fs/ReadDir, path)")
+  requireFsReadDir("fs/exists?", args[0])
+  requireStr("fs/exists? path", args[1])
   let path = args[1].strVal
   newBool(fileExists(path) or dirExists(path) or symlinkExists(path))
 
 proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "Fs/list_dir expects (Fs/ReadDir, path)")
+    raise newException(GeneError, "fs/list_dir expects (fs/ReadDir, path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("Fs/list_dir", args[0])
-  requireStr("Fs/list_dir path", args[1])
+  requireFsReadDir("fs/list_dir", args[0])
+  requireStr("fs/list_dir path", args[1])
   if not dirExists(args[1].strVal):
-    raiseOsError("Fs/list_dir: not a directory: " & args[1].strVal, scope)
+    raiseOsError("fs/list_dir: not a directory: " & args[1].strVal, scope)
   var names: seq[Value]
   try:
     for kind, path in walkDir(args[1].strVal, relative = true):
       names.add newStr(path)
   except OSError as e:
-    raiseOsError("Fs/list_dir: " & e.msg, scope)
+    raiseOsError("fs/list_dir: " & e.msg, scope)
   newList(names)
 
 proc biFsMakeDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "Fs/make_dir expects (Fs/WriteDir, path)")
+    raise newException(GeneError, "fs/make_dir expects (fs/WriteDir, path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsWriteDir("Fs/make_dir", args[0])
-  requireStr("Fs/make_dir path", args[1])
+  requireFsWriteDir("fs/make_dir", args[0])
+  requireStr("fs/make_dir path", args[1])
   try:
     createDir(args[1].strVal)
   except OSError as e:
-    raiseOsError("Fs/make_dir: " & e.msg, scope)
+    raiseOsError("fs/make_dir: " & e.msg, scope)
   NIL
 
 proc biFsRemove(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "Fs/remove expects (Fs/WriteDir, path)")
+    raise newException(GeneError, "fs/remove expects (fs/WriteDir, path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsWriteDir("Fs/remove", args[0])
-  requireStr("Fs/remove path", args[1])
+  requireFsWriteDir("fs/remove", args[0])
+  requireStr("fs/remove path", args[1])
   try:
     if fileExists(args[1].strVal):
       removeFile(args[1].strVal)
   except OSError as e:
-    raiseOsError("Fs/remove: " & e.msg, scope)
+    raiseOsError("fs/remove: " & e.msg, scope)
   NIL
 
 proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -4815,10 +4815,10 @@ proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   ## must resolve to (and be checked against) where it would actually write,
   ## not treated as an ordinary in-workspace name.
   if args.len != 2:
-    raise newException(GeneError, "Fs/real_path expects (Fs/ReadDir, path)")
+    raise newException(GeneError, "fs/real_path expects (fs/ReadDir, path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("Fs/real_path", args[0])
-  requireStr("Fs/real_path path", args[1])
+  requireFsReadDir("fs/real_path", args[0])
+  requireStr("fs/real_path path", args[1])
   var p = if args[1].strVal.len > 0: args[1].strVal else: "."
   try:
     # Follow a chain of final symlinks whose target may not exist (a dangling
@@ -4848,7 +4848,7 @@ proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
       resolved = resolved / tail[i]
     newStr(normalizedPath(resolved))
   except OSError as e:
-    raiseOsError("Fs/real_path: " & e.msg, scope)
+    raiseOsError("fs/real_path: " & e.msg, scope)
     NIL
 
 # --- json: parse and stringify over Gene value kinds (examples/ai_agent/design.md §5) ---
@@ -5337,7 +5337,7 @@ proc biLogNewFileLogger(args: openArray[Value],
                         call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
-      "log/new_file_logger expects (Fs/WriteDir, name, path)")
+      "log/new_file_logger expects (fs/WriteDir, name, path)")
   requireLogNamed("log/new_file_logger", call,
                   ["payload", "format", "flush", "level"])
   requireFsWriteDir("log/new_file_logger", args[0])
@@ -8194,17 +8194,19 @@ proc registerStdlibNamespaces(root: Scope) =
                                                acceptsNamed = false))
   httpScope.define("HttpError", root.vars["HttpError"])
   let httpClientScope = newScope(root)
-  httpClientScope.define("Http", newCapability("Net/Http"))
+  httpClientScope.define("Http", newCapability("net/Http"))
   httpClientScope.define("request",
     newNativeCallFn("net/http_client/request", biHttpClientRequest))
   httpClientScope.define("stream",
     newNativeCallFn("net/http_client/stream", biHttpClientStream))
   httpClientScope.define("HttpClientError", httpClientError)
-  let netLowerScope = newScope(root)
+  # Extend the `net` namespace buildBuiltins already created (socket capability
+  # and raw TCP ops) instead of rebinding the name, so `net/Connect` and
+  # `net/http` are members of one namespace.
+  let netLowerScope = root.vars["net"].nsScope
   netLowerScope.define("http", newNamespace("net/http", httpScope))
   netLowerScope.define("http_client",
                        newNamespace("net/http_client", httpClientScope))
-  root.define("net", newNamespace("net", netLowerScope))
 
   # db: shared protocol + error type; sqlite/postgres backends implement it.
   # DbError lives at the root so native raise sites resolve the type head and
@@ -8400,7 +8402,7 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("crypto", newNamespace("crypto", cryptoScope))
 
   # os: env, subprocess, line input (examples/ai_agent/design.md §3,§6). Capabilities are
-  # ambient values like Net/Connect; a launcher can withhold them.
+  # ambient values like net/Connect; a launcher can withhold them.
   let osScope = newScope(root)
   osScope.define("Env", newCapability("Os/Env"))
   osScope.define("Exec", newCapability("Os/Exec"))
@@ -8539,24 +8541,24 @@ proc registerStdlibNamespaces(root: Scope) =
   replScope.define("run", newNativeCallFn("repl/run", biReplRun))
   root.define("repl", newNamespace("repl", replScope))
 
-  # Extend the existing Fs namespace (built in vm.nim) with sync helpers the
+  # Extend the existing `fs` namespace (built in vm.nim) with sync helpers the
   # agent file tools need.
-  let fsNs = root.vars.getOrDefault("Fs", VOID)
+  let fsNs = root.vars.getOrDefault("fs", VOID)
   if fsNs.kind == vkNamespace:
     fsNs.nsScope.define("read_text",
-      newNativeCallFn("Fs/read_text", biFsReadTextSync, acceptsNamed = false))
+      newNativeCallFn("fs/read_text", biFsReadTextSync, acceptsNamed = false))
     fsNs.nsScope.define("write_text",
-      newNativeCallFn("Fs/write_text", biFsWriteTextSync, acceptsNamed = false))
+      newNativeCallFn("fs/write_text", biFsWriteTextSync, acceptsNamed = false))
     fsNs.nsScope.define("exists?",
-      newNativeCallFn("Fs/exists?", biFsExists, acceptsNamed = false))
+      newNativeCallFn("fs/exists?", biFsExists, acceptsNamed = false))
     fsNs.nsScope.define("list_dir",
-      newNativeCallFn("Fs/list_dir", biFsListDir, acceptsNamed = false))
+      newNativeCallFn("fs/list_dir", biFsListDir, acceptsNamed = false))
     fsNs.nsScope.define("make_dir",
-      newNativeCallFn("Fs/make_dir", biFsMakeDir, acceptsNamed = false))
+      newNativeCallFn("fs/make_dir", biFsMakeDir, acceptsNamed = false))
     fsNs.nsScope.define("remove",
-      newNativeCallFn("Fs/remove", biFsRemove, acceptsNamed = false))
+      newNativeCallFn("fs/remove", biFsRemove, acceptsNamed = false))
     fsNs.nsScope.define("real_path",
-      newNativeCallFn("Fs/real_path", biFsRealPath, acceptsNamed = false))
+      newNativeCallFn("fs/real_path", biFsRealPath, acceptsNamed = false))
 
   # json: parse/stringify over Gene value kinds (examples/ai_agent/design.md §5).
   let jsonScope = newScope(root)

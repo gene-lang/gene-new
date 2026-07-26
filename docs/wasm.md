@@ -62,9 +62,9 @@ Mapping each hostile dependency to its wasm reality:
 | Dependency | Used for | Browser (Emscripten) | WASI preview 1 |
 |---|---|---|---|
 | `dynlib` | FFI (`ffi/open`), db/curl/curses backends | **none** — no dynamic loading | **none** |
-| `net` | `Net/tcp-*-async`, `net/http` server | no BSD sockets (fetch/WebSocket only) | no listening sockets; limited connect |
+| `net` | `$net/tcp-*-async`, `net/http` server | no BSD sockets (fetch/WebSocket only) | no listening sockets; limited connect |
 | `osproc`, `posix` | `os/exec` (agent `run_shell`) | **none** — no subprocess | **none** |
-| `os` (env, fs) | `os/get_env`, `Fs/*` | virtual FS + bridged env | real files + env |
+| `os` (env, fs) | `os/get_env`, `$fs/*` | virtual FS + bridged env | real files + env |
 | `locks`, `cpuinfo`, threads | atomicArc worker lane | needs COOP/COEP + special flags | no threads (preview 1) |
 | `monotimes`, `times` | scheduler timers | ok (bridged clock) | ok |
 
@@ -180,9 +180,9 @@ namespaces register.
 | clock / random | JS imports | WASI `clock_time_get` / `random_get` |
 | async | Promise via §A.5 completion ABI | **none** (preview 1 has no event loop) |
 
-Correcting the blanket "keep `Fs/*` / `os/get_env`" in the source map below:
+Correcting the blanket "keep `$fs/*` / `os/get_env`" in the source map below:
 **the browser MVP excludes filesystem and env** unless the JS loader explicitly
-provides them, so `Fs/*` and `os/get_env` register only in `geneWasmWasi`. The
+provides them, so `$fs/*` and `os/get_env` register only in `geneWasmWasi`. The
 browser profile is pure language + the §A.4 eval ABI, nothing that touches a
 disk or an environment it does not have.
 
@@ -264,7 +264,7 @@ path, exactly like `GENE_LIBPQ`.
 (call inst "add" 2 3)                   ; -> 5
 ```
 
-- new capability `Wasm/Run` (ambient value like `Net/Connect`), gating module
+- new capability `Wasm/Run` (ambient value like `$net/Connect`), gating module
   execution — a launcher can withhold it;
 - value marshaling limited to the wasm core numeric types first: `i32`/`i64` ↔
   `Int`, `f32`/`f64` ↔ `Float`. Strings/buffers cross through guest linear
@@ -324,7 +324,7 @@ Implemented:
 Optional, for the size/clarity optimization only (not required, §A.2):
 
 - gate `dynlib`/`net`/`osproc` imports and their namespace registrations behind
-  `when not defined(geneWasm)`; register `os/get_env` and `Fs/*` only under a
+  `when not defined(geneWasm)`; register `os/get_env` and `$fs/*` only under a
   WASI profile, not the browser profile (§A.4.1).
 - new `src/gene/wasm.nim` (Target B only) — the wasmtime dynlib backend,
   `include`d by vm.nim beside the db/os/json code, same as `stdlib.nim`.
@@ -377,7 +377,7 @@ does not, and none of the above uses it.
    GIR image so load does not re-parse.
 3. **fetch bridge (Target A optional).** `net/fetch` over a host Promise import,
    settled through external-pending tasks — the browser analogue of
-   `Fs/*-async`. Lets a wasm-hosted agent (`examples/ai_agent/design.md`) talk to an API
+   `$fs/*-async`. Lets a wasm-hosted agent (`examples/ai_agent/design.md`) talk to an API
    without sockets.
 4. **wasm-in-Gene (Target B).** `wasm` namespace over an embedded engine via the
    dynlib pattern; `Wasm/Run` capability; numeric marshaling; spec tests with a

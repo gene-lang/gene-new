@@ -53,8 +53,8 @@ namespace (`get_env`/`env?` under `Os/Env`, `exec` under `Os/Exec` with
 timeout + output caps, `exec_stream` with stdout callbacks, `read_line`, and
 legacy input compatibility helpers), the public `curses` namespace (`Screen`,
 lifecycle, dimensions, drawing, editor, and cancellable `next_event`),
-`Fs/read_text`/`Fs/write_text`/
-`Fs/list_dir`/`Fs/real_path`, the `json` namespace (`parse`/`stringify`/
+`$fs/read_text`/`$fs/write_text`/
+`$fs/list_dir`/`$fs/real_path`, the `json` namespace (`parse`/`stringify`/
 `JsonError`), `net/http_client` (native async libcurl request/stream), and the
 agent itself — a streaming Responses-API loop over native HTTP with a curl(1)
 bootstrap fallback, the §8.5 catastrophe guard (realpath-confined workspace
@@ -349,10 +349,10 @@ Host capabilities (gated authority):
 | Capability | Needed for | Status today | Section |
 |---|---|---|---|
 | Env var read (`Os/Env`) | API token, model, base URL | **implemented** | §3 |
-| Outbound HTTPS (`Net/Http`) | call the API | **implemented** through `net/http_client` + libcurl | §4 |
+| Outbound HTTPS (`$net/Http`) | call the API | **implemented** through `net/http_client` + libcurl | §4 |
 | Subprocess (`Os/Exec`) | `run_shell`, `grep`, bootstrap `curl` | **implemented** | §6 |
 | PTY process (`Os/Pty`) | local interactive terminal worker | **planned C8** — narrow helper-backed authority | §7.4 |
-| File read/write/list (`Fs/*`) | file tools | **implemented** — sync + async helpers | §6 |
+| File read/write/list (`$fs/*`) | file tools | **implemented** — sync + async helpers | §6 |
 
 Pure stdlib / runtime pieces (no new authority):
 
@@ -365,17 +365,17 @@ Pure stdlib / runtime pieces (no new authority):
 
 What already exists and is directly reusable:
 
-- **Capabilities** as ambient values: `Fs/ReadDir`, `Fs/WriteDir`,
-  `Fs/ReadWriteDir`, `Net/Connect`, `Ffi/Load` (`src/gene/vm.nim`
+- **Capabilities** as ambient values: `$fs/ReadDir`, `$fs/WriteDir`,
+  `$fs/ReadWriteDir`, `$net/Connect`, `$ffi/Load` (`src/gene/vm.nim`
   `buildBuiltins`). New host authority should follow this shape.
 - **Runtime dynamic library loading**: `ffi/open` + `ffi/bind` over an
-  `Ffi/Load` capability, and — more importantly — the *native-namespace over
+  `$ffi/Load` capability, and — more importantly — the *native-namespace over
   dynlib* pattern used by `db/sqlite`/`db/postgres` in `src/gene/stdlib.nim`.
   That pattern (own `LibHandle`, cache resolved symbols in a Nim `object`, wrap
   handles as owned C pointers, raise a typed error) is the template for curses
   and the HTTPS client.
-- **Async tasks + worker I/O queue**: `Net/tcp_read_text_async`,
-  `Net/tcp_write_text_async`, `Fs/*_async`, and `spawn`/`await` already suspend
+- **Async tasks + worker I/O queue**: `$net/tcp_read_text_async`,
+  `$net/tcp_write_text_async`, `$fs/*_async`, and `spawn`/`await` already suspend
   a Gene task on real I/O and resume it. A
   streaming HTTP client and non-blocking `getch` fit this model.
 - **`str`, `url`, `gene/stream`** stdlib helpers for building request bodies and
@@ -493,7 +493,7 @@ Native surface (small, in `src/gene/stdlib.nim` next to the db backends):
   `os/get_env : Os/Env, Str, Str -> Str` (with default) — nil-safe variant
   `os/env? : Os/Env, Str -> Str | Nil` for optional keys.
 
-`Os/Env` is granted the same way `native`/`Ffi/Load` is in tests: defined on the
+`Os/Env` is granted the same way `native`/`$ffi/Load` is in tests: defined on the
 root scope, or injected by a launcher (see §8).
 
 ## 4. HTTPS client (§4)
@@ -507,7 +507,7 @@ frames SSE lines and repaints the ncurses prompt. `curl -N` through
 `os/exec_stream_async` remains only as a library-discovery fallback.
 
 The runtime's built-in TCP client is plaintext-only
-(`Net/tcp_read_text_async` / `Net/tcp_write_text_async` in
+(`$net/tcp_read_text_async` / `$net/tcp_write_text_async` in
 `src/gene/vm.nim`); HTTPS is supplied separately by the first option below:
 
 1. **libcurl native namespace (implemented).**
@@ -615,8 +615,8 @@ The model calls tools; the agent executes them under capabilities and returns
 results. Tools needed for a coding agent:
 
 - `read_file`, `write_file`, `edit_file`, `list_dir` — files.
-  `Fs/read_text_async` / `Fs/write_text_async` still exist; `Fs/read_text`,
-  `Fs/write_text`, and `Fs/list_dir` are implemented for the line-oriented
+  `$fs/read_text_async` / `$fs/write_text_async` still exist; `$fs/read_text`,
+  `$fs/write_text`, and `$fs/list_dir` are implemented for the line-oriented
   agent tools.
   Writes and edits of `.gene` files run the public reader in-process and return
   structured parse warnings without rejecting or rolling back intermediate
@@ -1938,14 +1938,14 @@ application leader resolves genuine key collisions.
 ## 8. Capabilities and the launcher (§8)
 
 Every new host power is a capability value, consistent with the existing model
-(`src/gene/vm.nim` defines `Net/Connect`, `Fs/*`, `Ffi/Load`):
+(`src/gene/vm.nim` defines `$net/Connect`, `$fs/*`, `$ffi/Load`):
 
 - `Os/Env` — read environment variables (§3);
 - `Os/Exec` — spawn subprocesses (§6);
 - `Os/Pty` — launch and control one local PTY through the fixed helper surface
   (§7.4); it is never granted to a model or remote adapter;
-- `Net/Connect` — outbound network (reuse; §4);
-- `Fs/ReadWriteDir` — workspace file tools (reuse; §6).
+- `$net/Connect` — outbound network (reuse; §4);
+- `$fs/ReadWriteDir` — workspace file tools (reuse; §6).
 
 `gene run` now supports explicit named entrypoint grants such as
 `--grant env=Os/Env --grant exec=Os/Exec --`. The current personal-agent script
@@ -2698,7 +2698,7 @@ forward priority order.
    known secrets — all without prompting for normal work.
 6. **Done.** Deterministic fake-model tests cover derived-schema-on-the-wire,
    catastrophe denial, event/trace behavior (`tests/test_cli.nim`), and
-   `Fs/real_path` (`tests/spec_runner.nim`).
+   `$fs/real_path` (`tests/spec_runner.nim`).
 
 The shipped signature demo is deliberately one main session: inspect live state
 in `/repl`, add or replace a typed Gene tool, query the event trail, and
