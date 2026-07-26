@@ -2213,6 +2213,31 @@ suite "spec — implicit self in message bodies from design §10":
                "(match (P ^a 7) (when (P ^a x) x) (else \"no\"))",
                "7")
 
+  test "an impl receiver must be a type, and says so catchably":
+    # An impl is keyed on the receiver's type identity, so a receiver without
+    # one cannot carry it. This used to reach `typeScope` and die on a Nim
+    # FieldDefect — a crash with no source location that Gene could not catch.
+    # Namespaces are the case that shows up, because several uppercase built-in
+    # surfaces are still namespaces rather than types.
+    check_eval("(protocol Shown (message show [] : Str)) " &
+               "(try (impl Shown for AtomicCell (message show [] : Str \"x\")) " &
+               " catch (TypeError ^where w ^expected e ^actual a) [w e a])",
+               "[\"impl receiver\" \"Type\" \"vkNamespace\"]")
+    check_runtime_error(
+      "(protocol Shown (message show [] : Str)) " &
+      "(impl Shown for AtomicCell (message show [] : Str \"x\"))",
+      "a namespace has no type identity")
+    check_runtime_error(
+      "(protocol Shown (message show [] : Str)) (var x 42) " &
+      "(impl Shown for x (message show [] : Str \"y\"))",
+      "only a type can receive an impl")
+    # The built-in surfaces decision 7 made types still take impls.
+    check_eval("(protocol Shown (message show [] : Str)) " &
+               "(impl Shown for List (message show [] : Str \"list\")) " &
+               "(impl Shown for Int (message show [] : Str \"int\")) " &
+               "[([1] ~ Shown:show) (7 ~ Shown:show)]",
+               "[\"list\" \"int\"]")
+
   test "leaf? names the base case for a generic walk":
     # A literal has no interior node structure. Under the projection model its
     # `body` is itself, so a walk that descends through `body` needs an

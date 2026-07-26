@@ -453,7 +453,8 @@ proc isBuiltinSurfaceType(v: Value): bool =
   ## only be a user declaration; now it usually is not.
   v.kind == vkType and gBuiltinSurfaceTypes.contains(v.bits)
 
-proc raiseTypeError(where, expected: string, value: Value, scope: Scope)
+proc raiseTypeError(where, expected: string, value: Value, scope: Scope,
+                    hint = "")
 proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope, hint = "")
 proc raiseMessageError(message, receiverType: string, scope: Scope,
@@ -10820,6 +10821,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let protocol = spop()
           if protocol.kind != vkProtocol:
             raise newException(GeneError, "impl target must be a protocol")
+          if receiver.kind != vkType:
+            # An impl is keyed on the receiver's type identity, so a receiver
+            # without one cannot carry it. Diagnosed here rather than deeper:
+            # `classifyStandaloneImpl` reaches `typeScope`, which raises a Nim
+            # FieldDefect — a crash with no source location, uncatchable from
+            # Gene. Namespaces are the case that actually shows up, because
+            # several uppercase built-in surfaces are still namespaces.
+            let hint =
+              if receiver.kind == vkNamespace:
+                "a namespace has no type identity, so it cannot receive an impl"
+              else:
+                "only a type can receive an impl"
+            raiseTypeError("impl receiver", "Type", receiver, scope, hint)
           var entries: seq[ImplMessage]
           for i, message in proto.messages:
             let resolved = resolveImplMessage(scope, protocol,
@@ -14762,8 +14776,11 @@ proc instantiateTypeExpr(expr: Value, bindings: Table[string, Value],
   else:
     substituteTypeParams(expr, bindings, typeParams)
 
-proc raiseTypeError(where, expected: string, value: Value, scope: Scope) =
-  let message = where & " expected " & expected & ", got " & $value.kind
+proc raiseTypeError(where, expected: string, value: Value, scope: Scope,
+                    hint = "") =
+  var message = where & " expected " & expected & ", got " & $value.kind
+  if hint.len > 0:
+    message = message & "; " & hint
   var props = initPropTable()
   props["message"] = newStr(message)
   props["where"] = newStr(where)
