@@ -461,6 +461,7 @@ type
     okEnum
     okProtocol
     okProtocolMessage
+    okBoundMessage
     okEnumVariant
 
   GeneObjectData* = ref object of RootObj
@@ -784,14 +785,20 @@ type
     protocolBits: uint64  # non-owning backreference to the owning Protocol
     signatureFn: Value    # non-callable-by-contract function carrying the shape
     hasDefault: bool      # signatureFn is also the shared default closure
-    # A *bound* message — what `Proto:msg` / `T:msg` / `Self:msg` yields in
-    # value position. `qualifier` is the Type for a type-direct message and NIL
-    # for a protocol one (`protocolBits` names that) or for `Self:msg`, which
-    # names no qualifier at all. `boundScope` is the scope the value was
-    # *written* in: applying a message has no send site, so this is where its
-    # impls resolve. A declaration-site message leaves both empty.
-    qualifier: Value
-    boundScope: Scope
+
+  BoundMessageData = ref object of GeneObjectData
+    ## What `Proto:msg` / `T:msg` / `Self:msg` yields in value position.
+    ##
+    ## Deliberately *not* extra fields on `ProtocolMessageData`. Widening that
+    ## type cost 11-14% on `value.small_int.construct_access` — a benchmark that
+    ## only runs `newInt`/`intVal` on immediates and cannot reach any of this.
+    ## Growing the `case objKind` blocks for child-traversal and teardown slowed
+    ## the not-managed fast path that every `Value` destructor takes. A separate
+    ## object keeps the declaration-site type byte-identical.
+    name: string
+    protocolBits: uint64  # non-owning; set when the qualifier is a Protocol
+    qualifier: Value      # the Type for a type-direct message; NIL for `Self:`
+    boundScope: Scope     # where the value was written — impls resolve there
 
 # ---------------------------------------------------------------------------
 # Interning (symbols are immediate indices; prop-key strings are deduplicated)
@@ -1453,7 +1460,8 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
   of okProtocolMessage:
     let d = ProtocolMessageData(data)
     emit(d.signatureFn)
-    emit(d.qualifier)
+  of okBoundMessage:
+    emit(BoundMessageData(data).qualifier)
   of okEnumVariant:
     let d = EnumVariantData(data)
     for val in d.payloadTypes:
@@ -1613,9 +1621,12 @@ proc clearObjectEdges(data: GeneObjectData) =
     let d = ProtocolMessageData(data)
     d.protocolBits = 0
     clearValueSlot(d.signatureFn)
+    d.hasDefault = false
+  of okBoundMessage:
+    let d = BoundMessageData(data)
+    d.protocolBits = 0
     clearValueSlot(d.qualifier)
     d.boundScope = nil
-    d.hasDefault = false
   of okEnumVariant:
     let d = EnumVariantData(data)
     d.enumBits = 0
@@ -2009,6 +2020,7 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okEnum: vkType
     of okProtocol: vkProtocol
     of okProtocolMessage: vkProtocolMessage
+    of okBoundMessage: vkProtocolMessage
     of okEnumVariant: vkEnumVariant
   else: vkNil
 
@@ -3786,14 +3798,23 @@ proc protocolUniversal*(v: Value): bool =
   ProtocolData(objData(v)).universal
 
 proc protocolMessageName*(v: Value): lent string =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
-    raise newException(FieldDefect, "value is not a ProtocolMessage")
-  ProtocolMessageData(objData(v)).name
+  # `lent` cannot borrow out of a case *expression*, so branch with returns.
+  if v.tagOf == OBJECT_TAG:
+    let d = objData(v)
+    if d.objKind == okProtocolMessage:
+      return ProtocolMessageData(d).name
+    if d.objKind == okBoundMessage:
+      return BoundMessageData(d).name
+  raise newException(FieldDefect, "value is not a ProtocolMessage")
 
 proc protocolMessageProtocol*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
+  if v.tagOf != OBJECT_TAG:
     raise newException(FieldDefect, "value is not a ProtocolMessage")
-  let bits = ProtocolMessageData(objData(v)).protocolBits
+  let bits =
+    case objData(v).objKind
+    of okProtocolMessage: ProtocolMessageData(objData(v)).protocolBits
+    of okBoundMessage: BoundMessageData(objData(v)).protocolBits
+    else: raise newException(FieldDefect, "value is not a ProtocolMessage")
   if (bits shr TAG_SHIFT) >= MANAGED_MIN:
     rcRetain(bits)
   Value(bits: bits)
@@ -5282,27 +5303,24 @@ proc newBoundMessage*(qualifier: Value, name: string, protocolBits: uint64,
   ## A message value carrying where it was written. This is a *message*, not a
   ## function: it prints as one, satisfies `Callable`, and is accepted as a held
   ## send callee `(x ~ %m)` — which a closure cannot be.
-  boxObject(ProtocolMessageData(objKind: okProtocolMessage,
-                                name: name,
-                                protocolBits: protocolBits,
-                                signatureFn: NIL,
-                                hasDefault: false,
-                                qualifier: qualifier,
-                                boundScope: scope))
+  boxObject(BoundMessageData(objKind: okBoundMessage,
+                             name: name,
+                             protocolBits: protocolBits,
+                             qualifier: qualifier,
+                             boundScope: scope))
 
 proc protocolMessageQualifier*(v: Value): Value =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
-    raise newException(FieldDefect, "value is not a ProtocolMessage")
-  ProtocolMessageData(objData(v)).qualifier
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okBoundMessage:
+    raise newException(FieldDefect, "value is not a bound message")
+  BoundMessageData(objData(v)).qualifier
 
 proc protocolMessageScope*(v: Value): Scope =
-  if v.tagOf != OBJECT_TAG or objData(v).objKind != okProtocolMessage:
-    raise newException(FieldDefect, "value is not a ProtocolMessage")
-  ProtocolMessageData(objData(v)).boundScope
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okBoundMessage:
+    raise newException(FieldDefect, "value is not a bound message")
+  BoundMessageData(objData(v)).boundScope
 
-proc protocolMessageIsBound*(v: Value): bool =
-  v.tagOf == OBJECT_TAG and objData(v).objKind == okProtocolMessage and
-    ProtocolMessageData(objData(v)).boundScope != nil
+proc protocolMessageIsBound*(v: Value): bool {.inline.} =
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okBoundMessage
 
 proc newProtocol*(name: string, messageNames: openArray[string],
                   deriveFn: Value = NIL, parents: sink seq[Value] = @[],
