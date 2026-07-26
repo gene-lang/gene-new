@@ -2063,11 +2063,36 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("[Cell Buffer Node Map List Channel Stream Actor]",
                "[(type Cell) (type Buffer) (type Node) (type Map) " &
                "(type List) (type Channel) (type Stream) (type Actor)]")
-    # Surfaces outside the decision-7 list still send identically through the
-    # built-in fallback, and are still namespaces.
-    check_eval("[AtomicCell Task ReplyTo] ",
-               "[(ns AtomicCell) (ns Task) (ns ReplyTo)]")
+    # The receiver-shaped surfaces are types too now, so the rule is uniform:
+    # an uppercase built-in surface is a type. What stays a namespace is a
+    # namespace *of* things (`C`'s ABI types, `gene/fs`' capabilities), not a
+    # surface whose members all take a receiver.
+    check_eval("[AtomicCell Task ReplyTo Module Namespace Capability]",
+               "[(type AtomicCell) (type Task) (type ReplyTo) (type Module) " &
+               "(type Namespace) (type Capability)]")
+    # `Env` is the one exception, and it is a real one rather than an
+    # oversight: `Env/extend` takes an `Env`, but `Env/snapshot` takes a
+    # **CallerEnv**, so it is a static factory. Making `Env` a type would
+    # withdraw its only call spelling, because `T/m` is not a callable path.
+    check_eval("Env", "(ns Env)")
+    check_eval("(var x 1) (fn! capture! [] (Env/snapshot caller_env [\"x\"])) " &
+               "($nil? (capture!))",
+               "false")
+    check_eval("[Date Time DateTime Timezone Duration Range]",
+               "[(type Date) (type Time) (type DateTime) (type Timezone) " &
+               "(type Duration) (type Range)]")
     check_eval("(var ac ($atomic_cell 1)) (ac ~ store 5) (ac ~ load)", "5")
+    check_eval("[(($range 0 5) ~ size) (($date 2026 7 4) ~ year) " &
+               " ((($range 0 3) ~ to_stream) ~ into [])]",
+               "[5 2026 [0 1 2]]")
+    # Which is what makes them impl receivers — the point of the rule.
+    check_eval("(protocol Shown (message show [] : Str)) " &
+               "(impl Shown for Range (message show [] : Str " &
+               "  ($to_str (self ~ size)))) " &
+               "(impl Shown for Date (message show [] : Str " &
+               "  ($to_str (self ~ year)))) " &
+               "[(($range 0 7) ~ Shown:show) (($date 2026 7 4) ~ Shown:show)]",
+               "[\"7\" \"2026\"]")
     # `each` has no bare root binding — it lives only in the `stream`
     # namespace — so the type's table has to hold that same value.
     check_shared_native("Stream", "map", "$map")
@@ -2217,15 +2242,16 @@ suite "spec — implicit self in message bodies from design §10":
     # An impl is keyed on the receiver's type identity, so a receiver without
     # one cannot carry it. This used to reach `typeScope` and die on a Nim
     # FieldDefect — a crash with no source location that Gene could not catch.
-    # Namespaces are the case that shows up, because several uppercase built-in
-    # surfaces are still namespaces rather than types.
+    # `C` is the durable example: it is a namespace *of* C ABI types and stays
+    # one deliberately, so unlike the receiver-shaped surfaces it will not turn
+    # into a type later and quietly make this test vacuous.
     check_eval("(protocol Shown (message show [] : Str)) " &
-               "(try (impl Shown for AtomicCell (message show [] : Str \"x\")) " &
+               "(try (impl Shown for C (message show [] : Str \"x\")) " &
                " catch (TypeError ^where w ^expected e ^actual a) [w e a])",
                "[\"impl receiver\" \"Type\" \"vkNamespace\"]")
     check_runtime_error(
       "(protocol Shown (message show [] : Str)) " &
-      "(impl Shown for AtomicCell (message show [] : Str \"x\"))",
+      "(impl Shown for C (message show [] : Str \"x\"))",
       "a namespace has no type identity")
     check_runtime_error(
       "(protocol Shown (message show [] : Str)) (var x 42) " &

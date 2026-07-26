@@ -5455,13 +5455,12 @@ proc buildBuiltins(app: Application): Scope =
   regexScope.define("split", newNativeFn("regex/split", biRegexSplit))
   result.define("regex", newNamespace("regex", regexScope))
   result.define("range", newNativeFn("range", biRange))
-  let rangeScope = newScope(result)
-  rangeScope.define("start", newNativeFn("Range/start", biRangeStart))
-  rangeScope.define("stop", newNativeFn("Range/stop", biRangeStop))
-  rangeScope.define("step", newNativeFn("Range/step", biRangeStep))
-  rangeScope.define("inclusive?", newNativeFn("Range/inclusive?", biRangeInclusive))
-  rangeScope.define("size", newNativeFn("Range/size", biRangeSize))
-  result.define("Range", newNamespace("Range", rangeScope))
+  result.defineBuiltinType(vkRange, "Range", {
+    "start": newNativeFn("Range/start", biRangeStart),
+    "stop": newNativeFn("Range/stop", biRangeStop),
+    "step": newNativeFn("Range/step", biRangeStep),
+    "inclusive?": newNativeFn("Range/inclusive?", biRangeInclusive),
+    "size": newNativeFn("Range/size", biRangeSize)})
   result.define("date", newNativeFn("date", biDate))
   result.define("time", newNativeFn("time", biTime))
   result.define("datetime", newNativeFn("datetime", biDateTime))
@@ -5469,39 +5468,34 @@ proc buildBuiltins(app: Application): Scope =
   result.define("duration", newNativeFn("duration", biDuration))
   result.define("today", newNativeFn("today", biToday))
   result.define("now", newNativeFn("now", biNow))
-  let dateScope = newScope(result)
-  dateScope.define("year", newNativeFn("Date/year", biDateYear))
-  dateScope.define("month", newNativeFn("Date/month", biDateMonth))
-  dateScope.define("day", newNativeFn("Date/day", biDateDay))
-  result.define("Date", newNamespace("Date", dateScope))
-  let timeScope = newScope(result)
-  timeScope.define("hour", newNativeFn("Time/hour", biTimeHour))
-  timeScope.define("minute", newNativeFn("Time/minute", biTimeMinute))
-  timeScope.define("second", newNativeFn("Time/second", biTimeSecond))
-  timeScope.define("microsecond", newNativeFn("Time/microsecond", biTimeMicrosecond))
-  timeScope.define("offset", newNativeFn("Time/offset", biTimeOffset))
-  timeScope.define("timezone", newNativeFn("Time/timezone", biTimeTimezone))
-  result.define("Time", newNamespace("Time", timeScope))
-  let dateTimeScope = newScope(result)
-  dateTimeScope.define("year", newNativeFn("DateTime/year", biDateTimeYear))
-  dateTimeScope.define("month", newNativeFn("DateTime/month", biDateTimeMonth))
-  dateTimeScope.define("day", newNativeFn("DateTime/day", biDateTimeDay))
-  dateTimeScope.define("hour", newNativeFn("DateTime/hour", biDateTimeHour))
-  dateTimeScope.define("minute", newNativeFn("DateTime/minute", biDateTimeMinute))
-  dateTimeScope.define("second", newNativeFn("DateTime/second", biDateTimeSecond))
-  dateTimeScope.define("microsecond", newNativeFn("DateTime/microsecond", biDateTimeMicrosecond))
-  dateTimeScope.define("offset", newNativeFn("DateTime/offset", biDateTimeOffset))
-  dateTimeScope.define("timezone", newNativeFn("DateTime/timezone", biDateTimeTimezone))
-  result.define("DateTime", newNamespace("DateTime", dateTimeScope))
-  let timezoneScope = newScope(result)
-  timezoneScope.define("offset", newNativeFn("Timezone/offset", biTimezoneOffset))
-  timezoneScope.define("name", newNativeFn("Timezone/name", biTimezoneName))
-  result.define("Timezone", newNamespace("Timezone", timezoneScope))
-  let durationScope = newScope(result)
-  durationScope.define("microseconds", newNativeFn("Duration/microseconds", biDurationMicroseconds))
-  durationScope.define("milliseconds", newNativeFn("Duration/milliseconds", biDurationMilliseconds))
-  durationScope.define("seconds", newNativeFn("Duration/seconds", biDurationSeconds))
-  result.define("Duration", newNamespace("Duration", durationScope))
+  result.defineBuiltinType(vkDate, "Date", {
+    "year": newNativeFn("Date/year", biDateYear),
+    "month": newNativeFn("Date/month", biDateMonth),
+    "day": newNativeFn("Date/day", biDateDay)})
+  result.defineBuiltinType(vkTime, "Time", {
+    "hour": newNativeFn("Time/hour", biTimeHour),
+    "minute": newNativeFn("Time/minute", biTimeMinute),
+    "second": newNativeFn("Time/second", biTimeSecond),
+    "microsecond": newNativeFn("Time/microsecond", biTimeMicrosecond),
+    "offset": newNativeFn("Time/offset", biTimeOffset),
+    "timezone": newNativeFn("Time/timezone", biTimeTimezone)})
+  result.defineBuiltinType(vkDateTime, "DateTime", {
+    "year": newNativeFn("DateTime/year", biDateTimeYear),
+    "month": newNativeFn("DateTime/month", biDateTimeMonth),
+    "day": newNativeFn("DateTime/day", biDateTimeDay),
+    "hour": newNativeFn("DateTime/hour", biDateTimeHour),
+    "minute": newNativeFn("DateTime/minute", biDateTimeMinute),
+    "second": newNativeFn("DateTime/second", biDateTimeSecond),
+    "microsecond": newNativeFn("DateTime/microsecond", biDateTimeMicrosecond),
+    "offset": newNativeFn("DateTime/offset", biDateTimeOffset),
+    "timezone": newNativeFn("DateTime/timezone", biDateTimeTimezone)})
+  result.defineBuiltinType(vkTimezone, "Timezone", {
+    "offset": newNativeFn("Timezone/offset", biTimezoneOffset),
+    "name": newNativeFn("Timezone/name", biTimezoneName)})
+  result.defineBuiltinType(vkDuration, "Duration", {
+    "microseconds": newNativeFn("Duration/microseconds", biDurationMicroseconds),
+    "milliseconds": newNativeFn("Duration/milliseconds", biDurationMilliseconds),
+    "seconds": newNativeFn("Duration/seconds", biDurationSeconds)})
   result.define("Set", newNativeFn("Set", biSet))
   result.define("set_has?", newNativeFn("set_has?", biSetHas))
   result.define("set_size", newNativeFn("set_size", biSetSize))
@@ -5582,10 +5576,8 @@ proc buildBuiltins(app: Application): Scope =
                                        biDeviceBufferElemType))
   deviceScope.define("Buffer", newNamespace("Device/Buffer", deviceBufferScope))
   result.define("Device", newNamespace("Device", deviceScope))
-  let capabilityScope = newScope(result)
-  capabilityScope.define("name",
-                         newNativeFn("Capability/name", biCapabilityName))
-  result.define("Capability", newNamespace("Capability", capabilityScope))
+  result.defineBuiltinType(vkCapability, "Capability", {
+    "name": newNativeFn("Capability/name", biCapabilityName)})
   let runtimeScope = newScope(result)
   runtimeScope.define("gc_stats",
                       newNativeFn("Runtime/gc_stats", biRuntimeGcStats))
@@ -5615,13 +5607,12 @@ proc buildBuiltins(app: Application): Scope =
     "swap": newNativeFn("Cell/swap", biCellSwap),
     "update": newNativeFn("Cell/update", biCellUpdate)})
   result.define("atomic_cell", newNativeFn("atomic_cell", biAtomicCell))
-  let atomicCellScope = newScope(result)
-  atomicCellScope.define("load", newNativeFn("AtomicCell/load", biAtomicCellLoad))
-  atomicCellScope.define("store", newNativeFn("AtomicCell/store", biAtomicCellStore))
-  atomicCellScope.define("swap", newNativeFn("AtomicCell/swap", biAtomicCellSwap))
-  atomicCellScope.define("compare_exchange",
-    newNativeFn("AtomicCell/compare_exchange", biAtomicCellCompareExchange))
-  result.define("AtomicCell", newNamespace("AtomicCell", atomicCellScope))
+  result.defineBuiltinType(vkAtomicCell, "AtomicCell", {
+    "load": newNativeFn("AtomicCell/load", biAtomicCellLoad),
+    "store": newNativeFn("AtomicCell/store", biAtomicCellStore),
+    "swap": newNativeFn("AtomicCell/swap", biAtomicCellSwap),
+    "compare_exchange":
+      newNativeFn("AtomicCell/compare_exchange", biAtomicCellCompareExchange)})
   let cScope = newScope(result)
   cScope.define("close", newNativeFn("C/close", biCPtrClose))
   cScope.define("closed?", newNativeFn("C/closed?", biCPtrClosed))
@@ -5649,11 +5640,10 @@ proc buildBuiltins(app: Application): Scope =
                          newNativeFn("Ffi/Library/path", biFfiLibraryPath))
   ffiTypeScope.define("Library", newNamespace("Ffi/Library", ffiLibraryScope))
   result.define("Ffi", newNamespace("Ffi", ffiTypeScope))
-  let taskScope = newScope(result)
-  taskScope.define("cancel", newNativeFn("Task/cancel", biTaskCancel))
-  taskScope.define("detach", newNativeCallFn("Task/detach", biTaskDetach,
-                                             acceptsNamed = false))
-  result.define("Task", newNamespace("Task", taskScope))
+  result.defineBuiltinType(vkTask, "Task", {
+    "cancel": newNativeFn("Task/cancel", biTaskCancel),
+    "detach": newNativeCallFn("Task/detach", biTaskDetach,
+                                             acceptsNamed = false)})
   let tryRecvType = newEnum("TryRecv", @["T"],
     [(name: "empty", payloadTypes: newSeq[Value](),
       hasBacking: false, backing: NIL),
@@ -5699,26 +5689,27 @@ proc buildBuiltins(app: Application): Scope =
   actorScope.define("continue", newNativeFn("actor/continue", biActorContinue))
   actorScope.define("stop", newNativeFn("actor/stop", biActorStop))
   result.define("actor", newNamespace("actor", actorScope))
-  let replyToScope = newScope(result)
-  replyToScope.define("send", newNativeCallFn("ReplyTo/send", biReplyToSend,
-                                             acceptsNamed = false))
-  result.define("ReplyTo", newNamespace("ReplyTo", replyToScope))
+  result.defineBuiltinType(vkReplyTo, "ReplyTo", {
+    "send": newNativeCallFn("ReplyTo/send", biReplyToSend,
+                                             acceptsNamed = false)})
   result.define("declarations", newNativeFn("declarations", biDeclarations))
-  let namespaceScope = newScope(result)
-  namespaceScope.define("bindings", newNativeFn("Namespace/bindings", biNamespaceBindings))
-  namespaceScope.define("lookup", newNativeFn("Namespace/lookup", biNamespaceLookup))
-  namespaceScope.define("declarations",
-    newNativeFn("Namespace/declarations", biNamespaceDeclarations))
-  result.define("Namespace", newNamespace("Namespace", namespaceScope))
-  let moduleScope = newScope(result)
-  moduleScope.define("root_namespace",
-    newNativeFn("Module/root_namespace", biModuleRootNamespace))
-  moduleScope.define("name", newNativeFn("Module/name", biModuleName))
-  moduleScope.define("path", newNativeFn("Module/path", biModulePath))
-  moduleScope.define("meta", newNativeFn("Module/meta", biModuleMeta))
-  moduleScope.define("declarations",
-    newNativeFn("Module/declarations", biModuleDeclarations))
-  result.define("Module", newNamespace("Module", moduleScope))
+  result.defineBuiltinType(vkNamespace, "Namespace", {
+    "bindings": newNativeFn("Namespace/bindings", biNamespaceBindings),
+    "lookup": newNativeFn("Namespace/lookup", biNamespaceLookup),
+    "declarations": newNativeFn("Namespace/declarations", biNamespaceDeclarations)})
+  result.defineBuiltinType(vkModule, "Module", {
+    "root_namespace": newNativeFn("Module/root_namespace", biModuleRootNamespace),
+    "name": newNativeFn("Module/name", biModuleName),
+    "path": newNativeFn("Module/path", biModulePath),
+    "meta": newNativeFn("Module/meta", biModuleMeta),
+    "declarations": newNativeFn("Module/declarations", biModuleDeclarations)})
+  # `Env` deliberately stays a namespace, and is the one uppercase surface that
+  # is not receiver-shaped. `Env/extend` is a message — it takes an `Env` — but
+  # `Env/snapshot` takes a **CallerEnv**, so it is a static factory, and making
+  # `Env` a type would withdraw its only call spelling (decision 4 removed
+  # `T/m` as a callable path). Giving `snapshot` a receiver means deciding
+  # whether it becomes a message on `caller_env`, which is a language-surface
+  # decision rather than a transcription, so it is left open.
   let envScope = newScope(result)
   envScope.define("extend", newNativeCallFn("Env/extend", biEnvExtend,
                                             acceptsNamed = false))
@@ -7628,15 +7619,6 @@ proc enumReflectionMessage(name: string): Value =
   of "from_backing": newNativeFn("Enum/from_backing", biEnumFromBacking)
   else: NIL
 
-proc typeNsMessage(scope: Scope, nsName, name: string): Value =
-  ## Resolve `name` as a type-direct message from the built-in type namespace
-  ## `nsName` (design §12): built-in operations are messages on their type, so
-  ## `(x ~ get)` is also reachable as `(x ~ get)` and `x/~get`. Returns
-  ## NIL when the namespace has no such member.
-  let ns = builtinBinding(scope, nsName)
-  let binding = exportedBinding(ns, name)
-  if binding.kind == vkVoid: NIL else: binding
-
 proc convertMessage(scope: Scope, name: string,
                     names: openArray[string]): Value =
   ## The stream/pipeline operations (design §6) and the Node accessors (§1.2)
@@ -7682,52 +7664,22 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     else:
       convertMessage(scope, name, ["to_stream"])
   of vkRange:
-    var m = typeNsMessage(scope, "Range", name)
-    if m.kind == vkNil: m = convertMessage(scope, name, ["to_stream"])
-    m
+    # `Range`'s own messages moved into its type table; `to_stream` is the
+    # shared pipeline entry and still comes from the stdlib, as it does for Set.
+    convertMessage(scope, name, ["to_stream"])
   of vkNode:
     # Only a *typed* instance reaches here: a data node's dispatch face is
     # already the `Node` type, so `receiverType` resolved it. An instance is
     # structurally a node, so the same table answers its anatomy projections
     # and mutators (§1.2) — one table, two receiver classes.
     typeDirectMessage(gScalarTypes[vkNode], name)
-  of vkAtomicCell:
-    typeNsMessage(scope, "AtomicCell", name)
-  of vkTask:
-    typeNsMessage(scope, "Task", name)
-  of vkReplyTo:
-    typeNsMessage(scope, "ReplyTo", name)
-  of vkModule:
-    typeNsMessage(scope, "Module", name)
-  of vkNamespace:
-    typeNsMessage(scope, "Namespace", name)
-  of vkCapability:
-    typeNsMessage(scope, "Capability", name)
   of vkEnv:
-    typeNsMessage(scope, "Env", name)
+    let envNs = builtinBinding(scope, "Env")
+    let binding = exportedBinding(envNs, name)
+    if binding.kind == vkVoid: NIL else: binding
   of vkRegex:
     let regexNs = builtinBinding(scope, "regex")
     let binding = exportedBinding(regexNs, name)
-    if binding.kind == vkVoid: NIL else: binding
-  of vkDate:
-    let dateNs = builtinBinding(scope, "Date")
-    let binding = exportedBinding(dateNs, name)
-    if binding.kind == vkVoid: NIL else: binding
-  of vkTime:
-    let timeNs = builtinBinding(scope, "Time")
-    let binding = exportedBinding(timeNs, name)
-    if binding.kind == vkVoid: NIL else: binding
-  of vkDateTime:
-    let dateTimeNs = builtinBinding(scope, "DateTime")
-    let binding = exportedBinding(dateTimeNs, name)
-    if binding.kind == vkVoid: NIL else: binding
-  of vkTimezone:
-    let timezoneNs = builtinBinding(scope, "Timezone")
-    let binding = exportedBinding(timezoneNs, name)
-    if binding.kind == vkVoid: NIL else: binding
-  of vkDuration:
-    let durationNs = builtinBinding(scope, "Duration")
-    let binding = exportedBinding(durationNs, name)
     if binding.kind == vkVoid: NIL else: binding
   of vkLogger:
     let logNs = builtinBinding(scope, "log")

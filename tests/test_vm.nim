@@ -1569,8 +1569,12 @@ suite "vm — atomic cells":
       discard runStr("(fn read [a : AtomicCell] a) (read ($cell 3))")
 
   test "atomic cell operations require atomic cells":
-    expect GeneError: discard runStr("(AtomicCell/load 1)")
-    expect GeneError: discard runStr("(AtomicCell/store ($atomic_cell 1))")
+    # `AtomicCell` is a type, so the receiver check is reached through a send.
+    # `(AtomicCell/load 1)` no longer reaches the native at all — it is the
+    # decision-4 "not a callable path" error — so asserting on it would stop
+    # testing what this test is named for.
+    expect GeneError: discard runStr("(1 ~ AtomicCell:load)")
+    expect GeneError: discard runStr("(($atomic_cell 1) ~ store)")
 
 suite "vm — channels":
   test "channel values are opaque display values":
@@ -2688,7 +2692,7 @@ suite "vm — actors":
     expect GeneError:
       discard runStr("($actor/spawn ^handle (fn [ctx state msg] ($actor/stop)))")
     expect GeneError: discard runStr("(1 ~ send 2)")
-    expect GeneError: discard runStr("(ReplyTo/send 1 2)")
+    expect GeneError: discard runStr("(1 ~ ReplyTo:send 2)")
 
 suite "vm — streams":
   test "read_one and read_all expose parsed forms":

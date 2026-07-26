@@ -4,7 +4,7 @@ Status: **decision doc** (spike result plus staged implementation notes). Date:
 2026-06-28; updated 2026-06-30 for the default bounded worker lease.
 Branch context: `main` (cooperative root scheduler with bounded
 worker-candidate OS worker lane, channel/task/actor suspension, explicit
-`Task/cancel`, and error/cancel scope-exit child-task cancellation with cleanup
+`cancel` (on `Task`), and error/cancel scope-exit child-task cancellation with cleanup
 plus normal-exit child waiting done; actor scope shutdown cancels pending asks
 and parked handlers).
 

@@ -13,7 +13,7 @@
 #   - (scope ...)         structured-concurrency root; waits for live children
 #   - (spawn expr)        evaluate expr in a child task, return (Task T E)
 #   - (await task)        suspend on the task; returns value or propagates Error
-#   - (Task/cancel task)  request cancellation; cooperative at next safepoint
+#   - (task ~ cancel)     request cancellation; cooperative at next safepoint
 #   - (channel ^capacity N)
 #                        bounded, typed (Channel T)
 #   - (actor/spawn ^init init-fn ^handle handle-fn)
@@ -139,7 +139,7 @@
 # -----------------------------------------------------------------------------
 ($println "4. cancellation contract")
 
-($println "   - explicit (Task/cancel t) runs the spawned task's `ensure`")
+($println "   - explicit (t ~ cancel) runs the spawned task's `ensure`")
 (var cleanup_count ($cell 0))
 (scope
   (var t
