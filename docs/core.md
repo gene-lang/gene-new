@@ -631,7 +631,9 @@ reliable signal — **bare means type-direct, qualified means protocol.** The
 built-in type operations are type-direct, hence bare: `(c ~ get)`, never
 `(c ~ Cell/get)`. `Cell` is a real type and `get` is one of its type-direct
 messages, so `Cell/get` is the same qualified-member spelling any type gives its
-messages (§8) and stays usable in call position, `(Cell/get c)`.
+messages (§8). It is not a callable path — `(Cell/get c)` is an error, because
+static impl selection is `super` only (§10) — so it is used in a send,
+`(c ~ Cell:get)`, or as a value.
 
 The **held-value send** `(x ~ %m ...)` evaluates `m` to a message value and
 dispatches it on `x`. `%m` is the ordinary `%` escape (design §5): a bare name

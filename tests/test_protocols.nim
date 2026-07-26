@@ -530,13 +530,16 @@ suite "protocols — ^inherit and qualified message identity":
        "\"ok\""
 
 suite "types — type-direct messages and sends":
-  test "type-direct messages are sendable and qualified members":
+  test "type-direct messages are sendable, and qualify with `:`":
+    # `Box/get` is no longer a callable path (design §3, decision 4): static
+    # impl selection is `super` only. The qualified spelling is `Box:get`, and
+    # it dispatches on the receiver rather than selecting Box's body.
     ck "(type Box ^props {^val Int} " &
        "  (message get [self] self/val) " &
        "  (message doubled [self] (* self/val 2))) " &
        "(var b (Box ^val 7)) " &
-       "[(b ~ get) (b ~ doubled) (Box/get b)]",
-       "[7 14 7]"
+       "[(b ~ get) (b ~ doubled) (b ~ Box:get) (b ~ Self:get)]",
+       "[7 14 7 7]"
 
   test "a receiver message wins over a lexical binding at send sites":
     # docs/core.md §9.1/§9.3: receiver-first; the bare call stays lexical.
@@ -577,8 +580,8 @@ suite "types — type-direct messages and sends":
        "  (message speak [self] $\"${self/name} makes a sound\")) " &
        "(type Dog ^is Animal ^props {^breed Str}) " &
        "(var d (Dog ^name \"Rex\" ^breed \"Lab\")) " &
-       "[(d ~ speak) (Dog/speak d)]",
-       "[\"Rex makes a sound\" \"Rex makes a sound\"]"
+       "[(d ~ speak) (d ~ Dog:speak) (d ~ Animal:speak)]",
+       "[\"Rex makes a sound\" \"Rex makes a sound\" \"Rex makes a sound\"]"
 
   test "a child's same-named message shadows the parent's":
     ck "(type Animal ^props {^name Str} " &

@@ -767,7 +767,9 @@ reliable signal: **bare means type-direct, qualified means protocol.** Built-in
 operations are type-direct messages, so they take the bare form — `(c ~ get)`,
 not `(c ~ Cell/get)`. `Cell` is a real type whose messages are `get`, `set`,
 `swap`, and `update`, and a type exposes its messages as qualified members
-(§7.1), so `Cell/get` remains usable in call position, `(Cell/get c)`.
+(§7.1). `Cell/get` is *not* a callable path: `(Cell/get c)` was static
+binding, which decision 4 withdraws in favour of `super` alone. Write the
+send, `(c ~ get)` or `(c ~ Cell:get)`.
 
 **Case carries meaning in the stdlib: `Name` is a type, `name` is a namespace
 of functions.** Both live under the `gene` root, so the type of an actor
@@ -783,8 +785,8 @@ an operation belongs to follows from whether it has a receiver:
 
 The same split applies to `Module`, `Namespace`, `Capability`, and `Env`:
 `(this_mod ~ path)`, `(ns ~ lookup "x")`, `(cap ~ name)`. The qualified member
-stays callable — `(Actor/send a msg)` works like `(Cell/get c)` — but the send
-is the idiomatic form, because the receiver is what the operation is about.
+names the message — `(a ~ Actor:send msg)` — and the bare send `(a ~ send msg)`
+says the same thing. `Actor/send` is not a callable path.
 
 `List`, `Map`, `Node`, `Cell`, `Channel`, `Stream`, `Actor`, and `Buffer` are
 real types; the remaining uppercase surfaces (`AtomicCell`, `Task`, `ReplyTo`,
@@ -2494,6 +2496,13 @@ Two forms remain unsupported, pending the protocol-impl precedence rule:
 `(super ~ Proto/m)` for protocol-impl delegation, and the dynamic
 `(super ~ %m)`. Both are diagnosed rather than silently mis-dispatched.
 
+**Static impl selection is `super` only.** `T/m` is not a callable path:
+`(Dog/bark p)` used to run `Dog`'s body even when `p` was a `Pup` overriding it,
+and `(map xs Dog/bark)` did that per element. Both are now errors that name the
+replacement — a send `(x ~ bark)`, or the value spelling `Dog:bark`, which
+dispatches. Enum variants (`Direction/east`) are unaffected: they are not
+messages. Impls were already never exposed as members.
+
 `Self` remains a type name in annotation position, e.g.
 `(message eq [other : Self] : Bool)`. The legacy form that names the receiver
 explicitly as the first parameter (`[self …]`) is still accepted during
@@ -3130,7 +3139,7 @@ Until that lands, `const` is rejected with a "not yet implemented" diagnostic;
 the same message, through the same lookup that serves a user-declared type. A
 qualified send names a *protocol* message, so `(count ~ Cell/get)` is an error —
 `Cell/get` is the qualified member spelling every type gives its messages
-(§7.1), and is used in call position, `(Cell/get count)`.
+(§7.1), and is used in a send: `(count ~ get)` or `(count ~ Cell:get)`.
 
 Being a real type is what makes `Cell` nameable as an impl receiver:
 

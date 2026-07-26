@@ -15642,10 +15642,21 @@ proc staticLookup(target, segment: Value): Value =
           let message = typeDirectMessage(target, key)
           if message.kind == vkNil: VOID else: message
       else:
-        # Qualified type-direct message access, e.g. Box/get (docs/core.md §8);
-        # walks the ^is chain like send resolution does.
+        # `T/m` is withdrawn as a callable path (design §3, decision 4). It was
+        # *static* binding: `(Dog/bark p)` ran `Dog`'s body even when `p` was a
+        # `Pup` that overrides it, and `(map xs Dog/bark)` did that per element.
+        # Static impl selection is `super` only now. A missing member still
+        # answers VOID — only the case that used to succeed is rejected, and the
+        # diagnostic names both replacements.
         let message = typeDirectMessage(target, key)
-        if message.kind == vkNil: VOID else: message
+        if message.kind == vkNil:
+          VOID
+        else:
+          raise newException(GeneError,
+            "'" & target.typeName & "/" & key &
+            "' is not a callable path: a type message is reached with a send, " &
+            "(x ~ " & key & "), or named as a value with " &
+            target.typeName & ":" & key & " (design §3)")
     else:
       VOID
   of vkNode:

@@ -7,6 +7,17 @@
 import gene/[compiler, gir, printer, reader, types, vm]
 import std/[algorithm, monotimes, os, sequtils, sets, strutils, tables, times, unittest]
 
+proc sharedNativeIdentity(scope: Scope, typeName, msg, rootName: string): bool =
+  ## A native bound both into the lexical root and into a type's message table
+  ## must be one object. `T/m` used to make that observable from Gene; decision
+  ## 4 withdrew it, so the invariant is checked directly against the table.
+  let typ = run(compileSource(typeName), scope)
+  let rootFn = run(compileSource(rootName), scope)
+  typeDirectMessage(typ, msg).bits == rootFn.bits
+
+template check_shared_native(typeName, msg, rootName: string) =
+  check sharedNativeIdentity(newGlobalScope(), typeName, msg, rootName)
+
 template check_read(src: string, expected: string) =
   check read(src).print() == expected
 
@@ -18,6 +29,18 @@ template check_compile_error(src: string, fragment: string) =
   var raised = false
   try:
     discard compileSource(src)
+  except CatchableError as e:
+    raised = true
+    check fragment in e.msg
+  check raised
+
+template check_runtime_error(src: string, fragment: string) =
+  ## Asserts that *running* `src` raises with `fragment` in the message. Some
+  ## rules cannot be checked at compile time — the compiler does not track
+  ## which names are types, so `(T/m x)` is only recognizable once `T` resolves.
+  var raised = false
+  try:
+    discard run(compileSource(src), newGlobalScope())
   except CatchableError as e:
     raised = true
     check fragment in e.msg
@@ -2026,12 +2049,11 @@ suite "spec — implicit self in message bodies from design §10":
                "(try ([\"a\" \"b\"] ~ gene/str/join \"-\") " &
                "catch (CallKindError ^expected e) e)",
                "\"Message\"")
-    # A built-in operation is type-direct, so it takes the bare form; the
-    # qualified member spelling stays available in ordinary call position.
-    check_eval("(var c ($cell 7)) " &
-               "[(c ~ get) (Cell/get c) " &
-               " (try (c ~ Cell/get) catch (CallKindError ^expected e) e)]",
-               "[7 7 \"Message\"]")
+    # A built-in operation is type-direct, so it takes the bare form. `Cell/get`
+    # is no longer a callable path at all (decision 4): a type message is
+    # reached with a send, or named as a value with `Cell:get`.
+    check_eval("(var c ($cell 7)) [(c ~ get) (c ~ Cell:get)]", "[7 7]")
+    check_runtime_error("(Cell/get ($cell 7))", "not a callable path")
 
   test "a built-in surface is a type, so it can receive impls":
     # `Cell` is a real type whose message table holds get/set/swap/update
@@ -2048,9 +2070,9 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(var ac ($atomic_cell 1)) (ac ~ store 5) (ac ~ load)", "5")
     # `each` has no bare root binding — it lives only in the `stream`
     # namespace — so the type's table has to hold that same value.
-    check_eval("[(same? $map Stream/map) (same? $into Stream/into) " &
-               " (same? $stream/each Stream/each)]",
-               "[true true true]")
+    check_shared_native("Stream", "map", "$map")
+    check_shared_native("Stream", "into", "$into")
+    check_shared_native("Stream", "each", "$stream/each")
     check_eval("(var c ($cell 0)) " &
                "((([1 2 3 4] ~ to_stream) ~ filter (fn [x] (> x 2))) " &
                "  ~ each (fn [x] (c ~ set (+ (c ~ get) x)))) " &
@@ -2070,9 +2092,9 @@ suite "spec — implicit self in message bodies from design §10":
                "[3 \"Channel\"]")
     # A name that is both a bare library function and a type message names one
     # function value, not two natives that behave alike.
-    check_eval("[(same? $size List/size) (same? $head Node/head) " &
-               " (same? $to_stream List/to_stream)]",
-               "[true true true]")
+    check_shared_native("List", "size", "$size")
+    check_shared_native("Node", "head", "$head")
+    check_shared_native("List", "to_stream", "$to_stream")
     # Kinds that are still namespace-backed keep reaching the same natives.
     check_eval("(var s ($Set 1 2)) (var r ($range 0 3)) " &
                "[(s ~ contains? 1) ((s ~ to_stream) ~ into []) " &
@@ -2091,7 +2113,7 @@ suite "spec — implicit self in message bodies from design §10":
     # A generic annotation on a built-in stays on the symbolic matching path,
     # so making the surface a type does not disturb `(Buffer T)`.
     check_eval("(var b ($buffer [1 2 3])) " &
-               "[((fn [x : (Buffer Int)] (x ~ len)) b) (Buffer/len b) " &
+               "[((fn [x : (Buffer Int)] (x ~ len)) b) (b ~ Buffer:len) " &
                " ((fn [x : Buffer] (x ~ get 0)) b)]",
                "[3 3 1]")
     check_eval("(protocol Shown (message show [] : Str)) " &
@@ -2103,7 +2125,7 @@ suite "spec — implicit self in message bodies from design §10":
     # All three spellings resolve through the one message table, and a name it
     # does not hold is still a MessageError naming the type.
     check_eval("(var c ($cell 1)) " &
-               "[(c ~ get) (Cell/get c) c/~get " &
+               "[(c ~ get) (c ~ Cell:get) c/~get " &
                " (try (c ~ nope) catch (MessageError ^receiver_type t) t)]",
                "[1 1 1 \"Cell\"]")
 
@@ -3181,12 +3203,14 @@ suite "spec — actors from design":
                "[(same? gene/Actor Actor) (same? gene/actor $actor) " &
                " ((a ~ snapshot) ~ /state)]",
                "[true true 4]")
-    # The qualified member stays callable, like (Cell/get c).
+    # `Actor/send` is no longer a callable path; the qualified spelling is the
+    # message name, used in a send.
     check_eval("(fn handle [ctx, state, msg] ($actor/continue (+ state msg))) " &
                "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(Actor/send a 6) " &
+               "(a ~ Actor:send 6) " &
                "((a ~ snapshot) ~ /state)",
                "6")
+    check_runtime_error("(Actor/send 1 2)", "not a callable path")
     check_eval("(fn handle [ctx, state, msg] ($actor/continue state)) " &
                "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
                "[((fn [x : Actor] 1) a) ((fn [x : ActorRef] 2) a) " &
@@ -5035,10 +5059,11 @@ suite "spec — qualified message spelling":
     check run(compileSource("(same? Cell Cell)"), s2).print() == "true"
     # A native bound both into the root and into a type's message table has to
     # be one value in *every* application, not just the first.
-    for src in ["(same? $size List/size)", "(same? $head Node/head)",
-                "(same? $to_stream List/to_stream)",
-                "(same? $stream/each Stream/each)"]:
-      check run(compileSource(src), s2).print() == "true"
+    for (typeName, msg, rootName) in [("List", "size", "$size"),
+                                      ("Node", "head", "$head"),
+                                      ("List", "to_stream", "$to_stream"),
+                                      ("Stream", "each", "$stream/each")]:
+      check sharedNativeIdentity(s2, typeName, msg, rootName)
     check run(compileSource("[(($cell 7) ~ get) ([1 2 3] ~ size)]"),
               s2).print() == "[7 3]"
 
