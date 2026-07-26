@@ -11257,7 +11257,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # reaches only the receiver's type-direct messages (walking `^is`),
           # then the built-in type-direct surface. There is no protocol tier and
           # no lexical fallback — protocol messages are always qualified
-          # (`x ~ P/m`). The resolved callee is inserted below any named argument
+          # (`x ~ P:m`). The resolved callee is inserted below any named argument
           # values already on the stack, then the receiver goes back on top as
           # the first positional argument.
           let receiver = spop()
@@ -11270,7 +11270,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let recvType = receiver.receiverType
           # An unqualified send reaches only type-direct messages, walking the
           # `^is` chain (design §3/§9). Protocol messages are always qualified —
-          # `(x ~ P/m)` — so a protocol impl is never reached by a bare name.
+          # `(x ~ P:m)` — so a protocol impl is never reached by a bare name.
           if recvType.kind == vkType:
             when dispatchCacheEnabled:
               # site = this instruction's index (ip was advanced at loop top).
@@ -12555,7 +12555,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if stack[sp - 1].isSyntaxFn:
             rejectSyntaxSend(stack[sp - 1], scope)
         of opResolveQualifiedMessage:
-          # Qualified/dynamic send — (x ~ P/m), (x ~ %m), (x ~ (expr)). The
+          # Qualified/dynamic send — (x ~ P:m), (x ~ %m), (x ~ (expr)). The
           # callee must be a message value; `~` dispatches only and never
           # invokes an arbitrary function or a held fn! (design §3/§8). The impl
           # is resolved here rather than by lowering the send to a flipped call,
@@ -15673,19 +15673,24 @@ proc staticLookup(target, segment: Value): Value =
     of vkProtocol:
       # `P/m` is not a message spelling. `/` selects a member and `:` names a
       # message, and a protocol's messages are reached only through `:` — so
-      # `(x ~ P/m)` and `P/m` in value position are both errors that name the
+      # `(x ~ P:m)` and `P/m` in value position are both errors that name the
       # replacement. A protocol has no other members, so a name it does not
       # declare stays VOID rather than becoming a second diagnostic.
-      var found = target.protocolMessages.getOrDefault(key, VOID)
-      if found.kind == vkVoid:
-        let candidates = target.protocolClosureByName(key)
-        if candidates.len == 1:
-          found = candidates[0]
-        elif candidates.len > 1:
-          raise newException(GeneError,
-            "ambiguous message '" & key & "' in protocol " &
-            target.protocolName & "; qualify with the defining protocol")
-      if found.kind == vkVoid:
+      let own = target.protocolMessages.getOrDefault(key, VOID)
+      let declared =
+        if own.kind != vkVoid:
+          own
+        else:
+          let candidates = target.protocolClosureByName(key)
+          if candidates.len == 1:
+            candidates[0]
+          elif candidates.len > 1:
+            raise newException(GeneError,
+              "ambiguous message '" & key & "' in protocol " &
+              target.protocolName & "; qualify with the defining protocol")
+          else:
+            VOID
+      if declared.kind == vkVoid:
         VOID
       else:
         raise newException(GeneError,
@@ -20951,11 +20956,17 @@ proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
                loc = SourceLoc()): Value =
-  if callee.kind == vkProtocolMessage and callee.protocolMessageIsBound:
+  case callee.kind
+  of vkProtocolMessage:
     # Applying a message dispatches on its first argument (design §3, decision
     # 2): `(map xs P:m)` works, and the signature is (receiver, …send args).
     # Impls resolve in the scope the value was *written* in, which the value
-    # carries — there is no send site here to resolve against.
+    # carries — there is no send site here to resolve against. An *unbound*
+    # message is a declaration-site identity with no such scope, so it is not
+    # applicable. This lives in the case rather than ahead of it so non-message
+    # callees pay nothing for it.
+    if not callee.protocolMessageIsBound:
+      rejectMessageCall(callee, dispatchScope)
     if args.len == 0:
       raise newException(GeneError,
         "applying message '" & callee.protocolMessageName &
@@ -20968,7 +20979,6 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     let target = resolveQualifiedSend(bound, qualifier,
                                       callee.protocolMessageName, args[0])
     return applyCall(target, args, named, bound, site, loc)
-  case callee.kind
   of vkNativeFn:
     if named.len == 0 and args.len == 2:
       let fast = tryFastNative2(callee, args[0], args[1])
@@ -21021,11 +21031,6 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     # the type defines one (design §7.1.1). Constructor logic runs through
     # `new` only.
     constructTypedInstance(callee, args, named)
-  of vkProtocolMessage:
-    # `~` is the only way to invoke a message (design §3), so a message value
-    # is not callable — not in head position and not as a higher-order function
-    # (`(map xs P/m)`). Use a lambda: `(map xs (fn [x] (x ~ P/m)))`.
-    rejectMessageCall(callee, dispatchScope)
   of vkNode:
     if not callee.isSelector:
       if callee.valueImplementsCallable(dispatchScope):

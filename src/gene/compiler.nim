@@ -4543,7 +4543,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       return
     # A selector callee (x ~ /name) is a projection of the receiver, not a
     # message; it keeps the flipped-call lowering. Every other non-bare callee —
-    # a qualified path (x ~ P/m), `%m`, an expression, or `^protocol`/`^receiver`
+    # a qualified path (x ~ P:m), `%m`, an expression, or `^protocol`/`^receiver`
     # metadata — must evaluate to a message value and is dispatched by
     # opResolveQualifiedMessage, so `~` can never invoke an ordinary function
     # (design §3/§8).
@@ -4690,7 +4690,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       typeArgs: types.listItems))
   if node.props.hasKey("protocol") or node.props.hasKey("receiver"):
     # `(m ^protocol P ^receiver T recv args...)` is the pre-resolved spelling of
-    # `(recv ~ P/m args...)`, so dispatch it as a send. A message identity is
+    # `(recv ~ P:m args...)`, so dispatch it as a send. A message identity is
     # not callable in head position (design §3), and routing it here keeps the
     # message value out of the ordinary call opcodes.
     let messageExpr = sendMessageExpr(c, node, node.head)
