@@ -2158,6 +2158,28 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(var c ($cell 1)) [(same? ($head c) c) ($body c)]",
                "[true []]")
 
+  test "a rest pattern binds in node-body position, not only in a list":
+    # The reader gives `xs...` two shapes: the symbol `xs...` inside a list
+    # literal, and the spread node `(... xs)` everywhere else. A pattern has to
+    # accept both, or a node-body rest silently takes the exact-arity path.
+    check_eval("[(match (quote (f 1 2 3)) (when (f xs...) xs) (else \"no\")) " &
+               " (match [1 2 3] (when [a xs...] [a xs]) (else \"no\")) " &
+               " (match [1 2 3] (when (List xs...) xs) (else \"no\"))]",
+               "[[1 2 3] [1 [2 3]] [1 2 3]]")
+    # Patterns before and after the rest, and the `_...` discard.
+    check_eval("[(match (quote (f 1 2 3 4)) (when (f a rest... z) [a rest z]) " &
+               "  (else \"no\")) " &
+               " (match (quote (f 1 2 3)) (when (f a _...) a) (else \"no\"))]",
+               "[[1 [2 3] 4] 1]")
+    # A typed instance's body destructures the same way.
+    check_eval("(type P ^props {^a Int}) (var p (P ^a 1)) " &
+               "(p ~ push_body! 7) (p ~ push_body! 8) " &
+               "(match p (when (P ^a k xs...) [k xs]) (else \"no\"))",
+               "[1 [7 8]]")
+    # The macro-time matcher is a separate implementation and needs the same
+    # rule, or a macro parameter pattern disagrees with a runtime one.
+    check_eval("(macro grab [(f a xs...)] `%xs) (grab (f 1 2 3))", "[2 3]")
+
   test "a node-shape pattern destructures through the projection":
     # `(P ^a x)` already read a typed instance's head/props/body. Now that a
     # literal projects the same anatomy (design §1.3), the same pattern shape

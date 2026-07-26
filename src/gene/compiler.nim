@@ -830,7 +830,16 @@ proc patternBindsSelf(pattern: Value): bool =
     return false
 
 proc isRestPattern(pat: Value): bool =
-  pat.kind == vkSymbol and pat.symVal.len > 3 and pat.symVal.endsWith("...")
+  ## Mirrors `vm.nim`'s: the reader spells `xs...` as the symbol `xs...` inside
+  ## a list literal and as the spread node `(... xs)` everywhere else, so a
+  ## macro-time pattern has to accept both for `(f xs...)` to bind.
+  if pat.kind == vkSymbol:
+    return pat.symVal.len > 3 and pat.symVal.endsWith("...")
+  pat.kind == vkNode and pat.head.isSymbol("...") and pat.body.len == 1 and
+    pat.body[0].kind == vkSymbol
+
+proc restPatternName(pat: Value): string =
+  if pat.kind == vkSymbol: pat.symVal[0 .. ^4] else: pat.body[0].symVal
 
 proc addPatternBinding(names: var seq[string], seen: var Table[string, bool],
                        name: string) =
@@ -1916,7 +1925,7 @@ proc macroMatchSequence(patterns, items: seq[Value],
   for i in 0 ..< before:
     if not macroTryMatch(ps[i], items[i], trial):
       return false
-  let restName = ps[restIdx].symVal[0 .. ^4]
+  let restName = restPatternName(ps[restIdx])
   if restName != "_":
     var rest: seq[Value]
     for i in before ..< items.len - after:

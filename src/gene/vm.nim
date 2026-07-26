@@ -6111,7 +6111,21 @@ proc isSymbolP(v: Value, name: string): bool =
   v.kind == vkSymbol and v.symVal == name
 
 proc isRestPattern(p: Value): bool =
-  p.kind == vkSymbol and p.symVal.len > 3 and p.symVal.endsWith("...")
+  ## `xs...` has two shapes, because the reader gives it two: inside a list
+  ## literal it stays the symbol `xs...`, and everywhere else it reads as the
+  ## spread node `(... xs)` (`reader.nim` `tkSymbol`, `inList`). A pattern must
+  ## accept both, or `(f xs...)` and `(List xs...)` silently take
+  ## `matchSequence`'s exact-arity path while `[xs...]` works — which is what
+  ## they did.
+  if p.kind == vkSymbol:
+    return p.symVal.len > 3 and p.symVal.endsWith("...")
+  p.kind == vkNode and p.head.isSymbol("...") and p.body.len == 1 and
+    p.body[0].kind == vkSymbol
+
+proc restPatternName(p: Value): string =
+  ## The name a rest pattern binds, in either spelling. The spread node already
+  ## carries the bare symbol; only the list-literal form needs the suffix cut.
+  if p.kind == vkSymbol: p.symVal[0 .. ^4] else: p.body[0].symVal
 
 proc isTypedPattern(p: Value): bool =
   p.kind == vkNode and p.head.kind == vkSymbol and p.body.len > 0 and
@@ -6257,7 +6271,7 @@ proc matchSequence(pats, items: seq[Value], scope: Scope,
   if items.len < before + after: return false
   for i in 0 ..< before:
     if not tryMatch(ps[i], items[i], scope, binds): return false
-  let restName = ps[restIdx].symVal[0 .. ^4]   # drop trailing "..."
+  let restName = restPatternName(ps[restIdx])
   if restName != "_":
     var rest = newSeq[Value](items.len - before - after)
     for i in 0 ..< rest.len: rest[i] = items[before + i]
