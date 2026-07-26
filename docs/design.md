@@ -110,6 +110,21 @@ to `(f 1 2)` and to quasiquoted templates. A typed instance keeps its *own* type
 as its dispatch face and reaches the projections because it is structurally a
 node — not because it is an instance of `Node`.
 
+The annotation says the same thing, because it is the same rule: `[n : Node]`
+accepts a data node and rejects a typed instance, an enum value, and a scalar.
+**`Any` is the root type** — it is what accepts every value. Node shape for a
+non-node is a *conversion*, not a subtyping relation:
+
+```gene
+((fn [n : Node] 1) (quote (f 1 2)))  # 1
+((fn [n : Node] 1) (Task ^id 1))     # TypeError, expected Node
+((fn [x : Any]  1) (Task ^id 1))     # 1
+```
+
+An uppercase head does not make a node typed: `(quote (Declaration ^name "h"))`
+is tagged by the *symbol* `Declaration` and is still a data node. Only an actual
+type value in `head` makes an instance.
+
 This is homoiconicity as projection, not representation. An `Int`, `Str`, `Fn`, `Stream`, module, and heap node can expose node shape without sharing memory layout.
 
 ### 1.3 Pure projections

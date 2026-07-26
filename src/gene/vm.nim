@@ -1550,6 +1550,18 @@ const NodeShapedKinds = LeafValueKinds + {vkList, vkMap, vkHashMap}
   ## values a program makes, not shapes it writes, so they have no node reading
   ## and stay their own `head`.
 
+proc isDataNode*(v: Value): bool {.inline.} =
+  ## An instance of the concrete `Node` type: node-shaped, with nothing else
+  ## already claiming its head. A typed instance answers its own type and an
+  ## enum value answers its enum, so neither is a `Node` — `Node` is concrete,
+  ## not a supertype of everything node-shaped (design §1.2, decision 10). `Any`
+  ## is the root type; node shape for other values is a *conversion*, not a
+  ## subtyping relation.
+  ##
+  ## This is the same partition `receiverType` dispatches on, stated once so the
+  ## annotation and the impl cannot answer differently for the same value.
+  v.kind == vkNode and v.head.kind notin {vkType, vkEnumVariant}
+
 proc projectHead(v: Value): Value =
   if v.kind == vkNode:
     return v.head
@@ -15010,7 +15022,10 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
   of "HashMap":
     (true, value.kind == vkHashMap)
   of "Gene", "Node":
-    (true, value.kind == vkNode)
+    # Concrete, so a typed instance and an enum value are *not* `Node`s even
+    # though both are node-shaped — the annotation now answers exactly what
+    # `(impl P for Node …)` reaches. Use `Any` for the root type.
+    (true, value.isDataNode)
   of "Fn", "Function":
     # Fn! is a sibling of Fn, not a subtype (design §3/§7.2): a fn! value
     # never satisfies an Fn-typed boundary.

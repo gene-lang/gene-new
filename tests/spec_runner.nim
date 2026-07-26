@@ -2246,6 +2246,31 @@ suite "spec — implicit self in message bodies from design §10":
                "(p ~ set_prop! \"b\" 2) " &
                "[(p ~ head) (p ~ body) (p ~ props)]",
                "[(type P) [] {^a 1 ^b 2}]")
+    # The *annotation* answers exactly what the impl reaches. `Node` is a
+    # concrete type, so a typed instance and an enum value are not `Node`s even
+    # though both are node-shaped; `Any` is the root type. Node shape for other
+    # values is a conversion, not a subtyping relation.
+    check_eval("(type P ^props {^a Int}) (enum Color red green) " &
+               "(fn takes [n : Node] : Str \"yes\") " &
+               "[(takes (quote (f 1 2))) (takes `(tr (td \"x\"))) " &
+               " (try (takes (P ^a 1)) catch (TypeError ^expected e) e) " &
+               " (try (takes Color/red) catch (TypeError ^expected e) e) " &
+               " (try (takes 42) catch (TypeError ^expected e) e)]",
+               "[\"yes\" \"yes\" \"Node\" \"Node\" \"Node\"]")
+    check_eval("(type P ^props {^a Int}) (fn any [x : Any] : Str \"yes\") " &
+               "[(any (P ^a 1)) (any 42) (any (quote (f 1)))]",
+               "[\"yes\" \"yes\" \"yes\"]")
+    # An *uppercase* head is still only a symbol unless a type is actually
+    # there, so a node tagged `Declaration` stays a data node. That is what
+    # `$declarations` yields and what `web_demo`'s `[decl : Node]` relies on —
+    # a boundary that cannot be checked in that file, because it does not run.
+    check_eval("(type Declaration ^props {^name Str}) " &
+               "(fn routed? [decl : Node] : Bool true) " &
+               "[($leaf? ($head (quote (Declaration ^name \"h\")))) " &
+               " (routed? (quote (Declaration ^name \"h\"))) " &
+               " (try (routed? (Declaration ^name \"h\")) " &
+               "  catch (TypeError ^expected e) e)]",
+               "[true true \"Node\"]")
     # An impl on `Node` does not reach a typed instance: `Node` is concrete,
     # not a supertype.
     check_eval("(protocol Tag (message tag [] : Any)) " &
