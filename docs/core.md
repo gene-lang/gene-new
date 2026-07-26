@@ -21,7 +21,7 @@ as follow-on patches.
 
 ```gene
 (protocol ToHtml
-  (message to_html [self : Self] : Node))
+  (message to_html [] : Node))
 
 (impl ToHtml for MenuItem
   (message to_html [self] : Node
@@ -113,8 +113,8 @@ site ambiguity (§3.5).
 exist precisely so unrelated types can share a contract:
 
 ```gene
-(protocol Container (message put [self : Self, x : item] : Self) (message get [self : Self] : item))
-(protocol SortedContainer ^inherit [Container] (message min [self : Self] : item) (message max [self : Self] : item))
+(protocol Container (message put [x : item] : Self) (message get [] : item))
+(protocol SortedContainer ^inherit [Container] (message min [] : item) (message max [] : item))
 
 (type SortedArray ...)     # array-backed
 (type SortedSkipList ...)  # node-backed — no shared ^is ancestor with SortedArray
@@ -137,10 +137,10 @@ closure-flattened via ^inherit per §3}`.
 
 ```gene
 (protocol B ^inherit [A]
-  (message do_b [self : Self] : Any))
+  (message do_b [] : Any))
 
 (protocol C ^inherit [A B]
-  (message do_c [self : Self] : Any))
+  (message do_c [] : Any))
 ```
 
 `^inherit` is a prop key inside `protocol`, taking a list of parent protocol
@@ -165,9 +165,9 @@ message A/do_a"`.
 ### 3.3 Same-name messages across independent parents
 
 ```gene
-(protocol X (message clash [self : Self] : Any))
-(protocol Y (message clash [self : Self] : Any))
-(protocol Z ^inherit [X Y] (message do_z [self : Self] : Any))  # OK
+(protocol X (message clash [] : Any))
+(protocol Y (message clash [] : Any))
+(protocol Z ^inherit [X Y] (message do_z [] : Any))  # OK
 ```
 
 Same-name messages across unrelated protocols are expected and supported.
@@ -200,7 +200,7 @@ ancestor. It creates a new qualified message owned by the child protocol:
 
 ```gene
 (protocol B ^inherit [A]
-  (message do_a [self : Self] : Any))  # B/do_a, distinct from A/do_a
+  (message do_a [] : Any))  # B/do_a, distinct from A/do_a
 ```
 
 `B/do_a` does not override `A/do_a`; both messages are in `B`'s closure and
@@ -261,8 +261,8 @@ When a protocol closure contains more than one message with the same simple
 name, an `impl` body must qualify those message definitions:
 
 ```gene
-(protocol A (message do_x [self : Self] : Str))
-(protocol B (message do_x [self : Self] : Str))
+(protocol A (message do_x [] : Str))
+(protocol B (message do_x [] : Str))
 (protocol C ^inherit [A B])
 
 (impl C for T
@@ -290,13 +290,13 @@ protocols.
 
 ```gene
 (protocol (Container item)
-  (message put [self : Self, x : item] : Self)
-  (message get [self : Self] : item))
+  (message put [x : item] : Self)
+  (message get [] : item))
 
 (protocol (SortedContainer item)
   ^inherit [(Container item)]
-  (message min [self : Self] : item)
-  (message max [self : Self] : item))
+  (message min [] : item)
+  (message max [] : item))
 ```
 
 MVP requires an **exact type-parameter match** — `^inherit [(Container
@@ -360,7 +360,7 @@ time, unchanged.
 
 ```gene
 (protocol B ^inherit [A]
-  (message do_b [self : Self] : Any
+  (message do_b [] : Any
     (A/do_a self)))  # default body, calls an inherited message
 ```
 
@@ -399,12 +399,12 @@ accidentally universal. See §9.2 for the explicit universal opt-in.
 
 ```gene
 (protocol A
-  (message do_a [self : Self] : Any)
+  (message do_a [] : Any)
   (derive [t req]
     `(impl A for %t (message do_a [self] (to_str self/name)))))
 
 (protocol B ^inherit [A]
-  (message do_b [self : Self] : Any)
+  (message do_b [] : Any)
   (derive [t req]
     `(impl B for %t (message do_b [self] (to_str self/value)))))
 
@@ -441,9 +441,9 @@ Protocol inheritance has no override/MRO mechanism. Reusing an inherited
 simple name creates another qualified message, not an override:
 
 ```gene
-(protocol A (message render [self : Self] : Node))
+(protocol A (message render [] : Node))
 (protocol B ^inherit [A]
-  (message render [self : Self] : Str))  # B/render, not an override of A/render
+  (message render [] : Str))  # B/render, not an override of A/render
 ```
 
 An implementation of `B` must account for both `A/render` and `B/render`.
@@ -527,7 +527,7 @@ A type body may also carry `impl` blocks with the receiver implied — the
 enclosing type:
 
 ```gene
-(protocol A (message do_a [self : Self] : Any))
+(protocol A (message do_a [] : Any))
 
 (type T ^props {...}
   (impl A

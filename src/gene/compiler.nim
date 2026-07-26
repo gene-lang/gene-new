@@ -2385,7 +2385,17 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     returnType = body[start]
     inc start
 
-  let specs = c.paramSpecs(paramList)
+  var specs = c.paramSpecs(paramList)
+  # `[self : Self]`, the legacy explicit-receiver form design.md §10 still
+  # accepts, annotates the receiver with its own type. That is a tautology — a
+  # receiver is always an instance of the type it dispatches as — and it is also
+  # the one place `Self` cannot be checked, because the boundary for parameter 0
+  # runs before `self` is bound. Drop it here rather than teaching the runtime a
+  # special case, so `[self : Self]` and `[self]` build the identical proto and
+  # compare equal in the impl/declaration signature check.
+  if immutableSelf and specs.positional.len > 0 and specs.positional[0] == "self" and
+      specs.positionalTypes.len > 0 and specs.positionalTypes[0].isSymbol("Self"):
+    specs.positionalTypes[0] = NIL
   var seenLocals = initTable[string, bool]()
   for local in specs.positional:
     if seenLocals.hasKey(local):

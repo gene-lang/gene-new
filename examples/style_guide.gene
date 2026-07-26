@@ -57,7 +57,7 @@ line two"""
 (type User @doc "a small styled record" ^props {^name Str ^roles (List Str) ^active Bool?})
 
 (protocol Labelled
-  (message label [self : Self] : Str))
+  (message label [] : Str))
 
 (impl Labelled for User
   (message label [self] : Str

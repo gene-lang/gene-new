@@ -29,7 +29,7 @@
 # -----------------------------------------------------------------------------
 
 (protocol HasLabel
-  (message label [self : Self] : Str)
+  (message label [] : Str)
 
   # Protocol-local derivation. A type may request this with ^derive [HasLabel].
   # The generated impl expects the target type to have a ^name prop.
@@ -39,7 +39,7 @@
          ($to_str self/name)))))
 
 (protocol ToHtml
-  (message to_html [self : Self] : Node))
+  (message to_html [] : Node))
 
 # -----------------------------------------------------------------------------
 # Typed domain data

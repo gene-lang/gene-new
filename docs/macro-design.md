@@ -194,7 +194,7 @@ A `fn!` defines a runtime value implementing `SyntaxCallable`.
 ```gene
 (protocol SyntaxCallable
   (message apply_syntax
-    [self : Self, call : SyntaxCall, env : Env] : Any))
+    [call : SyntaxCall, env : Env] : Any))
 ```
 
 `SyntaxCallable` is the conceptual dispatch model, not a user-implementable

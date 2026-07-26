@@ -2561,11 +2561,33 @@ replacement — a send `(x ~ bark)`, or the value spelling `Dog:bark`, which
 dispatches. Enum variants (`Direction/east`) are unaffected: they are not
 messages. Impls were already never exposed as members.
 
-`Self` remains a type name in annotation position, e.g.
-`(message eq [other : Self] : Bool)`. The legacy form that names the receiver
-explicitly as the first parameter (`[self …]`) is still accepted during
-migration, but `self` may not be rebound anywhere inside a message or `ctor`
-body — nested functions and pattern bindings included.
+`Self` is a type name in annotation position, e.g.
+`(message eq [other : Self] : Bool)`, and it means **the receiver's own type** —
+the same thing it means as a message qualifier, so the name has one rule in both
+positions. It is resolved against the receiver at the boundary, not against the
+enclosing declaration, which is what lets it work inside a protocol's default
+body where there is no enclosing type to name:
+
+```gene
+(protocol Eq (message eq [other : Self] : Bool))
+(type Dog ^props {^name Str})
+(type Pup ^is Dog ^props {})
+(impl Eq for Dog (message eq [other : Self] : Bool (== self/name other/name)))
+
+(dog ~ Eq:eq pup)   # ok — Self is Dog, and a Pup is a Dog
+(pup ~ Eq:eq dog)   # TypeError — Self is Pup, and a Dog is not a Pup
+```
+
+That asymmetry is the point of a self type: the constraint follows the receiver
+down the `^is` chain. `Self` works in parameter, return, and nested positions
+(`(List Self)`, `Self?`), and outside a message or `ctor` body it is an error,
+because there is no receiver for it to name.
+
+The legacy form that names the receiver explicitly as the first parameter
+(`[self …]`) is still accepted during migration, but `self` may not be rebound
+anywhere inside a message or `ctor` body — nested functions and pattern bindings
+included. Annotating that receiver with `[self : Self]` is a tautology and is
+accepted and discarded, so it builds the same signature as `[self]`.
 
 Message dispatch is on the first argument's head/type. Messages are ordinary callable values, but their names are **not** bound in the enclosing lexical scope — a message is reached with a send, or as a qualified member of its protocol (`docs/core.md §1/§9`):
 
@@ -2618,7 +2640,7 @@ Protocol-local derive:
 
 ```gene
 (protocol HasLabel
-  (message label [self : Self] : Str)
+  (message label [] : Str)
 
   (derive [t : Type, req]
     `(impl HasLabel for %t
@@ -2905,7 +2927,7 @@ Protocol-local `derive` remains a controlled compile-time declaration generator.
 
 ```gene
 (protocol HasLabel
-  (message label [self : Self] : Str)
+  (message label [] : Str)
 
   (derive [t : Type, req]
     `(impl HasLabel for %t

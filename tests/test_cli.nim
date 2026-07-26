@@ -7527,7 +7527,7 @@ suite "cli — gene parse/fmt/compile":
 (type Line ^props {^a Point ^b Point})
 (enum Shape circle square triangle)
 (enum Result (ok Any) (err Str))
-(protocol Drawable (message draw [self : Self] : Str))
+(protocol Drawable (message draw [] : Str))
 (fn area [p : Point] : Int (* p/x p/y))
 (type Counter ^props {^n Int}
   (ctor [start] ($println "COUNTER-CTOR-RAN") (self ~ set_prop! `n start)))

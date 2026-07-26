@@ -15315,6 +15315,19 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
              matchesTypeExpr(newSym(name[0 ..< name.len - 1]), value, scope)
     if name == "Callable":
       return value.valueImplementsCallable(scope)
+    if name == "Self":
+      # `Self` is the receiver's own type — the same meaning it carries as a
+      # message qualifier (design §10), so the name has one rule in both
+      # positions. It resolves against the receiver *in scope* rather than the
+      # enclosing declaration, which is what makes it work inside a protocol's
+      # default body, where there is no enclosing type to name.
+      var receiver: Value
+      if scope != nil and scope.lookupOptional("self", receiver):
+        let typ = receiver.receiverType
+        return typ.kind == vkType and value.isInstanceOfType(typ)
+      raise newException(GeneError,
+        "Self names the receiver's type, so it is only meaningful where a " &
+        "receiver is in scope — inside a message or ctor body")
     # Some built-ins are both annotations/namespaces and legal nominal names in
     # user code; let local nominal declarations win for bare annotations.
     if scope != nil and

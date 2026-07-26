@@ -23,7 +23,7 @@ const lspSample = """
 (enum Color red green (rgb Int))
 
 (protocol ToText
-  (message to-text [self : Self] : Str))
+  (message to-text [] : Str))
 
 (impl ToText for Task
   (message to-text [self] (greet self/title)))

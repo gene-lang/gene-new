@@ -2342,6 +2342,56 @@ suite "spec — implicit self in message bodies from design §10":
                "((Box2 ^val 7) ~ get)",
                "7")
 
+  test "Self in annotation position is the receiver's own type":
+    # design §10. `Self` means the same thing here as it does as a message
+    # qualifier — the receiver's own type — so the name has one rule in both
+    # positions. Nothing caught this being broken because doc ```gene blocks are
+    # not executed and the two example files using it fail to run for unrelated
+    # reasons, so the spec carries it now.
+    check_eval("(protocol Eq (message eq [other : Self] : Bool)) " &
+               "(type P ^props {^a Int}) " &
+               "(impl Eq for P " &
+               "  (message eq [other : Self] : Bool (== self/a other/a))) " &
+               "[((P ^a 1) ~ Eq:eq (P ^a 1)) ((P ^a 1) ~ Eq:eq (P ^a 2))]",
+               "[true false]")
+    # Return position, and a nested/optional occurrence.
+    check_eval("(type P ^props {^a Int} " &
+               "  (message me [] : Self self) " &
+               "  (message all [xs : (List Self)] : Int ($size xs)) " &
+               "  (message maybe [o : Self?] : Bool ($nil? o))) " &
+               "(var p (P ^a 1)) " &
+               "[(same? (p ~ me) p) (p ~ all [(P ^a 2)]) (p ~ maybe nil)]",
+               "[true 1 true]")
+    # Resolved against the receiver, not the enclosing declaration: the
+    # constraint follows the receiver down the `^is` chain, so it is asymmetric.
+    check_eval("(type Dog ^props {^n Str}) (type Pup ^is Dog ^props {}) " &
+               "(protocol Eq (message eq [other : Self] : Bool)) " &
+               "(impl Eq for Dog (message eq [other : Self] : Bool true)) " &
+               "[((Dog ^n \"d\") ~ Eq:eq (Pup ^n \"p\")) " &
+               " (try ((Pup ^n \"p\") ~ Eq:eq (Dog ^n \"d\")) " &
+               "  catch (TypeError ^expected e) e)]",
+               "[true \"Self\"]")
+    # A protocol's *default* body has no enclosing type at all, which is why
+    # `Self` cannot be resolved statically.
+    check_eval("(protocol Eq (message eq [other : Self] : Bool true)) " &
+               "(type A ^props {^a Int}) (type B ^props {^a Int}) " &
+               "(impl Eq for A) (impl Eq for B) " &
+               "[((A ^a 1) ~ Eq:eq (A ^a 2)) " &
+               " (try ((A ^a 1) ~ Eq:eq (B ^a 2)) " &
+               "  catch (TypeError ^expected e) e)]",
+               "[true \"Self\"]")
+    # Annotating the receiver itself is a tautology: accepted, discarded, and
+    # builds the same signature as `[self]` — which is what lets a declaration
+    # spelled either way satisfy the impl compatibility check.
+    check_eval("(protocol L (message label [self : Self] : Str)) " &
+               "(type P ^props {^n Str}) " &
+               "(impl L for P (message label [] : Str self/n)) " &
+               "((P ^n \"x\") ~ L:label)",
+               "\"x\"")
+    # Outside a message or ctor body there is no receiver to name.
+    check_runtime_error("(fn f [x : Self] x) (f 1)",
+                        "Self names the receiver's type")
+
   test "self is immutable inside a message body":
     # The diagnostic names the receiver rather than suggesting `var`, which is
     # not a fix a caller could apply to `self` (design §10).
