@@ -236,6 +236,10 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["impl"],
       "(protocol EmptyProtocol) (type EmptyType ^props {}) " &
       "(impl EmptyProtocol for EmptyType)")
+    fixture(["?~"],
+      "(type Guarded ^props {} (message g [] : Int 1) " &
+      "  (message lead [] : Int (?~ g))) " &
+      "[((Guarded) ?~ g) (nil ?~ g) (void ?~ g) ((Guarded) ~ lead)]")
     fixture(["import_impl"],
       "(protocol ImportedProtocol) (type ImportedType ^props {}) " &
       "(import_impl ImportedProtocol for ImportedType from \"./elsewhere\")")
@@ -2709,6 +2713,101 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(protocol P (message m [] : Int)) " &
                "(try (nil ~ P:m) catch (MessageError ^protocol pr) pr)",
                "\"P\"")
+
+suite "spec — absence-guarded sends (design §3)":
+  # `?~` guards on the *receiver* only. It is a call-site choice, not a rule
+  # about nil: `~` on an absent receiver is still an error, and `impl P for Nil`
+  # still wins on a plain send.
+  const guarded =
+    "(type X ^props {^n Int} " &
+    "  (message msg [] : Str \"x\") (message add [k] : Int (+ self/n k))) " &
+    "(protocol P (message pm [] : Str)) " &
+    "(impl P for X (message pm [] : Str \"x-pm\")) "
+
+  test "an absent receiver yields itself; a present one dispatches":
+    check_eval(guarded & "[((X ^n 1) ?~ msg) (nil ?~ msg) (void ?~ msg)]",
+               "[\"x\" nil void]")
+    check_eval(guarded & "[((X ^n 1) ?~ P:pm) (nil ?~ P:pm) (void ?~ P:pm)]",
+               "[\"x-pm\" nil void]")
+    check_eval(guarded & "[((X ^n 1) ?~ add 10) (nil ?~ add 10)]", "[11 nil]")
+
+  test "absence is decided before the message name, but never hides a typo":
+    # An absent receiver short-circuits an unknown message too — the guard is
+    # about the receiver. A *present* receiver still reports the bad name.
+    check_eval(guarded & "(nil ?~ no_such_message)", "nil")
+    check_eval(guarded &
+               "(try ((X ^n 1) ?~ no_such_message) " &
+               " catch (MessageError ^message m) m)",
+               "\"no message 'no_such_message' on X\"")
+
+  test "a guarded send evaluates its receiver once and skips arguments":
+    check_eval(guarded &
+               "(var hits ($cell 0)) " &
+               "(fn bump [] (hits ~ update (fn [n] (+ n 1))) 1) " &
+               "(var a (nil ?~ add (bump))) " &
+               "(var b ((X ^n 1) ?~ add (bump))) " &
+               "[a b (hits ~ get)]",
+               "[nil 2 1]")
+    check_eval(guarded &
+               "(var seen ($cell 0)) " &
+               "(fn recv [] (seen ~ update (fn [n] (+ n 1))) nil) " &
+               "[((recv) ?~ msg) (seen ~ get)]",
+               "[nil 1]")
+
+  test "?~ does not change what plain ~ means for nil":
+    # docs/core.md §10: Nil is an ordinary nominal type with no dispatch
+    # carve-out, so a bare send still fails and an explicit impl still wins.
+    check_eval(guarded &
+               "(try (nil ~ msg) catch (MessageError ^message m) m)",
+               "\"no message 'msg' on Nil\"")
+    # And the two spellings stay distinguishable even then: `~` dispatches to
+    # the Nil impl, `?~` short-circuits before any lookup. The guard is a
+    # call-site statement that this send tolerates absence — not a lookup that
+    # sometimes finds nil's impl and sometimes does not.
+    check_eval("(protocol P (message pm [] : Str)) " &
+               "(impl P for Nil (message pm [] : Str \"nil-pm\")) " &
+               "[(nil ~ P:pm) (nil ?~ P:pm)]",
+               "[\"nil-pm\" nil]")
+
+  test "every ~ callee form guards identically":
+    # The lowering is shared, so each spelling must guard the same way:
+    # held message values, computed callees, Self:m, and the leading self-send.
+    check_eval(guarded & "(var m P:pm) [((X ^n 1) ?~ %m) (nil ?~ %m)]",
+               "[\"x-pm\" nil]")
+    check_eval(guarded &
+               "(fn pick [] P:pm) [((X ^n 1) ?~ (pick)) (nil ?~ (pick))]",
+               "[\"x-pm\" nil]")
+    check_eval(guarded & "[((X ^n 1) ?~ Self:msg) (nil ?~ Self:msg)]",
+               "[\"x\" nil]")
+    # Leading `(?~ m)` is the guarded self-send. It is observable inside an
+    # `impl P for Nil` body, where lexical self is itself absent.
+    check_eval("(type L ^props {} (message a [] : Int 7) " &
+               "  (message b [] : Int (?~ a))) ((L) ~ b)",
+               "7")
+    check_eval("(protocol P (message pm [] : Str)) " &
+               "(impl P for Nil (message pm [] : Str ($to_str (?~ missing)))) " &
+               "(nil ~ P:pm)",
+               "\"nil\"")
+
+  test "named arguments and spreads are skipped when the receiver is absent":
+    check_eval(guarded &
+               "(type Y ^props {} (message k [a, ^b : Int = 0] : Int (+ a b))) " &
+               "(var hits ($cell 0)) " &
+               "(fn bump [] (hits ~ update (fn [n] (+ n 1))) 5) " &
+               "[((Y) ?~ k 1 ^b (bump)) (nil ?~ k 1 ^b (bump)) (hits ~ get)]",
+               "[6 nil 1]")
+    check_eval(guarded &
+               "(type Z ^props {} (message sum [xs...] : Int ($size xs))) " &
+               "(var args [1 2 3]) " &
+               "[((Z) ?~ sum args...) (nil ?~ sum args...)]",
+               "[3 nil]")
+
+  test "?~ is rejected where a receiver cannot be absent or is not a send":
+    check_compile_error(
+      "(type A ^props {} (message m [] : Int 1)) " &
+      "(type B ^is A ^props {} (message m [] : Int (super ?~ m)))",
+      "super is never absent")
+    check_compile_error("(var x {^a 1}) (x ?~ /a)", "projection")
 
 suite "spec — protocol intersection types":
   # `(& P Q ...)` requires every operand. Single inheritance makes an

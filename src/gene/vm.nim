@@ -13176,6 +13176,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             ip = inst[].intArg
           else:
             strunc(sp - 1)
+        of opJumpIfAbsent:
+          # `?~`: an absent receiver short-circuits to itself, so the value
+          # stays on the stack either way — as the send's result when jumping,
+          # as the receiver when falling through.
+          if sp == 0:
+            raise newException(GeneError, "VM stack underflow in conditional jump")
+          if stack[sp - 1].isAbsent:
+            ip = inst[].intArg
         of opNot:
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in not")

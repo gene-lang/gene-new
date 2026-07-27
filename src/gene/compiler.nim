@@ -150,7 +150,7 @@ const MaxMacroExpansionDepth = 100
 
 const CoreSpecialFormNames* = [
   "do", "if", "if_yes", "if_not", "&&", "||", "??", "!",
-  "let", "var", "const", "set", "set!", "new", "~",
+  "let", "var", "const", "set", "set!", "new", "~", "?~",
   "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
@@ -206,7 +206,7 @@ const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
 # `Self` is the receiver's own type in annotation position and the reserved
 # value spelling for a type-direct message (`Self:msg`, design §3). Like
 # `super` it denotes rather than binds, so a program may not declare it.
-const reservedOperatorNames = ["~", "super", "Self"]
+const reservedOperatorNames = ["~", "?~", "super", "Self"]
 
 const bareOperatorNames* = [
   # Operators are a closed, language-defined set (design §2.2): a program is not
@@ -4520,9 +4520,15 @@ proc sendMessageExpr(c: var Compiler, node, callee: Value): Value =
     return callee.body[0]
   callee
 
+proc emitOptionalReceiverGuard(c: var Compiler, optional: bool): int =
+  ## `?~` only: jump past the whole send when the receiver is absent, keeping
+  ## it on the stack as the result. Returns -1 for an ordinary `~`, so the
+  ## non-optional path emits nothing at all.
+  if optional: c.emitJump(opJumpIfAbsent) else: -1
+
 proc compileSend(c: var Compiler, node: Value, receiver: Value,
                  sendName: string, argsStart: int, messageExpr = NIL,
-                 qualifierExpr = NIL) =
+                 qualifierExpr = NIL, optional = false) =
   ## Message send (docs/core.md §9.1): the name after `~` resolves
   ## receiver-first at runtime. Stack shape matches ordinary calls:
   ## [callee, named..., receiver, args...]. `messageExpr` carries a qualified or
@@ -4530,6 +4536,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
   ## value, and its impl is resolved here rather than by lowering the send to an
   ## ordinary call — so a message value never reaches a call opcode.
   var names: seq[string]
+  var shortCircuit = -1
   let isSuper = receiver.kind == vkSymbol and receiver.symVal == "super"
   if isSuper:
     # (super ~ m) dispatches m from the enclosing type's ^is parent, but calls
@@ -4537,6 +4544,10 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
     # body's chunk when the type is created, so only `self` is pushed here — no
     # user-visible name is resolved, and a body-local cannot redirect the
     # delegation. Only bare-name messages are supported.
+    if optional:
+      raise newException(GeneError,
+        "?~ short-circuits an absent receiver, but super is never absent; " &
+        "use ~ for a super send")
     if c.superType.kind == vkNil:
       raise newException(GeneError,
         "super is only valid in a type message body with an ^is parent")
@@ -4564,14 +4575,19 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
     # names the message and dispatch remains on the receiver. The name travels
     # in the instruction; a non-protocol qualifier is rejected at runtime.
     compileExpr(c, receiver)
+    shortCircuit = c.emitOptionalReceiverGuard(optional)
     compileExpr(c, qualifierExpr)
     discard c.emit(opQualifiedSend, 0, name = sendName)
   elif messageExpr.kind != vkNil:
     compileExpr(c, receiver)
+    shortCircuit = c.emitOptionalReceiverGuard(optional)
     compileExpr(c, messageExpr)
     discard c.emit(opResolveQualifiedMessage, 0, name = sendName)
   else:
     compileExpr(c, receiver)
+    # `?~` decides on the receiver alone: an absent one yields itself without
+    # resolving the message or evaluating a single argument form.
+    shortCircuit = c.emitOptionalReceiverGuard(optional)
     # Resolve before every send argument, so a failed resolution does not run
     # named or positional argument forms.
     discard c.emit(opResolveMessage, 0, name = sendName)
@@ -4597,6 +4613,10 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
       else:
         c.emit(opCall, argCount, names = names)
     c.chunk.callSites[callIndex] = node
+  if shortCircuit >= 0:
+    # Both paths leave exactly one value: the call's result, or the absent
+    # receiver the guard preserved.
+    c.patchJump(shortCircuit)
 
 proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
   if node.head.kind == vkNode and node.head.head.isSymbol("msg"):
@@ -4614,13 +4634,15 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       "a message dispatches only through ~: write (x ~ " & shown &
       ") instead of (" & shown & " x)")
   if node.body.len > 1 and node.body[0].kind == vkSymbol and
-      node.body[0].symVal == "~":
-    # (x ~ f a) — infix message send (docs/core.md §9.1).
+      (node.body[0].symVal == "~" or node.body[0].symVal == "?~"):
+    # (x ~ f a) — infix message send (docs/core.md §9.1). `?~` is the same
+    # send with one added rule: an absent receiver yields itself.
+    let optional = node.body[0].symVal == "?~"
     if node.body[1].kind == vkSymbol and
         not node.props.hasKey("protocol") and
         not node.props.hasKey("receiver") and
         not node.props.hasKey("types"):
-      compileSend(c, node, node.head, node.body[1].symVal, 2)
+      compileSend(c, node, node.head, node.body[1].symVal, 2, optional = optional)
       return
     # A selector callee (x ~ /name) is a projection of the receiver, not a
     # message; it keeps the flipped-call lowering. Every other non-bare callee —
@@ -4629,6 +4651,10 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
     # opResolveQualifiedMessage, so `~` can never invoke an ordinary function
     # (design §3/§8).
     if node.body[1].kind == vkNode and node.body[1].head.isSymbol("select"):
+      if optional:
+        raise newException(GeneError,
+          "?~ guards a message send; a selector callee (x ?~ /name) is a " &
+          "projection — use ?? for an absent-valued projection")
       var args = newSeqOfCap[Value](node.body.len - 1)
       args.add node.head
       for i in 2 ..< node.body.len:
@@ -4651,19 +4677,19 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       # `(super ~ Self:m)` names no qualifier at all, so it is exactly the bare
       # super send — same as for an ordinary receiver.
       if qualifier.isSymbol("Self"):
-        compileSend(c, node, node.head, messageName, 2)
+        compileSend(c, node, node.head, messageName, 2, optional = optional)
       else:
         compileSend(c, node, node.head, messageName, 2,
-                    qualifierExpr = qualifier)
+                    qualifierExpr = qualifier, optional = optional)
       return
     let resolved = sendMessageExpr(c, node, node.body[1])
     if resolved.kind == vkNode and resolved.head.isSymbol("msg") and
         resolved.body.len == 2 and resolved.body[1].kind == vkSymbol:
       compileSend(c, node, node.head, resolved.body[1].symVal, 2,
-                  qualifierExpr = resolved.body[0])
+                  qualifierExpr = resolved.body[0], optional = optional)
     else:
       compileSend(c, node, node.head, sendCalleeName(node.body[1]), 2,
-                  messageExpr = resolved)
+                  messageExpr = resolved, optional = optional)
     return
   let localSyntaxHead = c.syntaxFnNames.len > 0 and
     node.head.kind == vkSymbol and c.syntaxFnNames.hasKey(node.head.symVal) and
@@ -4830,22 +4856,31 @@ proc compileNew(c: var Compiler, node: Value) =
       c.emit(opNew, node.body.len - 1, names = names)
   c.chunk.callSites[instruction] = node
 
-proc compileLeadingSelfCall(c: var Compiler, node: Value) =
+proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false) =
   # (~ f a) => (self ~ f a): message send to lexical self (docs/core.md §9.1).
+  # `(?~ f a)` is the guarded form, which matters inside an `impl P for Nil`
+  # body where lexical self is itself absent.
+  let spelling = if optional: "?~" else: "~"
   if node.body.len == 0:
-    raise newException(GeneError, "`~` requires a callable")
+    raise newException(GeneError, "`" & spelling & "` requires a callable")
   if not c.selfAvailable:
-    raise newException(GeneError, "leading `~` requires lexical self")
+    raise newException(GeneError,
+      "leading `" & spelling & "` requires lexical self")
   if node.body[0].kind == vkSymbol and
       not node.props.hasKey("protocol") and
       not node.props.hasKey("receiver") and
       not node.props.hasKey("types"):
-    compileSend(c, node, newSym("self"), node.body[0].symVal, 1)
+    compileSend(c, node, newSym("self"), node.body[0].symVal, 1,
+                optional = optional)
     return
   # A selector callee projects the receiver rather than naming a message, so it
   # keeps the flipped-call lowering; everything else must be a message value and
   # goes through the same qualified-send path as `(x ~ ...)` (design §3/§8).
   if node.body[0].kind == vkNode and node.body[0].head.isSymbol("select"):
+    if optional:
+      raise newException(GeneError,
+        "?~ guards a message send; a selector callee (?~ /name) is a " &
+        "projection — use ?? for an absent-valued projection")
     var args = newSeqOfCap[Value](node.body.len)
     args.add newSym("self")
     for i in 1 ..< node.body.len:
@@ -4858,13 +4893,14 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value) =
       resolved.body.len == 2 and resolved.body[1].kind == vkSymbol:
     # `(~ P:m)` is `(self ~ P:m)`: same qualifier path as an explicit receiver.
     if resolved.body[0].isSymbol("Self"):
-      compileSend(c, node, newSym("self"), resolved.body[1].symVal, 1)
+      compileSend(c, node, newSym("self"), resolved.body[1].symVal, 1,
+                  optional = optional)
     else:
       compileSend(c, node, newSym("self"), resolved.body[1].symVal, 1,
-                  qualifierExpr = resolved.body[0])
+                  qualifierExpr = resolved.body[0], optional = optional)
   else:
     compileSend(c, node, newSym("self"), sendCalleeName(node.body[0]), 1,
-                messageExpr = resolved)
+                messageExpr = resolved, optional = optional)
 
 proc compileMatch(c: var Compiler, node: Value) =
   let body = node.body
@@ -5812,6 +5848,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       return
     of "~":
       compileLeadingSelfCall(c, node)
+      return
+    of "?~":
+      compileLeadingSelfCall(c, node, optional = true)
       return
     of "fn":
       compileFn(c, node)

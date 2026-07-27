@@ -780,7 +780,48 @@ Message sends use `~`:
 (x ~ %m a b)  # send a held message value m (§8)
 (super ~ f a) # delegate to the implementation above this one (§10)
 (~ f a b)     # send to lexical self: (self ~ f a b)
+(x ?~ f a b)  # absence-guarded send: nil/void receiver yields itself (below)
+(?~ f a b)    # guarded send to lexical self
 ```
+
+**`?~` is the absence-guarded send.** It is the same send as `~` with one
+added rule, applied to the *receiver only*: when the receiver is absent the
+send yields that receiver unchanged — `nil` stays `nil`, `void` stays `void` —
+and the message is never resolved, nor is any argument form evaluated. A
+present receiver takes the ordinary path, so a misspelled message is still a
+`MessageError`:
+
+```gene
+(some ?~ msg)   # dispatches normally
+(nil  ?~ msg)   # => nil    — no lookup, no MessageError
+(void ?~ msg)   # => void
+(nil  ?~ nope)  # => nil    — absence is decided before the name is
+(some ?~ nope)  # MessageError: absence-guarding never hides a typo
+```
+
+This is deliberately *not* a global rule about `nil` receivers. `Nil` remains
+an ordinary nominal type with no dispatch carve-out (`docs/core.md` §10), so
+`(nil ~ msg)` is still an error and `(impl P for Nil …)` still works. The two
+spellings stay distinguishable even when that impl exists — `?~` short-circuits
+*before* any lookup, so it does not run it:
+
+```gene
+(impl P for Nil (message pm [] : Str "—"))
+(nil ~ P:pm)    # => "—"   dispatches to the Nil impl
+(nil ?~ P:pm)   # => nil   guarded: absence decided before lookup
+```
+
+That is the point of the guard being a call-site choice: `?~` states that
+*this* send tolerates absence, rather than resolving to whatever an impl
+elsewhere happens to define for `Nil`. Choose `~` when nil's behavior is the
+answer, `?~` when absence should propagate. The guard lives at the call site because that is where the
+decision belongs: `?~` says *this* send tolerates absence, without making every
+send silent about it. `super` is never absent, so `(super ?~ m)` is rejected;
+a selector callee `(x ?~ /name)` is a projection rather than a send, so it is
+rejected too — use `??` for an absent-valued projection. Leading `(?~ m …)`
+is the guarded self-send, which matters inside an `impl P for Nil` body where
+lexical `self` is itself absent. The normative contract is
+`docs/spec/calls.md`.
 
 **`~` dispatches, and only dispatches — there is no lexical fallback.** A bare
 name in send position resolves receiver-first against the receiver's type; it is
@@ -904,7 +945,7 @@ MVP core special forms:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! let var const set set! new ~ fn fn! macro quote quasiquote
+do if if_yes if_not && || ?? ! let var const set set! new ~ ?~ fn fn! macro quote quasiquote
 select path msg ns env eval import mod match while loop repeat for break continue yield
 return try scope supervisor spawn await fail panic type alias enum protocol impl
 derive import_impl
