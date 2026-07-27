@@ -325,6 +325,12 @@ type
     remaining*: int64
     parent*: EvalBudget
 
+  TypeBoundaryToken* = ref object
+    ## Stable identity shared by a transient scope and detached conformance
+    ## snapshots. The object has identity only; `marker` prevents an empty
+    ## object representation from being optimized into a singleton.
+    marker: bool
+
   WildcardFallback* = object
     ## Runtime value installed by a bare wildcard import. It deliberately
     ## lives outside `vars`, so reflection and export lookup never re-export it.
@@ -354,6 +360,8 @@ type
     slotMirror*: bool
     varsDirty*: bool  # mirrored slot writes pending materialization into vars
     simpleCallScope*: bool
+    typeBoundaryToken*: TypeBoundaryToken
+    typeBoundarySnapshot*: bool
     varTypes*: Table[string, TypeBinding]
     impls*: seq[ProtocolImpl]
     implOverlayRoot*: bool  # eval-local impls register here, never application-wide
@@ -554,6 +562,8 @@ type
   CellData = ref object of GeneObjectData
     cycleRefs: int            # Value-held refs, for trial-deletion collection
     value: Value
+    valueType: Value
+    valueScope: Scope
 
   AtomicCellData = ref object of CellData
     ## Inherits CellData's layout (cycleRefs/value) so the shared cycle-
@@ -1363,7 +1373,9 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     emit(d.capabilities)
     emit(d.policy)
   of okCell, okAtomicCell:
-    emit(CellData(data).value)
+    let d = CellData(data)
+    emit(d.value)
+    emit(d.valueType)
   of okStream:
     let d = StreamData(data)
     for val in d.items:
@@ -1525,7 +1537,10 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.borrowedActive = false
     d.borrowedScope = nil
   of okCell, okAtomicCell:
-    clearValueSlot(CellData(data).value)
+    let d = CellData(data)
+    clearValueSlot(d.value)
+    clearValueSlot(d.valueType)
+    d.valueScope = nil
   of okStream:
     let d = StreamData(data)
     d.items.setLen(0)
@@ -2572,6 +2587,23 @@ proc setCellValue*(v, newValue: Value) =
   if not v.isObjectTagged or objData(v).objKind != okCell:
     raise newException(FieldDefect, "value is not a Cell")
   CellData(objData(v)).value = newValue
+
+proc cellValueType*(v: Value): Value =
+  if not v.isObjectTagged or objData(v).objKind != okCell:
+    raise newException(FieldDefect, "value is not a Cell")
+  CellData(objData(v)).valueType
+
+proc cellValueScope*(v: Value): Scope =
+  if not v.isObjectTagged or objData(v).objKind != okCell:
+    raise newException(FieldDefect, "value is not a Cell")
+  CellData(objData(v)).valueScope
+
+proc setCellValueType*(v, valueType: Value, valueScope: Scope) =
+  if not v.isObjectTagged or objData(v).objKind != okCell:
+    raise newException(FieldDefect, "value is not a Cell")
+  let data = CellData(objData(v))
+  data.valueType = valueType
+  data.valueScope = valueScope
 
 proc asAtomicCellData(v: Value): AtomicCellData =
   if not v.isObjectTagged or objData(v).objKind != okAtomicCell:

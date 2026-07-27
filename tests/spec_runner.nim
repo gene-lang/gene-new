@@ -125,6 +125,10 @@ suite "spec — reader surface from design":
     check forms[0].kind == vkBytes
     check forms[1].kind == vkRegex
 
+  test "an immutable node used as data is quoted before evaluation":
+    check_eval("`#(user ^name \"Alice\")",
+               "#(user ^name \"Alice\")")
+
   test "each literal family rejects a recognized malformed form":
     for source in ["#(x", "#[1", "#{^a 1", "{{\"k\" : }}",
                    "#\"\"\"unterminated", "0!1", "'ab'", "\"unterminated",
@@ -1344,6 +1348,57 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(try (Port4) catch _ \"missing field\")",
                "\"missing field\"")
 
+  test "typed instance property writes preserve field types":
+    check_eval("(type Counter ^props {^n Int}) " &
+               "(var counter (Counter ^n 1)) " &
+               "[(try (counter ~ set_prop! `n \"bad\") " &
+               "  catch (TypeError ^where where) where) counter/n]",
+               "[\"field 'n' for Counter\" 1]")
+    check_eval("(type Counter ^props {^n Int}) " &
+               "(var counter (Counter ^n 1)) " &
+               "[(try (counter ~ set_prop! `n void) " &
+               "  catch (Error ^message message) message) counter/n]",
+               "[\"cannot remove required field 'n' from Counter\" 1]")
+    check_eval("(type MaybeCounter ^props {^n Int?}) " &
+               "(var counter (MaybeCounter ^n 1)) " &
+               "(counter ~ set_prop! `n void) (counter ~ props)",
+               "{}")
+
+  test "functional updates preserve typed instance schemas":
+    check_eval("(type Counter ^props {^n Int}) " &
+               "(var counter (Counter ^n 1)) " &
+               "[(try ($assoc_in counter /n \"bad\") " &
+               "  catch (TypeError ^where where) where) " &
+               " (try ($update_in counter /n (fn [_] \"bad\")) " &
+               "  catch (TypeError ^where where) where) counter/n]",
+               "[\"field 'n' for Counter\" \"field 'n' for Counter\" 1]")
+    check_eval("(type Counter ^props {^n Int}) " &
+               "(try ($assoc_in (quote (data ^n \"bad\")) /head Counter) " &
+               " catch (TypeError ^where where) where)",
+               "\"field 'n' for Counter\"")
+
+  test "typed instance body mutation preserves the declared body schema":
+    check_eval("(type NamedOnly ^props {^n Int}) " &
+               "(var value (NamedOnly ^n 1)) " &
+               "[(try (value ~ set_body! [\"undeclared\"]) " &
+               "  catch (Error ^message message) message) " &
+               " (try (value ~ push_body! \"undeclared\") " &
+               "  catch (Error ^message message) message) value]",
+               "[\"NamedOnly expects 0 body item(s), got 1\" " &
+               "\"NamedOnly expects 0 body item(s), got 1\" " &
+               "((type NamedOnly) ^n 1)]")
+    check_eval("(type Pair ^body [Int Int]) (var pair (Pair 1 2)) " &
+               "[(try (pair ~ set_body! [1 \"bad\"]) " &
+               "  catch (TypeError ^where where) where) pair]",
+               "[\"body field 1 for Pair\" ((type Pair) 1 2)]")
+
+  test "the immutable node reader preserves typed-instance immutability":
+    check_eval("(type Counter ^props {^n Int}) " &
+               "(var counter #(Counter ^n 1)) " &
+               "[(try (counter ~ set_prop! `n 2) " &
+               "  catch (Error ^message message) message) counter]",
+               "[\"cannot mutate immutable Node\" #((type Counter) ^n 1)]")
+
   test "construct_type validates a runtime map against one real type schema":
     check_eval("(type Request ^props {^name Str ^count Int?}) " &
                "(var request_type Request) " &
@@ -1539,6 +1594,13 @@ suite "spec — generic functions from design":
                "  (b ~ get 0)) " &
                "(first ($buffer [5 6]))",
                "5")
+    check_eval("(var count ($cell 7)) " &
+               "(fn (read item) [cell : (Cell item)] : item " &
+               "  (cell ~ get)) " &
+               "[(read count) " &
+               " (try (count ~ set \"bad\") " &
+               "  catch (TypeError ^where where) where)]",
+               "[7 \"Cell/set value\"]")
 
   test "generic calls can request selective monomorphization metadata":
     let chunk = compileSource("(fn (identity item) [x : item] : item x) " &
@@ -2197,7 +2259,7 @@ suite "spec — implicit self in message bodies from design §10":
                " (match (quote (f 1 2 3)) (when (f a _...) a) (else \"no\"))]",
                "[[1 [2 3] 4] 1]")
     # A typed instance's body destructures the same way.
-    check_eval("(type P ^props {^a Int}) (var p (P ^a 1)) " &
+    check_eval("(type P ^props {^a Int} ^body [Any...]) (var p (P ^a 1)) " &
                "(p ~ push_body! 7) (p ~ push_body! 8) " &
                "(match p (when (P ^a k xs...) [k xs]) (else \"no\"))",
                "[1 [7 8]]")
@@ -2268,7 +2330,7 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(protocol Shown (message show [] : Str)) " &
                "(try (impl Shown for C (message show [] : Str \"x\")) " &
                " catch (TypeError ^where w ^expected e ^actual a) [w e a])",
-               "[\"impl receiver\" \"Type\" \"vkNamespace\"]")
+               "[\"impl receiver\" \"Type\" \"Namespace\"]")
     check_runtime_error(
       "(protocol Shown (message show [] : Str)) " &
       "(impl Shown for C (message show [] : Str \"x\"))",
@@ -2314,9 +2376,10 @@ suite "spec — implicit self in message bodies from design §10":
                "[(n ~ head) (n ~ props) (n ~ body) (n ~ meta)]",
                "[f {} [1 2] {}]")
     check_eval("(type P ^props {^a Int}) (var p (P ^a 1)) " &
-               "(p ~ set_prop! \"b\" 2) " &
-               "[(p ~ head) (p ~ body) (p ~ props)]",
-               "[(type P) [] {^a 1 ^b 2}]")
+               "[(try (p ~ set_prop! \"b\" 2) " &
+               "  catch (Error ^message message) message) " &
+               " (p ~ head) (p ~ body) (p ~ props)]",
+               "[\"P has no field 'b'\" (type P) [] {^a 1}]")
     # The *annotation* answers exactly what the impl reaches. `Node` is a
     # concrete type, so a typed instance and an enum value are not `Node`s even
     # though both are node-shaped; `Any` is the root type. Node shape for other
@@ -2656,6 +2719,12 @@ suite "spec — binding forms from design §12.1":
     check_compile_error("(let x 10) (set x 20)",
                         "cannot set 'x'")
 
+  test "set rejects extra arguments instead of silently discarding them":
+    check_compile_error("(var x 1) (set x 2 3)",
+                        "set requires exactly a name and a value")
+    check_compile_error("(var x {^n 1}) (set x /n 2)",
+                        "set_prop!")
+
   test "let destructuring names are immutable":
     check_compile_error("(let [a b] [1 2]) (set a 9)",
                         "cannot set 'a'")
@@ -2710,6 +2779,56 @@ suite "spec — cells from design":
                " (count ~ update (fn [x] (+ x 1))) " &
                " (count ~ get)]",
                "[0 10 10 21 21]")
+
+  test "typed cells retain and enforce their value type":
+    check_eval("(var count : (Cell Int) ($cell 1)) " &
+               "[(count ~ set 2) " &
+               " (try (count ~ swap \"bad\") " &
+               "  catch (TypeError ^where where) where) " &
+               " (try (count ~ update (fn [n] \"bad\")) " &
+               "  catch (TypeError ^where where) where) " &
+               " (count ~ get)]",
+               "[2 \"Cell/swap value\" \"Cell/update result\" 2]")
+    check_eval("(try (do (var count : (Cell Int) ($cell \"bad\")) count) " &
+               " catch (TypeError ^expected expected) expected)",
+               "\"(Cell Int)\"")
+
+  test "typed cell writes use the captured protocol visibility scope":
+    check_eval("(protocol Tagged) " &
+               "(type Good ^props {}) (type Bad ^props {}) " &
+               "(impl Tagged for Good) " &
+               "(fn capture [cell : (Cell Tagged)] cell) " &
+               "(var item (capture ($cell (Good)))) " &
+               "[((item ~ set (Good)) ~ head; ~ name) " &
+               " (try (item ~ set (Bad)) " &
+               "  catch (TypeError ^where where) where) " &
+               " ((item ~ get) ~ head; ~ name)]",
+               "[\"Good\" \"Cell/set value\" \"Good\"]")
+
+  test "typed cell aliases retain the write invariant":
+    check_eval("(alias IntCell (Cell Int)) " &
+               "(var count : IntCell ($cell 1)) " &
+               "[(try (count ~ set \"bad\") " &
+               "  catch (TypeError ^where where) where) (count ~ get)]",
+               "[\"Cell/set value\" 1]")
+
+  test "typed cells retain their invariant inside container boundaries":
+    check_eval("(var counts : (List (Cell Int)) [($cell 1)]) " &
+               "[(try (counts/0 ~ set \"bad\") " &
+               "  catch (TypeError ^where where) where) (counts/0 ~ get)]",
+               "[\"Cell/set value\" 1]")
+
+  test "typed cell mismatches report their retained invariant":
+    check_eval("(var item ($cell 1)) " &
+               "(fn admit_any [cell : (Cell Any)] cell) " &
+               "(fn require_int [cell : (Cell Int)] cell) " &
+               "(admit_any item) " &
+               "(try (require_int item) " &
+               " catch (TypeError ^actual actual ^message message) " &
+               "   [actual message])",
+               "[\"(Cell Any)\" " &
+               "\"parameter 'cell' expected (Cell Int), got (Cell Any); " &
+               "Cell value types are invariant\"]")
 
 suite "spec — atomic cells from design":
   test "AtomicCell load, store, swap, and compare_exchange are explicit mutation":

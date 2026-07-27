@@ -62,6 +62,15 @@ when defined(geneRcStats):
                           "  (impl P for T (message value [self] : Int 1)))) " &
                           "^in (env))") == 0
 
+    test "protocol-typed cells do not retain their annotation scope":
+      check leakedManaged(
+        "(fn make [] " &
+        "  (protocol Tagged) " &
+        "  (type Item ^props {}) " &
+        "  (impl Tagged for Item) " &
+        "  (var cell : (Cell Tagged) ($cell (Item)))) " &
+        "(repeat 500 (make))") == 0
+
     test "eval named functions are reclaimed when the result does not escape":
       check leakedManaged("(eval (quote (fn f [] f)) ^in (env))") == 0
 
@@ -77,20 +86,20 @@ when defined(geneRcStats):
 
     test "namespace and stream values are reclaimed when they do not capture functions":
       check leakedManaged("(ns m (var x 1))") == 0
-      check leakedManaged("(var s (read_all \"(a) (b)\")) (s ~ next)") == 0
-      check leakedManaged("(var s (to_stream [1 2 3])) (s ~ next)") == 0
-      check leakedManaged("(var s (map (to_stream [1]) (fn [x] x)))") == 0
-      check leakedManaged("(var s (filter (to_stream [1]) (fn [x] true)))") == 0
+      check leakedManaged("(var s ($read_all \"(a) (b)\")) (s ~ next)") == 0
+      check leakedManaged("(var s ($to_stream [1 2 3])) (s ~ next)") == 0
+      check leakedManaged("(var s ($map ($to_stream [1]) (fn [x] x)))") == 0
+      check leakedManaged("(var s ($filter ($to_stream [1]) (fn [x] true)))") == 0
       # Regression: a transient stream whose callable captures an inner scope
       # that has already returned must keep that scope alive while pulling
       # (no use-after-free) and leave nothing behind once consumed.
       check leakedManaged("(fn mk [] (fn [x] (> x 1))) " &
-                          "(into (filter (to_stream [1 2 3]) (mk)) [])") == 0
+                          "($into ($filter ($to_stream [1 2 3]) (mk)) [])") == 0
       check leakedManaged("(var items [1 2 3]) " &
                           "(fn mk [k] (match k (else (fn [x] true)))) " &
-                          "(fn go [k] (into (filter (to_stream items) (mk k)) [])) " &
+                          "(fn go [k] ($into ($filter ($to_stream items) (mk k)) [])) " &
                           "(go \"a\")") == 0
-      check leakedManaged("(freeze [1 {^a [2]}])") == 0
+      check leakedManaged("($freeze [1 {^a [2]}])") == 0
       check leakedManaged("(fn gen [] (yield 1)) " &
                           "(var s (gen)) " &
                           "(s ~ next) " &
@@ -103,19 +112,19 @@ when defined(geneRcStats):
                           "  (fn use [t : (Task Int Never)] " &
                           "    (try (await t) catch (TypeError) nil)) " &
                           "  (use (spawn \"bad\")))") == 0
-      check leakedManaged("(var ch (channel)) " &
+      check leakedManaged("(var ch ($channel)) " &
                           "(ch ~ send 1) " &
                           "(ch ~ recv)") == 0
-      check leakedManaged("(var ch : (Channel Int) (channel))") == 0
-      check leakedManaged("(var a (actor/spawn ^init (fn [] 0) " &
+      check leakedManaged("(var ch : (Channel Int) ($channel))") == 0
+      check leakedManaged("(var a ($actor/spawn ^init (fn [] 0) " &
                           "  ^handle (fn [ctx state msg] " &
-                          "    (actor/continue state))))") == 0
+                          "    ($actor/continue state))))") == 0
       check leakedManaged("(scope " &
-                          "  (actor/spawn ^init (fn [] 0) " &
+                          "  ($actor/spawn ^init (fn [] 0) " &
                           "    ^handle (fn [ctx state msg] " &
-                          "      (actor/continue state))))") == 0
+                          "      ($actor/continue state))))") == 0
       check leakedManaged("(supervisor ^strategy restart " &
-                          "  (var a (actor/spawn ^init (fn [] 0) " &
+                          "  (var a ($actor/spawn ^init (fn [] 0) " &
                           "    ^handle (fn [ctx state msg] 99))) " &
                           "  (a ~ send 1))") == 0
       # A top-level `impl Send for Get` belongs in the global-retention test
@@ -136,7 +145,7 @@ when defined(geneRcStats):
                           "(type User ^props {^name Str} " &
                           "  ^impl [HasLabel] " &
                           "  ^derive [HasLabel]) " &
-                          "((User ^name \"Ada\") ~ label)") > 0        # generated impl
+                          "((User ^name \"Ada\") ~ HasLabel:label)") > 0 # generated impl
       # Control: the same type without an impl reclaims fully.
       check leakedManaged("(type User ^props {^name Str}) (User ^name \"Ada\")") == 0
 
@@ -288,14 +297,14 @@ when defined(geneRcStats):
     const N = 30000
 
     test "control: acyclic cell mutation does not grow the heap":
-      check heapGrowth("(var c (cell 0)) (c ~ set 5)", N) < 100_000
+      check heapGrowth("(var c ($cell 0)) (c ~ set 5)", N) < 100_000
 
     test "a self-referential cell is reclaimed":
-      check heapGrowth("(var c (cell 0)) (c ~ set c)", N) < 100_000
+      check heapGrowth("(var c ($cell 0)) (c ~ set c)", N) < 100_000
 
     test "a two-cell cycle is reclaimed":
       check heapGrowth(
-        "(var a (cell 0)) (var b (cell 0)) (a ~ set b) (b ~ set a)",
+        "(var a ($cell 0)) (var b ($cell 0)) (a ~ set b) (b ~ set a)",
         N) < 100_000
 
     test "an Env binding closure cycle is reclaimed":

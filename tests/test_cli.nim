@@ -163,7 +163,7 @@ suite "cli — gene run":
       "(fn main [args : (List Str)] nil)")
     let ran = runGene(["run", typedMain, "x"])
     check ran.exitCode == 1
-    check "parameter 'args' expected (List Str), got vkNode" in ran.output
+    check "parameter 'args' expected (List Str), got Node" in ran.output
     check ("at " & normalizedPath(absolutePath(typedMain)) & ":1:1") in ran.output
 
   test "runurl runs a remote module graph with URL-relative imports":
@@ -4831,7 +4831,7 @@ catch {^message message}
     let ran = runGene(["run", fixture])
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
-    check "[nil \"field 'name' for Args expected Str, got vkInt\"" in ran.output
+    check "[nil \"field 'name' for Args expected Str, got Int\"" in ran.output
     check "Args has no field 'surprise'" in ran.output
     check ran.output.contains("false]")
     check "cat 'tmp/agent-c6-completion space.txt'" in ran.output
@@ -7534,7 +7534,7 @@ suite "cli — gene parse/fmt/compile":
 (type Conn ^props {^host Str ^live Bool}
   (message serde_state [self] {^host self/host})
   (message serde_restore [state] (Conn ^host state/host ^live true)))
-(type Registry ^props {^label Str})
+(type Registry ^props {^label Str ^marker Int?})
 (impl SerdeRef for Registry)
 (var REGISTRY (Registry ^label "the-one"))
 """)

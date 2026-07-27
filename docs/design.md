@@ -347,7 +347,7 @@ Reader literal/comment dispatch examples:
 ```gene
 #[1 2 3]                 # shallow immutable List
 #{^name "Alice"}         # shallow immutable PropMap
-#(user ^name "Alice")    # shallow immutable Gene/node value
+`#(user ^name "Alice")   # quoted shallow immutable Gene/node value
 # line comment
 #< nested block comment >#
 #_ next-node-is-discarded
@@ -1379,6 +1379,10 @@ instance using explicit mutable node/type messages — `set_prop!`, `set_body!`,
 (on `Node`) — or future field-specific setters. The ctor
 body result is ignored; construction returns the validated `self` instance unless
 the ctor raises a recoverable error or panics.
+
+An in-progress constructor may populate fields and body positions incrementally;
+the completed instance is checked atomically before publication. After
+construction, every property or body mutation must preserve the closed schema.
 
 A constructor uses normal function-style argument matching:
 
@@ -2642,8 +2646,13 @@ Message dispatch is on the first argument's head/type. Messages are ordinary cal
 ```gene
 (item ~ to_html)          # send: to_html resolves in item's context
 (item ~ ToHtml:to_html)   # qualified send: always unambiguous
-(ToHtml:to_html item)     # qualified call through the protocol value
+(var render ToHtml:to_html)
+(render item)             # a held message value applies to its first argument
 ```
+
+The direct head spelling `(ToHtml:to_html item)` is intentionally rejected: in
+head position it looks like static implementation selection. Bind or pass the
+message value first when a higher-order API needs a callable.
 
 A type can require manual implementations:
 
@@ -3160,7 +3169,7 @@ The `#` reader prefix constructs a **shallow immutable** container:
 ```gene
 #[1 2 3]
 #{^name "Alice" ^age 30}
-#(user ^name "Alice")
+`#(user ^name "Alice")
 ```
 
 Shallow immutability means the container's head, props, body, keys, and positions cannot be changed. Values stored inside it are not recursively frozen:
@@ -3179,7 +3188,7 @@ Immutable containers support persistent functional updates with structural shari
 (var user3 ($update_in user /score (fn [x] (+ x 1))))
 ```
 
-`assoc_in` and `update_in` never mutate their input. They return a new root and preserve the root's mutable/immutable class unless an API explicitly requests another representation. Missing intermediate paths are errors unless the chosen operation explicitly permits construction. Writing `void` into a prop/map removes it; writing `void` into a list/body position stores `nil`.
+`assoc_in` and `update_in` never mutate their input. They return a new root and preserve the root's mutable/immutable class unless an API explicitly requests another representation. Missing intermediate paths are errors unless the chosen operation explicitly permits construction. Writing `void` into a map or untyped/optional prop removes it; writing `void` into a list/body position stores `nil`. Every typed instance reconstructed along the path is revalidated, including a node whose `head` is changed to a `Type`; functional updates cannot forge an invalid nominal value.
 
 Mutable containers use explicit mutating operations, conventionally named with `!`:
 
@@ -3193,6 +3202,12 @@ Mutable containers use explicit mutating operations, conventionally named with `
 `List/push!` appends to a mutable list in amortized O(1) time and returns the
 inserted value. It stores `nil` when given `void`. Use it for owned local
 accumulators; repeated copy-and-append growth is quadratic.
+
+For a typed instance, `set_prop!` accepts only declared properties and checks
+the declared field type before changing the value. Removing a required field
+with `void` is an error; `void` still removes an optional or untyped property.
+`set_body!` and `push_body!` likewise enforce the declared fixed/rest body
+schema after construction and leave the original instance unchanged on failure.
 
 Selectors remain read-only paths; Gene does not overload selector access with hidden mutation.
 
@@ -3215,8 +3230,9 @@ rebound, never in what the value can do:
 | `const` | fixed   | fixed, compile-time | no    |
 
 `set` changes a lexical binding. It does not mutate the value previously stored
-in that binding. `set` requires a `var` target; applying it to a `let` or
-`const` binding is a compile-time error.
+in that binding. Its form is exactly `(set name value)`, where `name` is a bare
+`var`; extra arguments are an error. Use `set_prop!` for property mutation.
+Applying `set` to a `let` or `const` binding is a compile-time error.
 
 **`let` is the default; `var` is the marked exception.** "Fixed value" means the
 binding is not rebound, not that the value's internal state is frozen. Mutable
@@ -3281,7 +3297,20 @@ Being a real type is what makes `Cell` nameable as an impl receiver:
 the same footing. `AtomicCell`, `Task`, and `ReplyTo` send identically but are
 still namespaces of natives, so they cannot yet be named as impl receivers.
 
-Typed cells use `(Cell T)`. A native compiler may keep primitive values unboxed inside specialized typed cells, but the semantic model is a mutable reference containing a Gene value.
+Typed cells use `(Cell T)`. The first checked boundary validates the current
+value and retains `T` with the annotation's visibility scope. Every later
+`set`, `swap`, and `update` result is checked in that captured scope; `get`
+therefore exposes `T`, not `Any`. When `T` is scope-sensitive (for example, a
+protocol), another `(Cell T)` boundary must share that conformance scope. A
+native compiler may keep primitive values unboxed inside specialized typed
+cells, but the semantic model remains a mutable reference containing a Gene
+value.
+
+Cell element types are invariant. A raw `Cell` specializes at its first
+`(Cell T)` boundary, including `T = Any`; later boundaries must name the same
+closed `T`, so passing a cell through `(Cell Any)` first does not permit a later
+reinterpretation as `(Cell Int)`. A mismatch reports the retained runtime type,
+such as `(Cell Any)`, and identifies invariance as the reason.
 
 `Cell` is intended for local mutable state, closure state, and actor-private state. It is not thread-safe and does not implement `Send`.
 

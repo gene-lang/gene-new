@@ -48,7 +48,7 @@ line two"""
     #{^name "Ada" ^^active}
     {{"first" : 1 "second" : 2}}
     (quote (user @source "example" @@generated ^name "Ada" ^^active))
-    #(user ^name "Ada" ^^active)])
+    `#(user ^name "Ada" ^^active)])
 
 # Domain declarations.
 

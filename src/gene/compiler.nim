@@ -2770,7 +2770,15 @@ proc compileVar(c: var Compiler, node: Value, immutable = false) =
 
 proc compileSet(c: var Compiler, node: Value) =
   let body = node.body
-  if body.len < 2 or body[0].kind != vkSymbol:
+  if body.len != 2:
+    if body.len > 1 and body[1].kind == vkNode and
+        body[1].head.isSymbol("select"):
+      raise newException(GeneError,
+        "set changes a lexical binding and requires exactly a name and a value; " &
+        "use set_prop! for property mutation")
+    raise newException(GeneError,
+      "set requires exactly a name and a value")
+  if body[0].kind != vkSymbol:
     raise newException(GeneError, "set requires a name and a value")
   validateBindingName(body[0].symVal)
   if body[0].symVal in c.letNames:

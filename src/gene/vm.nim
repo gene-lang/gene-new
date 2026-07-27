@@ -463,6 +463,7 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
 proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
+proc typeExprNeedsBoundaryScope(typeExpr: Value): bool
 proc closeTypeExpr(expr: Value, scope: Scope): Value
 proc commonRuntimeTypeExpr(values: openArray[Value]): Value
 proc matchesBufferType(args: openArray[Value], value: Value,
@@ -1171,7 +1172,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
                loc = SourceLoc()): Value
 proc constructTypedInstance(callee: Value, args: openArray[Value],
-                            named: NamedArgs): Value
+                            named: NamedArgs, immutable = false): Value
 proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
                        dispatchScope: Scope = nil, site: Value = NIL): Value
 proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value
@@ -1621,21 +1622,30 @@ proc biCellGet(args: openArray[Value]): Value {.nimcall.} =
   requireCell("Cell/get", args[0])
   args[0].cellValue
 
+proc checkedCellValue(cell, value: Value, where: string): Value =
+  let valueType = cell.cellValueType
+  if valueType.kind == vkNil:
+    value
+  else:
+    adaptBoundary(where, valueType, value, cell.cellValueScope)
+
 proc biCellSet(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Cell/set expects 2 arguments, got " & $args.len)
   requireCell("Cell/set", args[0])
   rejectCallerEnvEscape("Cell/set", args[1])
-  args[0].setCellValue(args[1])
-  args[1]
+  let checked = checkedCellValue(args[0], args[1], "Cell/set value")
+  args[0].setCellValue(checked)
+  checked
 
 proc biCellSwap(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Cell/swap expects 2 arguments, got " & $args.len)
   requireCell("Cell/swap", args[0])
   rejectCallerEnvEscape("Cell/swap", args[1])
+  let checked = checkedCellValue(args[0], args[1], "Cell/swap value")
   let old = args[0].cellValue
-  args[0].setCellValue(args[1])
+  args[0].setCellValue(checked)
   old
 
 proc biCellUpdate(args: openArray[Value]): Value {.nimcall.} =
@@ -1645,8 +1655,9 @@ proc biCellUpdate(args: openArray[Value]): Value {.nimcall.} =
   var callArgs = [args[0].cellValue]
   let next = applyCall(args[1], callArgs, NamedArgs())
   rejectCallerEnvEscape("Cell/update", next)
-  args[0].setCellValue(next)
-  next
+  let checked = checkedCellValue(args[0], next, "Cell/update result")
+  args[0].setCellValue(checked)
+  checked
 
 proc requireAtomicCell(name: string, value: Value) =
   if value.kind != vkAtomicCell:
@@ -3915,6 +3926,80 @@ proc readUpdateChild(name: string, target, segment: Value): Value =
     raise newException(GeneError,
       name & " cannot update through " & $target.kind)
 
+type TypedNodeValidationMode = enum
+  tnvmMutation
+  tnvmCtorResult
+
+proc validateTypedNodeParts(typ: Value, props: var PropTable,
+                            body: var seq[Value],
+                            mode: TypedNodeValidationMode) =
+  ## Validate an already-shaped typed node before publishing a persistent or
+  ## in-place update. Work on detached parts so a failed check is atomic.
+  let typeName = typ.typeName
+  let fields = typ.typeFields
+  let fallbackScope = typ.typeScope
+  for f in fields:
+    var stored: Value
+    if props.tryGetById(f.nameId, stored):
+      let fieldScope = f.typeFieldScope(fallbackScope)
+      props.putById(f.nameId,
+                    adaptBoundary("field '" & f.name & "' for " & typeName,
+                                  f.typeExpr, stored, fieldScope))
+    elif not f.optional:
+      case mode
+      of tnvmMutation:
+        raise newException(GeneError,
+          "cannot remove required field '" & f.name & "' from " & typeName)
+      of tnvmCtorResult:
+        raise newException(GeneError,
+          "ctor for " & typeName & " left required field '" & f.name &
+          "' unset")
+  for id, _ in props.idPairs:
+    var known = false
+    for f in fields:
+      if f.nameId == id:
+        known = true
+        break
+    if not known:
+      raise newException(GeneError,
+        typeName & " has no field '" & propKeyText(id) & "'")
+
+  let bodyFields = typ.typeBodyFields
+  let bodyLen = body.len
+  var restBody = -1
+  for i, f in bodyFields:
+    if f.rest:
+      restBody = i
+      break
+  if restBody < 0:
+    if bodyLen != bodyFields.len:
+      let prefix =
+        if mode == tnvmCtorResult: "ctor for " & typeName & " must leave "
+        else: typeName & " expects "
+      raise newException(GeneError,
+        prefix & $bodyFields.len & " body item(s), got " & $bodyLen)
+    for i, f in bodyFields:
+      let fieldScope = f.typeBodyFieldScope(fallbackScope)
+      body[i] = adaptBoundary("body field " & $i & " for " & typeName,
+                              f.typeExpr, body[i], fieldScope)
+  else:
+    if bodyLen < restBody:
+      let prefix =
+        if mode == tnvmCtorResult: "ctor for " & typeName & " must leave at least "
+        else: typeName & " expects at least "
+      raise newException(GeneError,
+        prefix & $restBody & " body item(s), got " & $bodyLen)
+    for i in 0 ..< restBody:
+      let f = bodyFields[i]
+      let fieldScope = f.typeBodyFieldScope(fallbackScope)
+      body[i] = adaptBoundary("body field " & $i & " for " & typeName,
+                              f.typeExpr, body[i], fieldScope)
+    let restType = bodyFields[restBody]
+    let fieldScope = restType.typeBodyFieldScope(fallbackScope)
+    for i in restBody ..< bodyLen:
+      body[i] = adaptBoundary("body field " & $i & " for " & typeName,
+                              restType.typeExpr, body[i], fieldScope)
+
 proc writeUpdateChild(name: string, target, segment, value: Value): Value =
   if value.kind != vkVoid:
     rejectCallerEnvEscape(name & " functional update", value)
@@ -3935,6 +4020,7 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
       if value.kind == vkVoid: NIL else: value
     newList(items, target.listImmutable)
   of vkNode:
+    var head = target.head
     var props = copyEntries(target.props)
     var body = copyItems(target.body)
     var meta = copyEntries(target.meta)
@@ -3954,7 +4040,7 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
         of "head":
           if value.kind == vkVoid:
             raise newException(GeneError, name & " cannot remove a node head")
-          return newNode(value, props, body, meta, target.nodeImmutable)
+          head = value
         of "props":
           if value.kind == vkVoid:
             props = initPropTable()
@@ -3981,7 +4067,9 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
     else:
       raise newException(GeneError,
         name & " cannot update through selector stage: " & $segment.kind)
-    newNode(target.head, props, body, meta, target.nodeImmutable)
+    if head.kind == vkType:
+      validateTypedNodeParts(head, props, body, tnvmMutation)
+    newNode(head, props, body, meta, target.nodeImmutable)
   else:
     raise newException(GeneError,
       name & " cannot update through " & $target.kind)
@@ -4410,14 +4498,39 @@ proc biRegexSplit(args: openArray[Value]): Value {.nimcall.} =
       items.add newStr(part)
     newList(items)
 
+proc setCheckedNodeProp(node: Value, key: string, value: Value): Value =
+  if node.nodeImmutable:
+    raise newException(GeneError, "cannot mutate immutable Node")
+  if node.head.kind != vkType:
+    node.setNodeProp(key, value)
+    return value
+
+  let typ = node.head
+  for field in typ.typeFields:
+    if field.name != key:
+      continue
+    if value.kind == vkVoid:
+      if not field.optional:
+        raise newException(GeneError,
+          "cannot remove required field '" & key & "' from " & typ.typeName)
+      node.setNodeProp(key, value)
+      return value
+    let adapted = adaptBoundary("field '" & key & "' for " & typ.typeName,
+                                field.typeExpr, value,
+                                field.typeFieldScope(typ.typeScope))
+    node.setNodeProp(key, adapted)
+    return adapted
+
+  raise newException(GeneError,
+    typ.typeName & " has no field '" & key & "'")
+
 proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
       "Node/set_prop! expects 3 arguments, got " & $args.len)
   requireNode("Node/set_prop!", args[0])
   rejectCallerEnvEscape("Node/set_prop!", args[2])
-  args[0].setNodeProp(keySegment("Node/set_prop!", args[1]), args[2])
-  args[2]
+  setCheckedNodeProp(args[0], keySegment("Node/set_prop!", args[1]), args[2])
 
 proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -4427,7 +4540,11 @@ proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args[1].kind != vkList:
     raise newException(GeneError, "Node/set_body! expects a List")
   rejectCallerEnvEscape("Node/set_body!", args[1])
-  args[0].setNodeBody(args[1].listItems)
+  var body = copyItems(args[1].listItems)
+  if args[0].head.kind == vkType and not args[0].nodeConstructing:
+    var props = copyEntries(args[0].props)
+    validateTypedNodeParts(args[0].head, props, body, tnvmMutation)
+  args[0].setNodeBody(body)
   args[1]
 
 proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
@@ -4436,8 +4553,16 @@ proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
       "Node/push_body! expects 2 arguments, got " & $args.len)
   requireNode("Node/push_body!", args[0])
   rejectCallerEnvEscape("Node/push_body!", args[1])
-  args[0].pushNodeBody(args[1])
-  args[1]
+  if args[0].head.kind == vkType and not args[0].nodeConstructing:
+    var props = copyEntries(args[0].props)
+    var body = copyItems(args[0].body)
+    body.add args[1]
+    validateTypedNodeParts(args[0].head, props, body, tnvmMutation)
+    args[0].setNodeBody(body)
+    args[0].body[^1]
+  else:
+    args[0].pushNodeBody(args[1])
+    args[1]
 
 proc requireBuffer(name: string, value: Value) =
   if value.kind != vkBuffer:
@@ -6656,6 +6781,8 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
     else: nil
   scope.parent = parent
   scope.simpleCallScope = false
+  scope.typeBoundaryToken = nil
+  scope.typeBoundarySnapshot = false
   scope.vars.clear()
   scope.varsDirty = false
   scope.varTypes.clear()
@@ -7043,6 +7170,62 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
 
 proc releaseCallScope(scope: Scope) =
   releaseCallScope(gVmPools, scope)
+
+proc typeBoundaryScope(scope: Scope): Scope =
+  ## Conformance depends on the nearest impl-bearing scope. A module/eval root
+  ## is only the fallback when no visible scope carries impls; preferring the
+  ## actual impl scope avoids retaining an irrelevant program root when all
+  ## conformance is canonical.
+  var current = scope
+  var base: Scope
+  while current != nil:
+    if current.typeBoundarySnapshot or current.impls.len > 0:
+      return current
+    if base == nil and (current.moduleRoot or current.implOverlayRoot):
+      base = current
+    current = current.parent
+  if base != nil: base else: scope
+
+proc sameTypeBoundaryScope(a, b: Scope): bool =
+  let left = typeBoundaryScope(a)
+  let right = typeBoundaryScope(b)
+  if left == right:
+    return true
+  left != nil and right != nil and left.typeBoundaryToken != nil and
+    left.typeBoundaryToken == right.typeBoundaryToken
+
+proc captureTypeBoundaryScope(scope: Scope): Scope =
+  ## A typed mutable value may outlive the call that first checks it. Stable
+  ## module scopes can be retained directly. A transient overlay cannot: it may
+  ## also own the Cell, which would form Scope -> Cell -> Scope across Gene's
+  ## manual RC and Nim's ORC. Capture its visible non-canonical impl view in a
+  ## detached scope and share only a stable identity token with the original.
+  let origin = typeBoundaryScope(scope)
+  if origin == nil:
+    return nil
+  if origin.typeBoundarySnapshot:
+    return origin
+  let app = origin.application()
+  let builtins = app.builtinsScope()
+  var hasOverlay = false
+  for impl in origin.impls:
+    if impl.visibility == ivOverlay:
+      hasOverlay = true
+      break
+  if origin == builtins or
+      (origin.moduleRoot and not origin.implOverlayRoot and not hasOverlay):
+    return origin
+
+  if origin.typeBoundaryToken == nil:
+    origin.typeBoundaryToken = TypeBoundaryToken()
+  result = newScope(builtins, application = origin.application)
+  result.typeBoundaryToken = origin.typeBoundaryToken
+  result.typeBoundarySnapshot = true
+  var current = origin
+  while current != nil and current != builtins:
+    for impl in current.impls:
+      result.impls.add impl
+    current = current.parent
 
 proc qualifiedMessageName(message: Value): string =
   let owner = message.protocolMessageProtocol
@@ -14522,7 +14705,12 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkModule: newSym("Module")
   of vkEnv: newSym("Env")
   of vkCallerEnv: newSym("CallerEnv")
-  of vkCell: newSym("Cell")
+  of vkCell:
+    let valueType = value.cellValueType
+    if valueType.kind == vkNil:
+      newSym("Cell")
+    else:
+      typeNode("Cell", @[valueType])
   of vkAtomicCell: newSym("AtomicCell")
   of vkStream:
     let itemType = value.streamItemType
@@ -14688,6 +14876,21 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
           if not inferTypeExpr(valueType, item, scope, typeParams, bindings):
             return false
         return true
+      of "Cell":
+        if value.kind != vkCell:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(Cell T) expects one value type")
+        let storedType = value.cellValueType
+        if storedType.kind != vkNil and expr.body[0].kind == vkSymbol and
+            expr.body[0].symVal in typeParams:
+          return bindings.bindTypeParam(expr.body[0].symVal, storedType)
+        if storedType.kind == vkNil:
+          return inferTypeExpr(expr.body[0], value.cellValue, scope,
+                               typeParams, bindings)
+        return matchesTypeExpr(expr, value, scope)
       of "Stream":
         if value.kind != vkStream:
           return false
@@ -14810,14 +15013,15 @@ proc instantiateTypeExpr(expr: Value, bindings: Table[string, Value],
 
 proc raiseTypeError(where, expected: string, value: Value, scope: Scope,
                     hint = "") =
-  var message = where & " expected " & expected & ", got " & $value.kind
+  let actual = runtimeTypeExpr(value).typeExprLabel
+  var message = where & " expected " & expected & ", got " & actual
   if hint.len > 0:
     message = message & "; " & hint
   var props = initPropTable()
   props["message"] = newStr(message)
   props["where"] = newStr(where)
   props["expected"] = newStr(expected)
-  props["actual"] = newStr($value.kind)
+  props["actual"] = newStr(actual)
   props["actual_value"] = value
   var head = newSym("TypeError")
   var typeError: Value
@@ -15698,6 +15902,22 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           if not matchesTypeExpr(valueType, entry.val, scope):
             return false
         return true
+      of "Cell":
+        if value.kind != vkCell:
+          return false
+        if expr.body.len == 0:
+          return true
+        if expr.body.len != 1:
+          raise newException(GeneError, "(Cell T) expects one value type")
+        let expectedType = closeTypeExpr(expr.body[0], scope)
+        let storedType = value.cellValueType
+        if storedType.kind != vkNil:
+          if not typeExprEqual(expectedType, storedType):
+            return false
+          if typeExprNeedsBoundaryScope(storedType):
+            return sameTypeBoundaryScope(value.cellValueScope, scope)
+          return true
+        return matchesTypeExpr(expr.body[0], value.cellValue, scope)
       of "Stream":
         if value.kind != vkStream:
           return false
@@ -15788,11 +16008,128 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   else:
     raise newException(GeneError, "unsupported type annotation: " & expr.print())
 
+proc typeExprNeedsBoundaryScope(typeExpr: Value): bool =
+  case typeExpr.kind
+  of vkProtocol:
+    not typeExpr.protocolUniversal
+  of vkSymbol:
+    typeExpr.symVal in ["Callable", "Self"]
+  of vkType:
+    typeExpr.isTypeAlias and typeExprNeedsBoundaryScope(typeExpr.typeAliasExpr)
+  of vkList:
+    for item in typeExpr.listItems:
+      if typeExprNeedsBoundaryScope(item):
+        return true
+    false
+  of vkMap:
+    for _, item in typeExpr.mapEntries:
+      if typeExprNeedsBoundaryScope(item):
+        return true
+    false
+  of vkNode:
+    if typeExprNeedsBoundaryScope(typeExpr.head):
+      return true
+    for _, item in typeExpr.props:
+      if typeExprNeedsBoundaryScope(item):
+        return true
+    for item in typeExpr.body:
+      if typeExprNeedsBoundaryScope(item):
+        return true
+    false
+  else:
+    false
+
+proc typeExprContainsCell(typeExpr: Value): bool =
+  case typeExpr.kind
+  of vkType:
+    typeExpr.isTypeAlias and typeExprContainsCell(typeExpr.typeAliasExpr)
+  of vkList:
+    for item in typeExpr.listItems:
+      if typeExprContainsCell(item):
+        return true
+    false
+  of vkMap:
+    for _, item in typeExpr.mapEntries:
+      if typeExprContainsCell(item):
+        return true
+    false
+  of vkNode:
+    if typeExpr.head.isSymbol("Cell"):
+      return true
+    for _, item in typeExpr.props:
+      if typeExprContainsCell(item):
+        return true
+    for item in typeExpr.body:
+      if typeExprContainsCell(item):
+        return true
+    false
+  else:
+    false
+
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
   if typeExpr.kind == vkNil:
     return value
   if not matchesTypeExpr(typeExpr, value, scope):
-    raiseTypeError(where, typeExpr.typeExprLabel, value, scope)
+    let hint =
+      if value.kind == vkCell and value.cellValueType.kind != vkNil and
+          typeExpr.kind == vkNode and typeExpr.head.isSymbol("Cell") and
+          typeExpr.body.len == 1:
+        "Cell value types are invariant"
+      else:
+        ""
+    raiseTypeError(where, typeExpr.typeExprLabel, value, scope, hint)
+  let closedType = closeTypeExpr(typeExpr, scope)
+  if closedType.bits != typeExpr.bits:
+    return adaptBoundary(where, closedType, value, scope)
+  if typeExpr.kind == vkType and typeExpr.isTypeAlias:
+    return adaptBoundary(where, typeExpr.typeAliasExpr, value, scope)
+  if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Cell") and
+      typeExpr.body.len == 1 and value.kind == vkCell:
+    if value.cellValueType.kind == vkNil:
+      let storedType = closeTypeExpr(typeExpr.body[0], scope)
+      let checked = adaptBoundary(where & " value", storedType,
+                                  value.cellValue, scope)
+      value.setCellValue(checked)
+      let storedScope =
+        if typeExprNeedsBoundaryScope(storedType):
+          captureTypeBoundaryScope(scope)
+        else:
+          nil
+      value.setCellValueType(storedType, storedScope)
+    return value
+  if typeExpr.kind == vkNode and typeExpr.head.kind == vkSymbol:
+    case typeExpr.head.symVal
+    of "List":
+      if typeExpr.body.len == 1 and typeExprContainsCell(typeExpr.body[0]):
+        for item in value.listItems:
+          discard adaptBoundary(where & " item", typeExpr.body[0], item, scope)
+    of "Tuple":
+      for i, itemType in typeExpr.body:
+        if typeExprContainsCell(itemType):
+          discard adaptBoundary(where & " item " & $i, itemType,
+                                value.listItems[i], scope)
+    of "Map", "PropMap", "HashMap":
+      if typeExpr.body.len > 0 and typeExprContainsCell(typeExpr.body[^1]):
+        let valueType = typeExpr.body[^1]
+        case value.kind
+        of vkMap:
+          for _, item in value.mapEntries:
+            discard adaptBoundary(where & " value", valueType, item, scope)
+        of vkHashMap:
+          for entry in value.hashMapEntries:
+            discard adaptBoundary(where & " value", valueType,
+                                  entry.val, scope)
+        else:
+          discard
+    of "|", "?":
+      if value.kind != vkNil:
+        for alternative in typeExpr.body:
+          if matchesTypeExpr(alternative, value, scope):
+            if typeExprContainsCell(alternative):
+              discard adaptBoundary(where, alternative, value, scope)
+            break
+    else:
+      discard
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Stream") and
       typeExpr.body.len == 2:
     return newCheckedStream(value, typeExpr.body[0], typeExpr.body[1], scope)
@@ -21019,68 +21356,15 @@ proc validateConstructedInstance(typ, instance: Value) =
   ## Schema validation after a ctor body runs (design §7.1.1): required fields
   ## present, unknown fields rejected, field/body types checked against the
   ## full inherited schema with boundary adaptation written back in place.
-  let typeName = typ.typeName
-  let fields = typ.typeFields
-  let fallbackScope = typ.typeScope
-  for f in fields:
-    var stored: Value
-    if instance.props.tryGetById(f.nameId, stored):
-      let fieldScope = f.typeFieldScope(fallbackScope)
-      let adapted = adaptBoundary("field '" & f.name & "' for " & typeName,
-                                  f.typeExpr, stored, fieldScope)
-      instance.setNodeProp(f.name, adapted)
-    elif not f.optional:
-      raise newException(GeneError,
-        "ctor for " & typeName & " left required field '" & f.name & "' unset")
-  var propIds: seq[int32]
-  for id, _ in instance.props.idPairs:
-    propIds.add id
-  for id in propIds:
-    var known = false
-    for f in fields:
-      if f.nameId == id:
-        known = true
-        break
-    if not known:
-      raise newException(GeneError,
-        typeName & " has no field '" & propKeyText(id) & "'")
-  let bodyFields = typ.typeBodyFields
-  let bodyLen = instance.body.len
-  var restBody = -1
-  for i, f in bodyFields:
-    if f.rest:
-      restBody = i
-      break
-  if restBody < 0:
-    if bodyLen != bodyFields.len:
-      raise newException(GeneError,
-        "ctor for " & typeName & " must leave " & $bodyFields.len &
-        " body item(s), got " & $bodyLen)
-    for i, f in bodyFields:
-      let fieldScope = f.typeBodyFieldScope(fallbackScope)
-      instance.setNodeBodyItem(i, adaptBoundary(
-        "body field " & $i & " for " & typeName, f.typeExpr,
-        instance.body[i], fieldScope))
-  else:
-    if bodyLen < restBody:
-      raise newException(GeneError,
-        "ctor for " & typeName & " must leave at least " & $restBody &
-        " body item(s), got " & $bodyLen)
-    for i in 0 ..< restBody:
-      let f = bodyFields[i]
-      let fieldScope = f.typeBodyFieldScope(fallbackScope)
-      instance.setNodeBodyItem(i, adaptBoundary(
-        "body field " & $i & " for " & typeName, f.typeExpr,
-        instance.body[i], fieldScope))
-    let restType = bodyFields[restBody]
-    let fieldScope = restType.typeBodyFieldScope(fallbackScope)
-    for i in restBody ..< bodyLen:
-      instance.setNodeBodyItem(i, adaptBoundary(
-        "body field " & $i & " for " & typeName, restType.typeExpr,
-        instance.body[i], fieldScope))
+  var props = copyEntries(instance.props)
+  var body = copyItems(instance.body)
+  validateTypedNodeParts(typ, props, body, tnvmCtorResult)
+  for key, value in props:
+    instance.setNodeProp(key, value)
+  instance.setNodeBody(body)
 
 proc constructTypedInstance(callee: Value, args: openArray[Value],
-                            named: NamedArgs): Value =
+                            named: NamedArgs, immutable: bool): Value =
   ## Direct typed-data construction (design §7.1.1): map named arguments to
   ## props and positional arguments to body fields, validate against the full
   ## schema, stamp the head with the type. Never runs a ctor — `(T ...)` is
@@ -21154,7 +21438,7 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
     if not known:
       raise newException(GeneError,
         callee.typeName & " has no field '" & key & "'")
-  newNode(callee, props = props, body = body)
+  newNode(callee, props = props, body = body, immutable = immutable)
 
 proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
                        dispatchScope: Scope = nil, site: Value = NIL): Value =
@@ -21253,7 +21537,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     # Direct typed-data construction: `(T ...)` never calls a ctor, even when
     # the type defines one (design §7.1.1). Constructor logic runs through
     # `new` only.
-    constructTypedInstance(callee, args, named)
+    constructTypedInstance(callee, args, named,
+      immutable = site.kind == vkNode and site.nodeImmutable)
   of vkNode:
     if not callee.isSelector:
       if callee.valueImplementsCallable(dispatchScope):
