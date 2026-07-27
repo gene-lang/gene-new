@@ -2568,9 +2568,35 @@ message body may use `super`, and it delegates from the same parent. `super` is
 reserved and cannot be bound. Using it outside a type message body with an `^is`
 parent is a compile error.
 
-Two forms remain unsupported, pending the protocol-impl precedence rule:
-`(super ~ Proto:m)` for protocol-impl delegation, and the dynamic
-`(super ~ %m)`. Both are diagnosed rather than silently mis-dispatched.
+`super` delegates a **protocol** message the same way. `(super ~ P:m)` resolves
+`P`'s impl from above the enclosing type; the qualifier names the message and
+the parent selects the impl, which is the ordinary "qualifier constrains, never
+selects" rule with the parent standing in for the receiver's runtime type:
+
+```gene runnable
+(protocol Speaks (message speak [] : Str))
+(type Animal ^props {})
+(impl Speaks for Animal (message speak [] : Str "…"))
+(type Dog ^is Animal ^props {})
+(impl Speaks for Dog
+  (message speak [] : Str ($ "woof; " (super ~ Speaks:speak))))
+
+((Dog) ~ Speaks:speak)   # "woof; …"
+```
+
+This needed no new precedence rule: resolution already keeps only providers at
+the nearest applicable receiver depth (`docs/scoped-impls.md` §3.3), so starting
+the walk at the parent *is* "continue from above the enclosing type". A level
+that implements nothing is skipped rather than being an error, and nothing above
+at all is a recoverable `MessageError`. The same works in an inline impl, whose
+receiver is the enclosing type, and in a standalone `(impl P for T …)`, which
+names its receiver. `(super ~ Self:m)` names no qualifier and so is exactly the
+bare super send.
+
+One form stays unsupported: the dynamic `(super ~ %m)`. `super`'s target is
+fixed statically, and an expression yielding a message value cannot be checked
+against the parent at compile time, so it is diagnosed rather than silently
+mis-dispatched.
 
 **Static impl selection is `super` only.** `T/m` is not a callable path:
 `(Dog/bark p)` used to run `Dog`'s body even when `p` was a `Pup` overriding it,

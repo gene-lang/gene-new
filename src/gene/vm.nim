@@ -8983,6 +8983,50 @@ proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
     return message.protocolMessageDefaultFn
   NIL
 
+proc resolveSuperQualifiedSend(scope: Scope, qualifier: Value, name: string,
+                               receiver, superType: Value): Value =
+  ## `(super ~ Q:name)`. Same rule as `resolveQualifiedSend` — the qualifier
+  ## constrains, a type selects — except the selecting type is the enclosing
+  ## type's `^is` parent rather than the receiver's own, while `receiver` is
+  ## still the value passed as `self`. Starting the walk at the parent *is*
+  ## "continue from above the enclosing type", because selection already keeps
+  ## only providers at the nearest applicable receiver depth
+  ## (`docs/scoped-impls.md` §3.3).
+  ##
+  ## Deliberately a separate proc rather than a parameter on
+  ## `resolveQualifiedSend`: widening that one cost 4-8% on
+  ## `vm.protocol_message.trivial_body`, and a reorder-only control did not
+  ## recover it. super sends are rare; ordinary qualified sends are not.
+  case qualifier.kind
+  of vkProtocol:
+    var message = qualifier.protocolMessages.getOrDefault(name, VOID)
+    if message.kind == vkVoid:
+      let candidates = qualifier.protocolClosureByName(name)
+      if candidates.len == 1:
+        message = candidates[0]
+      elif candidates.len > 1:
+        raise newException(GeneError,
+          "ambiguous message '" & name & "' in protocol " &
+          qualifier.protocolName & "; qualify with the defining protocol")
+    if message.kind != vkProtocolMessage:
+      raiseMessageError(name, qualifier.protocolName, scope,
+                        protocol = qualifier.protocolName, missingImpl = true)
+    result = scope.tryResolveProtocolMessage(superType, message)
+    if result.kind == vkNil:
+      raiseMessageError(name, superType.typeName, scope,
+                        protocol = qualifier.protocolName, missingImpl = true)
+  of vkType:
+    # The qualifier still only constrains: the parent must be a `Q`.
+    if not superType.isSubtypeOf(qualifier):
+      raiseTypeError("super send " & qualifier.typeName & ":" & name,
+                     qualifier.typeName, receiver, scope)
+    result = typeDirectMessage(superType, name)
+    if result.kind == vkNil:
+      raiseMessageError(name, superType.typeName, scope, false)
+  else:
+    raiseCallKindError("super send", "Protocol or Type",
+                       freezeRejectName(qualifier), qualifier, scope)
+
 proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
                           receiver: Value): Value =
   ## Resolve `Q:name` on `receiver`. Shared by the send opcode and by applying a
@@ -10641,8 +10685,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               let resolved = resolveImplMessage(scope, inlineProtocols[i],
                                                 message.protocolPath,
                                                 message.name)
-              let fn = newFunction(message.fn.name, message.fn.params,
-                                   message.fn, scope, message.fn.checksErrors,
+              # An inline impl's receiver is the enclosing type, so `super` in
+              # its body means what it means in a type-direct message body:
+              # stamp the same `^is` parent.
+              let messageFn = stampSuperType(message.fn, parent)
+              let fn = newFunction(messageFn.name, messageFn.params,
+                                   messageFn, scope, messageFn.checksErrors,
                                    inlineErrorTypes[i][j])
               entries.add ImplMessage(message: resolved,
                                       fn: functionForScopeStorage(fn, scope))
@@ -10794,8 +10842,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let resolved = resolveImplMessage(scope, protocol,
                                               message.protocolPath,
                                               message.name)
-            let fn = newFunction(message.fn.name, message.fn.params, message.fn,
-                                 scope, message.fn.checksErrors,
+            # `(impl P for T …)` delegates from `T`'s `^is` parent, exactly as
+            # a message declared inside `T` would. The receiver is in hand here,
+            # so the parent is too.
+            let messageFn = stampSuperType(message.fn, receiver.typeParent)
+            let fn = newFunction(messageFn.name, messageFn.params, messageFn,
+                                 scope, messageFn.checksErrors,
                                  messageErrorTypes[i])
             entries.add ImplMessage(message: resolved,
                                     fn: functionForScopeStorage(fn, scope))
@@ -11444,6 +11496,37 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               (if superType.kind == vkType: "super " & superType.typeName
                else: "super"),
               scope, false)
+          if callee.isSyntaxFn:
+            rejectSyntaxSend(callee, scope)
+          if inst[].intArg > 0:
+            if sp >= stack.len:
+              spGrow(stack)
+            var insertAt = sp - inst[].intArg
+            var shiftIndex = sp
+            while shiftIndex > insertAt:
+              stack[shiftIndex] = move stack[shiftIndex - 1]
+              dec shiftIndex
+            stack[insertAt] = callee
+            inc sp
+          else:
+            spush callee
+          spush receiver
+        of opSuperQualifiedSend:
+          # `(super ~ Q:m)`. Same delegation rule as opSuperSend — resolve from
+          # the enclosing type's `^is` parent, call with `self` — but the
+          # qualifier names the message, so this goes through the ordinary
+          # qualified-send rule with the parent standing in as the selecting
+          # type. No per-site cache here: the qualifier is an operand rather
+          # than a chunk constant, so the site is not statically monomorphic
+          # the way a bare super send is.
+          let qualifier = spop()
+          let receiver = spop()           # self
+          let superType = chunk.superType
+          if superType.kind != vkType:
+            raise newException(GeneError,
+              "super is only valid in a type message body with an ^is parent")
+          let callee = resolveSuperQualifiedSend(scope, qualifier, inst[].name,
+                                                 receiver, superType)
           if callee.isSyntaxFn:
             rejectSyntaxSend(callee, scope)
           if inst[].intArg > 0:

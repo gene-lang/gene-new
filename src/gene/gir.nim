@@ -67,6 +67,7 @@ type
     opCallSplice
     opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
     opSuperSend       # pop enclosing type + self; resolve msg from the type's ^is parent, push callee + self (super delegation, design §10)
+    opSuperQualifiedSend # like opSuperSend, but pops a qualifier too: (super ~ Q:m) selects against the ^is parent, not the receiver
     opPlaceSendReceiver # move receiver below newly evaluated named args
     opIntAdd2
     opReturnIntAdd2
@@ -761,7 +762,7 @@ proc formatInstruction(inst: Instruction): string =
       result.add " names=" & formatNames(inst.names)
   of opResolveMessage:
     result.add " name=" & inst.name & " candidates=" & $inst.depth
-  of opSuperSend:
+  of opSuperSend, opSuperQualifiedSend:
     result.add " name=" & inst.name
   of opPlaceSendReceiver:
     result.add " named=" & $inst.intArg

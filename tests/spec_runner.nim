@@ -2516,19 +2516,58 @@ suite "spec — implicit self in message bodies from design §10":
       "(type X ^props {} (message m [] : Str (super ~ m)))",
       "super is only valid")
 
-  test "super rejects qualified and dynamic callees at compile time":
-    # Protocol-impl delegation needs a precedence rule that does not exist yet.
-    check_compile_error(
-      "(protocol P (message m [] : Str)) " &
-      "(type A ^props {} (impl P (message m [] : Str \"A\"))) " &
-      "(type B ^is A ^props {} (message go [] : Str (super ~ P:m)))",
-      "super delegates to a type-direct message only")
+  test "super delegates a protocol message from the ^is parent":
+    # `docs/scoped-impls.md` §3.3 already keeps only providers at the nearest
+    # applicable receiver depth, so resolving from the parent *is* "continue the
+    # walk from above the enclosing type" — no new precedence rule was needed.
+    # The qualifier names the message; the parent selects the impl.
+    check_eval("(protocol P (message m [] : Str)) " &
+               "(type A ^props {}) (impl P for A (message m [] : Str \"A\")) " &
+               "(type B ^is A ^props {}) " &
+               "(impl P for B (message m [] : Str ($ \"B+\" (super ~ P:m)))) " &
+               "((B) ~ P:m)",
+               "\"B+A\"")
+    # Three deep, and the inline-impl spelling, which shares the enclosing type.
+    check_eval("(protocol P (message m [] : Str)) " &
+               "(type A ^props {} (impl P (message m [] : Str \"A\"))) " &
+               "(type B ^is A ^props {} " &
+               "  (impl P (message m [] : Str ($ \"B+\" (super ~ P:m))))) " &
+               "(type C ^is B ^props {} " &
+               "  (impl P (message m [] : Str ($ \"C+\" (super ~ P:m))))) " &
+               "((C) ~ P:m)",
+               "\"C+B+A\"")
+    # A level with no provider is skipped rather than erroring: nearest
+    # applicable receiver depth, not "the immediate parent must implement it".
+    check_eval("(protocol P (message m [] : Str)) " &
+               "(type A ^props {}) (impl P for A (message m [] : Str \"A\")) " &
+               "(type B ^is A ^props {}) " &
+               "(type C ^is B ^props {}) " &
+               "(impl P for C (message m [] : Str ($ \"C+\" (super ~ P:m)))) " &
+               "((C) ~ P:m)",
+               "\"C+A\"")
+    # Nothing above at all is a recoverable MessageError naming the parent.
+    check_eval("(protocol P (message m [] : Str)) " &
+               "(type A ^props {}) " &
+               "(type B ^is A ^props {}) " &
+               "(impl P for B (message m [] : Str (super ~ P:m))) " &
+               "(try ((B) ~ P:m) catch (MessageError ^receiver_type t) t)",
+               "\"A\"")
+    # `Self:` names no qualifier, so it is exactly the bare super send.
+    check_eval("(type A ^props {} (message g [] : Str \"A\")) " &
+               "(type B ^is A ^props {} " &
+               "  (message g [] : Str ($ \"B+\" (super ~ Self:g)))) " &
+               "((B) ~ g)",
+               "\"B+A\"")
+
+  test "super still rejects a dynamic callee":
+    # super's target is fixed statically; an expression yielding a message value
+    # cannot be checked against the parent at compile time, so it stays refused.
     check_compile_error(
       "(protocol P (message m [] : Str)) " &
       "(type A ^props {} (impl P (message m [] : Str \"A\"))) " &
       "(type B ^is A ^props {} " &
       "  (message go [] : Str (var q P/m) (super ~ %q)))",
-      "super delegates to a type-direct message only")
+      "is a dynamic callee")
 
   test "super is robust against a local shadowing the parent or enclosing name":
     # super resolves no user-visible name: the owner's ^is parent is recorded on

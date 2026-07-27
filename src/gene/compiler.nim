@@ -4487,14 +4487,24 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
       raise newException(GeneError,
         "super is only valid in a type message body with an ^is parent")
     if messageExpr.kind != vkNil:
-      # Protocol-impl delegation needs a precedence rule that does not exist
-      # yet, and a dynamic callee cannot be checked for one, so both are
-      # rejected here rather than reported as a missing message at run time.
+      # A *dynamic* callee still cannot be delegated: super's whole point is
+      # that the target is fixed statically, and an expression yielding a
+      # message value cannot be checked against the parent at compile time.
+      # A qualified callee is fine and handled below.
       raise newException(GeneError,
-        "super delegates to a type-direct message only: '" & sendName &
-        "' is a qualified or dynamic callee, which is not yet supported")
+        "super delegates to a statically named message: '" & sendName &
+        "' is a dynamic callee, which is not supported")
     compileExpr(c, newSym("self"))
-    discard c.emit(opSuperSend, 0, name = sendName)
+    if qualifierExpr.kind != vkNil:
+      # `(super ~ Q:m)` — the qualifier names the message and the `^is` parent
+      # selects the impl, so both reach the opcode. Selection already keeps
+      # providers at the nearest applicable receiver depth
+      # (`docs/scoped-impls.md` §3.3), so resolving from the parent *is*
+      # "continue the walk from above the enclosing type".
+      compileExpr(c, qualifierExpr)
+      discard c.emit(opSuperQualifiedSend, 0, name = sendName)
+    else:
+      discard c.emit(opSuperSend, 0, name = sendName)
   elif qualifierExpr.kind != vkNil:
     # `(x ~ Q:msg)` — push the *qualifier*, not a member of it. The qualifier
     # names the message and never selects the impl (design §3, decision 5), so
@@ -4586,16 +4596,8 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
         not node.props.hasKey("types"):
       let qualifier = node.body[1].body[0]
       let messageName = node.body[1].body[1].symVal
-      if node.head.kind == vkSymbol and node.head.symVal == "super":
-        # `super` delegates to a type-direct message only; a qualified callee
-        # needs the protocol-impl precedence rule that does not exist yet. The
-        # `/` spelling was already rejected here — without this the `:` spelling
-        # would silently drop the qualifier and delegate the bare name instead.
-        raise newException(GeneError,
-          "super delegates to a type-direct message only: '" &
-          (if qualifier.kind == vkSymbol: qualifier.symVal else: $qualifier) &
-          ":" & messageName &
-          "' is a qualified callee, which is not yet supported")
+      # `(super ~ Self:m)` names no qualifier at all, so it is exactly the bare
+      # super send — same as for an ordinary receiver.
       if qualifier.isSymbol("Self"):
         compileSend(c, node, node.head, messageName, 2)
       else:
@@ -5312,7 +5314,10 @@ proc compileType(c: var Compiler, node: Value) =
       raise newException(GeneError, "duplicate type message: " & mp.name)
     seenMessages[mp.name] = true
     messages.add mp
-  c.superType = savedSuperType
+  # NB: `c.superType` stays set through the inline-impl loop below. An inline
+  # impl's receiver *is* the enclosing type (docs/core.md §8), so `super` means
+  # the same thing in its message bodies as in a type-direct one; restoring
+  # here left `(impl P (message m [] (super ~ P:m)))` unable to see the parent.
   # Inline impls (docs/core.md §8): (impl P (message ...) ...) with the
   # receiver implied — the enclosing type. Each impl emits its message error
   # rows and then its protocol expression, in declaration order.
@@ -5336,6 +5341,7 @@ proc compileType(c: var Compiler, node: Value) =
       implMessages.add mp
     compileExpr(c, item.body[0])
     inlineImpls.add InlineImplProto(messages: implMessages)
+  c.superType = savedSuperType
   var fields: seq[TypeField]
   if node.props.hasKey("props"):
     let schema = node.props["props"]
@@ -5628,6 +5634,12 @@ proc compileImpl(c: var Compiler, node: Value) =
   compileExpr(c, body[2])
   var messages: seq[ImplMessageProto]
   var seen = initTable[string, bool]()
+  # `(impl P for T …)` names its receiver, so `super` in a message body has the
+  # same meaning it has inside `T`'s own body: delegate from `T`'s `^is` parent.
+  # The name is stored, not the resolved type, so a body-local that shadows the
+  # parent's spelling cannot redirect the delegation — same rule as a type body.
+  let savedSuperType = c.superType
+  c.superType = if body[2].kind == vkSymbol: body[2] else: NIL
   for i in 3 ..< body.len:
     let mp = implMessageProto(c, body[i])
     let key = mp.protocolPath.join("/") & "/" & mp.name
@@ -5635,6 +5647,7 @@ proc compileImpl(c: var Compiler, node: Value) =
       raise newException(GeneError, "duplicate impl message: " & mp.name)
     seen[key] = true
     messages.add mp
+  c.superType = savedSuperType
   let idx = c.chunk.addImpl(ImplProto(messages: messages,
                                       staticTopLevel: staticTopLevel,
                                       staticOperands: staticOperands,
