@@ -69,6 +69,7 @@ type
     opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
     opSuperSend       # pop enclosing type + self; resolve msg from the type's ^is parent, push callee + self (super delegation, design §10)
     opSuperQualifiedSend # like opSuperSend, but pops a qualifier too: (super ~ Q:m) selects against the ^is parent, not the receiver
+    opSetPath         # [base, seg..., value] -> checked in-place write through setMutableChild; pushes the stored value (set!, design §12.1)
     opPlaceSendReceiver # move receiver below newly evaluated named args
     opIntAdd2
     opReturnIntAdd2
@@ -772,6 +773,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " name=" & inst.name & " candidates=" & $inst.depth
   of opSuperSend, opSuperQualifiedSend:
     result.add " name=" & inst.name
+  of opSetPath:
+    result.add " segments=" & $inst.intArg
   of opPlaceSendReceiver:
     result.add " named=" & $inst.intArg
   of opIntAdd2, opReturnIntAdd2, opIntSub2, opIntMul2, opIntLt2, opIntGt2,

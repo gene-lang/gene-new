@@ -191,6 +191,7 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["do", "var", "set", "if"],
       "(do (var x 1) (set x 2) (if true (then x) (else 0)))")
     fixture(["let"], "(let x 1)")
+    fixture(["set!"], "(var m {^a 1}) (set! m/a 2)")
     fixture(["new"],
       "(type FixtureNew ^props {} (ctor [] nil)) (new FixtureNew)")
     expect GeneError:
@@ -2739,8 +2740,81 @@ suite "spec — binding forms from design §12.1":
   test "set rejects extra arguments instead of silently discarding them":
     check_compile_error("(var x 1) (set x 2 3)",
                         "set requires exactly a name and a value")
-    check_compile_error("(var x {^n 1}) (set x /n 2)",
-                        "set_prop!")
+    # Both spellings of a path target point at `set!`. The glued form is what
+    # people actually type, and it used to fall through to the arity message
+    # because the check looked at `body[1]` while the target is `body[0]`.
+    check_compile_error("(var x {^n 1}) (set x /n 2)", "use set! for property")
+    check_compile_error("(var x {^n 1}) (set x/n 2)", "use set! for property")
+
+  test "set! assigns in place through a path":
+    # design §12.1. `set` rebinds a lexical binding and never mutates; `set!` is
+    # the explicitly mutating spelling, bang-named like set_prop!/put!/push!.
+    check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) (set! t/n 2) t/n", "2")
+    check_eval("(var xs [1 2 3]) (set! xs/0 9) xs", "[9 2 3]")
+    check_eval("(var m {^a 1}) (set! m/a 2) m", "{^a 2}")
+    check_eval("(var xs [1 2 3]) (set! xs/-1 9) xs", "[1 2 9]")
+    # Only the final container is mutated; intermediates resolve read-only.
+    check_eval("(type T ^props {^n Int}) (type O ^props {^inner T}) " &
+               "(var o (O ^inner (T ^n 1))) (set! o/inner/n 5) o/inner/n", "5")
+    # It returns the stored value, which is the adapted one at a boundary.
+    check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) (set! t/n 7)", "7")
+
+  test "set! is checked by the same rules as construction":
+    # The point of routing every write through one seam: the closed schema and
+    # the field types hold for assignment exactly as they do for construction.
+    check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) " &
+               "[(try (set! t/n \"bad\") catch (TypeError ^message m) m) t/n]",
+               "[\"field 'n' for T expected Int, got Str\" 1]")
+    check_runtime_error("(type T ^props {^n Int}) (var t (T ^n 1)) " &
+                        "(set! t/bogus 1)", "T has no field 'bogus'")
+    check_runtime_error("(type T ^props {^n Int}) (var f #(T ^n 1)) " &
+                        "(set! f/n 2)", "cannot mutate immutable Node")
+    # A typed *body* position had no in-place writer at all before `set!`, so
+    # it is the case that would have reintroduced unchecked writes.
+    check_eval("(type B ^props {^n Int} ^body [Str...]) " &
+               "(var b (B ^n 1 \"a\")) (set! b/0 \"z\") b",
+               "((type B) ^n 1 \"z\")")
+    check_runtime_error("(type B ^props {^n Int} ^body [Str...]) " &
+                        "(var b (B ^n 1 \"a\")) (set! b/0 42)",
+                        "body field 0 for B expected Str")
+
+  test "set! path segments are keys, never applied":
+    # Ordinary selector evaluation *applies* a callable segment; that is
+    # incoherent as an assignment target, so `set!` takes keys only.
+    check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) " &
+               "(var k `n) (set! t/%k 7) t/n", "7")
+    check_runtime_error("(type T ^props {^n Int}) (var t (T ^n 1)) " &
+                        "(fn f [x] x) (set! t/%f 1)",
+                        "set! path segment must be a Sym, Str, or Int")
+    check_compile_error("(var t {^n 1}) (set! t/~size 1)",
+                        "cannot assign through a message segment")
+
+  test "set! rejects the virtual Node projections":
+    # `head`/`props`/`body`/`meta` are detached copies (design §1.3), so
+    # assigning through one would silently write to a temporary.
+    check_runtime_error("(var n (quote (u ^a 1 \"x\"))) (set! n/body/0 \"z\")",
+                        "cannot assign through a Node projection")
+    # A real prop of that name keeps ordinary prop precedence and is assignable.
+    check_eval("(type P ^props {^body Str}) (var p (P ^body \"ok\")) " &
+               "(set! p/body \"new\") p/body",
+               "\"new\"")
+
+  test "set! may populate self during construction":
+    # A ctor can fill fields incrementally; the completed instance is still
+    # validated atomically at publication. The negative case — a ctor that
+    # leaves a required field unset — is NOT asserted here: a ctor whose
+    # validation raises corrupts the heap, which reproduces on an unmodified
+    # build with `set_prop!` and no `set!` at all. Recorded as its own defect.
+    check_eval("(type C ^props {^x Int} (ctor [v : Int] (set! self/x v))) " &
+               "(var c (new C 5)) c/x",
+               "5")
+
+  test "set! requires a path and exactly two operands":
+    check_compile_error("(set! x 1)", "set! requires a path; use set to rebind")
+    check_compile_error("(var t {^n 1}) (set! t/n)",
+                        "set! requires exactly a path and a value")
+    check_compile_error("(var t {^n 1}) (set! t/n 1 2)",
+                        "set! requires exactly a path and a value")
 
   test "let destructuring names are immutable":
     check_compile_error("(let [a b] [1 2]) (set a 9)",

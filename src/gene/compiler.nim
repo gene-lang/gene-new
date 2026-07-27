@@ -150,7 +150,7 @@ const MaxMacroExpansionDepth = 100
 
 const CoreSpecialFormNames* = [
   "do", "if", "if_yes", "if_not", "&&", "||", "??", "!",
-  "let", "var", "const", "set", "new", "~",
+  "let", "var", "const", "set", "set!", "new", "~",
   "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
@@ -2768,14 +2768,21 @@ proc compileVar(c: var Compiler, node: Value, immutable = false) =
     if patternBindsSelf(body[0]):
       c.selfAvailable = true
 
+proc setTargetIsPath(v: Value): bool =
+  v.kind == vkNode and (v.head.isSymbol("path") or v.head.isSymbol("select"))
+
 proc compileSet(c: var Compiler, node: Value) =
   let body = node.body
+  # The assignment target is `body[0]`. Testing `body[1]` meant only the spaced
+  # `(set t /n 2)` got the helpful text, while the glued `(set t/n 2)` — which
+  # is what people actually type, and reads as a single `path` node — fell
+  # through to the generic arity message.
+  if (body.len == 2 and setTargetIsPath(body[0])) or
+      (body.len == 3 and setTargetIsPath(body[1])):
+    raise newException(GeneError,
+      "set changes a lexical binding and requires exactly a name and a value; " &
+      "use set! for property mutation")
   if body.len != 2:
-    if body.len > 1 and body[1].kind == vkNode and
-        body[1].head.isSymbol("select"):
-      raise newException(GeneError,
-        "set changes a lexical binding and requires exactly a name and a value; " &
-        "use set_prop! for property mutation")
     raise newException(GeneError,
       "set requires exactly a name and a value")
   if body[0].kind != vkSymbol:
@@ -4324,6 +4331,46 @@ proc compilePath(c: var Compiler, node: Value) =
       compileSelectorParts(c, parts.toOpenArray(start, i - 1))
       discard c.emit(opApplySelectorTop)
 
+proc compileSetBang(c: var Compiler, node: Value) =
+  ## `(set! path value)` — checked in-place assignment (design §12.1). `set`
+  ## still means "rebind a lexical binding" and never mutates; this is the
+  ## explicitly-mutating spelling, which is why it is bang-named like the
+  ## `set_prop!`/`put!`/`push!` family.
+  let body = node.body
+  if body.len != 2:
+    raise newException(GeneError,
+      "set! requires exactly a path and a value")
+  let target = body[0]
+  if target.kind == vkSymbol:
+    raise newException(GeneError,
+      "set! requires a path; use set to rebind a var")
+  if target.kind != vkNode or not target.head.isSymbol("path") or
+      target.body.len < 2:
+    raise newException(GeneError,
+      "set! requires a path; use set to rebind a var")
+  let parts = target.body
+  compileExpr(c, parts[0])
+  for i in 1 ..< parts.len:
+    let seg = parts[i]
+    if seg.isPathSendSegment:
+      raise newException(GeneError,
+        "set! cannot assign through a message segment")
+    if seg.kind == vkNode and seg.head.isSymbol("unquote"):
+      # Dynamic segments are key-only: ordinary selector evaluation *applies*
+      # a callable segment, which is incoherent as an assignment target, so the
+      # value is checked at run time and never applied.
+      if seg.body.len != 1:
+        raise newException(GeneError,
+          "set! path segment must be a Sym, Str, or Int")
+      compileExpr(c, seg.body[0])
+    elif seg.kind in {vkSymbol, vkString, vkInt}:
+      c.emitConst seg
+    else:
+      raise newException(GeneError,
+        "set! path segment must be a Sym, Str, or Int")
+  compileExpr(c, body[1])
+  discard c.emit(opSetPath, parts.len - 1)
+
 proc compileMessageValue(c: var Compiler, node: Value) =
   ## `Proto:msg` / `T:msg` / `Self:msg` in value position (design §3,
   ## decisions 2 and 5): a **message value**, not a function and not a closure.
@@ -5759,6 +5806,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
         "const is reserved but not yet implemented (design §12.1); use let")
     of "set":
       compileSet(c, node)
+      return
+    of "set!":
+      compileSetBang(c, node)
       return
     of "new":
       compileNew(c, node)

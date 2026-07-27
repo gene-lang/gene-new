@@ -4525,6 +4525,24 @@ proc setCheckedNodeProp(node: Value, key: string, value: Value): Value =
   raise newException(GeneError,
     typ.typeName & " has no field '" & key & "'")
 
+proc readSetPathChild(target, segment: Value): Value =
+  ## Read one intermediate segment of a `set!` path. Deliberately *not*
+  ## `readUpdateChild`: that one answers `head`/`props`/`body`/`meta` with the
+  ## node projections, which are detached copies (design §1.3), so
+  ## `(set! n/body/0 v)` would write into a temporary and silently do nothing.
+  ## A real prop of that name keeps ordinary prop precedence and is assignable.
+  if target.kind == vkNode and segment.kind in {vkSymbol, vkString}:
+    let key = keySegment("set!", segment)
+    if not target.props.hasKey(key) and
+        key in ["head", "props", "body", "meta"]:
+      raise newException(GeneError,
+        "set! cannot assign through a Node projection; props, body, and meta " &
+        "are copies")
+  result = readUpdateChild("set!", target, segment)
+  if result.kind == vkVoid:
+    raise newException(GeneError,
+      "set! path segment '" & segment.print() & "' is missing")
+
 proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
@@ -4547,6 +4565,90 @@ proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
     validateTypedNodeParts(args[0].head, props, body, tnvmMutation)
   args[0].setNodeBody(body)
   args[1]
+
+proc setMutableChild(target, segment, value: Value): Value =
+  ## The one checked in-place mutation seam (design §12.1). `set!` calls only
+  ## this, so a write cannot skip a gate by taking a different route, and the
+  ## gates run in one fixed order: caller-env escape · immutability · segment
+  ## kind · `void` · boundary adaptation against the declared prop *or body*
+  ## field. Node body positions had no in-place writer at all before this, so
+  ## routing them anywhere else would have reintroduced the unchecked-write bug
+  ## class that typed props just had. Per-field write permission, if it is ever
+  ## added, belongs here and nowhere else.
+  ##
+  ## Returns the value actually stored, which is the adapted one at a typed
+  ## boundary rather than the value handed in.
+  ##
+  ## Written statement-shaped, with every local hoisted above the branches. An
+  ## earlier expression-shaped `case` with `var`s declared inside one arm
+  ## corrupted the heap whenever the typed-body validation raised — the arm
+  ## that both declares locals and raises is exactly the codegen shape this
+  ## file has been bitten by before.
+  if value.kind != vkVoid:
+    rejectCallerEnvEscape("set!", value)
+  var index = 0
+  var stored = NIL
+  var body: seq[Value] = @[]
+  case target.kind
+  of vkNode:
+    case segment.kind
+    of vkSymbol, vkString:
+      # Props keep their own checked writer, which already owns immutability,
+      # the closed schema, `void` removal, and boundary adaptation.
+      result = setCheckedNodeProp(target, keySegment("set!", segment), value)
+    of vkInt:
+      if target.nodeImmutable:
+        raise newException(GeneError, "cannot mutate immutable Node")
+      index = updateIndex("set!", target.body.len,
+                          requireInt64("set!", segment))
+      stored = if value.kind == vkVoid: NIL else: value
+      if target.head.kind == vkType and not target.nodeConstructing:
+        # Validate the whole typed shape rather than this position alone: a
+        # `^body [T...]` rest field means the position's type is not knowable
+        # from the index by itself. Delegate to `set_body!` rather than
+        # reimplementing it — that writer already validates detached parts and
+        # publishes atomically, and duplicating the sequence here corrupted the
+        # heap whenever the validation raised.
+        body = copyItems(target.body)
+        body[index] = stored
+        discard biNodeSetBodyBang([target, newList(body)])
+        result = target.body[index]
+      else:
+        target.setNodeBodyItem(index, stored)
+        result = stored
+    else:
+      raise newException(GeneError,
+        "set! path segment must be a Sym, Str, or Int")
+  of vkMap:
+    # `putMapEntry` already owns immutability and `void`-removes the entry.
+    target.putMapEntry(keySegment("set!", segment), value)
+    result = value
+  of vkList:
+    if target.listImmutable:
+      raise newException(GeneError, "cannot mutate immutable List")
+    if segment.kind != vkInt:
+      raise newException(GeneError, "set! into a List requires an Int index")
+    index = updateIndex("set!", target.listItems.len,
+                        requireInt64("set!", segment))
+    stored = if value.kind == vkVoid: NIL else: value
+    target.setListItem(index, stored)
+    result = stored
+  else:
+    raise newException(GeneError,
+      "set! cannot assign through " & declarationKind(target))
+
+proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
+    {.noinline.} =
+  ## Out of line on purpose. The dispatch switch is I-cache sensitive — the
+  ## same reason `spRelease` is `{.noinline.}` — and inlining this arm's loops
+  ## cost 3-7% across the call family on two independent paired batches.
+  ## Operands are read in place: the stack keeps owning them until the arm
+  ## truncates, so an unwind has exactly one owner to release.
+  var target = stack[baseIndex]
+  for i in 0 ..< segCount - 1:
+    target = readSetPathChild(target, stack[baseIndex + 1 + i])
+  setMutableChild(target, stack[baseIndex + segCount],
+                  stack[baseIndex + segCount + 1])
 
 proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
@@ -11715,6 +11817,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           else:
             spush callee
           spush receiver
+        of opSetPath:
+          # `(set! base/seg…/last value)`. Operands sit on the stack in the
+          # order the design fixes — base, then dynamic segments left to right,
+          # then the RHS once — so they are read in place by index rather than
+          # popped into a temporary seq: no per-write heap allocation, and the
+          # slots stay owned by the stack until `strunc` releases them together.
+          let segCount = inst[].intArg
+          let baseIndex = sp - segCount - 2
+          if baseIndex < 0:
+            raise newException(GeneError, "VM stack underflow in set!")
+          # Intermediates resolve read-only; only the final container is
+          # mutated, and in place. `assoc_in` stays the copying form.
+          let stored = runSetPath(stack, baseIndex, segCount)
+          strunc(baseIndex)
+          spush stored
         of opPlaceSendReceiver:
           # [callee, receiver, named...] -> [callee, named..., receiver]. The
           # resolution itself happened before named argument evaluation.

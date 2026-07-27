@@ -1376,8 +1376,8 @@ evaluate the type expression to a Type
 ```
 
 There is no `init` special form. The constructor mutates the pre-created `self`
-instance using explicit mutable node/type messages — `set_prop!`, `set_body!`, `push_body!`
-(on `Node`) — or future field-specific setters. The ctor
+instance with `(set! self/field v)` (§12.1) or the explicit mutable node/type
+messages — `set_prop!`, `set_body!`, `push_body!` (on `Node`). The ctor
 body result is ignored; construction returns the validated `self` instance unless
 the ctor raises a recoverable error or panics.
 
@@ -3235,8 +3235,41 @@ rebound, never in what the value can do:
 
 `set` changes a lexical binding. It does not mutate the value previously stored
 in that binding. Its form is exactly `(set name value)`, where `name` is a bare
-`var`; extra arguments are an error. Use `set_prop!` for property mutation.
-Applying `set` to a `let` or `const` binding is a compile-time error.
+`var`; extra arguments are an error. Applying `set` to a `let` or `const`
+binding is a compile-time error.
+
+**`set!` is the mutating counterpart, and it takes a path.** The two are
+deliberately different words: `set` rebinds and never mutates, `set!` mutates
+and never rebinds, and the bang marks it as part of the
+`set_prop!`/`put!`/`push!` family. Selectors stay read-only for *reading* —
+`set!` is an explicit write form, not hidden mutation through selector access.
+
+```gene runnable
+(type T ^props {^n Int})
+(var t (T ^n 1))
+(set! t/n 2)      # 2 — checked against the field's declared type
+(var xs [1 2 3])
+(set! xs/0 9)     # [9 2 3]
+(var m {^a 1})
+(set! m/a 2)      # {^a 2}
+```
+
+Its form is exactly `(set! path value)`. Evaluation is fixed left to right:
+base, then any dynamic segments, then the value once. Intermediates resolve
+**read-only** and only the final container is mutated, in place — `assoc_in`
+remains the copying counterpart, and having both is the point.
+
+Every `set!` goes through one checked seam, so assignment obeys exactly the
+rules construction does: the closed schema, declared field types for props
+**and** typed body positions, the frozen bit, and `void` handling. A path
+segment is a key, never something applied: a dynamic `%k` segment must evaluate
+to a `Sym`, `Str`, or `Int`. The virtual `Node` projections — `head`, `props`,
+`body`, `meta` — are rejected as assignment targets because they return
+detached copies (§1.3), so writing through one would silently update a
+temporary; a *real* prop of that name keeps ordinary precedence and is
+assignable. A `ctor` may use `(set! self/field v)` to populate fields
+incrementally, and the completed instance is still validated atomically at
+publication.
 
 **`let` is the default; `var` is the marked exception.** "Fixed value" means the
 binding is not rebound, not that the value's internal state is frozen. Mutable

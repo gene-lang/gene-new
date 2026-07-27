@@ -14,7 +14,7 @@ MVP compiler-dispatched heads:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! let var const set new ~ fn fn! macro quote quasiquote
+do if if_yes if_not && || ?? ! let var const set set! new ~ fn fn! macro quote quasiquote
 select path msg ns env eval import import_impl mod match while loop repeat for break
 continue yield return try scope supervisor spawn await fail panic type alias enum
 protocol impl derive
