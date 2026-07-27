@@ -2238,6 +2238,26 @@ suite "spec — implicit self in message bodies from design §10":
                "(match (P ^a 7) (when (P ^a x) x) (else \"no\"))",
                "7")
 
+  test "a gene-root annotation spelling means what the bare name means":
+    # `$X/y` and `gene/X/y` are two spellings of one name, so an annotation
+    # written either way must answer as bare `X/y` does. `$X/y` reads as a path
+    # and `gene/X/y` as a symbol, so the two arrive on different arms and both
+    # need normalising — and before this, the path arm re-closed an expression
+    # that could not change and recursed until the stack overflowed, i.e.
+    # `[x : $ffi/Load]` was a SIGSEGV rather than any kind of error.
+    check_eval("[((fn [x : $Int] x) 7) ((fn [x : gene/Int] x) 7) " &
+               " ((fn [x : Int] x) 7)]",
+               "[7 7 7]")
+    check_eval("(try ((fn [x : $Int] x) \"s\") " &
+               " catch (TypeError ^expected e) e)",
+               "\"gene/Int\"")
+    # A path that names nothing is an unknown annotation, not a crash, and it
+    # is catchable.
+    check_eval("($str/starts_with? " &
+               " (try ((fn [x : $fs/ReadDir] x) nil) catch (Error ^message m) m) " &
+               " \"unknown type annotation\")",
+               "true")
+
   test "an impl receiver must be a type, and says so catchably":
     # An impl is keyed on the receiver's type identity, so a receiver without
     # one cannot carry it. This used to reach `typeScope` and die on a Nim

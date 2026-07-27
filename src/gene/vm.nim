@@ -15101,6 +15101,22 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
           return resolved
     expr
   of vkNode:
+    if expr.head.isSymbol("path") and expr.body.len > 1 and
+        expr.body[0].isSymbol("gene"):
+      # `$X/y` and `gene/X/y` are two spellings of one name, so an annotation
+      # written either way has to mean what bare `X/y` means. The built-in
+      # annotation names are matched symbolically and never carry the root, so
+      # drop it and re-close as a symbol. Without this, moving `Ffi` to
+      # `gene/ffi` would have made the natural `[x : $ffi/Load]` unresolvable
+      # while `[x : ffi/Load]` worked.
+      var parts: seq[string]
+      for i in 1 ..< expr.body.len:
+        if expr.body[i].kind != vkSymbol:
+          parts.setLen(0)
+          break
+        parts.add expr.body[i].symVal
+      if parts.len > 0:
+        return closeTypeExpr(newSym(parts.join("/")), scope)
     if expr.head.isSymbol("path") and expr.body.len == 2 and
         expr.body[1].kind == vkSymbol:
       if expr.body[0].isSymbol("C"):
@@ -15302,6 +15318,11 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
              matchesTypeExpr(newSym(name[0 ..< name.len - 1]), value, scope)
     if name == "Callable":
       return value.valueImplementsCallable(scope)
+    if name.len > 5 and name.startsWith("gene/"):
+      # `$X/y` reads as a path and is normalised in `closeTypeExpr`; the bare
+      # `gene/X/y` spelling arrives here as a symbol instead. Both name the
+      # same thing, so strip the explicit root and answer identically.
+      return matchesTypeExpr(newSym(name[5 .. ^1]), value, scope)
     if name == "Self":
       # `Self` is the receiver's own type — the same meaning it carries as a
       # message qualifier (design §10), so the name has one rule in both
@@ -15375,7 +15396,15 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
     if expr.head.kind == vkSymbol:
       case expr.head.symVal
       of "path":
-        return matchesTypeExpr(closeTypeExpr(expr, scope), value, scope)
+        # `closeTypeExpr` already ran at the top of this arm, and reaching here
+        # proves it returned the same expression — the `bits` guard above would
+        # have recursed otherwise. Re-closing therefore cannot make progress,
+        # and calling back into `matchesTypeExpr` spun until the stack
+        # overflowed: a SIGSEGV rather than a catchable error, on a spelling as
+        # ordinary as `[x : $ffi/Load]`. A path that does not close to a type or
+        # protocol is simply an unknown annotation, and says so.
+        raise newException(GeneError,
+          "unknown type annotation: " & typeExprLabel(expr))
       of "C/Ptr", "C/NullablePtr", "C/ConstPtr", "C/NullableConstPtr",
          "C/OwnedPtr":
         return matchesCPtrType(expr.head.symVal, expr.body, value, scope)
