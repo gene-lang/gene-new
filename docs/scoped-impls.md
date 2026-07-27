@@ -149,6 +149,38 @@ Overlay scopes are not globally enumerable. Registration rejects conflicts
 already visible to the overlay, but a later canonical activation may conflict
 with a live overlay; the next affected send reports that ambiguity.
 
+### 4.1 Diagnosing a failed conformance check
+
+Because conformance is scope-relative, "no impl exists" and "an impl exists but
+is not visible here" are different problems with different fixes. A failed
+boundary or qualified send therefore searches the enumerable scopes for an
+applicable impl and, when it finds one, appends advice naming what to do:
+
+| Found | Advice |
+|---|---|
+| scoped, exported, checking scope is a module | `import_impl P for T from "<origin>"` into that module |
+| scoped, not exported | add `^export true`, then import |
+| checking scope not addressable (program/REPL, captured, built-ins) | move the impl to the home module of `P` or `T` to make it canonical |
+| several candidates at the same rank | reports the count; import one |
+| nothing enumerable | no advice — the message stays as it was |
+
+Two rules keep the advice from being a no-op:
+
+- **The module named is the one whose scope governs the check** — the
+  annotation's module for a boundary, the send's module for a send. It is not
+  the caller's: importing into a caller changes nothing about what a library's
+  annotation can see.
+- **The pair named is the impl's own**, not the queried one. A hidden impl
+  found through receiver ancestry or protocol inheritance declares different
+  operands, and `import_impl` copies an exact pair, so advising the queried
+  spelling would be a command that fails.
+
+**Overlay impls are undiscoverable by design.** They live only in transient
+scopes and are deliberately absent from the scope index (§3.2), so no failure
+site can enumerate them; an overlay-only conformance failure keeps the bare
+message. Retaining those scopes to make them searchable would reintroduce the
+scope-retention leak class the reload contract exists to avoid (§6).
+
 ## 5. Protocol conformance
 
 Conformance uses the same lexical visibility scope as dispatch, not a separate

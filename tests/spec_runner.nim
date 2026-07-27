@@ -2700,6 +2700,203 @@ suite "spec — implicit self in message bodies from design §10":
                "(try (nil ~ P:m) catch (MessageError ^protocol pr) pr)",
                "\"P\"")
 
+suite "spec — protocol intersection types":
+  # `(& P Q ...)` requires every operand. Single inheritance makes an
+  # intersection of *types* uninhabitable, so operands must be protocols.
+  const protos =
+    "(protocol Shown (message show [] : Str)) " &
+    "(protocol Sized (message sz [] : Int)) " &
+    "(type Both ^props {}) (type OnlyShown ^props {}) (type Dog ^props {}) " &
+    "(impl Shown for Both (message show [] : Str \"b\")) " &
+    "(impl Sized for Both (message sz [] : Int 1)) " &
+    "(impl Shown for OnlyShown (message show [] : Str \"o\")) "
+
+  test "an intersection requires every operand":
+    check_eval(protos & "((fn [a : (& Shown Sized)] \"ok\") (Both))", "\"ok\"")
+    check_eval(protos &
+               "(try ((fn [a : (& Shown Sized)] \"ok\") (OnlyShown)) " &
+               " catch (TypeError ^expected e) e)",
+               "\"(& Shown Sized)\"")
+
+  test "intersections compose inside containers and props":
+    check_eval(protos &
+               "((fn [xs : (List (& Shown Sized))] ($size xs)) [(Both)])", "1")
+    check_eval(protos & "(type Box ^props {^item (& Shown Sized)}) " &
+               "(var b (Box ^item (Both))) (var it b/item) " &
+               "(it ~ Shown:show)", "\"b\"")
+    check_eval(protos & "(type Box2 ^props {^item (& Shown Sized)}) " &
+               "(try (Box2 ^item (OnlyShown)) catch (TypeError ^where w) w)",
+               "\"field 'item' for Box2\"")
+    check_eval(protos & "((fn [a : (| Int (& Shown Sized))] \"ok\") (Both))",
+               "\"ok\"")
+
+  test "operand order is insignificant at every comparison site":
+    # Matching, the stored type of an invariant container, and a callable
+    # signature all go through one canonical form, so no site can disagree.
+    check_eval(protos & "((fn [a : (& Sized Shown)] \"ok\") (Both))", "\"ok\"")
+    check_eval(protos &
+               "(fn keep [c : (Cell (& Shown Sized))] c) " &
+               "(fn same [c : (Cell (& Sized Shown))] c) " &
+               "(((same (keep ($cell (Both)))) ~ get) ~ Shown:show)",
+               "\"b\"")
+    check_eval(protos &
+               "(protocol Q (message m [v : (& Shown Sized)] : Str)) " &
+               "(impl Q for Both (message m [v : (& Sized Shown)] : Str \"q\")) " &
+               "((Both) ~ Q:m (Both))",
+               "\"q\"")
+
+  test "union signatures are order-insensitive too (shared canonical form)":
+    # Regression guard: this failed before intersection work introduced the
+    # shared `typeExprEquivalent` seam, and it proves the seam reaches
+    # signature comparison rather than only boundary closure.
+    check_eval("(protocol A) (protocol B) (type X ^props {}) " &
+               "(impl A for X) " &
+               "(protocol P (message m [v : (| A B)] : Str)) " &
+               "(impl P for X (message m [v : (| B A)] : Str \"ok\")) " &
+               "((X) ~ P:m (X))",
+               "\"ok\"")
+
+  test "operands must be resolved protocols, checked on use not definition":
+    # Annotations resolve lazily, so an unused invalid intersection still
+    # loads — the same latitude that makes forward references work.
+    check_eval(protos & "(fn never [a : (& Shown Dog)] a) \"loaded\"",
+               "\"loaded\"")
+    check_runtime_error(protos & "((fn [a : (& Shown Dog)] a) (Both))",
+                        "intersection of types is uninhabitable")
+    check_runtime_error(protos & "((fn [a : (& Shown)] a) (Both))",
+                        "requires at least two protocols")
+    check_runtime_error(protos &
+                        "((fn (g item) [a : (& item Shown)] a) (Both))",
+                        "type parameters cannot carry protocol constraints")
+
+  test "intersections honor protocol inheritance and receiver ancestry":
+    check_eval("(protocol Shown (message show [] : Str)) " &
+               "(protocol Sized (message sz [] : Int)) " &
+               "(type Parent ^props {}) (type Child ^is Parent ^props {}) " &
+               "(impl Shown for Parent (message show [] : Str \"p\")) " &
+               "(impl Sized for Parent (message sz [] : Int 1)) " &
+               "((fn [a : (& Shown Sized)] \"ok\") (Child))",
+               "\"ok\"")
+    check_eval("(protocol Shown (message show [] : Str)) " &
+               "(protocol Sized (message sz [] : Int)) " &
+               "(protocol SubShown ^inherit [Shown] (message extra [] : Int)) " &
+               "(type Q ^props {}) " &
+               "(impl SubShown for Q (message show [] : Str \"q\") " &
+               "  (message extra [] : Int 2)) " &
+               "(impl Sized for Q (message sz [] : Int 3)) " &
+               "((fn [a : (& Shown Sized)] \"ok\") (Q))",
+               "\"ok\"")
+
+  test "forward-referenced protocols resolve inside an intersection":
+    check_eval("(fn takes [a : (& Early Late)] \"ok\") " &
+               "(protocol Early) (protocol Late) (type G ^props {}) " &
+               "(impl Early for G) (impl Late for G) (takes (G))",
+               "\"ok\"")
+
+suite "spec — hidden impl diagnostics (docs/scoped-impls.md §4)":
+  # A conformance failure must distinguish "no impl exists" from "an impl
+  # exists but is not visible here", and must name the module whose scope
+  # governs the check — importing anywhere else is a no-op.
+  proc hintDir(): string =
+    result = getTempDir() / "gene_spec_hidden_impls"
+    removeDir(result)
+    createDir(result)
+    writeFile(result / "proto.gene",
+      "(protocol Shown (message show [] : Str))\n" &
+      "(type Widget ^props {})\n" &
+      "(type Base ^props {})\n" &
+      "(type Derived ^is Base ^props {})\n")
+    writeFile(result / "provider.gene",
+      "(import [Shown Widget] from \"./proto\")\n" &
+      "(impl Shown for Widget ^export true (message show [] : Str \"w\"))\n")
+    writeFile(result / "unexported.gene",
+      "(import [Shown Base] from \"./proto\")\n" &
+      "(impl Shown for Base (message show [] : Str \"b\"))\n")
+
+  proc loadError(dir, name, source: string): string =
+    writeFile(dir / name, source)
+    let app = newApplication(dir)
+    try:
+      discard app.loadFileModule(dir / name)
+      return ""
+    except CatchableError as e:
+      return e.msg
+
+  test "an exported scoped impl names the module the import must land in":
+    let dir = hintDir()
+    let msg = loadError(dir, "main.gene",
+      "(import [Shown Widget] from \"./proto\")\n" &
+      "(import [] from \"./provider\")\n" &
+      "(fn takes [a : Shown] \"ok\")\n" &
+      "(takes (Widget))\n")
+    check "import_impl Shown for Widget from" in msg
+    check "provider.gene" in msg
+    check "main.gene" in msg          # the checking module, not the impl's
+
+  test "the named module is the annotation's, not the caller's":
+    # The no-op trap: telling an application author to import into their own
+    # module does nothing when the failing annotation belongs to a library.
+    let dir = hintDir()
+    writeFile(dir / "lib.gene",
+      "(import [Shown Widget] from \"./proto\")\n" &
+      "(fn lib_takes [a : Shown] \"ok\")\n")
+    let msg = loadError(dir, "app.gene",
+      "(import [Shown Widget] from \"./proto\")\n" &
+      "(import [lib_takes] from \"./lib\")\n" &
+      "(import [] from \"./provider\")\n" &
+      "(lib_takes (Widget))\n")
+    check "lib.gene" in msg
+    check "app.gene" notin msg
+
+  test "an unexported scoped impl advises export before import":
+    let dir = hintDir()
+    let msg = loadError(dir, "main.gene",
+      "(import [Shown Base] from \"./proto\")\n" &
+      "(import [] from \"./unexported\")\n" &
+      "(fn takes [a : Shown] \"ok\")\n" &
+      "(takes (Base))\n")
+    check "^export true" in msg
+    check "import_impl" notin msg
+
+  test "a hidden impl found through ancestry names its own pair":
+    # `import_impl` copies an exact pair, so advising the *queried* pair would
+    # be a command that fails: the impl is for Base, the value is a Derived.
+    let dir = hintDir()
+    writeFile(dir / "baseprov.gene",
+      "(import [Shown Base] from \"./proto\")\n" &
+      "(impl Shown for Base ^export true (message show [] : Str \"b\"))\n")
+    let msg = loadError(dir, "main.gene",
+      "(import [Shown Base Derived] from \"./proto\")\n" &
+      "(import [] from \"./baseprov\")\n" &
+      "(fn takes [a : Shown] \"ok\")\n" &
+      "(takes (Derived))\n")
+    check "import_impl Shown for Base from" in msg
+    check "for Derived" notin msg
+
+  test "a qualified send gets the same advice":
+    let dir = hintDir()
+    let msg = loadError(dir, "main.gene",
+      "(import [Shown Widget] from \"./proto\")\n" &
+      "(import [] from \"./provider\")\n" &
+      "((Widget) ~ Shown:show)\n")
+    check "no implementation of message 'show'" in msg
+    check "import_impl Shown for Widget from" in msg
+
+  test "no hint when nothing is hidden":
+    # The negative cases matter most: advice that fires when no impl exists
+    # would be worse than today's bare message. Overlay impls are deliberately
+    # unenumerable, so they stay silent too — pinned, not silently regressed.
+    check_eval("(protocol Shown (message show [] : Str)) " &
+               "(type N ^props {}) (fn takes [a : Shown] \"ok\") " &
+               "(try (takes (N)) catch (TypeError ^message m) m)",
+               "\"parameter 'a' expected Shown, got (type N)\"")
+    check_eval("(protocol Shown (message show [] : Str)) " &
+               "(type H ^props {}) (fn takes [a : Shown] \"ok\") " &
+               "(fn hidden [] (impl Shown for H (message show [] : Str \"h\")) " &
+               "  (takes (H))) " &
+               "(try (hidden) catch (TypeError ^message m) m)",
+               "\"parameter 'a' expected Shown, got (type H)\"")
+
 suite "spec — protocol derive from design":
   test "protocol-local derive can generate an impl":
     check_eval("(protocol HasLabel " &

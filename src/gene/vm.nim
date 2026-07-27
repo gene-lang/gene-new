@@ -459,7 +459,9 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
                         scope: Scope, hint = "")
 proc raiseMessageError(message, receiverType: string, scope: Scope,
                        lexicalHint = false, protocol = "",
-                       missingImpl = false) {.noreturn.}
+                       missingImpl = false,
+                       protocolValue = NIL,
+                       receiverValue = NIL) {.noreturn.}
 proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
@@ -7373,11 +7375,68 @@ proc resolveImplMessage(scope: Scope, protocol: Value,
       spellings.join(", "))
   candidates[0]
 
+proc typeExprHasCommutativeHead(expr: Value): bool =
+  ## Cheap pre-test so the common annotation pays one kind check instead of a
+  ## rebuild. Only `&` and `|` have operands whose order carries no meaning.
+  if expr.kind != vkNode:
+    return false
+  if expr.head.isSymbol("&") or expr.head.isSymbol("|"):
+    return true
+  for item in expr.body:
+    if typeExprHasCommutativeHead(item):
+      return true
+  for _, item in expr.props:
+    if typeExprHasCommutativeHead(item):
+      return true
+  false
+
+proc sortTypeExprOperands(operands: var seq[Value]) =
+  ## Printed form is the sort key: stable within a run for every operand shape,
+  ## and identical for structurally identical operands — which is exactly the
+  ## equivalence being canonicalized. Keys are computed once rather than inside
+  ## the comparator, so an operand is printed O(n) times, not O(n log n).
+  if operands.len < 2:
+    return
+  var keyed: seq[(string, Value)]
+  for operand in operands:
+    keyed.add (operand.print(), operand)
+  keyed.sort(proc (x, y: (string, Value)): int = cmp(x[0], y[0]))
+  for i, entry in keyed:
+    operands[i] = entry[1]
+
+proc canonicalTypeExpr*(expr: Value): Value =
+  ## Sort the operands of every `&`/`|` node into a stable order so two
+  ## spellings of one set compare equal. Purely structural — it resolves no
+  ## names, so it needs no scope and is safe at any phase, including impl
+  ## registration, which runs long before boundary closure.
+  if not typeExprHasCommutativeHead(expr):
+    return expr
+  var body: seq[Value]
+  for item in expr.body:
+    body.add canonicalTypeExpr(item)
+  if expr.head.isSymbol("&") or expr.head.isSymbol("|"):
+    sortTypeExprOperands(body)
+  var props = initPropTable()
+  for key, item in expr.props:
+    props[key] = canonicalTypeExpr(item)
+  var meta = initPropTable()
+  for key, item in expr.meta:
+    meta[key] = item
+  newNode(expr.head, props = props, body = body, meta = meta,
+          immutable = expr.nodeImmutable)
+
+proc typeExprEquivalent*(a, b: Value): bool =
+  ## The one semantic-equivalence test for type expressions. Used by callable
+  ## signature comparison (impl registration, before closure) and by
+  ## stored-container comparison (typed `Cell`, after closure), so operand
+  ## order cannot be significant in one place and not the other.
+  equal(canonicalTypeExpr(a), canonicalTypeExpr(b))
+
 proc signatureTypeEqual(a, b: Value): bool =
   ## Omitted annotations and explicit Any have the same boundary meaning.
   let aAny = a.kind == vkNil or a.isSymbol("Any")
   let bAny = b.kind == vkNil or b.isSymbol("Any")
-  (aAny and bAny) or equal(a, b)
+  (aAny and bAny) or typeExprEquivalent(a, b)
 
 proc callableSignatureMismatch(expected, actual: Value): string =
   if expected.kind != vkFunction or actual.kind != vkFunction:
@@ -7733,6 +7792,21 @@ proc importScopedImpl(importingScope, sourceScope: Scope,
   app.addIndexedScope(target, imported)
   inc app.implEpoch
 
+proc checkingModulePath(scope: Scope): string =
+  ## Path of the module a conformance check resolves against, or "" when that
+  ## scope is not addressable (program/REPL base, captured scope, built-ins).
+  ## The advice must name *this* module: an import into the caller's module
+  ## does not change what a library's annotation can see.
+  let root = scope.moduleRootScope()
+  if root == nil:
+    return ""
+  var owner: Value
+  if not root.lookupOptional("this_mod", owner):
+    return ""
+  if owner.kind != vkModule:
+    return ""
+  owner.modulePath
+
 proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
   # An impl of a protocol that ^inherits `protocol` also satisfies `protocol`
   # (docs/core.md §3.5 — structural subtyping from the impl).
@@ -7744,6 +7818,104 @@ proc hasVisibleImpl(scope: Scope, protocol, receiver: Value): bool =
         return true
     s = s.parent
   false
+
+proc findHiddenImpls(app: Application, protocol, receiver: Value,
+                     checking: Scope): seq[ProtocolImpl] =
+  ## Failure path only. Enumerate impls of `protocol` for `receiver` that exist
+  ## somewhere enumerable but are not visible at `checking`. `baseScopes` is the
+  ## right source: it holds exactly the file-module bases plus any scope that
+  ## carries a scoped/imported impl, including non-module program/REPL bases
+  ## that `moduleCache` would miss. Overlay impls live only in transient scopes
+  ## and are deliberately unenumerable, so they are never reported.
+  ##
+  ## Applicability, not pair equality: an impl on a parent type or on a protocol
+  ## that inherits the requested one is still the answer the user needs.
+  if app == nil or protocol.kind != vkProtocol:
+    return @[]
+  for scope in app.baseScopes:
+    if scope == nil:
+      continue
+    for impl in scope.impls:
+      if impl.visibility != ivScoped:
+        continue
+      if not protocolIsOrInherits(impl.protocol, protocol):
+        continue
+      if not receiver.isSubtypeOf(impl.receiver):
+        continue
+      if checking != nil and checking.hasVisibleImpl(protocol, receiver):
+        continue
+      var seen = false
+      for existing in result:
+        if existing.originPath == impl.originPath and
+            existing.protocol.bits == impl.protocol.bits and
+            existing.receiver.bits == impl.receiver.bits:
+          seen = true
+          break
+      if not seen:
+        result.add impl
+
+proc hiddenImplHint(app: Application, protocol, receiver: Value,
+                    checking: Scope): string =
+  ## Format the deterministic advice. Ranking never depends on table iteration
+  ## order, so the same program always produces the same hint.
+  if protocol.kind != vkProtocol:
+    return ""
+  var candidates = findHiddenImpls(app, protocol, receiver, checking)
+  if candidates.len == 0:
+    return ""
+  let target = checkingModulePath(checking)
+  let addressable = target.len > 0
+  # Rank: importable first, then exportable-then-importable, then the rest.
+  # Ties break on originPath, empty last, so ordering is total and stable.
+  proc rank(impl: ProtocolImpl): int =
+    if impl.exported and addressable and impl.originPath.len > 0: 0
+    elif not impl.exported: 1
+    else: 2
+  candidates.sort(proc (a, b: ProtocolImpl): int =
+    result = cmp(rank(a), rank(b))
+    if result != 0:
+      return
+    let aEmpty = a.originPath.len == 0
+    let bEmpty = b.originPath.len == 0
+    if aEmpty != bEmpty:
+      return cmp(aEmpty, bEmpty)
+    result = cmp(a.originPath, b.originPath))
+  let best = candidates[0]
+  # Name the pair the impl actually declares, not the pair that was queried:
+  # a hidden impl found through receiver ancestry or protocol inheritance has
+  # different operands, and `import_impl` copies an exact pair — advising the
+  # queried spelling would be a command that fails.
+  let pair = best.protocol.protocolName & " for " & best.receiver.typeName
+  var sameRank = 0
+  for impl in candidates:
+    if rank(impl) == rank(best):
+      inc sameRank
+  if sameRank > 1:
+    return "impls of " & protocol.protocolName & " for " & receiver.typeName &
+      " exist in " & $sameRank & " modules but none is visible" &
+      (if addressable: " in \"" & target & "\"" else: " here") &
+      "; import one there with import_impl"
+  if best.originPath.len == 0:
+    # A program/REPL-scope impl has no path to import from.
+    return "an impl " & pair & " exists but is scoped to a program or REPL " &
+      "scope with no importable path; move it to the home module of " &
+      protocol.protocolName & " or " & receiver.typeName & " to make it canonical"
+  if not best.exported:
+    return "an impl " & pair & " exists in \"" & best.originPath &
+      "\" but is scoped and not exported; add ^export true, then import it" &
+      (if addressable: " into \"" & target & "\"" else: " where this is checked")
+  if not addressable:
+    return "an impl " & pair & " exists in \"" & best.originPath &
+      "\" but is not visible where this annotation is checked; move it to the " &
+      "home module of " & protocol.protocolName & " or " & receiver.typeName &
+      " to make it canonical"
+  # Name the module whose scope governs the check — the annotation's module for
+  # a boundary, the send's module for a send. Importing anywhere else is a
+  # no-op, which is the whole point of naming it.
+  "an impl " & pair & " exists in \"" & best.originPath &
+    "\" but is not visible in \"" & target &
+    "\", which governs this check; add (import_impl " & pair &
+    " from \"" & best.originPath & "\") there"
 
 proc receiverType(value: Value): Value =
   let builtin = gScalarTypes[value.kind]
@@ -9289,7 +9461,8 @@ proc resolveSuperQualifiedSend(scope: Scope, qualifier: Value, name: string,
     result = scope.tryResolveProtocolMessage(superType, message)
     if result.kind == vkNil:
       raiseMessageError(name, superType.typeName, scope,
-                        protocol = qualifier.protocolName, missingImpl = true)
+                        protocol = qualifier.protocolName, missingImpl = true,
+                        protocolValue = qualifier, receiverValue = superType)
   of vkType:
     # The qualifier still only constrains: the parent must be a `Q`.
     if not superType.isSubtypeOf(qualifier):
@@ -9368,7 +9541,8 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
   if result.kind == vkNil:
     # A qualified send with no visible impl is a recoverable MessageError (§9).
     raiseMessageError(message.protocolMessageName, recvType.typeName, scope,
-                      protocol = protocol.protocolName, missingImpl = true)
+                      protocol = protocol.protocolName, missingImpl = true,
+                      protocolValue = protocol, receiverValue = recvType)
 
 
 
@@ -14781,7 +14955,11 @@ proc typeExprEqual(a, b: Value): bool =
     return true
   if equal(a, b):
     return true
-  # Only mismatches pay for sugar normalization; equal spellings return above.
+  # Only mismatches pay for normalization; equal spellings return above.
+  # Operand order goes through the shared `typeExprEquivalent` interface so a
+  # stored container and a callable signature cannot disagree about it.
+  if typeExprEquivalent(a, b):
+    return true
   equal(normalizeOptionalSugar(a), normalizeOptionalSugar(b))
 
 proc typeNode(name: string, body: sink seq[Value] = @[]): Value =
@@ -15203,7 +15381,9 @@ proc raiseCallKindError(where, expected, actual: string, value: Value,
 
 proc raiseMessageError(message, receiverType: string, scope: Scope,
                        lexicalHint = false, protocol = "",
-                       missingImpl = false) {.noreturn.} =
+                       missingImpl = false,
+                       protocolValue = NIL,
+                       receiverValue = NIL) {.noreturn.} =
   ## Design §3/§9: a `~` send that resolves to no message on the
   ## receiver's type. Recoverable MessageError (a TypeError subtype).
   ## `lexicalHint` marks the case where the message name also names a lexical
@@ -15218,6 +15398,13 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
   if lexicalHint:
     full = full & "; '" & message &
       "' is a function — did you mean to call it, not send it?"
+  elif missingImpl and protocolValue.kind == vkProtocol and
+      receiverValue.kind == vkType and scope != nil:
+    # Same visibility advice the boundary path gives. Failure path only.
+    let hint = hiddenImplHint(scope.application(), protocolValue,
+                              receiverValue, scope)
+    if hint.len > 0:
+      full = full & "; " & hint
   var props = initPropTable()
   props["message"] = newStr(full)
   props["where"] = newStr("message send")
@@ -15585,6 +15772,45 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
       meta[key] = closed
       if closed.bits != value.bits:
         changed = true
+    if closedHead.isSymbol("&"):
+      # Lazy validation: this runs on first boundary use, never at definition,
+      # so an unused annotation stays accepted and forward-referenced protocols
+      # still resolve. Canonical ordering happens here too, so everything
+      # downstream — matching, stored containers, printing — sees one spelling.
+      if body.len < 2:
+        raise newException(GeneError,
+          "(& ...) requires at least two protocols; write the protocol " &
+          "directly for a single requirement")
+      for i, operand in body:
+        if operand.kind == vkProtocol:
+          continue
+        if operand.kind == vkType:
+          raise newException(GeneError,
+            "(& ...) requires protocol operands; " & operand.typeName &
+            " is a type — a value has one type lineage, so an intersection " &
+            "of types is uninhabitable")
+        if operand.kind == vkSymbol:
+          # Either a type parameter or a name that never resolved. Both are
+          # "not a protocol here"; naming the constraint rule covers the
+          # generic case without misdescribing a plain typo.
+          raise newException(GeneError,
+            "(& ...) operands must be resolved protocols; " &
+            operand.symVal & " is not one here — type parameters cannot " &
+            "carry protocol constraints")
+        raise newException(GeneError,
+          "(& ...) operands must be resolved protocols; " &
+          typeExprLabel(expr.body[i]) & " is not")
+      # Reordering counts as a change, but an already-canonical expression must
+      # return `expr` itself: `adaptBoundary` re-enters whenever closure yields
+      # different bits, so allocating a fresh node unconditionally is an
+      # infinite recursion, not just garbage.
+      let beforeSort = body
+      sortTypeExprOperands(body)
+      if not changed:
+        for i in 0 ..< body.len:
+          if body[i].bits != beforeSort[i].bits:
+            changed = true
+            break
     if changed:
       newNode(closedHead, props = props, body = body, meta = meta,
               immutable = expr.nodeImmutable)
@@ -15843,6 +16069,19 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           if matchesTypeExpr(alt, value, scope):
             return true
         return false
+      of "&":
+        # Intersection of protocol conformances. Operands were validated and
+        # canonically ordered by closeTypeExpr; matching is plain conjunction
+        # over the ordinary applicability rules, so protocol inheritance and
+        # receiver ancestry apply exactly as they do for a single operand.
+        if expr.body.len < 2:
+          raise newException(GeneError,
+            "(& ...) requires at least two protocols; write the protocol " &
+            "directly for a single requirement")
+        for operand in expr.body:
+          if not matchesTypeExpr(operand, value, scope):
+            return false
+        return true
       of "?":
         if expr.body.len == 0:
           raise newException(GeneError, "(? T ...) expects at least one type")
@@ -16209,17 +16448,78 @@ proc typeExprContainsCell(typeExpr: Value): bool =
   else:
     false
 
+type ConformanceFailure = object
+  ## What a failed conformance check was actually about. Produced only on the
+  ## error path, so the fast `matchesTypeExpr` stays a bare `bool` and pays
+  ## nothing for it.
+  protocol: Value   # vkNil when the mismatch was not about a protocol
+  receiver: Value   # the value that failed, which may be nested in a container
+
+proc explainTypeMismatch(typeExpr, value: Value, scope: Scope,
+                         depth = 0): ConformanceFailure =
+  ## Cold path: called after `matchesTypeExpr` already returned false, to find
+  ## which protocol is responsible. It re-walks the expression using the *same*
+  ## predicate rather than reimplementing the rules, so the explanation can
+  ## never disagree with the check that produced the error.
+  result = ConformanceFailure(protocol: NIL, receiver: NIL)
+  if depth > 8:
+    return
+  case typeExpr.kind
+  of vkSymbol:
+    # `adaptBoundary` raises before closing, so a protocol annotation still
+    # reads as its name here. Close it once to reach the identity; an
+    # unresolvable name closes to itself and stops.
+    let closed = closeTypeExpr(typeExpr, scope)
+    if closed.bits != typeExpr.bits:
+      return explainTypeMismatch(closed, value, scope, depth + 1)
+  of vkProtocol:
+    if not matchesTypeExpr(typeExpr, value, scope):
+      return ConformanceFailure(protocol: typeExpr, receiver: value)
+  of vkType:
+    if typeExpr.isTypeAlias:
+      return explainTypeMismatch(typeExpr.typeAliasExpr, value, scope, depth + 1)
+  of vkNode:
+    if typeExpr.head.kind != vkSymbol:
+      return
+    case typeExpr.head.symVal
+    of "&", "|", "?":
+      # Intersection: the first failing operand is the cause. Union: every
+      # alternative failed, so any failing protocol alternative is a true and
+      # useful explanation.
+      for operand in typeExpr.body:
+        let inner = explainTypeMismatch(operand, value, scope, depth + 1)
+        if inner.protocol.kind == vkProtocol:
+          return inner
+    of "List":
+      if typeExpr.body.len == 1 and value.kind == vkList:
+        for item in value.listItems:
+          if not matchesTypeExpr(typeExpr.body[0], item, scope):
+            return explainTypeMismatch(typeExpr.body[0], item, scope, depth + 1)
+    of "Cell":
+      if typeExpr.body.len == 1 and value.kind == vkCell:
+        return explainTypeMismatch(typeExpr.body[0], value.cellValue, scope,
+                                   depth + 1)
+    else:
+      discard
+  else:
+    discard
+
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
   if typeExpr.kind == vkNil:
     return value
   if not matchesTypeExpr(typeExpr, value, scope):
-    let hint =
+    var hint =
       if value.kind == vkCell and value.cellValueType.kind != vkNil and
           typeExpr.kind == vkNode and typeExpr.head.isSymbol("Cell") and
           typeExpr.body.len == 1:
         "Cell value types are invariant"
       else:
         ""
+    if hint.len == 0 and scope != nil:
+      let failure = explainTypeMismatch(typeExpr, value, scope)
+      if failure.protocol.kind == vkProtocol:
+        hint = hiddenImplHint(scope.application(), failure.protocol,
+                              receiverType(failure.receiver), scope)
     raiseTypeError(where, typeExpr.typeExprLabel, value, scope, hint)
   let closedType = closeTypeExpr(typeExpr, scope)
   if closedType.bits != typeExpr.bits:

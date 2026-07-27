@@ -1926,6 +1926,7 @@ ordinary Gene data, so quoting and printing it preserves the spelling shown.
 ```ebnf
 type-expr       = type-name | type-name "?"
                 | "(" "|" type-expr+ ")"
+                | "(" "&" protocol-name protocol-name+ ")"
                 | "(" "?" type-expr+ ")"
                 | "(" "List" type-expr ")"
                 | "(" "Set" type-expr ")"
@@ -1937,6 +1938,22 @@ type-expr       = type-name | type-name "?"
                       [ "^named" "{" ( "^" name type-expr )* "}" ] ")"
                 | "(" generic-enum-name type-expr* ")"
 ```
+
+`(& P Q ...)` is a **protocol intersection**: it matches a value that satisfies
+every operand, under the ordinary applicability rules, so protocol inheritance
+and receiver ancestry apply exactly as they do for a single operand. Operands
+must be protocols and there must be at least two — a value has one type lineage
+(§7.3), so an intersection of *types* is uninhabitable and is rejected rather
+than silently never matching. Type parameters are not permitted as operands;
+protocol-constrained generics are a separate feature.
+
+Operand order carries no meaning. `(& P Q)` and `(& Q P)` are the same type at
+every comparison site — boundary matching, the stored type of an invariant
+container such as `(Cell T)`, and callable-signature compatibility at `impl`
+registration. The same now holds for `(| A B)`. Like every other annotation,
+an intersection is validated when a boundary is first exercised, not when the
+enclosing function is defined, so forward-referenced protocols resolve
+normally.
 
 `(Tuple A B ...)` is a fixed-length positional product represented by a Gene
 list. `(Fn [A B ...] R)` describes an ordinary `fn`, never `fn!`, by one call
