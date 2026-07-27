@@ -186,8 +186,8 @@ The collision is resolved by qualified message identity:
 
 Bare `(t ~ clash ...)` reaches only a type-direct `clash` message; it never
 resolves to a protocol message, however many (or few) protocol messages named
-`clash` are visible. A protocol message is always sent qualified — `X/clash`
-or `Y/clash` — which is unambiguous by construction.
+`clash` are visible. A protocol message is always sent qualified — `X:clash`
+or `Y:clash` — which is unambiguous by construction.
 
 Because message names are never bound in the enclosing scope (§1), declaring
 `X` and `Y` with the same message name in one module is not a binding
@@ -602,7 +602,7 @@ messages only; protocol messages are reached by their qualified name
 
 ```gene
 (x ~ name ...)       # send message `name` to x
-(x ~ X:name ...)     # qualified: the message `name` of protocol X
+(x ~ P:name ...)     # qualified: the message `name` of protocol P
 (x ~ %m ...)         # send a held message value m
 (~ name ...)         # send to self: (self ~ name ...)
 (super ~ name ...)   # delegate to the implementation above (§8, design §10)
@@ -623,17 +623,16 @@ at the send. When the failed name also names a lexical callable, the diagnostic
 points at the call form (`did you mean to call it, not send it?`), and when it
 names a protocol message it hints to qualify.
 
-The **qualified send** `(x ~ X:name ...)` names the protocol message `X/name`
-and dispatches it on `x`. `X/name` is a message identity, not a callable:
-`(X/name x)` and higher-order use `(map xs X/name)` both raise `CallKindError`.
+The **qualified send** `(x ~ P:name ...)` names protocol `P`'s message identity
+and dispatches it on `x`. Slash does not spell a message: `P/name` is rejected,
+while `P:name` in value position is a message value suitable for higher-order
+use such as `(map xs P:name)`.
 Only a protocol gives a message a qualified spelling, so the qualifier is a
 reliable signal — **bare means type-direct, qualified means protocol.** The
 built-in type operations are type-direct, hence bare: `(c ~ get)`, never
-`(c ~ Cell:get)`. `Cell` is a real type and `get` is one of its type-direct
-messages, so `Cell/get` is the same qualified-member spelling any type gives its
-messages (§8). It is not a callable path — `(Cell/get c)` is an error, because
-static impl selection is `super` only (§10) — so it is used in a send,
-`(c ~ Cell:get)`, or as a value.
+`(c ~ Cell:get)`. `Cell` is a real type, not a protocol, so `Cell:get` is
+rejected with `^expected "Protocol"`; `Cell/get` is not a callable path either.
+Use `Self:get` when a type-direct message is needed as a value.
 
 The **held-value send** `(x ~ %m ...)` evaluates `m` to a message value and
 dispatches it on `x`. `%m` is the ordinary `%` escape (design §5): a bare name
@@ -744,7 +743,7 @@ implemented and stable, and sit at implementation-order item 13; base
   checks; dispatch itself matches impl entries by message identity, which
   covers `^inherit` descendants without a protocol-level walk
 - §4 — closure flattening at protocol-construction time; qualified access
-  through a child protocol (`C/do_a` for an inherited unambiguous name)
+  through a child protocol (`C:do_a` for an inherited unambiguous name)
   resolves through the closure; ambiguous spellings error with the candidate
   list
 - §5 and §9.2 — shared default closures fill omitted entries only after an
@@ -766,13 +765,12 @@ implemented and stable, and sit at implementation-order item 13; base
   fallback); `(~ f a)` sends to lexical `self`; `(super ~ f a)` delegates via
   `opSuperSend`, reading the owner's `^is` parent from the identity stamped on
   the message body's chunk when the type is created, so no user-visible name is
-  resolved. Every non-bare callee — `P/m`, `%m`, an expression, and the
-  `^protocol`/`^receiver` direct-call metadata form — dispatches through
-  `opResolveQualifiedMessage`, which requires a message value and resolves the
-  impl (cached per site on receiver type + message identity + impl epoch). A
-  message value therefore never reaches a call opcode, so the call paths and
-  `applyCall` reject one outright: `(P/m x)` and `(map xs P/m)` are
-  `CallKindError`. Selector callees keep their projection lowering.
+  resolved. A direct `P:m` send uses `opQualifiedSend`; held and expression
+  callees use `opResolveQualifiedMessage`, which requires a message value and
+  resolves the impl (cached per site on receiver type + message identity + impl
+  epoch). Direct source head syntax `(P:m x)` is a compile error, while
+  `(map xs P:m)` is higher-order message application. Selector callees keep
+  their projection lowering.
 - Tests: `tests/test_protocols.nim`, plus migrated cases in
   `tests/test_modules.nim`, `tests/test_errors.nim`, `tests/test_vm.nim`,
   `tests/test_reader.nim`, `tests/test_rc.nim`, `tests/spec_runner.nim`

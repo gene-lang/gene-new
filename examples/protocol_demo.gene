@@ -18,7 +18,7 @@
 #
 # Note: message names are not lexical bindings (docs/core.md §1) and a message
 # identity is not callable — behavior is reached with `~`, never with a bare
-# call like (name x) or (Protocol/name x).
+# call like (name x) or (Protocol:name x).
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -68,7 +68,7 @@
 # -----------------------------------------------------------------------------
 # Multiple unrelated parents with a same-name message: Sized/size_of and
 # Scored/size_of are distinct messages (qualified identity, §3.3). The impl
-# qualifies them; callers pick with Protocol/name.
+# qualifies them; callers pick with Protocol:name.
 # -----------------------------------------------------------------------------
 
 (protocol Sized

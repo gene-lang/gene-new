@@ -2129,10 +2129,12 @@ suite "spec — implicit self in message bodies from design §10":
                "(try ([\"a\" \"b\"] ~ gene/str/join \"-\") " &
                "catch (CallKindError ^expected e) e)",
                "\"Message\"")
-    # A built-in operation is type-direct, so it takes the bare form. `Cell/get`
-    # is no longer a callable path at all (decision 4): a type message is
-    # reached with a send, or named as a value with `Cell:get`.
-    check_eval("(var c ($cell 7)) [(c ~ get) (c ~ Cell:get)]", "[7 7]")
+    # A built-in operation is type-direct, so it takes the bare form.
+    # Neither `Cell/get` nor `Cell:get` is a callable/message spelling.
+    check_eval("(var c ($cell 7)) " &
+               "[(c ~ get) " &
+               " (try (c ~ Cell:get) catch (CallKindError ^expected e) e)]",
+               "[7 \"Protocol\"]")
     check_runtime_error("(Cell/get ($cell 7))", "not a callable path")
 
   test "a built-in surface is a type, so it can receive impls":
@@ -2218,21 +2220,21 @@ suite "spec — implicit self in message bodies from design §10":
     # A generic annotation on a built-in stays on the symbolic matching path,
     # so making the surface a type does not disturb `(Buffer T)`.
     check_eval("(var b ($buffer [1 2 3])) " &
-               "[((fn [x : (Buffer Int)] (x ~ len)) b) (b ~ Buffer:len) " &
+               "[((fn [x : (Buffer Int)] (x ~ len)) b) " &
                " ((fn [x : Buffer] (x ~ get 0)) b)]",
-               "[3 3 1]")
+               "[3 1]")
     check_eval("(protocol Shown (message show [] : Str)) " &
                "(impl Shown for Str (message show [] : Str self)) " &
                "(impl Shown for Cell " &
                "  (message show [] : Str ((self ~ get) ~ Shown:show))) " &
                "(($cell \"hi\") ~ Shown:show)",
                "\"hi\"")
-    # All three spellings resolve through the one message table, and a name it
-    # does not hold is still a MessageError naming the type.
+    # Bare and selector spellings resolve through the one message table, and a
+    # name it does not hold is still a MessageError naming the type.
     check_eval("(var c ($cell 1)) " &
-               "[(c ~ get) (c ~ Cell:get) c/~get " &
+               "[(c ~ get) c/~get " &
                " (try (c ~ nope) catch (MessageError ^receiver_type t) t)]",
-               "[1 1 1 \"Cell\"]")
+               "[1 1 \"Cell\"]")
 
   test "every reader-produced shape projects as a node":
     # design §1.3: `42` reads as `(Int 42)`, `[1 2]` as `(List 1 2)`, and
@@ -2597,6 +2599,14 @@ suite "spec — implicit self in message bodies from design §10":
       "(type X ^props {} (message m [] : Str (super ~ m)))",
       "super is only valid")
 
+  test "a type cannot qualify a super send":
+    check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
+               "(type B ^is A ^props {} " &
+               "  (message m [] : Str (super ~ A:m))) " &
+               "(try ((B) ~ m) " &
+               "catch (CallKindError ^where w ^expected e) [w e])",
+               "[\"super send\" \"Protocol\"]")
+
   test "super delegates a protocol message from the ^is parent":
     # `docs/scoped-impls.md` §3.3 already keeps only providers at the nearest
     # applicable receiver depth, so resolving from the parent *is* "continue the
@@ -2647,7 +2657,7 @@ suite "spec — implicit self in message bodies from design §10":
       "(protocol P (message m [] : Str)) " &
       "(type A ^props {} (impl P (message m [] : Str \"A\"))) " &
       "(type B ^is A ^props {} " &
-      "  (message go [] : Str (var q P/m) (super ~ %q)))",
+      "  (message go [] : Str (var q P:m) (super ~ %q)))",
       "is a dynamic callee")
 
   test "super is robust against a local shadowing the parent or enclosing name":
@@ -3160,7 +3170,7 @@ suite "spec — mutable containers from design":
                "(n ~ set_prop! \"name\" \"Bob\") (n ~ /name)",
                "\"Bob\"")
 
-  test "qualified built-in sends remain valid alongside the unqualified form":
+  test "built-in sends use the unqualified form":
     check_eval("(var c ($cell 1)) (c ~ set 5) (c ~ get)", "5")
 
   test "pipeline operations are messages: to_stream on iterables, map/filter/take/into on streams":
@@ -3905,11 +3915,10 @@ suite "spec — actors from design":
                "[(same? gene/Actor Actor) (same? gene/actor $actor) " &
                " ((a ~ snapshot) ~ /state)]",
                "[true true 4]")
-    # `Actor/send` is no longer a callable path; the qualified spelling is the
-    # message name, used in a send.
+    # `Actor/send` is no longer a callable path; the message is sent bare.
     check_eval("(fn handle [ctx, state, msg] ($actor/continue (+ state msg))) " &
                "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
-               "(a ~ Actor:send 6) " &
+               "(a ~ send 6) " &
                "((a ~ snapshot) ~ /state)",
                "6")
     check_runtime_error("(Actor/send 1 2)", "not a callable path")
@@ -5710,37 +5719,28 @@ suite "spec — qualified message spelling":
     check_read("A:b", "(msg A b)")
     check_read("a/b", "(path a b)")
 
-  test "a type qualifier constrains the receiver but never selects the impl":
-    # Decision 5. `T:msg` and `Self:msg` both *dispatch* on the receiver. The
-    # qualifier constrains — the receiver has to be a `T` — but it is never
-    # consulted to pick the function, so an override wins even when the parent
-    # is named.
+  test "a type cannot qualify a direct message send":
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
-               "(type Pup ^is Dog (message bark [] : Str \"yip\")) " &
-               "[((Pup) ~ bark) ((Pup) ~ Dog:bark) ((Pup) ~ Self:bark)]",
-               "[\"yip\" \"yip\" \"yip\"]")
-    # In value position both are dispatching closures, so a bare message name —
-    # which is not a lexical binding and has no other value spelling — becomes
-    # writable as `Self:msg`.
-    # An unrelated receiver is rejected, not quietly run against its own
-    # same-named message.
+               "(try ((Dog) ~ Dog:bark) " &
+               "catch (CallKindError ^where w ^expected e) [w e])",
+               "[\"message send\" \"Protocol\"]")
+
+  test "a type cannot qualify a message value":
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
-               "(type Cat ^props {} (message bark [] : Str \"meow\")) " &
-               "(try ((Cat) ~ Dog:bark) catch (TypeError ^expected e) e)",
-               "\"Dog\"")
-    # `Self:` names no type, so it constrains nothing and reaches every
-    # receiver that has the message.
+               "(try Dog:bark " &
+               "catch (CallKindError ^where w ^expected e) [w e])",
+               "[\"message value\" \"Protocol\"]")
+
+  test "Self:msg is the value spelling for a type-direct message":
+    # `Self:msg` names no type and dispatches on the runtime receiver, so an
+    # override wins and one value can be applied to unrelated receiver types.
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
                "(type Pup ^is Dog (message bark [] : Str \"yip\")) " &
                "(type Cat ^props {} (message bark [] : Str \"meow\")) " &
                "(var xs [(Dog) (Pup) (Cat)]) " &
-               "[(($map ($to_stream xs) Self:bark) ~ into []) " &
-               " (($map ($to_stream [(Dog) (Pup)]) Dog:bark) ~ into [])]",
-               "[[\"woof\" \"yip\" \"meow\"] [\"woof\" \"yip\"]]")
-    # Built-in surfaces are types, so they qualify the same way.
-    check_eval("[(($cell 7) ~ Cell:get) " &
-               " (($map ($to_stream [($cell 1) ($cell 2)]) Cell:get) ~ into [])]",
-               "[7 [1 2]]")
+               "[((Pup) ~ bark) ((Pup) ~ Self:bark) " &
+               " (($map ($to_stream xs) Self:bark) ~ into [])]",
+               "[\"yip\" \"yip\" [\"woof\" \"yip\" \"meow\"]]")
     # A protocol qualifier still resolves a visible impl. The receiver is a user
     # type, not `Int`: an impl on a *built-in* type is keyed on an identity that
     # `gScalarTypes` hands out process-wide, so it stops resolving once a second

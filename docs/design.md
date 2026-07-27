@@ -386,10 +386,10 @@ A delimited `/` is an ordinary symbol and remains available as a normal callable
 
 A protocol message is qualified with `:` — `Proto:msg` — which is structural only
 when glued between two symbol characters, so `x : T`, `open : alias`, `{{a : 1}}`,
-and a trailing `^key:` keep their meanings. It reads as the member `msg` of
-`Proto`.
+and a trailing `^key:` keep their meanings. It reads as a message expression
+whose protocol expression is `Proto` and whose message name is `msg`.
 
-Slash is also the reader spelling for qualified names in static contexts such as built-in namespace names, type names, protocol messages, and namespace members. File/string module paths are written in `from "path"` import clauses and are normalized by the module loader:
+Slash is also the reader spelling for qualified names in static contexts such as built-in namespace names, type names, and namespace members. File/string module paths are written in `from "path"` import clauses and are normalized by the module loader:
 
 ```gene
 (import gene/stream [map, filter])       # built-in / already-loaded namespace path
@@ -411,18 +411,18 @@ Context determines interpretation:
 The reader may represent selector paths and qualified names with related path nodes, but the compiler resolves them by context. Static qualified names are resolved during name/type checking and must not require evaluating runtime values named `C`, `Stream`, or `net`.
 
 A slash path is member selection: `a/b` denotes the member `b` of the value the
-base `a` denotes. Selection is uniform across member kinds — a namespace member
-is its bound function or value, a protocol member `P/m` is the message `m`, a
-type member `T/m` is that member. Native and standard-library functions hold no
-special status: they are ordinary members reached by this same selection, so the
-language defines **no hard-coded mapping from particular names or paths to native
-functions**. `gene/str/join`, a user `ns/helper`, and `Color/red` are the same
-mechanism.
+base `a` denotes. A namespace member is its bound function or value, and a type
+member may be data such as the enum variant `Color/red`. Messages are excluded:
+`P/m` and `T/m` are errors, because `:` is the message spelling. Native and
+standard-library functions hold no special status: they are ordinary members
+reached by this same selection, so the language defines **no hard-coded mapping
+from particular names or paths to native functions**. `gene/str/join`, a user
+`ns/helper`, and `Color/red` use the same member-selection mechanism.
 
 Resolving a path is separate from invoking the result. A function member is
-applied in call-head position, `(ns/f x)`; a protocol-message member is invoked
-with `~`, `(x ~ P:m)`, which dispatches on the receiver's type (§3, §10). `P/m`
-on its own is the first-class message value.
+applied in call-head position, `(ns/f x)`; a protocol message is sent with `~`,
+`(x ~ P:m)`, which dispatches on the receiver's type (§3, §10). `P:m` on its
+own is the first-class message value.
 
 Where the selection is resolved — compile time or runtime — is an implementation
 choice constrained by soundness, not part of the semantics. When the base is a
@@ -776,7 +776,7 @@ Message sends use `~`:
 
 ```gene
 (x ~ f a b)   # send message f to x; dispatches on x's runtime type
-(x ~ X:f a b) # qualified: X:f names the message identity, still dispatched on x
+(x ~ P:f a b) # qualified: P:f names a protocol message, dispatched on x
 (x ~ %m a b)  # send a held message value m (§8)
 (super ~ f a) # delegate to the implementation above this one (§10)
 (~ f a b)     # send to lexical self: (self ~ f a b)
@@ -795,30 +795,29 @@ receiver's type declares no such message, the send raises a recoverable
 **`MessageError`** (a subtype of `TypeError`) carrying `^where`,
 `^receiver_type`, and `^message`; when the failed name also names a lexical
 callable, the diagnostic says so ("… is a function — did you mean to call it,
-not send it?"), and when it names a protocol message it hints to qualify. Full
-resolution rules: `docs/core.md §9`.
+not send it?"). Full resolution rules: `docs/core.md §9`.
 
-**Every non-bare callee must be a message value.** A qualified path
-(`x ~ P:m`), a held value (`x ~ %m`), and a parenthesized expression all resolve
-to a value that has to be a message identity; the impl is then dispatched on
-`x`. A plain function, a namespace member, or a held `Fn!` is **rejected, not
-invoked** — so `(xs ~ str/join "-")` and `(x ~ %some_fn)` are errors rather than
+**Every non-bare callee must be a message value.** A protocol-qualified message
+(`x ~ P:m`), a held value (`x ~ %m`), and a parenthesized expression all have
+to denote or evaluate to a message; the implementation is then dispatched on
+`x`. A plain function, a slash-selected namespace member, or a held `Fn!` is
+**rejected, not invoked** — so
+`(xs ~ gene/str/join "-")` and `(x ~ %some_fn)` are errors rather than
 back-door function calls. This is what makes "dispatches, and only dispatches"
 true of the whole operator and not just of bare names.
 
-Because only protocols give a message a qualified spelling, the qualifier is a
-reliable signal: **bare means type-direct, qualified means protocol.** Built-in
-operations are type-direct messages, so they take the bare form — `(c ~ get)`,
-not `(c ~ Cell:get)`. `Cell` is a real type whose messages are `get`, `set`,
-`swap`, and `update`, and a type exposes its messages as qualified members
-(§7.1). `Cell/get` is *not* a callable path: `(Cell/get c)` was static
-binding, which decision 4 withdraws in favour of `super` alone. Write the
-send, `(c ~ get)` or `(c ~ Cell:get)`.
+Only protocols give messages a qualified spelling. **Bare means type-direct;
+`P:m` means protocol-qualified.** Built-in operations on real built-in types
+follow the same rule: `Cell` owns the type-direct messages `get`, `set`, `swap`,
+and `update`, so `(c ~ get)` dispatches. `Cell:get` is invalid because `Cell` is
+a type, not a protocol; `Cell/get` is not a callable path either.
 
-**Case carries meaning in the stdlib: `Name` is a type, `name` is a namespace
-of functions.** Both live under the `gene` root, so the type of an actor
-reference is `gene/Actor` and the actor functions are `gene/actor`. Which one
-an operation belongs to follows from whether it has a receiver:
+**Case carries meaning in the stdlib: uppercase names denote types, protocols,
+enums, and capabilities; lowercase names denote functions or namespaces.** A
+lowercase companion is not required for every type. Where both exist, an
+operation with a receiver belongs to the type and an operation without one is
+a function. For actors, the type is `gene/Actor` and the creation/control
+functions are under `gene/actor`:
 
 ```gene
 (a ~ send msg)              # Actor/send — acts on an actor reference
@@ -827,50 +826,51 @@ an operation belongs to follows from whether it has a receiver:
 ($actor/continue state)            # actor-body control signal — no receiver
 ```
 
-The same split applies to `Module`, `Namespace`, `Capability`, and `Env`:
-`(this_mod ~ path)`, `(ns ~ lookup "x")`, `(cap ~ name)`. The qualified member
-names the message — `(a ~ Actor:send msg)` — and the bare send `(a ~ send msg)`
-says the same thing. `Actor/send` is not a callable path.
+`Module`, `Namespace`, `Capability`, and `Env` likewise expose receiver
+operations as type-direct messages: `(this_mod ~ path)`,
+`(ns ~ lookup "x")`, and `(cap ~ name)`. These messages are sent bare;
+`Actor:send` and `Actor/send` are both invalid spellings.
 
-`List`, `Map`, `Node`, `Cell`, `Channel`, `Stream`, `Actor`, and `Buffer` are
-real types; the remaining uppercase surfaces (`AtomicCell`, `Task`, `ReplyTo`,
-`Module`, `Namespace`, `Capability`, `Env`, `Date`, `Time`, …) are still
-namespaces of natives and send through a built-in fallback. The spelling is
-the same either way; only `(impl P for T)` tells them apart.
+Most uppercase built-in receiver surfaces are real types, not namespaces of
+natives. This includes the scalar types and `List`, `Map`, `Node`, `Range`,
+`Date`, `Time`, `DateTime`, `Timezone`, `Duration`, `Buffer`, `Cell`,
+`AtomicCell`, `Task`, `Channel`, `Stream`, `Actor`, `ReplyTo`, `Module`,
+`Namespace`, `Capability`, `Env`, and `CallerEnv`. Their message tables use the
+same type-direct resolution path as user types, and they can be named by
+`(impl P for T)`.
 
-Not every `Name/op` pair splits this way: `snapshot` (on `CallerEnv`) takes a `CallerEnv`
-rather than an `Env`, so it stays a function. The rule is the receiver, not the
-spelling.
+The separate built-in fallback is deliberately narrow: it supplies operations
+for runtime surfaces that are not real types (`Set`, `Regex`, and `Logger`),
+shared structural behavior such as `Range/to_stream` and typed-node anatomy,
+and type/enum reflection. It is not the implementation path for the real types
+listed above.
+
+`snapshot` illustrates the receiver rule: it takes a `CallerEnv`, so
+`CallerEnv` is a real type with a `snapshot` message and the operation is sent
+as `(caller_env ~ snapshot ["x"])`; it is not an `Env` function.
 
 The one exception is a **selector** callee, `(x ~ /name)`: a selector projects
 the receiver rather than naming a message, and keeps its projection meaning.
 
-The recoverable error is `CallKindError`, a subtype of `TypeError`, with
-`^where`, `^expected` (`"Message"`), `^actual`, and `^actual_value` diagnostics;
-rejection happens before any remaining send argument is evaluated. Syntax
-callables are invoked only in ordinary call-head position; send syntax is never
-reinterpreted as a syntax call.
+The recoverable error for the wrong kind of non-bare callee or qualifier is
+`CallKindError`, a subtype of `TypeError`, with `^where`, `^expected`, `^actual`,
+and `^actual_value` diagnostics. An ordinary non-message callee reports
+`^expected "Message"`; a direct qualifier must be a `Protocol`; and a `Fn!`
+reports the `SyntaxCallable` mismatch. Rejection happens before any
+remaining send argument is evaluated. Syntax callables are invoked only in
+ordinary call-head position; send syntax is never reinterpreted as a syntax
+call.
 
 **Head position is rejected; value position dispatches.** `(P:msg x)` is a
 compile-time error — `:` reads as its own node, so the check does not wait for
 the callee to evaluate — and the diagnostic names the fix, `(x ~ P:msg)`. This
 only rejects; it never picks between two meanings.
 
-**A type qualifies a message too, and `Self` is the qualifier that names no
-type.** `T:msg` and `Self:msg` are the type-direct spellings, and both
-*dispatch*.
-
-A qualifier **constrains, but never selects**. `T:msg` names the message as
-declared on `T`, so the receiver must be a `T`: `(cat ~ Dog:bark)` is a
-`TypeError` even when `Cat` has an unrelated `bark` of its own. This matches the
-protocol side, where a receiver with no visible impl of `P` is already a
-`MessageError`. What the qualifier does *not* do is pick the function — on a
-`Pup ^is Dog` that overrides `bark`, `(p ~ Dog:bark)`, `(p ~ Self:bark)`, and
-the bare `(p ~ bark)` all give `Pup`'s. That is structural rather than a
-promise: the lookup goes through the receiver's type, never the qualifier's.
-
-`Self` names no type at all, so it constrains nothing and is exactly the bare
-send. It is reserved: a program may not declare it.
+**`Self` is the reserved value spelling for a type-direct message.** It names
+no qualifier, so `(x ~ Self:msg)` is exactly the bare send `(x ~ msg)` and
+dispatches on `x`'s runtime type. A type cannot qualify a message: `T:msg`
+raises `CallKindError` with `^expected "Protocol"`. A program may not declare
+`Self`.
 
 `Self:msg` is what gives a bare message name a *value* spelling, since message
 names are not lexical bindings:
@@ -880,21 +880,23 @@ names are not lexical bindings:
 (map xs Self:show)   # each element's own type-direct show
 ```
 
-In any other position `P:msg` is a **message value**, and it is a message rather
-than a function: it prints as `(message msg)`, satisfies `Callable` but *not*
-`Fn`, and is accepted as a held send callee `(x ~ %m)` — which a function is
-not. Applying one dispatches on its first argument, so `(map xs P:msg)`
-dispatches per element and needs no lambda; the signature is
-`(receiver, ...send args)`.
+In any other position `P:msg` or `Self:msg` is a **message value**, not a
+function: it prints as `(message msg)`, satisfies `Callable` but *not* `Fn`, and
+is accepted as a held send callee `(x ~ %m)` — which a function is not. A
+higher-order callable consumer applies one to its first argument, so
+`(map xs P:msg)` dispatches per element and needs no lambda; the callable shape
+is `(receiver, ...send args)`. Direct source syntax `(P:msg x)` remains rejected
+as described above.
 
-The value carries the scope it was **written** in. Applying a message has no
-send site, so there is no reaching scope to resolve impls against — resolving
-where the value was authored is the send-site rule, evaluated one step earlier.
-That is what lets a message be used inside a lazy combinator, which retains only
-the callable and has no send site of its own.
+The value carries the scope it was **written** in. Higher-order application has
+no send site, so it resolves in that authored scope. A held send `(x ~ %m)` is
+different: it does have a send site and resolves the held message in that
+site's scope. This distinction lets a lazy combinator retain and apply only the
+message value without silently adopting the eventual consumer's scope.
 
-`/` never spells a message. `P/m` and `T/m` are both errors that name the
-replacement: `/` selects a member, `:` names a message.
+`/` never spells a message. `P/m` is an error that names `P:m` as the
+replacement. `T/m` is also invalid; use the bare send `(x ~ m)` or the
+type-direct message value `Self:m`.
 
 If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 
@@ -902,8 +904,8 @@ MVP core special forms:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! let var const set new ~ fn fn! macro quote quasiquote
-select path ns env eval import mod match while loop repeat for break continue yield
+do if if_yes if_not && || ?? ! let var const set set! new ~ fn fn! macro quote quasiquote
+select path msg ns env eval import mod match while loop repeat for break continue yield
 return try scope supervisor spawn await fail panic type alias enum protocol impl
 derive import_impl
 ```
@@ -918,11 +920,11 @@ shadowed by a binding.
 
 Core special forms are reserved in head position. They are not ordinary bindings that `Env` can shadow. A value named `if` may exist in data or as a qualified member, but `(if ...)` always uses the special-form rule. Clause heads such as `then`, `elif`, `else`, `when`, `catch`, and `ensure` are recognized only inside their owning special form.
 
-`path` is the canonical reader/compiler node behind glued slash syntax; users
-normally write `a/b`. `ctor`, `message`, `then`, `elif`, `else`, `when`,
-`catch`, and `ensure` are clause/declaration heads, not independently
-dispatched core forms. `new` is a compiler-dispatched constructor form and is
-reserved in head position.
+`path` and `msg` are the canonical reader/compiler nodes behind glued slash and
+colon syntax; users normally write `a/b` and `P:m`. `ctor`, `message`, `then`,
+`elif`, `else`, `when`, `catch`, and `ensure` are clause/declaration heads, not
+independently dispatched core forms. `new` is a compiler-dispatched constructor
+form and is reserved in head position.
 
 `select` is special because selector bodies are quoted-like contexts: bare names become static segments, and `%` escapes to lexical values.
 
@@ -2626,7 +2628,7 @@ mis-dispatched.
 **Static impl selection is `super` only.** `T/m` is not a callable path:
 `(Dog/bark p)` used to run `Dog`'s body even when `p` was a `Pup` overriding it,
 and `(map xs Dog/bark)` did that per element. Both are now errors that name the
-replacement — a send `(x ~ bark)`, or the value spelling `Dog:bark`, which
+replacement — a send `(x ~ bark)`, or the value spelling `Self:bark`, which
 dispatches. Enum variants (`Direction/east`) are unaffected: they are not
 messages. Impls were already never exposed as members.
 
@@ -3335,9 +3337,9 @@ Until that lands, `const` is rejected with a "not yet implemented" diagnostic;
 `update` are its **type-direct messages** (§3). So they take the bare form:
 `(count ~ get)`, `(count ~ set 10)`, and the path form `count/~get` all resolve
 the same message, through the same lookup that serves a user-declared type. A
-qualified send names a *protocol* message, so `(count ~ Cell:get)` is an error —
-`Cell/get` is the qualified member spelling every type gives its messages
-(§7.1), and is used in a send: `(count ~ get)` or `(count ~ Cell:get)`.
+qualified send names a *protocol* message, so `(count ~ Cell:get)` is an error;
+`Cell/get` is not callable either. Use `(count ~ get)` for a send or `Self:get`
+when the type-direct message is needed as a value.
 
 Being a real type is what makes `Cell` nameable as an impl receiver:
 
@@ -3347,9 +3349,9 @@ Being a real type is what makes `Cell` nameable as an impl receiver:
   (message show [] : Str ((self ~ get) ~ Shown:show)))
 ```
 
-`List`, `Map`, `Node`, `Buffer`, `Stream`, `Channel`, and `Actor` are types on
-the same footing. `AtomicCell`, `Task`, and `ReplyTo` send identically but are
-still namespaces of natives, so they cannot yet be named as impl receivers.
+`List`, `Map`, `Node`, `Buffer`, `Stream`, `Channel`, `Actor`, `AtomicCell`,
+`Task`, and `ReplyTo` are types on the same footing and can be named as impl
+receivers.
 
 Typed cells use `(Cell T)`. The first checked boundary validates the current
 value and retains `T` with the annotation's visibility scope. Every later
@@ -4978,7 +4980,7 @@ Deferred until after the first implementation slice:
 - Actors process one message at a time without reentrancy, use bounded mailboxes, and are owned by scopes or supervisors.
 - Standard selector-stage names are `props`, `body`, `meta`, `declarations`, `to_stream`, and `to_pairs_stream`. These are ordinary callable stages, not selector magic.
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
-- `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x ~ X:f a)` names the protocol message `X/f`. `(x ~ %m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so `~` never invokes an arbitrary function. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
+- `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x ~ P:f a)` names protocol `P`'s message `f`; type-direct message values use `Self:f`, not `T:f`. `(x ~ %m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so `~` never invokes an arbitrary function. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope. `(super ~ f a)` delegates to the implementation above the enclosing type on the `^is` chain.
 - `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes the nearest `ctor` in the type's ancestry with a pre-created in-progress `self`, and fails when the hierarchy has no constructor.
 - `fn!` defines runtime fexprs / syntax callables that receive raw syntax and a borrowed `CallerEnv`; durable authority requires explicit named `snapshot` (on `CallerEnv`). `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.

@@ -797,7 +797,7 @@ type
     hasDefault: bool      # signatureFn is also the shared default closure
 
   BoundMessageData = ref object of GeneObjectData
-    ## What `Proto:msg` / `T:msg` / `Self:msg` yields in value position.
+    ## What `Proto:msg` / `Self:msg` yields in value position.
     ##
     ## Deliberately *not* extra fields on `ProtocolMessageData`. Widening that
     ## type cost 11-14% on `value.small_int.construct_access` — a benchmark that
@@ -807,7 +807,7 @@ type
     ## object keeps the declaration-site type byte-identical.
     name: string
     protocolBits: uint64  # non-owning; set when the qualifier is a Protocol
-    qualifier: Value      # the Type for a type-direct message; NIL for `Self:`
+    qualifier: Value      # the Protocol, or NIL for `Self:`
     boundScope: Scope     # where the value was written — impls resolve there
 
 # ---------------------------------------------------------------------------

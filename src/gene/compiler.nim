@@ -203,10 +203,9 @@ const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
 # `~` is the send operator and is reserved in executable position (design §3).
 # The reader still tokenizes it (so quoted data like `(quote (a ~ b))`
 # round-trips), but it may not be bound, set, or declared as a name.
-# `Self` is the receiver's own type in a message qualifier (`Self:msg`, design
-# §3) and in annotation position. Like `super` it denotes rather than binds, so
-# a program may not declare it — otherwise `(type Self ...)` would make the
-# qualifier mean two things.
+# `Self` is the receiver's own type in annotation position and the reserved
+# value spelling for a type-direct message (`Self:msg`, design §3). Like
+# `super` it denotes rather than binds, so a program may not declare it.
 const reservedOperatorNames = ["~", "super", "Self"]
 
 const bareOperatorNames* = [
@@ -4372,8 +4371,8 @@ proc compileSetBang(c: var Compiler, node: Value) =
   discard c.emit(opSetPath, parts.len - 1)
 
 proc compileMessageValue(c: var Compiler, node: Value) =
-  ## `Proto:msg` / `T:msg` / `Self:msg` in value position (design §3,
-  ## decisions 2 and 5): a **message value**, not a function and not a closure.
+  ## `Proto:msg` / `Self:msg` in value position (design §3): a **message
+  ## value**, not a function and not a closure.
   ##
   ## It carries the scope it was written in. That is what makes a message usable
   ## in a higher-order position at all: applying one has no send site, so there
@@ -4527,7 +4526,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
   ## Message send (docs/core.md §9.1): the name after `~` resolves
   ## receiver-first at runtime. Stack shape matches ordinary calls:
   ## [callee, named..., receiver, args...]. `messageExpr` carries a qualified or
-  ## dynamic callee (`P/m`, `%m`, an expression); it must evaluate to a message
+  ## dynamic callee (`%m` or an expression); it must evaluate to a message
   ## value, and its impl is resolved here rather than by lowering the send to an
   ## ordinary call — so a message value never reaches a call opcode.
   var names: seq[string]
@@ -4551,7 +4550,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
         "' is a dynamic callee, which is not supported")
     compileExpr(c, newSym("self"))
     if qualifierExpr.kind != vkNil:
-      # `(super ~ Q:m)` — the qualifier names the message and the `^is` parent
+      # `(super ~ P:m)` — the protocol names the message and the `^is` parent
       # selects the impl, so both reach the opcode. Selection already keeps
       # providers at the nearest applicable receiver depth
       # (`docs/scoped-impls.md` §3.3), so resolving from the parent *is*
@@ -4561,11 +4560,9 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
     else:
       discard c.emit(opSuperSend, 0, name = sendName)
   elif qualifierExpr.kind != vkNil:
-    # `(x ~ Q:msg)` — push the *qualifier*, not a member of it. The qualifier
-    # names the message and never selects the impl (design §3, decision 5), so
-    # dispatch is on the receiver in both cases: a protocol qualifier resolves
-    # a visible impl, a type qualifier resolves the receiver's own type-direct
-    # message. The name travels in the instruction.
+    # `(x ~ P:msg)` — push the *protocol*, not a member of it. The protocol
+    # names the message and dispatch remains on the receiver. The name travels
+    # in the instruction; a non-protocol qualifier is rejected at runtime.
     compileExpr(c, receiver)
     compileExpr(c, qualifierExpr)
     discard c.emit(opQualifiedSend, 0, name = sendName)
@@ -5649,8 +5646,8 @@ proc compileProtocol(c: var Compiler, node: Value) =
       compileEvaluatedListItem(c, parentExpr)
       inc parentCount
   # Message names are deliberately not bound in the enclosing scope
-  # (docs/core.md §1, OQ-I): messages are reached via qualified access
-  # (Protocol/name) and sends only.
+  # (docs/core.md §1, OQ-I): messages are reached via their `Protocol:name`
+  # value spelling and sends only.
   let idx = c.chunk.addProtocol(ProtocolProto(name: name,
                                               messages: messages,
                                               deriveFn: deriveFn,

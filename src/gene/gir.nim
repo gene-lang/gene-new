@@ -123,7 +123,7 @@ type
     opSyntaxGuard # if the callee on top is a fn!, syntax_call the const node and jump
     opRejectSyntaxSend # reject fn! at a ~ send before evaluating send arguments
     opResolveQualifiedMessage # pop receiver + message value; resolve the impl, push callee + receiver
-    opQualifiedSend # pop receiver + qualifier (`Q` of `Q:msg`); dispatch `name` on the receiver
+    opQualifiedSend # pop receiver + protocol (`P` of `P:msg`); dispatch `name` on the receiver
     opBindMessage # pop qualifier; push a message value bound to the current scope
 
   Instruction* = object

@@ -9431,13 +9431,12 @@ proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
   NIL
 
 proc resolveSuperQualifiedSend(scope: Scope, qualifier: Value, name: string,
-                               receiver, superType: Value): Value =
-  ## `(super ~ Q:name)`. Same rule as `resolveQualifiedSend` — the qualifier
-  ## constrains, a type selects — except the selecting type is the enclosing
-  ## type's `^is` parent rather than the receiver's own, while `receiver` is
-  ## still the value passed as `self`. Starting the walk at the parent *is*
-  ## "continue from above the enclosing type", because selection already keeps
-  ## only providers at the nearest applicable receiver depth
+                               superType: Value): Value =
+  ## `(super ~ P:name)`. The protocol names the message and the enclosing
+  ## type's `^is` parent starts impl selection, while `receiver` remains the
+  ## value passed as `self`. Starting the walk at the parent *is* "continue
+  ## from above the enclosing type", because selection already keeps only
+  ## providers at the nearest applicable receiver depth
   ## (`docs/scoped-impls.md` §3.3).
   ##
   ## Deliberately a separate proc rather than a parameter on
@@ -9463,23 +9462,15 @@ proc resolveSuperQualifiedSend(scope: Scope, qualifier: Value, name: string,
       raiseMessageError(name, superType.typeName, scope,
                         protocol = qualifier.protocolName, missingImpl = true,
                         protocolValue = qualifier, receiverValue = superType)
-  of vkType:
-    # The qualifier still only constrains: the parent must be a `Q`.
-    if not superType.isSubtypeOf(qualifier):
-      raiseTypeError("super send " & qualifier.typeName & ":" & name,
-                     qualifier.typeName, receiver, scope)
-    result = typeDirectMessage(superType, name)
-    if result.kind == vkNil:
-      raiseMessageError(name, superType.typeName, scope, false)
   else:
-    raiseCallKindError("super send", "Protocol or Type",
+    raiseCallKindError("super send", "Protocol",
                        freezeRejectName(qualifier), qualifier, scope)
 
 proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
                           receiver: Value): Value =
   ## Resolve `Q:name` on `receiver`. Shared by the send opcode and by applying a
-  ## bound message value, so both obey one rule: the qualifier *constrains*, the
-  ## receiver *selects*.
+  ## bound message value. A qualifier names a protocol; NIL is the internal
+  ## representation of `Self:name` and performs ordinary type-direct dispatch.
   let recvType = receiver.receiverType
   case qualifier.kind
   of vkProtocol:
@@ -9496,20 +9487,6 @@ proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
       raiseMessageError(name, qualifier.protocolName, scope,
                         protocol = qualifier.protocolName, missingImpl = true)
     result = resolveProtocolMessage(scope, message, receiver)
-  of vkType:
-    # `T:name` names the message as declared on T, so the receiver must be a T.
-    if not recvType.isSubtypeOf(qualifier):
-      raiseTypeError("message send " & qualifier.typeName & ":" & name,
-                     qualifier.typeName, receiver, scope)
-    if recvType.kind == vkType:
-      result = typeDirectMessage(recvType, name)
-    if result.kind == vkNil:
-      result = builtinReceiverMessage(scope, receiver, name)
-    if result.kind == vkNil:
-      let recvTypeName =
-        if recvType.kind == vkType: recvType.typeName
-        else: declarationKind(receiver)
-      raiseMessageError(name, recvTypeName, scope, false)
   of vkNil:
     # `Self:name` names no qualifier: the bare type-direct send.
     if recvType.kind == vkType:
@@ -9522,7 +9499,7 @@ proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
         else: declarationKind(receiver)
       raiseMessageError(name, recvTypeName, scope, false)
   else:
-    raiseCallKindError("message send", "Protocol or Type",
+    raiseCallKindError("message send", "Protocol",
                        freezeRejectName(qualifier), qualifier, scope)
 
 proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
@@ -11260,7 +11237,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                      parents, signatures, hasDefaults,
                                      proto.universal, scope)
           # Message names are not bound in the enclosing scope (docs/core.md
-          # §1, OQ-I): messages are reached via Protocol/name and sends.
+          # §1, OQ-I): messages are reached via Protocol:name and sends.
           spush protocol
         of opMakeImpl:
           let proto = chunk.implProtos[inst[].intArg]
@@ -11961,9 +11938,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             spush callee
           spush receiver
         of opSuperQualifiedSend:
-          # `(super ~ Q:m)`. Same delegation rule as opSuperSend — resolve from
+          # `(super ~ P:m)`. Same delegation rule as opSuperSend — resolve from
           # the enclosing type's `^is` parent, call with `self` — but the
-          # qualifier names the message, so this goes through the ordinary
+          # protocol names the message, so this goes through the ordinary
           # qualified-send rule with the parent standing in as the selecting
           # type. No per-site cache here: the qualifier is an operand rather
           # than a chunk constant, so the site is not statically monomorphic
@@ -11975,7 +11952,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError,
               "super is only valid in a type message body with an ^is parent")
           let callee = resolveSuperQualifiedSend(scope, qualifier, inst[].name,
-                                                 receiver, superType)
+                                                 superType)
           if callee.isSyntaxFn:
             rejectSyntaxSend(callee, scope)
           if inst[].intArg > 0:
@@ -12037,7 +12014,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var callee = stack[calleeIndex]
           # A message identity is not callable in head position (design §3):
           # qualified sends resolve their impl in opResolveQualifiedMessage, so a
-          # message value reaching an ordinary call is source like `(P/m x)`.
+          # message value reaching an ordinary call came from a dynamic value;
+          # direct source `(P:m x)` is rejected by the compiler.
           if callee.kind == vkProtocolMessage and
               not callee.protocolMessageIsBound:
             # A *bound* message is applicable — that is decision 2. An unbound
@@ -13281,9 +13259,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush callee
           spush receiver
         of opQualifiedSend:
-          # `(x ~ Q:msg)` — Q on top, receiver below. The qualifier constrains
-          # and the receiver selects; `Self:msg` never reaches here because it
-          # names no qualifier and compiles to the bare send.
+          # `(x ~ P:msg)` — P on top, receiver below. The protocol names the
+          # message and the receiver selects the impl; `Self:msg` never reaches
+          # here because it names no qualifier and compiles to the bare send.
           if sp < 2:
             raise newException(GeneError,
               "VM stack underflow resolving qualified send")
@@ -13313,13 +13291,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush callee
           spush receiver
         of opBindMessage:
-          # `Q:msg` in value position: a *message* value carrying the scope it
-          # was written in. Applying it has no send site, so that scope is where
-          # its impls resolve — the send-site rule, evaluated where the value
-          # was authored rather than where it happens to be applied.
+          # `P:msg` / `Self:msg` in value position: a *message* value carrying
+          # the scope it was written in. Applying it has no send site, so that
+          # scope is where its impls resolve — the send-site rule, evaluated
+          # where the value was authored rather than where it is applied.
           if sp < 1:
             raise newException(GeneError, "VM stack underflow binding message")
           let qualifier = spop()
+          if qualifier.kind notin {vkProtocol, vkNil}:
+            raiseCallKindError("message value", "Protocol",
+                               freezeRejectName(qualifier), qualifier, scope)
           var protocolBits = 0'u64
           if qualifier.kind == vkProtocol:
             protocolBits = qualifier.bits
@@ -16721,9 +16702,8 @@ proc staticLookup(target, segment: Value): Value =
         else:
           raise newException(GeneError,
             "'" & target.typeName & "/" & key &
-            "' is not a callable path: a type message is reached with a send, " &
-            "(x ~ " & key & "), or named as a value with " &
-            target.typeName & ":" & key & " (design §3)")
+            "' is not a callable path: use the bare send (x ~ " & key &
+            ") or the message value Self:" & key & " (design §3)")
     else:
       VOID
   of vkNode:
