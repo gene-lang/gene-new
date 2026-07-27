@@ -7575,8 +7575,8 @@ suite "cli — gene parse/fmt/compile":
 (check "inst-unknown-field"
   (try (do (read "(serde_v1 (serde_inst (serde_type_ref ^module \"serde_geometry\" ^path \"Point\") (serde_map false [\"x\" 1 \"y\" 2 \"z\" 9]) []))") false)
        catch (SerdeError ^message m) (contains? m "no field")))
-# ctor must NOT run on read-back ($new runs it once, printing the marker)
-(var c ($new Counter 7))
+# ctor must NOT run on read-back (`new` runs it once, printing the marker)
+(var c (new Counter 7))
 (var c2 (read (write c)))
 (check "inst-no-ctor" (&& (== c c2) (== 7 c2/n)))
 # stage 5: Serde hooks behind ^allow_restore

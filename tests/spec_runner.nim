@@ -191,6 +191,8 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["do", "var", "set", "if"],
       "(do (var x 1) (set x 2) (if true (then x) (else 0)))")
     fixture(["let"], "(let x 1)")
+    fixture(["new"],
+      "(type FixtureNew ^props {} (ctor [] nil)) (new FixtureNew)")
     expect GeneError:
       discard compileSource("(const K 1)")
     covered.add "const"
@@ -1286,12 +1288,19 @@ suite "spec — nominal types from design":
       discard compileSource("(type Packed ^sealed true ^props {})")
 
 suite "spec — direct construction, new, and ctor (design §7.1.1)":
+  test "new is a keyword that invokes the type constructor":
+    check_eval("(type Point ^props {^x Int} " &
+               "  (ctor [x : Int] (self ~ set_prop! `x x))) " &
+               "(let new (fn [_] \"shadowed\")) " &
+               "(var point (new Point 42)) point/x",
+               "42")
+
   test "ctor mutates pre-created self and returns the validated instance":
     check_eval("(type Point ^props {^x F64 ^y F64} " &
                "  (ctor [x : F64, y : F64] " &
                "    (self ~ set_prop! `x x) " &
                "    (self ~ set_prop! `y y))) " &
-               "(var p ($new Point 10.0 20.0)) [p/x p/y]",
+               "(var p (new Point 10.0 20.0)) [p/x p/y]",
                "[10.0 20.0]")
 
   test "ctor uses function-style argument matching with named defaults":
@@ -1300,7 +1309,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "    (self ~ set_prop! `name name) " &
                "    (self ~ set_prop! `age age) " &
                "    (self ~ set_prop! `active active))) " &
-               "(var u ($new User \"Ada\" ^age 37)) [u/name u/age u/active]",
+               "(var u (new User \"Ada\" ^age 37)) [u/name u/age u/active]",
                "[\"Ada\" 37 true]")
 
   test "ctor declares checked errors":
@@ -1311,30 +1320,30 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "    (if (&& (>= n 0) (<= n 65535)) " &
                "      (self ~ set_prop! `value n) " &
                "      (fail (ValidationError ^message \"invalid port\"))))) " &
-               "(var ok ($new Port 8080)) " &
-               "[(try ($new Port 99999) catch (ValidationError ^message m) m) " &
+               "(var ok (new Port 8080)) " &
+               "[(try (new Port 99999) catch (ValidationError ^message m) m) " &
                " ok/value]",
                "[\"invalid port\" 8080]")
 
   test "new validates the completed instance against the schema":
     check_eval("(type Bad ^props {^v Int} (ctor [] nil)) " &
-               "(try ($new Bad) catch _ \"required field unset\")",
+               "(try (new Bad) catch _ \"required field unset\")",
                "\"required field unset\"")
     check_eval("(type Sneaky ^props {^a Int} " &
                "  (ctor [] (self ~ set_prop! `a 1) " &
                "           (self ~ set_prop! `zzz 9))) " &
-               "(try ($new Sneaky) catch _ \"unknown field\")",
+               "(try (new Sneaky) catch _ \"unknown field\")",
                "\"unknown field\"")
     check_eval("(type Typed ^props {^a Int} " &
                "  (ctor [] (self ~ set_prop! `a \"nope\"))) " &
-               "(try ($new Typed) catch (TypeError ^where w) w)",
+               "(try (new Typed) catch (TypeError ^where w) w)",
                "\"field 'a' for Typed\"")
 
   test "(T ...) is direct data construction and never runs the ctor":
     check_eval("(type Port2 ^props {^value Int} " &
                "  (ctor [n : Int] (self ~ set_prop! `value (* n 2)))) " &
                "(var direct (Port2 ^value 8080)) " &
-               "(var made ($new Port2 8080)) " &
+               "(var made (new Port2 8080)) " &
                "[direct/value made/value]",
                "[8080 16160]")
 
@@ -1416,11 +1425,12 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                " f/1/name f/1/optional f/1/type]",
                "[\"Request\" \"name\" false Str \"count\" true Int?]")
 
-  test "new without a ctor falls back to direct schema mapping":
+  test "new fails when the type hierarchy has no ctor":
     check_eval("(type Plain ^props {^name Str ^age Int}) " &
-               "(var p ($new Plain ^name \"Ada\" ^age 37)) [p/name p/age]",
-               "[\"Ada\" 37]")
-    check_eval("(try ($new 5) catch _ \"not a type\")",
+               "(try (new Plain ^name \"Ada\" ^age 37) " &
+               " catch (Error ^message message) message)",
+               "\"type Plain has no constructor\"")
+    check_eval("(try (new 5) catch _ \"not a type\")",
                "\"not a type\"")
 
   test "child ctor covers inherited schema; parent ctor is not chained":
@@ -1429,18 +1439,25 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "  (ctor [name : Str, breed : Str] " &
                "    (self ~ set_prop! `name name) " &
                "    (self ~ set_prop! `breed breed))) " &
-               "(var d ($new Dog \"Rex\" \"Lab\")) [d/name d/breed]",
+               "(var d (new Dog \"Rex\" \"Lab\")) [d/name d/breed]",
                "[\"Rex\" \"Lab\"]")
+
+  test "new inherits the nearest ancestor ctor":
+    check_eval("(type Animal ^props {^name Str} " &
+               "  (ctor [name : Str] (self ~ set_prop! `name name))) " &
+               "(type Dog ^is Animal) " &
+               "(var dog (new Dog \"Rex\")) dog",
+               "((type Dog) ^name \"Rex\")")
 
   test "ctor fills body fields through mutable node APIs":
     check_eval("(type Pair ^body [Int Int] " &
                "  (ctor [a : Int, b : Int] " &
                "    (self ~ push_body! a) " &
                "    (self ~ push_body! b))) " &
-               "(var pr ($new Pair 1 2)) [pr/0 pr/1]",
+               "(var pr (new Pair 1 2)) [pr/0 pr/1]",
                "[1 2]")
     check_eval("(type Solo ^body [Int] (ctor [] nil)) " &
-               "(try ($new Solo) catch _ \"body count\")",
+               "(try (new Solo) catch _ \"body count\")",
                "\"body count\"")
 
   test "a type defines at most one ctor":
@@ -1452,57 +1469,57 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked self) " &
                "    (self ~ set_prop! `x 1))) " &
-               "[(try ($new T) catch _ \"blocked\") leaked]",
+               "[(try (new T) catch _ \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(var box ($cell nil)) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (box ~ set self) " &
                "    (self ~ set_prop! `x 1))) " &
-               "[(try ($new T) catch _ \"blocked\") (box ~ get)]",
+               "[(try (new T) catch _ \"blocked\") (box ~ get)]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
                "  (ctor [] [self] (self ~ set_prop! `x 1))) " &
-               "(try ($new T) catch _ \"blocked\")",
+               "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} ^impl [Error] " &
                "  (ctor [] (fail self))) " &
                "(impl Error for T) " &
-               "(try ($new T) catch (T) \"leaked\" catch _ \"blocked\")",
+               "(try (new T) catch (T) \"leaked\" catch _ \"blocked\")",
                "\"blocked\"")
     expect GeneError:
       discard run(compileSource(
-        "(type T ^props {^x Int} (ctor [] (panic self))) ($new T)"),
+        "(type T ^props {^x Int} (ctor [] (panic self))) (new T)"),
         newGlobalScope())
     check_eval("(var leaked nil) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked (fn [] self)) " &
                "    (self ~ set_prop! `x 1))) " &
-               "[(try ($new T) catch _ \"blocked\") leaked]",
+               "[(try (new T) catch _ \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
                "  (message inspect [self] self/x) " &
                "  (ctor [] (self ~ inspect) " &
                "    (self ~ set_prop! `x 1))) " &
-               "(try ($new T) catch _ \"blocked\")",
+               "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} " &
                "  (ctor [] (spawn self) " &
                "    (self ~ set_prop! `x 1))) " &
-               "(try ($new T) catch _ \"blocked\")",
+               "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(var ch ($channel ^capacity 1)) " &
                "(type T ^props {^x Int} ^impl [Send] " &
                "  (ctor [] (ch ~ send self) " &
                "    (self ~ set_prop! `x 1))) " &
                "(impl Send for T) " &
-               "(try ($new T) catch _ \"blocked\")",
+               "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
 
   test "successful construction clears the publication guard":
     check_eval("(type T ^props {^x Int} ^impl [Send] " &
                "  (ctor [] (self ~ set_prop! `x 1))) " &
                "(impl Send for T) " &
-               "(var ch ($channel ^capacity 1)) (var value ($new T)) " &
+               "(var ch ($channel ^capacity 1)) (var value (new T)) " &
                "(ch ~ send value) " &
                "(var received (ch ~ recv)) received/x",
                "1")
@@ -1514,7 +1531,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "  (ctor [] " &
                "    (try (fail (Boom ^message \"bad\")) " &
                "      ensure (cleaned ~ set true)))) " &
-               "(try ($new T) catch (Boom) nil) (cleaned ~ get)",
+               "(try (new T) catch (Boom) nil) (cleaned ~ get)",
                "true")
 
 suite "spec — typed variable boundaries from design":

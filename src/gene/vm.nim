@@ -1174,6 +1174,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
 proc constructTypedInstance(callee: Value, args: openArray[Value],
                             named: NamedArgs, immutable = false): Value
 proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
+                       ctor: Value,
                        dispatchScope: Scope = nil, site: Value = NIL): Value
 proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value
 proc applyNativeCompiled(callee: Value, proto: FunctionProto,
@@ -5229,32 +5230,28 @@ proc run*(chunk: Chunk, scope: Scope,
 
 include ./stdlib
 
-proc biNew(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+proc constructNew(callee: Value, args: openArray[Value], named: NamedArgs,
+                  dispatchScope: Scope, site: Value): Value =
   ## (new T args... ^named...) — explicit constructor invocation (design
-  ## §7.1.1). Runs the type's ctor when one is defined: pre-created `self`,
-  ## function-style argument matching, then schema validation. Without a
-  ## ctor, falls back to the same direct schema mapping as `(T ...)`.
-  if args.len < 1:
-    raise newException(GeneError, "new expects a Type argument")
-  let callee = args[0]
+  ## §7.1.1). Runs the nearest ctor in the type's ancestry: pre-created `self`,
+  ## function-style argument matching, then schema validation. Direct schema
+  ## construction remains the separate `(T ...)` form.
   if callee.kind != vkType:
     raise newException(GeneError,
       "new expects a Type as its first argument, got " & $callee.kind)
   if callee.isEnumType:
     raise newException(GeneError,
       "enum " & callee.typeName & " is not directly constructible; use a variant")
-  var named = NamedArgs()
-  var dispatchScope: Scope = nil
-  var site = NIL
-  if call != nil:
-    named = NamedArgs(names: call[].namedNames, values: call[].namedValues)
-    dispatchScope = call[].dispatchScope
-    site = call[].site
-  if callee.typeCtor.kind != vkNil:
-    constructWithCtor(callee, args.toOpenArray(1, args.len - 1), named,
-                      dispatchScope, site)
+  if callee.isTypeAlias:
+    raise newException(GeneError,
+      "type alias '" & callee.typeName & "' is not constructible; it names " &
+      "the type " & callee.typeAliasExpr.print())
+  let ctor = callee.typeConstructor
+  if ctor.kind != vkNil:
+    constructWithCtor(callee, args, named, ctor, dispatchScope, site)
   else:
-    constructTypedInstance(callee, args.toOpenArray(1, args.len - 1), named)
+    raise newException(GeneError,
+      "type " & callee.typeName & " has no constructor")
 
 proc biConstructType(args: openArray[Value]): Value {.nimcall.} =
   ## Data-driven direct construction. This is the runtime-map counterpart of
@@ -5553,7 +5550,6 @@ proc buildBuiltins(app: Application): Scope =
   result.define("props", propsFn)
   result.define("body", bodyFn)
   result.define("meta", metaFn)
-  result.define("new", newNativeCallFn("new", biNew))
   result.define("construct_type",
                 newNativeFn("construct_type", biConstructType))
   result.define("to_str", newNativeCallFn("to_str", biToStr,
@@ -11941,6 +11937,36 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             fiber.waitDeadline = se.deadline
             return RunStop(kind: rskSuspend, value: NIL)
           strunc(calleeIndex)
+          spush value
+        of opNew:
+          let namedCount = inst[].names.len
+          let partCount =
+            if inst[].flag:
+              chunk.listBuilds[inst[].intArg].splices.len
+            else:
+              inst[].intArg
+          let partsStart = sp - partCount
+          if partsStart < 0 or partsStart < namedCount + 1:
+            raise newException(GeneError, "VM stack underflow in new")
+          let typeIndex = partsStart - namedCount - 1
+          var args = newSeqOfCap[Value](partCount)
+          if inst[].flag:
+            let build = chunk.listBuilds[inst[].intArg]
+            for i, part in stack.toOpenArray(partsStart, sp - 1):
+              if build.splices[i]:
+                appendSplicedBody(args, part)
+              else:
+                args.add part
+          elif partCount > 0:
+            for part in stack.toOpenArray(partsStart, sp - 1):
+              args.add part
+          var named: NamedArgs
+          if namedCount > 0:
+            named = namedArgsFromStack(inst[].names, stack, typeIndex + 1)
+          let value = constructNew(
+            stack[typeIndex], args, named, scope,
+            chunk.callSites.getOrDefault(ip - 1, NIL))
+          strunc(typeIndex)
           spush value
         of opCallSplice:
           var named: NamedArgs
@@ -21441,11 +21467,13 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
   newNode(callee, props = props, body = body, immutable = immutable)
 
 proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
+                       ctor: Value,
                        dispatchScope: Scope = nil, site: Value = NIL): Value =
-  ## Ctor construction (design §7.1.1): pre-create the instance with the type
-  ## as head, run the ctor with it bound as `self` (the implicit leading
-  ## parameter), then validate the completed instance against the full
-  ## inherited schema. The ctor body result is ignored.
+  ## Ctor construction (design §7.1.1): pre-create the instance with the
+  ## requested type as head, run the selected nearest ctor with it bound as
+  ## `self` (the implicit leading parameter), then validate the completed
+  ## instance against the full inherited schema. The ctor body result is
+  ## ignored.
   let instance = newNode(callee, constructing = true)
   var ctorArgs = newSeqOfCap[Value](args.len + 1)
   ctorArgs.add instance
@@ -21453,7 +21481,7 @@ proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
     ctorArgs.add a
   inc activeConstructionDepth
   try:
-    discard applyCall(callee.typeCtor, ctorArgs, named, dispatchScope, site)
+    discard applyCall(ctor, ctorArgs, named, dispatchScope, site)
     validateConstructedInstance(callee, instance)
     instance.finishNodeConstruction()
     instance

@@ -14,7 +14,7 @@ MVP compiler-dispatched heads:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! let var const set ~ fn fn! macro quote quasiquote
+do if if_yes if_not && || ?? ! let var const set new ~ fn fn! macro quote quasiquote
 select path msg ns env eval import import_impl mod match while loop repeat for break
 continue yield return try scope supervisor spawn await fail panic type alias enum
 protocol impl derive
@@ -22,8 +22,8 @@ protocol impl derive
 <!-- compiler-head-dispatch:end -->
 
 Clause/declaration heads (`then`, `elif`, `else`, `when`, `catch`, `ensure`,
-`ctor`, and `message`) are meaningful only inside their owner. `new` is an
-ordinary runtime callable.
+`ctor`, and `message`) are meaningful only inside their owner. `new` is a core
+form that invokes the nearest constructor in a type's ancestry.
 
 Expression paths resolve their base lexically and select later segments;
 declaration/import/type contexts resolve qualified names statically. Static

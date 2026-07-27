@@ -9,7 +9,8 @@ containers”, and “optionality lives on the type, not the key”.
   ordinary singleton types. Type expressions use the canonical constructors
   exercised by the spec suite.
 - `(T ...)` performs closed-schema data construction and never runs `ctor`.
-  `(new T ...)` runs the ctor when present, otherwise the same schema mapping.
+  `(new T ...)` runs the nearest `ctor` in `T`'s ancestry and fails if none is
+  defined.
 - Optionality lives on the type: a prop-schema field or named parameter whose
   type explicitly admits nil (`T?`, `(? T)`, a union containing `Nil`) may be
   omitted. An absent field reads as `void`; an omitted named parameter binds
@@ -26,5 +27,7 @@ containers”, and “optionality lives on the type, not the key”.
   unwinding without publishing the partial value.
 - Single nominal inheritance preserves parent field schemas. Type-direct
   overrides preserve the inherited callable signature exactly in the MVP.
+  Constructors are inherited by nearest-ancestor selection; they do not chain
+  automatically.
 - Persistent updates return a new root; `!` operations mutate only mutable
   containers. `freeze` is deep, `freeze_shallow` is shallow, and `thaw` is deep.

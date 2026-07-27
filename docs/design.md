@@ -902,7 +902,7 @@ MVP core special forms:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! let var const set ~ fn fn! macro quote quasiquote
+do if if_yes if_not && || ?? ! let var const set new ~ fn fn! macro quote quasiquote
 select path ns env eval import mod match while loop repeat for break continue yield
 return try scope supervisor spawn await fail panic type alias enum protocol impl
 derive import_impl
@@ -921,9 +921,8 @@ Core special forms are reserved in head position. They are not ordinary bindings
 `path` is the canonical reader/compiler node behind glued slash syntax; users
 normally write `a/b`. `ctor`, `message`, `then`, `elif`, `else`, `when`,
 `catch`, and `ensure` are clause/declaration heads, not independently
-dispatched core forms. `new` is an ordinary runtime constructor callable: it
-can be passed or qualified like another callable and is not reserved by the
-compiler.
+dispatched core forms. `new` is a compiler-dispatched constructor form and is
+reserved in head position.
 
 `select` is special because selector bodies are quoted-like contexts: bare names become static segments, and `%` escapes to lexical values.
 
@@ -1356,17 +1355,19 @@ A type may additionally define one constructor with `ctor`:
 Constructor invocation uses `new`:
 
 ```gene
-(var p ($new Point 10.0 20.0))
+(var p (new Point 10.0 20.0))
 ```
 
-`new` is an ordinary runtime callable and the explicit operation for running
-constructor logic; it is not a compiler special form. If the type has no
-`ctor`, `(new T ...)` falls back to the same schema mapping as `(T ...)`. If the
-type has a `ctor`, the construction sequence is:
+`new` is the compiler-dispatched operation for running constructor logic. It
+looks for a `ctor` on the requested type, then walks `^is` ancestors until it
+finds the nearest one. If the hierarchy has no `ctor`, construction fails; use
+direct `(T ...)` construction for schema mapping without constructor logic.
+The construction sequence is:
 
 ```text
 evaluate the type expression to a Type
 → allocate a new in-progress instance with that type as head
+→ select the nearest ctor, starting at that type and walking its ancestors
 → bind that in-progress instance as lexical `self`
 → argument-match the arguments after the type expression against the ctor parameter vector
 → execute the ctor body
@@ -1395,7 +1396,7 @@ A constructor uses normal function-style argument matching:
     (self ~ set_prop! `age age)
     (self ~ set_prop! `active active)))
 
-($new User "Ada" ^age 37)
+(new User "Ada" ^age 37)
 (User ^name "Ada" ^age 37 ^active true) # direct data construction
 ```
 
@@ -1411,7 +1412,7 @@ Constructors may declare checked errors:
       (self ~ set_prop! `value n)
       (fail (ValidationError ^message "invalid port")))))
 
-($new Port 8080)
+(new Port 8080)
 (Port ^value 8080) # direct data construction; no ctor code runs
 ```
 
@@ -1419,7 +1420,7 @@ The distinction is semantic, not just syntactic:
 
 ```text
 (T ...)      canonical typed data construction; replay-safe; no ctor side effects
-(new T ...)  constructor invocation; runs ctor when present; may normalize/fail/effect
+(new T ...)  constructor invocation; requires a ctor in T's ancestry; may normalize/fail/effect
 ```
 
 Therefore a `ctor` is an ergonomic and validation entry point, not the only way
@@ -1429,21 +1430,23 @@ protocol, or trusted deserialization policy. Schema validation always runs for
 both direct construction and `new`, but semantic invariants encoded only in
 `ctor` are not automatically enforced by direct construction.
 
-Single inheritance affects schema, not constructor chaining. A child inherits
-parent fields and must leave `self` valid for the full inherited schema, but the
-parent constructor is not called automatically:
+Constructors are inherited. `new` selects the nearest `ctor` in the requested
+type's ancestry; a child `ctor` overrides its parent's, and constructors do not
+chain automatically. The selected constructor receives a `self` whose head is
+the originally requested type and must leave it valid for that type's full
+inherited schema:
 
 ```gene
 (type Animal
-  ^props {^name Str})
+  ^props {^name Str}
+
+  (ctor [name : Str]
+    (self ~ set_prop! `name name)))
 
 (type Dog
-  ^is Animal
-  ^props {^breed Str}
+  ^is Animal)
 
-  (ctor [name : Str, breed : Str]
-    (self ~ set_prop! `name name)
-    (self ~ set_prop! `breed breed)))
+(new Dog "Rex") # runs Animal's ctor and returns a Dog
 ```
 
 A partially constructed `self` carries an in-progress construction marker and
@@ -1836,9 +1839,10 @@ A child may add no fields. `(type Dog ^is Animal ^props {})` is valid; an
 instance of that child must still supply every inherited required field.
 
 A message body may delegate to the implementation above it with `(super ~ m)`
-(§10). `super` is not available in a `ctor`: parent-constructor chaining, along
-with field narrowing, abstract parent types, final/sealed inheritance, layout
-inheritance, inherited constructors, and schema-evolution adapters, is post-MVP.
+(§10). `super` is not available in a `ctor`: constructors are inherited by
+nearest-ancestor selection, but explicit parent-constructor chaining is
+post-MVP, along with field narrowing, abstract parent types, final/sealed
+inheritance, layout inheritance, and schema-evolution adapters.
 
 ### 7.4 Numeric model
 
@@ -4926,7 +4930,7 @@ Deferred until after the first implementation slice:
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
 - `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x ~ X:f a)` names the protocol message `X/f`. `(x ~ %m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so `~` never invokes an arbitrary function. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope. `(super ~ f a)` delegates to the implementation above the enclosing type on the `^is` chain.
-- `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes `ctor` when present, with a pre-created in-progress `self`, and falls back to direct schema mapping when no `ctor` exists.
+- `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes the nearest `ctor` in the type's ancestry with a pre-created in-progress `self`, and fails when the hierarchy has no constructor.
 - `fn!` defines runtime fexprs / syntax callables that receive raw syntax and a borrowed `CallerEnv`; durable authority requires explicit named `snapshot` (on `CallerEnv`). `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
 - Delegation is explicit protocol forwarding, written manually as `impl`s in MVP; future derive helpers may generate forwarding impls from selector paths.
 - `Any`→typed boundary failures raise recoverable `TypeError` with blame. Internal typed representation contradictions are panics.

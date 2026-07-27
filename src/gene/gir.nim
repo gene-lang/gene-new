@@ -65,6 +65,7 @@ type
     opCall2
     opCall
     opCallSplice
+    opNew            # constructor keyword: type + named args + body args
     opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
     opSuperSend       # pop enclosing type + self; resolve msg from the type's ^is parent, push callee + self (super delegation, design §10)
     opSuperQualifiedSend # like opSuperSend, but pops a qualifier too: (super ~ Q:m) selects against the ^is parent, not the receiver
@@ -758,6 +759,13 @@ proc formatInstruction(inst: Instruction): string =
       result.add " names=" & formatNames(inst.names)
   of opCallSplice:
     result.add " list=" & $inst.intArg
+    if inst.names.len > 0:
+      result.add " names=" & formatNames(inst.names)
+  of opNew:
+    if inst.flag:
+      result.add " list=" & $inst.intArg
+    else:
+      result.add " argc=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
   of opResolveMessage:

@@ -150,7 +150,7 @@ const MaxMacroExpansionDepth = 100
 
 const CoreSpecialFormNames* = [
   "do", "if", "if_yes", "if_not", "&&", "||", "??", "!",
-  "let", "var", "const", "set", "~",
+  "let", "var", "const", "set", "new", "~",
   "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
@@ -4764,6 +4764,28 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
   if syntaxGuardAt >= 0:
     c.patchJump(syntaxGuardAt)
 
+proc compileNew(c: var Compiler, node: Value) =
+  ## `new` is a core form, not a binding. Evaluate the type first, followed by
+  ## named and positional constructor arguments, then let opNew perform the
+  ## constructor lookup and invocation.
+  if node.body.len == 0:
+    raise newException(GeneError, "new expects a Type argument")
+  compileExpr(c, node.body[0])
+  var names: seq[string]
+  for name, value in node.props:
+    names.add name
+    compileExpr(c, value)
+  var splices: seq[bool]
+  var hasSplice = false
+  compileSpreadValues(c, node.body, 1, forList = false, splices, hasSplice)
+  let instruction =
+    if hasSplice:
+      let listIndex = c.chunk.addListBuild(ListBuildProto(splices: splices))
+      c.emit(opNew, listIndex, names = names, flag = true)
+    else:
+      c.emit(opNew, node.body.len - 1, names = names)
+  c.chunk.callSites[instruction] = node
+
 proc compileLeadingSelfCall(c: var Compiler, node: Value) =
   # (~ f a) => (self ~ f a): message send to lexical self (docs/core.md §9.1).
   if node.body.len == 0:
@@ -5737,6 +5759,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
         "const is reserved but not yet implemented (design §12.1); use let")
     of "set":
       compileSet(c, node)
+      return
+    of "new":
+      compileNew(c, node)
       return
     of "~":
       compileLeadingSelfCall(c, node)

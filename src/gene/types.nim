@@ -3675,13 +3675,24 @@ proc typeBodyFields*(v: Value): seq[TypeBodyField] =
   TypeData(objData(v)).bodyFields
 
 proc typeCtor*(v: Value): Value =
-  ## The type's own (ctor ...) function value, or NIL. Constructors are not
-  ## inherited (design §7.1.1).
+  ## The type's own (ctor ...) function value, or NIL.
   if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
     raise newException(FieldDefect, "value is not a Type")
   if objData(v).objKind == okEnum:
     return NIL
   TypeData(objData(v)).ctorFn
+
+proc typeConstructor*(v: Value): Value =
+  ## The nearest constructor in the type's ancestry, including the type
+  ## itself. A child constructor overrides an inherited one; constructors do
+  ## not chain automatically.
+  var current = v
+  while current.kind == vkType:
+    let ctor = current.typeCtor
+    if ctor.kind != vkNil:
+      return ctor
+    current = current.typeParent
+  NIL
 
 proc typeScope*(v: Value): Scope =
   if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
