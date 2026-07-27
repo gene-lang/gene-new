@@ -4619,7 +4619,58 @@ MVP restrictions:
 - by-value struct arguments/results only after ABI conformance tests;
 - unions, flexible array members, and variadic functions deferred.
 
-A foreign struct value is not automatically a normal Gene node. Libraries may provide wrappers that implement `Node` or expose selector-friendly fields.
+A foreign struct value is not automatically a normal Gene node. Libraries wrap
+it instead, using the pattern below.
+
+#### Wrapper types: giving foreign data a Gene identity
+
+A **wrapper type** is an ordinary nominal type whose props hold an opaque
+pointer. It is how every shipped native surface — `db/sqlite`, `db/postgres`,
+`net/http_client` — gives foreign data a Gene identity:
+
+```gene
+(var c (open ":memory:"))
+c            # ((type SqliteDb) ^handle (c_owned_ptr) ^backend "sqlite" ...)
+($head c)    # (type SqliteDb) — a real Type, so annotations and impls apply
+c/backend    # "sqlite"
+(c ~ Db:exec "create table t (a int)")
+```
+
+Because the value is just a node whose head is a `Type`, it needs no special
+case anywhere: selectors, type-direct messages, protocol impls, `^is`
+ancestry, and nominal annotations all work. Third-party code can implement its
+own protocol for a library's native type without the library's cooperation
+(§10.1).
+
+**The prop schema is deliberately empty, and that is load-bearing.** A wrapper
+type declares no `^props`, so `Type/fields` is `[]` and both direct
+construction and `set_prop!` reject every name (§12). Native code populates the
+props through the extension API instead. That is what makes the handle
+unforgeable from Gene: without it, `(c ~ set_prop! ^handle "junk")` would
+succeed and the next native call would read a `Str` as a pointer. Do not "fix"
+the missing schema.
+
+Native extensions build wrappers through three `GeneApi` entries
+(`src/gene/native_api.nim`):
+`defineWrapperType` creates the type and registers it in the module,
+`newWrapper` instantiates one with native-owned props — the only path that may
+populate them, and it refuses a type that declares a schema — and
+`wrapperField` reads a prop back under a nominal check, so a look-alike node
+cannot reach a pointer dereference.
+
+Two limits are part of the contract:
+
+- **Selectors read the wrapper's props, never foreign memory.** `c/backend`
+  projects the Gene node holding the pointer; nothing dereferences the C value.
+  Projecting a C struct's fields would need a foreign-record storage module
+  that owns reads, writes, and liveness — deferred, and deliberately not
+  spelled as layout metadata on `type`, because an ordinary instance stores
+  fields in props/body and every operation over it (construction, mutation,
+  equality, printing, freeze, `Send`, serde) assumes that representation.
+- **Release is explicit.** An owned pointer's destructor runs when the value
+  becomes unreachable, which is a reclamation fallback, not resource
+  management (§16.5). Wrapper APIs expose an explicit `close` and report
+  `closed?`; using a closed handle raises rather than dereferencing.
 
 ### 16.7 Errors across the boundary
 
@@ -4688,6 +4739,12 @@ The runtime passes a versioned API table. The extension may register:
 The API table should include an ABI version and feature-size information. New runtime versions may append functions without changing existing offsets. An incompatible major ABI version must fail module loading cleanly.
 
 Native types should normally expose opaque handles. Their internals belong to the extension, while optional protocol implementations provide `Node`, `Callable`, `Closeable`, or domain-specific behavior.
+
+The API table's `defineWrapperType` / `newWrapper` / `wrapperField` entries are
+how an extension builds such a type; §16.6 describes the pattern and why the
+empty prop schema is load-bearing. They exist as validated entry points
+precisely so an extension cannot construct a schema-bearing "wrapper" whose
+handle Gene code could then overwrite.
 
 ### 16.10 Dynamic loading and capability values
 

@@ -365,6 +365,56 @@ suite "native api — roots and trampoline":
     check run(compileSource("(envelope ^tag \"ok\" 3)"), scope).print() ==
       "[\"envelope\" 1 1 tag \"ok\" 3]"
 
+  test "an extension can build the wrapper-type pattern through the API table":
+    # The whole point of the entry point: an out-of-tree module can create a
+    # native type whose payload is unforgeable from Gene, using only the
+    # advertised interface — no internal newType/newNode.
+    let api = geneApi()
+    let module = newGeneModule("wrapper-native")
+    let defined = api.defineWrapperType(module, "Conn")
+    check defined.status == gsOk
+    let connType = defined.value
+    check connType.kind == vkType
+
+    proc release(p: pointer) {.nimcall.} = discard
+    let handle = api.newCOwnedPtr(cast[pointer](0xBEEF), release, NIL)
+    let made = api.newWrapper(connType, {"handle": handle,
+                                         "backend": newStr("demo")})
+    check made.status == gsOk
+    let conn = made.value
+    check conn.head.typeName == "Conn"
+
+    # Native code reads its own props back under a nominal check.
+    check api.wrapperField(conn, connType, "backend").value.print() == "\"demo\""
+    check api.wrapperField(newInt(1), connType, "backend").status == gsError
+
+    # Gene sees a first-class typed value: selectors read the wrapper's props,
+    # dispatch works, and the payload cannot be forged or overwritten.
+    let scope = geneModuleScope(module)
+    discard geneModuleDefine(module, "conn", conn)
+    check run(compileSource("conn/backend"), scope).print() == "\"demo\""
+    check run(compileSource("($head conn)"), scope).print() == "(type Conn)"
+    check run(compileSource(
+      "(try (conn ~ set_prop! `handle \"junk\") catch (Error ^message m) m)"),
+      scope).print() == "\"Conn has no field 'handle'\""
+    check run(compileSource(
+      "(try (Conn ^handle \"junk\") catch (Error ^message m) m)"),
+      scope).print() == "\"Conn has no field 'handle'\""
+
+  test "a wrapper type must keep an empty schema":
+    # A declared schema would make the props forgeable from Gene, silently
+    # removing the property that makes native handles safe — so the entry
+    # point refuses rather than trusting convention.
+    let api = geneApi()
+    let scope = newGlobalScope()
+    let schemaed = run(compileSource("(type Schemaed ^props {^n Int})"), scope)
+    discard schemaed
+    var declared: Value
+    check scope.lookupOptional("Schemaed", declared)
+    let rejected = api.newWrapper(declared, {"n": newInt(1)})
+    check rejected.status == gsError
+    check "empty schema" in rejected.message
+
   test "native module initializer rejects incompatible API versions":
     let module = newGeneModule("versioned-native")
     var incompatible = geneApi()

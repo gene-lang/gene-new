@@ -21,6 +21,12 @@ type
   GeneModuleDefineNativeCallProc* = proc(module: GeneModule, name: string,
                                          impl: NativeCallProc,
                                          acceptsNamed: bool): GeneResult
+  GeneDefineWrapperTypeProc* = proc(module: GeneModule,
+                                    name: string): GeneResult
+  GeneNewWrapperProc* = proc(wrapperType: Value,
+                             props: openArray[(string, Value)]): GeneResult
+  GeneWrapperFieldProc* = proc(instance, wrapperType: Value,
+                               name: string): GeneResult
   GeneNewCPtrProc* = proc(address: pointer, targetType: Value): Value
   GeneNewCConstPtrProc* = proc(address: pointer, targetType: Value): Value
   GeneNewCOwnedPtrProc* = proc(address: pointer, release: CPtrReleaseProc,
@@ -105,6 +111,9 @@ type
     moduleDefine*: GeneModuleDefineProc
     moduleDefineNative*: GeneModuleDefineNativeProc
     moduleDefineNativeCall*: GeneModuleDefineNativeCallProc
+    defineWrapperType*: GeneDefineWrapperTypeProc
+    newWrapper*: GeneNewWrapperProc
+    wrapperField*: GeneWrapperFieldProc
     newCPtr*: GeneNewCPtrProc
     newCConstPtr*: GeneNewCConstPtrProc
     newCOwnedPtr*: GeneNewCOwnedPtrProc
@@ -133,7 +142,7 @@ type
     logEmit*: GeneLogEmitProc
 
 const GeneApiVersion* = 1
-const GeneApiFeatureCount* = 33
+const GeneApiFeatureCount* = 36
 const GeneModuleInitSymbol* = "gene_module_init"
 
 var geneThreadAttachDepth {.threadvar.}: int
@@ -246,6 +255,78 @@ proc geneModuleDefineNativeCall*(module: GeneModule, name: string,
                                  acceptsNamed: bool): GeneResult =
   geneModuleDefine(module, name,
                    newNativeCallFn(name, impl, acceptsNamed = acceptsNamed))
+
+proc geneDefineWrapperType*(module: GeneModule, name: string): GeneResult =
+  ## Define a **wrapper type**: a nominal Gene type with a deliberately empty
+  ## prop schema, for native values whose payload is an opaque pointer.
+  ##
+  ## The empty schema is the safety mechanism, not an omission. Construction
+  ## and `set_prop!` both reject undeclared fields, so Gene code cannot forge
+  ## an instance or overwrite a handle with a `Str` that the next native call
+  ## would read as a pointer. `geneNewWrapper` is the only way to populate the
+  ## props, which is why it is a separate validated entry point rather than
+  ## letting extensions build nodes freely.
+  try:
+    if name.len == 0:
+      raise newException(GeneError, "wrapper type requires a name")
+    let scope = geneModuleScope(module)
+    if scope == nil:
+      raise newException(GeneError, "wrapper type requires a module scope")
+    let typ = newType(name, NIL, @[], @[], scope)
+    result = geneModuleDefine(module, name, typ)
+    if result.status == gsOk:
+      result.value = typ
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
+
+proc geneNewWrapper*(wrapperType: Value,
+                     props: openArray[(string, Value)]): GeneResult =
+  ## Instantiate a wrapper type with native-owned props. This bypasses the
+  ## closed-schema check *by design* — it is the one place that may, and it is
+  ## why the invariant is enforced here rather than by convention.
+  try:
+    if wrapperType.kind != vkType:
+      raise newException(GeneError, "geneNewWrapper expects a Type")
+    if wrapperType.typeFields.len != 0 or
+        wrapperType.typeBodyFields.len != 0:
+      # A declared schema would make the props forgeable from Gene, silently
+      # removing the property that makes native handles safe.
+      raise newException(GeneError,
+        "geneNewWrapper requires a wrapper type with an empty schema; " &
+        wrapperType.typeName & " declares fields")
+    var table = initPropTable()
+    for (key, value) in props:
+      if key.len == 0:
+        raise newException(GeneError, "wrapper prop requires a name")
+      table[key] = value
+    result.status = gsOk
+    result.value = newNode(wrapperType, props = table)
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
+
+proc geneWrapperField*(instance, wrapperType: Value,
+                       name: string): GeneResult =
+  ## Read a native-owned prop back, checking the instance really is one of
+  ## `wrapperType`. Native code must not trust a caller-supplied value's head:
+  ## the nominal check is what stops a look-alike node reaching a pointer
+  ## dereference, and it mirrors the in-tree `dbConnHandleValue` guard.
+  try:
+    if wrapperType.kind != vkType:
+      raise newException(GeneError, "geneWrapperField expects a Type")
+    if instance.kind != vkNode or instance.head.kind != vkType or
+        instance.head.typeName != wrapperType.typeName:
+      raise newException(GeneError,
+        "expected a " & wrapperType.typeName & " value")
+    result.status = gsOk
+    result.value = instance.props.getOrDefault(name, VOID)
+  except GeneError as e:
+    result = errorResult(e)
+  except GenePanic as e:
+    result = panicResult(e)
 
 proc geneNewCPtr*(address: pointer, targetType: Value): Value =
   newCPtr(address, targetType)
@@ -483,6 +564,9 @@ proc geneApi*(): GeneApi =
           newCPtr: geneNewCPtr,
           newCConstPtr: geneNewCConstPtr,
           newCOwnedPtr: geneNewCOwnedPtr,
+          defineWrapperType: geneDefineWrapperType,
+          newWrapper: geneNewWrapper,
+          wrapperField: geneWrapperField,
           closeCPtr: geneCloseCPtr,
           newCSlice: geneNewCSlice,
           newBuffer: geneNewBuffer,
