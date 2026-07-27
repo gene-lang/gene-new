@@ -32,9 +32,9 @@ when defined(geneRcStats):
     test "scalar program leaks nothing (measurement sanity)":
       check leakedManaged("(+ 1 2)") == 0
 
-    test "Runtime/gc_stats exposes live managed count":
+    test "$runtime/gc_stats exposes live managed count":
       let scope = newGlobalScope()
-      let stats = run(compileSource("(Runtime/gc_stats)"), scope)
+      let stats = run(compileSource("($runtime/gc_stats)"), scope)
       check stats.kind == vkMap
       check stats.mapEntries["rc_stats?"].boolVal
       check stats.mapEntries["live_managed"].kind == vkInt
@@ -72,7 +72,7 @@ when defined(geneRcStats):
         "(fn! reject! [] (try [caller_env] catch * nil)) (reject!)") == 0
       check leakedManaged(
         "(var x 1) " &
-        "(fn! snapshot! [] (Env/snapshot caller_env [\"x\"])) " &
+        "(fn! snapshot! [] (caller_env ~ snapshot [\"x\"])) " &
         "(snapshot!)") == 0
 
     test "namespace and stream values are reclaimed when they do not capture functions":
@@ -303,7 +303,7 @@ when defined(geneRcStats):
         "(var e nil) (set e (env ^bindings {^f (fn [] e)}))",
         N) < 100_000
 
-    test "an Env/extend binding closure cycle is reclaimed":
+    test "an Env extend binding closure cycle is reclaimed":
       check heapGrowth(
         "(var e (env)) (set e (e ~ extend {^f (fn [] e)}))",
         N) < 100_000

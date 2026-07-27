@@ -474,7 +474,7 @@ and any future export command must make redacted-versus-full an explicit
 choice, never a default.
 
 Before this work there was no OS-environment access at the Gene surface. The
-`Env` value type (`env`, `Env/extend`) remains the eval sandbox's binding
+`Env` value type (`env`, `extend` (on `Env`)) remains the eval sandbox's binding
 environment, unrelated to `getenv`. The implemented `os/get_env` surface below
 exposes Nim's `os.getEnv` under explicit `Os/Env` authority.
 

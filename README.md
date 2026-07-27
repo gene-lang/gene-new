@@ -101,7 +101,7 @@ participates in equality or hashing.
   assertions, and runtime `ffi/bind` dynamic calls for MVP C scalar,
   C-string, opaque pointer, owned-pointer release, and small multi-argument
   pointer/size signatures,
-  `Device/Compute` authority plus opaque `Device/Buffer` metadata handles,
+  `$device/Compute` authority plus opaque `$device/Buffer` metadata handles,
   first-class `Env` values with explicit
   `eval node ^in env`, explicit Env imports/capabilities, `^policy`
   max-step limits with validation for reserved policy fields, opaque runtime
@@ -293,7 +293,7 @@ weak captured-scope edges. Direct mutable Cell/Env reference cycles (e.g. a
 self-referential `cell`) are reclaimed by a conservative trial-deletion pass, and
 Env-bound closures use weak local captures that are strengthened when the Env
 escapes. Symbols are interned to immediate ids. Build with
-`-d:geneRcStats` to expose `liveManaged` and `Runtime/gc_stats` for
+`-d:geneRcStats` to expose `liveManaged` and `$runtime/gc_stats` for
 retain/release auditing. Values crossing `Send` boundaries are marked as
 published; in threaded builds, manual-RC heap objects switch to atomic
 retain/release after that marker while thread-local objects stay on the

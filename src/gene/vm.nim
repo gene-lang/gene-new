@@ -3368,7 +3368,7 @@ proc freezeRejectName(value: Value): string =
   of vkCPtr: "C pointer"
   of vkCSlice: "C slice"
   of vkBuffer: "Buffer"
-  of vkDeviceBuffer: "Device/Buffer"
+  of vkDeviceBuffer: "device/Buffer"
   of vkCapability: "Capability"
   of vkFfiLoad: "ffi/Load"
   of vkFfiLibrary: "ffi/Library"
@@ -4445,7 +4445,7 @@ proc requireBuffer(name: string, value: Value) =
 
 proc requireDeviceBuffer(name: string, value: Value) =
   if value.kind != vkDeviceBuffer:
-    raise newException(GeneError, name & " expects a Device/Buffer")
+    raise newException(GeneError, name & " expects a device/Buffer")
 
 proc bufferTypeExprArg(name: string, value: Value): Value =
   if value.kind == vkNode and value.head.isSymbol("c_abi_type") and
@@ -4555,34 +4555,34 @@ proc biBufferElemType(args: openArray[Value]): Value {.nimcall.} =
 proc biDeviceBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 4:
     raise newException(GeneError,
-      "Device/buffer expects 4 arguments, got " & $args.len)
-  if args[0].kind != vkCapability or args[0].capabilityName != "Device/Compute":
+      "device/buffer expects 4 arguments, got " & $args.len)
+  if args[0].kind != vkCapability or args[0].capabilityName != "device/Compute":
     raise newException(GeneError,
-      "Device/buffer expects a Device/Compute capability")
+      "device/buffer expects a device/Compute capability")
   if args[1].kind != vkString:
-    raiseTypeError("Device/buffer backend", "Str", args[1],
+    raiseTypeError("device/buffer backend", "Str", args[1],
                    if call == nil: nil else: call.dispatchScope)
   let scope = if call == nil: nil else: call.dispatchScope
-  let elemType = closeTypeExpr(bufferTypeExprArg("Device/buffer elem_type", args[2]),
+  let elemType = closeTypeExpr(bufferTypeExprArg("device/buffer elem_type", args[2]),
                                scope)
-  let rawLen = requireInt64("Device/buffer length", args[3])
+  let rawLen = requireInt64("device/buffer length", args[3])
   if rawLen < 0 or rawLen > int64(high(int)):
-    raise newException(GeneError, "Device/buffer length must be non-negative")
+    raise newException(GeneError, "device/buffer length must be non-negative")
   newDeviceBuffer(args[1].strVal, elemType, int(rawLen))
 
 proc biDeviceBufferLen(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("Device/Buffer/len", args)
-  requireDeviceBuffer("Device/Buffer/len", args[0])
+  requireOne("device/Buffer/len", args)
+  requireDeviceBuffer("device/Buffer/len", args[0])
   newInt(args[0].deviceBufferLen)
 
 proc biDeviceBufferBackend(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("Device/Buffer/backend", args)
-  requireDeviceBuffer("Device/Buffer/backend", args[0])
+  requireOne("device/Buffer/backend", args)
+  requireDeviceBuffer("device/Buffer/backend", args[0])
   newStr(args[0].deviceBufferBackend)
 
 proc biDeviceBufferElemType(args: openArray[Value]): Value {.nimcall.} =
-  requireOne("Device/Buffer/elem_type", args)
-  requireDeviceBuffer("Device/Buffer/elem_type", args[0])
+  requireOne("device/Buffer/elem_type", args)
+  requireDeviceBuffer("device/Buffer/elem_type", args[0])
   let elemType = args[0].deviceBufferElemType
   if elemType.kind == vkNil: newSym("Any") else: elemType
 
@@ -5056,7 +5056,7 @@ proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
-    raise newException(GeneError, "Runtime/gc_stats expects no arguments")
+    raise newException(GeneError, "runtime/gc_stats expects no arguments")
   var entries = initPropTable()
   entries["live_managed"] = newInt(managedLiveCount())
   entries["rc_stats?"] =
@@ -5562,26 +5562,26 @@ proc buildBuiltins(app: Application): Scope =
     "to_list": newNativeFn("Buffer/to_list", biBufferToList),
     "elem_type": newNativeFn("Buffer/elem_type", biBufferElemType)})
   let deviceScope = newScope(result)
-  deviceScope.define("Compute", newCapability("Device/Compute"))
-  deviceScope.define("buffer", newNativeCallFn("Device/buffer", biDeviceBuffer,
+  deviceScope.define("Compute", newCapability("device/Compute"))
+  deviceScope.define("buffer", newNativeCallFn("device/buffer", biDeviceBuffer,
                                                acceptsNamed = false))
   let deviceBufferScope = newScope(deviceScope)
   deviceBufferScope.define("len",
-                           newNativeFn("Device/Buffer/len", biDeviceBufferLen))
+                           newNativeFn("device/Buffer/len", biDeviceBufferLen))
   deviceBufferScope.define("backend",
-                           newNativeFn("Device/Buffer/backend",
+                           newNativeFn("device/Buffer/backend",
                                        biDeviceBufferBackend))
   deviceBufferScope.define("elem_type",
-                           newNativeFn("Device/Buffer/elem_type",
+                           newNativeFn("device/Buffer/elem_type",
                                        biDeviceBufferElemType))
-  deviceScope.define("Buffer", newNamespace("Device/Buffer", deviceBufferScope))
-  result.define("Device", newNamespace("Device", deviceScope))
+  deviceScope.define("Buffer", newNamespace("device/Buffer", deviceBufferScope))
+  result.define("device", newNamespace("device", deviceScope))
   result.defineBuiltinType(vkCapability, "Capability", {
     "name": newNativeFn("Capability/name", biCapabilityName)})
   let runtimeScope = newScope(result)
   runtimeScope.define("gc_stats",
-                      newNativeFn("Runtime/gc_stats", biRuntimeGcStats))
-  result.define("Runtime", newNamespace("Runtime", runtimeScope))
+                      newNativeFn("runtime/gc_stats", biRuntimeGcStats))
+  result.define("runtime", newNamespace("runtime", runtimeScope))
   let fsScope = newScope(result)
   fsScope.define("ReadDir", newCapability("fs/ReadDir"))
   fsScope.define("WriteDir", newCapability("fs/WriteDir"))
@@ -5706,18 +5706,16 @@ proc buildBuiltins(app: Application): Scope =
     "path": newNativeFn("Module/path", biModulePath),
     "meta": newNativeFn("Module/meta", biModuleMeta),
     "declarations": newNativeFn("Module/declarations", biModuleDeclarations)})
-  # `Env` deliberately stays a namespace, and is the one uppercase surface that
-  # is not receiver-shaped. `Env/extend` is a message — it takes an `Env` — but
-  # `Env/snapshot` takes a **CallerEnv**, so it is a static factory, and making
-  # `Env` a type would withdraw its only call spelling (decision 4 removed
-  # `T/m` as a callable path). Giving `snapshot` a receiver means deciding
-  # whether it becomes a message on `caller_env`, which is a language-surface
-  # decision rather than a transcription, so it is left open.
-  let envScope = newScope(result)
-  envScope.define("extend", newNativeCallFn("Env/extend", biEnvExtend,
-                                            acceptsNamed = false))
-  envScope.define("snapshot", newNativeFn("Env/snapshot", biEnvSnapshot))
-  result.define("Env", newNamespace("Env", envScope))
+  result.defineBuiltinType(vkEnv, "Env", {
+    "extend": newNativeCallFn("Env/extend", biEnvExtend,
+                              acceptsNamed = false)})
+  # `snapshot` takes a **CallerEnv**, not an `Env`, so it was the one member
+  # that made `Env` look like a namespace: as a static factory it had no
+  # receiver, and `T/m` is not a callable path. Giving it its real receiver
+  # settles that — `(caller_env ~ snapshot ["x"])` reads as what it does, and
+  # `Env` is left holding only the message that genuinely takes an `Env`.
+  result.defineBuiltinType(vkCallerEnv, "CallerEnv", {
+    "snapshot": newNativeFn("CallerEnv/snapshot", biEnvSnapshot)})
   result.define("read_one", newNativeCallFn("read_one", biReadOne,
                                             acceptsNamed = false))
   result.define("read_all", newNativeCallFn("read_all", biReadAll,
@@ -7676,10 +7674,6 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     # structurally a node, so the same table answers its anatomy projections
     # and mutators (§1.2) — one table, two receiver classes.
     typeDirectMessage(gScalarTypes[vkNode], name)
-  of vkEnv:
-    let envNs = builtinBinding(scope, "Env")
-    let binding = exportedBinding(envNs, name)
-    if binding.kind == vkVoid: NIL else: binding
   of vkRegex:
     let regexNs = builtinBinding(scope, "regex")
     let binding = exportedBinding(regexNs, name)
@@ -14496,9 +14490,9 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkDeviceBuffer:
     let elemType = value.deviceBufferElemType
     if elemType.kind == vkNil:
-      newSym("Device/Buffer")
+      newSym("device/Buffer")
     else:
-      typeNode("Device/Buffer", @[elemType])
+      typeNode("device/Buffer", @[elemType])
   of vkMap:
     var values: seq[Value]
     for _, item in value.mapEntries:
@@ -14660,13 +14654,13 @@ proc inferTypeExpr(expr, value: Value, scope: Scope, typeParams: openArray[strin
         if expr.body[0].kind == vkSymbol and expr.body[0].symVal in typeParams:
           return bindings.bindTypeParam(expr.body[0].symVal, itemType)
         return matchesBufferType(expr.body, value, scope)
-      of "Device/Buffer":
+      of "device/Buffer":
         if value.kind != vkDeviceBuffer:
           return false
         if expr.body.len == 0:
           return true
         if expr.body.len != 1:
-          raise newException(GeneError, "(Device/Buffer T) expects one item type")
+          raise newException(GeneError, "(device/Buffer T) expects one item type")
         let itemType =
           if value.deviceBufferElemType.kind == vkNil:
             newSym("Any")
@@ -15056,7 +15050,7 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkList)
   of "Buffer":
     (true, value.kind == vkBuffer)
-  of "Device/Buffer":
+  of "device/Buffer":
     (true, value.kind == vkDeviceBuffer)
   of "Capability":
     (true, value.kind == vkCapability)
@@ -15206,8 +15200,8 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
         return newSym("C/" & expr.body[1].symVal)
       if expr.body[0].isSymbol("ffi"):
         return newSym("ffi/" & expr.body[1].symVal)
-      if expr.body[0].isSymbol("Device"):
-        return newSym("Device/" & expr.body[1].symVal)
+      if expr.body[0].isSymbol("device"):
+        return newSym("device/" & expr.body[1].symVal)
     if expr.head.isSymbol("path") and expr.body.len > 0 and scope != nil and
         expr.body[0].kind == vkSymbol:
       var resolved: Value
@@ -15377,7 +15371,7 @@ proc matchesDeviceBufferType(args: openArray[Value], value: Value,
   if args.len == 0:
     return true
   if args.len != 1:
-    raise newException(GeneError, "(Device/Buffer T) expects one item type")
+    raise newException(GeneError, "(device/Buffer T) expects one item type")
   let expected = closeTypeExpr(args[0], scope)
   if expected.isAnyTypeValue:
     return true
@@ -15495,7 +15489,7 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
         return matchesCSliceType(expr.head.symVal, expr.body, value, scope)
       of "Buffer":
         return matchesBufferType(expr.body, value, scope)
-      of "Device/Buffer":
+      of "device/Buffer":
         return matchesDeviceBufferType(expr.body, value, scope)
       of "|":
         for alt in expr.body:

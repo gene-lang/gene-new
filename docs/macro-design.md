@@ -229,7 +229,7 @@ scope — declarations made by an evaluated unit live in that unit's own
 overlay. Mutable values reachable through caller bindings (`Cell`, buffers,
 actors) can still be mutated; the view is read-only, not deep-frozen. The view
 cannot escape the syntax call through returns, containers, closures, tasks,
-serialization, or `Send` boundaries. Use `(Env/snapshot caller_env ["name" ...])`
+serialization, or `Send` boundaries. Use `(caller_env ~ snapshot ["name" ...])`
 to create a durable `Env` containing only explicitly selected bindings.
 
 Example:
@@ -693,7 +693,7 @@ design", "spec — fn! across modules"), with the §4.2/§5.2/§5.4 MVP notes:
   parameters;
 - guarded dynamic/Any call sites before argument evaluation; fused sites only
   for callees proven ordinary (SyntaxCallable stays conceptual — see §5.1);
-- explicit eval through live `caller_env`, and named durable `Env/snapshot`;
+- explicit eval through live `caller_env`, and named durable `snapshot` (on `CallerEnv`);
 - tests for lazy args, named syntax args, borrowed authority/escape rejection,
   durable snapshots, and fn! value aliasing.
 ```

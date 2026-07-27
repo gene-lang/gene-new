@@ -2445,7 +2445,7 @@ suite "vm — actors":
        "    (spawn (a ~ send i)) " &
        "    (set i (+ i 1))) " &
        "  ($sleep 20) " &
-       "  (var stats (Runtime/gc_stats)) " &
+       "  (var stats ($runtime/gc_stats)) " &
        "  (var first (events ~ recv)) " &
        "  (var second (events ~ recv)) " &
        "  (var drained 0) " &

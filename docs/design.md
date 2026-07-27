@@ -838,7 +838,7 @@ real types; the remaining uppercase surfaces (`AtomicCell`, `Task`, `ReplyTo`,
 namespaces of natives and send through a built-in fallback. The spelling is
 the same either way; only `(impl P for T)` tells them apart.
 
-Not every `Name/op` pair splits this way: `Env/snapshot` takes a `CallerEnv`
+Not every `Name/op` pair splits this way: `snapshot` (on `CallerEnv`) takes a `CallerEnv`
 rather than an `Env`, so it stays a function. The rule is the receiver, not the
 spelling.
 
@@ -2885,14 +2885,14 @@ Like macros, names bound to `fn!` values should keep the `!` suffix by conventio
 - `caller_env` resolves the caller's lexical bindings, imports, module namespace, and core built-ins, in §11.5 resolution order.
 - `caller_env` is a read-only view for name resolution. Code evaluated `^in caller_env` cannot create, rebind, or `set` bindings in the caller's scope; declarations made by an evaluated unit live in that unit's own overlay. Mutable values reachable through caller bindings — `Cell`, buffers, actors — can still be mutated. The view is read-only, not deep-frozen.
 - `CallerEnv` is valid only for the dynamic extent of the syntax call. It is not `Send` or serializable. It cannot be returned, used as an error payload, inserted into a heap container or durable `Env`, stored in an outer/global/module binding, captured by an escaping closure, or captured by a spawned task. These checks also apply to closures and containers that transitively carry the borrowed view.
-- Durable capture is explicit: `(Env/snapshot caller_env ["name" ...])` copies exactly the named visible bindings into a new `Env`. Missing or duplicate names fail. Selected closures and capabilities retain only the authority explicitly reachable from those selected values; unlisted caller bindings are absent.
+- Durable capture is explicit: `(caller_env ~ snapshot ["name" ...])` copies exactly the named visible bindings into a new `Env`. Missing or duplicate names fail. Selected closures and capabilities retain only the authority explicitly reachable from those selected values; unlisted caller bindings are absent.
 - Because calling an unknown value may temporarily hand it your environment, security-sensitive code should type callees to exclude `Fn!`. A syntax callable evaluating untrusted syntax should first create a purpose-built snapshot and apply the evaluation policies described in §11.5.
 
 For example, this durable environment contains `config` but not `secret`:
 
 ```gene
 (fn! capture_config! []
-  (Env/snapshot caller_env ["config"]))
+  (caller_env ~ snapshot ["config"]))
 ```
 
 `fn!` values are runtime values. They may be bound, imported, passed around, stored in maps, and selected like other values. When a call's evaluated callee implements `SyntaxCallable`, the evaluator does not evaluate ordinary arguments; it calls `apply_syntax` with a `SyntaxCall` and a fresh borrowed `CallerEnv`. The compilation cost model for this dispatch is specified in §3.
@@ -3011,7 +3011,7 @@ An `Env` is an opaque, garbage-collected value. It may be stored, passed, return
   (base ~ extend {^y 20}))
 ```
 
-Environments are immutable by default. `Env/extend` creates a child environment whose parent is the original environment; it does not mutate the parent.
+Environments are immutable by default. `extend` (on `Env`) creates a child environment whose parent is the original environment; it does not mutate the parent.
 
 Conceptually, an environment contains:
 
@@ -3622,7 +3622,7 @@ same `ActorFailure` to the dead-letter channel. A full sink without an available
 fallback queues the failure in one application-owned FIFO with capacity 64 and
 retries when a channel receive frees space. The queue allocates no task or fiber
 per notification. On overflow the newest notification is dropped; a
-closed/rejected queued sink is also dropped. `Runtime/gc_stats` exposes
+closed/rejected queued sink is also dropped. `$runtime/gc_stats` exposes
 `supervisor_retry_pending`, `supervisor_retry_capacity`,
 `supervisor_retry_high_water`, and `supervisor_retry_drops`. Failure handling
 and the original actor error remain independent of notification delivery.
@@ -4608,8 +4608,8 @@ GPU support should build on the same foundations rather than becoming a second u
 
 A GPU buffer is not a `C/Ptr` and should use a distinct device-specific type. CUDA, HIP, Metal, Vulkan, and accelerator libraries can first be exposed through native extension modules. Kernel syntax and compiler-generated device code are separate later design questions.
 
-MVP native-compute scaffolding exposes `Device/Compute` authority and opaque
-`Device/Buffer` handles with backend, element-type, and length metadata only.
+MVP native-compute scaffolding exposes `$device/Compute` authority and opaque
+`$device/Buffer` handles with backend, element-type, and length metadata only.
 They are not `C/Ptr` values, do not expose raw memory access, and are intended
 as the stable boundary for later CUDA/HIP/Metal/Vulkan extension modules.
 
@@ -4767,7 +4767,7 @@ The v1 VM direction is retained and extended with mixed execution:
 - an M:N cooperative task scheduler with GC-aware suspension frames and worker-thread safepoints.
 
 Runtime diagnostics may expose read-only GC/RC counters such as
-`Runtime/gc_stats` so optimization and custom-GC work can be tested without
+`$runtime/gc_stats` so optimization and custom-GC work can be tested without
 exposing object layouts.
 
 `Any` uses dynamic representation. Type annotations enable optimization later: sealed layouts, unboxed fields, and specialized generic instantiations are post-MVP optimizations.
@@ -4898,7 +4898,7 @@ Deferred until after the first implementation slice:
 - `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x ~ X:f a)` names the protocol message `X/f`. `(x ~ %m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so `~` never invokes an arbitrary function. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope. `(super ~ f a)` delegates to the implementation above the enclosing type on the `^is` chain.
 - `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes `ctor` when present, with a pre-created in-progress `self`, and falls back to direct schema mapping when no `ctor` exists.
-- `fn!` defines runtime fexprs / syntax callables that receive raw syntax and a borrowed `CallerEnv`; durable authority requires explicit named `Env/snapshot`. `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
+- `fn!` defines runtime fexprs / syntax callables that receive raw syntax and a borrowed `CallerEnv`; durable authority requires explicit named `snapshot` (on `CallerEnv`). `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
 - Delegation is explicit protocol forwarding, written manually as `impl`s in MVP; future derive helpers may generate forwarding impls from selector paths.
 - `Any`→typed boundary failures raise recoverable `TypeError` with blame. Internal typed representation contradictions are panics.
 - Generic constraints are deferred until needed for generic derived implementations.

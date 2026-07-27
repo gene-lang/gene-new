@@ -557,11 +557,11 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
 
   test "caller_env is borrowed and explicit snapshots are durable":
     check_eval("(var x 41) " &
-               "(fn! capture! [] (Env/snapshot caller_env [\"x\"])) " &
+               "(fn! capture! [] (caller_env ~ snapshot [\"x\"])) " &
                "(var saved (capture!)) (eval (quote (+ x 1)) ^in saved)",
                "42")
     check_eval("(var x 1) (var secret 9) " &
-               "(fn! capture! [] (Env/snapshot caller_env [\"x\"])) " &
+               "(fn! capture! [] (caller_env ~ snapshot [\"x\"])) " &
                "(var saved (capture!)) " &
                "(try (eval (quote secret) ^in saved) catch _ \"absent\")",
                "\"absent\"")
@@ -1228,22 +1228,22 @@ suite "spec — numeric boundaries from design":
                   newGlobalScope())
 
   test "Device buffers are opaque native-compute handles":
-    check_eval("(var b (Device/buffer Device/Compute \"mock\" C/Int64 4)) " &
-               "[(Device/Buffer/backend b) " &
-               " (Device/Buffer/elem_type b) " &
-               " (Device/Buffer/len b) " &
-               " ((fn [buf : Device/Buffer] (Device/Buffer/len buf)) b) " &
-               " ((fn [buf : (Device/Buffer C/Int64)] " &
-               "    (Device/Buffer/elem_type buf)) b) " &
+    check_eval("(var b ($device/buffer $device/Compute \"mock\" C/Int64 4)) " &
+               "[($device/Buffer/backend b) " &
+               " ($device/Buffer/elem_type b) " &
+               " ($device/Buffer/len b) " &
+               " ((fn [buf : device/Buffer] ($device/Buffer/len buf)) b) " &
+               " ((fn [buf : (device/Buffer C/Int64)] " &
+               "    ($device/Buffer/elem_type buf)) b) " &
                " b]",
                "[\"mock\" C/Int64 4 4 C/Int64 (device-buffer mock C/Int64 4)]")
     expect GeneError:
-      discard run(compileSource("(Device/buffer nil \"mock\" C/Int64 1)"),
+      discard run(compileSource("($device/buffer nil \"mock\" C/Int64 1)"),
                   newGlobalScope())
-    check_eval("(var b (Device/buffer Device/Compute \"mock\" C/Int64 4)) " &
-               "(try ((fn [buf : (Device/Buffer F64)] buf) b) " &
+    check_eval("(var b ($device/buffer $device/Compute \"mock\" C/Int64 4)) " &
+               "(try ((fn [buf : (device/Buffer F64)] buf) b) " &
                "catch (TypeError ^expected e) e)",
-               "\"(Device/Buffer F64)\"")
+               "\"(device/Buffer F64)\"")
 
   test "FFI runtime loading requires explicit authority":
     check_eval("$ffi/Load", "(ffi_type Load)")
@@ -2070,12 +2070,12 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("[AtomicCell Task ReplyTo Module Namespace Capability]",
                "[(type AtomicCell) (type Task) (type ReplyTo) (type Module) " &
                "(type Namespace) (type Capability)]")
-    # `Env` is the one exception, and it is a real one rather than an
-    # oversight: `Env/extend` takes an `Env`, but `Env/snapshot` takes a
-    # **CallerEnv**, so it is a static factory. Making `Env` a type would
-    # withdraw its only call spelling, because `T/m` is not a callable path.
-    check_eval("Env", "(ns Env)")
-    check_eval("(var x 1) (fn! capture! [] (Env/snapshot caller_env [\"x\"])) " &
+    # `snapshot` used to make `Env` look like a namespace: it takes a
+    # **CallerEnv**, not an `Env`, so as a static factory it had no receiver and
+    # `T/m` is not a callable path. Giving it its real receiver settles it —
+    # `Env` keeps only the message that genuinely takes an `Env`.
+    check_eval("[Env CallerEnv]", "[(type Env) (type CallerEnv)]")
+    check_eval("(var x 1) (fn! capture! [] (caller_env ~ snapshot [\"x\"])) " &
                "($nil? (capture!))",
                "false")
     check_eval("[Date Time DateTime Timezone Duration Range]",
@@ -4026,7 +4026,7 @@ suite "spec — Env and eval from design":
                " partial/status completed/status completed/text]",
                "[\"ok\" \"41\" \"ok\" \"42\" \"incomplete\" \"ok\" \"43\"]")
 
-  test "Env/extend creates a child environment":
+  test "Env extend creates a child environment":
     check_eval("(var base (env ^bindings {^x 10})) " &
                "(var child (base ~ extend {^y 20})) " &
                "[(eval (quote x) ^in child) " &
@@ -4084,7 +4084,7 @@ suite "spec — Env and eval from design":
                "\"Send\"")
 
   test "runtime GC stats expose optimization diagnostics":
-    check_eval("(var stats (Runtime/gc_stats)) " &
+    check_eval("(var stats ($runtime/gc_stats)) " &
                "[stats/live_managed stats/rc_stats?]",
                "[0 false]")
 

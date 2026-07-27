@@ -7,7 +7,7 @@ destructuring”, “checked errors”, and “Env and eval”.
 Calls are callable-first. Dynamic call sites resolve the callee and distinguish
 ordinary `Callable` from `SyntaxCallable` before evaluating arguments. `fn!`
 receives raw syntax and a borrowed `CallerEnv`; durable authority requires an
-explicit named `Env/snapshot`. Message-send lexical fallback accepts ordinary
+explicit named `snapshot` (on `CallerEnv`). Message-send lexical fallback accepts ordinary
 callables only and rejects syntax callables before send arguments run.
 
 MVP compiler-dispatched heads:
