@@ -22172,7 +22172,8 @@ proc moduleCompileHeader(app: Application,
       readFile(absPath)
   let unit = readAllWithLocs(source, absPath)
   result = ModuleCompileHeader(unit: unit,
-                               compileInterface: buildCompileInterface(unit.forms))
+                               compileInterface:
+                                 buildCompileInterface(unit.forms, absPath))
   app.moduleCompileHeaders[absPath] = result
 
 proc compileModuleArtifact(app: Application,
@@ -22214,7 +22215,8 @@ proc compileModuleArtifact(app: Application,
             parseImportSpec(depImport).reexport:
           depHasReexports = true
           break
-      let needsDependency = importSpec.reexport or depHasReexports
+      let needsDependency = importSpec.reexport or depHasReexports or
+        compileInterfaceNeedsArtifact(depInterface)
       if needsDependency:
         dependency = compileModuleArtifact(app, depPath)
         dependencies[raw] = dependency
@@ -22263,6 +22265,7 @@ proc compileModuleArtifact(app: Application,
     let compiled = compileFormsWithMacros(header.unit, importedMacros,
                                           importedSyntaxFns,
                                           importedInterfaces)
+    attachCompiledNativeMetadata(ownInterface, compiled.chunk, absPath)
     var macroExports = compiled.macroExports
     var syntaxFnExports = compiled.syntaxFnExports
     for spec in importSpecs:

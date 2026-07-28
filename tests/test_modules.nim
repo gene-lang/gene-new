@@ -1,5 +1,5 @@
-import gene/[compiler, types, vm, printer]
-import std/[os, strutils, unittest]
+import gene/[compiler, gir, types, vm, printer]
+import std/[os, osproc, strutils, unittest]
 
 let modDir = getTempDir() / "gene_module_tests"
 
@@ -10,6 +10,15 @@ proc runProgram(src: string): Value =
   ## Run a program whose relative imports resolve from `modDir`.
   initModuleContext(modDir)
   run(compileSource(src), newGlobalScope())
+
+proc checkCCompiles(source, label: string) =
+  let path = modDir / (label & ".c")
+  writeFile(path, source)
+  let checked = execCmdEx(
+    quoteShell(getEnv("CC", "cc")) & " -std=c11 -fsyntax-only " &
+      quoteShell(path))
+  checkpoint checked.output
+  check checked.exitCode == 0
 
 suite "modules — file imports":
   setup:
@@ -23,6 +32,128 @@ suite "modules — file imports":
   test "import a single binding":
     writeModule("math.gene", "(var pi 3)")
     check runProgram("(import pi from \"./math\") pi").print() == "3"
+
+  test "typed-native layout metadata crosses a selected module import":
+    writeModule("native_layout.gene",
+      "(ffi/struct CTimespec " &
+      "  ^fields [[tv_sec C/Long] [tv_nsec C/Long]]) " &
+      "(type Timespec " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true})")
+    writeModule("native_layout_user.gene",
+      "(import [Timespec] from \"./native_layout\") " &
+      "(fn seconds [t : Timespec] : I64 t/tv_sec)")
+    let c = newApplication(modDir)
+      .compileFileModule(modDir / "native_layout_user.gene")
+      .emitExperimentalC()
+    check "typedef struct CTimespec" in c
+    check "int64_t gene_native_seconds(CTimespec * t)" in c
+    check "return t->tv_sec;" in c
+
+  test "typed-native wrapper adapters retain imported ownership metadata":
+    writeModule("native_wrapper.gene",
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CTimespec)} " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^wrapper handle " &
+      "           ^release \"timespec_free\" ^copy \"timespec_copy\"})")
+    writeModule("native_wrapper_user.gene",
+      "(import [Timespec] from \"./native_wrapper\") " &
+      "(fn clone_timespec ^native_entry {^t borrow ^result copy} " &
+      "  [t : Timespec] : Timespec t)")
+    let c = newApplication(modDir)
+      .compileFileModule(modDir / "native_wrapper_user.gene")
+      .emitExperimentalC()
+    let typeIdentity = normalizedPath(absolutePath(
+      modDir / "native_wrapper.gene")) & "::Timespec"
+    let abiIdentity = normalizedPath(absolutePath(
+      modDir / "native_wrapper.gene")) & "::CTimespec"
+    check ("\"" & typeIdentity & "\"") in c
+    check ("\"" & abiIdentity & "\"") in c
+    check "timespec_copy((const CTimespec *)value)" in c
+    check "timespec_free((CTimespec *)value)" in c
+    checkCCompiles(c, "native_wrapper_adapter_import")
+
+  test "typed-native metadata follows a module alias annotation":
+    writeModule("native_alias_layout.gene",
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec ^native {^abi CTimespec ^lifecycle manual})")
+    writeModule("native_alias_user.gene",
+      "(import * : native from \"./native_alias_layout\") " &
+      "(fn seconds [t : native/Timespec] : I64 t/tv_sec)")
+    let c = newApplication(modDir)
+      .compileFileModule(modDir / "native_alias_user.gene")
+      .emitExperimentalC()
+    check "gene_native_seconds" in c
+    check "return t->tv_sec;" in c
+    checkCCompiles(c, "native_alias_import")
+
+  test "an imported layout can back a re-exported native Type":
+    writeModule("native_abi_only.gene",
+      "(ffi/struct CRecord ^fields [[value C/Int64]])")
+    writeModule("native_type_only.gene",
+      "(import [CRecord] from \"./native_abi_only\") " &
+      "(type Record ^native {^abi CRecord ^lifecycle manual})")
+    writeModule("native_type_user.gene",
+      "(import [Record] from \"./native_type_only\") " &
+      "(fn value [p : Record] : I64 p/value)")
+    let chunk = newApplication(modDir)
+      .compileFileModule(modDir / "native_type_user.gene")
+    let dependency = normalizedPath(absolutePath(
+      modDir / "native_abi_only.gene")) & "::CRecord"
+    check dependency in chunk.ffiStructDependencies
+    check dependency in chunk.disassemble()
+    let c = chunk.emitExperimentalC()
+    check "gene_native_value" in c
+    check "return p->value;" in c
+    checkCCompiles(c, "native_imported_abi")
+
+  test "typed-native metadata survives an explicit re-export":
+    writeModule("native_reexport_base.gene",
+      "(ffi/struct CRecord ^fields [[value C/Int64]]) " &
+      "(type Record ^native {^abi CRecord ^lifecycle manual})")
+    writeModule("native_reexport_mid.gene",
+      "(import [Record] from \"./native_reexport_base\" ^export true)")
+    writeModule("native_reexport_user.gene",
+      "(import [Record] from \"./native_reexport_mid\") " &
+      "(fn value [p : Record] : I64 p/value)")
+    let c = newApplication(modDir)
+      .compileFileModule(modDir / "native_reexport_user.gene")
+      .emitExperimentalC()
+    check "gene_native_value" in c
+    check "return p->value;" in c
+    checkCCompiles(c, "native_type_reexport")
+
+  test "typed-native ABI changes invalidate the module compile interface":
+    writeModule("native_reload.gene",
+      "(ffi/struct CRecord ^fields [[value C/Long]]) " &
+      "(type Record ^native {^abi CRecord ^lifecycle manual})")
+    let app = newApplication(modDir)
+    discard app.loadFileModule(modDir / "native_reload.gene")
+    writeModule("native_reload.gene",
+      "(ffi/struct CRecord ^fields [[value C/Double]]) " &
+      "(type Record ^native {^abi CRecord ^lifecycle manual})")
+    expect GeneError:
+      discard app.reloadFileModule(modDir / "native_reload.gene")
+
+  test "typed-native codegen keeps same-named imported layouts distinct":
+    writeModule("native_left.gene",
+      "(ffi/struct CRecord ^fields [[left C/Int64]]) " &
+      "(type LeftRecord ^native {^abi CRecord ^lifecycle manual})")
+    writeModule("native_right.gene",
+      "(ffi/struct CRecord ^fields [[right C/Double]]) " &
+      "(type RightRecord ^native {^abi CRecord ^lifecycle manual})")
+    writeModule("native_collision_user.gene",
+      "(import [LeftRecord] from \"./native_left\") " &
+      "(import [RightRecord] from \"./native_right\") " &
+      "(fn left_value [p : LeftRecord] : I64 p/left) " &
+      "(fn right_value [p : RightRecord] : F64 p/right)")
+    let c = newApplication(modDir)
+      .compileFileModule(modDir / "native_collision_user.gene")
+      .emitExperimentalC()
+    check "return p->left;" in c
+    check "return p->right;" in c
+    checkCCompiles(c, "native_layout_collision")
 
   test "aliased selection (name : local)":
     writeModule("math.gene", "(fn sub [a b] (- a b))")

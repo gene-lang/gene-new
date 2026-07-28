@@ -5,7 +5,8 @@
 ##   nimble spec
 
 import gene/[compiler, gir, printer, reader, types, vm]
-import std/[algorithm, monotimes, os, sequtils, sets, strutils, tables, times, unittest]
+import std/[algorithm, monotimes, os, osproc, sequtils, sets, strutils, tables,
+            times, unittest]
 
 proc sharedNativeIdentity(scope: Scope, typeName, msg, rootName: string): bool =
   ## A native bound both into the lexical root and into a type's message table
@@ -48,6 +49,37 @@ template check_runtime_error(src: string, fragment: string) =
 
 proc geneString(s: string): string =
   "\"" & s.replace("\\", "\\\\").replace("\"", "\\\"") & "\""
+
+proc checkCCompiles(source, label: string) =
+  let path = getTempDir() / ("gene_" & label & "_generated.c")
+  writeFile(path, source)
+  defer:
+    removeFile(path)
+  let checked = execCmdEx(
+    quoteShell(getEnv("CC", "cc")) & " -std=c11 -fsyntax-only " &
+      quoteShell(path))
+  checkpoint checked.output
+  check checked.exitCode == 0
+
+proc checkCRuns(source, label, expected: string) =
+  let sourcePath = getTempDir() / ("gene_" & label & "_generated.c")
+  let exePath = getTempDir() / ("gene_" & label & ExeExt)
+  writeFile(sourcePath, source)
+  defer:
+    if fileExists(sourcePath):
+      removeFile(sourcePath)
+    if fileExists(exePath):
+      removeFile(exePath)
+  let built = execCmdEx(
+    quoteShell(getEnv("CC", "cc")) & " -std=c11 " & quoteShell(sourcePath) &
+      " -o " & quoteShell(exePath))
+  checkpoint built.output
+  check built.exitCode == 0
+  if built.exitCode == 0:
+    let ran = execCmdEx(quoteShell(exePath))
+    checkpoint ran.output
+    check ran.exitCode == 0
+    check ran.output.strip() == expected
 
 suite "spec — reader surface from design":
   test "programs contain multiple top-level forms":
@@ -664,10 +696,12 @@ suite "spec — typed native compilation prototype from design":
     let c = chunk.emitExperimentalC()
     check "typedef struct GeneNativeFrameInfo" in c
     check "typedef struct GeneAotModuleFunction" in c
+    check "const char *entry_symbol;" in c
     check "static const GeneNativeFrameInfo gene_frame_add64 GENE_MAYBE_UNUSED = {\"add64\", GENE_NATIVE_FRAME_TYPED};" in c
     check "(void)&gene_frame_add64;" in c
     check "static const GeneAotModuleFunction gene_aot_module[] GENE_MAYBE_UNUSED = {" in c
-    check "{\"add64\", \"gene_native_add64\", \"I64\", 2, &gene_frame_add64}," in c
+    check "{\"add64\", \"gene_native_add64\", \"\", \"I64\", 2, " &
+      "&gene_frame_add64}," in c
     check "static const size_t gene_aot_module_count GENE_MAYBE_UNUSED = 2;" in c
     check "int64_t gene_native_add64_twice(int64_t x, int64_t y)" in c
     check "return gene_native_add64(gene_native_add64(x, y), y);" in c
@@ -676,6 +710,509 @@ suite "spec — typed native compilation prototype from design":
                "  (add64 (add64 x y) y)) " &
                "(add64_twice 20 2)",
                "24")
+
+  test "typed-native pointer parameters lower foreign fields to direct C loads":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec " &
+      "  ^fields [[tv_sec C/Long] [tv_nsec C/Long]]) " &
+      "(type Timespec " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
+      "(fn seconds [t : Timespec] : I64 t/tv_sec)")
+    let c = chunk.emitExperimentalC()
+    check "int64_t gene_native_seconds(CTimespec * t)" in c
+    check "return t->tv_sec;" in c
+    check "gene_native_seconds(GeneValue" notin c
+
+  test "a generated typed-native getter executes against a real C struct":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec " &
+      "  ^fields [[tv_sec C/Int64] [tv_nsec C/Int64]]) " &
+      "(type Timespec ^native {^abi CTimespec ^lifecycle manual}) " &
+      "(fn seconds [t : Timespec] : I64 t/tv_sec)")
+    let harness = """
+#include <stdio.h>
+int main(void) {
+  CTimespec value = {42, 7};
+  printf("%lld\n", (long long)gene_native_seconds(&value));
+  return 0;
+}
+"""
+    checkCRuns(chunk.emitExperimentalC() & harness,
+               "typed_native_direct_getter", "42")
+
+  test "typed-native functions require a machine representation for every parameter":
+    check_compile_error(
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(fn bad [node : Node callback] : I64 node/value)",
+      "typed_native function bad cannot lower its body statically")
+
+  test "typed-native metadata remains available inside lexical child units":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec ^native {^abi CTimespec ^lifecycle manual}) " &
+      "(ns util (fn seconds [t : Timespec] : I64 t/tv_sec))")
+    let c = chunk.emitExperimentalC()
+    check "int64_t gene_native_ns0_seconds(CTimespec * t)" in c
+    check "return t->tv_sec;" in c
+    checkCCompiles(c, "typed_native_lexical_child")
+
+  test "typed-native mutable fields lower stores without dynamic helpers":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec " &
+      "  ^fields [[tv_sec C/Int64] [tv_nsec C/Int64]]) " &
+      "(type Timespec " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
+      "(fn set_seconds [t : Timespec value : I64] : I64 " &
+      "  (do (set! t/tv_sec value) value))")
+    let c = chunk.emitExperimentalC()
+    check "int64_t gene_native_set_seconds(CTimespec * t, int64_t value)" in c
+    check "(void)(t->tv_sec = value);" in c
+    check "return value;" in c
+
+  test "typed-native stores reject narrowing ABI conversions":
+    check_compile_error(
+      "(ffi/struct CByte ^fields [[value C/UInt8]]) " &
+      "(type BytePtr " &
+      "  ^native {^abi CByte ^lifecycle manual ^mutable true}) " &
+      "(fn set_byte [p : BytePtr value : I64] : I64 " &
+      "  (set! p/value value))",
+      "typed_native function set_byte cannot lower its body statically")
+
+  test "typed-native paths reject operations that require runtime dispatch":
+    check_compile_error(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
+      "(fn bad [t : Timespec] : I64 (t ~ missing))",
+      "typed_native function bad cannot lower its body statically")
+
+  test "typed-native sends specialize a visible impl for a concrete receiver":
+    let chunk = compileSource(
+      "(protocol ReadValue (message read_value [] : I64)) " &
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(impl ReadValue for Node " &
+      "  (message read_value [] : I64 self/value)) " &
+      "(fn read [node : Node] : I64 (node ~ ReadValue:read_value))")
+    let c = chunk.emitExperimentalC()
+    check chunk.directProtocolCalls.len == 1
+    check chunk.directProtocolCalls[0].messageName == "read_value"
+    check chunk.directProtocolCalls[0].protocolExpr.print() == "ReadValue"
+    check chunk.directProtocolCalls[0].receiverExpr.print() == "Node"
+    check "int64_t gene_native_impl_0_read_value(CNode * self)" in c
+    check "return self->value;" in c
+    check "return gene_native_impl_0_read_value(node);" in c
+    checkCCompiles(c, "typed_native_specialized_send")
+
+  test "typed-native functions call typed FFI symbols directly":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
+      "(ffi/fn read_seconds ^symbol \"read_seconds\" " &
+      "  [t : Timespec] : C/Long) " &
+      "(fn seconds_via_call [t : Timespec] : I64 (read_seconds t))")
+    let c = chunk.emitExperimentalC()
+    check "extern long GENE_FFI_CDECL read_seconds(CTimespec * t);" in c
+    check "return read_seconds(t);" in c
+    check "gene_ffi_arg_ptr" notin c[c.find("gene_native_seconds_via_call") .. ^1]
+    checkCCompiles(c, "typed_native_direct_ffi")
+
+  test "a lexical binding shadows a typed FFI symbol during lowering":
+    check_compile_error(
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(ffi/fn read_node ^symbol \"foreign_read_node\" " &
+      "  [node : Node] : C/Int64) " &
+      "(fn shadowed [node : Node read_node : Node] : I64 " &
+      "  (read_node node))",
+      "typed_native function shadowed cannot lower its body statically")
+
+  test "typed-native pointer locals stay unboxed":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^native {^abi CTimespec ^lifecycle manual}) " &
+      "(ffi/fn choose_timespec ^symbol \"choose_timespec\" " &
+      "  [t : Timespec] : Timespec) " &
+      "(fn seconds_via_local [t : Timespec] : I64 " &
+      "  (do " &
+      "    (let selected : Timespec (choose_timespec t)) " &
+      "    selected/tv_sec))")
+    let c = chunk.emitExperimentalC()
+    let start = c.find("gene_native_seconds_via_local")
+    check start >= 0
+    let generated = c[start .. ^1]
+    check "CTimespec * selected = choose_timespec(t);" in generated
+    check "return selected->tv_sec;" in generated
+    check "GeneValue" notin generated[0 ..< generated.find("}")]
+    checkCCompiles(c, "typed_native_pointer_local")
+
+  test "typed-native pointer vars rebind without boxing":
+    let chunk = compileSource(
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(fn value_after_replace [node : Node replacement : Node] : I64 " &
+      "  (do " &
+      "    (var selected : Node node) " &
+      "    (set selected replacement) " &
+      "    selected/value))")
+    let c = chunk.emitExperimentalC()
+    let start = c.find("gene_native_value_after_replace")
+    check start >= 0
+    let generated = c[start .. ^1]
+    check "CNode * selected = node;" in generated
+    check "selected = replacement;" in generated
+    check "return selected->value;" in generated
+    check "GeneValue" notin generated[0 ..< generated.find("}")]
+    checkCCompiles(c, "typed_native_pointer_var")
+
+  test "typed-native functions call other typed-native functions directly":
+    let chunk = compileSource(
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(fn identity_node [node : Node] : Node node) " &
+      "(fn value_via_identity [node : Node] : I64 " &
+      "  (do " &
+      "    (let selected : Node (identity_node node)) " &
+      "    selected/value))")
+    let c = chunk.emitExperimentalC()
+    let start = c.find("gene_native_value_via_identity")
+    check start >= 0
+    let generated = c[start .. ^1]
+    check "CNode * selected = gene_native_identity_node(node);" in generated
+    check "return selected->value;" in generated
+    check "GeneValue" notin generated[0 ..< generated.find("}")]
+    checkCCompiles(c, "typed_native_direct_function")
+
+  test "typed-native pointer fields preserve nominal type and nullability":
+    let chunk = compileSource(
+      "(ffi/struct CNode " &
+      "  ^fields [[next (C/NullablePtr Node)] [value C/Int64]]) " &
+      "(type Node " &
+      "  ^native {^abi CNode ^lifecycle manual ^mutable true}) " &
+      "(fn next_node [node : Node] : Node? node/next) " &
+      "(fn set_next [node : Node child : Node] : Node " &
+      "  (do (set! node/next child) child))")
+    let c = chunk.emitExperimentalC()
+    check "CNode * gene_native_next_node(CNode * node)" in c
+    check "return node->next;" in c
+    check "(void)(node->next = child);" in c
+    check "return child;" in c
+    checkCCompiles(c, "typed_native_pointer_field")
+
+  test "typed-native field stores preserve their result's nominal type":
+    check_compile_error(
+      "(ffi/struct CNode ^fields [[next (C/NullablePtr Node)]]) " &
+      "(ffi/struct COther ^fields [[value C/Int64]]) " &
+      "(type Node " &
+      "  ^native {^abi CNode ^lifecycle manual ^mutable true}) " &
+      "(type Other ^native {^abi COther ^lifecycle manual}) " &
+      "(fn lie [node : Node child : Node] : Other " &
+      "  (set! node/next child))",
+      "typed_native function lie cannot lower its body statically")
+
+  test "an explicit native entry borrows a managed wrapper for the call":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CTimespec)} " &
+      "  ^native {^abi CTimespec ^lifecycle manual " &
+      "           ^wrapper handle}) " &
+      "(fn seconds ^native_entry {^t borrow} " &
+      "  [t : Timespec] : I64 t/tv_sec)")
+    let c = chunk.emitExperimentalC()
+    check "GeneStatus gene_entry_seconds(" in c
+    check "gene_typed_native_arg_borrow(ctx, call, 0, \"t\", " &
+      "\"<memory>::Timespec\", \"<memory>::CTimespec\", \"handle\", " &
+      "false, &t_raw)" in c
+    check "CTimespec * t = NULL;" in c
+    check "t = (CTimespec *)t_raw;" in c
+    check "int64_t native_result = gene_native_seconds(t);" in c
+    check "return gene_ffi_result_int64(ctx, native_result, result);" in c
+    check "{\"seconds\", \"gene_native_seconds\", \"gene_entry_seconds\", " &
+      "\"I64\", 1, &gene_frame_seconds}," in c
+    checkCCompiles(c, "typed_native_borrow_entry")
+
+  test "an explicit native entry transfers a wrapper pointer and result":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CTimespec)} " &
+      "  ^native {^abi CTimespec ^lifecycle manual " &
+      "           ^wrapper handle ^release \"timespec_free\"}) " &
+      "(fn handoff ^native_entry {^t transfer ^result transfer} " &
+      "  [t : Timespec] : Timespec t)")
+    let c = chunk.emitExperimentalC()
+    check "gene_typed_native_arg_transfer(ctx, call, 0, \"t\", " &
+      "\"<memory>::Timespec\", \"<memory>::CTimespec\", \"handle\", " &
+      "false, &t_raw)" in c
+    check "static void gene_entry_handoff_result_release(void *value)" in c
+    check "timespec_free((CTimespec *)value);" in c
+    check "CTimespec * native_result = gene_native_handoff(t);" in c
+    check "gene_typed_native_result_transfer(ctx, (void *)native_result, " &
+      "\"<memory>::Timespec\", \"<memory>::CTimespec\", \"handle\", " &
+      "false, gene_entry_handoff_result_release, result)" in c
+    checkCCompiles(c, "typed_native_transfer_entry")
+
+  test "native entry argument acquisition rolls back before returning an error":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Int64]]) " &
+      "(type Timespec " &
+      "  ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CTimespec)} " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^wrapper handle " &
+      "           ^release \"timespec_free\"}) " &
+      "(fn consume ^native_entry {^t transfer} " &
+      "  [t : Timespec count : I64] : I64 t/tv_sec)")
+    let c = chunk.emitExperimentalC()
+    check "goto gene_entry_consume_arg_error;" in c
+    check "gene_typed_native_arg_restore(ctx, call, 0, t_raw);" in c
+    check "gene_entry_consume_arg_error:" in c
+    checkCCompiles(c, "typed_native_argument_rollback")
+
+  test "an explicit native entry copies a wrapper pointer before reboxing":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CTimespec)} " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^wrapper handle " &
+      "           ^release \"timespec_free\" ^copy \"timespec_copy\"}) " &
+      "(fn duplicate ^native_entry {^t copy ^result transfer} " &
+      "  [t : Timespec] : Timespec t)")
+    let c = chunk.emitExperimentalC()
+    check "static void *gene_entry_duplicate_t_copy(const void *value)" in c
+    check "timespec_copy((const CTimespec *)value)" in c
+    check "gene_typed_native_arg_copy(ctx, call, 0, \"t\", " &
+      "\"<memory>::Timespec\", \"<memory>::CTimespec\", \"handle\", " &
+      "false, gene_entry_duplicate_t_copy, &t_raw)" in c
+    check "gene_typed_native_result_transfer(ctx, (void *)native_result" in c
+    checkCCompiles(c, "typed_native_copy_entry")
+
+  test "an explicit native entry copies a borrowed native result":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CTimespec)} " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^wrapper handle " &
+      "           ^release \"timespec_free\" ^copy \"timespec_copy\"}) " &
+      "(fn copied_result ^native_entry {^t borrow ^result copy} " &
+      "  [t : Timespec] : Timespec t)")
+    let c = chunk.emitExperimentalC()
+    check "static void *gene_entry_copied_result_result_copy(" in c
+    check "static void gene_entry_copied_result_result_release(" in c
+    check "gene_typed_native_result_copy(ctx, (void *)native_result, " &
+      "\"<memory>::Timespec\", \"<memory>::CTimespec\", \"handle\", " &
+      "false, gene_entry_copied_result_result_copy, " &
+      "gene_entry_copied_result_result_release, result)" in c
+    checkCCompiles(c, "typed_native_copied_result")
+
+  test "a native entry cannot expose a borrowed pointer result":
+    check_compile_error(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CTimespec)} " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^wrapper handle}) " &
+      "(fn dangling ^native_entry {^t borrow ^result borrow} " &
+      "  [t : Timespec] : Timespec t)",
+      "function dangling ^native_entry cannot borrow a native-pointer result")
+
+  test "a native entry cannot transfer a result derived from a borrowed parameter":
+    check_compile_error(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CTimespec)} " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^wrapper handle " &
+      "           ^release \"timespec_free\"}) " &
+      "(fn double_owner ^native_entry {^t borrow ^result transfer} " &
+      "  [t : Timespec] : Timespec t)",
+      "function double_owner ^native_entry cannot transfer a result " &
+      "derived from borrowed parameter t")
+
+  test "a native entry executes null and copied wrapper boundaries":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CTimespec)} " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^wrapper handle " &
+      "           ^release \"timespec_free\" ^copy \"timespec_copy\"}) " &
+      "(fn round_trip ^native_entry {^t borrow ^result copy} " &
+      "  [t : Timespec?] : Timespec? t)",
+      sourceName = "adapter.gene")
+    let harness = """
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct GeneContext { int unused; };
+struct GeneValue {
+  int kind;
+  void *pointer;
+  bool closed;
+  const char *type_identity;
+  const char *abi_identity;
+  GeneTypedNativeReleaseFn release;
+};
+struct GeneCall { size_t len; GeneValue *args; };
+
+static int copy_calls;
+static int release_calls;
+
+CTimespec *timespec_copy(const CTimespec *value) {
+  ++copy_calls;
+  CTimespec *result = malloc(sizeof(*result));
+  if (result != NULL) *result = *value;
+  return result;
+}
+
+void timespec_free(CTimespec *value) {
+  ++release_calls;
+  free(value);
+}
+
+GeneStatus gene_ffi_check_arity(GeneContext *ctx, const GeneCall *call,
+                                size_t expected) {
+  (void)ctx;
+  return call != NULL && call->len == expected ? GENE_OK : GENE_ERROR;
+}
+
+GeneStatus gene_typed_native_arg_borrow(
+    GeneContext *ctx, const GeneCall *call, size_t index, const char *name,
+    const char *type_identity, const char *abi_identity,
+    const char *handle_field, bool nullable, void **out) {
+  (void)ctx;
+  (void)name;
+  if (call == NULL || index >= call->len || out == NULL) return GENE_ERROR;
+  GeneValue *value = &call->args[index];
+  if (value->kind == 0) {
+    if (!nullable) return GENE_ERROR;
+    *out = NULL;
+    return GENE_OK;
+  }
+  if (value->kind != 1 || value->closed ||
+      strcmp(value->type_identity, type_identity) != 0 ||
+      strcmp(value->abi_identity, abi_identity) != 0 ||
+      strcmp(handle_field, "handle") != 0 ||
+      (value->pointer == NULL && !nullable)) return GENE_ERROR;
+  *out = value->pointer;
+  return GENE_OK;
+}
+
+GeneStatus gene_typed_native_result_copy(
+    GeneContext *ctx, const void *value, const char *type_identity,
+    const char *abi_identity, const char *handle_field, bool nullable,
+    GeneTypedNativeCopyFn copy, GeneTypedNativeReleaseFn release,
+    GeneValue *out) {
+  (void)ctx;
+  if (out == NULL || strcmp(handle_field, "handle") != 0) return GENE_ERROR;
+  if (value == NULL) {
+    if (!nullable) return GENE_ERROR;
+    *out = (GeneValue){0};
+    return GENE_OK;
+  }
+  void *owned = copy(value);
+  if (owned == NULL) return GENE_ERROR;
+  *out = (GeneValue){1, owned, false, type_identity, abi_identity, release};
+  return GENE_OK;
+}
+
+int main(void) {
+  GeneContext ctx = {0};
+  GeneValue arg = {0};
+  GeneCall call = {1, &arg};
+  GeneValue result = {0};
+
+  if (gene_entry_round_trip(&ctx, &call, &result) != GENE_OK ||
+      result.kind != 0 || copy_calls != 0) return 1;
+
+  CTimespec original = {42};
+  arg = (GeneValue){1, &original, false,
+                    "adapter.gene::Timespec",
+                    "adapter.gene::CTimespec", NULL};
+  if (gene_entry_round_trip(&ctx, &call, &result) != GENE_OK ||
+      result.kind != 1 || result.pointer == &original ||
+      ((CTimespec *)result.pointer)->tv_sec != 42 || copy_calls != 1)
+    return 2;
+  result.release(result.pointer);
+  if (release_calls != 1) return 3;
+  puts("nil->null->nil; copy->wrapper");
+  return 0;
+}
+"""
+    checkCRuns(chunk.emitExperimentalC() & harness,
+               "typed_native_adapter_runtime",
+               "nil->null->nil; copy->wrapper")
+
+  test "typed-native FFI calls reject narrowing scalar arguments":
+    check_compile_error(
+      "(ffi/struct CUnit ^fields [[value C/Int64]]) " &
+      "(type UnitPtr ^native {^abi CUnit ^lifecycle manual}) " &
+      "(ffi/fn take_byte ^symbol \"take_byte\" " &
+      "  [value : C/UInt8] : C/Int64) " &
+      "(fn call_take_byte [p : UnitPtr value : I64] : I64 " &
+      "  (take_byte value))",
+      "typed_native function call_take_byte cannot lower its body statically")
+
+  test "typed-native scalar loads reject values wider than I64":
+    check_compile_error(
+      "(ffi/struct CCount ^fields [[value C/UInt64]]) " &
+      "(type CountPtr ^native {^abi CCount ^lifecycle manual}) " &
+      "(fn count [p : CountPtr] : I64 p/value)",
+      "typed_native function count cannot lower its body statically")
+
+  test "nullable typed-native pointers stay unboxed and guard field loads":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^mutable false}) " &
+      "(fn maybe_seconds [t : Timespec?] : I64 t/tv_sec)")
+    let c = chunk.emitExperimentalC()
+    check "int64_t gene_native_maybe_seconds(CTimespec * t)" in c
+    check "return (t != NULL ? t->tv_sec : " &
+      "gene_typed_native_null_i64(\"Timespec\", \"tv_sec\"));" in c
+
+  test "nullable typed-native pointers cannot flow into non-null FFI parameters":
+    check_compile_error(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec ^native {^abi CTimespec ^lifecycle manual}) " &
+      "(ffi/fn read_seconds ^symbol \"read_seconds\" " &
+      "  [t : Timespec] : C/Long) " &
+      "(fn maybe_seconds [t : Timespec?] : I64 (read_seconds t))",
+      "typed_native function maybe_seconds cannot lower its body statically")
+
+  test "nullable typed-native stores guard before assigning":
+    let chunk = compileSource(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Int64]]) " &
+      "(type Timespec " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
+      "(fn maybe_set [t : Timespec? value : I64] : I64 " &
+      "  (set! t/tv_sec value))")
+    let c = chunk.emitExperimentalC()
+    check "t != NULL ? (t->tv_sec = value)" in c
+    checkCCompiles(c, "typed_native_nullable_store")
+
+  test "nullable typed-native bases guard pointer-valued fields with a pointer trap":
+    let chunk = compileSource(
+      "(ffi/struct CNode ^fields [[next (C/NullablePtr Node)]]) " &
+      "(type Node " &
+      "  ^native {^abi CNode ^lifecycle manual ^mutable true}) " &
+      "(fn maybe_next [node : Node?] : Node? node/next) " &
+      "(fn maybe_set_next [node : Node? child : Node] : Node " &
+      "  (set! node/next child))")
+    let c = chunk.emitExperimentalC()
+    check "node != NULL ? node->next : " &
+      "gene_typed_native_null_ptr(\"Node\", \"next\")" in c
+    check "node != NULL ? (node->next = child) : " &
+      "gene_typed_native_null_ptr(\"Node\", \"next\")" in c
+    checkCCompiles(c, "typed_native_nullable_pointer_field")
 
   test "fixed scalar AOT covers branching and direct recursion":
     let chunk = compileSource(

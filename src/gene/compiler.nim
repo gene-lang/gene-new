@@ -101,6 +101,8 @@ type
     importedSyntaxFnSets: Table[string, seq[string]]
     importedSyntaxFnNames: HashSet[string]
     importedInterfaces: Table[string, CompileNamespaceInterface]
+    ownCompileInterface: CompileNamespaceInterface
+    importedCompileEntries: Table[string, CompileInterfaceEntry]
     wildcardCandidates: Table[string, seq[StaticWildcardCandidate]]
     aliasInterfaces: Table[string, StaticAliasInterface]
     declaredUnitNames: HashSet[string]
@@ -683,6 +685,8 @@ proc childCompiler(c: Compiler): Compiler =
            importedSyntaxFnSets: c.importedSyntaxFnSets,
            importedSyntaxFnNames: c.importedSyntaxFnNames,
            importedInterfaces: c.importedInterfaces,
+           ownCompileInterface: c.ownCompileInterface,
+           importedCompileEntries: c.importedCompileEntries,
            wildcardCandidates: c.wildcardCandidates,
            aliasInterfaces: c.aliasInterfaces,
            declaredUnitNames: c.declaredUnitNames,
@@ -2214,6 +2218,378 @@ proc fixedAotType(expr: Value): string =
   of "F64": "F64"
   else: ""
 
+proc ffiTypeLabel(expr: Value): string
+
+proc nativeTypeFor(c: Compiler, expr: Value): NativeTypeProto =
+  ## Local lookup for the first typed-native slice. Imported/native-qualified
+  ## lookup is added at the compile-interface seam; callers never inspect a
+  ## runtime Type value.
+  if expr.kind != vkSymbol:
+    return nil
+  if c.ownCompileInterface != nil and
+      c.ownCompileInterface.entries.hasKey(expr.symVal):
+    result = c.ownCompileInterface.entries[expr.symVal].nativeType
+  for typeProto in c.chunk.typeProtos:
+    if typeProto.name == expr.symVal and typeProto.nativeType != nil:
+      if result != nil and
+          result.identity != typeProto.nativeType.identity:
+        raise newException(GeneError,
+          "ambiguous typed_native Type metadata: " & expr.symVal)
+      result = typeProto.nativeType
+  var imported = false
+  if result == nil and c.importedCompileEntries.hasKey(expr.symVal):
+    result = c.importedCompileEntries[expr.symVal].nativeType
+    imported = result != nil
+  if result != nil and result.abi != nil:
+    var present = false
+    for layout in c.chunk.ffiStructs:
+      if layout.identity == result.abi.identity:
+        present = true
+        break
+    if not present:
+      # Imported layout descriptors are code-generation dependencies, not
+      # runtime declarations. Keeping them on the chunk makes generated C
+      # self-contained and lets invalidation compare exact descriptors.
+      discard c.chunk.addFfiStruct(result.abi)
+    if imported:
+      c.chunk.addFfiStructDependency(result.abi.identity)
+
+proc resolvedAotRepr(c: Compiler, expr: Value): AotRepr =
+  var nativeExpr = expr
+  var nullable = false
+  if expr.kind == vkSymbol and expr.symVal.len > 1 and
+      expr.symVal.endsWith("?"):
+    nativeExpr = newSym(expr.symVal[0 .. ^2])
+    nullable = true
+  if expr.kind == vkSymbol:
+    case expr.symVal
+    of "I64":
+      return AotRepr(kind: arkI64, typeName: "I64")
+    of "F64":
+      return AotRepr(kind: arkF64, typeName: "F64")
+    else:
+      discard
+  let nativeType = c.nativeTypeFor(nativeExpr)
+  if nativeType != nil:
+    return AotRepr(kind: arkNativePtr,
+                   typeName: nativeType.name,
+                   nullable: nullable,
+                   nativeType: nativeType)
+
+proc fieldMatchesAotResult(fieldType: Value, resultRepr: AotRepr): bool =
+  let label = ffiTypeLabel(fieldType)
+  case resultRepr.kind
+  of arkI64:
+    label in [
+      "C/Int8", "C/UInt8", "C/Int16", "C/UInt16", "C/Int32", "C/UInt32",
+      "C/Int64", "C/Char", "C/UChar", "C/Short", "C/UShort", "C/Int",
+      "C/UInt", "C/Long", "C/PtrDiff"
+    ]
+  of arkF64:
+    label in ["C/Float", "C/Double"]
+  else:
+    false
+
+proc fieldAcceptsAotStore(fieldType: Value, valueRepr: AotRepr): bool =
+  ## The initial write subset is lossless. Wider/narrower ABI conversions need
+  ## an explicit checked lowering before they become eligible.
+  let label = ffiTypeLabel(fieldType)
+  case valueRepr.kind
+  of arkI64:
+    label == "C/Int64"
+  of arkF64:
+    label == "C/Double"
+  else:
+    false
+
+proc typedNativeField(expr: Value, params: openArray[string],
+                      paramReprs: openArray[AotRepr],
+                      locals: openArray[AotLocal]):
+    tuple[found: bool, nativeType: NativeTypeProto, field: FfiStructField] =
+  if expr.kind != vkNode or not expr.head.isSymbol("path") or
+      expr.body.len != 2 or expr.body[0].kind != vkSymbol or
+      expr.body[1].kind != vkSymbol:
+    return
+  let base = expr.body[0].symVal
+  var baseRepr = AotRepr()
+  for i, param in params:
+    if base == param and i < paramReprs.len:
+      baseRepr = paramReprs[i]
+      break
+  if baseRepr.kind == arkNone:
+    for local in locals:
+      if local.name == base:
+        baseRepr = local.repr
+        break
+  if baseRepr.kind != arkNativePtr:
+    return
+  let nativeType = baseRepr.nativeType
+  for field in nativeType.abi.fields:
+    if field.name == expr.body[1].symVal:
+      return (true, nativeType, field)
+
+proc aotBindingRepr(expr: Value, params: openArray[string],
+                    paramReprs: openArray[AotRepr],
+                    locals: openArray[AotLocal]): AotRepr =
+  if expr.kind != vkSymbol:
+    return
+  for i, param in params:
+    if expr.symVal == param and i < paramReprs.len:
+      return paramReprs[i]
+  for local in locals:
+    if expr.symVal == local.name:
+      return local.repr
+
+proc aotMutableBindingRepr(name: string, params: openArray[string],
+                           paramReprs: openArray[AotRepr],
+                           locals: openArray[AotLocal]): AotRepr =
+  for i, param in params:
+    if param == name and i < paramReprs.len:
+      return paramReprs[i]
+  for local in locals:
+    if local.name == name and local.mutable:
+      return local.repr
+
+proc aotReprAccepts(destination, source: AotRepr): bool =
+  if destination.kind != source.kind:
+    return false
+  if destination.kind != arkNativePtr:
+    return destination.kind != arkNone
+  destination.nativeType.identity == source.nativeType.identity and
+    (destination.nullable or not source.nullable)
+
+proc nativeFieldAotRepr(c: Compiler, expr: Value): AotRepr =
+  ## Preserve the nominal Gene Type carried by a pointer-valued C field. The C
+  ## layout owns the machine shape; the target Type supplies the identity and
+  ## nullability needed to type-check subsequent direct loads and stores.
+  if expr.kind != vkNode or expr.body.len != 1:
+    return
+  let head = ffiTypeLabel(expr.head)
+  # Const views need a representation-level read-only bit, and an OwnedPtr
+  # field needs an explicit ownership operation before it can become a nominal
+  # local/result. Do not erase either contract into a plain mutable pointer.
+  if head notin ["C/Ptr", "C/NullablePtr"]:
+    return
+  let nativeType = c.nativeTypeFor(expr.body[0])
+  if nativeType == nil:
+    return
+  AotRepr(kind: arkNativePtr,
+          typeName: nativeType.name,
+          nullable: head == "C/NullablePtr",
+          nativeType: nativeType)
+
+proc ffiParamMatchesAotRepr(typeExpr: Value, ffiRepr,
+                            valueRepr: AotRepr): bool =
+  if ffiRepr.kind == arkNativePtr:
+    return ffiRepr.aotReprAccepts(valueRepr)
+  typeExpr.fieldAcceptsAotStore(valueRepr)
+
+proc ffiResultMatchesAotRepr(typeExpr: Value, ffiRepr,
+                             resultRepr: AotRepr): bool =
+  if ffiRepr.kind == arkNativePtr:
+    return resultRepr.aotReprAccepts(ffiRepr)
+  typeExpr.fieldMatchesAotResult(resultRepr)
+
+proc aotBindingNamed(name: string, params: openArray[string],
+                     locals: openArray[AotLocal]): bool =
+  for param in params:
+    if param == name:
+      return true
+  for local in locals:
+    if local.name == name:
+      return true
+
+proc localAotFunction(c: Compiler, name: string): FunctionProto =
+  ## A previously declared function in this compiled unit is callable directly
+  ## when its complete machine signature and body have already been proven.
+  ## Keeping this source-ordered matches C emission, which has emitted the
+  ## callee before making it available to the next function.
+  for fn in c.chunk.functions:
+    if fn.name == name and fn.aotExpr.kind != vkNil:
+      return fn
+
+proc typedNativeSend(expr: Value, params: openArray[string],
+                     paramReprs: openArray[AotRepr],
+                     locals: openArray[AotLocal]):
+    tuple[found: bool, receiverRepr: AotRepr, protocolExpr: Value,
+          messageName: string, argsStart: int] =
+  if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0 or
+      expr.head.kind != vkSymbol or expr.body.len < 2 or
+      not expr.body[0].isSymbol("~"):
+    return
+  let receiverRepr = expr.head.aotBindingRepr(params, paramReprs, locals)
+  if receiverRepr.kind != arkNativePtr or receiverRepr.nullable:
+    return
+  let message = expr.body[1]
+  if message.kind == vkSymbol:
+    return (true, receiverRepr, NIL, message.symVal, 2)
+  if message.kind == vkNode and message.head.isSymbol("msg") and
+      message.body.len == 2 and message.body[1].kind == vkSymbol:
+    return (true, receiverRepr, message.body[0], message.body[1].symVal, 2)
+
+proc localAotImplMessage(c: Compiler, receiverRepr: AotRepr,
+                         protocolExpr: Value,
+                         messageName: string):
+    tuple[fn: FunctionProto, protocolExpr, receiverExpr: Value] =
+  var matches = 0
+  for impl in c.chunk.implProtos:
+    if not impl.staticTopLevel or not impl.staticOperands:
+      continue
+    let implReceiver = c.resolvedAotRepr(impl.receiverExpr)
+    if implReceiver.kind != arkNativePtr or
+        implReceiver.nativeType.identity != receiverRepr.nativeType.identity:
+      continue
+    if protocolExpr.kind != vkNil and not equal(impl.protocolExpr, protocolExpr):
+      continue
+    for message in impl.messages:
+      if message.name != messageName or message.protocolPath.len != 0:
+        continue
+      inc matches
+      result = (message.fn, impl.protocolExpr, impl.receiverExpr)
+  if matches != 1:
+    result = (nil, NIL, NIL)
+
+proc recordAotDirectImpl(c: Compiler, messageName: string,
+                         protocolExpr, receiverExpr: Value) =
+  for existing in c.chunk.directProtocolCalls:
+    if existing.messageName == messageName and
+        equal(existing.protocolExpr, protocolExpr) and
+        equal(existing.receiverExpr, receiverExpr):
+      return
+  discard c.chunk.addDirectProtocolCall(DirectProtocolCallSpec(
+    messageName: messageName,
+    protocolExpr: protocolExpr,
+    receiverExpr: receiverExpr))
+
+proc isTypedNativeAotExpr(c: Compiler, expr: Value,
+                          params: openArray[string],
+                          paramReprs: openArray[AotRepr],
+                          resultRepr: AotRepr,
+                          ffiFns: openArray[FfiFnProto],
+                          locals: var seq[AotLocal]): bool =
+  ## Static expression subset for native-pointer functions. Start with the gate
+  ## promised by the proposal: pointer identity and one scalar foreign-field
+  ## read. Unsupported operations are rejected instead of silently boxing.
+  if expr.kind == vkSymbol:
+    let repr = expr.aotBindingRepr(params, paramReprs, locals)
+    return resultRepr.aotReprAccepts(repr)
+  if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0 or
+      expr.head.kind != vkSymbol:
+    return false
+  if expr.head.symVal == "path":
+    let resolved = expr.typedNativeField(params, paramReprs, locals)
+    if not resolved.found:
+      return false
+    let fieldRepr = c.nativeFieldAotRepr(resolved.field.typeExpr)
+    if fieldRepr.kind != arkNone:
+      return resultRepr.aotReprAccepts(fieldRepr)
+    return resolved.field.typeExpr.fieldMatchesAotResult(resultRepr)
+  if expr.head.symVal == "set!" and expr.body.len == 2:
+    let resolved = expr.body[0].typedNativeField(params, paramReprs, locals)
+    if not resolved.found or not resolved.nativeType.mutable:
+      return false
+    let valueRepr = expr.body[1].aotBindingRepr(params, paramReprs, locals)
+    if valueRepr.kind == arkNone:
+      return false
+    let fieldRepr = c.nativeFieldAotRepr(resolved.field.typeExpr)
+    if fieldRepr.kind != arkNone:
+      return fieldRepr.aotReprAccepts(valueRepr) and
+        resultRepr.aotReprAccepts(valueRepr)
+    return resolved.field.typeExpr.fieldAcceptsAotStore(valueRepr) and
+      resultRepr.aotReprAccepts(valueRepr)
+  if expr.head.symVal == "set" and expr.body.len == 2 and
+      expr.body[0].kind == vkSymbol:
+    let destination = expr.body[0].symVal.aotMutableBindingRepr(
+      params, paramReprs, locals)
+    let valueRepr = expr.body[1].aotBindingRepr(params, paramReprs, locals)
+    return destination.kind != arkNone and valueRepr.kind != arkNone and
+      destination.aotReprAccepts(valueRepr) and
+      resultRepr.aotReprAccepts(valueRepr)
+  if expr.head.symVal == "do" and expr.body.len > 0:
+    for i in 0 ..< expr.body.high:
+      let statement = expr.body[i]
+      if statement.kind == vkNode and
+          (statement.head.isSymbol("let") or statement.head.isSymbol("var")):
+        if statement.body.len != 4 or statement.body[0].kind != vkSymbol or
+            not statement.body[1].isSymbol(":"):
+          return false
+        let name = statement.body[0].symVal
+        if name in params:
+          return false
+        for local in locals:
+          if local.name == name:
+            return false
+        let localRepr = c.resolvedAotRepr(statement.body[2])
+        if localRepr.kind == arkNone or
+            not c.isTypedNativeAotExpr(statement.body[3], params, paramReprs,
+                                       localRepr, ffiFns, locals):
+          return false
+        locals.add AotLocal(name: name, repr: localRepr,
+                            mutable: statement.head.isSymbol("var"))
+        continue
+      # Statement-position stores still return the assigned scalar, but their
+      # value is discarded by `do`; validate against the RHS representation.
+      if statement.kind != vkNode or statement.head.kind != vkSymbol or
+          statement.head.symVal notin ["set", "set!"] or
+          statement.body.len != 2:
+        return false
+      let valueRepr = statement.body[1].aotBindingRepr(
+        params, paramReprs, locals)
+      if valueRepr.kind == arkNone or
+          not c.isTypedNativeAotExpr(statement, params, paramReprs, valueRepr,
+                                     ffiFns, locals):
+        return false
+    return c.isTypedNativeAotExpr(expr.body[^1], params, paramReprs,
+                                  resultRepr, ffiFns, locals)
+  let send = expr.typedNativeSend(params, paramReprs, locals)
+  if send.found:
+    let selected = c.localAotImplMessage(send.receiverRepr, send.protocolExpr,
+                                         send.messageName)
+    let callee = selected.fn
+    if callee == nil or callee.aotExpr.kind == vkNil or
+        callee.params.len != expr.body.len - send.argsStart + 1 or
+        callee.aotParamReprs.len != callee.params.len or
+        not callee.aotParamReprs[0].aotReprAccepts(send.receiverRepr):
+      return false
+    for i in send.argsStart ..< expr.body.len:
+      let argRepr = expr.body[i].aotBindingRepr(params, paramReprs, locals)
+      let calleeIndex = i - send.argsStart + 1
+      if argRepr.kind == arkNone or
+          not callee.aotParamReprs[calleeIndex].aotReprAccepts(argRepr):
+        return false
+    if not resultRepr.aotReprAccepts(callee.aotReturnRepr):
+      return false
+    c.recordAotDirectImpl(send.messageName, selected.protocolExpr,
+                          selected.receiverExpr)
+    return true
+  if expr.head.symVal.aotBindingNamed(params, locals):
+    return false
+  let callee = c.localAotFunction(expr.head.symVal)
+  if callee != nil:
+    if callee.params.len != expr.body.len or
+        callee.aotParamReprs.len != expr.body.len:
+      return false
+    for i, arg in expr.body:
+      let argRepr = arg.aotBindingRepr(params, paramReprs, locals)
+      if argRepr.kind == arkNone or
+          not callee.aotParamReprs[i].aotReprAccepts(argRepr):
+        return false
+    return resultRepr.aotReprAccepts(callee.aotReturnRepr)
+  for ffiFn in ffiFns:
+    if ffiFn.name != expr.head.symVal:
+      continue
+    if ffiFn.params.len != expr.body.len:
+      return false
+    for i, arg in expr.body:
+      let argRepr = arg.aotBindingRepr(params, paramReprs, locals)
+      if argRepr.kind == arkNone or i >= ffiFn.paramReprs.len or
+          not ffiFn.params[i].typeExpr.ffiParamMatchesAotRepr(
+            ffiFn.paramReprs[i], argRepr):
+        return false
+    return ffiFn.returnType.ffiResultMatchesAotRepr(ffiFn.returnRepr,
+                                                    resultRepr)
+  false
+
 proc nativeArithmeticOp(typeName, opName: string): NativeCompileOp =
   case typeName
   of "Int":
@@ -2374,7 +2750,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                         typeParams: seq[string] = @[],
                         checksErrors = false,
                         errorTypeCount = 0,
-                        immutableSelf = false): FunctionProto =
+                        immutableSelf = false,
+                        aotSelfRepr = AotRepr()): FunctionProto =
   var start = bodyStart
   var returnType = NIL
   if start < body.len and body[start].isSymbol(":"):
@@ -2506,8 +2883,54 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
   let native = specs.detectNativeCompileOp(body, start, returnType,
                                            typeParams, checksErrors,
                                            fnCompiler.sawYield)
-  let aotExpr = c.detectAotExpr(name, specs, body, start, returnType,
-                                typeParams, checksErrors, fnCompiler.sawYield)
+  var aotParamReprs: seq[AotRepr]
+  for i, paramType in specs.positionalTypes:
+    if i == 0 and specs.positional[i] == "self" and
+        aotSelfRepr.kind != arkNone:
+      aotParamReprs.add aotSelfRepr
+    else:
+      aotParamReprs.add c.resolvedAotRepr(paramType)
+  let aotReturnRepr = c.resolvedAotRepr(returnType)
+  var requiresTypedNative = aotReturnRepr.kind == arkNativePtr
+  for paramType in specs.positionalTypes:
+    requiresTypedNative = requiresTypedNative or
+      c.resolvedAotRepr(paramType).kind == arkNativePtr
+  var hasNativeRepr = aotReturnRepr.kind == arkNativePtr
+  var allAotParamsRepresentable = true
+  for repr in aotParamReprs:
+    hasNativeRepr = hasNativeRepr or repr.kind == arkNativePtr
+    allAotParamsRepresentable =
+      allAotParamsRepresentable and repr.kind != arkNone
+  var aotLocals: seq[AotLocal]
+  var aotExpr = NIL
+  if hasNativeRepr:
+    let cannotLower = typeParams.len != 0 or checksErrors or fnCompiler.sawYield or
+        specs.rest.len != 0 or specs.named.len != 0 or
+        specs.hasOptionalPositional or body.len != start + 1 or
+        aotReturnRepr.kind == arkNone or
+        not allAotParamsRepresentable or
+        aotParamReprs.len != specs.positional.len or
+        not c.isTypedNativeAotExpr(body[start], specs.positional,
+                                   aotParamReprs, aotReturnRepr,
+                                   c.chunk.ffiFns, aotLocals)
+    if cannotLower:
+      if requiresTypedNative:
+        raise newException(GeneError,
+          "typed_native function " &
+          (if name.len > 0: name else: "<anonymous>") &
+          " cannot lower its body statically; box explicitly or keep the " &
+          "function in dynamic Gene")
+      aotLocals.setLen(0)
+    else:
+      aotExpr = body[start]
+  else:
+    aotExpr = c.detectAotExpr(name, specs, body, start, returnType,
+                              typeParams, checksErrors, fnCompiler.sawYield)
+  if aotExpr.kind != vkNil and not hasNativeRepr:
+    # The original scalar AOT path is representation-homogeneous.
+    for i in 0 ..< aotParamReprs.len:
+      if aotParamReprs[i].kind == arkNone:
+        aotParamReprs[i] = aotReturnRepr
   let aotFrameKind =
     if aotExpr.kind == vkNil: afkNone
     else: afkTypedNative
@@ -2585,6 +3008,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          nativeOp: native.op,
                          nativeParamIndex: native.paramIndex,
                          aotExpr: aotExpr,
+                         aotParamReprs: aotParamReprs,
+                         aotLocals: aotLocals,
+                         aotReturnRepr: aotReturnRepr,
                          aotFrameKind: aotFrameKind,
                          aotFrameCanSuspend: false,
                          taskFrameKind: taskFrameKind,
@@ -2593,6 +3019,164 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          chunk: fnCompiler.chunk)
   result.chunk.owner = result
   deriveScopelessChunk(result)
+
+proc nativeOwnership(value: Value, context: string): NativeOwnership =
+  if value.kind != vkSymbol:
+    raise newException(GeneError, context & " must be borrow, transfer, or copy")
+  case value.symVal
+  of "borrow": noBorrow
+  of "transfer": noTransfer
+  of "copy": noCopy
+  else:
+    raise newException(GeneError, context & " must be borrow, transfer, or copy")
+
+proc nativeResultSources(expr: Value, params: openArray[string],
+                         locals: Table[string, HashSet[int]]): HashSet[int] =
+  ## Conservative provenance for pointer results crossing a dynamic entry.
+  ## A result reached through a binding, field, or call argument retains every
+  ## parameter it may borrow from; transferring such a result would create a
+  ## second owner for a wrapper that remains live.
+  if expr.kind == vkSymbol:
+    for i, param in params:
+      if expr.symVal == param:
+        result.incl i
+        return
+    if locals.hasKey(expr.symVal):
+      return locals[expr.symVal]
+    return
+  if expr.kind != vkNode:
+    return
+  if expr.head.isSymbol("path") and expr.body.len > 0:
+    return nativeResultSources(expr.body[0], params, locals)
+  if expr.head.kind == vkSymbol and expr.head.symVal in ["set", "set!"] and
+      expr.body.len == 2:
+    return nativeResultSources(expr.body[1], params, locals)
+  if expr.head.isSymbol("do") and expr.body.len > 0:
+    var flowLocals = locals
+    for i in 0 ..< expr.body.high:
+      let statement = expr.body[i]
+      if statement.kind != vkNode or statement.head.kind != vkSymbol:
+        continue
+      if statement.head.symVal in ["let", "var"] and
+          statement.body.len == 4 and statement.body[0].kind == vkSymbol:
+        flowLocals[statement.body[0].symVal] =
+          nativeResultSources(statement.body[3], params, flowLocals)
+      elif statement.head.symVal == "set" and statement.body.len == 2 and
+          statement.body[0].kind == vkSymbol:
+        flowLocals[statement.body[0].symVal] =
+          nativeResultSources(statement.body[1], params, flowLocals)
+    return nativeResultSources(expr.body[^1], params, flowLocals)
+  # Until callees carry a richer ownership signature, assume their pointer
+  # result may borrow from any argument. This keeps the dynamic ownership seam
+  # safe and can be relaxed when direct calls publish result provenance.
+  for arg in expr.body:
+    for source in nativeResultSources(arg, params, locals):
+      result.incl source
+
+proc nativeEntryMarker(node: Value, fn: FunctionProto): NativeEntryProto =
+  if not node.props.hasKey("native_entry"):
+    return NativeEntryProto(resultBorrowParam: -1)
+  if fn.name.len == 0:
+    raise newException(GeneError,
+      "^native_entry requires a named typed_native function")
+  if fn.aotExpr.kind == vkNil:
+    raise newException(GeneError,
+      "function " & fn.name & " ^native_entry requires typed_native lowering")
+  let marker = node.props["native_entry"]
+  if marker.kind != vkMap:
+    raise newException(GeneError,
+      "function " & fn.name & " ^native_entry must be a map")
+  result.enabled = true
+  result.resultBorrowParam = -1
+  result.paramOwnership = newSeq[NativeOwnership](fn.params.len)
+  for key, policyExpr in marker.mapEntries:
+    if key == "result":
+      if fn.aotReturnRepr.kind != arkNativePtr:
+        raise newException(GeneError,
+          "function " & fn.name &
+          " ^native_entry ^result is only valid for a native-pointer result")
+      result.resultOwnership = nativeOwnership(
+        policyExpr, "function " & fn.name & " ^native_entry ^result")
+      continue
+    var paramIndex = -1
+    for i, param in fn.params:
+      if param == key:
+        paramIndex = i
+        break
+    if paramIndex < 0:
+      raise newException(GeneError,
+        "function " & fn.name &
+        " ^native_entry names no parameter: " & key)
+    if paramIndex >= fn.aotParamReprs.len or
+        fn.aotParamReprs[paramIndex].kind != arkNativePtr:
+      raise newException(GeneError,
+        "function " & fn.name & " ^native_entry ^" & key &
+        " is only valid for a native-pointer parameter")
+    result.paramOwnership[paramIndex] = nativeOwnership(
+      policyExpr, "function " & fn.name & " ^native_entry ^" & key)
+  for i, repr in fn.aotParamReprs:
+    if repr.kind != arkNativePtr:
+      continue
+    if result.paramOwnership[i] == noNone:
+      raise newException(GeneError,
+        "function " & fn.name & " ^native_entry requires an ownership " &
+        "policy for parameter " & fn.params[i])
+    if repr.nativeType == nil or repr.nativeType.wrapperField.len == 0:
+      raise newException(GeneError,
+        "function " & fn.name & " ^native_entry parameter " & fn.params[i] &
+        " requires its native Type to declare ^wrapper")
+    if result.paramOwnership[i] == noCopy and
+        repr.nativeType.copySymbol.len == 0:
+      raise newException(GeneError,
+          "function " & fn.name & " ^native_entry copies parameter " &
+          fn.params[i] & " but its native Type does not declare ^copy")
+    if result.paramOwnership[i] == noCopy and
+        repr.nativeType.releaseSymbol.len == 0:
+      raise newException(GeneError,
+        "function " & fn.name & " ^native_entry copies parameter " &
+        fn.params[i] & " but its native Type does not declare ^release")
+  if fn.aotReturnRepr.kind == arkNativePtr:
+    if result.resultOwnership == noNone:
+      raise newException(GeneError,
+        "function " & fn.name &
+        " ^native_entry requires an ownership policy for its result")
+    if fn.aotReturnRepr.nativeType == nil or
+        fn.aotReturnRepr.nativeType.wrapperField.len == 0:
+      raise newException(GeneError,
+        "function " & fn.name &
+        " ^native_entry result requires its native Type to declare ^wrapper")
+    if result.resultOwnership == noBorrow:
+      raise newException(GeneError,
+        "function " & fn.name &
+        " ^native_entry cannot borrow a native-pointer result; use transfer " &
+        "or copy")
+    if result.resultOwnership == noTransfer and
+        fn.aotReturnRepr.nativeType.releaseSymbol.len == 0:
+      raise newException(GeneError,
+          "function " & fn.name &
+          " ^native_entry transfers its result but its native Type does not " &
+          "declare ^release")
+    if result.resultOwnership == noTransfer:
+      let sources = nativeResultSources(
+        fn.aotExpr, fn.params, initTable[string, HashSet[int]]())
+      for source in sources:
+        if source < result.paramOwnership.len and
+            result.paramOwnership[source] == noBorrow:
+          raise newException(GeneError,
+            "function " & fn.name &
+            " ^native_entry cannot transfer a result derived from borrowed " &
+            "parameter " & fn.params[source])
+    if result.resultOwnership == noCopy:
+      if fn.aotReturnRepr.nativeType.copySymbol.len == 0:
+        raise newException(GeneError,
+          "function " & fn.name &
+          " ^native_entry copies its result but its native Type does not " &
+          "declare ^copy")
+      if fn.aotReturnRepr.nativeType.releaseSymbol.len == 0:
+        raise newException(GeneError,
+          "function " & fn.name &
+          " ^native_entry copies its result but its native Type does not " &
+          "declare ^release")
 
 proc compileIfThen(c: var Compiler, node: Value) =
   ## (if_yes cond body...) — everything after the condition is the then
@@ -2835,6 +3419,7 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
                                  typeParams = typeParams,
                                  checksErrors = errorRow.checks,
                                  errorTypeCount = errorRow.count)
+  proto.nativeEntry = nativeEntryMarker(node, proto)
   # Declaration meta (@route ..., @doc ...) rides the proto as raw data so
   # Module/declarations records can expose it (proposal §8 route discovery).
   for key, val in node.meta:
@@ -3032,6 +3617,12 @@ proc nsPathSegments(v: Value): seq[string] =
   else:
     raise newException(GeneError, "import source must be a namespace path or `from \"path\"`")
 
+proc propLiteral(node: Value, key, defaultValue, context: string): string
+proc propInt(node: Value, key: string, defaultValue: int,
+             context: string, hasValue: var bool): int
+proc parseFfiStructFields(fields: Value): seq[FfiStructField]
+proc validateFfiLayout(context, layout: string)
+
 proc newCompileNamespaceInterface*(): CompileNamespaceInterface =
   CompileNamespaceInterface(entries: initTable[string, CompileInterfaceEntry]())
 
@@ -3069,19 +3660,36 @@ proc protocolInterfaceMessages(form: Value): seq[string] =
 
 proc collectCompileInterfaceForms(forms: openArray[Value], first: int,
                                   target: CompileNamespaceInterface,
-                                  syntaxNames: var HashSet[string])
+                                  syntaxNames: var HashSet[string],
+                                  sourceName: string,
+                                  namespacePath: seq[string])
 
 proc collectCompileInterfaceForm(form: Value,
                                  target: CompileNamespaceInterface,
-                                 syntaxNames: var HashSet[string]) =
-  if form.kind != vkNode or form.head.kind != vkSymbol:
+                                 syntaxNames: var HashSet[string],
+                                 sourceName: string,
+                                 namespacePath: seq[string]) =
+  if form.kind != vkNode:
     return
-  let head = form.head.symVal
+  var head = ""
+  if form.head.kind == vkSymbol:
+    head = form.head.symVal
+  elif form.head.kind == vkNode and form.head.head.isSymbol("path"):
+    var segments: seq[string]
+    for segment in form.head.body:
+      if segment.kind != vkSymbol:
+        return
+      segments.add segment.symVal
+    head = segments.join("/")
+  if head.len == 0:
+    return
   case head
   of "mod":
-    collectCompileInterfaceForms(form.body, 1, target, syntaxNames)
+    collectCompileInterfaceForms(form.body, 1, target, syntaxNames,
+                                 sourceName, namespacePath)
   of "do":
-    collectCompileInterfaceForms(form.body, 0, target, syntaxNames)
+    collectCompileInterfaceForms(form.body, 0, target, syntaxNames,
+                                 sourceName, namespacePath)
   of "ns":
     let name = form.declaredName
     if name.len == 0:
@@ -3092,7 +3700,8 @@ proc collectCompileInterfaceForm(form: Value,
         target.entries[name].namespace != nil:
       child = target.entries[name].namespace
     var childSyntax = initHashSet[string]()
-    collectCompileInterfaceForms(form.body, 1, child, childSyntax)
+    collectCompileInterfaceForms(form.body, 1, child, childSyntax,
+                                 sourceName, namespacePath & @[name])
     if not form.declarationIsPrivate:
       target.entries[name] = CompileInterfaceEntry(
         category: cbcNamespace, namespace: child)
@@ -3135,7 +3744,32 @@ proc collectCompileInterfaceForm(form: Value,
         if entry.category == cbcSyntaxFn:
           entry.category = cbcValue
           target.entries[name] = entry
-  of "type", "enum", "alias":
+  of "ffi/struct":
+    let name = form.declaredName
+    if name.len > 0 and form.props.hasKey("fields"):
+      var hasSize = false
+      var hasAlign = false
+      let layout = propLiteral(form, "layout", "C", "ffi/struct")
+      validateFfiLayout("ffi/struct", layout)
+      target.entries[name] = CompileInterfaceEntry(
+        category: cbcValue,
+        ffiStruct: FfiStructProto(
+          name: name,
+          identity: (if sourceName.len > 0: sourceName else: "<memory>") &
+            "::" & (namespacePath & @[name]).join("/"),
+          layout: layout,
+          size: propInt(form, "size", -1, "ffi/struct", hasSize),
+          hasSize: hasSize,
+          align: propInt(form, "align", -1, "ffi/struct", hasAlign),
+          hasAlign: hasAlign,
+          fields: parseFfiStructFields(form.props["fields"])))
+  of "type":
+    let name = form.declaredName
+    if name.len > 0 and not form.declarationIsPrivate:
+      target.entries[name] = CompileInterfaceEntry(
+        category: cbcType,
+        nativeSpec: form.props.getOrDefault("native", NIL))
+  of "enum", "alias":
     let name = form.declaredName
     if name.len > 0 and not form.declarationIsPrivate:
       target.entries[name] = CompileInterfaceEntry(category: cbcType)
@@ -3150,16 +3784,80 @@ proc collectCompileInterfaceForm(form: Value,
 
 proc collectCompileInterfaceForms(forms: openArray[Value], first: int,
                                   target: CompileNamespaceInterface,
-                                  syntaxNames: var HashSet[string]) =
+                                  syntaxNames: var HashSet[string],
+                                  sourceName: string,
+                                  namespacePath: seq[string]) =
   if first > forms.high:
     return
   for i in first .. forms.high:
-    collectCompileInterfaceForm(forms[i], target, syntaxNames)
+    collectCompileInterfaceForm(forms[i], target, syntaxNames,
+                                sourceName, namespacePath)
 
-proc buildCompileInterface*(forms: openArray[Value]): CompileNamespaceInterface =
+proc resolveNativeInterfaceTypes(iface: CompileNamespaceInterface,
+                                 sourceName: string,
+                                 namespacePath: seq[string]) =
+  if iface == nil:
+    return
+  for name, entryValue in iface.entries.mpairs:
+    if entryValue.category == cbcNamespace:
+      resolveNativeInterfaceTypes(entryValue.namespace, sourceName,
+                                  namespacePath & @[name])
+      continue
+    if entryValue.category != cbcType or entryValue.nativeSpec.kind == vkNil:
+      continue
+    let spec = entryValue.nativeSpec
+    if spec.kind != vkMap or not spec.mapEntries.hasKey("abi"):
+      continue # The full compiler produces the normative diagnostic.
+    let abiExpr = spec.mapEntries["abi"]
+    if abiExpr.kind != vkSymbol or not iface.entries.hasKey(abiExpr.symVal):
+      continue
+    let abi = iface.entries[abiExpr.symVal].ffiStruct
+    if abi == nil:
+      continue
+    var lifecycle = "manual"
+    if spec.mapEntries.hasKey("lifecycle") and
+        spec.mapEntries["lifecycle"].kind == vkSymbol:
+      lifecycle = spec.mapEntries["lifecycle"].symVal
+    let mutable = spec.mapEntries.hasKey("mutable") and
+      spec.mapEntries["mutable"].kind == vkBool and
+      spec.mapEntries["mutable"].boolVal
+    let wrapperField =
+      if spec.mapEntries.hasKey("wrapper") and
+          spec.mapEntries["wrapper"].kind == vkSymbol:
+        spec.mapEntries["wrapper"].symVal
+      else:
+        ""
+    let releaseSymbol =
+      if spec.mapEntries.hasKey("release") and
+          spec.mapEntries["release"].kind == vkString:
+        spec.mapEntries["release"].strVal
+      else:
+        ""
+    let copySymbol =
+      if spec.mapEntries.hasKey("copy") and
+          spec.mapEntries["copy"].kind == vkString:
+        spec.mapEntries["copy"].strVal
+      else:
+        ""
+    entryValue.nativeType = NativeTypeProto(
+      name: name,
+      identity: (if sourceName.len > 0: sourceName else: "<memory>") &
+        "::" & (namespacePath & @[name]).join("/"),
+      abiIdentity: abi.identity,
+      abi: abi,
+      lifecycle: lifecycle,
+      mutable: mutable,
+      wrapperField: wrapperField,
+      releaseSymbol: releaseSymbol,
+      copySymbol: copySymbol)
+
+proc buildCompileInterface*(forms: openArray[Value],
+                            sourceName = ""): CompileNamespaceInterface =
   result = newCompileNamespaceInterface()
   var syntaxNames = initHashSet[string]()
-  collectCompileInterfaceForms(forms, 0, result, syntaxNames)
+  collectCompileInterfaceForms(forms, 0, result, syntaxNames,
+                               sourceName, @[])
+  resolveNativeInterfaceTypes(result, sourceName, @[])
 
 proc compileInterfaceAt*(root: CompileNamespaceInterface,
                          segments: openArray[string]): CompileNamespaceInterface =
@@ -3194,6 +3892,31 @@ proc compileInterfacePaths*(iface: CompileNamespaceInterface,
         result.add nested
   result.sort()
 
+proc ffiStructsEqual(a, b: FfiStructProto): bool =
+  if a == nil or b == nil:
+    return a == b
+  if a.identity != b.identity or a.layout != b.layout or
+      a.hasSize != b.hasSize or a.size != b.size or
+      a.hasAlign != b.hasAlign or a.align != b.align or
+      a.fields.len != b.fields.len:
+    return false
+  for i in 0 ..< a.fields.len:
+    let left = a.fields[i]
+    let right = b.fields[i]
+    if left.name != right.name or not equal(left.typeExpr, right.typeExpr) or
+        left.hasOffset != right.hasOffset or left.offset != right.offset:
+      return false
+  true
+
+proc nativeTypesEqual(a, b: NativeTypeProto): bool =
+  if a == nil or b == nil:
+    return a == b
+  a.name == b.name and a.identity == b.identity and
+    a.abiIdentity == b.abiIdentity and a.lifecycle == b.lifecycle and
+    a.mutable == b.mutable and a.wrapperField == b.wrapperField and
+    a.releaseSymbol == b.releaseSymbol and a.copySymbol == b.copySymbol and
+    ffiStructsEqual(a.abi, b.abi)
+
 proc compileInterfacesEqual*(a, b: CompileNamespaceInterface): bool =
   if a == nil or b == nil:
     return a == b
@@ -3204,12 +3927,56 @@ proc compileInterfacesEqual*(a, b: CompileNamespaceInterface): bool =
       return false
     let right = b.entries[name]
     if left.category != right.category or
-        left.protocolMessages != right.protocolMessages:
+        left.protocolMessages != right.protocolMessages or
+        not ffiStructsEqual(left.ffiStruct, right.ffiStruct) or
+        not nativeTypesEqual(left.nativeType, right.nativeType):
       return false
     if left.category == cbcNamespace and
         not compileInterfacesEqual(left.namespace, right.namespace):
       return false
   true
+
+proc compileInterfaceNeedsArtifact*(iface: CompileNamespaceInterface): bool =
+  ## Header-only interfaces cannot finish a native Type whose ABI layout comes
+  ## from an import. Such a module must be compiled once so its resolved Type
+  ## metadata can become the interface consumed downstream.
+  if iface == nil:
+    return false
+  for _, entry in iface.entries:
+    if entry.category == cbcNamespace:
+      if compileInterfaceNeedsArtifact(entry.namespace):
+        return true
+    elif entry.category == cbcType and entry.nativeSpec.kind != vkNil and
+        entry.nativeType == nil:
+      return true
+
+proc collectChunkNativeTypes(chunk: Chunk,
+                             found: var Table[string, NativeTypeProto]) =
+  for typeProto in chunk.typeProtos:
+    if typeProto.nativeType != nil:
+      found[typeProto.nativeType.identity] = typeProto.nativeType
+  for fn in chunk.functions:
+    collectChunkNativeTypes(fn.chunk, found)
+  for child in chunk.subchunks:
+    collectChunkNativeTypes(child, found)
+
+proc attachCompiledNativeMetadata*(iface: CompileNamespaceInterface,
+                                   chunk: Chunk, sourceName: string,
+                                   namespacePath: seq[string] = @[]) =
+  var compiled = initTable[string, NativeTypeProto]()
+  collectChunkNativeTypes(chunk, compiled)
+  proc attach(current: CompileNamespaceInterface, path: seq[string]) =
+    if current == nil:
+      return
+    for name, entry in current.entries.mpairs:
+      if entry.category == cbcNamespace:
+        attach(entry.namespace, path & @[name])
+      elif entry.category == cbcType and entry.nativeSpec.kind != vkNil:
+        let identity = (if sourceName.len > 0: sourceName else: "<memory>") &
+          "::" & (path & @[name]).join("/")
+        if compiled.hasKey(identity):
+          entry.nativeType = compiled[identity]
+  attach(iface, namespacePath)
 
 proc cloneCompileInterface*(source: CompileNamespaceInterface):
     CompileNamespaceInterface =
@@ -3284,6 +4051,17 @@ proc collectRuntimeDeclaredUnitNames(c: Compiler, form: Value,
     for item in form.body:
       c.collectRuntimeDeclaredUnitNames(item, names)
 
+proc addAliasedCompileEntries(c: var Compiler, alias: string,
+                              iface: CompileNamespaceInterface,
+                              prefix: seq[string] = @[]) =
+  if iface == nil:
+    return
+  for name, entry in iface.entries:
+    let path = prefix & @[name]
+    c.importedCompileEntries[alias & "/" & path.join("/")] = entry
+    if entry.category == cbcNamespace:
+      c.addAliasedCompileEntries(alias, entry.namespace, path)
+
 proc prepareStaticImportForm(c: var Compiler, form: Value) =
   if form.kind != vkNode or form.head.kind != vkSymbol:
     return
@@ -3294,10 +4072,18 @@ proc prepareStaticImportForm(c: var Compiler, form: Value) =
     c.prepareStaticImports(form.body, 0)
   of "import":
     let spec = parseImportSpec(form)
-    if not spec.fromModule or not spec.wildcard or
+    if not spec.fromModule or
         not c.importedInterfaces.hasKey(spec.modulePath):
       return
-    let iface = compileInterfaceAt(c.importedInterfaces[spec.modulePath],
+    let rootInterface = c.importedInterfaces[spec.modulePath]
+    for selection in spec.selections:
+      let resolved = compileInterfaceEntryAt(
+        rootInterface, selection.name.split('/'))
+      if resolved.found:
+        c.importedCompileEntries[selection.local] = resolved.entry
+    if not spec.wildcard:
+      return
+    let iface = compileInterfaceAt(rootInterface,
                                    spec.wildcardSegments)
     if iface == nil:
       return
@@ -3306,6 +4092,7 @@ proc prepareStaticImportForm(c: var Compiler, form: Value) =
         modulePath: spec.modulePath,
         exportPrefix: spec.wildcardSegments,
         namespace: iface)
+      c.addAliasedCompileEntries(spec.alias, iface)
     else:
       for name, entry in iface.entries:
         let candidate = StaticWildcardCandidate(
@@ -3341,6 +4128,16 @@ proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first: int) 
     c.collectRuntimeDeclaredUnitNames(forms[i], runtimeNames)
   for i in first .. forms.high:
     c.prepareStaticImportForm(forms[i])
+  for name, candidates in c.wildcardCandidates:
+    if candidates.len != 1 or name in c.declaredUnitNames:
+      continue
+    let candidate = candidates[0]
+    if not c.importedInterfaces.hasKey(candidate.modulePath):
+      continue
+    let resolved = compileInterfaceEntryAt(
+      c.importedInterfaces[candidate.modulePath], candidate.exportPath)
+    if resolved.found:
+      c.importedCompileEntries[name] = resolved.entry
   if c.useLocalSlots:
     for name in runtimeNames:
       if c.wildcardCandidates.hasKey(name):
@@ -3806,8 +4603,13 @@ proc compileFfiFn(c: var Compiler, node: Value) =
                          returnType: ret,
                          release: release)
   for param in proto.params:
-    validateFfiFnParamType("ffi/fn", param.name, param.typeExpr)
-  validateFfiFnReturnType("ffi/fn", proto.returnType, proto.release)
+    let repr = c.resolvedAotRepr(param.typeExpr)
+    proto.paramReprs.add repr
+    if repr.kind != arkNativePtr:
+      validateFfiFnParamType("ffi/fn", param.name, param.typeExpr)
+  proto.returnRepr = c.resolvedAotRepr(proto.returnType)
+  if proto.returnRepr.kind != arkNativePtr:
+    validateFfiFnReturnType("ffi/fn", proto.returnType, proto.release)
   validateFfiAbi("ffi/fn", proto.abi)
   validateFfiCallingConvention("ffi/fn", proto.calling)
   discard c.chunk.addFfiFn(proto)
@@ -3826,13 +4628,21 @@ proc compileFfiStruct(c: var Compiler, node: Value) =
   validateFfiLayout("ffi/struct", layout)
   let proto = FfiStructProto(
     name: body[0].symVal,
+    identity: (if c.sourceName.len > 0: c.sourceName else: "<memory>") &
+      "::" & (c.namespacePath & @[body[0].symVal]).join("/"),
     layout: layout,
     size: propInt(node, "size", -1, "ffi/struct", hasSize),
     hasSize: hasSize,
     align: propInt(node, "align", -1, "ffi/struct", hasAlign),
     hasAlign: hasAlign,
     fields: parseFfiStructFields(node.props["fields"]))
-  discard c.chunk.addFfiStruct(proto)
+  var present = false
+  for existing in c.chunk.ffiStructs:
+    if existing.identity == proto.identity:
+      present = true
+      break
+  if not present:
+    discard c.chunk.addFfiStruct(proto)
   c.emitConst(newSym(proto.name))
   c.emitDefineBinding(proto.name)
 
@@ -5255,7 +6065,8 @@ proc parseTypeBodySchema(schema: Value): seq[TypeBodyField] =
 
 proc rejectUnknownTypeProps(node: Value) =
   for key in node.props.keys:
-    if key in ["props", "body", "impl", "derive", "is", "private", "repr"]:
+    if key in ["props", "body", "impl", "derive", "is", "private", "repr",
+               "native"]:
       continue
     if key == "sealed":
       raise newException(GeneError,
@@ -5275,6 +6086,112 @@ proc typeReprMarker(node: Value, name: string): TypeRepr =
     raise newException(GeneError,
       "type " & name & " ^repr must be the symbol native_wrapper")
   trNativeWrapper
+
+proc nativeTypeMarker(c: Compiler, node: Value,
+                      name: string): NativeTypeProto =
+  ## Resolve `^native` entirely in the compiler metadata plane. The ABI name
+  ## denotes a previously declared ffi/struct layout; evaluating its runtime
+  ## symbol binding would lose the descriptor and create a fourth namespace.
+  if not node.props.hasKey("native"):
+    return nil
+  let marker = node.props["native"]
+  if marker.kind != vkMap:
+    raise newException(GeneError,
+      "type " & name & " ^native must be a map")
+  for key in marker.mapEntries.keys:
+    if key notin ["abi", "lifecycle", "mutable", "wrapper", "release", "copy"]:
+      raise newException(GeneError,
+        "type " & name & " ^native got unexpected field: " & key)
+  if not marker.mapEntries.hasKey("abi"):
+    raise newException(GeneError,
+      "type " & name & " ^native requires ^abi")
+  let abiExpr = marker.mapEntries["abi"]
+  if abiExpr.kind != vkSymbol:
+    raise newException(GeneError,
+      "type " & name & " ^native ^abi must name an ffi/struct")
+  var abi: FfiStructProto
+  for candidate in c.chunk.ffiStructs:
+    if candidate.name == abiExpr.symVal:
+      if abi != nil:
+        raise newException(GeneError,
+          "type " & name & " ^native ^abi is ambiguous: " & abiExpr.symVal)
+      abi = candidate
+  if abi == nil and c.ownCompileInterface != nil and
+      c.ownCompileInterface.entries.hasKey(abiExpr.symVal):
+    abi = c.ownCompileInterface.entries[abiExpr.symVal].ffiStruct
+  var importedAbi = false
+  if abi == nil and c.importedCompileEntries.hasKey(abiExpr.symVal):
+    abi = c.importedCompileEntries[abiExpr.symVal].ffiStruct
+    importedAbi = abi != nil
+  if abi == nil:
+    raise newException(GeneError,
+      "type " & name & " ^native ^abi does not resolve to an ffi/struct: " &
+      abiExpr.symVal)
+  if importedAbi:
+    c.chunk.addFfiStructDependency(abi.identity)
+    var present = false
+    for candidate in c.chunk.ffiStructs:
+      if candidate.identity == abi.identity:
+        present = true
+        break
+    if not present:
+      discard c.chunk.addFfiStruct(abi)
+  var lifecycle = "manual"
+  if marker.mapEntries.hasKey("lifecycle"):
+    let value = marker.mapEntries["lifecycle"]
+    if value.kind != vkSymbol or value.symVal != "manual":
+      raise newException(GeneError,
+        "type " & name & " ^native ^lifecycle must be manual")
+    lifecycle = value.symVal
+  var mutable = false
+  if marker.mapEntries.hasKey("mutable"):
+    let value = marker.mapEntries["mutable"]
+    if value.kind != vkBool:
+      raise newException(GeneError,
+        "type " & name & " ^native ^mutable must be Bool")
+    mutable = value.boolVal
+  var wrapperField = ""
+  if marker.mapEntries.hasKey("wrapper"):
+    let value = marker.mapEntries["wrapper"]
+    if value.kind != vkSymbol:
+      raise newException(GeneError,
+        "type " & name & " ^native ^wrapper must name a field")
+    if not node.props.hasKey("repr") or
+        not node.props["repr"].isSymbol("native_wrapper"):
+      raise newException(GeneError,
+        "type " & name & " ^native ^wrapper requires ^repr native_wrapper")
+    if not node.props.hasKey("props") or
+        node.props["props"].kind != vkMap or
+        not node.props["props"].mapEntries.hasKey(value.symVal):
+      raise newException(GeneError,
+        "type " & name & " ^native ^wrapper field is not declared: " &
+        value.symVal)
+    wrapperField = value.symVal
+  var releaseSymbol = ""
+  if marker.mapEntries.hasKey("release"):
+    let value = marker.mapEntries["release"]
+    if value.kind != vkString or value.strVal.len == 0:
+      raise newException(GeneError,
+        "type " & name & " ^native ^release must be a non-empty Str")
+    releaseSymbol = value.strVal
+  var copySymbol = ""
+  if marker.mapEntries.hasKey("copy"):
+    let value = marker.mapEntries["copy"]
+    if value.kind != vkString or value.strVal.len == 0:
+      raise newException(GeneError,
+        "type " & name & " ^native ^copy must be a non-empty Str")
+    copySymbol = value.strVal
+  NativeTypeProto(
+    name: name,
+    identity: (if c.sourceName.len > 0: c.sourceName else: "<memory>") &
+      "::" & (c.namespacePath & @[name]).join("/"),
+    abiIdentity: abi.identity,
+    abi: abi,
+    lifecycle: lifecycle,
+    mutable: mutable,
+    wrapperField: wrapperField,
+    releaseSymbol: releaseSymbol,
+    copySymbol: copySymbol)
 
 proc messageNameParts(node: Value): tuple[protocolPath: seq[string], name: string] =
   ## A message name is a simple symbol, or a qualified path in impl bodies for
@@ -5332,7 +6249,8 @@ proc messageParamVector(paramList: Value): Value =
       items.add item
   newList(items)
 
-proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
+proc implMessageProto(c: var Compiler, node: Value,
+                      aotSelfRepr = AotRepr()): ImplMessageProto =
   let parts = messageNameParts(node)
   let displayName =
     if parts.protocolPath.len > 0: parts.protocolPath.join("/") & "/" & parts.name
@@ -5345,7 +6263,8 @@ proc implMessageProto(c: var Compiler, node: Value): ImplMessageProto =
                                           node.body, 2,
                                           checksErrors = errorRow.checks,
                                           errorTypeCount = errorRow.count,
-                                          immutableSelf = true))
+                                          immutableSelf = true,
+                                          aotSelfRepr = aotSelfRepr))
 
 proc protocolMessageHasDefault(node: Value): bool =
   ## A protocol message declaration ends after its parameter vector and
@@ -5385,6 +6304,11 @@ proc compileType(c: var Compiler, node: Value) =
   let name = body[0].symVal
   validateDeclarationCase("type", name)
   let repr = typeReprMarker(node, name)
+  let nativeType = c.nativeTypeMarker(node, name)
+  let nativeSelfRepr =
+    if nativeType == nil: AotRepr()
+    else: AotRepr(kind: arkNativePtr, typeName: nativeType.name,
+                  nativeType: nativeType)
   var messageNodes: seq[Value]
   var implNodes: seq[Value]
   var ctorNode = NIL
@@ -5429,7 +6353,7 @@ proc compileType(c: var Compiler, node: Value) =
   c.superType = if node.props.hasKey("is"): newSym(name) else: NIL
   for item in messageNodes:
     rejectReservedEffects(item)
-    let mp = implMessageProto(c, item)
+    let mp = implMessageProto(c, item, nativeSelfRepr)
     if mp.protocolPath.len > 0:
       raise newException(GeneError,
         "type-direct message names must be simple: " &
@@ -5457,7 +6381,7 @@ proc compileType(c: var Compiler, node: Value) =
         raise newException(GeneError,
           "inline impl body items must be message declarations — no `for`, " &
           "no receiver: the enclosing type is the receiver")
-      let mp = implMessageProto(c, msgNode)
+      let mp = implMessageProto(c, msgNode, nativeSelfRepr)
       let key = mp.protocolPath.join("/") & "/" & mp.name
       if seenImplMessages.hasKey(key):
         raise newException(GeneError, "duplicate impl message: " & mp.name)
@@ -5516,6 +6440,7 @@ proc compileType(c: var Compiler, node: Value) =
                                            staticTopLevel:
                                              node.bits in c.staticTopLevelImpls,
                                            repr: repr,
+                                           nativeType: nativeType,
                                            fields: fields,
                                            bodyFields: bodyFields,
                                            requiredImplCount: requiredImplCount,
@@ -5765,15 +6690,18 @@ proc compileImpl(c: var Compiler, node: Value) =
   # parent's spelling cannot redirect the delegation — same rule as a type body.
   let savedSuperType = c.superType
   c.superType = if body[2].kind == vkSymbol: body[2] else: NIL
+  let nativeSelfRepr = c.resolvedAotRepr(body[2])
   for i in 3 ..< body.len:
-    let mp = implMessageProto(c, body[i])
+    let mp = implMessageProto(c, body[i], nativeSelfRepr)
     let key = mp.protocolPath.join("/") & "/" & mp.name
     if seen.hasKey(key):
       raise newException(GeneError, "duplicate impl message: " & mp.name)
     seen[key] = true
     messages.add mp
   c.superType = savedSuperType
-  let idx = c.chunk.addImpl(ImplProto(messages: messages,
+  let idx = c.chunk.addImpl(ImplProto(protocolExpr: body[0],
+                                      receiverExpr: body[2],
+                                      messages: messages,
                                       staticTopLevel: staticTopLevel,
                                       staticOperands: staticOperands,
                                       exported: exported))
@@ -6075,6 +7003,8 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
         c.chunk.topLevelForms.add topLevelFormInfo(form, c.formLocs[i])
   for form in forms:
     collectMutableBindingNames(form, c.mutableBindingNames)
+  if c.ownCompileInterface == nil:
+    c.ownCompileInterface = buildCompileInterface(forms, c.sourceName)
   if useLocalSlots:
     c.enableLocalSlots()
   c.markStaticImplForms(forms)

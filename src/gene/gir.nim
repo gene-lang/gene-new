@@ -4,7 +4,7 @@
 ## prototypes. It is the handoff boundary between syntax compilation and runtime
 ## execution.
 
-import std/[strutils, tables]
+import std/[sets, strutils, tables]
 import ./[printer, types]
 
 type
@@ -159,6 +159,44 @@ type
     afkNone
     afkTypedNative
 
+  AotReprKind* = enum
+    arkNone
+    arkI64
+    arkF64
+    arkNativePtr
+
+  AotRepr* = object
+    ## Resolved machine representation for one typed-native function edge.
+    ## Native pointers retain their nominal Type and concrete ABI layout so C
+    ## emission never needs to recover either from a runtime binding.
+    kind*: AotReprKind
+    typeName*: string
+    nullable*: bool
+    nativeType*: NativeTypeProto
+
+  AotLocal* = object
+    ## One statically represented local in a typed-native function. The source
+    ## initializer remains in `aotExpr`; this table is the compiler's proof of
+    ## the local's machine representation for validation and C emission.
+    name*: string
+    repr*: AotRepr
+    mutable*: bool
+
+  NativeOwnership* = enum
+    noNone
+    noBorrow
+    noTransfer
+    noCopy
+
+  NativeEntryProto* = object
+    ## Explicit dynamic entry for one typed-native function. Pointer edges have
+    ## an ownership policy; scalar edges use the ordinary generated FFI value
+    ## adapters and therefore stay `noNone` here.
+    enabled*: bool
+    paramOwnership*: seq[NativeOwnership]
+    resultOwnership*: NativeOwnership
+    resultBorrowParam*: int
+
   TaskFrameKind* = enum
     tfkNone
     tfkVm
@@ -206,6 +244,10 @@ type
     nativeOp*: NativeCompileOp
     nativeParamIndex*: int
     aotExpr*: Value
+    aotParamReprs*: seq[AotRepr]
+    aotLocals*: seq[AotLocal]
+    aotReturnRepr*: AotRepr
+    nativeEntry*: NativeEntryProto
     aotFrameKind*: AotFrameKind
     aotFrameCanSuspend*: bool
     taskFrameKind*: TaskFrameKind
@@ -243,6 +285,9 @@ type
     category*: CompileBindingCategory
     namespace*: CompileNamespaceInterface
     protocolMessages*: seq[string]
+    ffiStruct*: FfiStructProto
+    nativeType*: NativeTypeProto
+    nativeSpec*: Value
 
   ImportSpec* = object
     fromModule*: bool                 # true: `from "path"`; false: namespace path
@@ -298,7 +343,9 @@ type
     abi*: string
     calling*: string
     params*: seq[FfiParam]
+    paramReprs*: seq[AotRepr]
     returnType*: Value
+    returnRepr*: AotRepr
     release*: string
 
   FfiStructField* = object
@@ -309,12 +356,27 @@ type
 
   FfiStructProto* = ref object
     name*: string
+    identity*: string
     layout*: string
     size*: int
     hasSize*: bool
     align*: int
     hasAlign*: bool
     fields*: seq[FfiStructField]
+
+  NativeTypeProto* = ref object
+    ## Compile-only attachment from a nominal Gene Type to one foreign layout.
+    ## `identity` and `abiIdentity` are stable module-qualified dependency keys;
+    ## no runtime namespace lookup participates in typed-native lowering.
+    name*: string
+    identity*: string
+    abiIdentity*: string
+    abi*: FfiStructProto
+    lifecycle*: string
+    mutable*: bool
+    wrapperField*: string
+    releaseSymbol*: string
+    copySymbol*: string
 
   FfiUnionProto* = ref object
     name*: string
@@ -383,6 +445,7 @@ type
     name*: string
     staticTopLevel*: bool
     repr*: TypeRepr              # `^repr native_wrapper`, or ordinary
+    nativeType*: NativeTypeProto # `^native {...}`, compile metadata only
     fields*: seq[TypeField]      # own (non-inherited) field schema
     bodyFields*: seq[TypeBodyField] # own (non-inherited) body schema
     requiredImplCount*: int
@@ -426,6 +489,8 @@ type
     fn*: FunctionProto
 
   ImplProto* = ref object
+    protocolExpr*: Value
+    receiverExpr*: Value
     messages*: seq[ImplMessageProto]
     staticTopLevel*: bool
     staticOperands*: bool
@@ -478,6 +543,7 @@ type
     ffiLibraries*: seq[FfiLibraryProto]
     ffiFns*: seq[FfiFnProto]
     ffiStructs*: seq[FfiStructProto]
+    ffiStructDependencies*: seq[string] # imported layout identities
     ffiUnions*: seq[FfiUnionProto]
     ffiSignatures*: seq[FfiSignatureProto]
     monomorphizations*: seq[MonomorphizationSpec]
@@ -502,6 +568,7 @@ proc newChunk*(sourceName = ""): Chunk =
         nodeBuilds: @[],
         typeProtos: @[], enumProtos: @[], protocolProtos: @[], implProtos: @[],
         ffiLibraries: @[], ffiFns: @[], ffiStructs: @[], ffiUnions: @[],
+        ffiStructDependencies: @[],
         ffiSignatures: @[],
         monomorphizations: @[], directProtocolCalls: @[],
         callSites: initTable[int, Value]())
@@ -565,6 +632,10 @@ proc addFfiFn*(chunk: Chunk, fn: FfiFnProto): int =
 proc addFfiStruct*(chunk: Chunk, structProto: FfiStructProto): int =
   result = chunk.ffiStructs.len
   chunk.ffiStructs.add structProto
+
+proc addFfiStructDependency*(chunk: Chunk, identity: string) =
+  if identity.len > 0 and identity notin chunk.ffiStructDependencies:
+    chunk.ffiStructDependencies.add identity
 
 proc addFfiUnion*(chunk: Chunk, unionProto: FfiUnionProto): int =
   result = chunk.ffiUnions.len
@@ -636,12 +707,11 @@ proc formatFfiSignatureKind(kind: FfiSignatureKind): string =
   of fskDynamic: "dynamic"
 
 proc formatAotRepr(fn: FunctionProto): string =
-  if fn.returnType.kind != vkSymbol:
-    return ""
-  case fn.returnType.symVal
-  of "I64": "I64"
-  of "F64": "F64"
-  else: ""
+  case fn.aotReturnRepr.kind
+  of arkI64: "I64"
+  of arkF64: "F64"
+  of arkNativePtr: fn.aotReturnRepr.typeName
+  of arkNone: ""
 
 proc formatInstruction(inst: Instruction): string =
   result = $inst.op
@@ -1004,6 +1074,11 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
         desc.add " align=" & $structProto.align
       lines.add desc
 
+  if chunk.ffiStructDependencies.len > 0:
+    lines.add indent & "ffi-struct-dependencies:"
+    for identity in chunk.ffiStructDependencies:
+      lines.add indent & "  " & identity
+
   if chunk.ffiUnions.len > 0:
     lines.add indent & "ffi-unions:"
     for i, unionProto in chunk.ffiUnions:
@@ -1115,6 +1190,53 @@ proc aotCType(typeName: string): string =
   of "F64": "double"
   else: ""
 
+type FfiStructCNames = Table[string, string]
+
+proc stableCIdentityHash(identity: string): string =
+  var hash = 1469598103934665603'u64
+  for ch in identity:
+    hash = (hash xor uint64(ord(ch))) * 1099511628211'u64
+  toHex(hash, 16).toLowerAscii
+
+proc collectFfiStructCNames(chunk: Chunk,
+                            identities: var Table[string, seq[string]]) =
+  for structProto in chunk.ffiStructs:
+    let base = cIdent(structProto.name, "FfiStruct")
+    var seen = false
+    for identity in identities.getOrDefault(base):
+      if identity == structProto.identity:
+        seen = true
+        break
+    if not seen:
+      identities.mgetOrPut(base, @[]).add structProto.identity
+  for fn in chunk.functions:
+    collectFfiStructCNames(fn.chunk, identities)
+  for child in chunk.subchunks:
+    collectFfiStructCNames(child, identities)
+
+proc buildFfiStructCNames(chunk: Chunk): FfiStructCNames =
+  var identities = initTable[string, seq[string]]()
+  collectFfiStructCNames(chunk, identities)
+  for base, values in identities:
+    for identity in values:
+      result[identity] =
+        if values.len == 1: base
+        else: base & "__" & stableCIdentityHash(identity)
+
+proc ffiStructCName(structProto: FfiStructProto,
+                    names: FfiStructCNames): string =
+  names.getOrDefault(structProto.identity,
+                     cIdent(structProto.name, "FfiStruct"))
+
+proc aotCType(repr: AotRepr, names: FfiStructCNames): string =
+  case repr.kind
+  of arkI64: "int64_t"
+  of arkF64: "double"
+  of arkNativePtr:
+    if repr.nativeType == nil or repr.nativeType.abi == nil: ""
+    else: ffiStructCName(repr.nativeType.abi, names) & " *"
+  of arkNone: ""
+
 type AotCFunction = object
   cName: string
   paramCount: int
@@ -1123,6 +1245,7 @@ type AotCFunction = object
 type AotModuleFunction = object
   geneName: string
   cName: string
+  entryName: string
   typeName: string
   paramCount: int
   frameName: string
@@ -1202,8 +1325,45 @@ type FfiMarshalKind = enum
   fmkConstPtr
   fmkBuffer
 
+proc ffiTypeLabel(expr: Value): string
+
+proc typedNativeNullHelper(nativeType: NativeTypeProto,
+                           fieldName: string): string =
+  for field in nativeType.abi.fields:
+    if field.name != fieldName:
+      continue
+    let label = ffiTypeLabel(field.typeExpr)
+    if label in ["C/Float", "C/Double"]:
+      return "gene_typed_native_null_f64"
+    if label.startsWith("(C/Ptr ") or
+        label.startsWith("(C/NullablePtr "):
+      return "gene_typed_native_null_ptr"
+    break
+  "gene_typed_native_null_i64"
+
+proc aotCBindingRepr(name: string, params: openArray[string],
+                     paramReprs: openArray[AotRepr],
+                     locals: openArray[AotLocal]): AotRepr =
+  for i, param in params:
+    if param == name and i < paramReprs.len:
+      return paramReprs[i]
+  for local in locals:
+    if local.name == name:
+      return local.repr
+
+proc aotSendKey(receiverIdentity, protocolName, messageName: string): string =
+  "@typed_send\x1f" & receiverIdentity & "\x1f" & protocolName & "\x1f" &
+    messageName
+
+proc emitAotCSend(expr: Value, params: openArray[string],
+                  paramReprs: openArray[AotRepr],
+                  available: Table[string, AotCFunction],
+                  locals: openArray[AotLocal]): tuple[found: bool, code: string]
+
 proc emitAotCExpr(expr: Value, params: openArray[string],
-                  available: Table[string, AotCFunction]): string =
+                  paramReprs: openArray[AotRepr],
+                  available: Table[string, AotCFunction],
+                  locals: openArray[AotLocal]): string =
   case expr.kind
   of vkSymbol:
     cIdent(expr.symVal, "arg")
@@ -1213,26 +1373,153 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
     expr.print()
   of vkNode:
     let head = expr.head.symVal
+    let send = emitAotCSend(expr, params, paramReprs, available, locals)
+    if send.found:
+      return send.code
     if head in ["+", "-", "*"] and expr.body.len == 2:
-      "(" & emitAotCExpr(expr.body[0], params, available) & " " & head & " " &
-        emitAotCExpr(expr.body[1], params, available) & ")"
+      "(" & emitAotCExpr(expr.body[0], params, paramReprs, available, locals) &
+        " " & head & " " & emitAotCExpr(expr.body[1], params, paramReprs,
+                                           available, locals) & ")"
     elif head in ["<", ">", "<=", ">=", "="] and expr.body.len == 2:
       let cOp = if head == "=": "==" else: head
-      "(" & emitAotCExpr(expr.body[0], params, available) & " " & cOp & " " &
-        emitAotCExpr(expr.body[1], params, available) & ")"
+      "(" & emitAotCExpr(expr.body[0], params, paramReprs, available, locals) &
+        " " & cOp & " " & emitAotCExpr(expr.body[1], params, paramReprs,
+                                          available, locals) & ")"
     elif head == "if" and expr.body.len == 3:
-      "(" & emitAotCExpr(expr.body[0], params, available) & " ? " &
-        emitAotCExpr(expr.body[1], params, available) & " : " &
-        emitAotCExpr(expr.body[2], params, available) & ")"
+      "(" & emitAotCExpr(expr.body[0], params, paramReprs, available, locals) &
+        " ? " & emitAotCExpr(expr.body[1], params, paramReprs, available,
+                               locals) & " : " &
+        emitAotCExpr(expr.body[2], params, paramReprs, available, locals) & ")"
+    elif head == "set!" and expr.body.len == 2:
+      let target = expr.body[0]
+      var guarded = false
+      var rendered = ""
+      if target.kind == vkNode and target.head.kind == vkSymbol and
+          target.head.symVal == "path" and
+          target.body.len == 2 and target.body[0].kind == vkSymbol and
+          target.body[1].kind == vkSymbol:
+        let base = target.body[0].symVal
+        let nativeParam = base.aotCBindingRepr(params, paramReprs, locals)
+        if nativeParam.kind == arkNativePtr and nativeParam.nullable:
+          let baseName = cIdent(base, "arg")
+          let fieldName = target.body[1].symVal
+          let access = baseName & "->" & cIdent(fieldName, "field")
+          let helper = nativeParam.nativeType.typedNativeNullHelper(fieldName)
+          rendered = "(" & baseName & " != NULL ? (" & access & " = " &
+            emitAotCExpr(expr.body[1], params, paramReprs, available, locals) &
+            ") : " & helper & "(" & cStringLiteral(nativeParam.typeName) &
+            ", " & cStringLiteral(fieldName) & "))"
+          guarded = true
+      if not guarded:
+        rendered = "(" & emitAotCExpr(target, params, paramReprs, available,
+                                       locals) & " = " &
+          emitAotCExpr(expr.body[1], params, paramReprs, available, locals) & ")"
+      rendered
+    elif head == "set" and expr.body.len == 2 and
+        expr.body[0].kind == vkSymbol:
+      "(" & cIdent(expr.body[0].symVal, "local") & " = " &
+        emitAotCExpr(expr.body[1], params, paramReprs, available, locals) & ")"
+    elif head == "do" and expr.body.len > 0:
+      var items: seq[string]
+      for item in expr.body:
+        items.add emitAotCExpr(item, params, paramReprs, available, locals)
+      "(" & items.join(", ") & ")"
+    elif head == "path" and expr.body.len == 2 and
+        expr.body[0].kind == vkSymbol and expr.body[1].kind == vkSymbol:
+      let base = expr.body[0].symVal
+      let nativeParam = base.aotCBindingRepr(params, paramReprs, locals)
+      if nativeParam.kind == arkNativePtr:
+        let baseName = cIdent(base, "arg")
+        let fieldName = expr.body[1].symVal
+        let access = baseName & "->" & cIdent(fieldName, "field")
+        if nativeParam.nullable:
+          let helper = nativeParam.nativeType.typedNativeNullHelper(fieldName)
+          "(" & baseName & " != NULL ? " & access & " : " & helper & "(" &
+            cStringLiteral(nativeParam.typeName) & ", " &
+            cStringLiteral(fieldName) & "))"
+        else:
+          access
+      else:
+        "0"
     elif available.hasKey(head):
       var args: seq[string]
       for arg in expr.body:
-        args.add emitAotCExpr(arg, params, available)
+        args.add emitAotCExpr(arg, params, paramReprs, available, locals)
       available[head].cName & "(" & args.join(", ") & ")"
     else:
       "0"
   else:
     "0"
+
+proc emitAotCSend(expr: Value, params: openArray[string],
+                  paramReprs: openArray[AotRepr],
+                  available: Table[string, AotCFunction],
+                  locals: openArray[AotLocal]): tuple[found: bool, code: string] =
+  if expr.kind != vkNode or expr.head.kind != vkSymbol or expr.body.len < 2 or
+      expr.body[0].kind != vkSymbol or expr.body[0].symVal != "~":
+    return
+  let receiverRepr = expr.head.symVal.aotCBindingRepr(
+    params, paramReprs, locals)
+  if receiverRepr.kind != arkNativePtr:
+    return
+  var protocolName = ""
+  var messageName = ""
+  let message = expr.body[1]
+  if message.kind == vkSymbol:
+    messageName = message.symVal
+  elif message.kind == vkNode and message.head.kind == vkSymbol and
+      message.head.symVal == "msg" and
+      message.body.len == 2 and message.body[1].kind == vkSymbol:
+    protocolName = ffiTypeLabel(message.body[0])
+    messageName = message.body[1].symVal
+  else:
+    return
+  let key = aotSendKey(receiverRepr.nativeType.identity,
+                       protocolName, messageName)
+  if not available.hasKey(key):
+    return
+  var args = @[cIdent(expr.head.symVal, "receiver")]
+  for i in 2 ..< expr.body.len:
+    args.add emitAotCExpr(expr.body[i], params, paramReprs, available, locals)
+  (true, available[key].cName & "(" & args.join(", ") & ")")
+
+proc emitAotCBody(lines: var seq[string], fn: FunctionProto,
+                  available: Table[string, AotCFunction],
+                  structNames: FfiStructCNames) =
+  let expr = fn.aotExpr
+  if expr.kind == vkNode and expr.head.kind == vkSymbol and
+      expr.head.symVal == "do" and expr.body.len > 0:
+    for i in 0 ..< expr.body.high:
+      let statement = expr.body[i]
+      if statement.kind == vkNode and statement.head.kind == vkSymbol and
+          statement.head.symVal in ["let", "var"]:
+        let name = statement.body[0].symVal
+        var localRepr = AotRepr()
+        for local in fn.aotLocals:
+          if local.name == name:
+            localRepr = local.repr
+            break
+        lines.add "  " & localRepr.aotCType(structNames) & " " &
+          cIdent(name, "local") & " = " &
+          emitAotCExpr(statement.body[3], fn.params, fn.aotParamReprs,
+                       available, fn.aotLocals) & ";"
+      elif statement.kind == vkNode and statement.head.kind == vkSymbol and
+          statement.head.symVal == "set" and
+          statement.body.len == 2 and statement.body[0].kind == vkSymbol:
+        lines.add "  " & cIdent(statement.body[0].symVal, "local") & " = " &
+          emitAotCExpr(statement.body[1], fn.params, fn.aotParamReprs,
+                       available, fn.aotLocals) & ";"
+      else:
+        lines.add "  (void)" &
+          emitAotCExpr(statement, fn.params, fn.aotParamReprs, available,
+                       fn.aotLocals) & ";"
+    lines.add "  return " &
+      emitAotCExpr(expr.body[^1], fn.params, fn.aotParamReprs, available,
+                   fn.aotLocals) & ";"
+  else:
+    lines.add "  return " &
+      emitAotCExpr(expr, fn.params, fn.aotParamReprs, available,
+                   fn.aotLocals) & ";"
 
 proc ffiTypeLabel(expr: Value): string =
   case expr.kind
@@ -1412,19 +1699,25 @@ proc ffiSignatureManifestName(prefix: string): string =
   "gene_" & cIdent(prefix & "ffi_signatures", "ffi_signatures")
 
 proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
-                   prefix: string) =
+                   prefix: string, structNames: FfiStructCNames) =
   let symbol = if fn.symbol.len > 0: fn.symbol else: fn.name
   let cSymbol = cIdent(symbol, "ffi_symbol_" & $index)
   let retLabel =
     if fn.returnType.kind == vkNil: "C/Void" else: ffiTypeLabel(fn.returnType)
-  let retType = ffiCType(retLabel)
+  let retType =
+    if fn.returnRepr.kind == arkNativePtr:
+      fn.returnRepr.aotCType(structNames)
+    else: ffiCType(retLabel)
   let supported = ffiWrapperSupported(fn, retLabel)
   var declParams: seq[string]
   for i, p in fn.params:
     let label = ffiTypeLabel(p.typeExpr)
     let name = cIdent(p.name, "arg" & $i)
-    for cDecl in ffiParamCDecls(label, name):
-      declParams.add cDecl
+    if i < fn.paramReprs.len and fn.paramReprs[i].kind == arkNativePtr:
+      declParams.add fn.paramReprs[i].aotCType(structNames) & " " & name
+    else:
+      for cDecl in ffiParamCDecls(label, name):
+        declParams.add cDecl
   let paramList = if declParams.len == 0: "void" else: declParams.join(", ")
   lines.add "extern " & retType & " " & ffiCallingMacro(fn.calling) &
     " " & cSymbol & "(" & paramList & ");"
@@ -1519,8 +1812,199 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
   lines.add "}"
   lines.add ""
 
-proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
-                 available: var Table[string, AotCFunction]) =
+proc nativeEntryName(fnName, fallback: string): string =
+  "gene_entry_" & cIdent(fnName, fallback)
+
+proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
+                    nativeName, entryName: string,
+                    structNames: FfiStructCNames) =
+  ## Explicit dynamic → typed-native seam (native-type proposal §6.4). The
+  ## runtime helper owns wrapper identity/liveness/ABI validation; generated C
+  ## receives only the raw pointer after that check and never boxes implicitly.
+  var paramCopies = newSeq[string](fn.params.len)
+  var paramReleases = newSeq[string](fn.params.len)
+  for i, repr in fn.aotParamReprs:
+    if repr.kind != arkNativePtr or
+        fn.nativeEntry.paramOwnership[i] != noCopy:
+      continue
+    let nativeType = repr.nativeType
+    let structName = ffiStructCName(nativeType.abi, structNames)
+    let shimName = entryName & "_" & cIdent(fn.params[i], "arg" & $i) &
+      "_copy"
+    paramCopies[i] = shimName
+    lines.add "extern " & structName & " * GENE_FFI_CDECL " &
+      nativeType.copySymbol & "(const " & structName & " *value);"
+    lines.add "static void *" & shimName & "(const void *value) {"
+    lines.add "  return (void *)" & nativeType.copySymbol & "((const " &
+      structName & " *)value);"
+    lines.add "}"
+    let releaseShim = entryName & "_" & cIdent(fn.params[i], "arg" & $i) &
+      "_release"
+    paramReleases[i] = releaseShim
+    lines.add "extern void GENE_FFI_CDECL " & nativeType.releaseSymbol &
+      "(" & structName & " *value);"
+    lines.add "static void " & releaseShim & "(void *value) {"
+    lines.add "  " & nativeType.releaseSymbol & "((" & structName & " *)value);"
+    lines.add "}"
+    lines.add ""
+  var resultRelease = ""
+  if fn.aotReturnRepr.kind == arkNativePtr and
+      fn.nativeEntry.resultOwnership in {noTransfer, noCopy}:
+    let nativeType = fn.aotReturnRepr.nativeType
+    let cType = fn.aotReturnRepr.aotCType(structNames)
+    resultRelease = entryName & "_result_release"
+    lines.add "extern void GENE_FFI_CDECL " & nativeType.releaseSymbol &
+      "(" & cType & " value);"
+    lines.add "static void " & resultRelease & "(void *value) {"
+    lines.add "  " & nativeType.releaseSymbol & "((" & cType & ")value);"
+    lines.add "}"
+    lines.add ""
+  var resultCopy = ""
+  if fn.aotReturnRepr.kind == arkNativePtr and
+      fn.nativeEntry.resultOwnership == noCopy:
+    let nativeType = fn.aotReturnRepr.nativeType
+    let structName = ffiStructCName(nativeType.abi, structNames)
+    resultCopy = entryName & "_result_copy"
+    lines.add "extern " & structName & " * GENE_FFI_CDECL " &
+      nativeType.copySymbol & "(const " & structName & " *value);"
+    lines.add "static void *" & resultCopy & "(const void *value) {"
+    lines.add "  return (void *)" & nativeType.copySymbol & "((const " &
+      structName & " *)value);"
+    lines.add "}"
+    lines.add ""
+  lines.add "GeneStatus " & entryName &
+    "(GeneContext *ctx, const GeneCall *call, GeneValue *result) {"
+  lines.add "  GeneStatus status = gene_ffi_check_arity(ctx, call, " &
+    $fn.params.len & ");"
+  lines.add "  if (status != GENE_OK) return status;"
+  var callArgs: seq[string]
+  # Declare every acquisition slot before the first fallible conversion so the
+  # shared rollback label can safely inspect all of them after any failure.
+  for i, param in fn.params:
+    let name = cIdent(param, "arg" & $i)
+    let repr = fn.aotParamReprs[i]
+    case repr.kind
+    of arkI64:
+      lines.add "  int64_t " & name & ";"
+    of arkF64:
+      lines.add "  double " & name & ";"
+    of arkNativePtr:
+      let rawName = name & "_raw"
+      lines.add "  void *" & rawName & " = NULL;"
+      lines.add "  " & repr.aotCType(structNames) & " " & name & " = NULL;"
+      if fn.nativeEntry.paramOwnership[i] in {noTransfer, noCopy}:
+        lines.add "  bool " & name & "_acquired = false;"
+    of arkNone:
+      lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
+    callArgs.add name
+  for i, param in fn.params:
+    let name = cIdent(param, "arg" & $i)
+    let repr = fn.aotParamReprs[i]
+    case repr.kind
+    of arkI64:
+      lines.add "  status = gene_ffi_arg_int64(ctx, call, " & $i & ", " &
+        cStringLiteral(param) & ", &" & name & ");"
+      lines.add "  if (status != GENE_OK) goto " & entryName & "_arg_error;"
+    of arkF64:
+      lines.add "  status = gene_ffi_arg_double(ctx, call, " & $i & ", " &
+        cStringLiteral(param) & ", &" & name & ");"
+      lines.add "  if (status != GENE_OK) goto " & entryName & "_arg_error;"
+    of arkNativePtr:
+      let nativeType = repr.nativeType
+      let rawName = name & "_raw"
+      case fn.nativeEntry.paramOwnership[i]
+      of noBorrow:
+        lines.add "  status = gene_typed_native_arg_borrow(ctx, call, " &
+          $i & ", " & cStringLiteral(param) & ", " &
+          cStringLiteral(nativeType.identity) & ", " &
+          cStringLiteral(nativeType.abiIdentity) & ", " &
+          cStringLiteral(nativeType.wrapperField) & ", " &
+          (if repr.nullable: "true" else: "false") & ", &" & rawName & ");"
+        lines.add "  if (status != GENE_OK) goto " & entryName & "_arg_error;"
+      of noTransfer:
+        lines.add "  status = gene_typed_native_arg_transfer(ctx, call, " &
+          $i & ", " & cStringLiteral(param) & ", " &
+          cStringLiteral(nativeType.identity) & ", " &
+          cStringLiteral(nativeType.abiIdentity) & ", " &
+          cStringLiteral(nativeType.wrapperField) & ", " &
+          (if repr.nullable: "true" else: "false") & ", &" & rawName & ");"
+        lines.add "  if (status != GENE_OK) goto " & entryName & "_arg_error;"
+        lines.add "  " & name & "_acquired = true;"
+      of noCopy:
+        lines.add "  status = gene_typed_native_arg_copy(ctx, call, " &
+          $i & ", " & cStringLiteral(param) & ", " &
+          cStringLiteral(nativeType.identity) & ", " &
+          cStringLiteral(nativeType.abiIdentity) & ", " &
+          cStringLiteral(nativeType.wrapperField) & ", " &
+          (if repr.nullable: "true" else: "false") & ", " &
+          paramCopies[i] & ", &" & rawName & ");"
+        lines.add "  if (status != GENE_OK) goto " & entryName & "_arg_error;"
+        lines.add "  " & name & "_acquired = true;"
+      else:
+        lines.add "  (void)" & rawName & ";"
+        lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
+      lines.add "  " & name & " = (" & repr.aotCType(structNames) & ")" &
+        rawName & ";"
+    of arkNone:
+      discard
+  let nativeCall = nativeName & "(" & callArgs.join(", ") & ")"
+  case fn.aotReturnRepr.kind
+  of arkI64:
+    lines.add "  int64_t native_result = " & nativeCall & ";"
+    lines.add "  return gene_ffi_result_int64(ctx, native_result, result);"
+  of arkF64:
+    lines.add "  double native_result = " & nativeCall & ";"
+    lines.add "  return gene_ffi_result_double(ctx, native_result, result);"
+  of arkNativePtr:
+    let nativeType = fn.aotReturnRepr.nativeType
+    lines.add "  " & fn.aotReturnRepr.aotCType(structNames) &
+      " native_result = " & nativeCall & ";"
+    case fn.nativeEntry.resultOwnership
+    of noTransfer:
+      lines.add "  return gene_typed_native_result_transfer(ctx, " &
+        "(void *)native_result, " & cStringLiteral(nativeType.identity) &
+        ", " & cStringLiteral(nativeType.abiIdentity) & ", " &
+        cStringLiteral(nativeType.wrapperField) & ", " &
+        (if fn.aotReturnRepr.nullable: "true" else: "false") & ", " &
+        resultRelease & ", result);"
+    of noCopy:
+      lines.add "  return gene_typed_native_result_copy(ctx, " &
+        "(void *)native_result, " & cStringLiteral(nativeType.identity) &
+        ", " & cStringLiteral(nativeType.abiIdentity) & ", " &
+        cStringLiteral(nativeType.wrapperField) & ", " &
+        (if fn.aotReturnRepr.nullable: "true" else: "false") & ", " &
+        resultCopy & ", " & resultRelease & ", result);"
+    else:
+      lines.add "  (void)result;"
+      lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
+  else:
+    lines.add "  (void)result;"
+    lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
+  lines.add entryName & "_arg_error:"
+  for i in countdown(fn.params.high, 0):
+    if i >= fn.aotParamReprs.len or
+        fn.aotParamReprs[i].kind != arkNativePtr:
+      continue
+    let name = cIdent(fn.params[i], "arg" & $i)
+    let rawName = name & "_raw"
+    case fn.nativeEntry.paramOwnership[i]
+    of noTransfer:
+      lines.add "  if (" & name & "_acquired)"
+      lines.add "    gene_typed_native_arg_restore(ctx, call, " & $i & ", " &
+        rawName & ");"
+    of noCopy:
+      lines.add "  if (" & name & "_acquired && " & rawName & " != NULL)"
+      lines.add "    " & paramReleases[i] & "(" & rawName & ");"
+    else:
+      discard
+  lines.add "  return status;"
+  lines.add "}"
+  lines.add ""
+
+proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
+                 structNames: FfiStructCNames,
+                 available: var Table[string, AotCFunction],
+                 declaredStructs, definedStructs: var HashSet[string]) =
   var ffiLibraryRows: seq[FfiLibraryCRow]
   for library in chunk.ffiLibraries:
     ffiLibraryRows.add FfiLibraryCRow(name: library.name,
@@ -1539,6 +2023,16 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
     lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $ffiLibraryRows.len & ";"
     lines.add ""
+  # Typed FFI prototypes may mention layout typedef names. Declare those names
+  # before emitting any extern, then provide the complete definitions below.
+  for structProto in chunk.ffiStructs:
+    if structProto.layout == "C" and
+        structProto.identity notin declaredStructs:
+      let cStructName = ffiStructCName(structProto, structNames)
+      lines.add "typedef struct " & cStructName & " " & cStructName & ";"
+      declaredStructs.incl structProto.identity
+  if chunk.ffiStructs.len > 0:
+    lines.add ""
   var ffiFnRows: seq[FfiFnCRow]
   for i, fn in chunk.ffiFns:
     let retLabel =
@@ -1554,7 +2048,15 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
       release: fn.release,
       arity: fn.params.len,
       resultType: retLabel)
-    addFfiWrapper(lines, fn, i, prefix)
+    addFfiWrapper(lines, fn, i, prefix, structNames)
+    let symbol = if fn.symbol.len > 0: fn.symbol else: fn.name
+    available[fn.name] = AotCFunction(
+      cName: cIdent(symbol, "ffi_symbol_" & $i),
+      paramCount: fn.params.len,
+      cType: (if fn.returnRepr.kind == arkNativePtr:
+                fn.returnRepr.aotCType(structNames)
+              else:
+                ffiCType(retLabel)))
   if ffiFnRows.len > 0:
     let manifestName = ffiFnManifestName(prefix)
     lines.add "static const GeneFfiFnInfo " & manifestName &
@@ -1575,8 +2077,8 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
   var structRows: seq[FfiStructCRow]
   var structFieldRows: seq[FfiStructFieldCRow]
   for structProto in chunk.ffiStructs:
-    let cStructName = cIdent(structProto.name, "FfiStruct")
-    if structProto.layout == "C":
+    let cStructName = ffiStructCName(structProto, structNames)
+    if structProto.layout == "C" and structProto.identity notin definedStructs:
       lines.add "typedef struct " & cStructName & " {"
       for i, field in structProto.fields:
         let fieldType = ffiCType(ffiTypeLabel(field.typeExpr))
@@ -1600,6 +2102,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
             cStringLiteral("ffi/struct " & structProto.name & "." &
               field.name & " offset mismatch") & ");"
       lines.add ""
+      definedStructs.incl structProto.identity
     structRows.add FfiStructCRow(name: structProto.name,
                                  layout: structProto.layout,
                                  size: if structProto.hasSize: structProto.size else: -1,
@@ -1775,10 +2278,55 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
     lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $taskFrameRows.len & ";"
     lines.add ""
+  var bareImplCandidates = initTable[string, AotCFunction]()
+  var ambiguousBareImpls = initHashSet[string]()
+  for implIndex, impl in chunk.implProtos:
+    let protocolName = ffiTypeLabel(impl.protocolExpr)
+    for messageIndex, message in impl.messages:
+      let fn = message.fn
+      let cType = fn.aotReturnRepr.aotCType(structNames)
+      if fn.aotExpr.kind == vkNil or cType.len == 0 or
+          fn.aotParamReprs.len == 0 or
+          fn.aotParamReprs[0].kind != arkNativePtr:
+        continue
+      let cName = "gene_native_" & cIdent(
+        prefix & "impl_" & $implIndex & "_" & message.name,
+        "impl_" & $implIndex & "_message_" & $messageIndex)
+      var params: seq[string]
+      var representable = true
+      for i, param in fn.params:
+        let paramType =
+          if i < fn.aotParamReprs.len:
+            fn.aotParamReprs[i].aotCType(structNames)
+          else:
+            ""
+        if paramType.len == 0:
+          representable = false
+          break
+        params.add paramType & " " & cIdent(param, "arg" & $i)
+      if not representable:
+        continue
+      let paramList = if params.len == 0: "void" else: params.join(", ")
+      lines.add cType & " " & cName & "(" & paramList & ") {"
+      emitAotCBody(lines, fn, available, structNames)
+      lines.add "}"
+      lines.add ""
+      let target = AotCFunction(cName: cName, paramCount: fn.params.len,
+                                cType: cType)
+      let receiverIdentity = fn.aotParamReprs[0].nativeType.identity
+      available[aotSendKey(receiverIdentity, protocolName, message.name)] = target
+      let bareKey = aotSendKey(receiverIdentity, "", message.name)
+      if bareImplCandidates.hasKey(bareKey):
+        ambiguousBareImpls.incl bareKey
+      else:
+        bareImplCandidates[bareKey] = target
+  for key, target in bareImplCandidates:
+    if key notin ambiguousBareImpls:
+      available[key] = target
   var moduleFns: seq[AotModuleFunction]
   for i, fn in chunk.functions:
     let typeName = fn.aotTypeName
-    let cType = typeName.aotCType
+    let cType = fn.aotReturnRepr.aotCType(structNames)
     if fn.aotExpr.kind != vkNil and cType.len > 0:
       let fnName = cIdent(prefix & fn.name, "fn_" & $i)
       let cName = "gene_native_" & fnName
@@ -1788,7 +2336,11 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
         frameFlags.add " | GENE_NATIVE_FRAME_CAN_SUSPEND"
       var params: seq[string]
       for j, param in fn.params:
-        params.add cType & " " & cIdent(param, "arg" & $j)
+        let paramType =
+          if j < fn.aotParamReprs.len:
+            fn.aotParamReprs[j].aotCType(structNames)
+          else: ""
+        params.add paramType & " " & cIdent(param, "arg" & $j)
       let paramList = if params.len == 0: "void" else: params.join(", ")
       lines.add "static const GeneNativeFrameInfo " & frameName &
         " GENE_MAYBE_UNUSED = {" &
@@ -1799,34 +2351,47 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "",
       fnAvailable[fn.name] = AotCFunction(cName: cName,
                                           paramCount: fn.params.len,
                                           cType: cType)
-      lines.add "  return " & emitAotCExpr(fn.aotExpr, fn.params, fnAvailable) & ";"
+      emitAotCBody(lines, fn, fnAvailable, structNames)
       lines.add "}"
       lines.add ""
+      let entryName =
+        if fn.nativeEntry.enabled: nativeEntryName(fn.name, "fn_" & $i)
+        else: ""
+      if entryName.len > 0:
+        addNativeEntry(lines, fn, cName, entryName, structNames)
       available[fn.name] = AotCFunction(cName: cName, paramCount: fn.params.len,
                                         cType: cType)
       moduleFns.add AotModuleFunction(geneName: fn.name, cName: cName,
+                                      entryName: entryName,
                                       typeName: typeName,
                                       paramCount: fn.params.len,
                                       frameName: frameName)
-    addCBackend(lines, fn.chunk, prefix & fn.name & "_", available)
+    addCBackend(lines, fn.chunk, prefix & fn.name & "_", structNames,
+                available, declaredStructs, definedStructs)
   if moduleFns.len > 0:
     let manifestName = aotModuleManifestName(prefix)
     lines.add "static const GeneAotModuleFunction " & manifestName &
       "[] GENE_MAYBE_UNUSED = {"
     for fn in moduleFns:
       lines.add "  {" & cStringLiteral(fn.geneName) & ", " &
-        cStringLiteral(fn.cName) & ", " & cStringLiteral(fn.typeName) & ", " &
+        cStringLiteral(fn.cName) & ", " & cStringLiteral(fn.entryName) & ", " &
+        cStringLiteral(fn.typeName) & ", " &
         $fn.paramCount & ", &" & fn.frameName & "},"
     lines.add "};"
     lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $moduleFns.len & ";"
     lines.add ""
   for i, sub in chunk.subchunks:
-    addCBackend(lines, sub, prefix & "ns" & $i & "_", available)
+    addCBackend(lines, sub, prefix & "ns" & $i & "_", structNames,
+                available, declaredStructs, definedStructs)
 
-proc addCBackend(lines: var seq[string], chunk: Chunk, prefix = "") =
+proc addCBackend(lines: var seq[string], chunk: Chunk,
+                 structNames: FfiStructCNames, prefix = "") =
   var available = initTable[string, AotCFunction]()
-  addCBackend(lines, chunk, prefix, available)
+  var declaredStructs = initHashSet[string]()
+  var definedStructs = initHashSet[string]()
+  addCBackend(lines, chunk, prefix, structNames, available,
+              declaredStructs, definedStructs)
 
 proc emitExperimentalC*(chunk: Chunk): string =
   var lines = @[
@@ -1847,6 +2412,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "typedef struct GeneAotModuleFunction {",
     "  const char *gene_name;",
     "  const char *c_symbol;",
+    "  const char *entry_symbol;",
     "  const char *repr;",
     "  int arity;",
     "  const GeneNativeFrameInfo *frame;",
@@ -1963,6 +2529,17 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "#define GENE_MAYBE_UNUSED",
     "#endif",
     "#endif",
+    "extern int64_t gene_typed_native_null_i64(const char *type_name, const char *field_name);",
+    "extern double gene_typed_native_null_f64(const char *type_name, const char *field_name);",
+    "extern void *gene_typed_native_null_ptr(const char *type_name, const char *field_name);",
+    "extern GeneStatus gene_typed_native_arg_borrow(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, void **out);",
+    "extern GeneStatus gene_typed_native_arg_transfer(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, void **out);",
+    "extern void gene_typed_native_arg_restore(GeneContext *ctx, const GeneCall *call, size_t index, void *value);",
+    "typedef void *(*GeneTypedNativeCopyFn)(const void *value);",
+    "extern GeneStatus gene_typed_native_arg_copy(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, GeneTypedNativeCopyFn copy, void **out);",
+    "typedef void (*GeneTypedNativeReleaseFn)(void *value);",
+    "extern GeneStatus gene_typed_native_result_transfer(GeneContext *ctx, void *value, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, GeneTypedNativeReleaseFn release, GeneValue *out);",
+    "extern GeneStatus gene_typed_native_result_copy(GeneContext *ctx, const void *value, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, GeneTypedNativeCopyFn copy, GeneTypedNativeReleaseFn release, GeneValue *out);",
     "extern GeneStatus gene_ffi_check_arity(GeneContext *ctx, const GeneCall *call, size_t expected);",
     "extern GeneStatus gene_ffi_arg_int8(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, int8_t *out);",
     "extern GeneStatus gene_ffi_arg_uint8(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, uint8_t *out);",
@@ -2049,7 +2626,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     ""
   ]
   let headerLen = lines.len
-  addCBackend(lines, chunk)
+  addCBackend(lines, chunk, buildFfiStructCNames(chunk))
   if lines.len == headerLen:
     lines.add "/* no fixed-representation native functions or FFI wrappers */"
   lines.join("\n")

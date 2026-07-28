@@ -12,6 +12,17 @@ import std/[json, monotimes, strutils, tables, times]
 
 var positiveZeroInput {.volatile.}: float64 = 0.0
 
+type BenchNativeRecord = object
+  value: int64
+
+proc benchTypedNativeLoad(record: ptr BenchNativeRecord): int64 {.inline.} =
+  record.value
+
+proc benchWrapperNativeGetter(args: openArray[Value]): Value {.nimcall.} =
+  let record = cast[ptr BenchNativeRecord](
+    args[0].props["handle"].cPtrAddress)
+  newInt(record.value)
+
 proc discardLogLine(line: string) {.gcsafe.} =
   discard line
 
@@ -493,6 +504,22 @@ proc main() =
   let wrapperType = run(compileSource("WrapperLike"), wrapperScope)
   let untypedWrapperType = run(compileSource("UntypedWrapperLike"), wrapperScope)
 
+  var nativeRecord {.volatile.} = BenchNativeRecord(value: 42)
+  let nativeRecordPtr = addr nativeRecord
+  bench("typed_native.direct_field_load", 20_000_000, i):
+    checksum = checksum + benchTypedNativeLoad(nativeRecordPtr) +
+      int64(i and 1)
+
+  wrapperScope.define("native_value",
+    newNativeFn("native_value", benchWrapperNativeGetter))
+  wrapperScope.define("bench_wrapper", newNativeWrapper(untypedWrapperType,
+    {"handle": newCPtr(nativeRecordPtr, newSym("BenchNativeRecord")),
+     "backend": newStr("bench")}))
+  let wrapperGetterChunk = compileSource("(native_value bench_wrapper)")
+  bench("typed_native.dynamic_wrapper_getter", 500_000, i):
+    let value = run(wrapperGetterChunk, wrapperScope)
+    checksum = checksum + value.intVal + int64(i and 1)
+
   bench("vm.native_wrapper.handle_alloc", 250_000, i):
     let h = newCOwnedPtr(cast[pointer](0xB10B), benchReleaseHandle,
                          newSym("Blob"))
@@ -527,6 +554,18 @@ proc main() =
   bench("vm.native_wrapper.field_read", 500_000, i):
     let v = run(wrapperFieldChunk, wrapperScope)
     checksum = checksum + int64(v.strVal.len)
+
+  let sqliteScope = newGlobalScope()
+  discard run(compileSource(
+    "(import $db/sqlite [open Db]) " &
+    "(var sqlite_conn (open \":memory:\"))"), sqliteScope)
+  let sqliteQueryChunk = compileSource(
+    "(sqlite_conn ~ Db:query \"select 1 as value\")")
+  bench("typed_native.sqlite_query", 2_000, i):
+    let rows = run(sqliteQueryChunk, sqliteScope)
+    checksum = checksum + rows.listItems[0].mapEntries["value"].intVal +
+      int64(i and 1)
+  discard run(compileSource("(sqlite_conn ~ Db:close)"), sqliteScope)
 
   let assocScope = newGlobalScope()
   assocScope.define("user", run(compileSource("{^name \"Ada\" ^age 37}"), assocScope))
