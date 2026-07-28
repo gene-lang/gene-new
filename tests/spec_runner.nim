@@ -868,6 +868,31 @@ int main(void) {
     check "return gene_native_impl_0_read_value(node);" in c
     checkCCompiles(c, "typed_native_specialized_send")
 
+  test "two slot-compiled chunks cannot silently share one scope":
+    ## Each slot layout numbers its locals from zero, so a second such chunk
+    ## in the same scope read the resident layout's slot 0: `join` resolved to
+    ## whatever the first chunk bound, failing later as "value is not callable:
+    ## vkInt". Refuse the layout collision instead of misbinding.
+    let scope = newGlobalScope()
+    discard run(compileSource("(var q 1)"), scope)
+    var raised = false
+    try:
+      discard run(compileSource("(import $str [join]) (join [\"a\"] \",\")"),
+                  scope)
+    except CatchableError as e:
+      raised = true
+      check "cannot run a second slot-compiled chunk" in e.msg
+    check raised
+
+  test "name-bound chunks accumulate in one scope":
+    ## The supported way to run several sources against one scope. Unlike
+    ## compileEvalSource this keeps ambient import authority.
+    let scope = newGlobalScope()
+    discard run(compileSource("(var q 1)", useLocalSlots = false), scope)
+    check run(compileSource("(import $str [join]) (join [\"a\" \"b\"] \",\")",
+                            useLocalSlots = false), scope).strVal == "a,b"
+    check run(compileSource("q", useLocalSlots = false), scope).intVal == 1
+
   test "Gene calls a natively compiled function through an AOT library":
     ## The §6.4 dynamic boundary, end to end: compile a function to C, build it
     ## as a shared library, load it, and call it from ordinary Gene code. The

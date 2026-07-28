@@ -7230,5 +7230,12 @@ proc compileEvalSource*(src: string, useLocalSlots = true,
                     allowAmbientImports = false,
                     useLocalSlots = useLocalSlots)
 
-proc compileSource*(src: string, sourceName = ""): Chunk =
-  compileSourceUnit(readAllWithLocs(src, sourceName))
+proc compileSource*(src: string, sourceName = "",
+                    useLocalSlots = true): Chunk =
+  ## `useLocalSlots = false` binds by name instead of by slot index, which is
+  ## what lets several independently compiled chunks accumulate in one scope:
+  ## each slot layout numbers its locals from zero, so two of them in the same
+  ## scope would alias. Unlike `compileEvalSource` this keeps ambient import
+  ## authority, so an embedder can run successive sources that import.
+  compileSourceUnit(readAllWithLocs(src, sourceName),
+                    useLocalSlots = useLocalSlots)

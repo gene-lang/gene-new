@@ -801,8 +801,24 @@ proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   scope.slotMirror = mirror
 
 proc prepareChunkScope(scope: Scope, chunk: Chunk) =
-  if scope.slots.len == 0 and chunk.localNames.len > 0:
-    scope.prepareSlots(chunk.localNames, mirror = chunk.mirrorSlots)
+  if chunk.localNames.len > 0:
+    if scope.slots.len == 0:
+      scope.prepareSlots(chunk.localNames, mirror = chunk.mirrorSlots)
+    elif scope.slotNames.len > 0 and scope.slotNames != chunk.localNames:
+      ## Two independently compiled slot layouts cannot share one scope: each
+      ## numbers its locals from zero, so the incoming chunk's slot 0 would
+      ## read whatever the resident layout put there. That used to happen
+      ## silently — a name resolved to an unrelated value and failed far away,
+      ## as `value is not callable: vkInt`.
+      ##
+      ## Chunks that are meant to accumulate in one scope (REPL, eval, an
+      ## embedder running several sources) compile with `useLocalSlots =
+      ## false` and bind by name instead, which is why they never reach here.
+      raise newException(GeneError,
+        "cannot run a second slot-compiled chunk in this scope: it declares " &
+        $chunk.localNames.len & " local(s) but the scope already holds a " &
+        "different layout of " & $scope.slotNames.len & ". Compile the " &
+        "chunks with useLocalSlots = false to share one scope.")
   for name in chunk.exportExcludedNames:
     scope.exportExcludedNames.incl name
 
