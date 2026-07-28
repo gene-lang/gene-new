@@ -72,3 +72,15 @@
   (if (< (row_total stmt amount_column quantity_column) cap)
     (row_total stmt amount_column quantity_column)
     cap))
+
+# The whole scan, compiled: `while` and block-scoped locals keep the loop in
+# Gene, so stepping, both column reads, the multiply and the accumulate all
+# lower into one C function. `main.c` calls this once instead of driving the
+# loop itself.
+(fn scan_total [stmt : Stmt amount_column : I64 quantity_column : I64
+                row_marker : I64] : I64
+  (do
+    (var total : I64 0)
+    (while (= (step_row stmt) row_marker)
+      (set total (+ total (row_total stmt amount_column quantity_column))))
+    total))

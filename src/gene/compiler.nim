@@ -2360,7 +2360,7 @@ proc aotBindingRepr(expr: Value, params: openArray[string],
     if expr.symVal == param and i < paramReprs.len:
       return paramReprs[i]
   for local in locals:
-    if expr.symVal == local.name:
+    if expr.symVal == local.name and not local.outOfScope:
       return local.repr
 
 proc aotMutableBindingRepr(name: string, params: openArray[string],
@@ -2480,10 +2480,19 @@ proc localAotImplMessage(c: Compiler, receiverRepr: AotRepr,
   ## too. The per-chunk scan below stays because it can also rule out a
   ## *canonical* impl whose receiver does not resolve statically.
   ##
-  ## Remaining hole: another module may install an overlay for this type after
-  ## this one is compiled. Nothing local can see that; §7 says only closed-world
-  ## AOT may omit the activation-epoch guard, and whether the typed-native path
-  ## counts as closed-world is an open design question.
+  ## Scope of the guarantee (decided 2026-07-28): the check is module-local.
+  ## Another module may install an overlay for this type after this one is
+  ## compiled, and compiled code will keep calling the canonical impl while
+  ## interpreted code would dispatch to the overlay. That is accepted for the
+  ## experimental backend rather than closed over.
+  ##
+  ## §7 offers the activation-epoch guard for runtimes with loading/reload, and
+  ## that is the eventual answer here — not declaring the path closed-world,
+  ## which would make the divergence permanent and silent. The guard is
+  ## deferred because it needs a boxed dynamic fallback per specialized send,
+  ## which only earns its cost once this backend is no longer experimental.
+  ## Until then a cross-module overlay over an AOT-compiled type is a known
+  ## limitation, documented in docs/proposals/native-type.md.
   if messageName in c.overlayImplMessages:
     return (nil, NIL, NIL)
   for impl in c.chunk.implProtos:
@@ -2525,6 +2534,12 @@ proc recordAotDirectImpl(c: Compiler, messageName: string,
     messageName: messageName,
     protocolExpr: protocolExpr,
     receiverExpr: receiverExpr))
+
+proc isTypedNativeAotStatement(c: Compiler, statement: Value,
+                               params: openArray[string],
+                               paramReprs: openArray[AotRepr],
+                               ffiFns: openArray[FfiFnProto],
+                               locals: var seq[AotLocal]): bool
 
 proc isTypedNativeAotExpr(c: Compiler, expr: Value,
                           params: openArray[string],
@@ -2611,37 +2626,8 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
       resultRepr.aotReprAccepts(valueRepr)
   if expr.head.symVal == "do" and expr.body.len > 0:
     for i in 0 ..< expr.body.high:
-      let statement = expr.body[i]
-      if statement.kind == vkNode and
-          (statement.head.isSymbol("let") or statement.head.isSymbol("var")):
-        if statement.body.len != 4 or statement.body[0].kind != vkSymbol or
-            not statement.body[1].isSymbol(":"):
-          return false
-        let name = statement.body[0].symVal
-        if name in params:
-          return false
-        for local in locals:
-          if local.name == name:
-            return false
-        let localRepr = c.resolvedAotRepr(statement.body[2])
-        if localRepr.kind == arkNone or
-            not c.isTypedNativeAotExpr(statement.body[3], params, paramReprs,
-                                       localRepr, ffiFns, locals):
-          return false
-        locals.add AotLocal(name: name, repr: localRepr,
-                            mutable: statement.head.isSymbol("var"))
-        continue
-      # Statement-position stores still return the assigned scalar, but their
-      # value is discarded by `do`; validate against the RHS representation.
-      if statement.kind != vkNode or statement.head.kind != vkSymbol or
-          statement.head.symVal notin ["set", "set!"] or
-          statement.body.len != 2:
-        return false
-      let valueRepr = statement.body[1].aotBindingRepr(
-        params, paramReprs, locals)
-      if valueRepr.kind == arkNone or
-          not c.isTypedNativeAotExpr(statement, params, paramReprs, valueRepr,
-                                     ffiFns, locals):
+      if not c.isTypedNativeAotStatement(expr.body[i], params, paramReprs,
+                                         ffiFns, locals):
         return false
     return c.isTypedNativeAotExpr(expr.body[^1], params, paramReprs,
                                   resultRepr, ffiFns, locals)
@@ -2692,6 +2678,78 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
         return false
     return ffiFn.returnType.ffiResultMatchesAotRepr(ffiFn.returnRepr,
                                                     resultRepr)
+  false
+
+proc isTypedNativeAotStatement(c: Compiler, statement: Value,
+                               params: openArray[string],
+                               paramReprs: openArray[AotRepr],
+                               ffiFns: openArray[FfiFnProto],
+                               locals: var seq[AotLocal]): bool =
+  ## Statement position: inside `do`, and inside a `while` body. A statement's
+  ## value is discarded, so only its effect has to lower.
+  if statement.kind != vkNode or statement.head.kind != vkSymbol:
+    return false
+  if statement.head.isSymbol("let") or statement.head.isSymbol("var"):
+    if statement.body.len != 4 or statement.body[0].kind != vkSymbol or
+        not statement.body[1].isSymbol(":"):
+      return false
+    let name = statement.body[0].symVal
+    if name in params:
+      return false
+    for local in locals:
+      if local.name == name:
+        return false
+    let localRepr = c.resolvedAotRepr(statement.body[2])
+    if localRepr.kind == arkNone or
+        not c.isTypedNativeAotExpr(statement.body[3], params, paramReprs,
+                                   localRepr, ffiFns, locals):
+      return false
+    locals.add AotLocal(name: name, repr: localRepr,
+                        mutable: statement.head.isSymbol("var"))
+    return true
+  if statement.head.symVal == "set" and statement.body.len == 2 and
+      statement.body[0].kind == vkSymbol:
+    ## Validate the value against the *target's* representation. Requiring the
+    ## value to be a bare binding, as this used to, rejected `(set i (+ i 1))`
+    ## and so made counting loops impossible to express.
+    let target = statement.body[0].aotBindingRepr(params, paramReprs, locals)
+    if target.kind == arkNone:
+      return false
+    return c.isTypedNativeAotExpr(statement.body[1], params, paramReprs,
+                                  target, ffiFns, locals)
+  if statement.head.symVal == "set!" and statement.body.len == 2:
+    let valueRepr = statement.body[1].aotBindingRepr(params, paramReprs, locals)
+    if valueRepr.kind == arkNone:
+      return false
+    return c.isTypedNativeAotExpr(statement, params, paramReprs, valueRepr,
+                                  ffiFns, locals)
+  if statement.head.symVal == "do" and statement.body.len > 0:
+    ## A `do` in statement position is a block: its value is discarded, so
+    ## every item is a statement, and its declarations are block-scoped.
+    let outerLocals = locals.len
+    for item in statement.body:
+      if not c.isTypedNativeAotStatement(item, params, paramReprs, ffiFns,
+                                         locals):
+        return false
+    for i in outerLocals ..< locals.len:
+      locals[i].outOfScope = true
+    return true
+  if statement.head.symVal == "while" and statement.body.len >= 2:
+    let condition = AotRepr(kind: arkI64, typeName: "I64")
+    if not c.isTypedNativeAotExpr(statement.body[0], params, paramReprs,
+                                  condition, ffiFns, locals):
+      return false
+    ## Declarations inside the body leave scope with it, matching the C block
+    ## the emitter produces. Without the reset, analysis would keep accepting a
+    ## name the emitted code can no longer see.
+    let outerLocals = locals.len
+    for i in 1 ..< statement.body.len:
+      if not c.isTypedNativeAotStatement(statement.body[i], params, paramReprs,
+                                         ffiFns, locals):
+        return false
+    for i in outerLocals ..< locals.len:
+      locals[i].outOfScope = true
+    return true
   false
 
 proc nativeArithmeticOp(typeName, opName: string): NativeCompileOp =

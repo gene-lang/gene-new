@@ -221,10 +221,32 @@ borrow leaves the wrapper usable, transfer *relinquishes* it (closed without
 running the release callback, which would free memory the callee is about to
 use), and copy leaves the original intact.
 
-What remains is mechanical rather than architectural: the non-scalar
-`gene_ffi_arg_*` helpers (strings, buffers, collections), which only the
-dynamic FFI wrappers use. Those wrappers stay behind
-`#ifdef GENE_AOT_DYNAMIC_ENTRIES`.
+### Overlay scope for direct protocol sends (decided 2026-07-28)
+
+`docs/scoped-impls.md` §7 allows a direct protocol call only when the winning
+unconditional canonical pair is known and no overlay is reachable, guarded by
+the activation epoch in a runtime with loading/reload, and lets closed-world
+AOT omit that guard.
+
+**The typed-native backend is not declared closed-world.** Its overlay check is
+module-local: a send does not lower if any overlay-only impl anywhere in the
+compiling module declares that message, in any position and in any order. A
+cross-module overlay installed after compilation is *not* detected — compiled
+code keeps calling the canonical impl where interpreted code would dispatch to
+the overlay.
+
+That gap is accepted for now rather than closed. Declaring the path
+closed-world was rejected: it would make the divergence permanent and silent,
+which is the failure mode this backend has already paid for twice (a `"0"`
+emitter fallback, and bare sends resolving to protocol impls). The epoch guard
+is the intended answer, deferred because it needs a boxed dynamic fallback per
+specialized send and only earns that cost once the backend leaves experimental
+status. Until then the limitation is: do not install a cross-module overlay
+over a type whose module has been AOT-compiled.
+
+The remaining work is mechanical rather than architectural — chiefly a loop
+form in the lowerable subset, and a `gene build` that produces a linked
+artifact instead of leaving `cc` to a shell script.
 
 ## 5. Goal and scope
 

@@ -181,6 +181,12 @@ type
     name*: string
     repr*: AotRepr
     mutable*: bool
+    outOfScope*: bool
+      ## Set when analysis leaves the block that declared this local. The entry
+      ## stays for C emission, which needs every local's representation, but
+      ## name resolution stops seeing it — matching the C block the emitter
+      ## produces. Names are unique per function, so emission can still look up
+      ## by name unambiguously.
 
   NativeOwnership* = enum
     noNone
@@ -1521,6 +1527,51 @@ proc emitAotCSend(expr: Value, params: openArray[string],
     args.add emitAotCExpr(expr.body[i], params, paramReprs, available, locals)
   (true, available[key].cName & "(" & args.join(", ") & ")")
 
+proc emitAotCStatement(lines: var seq[string], statement: Value,
+                       indent: string, fn: FunctionProto,
+                       available: Table[string, AotCFunction],
+                       structNames: FfiStructCNames) =
+  if statement.kind == vkNode and statement.head.kind == vkSymbol and
+      statement.head.symVal in ["let", "var"]:
+    let name = statement.body[0].symVal
+    var localRepr = AotRepr()
+    for local in fn.aotLocals:
+      if local.name == name:
+        localRepr = local.repr
+        break
+    let localType = localRepr.aotCType(structNames)
+    if localType.len == 0:
+      discard aotLoweringGap(statement,
+        "local " & name & " has no resolved machine representation")
+    lines.add indent & localType & " " & cIdent(name, "local") & " = " &
+      emitAotCExpr(statement.body[3], fn.params, fn.aotParamReprs,
+                   available, fn.aotLocals) & ";"
+  elif statement.kind == vkNode and statement.head.kind == vkSymbol and
+      statement.head.symVal == "set" and
+      statement.body.len == 2 and statement.body[0].kind == vkSymbol:
+    lines.add indent & cIdent(statement.body[0].symVal, "local") & " = " &
+      emitAotCExpr(statement.body[1], fn.params, fn.aotParamReprs,
+                   available, fn.aotLocals) & ";"
+  elif statement.kind == vkNode and statement.head.kind == vkSymbol and
+      statement.head.symVal == "do" and statement.body.len > 0:
+    lines.add indent & "{"
+    for item in statement.body:
+      emitAotCStatement(lines, item, indent & "  ", fn, available, structNames)
+    lines.add indent & "}"
+  elif statement.kind == vkNode and statement.head.kind == vkSymbol and
+      statement.head.symVal == "while" and statement.body.len >= 2:
+    lines.add indent & "while (" &
+      emitAotCExpr(statement.body[0], fn.params, fn.aotParamReprs, available,
+                   fn.aotLocals) & ") {"
+    for i in 1 ..< statement.body.len:
+      emitAotCStatement(lines, statement.body[i], indent & "  ", fn,
+                        available, structNames)
+    lines.add indent & "}"
+  else:
+    lines.add indent & "(void)" &
+      emitAotCExpr(statement, fn.params, fn.aotParamReprs, available,
+                   fn.aotLocals) & ";"
+
 proc emitAotCStatements(lines: var seq[string], fn: FunctionProto,
                         available: Table[string, AotCFunction],
                         structNames: FfiStructCNames) =
@@ -1528,33 +1579,7 @@ proc emitAotCStatements(lines: var seq[string], fn: FunctionProto,
   if expr.kind == vkNode and expr.head.kind == vkSymbol and
       expr.head.symVal == "do" and expr.body.len > 0:
     for i in 0 ..< expr.body.high:
-      let statement = expr.body[i]
-      if statement.kind == vkNode and statement.head.kind == vkSymbol and
-          statement.head.symVal in ["let", "var"]:
-        let name = statement.body[0].symVal
-        var localRepr = AotRepr()
-        for local in fn.aotLocals:
-          if local.name == name:
-            localRepr = local.repr
-            break
-        let localType = localRepr.aotCType(structNames)
-        if localType.len == 0:
-          discard aotLoweringGap(statement,
-            "local " & name & " has no resolved machine representation")
-        lines.add "  " & localType & " " &
-          cIdent(name, "local") & " = " &
-          emitAotCExpr(statement.body[3], fn.params, fn.aotParamReprs,
-                       available, fn.aotLocals) & ";"
-      elif statement.kind == vkNode and statement.head.kind == vkSymbol and
-          statement.head.symVal == "set" and
-          statement.body.len == 2 and statement.body[0].kind == vkSymbol:
-        lines.add "  " & cIdent(statement.body[0].symVal, "local") & " = " &
-          emitAotCExpr(statement.body[1], fn.params, fn.aotParamReprs,
-                       available, fn.aotLocals) & ";"
-      else:
-        lines.add "  (void)" &
-          emitAotCExpr(statement, fn.params, fn.aotParamReprs, available,
-                       fn.aotLocals) & ";"
+      emitAotCStatement(lines, expr.body[i], "  ", fn, available, structNames)
     lines.add "  return " &
       emitAotCExpr(expr.body[^1], fn.params, fn.aotParamReprs, available,
                    fn.aotLocals) & ";"

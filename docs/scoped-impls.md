@@ -247,6 +247,12 @@ In a runtime with loading/reload it is guarded by the activation epoch; an
 epoch change re-resolves and may report ambiguity. Only closed-world AOT may
 omit the guard.
 
+The experimental `typed_native` C backend is not closed-world and does not yet
+carry the epoch guard. It refuses to lower a send whose message is declared by
+any overlay-only impl in the compiling module, which makes it sound within a
+module; a cross-module overlay installed after compilation is a known,
+accepted limitation (`docs/proposals/native-type.md` Part II).
+
 The reverse index adds no send-hot-path work. Protocol-typed aggregate
 boundaries are separate: `nimble perf` must cover repeated same-scope and
 cross-module `(List P)` checks at multiple sizes, reporting time and

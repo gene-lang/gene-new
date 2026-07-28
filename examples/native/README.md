@@ -152,22 +152,32 @@ function with a native-pointer parameter may:
   resolved qualified protocol send (`(recv ~ P:m)`);
 - compute with `+`, `-`, `*`, the comparisons, `if`, and scalar literals,
   nested freely;
+- loop with `while`, and group statements with a block-scoped `do`;
 - return any of the above.
 
-So the per-row work is compiled — `row_total` does both column reads and the
-multiply inside one C function:
+That is enough to keep a whole scan in Gene. `scan_total` steps the statement,
+reads both columns, multiplies and accumulates — all in one compiled C
+function, with `main.c` calling it once:
 
 ```c
-int64_t gene_native_row_total(sqlite3_stmt * stmt, int64_t amount_column,
-                              int64_t quantity_column) {
-  return (gene_native_column_i64(stmt, amount_column) *
-          gene_native_column_i64(stmt, quantity_column));
+int64_t gene_native_scan_total(sqlite3_stmt * stmt, int64_t amount_column,
+                               int64_t quantity_column, int64_t row_marker) {
+  int64_t total = 0;
+  while ((gene_native_step_row(stmt) == row_marker)) {
+    total = (total + gene_native_row_total(stmt, amount_column,
+                                           quantity_column));
+  }
+  return total;
 }
 ```
 
-It may **not** yet use any loop form, which is why the `while` stays in
-`main.c`. Both arms of an `if` must share the result representation: a C
-ternary has one type and there is no boxing available to reconcile two.
+The example runs the scan both ways — a C loop calling `row_total` per row,
+and this single compiled call — and both report `340`.
+
+Constraints worth knowing: both arms of an `if` must share the result
+representation (a C ternary has one type, and there is no boxing available to
+reconcile two), and a local declared inside a block leaves scope with it, just
+as in the emitted C.
 
 Two further limits shape `sqlite_shim.c`:
 

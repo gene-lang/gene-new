@@ -869,6 +869,52 @@ int main(void) {
 """
     checkCRuns(c & harness, "typed_native_arithmetic", "12 4 4 25")
 
+  test "typed-native bodies loop with while and block-scoped locals":
+    ## `while` and a statement-position `do` complete the subset enough to keep
+    ## a whole loop in Gene. A local declared inside the block leaves scope with
+    ## it, matching the C block, but its representation is still recorded for
+    ## emission.
+    let chunk = compileSource(
+      "(ffi/struct CPoint ^fields [[x C/Int64] [y C/Int64]]) " &
+      "(type Point ^native {^abi CPoint ^lifecycle manual}) " &
+      "(fn scaled_sum [p : Point n : I64] : I64 " &
+      "  (do " &
+      "    (var acc : I64 0) " &
+      "    (var i : I64 0) " &
+      "    (while (< i n) " &
+      "      (do (let step : I64 (* p/x p/y)) (set acc (+ acc step))) " &
+      "      (set i (+ i 1))) " &
+      "    acc))")
+    let c = chunk.emitExperimentalC()
+    check "while ((i < n)) {" in c
+    check "int64_t step = (p->x * p->y);" in c
+    check "acc = (acc + step);" in c
+    let harness = """
+#include <stdio.h>
+int main(void) {
+  CPoint p; p.x = 3; p.y = 4;
+  printf("%lld\n", (long long)gene_native_scaled_sum(&p, 5));
+  return 0;
+}
+"""
+    checkCRuns(c & harness, "typed_native_while", "60")
+
+  test "a typed-native loop cannot use a local after its block ends":
+    ## The out-of-scope marking is what keeps analysis honest here; without it
+    ## the emitter would place the declaration inside the C block and the
+    ## reference outside it.
+    check_compile_error(
+      "(ffi/struct CPoint ^fields [[x C/Int64] [y C/Int64]]) " &
+      "(type Point ^native {^abi CPoint ^lifecycle manual}) " &
+      "(fn bad [p : Point n : I64] : I64 " &
+      "  (do " &
+      "    (var i : I64 0) " &
+      "    (while (< i n) " &
+      "      (do (let step : I64 p/x)) " &
+      "      (set i (+ i 1))) " &
+      "    step))",
+      "typed_native function bad cannot lower its body statically")
+
   test "typed-native if arms must share the result representation":
     ## A C ternary has one type and there is no boxing available to reconcile
     ## two, so a pointer arm cannot join a scalar one.

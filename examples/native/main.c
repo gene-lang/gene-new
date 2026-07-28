@@ -30,6 +30,8 @@ int64_t gene_native_row_total(sqlite3_stmt *stmt, int64_t amount_column,
                               int64_t quantity_column);
 int64_t gene_native_row_total_capped(sqlite3_stmt *stmt, int64_t amount_column,
                                      int64_t quantity_column, int64_t cap);
+int64_t gene_native_scan_total(sqlite3_stmt *stmt, int64_t amount_column,
+                               int64_t quantity_column, int64_t row_marker);
 
 #define ROW 100 /* SQLITE_ROW */
 
@@ -73,6 +75,11 @@ int main(void) {
   printf("rows: %lld\n", (long long)rows);
   printf("total: %lld\n", (long long)total);
   printf("capped: %lld\n", (long long)capped);
+
+  /* The same scan with the loop itself compiled: one call, no C loop. */
+  gene_native_reset_stmt(stmt);
+  printf("scanned: %lld\n",
+         (long long)gene_native_scan_total(stmt, 0, 1, ROW));
 
   gene_native_reset_stmt(stmt);
   sqlite3_finalize(stmt);
