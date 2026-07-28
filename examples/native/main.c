@@ -26,6 +26,10 @@ int64_t gene_native_reset_stmt(sqlite3_stmt *stmt);
 int64_t gene_native_column_count(sqlite3_stmt *stmt);
 int64_t gene_native_column_i64(sqlite3_stmt *stmt, int64_t column);
 int64_t gene_native_read_first(sqlite3_stmt *stmt, int64_t first_column);
+int64_t gene_native_row_total(sqlite3_stmt *stmt, int64_t amount_column,
+                              int64_t quantity_column);
+int64_t gene_native_row_total_capped(sqlite3_stmt *stmt, int64_t amount_column,
+                                     int64_t quantity_column, int64_t cap);
 
 #define ROW 100 /* SQLITE_ROW */
 
@@ -56,16 +60,19 @@ int main(void) {
 
   int64_t rows = 0;
   int64_t total = 0;
-  /* Each iteration is four direct calls into Gene-compiled C. */
+  int64_t capped = 0;
+  /* The per-row work is compiled: row_total does both column reads and the
+   * multiply inside one Gene-compiled C function. Only the loop is here,
+   * because the subset still has no loop form. */
   while (gene_native_step_row(stmt) == ROW) {
-    int64_t amount = gene_native_read_first(stmt, 0);
-    int64_t quantity = gene_native_column_i64(stmt, 1);
-    total += amount * quantity;
+    total += gene_native_row_total(stmt, 0, 1);
+    capped += gene_native_row_total_capped(stmt, 0, 1, 120);
     rows += 1;
   }
 
   printf("rows: %lld\n", (long long)rows);
   printf("total: %lld\n", (long long)total);
+  printf("capped: %lld\n", (long long)capped);
 
   gene_native_reset_stmt(stmt);
   sqlite3_finalize(stmt);

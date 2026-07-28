@@ -2538,9 +2538,48 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
   if expr.kind == vkSymbol:
     let repr = expr.aotBindingRepr(params, paramReprs, locals)
     return resultRepr.aotReprAccepts(repr)
+  ## Scalar literals. The emitter has always rendered these; without the
+  ## matching analysis case even `(+ x 1)` was rejected.
+  if expr.kind == vkInt:
+    return resultRepr.kind == arkI64
+  if expr.kind == vkFloat:
+    return resultRepr.kind == arkF64
   if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0 or
       expr.head.kind != vkSymbol:
     return false
+  ## Arithmetic, comparison and `if` lower to plain C operators and a ternary.
+  ## The emitter has always handled them; analysis had no case, so a body that
+  ## computed anything at all was rejected as unlowerable.
+  if expr.head.symVal in ["+", "-", "*"] and expr.body.len == 2:
+    if resultRepr.kind notin {arkI64, arkF64}:
+      return false
+    return c.isTypedNativeAotExpr(expr.body[0], params, paramReprs, resultRepr,
+                                  ffiFns, locals) and
+      c.isTypedNativeAotExpr(expr.body[1], params, paramReprs, resultRepr,
+                             ffiFns, locals)
+  if expr.head.symVal in ["<", ">", "<=", ">=", "="] and expr.body.len == 2:
+    ## A C comparison yields int, so the result must be I64; the operands may
+    ## be either scalar repr as long as they agree.
+    if resultRepr.kind != arkI64:
+      return false
+    for operand in [AotRepr(kind: arkI64, typeName: "I64"),
+                    AotRepr(kind: arkF64, typeName: "F64")]:
+      if c.isTypedNativeAotExpr(expr.body[0], params, paramReprs, operand,
+                                ffiFns, locals) and
+          c.isTypedNativeAotExpr(expr.body[1], params, paramReprs, operand,
+                                 ffiFns, locals):
+        return true
+    return false
+  if expr.head.symVal == "if" and expr.body.len == 3:
+    ## Both arms must produce the result representation: a C ternary has one
+    ## type, and there is no boxing available to reconcile two.
+    let condition = AotRepr(kind: arkI64, typeName: "I64")
+    return c.isTypedNativeAotExpr(expr.body[0], params, paramReprs, condition,
+                                  ffiFns, locals) and
+      c.isTypedNativeAotExpr(expr.body[1], params, paramReprs, resultRepr,
+                             ffiFns, locals) and
+      c.isTypedNativeAotExpr(expr.body[2], params, paramReprs, resultRepr,
+                             ffiFns, locals)
   if expr.head.symVal == "path":
     let resolved = expr.typedNativeField(params, paramReprs, locals)
     if not resolved.found:

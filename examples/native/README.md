@@ -150,13 +150,24 @@ function with a native-pointer parameter may:
 - bind locals with `let`/`var`;
 - call another typed-native function, a typed FFI symbol, or a statically
   resolved qualified protocol send (`(recv ~ P:m)`);
+- compute with `+`, `-`, `*`, the comparisons, `if`, and scalar literals,
+  nested freely;
 - return any of the above.
 
-It may **not** yet use arithmetic (`+`, `-`, `*`), comparisons, `if`, or any
-loop form. The C emitter has code for arithmetic and conditionals, but the
-analysis pass that decides what is lowerable has no case for them, so such a
-function is rejected with "cannot lower its body statically". The loop and the
-`amount * quantity` computation therefore live in `main.c`.
+So the per-row work is compiled — `row_total` does both column reads and the
+multiply inside one C function:
+
+```c
+int64_t gene_native_row_total(sqlite3_stmt * stmt, int64_t amount_column,
+                              int64_t quantity_column) {
+  return (gene_native_column_i64(stmt, amount_column) *
+          gene_native_column_i64(stmt, quantity_column));
+}
+```
+
+It may **not** yet use any loop form, which is why the `while` stays in
+`main.c`. Both arms of an `if` must share the result representation: a C
+ternary has one type and there is no boxing available to reconcile two.
 
 Two further limits shape `sqlite_shim.c`:
 

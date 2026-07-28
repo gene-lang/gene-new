@@ -842,6 +842,42 @@ int main(void) {
       "  (set! p/value value))",
       "typed_native function set_byte cannot lower its body statically")
 
+  test "typed-native bodies compute with arithmetic, comparison and if":
+    ## The emitter always rendered these; analysis had no case for them, so a
+    ## native-pointer function that computed anything at all was rejected.
+    let chunk = compileSource(
+      "(ffi/struct CPoint ^fields [[x C/Int64] [y C/Int64]]) " &
+      "(type Point ^native {^abi CPoint ^lifecycle manual}) " &
+      "(fn area [p : Point] : I64 (* p/x p/y)) " &
+      "(fn shifted [p : Point] : I64 (+ p/x 1)) " &
+      "(fn larger [p : Point] : I64 (if (< p/x p/y) p/y p/x)) " &
+      "(fn nested [p : Point] : I64 (+ (* p/x p/x) (* p/y p/y)))")
+    let c = chunk.emitExperimentalC()
+    check "return (p->x * p->y);" in c
+    check "return (p->x + 1);" in c
+    check "return ((p->x < p->y) ? p->y : p->x);" in c
+    check "return ((p->x * p->x) + (p->y * p->y));" in c
+    let harness = """
+#include <stdio.h>
+int main(void) {
+  CPoint p; p.x = 3; p.y = 4;
+  printf("%lld %lld %lld %lld\n", (long long)gene_native_area(&p),
+         (long long)gene_native_shifted(&p), (long long)gene_native_larger(&p),
+         (long long)gene_native_nested(&p));
+  return 0;
+}
+"""
+    checkCRuns(c & harness, "typed_native_arithmetic", "12 4 4 25")
+
+  test "typed-native if arms must share the result representation":
+    ## A C ternary has one type and there is no boxing available to reconcile
+    ## two, so a pointer arm cannot join a scalar one.
+    check_compile_error(
+      "(ffi/struct CPoint ^fields [[x C/Int64] [y C/Int64]]) " &
+      "(type Point ^native {^abi CPoint ^lifecycle manual}) " &
+      "(fn bad [p : Point] : I64 (if (< p/x p/y) p p/x))",
+      "typed_native function bad cannot lower its body statically")
+
   test "typed-native paths reject operations that require runtime dispatch":
     check_compile_error(
       "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &

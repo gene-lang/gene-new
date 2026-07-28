@@ -60,3 +60,15 @@
   (do
     (let value : I64 (column_i64 stmt first_column))
     value))
+
+# Per-row work, compiled: two direct SQLite calls and the multiply all lower
+# into one C function with no boxing.
+(fn row_total [stmt : Stmt amount_column : I64 quantity_column : I64] : I64
+  (* (column_i64 stmt amount_column) (column_i64 stmt quantity_column)))
+
+# Conditionals lower to a C ternary.
+(fn row_total_capped [stmt : Stmt amount_column : I64 quantity_column : I64
+                      cap : I64] : I64
+  (if (< (row_total stmt amount_column quantity_column) cap)
+    (row_total stmt amount_column quantity_column)
+    cap))
