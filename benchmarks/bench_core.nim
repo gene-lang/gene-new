@@ -7,8 +7,8 @@
 ## Run:
 ##   nimble perf
 
-import gene/[compiler, equality, logging, printer, reader, types, vm]
-import std/[json, monotimes, strutils, tables, times]
+import gene/[compiler, equality, gir, logging, printer, reader, types, vm]
+import std/[json, monotimes, os, osproc, strutils, tables, times]
 
 var positiveZeroInput {.volatile.}: float64 = 0.0
 
@@ -17,6 +17,74 @@ type BenchNativeRecord = object
 
 proc benchTypedNativeLoad(record: ptr BenchNativeRecord): int64 {.inline.} =
   record.value
+
+proc benchGeneratedCFieldLoad(iterations: int) =
+  ## Time the C the backend actually emits.
+  ##
+  ## §10 of docs/proposals/native-type.md gates this feature on the emitted
+  ## path being a direct load. A hand-written Nim analogue cannot answer that:
+  ## it measures a different compiler's output, and it stays green even when
+  ## the backend emits nothing for the function at all. Skip cleanly when no C
+  ## compiler is available — `nimble perf` enforces no thresholds.
+  let cc = getEnv("CC", "cc")
+  if findExe(cc).len == 0:
+    echo "typed_native.generated_c_field_load: skipped (no C compiler on PATH)"
+    return
+  let chunk = compileSource(
+    "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+    "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+    "(fn load_value [node : Node] : I64 node/value)")
+  let generated = chunk.emitExperimentalC()
+  if "int64_t gene_native_load_value(CNode * node)" notin generated:
+    echo "typed_native.generated_c_field_load: FAILED (getter was not emitted)"
+    return
+  let harness = """
+#include <stdio.h>
+#include <time.h>
+int main(void) {
+  CNode record;
+  record.value = 42;
+  CNode *volatile slot = &record;
+  long long checksum = 0;
+  struct timespec started, ended;
+  clock_gettime(CLOCK_MONOTONIC, &started);
+  for (long long i = 0; i < ITERATIONS; ++i) {
+    checksum += gene_native_load_value(slot) + (i & 1);
+  }
+  clock_gettime(CLOCK_MONOTONIC, &ended);
+  double nanos = (double)(ended.tv_sec - started.tv_sec) * 1000000000.0 +
+                 (double)(ended.tv_nsec - started.tv_nsec);
+  printf("%.0f %lld\n", nanos, checksum);
+  return 0;
+}
+"""
+  let sourcePath = getTempDir() / "gene_bench_typed_native.c"
+  let exePath = getTempDir() / ("gene_bench_typed_native" & ExeExt)
+  writeFile(sourcePath, generated & harness)
+  defer:
+    removeFile(sourcePath)
+    if fileExists(exePath):
+      removeFile(exePath)
+  let built = execCmdEx(quoteShell(cc) & " -std=c11 -O2 -DITERATIONS=" &
+    $iterations & " " & quoteShell(sourcePath) & " -o " & quoteShell(exePath))
+  if built.exitCode != 0:
+    echo "typed_native.generated_c_field_load: FAILED to build generated C"
+    echo built.output.strip()
+    return
+  let ran = execCmdEx(quoteShell(exePath))
+  if ran.exitCode != 0:
+    echo "typed_native.generated_c_field_load: FAILED to run generated C"
+    return
+  let fields = ran.output.strip().split(' ')
+  if fields.len != 2:
+    echo "typed_native.generated_c_field_load: FAILED to parse harness output"
+    return
+  let nanos = max(1.0, parseFloat(fields[0]))
+  let opsPerSec = float(iterations) * 1_000_000_000.0 / nanos
+  echo "typed_native.generated_c_field_load: ", iterations, " ops in ",
+       formatFloat(nanos / 1_000_000.0, ffDecimal, 2), " ms (",
+       formatFloat(opsPerSec, ffDecimal, 0),
+       " ops/s, checksum=", fields[1], ")"
 
 proc benchWrapperNativeGetter(args: openArray[Value]): Value {.nimcall.} =
   let record = cast[ptr BenchNativeRecord](
@@ -506,9 +574,13 @@ proc main() =
 
   var nativeRecord {.volatile.} = BenchNativeRecord(value: 42)
   let nativeRecordPtr = addr nativeRecord
-  bench("typed_native.direct_field_load", 20_000_000, i):
+  # A hand-written inlined Nim load. This is a theoretical ceiling for
+  # comparison, NOT the backend: it says nothing about what the C emitter
+  # produced. `typed_native.generated_c_field_load` below is the real gate.
+  bench("typed_native.inline_nim_ceiling", 20_000_000, i):
     checksum = checksum + benchTypedNativeLoad(nativeRecordPtr) +
       int64(i and 1)
+  benchGeneratedCFieldLoad(20_000_000)
 
   wrapperScope.define("native_value",
     newNativeFn("native_value", benchWrapperNativeGetter))

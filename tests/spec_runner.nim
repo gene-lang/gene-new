@@ -35,6 +35,19 @@ template check_compile_error(src: string, fragment: string) =
     check fragment in e.msg
   check raised
 
+template check_emit_c_error(src: string, fragment: string) =
+  ## Asserts that C emission raises with `fragment`. Analysis and emission
+  ## re-derive lowerability from different data, so a gap can survive
+  ## compilation and only appear when the backend runs; it must fail loudly
+  ## rather than emit a placeholder.
+  var raised = false
+  try:
+    discard compileSource(src).emitExperimentalC()
+  except CatchableError as e:
+    raised = true
+    check fragment in e.msg
+  check raised
+
 template check_runtime_error(src: string, fragment: string) =
   ## Asserts that *running* `src` raises with `fragment` in the message. Some
   ## rules cannot be checked at compile time — the compiler does not track
@@ -804,6 +817,87 @@ int main(void) {
     check "return self->value;" in c
     check "return gene_native_impl_0_read_value(node);" in c
     checkCCompiles(c, "typed_native_specialized_send")
+
+  test "a bare typed-native send never resolves to a protocol impl":
+    ## Bare is type-direct, qualified is protocol (docs/core.md §3.6.1). The
+    ## interpreter answers "no message 'read_value' on Node" for this source,
+    ## so the backend must not lower it to a direct impl call.
+    check_compile_error(
+      "(protocol ReadValue (message read_value [] : I64)) " &
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(impl ReadValue for Node " &
+      "  (message read_value [] : I64 self/value)) " &
+      "(fn read [node : Node] : I64 (node ~ read_value))",
+      "typed_native function read cannot lower its body statically")
+
+  test "a lexical binding shadows a protocol name during send lowering":
+    check_compile_error(
+      "(protocol ReadValue (message read_value [] : I64)) " &
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(impl ReadValue for Node " &
+      "  (message read_value [] : I64 self/value)) " &
+      "(fn read [node : Node ReadValue : Node] : I64 " &
+      "  (node ~ ReadValue:read_value))",
+      "typed_native function read cannot lower its body statically")
+
+  test "an overlay impl blocks lowering a canonical direct send":
+    ## docs/scoped-impls.md §7: a direct protocol call needs the winning
+    ## unconditional canonical pair with no reachable overlay. A conditional
+    ## impl is overlay-only and cannot be ranked here, so the canonical target
+    ## must not be baked in.
+    ##
+    ## Limit: this sees overlay impls in the same chunk. An impl inside a
+    ## nested function body, or one declared after the send, is not visible
+    ## here — see the note in `localAotImplMessage`.
+    check_compile_error(
+      "(protocol ReadValue (message read_value [] : I64)) " &
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(impl ReadValue for Node " &
+      "  (message read_value [] : I64 self/value)) " &
+      "(if true (impl ReadValue for Node " &
+      "  (message read_value [] : I64 0))) " &
+      "(fn read [node : Node] : I64 (node ~ ReadValue:read_value))",
+      "typed_native function read cannot lower its body statically")
+
+  test "an unlowerable impl body fails emission instead of returning 0":
+    ## Impl functions are emitted before ordinary module functions, so an impl
+    ## calling an earlier typed-native helper passes analysis but has no
+    ## emittable target. The old `"0"` fallback made this compile to
+    ## `return 0;`, and for a pointer local to `T *x = 0;` followed by a field
+    ## load — clean C that dereferences null.
+    check_emit_c_error(
+      "(protocol ReadValue (message read_value [] : I64)) " &
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(fn helper [node : Node] : I64 node/value) " &
+      "(impl ReadValue for Node " &
+      "  (message read_value [] : I64 (helper self))) " &
+      "(fn read [node : Node] : I64 (node ~ ReadValue:read_value))",
+      "typed_native function read_value: typed_native backend has no " &
+      "lowering for (helper self)")
+
+  test "native release and copy symbols must be C identifiers":
+    ## `^release`/`^copy` are interpolated into generated C declarations
+    ## verbatim, so an unchecked value injects arbitrary C into the build.
+    check_compile_error(
+      "(ffi/struct CTimespec ^fields [[tv_sec C/Long]]) " &
+      "(type Timespec ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CTimespec)} " &
+      "  ^native {^abi CTimespec ^lifecycle manual ^wrapper handle " &
+      "           ^release \"ts_free\" " &
+      "           ^copy \"evil(void); } int pwned(void) { return 1\"})",
+      "^native ^copy must be a C identifier")
+
+  test "an ffi symbol must be a C identifier":
+    ## `cIdent` would otherwise rewrite this silently into a name that cannot
+    ## link, turning a typo into a confusing link error.
+    check_compile_error(
+      "(ffi/fn sneaky ^symbol \"legit(void); } int injected(void) { return 1\" " &
+      "  [x : C/Int64] : C/Int64)",
+      "ffi/fn ^symbol must be a C identifier")
 
   test "typed-native functions call typed FFI symbols directly":
     let chunk = compileSource(

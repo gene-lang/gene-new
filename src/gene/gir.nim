@@ -288,6 +288,10 @@ type
     ffiStruct*: FfiStructProto
     nativeType*: NativeTypeProto
     nativeSpec*: Value
+    ## The declaring `(type …)` form. `^native ^wrapper` is validated against
+    ## `^repr` and `^props`, so the header path needs the whole declaration to
+    ## apply the same rules the compiler does.
+    typeForm*: Value
 
   ImportSpec* = object
     fromModule*: bool                 # true: `from "path"`; false: namespace path
@@ -1355,6 +1359,24 @@ proc aotSendKey(receiverIdentity, protocolName, messageName: string): string =
   "@typed_send\x1f" & receiverIdentity & "\x1f" & protocolName & "\x1f" &
     messageName
 
+proc aotLoweringGap(expr: Value, detail: string): string =
+  ## Emission-time guard for the typed_native backend.
+  ##
+  ## `isTypedNativeAotExpr` decides what may be lowered; this emitter must be
+  ## able to lower everything analysis accepted. The two passes re-derive that
+  ## judgement from different data — analysis walks source-ordered compiler
+  ## state, emission walks an `available` table built in emission order — so
+  ## they can disagree. Reaching here means they did.
+  ##
+  ## Fail loudly rather than emitting a placeholder. The previous `"0"`
+  ## fallback silently produced wrong values, and for pointer-typed results a
+  ## `T *x = 0;` initializer followed by a field load, which compiles cleanly
+  ## at -Wall -Wextra and dereferences null at runtime.
+  raise newException(GeneError,
+    "typed_native backend has no lowering for " & expr.print() & " (" &
+    detail & "). Analysis accepted this expression but code generation " &
+    "cannot emit it; the typed_native analysis and emission passes disagree.")
+
 proc emitAotCSend(expr: Value, params: openArray[string],
                   paramReprs: openArray[AotRepr],
                   available: Table[string, AotCFunction],
@@ -1366,7 +1388,10 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
                   locals: openArray[AotLocal]): string =
   case expr.kind
   of vkSymbol:
-    cIdent(expr.symVal, "arg")
+    if expr.symVal.aotCBindingRepr(params, paramReprs, locals).kind == arkNone:
+      aotLoweringGap(expr, "symbol is not a typed parameter or local")
+    else:
+      cIdent(expr.symVal, "arg")
   of vkInt:
     $expr.intVal
   of vkFloat:
@@ -1440,16 +1465,19 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
         else:
           access
       else:
-        "0"
+        aotLoweringGap(expr,
+          "field base " & base & " is not a typed-native pointer")
     elif available.hasKey(head):
       var args: seq[string]
       for arg in expr.body:
         args.add emitAotCExpr(arg, params, paramReprs, available, locals)
       available[head].cName & "(" & args.join(", ") & ")"
     else:
-      "0"
+      aotLoweringGap(expr,
+        "no emitted typed-native function named " & head &
+        " is available at this point in emission order")
   else:
-    "0"
+    aotLoweringGap(expr, "unsupported literal or expression kind")
 
 proc emitAotCSend(expr: Value, params: openArray[string],
                   paramReprs: openArray[AotRepr],
@@ -1458,10 +1486,16 @@ proc emitAotCSend(expr: Value, params: openArray[string],
   if expr.kind != vkNode or expr.head.kind != vkSymbol or expr.body.len < 2 or
       expr.body[0].kind != vkSymbol or expr.body[0].symVal != "~":
     return
+  ## Past this point the expression is a `~` send, so an unresolved target is
+  ## an analysis/emission disagreement rather than "not a send". Returning
+  ## found=false here used to fall through to the generic `"0"` fallback and
+  ## silently drop the call.
   let receiverRepr = expr.head.symVal.aotCBindingRepr(
     params, paramReprs, locals)
   if receiverRepr.kind != arkNativePtr:
-    return
+    discard aotLoweringGap(expr,
+      "send receiver " & expr.head.symVal &
+      " is not a typed-native pointer")
   var protocolName = ""
   var messageName = ""
   let message = expr.body[1]
@@ -1473,19 +1507,23 @@ proc emitAotCSend(expr: Value, params: openArray[string],
     protocolName = ffiTypeLabel(message.body[0])
     messageName = message.body[1].symVal
   else:
-    return
+    discard aotLoweringGap(expr, "unrecognized message form in send")
   let key = aotSendKey(receiverRepr.nativeType.identity,
                        protocolName, messageName)
   if not available.hasKey(key):
-    return
+    discard aotLoweringGap(expr,
+      "no emitted impl for message " & messageName &
+      (if protocolName.len > 0: " of protocol " & protocolName
+       else: " (bare send)") &
+      " on receiver " & receiverRepr.typeName)
   var args = @[cIdent(expr.head.symVal, "receiver")]
   for i in 2 ..< expr.body.len:
     args.add emitAotCExpr(expr.body[i], params, paramReprs, available, locals)
   (true, available[key].cName & "(" & args.join(", ") & ")")
 
-proc emitAotCBody(lines: var seq[string], fn: FunctionProto,
-                  available: Table[string, AotCFunction],
-                  structNames: FfiStructCNames) =
+proc emitAotCStatements(lines: var seq[string], fn: FunctionProto,
+                        available: Table[string, AotCFunction],
+                        structNames: FfiStructCNames) =
   let expr = fn.aotExpr
   if expr.kind == vkNode and expr.head.kind == vkSymbol and
       expr.head.symVal == "do" and expr.body.len > 0:
@@ -1499,7 +1537,11 @@ proc emitAotCBody(lines: var seq[string], fn: FunctionProto,
           if local.name == name:
             localRepr = local.repr
             break
-        lines.add "  " & localRepr.aotCType(structNames) & " " &
+        let localType = localRepr.aotCType(structNames)
+        if localType.len == 0:
+          discard aotLoweringGap(statement,
+            "local " & name & " has no resolved machine representation")
+        lines.add "  " & localType & " " &
           cIdent(name, "local") & " = " &
           emitAotCExpr(statement.body[3], fn.params, fn.aotParamReprs,
                        available, fn.aotLocals) & ";"
@@ -1520,6 +1562,17 @@ proc emitAotCBody(lines: var seq[string], fn: FunctionProto,
     lines.add "  return " &
       emitAotCExpr(expr, fn.params, fn.aotParamReprs, available,
                    fn.aotLocals) & ";"
+
+proc emitAotCBody(lines: var seq[string], fn: FunctionProto,
+                  available: Table[string, AotCFunction],
+                  structNames: FfiStructCNames) =
+  ## Name the offending function on a lowering gap; the raised message
+  ## otherwise identifies only the expression, which is rarely unique.
+  try:
+    emitAotCStatements(lines, fn, available, structNames)
+  except GeneError as e:
+    raise newException(GeneError,
+      "typed_native function " & fn.name & ": " & e.msg)
 
 proc ffiTypeLabel(expr: Value): string =
   case expr.kind
@@ -2278,8 +2331,9 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
     lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $taskFrameRows.len & ";"
     lines.add ""
-  var bareImplCandidates = initTable[string, AotCFunction]()
-  var ambiguousBareImpls = initHashSet[string]()
+  ## Only qualified `(recv ~ P:m)` sends are registered. A bare send is
+  ## type-direct and is rejected by analysis; registering a protocol impl under
+  ## a bare key here would let emission resolve what analysis refused.
   for implIndex, impl in chunk.implProtos:
     let protocolName = ffiTypeLabel(impl.protocolExpr)
     for messageIndex, message in impl.messages:
@@ -2315,14 +2369,6 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
                                 cType: cType)
       let receiverIdentity = fn.aotParamReprs[0].nativeType.identity
       available[aotSendKey(receiverIdentity, protocolName, message.name)] = target
-      let bareKey = aotSendKey(receiverIdentity, "", message.name)
-      if bareImplCandidates.hasKey(bareKey):
-        ambiguousBareImpls.incl bareKey
-      else:
-        bareImplCandidates[bareKey] = target
-  for key, target in bareImplCandidates:
-    if key notin ambiguousBareImpls:
-      available[key] = target
   var moduleFns: seq[AotModuleFunction]
   for i, fn in chunk.functions:
     let typeName = fn.aotTypeName

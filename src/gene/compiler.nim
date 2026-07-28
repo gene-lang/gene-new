@@ -2422,15 +2422,52 @@ proc typedNativeSend(expr: Value, params: openArray[string],
     return
   let message = expr.body[1]
   if message.kind == vkSymbol:
-    return (true, receiverRepr, NIL, message.symVal, 2)
+    ## Bare `(recv ~ m)` is type-direct; only a qualified `(recv ~ P:m)` names
+    ## a protocol message (docs/core.md §3.6.1). Resolving a bare send against
+    ## protocol impls made the C backend call an impl the VM refuses to
+    ## dispatch — the interpreter answers "no message 'm' on T" for the same
+    ## source. Typed-native lowering has no type-direct message table, so a
+    ## bare send is simply not lowerable here.
+    return
   if message.kind == vkNode and message.head.isSymbol("msg") and
       message.body.len == 2 and message.body[1].kind == vkSymbol:
-    return (true, receiverRepr, message.body[0], message.body[1].symVal, 2)
+    let protocolExpr = message.body[0]
+    ## A lexical binding shadowing the protocol name makes the send dynamic.
+    ## The typed FFI path already enforces this for shadowed symbols; the send
+    ## path must not disagree.
+    if protocolExpr.kind == vkSymbol and
+        protocolExpr.symVal.aotBindingNamed(params, locals):
+      return
+    return (true, receiverRepr, protocolExpr, message.body[1].symVal, 2)
 
 proc localAotImplMessage(c: Compiler, receiverRepr: AotRepr,
                          protocolExpr: Value,
                          messageName: string):
     tuple[fn: FunctionProto, protocolExpr, receiverExpr: Value] =
+  ## A direct protocol call is allowed only when the winning unconditional
+  ## canonical pair is statically known and no overlay is reachable
+  ## (docs/scoped-impls.md §7). An impl that is not a static top-level pair is
+  ## overlay-only, and if it declares this message it may win at runtime. We
+  ## cannot rank it here, so refuse to lower rather than bake in the canonical
+  ## target. Receivers that do not resolve statically are treated as possible
+  ## matches for the same reason.
+  ##
+  ## Limit: this scans the current chunk only, and only impls compiled before
+  ## the send. An impl inside a nested function body lives in a subchunk, and
+  ## one declared later has not been compiled yet; neither is caught. Closing
+  ## that gap needs a decision on whether the typed-native path is closed-world
+  ## AOT (docs/scoped-impls.md §7 lets closed-world AOT omit the epoch guard
+  ## entirely), which is a design question rather than a local fix.
+  for impl in c.chunk.implProtos:
+    if impl.staticTopLevel and impl.staticOperands:
+      continue
+    let overlayReceiver = c.resolvedAotRepr(impl.receiverExpr)
+    if overlayReceiver.kind == arkNativePtr and
+        overlayReceiver.nativeType.identity != receiverRepr.nativeType.identity:
+      continue
+    for message in impl.messages:
+      if message.name == messageName and message.protocolPath.len == 0:
+        return (nil, NIL, NIL)
   var matches = 0
   for impl in c.chunk.implProtos:
     if not impl.staticTopLevel or not impl.staticOperands:
@@ -3768,7 +3805,8 @@ proc collectCompileInterfaceForm(form: Value,
     if name.len > 0 and not form.declarationIsPrivate:
       target.entries[name] = CompileInterfaceEntry(
         category: cbcType,
-        nativeSpec: form.props.getOrDefault("native", NIL))
+        nativeSpec: form.props.getOrDefault("native", NIL),
+        typeForm: form)
   of "enum", "alias":
     let name = form.declaredName
     if name.len > 0 and not form.declarationIsPrivate:
@@ -3793,6 +3831,113 @@ proc collectCompileInterfaceForms(forms: openArray[Value], first: int,
     collectCompileInterfaceForm(forms[i], target, syntaxNames,
                                 sourceName, namespacePath)
 
+proc isCIdentifier(symbol: string): bool =
+  if symbol.len == 0:
+    return false
+  if not (symbol[0].isAlphaAscii or symbol[0] == '_'):
+    return false
+  for ch in symbol:
+    if not (ch.isAlphaAscii or ch.isDigit or ch == '_'):
+      return false
+  true
+
+proc validateCSymbol(context, key, symbol: string) =
+  ## `^symbol`, `^release`, and `^copy` all name foreign C functions that reach
+  ## generated C. `^release`/`^copy` are interpolated into declarations
+  ## verbatim, so an unchecked value injects arbitrary C into the build — a
+  ## concern because these come from library bindings a program imports.
+  ## `^symbol` is passed through `cIdent`, which silently rewrites invalid
+  ## characters and yields a name that cannot link. Require a real C
+  ## identifier so both failure modes become declaration-time diagnostics.
+  if not symbol.isCIdentifier:
+    raise newException(GeneError,
+      context & " ^" & key & " must be a C identifier, got: " & symbol)
+
+proc validateNativeMarkerShape(marker: Value, name: string) =
+  ## Shape rules for `^native`, shared by the compiler and the compile-interface
+  ## (header) path. ABI *resolution* necessarily differs between the two — the
+  ## compiler searches its chunk and imports, a header only its own interface —
+  ## but every other rule must be identical, or a header can admit a
+  ## declaration the compiler would reject.
+  if marker.kind != vkMap:
+    raise newException(GeneError,
+      "type " & name & " ^native must be a map")
+  for key in marker.mapEntries.keys:
+    if key notin ["abi", "lifecycle", "mutable", "wrapper", "release", "copy"]:
+      raise newException(GeneError,
+        "type " & name & " ^native got unexpected field: " & key)
+  if not marker.mapEntries.hasKey("abi"):
+    raise newException(GeneError,
+      "type " & name & " ^native requires ^abi")
+  if marker.mapEntries["abi"].kind != vkSymbol:
+    raise newException(GeneError,
+      "type " & name & " ^native ^abi must name an ffi/struct")
+
+proc nativeTypeProtoFrom(marker, typeForm: Value, name, identity: string,
+                         abi: FfiStructProto): NativeTypeProto =
+  ## Normative field validation for `^native`, shared by both paths. Previously
+  ## the header path re-derived these fields with no validation at all and
+  ## silently skipped anything malformed, so an invalid declaration could look
+  ## complete to a dependent module.
+  var lifecycle = "manual"
+  if marker.mapEntries.hasKey("lifecycle"):
+    let value = marker.mapEntries["lifecycle"]
+    if value.kind != vkSymbol or value.symVal != "manual":
+      raise newException(GeneError,
+        "type " & name & " ^native ^lifecycle must be manual")
+    lifecycle = value.symVal
+  var mutable = false
+  if marker.mapEntries.hasKey("mutable"):
+    let value = marker.mapEntries["mutable"]
+    if value.kind != vkBool:
+      raise newException(GeneError,
+        "type " & name & " ^native ^mutable must be Bool")
+    mutable = value.boolVal
+  var wrapperField = ""
+  if marker.mapEntries.hasKey("wrapper"):
+    let value = marker.mapEntries["wrapper"]
+    if value.kind != vkSymbol:
+      raise newException(GeneError,
+        "type " & name & " ^native ^wrapper must name a field")
+    if typeForm.kind != vkNil:
+      if not typeForm.props.hasKey("repr") or
+          not typeForm.props["repr"].isSymbol("native_wrapper"):
+        raise newException(GeneError,
+          "type " & name & " ^native ^wrapper requires ^repr native_wrapper")
+      if not typeForm.props.hasKey("props") or
+          typeForm.props["props"].kind != vkMap or
+          not typeForm.props["props"].mapEntries.hasKey(value.symVal):
+        raise newException(GeneError,
+          "type " & name & " ^native ^wrapper field is not declared: " &
+          value.symVal)
+    wrapperField = value.symVal
+  var releaseSymbol = ""
+  if marker.mapEntries.hasKey("release"):
+    let value = marker.mapEntries["release"]
+    if value.kind != vkString or value.strVal.len == 0:
+      raise newException(GeneError,
+        "type " & name & " ^native ^release must be a non-empty Str")
+    validateCSymbol("type " & name & " ^native", "release", value.strVal)
+    releaseSymbol = value.strVal
+  var copySymbol = ""
+  if marker.mapEntries.hasKey("copy"):
+    let value = marker.mapEntries["copy"]
+    if value.kind != vkString or value.strVal.len == 0:
+      raise newException(GeneError,
+        "type " & name & " ^native ^copy must be a non-empty Str")
+    validateCSymbol("type " & name & " ^native", "copy", value.strVal)
+    copySymbol = value.strVal
+  NativeTypeProto(
+    name: name,
+    identity: identity,
+    abiIdentity: abi.identity,
+    abi: abi,
+    lifecycle: lifecycle,
+    mutable: mutable,
+    wrapperField: wrapperField,
+    releaseSymbol: releaseSymbol,
+    copySymbol: copySymbol)
+
 proc resolveNativeInterfaceTypes(iface: CompileNamespaceInterface,
                                  sourceName: string,
                                  namespacePath: seq[string]) =
@@ -3806,50 +3951,21 @@ proc resolveNativeInterfaceTypes(iface: CompileNamespaceInterface,
     if entryValue.category != cbcType or entryValue.nativeSpec.kind == vkNil:
       continue
     let spec = entryValue.nativeSpec
-    if spec.kind != vkMap or not spec.mapEntries.hasKey("abi"):
-      continue # The full compiler produces the normative diagnostic.
+    validateNativeMarkerShape(spec, name)
+    ## Only ABI lookup stays best-effort here: a header sees just its own
+    ## interface, so a `^abi` naming an imported layout legitimately does not
+    ## resolve and the type simply carries no native metadata in this view.
     let abiExpr = spec.mapEntries["abi"]
-    if abiExpr.kind != vkSymbol or not iface.entries.hasKey(abiExpr.symVal):
+    if not iface.entries.hasKey(abiExpr.symVal):
       continue
     let abi = iface.entries[abiExpr.symVal].ffiStruct
     if abi == nil:
       continue
-    var lifecycle = "manual"
-    if spec.mapEntries.hasKey("lifecycle") and
-        spec.mapEntries["lifecycle"].kind == vkSymbol:
-      lifecycle = spec.mapEntries["lifecycle"].symVal
-    let mutable = spec.mapEntries.hasKey("mutable") and
-      spec.mapEntries["mutable"].kind == vkBool and
-      spec.mapEntries["mutable"].boolVal
-    let wrapperField =
-      if spec.mapEntries.hasKey("wrapper") and
-          spec.mapEntries["wrapper"].kind == vkSymbol:
-        spec.mapEntries["wrapper"].symVal
-      else:
-        ""
-    let releaseSymbol =
-      if spec.mapEntries.hasKey("release") and
-          spec.mapEntries["release"].kind == vkString:
-        spec.mapEntries["release"].strVal
-      else:
-        ""
-    let copySymbol =
-      if spec.mapEntries.hasKey("copy") and
-          spec.mapEntries["copy"].kind == vkString:
-        spec.mapEntries["copy"].strVal
-      else:
-        ""
-    entryValue.nativeType = NativeTypeProto(
-      name: name,
-      identity: (if sourceName.len > 0: sourceName else: "<memory>") &
+    entryValue.nativeType = nativeTypeProtoFrom(
+      spec, entryValue.typeForm, name,
+      (if sourceName.len > 0: sourceName else: "<memory>") &
         "::" & (namespacePath & @[name]).join("/"),
-      abiIdentity: abi.identity,
-      abi: abi,
-      lifecycle: lifecycle,
-      mutable: mutable,
-      wrapperField: wrapperField,
-      releaseSymbol: releaseSymbol,
-      copySymbol: copySymbol)
+      abi)
 
 proc buildCompileInterface*(forms: openArray[Value],
                             sourceName = ""): CompileNamespaceInterface =
@@ -4586,12 +4702,15 @@ proc compileFfiFn(c: var Compiler, node: Value) =
   if idx < body.len:
     raise newException(GeneError, "ffi/fn has unexpected body forms")
   let symbol = propLiteral(node, "symbol", name, "ffi/fn")
+  validateCSymbol("ffi/fn", "symbol", symbol)
   let library = propLiteral(node, "library", "", "ffi/fn")
   if node.props.hasKey("library") and library.len == 0:
     raise newException(GeneError, "ffi/fn ^library must not be empty")
   let release = propLiteral(node, "release", "", "ffi/fn")
   if node.props.hasKey("release") and release.len == 0:
     raise newException(GeneError, "ffi/fn ^release must not be empty")
+  if release.len > 0:
+    validateCSymbol("ffi/fn", "release", release)
   let proto = FfiFnProto(name: name,
                          library: library,
                          libraryDeclared: library.len > 0 and
@@ -6095,20 +6214,8 @@ proc nativeTypeMarker(c: Compiler, node: Value,
   if not node.props.hasKey("native"):
     return nil
   let marker = node.props["native"]
-  if marker.kind != vkMap:
-    raise newException(GeneError,
-      "type " & name & " ^native must be a map")
-  for key in marker.mapEntries.keys:
-    if key notin ["abi", "lifecycle", "mutable", "wrapper", "release", "copy"]:
-      raise newException(GeneError,
-        "type " & name & " ^native got unexpected field: " & key)
-  if not marker.mapEntries.hasKey("abi"):
-    raise newException(GeneError,
-      "type " & name & " ^native requires ^abi")
+  validateNativeMarkerShape(marker, name)
   let abiExpr = marker.mapEntries["abi"]
-  if abiExpr.kind != vkSymbol:
-    raise newException(GeneError,
-      "type " & name & " ^native ^abi must name an ffi/struct")
   var abi: FfiStructProto
   for candidate in c.chunk.ffiStructs:
     if candidate.name == abiExpr.symVal:
@@ -6136,62 +6243,10 @@ proc nativeTypeMarker(c: Compiler, node: Value,
         break
     if not present:
       discard c.chunk.addFfiStruct(abi)
-  var lifecycle = "manual"
-  if marker.mapEntries.hasKey("lifecycle"):
-    let value = marker.mapEntries["lifecycle"]
-    if value.kind != vkSymbol or value.symVal != "manual":
-      raise newException(GeneError,
-        "type " & name & " ^native ^lifecycle must be manual")
-    lifecycle = value.symVal
-  var mutable = false
-  if marker.mapEntries.hasKey("mutable"):
-    let value = marker.mapEntries["mutable"]
-    if value.kind != vkBool:
-      raise newException(GeneError,
-        "type " & name & " ^native ^mutable must be Bool")
-    mutable = value.boolVal
-  var wrapperField = ""
-  if marker.mapEntries.hasKey("wrapper"):
-    let value = marker.mapEntries["wrapper"]
-    if value.kind != vkSymbol:
-      raise newException(GeneError,
-        "type " & name & " ^native ^wrapper must name a field")
-    if not node.props.hasKey("repr") or
-        not node.props["repr"].isSymbol("native_wrapper"):
-      raise newException(GeneError,
-        "type " & name & " ^native ^wrapper requires ^repr native_wrapper")
-    if not node.props.hasKey("props") or
-        node.props["props"].kind != vkMap or
-        not node.props["props"].mapEntries.hasKey(value.symVal):
-      raise newException(GeneError,
-        "type " & name & " ^native ^wrapper field is not declared: " &
-        value.symVal)
-    wrapperField = value.symVal
-  var releaseSymbol = ""
-  if marker.mapEntries.hasKey("release"):
-    let value = marker.mapEntries["release"]
-    if value.kind != vkString or value.strVal.len == 0:
-      raise newException(GeneError,
-        "type " & name & " ^native ^release must be a non-empty Str")
-    releaseSymbol = value.strVal
-  var copySymbol = ""
-  if marker.mapEntries.hasKey("copy"):
-    let value = marker.mapEntries["copy"]
-    if value.kind != vkString or value.strVal.len == 0:
-      raise newException(GeneError,
-        "type " & name & " ^native ^copy must be a non-empty Str")
-    copySymbol = value.strVal
-  NativeTypeProto(
-    name: name,
-    identity: (if c.sourceName.len > 0: c.sourceName else: "<memory>") &
+  nativeTypeProtoFrom(marker, node, name,
+    (if c.sourceName.len > 0: c.sourceName else: "<memory>") &
       "::" & (c.namespacePath & @[name]).join("/"),
-    abiIdentity: abi.identity,
-    abi: abi,
-    lifecycle: lifecycle,
-    mutable: mutable,
-    wrapperField: wrapperField,
-    releaseSymbol: releaseSymbol,
-    copySymbol: copySymbol)
+    abi)
 
 proc messageNameParts(node: Value): tuple[protocolPath: seq[string], name: string] =
   ## A message name is a simple symbol, or a qualified path in impl bodies for
