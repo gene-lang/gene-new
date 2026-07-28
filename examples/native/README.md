@@ -95,9 +95,28 @@ Ownership follows the declared mode:
   double free is not reachable from Gene.
 - **copy** — the callee gets its own pointer and the original stays usable.
 
-Still missing: non-scalar, non-pointer arguments (strings, buffers,
-collections). Those need the remaining `gene_ffi_arg_*` helpers, which is
-mechanical rather than a design question.
+## Foreign calls through compiled marshalling
+
+`aot/load` also binds each `ffi/fn`'s generated wrapper, so a foreign call goes
+through compiled marshalling code rather than the VM's dynamic FFI path:
+
+```gene
+(n/shout "hello")      # => 5     const char * borrowed for the call
+(n/flip false)         # => true
+(n/total 40 2)         # => 42    uint32_t + size_t
+```
+
+Every integral C parameter narrows from Gene's 64-bit `Int`, so the boundary
+range-checks instead of truncating — passing `200` where the C signature says
+`int8_t` is an error, not `-56`:
+
+```
+Error: native entry argument 'b' is out of range: 200 does not fit -128..127
+```
+
+Strings and buffers are *borrowed* for the call's extent (they point into the
+argument's own storage), so foreign code must not retain them. A returned
+`const char *` is copied, since its lifetime is unknown.
 
 ## What the generated C looks like
 

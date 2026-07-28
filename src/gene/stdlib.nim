@@ -8036,6 +8036,16 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 var aotEntries: Table[string, AotEntryProc]
 var aotModuleHandles: seq[LibHandle]
 
+proc aotResolveSymbol(name: string): pointer {.nimcall.} =
+  ## Look a symbol up across every loaded AOT library. A returned owned
+  ## pointer names its release function as a string, and only the loader knows
+  ## which libraries are open.
+  for handle in aotModuleHandles:
+    let address = symAddr(handle, name.cstring)
+    if address != nil:
+      return address
+  nil
+
 proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
                      {.nimcall.} =
   ## One dispatcher for every AOT entry. `NativeCallProc` is `nimcall` and
@@ -8073,25 +8083,45 @@ proc biAotLoad(args: openArray[Value]): Value =
   let manifest = cast[ptr UncheckedArray[AotModuleFunctionC]](
     symAddr(handle, "gene_aot_module"))
   let countAddr = cast[ptr csize_t](symAddr(handle, "gene_aot_module_count"))
-  if manifest == nil or countAddr == nil:
+  let ffiManifest = cast[ptr UncheckedArray[AotFfiFnInfoC]](
+    symAddr(handle, "gene_ffi_fns"))
+  let ffiCountAddr = cast[ptr csize_t](symAddr(handle, "gene_ffi_fns_count"))
+  ## Either manifest alone is a valid library: a module of typed functions has
+  ## no ffi/fns, and a pure binding module has no module functions.
+  if (manifest == nil or countAddr == nil) and
+      (ffiManifest == nil or ffiCountAddr == nil):
     unloadLib(handle)
     raise newException(GeneError,
-      "AOT library has no exported module manifest: " & path)
+      "AOT library exports no manifest; was it built from " &
+      "`gene compile --target c` with -DGENE_AOT_DYNAMIC_ENTRIES=1? " & path)
   aotModuleHandles.add handle
+  aotSymbolResolver = aotResolveSymbol
   var entries = initPropTable()
-  for i in 0 ..< int(countAddr[]):
-    let row = manifest[i]
-    if row.entrySymbol == nil or row.entrySymbol[0] == '\0':
-      continue
-    let entrySymbol = $row.entrySymbol
-    let entry = cast[AotEntryProc](symAddr(handle, entrySymbol.cstring))
+
+  proc bindEntry(geneName, symbol: string) =
+    let entry = cast[AotEntryProc](symAddr(handle, symbol.cstring))
     if entry == nil:
-      raise newException(GeneError,
-        "AOT entry symbol not found: " & entrySymbol)
-    let geneName = $row.geneName
+      raise newException(GeneError, "AOT entry symbol not found: " & symbol)
     aotEntries[geneName] = entry
     entries[geneName] = newNativeCallFn(geneName, aotEntryDispatch,
                                         acceptsNamed = false)
+
+  if manifest != nil and countAddr != nil:
+    for i in 0 ..< int(countAddr[]):
+      let row = manifest[i]
+      if row.entrySymbol == nil or row.entrySymbol[0] == '\0':
+        continue
+      bindEntry($row.geneName, $row.entrySymbol)
+
+  ## Generated ffi/fn wrappers share the entry signature, so they bind the same
+  ## way. This is what routes a foreign call through compiled marshalling code
+  ## rather than the VM's dynamic FFI path.
+  if ffiManifest != nil and ffiCountAddr != nil:
+    for i in 0 ..< int(ffiCountAddr[]):
+      let row = ffiManifest[i]
+      if row.wrapperName == nil or row.wrapperName[0] == '\0':
+        continue
+      bindEntry($row.name, $row.wrapperName)
   newMap(entries)
 
 proc registerStdlibNamespaces(root: Scope) =

@@ -927,6 +927,56 @@ int main(void) {
         "(var native (load " & geneString(libPath) & ")) " &
         "(native/triple 14)"), scope).intVal == 42
 
+  test "AOT ffi wrappers marshal strings, bools and sized integers":
+    ## Generated ffi/fn wrappers share the entry signature, so `aot/load` binds
+    ## them too and a foreign call goes through compiled marshalling code.
+    ## Every integral C parameter narrows from Gene's 64-bit Int, so the range
+    ## check is a correctness condition, not a nicety.
+    let src =
+      "(ffi/fn shout ^symbol \"shout\" [s : C/CStr] : C/Int) " &
+      "(ffi/fn clamp_byte ^symbol \"clamp_byte\" [b : C/Int8] : C/Int8) " &
+      "(ffi/fn flip ^symbol \"flip\" [b : C/Bool] : C/Bool) " &
+      "(ffi/fn total ^symbol \"total\" [a : C/UInt32 b : C/Size] : C/Size)"
+    let impl = """
+#include <string.h>
+int shout(const char *s) { return (int)strlen(s); }
+int8_t clamp_byte(int8_t b) { return b; }
+bool flip(bool b) { return !b; }
+size_t total(uint32_t a, size_t b) { return (size_t)a + b; }
+"""
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    let sourcePath = getTempDir() / "gene_aot_marshal.c"
+    let libPath = getTempDir() / ("libgene_aot_marshal" & libExt)
+    writeFile(sourcePath, compileSource(src).emitExperimentalC() & impl)
+    defer:
+      if fileExists(sourcePath): removeFile(sourcePath)
+      if fileExists(libPath): removeFile(libPath)
+    let built = execCmdEx(
+      quoteShell(getEnv("CC", "cc")) &
+        " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+        (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+        quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+    checkpoint built.output
+    check built.exitCode == 0
+    if built.exitCode == 0:
+      let prelude = "(import $aot [load]) " &
+        "(var n (load " & geneString(libPath) & ")) "
+      proc runAot(program: string): Value =
+        run(compileSource(prelude & program), newGlobalScope())
+      check runAot("(n/shout \"hello\")").intVal == 5
+      check runAot("(n/clamp_byte 127)").intVal == 127
+      check runAot("(n/flip false)").boolVal
+      check runAot("(n/total 40 2)").intVal == 42
+
+      # Narrowing must fail rather than truncate: 200 as int8 is -56.
+      check_runtime_error(prelude & "(n/clamp_byte 200)",
+                          "out of range: 200 does not fit -128..127")
+      check_runtime_error(prelude & "(n/total -1 2)", "does not fit 0..")
+      check_runtime_error(prelude & "(n/shout 42)", "expects Str")
+      check_runtime_error(prelude & "(n/flip 1)", "expects Bool")
+
   test "a managed wrapper crosses the AOT boundary in both directions":
     ## §6.4 proper: native code hands back a managed wrapper, Gene passes it
     ## in again, and ownership is honoured. The library and the running module
@@ -1641,10 +1691,10 @@ int main(void) {
     check "const char *calling;" in c
     check "#define GENE_FFI_CDECL" in c
     check "#define GENE_FFI_STDCALL __stdcall" in c
-    check "static const GeneFfiFnInfo gene_ffi_fns[] GENE_MAYBE_UNUSED = {" in c
+    check "const GeneFfiFnInfo gene_ffi_fns[] GENE_MAYBE_UNUSED = {" in c
     check "{\"strlen\", \"libc\", false, \"strlen\", \"C\", \"cdecl\", " &
       "\"gene_ffi_strlen\", \"\", 1, \"C/Size\"}," in c
-    check "static const size_t gene_ffi_fns_count GENE_MAYBE_UNUSED = 1;" in c
+    check "const size_t gene_ffi_fns_count GENE_MAYBE_UNUSED = 1;" in c
     check "extern size_t GENE_FFI_CDECL strlen(const char * s);" in c
     check "GeneStatus gene_ffi_strlen" in c
     check "calling: cdecl" in c
@@ -1684,7 +1734,7 @@ int main(void) {
       "(ffi/fn make_owned ^symbol \"make_owned\" ^release \"destroy_owned\" " &
       "  [] : (C/OwnedPtr C/Char))"
     let c = compileSource(source).emitExperimentalC()
-    check "static const size_t gene_ffi_fns_count GENE_MAYBE_UNUSED = 6;" in c
+    check "const size_t gene_ffi_fns_count GENE_MAYBE_UNUSED = 6;" in c
     check "{\"make_owned\", \"\", false, \"make_owned\", \"C\", " &
       "\"C\", \"gene_ffi_make_owned\", \"destroy_owned\", 0, " &
       "\"(C/OwnedPtr C/Char)\"}," in c

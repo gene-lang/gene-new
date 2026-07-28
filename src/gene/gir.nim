@@ -2129,7 +2129,9 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
                 ffiCType(retLabel)))
   if ffiFnRows.len > 0:
     let manifestName = ffiFnManifestName(prefix)
-    lines.add "static const GeneFfiFnInfo " & manifestName &
+    ## External linkage for the same reason as the module manifest: a loader
+    ## discovers each ffi/fn's generated wrapper through `wrapper_name` here.
+    lines.add "const GeneFfiFnInfo " & manifestName &
       "[] GENE_MAYBE_UNUSED = {"
     for row in ffiFnRows:
       lines.add "  {" & cStringLiteral(row.name) & ", " &
@@ -2141,7 +2143,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
         cStringLiteral(row.release) & ", " & $row.arity & ", " &
         cStringLiteral(row.resultType) & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
+    lines.add "const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $ffiFnRows.len & ";"
     lines.add ""
   var structRows: seq[FfiStructCRow]
