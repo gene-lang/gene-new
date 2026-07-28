@@ -401,6 +401,22 @@ suite "native api — roots and trampoline":
       "(try (Conn ^handle \"junk\") catch (Error ^message m) m)"),
       scope).print() == "\"Conn has no field 'handle'\""
 
+  test "wrapper identity is the Type value, never its name":
+    # Two modules may each define a `Conn`. A name-based check would let one
+    # module's wrapper carry its pointer into the other's native code, which
+    # would then dereference memory it does not own.
+    let api = geneApi()
+    let a = api.defineWrapperType(newGeneModule("mod-a"), "Conn").value
+    let b = api.defineWrapperType(newGeneModule("mod-b"), "Conn").value
+    check a.typeName == b.typeName
+    check a.bits != b.bits
+
+    proc release(p: pointer) {.nimcall.} = discard
+    let handle = api.newCOwnedPtr(cast[pointer](0xA), release, NIL)
+    let instA = api.newWrapper(a, {"handle": handle}).value
+    check api.wrapperField(instA, a, "handle").status == gsOk
+    check api.wrapperField(instA, b, "handle").status == gsError
+
   test "a wrapper type must keep an empty schema":
     # A declared schema would make the props forgeable from Gene, silently
     # removing the property that makes native handles safe — so the entry

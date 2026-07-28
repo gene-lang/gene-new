@@ -317,8 +317,12 @@ proc geneWrapperField*(instance, wrapperType: Value,
   try:
     if wrapperType.kind != vkType:
       raise newException(GeneError, "geneWrapperField expects a Type")
+    # Compare Type *identity*, never the name. Two modules may each define a
+    # `Conn`, and a name check would let one module's wrapper carry its pointer
+    # into the other's native code — which then dereferences memory it does not
+    # own. `bits` is the value identity for a boxed Type.
     if instance.kind != vkNode or instance.head.kind != vkType or
-        instance.head.typeName != wrapperType.typeName:
+        instance.head.bits != wrapperType.bits:
       raise newException(GeneError,
         "expected a " & wrapperType.typeName & " value")
     result.status = gsOk

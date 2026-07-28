@@ -6683,8 +6683,15 @@ proc raiseDbError(message: string, scope: Scope) =
 
 proc dbConnHandleValue(name: string, conn: Value, expectedType: string,
                        scope: Scope): Value =
-  if conn.kind != vkNode or conn.head.kind != vkType or
-      conn.head.typeName != expectedType:
+  # Identity, not name: `builtInTypeHead` resolves the one canonical Type for
+  # this backend, so a look-alike `SqliteDb` declared elsewhere cannot reach a
+  # pointer dereference. Falls back to the name only when the canonical type is
+  # unavailable (`builtInTypeHead` returns a symbol then).
+  let canonical = builtInTypeHead(scope, expectedType)
+  let identityOk =
+    if canonical.kind == vkType: conn.head.bits == canonical.bits
+    else: conn.head.typeName == expectedType
+  if conn.kind != vkNode or conn.head.kind != vkType or not identityOk:
     raiseDbError(name & " expects a " & expectedType & " connection", scope)
   let handle = conn.props.getOrDefault("handle", VOID)
   if handle.kind != vkCPtr:
