@@ -395,6 +395,35 @@ type
 
   NativeProc* = proc(args: openArray[Value]): Value {.nimcall.}
   NativeCallProc* = proc(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
+
+  ## typed_native AOT boundary (docs/proposals/native-type.md §6.4).
+  ##
+  ## The generated C never dereferences `GeneValue`, `GeneCall`, or
+  ## `GeneContext` — it only passes them to helpers — so these are their real
+  ## shapes. They live here because `aot_runtime.nim` implements the helpers
+  ## while the loader lives in the VM's own compilation unit.
+  AotCall* = object
+    args*: ptr UncheckedArray[Value]
+    len*: csize_t
+
+  AotContext* = object
+    ## Helpers report failure by filling `message`; the VM turns that into an
+    ## ordinary Gene error at the boundary.
+    message*: string
+    failed*: bool
+
+  AotEntryProc* = proc(ctx: ptr AotContext, call: ptr AotCall,
+                       resultOut: ptr Value): cint {.cdecl.}
+
+  AotModuleFunctionC* = object
+    ## Mirrors `GeneAotModuleFunction` in the generated C; field order and
+    ## types must stay in step with `emitExperimentalC`.
+    geneName*: cstring
+    cSymbol*: cstring
+    entrySymbol*: cstring
+    repr*: cstring
+    arity*: cint
+    frame*: pointer
   CPtrReleaseProc* = proc(address: pointer) {.nimcall.}
   FfiLibraryCloseProc* = proc(handle: pointer) {.nimcall.}
 

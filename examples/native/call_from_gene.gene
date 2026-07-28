@@ -1,0 +1,17 @@
+# Gene calling a natively compiled function.
+#
+# `scaled.gene` is compiled to C, built as a shared library, and loaded here.
+# `aot/load` reads the library's exported manifest, binds every function that
+# carries a ^native_entry adapter, and returns them as a map.
+#
+# Build and run with:  examples/native/build.sh
+#
+# The call below runs compiled machine code: the boundary unboxes the Int
+# argument, calls the native function directly, and boxes the Int result.
+
+(import $aot [load])
+
+(var native (load "build/native-example/libscaled.dylib"))
+
+($println (native/triple 14))
+($println (native/scale_by 7 6))

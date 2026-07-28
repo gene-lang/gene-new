@@ -8027,6 +8027,73 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
      "policy": policy,
      "closed": newCell(FALSE)})
 
+## typed_native AOT loading (docs/proposals/native-type.md §6.4).
+##
+## `aot_runtime.nim` exports the C helpers a generated module calls; this is
+## the other half — opening such a module and binding its entries so ordinary
+## Gene code can call natively compiled functions.
+
+var aotEntries: Table[string, AotEntryProc]
+var aotModuleHandles: seq[LibHandle]
+
+proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
+                     {.nimcall.} =
+  ## One dispatcher for every AOT entry. `NativeCallProc` is `nimcall` and
+  ## cannot capture the entry pointer, so entries are keyed by the same name
+  ## the VM reports back as `calleeName`.
+  let name = call.calleeName
+  if not aotEntries.hasKey(name):
+    raise newException(GeneError, "no AOT entry registered for '" & name & "'")
+  let entry = aotEntries[name]
+  var ctx = AotContext()
+  var aotCall = AotCall(
+    args: if args.len > 0: cast[ptr UncheckedArray[Value]](addr args[0])
+          else: nil,
+    len: csize_t(args.len))
+  var value = NIL
+  let status = entry(addr ctx, addr aotCall, addr value)
+  if status != 0:
+    raise newException(GeneError,
+      if ctx.message.len > 0: ctx.message
+      else: "AOT entry '" & name & "' failed with status " & $status)
+  value
+
+proc biAotLoad(args: openArray[Value]): Value =
+  ## `(aot/load "path")` — open a typed_native AOT library and return a map of
+  ## `name -> callable` for every function that carries a `^native_entry`
+  ## adapter. Functions compiled without one are present in the manifest but
+  ## have no dynamic boundary, so they are not callable from Gene and are
+  ## skipped.
+  if args.len != 1 or args[0].kind != vkString:
+    raise newException(GeneError, "aot/load expects one Str path")
+  let path = args[0].strVal
+  let handle = loadLib(path)
+  if handle == nil:
+    raise newException(GeneError, "could not load AOT library: " & path)
+  let manifest = cast[ptr UncheckedArray[AotModuleFunctionC]](
+    symAddr(handle, "gene_aot_module"))
+  let countAddr = cast[ptr csize_t](symAddr(handle, "gene_aot_module_count"))
+  if manifest == nil or countAddr == nil:
+    unloadLib(handle)
+    raise newException(GeneError,
+      "AOT library has no exported module manifest: " & path)
+  aotModuleHandles.add handle
+  var entries = initPropTable()
+  for i in 0 ..< int(countAddr[]):
+    let row = manifest[i]
+    if row.entrySymbol == nil or row.entrySymbol[0] == '\0':
+      continue
+    let entrySymbol = $row.entrySymbol
+    let entry = cast[AotEntryProc](symAddr(handle, entrySymbol.cstring))
+    if entry == nil:
+      raise newException(GeneError,
+        "AOT entry symbol not found: " & entrySymbol)
+    let geneName = $row.geneName
+    aotEntries[geneName] = entry
+    entries[geneName] = newNativeCallFn(geneName, aotEntryDispatch,
+                                        acceptsNamed = false)
+  newMap(entries)
+
 proc registerStdlibNamespaces(root: Scope) =
   ## Define the importable stdlib namespaces (gene/*, str, html, url, net/http,
   ## db, db/sqlite, db/postgres) and their error types on the built-ins root
@@ -8146,6 +8213,9 @@ proc registerStdlibNamespaces(root: Scope) =
   strScope.define("ends_with?", newNativeFn("str/ends_with?", biStrEndsWith))
   strScope.define("contains?", newNativeFn("str/contains?", biStrContains))
   root.define("str", newNamespace("str", strScope))
+  let aotScope = newScope(root)
+  aotScope.define("load", newNativeFn("aot/load", biAotLoad))
+  root.define("aot", newNamespace("aot", aotScope))
   let htmlScope = newScope(root)
   htmlScope.define("escape", newNativeFn("html/escape", biHtmlEscape))
   htmlScope.define("attr_escape", newNativeFn("html/attr_escape", biHtmlEscape))

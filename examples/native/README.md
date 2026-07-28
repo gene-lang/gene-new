@@ -15,9 +15,13 @@ nimble native_example # or: examples/native/build.sh
 Expected output:
 
 ```
+==> running (C calling Gene-compiled code)
 columns: 2
 rows: 3
 total: 340
+==> running (Gene calling native code)
+42
+42
 ```
 
 `total` is `(10*3) + (20*5) + (30*7)`. Build artifacts go to
@@ -26,12 +30,49 @@ keg-only prefix, then a bare `-lsqlite3`; override with `CC=` or `GENE=`.
 
 ## Files
 
+Both directions across the boundary are covered.
+
+**C calling Gene-compiled code:**
+
 | file | role |
 |---|---|
 | `sqlite_rows.gene` | the typed-native module — compiled to C by the backend |
 | `sqlite_shim.c` | thin C adapters for signatures the subset cannot express |
 | `main.c` | driver: opens the database, runs the row loop |
-| `build.sh` | generate C, compile, link, run |
+
+**Gene calling native code:**
+
+| file | role |
+|---|---|
+| `scaled.gene` | functions with `^native_entry`, built as a loadable library |
+| `call_from_gene.gene` | ordinary Gene that loads and calls them |
+
+`build.sh` drives both.
+
+## Gene calling native code
+
+```gene
+(import $aot [load])
+(var native (load "build/native-example/libscaled.dylib"))
+($println (native/triple 14))   # => 42
+```
+
+`aot/load` opens the library, reads its exported `gene_aot_module` manifest,
+and binds every function carrying a `^native_entry` adapter. The call runs
+compiled machine code: the adapter checks arity, unboxes the `Int`, calls the
+native function, and boxes the result.
+
+This works because the library is built with `-DGENE_AOT_DYNAMIC_ENTRIES=1`,
+which compiles in the adapters, and the `gene_ffi_*` helpers they call are
+exported from the `gene` executable (`src/gene/aot_runtime.nim`, plus
+`-Wl,-export_dynamic` in `nim.cfg`) so they resolve at `dlopen` time.
+
+**Scalars only for now.** `I64`/`F64` arguments and results cross the boundary;
+a native-pointer parameter needs the managed-wrapper seam
+(`gene_typed_native_arg_borrow` and friends), which is not wired up yet. Those
+helpers must match an incoming wrapper against the compiled type's identity,
+and a runtime `Type` value does not currently carry one — adding it is a
+deliberate design step, not a local fix.
 
 ## What the generated C looks like
 

@@ -5,6 +5,10 @@
 ##   nimble spec
 
 import gene/[compiler, gir, printer, reader, types, vm]
+# Side-effect import: puts the {.exportc, dynlib.} AOT boundary helpers into
+# this test binary's dynamic symbol table so a dlopened AOT library resolves
+# them, exactly as the gene executable does.
+import gene/aot_runtime
 import std/[algorithm, monotimes, os, osproc, sequtils, sets, strutils, tables,
             times, unittest]
 
@@ -721,10 +725,10 @@ suite "spec — typed native compilation prototype from design":
     check "const char *entry_symbol;" in c
     check "static const GeneNativeFrameInfo gene_frame_add64 GENE_MAYBE_UNUSED = {\"add64\", GENE_NATIVE_FRAME_TYPED};" in c
     check "(void)&gene_frame_add64;" in c
-    check "static const GeneAotModuleFunction gene_aot_module[] GENE_MAYBE_UNUSED = {" in c
+    check "const GeneAotModuleFunction gene_aot_module[] GENE_MAYBE_UNUSED = {" in c
     check "{\"add64\", \"gene_native_add64\", \"\", \"I64\", 2, " &
       "&gene_frame_add64}," in c
-    check "static const size_t gene_aot_module_count GENE_MAYBE_UNUSED = 2;" in c
+    check "const size_t gene_aot_module_count GENE_MAYBE_UNUSED = 2;" in c
     check "int64_t gene_native_add64_twice(int64_t x, int64_t y)" in c
     check "return gene_native_add64(gene_native_add64(x, y), y);" in c
     check_eval("(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
@@ -863,6 +867,40 @@ int main(void) {
     check "return self->value;" in c
     check "return gene_native_impl_0_read_value(node);" in c
     checkCCompiles(c, "typed_native_specialized_send")
+
+  test "Gene calls a natively compiled function through an AOT library":
+    ## The §6.4 dynamic boundary, end to end: compile a function to C, build it
+    ## as a shared library, load it, and call it from ordinary Gene code. The
+    ## library resolves gene_ffi_* from this test binary's dynamic symbol
+    ## table, which is why aot_runtime is imported above.
+    let chunk = compileSource(
+      "(fn triple ^native_entry {} [x : I64] : I64 (* x 3))")
+    let c = chunk.emitExperimentalC()
+    check "GeneStatus gene_entry_triple(" in c
+    check "const GeneAotModuleFunction gene_aot_module[]" in c
+
+    let sourcePath = getTempDir() / "gene_aot_roundtrip.c"
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    let libPath = getTempDir() / ("libgene_aot_roundtrip" & libExt)
+    writeFile(sourcePath, c)
+    defer:
+      if fileExists(sourcePath): removeFile(sourcePath)
+      if fileExists(libPath): removeFile(libPath)
+    let built = execCmdEx(
+      quoteShell(getEnv("CC", "cc")) &
+        " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+        (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+        quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+    checkpoint built.output
+    check built.exitCode == 0
+    if built.exitCode == 0:
+      let scope = newGlobalScope()
+      check run(compileSource(
+        "(import $aot [load]) " &
+        "(var native (load " & geneString(libPath) & ")) " &
+        "(native/triple 14)"), scope).intVal == 42
 
   test "a protocol message may return a native pointer":
     ## A message declaration carries only a signature. Treating it as an

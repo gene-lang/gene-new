@@ -47,7 +47,27 @@ echo "==> compiling"
 
 echo "==> built $out/sqlite_example"
 
+# The other direction: build scaled.gene as a loadable AOT library so Gene can
+# call into it. The dynamic entry adapters are compiled in here (they are off
+# by default), and the gene_ffi_* helpers they call resolve from the gene
+# executable at dlopen time.
+echo "==> generating C from scaled.gene"
+"$GENE" compile --target c "$here/scaled.gene" > "$out/scaled.c"
+
+echo "==> building loadable AOT library"
+undefined_flag=""
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  undefined_flag="-undefined dynamic_lookup"
+fi
+# shellcheck disable=SC2086
+"$CC" -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC $undefined_flag \
+  "$out/scaled.c" -o "$out/libscaled.dylib"
+
+echo "==> built $out/libscaled.dylib"
+
 if [[ "${1:-}" != "--build" ]]; then
-  echo "==> running"
+  echo "==> running (C calling Gene-compiled code)"
   "$out/sqlite_example"
+  echo "==> running (Gene calling native code)"
+  "$GENE" run "$here/call_from_gene.gene"
 fi

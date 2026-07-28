@@ -2433,7 +2433,10 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
                 available, declaredStructs, definedStructs)
   if moduleFns.len > 0:
     let manifestName = aotModuleManifestName(prefix)
-    lines.add "static const GeneAotModuleFunction " & manifestName &
+    ## The manifest is the module's public description of itself: an AOT
+    ## loader dlsyms it to discover which functions carry a dynamic entry and
+    ## what to bind them as. It must therefore have external linkage.
+    lines.add "const GeneAotModuleFunction " & manifestName &
       "[] GENE_MAYBE_UNUSED = {"
     for fn in moduleFns:
       lines.add "  {" & cStringLiteral(fn.geneName) & ", " &
@@ -2441,7 +2444,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
         cStringLiteral(fn.typeName) & ", " &
         $fn.paramCount & ", &" & fn.frameName & "},"
     lines.add "};"
-    lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
+    lines.add "const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $moduleFns.len & ";"
     lines.add ""
   for i, sub in chunk.subchunks:

@@ -1,0 +1,15 @@
+# Functions compiled to native code and called from Gene.
+#
+# ^native_entry asks the backend to emit a dynamic entry adapter alongside the
+# bare native function: it checks arity, unboxes each argument, calls the
+# compiled function, and boxes the result. That adapter is what `aot/load`
+# binds, and it is the only reason these are reachable from dynamic Gene.
+#
+# Scalars only for now — a native-pointer parameter needs the managed-wrapper
+# boundary, which is not wired up yet. See README.md.
+
+(fn triple ^native_entry {} [x : I64] : I64
+  (* x 3))
+
+(fn scale_by ^native_entry {} [x : I64 factor : I64] : I64
+  (* x factor))
