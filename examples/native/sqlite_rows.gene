@@ -1,0 +1,62 @@
+# Typed-native SQLite row reader.
+#
+# Compiled with `gene compile --target c`, every function below becomes a plain
+# C function taking an unboxed `sqlite3_stmt *` in a register. No GeneValue, no
+# boxing, no runtime message resolution — the calls into SQLite are direct.
+#
+# See README.md for what the current typed_native subset does and does not
+# allow; the shape of this module is dictated by those limits.
+
+# SQLite's handles are opaque: no public layout, so no declared fields. The
+# ffi/struct exists to give the pointer a name and a stable ABI identity.
+(ffi/struct sqlite3_stmt ^fields [])
+
+# The nominal Gene Type whose typed-native representation is `sqlite3_stmt *`.
+# ^lifecycle manual: SQLite owns the statement, Gene never frees it.
+(type Stmt ^native {^abi sqlite3_stmt ^lifecycle manual})
+
+# Bound straight to libsqlite3 — these take only the statement pointer, so
+# their real signatures are expressible as-is.
+(ffi/fn sqlite3_step
+  ^library libsqlite3
+  ^symbol "sqlite3_step"
+  [stmt : Stmt] : C/Int)
+
+(ffi/fn sqlite3_reset
+  ^library libsqlite3
+  ^symbol "sqlite3_reset"
+  [stmt : Stmt] : C/Int)
+
+(ffi/fn sqlite3_column_count
+  ^library libsqlite3
+  ^symbol "sqlite3_column_count"
+  [stmt : Stmt] : C/Int)
+
+# Bound to sqlite_shim.c, which widens the column index to int64_t. A Gene I64
+# cannot narrow into sqlite3_column_int64's `int` parameter.
+(ffi/fn gene_sqlite_column_i64
+  ^library libsqlite3
+  ^symbol "gene_sqlite_column_i64"
+  [stmt : Stmt column : C/Int64] : C/Int64)
+
+# The typed-native surface the C harness calls. Each lowers to a direct call
+# with the statement pointer passed in a register.
+
+(fn step_row [stmt : Stmt] : I64
+  (sqlite3_step stmt))
+
+(fn reset_stmt [stmt : Stmt] : I64
+  (sqlite3_reset stmt))
+
+(fn column_count [stmt : Stmt] : I64
+  (sqlite3_column_count stmt))
+
+(fn column_i64 [stmt : Stmt column : I64] : I64
+  (gene_sqlite_column_i64 stmt column))
+
+# A typed-native function calling another typed-native function: `read_first`
+# is lowered to a direct C call to `gene_native_column_i64`, not a dispatch.
+(fn read_first [stmt : Stmt first_column : I64] : I64
+  (do
+    (let value : I64 (column_i64 stmt first_column))
+    value))

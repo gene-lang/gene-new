@@ -36,6 +36,13 @@ task wasm, "Build the wasm host-ABI module (docs/wasm.md §A.4) via Emscripten":
        "-o:web/gene.js src/gene_wasm.nim"
   exec "node tests/test_wasm.mjs"
 
+task native_example, "Build and run the typed_native SQLite example":
+  ## Compiles examples/native/sqlite_rows.gene to C with the experimental
+  ## typed_native backend, links it with a small C shim and driver against
+  ## libsqlite3, and runs the result. Requires a C compiler and SQLite headers;
+  ## needs bin/gene, so run `nimble build` first.
+  exec "examples/native/build.sh"
+
 task test, "Run the test suite":
   exec "nim c -r --path:src --hints:off tests/test_all.nim"
   exec "node tests/test_wasm.mjs"

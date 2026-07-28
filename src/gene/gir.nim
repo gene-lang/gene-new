@@ -1774,6 +1774,14 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
   let paramList = if declParams.len == 0: "void" else: declParams.join(", ")
   lines.add "extern " & retType & " " & ffiCallingMacro(fn.calling) &
     " " & cSymbol & "(" & paramList & ");"
+  ## The dynamic entry wrapper is what lets interpreted Gene reach this symbol,
+  ## so it calls the gene_ffi_* helpers — which no runtime defines yet. It is a
+  ## non-static definition, so a linker cannot drop it and its undefined calls
+  ## sink the whole translation unit, even when nothing references it. Guard it
+  ## until the ABI exists: the typed path calls the foreign symbol directly and
+  ## needs none of this, so guarding makes an ffi/fn-bearing module link
+  ## standalone. Define GENE_AOT_DYNAMIC_ENTRIES to compile the wrappers in.
+  lines.add "#ifdef GENE_AOT_DYNAMIC_ENTRIES"
   lines.add "GeneStatus " & ffiWrapperName(fn, prefix & "ffi_" & $index) &
     "(GeneContext *ctx, const GeneCall *call, GeneValue *result) {"
   lines.add "  /* library: " & (if fn.library.len > 0: fn.library else: "<linker>") & " */"
@@ -1796,6 +1804,7 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
     lines.add "  (void)result;"
     lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
     lines.add "}"
+    lines.add "#endif"
     lines.add ""
     return
   lines.add "  GeneStatus status = gene_ffi_check_arity(ctx, call, " &
@@ -1863,6 +1872,7 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
   else:
     lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
   lines.add "}"
+  lines.add "#endif"
   lines.add ""
 
 proc nativeEntryName(fnName, fallback: string): string =
@@ -1874,6 +1884,12 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
   ## Explicit dynamic → typed-native seam (native-type proposal §6.4). The
   ## runtime helper owns wrapper identity/liveness/ABI validation; generated C
   ## receives only the raw pointer after that check and never boxes implicitly.
+  ##
+  ## Guarded for the same reason as the ffi/fn wrappers: this adapter is the
+  ## boundary itself, so it calls gene_typed_native_* helpers that no runtime
+  ## defines yet. The copy/release shims exist only to serve it, so the whole
+  ## unit is guarded together.
+  lines.add "#ifdef GENE_AOT_DYNAMIC_ENTRIES"
   var paramCopies = newSeq[string](fn.params.len)
   var paramReleases = newSeq[string](fn.params.len)
   for i, repr in fn.aotParamReprs:
@@ -2052,6 +2068,7 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
       discard
   lines.add "  return status;"
   lines.add "}"
+  lines.add "#endif"
   lines.add ""
 
 proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,

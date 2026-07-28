@@ -64,17 +64,25 @@ proc geneString(s: string): string =
   "\"" & s.replace("\\", "\\\\").replace("\"", "\\\"") & "\""
 
 proc checkCCompiles(source, label: string) =
+  ## Syntax-checks with GENE_AOT_DYNAMIC_ENTRIES defined so the guarded dynamic
+  ## entry wrappers stay covered. -fsyntax-only never links, so the helpers
+  ## those wrappers call need no definitions here.
   let path = getTempDir() / ("gene_" & label & "_generated.c")
   writeFile(path, source)
   defer:
     removeFile(path)
   let checked = execCmdEx(
-    quoteShell(getEnv("CC", "cc")) & " -std=c11 -fsyntax-only " &
+    quoteShell(getEnv("CC", "cc")) &
+      " -std=c11 -DGENE_AOT_DYNAMIC_ENTRIES=1 -fsyntax-only " &
       quoteShell(path))
   checkpoint checked.output
   check checked.exitCode == 0
 
-proc checkCRuns(source, label, expected: string) =
+proc checkCRuns(source, label, expected: string,
+                dynamicEntries = false) =
+  ## `dynamicEntries` compiles the guarded wrappers in. Only a caller that also
+  ## supplies implementations of the gene_ffi_* / gene_typed_native_* helpers
+  ## can link with it; everything else must leave them out.
   let sourcePath = getTempDir() / ("gene_" & label & "_generated.c")
   let exePath = getTempDir() / ("gene_" & label & ExeExt)
   writeFile(sourcePath, source)
@@ -84,8 +92,9 @@ proc checkCRuns(source, label, expected: string) =
     if fileExists(exePath):
       removeFile(exePath)
   let built = execCmdEx(
-    quoteShell(getEnv("CC", "cc")) & " -std=c11 " & quoteShell(sourcePath) &
-      " -o " & quoteShell(exePath))
+    quoteShell(getEnv("CC", "cc")) & " -std=c11 " &
+      (if dynamicEntries: "-DGENE_AOT_DYNAMIC_ENTRIES=1 " else: "") &
+      quoteShell(sourcePath) & " -o " & quoteShell(exePath))
   checkpoint built.output
   check built.exitCode == 0
   if built.exitCode == 0:
@@ -967,6 +976,32 @@ int main(void) {
     check "gene_ffi_arg_ptr" notin c[c.find("gene_native_seconds_via_call") .. ^1]
     checkCCompiles(c, "typed_native_direct_ffi")
 
+  test "an ffi/fn-bearing module links without the dynamic entry helpers":
+    ## The dynamic entry wrapper is a non-static definition calling
+    ## gene_ffi_* helpers no runtime defines, so before it was guarded its
+    ## undefined calls sank any translation unit containing an ffi/fn — even
+    ## though the typed path calls the foreign symbol directly and needs none
+    ## of them. examples/native depends on this linking.
+    let chunk = compileSource(
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(ffi/fn scale_node ^symbol \"scale_node\" [n : Node] : C/Int64) " &
+      "(fn scaled [n : Node] : I64 (scale_node n))")
+    let c = chunk.emitExperimentalC()
+    check "#ifdef GENE_AOT_DYNAMIC_ENTRIES" in c
+    check "GeneStatus gene_ffi_scale_node" in c
+    let harness = """
+#include <stdio.h>
+int64_t scale_node(CNode *n) { return n->value * 2; }
+int main(void) {
+  CNode node;
+  node.value = 21;
+  printf("%lld\n", (long long)gene_native_scaled(&node));
+  return 0;
+}
+"""
+    checkCRuns(c & harness, "typed_native_ffi_standalone_link", "42")
+
   test "a lexical binding shadows a typed FFI symbol during lowering":
     check_compile_error(
       "(ffi/struct CNode ^fields [[value C/Int64]]) " &
@@ -1297,7 +1332,8 @@ int main(void) {
 """
     checkCRuns(chunk.emitExperimentalC() & harness,
                "typed_native_adapter_runtime",
-               "nil->null->nil; copy->wrapper")
+               "nil->null->nil; copy->wrapper",
+               dynamicEntries = true)
 
   test "typed-native FFI calls reject narrowing scalar arguments":
     check_compile_error(
