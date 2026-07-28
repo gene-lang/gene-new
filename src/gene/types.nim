@@ -776,6 +776,14 @@ type
     parent: Value         # parent Type value, or NIL
     repr: TypeRepr        # representation marker (`^repr native_wrapper`);
                           # inherited through `^is` at newType
+    nativeIdentity: string # module-qualified `^native` identity, or "".
+                          # The typed_native AOT boundary matches an incoming
+                          # wrapper against the identity the compiled code was
+                          # built for; comparing names instead would let one
+                          # module's look-alike satisfy another's guard. Not
+                          # inherited: an `^is` descendant is a different
+                          # nominal type and does not share a native payload
+                          # contract.
     fields: seq[TypeField]
     bodyFields: seq[TypeBodyField]
     scope: Scope          # strong only for future escaped-type anchoring
@@ -3593,6 +3601,19 @@ proc closeCPtr*(v: Value) =
   data.address = nil
   data.closed = true
 
+proc relinquishCPtr*(v: Value) =
+  ## Mark an owned pointer closed *without* running its release callback.
+  ##
+  ## This is ownership transfer, not disposal: someone else now owns the
+  ## address and will free it. `closeCPtr` would free it here, leaving the new
+  ## owner with a dangling pointer — and the wrapper must still become unusable
+  ## so the same address cannot be handed out twice.
+  let data = cPtrData(v)
+  if data.closed:
+    return
+  data.address = nil
+  data.closed = true
+
 proc cSliceData(v: Value): CSliceData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okCSlice:
     raise newException(FieldDefect, "value is not a C slice")
@@ -3706,6 +3727,13 @@ proc typeRepr*(v: Value): TypeRepr =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
     return trOrdinary
   TypeData(objData(v)).repr
+
+proc typeNativeIdentity*(v: Value): string =
+  ## The `^native` identity this type was compiled with, or "" when it has no
+  ## native representation. See `TypeData.nativeIdentity`.
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    return ""
+  TypeData(objData(v)).nativeIdentity
 
 proc typeInheritsFrom*(actual, ancestor: Value): bool =
   ## Nominal ancestry by Type *identity*: true when `actual` is `ancestor` or
@@ -5311,7 +5339,8 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               ownBodyFields: seq[TypeBodyField] = @[],
               messages: sink Table[string, Value] = initTable[string, Value](),
               ctorFn: Value = NIL,
-              repr: TypeRepr = trOrdinary): Value =
+              repr: TypeRepr = trOrdinary,
+              nativeIdentity = ""): Value =
   ## A nominal type. Single inheritance is merged eagerly: the parent's fields
   ## come first, then this type's own fields (design Section 7.3).
   var fields: seq[TypeField]
@@ -5348,7 +5377,8 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
       owned.weakScope = cast[pointer](scope)
     bodyFields.add owned
   boxObject(TypeData(objKind: okType, name: name, parent: parent,
-                     repr: repr, fields: fields,
+                     repr: repr, nativeIdentity: nativeIdentity,
+                     fields: fields,
                      bodyFields: bodyFields,
                      weakScope: cast[pointer](scope),
                      requiredProtocols: requiredProtocols,

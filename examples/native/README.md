@@ -67,12 +67,37 @@ which compiles in the adapters, and the `gene_ffi_*` helpers they call are
 exported from the `gene` executable (`src/gene/aot_runtime.nim`, plus
 `-Wl,-export_dynamic` in `nim.cfg`) so they resolve at `dlopen` time.
 
-**Scalars only for now.** `I64`/`F64` arguments and results cross the boundary;
-a native-pointer parameter needs the managed-wrapper seam
-(`gene_typed_native_arg_borrow` and friends), which is not wired up yet. Those
-helpers must match an incoming wrapper against the compiled type's identity,
-and a runtime `Type` value does not currently carry one — adding it is a
-deliberate design step, not a local fix.
+## Managed wrappers across the boundary
+
+Native pointers cross too, as ordinary managed wrappers. A `^native_entry`
+whose result is `transfer` hands back a real Gene value:
+
+```gene
+(var p (native/make))     # native code allocated it
+($head p)                 # => (type Point)
+(native/get_x p)          # => 3, via a direct field load in compiled C
+```
+
+A `^native` type records the identity its compiled code was built against, and
+the boundary recovers the `Type` from that identity rather than trusting the
+incoming value's head. A look-alike carrying a forged handle is rejected:
+
+```
+Error: native entry argument 'p' expects a Point value
+```
+
+Ownership follows the declared mode:
+
+- **borrow** — the wrapper stays the owner; it is still usable afterwards.
+- **transfer** — ownership moves to the callee, so the wrapper is *relinquished*
+  (marked closed without running its release callback, which would free memory
+  the callee is about to use). Using it again fails with `is closed`, so a
+  double free is not reachable from Gene.
+- **copy** — the callee gets its own pointer and the original stays usable.
+
+Still missing: non-scalar, non-pointer arguments (strings, buffers,
+collections). Those need the remaining `gene_ffi_arg_*` helpers, which is
+mechanical rather than a design question.
 
 ## What the generated C looks like
 

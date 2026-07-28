@@ -199,16 +199,32 @@ The emitted path matches the hand-written ceiling and is ~480x the dynamic
 wrapper, so §10's "one-load path" question is answered yes and §11 items 1-4
 are done.
 
-§11 item 5 (wrapper borrow/transfer adapters) cannot be finished here. The
-generated C declares 59 `gene_ffi_*` / `gene_typed_native_*` helpers and the
-runtime defines none of them: production AOT backends are deferred
-(`docs/implementation-status.md`), and the native C ABI those helpers need —
-opaque `GeneValue`, root handles, native registration, the VM trampoline — is
-step 12 of design.md's implementation order, which precedes native
-compilation. Self-contained typed-native functions compile and run standalone
-today; anything crossing the dynamic boundary, including every
-`^native_entry` adapter, will not link until that ABI exists. The adapters are
-specified and code-generated, and are covered by tests against a mock harness.
+§11 item 5 (wrapper borrow/transfer adapters) is now implemented. The generated
+C never dereferences `GeneValue`, `GeneCall`, or `GeneContext` — it only passes
+them to helpers — so no public C value ABI was required after all;
+`src/gene/aot_runtime.nim` owns those shapes and exports the helpers, and
+`aot/load` binds a compiled library's `^native_entry` functions as ordinary
+callables:
+
+```gene
+(import $aot [load])
+(var native (load "libpoint.dylib"))
+(var p (native/make))     ; native code allocated it; a managed Point comes back
+(native/get_x p)          ; direct field load in compiled C
+```
+
+A `^native` type records the identity its compiled code was built against
+(`TypeData.nativeIdentity`), and the boundary recovers the `Type` from that
+identity instead of trusting the incoming value's head, so a look-alike cannot
+carry a forged handle into compiled code. Ownership follows the declared mode:
+borrow leaves the wrapper usable, transfer *relinquishes* it (closed without
+running the release callback, which would free memory the callee is about to
+use), and copy leaves the original intact.
+
+What remains is mechanical rather than architectural: the non-scalar
+`gene_ffi_arg_*` helpers (strings, buffers, collections), which only the
+dynamic FFI wrappers use. Those wrappers stay behind
+`#ifdef GENE_AOT_DYNAMIC_ENTRIES`.
 
 ## 5. Goal and scope
 

@@ -902,6 +902,76 @@ int main(void) {
         "(var native (load " & geneString(libPath) & ")) " &
         "(native/triple 14)"), scope).intVal == 42
 
+  test "a managed wrapper crosses the AOT boundary in both directions":
+    ## §6.4 proper: native code hands back a managed wrapper, Gene passes it
+    ## in again, and ownership is honoured. The library and the running module
+    ## come from one `compileSource`, so the type identity baked into the
+    ## generated C is the identity the runtime registers.
+    let src =
+      "(ffi/struct CPoint ^fields [[x C/Int64] [y C/Int64]]) " &
+      "(type Point ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CPoint)} " &
+      "  ^native {^abi CPoint ^lifecycle manual ^wrapper handle " &
+      "           ^release \"point_free\" ^copy \"point_copy\"}) " &
+      "(ffi/fn make_point ^symbol \"make_point\" [] : Point) " &
+      "(fn make ^native_entry {^result transfer} [] : Point (make_point)) " &
+      "(fn get_x ^native_entry {^p borrow} [p : Point] : I64 p/x) " &
+      "(fn consume ^native_entry {^p transfer} [p : Point] : I64 p/x)"
+    let chunk = compileSource(src)
+    let impl = """
+#include <stdlib.h>
+CPoint *make_point(void) {
+  CPoint *p = malloc(sizeof *p); p->x = 3; p->y = 4; return p;
+}
+CPoint *point_copy(const CPoint *src) {
+  CPoint *p = malloc(sizeof *p); *p = *src; return p;
+}
+void point_free(CPoint *p) { free(p); }
+"""
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    let sourcePath = getTempDir() / "gene_aot_wrapper.c"
+    let libPath = getTempDir() / ("libgene_aot_wrapper" & libExt)
+    writeFile(sourcePath, chunk.emitExperimentalC() & impl)
+    defer:
+      if fileExists(sourcePath): removeFile(sourcePath)
+      if fileExists(libPath): removeFile(libPath)
+    let built = execCmdEx(
+      quoteShell(getEnv("CC", "cc")) &
+        " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+        (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+        quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+    checkpoint built.output
+    check built.exitCode == 0
+    if built.exitCode == 0:
+      # Each program is one compilation unit: the module declarations (which
+      # create Point and register its native identity), the library load, and
+      # the calls. `compileSource` names every unit "<memory>", so the identity
+      # baked into the library above is the identity registered here.
+      let prelude = src & " (import $aot [load]) " &
+        "(var native (load " & geneString(libPath) & ")) "
+      proc runAot(program: string): Value =
+        run(compileSource(prelude & program), newGlobalScope())
+
+      # Native code allocated this and handed back a real managed wrapper.
+      check runAot("(var p (native/make)) ($head p)").typeName == "Point"
+      check runAot("(var p (native/make)) (native/get_x p)").intVal == 3
+
+      # A look-alike may not carry a forged pointer into compiled code.
+      check_runtime_error(prelude &
+        "(type Impostor ^props {^handle Any}) " &
+        "(native/get_x (Impostor ^handle 12345))",
+        "expects a Point value")
+      check_runtime_error(prelude & "(native/get_x nil)", "must not be nil")
+
+      # Transfer moves ownership, so the wrapper is closed and cannot be
+      # handed to native code a second time — no double free is reachable.
+      check runAot("(var p (native/make)) (native/consume p)").intVal == 3
+      check_runtime_error(prelude &
+        "(var p (native/make)) (native/consume p) (native/get_x p)",
+        "is closed")
+
   test "a protocol message may return a native pointer":
     ## A message declaration carries only a signature. Treating it as an
     ## executable typed-native function rejected it for having no lowerable

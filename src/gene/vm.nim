@@ -1177,6 +1177,7 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
                             named: NamedArgs, immutable = false): Value
 proc newNativeWrapper*(wrapperType: Value,
                        props: openArray[(string, Value)]): Value
+proc registerNativeTypeIdentity*(identity: string, typ: Value)
 proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
                        ctor: Value,
                        dispatchScope: Scope = nil, site: Value = NIL): Value
@@ -11176,7 +11177,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             ctorFn = functionForScopeStorage(fn, scope)
           let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope,
                             derivedProtocols, proto.deriveRequests,
-                            proto.bodyFields, messages, ctorFn, proto.repr)
+                            proto.bodyFields, messages, ctorFn, proto.repr,
+                            if proto.nativeType != nil: proto.nativeType.identity
+                            else: "")
+          if proto.nativeType != nil:
+            registerNativeTypeIdentity(proto.nativeType.identity, typ)
           # Inline impls register exactly like standalone (impl P for T ...) forms
           # written after the type declaration (docs/core.md §8), before
           # ^derive runs so manual-vs-generated conflicts surface normally.
@@ -21948,6 +21953,23 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
       raise newException(GeneError,
         callee.typeName & " has no field '" & key & "'")
   newNode(callee, props = props, body = body, immutable = immutable)
+
+var nativeTypeRegistry: Table[string, Value]
+
+proc registerNativeTypeIdentity*(identity: string, typ: Value) =
+  ## Index a `^native` type by the identity its compiled code was built
+  ## against. The typed_native AOT boundary receives only that string from
+  ## generated C and must recover the Type value to validate an incoming
+  ## wrapper, or to build one for a returned pointer.
+  ##
+  ## Re-registration overwrites: an identity is module-qualified, so the same
+  ## string reappearing means the same declaration was compiled again (module
+  ## reload), and the newest Type is the live one.
+  if identity.len > 0 and typ.kind == vkType:
+    nativeTypeRegistry[identity] = typ
+
+proc nativeTypeByIdentity*(identity: string): Value =
+  nativeTypeRegistry.getOrDefault(identity, NIL)
 
 proc newNativeWrapper*(wrapperType: Value,
                        props: openArray[(string, Value)]): Value =
