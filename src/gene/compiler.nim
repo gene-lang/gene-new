@@ -118,6 +118,9 @@ type
     # Exact impl-form nodes that are unconditional static module/namespace
     # declarations. Nested control-flow and callable bodies are absent.
     staticTopLevelImpls: HashSet[uint64]
+    ## Message names declared by overlay-only impls anywhere in this unit.
+    ## Collected up front so the check does not depend on compilation order.
+    overlayImplMessages: HashSet[string]
 
   ParamSpecs = object
     positional: seq[string]
@@ -700,7 +703,8 @@ proc childCompiler(c: Compiler): Compiler =
            namespacePath: c.namespacePath,
            moduleMacroExports: c.moduleMacroExports,
            moduleSyntaxFnExports: c.moduleSyntaxFnExports,
-           staticTopLevelImpls: c.staticTopLevelImpls)
+           staticTopLevelImpls: c.staticTopLevelImpls,
+           overlayImplMessages: c.overlayImplMessages)
 
 proc nextTemp(c: var Compiler, prefix: string): string =
   inc c.gensym
@@ -2471,12 +2475,17 @@ proc localAotImplMessage(c: Compiler, receiverRepr: AotRepr,
   ## target. Receivers that do not resolve statically are treated as possible
   ## matches for the same reason.
   ##
-  ## Limit: this scans the current chunk only, and only impls compiled before
-  ## the send. An impl inside a nested function body lives in a subchunk, and
-  ## one declared later has not been compiled yet; neither is caught. Closing
-  ## that gap needs a decision on whether the typed-native path is closed-world
-  ## AOT (docs/scoped-impls.md §7 lets closed-world AOT omit the epoch guard
-  ## entirely), which is a design question rather than a local fix.
+  ## `overlayImplMessages` covers the whole unit and is order-independent, so
+  ## an overlay in a nested function body or written after the send is caught
+  ## too. The per-chunk scan below stays because it can also rule out a
+  ## *canonical* impl whose receiver does not resolve statically.
+  ##
+  ## Remaining hole: another module may install an overlay for this type after
+  ## this one is compiled. Nothing local can see that; §7 says only closed-world
+  ## AOT may omit the activation-epoch guard, and whether the typed-native path
+  ## counts as closed-world is an open design question.
+  if messageName in c.overlayImplMessages:
+    return (nil, NIL, NIL)
   for impl in c.chunk.implProtos:
     if impl.staticTopLevel and impl.staticOperands:
       continue
@@ -5008,6 +5017,33 @@ proc markStaticImplForms(c: var Compiler, forms: openArray[Value], first = 0) =
     for i in first .. forms.high:
       c.markStaticImplForm(forms[i])
 
+proc collectOverlayImplMessages(c: var Compiler, form: Value) =
+  ## Record every message name declared by an impl that is *not* an
+  ## unconditional top-level declaration, anywhere in the unit.
+  ##
+  ## Such an impl is overlay-only and may win at runtime, so a typed_native
+  ## send of that message cannot be lowered to a direct call
+  ## (docs/scoped-impls.md §7). Scanning up front rather than during
+  ## compilation is what makes it order-independent: an impl inside a function
+  ## body lives in a subchunk, and one written after the send has not been
+  ## compiled yet, so neither is visible to a check made at the send.
+  ##
+  ## Must run after `markStaticImplForms`, which decides what counts as
+  ## unconditional.
+  if form.kind != vkNode:
+    return
+  if form.head.isSymbol("impl") and form.bits notin c.staticTopLevelImpls:
+    for item in form.body:
+      if item.kind == vkNode and item.head.isSymbol("message") and
+          item.body.len > 0 and item.body[0].kind == vkSymbol:
+        c.overlayImplMessages.incl item.body[0].symVal
+  for item in form.body:
+    c.collectOverlayImplMessages(item)
+
+proc collectOverlayImplMessages(c: var Compiler, forms: openArray[Value]) =
+  for form in forms:
+    c.collectOverlayImplMessages(form)
+
 proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
   ## A file/source unit already has a loader-created Module; `(mod name @meta
   ## body...)` names that module, stores its metadata, and runs the body in the
@@ -7106,6 +7142,7 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
   if useLocalSlots:
     c.enableLocalSlots()
   c.markStaticImplForms(forms)
+  c.collectOverlayImplMessages(forms)
   c.prepareStaticImports(forms)
   c.reserveProtocolBindingsFor(forms)
   if forms.len == 0:

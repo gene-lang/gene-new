@@ -687,6 +687,47 @@ library behavior is fixed by this target.
 8. Build a minimal SQLite-backed CRUD example.
 9. Add `web/router` only after the raw app works.
 
+## `gene/aot` — loading natively compiled modules
+
+Experimental, alongside the `typed_native` C backend
+(`docs/proposals/native-type.md` Part II).
+
+- `load` — open a shared library produced from `gene compile --target c` and
+  return a map of `name -> callable`.
+
+```gene
+(import $aot [load])
+(var native (load "build/libscaled.dylib"))
+(native/triple 14)
+```
+
+`load` reads the library's exported manifests and binds two things: every
+function declared with `^native_entry`, and every `ffi/fn`'s generated
+wrapper. Calls through the returned map run compiled machine code — arguments
+are unboxed at the boundary, the compiled function runs, and the result is
+boxed back.
+
+The library must be built with `-DGENE_AOT_DYNAMIC_ENTRIES=1` so the boundary
+adapters are compiled in; they are off by default so ordinary generated C
+links without a Gene runtime. The `gene_ffi_*` helpers those adapters call are
+exported from the `gene` executable and resolve at load time.
+
+Boundary rules:
+
+- Integral arguments range-check rather than truncate: passing `200` where the
+  C signature says `int8_t` is an error.
+- Strings and buffers are borrowed for the call's extent; foreign code must not
+  retain them. A returned `const char *` is copied.
+- A managed wrapper crossing in is matched against the compiled type's identity
+  — not its name — so a look-alike cannot carry a forged handle into compiled
+  code. Ownership follows the declared mode: `borrow` leaves the wrapper usable,
+  `transfer` closes it without freeing (the callee owns the pointer now), and
+  `copy` leaves the original intact.
+- A type's declaring module must be loaded before a wrapper of that type can
+  cross, since the boundary resolves the identity to a live `Type`.
+
+`examples/native` builds and runs both directions.
+
 ## Testing Strategy
 
 - Unit tests for every pure helper.

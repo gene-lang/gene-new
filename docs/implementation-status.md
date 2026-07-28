@@ -17,11 +17,21 @@ The normative implemented surface lives in `docs/spec/` and is checked by
 `nimble spec`. Unit and integration coverage runs with `nimble test`; broad
 runtime verification uses `nimble verify`.
 
+The experimental `typed_native` C backend (`gene compile --target c`,
+`docs/proposals/native-type.md` Part II) lowers native-pointer parameters,
+field access, and direct typed calls, and its dynamic boundary is now
+connected in both directions: `aot/load` opens a compiled library and binds
+its `^native_entry` functions and `ffi/fn` wrappers as ordinary callables, so
+Gene code can call compiled machine code and managed wrappers cross the seam
+with borrow/transfer/copy ownership. It remains experimental — the lowerable
+expression subset is small (no arithmetic, comparisons, conditionals, or
+loops), and there is no `gene build` that produces a linked artifact.
+
 Deferred work is explicitly non-normative. Major deferred areas include package
 version resolution/registries, static effect rows, full hygienic compile-time
 function macros, partial protocol impl composition, static enum exhaustiveness,
-arbitrary escaping foreign callbacks/foreign-thread VM entry, and production
-AOT/JIT backends beyond the existing prototypes.
+arbitrary escaping foreign callbacks/foreign-thread VM entry, JIT, and AOT
+beyond the experimental backend described above.
 
 For the AI agent, typed tools, event tracing, persistence, gateway surfaces,
 cancellation, and the embedded terminal are shipped. The next packaging slice

@@ -1088,25 +1088,34 @@ void point_free(CPoint *p) { free(p); }
       "  (node ~ ReadValue:read_value))",
       "typed_native function read cannot lower its body statically")
 
-  test "an overlay impl blocks lowering a canonical direct send":
+  test "an overlay impl anywhere in the unit blocks a direct send":
     ## docs/scoped-impls.md §7: a direct protocol call needs the winning
-    ## unconditional canonical pair with no reachable overlay. A conditional
-    ## impl is overlay-only and cannot be ranked here, so the canonical target
-    ## must not be baked in.
-    ##
-    ## Limit: this sees overlay impls in the same chunk. An impl inside a
-    ## nested function body, or one declared after the send, is not visible
-    ## here — see the note in `localAotImplMessage`.
-    check_compile_error(
+    ## unconditional canonical pair with no reachable overlay. Overlay-only
+    ## impls are collected before compilation, so the check does not depend on
+    ## where the overlay sits or whether it precedes the send — a per-chunk
+    ## check made at the send missed both of the last two cases.
+    let base =
       "(protocol ReadValue (message read_value [] : I64)) " &
       "(ffi/struct CNode ^fields [[value C/Int64]]) " &
       "(type Node ^native {^abi CNode ^lifecycle manual}) " &
       "(impl ReadValue for Node " &
-      "  (message read_value [] : I64 self/value)) " &
-      "(if true (impl ReadValue for Node " &
-      "  (message read_value [] : I64 0))) " &
-      "(fn read [node : Node] : I64 (node ~ ReadValue:read_value))",
-      "typed_native function read cannot lower its body statically")
+      "  (message read_value [] : I64 self/value)) "
+    let send = "(fn read [node : Node] : I64 (node ~ ReadValue:read_value)) "
+    let overlay = "(impl ReadValue for Node (message read_value [] : I64 0)) "
+    let cannotLower = "typed_native function read cannot lower its body statically"
+
+    # Conditional, same chunk.
+    check_compile_error(base & "(if true " & overlay & ") " & send, cannotLower)
+    # Inside a function body: a subchunk, invisible to a per-chunk scan.
+    check_compile_error(base & "(fn install [] " & overlay & ") " & send,
+                        cannotLower)
+    # Declared after the send: not yet compiled when the send is analysed.
+    check_compile_error(base & send & "(if true " & overlay & ")", cannotLower)
+
+    # Control: with no overlay the canonical impl is still called directly.
+    let chunk = compileSource(base & send)
+    check "return gene_native_impl_0_read_value(node);" in
+      chunk.emitExperimentalC()
 
   test "an unlowerable impl body fails emission instead of returning 0":
     ## Impl functions are emitted before ordinary module functions, so an impl

@@ -633,7 +633,12 @@ proc main() =
     "(var sqlite_conn (open \":memory:\"))"), sqliteScope)
   let sqliteQueryChunk = compileSource(
     "(sqlite_conn ~ Db:query \"select 1 as value\")")
-  bench("typed_native.sqlite_query", 2_000, i):
+  # Named for what it measures: the interpreted managed-wrapper path through
+  # $db/sqlite. It exercises none of the typed_native C backend, and the old
+  # `typed_native.` prefix implied otherwise — the proposal's §10 question is
+  # whether foreign work dominates, and this row is the "dominated by foreign
+  # work" reference point, not a compiled-code measurement.
+  bench("vm.native_wrapper.sqlite_query", 2_000, i):
     let rows = run(sqliteQueryChunk, sqliteScope)
     checksum = checksum + rows.listItems[0].mapEntries["value"].intVal +
       int64(i and 1)
