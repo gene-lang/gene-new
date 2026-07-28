@@ -1175,6 +1175,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                loc = SourceLoc()): Value
 proc constructTypedInstance(callee: Value, args: openArray[Value],
                             named: NamedArgs, immutable = false): Value
+proc newNativeWrapper*(wrapperType: Value,
+                       props: openArray[(string, Value)]): Value
 proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
                        ctor: Value,
                        dispatchScope: Scope = nil, site: Value = NIL): Value
@@ -3414,6 +3416,20 @@ proc freezeValue(value: Value): Value =
                                val: freezeValue(entry.val))
     buildHashMap("freeze", entries)
   of vkNode:
+    if value.head.isNativeWrapperType:
+      # `freeze` is deep, and a wrapper cannot satisfy that contract either way:
+      # rebuilding it would mint a second node over one handle through a path
+      # that is not its ctor (design §16.6), while returning it unchanged would
+      # publish a "frozen" value whose reachable state — the `closed` Cell, the
+      # pointer, any mutable metadata — still changes through the original.
+      # Making the contents immutable in place is not available either: a
+      # frozen `closed` Cell would break `close`. So reject, and say what to
+      # reach for. This is what the recursive walk already did on any real
+      # wrapper, by refusing its `C pointer` field.
+      raise newException(GeneError,
+        "freeze cannot freeze " & value.head.typeName &
+        ": a native wrapper owns native state; freeze_shallow returns it " &
+        "unchanged")
     var body = newSeq[Value](value.body.len)
     for i, item in value.body:
       body[i] = freezeValue(item)
@@ -3449,6 +3465,11 @@ proc thawValue(value: Value): Value =
                                val: thawValue(entry.val))
     buildHashMap("thaw", entries)
   of vkNode:
+    if value.head.isNativeWrapperType:
+      # Thaw promises mutability, not immutability, so passing the wrapper
+      # through breaks no contract — and rebuilding it would be construction by
+      # another name. A wrapper is never frozen in the first place.
+      return value
     var body = newSeq[Value](value.body.len)
     for i, item in value.body:
       body[i] = thawValue(item)
@@ -3475,6 +3496,12 @@ proc biFreezeShallow(args: openArray[Value]): Value {.nimcall.} =
       entries.add entry
     newHashMap(entries)
   of vkNode:
+    if args[0].head.isNativeWrapperType:
+      # Shallow freeze promises only that the container's own head/props/body
+      # cannot change — which is already true of a completed wrapper (§16.6).
+      # Returning it unchanged satisfies that without reconstructing it; the
+      # deep `freeze` above is the one that cannot be honored.
+      return args[0]
     newNode(args[0].head,
             props = copyEntries(args[0].props),
             body = copyItems(args[0].body),
@@ -3929,9 +3956,34 @@ proc readUpdateChild(name: string, target, segment: Value): Value =
     raise newException(GeneError,
       name & " cannot update through " & $target.kind)
 
+proc rejectNativeWrapperConstruction(head: Value, what: string) =
+  ## A `^repr native_wrapper` type is created by its `ctor` — or by the native
+  ## `newWrapper` factory — and by nothing else (design §16.6). Every other path
+  ## that stamps a Type onto a node (direct `(T ...)` construction,
+  ## `construct_type`, serde, `assoc_in`/`update_in` reconstruction, head
+  ## replacement, a node literal with an unquoted Type head) would otherwise
+  ## publish a value that passes the nominal boundary carrying no native
+  ## payload, or a forged one, and the failure would surface at its first
+  ## native call instead of here. Cheap to check: the marker is merged down the
+  ## `^is` chain at newType, so this is one flag read.
+  if head.isNativeWrapperType:
+    raise newException(GeneError,
+      what & " cannot construct " & head.typeName &
+      ": it is a native wrapper; construct it with (new " & head.typeName &
+      " ...)")
+
+proc rejectNativeWrapperWrite(what: string) =
+  ## Wrapper fields are initializer-only: writable while the ctor's in-progress
+  ## `self` is still constructing, rejected afterwards. That restriction is what
+  ## preserves the unforgeability the empty-schema convention used to provide,
+  ## now that a wrapper declares a real schema (design §16.6).
+  raise newException(GeneError,
+    what & ": native wrapper fields are initializer-only")
+
 type TypedNodeValidationMode = enum
   tnvmMutation
   tnvmCtorResult
+  tnvmNativeFactory      # native `newWrapper` (design §16.6)
 
 proc validateTypedNodeParts(typ: Value, props: var PropTable,
                             body: var seq[Value],
@@ -3957,6 +4009,10 @@ proc validateTypedNodeParts(typ: Value, props: var PropTable,
         raise newException(GeneError,
           "ctor for " & typeName & " left required field '" & f.name &
           "' unset")
+      of tnvmNativeFactory:
+        raise newException(GeneError,
+          "newWrapper for " & typeName & " is missing required field '" &
+          f.name & "'")
   for id, _ in props.idPairs:
     var known = false
     for f in fields:
@@ -4006,6 +4062,11 @@ proc validateTypedNodeParts(typ: Value, props: var PropTable,
 proc writeUpdateChild(name: string, target, segment, value: Value): Value =
   if value.kind != vkVoid:
     rejectCallerEnvEscape(name & " functional update", value)
+  if target.kind == vkNode and target.head.isNativeWrapperType:
+    # A functional update *reconstructs* the node, so it is a construction path
+    # even though it reads like a write. Rejecting the source here also covers
+    # the case where the new head is the wrapper Type.
+    rejectNativeWrapperWrite(name & " cannot rebuild " & target.head.typeName)
   case target.kind
   of vkMap:
     var entries = copyEntries(target.mapEntries)
@@ -4071,6 +4132,7 @@ proc writeUpdateChild(name: string, target, segment, value: Value): Value =
       raise newException(GeneError,
         name & " cannot update through selector stage: " & $segment.kind)
     if head.kind == vkType:
+      rejectNativeWrapperConstruction(head, name)
       validateTypedNodeParts(head, props, body, tnvmMutation)
     newNode(head, props, body, meta, target.nodeImmutable)
   else:
@@ -4509,6 +4571,8 @@ proc setCheckedNodeProp(node: Value, key: string, value: Value): Value =
     return value
 
   let typ = node.head
+  if typ.isNativeWrapperType and not node.nodeConstructing:
+    rejectNativeWrapperWrite("cannot set field '" & key & "' on " & typ.typeName)
   for field in typ.typeFields:
     if field.name != key:
       continue
@@ -4563,6 +4627,9 @@ proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   rejectCallerEnvEscape("Node/set_body!", args[1])
   var body = copyItems(args[1].listItems)
   if args[0].head.kind == vkType and not args[0].nodeConstructing:
+    if args[0].head.isNativeWrapperType:
+      rejectNativeWrapperWrite("Node/set_body! cannot modify " &
+                               args[0].head.typeName)
     var props = copyEntries(args[0].props)
     validateTypedNodeParts(args[0].head, props, body, tnvmMutation)
   args[0].setNodeBody(body)
@@ -4659,6 +4726,9 @@ proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
   requireNode("Node/push_body!", args[0])
   rejectCallerEnvEscape("Node/push_body!", args[1])
   if args[0].head.kind == vkType and not args[0].nodeConstructing:
+    if args[0].head.isNativeWrapperType:
+      rejectNativeWrapperWrite("Node/push_body! cannot modify " &
+                               args[0].head.typeName)
     var props = copyEntries(args[0].props)
     var body = copyItems(args[0].body)
     body.add args[1]
@@ -10938,6 +11008,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 meta[key] = metaValues[i]
           let head = spop()
           rejectCallerEnvEscape("node head construction", head)
+          if head.kind == vkType:
+            # A node literal with an unquoted Type head (`` `(%T ^handle p) ``)
+            # is another way to stamp a head; a wrapper must not be forgeable
+            # through it either.
+            rejectNativeWrapperConstruction(head, "node construction")
           var body: seq[Value]
           for i, part in bodyParts:
             if proto.bodySplices.len > 0 and proto.bodySplices[i]:
@@ -11101,7 +11176,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             ctorFn = functionForScopeStorage(fn, scope)
           let typ = newType(proto.name, parent, proto.fields, requiredProtocols, scope,
                             derivedProtocols, proto.deriveRequests,
-                            proto.bodyFields, messages, ctorFn)
+                            proto.bodyFields, messages, ctorFn, proto.repr)
           # Inline impls register exactly like standalone (impl P for T ...) forms
           # written after the type declaration (docs/core.md §8), before
           # ^derive runs so manual-vs-generated conflicts surface normally.
@@ -21804,6 +21879,9 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
     raise newException(GeneError,
       "type alias '" & callee.typeName & "' is not constructible; it names " &
       "the type " & callee.typeAliasExpr.print())
+  # One funnel for `(T ...)`, `construct_type`, and serde's `serde_inst`, so a
+  # wrapper cannot be materialized as replayable data by any of them.
+  rejectNativeWrapperConstruction(callee, "direct construction")
   let fields = callee.typeFields
   let bodyFields = callee.typeBodyFields
   if args.len != 0 and bodyFields.len == 0:
@@ -21871,6 +21949,53 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
         callee.typeName & " has no field '" & key & "'")
   newNode(callee, props = props, body = body, immutable = immutable)
 
+proc newNativeWrapper*(wrapperType: Value,
+                       props: openArray[(string, Value)]): Value =
+  ## The low-level factory behind `GeneApi.newWrapper` (design §16.6), for
+  ## extensions that cannot express construction as a Gene `ctor`. It is the
+  ## only construction path a `native_wrapper` type admits besides its ctor,
+  ## and it validates the *declared* schema — so both routes agree on what a
+  ## valid instance is, and neither is justified by an empty-schema convention.
+  if wrapperType.kind != vkType or wrapperType.isEnumType:
+    raise newException(GeneError, "newWrapper expects a Type")
+  if not wrapperType.isNativeWrapperType:
+    raise newException(GeneError,
+      "newWrapper requires a native wrapper type; " & wrapperType.typeName &
+      " is not declared ^repr native_wrapper")
+  var table = initPropTable()
+  for (key, value) in props:
+    if key.len == 0:
+      raise newException(GeneError, "wrapper prop requires a name")
+    table[key] = value
+  var body: seq[Value] = @[]
+  validateTypedNodeParts(wrapperType, table, body, tnvmNativeFactory)
+  newNode(wrapperType, props = table, body = body)
+
+proc releaseOwnedWrapperFields(instance: Value) =
+  ## Deterministic unwind for a failed wrapper construction (design §16.6): an
+  ## in-progress instance is never published, so anything the ctor already
+  ## opened would otherwise sit until reclamation — exactly the fallback §16.5
+  ## says must not be resource management. Only *owned* pointers are released;
+  ## a borrowed one belongs to someone else. `closeCPtr` is idempotent, so an
+  ## alias closed by the ctor itself costs nothing.
+  ##
+  ## Scoped to wrapper types on purpose: an ordinary Gene type's field happens
+  ## to hold a pointer, it does not own the resource by declaration.
+  ##
+  ## Props *and* body: `push_body!` is one of the mutations an in-progress
+  ## instance may perform (§7.1.1), so a declared `^body` position can hold an
+  ## owned handle just as a prop can.
+  proc releaseOwned(value: Value) =
+    if value.kind == vkCPtr and value.cPtrOwned and not value.cPtrClosed:
+      try:
+        value.closeCPtr()
+      except CatchableError:
+        discard   # a failing release must not replace the construction error
+  for _, value in instance.props:
+    releaseOwned(value)
+  for value in instance.body:
+    releaseOwned(value)
+
 proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
                        ctor: Value,
                        dispatchScope: Scope = nil, site: Value = NIL): Value =
@@ -21886,8 +22011,13 @@ proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
     ctorArgs.add a
   inc activeConstructionDepth
   try:
-    discard applyCall(ctor, ctorArgs, named, dispatchScope, site)
-    validateConstructedInstance(callee, instance)
+    try:
+      discard applyCall(ctor, ctorArgs, named, dispatchScope, site)
+      validateConstructedInstance(callee, instance)
+    except CatchableError:
+      if callee.isNativeWrapperType:
+        releaseOwnedWrapperFields(instance)
+      raise
     instance.finishNodeConstruction()
     instance
   finally:

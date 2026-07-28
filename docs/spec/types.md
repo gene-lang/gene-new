@@ -2,8 +2,9 @@
 
 **Status:** normative and implemented. Executable coverage:
 `tests/spec_runner.nim`, suites “nominal types”, “direct construction, new, and
-ctor”, “typed variable boundaries”, “numeric boundaries”, “mutable
-containers”, and “optionality lives on the type, not the key”.
+ctor”, “native wrapper types”, “typed variable boundaries”, “numeric
+boundaries”, “mutable containers”, and “optionality lives on the type, not the
+key”.
 
 - `Any` is the gradual top; `Never` is the bottom. `Nil` and `Void` are
   ordinary singleton types. Type expressions use the canonical constructors
@@ -29,5 +30,17 @@ containers”, and “optionality lives on the type, not the key”.
   overrides preserve the inherited callable signature exactly in the MVP.
   Constructors are inherited by nearest-ancestor selection; they do not chain
   automatically.
+- `^repr native_wrapper` marks a type whose props hold native state (design
+  §16.6). Only `(new T ...)` creates one: direct construction,
+  `construct_type`, serde, functional-update reconstruction, head replacement,
+  and node literals all reject the type. Declared fields are initializer-only —
+  writable on the in-progress ctor `self`, rejected afterwards — and a failed
+  ctor releases the owned pointers it already installed, in props and body.
+  Both rules are inherited through `^is`.
+  Deep `freeze` rejects a wrapper (its reachable native state cannot be made
+  immutable), while `freeze_shallow` and `thaw` return it unchanged; serde
+  reopens one through `serde_state`/`serde_restore` rather than reconstructing
+  it. Native receiver guards admit a wrapper Type or an `^is` descendant, by
+  Type identity and never by name. `^sealed` is reserved and rejected.
 - Persistent updates return a new root; `!` operations mutate only mutable
   containers. `freeze` is deep, `freeze_shallow` is shallow, and `thaw` is deep.

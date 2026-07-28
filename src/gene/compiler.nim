@@ -5255,13 +5255,26 @@ proc parseTypeBodySchema(schema: Value): seq[TypeBodyField] =
 
 proc rejectUnknownTypeProps(node: Value) =
   for key in node.props.keys:
-    if key in ["props", "body", "impl", "derive", "is", "private"]:
+    if key in ["props", "body", "impl", "derive", "is", "private", "repr"]:
       continue
-    if key in ["sealed", "repr"]:
+    if key == "sealed":
       raise newException(GeneError,
-        "type ^" & key & " is reserved for future native layout optimization")
+        "type ^sealed is reserved for future native layout optimization")
     raise newException(GeneError,
       "type got unexpected named argument: " & key)
+
+proc typeReprMarker(node: Value, name: string): TypeRepr =
+  ## `^repr native_wrapper` (design §16.6). The marker is a compile-time symbol,
+  ## not an expression: it decides whether construction paths reject the type,
+  ## so it must be knowable wherever the declaration is read — including by the
+  ## compiler, before any value exists.
+  if not node.props.hasKey("repr"):
+    return trOrdinary
+  let marker = node.props["repr"]
+  if marker.kind != vkSymbol or marker.symVal != "native_wrapper":
+    raise newException(GeneError,
+      "type " & name & " ^repr must be the symbol native_wrapper")
+  trNativeWrapper
 
 proc messageNameParts(node: Value): tuple[protocolPath: seq[string], name: string] =
   ## A message name is a simple symbol, or a qualified path in impl bodies for
@@ -5371,6 +5384,7 @@ proc compileType(c: var Compiler, node: Value) =
   rejectUnknownTypeProps(node)
   let name = body[0].symVal
   validateDeclarationCase("type", name)
+  let repr = typeReprMarker(node, name)
   var messageNodes: seq[Value]
   var implNodes: seq[Value]
   var ctorNode = NIL
@@ -5501,6 +5515,7 @@ proc compileType(c: var Compiler, node: Value) =
                  c.chunk.addType(TypeProto(name: name,
                                            staticTopLevel:
                                              node.bits in c.staticTopLevelImpls,
+                                           repr: repr,
                                            fields: fields,
                                            bodyFields: bodyFields,
                                            requiredImplCount: requiredImplCount,

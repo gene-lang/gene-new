@@ -452,6 +452,82 @@ proc main() =
     let v = run(projectionStageChunk, projectionStageScope)
     checksum = checksum + v.intVal
 
+  # Managed wrapper cost (docs/proposals/native-type.md §4.6). The open question
+  # is whether the shipped shape — wrapper node + prop table + CPtrData — is
+  # worth replacing with one compact object, so the handle here is a real owned
+  # pointer; a `Str` stand-in would allocate no CPtrData and measure the wrong
+  # thing. The decomposition is what decides it, and each step differs from the
+  # one above it by exactly one factor:
+  #
+  #   handle_alloc                  the CPtrData alone
+  #   factory_construct_untyped     + node + prop table + an `Any` field check
+  #   factory_construct             + the `(C/OwnedPtr T)` field check
+  #   ctor_construct                + ctor dispatch and the compiled chunk
+  #
+  # The two factory rows are the same `newNativeWrapper` call with the same
+  # fresh pointer and string allocations, differing only in the declared handle
+  # type, so their difference isolates the boundary check. (`plain_direct_
+  # construct` is a different path — ordinary `(T ...)` data construction — and
+  # is here for scale, not for subtraction.)
+  #
+  # As measured (2026-07-28, release, this machine): ~50 ns, ~615 ns, ~3.13 us,
+  # ~7.96 us. So the compound C-pointer check, not allocation, is ~2.5 us of the
+  # factory cost, and a compact single-allocation wrapper would attack the
+  # ~565 ns term instead. That is the §4.6 answer until the compound C-type
+  # check gets cheaper. Compare either total against the foreign work it wraps —
+  # a SQLite `open` is microseconds — before spending VM representation cases.
+  proc benchReleaseHandle(p: pointer) {.nimcall.} = discard
+  proc benchOpenHandle(args: openArray[Value]): Value {.nimcall.} =
+    newCOwnedPtr(cast[pointer](0xB10B), benchReleaseHandle, newSym("Blob"))
+  let wrapperScope = newGlobalScope()
+  wrapperScope.define("open_handle",
+                      newNativeFn("open_handle", benchOpenHandle))
+  discard run(compileSource(
+    "(type WrapperLike ^repr native_wrapper " &
+    "  ^props {^handle (C/OwnedPtr Blob) ^backend Str} " &
+    "  (ctor [] (set! self/handle (open_handle)) " &
+    "           (set! self/backend \"demo\"))) " &
+    "(type UntypedWrapperLike ^repr native_wrapper " &
+    "  ^props {^handle Any ^backend Str}) " &
+    "(type PlainLike ^props {^handle Any ^backend Str})"), wrapperScope)
+  let wrapperType = run(compileSource("WrapperLike"), wrapperScope)
+  let untypedWrapperType = run(compileSource("UntypedWrapperLike"), wrapperScope)
+
+  bench("vm.native_wrapper.handle_alloc", 250_000, i):
+    let h = newCOwnedPtr(cast[pointer](0xB10B), benchReleaseHandle,
+                         newSym("Blob"))
+    checksum = checksum + int64(h.cPtrOwned)
+
+  bench("vm.native_wrapper.factory_construct_untyped", 250_000, i):
+    let v = newNativeWrapper(untypedWrapperType,
+      {"handle": newCOwnedPtr(cast[pointer](0xB10B), benchReleaseHandle,
+                              newSym("Blob")),
+       "backend": newStr("demo")})
+    checksum = checksum + int64(v.props.len)
+
+  bench("vm.native_wrapper.factory_construct", 250_000, i):
+    let v = newNativeWrapper(wrapperType,
+      {"handle": newCOwnedPtr(cast[pointer](0xB10B), benchReleaseHandle,
+                              newSym("Blob")),
+       "backend": newStr("demo")})
+    checksum = checksum + int64(v.props.len)
+
+  let wrapperNewChunk = compileSource("(new WrapperLike)")
+  bench("vm.native_wrapper.ctor_construct", 250_000, i):
+    let v = run(wrapperNewChunk, wrapperScope)
+    checksum = checksum + int64(v.props.len)
+
+  let plainNewChunk = compileSource("(PlainLike ^handle \"h\" ^backend \"demo\")")
+  bench("vm.native_wrapper.plain_direct_construct", 250_000, i):
+    let v = run(plainNewChunk, wrapperScope)
+    checksum = checksum + int64(v.props.len)
+
+  wrapperScope.define("wrapper", run(wrapperNewChunk, wrapperScope))
+  let wrapperFieldChunk = compileSource("wrapper/backend")
+  bench("vm.native_wrapper.field_read", 500_000, i):
+    let v = run(wrapperFieldChunk, wrapperScope)
+    checksum = checksum + int64(v.strVal.len)
+
   let assocScope = newGlobalScope()
   assocScope.define("user", run(compileSource("{^name \"Ada\" ^age 37}"), assocScope))
   let assocChunk = compileSource("($assoc_in user /age 38)")

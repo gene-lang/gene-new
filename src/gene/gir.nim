@@ -382,6 +382,7 @@ type
   TypeProto* = ref object
     name*: string
     staticTopLevel*: bool
+    repr*: TypeRepr              # `^repr native_wrapper`, or ordinary
     fields*: seq[TypeField]      # own (non-inherited) field schema
     bodyFields*: seq[TypeBodyField] # own (non-inherited) body schema
     requiredImplCount*: int

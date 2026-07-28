@@ -1351,6 +1351,11 @@ Whitespace, comments, and discarded forms can produce `void`, which stream stage
 
 Construction stamps the value's head with the type value. Construction schemas are closed by default unless the type explicitly permits rest props.
 
+`^repr` declares the type's representation. Its one accepted value is
+`native_wrapper`, for a type whose props hold native state: only its `ctor`
+may create an instance, its declared fields are initializer-only, and the rule
+is inherited through `^is`. See §16.6. `^sealed` remains reserved.
+
 ### 7.1.1 Direct construction, `new`, and `ctor`
 
 Gene separates **direct data construction** from **constructor invocation**.
@@ -4624,9 +4629,9 @@ it instead, using the pattern below.
 
 #### Wrapper types: giving foreign data a Gene identity
 
-A **wrapper type** is an ordinary nominal type whose props hold an opaque
-pointer. It is how every shipped native surface — `db/sqlite`, `db/postgres`,
-`net/http_client` — gives foreign data a Gene identity:
+A **wrapper type** is a nominal type marked `^repr native_wrapper` whose props
+hold an opaque pointer. It is how every shipped native surface — `db/sqlite`,
+`db/postgres`, `terminal/Session` — gives foreign data a Gene identity:
 
 ```gene
 (var c (open ":memory:"))
@@ -4642,21 +4647,72 @@ ancestry, and nominal annotations all work. Third-party code can implement its
 own protocol for a library's native type without the library's cooperation
 (§10.1).
 
-**The prop schema is deliberately empty, and that is load-bearing.** A wrapper
-type declares no `^props`, so `Type/fields` is `[]` and both direct
-construction and `set_prop!` reject every name (§12). Native code populates the
-props through the extension API instead. That is what makes the handle
-unforgeable from Gene: without it, `(c ~ set_prop! ^handle "junk")` would
-succeed and the next native call would read a `Str` as a pointer. Do not "fix"
-the missing schema.
+**The marker is what makes the handle unforgeable, and it is load-bearing.**
+A wrapper's declared fields are ordinary `^props`, but the representation
+marker changes two things:
 
-Native extensions build wrappers through three `GeneApi` entries
-(`src/gene/native_api.nim`):
-`defineWrapperType` creates the type and registers it in the module,
-`newWrapper` instantiates one with native-owned props — the only path that may
-populate them, and it refuses a type that declares a schema — and
-`wrapperField` reads a prop back under a nominal check, so a look-alike node
-cannot reach a pointer dereference.
+- **Only a `ctor` creates one.** Every other path that stamps the type onto a
+  node rejects it: `(T ...)` direct construction, `construct_type`, serde,
+  `assoc_in`/`update_in` reconstruction, head replacement, and a node literal
+  with an unquoted Type head. Use `(new T ...)`. Without this, `(SqliteDb)`
+  would produce a handle-less value that passes a `SqliteDb` annotation and
+  fails only at its first query.
+- **Declared fields are initializer-only.** `(set! self/handle …)` works while
+  the ctor's in-progress `self` is still constructing (§7.1.1) and is rejected
+  afterwards, so `(c ~ set_prop! ^handle "junk")` cannot make the next native
+  call read a `Str` as a pointer. `set_body!` and `push_body!` are rejected on
+  a completed wrapper for the same reason.
+
+The rule is inherited through `^is`: a Gene-side subtype may add messages and
+impls, but it does not reopen construction on the parent's native payload.
+
+So a binding is an ordinary typed FFI declaration plus an ordinary Gene type:
+
+```gene
+(type PgConn
+  ^repr native_wrapper
+  ^props {^handle (C/OwnedPtr PGconn) ^conninfo Str}
+
+  (ctor [conninfo : Str]
+    (set! self/handle (pq_connect_db conninfo))
+    (set! self/conninfo conninfo)))
+
+(var db (new PgConn "postgresql://localhost/app"))
+```
+
+The declared schema supplies validation — ctor completion requires every
+declared field and checks its type — while the write restriction supplies the
+unforgeability an empty schema used to provide. If the ctor raises, the
+in-progress instance is unwound and every owned pointer it already installed is
+released immediately rather than waiting for reclamation.
+
+Native extensions can also build wrappers directly, through three `GeneApi`
+entries (`src/gene/native_api.nim`): `defineWrapperType` creates the marked
+type with its declared schema and registers it in the module, `newWrapper`
+instantiates one against that same schema for extensions that do not express
+construction in Gene, and `wrapperField` reads a prop back under a nominal
+check, so a look-alike node cannot reach a pointer dereference.
+
+**Receiver admission is by Type identity, and it is ancestry, not equality.**
+The check accepts the wrapper Type or an `^is` descendant of it, comparing Type
+*values* rather than names — two modules may each define a `Conn`, and a name
+check would let one module's value carry its pointer into the other's native
+code, or let a hand-written look-alike index into a session table it never
+opened. Every in-tree surface admits receivers this way.
+
+Two consequences follow from a wrapper being an opaque, write-closed value:
+
+- **Deep `freeze` rejects it; `freeze_shallow` and `thaw` return it
+  unchanged.** `freeze` is a promise about everything reachable, and a live
+  handle cannot keep it — the `closed` cell and the pointer still change
+  through the original — while rebuilding the node would be construction by
+  another name. Shallow freeze promises only that the container's own
+  head/props/body are fixed, which a completed wrapper already satisfies.
+- **serde reopens rather than reconstructs.** `serde/write` refuses a wrapper
+  instance outright; a wrapper that should survive a round trip defines the
+  `serde_state`/`serde_restore` message pair (§7), which runs user code behind
+  `^allow_restore` instead of rebuilding a handle from data. A blob can never
+  forge one.
 
 Two limits are part of the contract:
 
@@ -4742,9 +4798,10 @@ Native types should normally expose opaque handles. Their internals belong to th
 
 The API table's `defineWrapperType` / `newWrapper` / `wrapperField` entries are
 how an extension builds such a type; §16.6 describes the pattern and why the
-empty prop schema is load-bearing. They exist as validated entry points
-precisely so an extension cannot construct a schema-bearing "wrapper" whose
-handle Gene code could then overwrite.
+`^repr native_wrapper` marker is load-bearing. They exist as validated entry
+points precisely so an extension cannot construct a "wrapper" whose handle
+Gene code could then forge or overwrite: `newWrapper` requires a marked type
+and validates its declared schema.
 
 ### 16.10 Dynamic loading and capability values
 

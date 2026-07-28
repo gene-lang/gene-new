@@ -1539,6 +1539,100 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(try (new T) catch (Boom) nil) (cleaned ~ get)",
                "true")
 
+suite "spec — native wrapper types (design §16.6)":
+  test "^repr native_wrapper marks the type and admits only ctor construction":
+    check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
+               "  (ctor [h : Str] (set! self/handle h))) " &
+               "(var c (new Conn \"H\")) [c/handle ($head c)]",
+               "[\"H\" (type Conn)]")
+    check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
+               "  (ctor [h : Str] (set! self/handle h))) " &
+               "(try (Conn ^handle \"junk\") catch (Error ^message m) m)",
+               "\"direct construction cannot construct Conn: it is a native " &
+               "wrapper; construct it with (new Conn ...)\"")
+
+  test "every other construction path rejects a native wrapper head":
+    # Each of these would otherwise mint a value that passes the `Conn`
+    # nominal boundary while carrying no native payload.
+    check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
+               "  (ctor [h : Str] (set! self/handle h))) " &
+               "[(try ($construct_type Conn {^handle \"x\"}) catch _ \"no\") " &
+               " (try `(%Conn ^handle \"x\") catch _ \"no\") " &
+               " (try ($assoc_in (quote (data ^handle \"x\")) /head Conn) " &
+               "  catch _ \"no\")]",
+               "[\"no\" \"no\" \"no\"]")
+
+  test "wrapper fields are initializer-only after construction":
+    check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
+               "  (ctor [h : Str] (set! self/handle h))) " &
+               "(var c (new Conn \"H\")) " &
+               "[(try (set! c/handle \"junk\") catch (Error ^message m) m) " &
+               " (try (c ~ set_prop! `handle \"junk\") catch _ \"no\") " &
+               " (try ($assoc_in c /handle \"junk\") catch _ \"no\") " &
+               " c/handle]",
+               "[\"cannot set field 'handle' on Conn: native wrapper fields " &
+               "are initializer-only\" \"no\" \"no\" \"H\"]")
+
+  test "the wrapper rule is inherited through ^is":
+    # A Gene-side subtype may add messages and impls; it must not reopen
+    # construction on the parent's native payload.
+    check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
+               "  (ctor [h : Str] (set! self/handle h))) " &
+               "(type Tagged ^is Conn " &
+               "  (message tag [self] : Str self/handle)) " &
+               "[(try (Tagged ^handle \"x\") catch _ \"no\") " &
+               " ((new Tagged \"H\") ~ tag)]",
+               "[\"no\" \"H\"]")
+
+  test "^repr accepts only the native_wrapper marker":
+    expect GeneError:
+      discard compileSource("(type T ^repr packed ^props {^n Int})")
+    expect GeneError:
+      discard compileSource("(type T ^sealed true ^props {^n Int})")
+
+  test "in-tree native surfaces are wrapper types":
+    check_eval("(try (SqliteDb) catch (Error ^message m) m)",
+               "\"direct construction cannot construct SqliteDb: it is a " &
+               "native wrapper; construct it with (new SqliteDb ...)\"")
+    check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
+               "[(try (set! c/handle \"junk\") catch _ \"no\") " &
+               " (try ($assoc_in c /backend \"junk\") catch _ \"no\") " &
+               " c/backend]",
+               "[\"no\" \"no\" \"sqlite\"]")
+
+  test "shipped wrappers declare their schema, including the handle flavour":
+    # The backends build through the same validated factory an extension uses,
+    # so `Type/fields` reports what the value really holds instead of `[]`.
+    check_eval("(var f (SqliteDb ~ fields)) [f/0/name f/0/type f/1/name]",
+               "[\"handle\" (C/OwnedPtr sqlite3) \"backend\"]")
+    check_eval("(var f (PostgresDb ~ fields)) f/0/type",
+               "(C/OwnedPtr PGconn)")
+
+  test "native receivers are admitted by Type identity, never by name":
+    # The guard turns a prop into an index into a native session table, so a
+    # look-alike declaration must not reach state the program never opened.
+    check_eval("(import $terminal [write]) " &
+               "(type TerminalSession ^props {^id Int ^closed Any}) " &
+               "(var fake (TerminalSession ^id 1 ^closed ($cell false))) " &
+               "(try (write fake ^bytes \"x\") catch e e/message)",
+               "\"terminal/write expects a terminal/Session\"")
+
+  test "deep freeze rejects a wrapper; shallow freeze and thaw pass it through":
+    # Deep freeze is a promise about everything reachable, and a live handle
+    # cannot keep it: the `closed` Cell and the pointer still change through the
+    # original. Shallow freeze promises only that the container's own structure
+    # is fixed, which a completed wrapper already satisfies.
+    check_eval("(import $db/sqlite [open]) (var c (open \":memory:\")) " &
+               "(try ($freeze c) catch (Error ^message m) m)",
+               "\"freeze cannot freeze SqliteDb: a native wrapper owns " &
+               "native state; freeze_shallow returns it unchanged\"")
+    check_eval("(import $db/sqlite [open]) (var c (open \":memory:\")) " &
+               "(try ($freeze [c]) catch _ \"rejected through a container\")",
+               "\"rejected through a container\"")
+    check_eval("(import $db/sqlite [open]) (var c (open \":memory:\")) " &
+               "[(same? c ($thaw c)) (same? c ($freeze_shallow c))]",
+               "[true true]")
+
 suite "spec — typed variable boundaries from design":
   test "var annotations check gradual boundaries":
     check_eval("(var result : Int (eval (quote (+ 20 22)) ^in (env))) result",

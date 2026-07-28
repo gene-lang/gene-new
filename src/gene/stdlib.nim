@@ -374,6 +374,34 @@ proc biHtmlEscape(args: openArray[Value]): Value {.nimcall.} =
     else: escaped.add c
   newStr(escaped)
 
+proc ownedHandleField*(scope: Scope, target: string): TypeField =
+  ## The `^handle (C/OwnedPtr <target>)` field every in-tree native wrapper
+  ## declares. `target` names the foreign type (`sqlite3`, `PGconn`); it is
+  ## compared structurally against the pointer's own target, so the two ends of
+  ## a binding cannot be crossed.
+  TypeField(name: "handle", optional: false,
+            typeExpr: newNode(newSym("C/OwnedPtr"), body = @[newSym(target)]),
+            scope: scope)
+
+proc nativeReceiverIs*(scope: Scope, value: Value, typeName: string): bool =
+  ## Receiver identity for a native surface. The value's head must be *the*
+  ## canonical Type registered under that name — or an `^is` descendant of it,
+  ## which inherits the wrapper rule (design §16.6) and is therefore a
+  ## legitimate receiver.
+  ##
+  ## A name comparison is not enough, and that is a safety property rather than
+  ## tidiness: these guards turn a prop into an index into a native session
+  ## table, so any user declaration of the same name would otherwise reach a PTY
+  ## or store the program never opened. The name fallback only runs when the
+  ## canonical Type is unavailable (`builtInTypeHead` answers with a symbol),
+  ## which is the bootstrap case, before any user type can exist.
+  if value.kind != vkNode or value.head.kind != vkType:
+    return false
+  let canonical = builtInTypeHead(scope, typeName)
+  if canonical.kind == vkType:
+    return value.head.typeInheritsFrom(canonical)
+  value.head.typeName == typeName
+
 const urlUnreserved = {'A'..'Z', 'a'..'z', '0'..'9', '-', '.', '_', '~'}
 
 proc urlEncodeComponent(s: string): string =
@@ -2432,8 +2460,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   proc terminalHandleId(name: string, value: Value, scope: Scope,
                         requireOpen = true): int =
-    if value.kind != vkNode or value.head.kind != vkType or
-        value.head.typeName != "TerminalSession":
+    if not nativeReceiverIs(scope, value, "TerminalSession"):
       raiseTerminalError(name & " expects a terminal/Session", scope)
     let id = value.props.getOrDefault("id", VOID)
     let closed = value.props.getOrDefault("closed", VOID)
@@ -2642,10 +2669,8 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
       let id = terminalSessionNextId
       inc terminalSessionNextId
       terminalSessions[id] = session
-      var props = initPropTable()
-      props["id"] = newInt(id)
-      props["closed"] = newCell(FALSE)
-      newNode(builtInTypeHead(scope, "TerminalSession"), props = props)
+      newNativeWrapper(builtInTypeHead(scope, "TerminalSession"),
+        {"id": newInt(id), "closed": newCell(FALSE)})
     except GeneError:
       raise
     except CatchableError as error:
@@ -4131,8 +4156,7 @@ proc raiseCursesError(message: string, scope: Scope) =
 
 proc cursesScreenId(name: string, screen: Value, scope: Scope,
                     requireOpen = true): int =
-  if screen.kind != vkNode or screen.head.kind != vkType or
-      screen.head.typeName != "CursesScreen":
+  if not nativeReceiverIs(scope, screen, "CursesScreen"):
     raiseCursesError(name & " expects a curses/Screen", scope)
   let id = screen.props.getOrDefault("id", VOID)
   let closed = screen.props.getOrDefault("closed", VOID)
@@ -4163,10 +4187,8 @@ proc biCursesOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
     let id = cursesScreenNextId
     inc cursesScreenNextId
     cursesScreenActiveId = id
-    var props = initPropTable()
-    props["id"] = newInt(id)
-    props["closed"] = newCell(FALSE)
-    newNode(builtInTypeHead(scope, "CursesScreen"), props = props)
+    newNativeWrapper(builtInTypeHead(scope, "CursesScreen"),
+      {"id": newInt(id), "closed": newCell(FALSE)})
   else:
     raiseCursesError("curses is unavailable on this platform", scope)
     NIL
@@ -4529,8 +4551,7 @@ var incrementalReplSessions: seq[IncrementalReplSession]
 
 proc incrementalReplId(name: string, value: Value, scope: Scope,
                        requireOpen = true): int =
-  if value.kind != vkNode or value.head.kind != vkType or
-      value.head.typeName != "ReplSession":
+  if not nativeReceiverIs(scope, value, "ReplSession"):
     raise newException(GeneError, name & " expects a repl/Session")
   let id = value.props.getOrDefault("id", VOID)
   let closed = value.props.getOrDefault("closed", VOID)
@@ -4557,10 +4578,9 @@ proc biReplOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   let evalScope = incrementalReplScopeForEnv(args[0])
   let session = IncrementalReplSession(scope: evalScope)
   incrementalReplSessions.add session
-  var props = initPropTable()
-  props["id"] = newInt(incrementalReplSessions.len)
-  props["closed"] = newCell(FALSE)
-  newNode(builtInTypeHead(dispatchScope, "ReplSession"), props = props)
+  newNativeWrapper(builtInTypeHead(dispatchScope, "ReplSession"),
+    {"id": newInt(incrementalReplSessions.len),
+     "closed": newCell(FALSE)})
 
 proc biReplEval(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -5956,6 +5976,16 @@ proc serdeEmitInst(w: var SerdeWriter, v: Value) =
       discard w.path.pop()
       w.sb.add ')'
       return
+  if v.head.isNativeWrapperType:
+    # `serde_inst` reads back through direct construction, which a native
+    # wrapper rejects (design §16.6) — so emitting one would write a blob that
+    # can never be read. Fail where the mistake is, and point at the hook pair
+    # above, which reopens the resource as user code instead of reconstructing
+    # a handle as data.
+    raiseSerdeError(w.scope,
+      "cannot serialize " & v.head.typeName &
+      ": a native wrapper reopens through serde_state/serde_restore messages, " &
+      "not as data", w.path)
   if v.head.kind == vkEnumVariant and v.props.len > 0:
     raiseSerdeError(w.scope,
       "enum-variant value unexpectedly carries props", w.path)
@@ -6416,6 +6446,14 @@ proc serdeDecodeControl(r: var SerdeReader, v: Value, tag: string,
     var meta = initPropTable()
     for k, val in metaVal.mapEntries:
       meta[k] = val
+    if head.isNativeWrapperType:
+      # A blob is untrusted input, so it must not be able to stamp a native
+      # wrapper's Type onto a decoded node — that is construction wearing a
+      # data-node spelling (design §16.6). Typed instances take the
+      # `serde_inst` arm, which funnels through the same rejection.
+      raiseSerdeError(r.scope,
+        "serde cannot construct " & head.typeName &
+        ": it is a native wrapper", r.path)
     newNode(head, props = props, body = children, meta = meta,
             immutable = v.body[0].boolVal)
   of "serde_inst":
@@ -6683,15 +6721,11 @@ proc raiseDbError(message: string, scope: Scope) =
 
 proc dbConnHandleValue(name: string, conn: Value, expectedType: string,
                        scope: Scope): Value =
-  # Identity, not name: `builtInTypeHead` resolves the one canonical Type for
-  # this backend, so a look-alike `SqliteDb` declared elsewhere cannot reach a
-  # pointer dereference. Falls back to the name only when the canonical type is
-  # unavailable (`builtInTypeHead` returns a symbol then).
-  let canonical = builtInTypeHead(scope, expectedType)
-  let identityOk =
-    if canonical.kind == vkType: conn.head.bits == canonical.bits
-    else: conn.head.typeName == expectedType
-  if conn.kind != vkNode or conn.head.kind != vkType or not identityOk:
+  # Identity, not name: the one canonical Type for this backend, or an `^is`
+  # descendant of it — so a look-alike `SqliteDb` declared elsewhere cannot
+  # reach a pointer dereference, while a Gene-side subtype of the real one
+  # still works.
+  if not nativeReceiverIs(scope, conn, expectedType):
     raiseDbError(name & " expects a " & expectedType & " connection", scope)
   let handle = conn.props.getOrDefault("handle", VOID)
   if handle.kind != vkCPtr:
@@ -6891,12 +6925,11 @@ proc biSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
       type CloseProc = proc(p: pointer): cint {.cdecl.}
       discard cast[CloseProc](gSqliteApi.closeAddr)(db)
     raiseDbError("sqlite/open: " & msg, scope)
-  var props = initPropTable()
-  props["handle"] = newCForeignOwnedPtr(db, gSqliteApi.closeAddr)
-  props["backend"] = newStr("sqlite")
-  props["path"] = args[0]
-  let head = builtInTypeHead(scope, "SqliteDb")
-  newNode(head, props = props)
+  newNativeWrapper(builtInTypeHead(scope, "SqliteDb"),
+    {"handle": newCForeignOwnedPtr(db, gSqliteApi.closeAddr,
+                                   targetType = newSym("sqlite3")),
+     "backend": newStr("sqlite"),
+     "path": args[0]})
 
 proc biSqliteExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -7132,11 +7165,10 @@ proc biPostgresOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     type FinishProc = proc(p: pointer) {.cdecl.}
     cast[FinishProc](gPgApi.finishAddr)(db)
     raiseDbError("postgres/open: " & msg, scope)
-  var props = initPropTable()
-  props["handle"] = newCForeignOwnedPtr(db, gPgApi.finishAddr)
-  props["backend"] = newStr("postgres")
-  let head = builtInTypeHead(scope, "PostgresDb")
-  newNode(head, props = props)
+  newNativeWrapper(builtInTypeHead(scope, "PostgresDb"),
+    {"handle": newCForeignOwnedPtr(db, gPgApi.finishAddr,
+                                   targetType = newSym("PGconn")),
+     "backend": newStr("postgres")})
 
 proc biPostgresExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -7418,8 +7450,13 @@ proc storeSqlIdent(scope: Scope, ident, label: string): string =
 proc storeRequire(scope: Scope, value: Value): string =
   if value.kind != vkNode or value.head.kind != vkType:
     raiseStoreError(scope, "closed", "Store operation expects a Store")
-  let name = value.head.typeName
-  if name != "SqliteStore" and name != "FsStore":
+  # Backend selection reads the name, but admission is by canonical Type
+  # identity: a look-alike `SqliteStore` must not reach the sqlite backend.
+  let name =
+    if nativeReceiverIs(scope, value, "SqliteStore"): "SqliteStore"
+    elif nativeReceiverIs(scope, value, "FsStore"): "FsStore"
+    else: ""
+  if name.len == 0:
     raiseStoreError(scope, "closed", "Store operation expects a Store")
   let closed = value.props.getOrDefault("closed", NIL)
   if closed.kind == vkCell and closed.cellValue.isTruthy:
@@ -7528,15 +7565,14 @@ proc biStoreSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.ni
     for suffix in ["-wal", "-shm", "-journal"]:
       if fileExists(databasePath.strVal & suffix):
         storeOwnerOnly(databasePath.strVal & suffix)
-  var props = initPropTable()
-  props["db"] = args[0]
-  props["table"] = newStr(tableName)
-  props["key_column"] = newStr(keyColumn)
-  props["data_column"] = newStr(dataColumn)
-  props["mode"] = newSym(mode)
-  props["policy"] = policy
-  props["closed"] = newCell(FALSE)
-  newNode(builtInTypeHead(scope, "SqliteStore"), props = props)
+  newNativeWrapper(builtInTypeHead(scope, "SqliteStore"),
+    {"db": args[0],
+     "table": newStr(tableName),
+     "key_column": newStr(keyColumn),
+     "data_column": newStr(dataColumn),
+     "mode": newSym(mode),
+     "policy": policy,
+     "closed": newCell(FALSE)})
 
 proc biStorePut(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 3:
@@ -7984,13 +8020,12 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     storeOwnerOnly(root, directory = true)
   except OSError as e:
     raiseStoreError(scope, "io", "store/fs/open: " & e.msg)
-  var props = initPropTable()
-  props["fs"] = args[0]
-  props["root"] = newStr(root)
-  props["mode"] = newSym(mode)
-  props["policy"] = policy
-  props["closed"] = newCell(FALSE)
-  newNode(builtInTypeHead(scope, "FsStore"), props = props)
+  newNativeWrapper(builtInTypeHead(scope, "FsStore"),
+    {"fs": args[0],
+     "root": newStr(root),
+     "mode": newSym(mode),
+     "policy": policy,
+     "closed": newCell(FALSE)})
 
 proc registerStdlibNamespaces(root: Scope) =
   ## Define the importable stdlib namespaces (gene/*, str, html, url, net/http,
@@ -8231,9 +8266,29 @@ proc registerStdlibNamespaces(root: Scope) =
   let dbScope = newScope(root)
   dbScope.define("Db", dbProtocol)
   dbScope.define("DbError", dbError)
-  let sqliteDbType = newType("SqliteDb", NIL, @[], @[dbProtocol], root)
+  # Native wrappers (design §16.6): the props hold an owned connection pointer,
+  # so only the backend's `open` may create one. The marker is what rejects
+  # `(SqliteDb)`, a value that would pass the nominal boundary and fail only at
+  # its first query.
+  #
+  # The schema is declared rather than empty, and the backends build instances
+  # through `newNativeWrapper`, so the shipped surfaces satisfy the same
+  # invariant an out-of-tree binding does — including the exact owned-pointer
+  # flavour and target, which is what stops a postgres handle from being
+  # installed in a SqliteDb.
+  let sqliteDbType = newType("SqliteDb", NIL,
+    @[ownedHandleField(root, "sqlite3"),
+      TypeField(name: "backend", optional: false, typeExpr: newSym("Str"),
+                scope: root),
+      TypeField(name: "path", optional: false, typeExpr: newSym("Str"),
+                scope: root)],
+    @[dbProtocol], root, repr = trNativeWrapper)
   root.define("SqliteDb", sqliteDbType)
-  let postgresDbType = newType("PostgresDb", NIL, @[], @[dbProtocol], root)
+  let postgresDbType = newType("PostgresDb", NIL,
+    @[ownedHandleField(root, "PGconn"),
+      TypeField(name: "backend", optional: false, typeExpr: newSym("Str"),
+                scope: root)],
+    @[dbProtocol], root, repr = trNativeWrapper)
   root.define("PostgresDb", postgresDbType)
   let dbSqliteScope = newScope(root)
   dbSqliteScope.define("open", newNativeCallFn("sqlite/open", biSqliteOpen,
@@ -8316,8 +8371,19 @@ proc registerStdlibNamespaces(root: Scope) =
                                             "keys", "clear", "checkpoint",
                                             "load_checkpoint", "close"])
   let storeMessages = storeProtocol.protocolMessages
-  let sqliteStoreType = newType("SqliteStore", NIL, @[], @[storeProtocol], root)
-  let fsStoreType = newType("FsStore", NIL, @[], @[storeProtocol], root)
+  let storeField = proc (name, typ: string): TypeField =
+    TypeField(name: name, optional: false, typeExpr: newSym(typ), scope: root)
+  let sqliteStoreType = newType("SqliteStore", NIL,
+    @[storeField("db", "SqliteDb"), storeField("table", "Str"),
+      storeField("key_column", "Str"), storeField("data_column", "Str"),
+      storeField("mode", "Sym"), storeField("policy", "Any"),
+      storeField("closed", "Any")],
+    @[storeProtocol], root, repr = trNativeWrapper)
+  let fsStoreType = newType("FsStore", NIL,
+    @[storeField("fs", "Any"), storeField("root", "Str"),
+      storeField("mode", "Sym"), storeField("policy", "Any"),
+      storeField("closed", "Any")],
+    @[storeProtocol], root, repr = trNativeWrapper)
   root.define("SqliteStore", sqliteStoreType)
   root.define("FsStore", fsStoreType)
   let storeScope = newScope(root)
@@ -8448,11 +8514,13 @@ proc registerStdlibNamespaces(root: Scope) =
 
   # Local interactive terminal authority. The Session owns a PTY process and
   # a libvterm state machine; only attributed cells are exposed to curses.
+  # A native wrapper: `id` addresses a PTY process in the session table, so a
+  # forged Session would reach native state the program never opened.
   let terminalSessionType = newType("TerminalSession", NIL,
     @[TypeField(name: "id", optional: false, typeExpr: newSym("Int"),
                 scope: root),
       TypeField(name: "closed", optional: false, typeExpr: newSym("Any"),
-                scope: root)], @[], root)
+                scope: root)], @[], root, repr = trNativeWrapper)
   root.define("TerminalSession", terminalSessionType)
   let terminalScope = newScope(root)
   terminalScope.define("Session", terminalSessionType)
@@ -8495,7 +8563,7 @@ proc registerStdlibNamespaces(root: Scope) =
     @[TypeField(name: "id", optional: false, typeExpr: newSym("Int"),
                 scope: root),
       TypeField(name: "closed", optional: false, typeExpr: newSym("Any"),
-                scope: root)], @[], root)
+                scope: root)], @[], root, repr = trNativeWrapper)
   root.define("CursesScreen", cursesScreenType)
   let cursesScope = newScope(root)
   cursesScope.define("Screen", cursesScreenType)
@@ -8525,7 +8593,7 @@ proc registerStdlibNamespaces(root: Scope) =
     @[TypeField(name: "id", optional: false, typeExpr: newSym("Int"),
                 scope: root),
       TypeField(name: "closed", optional: false, typeExpr: newSym("Any"),
-                scope: root)], @[], root)
+                scope: root)], @[], root, repr = trNativeWrapper)
   root.define("ReplSession", replSessionType)
   let replScope = newScope(root)
   replScope.define("Session", replSessionType)

@@ -730,9 +730,23 @@ type
     routeId: int
     payload: Value
 
+  TypeRepr* = enum
+    ## How instances of a nominal type are represented and created.
+    ##
+    ## `trOrdinary` is the default: an ordinary Gene node, freely constructible
+    ## as data. `trNativeWrapper` marks a type whose props hold native state
+    ## (an owned C pointer and its metadata); only a `ctor` or the native
+    ## `newWrapper` factory may create one, and its declared fields are
+    ## initializer-only. The marker is what lets the VM tell a deliberate
+    ## native wrapper from an ordinary fieldless Gene type.
+    trOrdinary
+    trNativeWrapper
+
   TypeData = ref object of GeneObjectData
     name: string
     parent: Value         # parent Type value, or NIL
+    repr: TypeRepr        # representation marker (`^repr native_wrapper`);
+                          # inherited through `^is` at newType
     fields: seq[TypeField]
     bodyFields: seq[TypeBodyField]
     scope: Scope          # strong only for future escaped-type anchoring
@@ -3658,6 +3672,33 @@ proc typeParent*(v: Value): Value =
     return NIL
   TypeData(objData(v)).parent
 
+proc typeRepr*(v: Value): TypeRepr =
+  ## The type's representation marker. Enums and non-types are ordinary.
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    return trOrdinary
+  TypeData(objData(v)).repr
+
+proc typeInheritsFrom*(actual, ancestor: Value): bool =
+  ## Nominal ancestry by Type *identity*: true when `actual` is `ancestor` or
+  ## one of its `^is` descendants. Every step compares `bits`, never the name —
+  ## two modules may each declare a `Conn`, and a name check would let one
+  ## module's value satisfy the other's receiver guard.
+  if actual.kind != vkType or ancestor.kind != vkType:
+    return false
+  var current = actual
+  while current.kind == vkType:
+    if current.bits == ancestor.bits:
+      return true
+    current = current.typeParent
+  false
+
+proc isNativeWrapperType*(v: Value): bool {.inline.} =
+  ## True for a `^repr native_wrapper` type and, because newType copies the
+  ## marker down, for every `^is` descendant of one. Checking the flag rather
+  ## than walking the ancestry keeps the construction and write gates O(1).
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
+    TypeData(objData(v)).repr == trNativeWrapper
+
 proc typeFields*(v: Value): seq[TypeField] =
   ## Full field schema, parent fields first (inheritance is merged at newType).
   if v.tagOf != OBJECT_TAG or objData(v).objKind notin {okType, okEnum}:
@@ -5240,14 +5281,22 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               deriveRequests: sink seq[Value] = @[],
               ownBodyFields: seq[TypeBodyField] = @[],
               messages: sink Table[string, Value] = initTable[string, Value](),
-              ctorFn: Value = NIL): Value =
+              ctorFn: Value = NIL,
+              repr: TypeRepr = trOrdinary): Value =
   ## A nominal type. Single inheritance is merged eagerly: the parent's fields
   ## come first, then this type's own fields (design Section 7.3).
   var fields: seq[TypeField]
   var bodyFields: seq[TypeBodyField]
+  var repr = repr
   if parent.kind == vkType:
     fields = typeFields(parent)
     bodyFields = typeBodyFields(parent)
+    # The wrapper rule is inherited: a Gene-side subtype may add messages and
+    # impls, but it must not reopen construction on a native payload (design
+    # §16.6). Merging it here — like the field schema — keeps every later check
+    # a single flag read instead of an ancestry walk.
+    if parent.isNativeWrapperType:
+      repr = trNativeWrapper
   for f in ownFields:
     for inherited in fields:
       if inherited.name == f.name:
@@ -5269,7 +5318,8 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
     if owned.scope == nil and owned.weakScope == nil:
       owned.weakScope = cast[pointer](scope)
     bodyFields.add owned
-  boxObject(TypeData(objKind: okType, name: name, parent: parent, fields: fields,
+  boxObject(TypeData(objKind: okType, name: name, parent: parent,
+                     repr: repr, fields: fields,
                      bodyFields: bodyFields,
                      weakScope: cast[pointer](scope),
                      requiredProtocols: requiredProtocols,

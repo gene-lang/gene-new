@@ -371,10 +371,13 @@ suite "native api — roots and trampoline":
     # advertised interface — no internal newType/newNode.
     let api = geneApi()
     let module = newGeneModule("wrapper-native")
-    let defined = api.defineWrapperType(module, "Conn")
+    let defined = api.defineWrapperType(module, "Conn", [
+      GeneWrapperField(name: "handle", typeExpr: NIL),
+      GeneWrapperField(name: "backend", typeExpr: newSym("Str"))])
     check defined.status == gsOk
     let connType = defined.value
     check connType.kind == vkType
+    check connType.isNativeWrapperType
 
     proc release(p: pointer) {.nimcall.} = discard
     let handle = api.newCOwnedPtr(cast[pointer](0xBEEF), release, NIL)
@@ -389,25 +392,76 @@ suite "native api — roots and trampoline":
     check api.wrapperField(newInt(1), connType, "backend").status == gsError
 
     # Gene sees a first-class typed value: selectors read the wrapper's props,
-    # dispatch works, and the payload cannot be forged or overwritten.
+    # dispatch works, and the payload can neither be forged nor overwritten —
+    # now because the Type is marked, not because its schema is empty.
     let scope = geneModuleScope(module)
     discard geneModuleDefine(module, "conn", conn)
     check run(compileSource("conn/backend"), scope).print() == "\"demo\""
     check run(compileSource("($head conn)"), scope).print() == "(type Conn)"
     check run(compileSource(
       "(try (conn ~ set_prop! `handle \"junk\") catch (Error ^message m) m)"),
-      scope).print() == "\"Conn has no field 'handle'\""
+      scope).print() ==
+      "\"cannot set field 'handle' on Conn: native wrapper fields are " &
+      "initializer-only\""
     check run(compileSource(
-      "(try (Conn ^handle \"junk\") catch (Error ^message m) m)"),
-      scope).print() == "\"Conn has no field 'handle'\""
+      "(try (Conn ^handle \"junk\" ^backend \"x\") catch (Error ^message m) m)"),
+      scope).print() ==
+      "\"direct construction cannot construct Conn: it is a native wrapper; " &
+      "construct it with (new Conn ...)\""
+
+  test "the wrapper factory validates the declared schema":
+    # `newWrapper` is the low-level route for extensions that do not express
+    # construction in Gene, so it must reach the same instance a ctor would:
+    # every declared field present and boundary-checked, nothing undeclared.
+    let api = geneApi()
+    let module = newGeneModule("wrapper-schema")
+    let connType = api.defineWrapperType(module, "Conn", [
+      GeneWrapperField(name: "handle", typeExpr: NIL),
+      GeneWrapperField(name: "backend", typeExpr: newSym("Str"))]).value
+
+    let missing = api.newWrapper(connType, {"handle": newInt(1)})
+    check missing.status == gsError
+    check "missing required field 'backend'" in missing.message
+
+    let mistyped = api.newWrapper(connType, {"handle": newInt(1),
+                                             "backend": newInt(2)})
+    check mistyped.status == gsError
+
+    let undeclared = api.newWrapper(connType, {"handle": newInt(1),
+                                               "backend": newStr("demo"),
+                                               "extra": newInt(3)})
+    check undeclared.status == gsError
+    check "has no field 'extra'" in undeclared.message
+
+  test "wrapperField accepts a Gene-side subtype of the wrapper":
+    # A subtype inherits the wrapper rule (design §16.6), so it is a legitimate
+    # receiver. A leaf-equality check would accept the parent and reject its own
+    # subtype — while still admitting nothing else.
+    let api = geneApi()
+    let module = newGeneModule("wrapper-subtype")
+    let connType = api.defineWrapperType(module, "Conn", [
+      GeneWrapperField(name: "backend", typeExpr: newSym("Str"))]).value
+    let scope = geneModuleScope(module)
+    discard geneModuleDefine(module, "Conn", connType)
+    discard run(compileSource("(type Tagged ^is Conn)"), scope)
+    var taggedType: Value
+    check scope.lookupOptional("Tagged", taggedType)
+
+    let tagged = api.newWrapper(taggedType, {"backend": newStr("demo")}).value
+    check api.wrapperField(tagged, connType, "backend").value.print() ==
+      "\"demo\""
+    # …and the relationship does not run the other way.
+    let base = api.newWrapper(connType, {"backend": newStr("demo")}).value
+    check api.wrapperField(base, taggedType, "backend").status == gsError
 
   test "wrapper identity is the Type value, never its name":
     # Two modules may each define a `Conn`. A name-based check would let one
     # module's wrapper carry its pointer into the other's native code, which
     # would then dereference memory it does not own.
     let api = geneApi()
-    let a = api.defineWrapperType(newGeneModule("mod-a"), "Conn").value
-    let b = api.defineWrapperType(newGeneModule("mod-b"), "Conn").value
+    let fields = [GeneWrapperField(name: "handle", typeExpr: NIL)]
+    let a = api.defineWrapperType(newGeneModule("mod-a"), "Conn", fields).value
+    let b = api.defineWrapperType(newGeneModule("mod-b"), "Conn", fields).value
     check a.typeName == b.typeName
     check a.bits != b.bits
 
@@ -417,19 +471,75 @@ suite "native api — roots and trampoline":
     check api.wrapperField(instA, a, "handle").status == gsOk
     check api.wrapperField(instA, b, "handle").status == gsError
 
-  test "a wrapper type must keep an empty schema":
-    # A declared schema would make the props forgeable from Gene, silently
-    # removing the property that makes native handles safe — so the entry
-    # point refuses rather than trusting convention.
+  test "the wrapper factory refuses a type that is not a native wrapper":
+    # An ordinary Gene type stays ordinary data: `newWrapper` must not be the
+    # back door that gives it native-owned props no construction path checks.
     let api = geneApi()
     let scope = newGlobalScope()
-    let schemaed = run(compileSource("(type Schemaed ^props {^n Int})"), scope)
-    discard schemaed
+    discard run(compileSource("(type Schemaed ^props {^n Int})"), scope)
     var declared: Value
     check scope.lookupOptional("Schemaed", declared)
     let rejected = api.newWrapper(declared, {"n": newInt(1)})
     check rejected.status == gsError
-    check "empty schema" in rejected.message
+    check "native wrapper" in rejected.message
+
+  test "a wrapper ctor validates the declared C/OwnedPtr target":
+    # The declared schema is the invariant (§16.6): the handle field checks the
+    # exact pointer flavour and target, so a borrowed or wrong-target pointer
+    # never reaches the native code that will dereference it.
+    let api = geneApi()
+    let module = newGeneModule("wrapper-typed-handle")
+    releasedPointers = 0
+    proc openBlob(args: openArray[Value]): Value {.nimcall.} =
+      newCOwnedPtr(cast[pointer](0xB10B), releaseNativePointer, newSym("Blob"))
+    proc borrowBlob(args: openArray[Value]): Value {.nimcall.} =
+      newCPtr(cast[pointer](0xB10B), newSym("Blob"))
+    discard api.moduleDefineNative(module, "open_blob", openBlob)
+    discard api.moduleDefineNative(module, "borrow_blob", borrowBlob)
+    let scope = geneModuleScope(module)
+    discard run(compileSource(
+      "(type Blob ^repr native_wrapper ^props {^handle (C/OwnedPtr Blob)} " &
+      "  (ctor [^borrowed : Bool = false] " &
+      "    (set! self/handle (if borrowed (borrow_blob) (open_blob)))))"), scope)
+    check run(compileSource("($head (new Blob))"), scope).print() ==
+      "(type Blob)"
+    # A borrowed pointer fails the declared field type, and the ctor's own
+    # owned handle count is untouched because it never installed one.
+    check "field 'handle' for Blob" in run(compileSource(
+      "(try (new Blob ^borrowed true) catch (TypeError ^where w) w)"),
+      scope).print()
+    check releasedPointers == 0
+
+  test "a failed ctor releases the owned handles it already installed":
+    # §16.6: an in-progress instance is never published, so waiting for
+    # reclamation to close what the ctor opened would leak a live connection
+    # for an unbounded time.
+    let api = geneApi()
+    let module = newGeneModule("wrapper-unwind")
+    releasedPointers = 0
+    proc openHandle(args: openArray[Value]): Value {.nimcall.} =
+      newCOwnedPtr(cast[pointer](0xC0FFEE), releaseNativePointer, NIL)
+    discard api.moduleDefineNative(module, "open_handle", openHandle)
+    let scope = geneModuleScope(module)
+    # Each ctor installs a handle and then leaves `label` unset, so schema
+    # validation — not the body — is what fails. `Bag` covers the declared
+    # *body* position: `push_body!` is one of the mutations an in-progress
+    # instance may perform, so the unwind has to reach body items too.
+    discard run(compileSource(
+      "(type Conn ^repr native_wrapper ^props {^handle Any ^label Str} " &
+      "  (ctor [] (set! self/handle (open_handle)))) " &
+      "(type Bag ^repr native_wrapper ^body [Any] ^props {^label Str} " &
+      "  (ctor [] (self ~ push_body! (open_handle))))"), scope)
+    let failed = run(compileSource(
+      "(try (new Conn) catch (Error ^message m) m)"), scope)
+    check "left required field 'label' unset" in failed.print()
+    check releasedPointers == 1
+
+    releasedPointers = 0
+    let failedBody = run(compileSource(
+      "(try (new Bag) catch (Error ^message m) m)"), scope)
+    check "left required field 'label' unset" in failedBody.print()
+    check releasedPointers == 1
 
   test "native module initializer rejects incompatible API versions":
     let module = newGeneModule("versioned-native")

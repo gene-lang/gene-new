@@ -21,8 +21,16 @@ type
   GeneModuleDefineNativeCallProc* = proc(module: GeneModule, name: string,
                                          impl: NativeCallProc,
                                          acceptsNamed: bool): GeneResult
-  GeneDefineWrapperTypeProc* = proc(module: GeneModule,
-                                    name: string): GeneResult
+  GeneWrapperField* = object
+    ## One declared prop of a native wrapper type. `typeExpr` is an ordinary
+    ## Gene type expression (`newSym("Str")`, `(C/OwnedPtr PGconn)`, …) or NIL
+    ## for `Any`; `optional` mirrors the nil-admitting field rule (design §7.1).
+    name*: string
+    typeExpr*: Value
+    optional*: bool
+
+  GeneDefineWrapperTypeProc* = proc(module: GeneModule, name: string,
+                                    fields: openArray[GeneWrapperField]): GeneResult
   GeneNewWrapperProc* = proc(wrapperType: Value,
                              props: openArray[(string, Value)]): GeneResult
   GeneWrapperFieldProc* = proc(instance, wrapperType: Value,
@@ -141,7 +149,8 @@ type
     logEnabled*: GeneLogEnabledProc
     logEmit*: GeneLogEmitProc
 
-const GeneApiVersion* = 1
+const GeneApiVersion* = 2   # 2: wrapper types declare a schema and carry the
+                            #    `^repr native_wrapper` marker (design §16.6)
 const GeneApiFeatureCount* = 36
 const GeneModuleInitSymbol* = "gene_module_init"
 
@@ -256,23 +265,38 @@ proc geneModuleDefineNativeCall*(module: GeneModule, name: string,
   geneModuleDefine(module, name,
                    newNativeCallFn(name, impl, acceptsNamed = acceptsNamed))
 
-proc geneDefineWrapperType*(module: GeneModule, name: string): GeneResult =
-  ## Define a **wrapper type**: a nominal Gene type with a deliberately empty
-  ## prop schema, for native values whose payload is an opaque pointer.
+proc geneDefineWrapperType*(module: GeneModule, name: string,
+                            fields: openArray[GeneWrapperField]): GeneResult =
+  ## Define a **wrapper type**: a nominal Gene type marked `^repr
+  ## native_wrapper`, for native values whose payload is an opaque pointer.
   ##
-  ## The empty schema is the safety mechanism, not an omission. Construction
-  ## and `set_prop!` both reject undeclared fields, so Gene code cannot forge
-  ## an instance or overwrite a handle with a `Str` that the next native call
-  ## would read as a pointer. `geneNewWrapper` is the only way to populate the
-  ## props, which is why it is a separate validated entry point rather than
-  ## letting extensions build nodes freely.
+  ## The marker is the safety mechanism. It makes every ordinary construction
+  ## path — `(T ...)`, `construct_type`, serde, functional update, node
+  ## literals — reject the type, and it makes the declared props
+  ## initializer-only, so Gene code can neither forge an instance nor overwrite
+  ## a handle with a `Str` that the next native call would read as a pointer.
+  ## The schema is now free to describe the real fields: `geneNewWrapper`
+  ## validates against it, which is why declaring one no longer makes the props
+  ## forgeable. This is the same representation a Gene-side
+  ## `(type T ^repr native_wrapper ...)` declaration produces.
   try:
     if name.len == 0:
       raise newException(GeneError, "wrapper type requires a name")
     let scope = geneModuleScope(module)
     if scope == nil:
       raise newException(GeneError, "wrapper type requires a module scope")
-    let typ = newType(name, NIL, @[], @[], scope)
+    var schema: seq[TypeField]
+    for field in fields:
+      if field.name.len == 0:
+        raise newException(GeneError, "wrapper field requires a name")
+      # Leave `scope` nil: newType installs the ordinary *weak* defining scope.
+      # A strong field scope would close a Scope → Type → field.scope → Scope
+      # cycle that the collector cannot see, so every discarded native module
+      # would leak its scope.
+      schema.add TypeField(name: field.name, optional: field.optional,
+                           typeExpr: field.typeExpr)
+    let typ = newType(name, NIL, schema, @[], scope,
+                      repr = trNativeWrapper)
     result = geneModuleDefine(module, name, typ)
     if result.status == gsOk:
       result.value = typ
@@ -283,26 +307,13 @@ proc geneDefineWrapperType*(module: GeneModule, name: string): GeneResult =
 
 proc geneNewWrapper*(wrapperType: Value,
                      props: openArray[(string, Value)]): GeneResult =
-  ## Instantiate a wrapper type with native-owned props. This bypasses the
-  ## closed-schema check *by design* — it is the one place that may, and it is
-  ## why the invariant is enforced here rather than by convention.
+  ## Instantiate a wrapper type with native-owned props, for extensions that
+  ## cannot or do not want to express construction as a Gene `ctor`. It
+  ## requires a `native_wrapper` type and validates the declared schema, so
+  ## native-built and ctor-built instances satisfy the same invariant.
   try:
-    if wrapperType.kind != vkType:
-      raise newException(GeneError, "geneNewWrapper expects a Type")
-    if wrapperType.typeFields.len != 0 or
-        wrapperType.typeBodyFields.len != 0:
-      # A declared schema would make the props forgeable from Gene, silently
-      # removing the property that makes native handles safe.
-      raise newException(GeneError,
-        "geneNewWrapper requires a wrapper type with an empty schema; " &
-        wrapperType.typeName & " declares fields")
-    var table = initPropTable()
-    for (key, value) in props:
-      if key.len == 0:
-        raise newException(GeneError, "wrapper prop requires a name")
-      table[key] = value
     result.status = gsOk
-    result.value = newNode(wrapperType, props = table)
+    result.value = vm.newNativeWrapper(wrapperType, props)
   except GeneError as e:
     result = errorResult(e)
   except GenePanic as e:
@@ -320,9 +331,11 @@ proc geneWrapperField*(instance, wrapperType: Value,
     # Compare Type *identity*, never the name. Two modules may each define a
     # `Conn`, and a name check would let one module's wrapper carry its pointer
     # into the other's native code — which then dereferences memory it does not
-    # own. `bits` is the value identity for a boxed Type.
-    if instance.kind != vkNode or instance.head.kind != vkType or
-        instance.head.bits != wrapperType.bits:
+    # own. Ancestry, not leaf equality: a Gene-side `^is` subtype inherits the
+    # wrapper rule (design §16.6), so it is a legitimate receiver here; a leaf
+    # check would accept the parent and reject its own subtype.
+    if instance.kind != vkNode or
+        not instance.head.typeInheritsFrom(wrapperType):
       raise newException(GeneError,
         "expected a " & wrapperType.typeName & " value")
     result.status = gsOk

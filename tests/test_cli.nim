@@ -7534,6 +7534,12 @@ suite "cli — gene parse/fmt/compile":
 (type Conn ^props {^host Str ^live Bool}
   (message serde_state [self] {^host self/host})
   (message serde_restore [state] (Conn ^host state/host ^live true)))
+(type Handle ^repr native_wrapper ^props {^host Str}
+  (ctor [host : Str] (set! self/host host))
+  (message serde_state [self] {^host self/host})
+  (message serde_restore [state] (new Handle state/host)))
+(type Opaque ^repr native_wrapper ^props {^host Str}
+  (ctor [host : Str] (set! self/host host)))
 (type Registry ^props {^label Str ^marker Int?})
 (impl SerdeRef for Registry)
 (var REGISTRY (Registry ^label "the-one"))
@@ -7546,7 +7552,7 @@ suite "cli — gene parse/fmt/compile":
     let prog = writeCliProgram("serde_refs.gene", """
 (import $serde [write read write_data SerdePolicy SerdeError])
 (import $str [contains? join])
-(import [Point Line Shape Result Drawable area Counter Conn REGISTRY] from "./serde_geometry")
+(import [Point Line Shape Result Drawable area Counter Conn Handle Opaque REGISTRY] from "./serde_geometry")
 (fn check [label ok] ($println (join [label (if ok "ok" "FAIL")] " ")))
 # stage 3: references
 (check "type" (== Point (read (write Point))))
@@ -7587,6 +7593,19 @@ suite "cli — gene parse/fmt/compile":
   (try (do (read ht) false) catch (SerdeError ^message m) (contains? m "allow_restore")))
 (var conn2 (read ht ^policy (SerdePolicy ^allow_restore true)))
 (check "hooked-restore" (&& (== "db" conn2/host) (== true conn2/live)))
+# native wrappers (design §16.6): reopened by their own restore hook, never
+# reconstructed as data — and a blob can never forge one
+(var handle (new Handle "db"))
+(var wt (write handle))
+(check "wrapper-hooked-form" (contains? wt "serde_hooked"))
+(var handle2 (read wt ^policy (SerdePolicy ^allow_restore true)))
+(check "wrapper-hooked-restore" (== "db" handle2/host))
+(check "wrapper-no-hook-reject"
+  (try (do (write (new Opaque "db")) false)
+       catch (SerdeError ^message m) (contains? m "native wrapper")))
+(check "wrapper-inst-blob-reject"
+  (try (do (read "(serde_v1 (serde_inst (serde_type_ref ^module \"serde_geometry\" ^path \"Opaque\") (serde_map false [\"host\" \"forged\"]) []))") false)
+       catch (SerdeError ^message m) (contains? m "native wrapper")))
 # stage 6: SerdeRef module singleton -> identity value_ref
 (check "value-ref-form" (contains? (write REGISTRY) "serde_value_ref"))
 (var reg2 (read (write REGISTRY)))
@@ -7614,6 +7633,10 @@ suite "cli — gene parse/fmt/compile":
     check "hooked-form ok" in ran.output
     check "hooked-no-allow ok" in ran.output
     check "hooked-restore ok" in ran.output
+    check "wrapper-hooked-form ok" in ran.output
+    check "wrapper-hooked-restore ok" in ran.output
+    check "wrapper-no-hook-reject ok" in ran.output
+    check "wrapper-inst-blob-reject ok" in ran.output
     check "value-ref-form ok" in ran.output
     check "value-ref-identity ok" in ran.output
     check "plain-by-value ok" in ran.output
