@@ -770,6 +770,43 @@ int main(void) {
     check "return t->tv_sec;" in c
     checkCCompiles(c, "typed_native_lexical_child")
 
+  test "a namespace-local native Type is visible to forms that precede it":
+    ## A child compiler inherits the module-root compile interface, so a
+    ## namespace could not see its own declarations: this function compiled
+    ## with no native representation and emitted no C at all, silently and
+    ## with a zero exit. The same forward reference at module level worked.
+    let chunk = compileSource(
+      "(ns geom " &
+      "  (fn value_of [node : Node] : I64 node/value) " &
+      "  (ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "  (type Node ^native {^abi CNode ^lifecycle manual}))")
+    let c = chunk.emitExperimentalC()
+    check "int64_t gene_native_ns0_value_of(CNode * node)" in c
+    check "return node->value;" in c
+    checkCCompiles(c, "typed_native_ns_forward_ref")
+
+  test "a nested namespace resolves its own native Type":
+    let chunk = compileSource(
+      "(ns outer (ns inner " &
+      "  (fn deep_value [node : Node] : I64 node/value) " &
+      "  (ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "  (type Node ^native {^abi CNode ^lifecycle manual})))")
+    let c = chunk.emitExperimentalC()
+    check "return node->value;" in c
+    checkCCompiles(c, "typed_native_nested_ns")
+
+  test "a private namespace still resolves its own native Type":
+    ## A private namespace is absent from the parent interface, so this path
+    ## builds one at the namespace's own path — identities stay qualified.
+    let chunk = compileSource(
+      "(ns geom ^private true " &
+      "  (fn value_of [node : Node] : I64 node/value) " &
+      "  (ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "  (type Node ^native {^abi CNode ^lifecycle manual}))")
+    let c = chunk.emitExperimentalC()
+    check "return node->value;" in c
+    checkCCompiles(c, "typed_native_private_ns")
+
   test "typed-native mutable fields lower stores without dynamic helpers":
     let chunk = compileSource(
       "(ffi/struct CTimespec " &
@@ -817,6 +854,23 @@ int main(void) {
     check "return self->value;" in c
     check "return gene_native_impl_0_read_value(node);" in c
     checkCCompiles(c, "typed_native_specialized_send")
+
+  test "a protocol message may return a native pointer":
+    ## A message declaration carries only a signature. Treating it as an
+    ## executable typed-native function rejected it for having no lowerable
+    ## body, so a protocol returning a native pointer could not be declared.
+    let chunk = compileSource(
+      "(ffi/struct CNode " &
+      "  ^fields [[next (C/NullablePtr Node)] [value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(protocol Nav (message hop [] : Node?)) " &
+      "(impl Nav for Node (message hop [] : Node? self/next)) " &
+      "(fn step [node : Node] : Node? (node ~ Nav:hop))")
+    let c = chunk.emitExperimentalC()
+    check "CNode * gene_native_impl_0_hop(CNode * self)" in c
+    check "return self->next;" in c
+    check "return gene_native_impl_0_hop(node);" in c
+    checkCCompiles(c, "typed_native_protocol_pointer_result")
 
   test "a bare typed-native send never resolves to a protocol impl":
     ## Bare is type-direct, qualified is protocol (docs/core.md §3.6.1). The

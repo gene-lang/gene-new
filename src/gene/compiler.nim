@@ -102,6 +102,12 @@ type
     importedSyntaxFnNames: HashSet[string]
     importedInterfaces: Table[string, CompileNamespaceInterface]
     ownCompileInterface: CompileNamespaceInterface
+    ## Compile interfaces of the enclosing `ns` levels, innermost first. A
+    ## child compiler inherits `ownCompileInterface` unchanged — it is the
+    ## module root — so without this a namespace body cannot see its own
+    ## declarations, and a function preceding its namespace-local native Type
+    ## compiled with no native representation at all.
+    localCompileInterfaces: seq[CompileNamespaceInterface]
     importedCompileEntries: Table[string, CompileInterfaceEntry]
     wildcardCandidates: Table[string, seq[StaticWildcardCandidate]]
     aliasInterfaces: Table[string, StaticAliasInterface]
@@ -686,6 +692,7 @@ proc childCompiler(c: Compiler): Compiler =
            importedSyntaxFnNames: c.importedSyntaxFnNames,
            importedInterfaces: c.importedInterfaces,
            ownCompileInterface: c.ownCompileInterface,
+           localCompileInterfaces: c.localCompileInterfaces,
            importedCompileEntries: c.importedCompileEntries,
            wildcardCandidates: c.wildcardCandidates,
            aliasInterfaces: c.aliasInterfaces,
@@ -2220,15 +2227,27 @@ proc fixedAotType(expr: Value): string =
 
 proc ffiTypeLabel(expr: Value): string
 
+proc ownInterfaceEntry(c: Compiler, name: string):
+    tuple[found: bool, entry: CompileInterfaceEntry] =
+  ## Resolve a compile-interface entry from the innermost enclosing namespace
+  ## outwards, so a namespace-local declaration wins over a same-named outer
+  ## one and is visible to forms that precede it in its own body.
+  for iface in c.localCompileInterfaces:
+    if iface != nil and iface.entries.hasKey(name):
+      return (true, iface.entries[name])
+  if c.ownCompileInterface != nil and
+      c.ownCompileInterface.entries.hasKey(name):
+    return (true, c.ownCompileInterface.entries[name])
+
 proc nativeTypeFor(c: Compiler, expr: Value): NativeTypeProto =
   ## Local lookup for the first typed-native slice. Imported/native-qualified
   ## lookup is added at the compile-interface seam; callers never inspect a
   ## runtime Type value.
   if expr.kind != vkSymbol:
     return nil
-  if c.ownCompileInterface != nil and
-      c.ownCompileInterface.entries.hasKey(expr.symVal):
-    result = c.ownCompileInterface.entries[expr.symVal].nativeType
+  let own = c.ownInterfaceEntry(expr.symVal)
+  if own.found:
+    result = own.entry.nativeType
   for typeProto in c.chunk.typeProtos:
     if typeProto.name == expr.symVal and typeProto.nativeType != nil:
       if result != nil and
@@ -2940,7 +2959,15 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       allAotParamsRepresentable and repr.kind != arkNone
   var aotLocals: seq[AotLocal]
   var aotExpr = NIL
-  if hasNativeRepr:
+  if hasNativeRepr and start >= body.len:
+    ## A signature with no body is a declaration, not an executable function —
+    ## a protocol message contributing only its interface. There is nothing to
+    ## lower, and demanding a lowerable body here made a protocol message
+    ## returning a native pointer impossible to declare at all. The native
+    ## reprs stay on the proto so impls can be checked against them; `aotExpr`
+    ## remains nil, so no C is emitted for the declaration itself.
+    aotLocals.setLen(0)
+  elif hasNativeRepr:
     let cannotLower = typeParams.len != 0 or checksErrors or fnCompiler.sawYield or
         specs.rest.len != 0 or specs.named.len != 0 or
         specs.hasOptionalPositional or body.len != start + 1 or
@@ -3968,12 +3995,17 @@ proc resolveNativeInterfaceTypes(iface: CompileNamespaceInterface,
       abi)
 
 proc buildCompileInterface*(forms: openArray[Value],
-                            sourceName = ""): CompileNamespaceInterface =
+                            sourceName = "",
+                            namespacePath: seq[string] = @[]):
+    CompileNamespaceInterface =
+  ## `namespacePath` positions the interface: native Type identities are
+  ## namespace-qualified, so a sub-namespace interface built at the root path
+  ## would mint identities that never match the compiler's.
   result = newCompileNamespaceInterface()
   var syntaxNames = initHashSet[string]()
   collectCompileInterfaceForms(forms, 0, result, syntaxNames,
-                               sourceName, @[])
-  resolveNativeInterfaceTypes(result, sourceName, @[])
+                               sourceName, namespacePath)
+  resolveNativeInterfaceTypes(result, sourceName, namespacePath)
 
 proc compileInterfaceAt*(root: CompileNamespaceInterface,
                          segments: openArray[string]): CompileNamespaceInterface =
@@ -5012,6 +5044,16 @@ proc compileNs(c: var Compiler, node: Value) =
   for i in 1 ..< body.len:
     nsForms.add body[i]
   nsCompiler.namespacePath = c.namespacePath & @[name]
+  ## Make this namespace's own declarations visible inside its body, innermost
+  ## first. The interface is taken from the parent's rather than rebuilt so
+  ## native Type identities keep their namespace-qualified spelling; a private
+  ## namespace is absent there, so build one at this path as a fallback.
+  var nsInterface = compileInterfaceAt(c.ownCompileInterface, [name])
+  if nsInterface == nil:
+    nsInterface = buildCompileInterface(nsForms, c.sourceName,
+                                        nsCompiler.namespacePath)
+  nsCompiler.localCompileInterfaces =
+    @[nsInterface] & c.localCompileInterfaces
   nsCompiler.prepareStaticImports(nsForms)
   nsCompiler.reserveProtocolBindingsFor(nsForms)
   compileBodyFrom(nsCompiler, body, 1)
@@ -6223,9 +6265,10 @@ proc nativeTypeMarker(c: Compiler, node: Value,
         raise newException(GeneError,
           "type " & name & " ^native ^abi is ambiguous: " & abiExpr.symVal)
       abi = candidate
-  if abi == nil and c.ownCompileInterface != nil and
-      c.ownCompileInterface.entries.hasKey(abiExpr.symVal):
-    abi = c.ownCompileInterface.entries[abiExpr.symVal].ffiStruct
+  if abi == nil:
+    let own = c.ownInterfaceEntry(abiExpr.symVal)
+    if own.found:
+      abi = own.entry.ffiStruct
   var importedAbi = false
   if abi == nil and c.importedCompileEntries.hasKey(abiExpr.symVal):
     abi = c.importedCompileEntries[abiExpr.symVal].ffiStruct

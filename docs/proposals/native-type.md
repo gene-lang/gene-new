@@ -181,6 +181,35 @@ justification and tests.
 
 # Part II — Unboxed pointers in `typed_native`
 
+**Status (2026-07-28): the §10 measurement gate is met; the §6.4 dynamic
+boundary is blocked on work this proposal does not own.**
+
+The C backend lowers native-pointer parameters, locals, scalar and
+pointer-valued field loads and stores, direct typed calls, and statically
+resolved qualified protocol sends. Measured in release on the emitted C, not
+on a hand-written analogue:
+
+| path | ns/op |
+|---|---|
+| generated C field load | 0.51 |
+| inlined Nim ceiling | 0.57 |
+| dynamic wrapper getter | 245 |
+
+The emitted path matches the hand-written ceiling and is ~480x the dynamic
+wrapper, so §10's "one-load path" question is answered yes and §11 items 1-4
+are done.
+
+§11 item 5 (wrapper borrow/transfer adapters) cannot be finished here. The
+generated C declares 59 `gene_ffi_*` / `gene_typed_native_*` helpers and the
+runtime defines none of them: production AOT backends are deferred
+(`docs/implementation-status.md`), and the native C ABI those helpers need —
+opaque `GeneValue`, root handles, native registration, the VM trampoline — is
+step 12 of design.md's implementation order, which precedes native
+compilation. Self-contained typed-native functions compile and run standalone
+today; anything crossing the dynamic boundary, including every
+`^native_entry` adapter, will not link until that ABI exists. The adapters are
+specified and code-generated, and are covered by tests against a mock harness.
+
 ## 5. Goal and scope
 
 The goal is one-load foreign field access and direct native calls inside code
