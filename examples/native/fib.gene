@@ -1,0 +1,22 @@
+# Recursive Fibonacci, compiled to native code and called from Gene.
+#
+# `^native_entry` emits the dynamic boundary adapter alongside the compiled
+# function, which is what `aot/load` binds. The recursion itself never crosses
+# the boundary: `fib` calls itself directly in C, so one crossing covers the
+# whole call tree.
+#
+#   int64_t gene_native_fib(int64_t n) {
+#     return ((n < 2) ? n : (gene_native_fib((n - 1)) + gene_native_fib((n - 2))));
+#   }
+#
+# Built and measured by bench_fib.sh.
+
+(fn fib ^native_entry {} [n : I64] : I64
+  (if (< n 2)
+    n
+    (+ (fib (- n 1)) (fib (- n 2)))))
+
+# A trivial entry, used to price one boundary crossing on its own. Everything
+# it measures is adapter overhead: arity check, unbox, call, box.
+(fn identity ^native_entry {} [n : I64] : I64
+  n)

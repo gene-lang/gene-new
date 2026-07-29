@@ -1,0 +1,99 @@
+# Compare interpreted Fibonacci against the same function compiled to native
+# code and called through the AOT boundary.
+#
+# `benchmarks/scripts/bench_fib_aot_c` already times compiled fib as a
+# standalone binary — a ceiling with no runtime involved. This measures the
+# thing a Gene program actually experiences: a call from the VM, across the
+# boundary, into compiled code.
+#
+# Run via bench_fib.sh, which builds the library first.
+
+(import $aot [load])
+(import $os [monotonic_ms])
+
+(var n 28)
+(var reps 20)
+(var crossings 200000)
+
+(fn vm_fib [n : Int] : Int
+  (if (< n 2)
+    n
+    (+ (vm_fib (- n 1)) (vm_fib (- n 2)))))
+
+(fn vm_identity [n : Int] : Int n)
+
+# fib(n) makes 2*F(n+1)-1 naive calls; count them iteratively so the reported
+# rate is calls/second rather than just wall time.
+(fn fib_calls [n : Int] : Int
+  (var a 0)
+  (var b 1)
+  (var next 0)
+  (var i 0)
+  (while (< i (+ n 1))
+    (set next (+ a b))
+    (set a b)
+    (set b next)
+    (set i (+ i 1)))
+  (- (* 2 a) 1))
+
+(var native (load "build/native-example/libfib.dylib"))
+
+($println "=== Gene AOT boundary Fibonacci ===")
+($println ($ "Mode: vm vs aot-via-boundary, fib(" n ")"))
+($println "")
+
+# Compiled fib(28) runs well under the millisecond clock's resolution, so both
+# sides repeat the same number of times and the totals are divided down.
+(var calls (* (fib_calls n) reps))
+
+(var vm_result 0)
+(var t0 (monotonic_ms))
+(var r 0)
+(while (< r reps)
+  (set vm_result (vm_fib n))
+  (set r (+ r 1)))
+(var vm_ms (- (monotonic_ms) t0))
+
+(var native_result 0)
+(var t1 (monotonic_ms))
+(var s 0)
+(while (< s reps)
+  (set native_result (native/fib n))
+  (set s (+ s 1)))
+(var native_ms (- (monotonic_ms) t1))
+
+($println ($ "Result: vm  fib(" n ") = " vm_result))
+($println ($ "Result: aot fib(" n ") = " native_result))
+($println ($ "Fib calls: " calls " (" reps " x fib(" n "))"))
+($println "")
+($println ($ "vm   time: " vm_ms " ms"))
+($println ($ "aot  time: " native_ms " ms"))
+(if (> native_ms 0)
+  ($println ($ "Speedup:   " (/ vm_ms native_ms) "x")))
+(if (> vm_ms 0)
+  ($println ($ "vm   rate: " (/ (* calls 1000) vm_ms) " calls/second")))
+(if (> native_ms 0)
+  ($println ($ "aot  rate: " (/ (* calls 1000) native_ms) " calls/second")))
+
+# The recursion above stays inside compiled code, so the boundary is paid once.
+# Price a crossing on its own: the same trivial function called through the
+# boundary and through the VM.
+($println "")
+($println ($ "Boundary cost over " crossings " crossings:"))
+
+(var t2 (monotonic_ms))
+(var i 0)
+(while (< i crossings)
+  (native/identity i)
+  (set i (+ i 1)))
+(var cross_ms (- (monotonic_ms) t2))
+
+(var t3 (monotonic_ms))
+(var j 0)
+(while (< j crossings)
+  (vm_identity j)
+  (set j (+ j 1)))
+(var vm_call_ms (- (monotonic_ms) t3))
+
+($println ($ "  aot boundary call: " cross_ms " ms"))
+($println ($ "  vm function call:  " vm_call_ms " ms"))

@@ -25,6 +25,12 @@ a fixed-representation typed function, compiles that C with the host compiler,
 and times the resulting binary. This is useful as an AOT/JIT target signal; it
 does not exercise runtime VM dispatch into native code.
 
+For that, use `examples/native/bench_fib.sh`, which builds the same function as
+a loadable AOT library and calls it from Gene through the `aot/load` boundary.
+It reports both halves of the trade: compiled fib runs far ahead of the VM once
+the call tree is inside compiled code, while a single boundary crossing costs
+more than a plain VM call.
+
 ## Fibonacci
 
 The benchmarked Gene program is:

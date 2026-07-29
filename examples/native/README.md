@@ -95,6 +95,43 @@ Ownership follows the declared mode:
   double free is not reachable from Gene.
 - **copy** — the callee gets its own pointer and the original stays usable.
 
+## Benchmark: `bench_fib.sh`
+
+```bash
+examples/native/bench_fib.sh
+```
+
+Recursive `fib` in the VM against the same function compiled and called through
+the AOT boundary. `benchmarks/scripts/bench_fib_aot_c` already times compiled
+fib as a standalone binary — a ceiling with no runtime involved; this measures
+what a Gene program actually experiences.
+
+Representative run (Apple clang -O2, fib(28) × 20, stable to ~1% across runs):
+
+```
+vm   time: 1291 ms      vm   rate:    15,932,718 calls/second
+aot  time:   11 ms      aot  rate: 1,869,921,818 calls/second
+Speedup:   117x
+
+Boundary cost over 200000 crossings:
+  aot boundary call: 52 ms     (~260 ns/call)
+  vm function call:  20 ms     (~100 ns/call)
+```
+
+**Both numbers matter, and they point in opposite directions.** The recursion
+never crosses the boundary — `fib` calls itself directly in C — so one crossing
+covers a million calls and the compiled code runs ~117× the VM.
+
+But a crossing costs about 2.6× a plain VM call. Calling a *trivial* native
+function is slower than staying in the VM. AOT pays when the compiled function
+does enough work to amortize the crossing, and `identity` exists in `fib.gene`
+precisely to price that floor.
+
+Some of the per-crossing cost is the adapter's own doing: the dispatcher looks
+its entry up by name on every call, because `NativeCallProc` is `nimcall` and
+cannot capture the entry pointer. Carrying the pointer on the callable instead
+would remove that lookup.
+
 ## Foreign calls through compiled marshalling
 
 `aot/load` also binds each `ffi/fn`'s generated wrapper, so a foreign call goes
