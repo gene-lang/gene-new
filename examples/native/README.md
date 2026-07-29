@@ -198,10 +198,9 @@ directly, and acquisition happens in Gene:
 
 ```gene
 (fn open_db [path : Str] : Db?
-  (do
-    (var db : Db? nil)
-    (let rc : I64 (sqlite3_open path db))
-    (if (= rc 0) db nil)))
+  (var db : Db? nil)
+  (let rc : I64 (sqlite3_open path db))
+  (if (= rc 0) db nil))
 ```
 
 The `while` loop still lives in `main.c` only because the driver is a C

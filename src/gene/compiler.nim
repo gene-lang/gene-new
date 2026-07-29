@@ -3149,13 +3149,23 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     ## remains nil, so no C is emitted for the declaration itself.
     aotLocals.setLen(0)
   elif hasNativeRepr:
+    ## An ordinary Gene body is a *sequence* of forms, so a multi-form body is
+    ## folded into the `do` shape analysis and emission already understand.
+    ## Requiring exactly one form here meant every typed-native function with
+    ## more than one statement had to be wrapped in an explicit `(do ...)`,
+    ## which nothing else in the language asks for.
+    let lowerBody =
+      if body.len == start + 1: body[start]
+      elif body.len > start + 1:
+        newNode(newSym("do"), body = body[start .. ^1])
+      else: NIL
     let cannotLower = typeParams.len != 0 or checksErrors or fnCompiler.sawYield or
         specs.rest.len != 0 or specs.named.len != 0 or
-        specs.hasOptionalPositional or body.len != start + 1 or
+        specs.hasOptionalPositional or lowerBody.kind == vkNil or
         aotReturnRepr.kind == arkNone or
         not allAotParamsRepresentable or
         aotParamReprs.len != specs.positional.len or
-        not c.isTypedNativeAotExpr(body[start], specs.positional,
+        not c.isTypedNativeAotExpr(lowerBody, specs.positional,
                                    aotParamReprs, aotReturnRepr,
                                    c.chunk.ffiFns, aotLocals)
     if cannotLower:
@@ -3167,7 +3177,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
           "function in dynamic Gene")
       aotLocals.setLen(0)
     else:
-      aotExpr = body[start]
+      aotExpr = lowerBody
   else:
     aotExpr = c.detectAotExpr(name, specs, body, start, returnType,
                               typeParams, checksErrors, fnCompiler.sawYield)

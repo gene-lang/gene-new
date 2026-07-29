@@ -842,6 +842,22 @@ int main(void) {
       "  (set! p/value value))",
       "typed_native function set_byte cannot lower its body statically")
 
+  test "a typed-native body is a sequence, not a single form":
+    ## An ordinary Gene body is a sequence of forms. Requiring exactly one here
+    ## meant every multi-statement typed-native function had to be wrapped in
+    ## an explicit `(do ...)`, which nothing else in the language asks for.
+    let c = compileSource(
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(fn wrapped [n : Node] : I64 (do (let v : I64 n/value) v)) " &
+      "(fn bare [n : Node] : I64 (let v : I64 n/value) v)").emitExperimentalC()
+    for fn in ["wrapped", "bare"]:
+      let start = c.find("gene_native_" & fn & "(")
+      check start >= 0
+      let body = c[start .. ^1]
+      check "int64_t v = n->value;" in body[0 ..< body.find("}")]
+      check "return v;" in body[0 ..< body.find("}")]
+
   test "Str crosses typed-native edges as a borrowed const char *":
     ## A boundary representation like `I32`: it crosses edges and is passed on,
     ## but is never computed with. A `Str` argument owns the storage, so the

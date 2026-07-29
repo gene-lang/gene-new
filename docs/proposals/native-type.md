@@ -345,10 +345,9 @@ address.
   [filename : C/CStr db : Db?] : C/Int)
 
 (fn open_memory [] : Db?
-  (do
-    (var db : Db? nil)
-    (let rc : I64 (sqlite3_open ":memory:" db))
-    (if (= rc 0) db nil)))
+  (var db : Db? nil)
+  (let rc : I64 (sqlite3_open ":memory:" db))
+  (if (= rc 0) db nil))
 ```
 
 ```c
@@ -397,10 +396,9 @@ dynamic Gene where a `Str` is a real value.
 
 ```gene
 (fn open_db [path : Str] : Db?
-  (do
-    (var db : Db? nil)
-    (let rc : I64 (sqlite3_open path db))
-    (if (= rc 0) db nil)))
+  (var db : Db? nil)
+  (let rc : I64 (sqlite3_open path db))
+  (if (= rc 0) db nil))
 ```
 
 Lifetime is the whole design constraint. A `Str` argument owns the storage the
