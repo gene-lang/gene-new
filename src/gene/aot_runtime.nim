@@ -438,14 +438,25 @@ proc geneTypedNativeArgTransfer(ctx: ptr AotContext, call: ptr AotCall,
   AotOk
 
 proc geneTypedNativeArgRestore(ctx: ptr AotContext, call: ptr AotCall,
-                               index: csize_t, value: pointer)
+                               index: csize_t, handleField: cstring,
+                               value: pointer)
                               {.exportc: "gene_typed_native_arg_restore",
                                 cdecl, dynlib.} =
-  ## Rollback hook for an entry that failed after acquiring this argument.
-  ## A borrow consumed nothing, and a transfer's pointer is already owned by
-  ## the callee, so there is nothing to undo in either case; the hook exists so
-  ## generated C has a uniform unwind path.
-  discard
+  ## Rollback for an entry that failed *after* acquiring this argument.
+  ##
+  ## A transfer relinquishes the wrapper before the call, so reaching here means
+  ## the callee never ran and nobody owns the pointer: the wrapper is closed and
+  ## nothing will release it. Give ownership back. A borrow consumed nothing and
+  ## is unaffected, which is why this is keyed off the wrapper still being
+  ## closed rather than off the ownership mode.
+  if call == nil or index >= call.len or value == nil:
+    return
+  let arg = call.argAt(index)
+  if arg.kind != vkNode:
+    return
+  let handle = arg.props.getOrDefault($handleField, VOID)
+  if handle.kind == vkCPtr and handle.cPtrClosed:
+    restoreCPtr(handle, value)
 
 proc geneTypedNativeArgCopy(ctx: ptr AotContext, call: ptr AotCall,
                             index: csize_t, argName: cstring,

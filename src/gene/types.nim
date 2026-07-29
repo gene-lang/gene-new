@@ -3634,6 +3634,15 @@ proc relinquishCPtr*(v: Value) =
   data.address = nil
   data.closed = true
 
+proc restoreCPtr*(v: Value, address: pointer) =
+  ## Undo `relinquishCPtr`. Ownership transfer is only complete once the callee
+  ## actually runs; if acquisition fails afterwards the transfer must be taken
+  ## back, or the pointer has no owner at all — the wrapper is closed and
+  ## nothing will ever release it.
+  let data = cPtrData(v)
+  data.address = address
+  data.closed = false
+
 proc cSliceData(v: Value): CSliceData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okCSlice:
     raise newException(FieldDefect, "value is not a C slice")

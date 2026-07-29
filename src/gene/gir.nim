@@ -2151,6 +2151,7 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
     of noTransfer:
       lines.add "  if (" & name & "_acquired)"
       lines.add "    gene_typed_native_arg_restore(ctx, call, " & $i & ", " &
+        cStringLiteral(fn.aotParamReprs[i].nativeType.wrapperField) & ", " &
         rawName & ");"
     of noCopy:
       lines.add "  if (" & name & "_acquired && " & rawName & " != NULL)"
@@ -2708,7 +2709,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "extern void *gene_typed_native_null_ptr(const char *type_name, const char *field_name);",
     "extern GeneStatus gene_typed_native_arg_borrow(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, void **out);",
     "extern GeneStatus gene_typed_native_arg_transfer(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, void **out);",
-    "extern void gene_typed_native_arg_restore(GeneContext *ctx, const GeneCall *call, size_t index, void *value);",
+    "extern void gene_typed_native_arg_restore(GeneContext *ctx, const GeneCall *call, size_t index, const char *handle_field, void *value);",
     "typedef void *(*GeneTypedNativeCopyFn)(const void *value);",
     "extern GeneStatus gene_typed_native_arg_copy(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_identity, const char *abi_identity, const char *handle_field, bool nullable, GeneTypedNativeCopyFn copy, void **out);",
     "typedef void (*GeneTypedNativeReleaseFn)(void *value);",

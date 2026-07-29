@@ -8053,7 +8053,8 @@ proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
   ## the VM reports back as `calleeName`.
   let name = call.calleeName
   if not aotEntries.hasKey(name):
-    raise newException(GeneError, "no AOT entry registered for '" & name & "'")
+    raise newException(GeneError,
+      "no AOT entry registered for '" & name.rsplit('\x1f', 1)[^1] & "'")
   let entry = aotEntries[name]
   var ctx = AotContext()
   var aotCall = AotCall(
@@ -8102,8 +8103,14 @@ proc biAotLoad(args: openArray[Value]): Value =
     let entry = cast[AotEntryProc](symAddr(handle, symbol.cstring))
     if entry == nil:
       raise newException(GeneError, "AOT entry symbol not found: " & symbol)
-    aotEntries[geneName] = entry
-    entries[geneName] = newNativeCallFn(geneName, aotEntryDispatch,
+    ## Key by library *and* name. `NativeCallProc` is nimcall and cannot carry
+    ## the entry pointer, so dispatch goes through the callable's own name — and
+    ## a bare Gene name is not unique. Two libraries exporting `make` would
+    ## otherwise share one slot, so loading the second silently retargeted every
+    ## callable already handed out by the first.
+    let key = path & "\x1f" & geneName
+    aotEntries[key] = entry
+    entries[geneName] = newNativeCallFn(key, aotEntryDispatch,
                                         acceptsNamed = false)
 
   if manifest != nil and countAddr != nil:

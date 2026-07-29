@@ -1607,9 +1607,91 @@ int main(void) {
       "  [t : Timespec count : I64] : I64 t/tv_sec)")
     let c = chunk.emitExperimentalC()
     check "goto gene_entry_consume_arg_error;" in c
-    check "gene_typed_native_arg_restore(ctx, call, 0, t_raw);" in c
+    check "gene_typed_native_arg_restore(ctx, call, 0, \"handle\", t_raw);" in c
     check "gene_entry_consume_arg_error:" in c
     checkCCompiles(c, "typed_native_argument_rollback")
+
+  test "two AOT libraries exporting the same name stay isolated":
+    ## Dispatch goes through the callable's own name, because NativeCallProc is
+    ## nimcall and cannot carry the entry pointer. A bare Gene name is not
+    ## unique across libraries, so keying by it alone let the second load
+    ## silently retarget callables the first had already handed out.
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    var libs: seq[string]
+    for factor in 1 .. 2:
+      let src = "(fn make ^native_entry {} [x : I64] : I64 (* x " &
+        $factor & "))"
+      let sourcePath = getTempDir() / ("gene_aot_collide" & $factor & ".c")
+      let libPath = getTempDir() /
+        ("libgene_aot_collide" & $factor & libExt)
+      writeFile(sourcePath, compileSource(src).emitExperimentalC())
+      let built = execCmdEx(
+        quoteShell(getEnv("CC", "cc")) &
+          " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+          (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+          quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+      checkpoint built.output
+      check built.exitCode == 0
+      removeFile(sourcePath)
+      libs.add libPath
+    defer:
+      for lib in libs:
+        if fileExists(lib): removeFile(lib)
+    check run(compileSource(
+      "(import $aot [load]) " &
+      "(var a (load " & geneString(libs[0]) & ")) " &
+      "(var b (load " & geneString(libs[1]) & ")) " &
+      "[(a/make 10) (b/make 10)]"), newGlobalScope()).print() == "[10 20]"
+
+  test "a rolled-back transfer leaves the wrapper usable":
+    ## Emitting a restore call is not the same as restoring ownership. A
+    ## transfer relinquishes the wrapper *before* the call, so if a later
+    ## argument fails to convert the callee never runs and nothing owns the
+    ## pointer — the wrapper is closed and nothing will release it. Check the
+    ## wrapper still works afterwards, not merely that the hook was emitted.
+    let src =
+      "(ffi/struct CPoint ^fields [[x C/Int64]]) " &
+      "(type Point ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CPoint)} " &
+      "  ^native {^abi CPoint ^lifecycle manual ^wrapper handle " &
+      "           ^release \"point_free\"}) " &
+      "(ffi/fn make_point ^symbol \"make_point\" [] : Point) " &
+      "(fn make ^native_entry {^result transfer} [] : Point (make_point)) " &
+      "(fn take2 ^native_entry {^a transfer} " &
+      "  [a : Point b : I64] : I64 a/x) " &
+      "(fn get_x ^native_entry {^p borrow} [p : Point] : I64 p/x)"
+    let impl = """
+#include <stdlib.h>
+CPoint *make_point(void) { CPoint *p = malloc(sizeof *p); p->x = 5; return p; }
+void point_free(CPoint *p) { free(p); }
+"""
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    let sourcePath = getTempDir() / "gene_aot_rollback.c"
+    let libPath = getTempDir() / ("libgene_aot_rollback" & libExt)
+    writeFile(sourcePath, compileSource(src).emitExperimentalC() & impl)
+    defer:
+      if fileExists(sourcePath): removeFile(sourcePath)
+      if fileExists(libPath): removeFile(libPath)
+    let built = execCmdEx(
+      quoteShell(getEnv("CC", "cc")) &
+        " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+        (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+        quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+    checkpoint built.output
+    check built.exitCode == 0
+    if built.exitCode == 0:
+      # `take2` transfers `a`, then fails converting `b`; the wrapper must
+      # survive that with its pointer intact.
+      check run(compileSource(src &
+        " (import $aot [load]) " &
+        "(var n (load " & geneString(libPath) & ")) " &
+        "(var p (n/make)) " &
+        "(var caught (try (n/take2 p \"not an int\") catch e 1)) " &
+        "(+ caught (n/get_x p))"), newGlobalScope()).intVal == 6
 
   test "an explicit native entry copies a wrapper pointer before reboxing":
     let chunk = compileSource(
