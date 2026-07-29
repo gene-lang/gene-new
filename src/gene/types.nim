@@ -485,7 +485,16 @@ type
   AotModuleRequirements* = ref object
     ## A loaded library's full requirement set, retained so it can be
     ## re-validated after the native type registry changes.
+    ##
+    ## Load-time validation is only a snapshot. A native Type re-registered
+    ## afterwards can keep its identity and change its ABI or its policy, and
+    ## nothing presented at the boundary would reveal it — the affected Type may
+    ## never cross the boundary at all. The retained set plus the epoch it was
+    ## last validated at is what turns the snapshot into a standing guarantee.
     requirements*: seq[AotTypeRequirement]
+    validatedEpoch*: uint64
+    invalid*: bool
+    invalidReason*: string
 
   AotFfiFnInfoC* = object
     ## Mirrors `GeneFfiFnInfo` in the generated C.

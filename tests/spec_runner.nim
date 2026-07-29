@@ -2189,6 +2189,98 @@ int main(void) {
         "(var n (load " & geneString(libPath) & ")) n"),
         newGlobalScope()).kind == vkMap
 
+  test "an already-loaded callable rejects a call after its type is redeclared":
+    ## Load-time validation is a snapshot. `wrapperPointer` only ever sees the
+    ## Type crossing *this* call, so a transitively-required type re-registered
+    ## after load would leave compiled code reading stale offsets with nothing
+    ## to notice.
+    ##
+    ## Here compiled `deep` takes a `Parent` and reads through `parent/child`
+    ## into a `Node`. `Node` never crosses the boundary. Re-registering it over
+    ## a different layout must make the *already-held* callable refuse, and
+    ## refuse before native code runs — `note_ran` is a C-side side effect that
+    ## must never fire.
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    let decls =
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(ffi/struct CParent ^fields [[child (C/Ptr Node)]]) " &
+      "(type Parent ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CParent)} " &
+      "  ^native {^abi CParent ^lifecycle manual ^wrapper handle}) "
+    let libSrc = decls &
+      "(fn deep ^native_entry {^p borrow} [p : Parent] : I64 " &
+      "  (do (let n : Node p/child) n/value))"
+    let impl = """
+extern void gene_spec_note_free(int64_t which);
+"""
+    let sourcePath = getTempDir() / "gene_aot_epoch.c"
+    let libPath = getTempDir() / ("libgene_aot_epoch" & libExt)
+    writeFile(sourcePath, compileSource(libSrc).emitExperimentalC() & impl)
+    defer:
+      if fileExists(sourcePath): removeFile(sourcePath)
+      if fileExists(libPath): removeFile(libPath)
+    let built = execCmdEx(
+      quoteShell(getEnv("CC", "cc")) &
+        " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+        (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+        quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+    checkpoint built.output
+    check built.exitCode == 0
+    if built.exitCode == 0:
+      # Register the declarations once, then again. The second registration
+      # mints new `Type` values with identical contracts, and must NOT move the
+      # epoch — keying on Type object identity would make every module load
+      # invalidate every loaded library.
+      discard run(compileSource(decls), newGlobalScope())
+      let settled = nativeTypeActivationEpoch()
+      discard run(compileSource(decls), newGlobalScope())
+      check nativeTypeActivationEpoch() == settled
+
+      # Hold a callable, then redeclare `Node` over a wider layout in the same
+      # process. `Node` is transitively required but never crosses the boundary,
+      # so nothing presented at the call could reveal the change.
+      ## Chunks sharing one scope must be compiled without local slots, or the
+      ## second cannot run against the first's resident layout.
+      let scope = newGlobalScope()
+      discard run(compileSource(
+        decls & "(import $aot [load]) " &
+        "(var n (load " & geneString(libPath) & ")) ",
+        useLocalSlots = false), scope)
+      # The held callable works while the contract still holds. `nil` is not a
+      # Parent, so this fails at the wrapper check — but it reaches it.
+      var reachedBoundary = false
+      try:
+        discard run(compileSource("(n/deep nil)", useLocalSlots = false),
+                    scope)
+      except CatchableError as e:
+        reachedBoundary = "must not be nil" in e.msg
+      check reachedBoundary
+
+      ## The redeclaration happens in a *different* scope — which is what a
+      ## module reload is. `nativeTypeRegistry` is a process global keyed by
+      ## module-qualified identity, so this overwrites the same `<memory>::Node`
+      ## the loaded library depends on.
+      discard run(compileSource(
+        "(ffi/struct CNode ^fields [[pad C/Int64] [value C/Int64]]) " &
+        "(type Node ^native {^abi CNode ^lifecycle manual})"),
+        newGlobalScope())
+      check nativeTypeActivationEpoch() != settled
+
+      var raised = false
+      try:
+        discard run(compileSource("(n/deep nil)", useLocalSlots = false),
+                    scope)
+      except CatchableError as e:
+        raised = true
+        ## The guard fires before the argument check, so the failure names the
+        ## stale library rather than the nil — proof native code was not reached.
+        check "no longer compatible" in e.msg
+        check "the layout of" in e.msg
+      check raised
+
   test "each library's owned result runs its own release function":
     ## `aotResolveSymbol` scanned every loaded handle and returned the first
     ## match, so an allocation from library A could be paired with library B's

@@ -8033,7 +8033,13 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 ## the other half — opening such a module and binding its entries so ordinary
 ## Gene code can call natively compiled functions.
 
-var aotEntries: Table[string, AotEntryProc]
+type AotEntryBinding = object
+  ## The entry pointer plus the library's requirement set, so dispatch can
+  ## check the ABI epoch without a second lookup.
+  entry: AotEntryProc
+  module: AotModuleRequirements
+
+var aotEntries: Table[string, AotEntryBinding]
 var aotModuleHandles: seq[LibHandle]
 
 proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
@@ -8045,7 +8051,18 @@ proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
   if not aotEntries.hasKey(name):
     raise newException(GeneError,
       "no AOT entry registered for '" & name.rsplit('\x1f', 1)[^1] & "'")
-  let entry = aotEntries[name]
+  let binding = aotEntries[name]
+  ## The ABI guard, and the single chokepoint for it: every callable `aot/load`
+  ## hands out is bound to this proc. Load-time validation is a snapshot, so a
+  ## Type re-registered afterwards — same identity, different ABI or policy —
+  ## would otherwise leave compiled code reading stale offsets or calling a
+  ## superseded `^copy`. Raising here means native code never runs.
+  let stale = ensureAotModuleValid(binding.module)
+  if stale.len > 0:
+    raise newException(GeneError,
+      "AOT library is no longer compatible with the loaded native types: " &
+      stale)
+  let entry = binding.entry
   var ctx = AotContext()
   var aotCall = AotCall(
     args: if args.len > 0: cast[ptr UncheckedArray[Value]](addr args[0])
@@ -8095,6 +8112,7 @@ proc biAotLoad(args: openArray[Value]): Value =
   ## is the exact opposite of the policy for a *successful* load, where the
   ## library is pinned for the process lifetime.
   var stagedEntries: seq[(string, AotEntryProc)]
+  var moduleRequirements: AotModuleRequirements
   var entries = initPropTable()
 
   proc rejectLoad(message: string) =
@@ -8207,10 +8225,10 @@ proc biAotLoad(args: openArray[Value]): Value =
   ## Unloading then would turn a live pointer's release into a jump into
   ## unmapped memory. Revisit only alongside a real unload story, not as an
   ## isolated fix.
-  for (key, entry) in stagedEntries:
-    aotEntries[key] = entry
   commitAotMeasuredLayouts(measured)
-  registerAotModuleRequirements(path, requirements)
+  moduleRequirements = registerAotModuleRequirements(path, requirements)
+  for (key, entry) in stagedEntries:
+    aotEntries[key] = AotEntryBinding(entry: entry, module: moduleRequirements)
   aotModuleHandles.add handle
   newMap(entries)
 

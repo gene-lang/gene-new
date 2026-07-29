@@ -470,7 +470,9 @@ proc validateAotTypeRequirements*(reqs: openArray[AotTypeRequirement]): string
 proc checkAotMeasuredLayouts*(rows: openArray[AotMeasuredLayout]): string
 proc commitAotMeasuredLayouts*(rows: openArray[AotMeasuredLayout])
 proc registerAotModuleRequirements*(path: string,
-                                    reqs: sink seq[AotTypeRequirement])
+                                    reqs: sink seq[AotTypeRequirement]):
+    AotModuleRequirements {.discardable.}
+proc ensureAotModuleValid*(module: AotModuleRequirements): string
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 proc typeExprNeedsBoundaryScope(typeExpr: Value): bool
 proc closeTypeExpr(expr: Value, scope: Scope): Value
@@ -22056,6 +22058,19 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
 
 var nativeTypeRegistry: Table[string, Value]
 
+var nativeTypeEpoch: uint64
+  ## Bumped whenever a registered native Type's ABI contract changes. Loaded AOT
+  ## libraries hold compiled decisions about these types, so they re-validate
+  ## when this moves — the same shape as `implEpoch` guarding the dispatch cache
+  ## (see the note above `dispatchCacheEnabled`).
+  ##
+  ## Lives beside the registry rather than on `Application`, unlike `implEpoch`,
+  ## because the registry itself is a process global. If it ever moves onto
+  ## `Application`, this moves with it.
+
+proc nativeTypeActivationEpoch*(): uint64 {.inline.} =
+  nativeTypeEpoch
+
 proc registerNativeTypeIdentity*(identity: string, typ: Value) =
   ## Index a `^native` type by the identity its compiled code was built
   ## against. The typed_native AOT boundary receives only that string from
@@ -22065,8 +22080,21 @@ proc registerNativeTypeIdentity*(identity: string, typ: Value) =
   ## Re-registration overwrites: an identity is module-qualified, so the same
   ## string reappearing means the same declaration was compiled again (module
   ## reload), and the newest Type is the live one.
-  if identity.len > 0 and typ.kind == vkType:
-    nativeTypeRegistry[identity] = typ
+  ##
+  ## The epoch moves on a changed ABI *contract*, never on a changed `Type`
+  ## value. Recompiling the same declaration mints a fresh Type object every
+  ## time with an identical contract, so keying on object identity would make
+  ## every module load invalidate every loaded library. The contract fingerprint
+  ## already nests the type identity, ABI identity and layout fingerprint, so it
+  ## is the whole comparison.
+  if identity.len == 0 or typ.kind != vkType:
+    return
+  let existing = nativeTypeRegistry.getOrDefault(identity, NIL)
+  let changed = existing.kind != vkType or
+    existing.typeNativeContractFingerprint != typ.typeNativeContractFingerprint
+  nativeTypeRegistry[identity] = typ
+  if changed:
+    inc nativeTypeEpoch
 
 proc nativeTypeByIdentity*(identity: string): Value =
   nativeTypeRegistry.getOrDefault(identity, NIL)
@@ -22136,8 +22164,37 @@ proc commitAotMeasuredLayouts*(rows: openArray[AotMeasuredLayout]) =
 var aotModuleRequirements: Table[string, AotModuleRequirements]
 
 proc registerAotModuleRequirements*(path: string,
-                                    reqs: sink seq[AotTypeRequirement]) =
-  aotModuleRequirements[path] = AotModuleRequirements(requirements: reqs)
+                                    reqs: sink seq[AotTypeRequirement]):
+    AotModuleRequirements {.discardable.} =
+  result = AotModuleRequirements(requirements: reqs,
+                                 validatedEpoch: nativeTypeEpoch)
+  aotModuleRequirements[path] = result
+
+proc ensureAotModuleValid*(module: AotModuleRequirements): string =
+  ## Re-validate a loaded library's *entire* requirement set when the native
+  ## type registry has changed since it was last checked.
+  ##
+  ## Checking only the type crossing this call cannot close the hole: compiled
+  ## code that takes a `Parent` and reads `parent/child/value` never presents
+  ## `Node` at the boundary, yet holds its offsets. The unit of validation has
+  ## to be the module's whole requirement set.
+  ##
+  ## Equal epoch is the common case and costs one integer compare. A failure is
+  ## sticky: the module stays invalid so later calls fail fast rather than
+  ## re-walking a set that cannot start passing again on its own.
+  if module == nil:
+    return ""
+  if module.invalid:
+    return module.invalidReason
+  if module.validatedEpoch == nativeTypeEpoch:
+    return ""
+  let failure = validateAotTypeRequirements(module.requirements)
+  if failure.len > 0:
+    module.invalid = true
+    module.invalidReason = failure
+    return failure
+  module.validatedEpoch = nativeTypeEpoch
+  ""
 
 proc newNativeWrapper*(wrapperType: Value,
                        props: openArray[(string, Value)]): Value =
