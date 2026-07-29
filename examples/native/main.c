@@ -24,14 +24,14 @@ void gene_sqlite_close(sqlite3 *db);
 int64_t gene_native_step_row(sqlite3_stmt *stmt);
 int64_t gene_native_reset_stmt(sqlite3_stmt *stmt);
 int64_t gene_native_column_count(sqlite3_stmt *stmt);
-int64_t gene_native_column_i64(sqlite3_stmt *stmt, int64_t column);
-int64_t gene_native_read_first(sqlite3_stmt *stmt, int64_t first_column);
-int64_t gene_native_row_total(sqlite3_stmt *stmt, int64_t amount_column,
-                              int64_t quantity_column);
-int64_t gene_native_row_total_capped(sqlite3_stmt *stmt, int64_t amount_column,
-                                     int64_t quantity_column, int64_t cap);
-int64_t gene_native_scan_total(sqlite3_stmt *stmt, int64_t amount_column,
-                               int64_t quantity_column, int64_t row_marker);
+int64_t gene_native_column_i64(sqlite3_stmt *stmt, int32_t column);
+int64_t gene_native_read_first(sqlite3_stmt *stmt, int32_t first_column);
+int64_t gene_native_row_total(sqlite3_stmt *stmt, int32_t amount_column,
+                              int32_t quantity_column);
+int64_t gene_native_row_total_capped(sqlite3_stmt *stmt, int32_t amount_column,
+                                     int32_t quantity_column, int64_t cap);
+int64_t gene_native_scan_total(sqlite3_stmt *stmt, int32_t amount_column,
+                               int32_t quantity_column, int64_t row_marker);
 
 #define ROW 100 /* SQLITE_ROW */
 

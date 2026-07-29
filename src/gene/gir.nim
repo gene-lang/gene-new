@@ -162,6 +162,13 @@ type
   AotReprKind* = enum
     arkNone
     arkI64
+    arkI32
+      ## A *boundary* representation, not an arithmetic one. Gene's `I32` is a
+      ## range-checked Int: interpreted code rejects a return that leaves the
+      ## 32-bit range, while C `int32_t` arithmetic would wrap silently. Values
+      ## of this repr therefore only cross edges — parameter, result, native
+      ## field, FFI argument — and widen to `arkI64` to be computed with, so
+      ## compiled and interpreted code cannot disagree.
     arkF64
     arkNativePtr
 
@@ -719,6 +726,7 @@ proc formatFfiSignatureKind(kind: FfiSignatureKind): string =
 proc formatAotRepr(fn: FunctionProto): string =
   case fn.aotReturnRepr.kind
   of arkI64: "I64"
+  of arkI32: "I32"
   of arkF64: "F64"
   of arkNativePtr: fn.aotReturnRepr.typeName
   of arkNone: ""
@@ -1197,6 +1205,7 @@ proc aotTypeName(fn: FunctionProto): string =
 proc aotCType(typeName: string): string =
   case typeName
   of "I64": "int64_t"
+  of "I32": "int32_t"
   of "F64": "double"
   else: ""
 
@@ -1241,6 +1250,7 @@ proc ffiStructCName(structProto: FfiStructProto,
 proc aotCType(repr: AotRepr, names: FfiStructCNames): string =
   case repr.kind
   of arkI64: "int64_t"
+  of arkI32: "int32_t"
   of arkF64: "double"
   of arkNativePtr:
     if repr.nativeType == nil or repr.nativeType.abi == nil: ""
@@ -1980,6 +1990,8 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
     case repr.kind
     of arkI64:
       lines.add "  int64_t " & name & ";"
+    of arkI32:
+      lines.add "  int32_t " & name & ";"
     of arkF64:
       lines.add "  double " & name & ";"
     of arkNativePtr:
@@ -1997,6 +2009,12 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
     case repr.kind
     of arkI64:
       lines.add "  status = gene_ffi_arg_int64(ctx, call, " & $i & ", " &
+        cStringLiteral(param) & ", &" & name & ");"
+      lines.add "  if (status != GENE_OK) goto " & entryName & "_arg_error;"
+    of arkI32:
+      ## Range-checked at the boundary, which is what makes the compiled
+      ## signature agree with the interpreter's `I32` annotation.
+      lines.add "  status = gene_ffi_arg_int32(ctx, call, " & $i & ", " &
         cStringLiteral(param) & ", &" & name & ");"
       lines.add "  if (status != GENE_OK) goto " & entryName & "_arg_error;"
     of arkF64:

@@ -221,9 +221,13 @@ Two further limits shape `sqlite_shim.c`:
 - **Out-parameters.** `sqlite3_open`/`sqlite3_prepare_v2` return handles
   through `sqlite3**`. Typed-native Gene cannot take the address of a local,
   so acquisition happens in C and Gene receives an open pointer.
-- **`int` parameters.** `sqlite3_column_int64` takes `int` for the column
-  index, and a Gene `I64` will not narrow into it — correctly, since `int` is
-  32 bits. The shim widens the parameter to `int64_t`.
+- ~~**`int` parameters.**~~ Resolved: declare the index `I32` and
+  `sqlite3_column_int64` binds directly. `I32` is a *boundary* representation —
+  it crosses edges (parameter, result, native field, FFI argument) and widens
+  into `I64` to be computed with, but arithmetic never produces one. Gene's
+  `I32` is a range-checked Int, so the interpreter rejects a result outside 32
+  bits while C `int32_t` would wrap silently; keeping computation in `I64` is
+  what stops the two from disagreeing.
 - **Literal arguments.** FFI call arguments must be bindings, not literals, so
   column indices are passed in as parameters.
 

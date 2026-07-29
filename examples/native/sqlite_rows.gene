@@ -32,12 +32,15 @@
   ^symbol "sqlite3_column_count"
   [stmt : Stmt] : C/Int)
 
-# Bound to sqlite_shim.c, which widens the column index to int64_t. A Gene I64
-# cannot narrow into sqlite3_column_int64's `int` parameter.
-(ffi/fn gene_sqlite_column_i64
+# Bound straight to libsqlite3 as well. The column index is declared `I32`, so
+# it matches sqlite3_column_int64's `int` exactly — no widening shim. `I32` is
+# a boundary representation: it crosses edges and widens into `I64` to be
+# computed with, but arithmetic never produces one, because C would wrap where
+# Gene's range-checked `I32` errors.
+(ffi/fn sqlite3_column_int64
   ^library libsqlite3
-  ^symbol "gene_sqlite_column_i64"
-  [stmt : Stmt column : C/Int64] : C/Int64)
+  ^symbol "sqlite3_column_int64"
+  [stmt : Stmt column : C/Int] : C/Int64)
 
 # The typed-native surface the C harness calls. Each lowers to a direct call
 # with the statement pointer passed in a register.
@@ -51,23 +54,23 @@
 (fn column_count [stmt : Stmt] : I64
   (sqlite3_column_count stmt))
 
-(fn column_i64 [stmt : Stmt column : I64] : I64
-  (gene_sqlite_column_i64 stmt column))
+(fn column_i64 [stmt : Stmt column : I32] : I64
+  (sqlite3_column_int64 stmt column))
 
 # A typed-native function calling another typed-native function: `read_first`
 # is lowered to a direct C call to `gene_native_column_i64`, not a dispatch.
-(fn read_first [stmt : Stmt first_column : I64] : I64
+(fn read_first [stmt : Stmt first_column : I32] : I64
   (do
     (let value : I64 (column_i64 stmt first_column))
     value))
 
 # Per-row work, compiled: two direct SQLite calls and the multiply all lower
 # into one C function with no boxing.
-(fn row_total [stmt : Stmt amount_column : I64 quantity_column : I64] : I64
+(fn row_total [stmt : Stmt amount_column : I32 quantity_column : I32] : I64
   (* (column_i64 stmt amount_column) (column_i64 stmt quantity_column)))
 
 # Conditionals lower to a C ternary.
-(fn row_total_capped [stmt : Stmt amount_column : I64 quantity_column : I64
+(fn row_total_capped [stmt : Stmt amount_column : I32 quantity_column : I32
                       cap : I64] : I64
   (if (< (row_total stmt amount_column quantity_column) cap)
     (row_total stmt amount_column quantity_column)
@@ -77,7 +80,7 @@
 # Gene, so stepping, both column reads, the multiply and the accumulate all
 # lower into one C function. `main.c` calls this once instead of driving the
 # loop itself.
-(fn scan_total [stmt : Stmt amount_column : I64 quantity_column : I64
+(fn scan_total [stmt : Stmt amount_column : I32 quantity_column : I32
                 row_marker : I64] : I64
   (do
     (var total : I64 0)

@@ -842,6 +842,51 @@ int main(void) {
       "  (set! p/value value))",
       "typed_native function set_byte cannot lower its body statically")
 
+  test "I32 crosses typed-native edges and widens into I64":
+    ## `I32` already existed as a range-checked runtime annotation; this is the
+    ## machine representation for it, so a C `int` parameter is expressible
+    ## without a widening shim.
+    let chunk = compileSource(
+      "(ffi/struct CNode ^fields [[small C/Int32] [big C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(ffi/fn take_int ^symbol \"take_int\" " &
+      "  [n : Node col : C/Int] : C/Int64) " &
+      "(fn read_small [n : Node] : I32 n/small) " &
+      "(fn widened [n : Node] : I64 n/small) " &
+      "(fn pass_through [n : Node col : I32] : I64 (take_int n col))")
+    let c = chunk.emitExperimentalC()
+    check "int32_t gene_native_read_small(CNode * n)" in c
+    check "int64_t gene_native_widened(CNode * n)" in c
+    check "int64_t gene_native_pass_through(CNode * n, int32_t col)" in c
+    check "return take_int(n, col);" in c
+    checkCCompiles(c, "typed_native_i32")
+
+  test "arithmetic never produces an I32":
+    ## Gene's `I32` is a range-checked Int — the interpreter rejects a return
+    ## outside 32 bits — while C `int32_t` arithmetic wraps silently. Keeping
+    ## `I32` to edges and computing in I64 is what stops compiled and
+    ## interpreted code from disagreeing.
+    check_compile_error(
+      "(ffi/struct CNode ^fields [[small C/Int32]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(fn wraps [n : Node] : I32 (+ n/small 1))",
+      "typed_native function wraps cannot lower its body statically")
+    # The same arithmetic is fine once it produces the wider representation.
+    check "return (n->small + 1);" in compileSource(
+      "(ffi/struct CNode ^fields [[small C/Int32]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(fn computed [n : Node] : I64 (+ n/small 1))").emitExperimentalC()
+
+  test "an I64 does not narrow into an I32 edge":
+    ## Narrowing would need a runtime check, and a typed-native body has no
+    ## error path to report one.
+    check_compile_error(
+      "(ffi/struct CNode ^fields [[small C/Int32]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(ffi/fn take_int ^symbol \"take_int\" [n : Node col : C/Int] : C/Int64) " &
+      "(fn bad [n : Node col : I64] : I64 (take_int n col))",
+      "typed_native function bad cannot lower its body statically")
+
   test "typed-native bodies compute with arithmetic, comparison and if":
     ## The emitter always rendered these; analysis had no case for them, so a
     ## native-pointer function that computed anything at all was rejected.

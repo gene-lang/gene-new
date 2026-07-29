@@ -2288,6 +2288,8 @@ proc resolvedAotRepr(c: Compiler, expr: Value): AotRepr =
     case expr.symVal
     of "I64":
       return AotRepr(kind: arkI64, typeName: "I64")
+    of "I32":
+      return AotRepr(kind: arkI32, typeName: "I32")
     of "F64":
       return AotRepr(kind: arkF64, typeName: "F64")
     else:
@@ -2308,6 +2310,13 @@ proc fieldMatchesAotResult(fieldType: Value, resultRepr: AotRepr): bool =
       "C/Int64", "C/Char", "C/UChar", "C/Short", "C/UShort", "C/Int",
       "C/UInt", "C/Long", "C/PtrDiff"
     ]
+  of arkI32:
+    ## Exactly the 32-bit-and-narrower C types, so the value is always in
+    ## Gene's `I32` range and no check is needed on the way out.
+    label in [
+      "C/Int8", "C/UInt8", "C/Int16", "C/UInt16", "C/Int32", "C/Char",
+      "C/UChar", "C/Short", "C/UShort", "C/Int"
+    ]
   of arkF64:
     label in ["C/Float", "C/Double"]
   else:
@@ -2320,6 +2329,10 @@ proc fieldAcceptsAotStore(fieldType: Value, valueRepr: AotRepr): bool =
   case valueRepr.kind
   of arkI64:
     label == "C/Int64"
+  of arkI32:
+    ## An `I32` is in range for any of these by construction, so the store
+    ## stays lossless without a runtime check.
+    label in ["C/Int32", "C/Int", "C/Int64"]
   of arkF64:
     label == "C/Double"
   else:
@@ -2374,6 +2387,12 @@ proc aotMutableBindingRepr(name: string, params: openArray[string],
       return local.repr
 
 proc aotReprAccepts(destination, source: AotRepr): bool =
+  ## An I32 widens into an I64 destination: the value is already known to fit,
+  ## and computing in 64 bits is what keeps compiled arithmetic agreeing with
+  ## the interpreter's range-checked `I32`. The reverse never holds — narrowing
+  ## would need a runtime check, and a typed-native body has no error path.
+  if destination.kind == arkI64 and source.kind == arkI32:
+    return true
   if destination.kind != source.kind:
     return false
   if destination.kind != arkNativePtr:
