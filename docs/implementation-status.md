@@ -27,12 +27,20 @@ with borrow/transfer/copy ownership. The lowerable subset covers field access,
 locals, direct/FFI/protocol calls, arithmetic, comparisons, `if`, `while`, and
 block statements.
 
+The boundary enforces the same contracts the interpreter's FFI path does — the
+generated wrappers call those converters rather than a parallel set — and ABI
+compatibility is verified rather than assumed: a library declares every native
+type it transitively depends on with layout and declaration fingerprints, `load`
+rejects a mismatch before binding anything, and an incompatible redeclaration
+after load makes already-bound callables refuse.
+
 It remains experimental. Direct protocol sends are guarded only within the
 compiling module, so a cross-module overlay over an AOT-compiled type is a
 known limitation, and there is no `gene build` producing a linked artifact —
 that waits on package and dependency support, since what to link against is a
 dependency-graph question. `examples/native` drives `cc` from a shell script
-meanwhile.
+meanwhile. Loaded AOT libraries are pinned for the process lifetime, because
+their callables and release shims can outlive any individual call.
 
 Deferred work is explicitly non-normative. Major deferred areas include package
 version resolution/registries, static effect rows, full hygienic compile-time

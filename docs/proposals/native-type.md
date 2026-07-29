@@ -181,8 +181,9 @@ justification and tests.
 
 # Part II — Unboxed pointers in `typed_native`
 
-**Status (2026-07-28): the §10 measurement gate is met; the §6.4 dynamic
-boundary is blocked on work this proposal does not own.**
+**Status (2026-07-29): the §10 measurement gate is met and the §6.4 dynamic
+boundary is implemented, including ABI validation and the epoch guard that keeps
+it true after a reload. See §6.4's two dated subsections.**
 
 The C backend lowers native-pointer parameters, locals, scalar and
 pointer-valued field loads and stores, direct typed calls, and statically
@@ -436,6 +437,70 @@ The reverse adapter validates the exact wrapper Type, liveness, and ABI layout,
 then borrows or transfers the pointer into the compiled call. Boxing is the only
 place the wrapper allocation appears; it is never an implicit optimization or
 silent representation change.
+
+### ABI validation (implemented 2026-07-29)
+
+Type identity implies the ABI within one build, not across one, so the layout
+check above needs a fingerprint rather than a name comparison. Two are computed:
+a **layout fingerprint** over the declared descriptor, and a **contract
+fingerprint** over the complete code-generation contract, nesting the first.
+
+The contract is wider than the layout because compiled code bakes in more than
+offsets: `^copy` and `^release` become call targets, `^wrapper` becomes a string
+literal at every boundary helper, `^mutable` decides whether a field store
+lowers at all, and the handle's declared type decides what an ownership transfer
+means. A library compiled against `^copy old_copy` would otherwise keep applying
+it after the type was re-registered with `^copy new_copy` — same ABI, same
+layout, no signal.
+
+Both are shallow: a pointer field contributes an identity string rather than its
+pointee's fingerprint, since `CNode.next : Node` is self-referential and a
+transitive hash would not terminate. Completeness comes instead from the
+manifest being transitively complete.
+
+A compiled library therefore exports `gene_aot_native_types`, one row per native
+type its code depends on — **transitively**, not merely those crossing the
+boundary. That distinction is load-bearing: code that takes a `Parent` and reads
+`parent/child/value` presents only `Parent` at the boundary while holding
+`Node`'s offsets, so a check driven by what crosses would never examine it. A
+layout table alone could not express this contract at all, because the runtime
+registry is keyed by *Type* identity and the claim needing proof is that the
+live `Node` type still maps to the ABI the code was built against.
+
+`aot/load` validates every row before binding anything, and the whole load is
+transactional. A missing manifest means the library predates this checking and
+is rejected rather than trusted.
+
+Load-time validation is a snapshot, so a **native-type activation epoch** keeps
+it true: it moves whenever a registered type's contract fingerprint changes —
+never merely because recompiling minted a fresh `Type` object — and each loaded
+library re-validates its full requirement set when the epoch has moved,
+refusing the call before native code runs. This is the same mechanism the
+dispatch cache uses, and the same activation-epoch guard §"Overlay scope for
+direct protocol sends" names as the eventual answer there.
+
+### Boundary contracts share the interpreter's converters (2026-07-29)
+
+The generated adapters call the same conversion functions the VM's dynamic FFI
+path calls, rather than a parallel implementation. The parallel one disagreed at
+nearly every width — accepting an `Int` for a float parameter, dropping
+`C/Float`'s range check, rejecting a `Char` for `C/Char` and returning an `Int`
+for it, capping the 64-bit unsigned types, and turning a NULL `C/CStr` result
+into `nil`. Divergence between compiled and interpreted code is the failure mode
+this backend has already paid for repeatedly, so the property worth having is
+that one implementation exists, not that two agree.
+
+`C/Slice` and `Buffer` are separate: a slice borrows, while a Buffer marshals
+into storage owned by the call and copies back after the callee runs, making a
+`Buffer` parameter an out-parameter.
+
+Pointer fields in an `ffi/struct` resolve their pointee **in the declaring
+module** and record its nominal and ABI identities. Resolving the raw syntax at
+each use site let an imported `Node? next` bind to whatever `Node` a consuming
+module happened to declare — a silent miscompile that read a different layout,
+and one C could not catch while such fields rendered as `void *`. They now
+render as the real pointee type. A pointee naming an ordinary C type or an
+opaque foreign tag resolves to neither identity, which is not an error.
 
 This uses the mixed-execution model already specified in `design.md` §16.14.
 It does not add Type witnesses to every VM call frame, inline cache,

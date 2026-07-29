@@ -712,12 +712,25 @@ adapters are compiled in; they are off by default so ordinary generated C
 links without a Gene runtime. The `gene_ffi_*` helpers those adapters call are
 exported from the `gene` executable and resolve at load time.
 
-Boundary rules:
+Boundary rules. Every one of these is the *same* check the interpreter's own
+FFI path makes — the compiled wrappers call those converters rather than a
+parallel set, so a value accepted compiled is accepted interpreted and produces
+the same result:
 
 - Integral arguments range-check rather than truncate: passing `200` where the
-  C signature says `int8_t` is an error.
-- Strings and buffers are borrowed for the call's extent; foreign code must not
-  retain them. A returned `const char *` is copied.
+  C signature says `int8_t` is an error. `C/UInt64`, `C/ULong` and `C/Size`
+  carry the full unsigned range in both directions.
+- A float parameter requires a `Float`, and `C/Float` range-checks. A `C/Char`
+  takes a `Char` and returns one.
+- `Str` is borrowed for the call's extent and must not be retained by foreign
+  code; `nil` and interior NULs are rejected. A returned `const char *` is
+  copied, and a NULL return is an error rather than `nil`.
+- A pointer argument is checked for pointee identity, nullability, closed state,
+  and the const/owned flavors — a pointer to an unrelated native type cannot
+  reach C code that would dereference it as a different layout.
+- `C/Slice` borrows the value's storage. `Buffer` is marshalled instead: the
+  callee writes through temporary bytes and they are copied back into the Gene
+  buffer when the call returns, so a `Buffer` parameter is an out-parameter.
 - A managed wrapper crossing in is matched against the compiled type's identity
   — not its name — so a look-alike cannot carry a forged handle into compiled
   code. Ownership follows the declared mode: `borrow` leaves the wrapper usable,
@@ -725,6 +738,21 @@ Boundary rules:
   `copy` leaves the original intact.
 - A type's declaring module must be loaded before a wrapper of that type can
   cross, since the boundary resolves the identity to a live `Type`.
+
+ABI compatibility is checked, not assumed. A library declares every native type
+it depends on — transitively, including types it only ever reaches by
+dereferencing a pointer field — together with a fingerprint of each one's
+layout *and* its declaration (`^abi`, `^copy`, `^release`, `^wrapper`,
+`^mutable`, `^lifecycle`, and the handle's declared type). `load` rejects a
+library whose expectations no longer match the live types, saying which part
+drifted, and binds nothing when it does. If a type is redeclared incompatibly
+*after* a library is loaded, its already-bound callables refuse the next call
+rather than running against stale offsets.
+
+A library built before this checking existed is rejected with a rebuild
+message. Loaded libraries stay loaded for the life of the process: their
+callables and release functions can outlive any particular call, so unloading
+one could turn a live pointer's release into a jump into freed code.
 
 `examples/native` builds and runs both directions.
 
