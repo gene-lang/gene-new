@@ -401,6 +401,10 @@ type
     align*: int
     hasAlign*: bool
     fields*: seq[FfiStructField]
+    fingerprint*: string
+      ## Hash of the declared layout descriptor. Type identity implies the ABI
+      ## within one build but not across one: a library built before a layout
+      ## change carries the same identity and reads obsolete offsets.
 
   NativeTypeProto* = ref object
     ## Compile-only attachment from a nominal Gene Type to one foreign layout.
@@ -413,8 +417,22 @@ type
     lifecycle*: string
     mutable*: bool
     wrapperField*: string
+    wrapperFieldSchema*: string
+      ## Canonical label of the declared handle prop — `(C/OwnedPtr CPoint)`.
+      ## Changing its ownership flavor changes what a transfer or copy is valid
+      ## under, and no layout hash can see that.
     releaseSymbol*: string
     copySymbol*: string
+    abiFingerprint*: string
+    contractFingerprint*: string
+      ## Hash of the *complete* code-generation contract, nesting
+      ## `abiFingerprint`. Compiled code bakes in more than the layout:
+      ## `copySymbol` and `releaseSymbol` become call targets, `wrapperField`
+      ## becomes a string literal at every boundary helper, `mutable` decides
+      ## whether a field store lowers at all, and the handle schema decides what
+      ## an ownership transfer means. An entry compiled against `^copy old_copy`
+      ## would otherwise keep applying it after the live Type was re-registered
+      ## with `^copy new_copy` — same ABI, same layout, no signal.
 
   FfiUnionProto* = ref object
     name*: string
@@ -1673,6 +1691,67 @@ proc ffiTypeLabel(expr: Value): string =
       "(" & parts.join(" ") & ")"
   else:
     expr.print()
+
+const
+  AbiFingerprintVersion* = 1
+    ## Leads every serialization, so changing the hashing rule invalidates every
+    ## previously built library by design.
+  FnvOffsetBasis = 0xcbf29ce484222325'u64
+  FnvPrime = 0x100000001b3'u64
+  FingerprintSep = "\x1f"
+
+proc fingerprintOf(source: string): string =
+  ## FNV-1a. Explicitly not Nim's `hash`, which is not guaranteed stable across
+  ## builds or versions — this value is compared between a library compiled at
+  ## one time and a runtime Type registered at another.
+  var h = FnvOffsetBasis
+  for ch in source:
+    h = h xor uint64(uint8(ch))
+    h = h * FnvPrime
+  toHex(h, 16).toLowerAscii
+
+proc layoutFingerprintSource*(proto: FfiStructProto): string =
+  ## The canonical, human-inspectable serialization the layout hash is taken
+  ## over. A pointer field contributes its pointee's *ABI* identity, not the
+  ## nominal one: two Types can name the same layout, and it is the layout that
+  ## determines the offsets this hash is about.
+  ##
+  ## Shallow on purpose. A pointee contributes an identity string rather than
+  ## its own fingerprint, because `CNode.next : Node` is self-referential and a
+  ## transitive hash would not terminate. Completeness comes from every layout
+  ## the library depends on appearing in the manifest and being validated
+  ## independently.
+  var parts = @[$AbiFingerprintVersion, proto.layout,
+                (if proto.hasSize: $proto.size else: "-"),
+                (if proto.hasAlign: $proto.align else: "-")]
+  for field in proto.fields:
+    parts.add field.name
+    parts.add ffiTypeLabel(field.typeExpr)
+    parts.add field.pointeeAbiIdentity
+    parts.add (if field.hasOffset: $field.offset else: "-")
+  parts.join(FingerprintSep)
+
+proc computeLayoutFingerprint*(proto: FfiStructProto) =
+  if proto != nil:
+    proto.fingerprint = fingerprintOf(proto.layoutFingerprintSource())
+
+proc contractFingerprintSource*(proto: NativeTypeProto): string =
+  ## The complete code-generation contract, nesting the layout hash so any
+  ## layout change still moves this value.
+  @[$AbiFingerprintVersion, proto.identity, proto.abiIdentity,
+    proto.abiFingerprint, proto.lifecycle,
+    (if proto.mutable: "mut" else: "const"), proto.wrapperField,
+    proto.wrapperFieldSchema, proto.releaseSymbol,
+    proto.copySymbol].join(FingerprintSep)
+
+proc computeContractFingerprint*(proto: NativeTypeProto) =
+  if proto == nil:
+    return
+  if proto.abi != nil:
+    if proto.abi.fingerprint.len == 0:
+      computeLayoutFingerprint(proto.abi)
+    proto.abiFingerprint = proto.abi.fingerprint
+  proto.contractFingerprint = fingerprintOf(proto.contractFingerprintSource())
 
 proc ffiCType(label: string, paramName = ""): string =
   case label

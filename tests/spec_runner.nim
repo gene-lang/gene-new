@@ -1895,6 +1895,103 @@ int main(void) {
     # And the emitted field is the real struct pointer, not `void *`.
     check "CPoint * p;" in chunk.emitExperimentalC()
 
+  test "a layout fingerprint tracks the declaration, not the struct's name":
+    ## Type identity implies the ABI within one build but not across one: a
+    ## library built before a layout change carries the same identity and reads
+    ## obsolete offsets. The fingerprint is what makes that detectable.
+    proc layoutFp(src: string, structName = "CPoint"): string =
+      for layout in compileSource(src).ffiStructs:
+        if layout.name == structName:
+          return layout.fingerprint
+      ""
+
+    let base = layoutFp(
+      "(ffi/struct CPoint ^fields [[x C/Int64] [y C/Int64]])")
+    check base.len == 16
+
+    # Reordering fields changes the offsets, so it changes the fingerprint.
+    check layoutFp("(ffi/struct CPoint ^fields [[y C/Int64] [x C/Int64]])") !=
+      base
+    # So does changing a field's type, or its name.
+    check layoutFp("(ffi/struct CPoint ^fields [[x C/Int32] [y C/Int64]])") !=
+      base
+    check layoutFp("(ffi/struct CPoint ^fields [[a C/Int64] [y C/Int64]])") !=
+      base
+    # Asserting a size where there was none is a new claim about the layout.
+    check layoutFp(
+      "(ffi/struct CPoint ^size 16 ^fields [[x C/Int64] [y C/Int64]])") != base
+    # Renaming the struct changes the *identity* instead; the layout is the same.
+    check layoutFp(
+      "(ffi/struct COther ^fields [[x C/Int64] [y C/Int64]])", "COther") == base
+    # An unrelated struct in the same module does not perturb it.
+    check layoutFp(
+      "(ffi/struct CPoint ^fields [[x C/Int64] [y C/Int64]]) " &
+      "(ffi/struct CElse ^fields [[z C/Int64]])") == base
+
+  test "a contract fingerprint covers policy the layout hash cannot see":
+    ## Compiled code bakes in `^copy`, `^release`, `^wrapper`, `^mutable` and
+    ## `^lifecycle` as call targets, string literals and lowering decisions. An
+    ## entry compiled against `^copy old_copy` would otherwise keep applying it
+    ## after the live Type was re-registered with `^copy new_copy` — same ABI
+    ## identity, same layout fingerprint, no signal at all.
+    proc contractFp(native: string): string =
+      let src =
+        "(ffi/struct CPoint ^fields [[x C/Int64]]) " &
+        "(type Point ^repr native_wrapper " &
+        "  ^props {^handle (C/OwnedPtr CPoint)} " &
+        "  ^native " & native & ")"
+      for typeProto in compileSource(src).typeProtos:
+        if typeProto.nativeType != nil:
+          return typeProto.nativeType.contractFingerprint
+      ""
+
+    let base = contractFp(
+      "{^abi CPoint ^lifecycle manual ^wrapper handle " &
+      " ^release \"point_free\" ^copy \"point_copy\"}")
+    check base.len == 16
+
+    # The finding, exactly: only ^copy differs, layout untouched.
+    check contractFp(
+      "{^abi CPoint ^lifecycle manual ^wrapper handle " &
+      " ^release \"point_free\" ^copy \"other_copy\"}") != base
+    # And each of the other contract fields.
+    check contractFp(
+      "{^abi CPoint ^lifecycle manual ^wrapper handle " &
+      " ^release \"other_free\" ^copy \"point_copy\"}") != base
+    check contractFp(
+      "{^abi CPoint ^lifecycle manual ^wrapper handle ^mutable true " &
+      " ^release \"point_free\" ^copy \"point_copy\"}") != base
+
+    ## A layout change still moves it, because the contract hash nests the
+    ## layout hash rather than sitting beside it.
+    let widened =
+      "(ffi/struct CPoint ^fields [[x C/Int64] [y C/Int64]]) " &
+      "(type Point ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CPoint)} " &
+      "  ^native {^abi CPoint ^lifecycle manual ^wrapper handle " &
+      "           ^release \"point_free\" ^copy \"point_copy\"})"
+    var widenedFp = ""
+    for typeProto in compileSource(widened).typeProtos:
+      if typeProto.nativeType != nil:
+        widenedFp = typeProto.nativeType.contractFingerprint
+    check widenedFp != base
+
+  test "the wrapper handle's ownership flavor is part of the contract":
+    ## `(C/OwnedPtr CPoint)` -> `(C/Ptr CPoint)` changes what a transfer or copy
+    ## means to already compiled code, and touches neither the layout nor any
+    ## `^native` field.
+    proc handleFp(handleType: string): string =
+      let src =
+        "(ffi/struct CPoint ^fields [[x C/Int64]]) " &
+        "(type Point ^repr native_wrapper " &
+        "  ^props {^handle " & handleType & "} " &
+        "  ^native {^abi CPoint ^lifecycle manual ^wrapper handle})"
+      for typeProto in compileSource(src).typeProtos:
+        if typeProto.nativeType != nil:
+          return typeProto.nativeType.contractFingerprint
+      ""
+    check handleFp("(C/OwnedPtr CPoint)") != handleFp("(C/Ptr CPoint)")
+
   test "typed-native field stores preserve their result's nominal type":
     check_compile_error(
       "(ffi/struct CNode ^fields [[next (C/NullablePtr Node)]]) " &

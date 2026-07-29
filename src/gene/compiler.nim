@@ -4137,6 +4137,7 @@ proc nativeTypeProtoFrom(marker, typeForm: Value, name, identity: string,
         "type " & name & " ^native ^mutable must be Bool")
     mutable = value.boolVal
   var wrapperField = ""
+  var wrapperFieldSchema = ""
   if marker.mapEntries.hasKey("wrapper"):
     let value = marker.mapEntries["wrapper"]
     if value.kind != vkSymbol:
@@ -4153,6 +4154,14 @@ proc nativeTypeProtoFrom(marker, typeForm: Value, name, identity: string,
         raise newException(GeneError,
           "type " & name & " ^native ^wrapper field is not declared: " &
           value.symVal)
+      ## Recorded, not merely validated. The declared prop type is what says
+      ## whether the handle is owned, and changing `(C/OwnedPtr CPoint)` to
+      ## `(C/Ptr CPoint)` changes what a transfer or copy means to already
+      ## compiled code — a change no layout hash can see. The canonical label
+      ## carries both the flavor and the ABI struct's name, and it is identical
+      ## on the header and artifact paths, which the identity alone would not be.
+      wrapperFieldSchema =
+        ffiTypeLabel(typeForm.props["props"].mapEntries[value.symVal])
     wrapperField = value.symVal
   var releaseSymbol = ""
   if marker.mapEntries.hasKey("release"):
@@ -4170,7 +4179,7 @@ proc nativeTypeProtoFrom(marker, typeForm: Value, name, identity: string,
         "type " & name & " ^native ^copy must be a non-empty Str")
     validateCSymbol("type " & name & " ^native", "copy", value.strVal)
     copySymbol = value.strVal
-  NativeTypeProto(
+  result = NativeTypeProto(
     name: name,
     identity: identity,
     abiIdentity: abi.identity,
@@ -4178,8 +4187,10 @@ proc nativeTypeProtoFrom(marker, typeForm: Value, name, identity: string,
     lifecycle: lifecycle,
     mutable: mutable,
     wrapperField: wrapperField,
+    wrapperFieldSchema: wrapperFieldSchema,
     releaseSymbol: releaseSymbol,
     copySymbol: copySymbol)
+  computeContractFingerprint(result)
 
 proc resolveNativeInterfaceTypes(iface: CompileNamespaceInterface,
                                  sourceName: string,
@@ -4246,6 +4257,14 @@ proc resolveInterfacePointees(iface: CompileNamespaceInterface) =
       let resolved = lookup(name)
       field.pointeeTypeIdentity = resolved.typeIdentity
       field.pointeeAbiIdentity = resolved.abiIdentity
+  ## Fingerprints last: the layout hash reads the pointee identities just
+  ## resolved, and the contract hash nests the layout hash.
+  for _, entryValue in iface.entries.mpairs:
+    if entryValue.ffiStruct != nil:
+      computeLayoutFingerprint(entryValue.ffiStruct)
+  for _, entryValue in iface.entries.mpairs:
+    if entryValue.nativeType != nil:
+      computeContractFingerprint(entryValue.nativeType)
 
 proc buildCompileInterface*(forms: openArray[Value],
                             sourceName = "",
@@ -4298,6 +4317,7 @@ proc ffiStructsEqual(a, b: FfiStructProto): bool =
   if a == nil or b == nil:
     return a == b
   if a.identity != b.identity or a.layout != b.layout or
+      a.fingerprint != b.fingerprint or
       a.hasSize != b.hasSize or a.size != b.size or
       a.hasAlign != b.hasAlign or a.align != b.align or
       a.fields.len != b.fields.len:
@@ -4318,6 +4338,9 @@ proc nativeTypesEqual(a, b: NativeTypeProto): bool =
   a.name == b.name and a.identity == b.identity and
     a.abiIdentity == b.abiIdentity and a.lifecycle == b.lifecycle and
     a.mutable == b.mutable and a.wrapperField == b.wrapperField and
+    a.wrapperFieldSchema == b.wrapperFieldSchema and
+    a.abiFingerprint == b.abiFingerprint and
+    a.contractFingerprint == b.contractFingerprint and
     a.releaseSymbol == b.releaseSymbol and a.copySymbol == b.copySymbol and
     ffiStructsEqual(a.abi, b.abi)
 
@@ -5114,7 +5137,10 @@ proc compileFfiStruct(c: var Compiler, node: Value) =
     align: propInt(node, "align", -1, "ffi/struct", hasAlign),
     hasAlign: hasAlign,
     fields: parseFfiStructFields(node.props["fields"]))
+  ## After pointee resolution, never before: the layout hash includes each
+  ## pointer field's pointee ABI identity.
   c.resolveFfiPointeeFields(proto.fields)
+  computeLayoutFingerprint(proto)
   var present = false
   for existing in c.chunk.ffiStructs:
     if existing.identity == proto.identity:
