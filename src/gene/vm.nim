@@ -17210,17 +17210,56 @@ proc ffiBufferArg(name, label: string, typeExpr, value: Value): FfiBufferArg =
   if result.bytes.len > 0:
     result.data = cast[pointer](addr result.bytes[0])
 
-proc copyBackFfiBufferArg(arg: FfiBufferArg) =
-  if arg.buffer.kind != vkBuffer:
+proc copyBackFfiBufferLease*(lease: FfiBufferLease) =
+  if lease.buffer.kind != vkBuffer:
     return
-  for i, byte in arg.bytes:
+  for i, byte in lease.bytes:
     let item =
-      case arg.elementLabel
+      case lease.elementLabel
       of "C/Int8", "C/Char":
         newInt(int64(cast[int8](byte)))
       else:
         newInt(int64(byte))
-    arg.buffer.setBufferItem(i, item)
+    lease.buffer.setBufferItem(i, item)
+
+proc copyBackFfiBufferArg(arg: FfiBufferArg) =
+  copyBackFfiBufferLease(FfiBufferLease(buffer: arg.buffer,
+                                        elementLabel: arg.elementLabel,
+                                        bytes: arg.bytes,
+                                        length: arg.length))
+
+proc ffiAotSliceArg*(where, label: string, value: Value):
+    tuple[address: pointer, length: csize_t] =
+  ## `C/Slice` borrows the Gene value's own storage, so there is nothing to
+  ## release and nothing to write back.
+  if not matchesCSliceType("C/Slice", [ffiPointerTarget(label)], value, nil):
+    raiseTypeError(where, label, value, nil)
+  (value.cSliceAddress, csize_t(value.cSliceLen))
+
+proc ffiAotBufferLease*(where, label: string, value: Value): FfiBufferLease =
+  ## Builds the marshalling storage a `Buffer` argument needs. The caller must
+  ## keep the returned lease alive for the duration of the call and hand it to
+  ## `copyBackFfiBufferLease` afterwards; the view it produces points into the
+  ## lease's own bytes.
+  if value.kind != vkBuffer:
+    raiseTypeError(where, label, value, nil)
+  let elementLabel = ffiPointerTarget(label).print()
+  if elementLabel notin ["C/UInt8", "C/UChar", "C/Char", "C/Int8"]:
+    raise newException(GeneError,
+      where & " only supports dynamic FFI buffers of byte-compatible C types")
+  result.buffer = value
+  result.elementLabel = elementLabel
+  let items = value.bufferItems
+  result.bytes = newSeq[uint8](items.len)
+  for i, item in items:
+    let itemName = where & " item " & $i
+    result.bytes[i] =
+      case elementLabel
+      of "C/UInt8": ffiCUInt8Arg(itemName, item)
+      of "C/UChar": ffiCUCharArg(itemName, item)
+      of "C/Char": uint8(ffiCCharArg(itemName, item))
+      else: uint8(ffiCInt8Arg(itemName, item))
+  result.length = csize_t(result.bytes.len)
 
 proc applyFfiCallable(callee: Value, args: openArray[Value],
                       named: NamedArgs): Value =

@@ -198,31 +198,71 @@ type
     data: pointer
     len: csize_t
 
-proc geneFfiArgBuffer(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
-                      name, typeName: cstring,
-                      outValue: ptr AotBufferView): cint
-                     {.exportc: "gene_ffi_arg_buffer", cdecl, dynlib.} =
-  ## Borrowed like `cstr`: the view points into the argument's storage and is
-  ## valid for the call only. A Str is accepted as a byte view, which is what
-  ## a C API taking (bytes, len) expects.
+proc geneFfiArgSlice(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
+                     name, typeName: cstring,
+                     outValue: ptr AotBufferView): cint
+                    {.exportc: "gene_ffi_arg_slice", cdecl, dynlib.} =
+  ## `C/Slice`: borrowed for the call's extent, exactly like `cstr`. The view
+  ## points into the argument's own storage, so there is nothing to release and
+  ## nothing to write back.
   if call == nil or index >= call.len or outValue == nil:
     return ctx.fail("native entry argument index out of range")
   let value = call.argAt(index)
-  case value.kind
-  of vkNil:
-    outValue.data = nil
-    outValue.len = 0
-  of vkString:
-    let s = value.strVal
-    outValue.data = if s.len > 0: cast[pointer](unsafeAddr s[0]) else: nil
-    outValue.len = csize_t(s.len)
-  of vkCSlice:
-    outValue.data = value.cSliceAddress
-    outValue.len = csize_t(value.cSliceLen)
-  else:
-    return ctx.fail("native entry argument '" & $name &
-      "' expects a " & $typeName & " buffer")
+  try:
+    let view = ffiAotSliceArg(argWhere(name), $typeName, value)
+    outValue.data = view.address
+    outValue.len = view.length
+  except CatchableError as e:
+    return ctx.fail(e.msg)
   AotOk
+
+proc geneFfiArgBuffer(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
+                      name, typeName: cstring,
+                      outValue: ptr AotBufferView,
+                      leaseOut: ptr csize_t): cint
+                     {.exportc: "gene_ffi_arg_buffer", cdecl, dynlib.} =
+  ## `Buffer`: marshalled, not borrowed. Every element is unpacked into storage
+  ## the context owns, the callee writes through it, and
+  ## `gene_ffi_buffer_finalize` copies the bytes back.
+  ##
+  ## The lease is an index rather than a pointer, and the view is taken from the
+  ## *stored* copy: appending to the seq copies the bytes, so a pointer computed
+  ## before the append would name the wrong allocation, and a later append could
+  ## reallocate the seq out from under it. Taking the address after the append
+  ## and never resizing again is what keeps the view valid for the call.
+  ##
+  ## This previously accepted a `Str` or a `C/Slice` as a byte view and `nil` as
+  ## empty. The dynamic path requires a real `Buffer`, so those spellings made
+  ## the same program work compiled and fail interpreted; a `Str`-as-bytes
+  ## affordance belongs on both paths or neither.
+  if call == nil or index >= call.len or outValue == nil or leaseOut == nil:
+    return ctx.fail("native entry argument index out of range")
+  if ctx == nil:
+    return ctx.fail("native entry buffer argument requires a context")
+  let value = call.argAt(index)
+  try:
+    ctx.buffers.add ffiAotBufferLease(argWhere(name), $typeName, value)
+  except CatchableError as e:
+    return ctx.fail(e.msg)
+  let slot = ctx.buffers.high
+  leaseOut[] = csize_t(slot)
+  outValue.len = ctx.buffers[slot].length
+  outValue.data =
+    if ctx.buffers[slot].bytes.len > 0:
+      cast[pointer](addr ctx.buffers[slot].bytes[0])
+    else:
+      nil
+  AotOk
+
+proc geneFfiBufferFinalize(ctx: ptr AotContext, lease: csize_t)
+                          {.exportc: "gene_ffi_buffer_finalize", cdecl,
+                            dynlib.} =
+  ## Writes a Buffer argument's bytes back into the Gene value after the callee
+  ## has run. Without this the callee's writes are silently discarded — which is
+  ## why the test for it observes a mutation rather than the emitted call.
+  if ctx == nil or int(lease) > ctx.buffers.high:
+    return
+  copyBackFfiBufferLease(ctx.buffers[int(lease)])
 
 # ---------------------------------------------------------------------------
 # Scalar results

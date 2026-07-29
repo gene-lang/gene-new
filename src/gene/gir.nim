@@ -1358,7 +1358,12 @@ type FfiMarshalKind = enum
   fmkCStr
   fmkPtr
   fmkConstPtr
+  fmkSlice
   fmkBuffer
+    ## `C/Slice` and `Buffer` are two lifecycles, not one. A slice borrows the
+    ## Gene value's own storage for the call; a Buffer marshals every element
+    ## into temporary bytes and must copy them back afterwards, so it needs
+    ## storage that outlives the argument helper and an explicit finalize.
 
 proc ffiTypeLabel(expr: Value): string
 
@@ -1712,18 +1717,26 @@ proc ffiMarshalKind(label: string, isResult = false): FfiMarshalKind =
     elif label.startsWith("(C/Ptr ") or label.startsWith("(C/NullablePtr ") or
         label.startsWith("(C/OwnedPtr "):
       fmkPtr
-    elif not isResult and
-        (label.startsWith("(C/Slice ") or label.startsWith("(Buffer ")):
+    elif not isResult and label.startsWith("(C/Slice "):
+      fmkSlice
+    elif not isResult and label.startsWith("(Buffer "):
       fmkBuffer
     else:
       fmkUnsupported
 
 proc ffiParamCDecls(label, paramName: string): seq[string] =
   let name = cIdent(paramName, "arg")
-  if ffiMarshalKind(label) == fmkBuffer:
-    return @["const void * " & name,
-             "size_t " & cIdent(name & "_len", "arg_len")]
-  @[ffiCType(label, name) & " " & name]
+  case ffiMarshalKind(label)
+  of fmkSlice:
+    ## Borrowed and not written back, so the callee sees it as const.
+    @["const void * " & name, "size_t " & cIdent(name & "_len", "arg_len")]
+  of fmkBuffer:
+    ## Not const: a Buffer's whole point is that the callee writes it and the
+    ## bytes are copied back into the Gene value afterwards. Declaring it
+    ## `const void *` misdescribed every mutating C function it was used with.
+    @["void * " & name, "size_t " & cIdent(name & "_len", "arg_len")]
+  else:
+    @[ffiCType(label, name) & " " & name]
 
 proc ffiHelperSuffix(label: string): string =
   case label
@@ -1753,6 +1766,7 @@ proc ffiHelperSuffix(label: string): string =
     case ffiMarshalKind(label)
     of fmkPtr: "ptr"
     of fmkConstPtr: "const_ptr"
+    of fmkSlice: "slice"
     of fmkBuffer: "buffer"
     else: "unsupported"
 
@@ -1865,7 +1879,9 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
   for i, p in fn.params:
     let label = ffiTypeLabel(p.typeExpr)
     let shape =
-      if ffiMarshalKind(label) == fmkBuffer: "const void *, size_t"
+      case ffiMarshalKind(label)
+      of fmkSlice: "const void *, size_t"
+      of fmkBuffer: "void *, size_t"
       else: ffiCType(label, p.name)
     lines.add "  /* arg " & $i & " " & p.name & ": " & label &
       " -> " & shape & " */"
@@ -1886,6 +1902,7 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
     $fn.params.len & ");"
   lines.add "  if (status != GENE_OK) return status;"
   var callArgs: seq[string]
+  var bufferLeases: seq[string]
   for i, p in fn.params:
     let label = ffiTypeLabel(p.typeExpr)
     let name = cIdent(p.name, "arg" & $i)
@@ -1917,29 +1934,55 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
         name & ");"
       lines.add "  if (status != GENE_OK) return status;"
       callArgs.add name
-    of fmkBuffer:
+    of fmkSlice:
+      ## Borrowed: the view points into the Gene value's own storage and is
+      ## valid for the call. Nothing to release and nothing to write back.
       lines.add "  GeneFfiBufferView " & name & "_view;"
-      lines.add "  status = gene_ffi_arg_buffer(ctx, call, " & $i & ", " &
+      lines.add "  status = gene_ffi_arg_slice(ctx, call, " & $i & ", " &
         cStringLiteral(p.name) & ", " & cStringLiteral(label) & ", &" &
         name & "_view);"
       lines.add "  if (status != GENE_OK) return status;"
       callArgs.add name & "_view.data"
       callArgs.add name & "_view.len"
+    of fmkBuffer:
+      ## Marshalled: the helper unpacks each element into temporary bytes owned
+      ## by the context, so the view stays valid for the call, and returns a
+      ## lease. The bytes are written back to the Gene buffer at the matching
+      ## finalize below — without it a callee's writes would be discarded.
+      lines.add "  GeneFfiBufferView " & name & "_view;"
+      lines.add "  GeneFfiBufferLease " & name & "_lease;"
+      lines.add "  status = gene_ffi_arg_buffer(ctx, call, " & $i & ", " &
+        cStringLiteral(p.name) & ", " & cStringLiteral(label) & ", &" &
+        name & "_view, &" & name & "_lease);"
+      lines.add "  if (status != GENE_OK) return status;"
+      callArgs.add name & "_view.data"
+      callArgs.add name & "_view.len"
+      bufferLeases.add name & "_lease"
     else:
       discard
   let args = callArgs.join(", ")
+
+  proc addFinalizeLines(lines: var seq[string]) =
+    ## Copy-back runs after the callee and before the result is built, in
+    ## parameter order — the same order and position the dynamic path uses.
+    for lease in bufferLeases:
+      lines.add "  gene_ffi_buffer_finalize(ctx, " & lease & ");"
+
   case ffiMarshalKind(retLabel, isResult = true)
   of fmkVoid:
     lines.add "  " & cSymbol & "(" & args & ");"
+    addFinalizeLines(lines)
     lines.add "  return gene_ffi_result_void(ctx, result);"
   of fmkScalar, fmkCStr:
     lines.add "  " & retType & " native_result = " & cSymbol & "(" &
       args & ");"
+    addFinalizeLines(lines)
     lines.add "  return gene_ffi_result_" & ffiResultHelperSuffix(retLabel) &
       "(ctx, native_result, result);"
   of fmkPtr, fmkConstPtr:
     lines.add "  " & retType & " native_result = " & cSymbol & "(" &
       args & ");"
+    addFinalizeLines(lines)
     lines.add "  return gene_ffi_result_ptr(ctx, (void *)native_result, " &
       cStringLiteral(retLabel) & ", " &
       (if fn.release.len > 0: cStringLiteral(fn.release) else: "NULL") &
@@ -2668,6 +2711,10 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "  const void *data;",
     "  size_t len;",
     "} GeneFfiBufferView;",
+    "/* Opaque handle to context-owned marshalling storage for one Buffer",
+    " * argument. The bytes it names outlive the argument helper and are",
+    " * written back to the Gene value at gene_ffi_buffer_finalize. */",
+    "typedef size_t GeneFfiBufferLease;",
     "#define GENE_NATIVE_FRAME_TYPED (1u << 0)",
     "#define GENE_NATIVE_FRAME_CAN_SUSPEND (1u << 1)",
     "#define GENE_ALIGNOF(T) offsetof(struct { char c; T x; }, x)",
@@ -2740,7 +2787,9 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "extern GeneStatus gene_ffi_arg_cstr(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char **out);",
     "extern GeneStatus gene_ffi_arg_ptr(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_name, void **out);",
     "extern GeneStatus gene_ffi_arg_const_ptr(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_name, const void **out);",
-    "extern GeneStatus gene_ffi_arg_buffer(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_name, GeneFfiBufferView *out);",
+    "extern GeneStatus gene_ffi_arg_slice(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_name, GeneFfiBufferView *out);",
+    "extern GeneStatus gene_ffi_arg_buffer(GeneContext *ctx, const GeneCall *call, size_t index, const char *name, const char *type_name, GeneFfiBufferView *out, GeneFfiBufferLease *lease);",
+    "extern void gene_ffi_buffer_finalize(GeneContext *ctx, GeneFfiBufferLease lease);",
     "extern GeneStatus gene_ffi_result_void(GeneContext *ctx, GeneValue *result);",
     "extern GeneStatus gene_ffi_result_int8(GeneContext *ctx, int8_t value, GeneValue *result);",
     "extern GeneStatus gene_ffi_result_uint8(GeneContext *ctx, uint8_t value, GeneValue *result);",

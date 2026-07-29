@@ -1420,6 +1420,76 @@ void free_a(void *p) { free(p); }
         prelude & "(var p (n/make_owned_a)) ($C/close p) (n/take_a p)",
         "expected")
 
+  test "a compiled Buffer argument is written back, a C/Slice is not":
+    ## `C/Slice` and `Buffer` shared one emitter kind and one helper, which
+    ## returned only a view. A Buffer's storage is marshalled rather than
+    ## borrowed, so a view alone dangles the moment the helper returns and the
+    ## callee's writes are discarded. The Buffer path now takes a
+    ## context-owned lease and copies back at an explicit finalize.
+    ##
+    ## This asserts the mutation arrives in Gene — emitting a finalize call is
+    ## not the same as performing the copy-back.
+    let src =
+      "(ffi/fn fill ^symbol \"fill\" [b : (Buffer C/UInt8)] : C/Int64) " &
+      "(ffi/fn total ^symbol \"total\" [s : (C/Slice C/UInt8)] : C/Int64) "
+    let impl = """
+int64_t fill(void *data, size_t len) {
+  unsigned char *b = (unsigned char *)data;
+  for (size_t i = 0; i < len; i++) b[i] = (unsigned char)(i + 100);
+  return (int64_t)len;
+}
+int64_t total(const void *data, size_t len) {
+  const unsigned char *b = (const unsigned char *)data;
+  int64_t sum = 0;
+  for (size_t i = 0; i < len; i++) sum += b[i];
+  return sum;
+}
+"""
+    let c = compileSource(src).emitExperimentalC()
+    ## A Buffer parameter is by construction an out-parameter, so the callee
+    ## must not see it as const.
+    check "extern int64_t GENE_FFI_CDECL fill(void * b, size_t b_len);" in c
+    check "extern int64_t GENE_FFI_CDECL total(const void * s, size_t s_len);" in c
+    check "gene_ffi_arg_slice(ctx, call, 0, \"s\"" in c
+    check "GeneFfiBufferLease b_lease;" in c
+    check "gene_ffi_buffer_finalize(ctx, b_lease);" in c
+
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    let sourcePath = getTempDir() / "gene_ffi_buffer.c"
+    let libPath = getTempDir() / ("libgene_ffi_buffer" & libExt)
+    writeFile(sourcePath, c & impl)
+    defer:
+      if fileExists(sourcePath): removeFile(sourcePath)
+      if fileExists(libPath): removeFile(libPath)
+    let built = execCmdEx(
+      quoteShell(getEnv("CC", "cc")) &
+        " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+        (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+        quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+    checkpoint built.output
+    check built.exitCode == 0
+    if built.exitCode == 0:
+      let prelude = "(import $aot [load]) " &
+        "(var n (load " & geneString(libPath) & ")) "
+      proc runAot(program: string): Value =
+        run(compileSource(prelude & program), newGlobalScope())
+
+      # The copy-back test: the C callee's writes must be visible in Gene.
+      check runAot(
+        "(var b ($buffer C/UInt8 [0 0 0])) (n/fill b) " &
+        "[(b ~ get 0) (b ~ get 1) (b ~ get 2)]").print() == "[100 101 102]"
+      ## `total` is not called at runtime: nothing in Gene constructs a
+      ## `C/Slice` — they only ever arrive from C — so the slice parameter path
+      ## has no reachable caller to drive. Its separation from Buffer is covered
+      ## by the emission checks above (`gene_ffi_arg_slice`, `const void *`, and
+      ## no lease or finalize).
+      # A Str is not a Buffer. It used to be accepted here and rejected by the
+      # interpreter for the same declaration.
+      check_runtime_error(prelude & "(n/fill \"abc\")", "expected")
+      check_runtime_error(prelude & "(n/fill nil)", "expected")
+
   test "a managed wrapper crosses the AOT boundary in both directions":
     ## §6.4 proper: native code hands back a managed wrapper, Gene passes it
     ## in again, and ownership is honoured. The library and the running module
@@ -2282,15 +2352,20 @@ int main(void) {
       "\"(C/ConstPtr C/Char)\", &p);" in c
     check "return gene_ffi_result_ptr(ctx, (void *)native_result, " &
       "\"(C/NullablePtr C/Char)\", NULL, result);" in c
+    ## A slice borrows and a Buffer is marshalled and copied back, so they take
+    ## different helpers, different constness, and only the Buffer carries a
+    ## lease and a finalize.
     check "extern void GENE_FFI_CDECL consume_slice(const void * s, size_t s_len);" in c
-    check "status = gene_ffi_arg_buffer(ctx, call, 0, \"s\", " &
+    check "status = gene_ffi_arg_slice(ctx, call, 0, \"s\", " &
       "\"(C/Slice C/UInt8)\", &s_view);" in c
     check "consume_slice(s_view.data, s_view.len);" in c
-    check "extern void GENE_FFI_CDECL consume_buffer(const void * b, size_t b_len);" in c
+    check "extern void GENE_FFI_CDECL consume_buffer(void * b, size_t b_len);" in c
     check "GeneFfiBufferView b_view;" in c
+    check "GeneFfiBufferLease b_lease;" in c
     check "status = gene_ffi_arg_buffer(ctx, call, 0, \"b\", " &
-      "\"(Buffer C/UInt8)\", &b_view);" in c
+      "\"(Buffer C/UInt8)\", &b_view, &b_lease);" in c
     check "consume_buffer(b_view.data, b_view.len);" in c
+    check "gene_ffi_buffer_finalize(ctx, b_lease);" in c
     check "return gene_ffi_result_void(ctx, result);" in c
     check "return gene_ffi_result_ptr(ctx, (void *)native_result, " &
       "\"(C/OwnedPtr C/Char)\", \"destroy_owned\", result);" in c

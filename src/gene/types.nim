@@ -406,11 +406,29 @@ type
     args*: ptr UncheckedArray[Value]
     len*: csize_t
 
+  FfiBufferLease* = object
+    ## Marshalling storage for one `Buffer` argument, owned by the call's
+    ## `AotContext`.
+    ##
+    ## A Buffer is not borrowed like a `C/Slice`: every element is unpacked into
+    ## `bytes`, the C callee writes through that storage, and the bytes are
+    ## copied back into `buffer` afterwards. The storage therefore has to
+    ## outlive the argument helper that built it — a view returned by value
+    ## would dangle the moment the helper returned — and the copy-back has to be
+    ## an explicit step after the callee runs.
+    buffer*: Value
+    elementLabel*: string
+    bytes*: seq[uint8]
+    length*: csize_t
+
   AotContext* = object
     ## Helpers report failure by filling `message`; the VM turns that into an
     ## ordinary Gene error at the boundary.
     message*: string
     failed*: bool
+    buffers*: seq[FfiBufferLease]
+      ## Leases live and die with the call. A failed conversion means the callee
+      ## never ran, so nothing is owed a copy-back and the seq simply frees.
 
   AotEntryProc* = proc(ctx: ptr AotContext, call: ptr AotCall,
                        resultOut: ptr Value): cint {.cdecl.}
