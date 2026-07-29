@@ -2406,10 +2406,35 @@ proc aotReprAccepts(destination, source: AotRepr): bool =
   destination.nativeType.identity == source.nativeType.identity and
     (destination.nullable or not source.nullable)
 
-proc nativeFieldAotRepr(c: Compiler, expr: Value): AotRepr =
+proc nativeTypeByIdentity(c: Compiler, identity: string): NativeTypeProto =
+  ## Look a native Type up by its stable module-qualified identity rather than
+  ## by name. Name lookup is what let a consumer's unrelated `Node` answer for
+  ## an imported layout's `Node? next`.
+  if identity.len == 0:
+    return nil
+  for typeProto in c.chunk.typeProtos:
+    if typeProto.nativeType != nil and
+        typeProto.nativeType.identity == identity:
+      return typeProto.nativeType
+  if c.ownCompileInterface != nil:
+    for _, entry in c.ownCompileInterface.entries:
+      if entry.nativeType != nil and entry.nativeType.identity == identity:
+        return entry.nativeType
+  for _, entry in c.importedCompileEntries:
+    if entry.nativeType != nil and entry.nativeType.identity == identity:
+      return entry.nativeType
+
+proc nativeFieldAotRepr(c: Compiler, field: FfiStructField): AotRepr =
   ## Preserve the nominal Gene Type carried by a pointer-valued C field. The C
   ## layout owns the machine shape; the target Type supplies the identity and
   ## nullability needed to type-check subsequent direct loads and stores.
+  ##
+  ## The pointee comes from the identity the *declaring* module recorded, never
+  ## from re-resolving `field.typeExpr` here. An identity that is not reachable
+  ## from this module means this module genuinely cannot type that pointer, so
+  ## the field does not lower — which is the correct answer, and the one that
+  ## replaces silently substituting a same-named local type.
+  let expr = field.typeExpr
   if expr.kind != vkNode or expr.body.len != 1:
     return
   let head = ffiTypeLabel(expr.head)
@@ -2418,7 +2443,7 @@ proc nativeFieldAotRepr(c: Compiler, expr: Value): AotRepr =
   # local/result. Do not erase either contract into a plain mutable pointer.
   if head notin ["C/Ptr", "C/NullablePtr"]:
     return
-  let nativeType = c.nativeTypeFor(expr.body[0])
+  let nativeType = c.nativeTypeByIdentity(field.pointeeTypeIdentity)
   if nativeType == nil:
     return
   AotRepr(kind: arkNativePtr,
@@ -2648,7 +2673,7 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
     let resolved = expr.typedNativeField(params, paramReprs, locals)
     if not resolved.found:
       return false
-    let fieldRepr = c.nativeFieldAotRepr(resolved.field.typeExpr)
+    let fieldRepr = c.nativeFieldAotRepr(resolved.field)
     if fieldRepr.kind != arkNone:
       return resultRepr.aotReprAccepts(fieldRepr)
     return resolved.field.typeExpr.fieldMatchesAotResult(resultRepr)
@@ -2659,7 +2684,7 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
     let valueRepr = expr.body[1].aotBindingRepr(params, paramReprs, locals)
     if valueRepr.kind == arkNone:
       return false
-    let fieldRepr = c.nativeFieldAotRepr(resolved.field.typeExpr)
+    let fieldRepr = c.nativeFieldAotRepr(resolved.field)
     if fieldRepr.kind != arkNone:
       return fieldRepr.aotReprAccepts(valueRepr) and
         resultRepr.aotReprAccepts(valueRepr)
@@ -4185,6 +4210,43 @@ proc resolveNativeInterfaceTypes(iface: CompileNamespaceInterface,
         "::" & (namespacePath & @[name]).join("/"),
       abi)
 
+proc isFfiPointerType(expr: Value): bool
+
+proc resolveInterfacePointees(iface: CompileNamespaceInterface) =
+  ## The header-only counterpart of `resolveFfiPointeeFields`. A consumer that
+  ## only ever sees a dependency's interface must still get pointer fields whose
+  ## pointees were resolved in the declaring module, or the same look-alike
+  ## substitution reappears through that path.
+  ##
+  ## Runs after `resolveNativeInterfaceTypes` so `^native` types already carry
+  ## their identities.
+  if iface == nil:
+    return
+  proc lookup(name: string): tuple[typeIdentity, abiIdentity: string] =
+    if not iface.entries.hasKey(name):
+      return
+    let entry = iface.entries[name]
+    if entry.nativeType != nil:
+      return (entry.nativeType.identity, entry.nativeType.abiIdentity)
+    if entry.ffiStruct != nil:
+      return ("", entry.ffiStruct.identity)
+  for _, entryValue in iface.entries.mpairs:
+    if entryValue.category == cbcNamespace:
+      resolveInterfacePointees(entryValue.namespace)
+      continue
+    if entryValue.ffiStruct == nil:
+      continue
+    for field in entryValue.ffiStruct.fields.mitems:
+      if not field.typeExpr.isFfiPointerType or
+          field.typeExpr.body[0].kind != vkSymbol:
+        continue
+      let name = field.typeExpr.body[0].symVal
+      if name.startsWith("C/"):
+        continue
+      let resolved = lookup(name)
+      field.pointeeTypeIdentity = resolved.typeIdentity
+      field.pointeeAbiIdentity = resolved.abiIdentity
+
 proc buildCompileInterface*(forms: openArray[Value],
                             sourceName = "",
                             namespacePath: seq[string] = @[]):
@@ -4197,6 +4259,7 @@ proc buildCompileInterface*(forms: openArray[Value],
   collectCompileInterfaceForms(forms, 0, result, syntaxNames,
                                sourceName, namespacePath)
   resolveNativeInterfaceTypes(result, sourceName, namespacePath)
+  resolveInterfacePointees(result)
 
 proc compileInterfaceAt*(root: CompileNamespaceInterface,
                          segments: openArray[string]): CompileNamespaceInterface =
@@ -4243,6 +4306,8 @@ proc ffiStructsEqual(a, b: FfiStructProto): bool =
     let left = a.fields[i]
     let right = b.fields[i]
     if left.name != right.name or not equal(left.typeExpr, right.typeExpr) or
+        left.pointeeTypeIdentity != right.pointeeTypeIdentity or
+        left.pointeeAbiIdentity != right.pointeeAbiIdentity or
         left.hasOffset != right.hasOffset or left.offset != right.offset:
       return false
   true
@@ -4989,6 +5054,46 @@ proc compileFfiFn(c: var Compiler, node: Value) =
   c.emitConst(newNativeFn(name, nil))
   c.emitDefineBinding(name, immutable = true)
 
+proc ffiPointeeIdentities(c: Compiler, typeExpr: Value):
+    tuple[typeIdentity, abiIdentity: string] =
+  ## Resolve a pointer field's pointee *in the module that declares the layout*.
+  ##
+  ## This is the whole fix for imported pointer fields: the resolution used to
+  ## happen wherever the field was later read, so an imported `Node? next` bound
+  ## to whatever `Node` the consuming module declared — silently producing a
+  ## pointer to a different layout.
+  ##
+  ## Three outcomes, and only the first two resolve. A pointee naming an
+  ## ordinary C type or an undeclared opaque foreign tag is legitimate and
+  ## carries no identity; requiring one would reject `(C/Ptr C/Void)` and every
+  ## opaque handle.
+  if not typeExpr.isFfiPointerType or typeExpr.body[0].kind != vkSymbol:
+    return
+  let name = typeExpr.body[0].symVal
+  if name.startsWith("C/"):
+    return
+  let own = c.ownInterfaceEntry(name)
+  if own.found:
+    if own.entry.nativeType != nil:
+      return (own.entry.nativeType.identity, own.entry.nativeType.abiIdentity)
+    if own.entry.ffiStruct != nil:
+      return ("", own.entry.ffiStruct.identity)
+  if c.importedCompileEntries.hasKey(name):
+    let entry = c.importedCompileEntries[name]
+    if entry.nativeType != nil:
+      return (entry.nativeType.identity, entry.nativeType.abiIdentity)
+    if entry.ffiStruct != nil:
+      return ("", entry.ffiStruct.identity)
+  for layout in c.chunk.ffiStructs:
+    if layout.name == name:
+      return ("", layout.identity)
+
+proc resolveFfiPointeeFields(c: Compiler, fields: var seq[FfiStructField]) =
+  for field in fields.mitems:
+    let resolved = c.ffiPointeeIdentities(field.typeExpr)
+    field.pointeeTypeIdentity = resolved.typeIdentity
+    field.pointeeAbiIdentity = resolved.abiIdentity
+
 proc compileFfiStruct(c: var Compiler, node: Value) =
   let body = node.body
   if body.len != 1 or body[0].kind != vkSymbol:
@@ -5009,6 +5114,7 @@ proc compileFfiStruct(c: var Compiler, node: Value) =
     align: propInt(node, "align", -1, "ffi/struct", hasAlign),
     hasAlign: hasAlign,
     fields: parseFfiStructFields(node.props["fields"]))
+  c.resolveFfiPointeeFields(proto.fields)
   var present = false
   for existing in c.chunk.ffiStructs:
     if existing.identity == proto.identity:

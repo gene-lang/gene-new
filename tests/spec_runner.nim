@@ -1790,6 +1790,98 @@ int main(void) {
     check "return child;" in c
     checkCCompiles(c, "typed_native_pointer_field")
 
+  test "an imported layout's pointer field keeps the declarer's pointee":
+    ## `FfiStructField.typeExpr` is raw source syntax, and re-resolving it in a
+    ## consuming module bound `Node? next` to whatever `Node` the *consumer*
+    ## declared. The generated C returned a pointer to an unrelated layout with
+    ## no diagnostic, and compiled clean because the field rendered `void *`.
+    ## Pointees are resolved once, in the declaring module, and recorded.
+    proc pointeeDir(): string =
+      result = getTempDir() / "gene_spec_ffi_pointee"
+      removeDir(result)
+      createDir(result)
+      writeFile(result / "lib.gene",
+        "(ffi/struct CNode " &
+        "  ^fields [[next (C/NullablePtr Node)] [value C/Int64]])\n" &
+        "(type Node ^native {^abi CNode ^lifecycle manual ^mutable true})\n")
+
+    proc emitFor(dir, name, source: string): string =
+      writeFile(dir / name, source)
+      let app = newApplication(dir)
+      app.compileFileModule(dir / name).emitExperimentalC()
+
+    let dir = pointeeDir()
+
+    # The benign case: the consumer imports the type it names.
+    let ok = emitFor(dir, "ok.gene",
+      "(import [Node] from \"./lib\")\n" &
+      "(fn peek [n : Node] : Node? n/next)\n")
+    check "CNode * gene_native_peek(CNode * n)" in ok
+    check "return n->next;" in ok
+    ## With the pointee identity known, the field is emitted as the real C type
+    ## rather than `void *`, so C also refuses the substitution below.
+    check "CNode * next;" in ok
+    check "void * next;" notin ok
+
+    # An aliased import still types the field by the *declarer's* Node.
+    let aliased = emitFor(dir, "aliased.gene",
+      "(import [Node : ForeignNode] from \"./lib\")\n" &
+      "(fn peek [n : ForeignNode] : ForeignNode? n/next)\n")
+    check "CNode * gene_native_peek(CNode * n)" in aliased
+
+    # The finding: a consumer-local `Node` over an unrelated layout must not
+    # answer for the imported field. Reproduced before the fix as a silent
+    # miscompile returning `CEvil *` from a `CNode *` field.
+    writeFile(dir / "steal.gene",
+      "(import [Node : ForeignNode] from \"./lib\")\n" &
+      "(ffi/struct CEvil ^fields [[a C/Int64] [b C/Int64] " &
+      "  [c C/Int64] [d C/Int64]])\n" &
+      "(type Node ^native {^abi CEvil ^lifecycle manual})\n" &
+      "(fn steal [n : ForeignNode] : Node? n/next)\n")
+    let app = newApplication(dir)
+    var raised = false
+    try:
+      discard app.compileFileModule(dir / "steal.gene").emitExperimentalC()
+    except CatchableError as e:
+      raised = true
+      check "cannot lower its body statically" in e.msg
+    check raised
+
+  test "ordinary and opaque C pointees need no nominal identity":
+    ## Only a pointee naming a `^native` type or an `ffi/struct` resolves.
+    ## `C/Void`, `C/Char` and an undeclared opaque foreign tag are all valid
+    ## pointees, so requiring resolution would have rejected every opaque
+    ## handle — a check asking the wrong question, which is the recurring bug
+    ## shape in this subset.
+    let c = compileSource(
+      "(ffi/struct CBag ^fields [[raw (C/Ptr C/Void)] " &
+      "  [text (C/Ptr C/Char)] [handle (C/Ptr sqlite3)] [n C/Int64]]) " &
+      "(type Bag ^native {^abi CBag ^lifecycle manual}) " &
+      "(fn count [b : Bag] : I64 b/n)").emitExperimentalC()
+    check "int64_t gene_native_count(CBag * b)" in c
+    check "void * raw;" in c
+    check "void * text;" in c
+    check "void * handle;" in c
+    checkCCompiles(c, "typed_native_opaque_pointee")
+
+  test "a pointer field naming an ffi/struct records its ABI identity":
+    ## The other resolving spelling: `^wrapper handle` declares
+    ## `(C/OwnedPtr CPoint)`, where the pointee is the ABI struct itself rather
+    ## than a nominal Gene type.
+    let chunk = compileSource(
+      "(ffi/struct CPoint ^fields [[x C/Int64]]) " &
+      "(ffi/struct CBox ^fields [[p (C/Ptr CPoint)]]) " &
+      "(type Box ^native {^abi CBox ^lifecycle manual})")
+    var found = false
+    for layout in chunk.ffiStructs:
+      if layout.name == "CBox":
+        found = true
+        check layout.fields[0].pointeeAbiIdentity.endsWith("::CPoint")
+        check layout.fields[0].pointeeTypeIdentity == ""
+    check found
+    # And the emitted field is the real struct pointer, not `void *`.
+    check "CPoint * p;" in chunk.emitExperimentalC()
+
   test "typed-native field stores preserve their result's nominal type":
     check_compile_error(
       "(ffi/struct CNode ^fields [[next (C/NullablePtr Node)]]) " &

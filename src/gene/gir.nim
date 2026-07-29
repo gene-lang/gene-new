@@ -375,8 +375,20 @@ type
     release*: string
 
   FfiStructField* = object
+    ## `typeExpr` is raw source syntax and means whatever it means *where it was
+    ## written*. Re-resolving it in a consuming module let an imported
+    ## `Node? next` bind to whatever `Node` the consumer happened to declare, so
+    ## the pointee is resolved once, in the declaring module, and recorded here.
+    ##
+    ## Both identities are needed and neither implies the other: the nominal one
+    ## types the pointer for later loads and stores, the ABI one names the
+    ## layout and drives C emission. A pointee that is an ordinary C type
+    ## (`C/Void`, `C/Char`) or an opaque foreign tag resolves to neither, which
+    ## is not an error — those are legitimate and stay as they are.
     name*: string
     typeExpr*: Value
+    pointeeTypeIdentity*: string
+    pointeeAbiIdentity*: string
     offset*: int
     hasOffset*: bool
 
@@ -2292,7 +2304,17 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
     if structProto.layout == "C" and structProto.identity notin definedStructs:
       lines.add "typedef struct " & cStructName & " {"
       for i, field in structProto.fields:
-        let fieldType = ffiCType(ffiTypeLabel(field.typeExpr))
+        ## A pointer field whose pointee layout is known renders as that
+        ## struct's own C type rather than `void *`, so C's type system becomes
+        ## a backstop for exactly the substitution this field's recorded
+        ## identity prevents. A pointee that resolved to no layout — an ordinary
+        ## C type, or an opaque foreign tag — keeps its previous rendering.
+        var fieldType = ffiCType(ffiTypeLabel(field.typeExpr))
+        if fieldType == "void *" and field.pointeeAbiIdentity.len > 0:
+          for pointee in chunk.ffiStructs:
+            if pointee.identity == field.pointeeAbiIdentity:
+              fieldType = ffiStructCName(pointee, structNames) & " *"
+              break
         lines.add "  " & fieldType & " " &
           cIdent(field.name, "field_" & $i) & ";"
       lines.add "} " & cStructName & ";"
