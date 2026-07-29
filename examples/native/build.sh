@@ -42,7 +42,7 @@ echo "==> generating C from sqlite_rows.gene"
 echo "==> compiling"
 # shellcheck disable=SC2086
 "$CC" -std=c11 -O2 -Wall $sqlite_cflags \
-  "$out/sqlite_rows.c" "$here/sqlite_shim.c" "$here/main.c" \
+  "$out/sqlite_rows.c" "$here/main.c" \
   -o "$out/sqlite_example" $sqlite_libs
 
 echo "==> built $out/sqlite_example"

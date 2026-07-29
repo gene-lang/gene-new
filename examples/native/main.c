@@ -13,14 +13,12 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* From sqlite_shim.c */
-sqlite3 *gene_sqlite_open_memory(void);
-int gene_sqlite_exec(sqlite3 *db, const char *sql);
-sqlite3_stmt *gene_sqlite_prepare(sqlite3 *db, const char *sql);
-void gene_sqlite_close(sqlite3 *db);
-
 /* Compiled from sqlite_rows.gene. The generated header-less C exposes these
  * with the gene_native_ prefix and unboxed machine types. */
+sqlite3 *gene_native_open_db(const char *path);
+int64_t gene_native_exec(sqlite3 *db, const char *sql);
+sqlite3_stmt *gene_native_prepare(sqlite3 *db, const char *sql);
+int64_t gene_native_close_db(sqlite3 *db);
 int64_t gene_native_step_row(sqlite3_stmt *stmt);
 int64_t gene_native_reset_stmt(sqlite3_stmt *stmt);
 int64_t gene_native_column_count(sqlite3_stmt *stmt);
@@ -36,25 +34,25 @@ int64_t gene_native_scan_total(sqlite3_stmt *stmt, int32_t amount_column,
 #define ROW 100 /* SQLITE_ROW */
 
 int main(void) {
-  sqlite3 *db = gene_sqlite_open_memory();
+  sqlite3 *db = gene_native_open_db(":memory:");
   if (db == NULL) {
     fprintf(stderr, "could not open in-memory database\n");
     return 1;
   }
 
-  if (gene_sqlite_exec(db,
+  if (gene_native_exec(db,
         "create table orders (amount integer, quantity integer);"
         "insert into orders values (10, 3), (20, 5), (30, 7);") != SQLITE_OK) {
     fprintf(stderr, "could not seed database\n");
-    gene_sqlite_close(db);
+    gene_native_close_db(db);
     return 1;
   }
 
   sqlite3_stmt *stmt =
-      gene_sqlite_prepare(db, "select amount, quantity from orders");
+      gene_native_prepare(db, "select amount, quantity from orders");
   if (stmt == NULL) {
     fprintf(stderr, "could not prepare statement\n");
-    gene_sqlite_close(db);
+    gene_native_close_db(db);
     return 1;
   }
 
@@ -83,6 +81,6 @@ int main(void) {
 
   gene_native_reset_stmt(stmt);
   sqlite3_finalize(stmt);
-  gene_sqlite_close(db);
+  gene_native_close_db(db);
   return 0;
 }

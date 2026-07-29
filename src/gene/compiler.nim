@@ -2290,6 +2290,8 @@ proc resolvedAotRepr(c: Compiler, expr: Value): AotRepr =
       return AotRepr(kind: arkI64, typeName: "I64")
     of "I32":
       return AotRepr(kind: arkI32, typeName: "I32")
+    of "Str":
+      return AotRepr(kind: arkCStr, typeName: "Str")
     of "F64":
       return AotRepr(kind: arkF64, typeName: "F64")
     else:
@@ -2317,6 +2319,8 @@ proc fieldMatchesAotResult(fieldType: Value, resultRepr: AotRepr): bool =
       "C/Int8", "C/UInt8", "C/Int16", "C/UInt16", "C/Int32", "C/Char",
       "C/UChar", "C/Short", "C/UShort", "C/Int"
     ]
+  of arkCStr:
+    label == "C/CStr"
   of arkF64:
     label in ["C/Float", "C/Double"]
   else:
@@ -2333,6 +2337,8 @@ proc fieldAcceptsAotStore(fieldType: Value, valueRepr: AotRepr): bool =
     ## An `I32` is in range for any of these by construction, so the store
     ## stays lossless without a runtime check.
     label in ["C/Int32", "C/Int", "C/Int64"]
+  of arkCStr:
+    label == "C/CStr"
   of arkF64:
     label == "C/Double"
   else:
@@ -2431,6 +2437,23 @@ proc ffiResultMatchesAotRepr(typeExpr: Value, ffiRepr,
   if ffiRepr.kind == arkNativePtr:
     return resultRepr.aotReprAccepts(ffiRepr)
   typeExpr.fieldMatchesAotResult(resultRepr)
+
+proc aotLiteralRepr(expr: Value): AotRepr =
+  ## The representation a literal argument supplies. An integer takes the
+  ## narrowest that holds it, so it satisfies a C `int` parameter as readily as
+  ## a 64-bit one without a narrowing check.
+  case expr.kind
+  of vkString:
+    AotRepr(kind: arkCStr, typeName: "Str")
+  of vkInt:
+    if expr.intVal >= low(int32) and expr.intVal <= high(int32):
+      AotRepr(kind: arkI32, typeName: "I32")
+    else:
+      AotRepr(kind: arkI64, typeName: "I64")
+  of vkFloat:
+    AotRepr(kind: arkF64, typeName: "F64")
+  else:
+    AotRepr()
 
 proc aotBindingNamed(name: string, params: openArray[string],
                      locals: openArray[AotLocal]): bool =
@@ -2583,6 +2606,8 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
   ## produced (proposal §6.3.1).
   if expr.kind == vkNil:
     return resultRepr.kind == arkNativePtr and resultRepr.nullable
+  if expr.kind == vkString:
+    return resultRepr.kind == arkCStr
   if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0 or
       expr.head.kind != vkSymbol:
     return false
@@ -2695,7 +2720,19 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
     if ffiFn.params.len != expr.body.len:
       return false
     for i, arg in expr.body:
-      let argRepr = arg.aotBindingRepr(params, paramReprs, locals)
+      var argRepr = arg.aotBindingRepr(params, paramReprs, locals)
+      if argRepr.kind == arkNone:
+        ## Literals carry their own representation. Without this an FFI
+        ## argument had to be a binding, so even `(f ":memory:")` or `(f x 1)`
+        ## was unlowerable.
+        argRepr = arg.aotLiteralRepr()
+      if argRepr.kind == arkNone and arg.kind == vkNil and
+          i < ffiFn.paramReprs.len and
+          ffiFn.paramReprs[i].kind == arkNativePtr and
+          ffiFn.paramReprs[i].nullable:
+        ## `nil` takes its representation from the parameter: it is the null
+        ## pointer, and only a nullable one admits it.
+        argRepr = ffiFn.paramReprs[i]
       if argRepr.kind == arkNone or i >= ffiFn.paramReprs.len or
           not ffiFn.params[i].typeExpr.ffiParamMatchesAotRepr(
             ffiFn.paramReprs[i], argRepr):

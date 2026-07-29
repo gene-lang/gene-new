@@ -388,15 +388,37 @@ to surface the result — that is where returning a tuple would come back. Until
 that is designed, `^out` functions are typed-native only and the dynamic
 wrapper reports the call as unsupported rather than guessing.
 
-This alone does not retire `examples/native/sqlite_shim.c`, and the reason is
-worth recording because it is not the out-parameter. `sqlite3_open` and
-`sqlite3_prepare_v2` also take a `const char *`, and the subset has no string
-representation: `C/CStr` resolves to no machine representation, so it cannot be
-a typed-native parameter or local, and a string literal cannot be an argument.
-Finishing that case needs `C/CStr` as a *boundary* representation in the same
-sense as `I32` — a `const char *` that crosses edges and is borrowed for the
-call's extent. The dynamic side of it already exists: `gene_ffi_arg_cstr`
-borrows from the argument's own storage rather than a temporary.
+### 6.3.2 Strings as a boundary representation
+
+`Str` resolves to `const char *`, borrowed for the call's extent. Like `I32`
+it crosses edges — parameter, local, FFI argument — and is never computed
+with; the subset has no string operations, and any that arrive later belong in
+dynamic Gene where a `Str` is a real value.
+
+```gene
+(fn open_db [path : Str] : Db?
+  (do
+    (var db : Db? nil)
+    (let rc : I64 (sqlite3_open path db))
+    (if (= rc 0) db nil)))
+```
+
+Lifetime is the whole design constraint. A `Str` argument owns the storage the
+pointer refers to and outlives the call, so the borrow is valid throughout and
+foreign code must not retain it — the same rule `gene_ffi_arg_cstr` already
+applies at the dynamic boundary, which borrows from the argument's own storage
+rather than a temporary. String *literals* are safer still: they have static
+lifetime, so `(sqlite3_open ":memory:" db)` is always valid.
+
+Literal arguments in general became lowerable with this: an FFI argument used
+to have to be a binding, so neither `":memory:"` nor a plain `1` could be
+passed. An integer literal takes the narrowest representation that holds it, so
+it satisfies a C `int` parameter as readily as a 64-bit one, and `nil` takes
+its representation from the parameter it fills.
+
+Together with §6.3.1 this retired the hand-written C shim in
+`examples/native`: `sqlite3_open`, `sqlite3_exec`, `sqlite3_prepare_v2` and
+`sqlite3_close` are now bound directly, and acquisition happens in Gene.
 
 ### 6.4 Explicit dynamic boxing
 

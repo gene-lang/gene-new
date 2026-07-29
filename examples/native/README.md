@@ -37,8 +37,7 @@ Both directions across the boundary are covered.
 | file | role |
 |---|---|
 | `sqlite_rows.gene` | the typed-native module — compiled to C by the backend |
-| `sqlite_shim.c` | thin C adapters for signatures the subset cannot express |
-| `main.c` | driver: opens the database, runs the row loop |
+| `main.c` | driver: calls into the Gene-compiled entry points |
 
 **Gene calling native code:**
 
@@ -177,72 +176,49 @@ int64_t gene_native_read_first(sqlite3_stmt * stmt, int64_t first_column) {
 
 There is no `GeneValue` anywhere in the typed function bodies.
 
-## Why the loop is in C
+## What the subset covers
 
-This is the honest part. The `typed_native` subset is currently narrow, and
-the example's shape is dictated by its limits rather than by preference. A
-function with a native-pointer parameter may:
+A function with a native-pointer parameter may read and write native struct
+fields, bind locals, call another typed-native function / typed FFI symbol /
+statically resolved qualified send, compute with `+ - *`, the comparisons and
+`if`, loop with `while`, and group statements with a block-scoped `do`.
 
-- read and write native struct fields;
-- bind locals with `let`/`var`;
-- call another typed-native function, a typed FFI symbol, or a statically
-  resolved qualified protocol send (`(recv ~ P:m)`);
-- compute with `+`, `-`, `*`, the comparisons, `if`, and scalar literals,
-  nested freely;
-- loop with `while`, and group statements with a block-scoped `do`;
-- return any of the above.
+Three boundary representations cross edges without being computed with:
 
-That is enough to keep a whole scan in Gene. `scan_total` steps the statement,
-reads both columns, multiplies and accumulates — all in one compiled C
-function, with `main.c` calling it once:
+- **`I32`** — matches a C `int` exactly. Gene's `I32` is a range-checked Int,
+  so it widens into `I64` to be computed with rather than wrapping as C would.
+- **`Str`** — borrowed as a `const char *` for the call's extent. The argument
+  owns the storage; foreign code must not retain it. String literals work too.
+- **`^out` parameters** — passed by address and written through, so C's
+  "status plus out-handle" signatures are expressible directly.
 
-```c
-int64_t gene_native_scan_total(sqlite3_stmt * stmt, int64_t amount_column,
-                               int64_t quantity_column, int64_t row_marker) {
-  int64_t total = 0;
-  while ((gene_native_step_row(stmt) == row_marker)) {
-    total = (total + gene_native_row_total(stmt, amount_column,
-                                           quantity_column));
-  }
-  return total;
-}
+Together those retired the C shim this example used to need: `sqlite3_open`,
+`sqlite3_exec`, `sqlite3_prepare_v2` and `sqlite3_close` are all bound
+directly, and acquisition happens in Gene:
+
+```gene
+(fn open_db [path : Str] : Db?
+  (do
+    (var db : Db? nil)
+    (let rc : I64 (sqlite3_open path db))
+    (if (= rc 0) db nil)))
 ```
 
-The example runs the scan both ways — a C loop calling `row_total` per row,
-and this single compiled call — and both report `340`.
-
-Constraints worth knowing: both arms of an `if` must share the result
-representation (a C ternary has one type, and there is no boxing available to
-reconcile two), and a local declared inside a block leaves scope with it, just
-as in the emitted C.
-
-Two further limits shape `sqlite_shim.c`:
-
-- **Out-parameters.** `sqlite3_open`/`sqlite3_prepare_v2` return handles
-  through `sqlite3**`. Typed-native Gene cannot take the address of a local,
-  so acquisition happens in C and Gene receives an open pointer.
-- ~~**`int` parameters.**~~ Resolved: declare the index `I32` and
-  `sqlite3_column_int64` binds directly. `I32` is a *boundary* representation —
-  it crosses edges (parameter, result, native field, FFI argument) and widens
-  into `I64` to be computed with, but arithmetic never produces one. Gene's
-  `I32` is a range-checked Int, so the interpreter rejects a result outside 32
-  bits while C `int32_t` would wrap silently; keeping computation in `I64` is
-  what stops the two from disagreeing.
-- **Literal arguments.** FFI call arguments must be bindings, not literals, so
-  column indices are passed in as parameters.
+The `while` loop still lives in `main.c` only because the driver is a C
+program; `scan_total` shows the same loop compiled from Gene.
 
 ## Linking
 
 The generated C declares the `gene_ffi_*` / `gene_typed_native_*` runtime
-helpers but no Gene runtime defines them yet — production AOT backends are
-deferred (`docs/implementation-status.md`), and the native C ABI those helpers
-need is design.md's step 12, which precedes native compilation.
+helpers, and `src/gene/aot_runtime.nim` defines them. They are exported from
+the `gene` executable (`-Wl,-export_dynamic` in `nim.cfg`), so a library opened
+with `dlopen` resolves them from the host at load time.
 
-So the dynamic entry wrappers (what interpreted Gene would call to reach these
-symbols) are emitted behind `#ifdef GENE_AOT_DYNAMIC_ENTRIES` and compiled out
-by default. That is what lets this example link standalone. Define the macro
-once a runtime exports those helpers.
+The dynamic entry wrappers — what interpreted Gene calls to reach these symbols
+— are emitted behind `#ifdef GENE_AOT_DYNAMIC_ENTRIES` and compiled out by
+default, which is what lets `sqlite_example` link as a plain C program with no
+Gene runtime at all. `libscaled.dylib` is built with the macro defined, because
+`aot/load` binds exactly those wrappers.
 
-The practical consequence: **this example is C calling Gene-compiled code, not
-a Gene program calling native code.** The second direction is exactly what the
-missing ABI gates.
+So both halves of this directory link for different reasons: the SQLite driver
+needs none of the runtime, and the loadable library needs all of it.

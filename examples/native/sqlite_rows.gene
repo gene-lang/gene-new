@@ -9,7 +9,11 @@
 
 # SQLite's handles are opaque: no public layout, so no declared fields. The
 # ffi/struct exists to give the pointer a name and a stable ABI identity.
+(ffi/struct sqlite3 ^fields [])
 (ffi/struct sqlite3_stmt ^fields [])
+
+# The connection handle.
+(type Db ^native {^abi sqlite3 ^lifecycle manual})
 
 # The nominal Gene Type whose typed-native representation is `sqlite3_stmt *`.
 # ^lifecycle manual: SQLite owns the statement, Gene never frees it.
@@ -56,6 +60,51 @@
 
 (fn column_i64 [stmt : Stmt column : I32] : I64
   (sqlite3_column_int64 stmt column))
+
+# Acquisition, entirely in Gene. `^out` passes the handle slot by address, and
+# `Str` is borrowed as a `const char *` for the call — the two things that used
+# to force a hand-written C shim.
+(ffi/fn sqlite3_open
+  ^library libsqlite3
+  ^symbol "sqlite3_open"
+  ^out db
+  [path : C/CStr db : Db?] : C/Int)
+
+(ffi/fn sqlite3_exec
+  ^library libsqlite3
+  ^symbol "sqlite3_exec"
+  # The callback, its argument, and the errmsg slot are unused pointer
+  # parameters here; they are declared as nullable handles and passed as nil.
+  [db : Db sql : C/CStr cb : Db? arg : Db? err : Db?] : C/Int)
+
+(ffi/fn sqlite3_prepare_v2
+  ^library libsqlite3
+  ^symbol "sqlite3_prepare_v2"
+  ^out stmt
+  [db : Db sql : C/CStr n : C/Int stmt : Stmt? tail : Db?] : C/Int)
+
+(ffi/fn sqlite3_close
+  ^library libsqlite3
+  ^symbol "sqlite3_close"
+  [db : Db] : C/Int)
+
+(fn open_db [path : Str] : Db?
+  (do
+    (var db : Db? nil)
+    (let rc : I64 (sqlite3_open path db))
+    (if (= rc 0) db nil)))
+
+(fn exec [db : Db sql : Str] : I64
+  (sqlite3_exec db sql nil nil nil))
+
+(fn prepare [db : Db sql : Str] : Stmt?
+  (do
+    (var stmt : Stmt? nil)
+    (let rc : I64 (sqlite3_prepare_v2 db sql -1 stmt nil))
+    (if (= rc 0) stmt nil)))
+
+(fn close_db [db : Db] : I64
+  (sqlite3_close db))
 
 # A typed-native function calling another typed-native function: `read_first`
 # is lowered to a direct C call to `gene_native_column_i64`, not a dispatch.

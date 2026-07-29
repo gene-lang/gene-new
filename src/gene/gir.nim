@@ -169,6 +169,11 @@ type
       ## of this repr therefore only cross edges — parameter, result, native
       ## field, FFI argument — and widen to `arkI64` to be computed with, so
       ## compiled and interpreted code cannot disagree.
+    arkCStr
+      ## `const char *`, borrowed for the call's extent. Like `arkI32` this is
+      ## a boundary representation: it crosses edges and is passed on, but it
+      ## is never computed with, and a Gene `Str` argument owns the storage it
+      ## points at (proposal §6.3.2).
     arkF64
     arkNativePtr
 
@@ -731,6 +736,7 @@ proc formatAotRepr(fn: FunctionProto): string =
   case fn.aotReturnRepr.kind
   of arkI64: "I64"
   of arkI32: "I32"
+  of arkCStr: "Str"
   of arkF64: "F64"
   of arkNativePtr: fn.aotReturnRepr.typeName
   of arkNone: ""
@@ -1210,6 +1216,7 @@ proc aotCType(typeName: string): string =
   case typeName
   of "I64": "int64_t"
   of "I32": "int32_t"
+  of "Str": "const char *"
   of "F64": "double"
   else: ""
 
@@ -1255,6 +1262,7 @@ proc aotCType(repr: AotRepr, names: FfiStructCNames): string =
   case repr.kind
   of arkI64: "int64_t"
   of arkI32: "int32_t"
+  of arkCStr: "const char *"
   of arkF64: "double"
   of arkNativePtr:
     if repr.nativeType == nil or repr.nativeType.abi == nil: ""
@@ -1421,6 +1429,9 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
     expr.print()
   of vkNil:
     "NULL"
+  of vkString:
+    ## A C string literal has static lifetime, so it is always safe to pass.
+    cStringLiteral(expr.strVal)
   of vkNode:
     let head = expr.head.symVal
     let send = emitAotCSend(expr, params, paramReprs, available, locals)
@@ -2021,6 +2032,8 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
       lines.add "  int64_t " & name & ";"
     of arkI32:
       lines.add "  int32_t " & name & ";"
+    of arkCStr:
+      lines.add "  const char * " & name & " = NULL;"
     of arkF64:
       lines.add "  double " & name & ";"
     of arkNativePtr:
@@ -2044,6 +2057,12 @@ proc addNativeEntry(lines: var seq[string], fn: FunctionProto,
       ## Range-checked at the boundary, which is what makes the compiled
       ## signature agree with the interpreter's `I32` annotation.
       lines.add "  status = gene_ffi_arg_int32(ctx, call, " & $i & ", " &
+        cStringLiteral(param) & ", &" & name & ");"
+      lines.add "  if (status != GENE_OK) goto " & entryName & "_arg_error;"
+    of arkCStr:
+      ## Borrowed from the argument's own storage, so it stays valid for the
+      ## call and must not be retained by the callee.
+      lines.add "  status = gene_ffi_arg_cstr(ctx, call, " & $i & ", " &
         cStringLiteral(param) & ", &" & name & ");"
       lines.add "  if (status != GENE_OK) goto " & entryName & "_arg_error;"
     of arkF64:

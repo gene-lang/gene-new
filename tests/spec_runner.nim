@@ -842,6 +842,34 @@ int main(void) {
       "  (set! p/value value))",
       "typed_native function set_byte cannot lower its body statically")
 
+  test "Str crosses typed-native edges as a borrowed const char *":
+    ## A boundary representation like `I32`: it crosses edges and is passed on,
+    ## but is never computed with. A `Str` argument owns the storage, so the
+    ## pointer is valid for the call and must not be retained.
+    let chunk = compileSource(
+      "(ffi/fn puts_len ^symbol \"puts_len\" [s : C/CStr] : C/Int64) " &
+      "(ffi/struct CBox ^fields [[n C/Int64]]) " &
+      "(type Box ^native {^abi CBox ^lifecycle manual}) " &
+      "(fn measure [b : Box s : Str] : I64 (puts_len s)) " &
+      "(fn literal [b : Box] : I64 (puts_len \"hello\"))")
+    let c = chunk.emitExperimentalC()
+    check "extern int64_t GENE_FFI_CDECL puts_len(const char * s);" in c
+    check "int64_t gene_native_measure(CBox * b, const char * s)" in c
+    check "return puts_len(s);" in c
+    check "return puts_len(\"hello\");" in c
+    let harness = """
+#include <stdio.h>
+#include <string.h>
+int64_t puts_len(const char *s) { return (int64_t)strlen(s); }
+int main(void) {
+  CBox b; b.n = 0;
+  printf("%lld %lld\n", (long long)gene_native_measure(&b, "abcd"),
+         (long long)gene_native_literal(&b));
+  return 0;
+}
+"""
+    checkCRuns(c & harness, "typed_native_cstr", "4 5")
+
   test "^out passes an argument by address and writes through it":
     ## Proposal §6.3.1. `^out` is metadata: the parameter keeps its value type,
     ## and the marker is what adds an indirection to the declaration and passes
