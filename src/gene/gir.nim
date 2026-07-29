@@ -1883,6 +1883,20 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
   ## needs none of this, so guarding makes an ffi/fn-bearing module link
   ## standalone. Define GENE_AOT_DYNAMIC_ENTRIES to compile the wrappers in.
   lines.add "#ifdef GENE_AOT_DYNAMIC_ENTRIES"
+  ## An owned result's release function is passed as a *pointer*, not a name.
+  ## Resolving it by name meant scanning every loaded AOT library and taking the
+  ## first match, so an allocation could be paired with a different library's
+  ## destructor. The symbol is right here, in the library that declared it, and
+  ## the linker resolves it -- exactly as the ^native_entry shims already do.
+  var resultRelease = "NULL"
+  if fn.release.len > 0 and
+      ffiMarshalKind(retLabel, isResult = true) in {fmkPtr, fmkConstPtr}:
+    resultRelease = ffiWrapperName(fn, prefix & "ffi_" & $index) & "_release"
+    lines.add "extern void " & ffiCallingMacro(fn.calling) & " " &
+      fn.release & "(" & retType & " value);"
+    lines.add "static void " & resultRelease & "(void *value) {"
+    lines.add "  " & fn.release & "((" & retType & ")value);"
+    lines.add "}"
   lines.add "GeneStatus " & ffiWrapperName(fn, prefix & "ffi_" & $index) &
     "(GeneContext *ctx, const GeneCall *call, GeneValue *result) {"
   lines.add "  /* library: " & (if fn.library.len > 0: fn.library else: "<linker>") & " */"
@@ -1996,9 +2010,7 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
       args & ");"
     addFinalizeLines(lines)
     lines.add "  return gene_ffi_result_ptr(ctx, (void *)native_result, " &
-      cStringLiteral(retLabel) & ", " &
-      (if fn.release.len > 0: cStringLiteral(fn.release) else: "NULL") &
-      ", result);"
+      cStringLiteral(retLabel) & ", " & resultRelease & ", result);"
   else:
     lines.add "  return GENE_FFI_WRAPPER_UNIMPLEMENTED;"
   lines.add "}"
@@ -2835,7 +2847,7 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "extern GeneStatus gene_ffi_result_double(GeneContext *ctx, double value, GeneValue *result);",
     "extern GeneStatus gene_ffi_result_bool(GeneContext *ctx, bool value, GeneValue *result);",
     "extern GeneStatus gene_ffi_result_cstr(GeneContext *ctx, const char *value, GeneValue *result);",
-    "extern GeneStatus gene_ffi_result_ptr(GeneContext *ctx, void *value, const char *type_name, const char *release_name, GeneValue *result);",
+    "extern GeneStatus gene_ffi_result_ptr(GeneContext *ctx, void *value, const char *type_name, GeneTypedNativeReleaseFn release, GeneValue *result);",
     "_Static_assert(sizeof(int8_t) == 1, \"C/Int8 must be 1 byte\");",
     "_Static_assert(sizeof(uint8_t) == 1, \"C/UInt8 must be 1 byte\");",
     "_Static_assert(sizeof(int16_t) == 2, \"C/Int16 must be 2 bytes\");",

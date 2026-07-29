@@ -346,7 +346,7 @@ defResultVia(geneFfiResultCStr, "gene_ffi_result_cstr", cstring,
              ffiCStrResult(ResultWhere, value))
 
 proc geneFfiResultPtr(ctx: ptr AotContext, value: pointer,
-                      typeName, releaseName: cstring,
+                      typeName: cstring, release: AotReleaseProc,
                       resultOut: ptr Value): cint
                      {.exportc: "gene_ffi_result_ptr", cdecl, dynlib.} =
   ## Delegates to the dynamic path's `ffiPointerResult`, which applies the rule
@@ -354,19 +354,15 @@ proc geneFfiResultPtr(ctx: ptr AotContext, value: pointer,
   ## error, not `nil`. It also builds the value with the right constructor for
   ## the declared flavor — const, owned, or plain — where this returned a plain
   ## mutable pointer regardless.
+  ##
+  ## `release` is a pointer to a shim in the library that declared the symbol.
+  ## It used to be a *name*, resolved by scanning every loaded AOT library and
+  ## taking the first match, so an allocation from one library could be paired
+  ## with another's destructor.
   if resultOut == nil:
     return ctx.fail("native entry result slot is null")
-  var releaseAddress: pointer
-  if releaseName != nil and releaseName[0] != '\0':
-    releaseAddress =
-      if aotSymbolResolver != nil: aotSymbolResolver($releaseName)
-      else: nil
-    if releaseAddress == nil:
-      return ctx.fail("native entry result declares release '" &
-        $releaseName & "' but the symbol was not found in any loaded AOT " &
-        "library")
   try:
-    resultOut[] = ffiAotPointerResult($typeName, value, releaseAddress)
+    resultOut[] = ffiAotPointerResult($typeName, value, cast[pointer](release))
   except CatchableError as e:
     return ctx.fail(e.msg)
   AotOk

@@ -8036,16 +8036,6 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 var aotEntries: Table[string, AotEntryProc]
 var aotModuleHandles: seq[LibHandle]
 
-proc aotResolveSymbol(name: string): pointer {.nimcall.} =
-  ## Look a symbol up across every loaded AOT library. A returned owned
-  ## pointer names its release function as a string, and only the loader knows
-  ## which libraries are open.
-  for handle in aotModuleHandles:
-    let address = symAddr(handle, name.cstring)
-    if address != nil:
-      return address
-  nil
-
 proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
                      {.nimcall.} =
   ## One dispatcher for every AOT entry. `NativeCallProc` is `nimcall` and
@@ -8095,8 +8085,14 @@ proc biAotLoad(args: openArray[Value]): Value =
     raise newException(GeneError,
       "AOT library exports no manifest; was it built from " &
       "`gene compile --target c` with -DGENE_AOT_DYNAMIC_ENTRIES=1? " & path)
+  ## Loaded libraries are process-lifetime pinned on purpose. A library cannot
+  ## safely unload while its callables, entry pointers, or release shims may
+  ## still escape — and a release shim is reachable from an owned `CPtr` with
+  ## arbitrary lifetime, long after the callable that produced it is gone.
+  ## Unloading under those conditions turns a live pointer's release into a jump
+  ## into unmapped memory. Revisit only alongside a real unload story, not as an
+  ## isolated fix.
   aotModuleHandles.add handle
-  aotSymbolResolver = aotResolveSymbol
   var entries = initPropTable()
 
   proc bindEntry(geneName, symbol: string) =

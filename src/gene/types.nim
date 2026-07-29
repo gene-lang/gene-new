@@ -456,7 +456,6 @@ type
     arity*: csize_t
     resultType*: cstring
 
-  AotSymbolResolver* = proc(name: string): pointer {.nimcall.}
   CPtrReleaseProc* = proc(address: pointer) {.nimcall.}
   FfiLibraryCloseProc* = proc(handle: pointer) {.nimcall.}
 
@@ -3633,11 +3632,6 @@ proc closeCPtr*(v: Value) =
     cast[ForeignReleaseProc](data.foreignRelease)(data.address)
   data.address = nil
   data.closed = true
-
-var aotSymbolResolver*: AotSymbolResolver
-  ## Installed by the AOT loader. A returned owned pointer names its release
-  ## function as a string in generated C, and only the loader knows which
-  ## libraries are open; without this the runtime would have to track them.
 
 proc relinquishCPtr*(v: Value) =
   ## Mark an owned pointer closed *without* running its release callback.

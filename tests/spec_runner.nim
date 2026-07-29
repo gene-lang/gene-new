@@ -12,6 +12,19 @@ import gene/aot_runtime
 import std/[algorithm, monotimes, os, osproc, sequtils, sets, strutils, tables,
             times, unittest]
 
+## Observation points for the release-isolation spec below. Exported into this
+## binary's dynamic symbol table the same way the AOT helpers are, so a dlopened
+## test library can record which of its destructors actually ran.
+var geneSpecLastFreeSlot: int64 = 0
+
+proc geneSpecNoteFree(which: int64)
+                     {.exportc: "gene_spec_note_free", cdecl, dynlib.} =
+  geneSpecLastFreeSlot = which
+
+proc geneSpecLastFree(): int64
+                     {.exportc: "gene_spec_last_free", cdecl, dynlib.} =
+  geneSpecLastFreeSlot
+
 proc sharedNativeIdentity(scope: Scope, typeName, msg, rootName: string): bool =
   ## A native bound both into the lexical root and into a type's message table
   ## must be one object. `T/m` used to make that observable from Gene; decision
@@ -1988,6 +2001,60 @@ int main(void) {
       "(var b (load " & geneString(libs[1]) & ")) " &
       "[(a/make 10) (b/make 10)]"), newGlobalScope()).print() == "[10 20]"
 
+  test "each library's owned result runs its own release function":
+    ## `aotResolveSymbol` scanned every loaded handle and returned the first
+    ## match, so an allocation from library A could be paired with library B's
+    ## destructor. Two libraries here export a `destroy` with different
+    ## observable effects; each pointer must run the one from the library that
+    ## produced it, whichever order they were loaded in.
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    var libs: seq[string]
+    for tag in ["a", "b"]:
+      let src =
+        "(ffi/fn make ^symbol \"make\" ^release \"destroy\" " &
+        "  [] : (C/OwnedPtr C/Char)) " &
+        "(ffi/fn last_freed ^symbol \"last_freed\" [] : C/Int64) "
+      ## `destroy` records which library ran it in a process-wide slot the test
+      ## can read back, so "which destructor ran" is observed, not inferred.
+      let impl = """
+#include <stdlib.h>
+extern void gene_spec_note_free(int64_t which);
+extern int64_t gene_spec_last_free(void);
+void *make(void) { return malloc(8); }
+void destroy(void *p) { gene_spec_note_free(""" & (if tag == "a": "1" else: "2") &
+        """); free(p); }
+int64_t last_freed(void) { return gene_spec_last_free(); }
+"""
+      let sourcePath = getTempDir() / ("gene_aot_release_" & tag & ".c")
+      let libPath = getTempDir() / ("libgene_aot_release_" & tag & libExt)
+      writeFile(sourcePath, compileSource(src).emitExperimentalC() & impl)
+      let built = execCmdEx(
+        quoteShell(getEnv("CC", "cc")) &
+          " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+          (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+          quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+      checkpoint built.output
+      check built.exitCode == 0
+      removeFile(sourcePath)
+      libs.add libPath
+    defer:
+      for lib in libs:
+        if fileExists(lib): removeFile(lib)
+
+    # Library A is loaded first, so a name-keyed lookup would resolve B's
+    # `destroy` to A's. Close B's pointer and check B's destructor ran.
+    let prelude = "(import $aot [load]) " &
+      "(var a (load " & geneString(libs[0]) & ")) " &
+      "(var b (load " & geneString(libs[1]) & ")) "
+    check run(compileSource(
+      prelude & "(var p (b/make)) ($C/close p) (b/last_freed)"),
+      newGlobalScope()).intVal == 2
+    check run(compileSource(
+      prelude & "(var p (a/make)) ($C/close p) (a/last_freed)"),
+      newGlobalScope()).intVal == 1
+
   test "a rolled-back transfer leaves the wrapper usable":
     ## Emitting a restore call is not the same as restoring ownership. A
     ## transfer relinquishes the wrapper *before* the call, so if a later
@@ -2459,8 +2526,13 @@ int main(void) {
     check "consume_buffer(b_view.data, b_view.len);" in c
     check "gene_ffi_buffer_finalize(ctx, b_lease);" in c
     check "return gene_ffi_result_void(ctx, result);" in c
+    ## The release function is passed as a pointer to a shim in this library,
+    ## not as a name to be resolved across every loaded library.
+    check "extern void GENE_FFI_CDECL destroy_owned(void * value);" in c
+    check "static void gene_ffi_make_owned_release(void *value) {" in c
+    check "  destroy_owned((void *)value);" in c
     check "return gene_ffi_result_ptr(ctx, (void *)native_result, " &
-      "\"(C/OwnedPtr C/Char)\", \"destroy_owned\", result);" in c
+      "\"(C/OwnedPtr C/Char)\", gene_ffi_make_owned_release, result);" in c
     check "return GENE_FFI_WRAPPER_UNIMPLEMENTED;" notin c
     expect GeneError:
       discard compileSource("(ffi/fn bad_any ^symbol \"bad\" [x : Any] : C/Int)")
