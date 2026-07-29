@@ -23,9 +23,16 @@ field access, and direct typed calls, and its dynamic boundary is now
 connected in both directions: `aot/load` opens a compiled library and binds
 its `^native_entry` functions and `ffi/fn` wrappers as ordinary callables, so
 Gene code can call compiled machine code and managed wrappers cross the seam
-with borrow/transfer/copy ownership. It remains experimental — the lowerable
-expression subset is small (no arithmetic, comparisons, conditionals, or
-loops), and there is no `gene build` that produces a linked artifact.
+with borrow/transfer/copy ownership. The lowerable subset covers field access,
+locals, direct/FFI/protocol calls, arithmetic, comparisons, `if`, `while`, and
+block statements.
+
+It remains experimental. Direct protocol sends are guarded only within the
+compiling module, so a cross-module overlay over an AOT-compiled type is a
+known limitation, and there is no `gene build` producing a linked artifact —
+that waits on package and dependency support, since what to link against is a
+dependency-graph question. `examples/native` drives `cc` from a shell script
+meanwhile.
 
 Deferred work is explicitly non-normative. Major deferred areas include package
 version resolution/registries, static effect rows, full hygienic compile-time

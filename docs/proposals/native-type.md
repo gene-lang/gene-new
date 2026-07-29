@@ -244,9 +244,21 @@ specialized send and only earns that cost once the backend leaves experimental
 status. Until then the limitation is: do not install a cross-module overlay
 over a type whose module has been AOT-compiled.
 
-The remaining work is mechanical rather than architectural — chiefly a loop
-form in the lowerable subset, and a `gene build` that produces a linked
-artifact instead of leaving `cc` to a shell script.
+### Build integration deferred (decided 2026-07-28)
+
+There is no `gene build` producing a linked artifact; `examples/native` drives
+`cc` from a shell script. That is deliberate and waits on package and
+dependency support.
+
+A build command's whole job is deciding what to compile and what to link
+against, and both answers come from the dependency graph — which libraries a
+module needs, where their headers and archives live, and what the compiled
+output may assume is already present. Building it against today's flat model
+would bake in an answer that package support would immediately invalidate, and
+the shell script is a perfectly honest stand-in until then.
+
+The lowerable subset now covers field access, locals, direct/FFI/protocol
+calls, arithmetic, comparisons, `if`, `while`, and block statements.
 
 ## 5. Goal and scope
 
