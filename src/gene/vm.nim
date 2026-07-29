@@ -11195,6 +11195,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                             derivedProtocols, proto.deriveRequests,
                             proto.bodyFields, messages, ctorFn, proto.repr,
                             if proto.nativeType != nil: proto.nativeType.identity
+                            else: "",
+                            if proto.nativeType != nil: proto.nativeType.abiIdentity
+                            else: "",
+                            if proto.nativeType != nil: proto.nativeType.abiFingerprint
+                            else: "",
+                            if proto.nativeType != nil: proto.nativeType.contractFingerprint
                             else: "")
           if proto.nativeType != nil:
             registerNativeTypeIdentity(proto.nativeType.identity, typ)

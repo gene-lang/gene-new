@@ -809,6 +809,15 @@ type
     repr: TypeRepr        # representation marker (`^repr native_wrapper`);
                           # inherited through `^is` at newType
     nativeIdentity: string # module-qualified `^native` identity, or "".
+    nativeAbiIdentity: string
+      ## The layout this Type maps to. Not derivable from `nativeIdentity`: a
+      ## Type can keep its identity and be repointed at a different `^abi`.
+    nativeAbiFingerprint: string
+    nativeContractFingerprint: string
+      ## The authoritative value an AOT library's requirements are checked
+      ## against. Covers policy (`^copy`, `^release`, `^wrapper`, `^mutable`,
+      ## `^lifecycle`, handle schema) as well as layout — all of which compiled
+      ## code bakes in.
                           # The typed_native AOT boundary matches an incoming
                           # wrapper against the identity the compiled code was
                           # built for; comparing names instead would let one
@@ -3776,6 +3785,21 @@ proc typeNativeIdentity*(v: Value): string =
     return ""
   TypeData(objData(v)).nativeIdentity
 
+proc typeNativeAbiIdentity*(v: Value): string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    return ""
+  TypeData(objData(v)).nativeAbiIdentity
+
+proc typeNativeAbiFingerprint*(v: Value): string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    return ""
+  TypeData(objData(v)).nativeAbiFingerprint
+
+proc typeNativeContractFingerprint*(v: Value): string =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    return ""
+  TypeData(objData(v)).nativeContractFingerprint
+
 proc typeInheritsFrom*(actual, ancestor: Value): bool =
   ## Nominal ancestry by Type *identity*: true when `actual` is `ancestor` or
   ## one of its `^is` descendants. Every step compares `bits`, never the name —
@@ -5381,7 +5405,10 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               messages: sink Table[string, Value] = initTable[string, Value](),
               ctorFn: Value = NIL,
               repr: TypeRepr = trOrdinary,
-              nativeIdentity = ""): Value =
+              nativeIdentity = "",
+              nativeAbiIdentity = "",
+              nativeAbiFingerprint = "",
+              nativeContractFingerprint = ""): Value =
   ## A nominal type. Single inheritance is merged eagerly: the parent's fields
   ## come first, then this type's own fields (design Section 7.3).
   var fields: seq[TypeField]
@@ -5419,6 +5446,9 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
     bodyFields.add owned
   boxObject(TypeData(objKind: okType, name: name, parent: parent,
                      repr: repr, nativeIdentity: nativeIdentity,
+                     nativeAbiIdentity: nativeAbiIdentity,
+                     nativeAbiFingerprint: nativeAbiFingerprint,
+                     nativeContractFingerprint: nativeContractFingerprint,
                      fields: fields,
                      bodyFields: bodyFields,
                      weakScope: cast[pointer](scope),

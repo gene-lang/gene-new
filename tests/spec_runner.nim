@@ -1976,6 +1976,36 @@ int main(void) {
         widenedFp = typeProto.nativeType.contractFingerprint
     check widenedFp != base
 
+  test "the native-type manifest covers transitively reachable types":
+    ## The load-time contract. A table of ABI layouts alone cannot state it:
+    ## the registry is keyed by *Type* identity, so there is no mapping from a
+    ## layout back to a Type, and the claim that needs proving is that the live
+    ## `Node` Type still maps to the ABI this code was built against.
+    ##
+    ## Compiled code here takes a `Parent` and reads through `parent/child` into
+    ## a `Node`. Only `Parent` ever crosses the boundary; `Node`'s offsets are
+    ## baked in, so it must appear in the manifest or nothing would validate it.
+    let c = compileSource(
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(ffi/struct CParent ^fields [[child (C/Ptr Node)]]) " &
+      "(type Parent ^native {^abi CParent ^lifecycle manual}) " &
+      "(fn deep [p : Parent] : I64 " &
+      "  (do (let n : Node p/child) n/value))").emitExperimentalC()
+    check "typedef struct GeneAotNativeType {" in c
+    check "const GeneAotNativeType gene_aot_native_types[] GENE_MAYBE_UNUSED = {" in c
+    check "<memory>::Node" in c
+    check "<memory>::Parent" in c
+    check "const size_t gene_aot_native_types_count GENE_MAYBE_UNUSED = 2;" in c
+
+    ## The measured record: `sizeof`/`offsetof` are filled in by the C compiler,
+    ## capturing drift a declaration cannot. Exported, unlike `gene_ffi_structs`,
+    ## which is static and therefore invisible to a loader.
+    check "const GeneAotAbiLayout gene_aot_abi_layouts[] GENE_MAYBE_UNUSED = {" in c
+    check "sizeof(CNode), GENE_ALIGNOF(CNode)" in c
+    check "offsetof(CParent, child)" in c
+    checkCCompiles(c, "typed_native_manifest")
+
   test "the wrapper handle's ownership flavor is part of the contract":
     ## `(C/OwnedPtr CPoint)` -> `(C/Ptr CPoint)` changes what a transfer or copy
     ## means to already compiled code, and touches neither the layout nor any

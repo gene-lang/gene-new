@@ -2713,6 +2713,110 @@ proc addCBackend(lines: var seq[string], chunk: Chunk,
   addCBackend(lines, chunk, prefix, structNames, available,
               declaredStructs, definedStructs)
 
+proc collectNativeTypeRequirements(chunk: Chunk,
+                                   found: var OrderedTable[string, NativeTypeProto]) =
+  ## Every native Type this module's compiled code depends on, *transitively*:
+  ## not only the ones that cross the dynamic boundary, but every one whose
+  ## layout the emitted code dereferences.
+  ##
+  ## This is the difference between a check that works and one that looks like
+  ## it does. Compiled code that takes a `Parent` and reads `parent/child/value`
+  ## presents only `Parent` at the boundary; `Node`'s offsets are baked in and
+  ## nothing would ever validate them.
+  template note(proto: NativeTypeProto) =
+    let candidate = proto
+    if candidate != nil and candidate.identity.len > 0 and
+        not found.hasKey(candidate.identity):
+      found[candidate.identity] = candidate
+
+  template noteRepr(repr: AotRepr) =
+    let r = repr
+    if r.kind == arkNativePtr:
+      note(r.nativeType)
+
+  for typeProto in chunk.typeProtos:
+    note(typeProto.nativeType)
+  for fn in chunk.functions:
+    noteRepr(fn.aotReturnRepr)
+    for repr in fn.aotParamReprs:
+      noteRepr(repr)
+    for local in fn.aotLocals:
+      noteRepr(local.repr)
+    collectNativeTypeRequirements(fn.chunk, found)
+  for impl in chunk.implProtos:
+    for message in impl.messages:
+      noteRepr(message.fn.aotReturnRepr)
+      for repr in message.fn.aotParamReprs:
+        noteRepr(repr)
+      for local in message.fn.aotLocals:
+        noteRepr(local.repr)
+  for child in chunk.subchunks:
+    collectNativeTypeRequirements(child, found)
+
+proc collectLayoutRequirements(chunk: Chunk,
+                               found: var OrderedTable[string, FfiStructProto]) =
+  for layout in chunk.ffiStructs:
+    if layout.identity.len > 0 and not found.hasKey(layout.identity):
+      found[layout.identity] = layout
+  for fn in chunk.functions:
+    collectLayoutRequirements(fn.chunk, found)
+  for child in chunk.subchunks:
+    collectLayoutRequirements(child, found)
+
+proc addNativeTypeManifests(lines: var seq[string], chunk: Chunk,
+                            structNames: FfiStructCNames) =
+  ## Two exported manifests. Exported deliberately: `gene_ffi_structs` has
+  ## internal linkage and is therefore invisible to a loader, which is why no
+  ## such check was possible before.
+  var types = initOrderedTable[string, NativeTypeProto]()
+  collectNativeTypeRequirements(chunk, types)
+  var layouts = initOrderedTable[string, FfiStructProto]()
+  collectLayoutRequirements(chunk, layouts)
+
+  if types.len > 0:
+    lines.add "const GeneAotNativeType gene_aot_native_types[] GENE_MAYBE_UNUSED = {"
+    for _, proto in types:
+      lines.add "  {" & cStringLiteral(proto.identity) & ", " &
+        cStringLiteral(proto.abiIdentity) & ", " &
+        cStringLiteral(proto.abiFingerprint) & ", " &
+        cStringLiteral(proto.contractFingerprint) & "},"
+    lines.add "};"
+    lines.add "const size_t gene_aot_native_types_count GENE_MAYBE_UNUSED = " &
+      $types.len & ";"
+    lines.add ""
+
+  ## Measured layouts: the C compiler fills these in, so they capture drift a
+  ## declaration cannot -- a different `C/Long` width, say. The host VM never
+  ## lays out C structs itself, so their use is comparing two libraries that
+  ## declare the same layout identity.
+  var measuredRows: seq[string]
+  var fieldRows: seq[string]
+  for identity, layout in layouts:
+    if layout.layout != "C":
+      continue
+    let cName = ffiStructCName(layout, structNames)
+    measuredRows.add "  {" & cStringLiteral(identity) & ", " &
+      cStringLiteral(layout.fingerprint) & ", sizeof(" & cName &
+      "), GENE_ALIGNOF(" & cName & ")},"
+    for i, field in layout.fields:
+      fieldRows.add "  {" & cStringLiteral(identity) & ", " &
+        cStringLiteral(field.name) & ", offsetof(" & cName & ", " &
+        cIdent(field.name, "field_" & $i) & ")},"
+  if measuredRows.len > 0:
+    lines.add "const GeneAotAbiLayout gene_aot_abi_layouts[] GENE_MAYBE_UNUSED = {"
+    for row in measuredRows:
+      lines.add row
+    lines.add "};"
+    lines.add "const size_t gene_aot_abi_layouts_count GENE_MAYBE_UNUSED = " &
+      $measuredRows.len & ";"
+    lines.add "const GeneAotAbiLayoutField gene_aot_abi_layout_fields[] GENE_MAYBE_UNUSED = {"
+    for row in fieldRows:
+      lines.add row
+    lines.add "};"
+    lines.add "const size_t gene_aot_abi_layout_fields_count GENE_MAYBE_UNUSED = " &
+      $fieldRows.len & ";"
+    lines.add ""
+
 proc emitExperimentalC*(chunk: Chunk): string =
   var lines = @[
     "/* Gene experimental typed_native C backend.",
@@ -2748,6 +2852,27 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "  int arity;",
     "  const GeneNativeFrameInfo *frame;",
     "} GeneAotModuleFunction;",
+    "/* One row per native Type this library's compiled code depends on,",
+    " * transitively -- not merely those crossing the dynamic boundary. The",
+    " * contract fingerprint is authoritative; the other two exist so a loader",
+    " * can say which part drifted. */",
+    "typedef struct GeneAotNativeType {",
+    "  const char *type_identity;",
+    "  const char *abi_identity;",
+    "  const char *abi_fingerprint;",
+    "  const char *contract_fingerprint;",
+    "} GeneAotNativeType;",
+    "typedef struct GeneAotAbiLayout {",
+    "  const char *abi_identity;",
+    "  const char *fingerprint;",
+    "  size_t measured_size;",
+    "  size_t measured_align;",
+    "} GeneAotAbiLayout;",
+    "typedef struct GeneAotAbiLayoutField {",
+    "  const char *abi_identity;",
+    "  const char *field_name;",
+    "  size_t measured_offset;",
+    "} GeneAotAbiLayoutField;",
     "typedef struct GeneMonomorphizationSpec {",
     "  const char *function_name;",
     "  const char *type_args;",
@@ -2963,7 +3088,9 @@ proc emitExperimentalC*(chunk: Chunk): string =
     ""
   ]
   let headerLen = lines.len
-  addCBackend(lines, chunk, buildFfiStructCNames(chunk))
+  let structNames = buildFfiStructCNames(chunk)
+  addCBackend(lines, chunk, structNames)
+  addNativeTypeManifests(lines, chunk, structNames)
   if lines.len == headerLen:
     lines.add "/* no fixed-representation native functions or FFI wrappers */"
   lines.join("\n")
