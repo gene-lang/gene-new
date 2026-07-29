@@ -345,6 +345,10 @@ type
   FfiParam* = object
     name*: string
     typeExpr*: Value
+    isOut*: bool
+      ## Marked by `^out`. Metadata only: `typeExpr` stays the ordinary value
+      ## type, and this is what adds one indirection to the emitted
+      ## declaration and makes the call site pass an address.
 
   FfiLibraryProto* = ref object
     name*: string
@@ -1261,6 +1265,9 @@ type AotCFunction = object
   cName: string
   paramCount: int
   cType: string
+  outParams: seq[bool]
+    ## Per-position `^out` flags, so the call site can pass an address where
+    ## the declaration takes one. Empty for ordinary functions.
 
 type AotModuleFunction = object
   geneName: string
@@ -1412,6 +1419,8 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
     $expr.intVal
   of vkFloat:
     expr.print()
+  of vkNil:
+    "NULL"
   of vkNode:
     let head = expr.head.symVal
     let send = emitAotCSend(expr, params, paramReprs, available, locals)
@@ -1484,10 +1493,17 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
         aotLoweringGap(expr,
           "field base " & base & " is not a typed-native pointer")
     elif available.hasKey(head):
+      let callee = available[head]
       var args: seq[string]
-      for arg in expr.body:
-        args.add emitAotCExpr(arg, params, paramReprs, available, locals)
-      available[head].cName & "(" & args.join(", ") & ")"
+      for i, arg in expr.body:
+        ## An out-parameter is passed by address. Analysis has already required
+        ## the argument to be a mutable local, so this is always a plain name.
+        if i < callee.outParams.len and callee.outParams[i]:
+          args.add "&" & emitAotCExpr(arg, params, paramReprs, available,
+                                      locals)
+        else:
+          args.add emitAotCExpr(arg, params, paramReprs, available, locals)
+      callee.cName & "(" & args.join(", ") & ")"
     else:
       aotLoweringGap(expr,
         "no emitted typed-native function named " & head &
@@ -1739,6 +1755,13 @@ proc ffiWrapperSupported(fn: FfiFnProto, retLabel: string): bool =
   for p in fn.params:
     if ffiMarshalKind(ffiTypeLabel(p.typeExpr)) == fmkUnsupported:
       return false
+    ## An out-parameter has no incoming value to marshal and nowhere to surface
+    ## what the callee wrote, so the dynamic entry is not expressible yet
+    ## (proposal §6.3.1). Typed-native callers pass an address directly and are
+    ## unaffected; reporting unsupported here beats marshalling the slot as an
+    ## ordinary argument, which would hand C the value instead of its address.
+    if p.isOut:
+      return false
   if retLabel.startsWith("(C/OwnedPtr ") and fn.release.len == 0:
     return false
   ffiMarshalKind(retLabel, isResult = true) != fmkUnsupported
@@ -1802,7 +1825,13 @@ proc addFfiWrapper(lines: var seq[string], fn: FfiFnProto, index: int,
     let label = ffiTypeLabel(p.typeExpr)
     let name = cIdent(p.name, "arg" & $i)
     if i < fn.paramReprs.len and fn.paramReprs[i].kind == arkNativePtr:
-      declParams.add fn.paramReprs[i].aotCType(structNames) & " " & name
+      ## An out-parameter takes one more indirection than its value type: the
+      ## declaration still describes the real C signature, `^out` is only what
+      ## says so (proposal §6.3.1).
+      declParams.add fn.paramReprs[i].aotCType(structNames) &
+        (if p.isOut: "*" else: "") & " " & name
+    elif p.isOut:
+      declParams.add ffiCType(label, name) & " * " & name
     else:
       for cDecl in ffiParamCDecls(label, name):
         declParams.add cDecl
@@ -2163,9 +2192,13 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
       resultType: retLabel)
     addFfiWrapper(lines, fn, i, prefix, structNames)
     let symbol = if fn.symbol.len > 0: fn.symbol else: fn.name
+    var outFlags: seq[bool]
+    for p in fn.params:
+      outFlags.add p.isOut
     available[fn.name] = AotCFunction(
       cName: cIdent(symbol, "ffi_symbol_" & $i),
       paramCount: fn.params.len,
+      outParams: outFlags,
       cType: (if fn.returnRepr.kind == arkNativePtr:
                 fn.returnRepr.aotCType(structNames)
               else:

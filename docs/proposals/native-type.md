@@ -325,6 +325,79 @@ directly without `GeneCall`, argument boxing, or runtime message resolution.
 Native fields are not Gene props. `set_prop!`, node construction, serde, and
 schema derivation do not address foreign memory.
 
+### 6.3.1 Out-parameters
+
+C routinely returns values through a pointer parameter — `sqlite3_open` fills a
+`sqlite3**`, `sqlite3_prepare_v2` fills a `sqlite3_stmt**`. Typed-native Gene
+has no way to take the address of a local, so these signatures were unreachable
+and had to be wrapped by hand in C.
+
+`^out` marks which parameters are out-parameters. It is metadata only: the
+parameter keeps its ordinary *value* type, and the marker is what makes the
+emitted declaration take one more indirection and the call site pass an
+address.
+
+```gene
+(ffi/fn sqlite3_open
+  ^library libsqlite3
+  ^symbol "sqlite3_open"
+  ^out db
+  [filename : C/CStr db : Db?] : C/Int)
+
+(fn open_memory [] : Db?
+  (do
+    (var db : Db? nil)
+    (let rc : I64 (sqlite3_open ":memory:" db))
+    (if (= rc 0) db nil)))
+```
+
+```c
+extern int GENE_FFI_CDECL sqlite3_open(const char *filename, CDb **db);
+
+CDb *gene_native_open_memory(void) {
+  CDb *db = NULL;
+  int64_t rc = sqlite3_open(":memory:", &db);
+  return ((rc == 0) ? db : NULL);
+}
+```
+
+The return type stays the real C return, so status handling stays in the
+caller's hands rather than being folded into the declaration. Several
+out-parameters need no special treatment — `^out [stmt tail]` marks two and
+passes two addresses — because nothing is ever returned as a product. That
+matters: a typed-native call yields exactly one machine value, and `(Tuple A B)`
+is a boxed Gene list, so any design that returned the outs together would not
+lower.
+
+Constraints:
+
+- An argument in an `^out` position must be a **mutable local**. Not a
+  temporary, which has no address, and not a parameter, since writing through
+  one would not be visible to the Gene caller. The address is therefore formed
+  at the call and dies with it, which is what makes this safe where a general
+  address-of operator would need escape analysis.
+- Every name in `^out` must appear in the parameter list, so the declaration
+  still describes the real C signature.
+- The callee owns what it writes: an out-parameter is not an ownership
+  transfer, and §9's borrow/transfer/copy rules apply to the value afterwards
+  exactly as they would to any other pointer.
+
+Deferred: calling an `^out` function from *dynamic* Gene. The generated
+`gene_ffi_*` wrapper has no incoming value for an out slot and nowhere obvious
+to surface the result — that is where returning a tuple would come back. Until
+that is designed, `^out` functions are typed-native only and the dynamic
+wrapper reports the call as unsupported rather than guessing.
+
+This alone does not retire `examples/native/sqlite_shim.c`, and the reason is
+worth recording because it is not the out-parameter. `sqlite3_open` and
+`sqlite3_prepare_v2` also take a `const char *`, and the subset has no string
+representation: `C/CStr` resolves to no machine representation, so it cannot be
+a typed-native parameter or local, and a string literal cannot be an argument.
+Finishing that case needs `C/CStr` as a *boundary* representation in the same
+sense as `I32` — a `const char *` that crosses edges and is borrowed for the
+call's extent. The dynamic side of it already exists: `gene_ffi_arg_cstr`
+borrows from the argument's own storage rather than a temporary.
+
 ### 6.4 Explicit dynamic boxing
 
 A raw typed-native pointer cannot enter interpreted code, `Any`, an untyped

@@ -2578,6 +2578,11 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
     return resultRepr.kind == arkI64
   if expr.kind == vkFloat:
     return resultRepr.kind == arkF64
+  ## `nil` is the null pointer, so it only fits a nullable native pointer.
+  ## Needed wherever an out-parameter slot is seeded or a nullable result is
+  ## produced (proposal §6.3.1).
+  if expr.kind == vkNil:
+    return resultRepr.kind == arkNativePtr and resultRepr.nullable
   if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0 or
       expr.head.kind != vkSymbol:
     return false
@@ -2695,6 +2700,20 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
           not ffiFn.params[i].typeExpr.ffiParamMatchesAotRepr(
             ffiFn.paramReprs[i], argRepr):
         return false
+      if ffiFn.params[i].isOut:
+        ## The callee writes through this argument, so it must be a mutable
+        ## local whose address the emitter can take. A temporary has no
+        ## address, and writing through a parameter would not be visible to the
+        ## Gene caller (proposal §6.3.1).
+        if arg.kind != vkSymbol:
+          return false
+        var isLocal = false
+        for local in locals:
+          if local.name == arg.symVal and not local.outOfScope:
+            isLocal = local.mutable
+            break
+        if not isLocal:
+          return false
     return ffiFn.returnType.ffiResultMatchesAotRepr(ffiFn.returnRepr,
                                                     resultRepr)
   false
@@ -4878,6 +4897,37 @@ proc compileFfiFn(c: var Compiler, node: Value) =
                          params: parseFfiParams(body[1]),
                          returnType: ret,
                          release: release)
+  ## `^out name` or `^out [a b]` marks out-parameters (proposal §6.3.1). It is
+  ## metadata: the parameter keeps its value type, and the marker is what adds
+  ## an indirection to the declaration and passes an address at the call.
+  if node.props.hasKey("out"):
+    var outNames: seq[string]
+    let value = node.props["out"]
+    case value.kind
+    of vkSymbol:
+      outNames.add value.symVal
+    of vkList:
+      for item in value.listItems:
+        if item.kind != vkSymbol:
+          raise newException(GeneError,
+            "ffi/fn ^out entries must be parameter names")
+        outNames.add item.symVal
+    else:
+      raise newException(GeneError,
+        "ffi/fn ^out must be a parameter name or a [list] of them")
+    for outName in outNames:
+      var found = false
+      for i, param in proto.params:
+        if param.name == outName:
+          if proto.params[i].isOut:
+            raise newException(GeneError,
+              "ffi/fn ^out repeats parameter: " & outName)
+          proto.params[i].isOut = true
+          found = true
+          break
+      if not found:
+        raise newException(GeneError,
+          "ffi/fn ^out names a parameter that does not exist: " & outName)
   for param in proto.params:
     let repr = c.resolvedAotRepr(param.typeExpr)
     proto.paramReprs.add repr

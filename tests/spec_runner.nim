@@ -842,6 +842,97 @@ int main(void) {
       "  (set! p/value value))",
       "typed_native function set_byte cannot lower its body statically")
 
+  test "^out passes an argument by address and writes through it":
+    ## Proposal §6.3.1. `^out` is metadata: the parameter keeps its value type,
+    ## and the marker is what adds an indirection to the declaration and passes
+    ## an address at the call.
+    let chunk = compileSource(
+      "(ffi/struct CDb ^fields [[tag C/Int64]]) " &
+      "(type Db ^native {^abi CDb ^lifecycle manual}) " &
+      "(ffi/fn db_clone ^symbol \"db_clone\" ^out dst " &
+      "  [src : Db dst : Db?] : C/Int) " &
+      "(fn clone_it [src : Db seed : Db?] : Db? " &
+      "  (do " &
+      "    (var slot : Db? seed) " &
+      "    (let rc : I64 (db_clone src slot)) " &
+      "    (if (= rc 0) slot nil)))")
+    let c = chunk.emitExperimentalC()
+    check "extern int GENE_FFI_CDECL db_clone(CDb * src, CDb ** dst);" in c
+    check "int64_t rc = db_clone(src, &slot);" in c
+    check "return ((rc == 0) ? slot : NULL);" in c
+    let harness = """
+#include <stdio.h>
+static CDb pool;
+int db_clone(CDb *src, CDb **dst) {
+  if (src == NULL) return 1;
+  pool.tag = src->tag + 100;
+  *dst = &pool;
+  return 0;
+}
+int main(void) {
+  CDb src; src.tag = 7;
+  CDb *got = gene_native_clone_it(&src, NULL);
+  printf("%lld %s\n", got ? (long long)got->tag : -1,
+         gene_native_clone_it(NULL, NULL) ? "leaked" : "nil");
+  return 0;
+}
+"""
+    checkCRuns(c & harness, "typed_native_out_param", "107 nil")
+
+  test "several ^out parameters need no product result":
+    ## Each out is written through its own slot, so nothing has to be returned
+    ## together — which matters because a typed-native call yields exactly one
+    ## machine value and `(Tuple A B)` is a boxed Gene list.
+    let c = compileSource(
+      "(ffi/struct CDb ^fields [[tag C/Int64]]) " &
+      "(type Db ^native {^abi CDb ^lifecycle manual}) " &
+      "(ffi/fn db_split ^symbol \"db_split\" ^out [a b] " &
+      "  [src : Db a : Db? b : Db?] : C/Int) " &
+      "(fn split_it [src : Db] : Db? " &
+      "  (do " &
+      "    (var first : Db? nil) " &
+      "    (var second : Db? nil) " &
+      "    (let rc : I64 (db_split src first second)) " &
+      "    (if (= rc 0) second nil)))").emitExperimentalC()
+    check "extern int GENE_FFI_CDECL db_split(CDb * src, CDb ** a, CDb ** b);" in c
+    check "int64_t rc = db_split(src, &first, &second);" in c
+    checkCCompiles(c, "typed_native_multi_out")
+
+  test "an ^out argument must be a mutable local":
+    ## The callee writes through it, so it needs an address the emitter can
+    ## take and a binding the Gene caller can observe afterwards.
+    let base =
+      "(ffi/struct CDb ^fields [[tag C/Int64]]) " &
+      "(type Db ^native {^abi CDb ^lifecycle manual}) " &
+      "(ffi/fn db_clone ^symbol \"db_clone\" ^out dst " &
+      "  [src : Db dst : Db?] : C/Int) "
+    # An immutable binding cannot be written through.
+    check_compile_error(base &
+      "(fn bad [src : Db seed : Db?] : I64 " &
+      "  (do (let slot : Db? seed) (db_clone src slot)))",
+      "typed_native function bad cannot lower its body statically")
+    # A parameter would not be visible to the Gene caller.
+    check_compile_error(base &
+      "(fn bad2 [src : Db] : I64 (db_clone src src))",
+      "typed_native function bad2 cannot lower its body statically")
+
+  test "^out must name a declared parameter":
+    check_compile_error(
+      "(ffi/fn oops ^symbol \"oops\" ^out nope [a : C/Int64] : C/Int)",
+      "^out names a parameter that does not exist: nope")
+
+  test "an ^out function has no dynamic entry wrapper yet":
+    ## There is no incoming value for an out slot and nowhere to surface what
+    ## the callee wrote, so the dynamic wrapper reports unsupported rather than
+    ## marshalling the slot as an ordinary argument.
+    let c = compileSource(
+      "(ffi/struct CDb ^fields [[tag C/Int64]]) " &
+      "(type Db ^native {^abi CDb ^lifecycle manual}) " &
+      "(ffi/fn db_clone ^symbol \"db_clone\" ^out dst " &
+      "  [src : Db dst : Db?] : C/Int)").emitExperimentalC()
+    check "GeneStatus gene_ffi_db_clone" in c
+    check "return GENE_FFI_WRAPPER_UNIMPLEMENTED;" in c
+
   test "I32 crosses typed-native edges and widens into I64":
     ## `I32` already existed as a range-checked runtime annotation; this is the
     ## machine representation for it, so a C `int` parameter is expressible
