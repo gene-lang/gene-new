@@ -1232,12 +1232,128 @@ size_t total(uint32_t a, size_t b) { return (size_t)a + b; }
       check runAot("(n/flip false)").boolVal
       check runAot("(n/total 40 2)").intVal == 42
 
-      # Narrowing must fail rather than truncate: 200 as int8 is -56.
+      # Narrowing must fail rather than truncate: 200 as int8 is -56. The
+      # messages are the dynamic FFI converters' own, because the compiled
+      # wrapper now calls those converters rather than a parallel set.
       check_runtime_error(prelude & "(n/clamp_byte 200)",
-                          "out of range: 200 does not fit -128..127")
-      check_runtime_error(prelude & "(n/total -1 2)", "does not fit 0..")
-      check_runtime_error(prelude & "(n/shout 42)", "expects Str")
-      check_runtime_error(prelude & "(n/flip 1)", "expects Bool")
+                          "is out of C/Int8 range")
+      check_runtime_error(prelude & "(n/total -1 2)", "is out of C/UInt32 range")
+      check_runtime_error(prelude & "(n/shout 42)", "expected Str")
+      check_runtime_error(prelude & "(n/flip 1)", "expected C/Bool")
+
+  test "compiled FFI wrappers marshal identically to the dynamic FFI path":
+    ## The parity contract for the whole `gene_ffi_arg_*` / `gene_ffi_result_*`
+    ## seam. Every supported ABI label is driven through *both* paths over one
+    ## corpus, and the two must agree on the accept/reject decision and on the
+    ## resulting Gene value. A compiled wrapper that accepts what the
+    ## interpreter rejects — or returns a different type — is the divergence
+    ## class this backend has already paid for twice.
+    ##
+    ## One shared library serves both: `aot/load` binds its generated wrappers,
+    ## while `ffi/open` + `ffi/bind` reach the same raw symbols dynamically.
+    const parityLabels = [
+      ("int8", "C/Int8"), ("uint8", "C/UInt8"), ("int16", "C/Int16"),
+      ("uint16", "C/UInt16"), ("int32", "C/Int32"), ("uint32", "C/UInt32"),
+      ("int64", "C/Int64"), ("uint64", "C/UInt64"), ("char", "C/Char"),
+      ("uchar", "C/UChar"), ("short", "C/Short"), ("ushort", "C/UShort"),
+      ("cint", "C/Int"), ("cuint", "C/UInt"), ("clong", "C/Long"),
+      ("culong", "C/ULong"), ("csize", "C/Size"), ("cptrdiff", "C/PtrDiff"),
+      ("cfloat", "C/Float"), ("cdouble", "C/Double"), ("cbool", "C/Bool"),
+      ("cstr", "C/CStr")
+    ]
+    const cTypeFor = {
+      "C/Int8": "int8_t", "C/UInt8": "uint8_t", "C/Int16": "int16_t",
+      "C/UInt16": "uint16_t", "C/Int32": "int32_t", "C/UInt32": "uint32_t",
+      "C/Int64": "int64_t", "C/UInt64": "uint64_t", "C/Char": "char",
+      "C/UChar": "unsigned char", "C/Short": "short",
+      "C/UShort": "unsigned short", "C/Int": "int", "C/UInt": "unsigned int",
+      "C/Long": "long", "C/ULong": "unsigned long", "C/Size": "size_t",
+      "C/PtrDiff": "ptrdiff_t", "C/Float": "float", "C/Double": "double",
+      "C/Bool": "bool", "C/CStr": "const char *"
+    }.toTable
+
+    ## Every label sees a wrong-kind value, a `nil`, and the values that used to
+    ## expose a divergence: an Int for a float label, an out-of-f32-range
+    ## double, a Char for the char labels, and 2^64-1 for the wide unsigned
+    ## ones. `id_*` returns its argument, so the result converter is exercised
+    ## by the same call.
+    proc corpusFor(label: string): seq[string] =
+      result = @["nil", "\"text\"", "true", "1.5", "'A'", "0", "1"]
+      case label
+      of "C/Int8", "C/Char": result.add @["127", "-128", "128", "-129"]
+      of "C/UInt8", "C/UChar": result.add @["255", "256", "-1"]
+      of "C/Int16", "C/Short": result.add @["32767", "-32768", "32768"]
+      of "C/UInt16", "C/UShort": result.add @["65535", "65536", "-1"]
+      of "C/Int32", "C/Int": result.add @["2147483647", "-2147483648",
+                                          "2147483648"]
+      of "C/UInt32", "C/UInt": result.add @["4294967295", "4294967296", "-1"]
+      of "C/Int64", "C/Long", "C/PtrDiff":
+        result.add @["9223372036854775807", "-9223372036854775808",
+                     "9223372036854775808"]
+      of "C/UInt64", "C/ULong", "C/Size":
+        result.add @["9223372036854775807", "9223372036854775808",
+                     "18446744073709551615", "18446744073709551616", "-1"]
+      of "C/Float": result.add @["3.5", "1e300", "-1e300"]
+      of "C/Double": result.add @["3.5", "1e300"]
+      of "C/Bool": result.add @["false"]
+      of "C/CStr": result.add @["\"\"", "\"a\\u0000b\""]
+      else: discard
+
+    var decls: seq[string]
+    var impl = "#include <stdbool.h>\n#include <stddef.h>\n" &
+      "#include <stdint.h>\n"
+    for (suffix, label) in parityLabels:
+      let cType = cTypeFor[label]
+      decls.add "(ffi/fn id_" & suffix & " ^symbol \"id_" & suffix &
+        "\" [x : " & label & "] : " & label & ") "
+      impl.add cType & " id_" & suffix & "(" & cType & " x) { return x; }\n"
+
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    let sourcePath = getTempDir() / "gene_ffi_parity.c"
+    let libPath = getTempDir() / ("libgene_ffi_parity" & libExt)
+    writeFile(sourcePath,
+              compileSource(decls.join()).emitExperimentalC() & impl)
+    defer:
+      if fileExists(sourcePath): removeFile(sourcePath)
+      if fileExists(libPath): removeFile(libPath)
+    let built = execCmdEx(
+      quoteShell(getEnv("CC", "cc")) &
+        " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+        (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+        quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+    checkpoint built.output
+    check built.exitCode == 0
+    if built.exitCode == 0:
+      ## Outcome, not message: both paths now share one converter, but they
+      ## label the argument differently ("FFI argument 0 for 'f'" versus
+      ## "native entry argument 'x'"), so the comparable part is whether the
+      ## call succeeded and what it produced.
+      proc outcome(program: string): string =
+        let scope = newGlobalScope()
+        scope.define("ffi_load", newFfiLoadCapability())
+        try:
+          run(compileSource(program), scope).print()
+        except CatchableError:
+          "<rejected>"
+
+      var compared = 0
+      for (suffix, label) in parityLabels:
+        let aotPrelude = "(import $aot [load]) " &
+          "(var n (load " & geneString(libPath) & ")) "
+        let dynPrelude = "(var lib ($ffi/open ffi_load " &
+          geneString(libPath) & ")) " &
+          "(var f ($ffi/bind lib \"id_" & suffix & "\" [" & label & "] " &
+          label & ")) "
+        for value in corpusFor(label):
+          let viaAot = outcome(aotPrelude & "(n/id_" & suffix & " " & value & ")")
+          let viaDyn = outcome(dynPrelude & "(f " & value & ")")
+          checkpoint label & " <- " & value &
+            " : aot=" & viaAot & " dynamic=" & viaDyn
+          check viaAot == viaDyn
+          inc compared
+      check compared > 200
 
   test "a managed wrapper crosses the AOT boundary in both directions":
     ## §6.4 proper: native code hands back a managed wrapper, Gene passes it

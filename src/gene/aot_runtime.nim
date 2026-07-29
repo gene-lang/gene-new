@@ -38,6 +38,11 @@ proc fail(ctx: ptr AotContext, message: string): cint =
 proc argAt(call: ptr AotCall, index: csize_t): Value =
   call.args[int(index)]
 
+proc argWhere(name: cstring): string =
+  "native entry argument '" & $name & "'"
+
+const ResultWhere = "native entry result"
+
 # ---------------------------------------------------------------------------
 # Arity and scalar arguments
 # ---------------------------------------------------------------------------
@@ -52,137 +57,87 @@ proc geneFfiCheckArity(ctx: ptr AotContext, call: ptr AotCall,
       " argument(s), got " & $call.len)
   AotOk
 
-proc geneFfiArgInt64(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
-                     name: cstring, outValue: ptr int64): cint
-                    {.exportc: "gene_ffi_arg_int64", cdecl, dynlib.} =
-  if call == nil or index >= call.len or outValue == nil:
-    return ctx.fail("native entry argument index out of range")
-  let value = call.argAt(index)
-  if value.kind != vkInt:
-    return ctx.fail("native entry argument '" & $name & "' expects Int")
-  outValue[] = value.intVal
-  AotOk
+## Every scalar and string helper below delegates to the *same* converter the
+## VM's dynamic FFI path uses. The hand-written table that used to live here
+## disagreed with those converters at nearly every width — accepting an Int for
+## a Float, dropping `C/Float`'s range check, rejecting a `Char` for `C/Char`,
+## capping the 64-bit unsigned types at `high(int64)`, hardcoding `C/Long`'s
+## range as 64-bit, and letting a BigInt `FieldDefect` escape through a cdecl
+## frame. Compiled and interpreted code must agree, so there is exactly one
+## implementation of each conversion and it is not this file's.
 
-proc geneFfiArgDouble(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
-                      name: cstring, outValue: ptr float64): cint
-                     {.exportc: "gene_ffi_arg_double", cdecl, dynlib.} =
-  if call == nil or index >= call.len or outValue == nil:
-    return ctx.fail("native entry argument index out of range")
-  let value = call.argAt(index)
-  if value.kind == vkFloat:
-    outValue[] = value.floatVal
-  elif value.kind == vkInt:
-    outValue[] = float64(value.intVal)
-  else:
-    return ctx.fail("native entry argument '" & $name & "' expects Float")
-  AotOk
-
-proc argInRange(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
-                name: cstring, lo, hi: int64, outValue: var int64): cint =
-  ## Every integral C parameter narrows from Gene's 64-bit Int, so the range
-  ## check is the conversion's correctness condition: silently truncating
-  ## would hand foreign code a different number than the program wrote.
-  if call == nil or index >= call.len:
-    return ctx.fail("native entry argument index out of range")
-  let value = call.argAt(index)
-  if value.kind != vkInt:
-    return ctx.fail("native entry argument '" & $name & "' expects Int")
-  let raw = value.intVal
-  if raw < lo or raw > hi:
-    return ctx.fail("native entry argument '" & $name & "' is out of range: " &
-      $raw & " does not fit " & $lo & ".." & $hi)
-  outValue = raw
-  AotOk
-
-template defArgInt(nimName: untyped, cName: static string, CT: typedesc,
-                   lo, hi: int64) =
+template defArgVia(nimName: untyped, cName: static string, CT: typedesc,
+                   convert: untyped) {.dirty.} =
   proc nimName(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
                name: cstring, outValue: ptr CT): cint
               {.exportc: cName, cdecl, dynlib.} =
-    if outValue == nil:
-      return ctx.fail("native entry argument slot is null")
-    var raw: int64
-    let status = argInRange(ctx, call, index, name, lo, hi, raw)
-    if status != AotOk:
-      return status
-    outValue[] = cast[CT](raw)
+    if call == nil or index >= call.len or outValue == nil:
+      return ctx.fail("native entry argument index out of range")
+    let where = argWhere(name)
+    let value = call.argAt(index)
+    try:
+      outValue[] = CT(convert)
+    except CatchableError as e:
+      return ctx.fail(e.msg)
     AotOk
 
-defArgInt(geneFfiArgInt8, "gene_ffi_arg_int8", int8,
-          int64(low(int8)), int64(high(int8)))
-defArgInt(geneFfiArgUInt8, "gene_ffi_arg_uint8", uint8,
-          0'i64, int64(high(uint8)))
-defArgInt(geneFfiArgInt16, "gene_ffi_arg_int16", int16,
-          int64(low(int16)), int64(high(int16)))
-defArgInt(geneFfiArgUInt16, "gene_ffi_arg_uint16", uint16,
-          0'i64, int64(high(uint16)))
-defArgInt(geneFfiArgInt32, "gene_ffi_arg_int32", int32,
-          int64(low(int32)), int64(high(int32)))
-defArgInt(geneFfiArgUInt32, "gene_ffi_arg_uint32", uint32,
-          0'i64, int64(high(uint32)))
-defArgInt(geneFfiArgUInt64, "gene_ffi_arg_uint64", uint64,
-          0'i64, high(int64))
-defArgInt(geneFfiArgChar, "gene_ffi_arg_char", cchar,
-          int64(low(int8)), int64(high(int8)))
-defArgInt(geneFfiArgUChar, "gene_ffi_arg_uchar", uint8,
-          0'i64, int64(high(uint8)))
-defArgInt(geneFfiArgShort, "gene_ffi_arg_short", cshort,
-          int64(low(int16)), int64(high(int16)))
-defArgInt(geneFfiArgUShort, "gene_ffi_arg_ushort", cushort,
-          0'i64, int64(high(uint16)))
-defArgInt(geneFfiArgInt, "gene_ffi_arg_int", cint,
-          int64(low(int32)), int64(high(int32)))
-defArgInt(geneFfiArgUInt, "gene_ffi_arg_uint", cuint,
-          0'i64, int64(high(uint32)))
-defArgInt(geneFfiArgLong, "gene_ffi_arg_long", clong,
-          low(int64), high(int64))
-defArgInt(geneFfiArgULong, "gene_ffi_arg_ulong", culong,
-          0'i64, high(int64))
-defArgInt(geneFfiArgSize, "gene_ffi_arg_size", csize_t,
-          0'i64, high(int64))
-defArgInt(geneFfiArgPtrdiff, "gene_ffi_arg_ptrdiff", int,
-          low(int64), high(int64))
-
-proc geneFfiArgFloat(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
-                     name: cstring, outValue: ptr float32): cint
-                    {.exportc: "gene_ffi_arg_float", cdecl, dynlib.} =
-  if call == nil or index >= call.len or outValue == nil:
-    return ctx.fail("native entry argument index out of range")
-  let value = call.argAt(index)
-  if value.kind == vkFloat:
-    outValue[] = float32(value.floatVal)
-  elif value.kind == vkInt:
-    outValue[] = float32(value.intVal)
-  else:
-    return ctx.fail("native entry argument '" & $name & "' expects Float")
-  AotOk
-
-proc geneFfiArgBool(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
-                    name: cstring, outValue: ptr bool): cint
-                   {.exportc: "gene_ffi_arg_bool", cdecl, dynlib.} =
-  if call == nil or index >= call.len or outValue == nil:
-    return ctx.fail("native entry argument index out of range")
-  let value = call.argAt(index)
-  if value.kind != vkBool:
-    return ctx.fail("native entry argument '" & $name & "' expects Bool")
-  outValue[] = value.boolVal
-  AotOk
+defArgVia(geneFfiArgInt8, "gene_ffi_arg_int8", int8,
+          ffiCInt8Arg(where, value))
+defArgVia(geneFfiArgUInt8, "gene_ffi_arg_uint8", uint8,
+          ffiCUInt8Arg(where, value))
+defArgVia(geneFfiArgInt16, "gene_ffi_arg_int16", int16,
+          ffiCInt16Arg(where, value))
+defArgVia(geneFfiArgUInt16, "gene_ffi_arg_uint16", uint16,
+          ffiCUInt16Arg(where, value))
+defArgVia(geneFfiArgInt32, "gene_ffi_arg_int32", int32,
+          ffiCInt32Arg(where, value))
+defArgVia(geneFfiArgUInt32, "gene_ffi_arg_uint32", uint32,
+          ffiCUInt32Arg(where, value))
+defArgVia(geneFfiArgInt64, "gene_ffi_arg_int64", int64,
+          ffiCInt64Arg(where, value))
+defArgVia(geneFfiArgUInt64, "gene_ffi_arg_uint64", uint64,
+          ffiCUInt64Arg(where, "C/UInt64", value))
+defArgVia(geneFfiArgChar, "gene_ffi_arg_char", cchar,
+          ffiCCharArg(where, value))
+defArgVia(geneFfiArgUChar, "gene_ffi_arg_uchar", uint8,
+          ffiCUCharArg(where, value))
+defArgVia(geneFfiArgShort, "gene_ffi_arg_short", cshort,
+          ffiCShortArg(where, value))
+defArgVia(geneFfiArgUShort, "gene_ffi_arg_ushort", cushort,
+          ffiCUShortArg(where, value))
+defArgVia(geneFfiArgInt, "gene_ffi_arg_int", cint,
+          ffiCIntArg(where, value))
+defArgVia(geneFfiArgUInt, "gene_ffi_arg_uint", cuint,
+          ffiCUIntArg(where, value))
+defArgVia(geneFfiArgLong, "gene_ffi_arg_long", clong,
+          ffiCLongArg(where, value))
+defArgVia(geneFfiArgULong, "gene_ffi_arg_ulong", culong,
+          ffiCULongArg(where, value))
+defArgVia(geneFfiArgSize, "gene_ffi_arg_size", csize_t,
+          ffiCSizeArg(where, value))
+defArgVia(geneFfiArgPtrdiff, "gene_ffi_arg_ptrdiff", GeneCPtrDiff,
+          ffiCPtrDiffArg(where, value))
+defArgVia(geneFfiArgDouble, "gene_ffi_arg_double", float64,
+          ffiCDoubleArg(where, value))
+defArgVia(geneFfiArgFloat, "gene_ffi_arg_float", float32,
+          ffiCFloatArg(where, value))
+defArgVia(geneFfiArgBool, "gene_ffi_arg_bool", bool,
+          ffiCBoolArg(where, value))
 
 proc geneFfiArgCStr(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
                     name: cstring, outValue: ptr cstring): cint
                    {.exportc: "gene_ffi_arg_cstr", cdecl, dynlib.} =
-  ## Borrowed for the call's extent. `strVal` yields `lent string`, so this
-  ## points into the argument's own storage rather than a temporary; the
-  ## argument outlives the call, and foreign code must not retain it.
+  ## Borrowed for the call's extent: the pointer is formed from the argument's
+  ## own storage, the argument outlives the call, and foreign code must not
+  ## retain it. `nil` and interior NULs are rejected, as on the dynamic path —
+  ## a Gene `Str` does not admit nil, and `cstring(...)` would silently truncate
+  ## at the first interior NUL.
   if call == nil or index >= call.len or outValue == nil:
     return ctx.fail("native entry argument index out of range")
-  let value = call.argAt(index)
-  if value.kind == vkNil:
-    outValue[] = nil
-    return AotOk
-  if value.kind != vkString:
-    return ctx.fail("native entry argument '" & $name & "' expects Str")
-  outValue[] = cstring(value.strVal)
+  try:
+    outValue[] = ffiCStrArg(argWhere(name), call.argAt(index))
+  except CatchableError as e:
+    return ctx.fail(e.msg)
   AotOk
 
 proc argPointer(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
@@ -247,22 +202,6 @@ proc geneFfiArgBuffer(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
 # Scalar results
 # ---------------------------------------------------------------------------
 
-proc geneFfiResultInt64(ctx: ptr AotContext, value: int64,
-                        resultOut: ptr Value): cint
-                       {.exportc: "gene_ffi_result_int64", cdecl, dynlib.} =
-  if resultOut == nil:
-    return ctx.fail("native entry result slot is null")
-  resultOut[] = newInt(value)
-  AotOk
-
-proc geneFfiResultDouble(ctx: ptr AotContext, value: float64,
-                         resultOut: ptr Value): cint
-                        {.exportc: "gene_ffi_result_double", cdecl, dynlib.} =
-  if resultOut == nil:
-    return ctx.fail("native entry result slot is null")
-  resultOut[] = newFloat(value)
-  AotOk
-
 proc geneFfiResultVoid(ctx: ptr AotContext, resultOut: ptr Value): cint
                       {.exportc: "gene_ffi_result_void", cdecl, dynlib.} =
   if resultOut == nil:
@@ -270,72 +209,75 @@ proc geneFfiResultVoid(ctx: ptr AotContext, resultOut: ptr Value): cint
   resultOut[] = NIL
   AotOk
 
-template defResultInt(nimName: untyped, cName: static string, CT: typedesc) =
+template defResultVia(nimName: untyped, cName: static string, CT: typedesc,
+                      convert: untyped) {.dirty.} =
   proc nimName(ctx: ptr AotContext, value: CT, resultOut: ptr Value): cint
               {.exportc: cName, cdecl, dynlib.} =
     if resultOut == nil:
       return ctx.fail("native entry result slot is null")
-    resultOut[] = newInt(int64(value))
+    try:
+      resultOut[] = convert
+    except CatchableError as e:
+      return ctx.fail(e.msg)
     AotOk
 
-defResultInt(geneFfiResultInt8, "gene_ffi_result_int8", int8)
-defResultInt(geneFfiResultUInt8, "gene_ffi_result_uint8", uint8)
-defResultInt(geneFfiResultInt16, "gene_ffi_result_int16", int16)
-defResultInt(geneFfiResultUInt16, "gene_ffi_result_uint16", uint16)
-defResultInt(geneFfiResultInt32, "gene_ffi_result_int32", int32)
-defResultInt(geneFfiResultUInt32, "gene_ffi_result_uint32", uint32)
-defResultInt(geneFfiResultChar, "gene_ffi_result_char", cchar)
-defResultInt(geneFfiResultUChar, "gene_ffi_result_uchar", uint8)
-defResultInt(geneFfiResultShort, "gene_ffi_result_short", cshort)
-defResultInt(geneFfiResultUShort, "gene_ffi_result_ushort", cushort)
-defResultInt(geneFfiResultInt, "gene_ffi_result_int", cint)
-defResultInt(geneFfiResultUInt, "gene_ffi_result_uint", cuint)
-defResultInt(geneFfiResultLong, "gene_ffi_result_long", clong)
-defResultInt(geneFfiResultPtrdiff, "gene_ffi_result_ptrdiff", int)
+defResultVia(geneFfiResultInt8, "gene_ffi_result_int8", int8,
+             newInt(int64(value)))
+defResultVia(geneFfiResultUInt8, "gene_ffi_result_uint8", uint8,
+             newInt(int64(value)))
+defResultVia(geneFfiResultInt16, "gene_ffi_result_int16", int16,
+             newInt(int64(value)))
+defResultVia(geneFfiResultUInt16, "gene_ffi_result_uint16", uint16,
+             newInt(int64(value)))
+defResultVia(geneFfiResultInt32, "gene_ffi_result_int32", int32,
+             newInt(int64(value)))
+defResultVia(geneFfiResultUInt32, "gene_ffi_result_uint32", uint32,
+             newInt(int64(value)))
+defResultVia(geneFfiResultInt64, "gene_ffi_result_int64", int64,
+             newInt(value))
+defResultVia(geneFfiResultUChar, "gene_ffi_result_uchar", uint8,
+             newInt(int64(value)))
+defResultVia(geneFfiResultShort, "gene_ffi_result_short", cshort,
+             newInt(int64(value)))
+defResultVia(geneFfiResultUShort, "gene_ffi_result_ushort", cushort,
+             newInt(int64(value)))
+defResultVia(geneFfiResultInt, "gene_ffi_result_int", cint,
+             newInt(int64(value)))
+defResultVia(geneFfiResultUInt, "gene_ffi_result_uint", cuint,
+             newInt(int64(value)))
+defResultVia(geneFfiResultLong, "gene_ffi_result_long", clong,
+             newInt(int64(value)))
+defResultVia(geneFfiResultPtrdiff, "gene_ffi_result_ptrdiff", GeneCPtrDiff,
+             newInt(int64(value)))
+defResultVia(geneFfiResultFloat, "gene_ffi_result_float", float32,
+             newFloat(float64(value)))
+defResultVia(geneFfiResultDouble, "gene_ffi_result_double", float64,
+             newFloat(value))
+defResultVia(geneFfiResultBool, "gene_ffi_result_bool", bool,
+             newBool(value))
 
-template defResultUnsignedWide(nimName: untyped, cName: static string,
-                               CT: typedesc) =
-  ## 64-bit unsigned results can exceed Gene's Int. Report that instead of
-  ## wrapping into a negative number.
-  proc nimName(ctx: ptr AotContext, value: CT, resultOut: ptr Value): cint
-              {.exportc: cName, cdecl, dynlib.} =
-    if resultOut == nil:
-      return ctx.fail("native entry result slot is null")
-    if uint64(value) > uint64(high(int64)):
-      return ctx.fail("native entry result " & $uint64(value) &
-        " exceeds the range of Int")
-    resultOut[] = newInt(int64(value))
-    AotOk
+## A `C/Char` result is a Gene `Char`, not an Int — the dynamic converter has
+## always produced one, and returning an Int here made the same declaration
+## yield a different *type* compiled than interpreted.
+defResultVia(geneFfiResultChar, "gene_ffi_result_char", cchar,
+             ffiCCharResult(value))
 
-defResultUnsignedWide(geneFfiResultUInt64, "gene_ffi_result_uint64", uint64)
-defResultUnsignedWide(geneFfiResultULong, "gene_ffi_result_ulong", culong)
-defResultUnsignedWide(geneFfiResultSize, "gene_ffi_result_size", csize_t)
+## The 64-bit unsigned results promote past `high(int64)` rather than failing:
+## `ffiCUInt64Value` widens to a decimal Int, so a legitimate C return above
+## 2^63-1 is representable instead of being reported as an error.
+defResultVia(geneFfiResultUInt64, "gene_ffi_result_uint64", uint64,
+             ffiCUInt64Value(value))
+defResultVia(geneFfiResultULong, "gene_ffi_result_ulong", culong,
+             ffiCUInt64Value(uint64(value)))
+defResultVia(geneFfiResultSize, "gene_ffi_result_size", csize_t,
+             ffiCUInt64Value(uint64(value)))
 
-proc geneFfiResultFloat(ctx: ptr AotContext, value: float32,
-                        resultOut: ptr Value): cint
-                       {.exportc: "gene_ffi_result_float", cdecl, dynlib.} =
-  if resultOut == nil:
-    return ctx.fail("native entry result slot is null")
-  resultOut[] = newFloat(float64(value))
-  AotOk
-
-proc geneFfiResultBool(ctx: ptr AotContext, value: bool,
-                       resultOut: ptr Value): cint
-                      {.exportc: "gene_ffi_result_bool", cdecl, dynlib.} =
-  if resultOut == nil:
-    return ctx.fail("native entry result slot is null")
-  resultOut[] = newBool(value)
-  AotOk
-
-proc geneFfiResultCStr(ctx: ptr AotContext, value: cstring,
-                       resultOut: ptr Value): cint
-                      {.exportc: "gene_ffi_result_cstr", cdecl, dynlib.} =
-  ## Copied, not borrowed: the foreign buffer's lifetime is unknown, and a Gene
-  ## Str must stay valid after the call returns.
-  if resultOut == nil:
-    return ctx.fail("native entry result slot is null")
-  resultOut[] = if value == nil: NIL else: newStr($value)
-  AotOk
+## Copied, not borrowed: the foreign buffer's lifetime is unknown, and a Gene
+## Str must stay valid after the call returns. A NULL return raises rather than
+## becoming `nil`, so a null-return bug stays a boundary error instead of
+## silently entering Gene as a missing value.
+defResultVia(geneFfiResultCStr, "gene_ffi_result_cstr", cstring,
+             ffiCStrResult(ResultWhere, value))
 
 proc geneFfiResultPtr(ctx: ptr AotContext, value: pointer,
                       typeName, releaseName: cstring,

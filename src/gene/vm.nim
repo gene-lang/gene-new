@@ -28,9 +28,9 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import std/selectors
 
 when sizeof(csize_t) == sizeof(clong):
-  type GeneCPtrDiff = clong
+  type GeneCPtrDiff* = clong
 else:
-  type GeneCPtrDiff = clonglong
+  type GeneCPtrDiff* = clonglong
 
 type
   ReplReadLine* = proc(line: var string): bool {.closure.}
@@ -16911,37 +16911,37 @@ proc ensureNoInteriorNul(name: string, text: string) =
     if ch == '\0':
       raise newException(GeneError, name & " rejects strings with interior NUL")
 
-proc ffiCIntArg(name: string, value: Value): cint =
+proc ffiCIntArg*(name: string, value: Value): cint =
   let raw = requireInt64(name, value)
   if raw < int64(low(cint)) or raw > int64(high(cint)):
     raise newException(GeneError, name & " is out of C/Int range")
   cint(raw)
 
-proc ffiCInt32Arg(name: string, value: Value): int32 =
+proc ffiCInt32Arg*(name: string, value: Value): int32 =
   let raw = requireInt64(name, value)
   if raw < int64(low(int32)) or raw > int64(high(int32)):
     raise newException(GeneError, name & " is out of C/Int32 range")
   int32(raw)
 
-proc ffiCInt16Arg(name: string, value: Value): int16 =
+proc ffiCInt16Arg*(name: string, value: Value): int16 =
   let raw = requireInt64(name, value)
   if raw < int64(low(int16)) or raw > int64(high(int16)):
     raise newException(GeneError, name & " is out of C/Int16 range")
   int16(raw)
 
-proc ffiCShortArg(name: string, value: Value): cshort =
+proc ffiCShortArg*(name: string, value: Value): cshort =
   let raw = requireInt64(name, value)
   if raw < int64(low(cshort)) or raw > int64(high(cshort)):
     raise newException(GeneError, name & " is out of C/Short range")
   cshort(raw)
 
-proc ffiCInt8Arg(name: string, value: Value): int8 =
+proc ffiCInt8Arg*(name: string, value: Value): int8 =
   let raw = requireInt64(name, value)
   if raw < int64(low(int8)) or raw > int64(high(int8)):
     raise newException(GeneError, name & " is out of C/Int8 range")
   int8(raw)
 
-proc ffiCCharArg(name: string, value: Value): cchar =
+proc ffiCCharArg*(name: string, value: Value): cchar =
   if value.kind == vkChar:
     let raw = int64(int32(value.charVal))
     if raw > 127:
@@ -16952,37 +16952,37 @@ proc ffiCCharArg(name: string, value: Value): cchar =
     raise newException(GeneError, name & " is out of C/Char range")
   cchar(uint8(raw and 0xff))
 
-proc ffiCUIntArg(name: string, value: Value): cuint =
+proc ffiCUIntArg*(name: string, value: Value): cuint =
   let raw = requireInt64(name, value)
   if raw < 0 or raw > int64(high(cuint)):
     raise newException(GeneError, name & " is out of C/UInt range")
   cuint(raw)
 
-proc ffiCUInt32Arg(name: string, value: Value): uint32 =
+proc ffiCUInt32Arg*(name: string, value: Value): uint32 =
   let raw = requireInt64(name, value)
   if raw < 0 or raw > int64(high(uint32)):
     raise newException(GeneError, name & " is out of C/UInt32 range")
   uint32(raw)
 
-proc ffiCUInt16Arg(name: string, value: Value): uint16 =
+proc ffiCUInt16Arg*(name: string, value: Value): uint16 =
   let raw = requireInt64(name, value)
   if raw < 0 or raw > int64(high(uint16)):
     raise newException(GeneError, name & " is out of C/UInt16 range")
   uint16(raw)
 
-proc ffiCUShortArg(name: string, value: Value): cushort =
+proc ffiCUShortArg*(name: string, value: Value): cushort =
   let raw = requireInt64(name, value)
   if raw < 0 or raw > int64(high(cushort)):
     raise newException(GeneError, name & " is out of C/UShort range")
   cushort(raw)
 
-proc ffiCUInt8Arg(name: string, value: Value): uint8 =
+proc ffiCUInt8Arg*(name: string, value: Value): uint8 =
   let raw = requireInt64(name, value)
   if raw < 0 or raw > int64(high(uint8)):
     raise newException(GeneError, name & " is out of C/UInt8 range")
   uint8(raw)
 
-proc ffiCUCharArg(name: string, value: Value): uint8 =
+proc ffiCUCharArg*(name: string, value: Value): uint8 =
   if value.kind == vkChar:
     let raw = int64(int32(value.charVal))
     if raw > int64(high(uint8)):
@@ -16993,23 +16993,23 @@ proc ffiCUCharArg(name: string, value: Value): uint8 =
     raise newException(GeneError, name & " is out of C/UChar range")
   uint8(raw)
 
-proc ffiCLongArg(name: string, value: Value): clong =
+proc ffiCLongArg*(name: string, value: Value): clong =
   let raw = requireInt64(name, value)
   when sizeof(clong) < sizeof(int64):
     if raw < int64(low(clong)) or raw > int64(high(clong)):
       raise newException(GeneError, name & " is out of C/Long range")
   clong(raw)
 
-proc ffiCInt64Arg(name: string, value: Value): int64 =
+proc ffiCInt64Arg*(name: string, value: Value): int64 =
   requireInt64(name, value)
 
-proc ffiCUInt64Value(value: uint64): Value =
+proc ffiCUInt64Value*(value: uint64): Value =
   if value <= uint64(high(int64)):
     newInt(int64(value))
   else:
     newIntFromDecimal($value)
 
-proc ffiCUInt64Arg(name, label: string, value: Value,
+proc ffiCUInt64Arg*(name, label: string, value: Value,
                    maxValue = "18446744073709551615"): uint64 =
   if value.kind != vkInt:
     raise newException(GeneError, name & " expects an Int")
@@ -17021,48 +17021,51 @@ proc ffiCUInt64Arg(name, label: string, value: Value,
   except ValueError:
     raise newException(GeneError, name & " is out of " & label & " range")
 
-proc ffiCULongArg(name: string, value: Value): culong =
+proc ffiCULongArg*(name: string, value: Value): culong =
   culong(ffiCUInt64Arg(name, "C/ULong", value, $high(culong)))
 
-proc ffiCPtrDiffArg(name: string, value: Value): GeneCPtrDiff =
+proc ffiCPtrDiffArg*(name: string, value: Value): GeneCPtrDiff =
   let raw = requireInt64(name, value)
   if raw < int64(low(GeneCPtrDiff)) or raw > int64(high(GeneCPtrDiff)):
     raise newException(GeneError, name & " is out of C/PtrDiff range")
   GeneCPtrDiff(raw)
 
-proc ffiCSizeArg(name: string, value: Value): csize_t =
+proc ffiCSizeArg*(name: string, value: Value): csize_t =
   csize_t(ffiCUInt64Arg(name, "C/Size", value, $high(csize_t)))
 
-proc ffiCBoolArg(name: string, value: Value): bool =
+proc ffiCBoolArg*(name: string, value: Value): bool =
   if value.kind != vkBool:
     raiseTypeError(name, "C/Bool", value, nil)
   value.boolVal
 
-proc ffiCDoubleArg(name: string, value: Value): cdouble =
+proc ffiCDoubleArg*(name: string, value: Value): cdouble =
   if value.kind != vkFloat:
     raiseTypeError(name, "C/Double", value, nil)
   cdouble(value.floatVal)
 
-proc ffiCFloatArg(name: string, value: Value): cfloat =
+proc ffiCFloatArg*(name: string, value: Value): cfloat =
   if value.kind != vkFloat:
     raiseTypeError(name, "C/Float", value, nil)
   if not value.floatInF32Range:
     raise newException(GeneError, name & " is out of C/Float range")
   cfloat(value.floatVal)
 
-proc ffiCStrArg(name: string, value: Value): cstring =
+proc ffiCStrArg*(name: string, value: Value): cstring =
+  ## Borrowed from the argument's own storage for the call's extent. `strVal`
+  ## yields `lent string`, so the pointer must be formed from it directly — a
+  ## `let` binding would copy, and the cstring would then point into storage
+  ## freed on return.
   if value.kind != vkString:
     raiseTypeError(name, "Str", value, nil)
-  let text = value.strVal
-  ensureNoInteriorNul(name, text)
-  text.cstring
+  ensureNoInteriorNul(name, value.strVal)
+  value.strVal.cstring
 
-proc ffiCStrResult(name: string, value: cstring): Value =
+proc ffiCStrResult*(name: string, value: cstring): Value =
   if value == nil:
     raise newException(GeneError, name & " returned null C/CStr")
   newStr($value)
 
-proc ffiCCharResult(value: cchar): Value =
+proc ffiCCharResult*(value: cchar): Value =
   newChar(Rune(ord(value)))
 
 proc compositeLabelHasSingleArg(label, head: string): bool =
