@@ -39,6 +39,10 @@ proc argAt(call: ptr AotCall, index: csize_t): Value =
   call.args[int(index)]
 
 proc argWhere(name: cstring): string =
+  ## Only ever called on a failing conversion. Building this eagerly cost
+  ## ~275 ns per boundary crossing in allocation alone — `$name` plus two
+  ## concatenations, on every argument of every call, to produce a string the
+  ## success path never reads.
   "native entry argument '" & $name & "'"
 
 const ResultWhere = "native entry result"
@@ -68,13 +72,24 @@ proc geneFfiCheckArity(ctx: ptr AotContext, call: ptr AotCall,
 
 template defArgVia(nimName: untyped, cName: static string, CT: typedesc,
                    convert: untyped) {.dirty.} =
+  ## `where` starts empty so the success path allocates nothing. The converters
+  ## read it only when raising, so a failure re-runs the conversion once with
+  ## the real parameter name purely to build the message — the conversions are
+  ## pure in the argument, and the second run happens only on the error path
+  ## where its cost is irrelevant.
   proc nimName(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
                name: cstring, outValue: ptr CT): cint
               {.exportc: cName, cdecl, dynlib.} =
     if call == nil or index >= call.len or outValue == nil:
       return ctx.fail("native entry argument index out of range")
-    let where = argWhere(name)
     let value = call.argAt(index)
+    var where = ""
+    try:
+      outValue[] = CT(convert)
+      return AotOk
+    except CatchableError:
+      discard
+    where = argWhere(name)
     try:
       outValue[] = CT(convert)
     except CatchableError as e:
@@ -134,26 +149,37 @@ proc geneFfiArgCStr(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
   ## at the first interior NUL.
   if call == nil or index >= call.len or outValue == nil:
     return ctx.fail("native entry argument index out of range")
+  let value = call.argAt(index)
   try:
-    outValue[] = ffiCStrArg(argWhere(name), call.argAt(index))
+    outValue[] = ffiCStrArg("", value)
+    return AotOk
+  except CatchableError:
+    discard
+  try:
+    outValue[] = ffiCStrArg(argWhere(name), value)
   except CatchableError as e:
     return ctx.fail(e.msg)
   AotOk
 
 proc argPointer(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
                 name, typeName: cstring, outValue: ptr pointer): cint =
+  ## `typeName` is the full declared label — `"(C/NullablePtr CDb)"` — which the
+  ## emitter has always passed and this helper used to spend only on an error
+  ## message. Enforcing it is what stops a pointer to an unrelated native type
+  ## reaching C code that will dereference it as something else. Nullability,
+  ## closed state, and the const/owned flavors come with it.
   if call == nil or index >= call.len or outValue == nil:
     return ctx.fail("native entry argument index out of range")
   let value = call.argAt(index)
-  if value.kind == vkNil:
-    outValue[] = nil
+  try:
+    outValue[] = ffiAotPointerArg("", $typeName, value)
     return AotOk
-  if value.kind != vkCPtr:
-    return ctx.fail("native entry argument '" & $name & "' expects a " &
-      $typeName & " pointer")
-  if value.cPtrClosed:
-    return ctx.fail("native entry argument '" & $name & "' is closed")
-  outValue[] = value.cPtrAddress
+  except CatchableError:
+    discard
+  try:
+    outValue[] = ffiAotPointerArg(argWhere(name), $typeName, value)
+  except CatchableError as e:
+    return ctx.fail(e.msg)
   AotOk
 
 proc geneFfiArgPtr(ctx: ptr AotContext, call: ptr AotCall, index: csize_t,
@@ -283,23 +309,26 @@ proc geneFfiResultPtr(ctx: ptr AotContext, value: pointer,
                       typeName, releaseName: cstring,
                       resultOut: ptr Value): cint
                      {.exportc: "gene_ffi_result_ptr", cdecl, dynlib.} =
+  ## Delegates to the dynamic path's `ffiPointerResult`, which applies the rule
+  ## this helper used to skip: a NULL for a non-nullable declared result is an
+  ## error, not `nil`. It also builds the value with the right constructor for
+  ## the declared flavor — const, owned, or plain — where this returned a plain
+  ## mutable pointer regardless.
   if resultOut == nil:
     return ctx.fail("native entry result slot is null")
-  if value == nil:
-    resultOut[] = NIL
-    return AotOk
-  let target = newSym($typeName)
+  var releaseAddress: pointer
   if releaseName != nil and releaseName[0] != '\0':
-    let resolved =
+    releaseAddress =
       if aotSymbolResolver != nil: aotSymbolResolver($releaseName)
       else: nil
-    if resolved == nil:
+    if releaseAddress == nil:
       return ctx.fail("native entry result declares release '" &
         $releaseName & "' but the symbol was not found in any loaded AOT " &
         "library")
-    resultOut[] = newCOwnedPtr(value, cast[CPtrReleaseProc](resolved), target)
-  else:
-    resultOut[] = newCPtr(value, target)
+  try:
+    resultOut[] = ffiAotPointerResult($typeName, value, releaseAddress)
+  except CatchableError as e:
+    return ctx.fail(e.msg)
   AotOk
 
 # ---------------------------------------------------------------------------
@@ -455,7 +484,11 @@ proc wrapperResult(ctx: ptr AotContext, address: pointer,
   let abiName = newSym(identityLeafName($abiIdentity))
   let handle =
     if release != nil:
-      newCOwnedPtr(address, cast[CPtrReleaseProc](release), abiName)
+      # `newCForeignOwnedPtr`, not `newCOwnedPtr`: the shim is a generated C
+      # function and therefore `cdecl`, while `CPtrReleaseProc` is `nimcall`.
+      # The two coincide on x86-64 SysV and AArch64 and differ elsewhere, so
+      # casting one to the other was a latent ABI bug rather than a style nit.
+      newCForeignOwnedPtr(address, cast[pointer](release), abiName)
     else:
       newCPtr(address, abiName)
   try:

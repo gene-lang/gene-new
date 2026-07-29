@@ -17139,6 +17139,35 @@ proc ffiPointerArg(name, label: string, typeExpr, value: Value): pointer =
     raiseTypeError(name, label, value, nil)
   checked.cPtrAddress
 
+proc ffiPointerLabelHead(label: string): string =
+  ## `"(C/NullablePtr CDb)"` -> `"C/NullablePtr"`. A generated AOT wrapper
+  ## carries the declared label as a C string literal and nothing else, so the
+  ## head and target have to come back out of it.
+  if not (label.startsWith("(") and label.endsWith(")")):
+    return ""
+  let space = label.find(' ')
+  if space <= 1:
+    return ""
+  label[1 ..< space]
+
+proc ffiAotPointerArg*(where, label: string, value: Value): pointer =
+  ## The dynamic path's pointer contract, driven off the declared label rather
+  ## than a compile-time type expression. `matchesCPtrType` is the same check
+  ## `adaptBoundary` reaches for a `(C/Ptr T)` annotation, so a compiled wrapper
+  ## and the interpreter accept and reject exactly the same pointers: pointee
+  ## identity, nullability, closed state, and the mutable/owned flavors.
+  let head = ffiPointerLabelHead(label)
+  if head.len == 0 or
+      not matchesCPtrType(head, [ffiPointerTarget(label)], value, nil):
+    raiseTypeError(where, label, value, nil)
+  if value.kind == vkNil:
+    return nil
+  value.cPtrAddress
+
+proc ffiAotPointerResult*(label: string, address: pointer,
+                          releaseAddress: pointer = nil): Value =
+  ffiPointerResult(label, address, releaseAddress)
+
 proc ffiSliceArg(name, label: string, typeExpr, value: Value):
     tuple[address: pointer, length: csize_t] =
   let checked = adaptBoundary(name, typeExpr, value, nil)

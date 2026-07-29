@@ -1355,6 +1355,71 @@ size_t total(uint32_t a, size_t b) { return (size_t)a + b; }
           inc compared
       check compared > 200
 
+  test "compiled FFI wrappers enforce the pointer contract":
+    ## `argPointer` used to accept any live `CPtr`, so a pointer to an unrelated
+    ## native type reached C code that dereferences it as something else. The
+    ## declared label was already being passed and spent only on an error
+    ## message. Pointee identity, nullability and closed state are all checked
+    ## now, and each is compared against the dynamic path rather than asserted
+    ## on its own.
+    let src =
+      "(ffi/fn make_a ^symbol \"make_a\" [] : (C/Ptr CA)) " &
+      "(ffi/fn make_b ^symbol \"make_b\" [] : (C/Ptr CB)) " &
+      "(ffi/fn make_owned_a ^symbol \"make_a\" ^release \"free_a\" " &
+      "  [] : (C/OwnedPtr CA)) " &
+      "(ffi/fn take_a ^symbol \"take_a\" [p : (C/Ptr CA)] : C/Int64) " &
+      "(ffi/fn take_a_opt ^symbol \"take_a_opt\" " &
+      "  [p : (C/NullablePtr CA)] : C/Int64) "
+    ## The externs the backend emits for a pointee that is not a declared
+    ## `ffi/struct` are `void *`, so the implementations match that shape. The
+    ## contract under test is the Gene-level pointee identity, which is exactly
+    ## the distinction C is not making here.
+    let impl = """
+#include <stdlib.h>
+typedef struct CA { int64_t tag; } CA;
+typedef struct CB { int64_t tag; } CB;
+void *make_a(void) { CA *p = malloc(sizeof *p); p->tag = 1; return p; }
+void *make_b(void) { CB *p = malloc(sizeof *p); p->tag = 2; return p; }
+int64_t take_a(void *p) { return ((CA *)p)->tag; }
+int64_t take_a_opt(void *p) { return p ? ((CA *)p)->tag : -1; }
+void free_a(void *p) { free(p); }
+"""
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    let sourcePath = getTempDir() / "gene_ffi_ptr_contract.c"
+    let libPath = getTempDir() / ("libgene_ffi_ptr_contract" & libExt)
+    writeFile(sourcePath, compileSource(src).emitExperimentalC() & impl)
+    defer:
+      if fileExists(sourcePath): removeFile(sourcePath)
+      if fileExists(libPath): removeFile(libPath)
+    let built = execCmdEx(
+      quoteShell(getEnv("CC", "cc")) &
+        " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+        (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+        quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+    checkpoint built.output
+    check built.exitCode == 0
+    if built.exitCode == 0:
+      let prelude = "(import $aot [load]) " &
+        "(var n (load " & geneString(libPath) & ")) "
+      proc runAot(program: string): Value =
+        run(compileSource(prelude & program), newGlobalScope())
+
+      # A matching pointer still works, and a nullable parameter still takes nil.
+      check runAot("(n/take_a (n/make_a))").intVal == 1
+      check runAot("(n/take_a_opt nil)").intVal == -1
+
+      # The finding: a CB where a CA is declared. Same machine representation,
+      # different layout, and previously accepted.
+      check_runtime_error(prelude & "(n/take_a (n/make_b))", "expected")
+      # nil into a non-nullable pointer parameter.
+      check_runtime_error(prelude & "(n/take_a nil)", "expected")
+      # A closed pointer must not be resurrected through the compiled wrapper.
+      check_runtime_error(
+        prelude & "(var p (n/make_owned_a)) ($C/close p) (n/take_a p)",
+        "expected")
+
   test "a managed wrapper crosses the AOT boundary in both directions":
     ## §6.4 proper: native code hands back a managed wrapper, Gene passes it
     ## in again, and ownership is honoured. The library and the running module
