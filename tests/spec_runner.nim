@@ -2128,6 +2128,67 @@ int main(void) {
       "(var b (load " & geneString(libs[1]) & ")) " &
       "[(a/make 10) (b/make 10)]"), newGlobalScope()).print() == "[10 20]"
 
+  test "aot/load rejects a library built against a changed layout":
+    ## The stale-library case, end to end. The library is compiled against one
+    ## `CPoint`, and the loading program declares the same Type and ABI identity
+    ## over a *different* layout. Identity alone cannot tell these apart; the
+    ## fingerprint can.
+    const libExt = when defined(macosx): ".dylib"
+                   elif defined(windows): ".dll"
+                   else: ".so"
+    let libSrc =
+      "(ffi/struct CPoint ^fields [[x C/Int64]]) " &
+      "(type Point ^repr native_wrapper " &
+      "  ^props {^handle (C/OwnedPtr CPoint)} " &
+      "  ^native {^abi CPoint ^lifecycle manual ^wrapper handle}) " &
+      "(fn get_x ^native_entry {^p borrow} [p : Point] : I64 p/x)"
+    let sourcePath = getTempDir() / "gene_aot_stale.c"
+    let libPath = getTempDir() / ("libgene_aot_stale" & libExt)
+    writeFile(sourcePath, compileSource(libSrc).emitExperimentalC())
+    defer:
+      if fileExists(sourcePath): removeFile(sourcePath)
+      if fileExists(libPath): removeFile(libPath)
+    let built = execCmdEx(
+      quoteShell(getEnv("CC", "cc")) &
+        " -std=c11 -O2 -DGENE_AOT_DYNAMIC_ENTRIES=1 -shared -fPIC " &
+        (when defined(macosx): "-undefined dynamic_lookup " else: "") &
+        quoteShell(sourcePath) & " -o " & quoteShell(libPath))
+    checkpoint built.output
+    check built.exitCode == 0
+    if built.exitCode == 0:
+      # Same declaration: loads, and the entry works.
+      check run(compileSource(
+        libSrc & " (import $aot [load]) " &
+        "(var n (load " & geneString(libPath) & ")) n"),
+        newGlobalScope()).kind == vkMap
+
+      # A field added to CPoint moves the layout while every identity stays put.
+      check_runtime_error(
+        "(ffi/struct CPoint ^fields [[x C/Int64] [y C/Int64]]) " &
+        "(type Point ^repr native_wrapper " &
+        "  ^props {^handle (C/OwnedPtr CPoint)} " &
+        "  ^native {^abi CPoint ^lifecycle manual ^wrapper handle}) " &
+        "(import $aot [load]) (load " & geneString(libPath) & ")",
+        "the layout of")
+
+      # Policy-only drift: same layout, different ^release. The layout
+      # fingerprint is unmoved; the contract fingerprint is not.
+      check_runtime_error(
+        "(ffi/struct CPoint ^fields [[x C/Int64]]) " &
+        "(type Point ^repr native_wrapper " &
+        "  ^props {^handle (C/OwnedPtr CPoint)} " &
+        "  ^native {^abi CPoint ^lifecycle manual ^wrapper handle " &
+        "           ^release \"point_free\"}) " &
+        "(import $aot [load]) (load " & geneString(libPath) & ")",
+        "changed since the library was compiled")
+
+      # And an unloadable library leaves nothing behind: the failed load must
+      # not have registered entries, so a later good load still works.
+      check run(compileSource(
+        libSrc & " (import $aot [load]) " &
+        "(var n (load " & geneString(libPath) & ")) n"),
+        newGlobalScope()).kind == vkMap
+
   test "each library's owned result runs its own release function":
     ## `aotResolveSymbol` scanned every loaded handle and returned the first
     ## match, so an allocation from library A could be paired with library B's

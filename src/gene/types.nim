@@ -443,6 +443,50 @@ type
     arity*: cint
     frame*: pointer
 
+  AotNativeTypeC* = object
+    ## Mirrors `GeneAotNativeType`. One row per native Type the library's
+    ## compiled code depends on, transitively.
+    typeIdentity*: cstring
+    abiIdentity*: cstring
+    abiFingerprint*: cstring
+    contractFingerprint*: cstring
+
+  AotAbiLayoutC* = object
+    ## Mirrors `GeneAotAbiLayout`. `measuredSize`/`measuredAlign` are filled in
+    ## by the C compiler that built the library.
+    abiIdentity*: cstring
+    fingerprint*: cstring
+    measuredSize*: csize_t
+    measuredAlign*: csize_t
+
+  AotAbiLayoutFieldC* = object
+    ## Mirrors `GeneAotAbiLayoutField`.
+    abiIdentity*: cstring
+    fieldName*: cstring
+    measuredOffset*: csize_t
+
+  AotTypeRequirement* = object
+    ## One `gene_aot_native_types` row: what a loaded library was compiled to
+    ## assume about a native Type.
+    typeIdentity*: string
+    abiIdentity*: string
+    abiFingerprint*: string
+    contractFingerprint*: string
+
+  AotMeasuredLayout* = object
+    ## One `gene_aot_abi_layouts` row plus its field offsets, as the C compiler
+    ## that built the library actually laid the struct out.
+    abiIdentity*: string
+    fingerprint*: string
+    size*: int
+    align*: int
+    offsets*: Table[string, int]
+
+  AotModuleRequirements* = ref object
+    ## A loaded library's full requirement set, retained so it can be
+    ## re-validated after the native type registry changes.
+    requirements*: seq[AotTypeRequirement]
+
   AotFfiFnInfoC* = object
     ## Mirrors `GeneFfiFnInfo` in the generated C.
     name*: cstring

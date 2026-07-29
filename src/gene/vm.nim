@@ -464,6 +464,13 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
                        receiverValue = NIL) {.noreturn.}
 proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
+# The AOT loader lives in the included stdlib, which is spliced in well before
+# these are defined.
+proc validateAotTypeRequirements*(reqs: openArray[AotTypeRequirement]): string
+proc checkAotMeasuredLayouts*(rows: openArray[AotMeasuredLayout]): string
+proc commitAotMeasuredLayouts*(rows: openArray[AotMeasuredLayout])
+proc registerAotModuleRequirements*(path: string,
+                                    reqs: sink seq[AotTypeRequirement])
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
 proc typeExprNeedsBoundaryScope(typeExpr: Value): bool
 proc closeTypeExpr(expr: Value, scope: Scope): Value
@@ -22063,6 +22070,74 @@ proc registerNativeTypeIdentity*(identity: string, typ: Value) =
 
 proc nativeTypeByIdentity*(identity: string): Value =
   nativeTypeRegistry.getOrDefault(identity, NIL)
+
+var aotMeasuredLayouts: Table[string, AotMeasuredLayout]
+  ## First writer wins. Without somewhere to record the first library's measured
+  ## values there is nothing for a second library to be compared against, and
+  ## the measured rows would be inert.
+
+proc describeAotTypeMismatch(req: AotTypeRequirement, typ: Value): string =
+  ## Say *which* part drifted. The contract fingerprint is the check; the other
+  ## two exist so a stale-library error is actionable rather than opaque.
+  if typ.typeNativeAbiIdentity != req.abiIdentity:
+    return "native type '" & req.typeIdentity &
+      "' is now backed by ABI '" & typ.typeNativeAbiIdentity &
+      "' but the library was compiled against '" & req.abiIdentity & "'"
+  if typ.typeNativeAbiFingerprint != req.abiFingerprint:
+    return "the layout of '" & req.abiIdentity &
+      "' changed since the library was compiled"
+  "the declaration of native type '" & req.typeIdentity &
+    "' changed since the library was compiled (^copy, ^release, ^wrapper, " &
+    "^mutable, ^lifecycle, or the handle's declared type)"
+
+proc validateAotTypeRequirement*(req: AotTypeRequirement): string =
+  ## "" when the live Type still satisfies what the library assumed.
+  let typ = nativeTypeByIdentity(req.typeIdentity)
+  if typ.kind != vkType:
+    return "no native type is registered for identity '" & req.typeIdentity &
+      "'; its declaring module must be loaded first"
+  if typ.typeNativeContractFingerprint != req.contractFingerprint:
+    return describeAotTypeMismatch(req, typ)
+  ""
+
+proc validateAotTypeRequirements*(reqs: openArray[AotTypeRequirement]): string =
+  for req in reqs:
+    let failure = validateAotTypeRequirement(req)
+    if failure.len > 0:
+      return failure
+  ""
+
+proc checkAotMeasuredLayouts*(rows: openArray[AotMeasuredLayout]): string =
+  ## Compare against what an earlier library reported for the same layout
+  ## identity. The host VM never lays out C structs itself, so this is a
+  ## library-against-library check, not a library-against-host one.
+  for row in rows:
+    if not aotMeasuredLayouts.hasKey(row.abiIdentity):
+      continue
+    let known = aotMeasuredLayouts[row.abiIdentity]
+    if known.fingerprint != row.fingerprint:
+      continue  # the declaration itself differs; the type check reports that
+    if known.size != row.size or known.align != row.align:
+      return "layout '" & row.abiIdentity & "' measures " & $row.size & "/" &
+        $row.align & " here but " & $known.size & "/" & $known.align &
+        " in an already-loaded library"
+    for name, offset in row.offsets:
+      if known.offsets.hasKey(name) and known.offsets[name] != offset:
+        return "field '" & row.abiIdentity & "." & name & "' is at offset " &
+          $offset & " here but " & $known.offsets[name] &
+          " in an already-loaded library"
+  ""
+
+proc commitAotMeasuredLayouts*(rows: openArray[AotMeasuredLayout]) =
+  for row in rows:
+    if not aotMeasuredLayouts.hasKey(row.abiIdentity):
+      aotMeasuredLayouts[row.abiIdentity] = row
+
+var aotModuleRequirements: Table[string, AotModuleRequirements]
+
+proc registerAotModuleRequirements*(path: string,
+                                    reqs: sink seq[AotTypeRequirement]) =
+  aotModuleRequirements[path] = AotModuleRequirements(requirements: reqs)
 
 proc newNativeWrapper*(wrapperType: Value,
                        props: openArray[(string, Value)]): Value =

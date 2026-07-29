@@ -8085,36 +8085,108 @@ proc biAotLoad(args: openArray[Value]): Value =
     raise newException(GeneError,
       "AOT library exports no manifest; was it built from " &
       "`gene compile --target c` with -DGENE_AOT_DYNAMIC_ENTRIES=1? " & path)
-  ## Loaded libraries are process-lifetime pinned on purpose. A library cannot
-  ## safely unload while its callables, entry pointers, or release shims may
-  ## still escape — and a release shim is reachable from an owned `CPtr` with
-  ## arbitrary lifetime, long after the callable that produced it is gone.
-  ## Unloading under those conditions turns a live pointer's release into a jump
-  ## into unmapped memory. Revisit only alongside a real unload story, not as an
-  ## isolated fix.
-  aotModuleHandles.add handle
+  ## Everything below validates and *stages*; nothing mutable is touched until
+  ## every check has passed. The proc used to register the handle and then bind
+  ## entries in a loop that could raise partway through, leaving a live handle
+  ## and a half-filled entry table behind.
+  ##
+  ## `unloadLib` on a failed load is correct and safe precisely because nothing
+  ## escaped: no callable was handed out and no release shim is reachable. That
+  ## is the exact opposite of the policy for a *successful* load, where the
+  ## library is pinned for the process lifetime.
+  var stagedEntries: seq[(string, AotEntryProc)]
   var entries = initPropTable()
 
-  proc bindEntry(geneName, symbol: string) =
+  proc rejectLoad(message: string) =
+    unloadLib(handle)
+    raise newException(GeneError, message & ": " & path)
+
+  ## The manifest version is emitted unconditionally, so its absence means the
+  ## library predates ABI validation — not that it has no native types. A stale
+  ## library is exactly what this check exists to catch, so a missing marker is
+  ## a hard error rather than implicit trust.
+  let versionAddr = cast[ptr csize_t](
+    symAddr(handle, "gene_aot_manifest_version"))
+  if versionAddr == nil:
+    rejectLoad("AOT library predates ABI validation and must be rebuilt " &
+      "with `gene compile --target c`")
+  if int(versionAddr[]) != AbiFingerprintVersion:
+    rejectLoad("AOT library manifest version " & $int(versionAddr[]) &
+      " does not match this runtime's " & $AbiFingerprintVersion &
+      "; rebuild it")
+
+  ## Every native Type the compiled code depends on, transitively — so a type
+  ## whose layout is only ever reached by dereferencing a pointer field is
+  ## checked too, even though it never crosses the boundary.
+  let typeManifest = cast[ptr UncheckedArray[AotNativeTypeC]](
+    symAddr(handle, "gene_aot_native_types"))
+  let typeCountAddr = cast[ptr csize_t](
+    symAddr(handle, "gene_aot_native_types_count"))
+  var requirements: seq[AotTypeRequirement]
+  if typeManifest != nil and typeCountAddr != nil:
+    for i in 0 ..< int(typeCountAddr[]):
+      let row = typeManifest[i]
+      requirements.add AotTypeRequirement(
+        typeIdentity: $row.typeIdentity,
+        abiIdentity: $row.abiIdentity,
+        abiFingerprint: $row.abiFingerprint,
+        contractFingerprint: $row.contractFingerprint)
+  let mismatch = validateAotTypeRequirements(requirements)
+  if mismatch.len > 0:
+    rejectLoad(mismatch)
+
+  ## Measured layouts, compared across libraries. Two libraries declaring the
+  ## same layout identity must agree on what the C compiler actually laid out.
+  let layoutManifest = cast[ptr UncheckedArray[AotAbiLayoutC]](
+    symAddr(handle, "gene_aot_abi_layouts"))
+  let layoutCountAddr = cast[ptr csize_t](
+    symAddr(handle, "gene_aot_abi_layouts_count"))
+  let fieldManifest = cast[ptr UncheckedArray[AotAbiLayoutFieldC]](
+    symAddr(handle, "gene_aot_abi_layout_fields"))
+  let fieldCountAddr = cast[ptr csize_t](
+    symAddr(handle, "gene_aot_abi_layout_fields_count"))
+  var measured: seq[AotMeasuredLayout]
+  if layoutManifest != nil and layoutCountAddr != nil:
+    for i in 0 ..< int(layoutCountAddr[]):
+      let row = layoutManifest[i]
+      var entry = AotMeasuredLayout(
+        abiIdentity: $row.abiIdentity,
+        fingerprint: $row.fingerprint,
+        size: int(row.measuredSize),
+        align: int(row.measuredAlign))
+      if fieldManifest != nil and fieldCountAddr != nil:
+        for j in 0 ..< int(fieldCountAddr[]):
+          let field = fieldManifest[j]
+          if $field.abiIdentity == entry.abiIdentity:
+            entry.offsets[$field.fieldName] = int(field.measuredOffset)
+      measured.add entry
+  let layoutMismatch = checkAotMeasuredLayouts(measured)
+  if layoutMismatch.len > 0:
+    rejectLoad(layoutMismatch)
+
+  proc stageEntry(geneName, symbol: string): string =
     let entry = cast[AotEntryProc](symAddr(handle, symbol.cstring))
     if entry == nil:
-      raise newException(GeneError, "AOT entry symbol not found: " & symbol)
+      return "AOT entry symbol not found: " & symbol
     ## Key by library *and* name. `NativeCallProc` is nimcall and cannot carry
     ## the entry pointer, so dispatch goes through the callable's own name — and
     ## a bare Gene name is not unique. Two libraries exporting `make` would
     ## otherwise share one slot, so loading the second silently retargeted every
     ## callable already handed out by the first.
     let key = path & "\x1f" & geneName
-    aotEntries[key] = entry
+    stagedEntries.add (key, entry)
     entries[geneName] = newNativeCallFn(key, aotEntryDispatch,
                                         acceptsNamed = false)
+    ""
 
   if manifest != nil and countAddr != nil:
     for i in 0 ..< int(countAddr[]):
       let row = manifest[i]
       if row.entrySymbol == nil or row.entrySymbol[0] == '\0':
         continue
-      bindEntry($row.geneName, $row.entrySymbol)
+      let failure = stageEntry($row.geneName, $row.entrySymbol)
+      if failure.len > 0:
+        rejectLoad(failure)
 
   ## Generated ffi/fn wrappers share the entry signature, so they bind the same
   ## way. This is what routes a foreign call through compiled marshalling code
@@ -8124,7 +8196,22 @@ proc biAotLoad(args: openArray[Value]): Value =
       let row = ffiManifest[i]
       if row.wrapperName == nil or row.wrapperName[0] == '\0':
         continue
-      bindEntry($row.name, $row.wrapperName)
+      let failure = stageEntry($row.name, $row.wrapperName)
+      if failure.len > 0:
+        rejectLoad(failure)
+
+  ## Commit. Past this point the library is visible and pinned: it cannot safely
+  ## unload while its callables, entry pointers, or release shims may still
+  ## escape — and a release shim is reachable from an owned `CPtr` with
+  ## arbitrary lifetime, long after the callable that produced it is gone.
+  ## Unloading then would turn a live pointer's release into a jump into
+  ## unmapped memory. Revisit only alongside a real unload story, not as an
+  ## isolated fix.
+  for (key, entry) in stagedEntries:
+    aotEntries[key] = entry
+  commitAotMeasuredLayouts(measured)
+  registerAotModuleRequirements(path, requirements)
+  aotModuleHandles.add handle
   newMap(entries)
 
 proc registerStdlibNamespaces(root: Scope) =

@@ -2773,6 +2773,14 @@ proc addNativeTypeManifests(lines: var seq[string], chunk: Chunk,
   var layouts = initOrderedTable[string, FfiStructProto]()
   collectLayoutRequirements(chunk, layouts)
 
+  ## Emitted unconditionally, including for a library with no native types at
+  ## all. Its *presence* is what distinguishes a library built with ABI
+  ## validation from one built before it -- a library with zero native types
+  ## and a stale library would otherwise look identical, and the loader has to
+  ## reject the second while accepting the first.
+  lines.add "const size_t gene_aot_manifest_version GENE_MAYBE_UNUSED = " &
+    $AbiFingerprintVersion & ";"
+  lines.add ""
   if types.len > 0:
     lines.add "const GeneAotNativeType gene_aot_native_types[] GENE_MAYBE_UNUSED = {"
     for _, proto in types:
