@@ -2,5 +2,10 @@
   ^name "gene/todo_app"
   ^description "Gene Todo Example"
   ^version "0.1.0"
-  ^dependencies []
+  # A sibling checkout in this repository, so it is named by path rather than
+  # vendored. A ^path declaration may omit the version — that is what lets the
+  # two move together without editing this file (docs/proposals/package.md §8).
+  ^dependencies [
+    (dep "gene/utils" ^path "../utils")
+  ]
 }

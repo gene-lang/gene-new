@@ -7144,7 +7144,7 @@ suite "spec — packages (docs/proposals/package.md)":
       "unknown field(s): ^authors, ^scripts")
 
   test "the committed example manifests validate against the schema":
-    for dir in ["examples/todo_app", "examples/ai_agent"]:
+    for dir in ["examples/todo_app", "examples/ai_agent", "examples/utils"]:
       let pkg = loadPackageAt(dir, poEntry)
       check pkg.kind == pkRegular
       check pkg.name.isValidPackageName
@@ -7152,6 +7152,26 @@ suite "spec — packages (docs/proposals/package.md)":
       check pkg.description.len > 0
     check loadPackageAt("examples/todo_app", poEntry).name == "gene/todo_app"
     check loadPackageAt("examples/ai_agent", poEntry).name == "gene/ai_agent"
+    check loadPackageAt("examples/utils", poEntry).name == "gene/utils"
+
+  test "the committed example packages resolve across a ^path dependency":
+    # `examples/todo_app` depends on the sibling `examples/utils` by path, so a
+    # fresh clone resolves it with no install step. This is the committed case
+    # for §8's "a path dependency resolves outside the application root by
+    # construction" — the checkout layout is the only thing making it work.
+    let app = newApplicationForEntryFile("examples/todo_app/src/main.gene")
+    check app.applicationPackage.name == "gene/todo_app"
+    let utils = app.locatePackage("gene/utils")
+    check utils.origin == poPathDependency
+    check utils.name == "gene/utils"
+    check not app.applicationPackage.contains(utils.root)
+    # `^main_module "form"` is not `index`, so `"."` is doing real work here.
+    check utils.mainModule == "form"
+    check app.resolvePackageModule(utils, ".") ==
+      normalizedPath(absolutePath("examples/utils/src/form.gene"))
+    # The dependency is declared, so it is importable; nothing else is.
+    check packageErrorClass(proc () =
+      discard app.locatePackage("gene/ai_agent")) == pecNotDeclared
 
   test "module and package paths cannot escape a root, symlinks included":
     let root = packagesRoot()

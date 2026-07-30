@@ -1,0 +1,63 @@
+# =============================================================================
+# URL-encoded form handling for `net/http` request handlers.
+#
+# A browser posting an HTML form sends `application/x-www-form-urlencoded`, so
+# every form route repeats the same three steps: decode the body, pull one
+# field out of it, and answer 400 when it is missing or malformed. This module
+# is those three steps. It knows nothing about any particular application —
+# only about the shape of a form POST.
+#
+# The `with_*` combinators are the intended surface. They exist so a handler
+# never has to invent a sentinel for "absent": the failure answer is produced
+# here, and `action` runs only with a value that already passed validation.
+# That is the whole reason this is a package rather than a copied helper —
+# every route that reads a form field gets the same 400, worded the same way.
+#
+# This is the package entry (`^main_module "form"` in package.gene), so it is
+# reachable as `from "."`:
+#
+#   (import [with_str with_int] from "." ^pkg "gene/utils")
+# =============================================================================
+
+(mod utils_form @doc "URL-encoded form decoding and validated field access")
+
+(import $url [parse_query UrlError])
+(import $parse [parse_int ParseError])
+(import $net/http [Response])
+
+# `req` is deliberately unannotated. `net/http` documents a `Request` type, but
+# the server hands the handler a plain node rather than a `Request` instance,
+# so `[req : Request]` fails the boundary check on every request. Only `/body`
+# is read here, which is the one field that shape guarantees.
+#
+# A malformed body is not a crash: it is a request with no usable fields, and
+# the `with_*` combinators below turn that into the same 400 a missing field
+# produces. Callers that want to tell the two apart can catch `UrlError`
+# around `parse_query` themselves.
+(fn form_fields [req] : Map
+  (try
+    (parse_query req/body)
+  catch (UrlError ^message _)
+    {}))
+
+(fn form_str [req, name : Str] : Str
+  (|| ((form_fields req) ~ get name) ""))
+
+(fn bad_request [message : Str] : Response
+  (Response ^status 400 ^body message))
+
+# Run `action` with a non-empty field, or answer 400 without calling it.
+(fn with_str [req, name : Str, action]
+  (var value (form_str req name))
+  (if (== value "")
+    (bad_request $"${name} is required")
+    (action value)))
+
+# Same contract for integer fields. `parse_int` raising is the only way a
+# non-integer reaches here, so the catch arm *is* the validation.
+(fn with_int [req, name : Str, action]
+  (var raw (form_str req name))
+  (var value (try (parse_int raw) catch (ParseError ^message _) nil))
+  (if (== value nil)
+    (bad_request $"${name} must be an integer")
+    (action value)))

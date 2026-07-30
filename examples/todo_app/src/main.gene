@@ -17,11 +17,16 @@
 # Run:  bin/gene run examples/todo_app/src/main.gene   (creates ./todo.db)
 # Then: open http://127.0.0.1:8090
 #
-# This is one authored source file: server logic, HTML, CSS, and browser
-# behavior. No second file, no build command, no bundler, no hand-written
-# JavaScript. The `web_module` block below is compiled to a browser module
-# while this module loads, and served from a content-addressed route the
-# application owns (docs/proposals/transpile.md §4.12).
+# The whole page is one authored source file: server logic, HTML, CSS, and
+# browser behavior. No build command, no bundler, no hand-written JavaScript.
+# The `web_module` block below is compiled to a browser module while this
+# module loads, and served from a content-addressed route the application owns
+# (docs/proposals/transpile.md §4.12).
+#
+# The one thing outside this file is `gene/utils`, a sibling package holding
+# the form-decoding helpers every form-posting app needs and nothing this app
+# owns. It is declared in package.gene as a `^path` dependency, so a fresh
+# clone resolves it with no install step (docs/proposals/package.md §8).
 #
 # The store functions only speak the Db protocol (exec/query/execute), so
 # swapping in db/postgres means changing `open` and the SQL placeholder
@@ -36,12 +41,15 @@
 (import $html [render])
 (import $css [css rule decl scoped class_name render : render_css])
 (import $web [script stylesheet])
-(import $url [parse_query UrlError])
 (import $json [stringify])
-(import gene/parse [parse_int ParseError])
 (import gene/stream [to_stream map filter into])
 (import $net/http [Request Response Server serve json redirect not_found])
 (import $db/sqlite [open DbError Db])
+# Form decoding and field validation are not todo-specific, so they live in a
+# sibling package rather than at the bottom of this file. `"."` is that
+# package's entry module (docs/proposals/package.md §10); the dependency is
+# declared in package.gene, and only a declared dependency can be imported.
+(import [with_str with_int] from "." ^pkg "gene/utils")
 
 # -----------------------------------------------------------------------------
 # Store: SQLite via the Db protocol. `done` is stored as 0/1.
@@ -333,43 +341,6 @@
             %(script todo_client ^mount "todo_root"))))))
 
 # -----------------------------------------------------------------------------
-# Request helpers. Form bodies are URL-encoded; ids must parse as integers.
-# -----------------------------------------------------------------------------
-
-(fn parse_form [req]
-  (try
-    (parse_query req/body)
-  catch (UrlError ^message _)
-    {}))
-
-(fn form_text [req] : Str
-  (var form (parse_form req))
-  (|| form/text ""))
-
-(fn form_id [req] : Int
-  (var form (parse_form req))
-  (try
-    (parse_int (|| form/id ""))
-  catch (ParseError ^message _)
-    -1))
-
-(fn bad_request [msg : Str]
-  (Response ^status 400 ^body msg))
-
-# Run `action` with a validated form field, or answer 400 without it.
-(fn with_text [req, action]
-  (var text (form_text req))
-  (if (== text "")
-    (bad_request "text is required")
-    (action text)))
-
-(fn with_id [req, action]
-  (var id (form_id req))
-  (if (== id -1)
-    (bad_request "id must be an integer")
-    (action id)))
-
-# -----------------------------------------------------------------------------
 # Routing: method + path, HTML flows redirect, API flows return JSON.
 # -----------------------------------------------------------------------------
 
@@ -378,26 +349,28 @@
     (when ["GET" "/"]
       (page (parse_filter req/params/filter)))
     (when ["POST" "/todos"]
-      (with_text req (fn [text] (add_todo text) (redirect "/"))))
+      (with_str req "text" (fn [text] (add_todo text) (redirect "/"))))
     (when ["POST" "/todos/toggle"]
-      (with_id req (fn [id] (toggle_todo id) (redirect "/"))))
+      (with_int req "id" (fn [id] (toggle_todo id) (redirect "/"))))
     (when ["POST" "/todos/delete"]
-      (with_id req (fn [id] (delete_todo id) (redirect "/"))))
+      (with_int req "id" (fn [id] (delete_todo id) (redirect "/"))))
     (when ["POST" "/todos/clear-done"]
       (clear_done)
       (redirect "/"))
     (when ["GET" "/api/todos"]
       (json (todos_json (parse_filter req/params/filter))))
     (when ["POST" "/api/todos"]
-      (with_text req (fn [text]
+      (with_str req "text" (fn [text]
         (add_todo text)
         (Response ^status 201
                   ^headers {^content-type "application/json"}
                   ^body (todos_json TodoFilter/all)))))
     (when ["POST" "/api/todos/toggle"]
-      (with_id req (fn [id] (toggle_todo id) (json (todos_json TodoFilter/all)))))
+      (with_int req "id"
+        (fn [id] (toggle_todo id) (json (todos_json TodoFilter/all)))))
     (when ["POST" "/api/todos/delete"]
-      (with_id req (fn [id] (delete_todo id) (json (todos_json TodoFilter/all)))))
+      (with_int req "id"
+        (fn [id] (delete_todo id) (json (todos_json TodoFilter/all)))))
     (else
       (not_found "<h1>404</h1><p>No such route.</p>"))))
 
