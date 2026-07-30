@@ -1,5 +1,5 @@
-import gene/[compiler, gir, printer, types, vm]
-import std/[os, strutils, unittest]
+import gene/[compiler, gir, printer, reader, types, vm]
+import std/[os, strutils, tables, unittest]
 
 template ck(src, expected: string) =
   ## Compile and run a program string, then compare its printed result.
@@ -755,6 +755,26 @@ suite "vm — quasiquote templates":
     expect GeneError: discard compileSource("(quasiquote (unquote))")
 
 suite "vm — macros":
+  test "shared expansion artifact preserves source and macro provenance":
+    let source = "(macro choose_unless [condition yes no] " &
+      "`(if (! %condition) %yes %no))\n" &
+      "(choose_unless false \"expanded\" \"wrong\")"
+    let artifact = expandSourceUnitMacros(
+      readAllWithLocs(source, "macro_provenance.gene"))
+    check artifact.original.forms.len == 2
+    check artifact.expanded.forms.len == 1
+    check artifact.macroExports.hasKey("choose_unless")
+    check artifact.expanded.forms[0].print() ==
+      "(if (! false) \"expanded\" \"wrong\")"
+    var sawCallSite = false
+    for _, provenance in artifact.provenance:
+      if provenance.macroName == "choose_unless" and
+          provenance.sourceLoc.sourceName == "macro_provenance.gene" and
+          provenance.sourceLoc.line == 2:
+        sawCallSite = true
+    check sawCallSite
+    check run(compileSource(source), newGlobalScope()).print() == "\"expanded\""
+
   test "macro calls bind named syntax props":
     ck "(macro scaled! [value ^by n] `(+ %value %n)) " &
        "(scaled! ^by 3 7)",

@@ -1,0 +1,2 @@
+(mod transpile_web_dom ^profile web)
+(fn render [] : Any ($dom/render `(button ^class_name "action" "Run")))

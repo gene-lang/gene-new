@@ -50,6 +50,24 @@ task test, "Run the test suite":
 task spec, "Run executable language surface specs":
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"
 
+task transpile_spec, "Run shared VM/web-profile conformance fixtures":
+  exec "nim c -r --path:src --hints:off tests/transpile_fixture_runner.nim"
+  exec "nim c -r --path:src --hints:off tests/transpile_web_runner.nim"
+  exec "nim c -r --path:src --hints:off tests/transpile_async_runner.nim"
+  exec "nim c -r --path:src --hints:off tests/transpile_dom_runner.nim"
+
+task transpile_typecheck, "Type-check emitted web artifacts with pinned TypeScript":
+  exec "npm run transpile:typecheck"
+
+task dom_bindings, "Regenerate the supported lib.dom.d.ts binding subset":
+  exec "node tools/generate_dom_bindings.mjs"
+
+task transpile_perf, "Measure web-profile numeric, compile, runtime, and size baselines":
+  exec "mkdir -p bin"
+  exec "nim c -d:release --path:src --hints:off -o:bin/gene src/gene.nim"
+  exec "node benchmarks/transpile_numbers.mjs"
+  exec "node benchmarks/transpile_web.mjs"
+
 task perf, "Run release-mode core benchmarks":
   exec "nim c -r -d:release --path:src --hints:off benchmarks/bench_core.nim"
 
@@ -66,6 +84,14 @@ task threadcheck, "Run threaded atomicArc smoke checks":
 task verify, "Run tests, executable specs, and benchmarks":
   exec "nim c -r --path:src --hints:off tests/test_all.nim"
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"
+  exec "nim c -r --path:src --hints:off tests/transpile_fixture_runner.nim"
+  exec "nim c -r --path:src --hints:off tests/transpile_web_runner.nim"
+  exec "nim c -r --path:src --hints:off tests/transpile_async_runner.nim"
+  exec "nim c -r --path:src --hints:off tests/transpile_dom_runner.nim"
+  exec "mkdir -p bin"
+  exec "nim c -d:release --path:src --hints:off -o:bin/gene src/gene.nim"
+  exec "node benchmarks/transpile_numbers.mjs"
+  exec "node benchmarks/transpile_web.mjs"
   exec "nim c -r -d:release --path:src --hints:off benchmarks/bench_core.nim"
   exec "nim c -r -d:geneRcStats --path:src --hints:off tests/test_rc.nim"
   exec "nim c -r --mm:atomicArc --threads:on --path:src --hints:off tests/test_values.nim"

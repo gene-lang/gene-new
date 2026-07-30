@@ -1,0 +1,10 @@
+(mod web_namespace ^profile web)
+
+(ns math
+  (fn add [x : Int y : Int] : Int (+ x y))
+  (fn twice [x : Int] : Int (add x x))
+  (ns constants
+    (fn one [] : Int 1)))
+
+(fn run [] : (List Int)
+  [(math/twice 3) (math/constants/one)])

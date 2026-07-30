@@ -1,0 +1,2 @@
+(mod transpile_web_map ^profile web)
+(fn make_map [] : (Map Str Int) {{"answer" : 42}})

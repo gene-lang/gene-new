@@ -1,0 +1,3 @@
+(mod transpile_web_schema ^profile web)
+(type Point ^props {^x F64 ^y F64})
+(fn point [] : Point (Point ^x 1.0 ^y 2.0))

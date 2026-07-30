@@ -1,0 +1,2 @@
+(mod transpile_web_cancellation ^profile web)
+(fn work [] : Int (scope (let child (spawn 42)) (await child)))

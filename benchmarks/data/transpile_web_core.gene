@@ -1,0 +1,4 @@
+(mod transpile_web_core ^profile web)
+
+(fn identity [value : Str] : Str
+  value)

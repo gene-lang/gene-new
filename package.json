@@ -1,0 +1,10 @@
+{
+  "name": "gene-web-profile-toolchain",
+  "private": true,
+  "scripts": {
+    "transpile:typecheck": "node tests/transpile_typecheck.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.2"
+  }
+}

@@ -1,0 +1,4 @@
+(mod transpile_web_runtime ^profile web)
+
+(fn work [value : Int] : Int
+  (+ (* value 3) 1))

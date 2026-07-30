@@ -27,9 +27,9 @@
 (mod todo_app
   @doc "SQLite-backed TODO list with an HTML page and a JSON API")
 
-(import $html [escape])
+(import $html [render])
+(import $css [css rule decl scoped class_name render : render_css])
 (import $url [parse_query UrlError])
-(import $str [join])
 (import $json [stringify])
 (import gene/parse [parse_int ParseError])
 (import gene/stream [to_stream map filter into])
@@ -102,67 +102,67 @@
   (stringify ((to_stream (todos_for flt)) ~ map todo_map ; ~ into [])))
 
 # -----------------------------------------------------------------------------
-# HTML rendering: markup is node data; this is the one node -> text edge.
-# Strings render escaped, so the css below stays free of & < > " on purpose.
+# HTML and CSS rendering: both stay ordinary node data until their one public
+# render edge. The generated class scopes every selector to this component.
 # -----------------------------------------------------------------------------
 
-(fn render_attr [pair] : Str
-  (var [k, v] pair)
-  (if (== v void)
-    ""
-    $" ${($to_str k)}=\"${(escape ($to_str v))}\""))
+(var styles
+  (scoped "todo_app"
+    (css
+      (rule "&"
+        (decl font "16px/1.5 system-ui")
+        (decl margin 0)
+        (decl background "#f4f4f5")
+        (decl color "#18181b"))
+      (rule ".wrap"
+        (decl max_width "560px")
+        (decl margin "40px auto")
+        (decl padding "0 20px"))
+      (rule ".card"
+        (decl padding "20px 24px")
+        (decl border_radius "14px")
+        (decl margin "16px 0")
+        (decl background "#fff"))
+      (rule "ul" (decl list_style "none") (decl padding 0))
+      (rule "li"
+        (decl display "flex")
+        (decl align_items "center")
+        (decl gap "8px")
+        (decl padding "6px 0")
+        (decl border_bottom "1px solid #eee"))
+      (rule "li.done .text"
+        (decl text_decoration "line-through")
+        (decl opacity ".5"))
+      (rule ".text" (decl flex 1))
+      (rule "form.inline" (decl display "inline"))
+      (rule "button"
+        (decl border 0)
+        (decl border_radius "8px")
+        (decl padding "4px 10px")
+        (decl cursor "pointer")
+        (decl background "#e4e4e7"))
+      (rule ".add input[type=text]"
+        (decl flex 1)
+        (decl padding "8px")
+        (decl border "1px solid #ddd")
+        (decl border_radius "8px"))
+      (rule ".add" (decl display "flex") (decl gap "8px"))
+      (rule ".muted" (decl opacity ".6") (decl font_size ".85em"))
+      (rule ".foot"
+        (decl display "flex")
+        (decl gap "12px")
+        (decl align_items "center")
+        (decl justify_content "space-between")
+        (decl flex_wrap "wrap"))
+      (rule ".filters" (decl display "flex") (decl gap "8px"))
+      (rule "a.filter"
+        (decl color "inherit")
+        (decl text_decoration "none")
+        (decl opacity ".55"))
+      (rule "a.filter.on" (decl opacity 1) (decl font_weight 600)))))
 
-(fn render_attrs [n : Node] : Str
-  (join
-    (n/%$props/%$to_pairs_stream
-      ~ map render_attr
-      ; ~ into [])
-    ""))
-
-(fn render_children [n : Node] : Str
-  (join
-    (n/%$body/%$to_stream
-      ~ map render
-      ; ~ into [])
-    ""))
-
-(fn void_tag? [tag : Str] : Bool
-  (|| (== tag "input") (== tag "br") (== tag "hr") (== tag "meta")))
-
-(fn render_node [n : Node] : Str
-  (var tag ($to_str (n ~ head)))
-  (var open ($ "<" tag (render_attrs n) ">"))
-  (if (void_tag? tag)
-    open
-    ($ open (render_children n) "</" tag ">")))
-
-(fn render [x] : Str
-  (match x
-    (when (s : Str)
-      (escape s))
-    (when (n : Node)
-      (render_node n))
-    (else
-      (escape ($to_str x)))))
-
-(var css """
-  body{font:16px/1.5 system-ui;margin:0;background:#f4f4f5;color:#18181b}
-  .wrap{max-width:560px;margin:40px auto;padding:0 20px}
-  .card{padding:20px 24px;border-radius:14px;margin:16px 0;background:#fff}
-  ul{list-style:none;padding:0}
-  li{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eee}
-  li.done .text{text-decoration:line-through;opacity:.5}
-  .text{flex:1}
-  form.inline{display:inline}
-  button{border:0;border-radius:8px;padding:4px 10px;cursor:pointer;background:#e4e4e7}
-  .add input[type=text]{flex:1;padding:8px;border:1px solid #ddd;border-radius:8px}
-  .add{display:flex;gap:8px}
-  .muted{opacity:.6;font-size:.85em}
-  .foot{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
-  .filters{display:flex;gap:8px}
-  a.filter{color:inherit;text-decoration:none;opacity:.55}
-  a.filter.on{opacity:1;font-weight:600}
-""")
+(var rendered_css (render_css styles))
+(var scope_class (class_name styles))
 
 (fn todo_row [t] : Node
   (var id t/id)
@@ -198,14 +198,14 @@
   ($ "<!doctype html>"
      (render
        `(html
-          (head (title "Gene TODO") (style %css))
-          (body
+          (head (title "Gene TODO") (style %rendered_css))
+          (body ^class %scope_class
             (main ^class "wrap"
               (header (h1 "Gene TODO"))
               (section ^class "card"
                 (form ^class "add" ^method "post" ^action "/todos"
                   (input ^type "text" ^name "text"
-                         ^placeholder "What needs doing?" ^autofocus "")
+                         ^placeholder "What needs doing?" ^^autofocus)
                   (button "Add"))
                 (ul %rows...)
                 (div ^class "muted foot"

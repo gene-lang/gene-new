@@ -1,0 +1,15 @@
+(mod web_component ^profile web)
+
+# `view` returns a real DOM node. The template remains ordinary Gene node data
+# until the single node -> DOM edge, and the callback is a checked Gene export.
+(fn handle_click [event : Any] : Void
+  (set! event/current_target/text_content "Handled by Gene")
+  void)
+
+(fn view [] : Any
+  ($dom/render
+    `(button
+      ^type "button"
+      ^class_name "gene-button"
+      ^on_click %handle_click
+      "Click me")))

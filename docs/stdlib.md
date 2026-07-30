@@ -9,8 +9,9 @@ Implementation status:
 
 - Phase 1 (`gene/stream`, `gene/node`, `gene/parse`, `str`) — implemented as
   built-in namespaces; spec-tested in `tests/spec_runner.nim`.
-- Phase 2 (`html` escape, `url` encode/decode/parse_query/format_query with
-  typed `UrlError`) — implemented; spec-tested.
+- Phase 2 (`html` rendering/escaping, ordered `css` node data with scoped class
+  generation, `url` encode/decode/parse_query/format_query with typed
+  `UrlError`) — implemented; spec-tested.
 - Phase 3 (`net/http` blocking server: `serve`, `Request`/`Response`/`Server`
   types, `text`/`html`/`json`/`redirect`/`not_found` helpers, `HttpError`,
   `^max_requests` for tests) — implemented; `examples/todo_app.gene` is the
@@ -82,7 +83,8 @@ Initial modules should be available through namespace imports:
 (import gene/node [head props body meta declarations])
 (import gene/parse [parse_int read_all ParseError])
 (import str [join split starts_with? ends_with? trim byte_size slice_bytes])
-(import html [escape render])
+(import html [escape attr_escape render])
+(import css [css rule decl media keyframes frame scoped class_name render])
 (import net/http [Request Response Server serve redirect])
 (import net/http_client [Http request stream HttpClientError])
 (import crypto [sha256 random_hex secure_equal?])
@@ -391,15 +393,20 @@ Exports:
 - `escape : Str -> Str`
 - `attr_escape : Str -> Str`
 - `render : Node|Str|Any -> Str`
-- `render_node : Node -> Str`
-- `doctype : Str`
 
 Rules:
 
-- Text content is escaped.
-- Attribute values are escaped.
-- `void` props are omitted.
-- Boolean attrs can be modeled later; MVP renders explicit values only.
+- Text and attribute values use their distinct escaping contexts.
+- Attribute insertion order is output order. `nil`/`void` attrs are omitted;
+  known HTML boolean attrs render by presence, with `false` omitted.
+- Standard void elements omit an end tag and reject children.
+- `script` and `style` contents are raw text, not entity-escaped; a
+  case-insensitive closing-tag sequence is neutralized as `<\\/tag` so data
+  cannot terminate its containing element.
+- Tag and attribute names are validated before emission. Arbitrary `data-*`
+  and `aria-*` names remain valid and retain their wire spelling.
+- `nil`/`void` children render nothing, lists flatten, and other scalar values
+  use the ordinary `to_str` display contract before text escaping.
 - Raw HTML is not supported by default. Add an explicit `Html/raw` type later if
   needed.
 
@@ -408,6 +415,44 @@ Acceptance:
 - The demo renderer can move from app-local functions to `html/render`.
 - XSS-sensitive escaping tests cover text, attributes, quotes, `<`, `>`, and
   `&`.
+
+### `css`
+
+CSS is ordered Gene node data until `render`; it is not a compiler target.
+
+```gene
+(import css [css rule decl media scoped class_name render])
+
+(var styles
+  (scoped "card"
+    (css
+      (rule "&"
+        (decl display "-webkit-box")
+        (decl display "flex")
+        (decl border_radius "14px")
+        (decl "--brand" "#18181b"))
+      (media "(max-width: 600px)"
+        (rule "&" (decl padding "12px"))))))
+```
+
+`css`, `rule`, `media`, `keyframes`, `frame`, and `scoped` construct ordinary
+nodes. `decl` is a template macro so an unbound bare symbol remains syntax:
+symbol names convert `snake_case` to CSS `kebab-case`, while a string is an
+unmodified wire name. Declarations are body nodes, preserving duplicates and
+their position relative to nested rules.
+
+`scoped` prefixes selectors with `.` plus `class_name`. An `&` in a selector
+is replaced by that scope; selectors without one are descendants. Comma lists
+are expanded as a Cartesian product without splitting commas inside brackets,
+parentheses, or strings. Local `@keyframes` names and declaration-value token
+references are suffixed consistently.
+
+The class digest is the first 48 bits of SHA-256 over the versioned,
+length-prefixed canonical form: the scope label, node heads, ordered props,
+and ordered bodies participate; node source metadata does not. Labels are
+CSS-identifier-sanitized. Rendering a sheet checks any repeated generated
+class against its full canonical form and raises on a digest collision rather
+than silently merging styles.
 
 ### `url`
 

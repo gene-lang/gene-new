@@ -1,0 +1,4 @@
+(mod web_slice ^profile web)
+
+(fn choose [flag : Bool a : Str b : Str] : Str
+  (if flag a b))

@@ -1,6 +1,6 @@
 # Implementation status
 
-**Status date:** 2026-07-28
+**Status date:** 2026-07-29
 
 The current VM implements the reader/value/printer pipeline, callable-first
 bytecode execution, runtime fexprs and template macros, selectors and streams,
@@ -16,6 +16,25 @@ serialization, the experimental `gene runurl` URL-module entry
 The normative implemented surface lives in `docs/spec/` and is checked by
 `nimble spec`. Unit and integration coverage runs with `nimble test`; broad
 runtime verification uses `nimble verify`.
+
+The front-end transpilation proposal is implemented through its P5 DOM slice.
+`gene/html/render` is the shared node-to-text edge, and `gene/css` supplies
+ordered declaration/rule data, nested/media rendering, deterministic scoped
+classes, and scoped keyframes. `examples/todo_app.gene` and
+`examples/web_demo.gene` use these APIs instead of local renderers or raw CSS
+strings. A backend-neutral fixture manifest and canonical result envelope run
+under `nimble transpile_spec`; the fixed bigint/JSON spike runs under
+`nimble transpile_perf`. `gene build --target web` analyzes the deliberately
+bounded `web` profile into a separate semantic IR and emits readable ES2022,
+TypeScript declarations/source, and direct Gene source maps over a closed
+acyclic module graph. Exact `Int` uses `bigint`. The profile covers macros,
+state/control flow, matching, paths/selectors, structural maps and nodes,
+nominal types/enums/protocols, checked errors, streams, portable stdlib calls,
+structured tasks/cancellation, static namespaces, and generated DOM bindings.
+Checked JS exports/imports, callbacks, method edges, and an interactive Gene
+component exercise the ABI. `derive` deliberately remains VM-only; fexprs,
+runtime eval, actors/channels, native FFI, capabilities, scoped impl imports,
+threads, and deep persistent freeze/thaw receive explicit profile diagnostics.
 
 The experimental `typed_native` C backend (`gene compile --target c`,
 `docs/proposals/native-type.md` Part II) lowers native-pointer parameters,

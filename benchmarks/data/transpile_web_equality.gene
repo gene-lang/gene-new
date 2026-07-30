@@ -1,0 +1,4 @@
+(mod transpile_web_equality ^profile web)
+
+(fn equal [left : (List Int) right : (List Int)] : Bool
+  (== left right))

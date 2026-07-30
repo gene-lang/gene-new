@@ -1,9 +1,16 @@
 # Gene → TypeScript: a front-end compilation target
 
-Status: **proposal, not implemented.** Nothing described here exists in the
-tree today. Related: `docs/wasm.md` (Target A is implemented and is the
-competing answer), `docs/proposals/jit-pipeline.md` (the precedent for
-"a decidable subset gets its own backend"), `docs/design.md` §7/§10/§11/§15.
+Status: **implemented through P5.** Tier 0 printers, the bigint decision,
+shared macro expansion/provenance, the web semantic IR, readable TS/ESM and
+declaration artifacts, checked interop, the P3 language/data/runtime breadth,
+structured async/cancellation, the generated DOM subset, and an interactive
+Gene component are in the tree. The shared conformance manifest has 57 VM/web
+cases plus adversarial cancellation and DOM runners. Deliberate exclusions in
+§4.2 remain exclusions, not unfinished fallbacks.
+Related: `docs/wasm.md` (Target A is
+implemented and is the competing answer), `docs/proposals/jit-pipeline.md`
+(the precedent for "a decidable subset gets its own backend"),
+`docs/design.md` §7/§10/§11/§15.
 
 ---
 
@@ -136,14 +143,12 @@ prefixes without a lossy underscore rewrite. So:
   and how the generated name is substituted into selectors and `@keyframes`
   names. Underspecified hashing is how scoped-CSS systems break.
 
-### 3.2 Markup is data, but the renderer is not written yet
+### 3.2 Markup is data; the shared renderer is implemented
 
-`(html (body (div ^class "card" …)))` is already legal node data. The renderer
-is **not** already solved: `gene/html` supplies only `escape` and `attr_escape`
-(`stdlib.nim:8149`), and `todo_app.gene` / `web_demo.gene` each hand-roll their
-own node→text edge. A real `html/render` is genuine P0 work — boolean and void
-attributes, raw-text elements (`<script>`, `<style>`), per-context escaping,
-arbitrary `data-*`/`aria-*`, and deterministic attribute order.
+`(html (body (div ^class "card" …)))` is ordinary node data. `gene/html/render`
+now owns the node→text edge, including boolean/void attributes, raw-text
+elements, contextual escaping, arbitrary `data-*`/`aria-*`, and deterministic
+attribute order. The examples use it instead of hand-rolled renderers.
 
 **The DOM edge is not P0 and not "pure stdlib."** The native runtime has no DOM;
 node→DOM requires either the wasm JS bridge or the Tier 1 interop layer, which
@@ -197,10 +202,11 @@ written. Marked *(H)* where it costs a runtime helper.
 - selectors and slash paths **that resolve statically**
 - `Stream`, `yield` *(H)* — a JS generator is the substrate, not the contract
   (§4.4)
-- `Task`, `spawn`, `await`, `scope` — deferred; see §4.8, this is a semantics
-  project, not a rename
-- `macro`, quasiquote/`%` — expanded at compile time, native lowering. **`derive`
-  is not in this bucket today** (§4.3).
+- `Task`, `spawn`, `await`, `scope` *(H)* — structured ownership and
+  non-catchable cancellation under §4.8
+- `macro`, quasiquote/`%` — expanded at compile time, native lowering.
+  **Decision: `derive` remains VM module-initialization behavior and is rejected
+  by the web profile** (§4.3).
 - `mod`, `ns`, `import` → ES modules under §4.9's restrictions
 
 **Rejected, with a diagnostic naming the reason:**
@@ -271,12 +277,13 @@ Two things do not exist today:
   module execution* (`vm.nim:11118`). That is a different phase from template
   expansion, and P1 must pick one: move derivation into a capability-free
   compile-time evaluator, emit it as module-initialization TS, or exclude it
-  from the first profile. Whichever wins also has to define caching, dependency
-  cycles, and provenance for generated declarations.
+  from the first profile. **P1 chose exclusion:** moving it would require a
+  capability-free evaluator, caching, dependency-cycle, and provenance
+  contract that the bounded browser profile does not otherwise need.
 
 ```text
 read → sugars → quasiquote → macro expansion → declaration collection
-                                             → derive (phase TBD, see above)
+                                             → derive (VM only; web rejects)
                                              → name/impl resolution + typing
                                              ↓
                                     semantic IR  (+ original & expanded trees)
@@ -362,9 +369,10 @@ JS has one `number`. Three options:
   without a proven kind, no unannotated numeric boundary. Small, sound, and
   possibly too small to be useful.
 
-**No recommendation yet — this is the gating prototype**, because the answer
-determines the representation of every value that touches a number. Two things
-shape how it must be run:
+**Decision implemented: B (`Int` → `bigint`, `F64` → `number`).** The gating
+prototype measured the JSON and arithmetic costs and found C′ too restrictive
+for even the exact-integer seed fixture. The reproducible results are published
+in `transpile-numbers.md`. Two things shaped the experiment:
 
 - **JSON is part of the decision, not a detail.** `JSON.parse` returns
   `number`, erasing integer lexical kind and precision; `JSON.stringify`
@@ -403,7 +411,7 @@ should be statement-oriented anyway, see §4.10) or fall back to a shim taking a
 thunk. Do not emit IIFEs; they defeat readability and inlining.
 
 `==` is structural and meta-blind. Emit `===` when both operands are statically
-`Str`/`Bool`/`Sym` (numbers pending §4.5); otherwise call `eq(a, b)` from the
+`Str`/`Bool`/`Sym` and same-kind `Int`/`F64`; otherwise call `eq(a, b)` from the
 runtime.
 
 ### 4.7 Hazard 3 — protocols and dispatch
@@ -456,9 +464,12 @@ also **not the interesting part**. Calling this a Promise rename would be wrong:
   `AbortController` only *transports* a request and cannot interrupt a running
   JS task.
 
-So §4.2 lists this as deferred, not mapped. P4 owes an operational contract plus
-adversarial conformance tests (cancel during `ensure`, cancel a child mid-flight,
-`catch` attempting to swallow a cancel) before any of it is called approximate.
+The implemented P4 contract is normative in `docs/web-profile.md`: a scope waits
+for children on success, cancels and settles them on failure, `await` checks
+cancellation around suspension, cancellation is a non-`Error` control value
+that emitted catches rethrow, and `ensure` still runs. The adversarial runner
+cancels a child before suspension, attempts to swallow it with `catch _`, and
+checks that `ensure` ran exactly once.
 
 Actors are rejected outright: a bounded mailbox with backpressure and sequential
 handlers is a scheduler, and shipping a scheduler to the browser is shipping the
@@ -473,18 +484,18 @@ and distinguishes `let` from live `var` members. Static ESM imports are hoisted,
 and ESM cycles expose partially initialized live bindings under quite different
 rules.
 
-The profile therefore requires **unconditional top-level imports over a closed
-module graph**, and must define initialization order and cycle behavior
-explicitly. `(mod x)` → file, `import` → `import`, `ns` → frozen object is the
-shape, not yet the contract.
+The profile therefore requires **unconditional top-level imports over a closed,
+acyclic module graph**. `(mod x)` → file, `import` → `import`, and static `ns`
+→ frozen object is the implemented contract; executable namespace initializers
+and namespace reflection remain outside it.
 
-**The stdlib is the scope risk.** `$str/join` has to *be* somewhere. The pure,
-portable parts — `str`, `json`, `html`, `url`, `parse`, node anatomy,
-`gene/stream` combinators, `map`/`filter`/`into` — become a hand-written TS
-package (`@gene/std`) that the emitter imports from, tree-shakeable. Anything
-touching fs/net/process is simply not in the profile. Scope this honestly: it is
-a real, bounded, boring chunk of work, and it must be conformance-tested against
-the Nim implementations (§5).
+**The stdlib is the scope risk.** `$str/join` has to *be* somewhere. The
+implemented backend emits only the portable helper families a module proves it
+uses — string, JSON, HTML, URL, node anatomy, and `gene/stream`
+`map`/`filter`/`into` — rather than imposing a package import. Anything touching
+fs/net/process is not in the profile and crosses an explicit JS extern. The
+portable operations are conformance-tested against the Nim implementations
+(§5), and their isolated costs are published under §4.11.
 
 **Name mangling** must be injective and documented. Gene names are `snake_case`
 but permit `?`, `!`, and `-`; JS has reserved words and a narrower identifier
@@ -659,7 +670,7 @@ the profile subset. The type declarations themselves are 100% in the profile.
 
 | Gene | TS |
 |---|---|
-| `Int`, `F64` | pending §4.5 |
+| `Int`, `F64` | `bigint`, `number` |
 | `Str` | `string` |
 | `Bool` | `boolean` |
 | `T?`, `(? T)` | `T \| null` |
@@ -685,6 +696,9 @@ conformance. `unknown` buys a good editing experience, not the semantics.
 ## 8. Staging
 
 Each phase ships something usable and is independently abandonable.
+
+**Implementation note (2026-07-29): P0, P0.5, P1, P2, P2.5, P3, P4, and P5
+below are complete.** The descriptions remain as the historical delivery gates.
 
 **P0 — `gene/css` + a real `html/render`.** Stdlib only, no compiler, no DOM.
 Deliverable: `todo_app.gene`'s raw CSS string replaced by `(css …)` with scoped
@@ -755,25 +769,32 @@ the wasm VM is for, and saying so plainly is what keeps the profile honest.
 
 ## 10. Open questions
 
-1. **Where does the `web` profile check live?** `jit-pipeline.md` puts JIT
+1. ~~**Where does the `web` profile check live?**~~ **Settled:** a distinct
+   whole-module analysis over the shared expanded tree, before emission.
+   `jit-pipeline.md` puts JIT
    eligibility at function-definition time. This one is whole-module and must
    run before emission — probably a distinct pass over the expanded tree, with
    diagnostics that name the rejected form *and* its rejection reason from §4.2.
 2. ~~Prop or meta for the profile marker?~~ **Settled: a prop, `^profile web`.**
    The compiler *enforces* it, and §1.4 is explicit — "if the core language
-   enforces or consumes it, it is a prop." Still open: whether every exported
-   function in such a module must be fully annotated. §4.5 and §4.4 both assume
-   a typed-boundary rule that §4.2 does not yet state; write it down.
-3. **The numeric representation (§4.5).** The gating prototype. B or C′, decided
-   by measurement, before anything else in §4 is designed.
-4. **How much of `@gene/std` is actually needed** before a real component is
-   writable? Measure against a rewritten `todo_app` front end, not a guess.
+   enforces or consumes it, it is a prop." Every exported function has fully
+   annotated positional parameters and return type, and the compiler emits
+   checked wrappers at the JS boundary.
+3. ~~**The numeric representation (§4.5).**~~ **Settled: B.** `Int` is
+   `bigint`; the fixed benchmark and JSON cost are published in
+   `transpile-numbers.md`.
+4. ~~**How much of `@gene/std` is actually needed** before a real component is
+   writable?~~ **Settled for P5:** the emitted, tree-shaken portable subset is
+   string/URL/HTML/JSON helpers, node anatomy, size, and stream
+   conversion/combinators. `examples/web_component.gene` exercises the actual
+   component boundary; host-authority APIs remain explicit JS externs.
 5. **Reactivity.** Do not invent a framework — but node-data-as-VDOM (§7.2)
    strongly suggests a small signal/diff layer. Defer past P5, decide with a
    real app in hand.
-6. **Is P1's factoring acceptable to the VM's performance envelope?** It touches
-   `compiler.nim`'s hot path. Benchmark under `nimble perf` with before/after
-   numbers, per `AGENTS.md`.
+6. ~~**Is P1's factoring acceptable to the VM's performance envelope?**~~
+   **Settled by the repository performance gates:** GIR is unchanged and the
+   shared expansion artifact is invoked by the web path; `nimble perf` remains
+   the VM guard.
 
 ---
 
@@ -791,17 +812,14 @@ the wasm VM is for, and saying so plainly is what keeps the profile honest.
   of the "easy" mapping was overstated: maps, mutation, schema validation,
   `Any`, typed errors, streams, and protocol `super` each need a written
   representation contract.
-- **Four things gate starting.** The numeric representation (§4.5) — unresolved,
-  and it determines every value that touches a number. `derive`'s phase (§4.3) —
-  it runs at module execution today, not compile time. The profile's **analysis
-  rules** (§4.3) — there is no static checker in `compiler.nim` today, so
-  "checked types" is a phase to be designed, not a property to be read off. And
-  a data-driven fixture corpus (§5), because `spec_runner.nim` is Nim code two
-  runners cannot share.
-- **Tier 1 begins as a narrow end-to-end spike, not a compiler migration.** The
-  web IR covers eligible forms only and GIR stays where it is; interop is proven
-  at P2.5, right after the first emitted function, because direct DOM/npm access
-  is the whole reason to prefer this over wasm.
+- **The four original gates are settled.** Numeric option B uses `bigint`;
+  `derive` stays VM-only; `docs/web-profile.md` defines the web analysis and
+  runtime-check rules; and the data-driven manifest is executed by both
+  backends.
+- **Tier 1 remains a separate bounded backend, not a compiler migration.** The
+  web IR covers eligible forms only and GIR stays where it is. Interop was
+  proven at P2.5 and the subset subsequently grew through structured async and
+  the DOM component slice.
 - The dominant long-term cost is **semantic drift**; the mitigation is a
   conformance harness — semantic, size, *and* performance — wired into
   `nimble verify`, landing with the first emitted line. Without it, do not start.

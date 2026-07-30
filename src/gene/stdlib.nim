@@ -374,6 +374,510 @@ proc biHtmlEscape(args: openArray[Value]): Value {.nimcall.} =
     else: escaped.add c
   newStr(escaped)
 
+proc htmlTextEscape(value: string): string =
+  result = newStringOfCap(value.len)
+  for c in value:
+    case c
+    of '&': result.add "&amp;"
+    of '<': result.add "&lt;"
+    of '>': result.add "&gt;"
+    else: result.add c
+
+proc htmlAttrEscape(value: string): string =
+  result = newStringOfCap(value.len)
+  for c in value:
+    case c
+    of '&': result.add "&amp;"
+    of '<': result.add "&lt;"
+    of '>': result.add "&gt;"
+    of '"': result.add "&quot;"
+    of '\'': result.add "&#39;"
+    else: result.add c
+
+proc htmlNameValid(name: string): bool =
+  if name.len == 0 or not (name[0] in {'A'..'Z', 'a'..'z'}):
+    return false
+  for c in name:
+    if c notin {'A'..'Z', 'a'..'z', '0'..'9', '-', '_', ':', '.'}:
+      return false
+  true
+
+proc htmlVoidElement(tag: string): bool =
+  tag.toLowerAscii() in ["area", "base", "br", "col", "embed", "hr", "img",
+                             "input", "link", "meta", "param", "source",
+                             "track", "wbr"]
+
+proc htmlBooleanAttr(name: string): bool =
+  name.toLowerAscii() in [
+    "allowfullscreen", "async", "autofocus", "autoplay", "checked",
+    "controls", "default", "defer", "disabled", "formnovalidate", "hidden",
+    "inert", "ismap", "itemscope", "loop", "multiple", "muted",
+    "nomodule", "novalidate", "open", "playsinline", "readonly",
+    "required", "reversed", "selected"]
+
+proc htmlRawText(value: Value, tag: string, scope: Scope): string =
+  case value.kind
+  of vkNil, vkVoid:
+    discard
+  of vkString:
+    let needle = "</" & tag.toLowerAscii()
+    let source = value.strVal
+    let lowered = source.toLowerAscii()
+    var start = 0
+    while true:
+      let found = lowered.find(needle, start)
+      if found < 0:
+        result.add source[start .. ^1]
+        break
+      result.add source[start ..< found]
+      result.add "<\\/"
+      result.add source[found + 2 ..< found + needle.len]
+      start = found + needle.len
+  of vkList:
+    for item in value.listItems:
+      result.add htmlRawText(item, tag, scope)
+  of vkNode:
+    raise newException(GeneError,
+      "html/render raw-text element '" & tag & "' cannot contain a node")
+  else:
+    result = displayStr(value, scope)
+
+proc renderHtmlValue(value: Value, scope: Scope): string =
+  case value.kind
+  of vkNil, vkVoid:
+    result = ""
+  of vkString:
+    result = htmlTextEscape(value.strVal)
+  of vkList:
+    for item in value.listItems:
+      result.add renderHtmlValue(item, scope)
+  of vkNode:
+    let tag =
+      case value.head.kind
+      of vkSymbol: value.head.symVal
+      of vkString: value.head.strVal
+      else:
+        raise newException(GeneError,
+          "html/render expects a Symbol or Str node head")
+    if not htmlNameValid(tag):
+      raise newException(GeneError, "html/render invalid tag name: " & tag)
+    result.add '<'
+    result.add tag
+    for name, attr in value.props:
+      if not htmlNameValid(name):
+        raise newException(GeneError,
+          "html/render invalid attribute name: " & name)
+      if htmlBooleanAttr(name):
+        if attr.kind in {vkNil, vkVoid} or
+            (attr.kind == vkBool and not attr.boolVal):
+          continue
+        result.add ' '
+        result.add name
+        continue
+      if attr.kind in {vkNil, vkVoid}:
+        continue
+      result.add ' '
+      result.add name
+      result.add "=\""
+      result.add htmlAttrEscape(displayStr(attr, scope))
+      result.add '"'
+    result.add '>'
+    if htmlVoidElement(tag):
+      if value.body.len > 0:
+        raise newException(GeneError,
+          "html/render void element '" & tag & "' cannot have children")
+      return
+    if tag.toLowerAscii() in ["script", "style"]:
+      for child in value.body:
+        result.add htmlRawText(child, tag, scope)
+    else:
+      for child in value.body:
+        result.add renderHtmlValue(child, scope)
+    result.add "</"
+    result.add tag
+    result.add '>'
+  else:
+    result = htmlTextEscape(displayStr(value, scope))
+
+proc biHtmlRender(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("html/render", args)
+  let scope = if call == nil: nil else: call.dispatchScope
+  newStr(renderHtmlValue(args[0], scope))
+
+# CSS is ordered node data. Declarations deliberately live in the body rather
+# than a PropTable: duplicate fallbacks and interleaving with nested rules are
+# observable CSS semantics (docs/proposals/transpile.md §3.1).
+proc cssNode(head: string, body: openArray[Value]): Value =
+  newNode(newSym(head), body = @body)
+
+proc biCss(args: openArray[Value]): Value {.nimcall.} =
+  cssNode("css", args)
+
+proc biCssRule(args: openArray[Value]): Value {.nimcall.} =
+  if args.len < 1 or args[0].kind != vkString:
+    raise newException(GeneError,
+      "css/rule expects a Str selector followed by CSS nodes")
+  cssNode("rule", args)
+
+proc biCssMedia(args: openArray[Value]): Value {.nimcall.} =
+  if args.len < 1 or args[0].kind != vkString:
+    raise newException(GeneError,
+      "css/media expects a Str query followed by CSS nodes")
+  cssNode("media", args)
+
+proc biCssKeyframes(args: openArray[Value]): Value {.nimcall.} =
+  if args.len < 2 or args[0].kind != vkString:
+    raise newException(GeneError,
+      "css/keyframes expects a Str name followed by frame nodes")
+  cssNode("keyframes", args)
+
+proc biCssFrame(args: openArray[Value]): Value {.nimcall.} =
+  if args.len < 2 or args[0].kind != vkString:
+    raise newException(GeneError,
+      "css/frame expects a Str selector followed by declarations")
+  cssNode("frame", args)
+
+proc biCssDeclValue(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2 or args[0].kind notin {vkSymbol, vkString}:
+    raise newException(GeneError,
+      "css/decl expects a Symbol or Str property name and one value")
+  cssNode("decl", args)
+
+proc sha256Hex(data: string): string
+
+proc cssCanonical(value: Value): string =
+  ## Length-prefixed, kind-tagged, source-meta-blind serialization. Node props
+  ## retain insertion order and bodies retain duplicates/order; node metadata
+  ## is deliberately absent because source locations and docs do not affect CSS.
+  template field(tag, payload: string) =
+    result.add tag
+    result.add $payload.len
+    result.add ':'
+    result.add payload
+  case value.kind
+  of vkNode:
+    field("N", cssCanonical(value.head))
+    result.add "P" & $value.props.len & ":"
+    for key, item in value.props:
+      field("K", key)
+      field("V", cssCanonical(item))
+    result.add "B" & $value.body.len & ":"
+    for item in value.body:
+      field("V", cssCanonical(item))
+  of vkList:
+    result.add "L" & $value.listItems.len & ":"
+    for item in value.listItems:
+      field("V", cssCanonical(item))
+  of vkMap:
+    result.add "M" & $value.mapEntries.len & ":"
+    for key, item in value.mapEntries:
+      field("K", key)
+      field("V", cssCanonical(item))
+  of vkSymbol:
+    field("Y", value.symVal)
+  of vkString:
+    field("S", value.strVal)
+  of vkNil:
+    result = "Z"
+  of vkVoid:
+    result = "V"
+  of vkBool:
+    result = if value.boolVal: "T" else: "F"
+  of vkInt, vkFloat, vkChar:
+    field("Q" & $ord(value.kind), value.print())
+  else:
+    raise newException(GeneError,
+      "css/scoped canonical serialization rejects " & $value.kind)
+
+proc cssSafeLabel(label: string): string =
+  for c in label:
+    if c in {'A'..'Z', 'a'..'z', '0'..'9', '_', '-'}:
+      result.add c
+    else:
+      result.add '_'
+  if result.len == 0:
+    result = "scope"
+  if result[0] notin {'A'..'Z', 'a'..'z', '_'}:
+    result = "g_" & result
+
+proc cssScopedCanonical(value: Value): string =
+  if value.kind != vkNode or not value.head.isSymbol("scoped") or
+      not value.props.hasKey("name") or
+      value.props["name"].kind != vkString:
+    raise newException(GeneError, "css/scoped expects a scoped CSS node")
+  result = "gene-css-scope-v1:"
+  result.add cssCanonical(value.props["name"])
+  for child in value.body:
+    result.add cssCanonical(child)
+
+proc cssScopedClass(value: Value): string =
+  let canonical = cssScopedCanonical(value)
+  cssSafeLabel(value.props["name"].strVal) & "__" & sha256Hex(canonical)[0 .. 11]
+
+proc biCssScoped(args: openArray[Value]): Value {.nimcall.} =
+  if args.len < 2 or args[0].kind != vkString:
+    raise newException(GeneError,
+      "css/scoped expects a Str label followed by CSS node data")
+  var props = initPropTable()
+  props["name"] = args[0]
+  newNode(newSym("scoped"), props = props, body = @args[1 .. ^1])
+
+proc biCssClassName(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("css/class_name", args)
+  newStr(cssScopedClass(args[0]))
+
+proc cssPropertyName(value: Value): string =
+  case value.kind
+  of vkSymbol:
+    result = value.symVal.replace("_", "-")
+  of vkString:
+    result = value.strVal
+  else:
+    raise newException(GeneError,
+      "css/render declaration name must be a Symbol or Str")
+  if result.len == 0:
+    raise newException(GeneError, "css/render declaration name is empty")
+  for c in result:
+    if c in {' ', '\t', '\r', '\n', ':', ';', '{', '}'}:
+      raise newException(GeneError,
+        "css/render invalid declaration name: " & result)
+
+proc cssIndent(depth: int): string =
+  repeat(' ', depth * 2)
+
+proc cssSelectorParts(selector: string): seq[string] =
+  var start = 0
+  var depth = 0
+  var quote = '\0'
+  var escaped = false
+  for i, c in selector:
+    if quote != '\0':
+      if escaped:
+        escaped = false
+      elif c == '\\':
+        escaped = true
+      elif c == quote:
+        quote = '\0'
+    else:
+      case c
+      of '\'', '"': quote = c
+      of '[', '(': inc depth
+      of ']', ')': depth = max(0, depth - 1)
+      of ',':
+        if depth == 0:
+          result.add selector[start ..< i].strip()
+          start = i + 1
+      else: discard
+  result.add selector[start .. ^1].strip()
+
+proc cssSelector(parent, child: string): string =
+  if parent.len == 0:
+    return child
+  var combined: seq[string]
+  for parentPart in cssSelectorParts(parent):
+    for childPart in cssSelectorParts(child):
+      if '&' in childPart:
+        combined.add childPart.replace("&", parentPart)
+      else:
+        combined.add parentPart & " " & childPart
+  combined.join(", ")
+
+proc collectCssKeyframes(value: Value, names: var seq[string]) =
+  case value.kind
+  of vkNode:
+    if value.head.isSymbol("keyframes") and value.body.len > 0 and
+        value.body[0].kind == vkString and value.body[0].strVal notin names:
+      names.add value.body[0].strVal
+    for child in value.body:
+      collectCssKeyframes(child, names)
+  of vkList:
+    for child in value.listItems:
+      collectCssKeyframes(child, names)
+  else:
+    discard
+
+proc cssNameChar(c: char): bool =
+  c in {'A'..'Z', 'a'..'z', '0'..'9', '_', '-'}
+
+proc replaceCssToken(source, token, replacement: string): string =
+  var start = 0
+  while start < source.len:
+    let found = source.find(token, start)
+    if found < 0:
+      result.add source[start .. ^1]
+      return
+    let beforeOk = found == 0 or not cssNameChar(source[found - 1])
+    let afterAt = found + token.len
+    let afterOk = afterAt >= source.len or not cssNameChar(source[afterAt])
+    if beforeOk and afterOk:
+      result.add source[start ..< found]
+      result.add replacement
+      start = afterAt
+    else:
+      result.add source[start .. found]
+      start = found + 1
+  if start == source.len:
+    discard
+
+proc transformScopedCss(value: Value,
+                        keyframes: Table[string, string]): Value =
+  case value.kind
+  of vkNode:
+    var body: seq[Value]
+    for child in value.body:
+      body.add transformScopedCss(child, keyframes)
+    if value.head.isSymbol("keyframes") and body.len > 0 and
+        body[0].kind == vkString and keyframes.hasKey(body[0].strVal):
+      body[0] = newStr(keyframes[body[0].strVal])
+    elif value.head.isSymbol("decl") and body.len == 2 and
+        body[1].kind == vkString and
+        cssPropertyName(body[0]) in ["animation", "animation-name"]:
+      var rendered = body[1].strVal
+      for name, replacement in keyframes:
+        rendered = replaceCssToken(rendered, name, replacement)
+      body[1] = newStr(rendered)
+    result = newNode(value.head, props = value.props, body = body,
+                     immutable = value.nodeImmutable)
+  of vkList:
+    var items: seq[Value]
+    for child in value.listItems:
+      items.add transformScopedCss(child, keyframes)
+    result = newList(items, immutable = value.listImmutable)
+  else:
+    result = value
+
+proc renderCssNode(value: Value, parent: string, depth: int,
+                   scope: Scope): string
+
+proc renderCssRule(value: Value, parent: string, depth: int,
+                   scope: Scope): string =
+  if value.kind != vkNode or not value.head.isSymbol("rule") or
+      value.body.len < 1 or value.body[0].kind != vkString:
+    raise newException(GeneError, "css/render expected a rule node")
+  let selector = cssSelector(parent, value.body[0].strVal)
+  var declarations: seq[Value]
+  var nested: seq[Value]
+  for i in 1 ..< value.body.len:
+    let child = value.body[i]
+    if child.kind == vkNode and child.head.isSymbol("decl"):
+      declarations.add child
+    else:
+      nested.add child
+  if declarations.len > 0:
+    result.add cssIndent(depth) & selector & " {\n"
+    for decl in declarations:
+      if decl.body.len != 2:
+        raise newException(GeneError,
+          "css/render declaration must contain a name and value")
+      result.add cssIndent(depth + 1)
+      result.add cssPropertyName(decl.body[0])
+      result.add ": "
+      result.add displayStr(decl.body[1], scope)
+      result.add ";\n"
+    result.add cssIndent(depth) & "}\n"
+  for child in nested:
+    result.add renderCssNode(child, selector, depth, scope)
+
+proc renderCssMedia(value: Value, parent: string, depth: int,
+                    scope: Scope): string =
+  if value.body.len < 1 or value.body[0].kind != vkString:
+    raise newException(GeneError, "css/render expected a media query")
+  result.add cssIndent(depth) & "@media " & value.body[0].strVal & " {\n"
+  for i in 1 ..< value.body.len:
+    result.add renderCssNode(value.body[i], parent, depth + 1, scope)
+  result.add cssIndent(depth) & "}\n"
+
+proc renderCssKeyframes(value: Value, depth: int, scope: Scope): string =
+  if value.body.len < 2 or value.body[0].kind != vkString:
+    raise newException(GeneError, "css/render expected keyframes data")
+  result.add cssIndent(depth) & "@keyframes " & value.body[0].strVal & " {\n"
+  for i in 1 ..< value.body.len:
+    let frame = value.body[i]
+    if frame.kind != vkNode or not frame.head.isSymbol("frame") or
+        frame.body.len < 2 or frame.body[0].kind != vkString:
+      raise newException(GeneError,
+        "css/render keyframes may contain only frame nodes")
+    result.add cssIndent(depth + 1) & frame.body[0].strVal & " {\n"
+    for j in 1 ..< frame.body.len:
+      let decl = frame.body[j]
+      if decl.kind != vkNode or not decl.head.isSymbol("decl") or
+          decl.body.len != 2:
+        raise newException(GeneError,
+          "css/render frame may contain only declarations")
+      result.add cssIndent(depth + 2)
+      result.add cssPropertyName(decl.body[0])
+      result.add ": " & displayStr(decl.body[1], scope) & ";\n"
+    result.add cssIndent(depth + 1) & "}\n"
+  result.add cssIndent(depth) & "}\n"
+
+proc renderCssNode(value: Value, parent: string, depth: int,
+                   scope: Scope): string =
+  if value.kind == vkNil or value.kind == vkVoid:
+    return ""
+  if value.kind == vkList:
+    for item in value.listItems:
+      result.add renderCssNode(item, parent, depth, scope)
+    return
+  if value.kind != vkNode or value.head.kind != vkSymbol:
+    raise newException(GeneError, "css/render expects CSS node data")
+  case value.head.symVal
+  of "css":
+    for child in value.body:
+      result.add renderCssNode(child, parent, depth, scope)
+  of "rule":
+    result = renderCssRule(value, parent, depth, scope)
+  of "media":
+    result = renderCssMedia(value, parent, depth, scope)
+  of "keyframes":
+    result = renderCssKeyframes(value, depth, scope)
+  of "scoped":
+    let className = cssScopedClass(value)
+    let digest = className.split("__")[^1]
+    var names: seq[string]
+    for child in value.body:
+      collectCssKeyframes(child, names)
+    var keyframes = initTable[string, string]()
+    for name in names:
+      keyframes[name] = name & "__" & digest
+    let scopeSelector =
+      if parent.len == 0: "." & className
+      else: parent & " ." & className
+    for child in value.body:
+      result.add renderCssNode(transformScopedCss(child, keyframes),
+                               scopeSelector, depth, scope)
+  of "decl", "frame":
+    raise newException(GeneError,
+      "css/render declaration must be inside a rule")
+  else:
+    raise newException(GeneError,
+      "css/render unknown CSS node: " & value.head.symVal)
+
+proc validateCssScopeCollisions(value: Value,
+                                seen: var Table[string, string]) =
+  case value.kind
+  of vkNode:
+    if value.head.isSymbol("scoped"):
+      let className = cssScopedClass(value)
+      let canonical = cssScopedCanonical(value)
+      if seen.hasKey(className) and seen[className] != canonical:
+        raise newException(GeneError,
+          "css/render scoped class hash collision: " & className)
+      seen[className] = canonical
+    for child in value.body:
+      validateCssScopeCollisions(child, seen)
+  of vkList:
+    for child in value.listItems:
+      validateCssScopeCollisions(child, seen)
+  else:
+    discard
+
+proc biCssRender(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("css/render", args)
+  let scope = if call == nil: nil else: call.dispatchScope
+  var scopedClasses = initTable[string, string]()
+  validateCssScopeCollisions(args[0], scopedClasses)
+  newStr(renderCssNode(args[0], "", 0, scope))
+
 proc ownedHandleField*(scope: Scope, target: string): TypeField =
   ## The `^handle (C/OwnedPtr <target>)` field every in-tree native wrapper
   ## declares. `target` names the foreign type (`sqlite3`, `PGconn`); it is
@@ -8357,7 +8861,21 @@ proc registerStdlibNamespaces(root: Scope) =
   let htmlScope = newScope(root)
   htmlScope.define("escape", newNativeFn("html/escape", biHtmlEscape))
   htmlScope.define("attr_escape", newNativeFn("html/attr_escape", biHtmlEscape))
+  htmlScope.define("render", newNativeCallFn("html/render", biHtmlRender,
+                                              acceptsNamed = false))
   root.define("html", newNamespace("html", htmlScope))
+  let cssScope = newScope(root)
+  cssScope.define("css", newNativeFn("css/css", biCss))
+  cssScope.define("rule", newNativeFn("css/rule", biCssRule))
+  cssScope.define("decl_value", newNativeFn("css/decl_value", biCssDeclValue))
+  cssScope.define("media", newNativeFn("css/media", biCssMedia))
+  cssScope.define("keyframes", newNativeFn("css/keyframes", biCssKeyframes))
+  cssScope.define("frame", newNativeFn("css/frame", biCssFrame))
+  cssScope.define("scoped", newNativeFn("css/scoped", biCssScoped))
+  cssScope.define("class_name", newNativeFn("css/class_name", biCssClassName))
+  cssScope.define("render", newNativeCallFn("css/render", biCssRender,
+                                             acceptsNamed = false))
+  root.define("css", newNamespace("css", cssScope))
   let urlScope = newScope(root)
   urlScope.define("encode_component",
                   newNativeFn("url/encode_component", biUrlEncodeComponent))

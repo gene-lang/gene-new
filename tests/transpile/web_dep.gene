@@ -1,0 +1,4 @@
+(mod web_dep ^profile web)
+
+(fn invert [value : Bool] : Bool
+  (! value))

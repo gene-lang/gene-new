@@ -157,6 +157,23 @@ type
     rest: string
     body: seq[Value]
 
+  ExpansionProvenance* = object
+    ## Provenance for a container created by template expansion. `sourceLoc`
+    ## is the call site shown to users; `macroName` is diagnostic context.
+    sourceLoc*: SourceLoc
+    macroName*: string
+
+  ExpandedSourceUnit* = object
+    ## The shared front-end artifact. The original tree remains available to
+    ## formatters/LSP consumers while `expanded` is consumed by semantic
+    ## backends. Both trees are immutable inputs owned by this value.
+    original*: SourceUnit
+    expanded*: SourceUnit
+    provenance*: Table[uint64, ExpansionProvenance]
+    macroExports*: Table[string, MacroDef]
+
+proc parseImportSpec*(node: Value): ImportSpec
+
 const MaxMacroExpansionDepth = 100
 
 const CoreSpecialFormNames* = [
@@ -188,7 +205,7 @@ proc emitPlainCall(c: var Compiler, argCount: int): int =
   c.emit(op, argCount)
 
 proc hasStableSourceIdentity(v: Value): bool =
-  v.kind in {vkList, vkMap, vkNode}
+  v.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode}
 
 proc sourceLocFor(c: Compiler, v: Value): SourceLoc =
   if c.sourceLocs != nil and v.hasStableSourceIdentity and
@@ -670,6 +687,7 @@ proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first = 0)
 proc builtinNamespaceMacros(segments: openArray[string]):
     Table[string, MacroDef]
 proc declarationIsPrivate(node: Value): bool
+proc importMacro(c: var Compiler, local: string, def: MacroDef)
 proc importMacroLocals(c: Compiler, node: Value): HashSet[string]
 
 proc childCompiler(c: Compiler): Compiler =
@@ -2169,6 +2187,160 @@ proc compileMacro(c: var Compiler, node: Value) =
     let path = (c.namespacePath & @[body[0].symVal]).join("/")
     c.moduleMacroExports[][path] = c.macros[body[0].symVal]
   c.emitConst NIL
+
+proc expansionLoc(unit: SourceUnit, value: Value,
+                  fallback: SourceLoc): SourceLoc =
+  if value.kind in {vkNode, vkList, vkMap, vkSet, vkHashMap} and
+      unit.locs.hasKey(value.bits):
+    unit.locs[value.bits]
+  else:
+    fallback
+
+proc markExpandedContainers(value: Value, loc: SourceLoc, macroName: string,
+                            locs: var Table[uint64, SourceLoc],
+                            provenance: var Table[uint64,
+                                                  ExpansionProvenance]) =
+  if value.kind notin {vkNode, vkList, vkMap, vkSet, vkHashMap}:
+    return
+  if not locs.hasKey(value.bits):
+    locs[value.bits] = loc
+    provenance[value.bits] = ExpansionProvenance(sourceLoc: loc,
+                                                  macroName: macroName)
+  case value.kind
+  of vkNode:
+    markExpandedContainers(value.head, loc, macroName, locs, provenance)
+    for _, item in value.meta:
+      markExpandedContainers(item, loc, macroName, locs, provenance)
+    for _, item in value.props:
+      markExpandedContainers(item, loc, macroName, locs, provenance)
+    for item in value.body:
+      markExpandedContainers(item, loc, macroName, locs, provenance)
+  of vkList:
+    for item in value.listItems:
+      markExpandedContainers(item, loc, macroName, locs, provenance)
+  of vkMap:
+    for _, item in value.mapEntries:
+      markExpandedContainers(item, loc, macroName, locs, provenance)
+  of vkSet:
+    for item in value.setItems:
+      markExpandedContainers(item, loc, macroName, locs, provenance)
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      markExpandedContainers(entry.key, loc, macroName, locs, provenance)
+      markExpandedContainers(entry.val, loc, macroName, locs, provenance)
+  else:
+    discard
+
+proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
+                     fallback: SourceLoc,
+                     locs: var Table[uint64, SourceLoc],
+                     provenance: var Table[uint64,
+                                           ExpansionProvenance]): Value =
+  let loc = unit.expansionLoc(value, fallback)
+  case value.kind
+  of vkNode:
+    if value.head.kind == vkSymbol and c.hasMacros and
+        c.macros.hasKey(value.head.symVal):
+      if c.macroExpansionDepth >= MaxMacroExpansionDepth:
+        raise newException(GeneError, "macro expansion depth exceeded")
+      let macroName = value.head.symVal
+      inc c.macroExpansionDepth
+      try:
+        let expanded = c.expandMacro(c.macros[macroName], value)
+        markExpandedContainers(expanded, loc, macroName, locs, provenance)
+        return c.expandMacroTree(unit, expanded, loc, locs, provenance)
+      finally:
+        dec c.macroExpansionDepth
+    # Quoted syntax is data; expanding inside it would change the macro
+    # language rather than the program that consumes the artifact.
+    if value.head.isSymbol("quote"):
+      return value
+    var meta = initPropTable()
+    for key, item in value.meta:
+      meta[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
+    var props = initPropTable()
+    for key, item in value.props:
+      props[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
+    let head = c.expandMacroTree(unit, value.head, loc, locs, provenance)
+    var body: seq[Value]
+    for item in value.body:
+      body.add c.expandMacroTree(unit, item, loc, locs, provenance)
+    result = newNode(head, props = props, body = body, meta = meta,
+                     immutable = value.nodeImmutable)
+  of vkList:
+    var items: seq[Value]
+    for item in value.listItems:
+      items.add c.expandMacroTree(unit, item, loc, locs, provenance)
+    result = newList(items, immutable = value.listImmutable)
+  of vkMap:
+    var entries = initPropTable()
+    for key, item in value.mapEntries:
+      entries[key] = c.expandMacroTree(unit, item, loc, locs, provenance)
+    result = newMap(entries, immutable = value.mapImmutable)
+  of vkSet:
+    var items: seq[Value]
+    for item in value.setItems:
+      items.add c.expandMacroTree(unit, item, loc, locs, provenance)
+    result = newSet(items)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in value.hashMapEntries:
+      entries.add HashMapEntry(
+        key: c.expandMacroTree(unit, entry.key, loc, locs, provenance),
+        val: c.expandMacroTree(unit, entry.val, loc, locs, provenance))
+    result = newHashMap(entries)
+  else:
+    return value
+  locs[result.bits] = loc
+  if provenance.hasKey(value.bits):
+    provenance[result.bits] = provenance[value.bits]
+
+proc expandSourceUnitMacros*(unit: SourceUnit,
+    importedMacros = initTable[string, Table[string, MacroDef]]()):
+    ExpandedSourceUnit =
+  ## Produce the original+expanded front-end artifact without emitting GIR.
+  ## This is the single macro-expansion seam shared by semantic backends; the
+  ## VM compiler continues to use the same `expandMacro` implementation.
+  result.original = unit
+  result.expanded = SourceUnit(sourceName: unit.sourceName,
+                               locs: unit.locs)
+  result.provenance = initTable[uint64, ExpansionProvenance]()
+  result.macroExports = initTable[string, MacroDef]()
+  var c = Compiler(chunk: newChunk(unit.sourceName), sourceName: unit.sourceName,
+                   sourceLocs: sharedSourceLocs(unit.locs),
+                   formLocs: unit.formLocs, allowAmbientImports: true,
+                   ffiLibraryNames: initTable[string, bool](),
+                   importedMacroSets: importedMacros)
+  for i, form in unit.forms:
+    let loc = if i < unit.formLocs.len: unit.formLocs[i] else: SourceLoc()
+    c.currentLoc = loc
+    if form.kind == vkNode and form.head.isSymbol("import"):
+      let spec = parseImportSpec(form)
+      var exported: Table[string, MacroDef]
+      if spec.fromModule and importedMacros.hasKey(spec.modulePath):
+        exported = importedMacros[spec.modulePath]
+      elif not spec.fromModule:
+        exported = builtinNamespaceMacros(spec.nsSegments)
+      for selection in spec.selections:
+        if exported.hasKey(selection.name):
+          c.importMacro(selection.local, exported[selection.name])
+          if spec.reexport:
+            result.macroExports[selection.local] = exported[selection.name]
+      # Runtime import filtering is backend-specific; retain the source form.
+      result.expanded.forms.add form
+      result.expanded.formLocs.add loc
+      continue
+    if form.kind == vkNode and form.head.isSymbol("macro"):
+      c.compileMacro(form)
+      let name = form.body[0].symVal
+      if not form.declarationIsPrivate:
+        result.macroExports[name] = c.macros[name]
+      continue
+    let expanded = c.expandMacroTree(unit, form, loc,
+                                     result.expanded.locs,
+                                     result.provenance)
+    result.expanded.forms.add expanded
+    result.expanded.formLocs.add loc
 
 proc rejectReservedEffects(node: Value) =
   if node.props.hasKey("effects"):
@@ -5228,6 +5400,19 @@ proc builtinLogMacro(level: string): MacroDef =
       "  nil)))")]
   )
 
+proc builtinCssDeclMacro(): MacroDef =
+  ## Keep the declaration name as syntax so `(decl border_radius value)` can
+  ## distinguish symbol sugar from `(decl "--raw-name" value)`. The runtime
+  ## constructor receives the quoted Symbol/Str and stores it as ordered data.
+  MacroDef(
+    params: @[
+      MacroParam(pattern: newSym("name")),
+      MacroParam(pattern: newSym("value"))
+    ],
+    body: @[read(
+      "`(gene/css/decl_value (quote %name) %value)")]
+  )
+
 proc builtinNamespaceMacros(segments: openArray[string]):
     Table[string, MacroDef] =
   result = initTable[string, MacroDef]()
@@ -5236,6 +5421,10 @@ proc builtinNamespaceMacros(segments: openArray[string]):
        segments[1] == "log"):
     for level in ["error", "warn", "info", "debug", "trace"]:
       result[level & "!"] = builtinLogMacro(level)
+  elif (segments.len == 1 and segments[0] == "css") or
+      (segments.len == 2 and segments[0] == "gene" and
+       segments[1] == "css"):
+    result["decl"] = builtinCssDeclMacro()
 
 proc importMacro(c: var Compiler, local: string, def: MacroDef) =
   validateBindingName(local)

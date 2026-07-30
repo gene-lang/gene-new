@@ -1,0 +1,6 @@
+(mod web_importer ^profile web)
+
+(import [invert] from "./web_dep.gene")
+
+(fn result [] : Bool
+  (invert false))

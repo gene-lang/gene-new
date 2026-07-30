@@ -1,0 +1,24 @@
+{
+  "request_id": "req_01JZ7PC2V0",
+  "generated_at_ms": 1785326400123,
+  "account": {
+    "id": 9007199254740991,
+    "name": "Northwind Browser Demo",
+    "active": true
+  },
+  "items": [
+    {"id": 10421, "sku": "CARD-BLK", "quantity": 2, "unit_cents": 2499, "rating": 4.8},
+    {"id": 10422, "sku": "CARD-WHT", "quantity": 1, "unit_cents": 2499, "rating": 4.7},
+    {"id": 10423, "sku": "BADGE-GRN", "quantity": 4, "unit_cents": 799, "rating": 4.25},
+    {"id": 10424, "sku": "BUTTON-SM", "quantity": 8, "unit_cents": 399, "rating": 3.9},
+    {"id": 10425, "sku": "INPUT-LG", "quantity": 3, "unit_cents": 1299, "rating": 4.1},
+    {"id": 10426, "sku": "TABLE-ROW", "quantity": 20, "unit_cents": 149, "rating": 4.0},
+    {"id": 10427, "sku": "NAV-LINK", "quantity": 6, "unit_cents": 299, "rating": 3.75},
+    {"id": 10428, "sku": "MODAL-BASE", "quantity": 1, "unit_cents": 4599, "rating": 4.6},
+    {"id": 10429, "sku": "TOAST-INFO", "quantity": 5, "unit_cents": 549, "rating": 4.05},
+    {"id": 10430, "sku": "FORM-KIT", "quantity": 2, "unit_cents": 6799, "rating": 4.9},
+    {"id": 10431, "sku": "ICON-SET", "quantity": 12, "unit_cents": 999, "rating": 4.35},
+    {"id": 10432, "sku": "GRID-12", "quantity": 1, "unit_cents": 3299, "rating": 4.15}
+  ],
+  "page": {"offset": 0, "limit": 50, "total": 12}
+}

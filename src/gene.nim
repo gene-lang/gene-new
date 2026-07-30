@@ -13,7 +13,7 @@
 
 import std/[algorithm, os, strutils, tables]
 import gene/[compiler, diagnostics, fmt, gir, printer, reader, repl,
-             repl_curses, logging, logging_config, types, vm]
+             repl_curses, logging, logging_config, types, vm, web]
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
 # executable's dynamic symbol table for a dlopened AOT library to resolve.
@@ -36,6 +36,7 @@ proc usage() =
   echo "  gene fmt <file.gene>    format source through the canonical printer"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
   echo "  gene compile --target c <file.gene> print experimental typed_native C"
+  echo "  gene build --target web [--out-dir dir] <file.gene> emit web ESM + types"
   echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
   echo "  gene view [options] <file.gene> browse source structure and edit externally"
   echo "  gene lsp                run the language server over stdio (docs/lsp.md)"
@@ -410,6 +411,55 @@ proc cmdCompileC(path: string) =
     stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
     quit(1)
 
+type BuildWebCli = object
+  path: string
+  outDir: string
+
+proc parseBuildWebCli(): BuildWebCli =
+  result.outDir = "dist"
+  var target = ""
+  var i = 2
+  while i <= paramCount():
+    let arg = paramStr(i)
+    case arg
+    of "--target", "--out-dir":
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, arg & " expects a value")
+      if arg == "--target": target = paramStr(i)
+      else: result.outDir = paramStr(i)
+    else:
+      if arg.startsWith("--target="):
+        target = arg[9 .. ^1]
+      elif arg.startsWith("--out-dir="):
+        result.outDir = arg[10 .. ^1]
+      elif arg.startsWith("-"):
+        raise newException(ValueError, "unknown build option: " & arg)
+      elif result.path.len == 0:
+        result.path = arg
+      else:
+        raise newException(ValueError, "build accepts one entry file")
+    inc i
+  if target != "web":
+    raise newException(ValueError, "unsupported build target: " & target)
+  if result.path.len == 0:
+    raise newException(ValueError, "'build --target web' needs a file path")
+
+proc cmdBuildWeb(options: BuildWebCli) =
+  try:
+    let outputs = buildWebModule(options.path, options.outDir)
+    for output in outputs:
+      echo normalizedPath(output)
+  except ReadError as e:
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
+    quit(1)
+  except WebProfileError as e:
+    stderr.writeLine "Error: " & e.msg
+    quit(1)
+  except CatchableError as e:
+    stderr.writeLine "Error: " & e.msg
+    quit(1)
+
 proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
   scope.materializeMirroredVars()
   for name in scope.vars.keys:
@@ -587,6 +637,12 @@ proc main() =
       cmdCompileC(paramStr(3))
     else:
       cmdCompile(paramStr(2))
+  of "build":
+    try:
+      cmdBuildWeb(parseBuildWebCli())
+    except ValueError as e:
+      stderr.writeLine "Error: " & e.msg
+      quit(1)
   of "doc":
     if paramCount() < 2:
       stderr.writeLine "Error: 'doc' needs a file path"

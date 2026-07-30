@@ -1,0 +1,52 @@
+{
+  "generated_by": "tools/generate_dom_bindings.mjs",
+  "typescript": "5.9.2",
+  "source": "lib.dom.d.ts",
+  "policy": "explicit allowlist; unsupported TypeScript shapes are rejected",
+  "interfaces": {
+    "EventTarget": {
+      "addEventListener": {
+        "overloads_in_lib_dom": 1,
+        "gene_abi": "Any boundary with generated checked callback adapters"
+      },
+      "removeEventListener": {
+        "overloads_in_lib_dom": 1,
+        "gene_abi": "Any boundary with generated checked callback adapters"
+      }
+    },
+    "Node": {
+      "appendChild": {
+        "overloads_in_lib_dom": 1,
+        "gene_abi": "Any boundary with generated checked callback adapters"
+      },
+      "removeChild": {
+        "overloads_in_lib_dom": 1,
+        "gene_abi": "Any boundary with generated checked callback adapters"
+      }
+    },
+    "Element": {
+      "setAttribute": {
+        "overloads_in_lib_dom": 1,
+        "gene_abi": "Any boundary with generated checked callback adapters"
+      },
+      "removeAttribute": {
+        "overloads_in_lib_dom": 1,
+        "gene_abi": "Any boundary with generated checked callback adapters"
+      }
+    },
+    "Document": {
+      "createElement": {
+        "overloads_in_lib_dom": 3,
+        "gene_abi": "Any boundary with generated checked callback adapters"
+      },
+      "createTextNode": {
+        "overloads_in_lib_dom": 1,
+        "gene_abi": "Any boundary with generated checked callback adapters"
+      },
+      "createDocumentFragment": {
+        "overloads_in_lib_dom": 1,
+        "gene_abi": "Any boundary with generated checked callback adapters"
+      }
+    }
+  }
+}

@@ -42,6 +42,15 @@ template check_read(src: string, expected: string) =
 template check_eval(src: string, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
 
+template check_eval_error(src: string, fragment: string) =
+  var raised = false
+  try:
+    discard run(compileSource(src), newGlobalScope())
+  except CatchableError as e:
+    raised = true
+    check fragment in e.msg
+  check raised
+
 template check_compile_error(src: string, fragment: string) =
   ## Asserts that compiling `src` raises with `fragment` in the message.
   var raised = false
@@ -7847,7 +7856,7 @@ suite "spec — serde references (stage 3)":
 suite "spec — web demo remains parseable":
   test "web demo parses as a module source unit":
     let forms = readAll(readFile("examples/web_demo.gene"))
-    check forms.len == 35
+    check forms.len == 31
     check forms[0].print().startsWith("(mod @doc ")
     check forms[1].print() == "(import (path gene net http) [Request Response serve])"
     check forms[^1].print().startsWith("(fn main ")
@@ -7857,6 +7866,8 @@ suite "spec — web demo remains parseable":
     check "(unquote ($ \"$\" (path self price)))" in rendered
     check "(path routes (unquote (path gene to_pairs_stream)))" in rendered
     check "(path req params name)" in rendered
+    check "(scoped \"web_demo\" (css " in rendered
+    check "(render (try " in rendered
 
 suite "spec — qualified message spelling":
   test "Proto:msg names a protocol message":
@@ -8137,6 +8148,96 @@ suite "spec — documentation contract":
     check offenders.len == 0
     # A marker that stops matching any block would make this vacuously green.
     check ran > 0
+
+suite "spec — Tier 0 HTML renderer (transpile proposal P0)":
+  test "html/render escapes text and attributes through the public namespace":
+    check_eval(
+      "(import $html [render]) " &
+      "(render `(div ^title \"a&\\\"b\" \"x < y\"))",
+      "\"<div title=\\\"a&amp;&quot;b\\\">x &lt; y</div>\"")
+
+  test "html/render handles boolean attrs, void tags, and raw-text elements":
+    check_eval(
+      "(import $html [render]) " &
+      "(render `(div ^^hidden ^draggable false ^data-ok true " &
+      "(input ^^required ^value \"x\") " &
+      "(style \"a>b&c\") " &
+      "(script \"if (a < b) x = \\\"</script>\\\";\")))",
+      "\"<div hidden draggable=\\\"false\\\" data-ok=\\\"true\\\">" &
+      "<input required value=\\\"x\\\"><style>a>b&c</style>" &
+      "<script>if (a < b) x = \\\"<\\\\/script>\\\";</script></div>\"")
+
+  test "html/render rejects children on a void element":
+    check_eval_error(
+      "(import $html [render]) (render `(br \"not allowed\"))",
+      "void element 'br' cannot have children")
+
+suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
+  test "css/render preserves declaration order and lowers nested rules":
+    let expected =
+      ".card {\n" &
+      "  display: -webkit-box;\n" &
+      "  display: flex;\n" &
+      "  border-radius: 14px;\n" &
+      "  --brand: #fff;\n" &
+      "}\n" &
+      ".card:hover {\n" &
+      "  background: #000;\n" &
+      "}\n" &
+      "@media (max-width: 600px) {\n" &
+      "  .card {\n" &
+      "    padding: 12px;\n" &
+      "  }\n" &
+      "}\n"
+    check_eval(
+      "(import $css [css rule decl media render]) " &
+      "(render (css " &
+      "  (rule \".card\" " &
+      "    (decl display \"-webkit-box\") " &
+      "    (decl display \"flex\") " &
+      "    (decl border_radius \"14px\") " &
+      "    (decl \"--brand\" \"#fff\") " &
+      "    (rule \"&:hover\" (decl background \"#000\"))) " &
+      "  (media \"(max-width: 600px)\" " &
+      "    (rule \".card\" (decl padding \"12px\")))))",
+      newStr(expected).print())
+
+  test "css/scoped generates deterministic classes from meta-blind data":
+    let value = run(compileSource(
+      "(import $css [scoped class_name render]) " &
+      "(var a (scoped \"card\" " &
+      "  (quote #(css @note \"first\" #(rule \"&\" #(decl color \"red\")))))) " &
+      "(var b (scoped \"card\" " &
+      "  (quote #(css @note \"second\" #(rule \"&\" #(decl color \"red\")))))) " &
+      "(var c (scoped \"card\" " &
+      "  (quote #(css #(rule \"&\" #(decl color \"blue\")))))) " &
+      "[(== (class_name a) (class_name b)) " &
+      " (! (== (class_name a) (class_name c))) " &
+      " (class_name a) (render a)]"), newGlobalScope())
+    check value.kind == vkList
+    check value.listItems[0] == TRUE
+    check value.listItems[1] == TRUE
+    let className = value.listItems[2].strVal
+    check className.startsWith("card__")
+    check value.listItems[3].strVal ==
+      "." & className & " {\n  color: red;\n}\n"
+
+  test "css/scoped rewrites local keyframe declarations and references":
+    let value = run(compileSource(
+      "(import $css [css scoped class_name rule decl keyframes frame render]) " &
+      "(var styles (scoped \"pulse\" (css " &
+      "  (keyframes \"fade\" " &
+      "    (frame \"from\" (decl opacity 0)) " &
+      "    (frame \"to\" (decl opacity 1))) " &
+      "  (rule \"&\" (decl animation_name \"fade\") " &
+      "    (decl color \"fade\"))))) " &
+      "[(class_name styles) (render styles)]"), newGlobalScope())
+    let className = value.listItems[0].strVal
+    let digest = className.split("__")[^1]
+    let cssText = value.listItems[1].strVal
+    check "@keyframes fade__" & digest & " {" in cssText
+    check "animation-name: fade__" & digest & ";" in cssText
+    check "color: fade;" in cssText
 
 suite "spec — naming convention":
   test "registered names use underscores, never hyphens":

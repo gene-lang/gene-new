@@ -6,6 +6,8 @@ tests/*
 !tests/*.nim
 !tests/*.mjs
 !tests/test_ai_agent_tui.py
+!tests/transpile/
+!tests/transpile/**
 
 benchmarks/bench_core
 
@@ -50,3 +52,4 @@ tmp/
 examples/ai_agent/logs/
 examples/ai_agent/home/
 *.vsix
+skills-lock.json

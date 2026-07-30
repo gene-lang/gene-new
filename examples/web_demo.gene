@@ -18,10 +18,9 @@
 
 (import $net/http [Request Response serve])
 (import io [write_line])
-(import $html [escape])
-(import $str [join])
+(import $html [render])
+(import $css [css rule decl scoped class_name render : render_css])
 (import gene/stream [to_stream to_pairs_stream map filter take each into])
-(import gene/node [head props body meta declarations])
 (import gene/parse [parse_int ParseError])
 
 # -----------------------------------------------------------------------------
@@ -60,15 +59,36 @@
    (MenuItem ^name "Cold Brew"    ^price 5 ^tag "iced"    ^featured true)
    (MenuItem ^name "Matcha Latte" ^price 6 ^tag "green"   ^featured false)])
 
-(var css """
-  body{font:16px/1.5 system-ui;margin:0;background:#f4f4f5;color:#18181b}
-  .wrap{max-width:720px;margin:40px auto;padding:0 20px}
-  .card{padding:20px 24px;border-radius:14px;margin:16px 0;background:#fff}
-  .muted{opacity:.65;font-size:.85em}
-  .badge{padding:2px 10px;border-radius:999px;background:#e4e4e7}
-  table{border-collapse:collapse;width:100%}
-  td,th{border-bottom:1px solid #eee;padding:8px;text-align:left}
-""")
+(var styles
+  (scoped "web_demo"
+    (css
+      (rule "&"
+        (decl font "16px/1.5 system-ui")
+        (decl margin 0)
+        (decl background "#f4f4f5")
+        (decl color "#18181b"))
+      (rule ".wrap"
+        (decl max_width "720px")
+        (decl margin "40px auto")
+        (decl padding "0 20px"))
+      (rule ".card"
+        (decl padding "20px 24px")
+        (decl border_radius "14px")
+        (decl margin "16px 0")
+        (decl background "#fff"))
+      (rule ".muted" (decl opacity ".65") (decl font_size ".85em"))
+      (rule ".badge"
+        (decl padding "2px 10px")
+        (decl border_radius "999px")
+        (decl background "#e4e4e7"))
+      (rule "table" (decl border_collapse "collapse") (decl width "100%"))
+      (rule "td, th"
+        (decl border_bottom "1px solid #eee")
+        (decl padding "8px")
+        (decl text_align "left")))))
+
+(var rendered_css (render_css styles))
+(var scope_class (class_name styles))
 
 # -----------------------------------------------------------------------------
 # HTML as node data
@@ -88,8 +108,8 @@
   `(html
      (head
        (title %title)
-       (style %css))
-     (body
+       (style %rendered_css))
+     (body ^class %scope_class
        (main ^class "wrap"
          (header
            (h1 "Gene web demo")
@@ -194,13 +214,13 @@
 # Module introspection with selectors + streams, not query.
 # -----------------------------------------------------------------------------
 
-(fn routed? [decl : Node] : Bool
-  (not (== decl/%$meta/route void)))
+(fn routed? [declaration : Node] : Bool
+  (not (== declaration/%$meta/route void)))
 
-(fn route_entry [decl : Node] : (List Any)
-  (match decl
+(fn route_entry [declaration : Node] : (List Any)
+  (match declaration
     (when (fn name _...)
-      [decl/%$meta/route (resolve name)])
+      [declaration/%$meta/route (resolve name)])
     (else
       void)))
 
@@ -209,45 +229,6 @@
     ~ filter routed?
     ; ~ map route_entry
     ; ~ into {}))
-
-# -----------------------------------------------------------------------------
-# Rendering: one edge converts node data to HTML text.
-# -----------------------------------------------------------------------------
-
-(fn render_attr [pair] : Str
-  (var [k, v] pair)
-  (if (== v void)
-    ""
-    $" ${($to_str k)}=\"${(escape ($to_str v))}\""))
-
-(fn render_attrs [n : Node] : Str
-  (join
-    (n/%$props/%$to_pairs_stream
-      ~ map render_attr
-      ; ~ into [])
-    ""))
-
-(fn render_children [n : Node] : Str
-  (join
-    (n/%$body/%$to_stream
-      ~ map render
-      ; ~ into [])
-    ""))
-
-(fn render_node [n : Node] : Str
-  (var tag ($to_str (n ~ head)))
-  ($ "<" tag (render_attrs n) ">"
-     (render_children n)
-     "</" tag ">"))
-
-(fn render [x] : Str
-  (match x
-    (when (s : Str)
-      (escape s))
-    (when (n : Node)
-      (render_node n))
-    (else
-      (escape ($to_str x)))))
 
 # -----------------------------------------------------------------------------
 # The app is pure ordinary code. Request validation is a gradual typed boundary.

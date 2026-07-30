@@ -1,0 +1,46 @@
+(mod web_advanced ^profile web)
+
+(protocol Named
+  (message name [self] : Str))
+
+(type Item
+  ^props {^name Str}
+  (ctor [name : Str]
+    (set! self/name name)))
+
+(impl Named for Item
+  (message name [self] : Str
+    self/name))
+
+(fn name_of [value : Named] : Str
+  (value ~ Named:name))
+
+(enum Choice
+  none
+  (some Int))
+
+(fn numbers [] : (Stream Int Never)
+  (yield 1)
+  (yield void)
+  (yield 2))
+
+(fn async_value [] : Int
+  (scope
+    (let pending (spawn 42))
+    (await pending)))
+
+(fn describe [choice : Choice] : Str
+  (match choice
+    (when Choice/none "none")
+    (when (Choice/some value)
+      ($json/stringify {^value value}))))
+
+(fn run [] : Str
+  (scope
+    (let item (new Item "advanced"))
+    (let values : (List Int) ($into (numbers) []))
+    ($str/join
+      [(name_of item)
+       (describe (Choice/some ($size values)))
+       ($json/stringify (async_value))]
+      ":")))

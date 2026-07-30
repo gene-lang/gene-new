@@ -4,7 +4,7 @@ when defined(posix):
   import std/posix
 when defined(macosx):
   const SigWinch = 28
-import gene/[repl, vm]
+import gene/[repl, vm, web]
 
 let cliDir = getTempDir() / "gene_cli_tests"
 let geneExe = cliDir / "gene-test-bin"
@@ -7508,6 +7508,172 @@ suite "cli — gene parse/fmt/compile":
     let ran = runGene(["compile", "--target", "llvm", path])
     check ran.exitCode == 1
     check "unsupported compile target: llvm" in ran.output
+
+  test "build target web emits runnable ESM, TypeScript, declarations, and a source map":
+    let path = writeCliProgram("web_slice.gene",
+      "(mod web_slice ^profile web)\n" &
+      "(fn choose [flag : Bool a : Str b : Str] : Str\n" &
+      "  (if flag a b))\n")
+    let outDir = cliDir / "web_slice_out"
+    createDir(outDir)
+    let ran = runGene(["build", "--target", "web", "--out-dir", outDir, path])
+    checkpoint ran.output
+    check ran.exitCode == 0
+    let jsPath = outDir / "web_slice.mjs"
+    let tsPath = outDir / "web_slice.ts"
+    let dtsPath = outDir / "web_slice.d.ts"
+    let mapPath = outDir / "web_slice.mjs.map"
+    let tsMapPath = outDir / "web_slice.ts.map"
+    check fileExists(jsPath)
+    check fileExists(tsPath)
+    check fileExists(dtsPath)
+    check fileExists(mapPath)
+    check fileExists(tsMapPath)
+    if fileExists(jsPath):
+      let js = readFile(jsPath)
+      check "export function choose(flag, a, b)" in js
+      check "sourceMappingURL=web_slice.mjs.map" in js
+      check "eval(" notin js
+      check "Function(" notin js
+    if fileExists(dtsPath):
+      check "export declare function choose(flag: boolean, a: string, b: string): string;" in
+        readFile(dtsPath)
+    if fileExists(mapPath):
+      let sourceMapText = readFile(mapPath)
+      let sourceMap = parseJson(sourceMapText)
+      check normalizedPath(absolutePath(path)) in sourceMapText
+      check sourceMap["mappings"].getStr().contains(';')
+      check sourceMap["mappings"].getStr() != "AAAA"
+    if fileExists(jsPath):
+      let executed = execCmdEx(
+        "node --input-type=module -e " & shellQuote(
+          "import { choose } from " & jsPath.absolutePath.escape() &
+          "; console.log(choose(true, 'left', 'right'));"))
+      checkpoint executed.output
+      check executed.exitCode == 0
+      check executed.output.strip == "left"
+
+  test "web names are mangled injectively into legal JavaScript identifiers":
+    check mangleWebName("ready?") == "ready$q"
+    check mangleWebName("ready$q") == "ready$$q"
+    check mangleWebName("ready?") != mangleWebName("ready$q")
+    check mangleWebName("class") == "$r$class"
+    check mangleWebName("2d") == "$n$2d"
+
+  test "web list literals preserve shallow mutability":
+    let path = writeCliProgram("web_list_mutability.gene",
+      "(mod web_list_mutability ^profile web)\n" &
+      "(fn mutable [] : (List Int) [1 2])\n" &
+      "(fn immutable [] : (List Int) #[1 2])\n")
+    let outDir = cliDir / "web_list_mutability_out"
+    createDir(outDir)
+    let ran = runGene(["build", "--target", "web", "--out-dir", outDir, path])
+    checkpoint ran.output
+    check ran.exitCode == 0
+    let jsPath = outDir / "web_list_mutability.mjs"
+    if fileExists(jsPath):
+      let js = readFile(jsPath)
+      check "return [1n, 2n];" in js
+      check "return Object.freeze([1n, 2n]);" in js
+      let executed = execCmdEx(
+        "node --input-type=module -e " & shellQuote(
+          "import { mutable, immutable } from " & jsPath.absolutePath.escape() &
+          "; console.log(Object.isFrozen(mutable()), Object.isFrozen(immutable()))"))
+      checkpoint executed.output
+      check executed.exitCode == 0
+      check executed.output.strip == "false true"
+
+  test "build target web rejects VM-only forms with a profile reason":
+    let path = writeCliProgram("web_rejected.gene",
+      "(mod web_rejected ^profile web)\n" &
+      "(fn! raw [x] x)\n")
+    let outDir = cliDir / "web_rejected_out"
+    createDir(outDir)
+    let ran = runGene(["build", "--target", "web", "--out-dir", outDir, path])
+    check ran.exitCode == 1
+    check "fn! is outside the web profile" in ran.output
+
+  test "web macro diagnostics point at the expansion call site":
+    let path = writeCliProgram("web_macro_diagnostic.gene",
+      "(mod web_macro_diagnostic ^profile web)\n" &
+      "(macro broken! [value] `(missing_web_fn %value))\n" &
+      "\n" &
+      "(fn run [] : Int (broken! 1))\n")
+    let outDir = cliDir / "web_macro_diagnostic_out"
+    createDir(outDir)
+    let ran = runGene(["build", "--target", "web", "--out-dir", outDir, path])
+    check ran.exitCode == 1
+    check "web_macro_diagnostic.gene:4:" in ran.output
+    check "missing_web_fn" in ran.output
+
+  test "web JS extern rejects an import name that cannot form ESM syntax":
+    let path = writeCliProgram("web_bad_js_import.gene",
+      "(mod web_bad_js_import ^profile web)\n" &
+      "(js/fn host ^from \"./host.mjs\" ^import \"not-an-id\" [] : Nil)\n")
+    let outDir = cliDir / "web_bad_js_import_out"
+    createDir(outDir)
+    let ran = runGene(["build", "--target", "web", "--out-dir", outDir, path])
+    check ran.exitCode == 1
+    check "js/fn ^import must be a JavaScript identifier" in ran.output
+
+  test "build target web follows a closed graph of unconditional relative imports":
+    discard writeCliProgram("web_dep.gene",
+      "(mod web_dep ^profile web)\n" &
+      "(fn invert [value : Bool] : Bool (! value))\n")
+    let path = writeCliProgram("web_importer.gene",
+      "(mod web_importer ^profile web)\n" &
+      "(import [invert] from \"./web_dep.gene\")\n" &
+      "(fn result [] : Bool (invert false))\n")
+    let outDir = cliDir / "web_import_out"
+    createDir(outDir)
+    let ran = runGene(["build", "--target", "web", "--out-dir", outDir, path])
+    checkpoint ran.output
+    check ran.exitCode == 0
+    check fileExists(outDir / "web_dep.mjs")
+    check fileExists(outDir / "web_importer.mjs")
+    if fileExists(outDir / "web_importer.mjs"):
+      check "import { invert } from \"./web_dep.mjs\";" in
+        readFile(outDir / "web_importer.mjs")
+      let executed = execCmdEx(
+        "node --input-type=module -e " & shellQuote(
+          "import { result } from " &
+          (outDir / "web_importer.mjs").absolutePath.escape() &
+          "; console.log(result());"))
+      checkpoint executed.output
+      check executed.exitCode == 0
+      check executed.output.strip == "true"
+
+  test "web ABI checks exported calls, JS imports, and callbacks in both directions":
+    writeFile(cliDir / "web_host.mjs",
+      "export function upper(value, callback) {\n" &
+      "  return callback(value.toUpperCase());\n" &
+      "}\n")
+    let path = writeCliProgram("web_interop.gene",
+      "(mod web_interop ^profile web)\n" &
+      "(js/fn host_upper ^from \"./web_host.mjs\" ^import \"upper\" " &
+      "  [value : Str callback : (Callback [Str] Str)] : Str)\n" &
+      "(fn decorate [value : Str] : Str ($ \"<\" value))\n" &
+      "(fn run [value : Str] : Str (host_upper value decorate))\n" &
+      "(fn run_with [value : Str callback : (Callback [Str] Str)] : Str " &
+      "  (host_upper value callback))\n")
+    let ran = runGene(["build", "--target", "web", "--out-dir", cliDir, path])
+    checkpoint ran.output
+    check ran.exitCode == 0
+    let jsPath = cliDir / "web_interop.mjs"
+    if fileExists(jsPath):
+      let js = readFile(jsPath)
+      check "from \"./web_host.mjs\"" in js
+      check "$gene_check_str" in js
+      check "$gene_check_callback" in js
+      let executed = execCmdEx(
+        "node --input-type=module -e " & shellQuote(
+          "import { run, run_with } from " & jsPath.absolutePath.escape() &
+          "; console.log(run('ada')); try { run(1) } catch (e) { console.log(e.name) }" &
+          "; try { run_with('ada', () => 7) } catch (e) { console.log(e.name) }"))
+      checkpoint executed.output
+      check executed.exitCode == 0
+      check executed.output.strip.splitLines ==
+        @["<ADA", "TypeError", "TypeError"]
 
   test "file runtime errors include source location and snippet":
     let path = writeCliProgram("located_runtime_error.gene",

@@ -1,0 +1,15 @@
+(mod web_interop ^profile web)
+
+(js/fn host_upper
+  ^from "./web_host.mjs"
+  ^import "upper"
+  [value : Str callback : (Callback [Str] Str)] : Str)
+
+(fn decorate [value : Str] : Str
+  ($ "<" value))
+
+(fn run [value : Str] : Str
+  (host_upper value decorate))
+
+(fn run_with [value : Str callback : (Callback [Str] Str)] : Str
+  (host_upper value callback))

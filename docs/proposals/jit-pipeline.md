@@ -498,3 +498,232 @@ Benchmarks report at least:
 `nimble perf` must show that disabled/explicit mode does not add avoidable work
 to ordinary VM calls. Performance regressions are not hidden behind expected
 future JIT gains.
+
+---
+
+# Review comments (2026-07-29)
+
+Written immediately after hardening the `typed_native` dynamic boundary
+(`native-type.md` §6.4, commits `058e054..33edca4`), so §§3–4 and §7 here are
+checked against code rather than recalled.
+
+The central decision — one `lower_native`, with a successfully produced plan
+*being* the eligibility proof, and no separate `is_jit_eligible` pass — is
+right, and it is the most valuable sentence in the document. Every silent
+miscompilation the typed_native backend has produced came from analysis and
+emission independently re-deriving lowerability and disagreeing. `aotLoweringGap`
+(`gir.nim:1428`) exists only to convert such a disagreement into a hard error,
+and it caught two real bugs during that work. Under a plan the disagreement
+becomes structurally impossible, which is a genuine improvement — but note the
+corollary: the safety net disappears with it. Any place a backend re-derives
+something from source after Phase 0 loses both the guarantee and the guard.
+
+The comments below are ordered by cost of getting them wrong.
+
+## 1. Putting SSA in the plan forces structured-control-flow reconstruction in the C backend
+
+§3.1 requires the plan to carry "a typed SSA control-flow graph with explicit
+join values", and §11 Phase 0 requires the C backend to consume the plan. Those
+two together mean the C emitter must rebuild structured control flow from a CFG:
+a relooper/Stackifier pass. That is a real algorithm, it is new, it is a
+recognized source of subtle bugs, and it makes generated C substantially less
+readable — which matters for a backend whose output is currently inspectable and
+is inspected in tests.
+
+Nothing in the language requires paying that. The lowerable subset is
+*structured by construction*: statement position admits only `let`/`var`, `set`,
+`set!`, `do`, and `while` (`compiler.nim:2952`), and `if` is a three-arm
+expression that lowers to a ternary. `break`, `continue`, `return`, `for` and
+`try` all exist in Gene (`compiler.nim:7517`) and none of them is lowerable.
+There is no `goto` and no irreducible control flow to represent.
+
+Recommend the plan carry **structured** control flow — nested blocks, `if`,
+`while`, typed expression trees over SSA-numbered values — and make CFG/SSA
+construction a private detail of the machine adapter, which is the only backend
+that wants it. This stays viable as the subset widens: `break`, `continue` and
+early `return` are structured-with-exits and emit as labelled breaks in C, so
+the structured form does not become a dead end.
+
+If SSA in the plan is kept deliberately, Phase 0 should name the relooper as a
+deliverable and budget it, rather than have it emerge as the reason the
+"highest-risk refactor" overran.
+
+## 2. There are three lowering analyses today, and the proposal unifies one
+
+`aotExpr` is selected by two mutually exclusive analyses
+(`compiler.nim:3336-3378`): `isTypedNativeAotExpr` when the signature carries
+native representations, and `detectAotExpr` otherwise — the older,
+representation-homogeneous scalar path. A third, independent analysis,
+`detectNativeCompileOp` (`compiler.nim:3054`), produces the VM's own `nativeOp`
+fast paths (`ncoI64Add`, `ncoF64Mul`, …) consumed at `vm.nim:14873`, with no C
+involvement at all.
+
+§10.2 and Phase 0 speak of "the existing typed-native proof" as if there were
+one. Two concrete consequences:
+
+- Phase 0 must state whether `lower_native` subsumes the scalar `detectAotExpr`
+  path or leaves it standing. Leaving it standing preserves exactly the
+  duplicate-subset hazard §3 is designed to remove, and that path has no
+  `aotLoweringGap` equivalent.
+- `auto` mode needs a stated rule for functions that already have a VM
+  `nativeOp`. Those are *already* the small fixed-scalar shapes a baseline JIT
+  targets first, so they will trip any hotness counter immediately, and
+  compiling them buys the least. Either they are excluded with a reason, or the
+  benchmark in §12 must show the JIT beating the existing fast op rather than
+  the generic VM path — otherwise `auto`'s first measured win is against a
+  strawman.
+
+## 3. Entry adapters are more than validators; per-call marshalling storage needs a home
+
+§4.3 says AOT dynamic entries and JIT entry stubs "reuse the same scalar
+validators and managed-wrapper borrow/copy/transfer operations". That
+undercounts what an entry adapter now does. Two cases from the current boundary:
+
+- A `Buffer` argument is not borrowed. Every element is unmarshalled into
+  storage owned by the call's `AotContext`, the callee writes through it, and
+  the bytes are copied back at an explicit `gene_ffi_buffer_finalize` after the
+  callee returns. It is a two-phase acquire/finalize protocol with live storage
+  in between, not a validator call.
+- A `Str` (and a `C/Slice`) yields a pointer *into the boxed argument's own
+  storage*. It is valid only because the boxed argument is rooted for the
+  duration of the entry.
+
+The generated-C adapter has somewhere to put all of this: it declares locals and
+sequences the finalize calls. A machine-code entry stub does not. Two
+recommendations:
+
+- The JIT entry stub should not open-code marshalling. Have it call one
+  descriptor-driven entry adapter in the runtime, so both tiers share the
+  acquire/finalize protocol and the storage's lifetime, not merely the leaf
+  validators. This also keeps §10.5 ("do not add JIT-specific conversion rules")
+  honest, which the AOT side now satisfies literally — every `gene_ffi_arg_*` /
+  `gene_ffi_result_*` helper delegates to the interpreter's own converters.
+- Make "a borrowed `CStr` or buffer view may not outlive the entry that produced
+  it" an explicit plan-level lifetime rule. Today it holds because the subset
+  offers no way to store one. Once a plan permits JIT→JIT direct calls, a
+  borrowed pointer can flow through several native frames whose combined
+  lifetime is bounded only by the outermost entry, and §4.4's "Phase 1 native
+  code keeps no managed values" means no native frame roots the `Str` itself.
+  That invariant should be stated where it can be checked, not left implicit in
+  what the subset happens to exclude.
+
+## 4. The activation epoch, as it exists, is too coarse to be a per-artifact dependency
+
+§7 lists "protocol implementation activation epoch" among the facts an artifact
+records, and §5 correctly insists mutable facts stay out of the specialization
+key. But `implEpoch` is a single global counter bumped by *every* impl mutation —
+canonical, scoped, overlay, staged activation, `import_impl`, reload
+(`vm.nim:7777` and following). With per-function artifacts, "re-validate when
+the epoch moves" is O(artifacts x mutations), and any program that installs impls
+during startup or per-request invalidates the entire code cache repeatedly.
+
+The native-type work just landed is a working precedent for the mechanism *and*
+for the granularity lesson. `nativeTypeEpoch` bumps only when a registered
+type's **contract fingerprint** changes, explicitly not when a fresh `Type`
+object is minted for an identical declaration — because recompiling the same
+source mints a new `Type` every time, so keying on object identity would have
+made every module load invalidate every loaded library. Getting that wrong is
+not a slowdown; it is a cache that never hits.
+
+Recommend §7 state the granularity requirement directly: guards are keyed to the
+specific dependency (protocol + receiver generation, callee generation, type
+contract fingerprint), and a global epoch is admissible only as a cheap gate in
+front of a finer check, never as the dependency itself. Also worth adopting:
+re-validation failure should be **sticky** per artifact
+(`ensureAotModuleValid` marks a module permanently invalid), so a
+permanently-broken artifact stops re-walking its requirement set on every call.
+
+## 5. The suspension exclusion is load-bearing for the M:N scheduler and is currently incidental
+
+Both lowering paths bail on `checksErrors or sawYield` (`compiler.nim:3161` and
+`3357`). That exclusion is what currently makes it safe to run a native frame
+the scheduler cannot park, migrate, or unwind — and it reads today as a subset
+limitation rather than as the safety property it is.
+
+§4.4 addresses the GC dimension (root maps, safepoints) and defers it well. The
+*scheduler* dimension is distinct and unnamed. With VM call/control paths now on
+a heap frame stack and an M:N scheduler as the next major arc, a JIT frame that
+can suspend is a scheduler problem before it is a GC problem: a native frame has
+no representation the scheduler can move between threads or park on a channel.
+
+Recommend §7 promote this to a stated Phase 1 rule with its reason — no function
+that can suspend or that participates in structured-task control flow is
+lowerable — and §11's later phases list scheduler-parkable native frames beside
+safepoints and OSR, since widening the subset without it produces a frame the
+scheduler cannot account for.
+
+## 6. Direct JIT-to-AOT calls need manifest data that does not exist yet
+
+§4.3's descriptor matching assumes an AOT manifest publishes enough to validate
+an unboxed call. It does not. `gene_aot_module` rows are
+`{gene_name, c_symbol, entry_symbol, repr, arity, frame}` where `repr` is only
+the *return* representation as a string — there are no per-parameter
+representations, no target triple, and no calling-convention version. The
+unboxed body (`gene_native_foo(CNode *n)`) is a plain C symbol published
+nowhere; only the boxed `^native_entry` wrapper is discoverable.
+
+So §4.3 implies a new manifest section describing unboxed bodies. Worth saying
+so explicitly, because it is the difference between "match a fingerprint" and
+"design and version a second ABI surface".
+
+The dependency-contract half, by contrast, is already there and closer to §10.4
+than the document assumes: `gene_aot_native_types` publishes
+`{type_identity, abi_identity, abi_fingerprint, contract_fingerprint}` per
+transitively-required type, `gene_aot_abi_layouts` publishes measured
+`sizeof`/`alignof`/`offsetof`, `AbiFingerprintVersion` versions the hashing rule,
+and `AotTypeRequirement` / `validateAotTypeRequirements` are already the
+in-memory form the JIT would read live. The contract fingerprint deliberately
+covers policy as well as layout (`^copy`, `^release`, `^wrapper`, `^mutable`,
+`^lifecycle`, and the handle's declared type), because compiled code bakes those
+in as call targets and lowering decisions — a JIT artifact bakes in exactly the
+same things, so it should reuse the same fingerprint rather than define a
+narrower one.
+
+## 7. `auto` counters land inside active call-path perf work, and the noise floor is high
+
+Two methodological points for §12, both from repository history rather than
+principle.
+
+Counter *placement* is the entire cost. Previous attempts to widen hot VM types
+for caching (`Instruction`, `NamedArgs`) were rejected on benchmark evidence,
+and the current perf arc is operand-stack registerization — the same code a
+per-entry counter has to touch. §12's "counter overhead on cold and
+non-lowerable functions" is the right gate; it should also require that the
+chosen location be benchmarked before `auto` ships, not after.
+
+And `nimble perf` alone is not sufficient evidence. This repository has a
+documented bench noise floor high enough that a mover is only real if it
+reproduces across batches *and* has a mechanism. Concretely, during the boundary
+hardening I introduced an 11% regression in AOT boundary crossings — an eagerly
+formatted error string on the success path, ~275 ns per crossing — and `nimble
+perf` did not show it at all; `examples/native/bench_fib.sh` did. §12 should
+name the boundary benchmark as a separate required gate and state the
+reproduction bar, since "explicit/off mode costs nothing" is exactly the kind of
+claim a single run cannot support.
+
+## 8. wasm needs compile-time exclusion, not just a runtime disable
+
+§2 and §9 disable the JIT where W^X cannot be guaranteed, which is a runtime
+decision. `web/gene.wasm` is a tracked artifact where size is a user-visible
+cost, and two instruction encoders plus executable-memory management that can
+never run there should not be linked in at all. The `geneWasm` / `emscripten`
+defines already gate other subsystems this way (`vm.nim:25`). One sentence in §9
+turns a runtime policy into a build guarantee.
+
+## 9. Smaller, still concrete
+
+- **`^out` address-of-local is missing from §10.3's list** of operations that
+  must become explicit plan operations. It matters specifically for the machine
+  adapter: taking a local's address forces it to a stack slot and constrains
+  register allocation, and that constraint must be visible in the plan rather
+  than discovered by the allocator.
+- **§2.1's mechanism already exists.** `requiresTypedNative`
+  (`compiler.nim:3366`) raises a source-located diagnostic when an explicit
+  request cannot lower and otherwise silently falls back to VM code — precisely
+  the `^jit true` / `--jit-required` split. Reuse it rather than build a parallel
+  one, and keep the two markers' diagnostics phrased alike.
+- **Fexprs and macros go unmentioned.** `fn!` and ctor fexprs receive unevaluated
+  forms and a snapshot caller-env; they can never form a plan. §2.1 promises a
+  diagnostic "naming the first unsupported operation", but for a fexpr the honest
+  diagnostic is categorical. Worth one line so the failure is a clear rejection
+  rather than a confusing per-operation complaint.
