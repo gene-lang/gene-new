@@ -238,7 +238,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     buildGeneCli()
     let ran = execCmdOnce("env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
                         "-u CODEX_ACCESS_TOKEN " &
-                        shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+                        shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene")
     check ran.exitCode == 0
     check "No OPENAI_AUTH_TOKEN, OPENAI_API_KEY, or CODEX_ACCESS_TOKEN set" in
       ran.output
@@ -261,7 +261,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
                   "-u CODEX_ACCESS_TOKEN -u GENE_AGENT_STATE " &
                   shellQuote(geneExe) & " run --log-config " &
                   shellQuote(configPath) &
-                  " examples/ai_agent/tui.gene"
+                  " examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
@@ -270,7 +270,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
       "env -u OPENAI_API_KEY -u CODEX_ACCESS_TOKEN " &
       "-u GENE_AGENT_STATE -u GENE_AGENT_HOME OPENAI_AUTH_TOKEN=dummy " &
       shellQuote(geneExe) & " run --log-config " & shellQuote(configPath) &
-      " examples/ai_agent/tui.gene"
+      " examples/ai_agent/src/tui.gene"
     let paneRan = execCmdOnce(paneCommand)
     if paneRan.exitCode != 0: checkpoint paneRan.output
     check paneRan.exitCode == 0
@@ -301,7 +301,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
       "/1 printf \"shell-line-one\\\\nshell-line-two\\\\n\"\\n" &
       "/close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "shell pane 1" in ran.output
@@ -313,7 +313,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 
   test "ai agent comprehensive help is global and presentation-only":
     buildGeneCli()
-    let fixture = "examples/ai_agent/help_surface_test.gene"
+    let fixture = "examples/ai_agent/src/help_surface_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -349,7 +349,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (open_output_pane "notes")
 (open_log_tail_pane "")
 (open_stats_pane)
-(open_file_view_pane "examples/ai_agent/design.md")
+(open_file_view_pane "examples/ai_agent/docs/design.md")
 (var before_text (transcript ~ get))
 (var before_items (items ~ get))
 (var before_events ((events ~ get) ~ size))
@@ -382,7 +382,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     let command =
       "printf '/help all\n/help /worker\n/help search durable\n/pan\n/quit\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
@@ -409,7 +409,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
       "/unknown-command\\n/close 1\\n/pane close 0\\n/? pane\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
       "GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) & " " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
@@ -445,7 +445,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
       "/max 2\\n/max\\n/max 0\\n/max abc\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_STATE " &
       "-u GENE_AGENT_HOME CODEX_ACCESS_TOKEN=dummy " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
@@ -471,7 +471,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
       "/memory\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_STATE " &
       "-u GENE_AGENT_HOME CODEX_ACCESS_TOKEN=dummy " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
@@ -487,7 +487,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 
   test "ai agent output follow rejects cycles and process restart mints identity":
     buildGeneCli()
-    let fixture = "examples/ai_agent/output_follow_test.gene"
+    let fixture = "examples/ai_agent/src/output_follow_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -521,7 +521,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
       "/worker list\n/trace type=worker_started worker=w2 --detail\n/quit\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
       "GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) & " " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let restarted = execCmdOnce(command)
     if restarted.exitCode != 0: checkpoint restarted.output
     check restarted.exitCode == 0
@@ -533,7 +533,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 
   test "ai agent worker operations are typed attributed delegated and stateful":
     buildGeneCli()
-    let fixture = "examples/ai_agent/worker_operations_test.gene"
+    let fixture = "examples/ai_agent/src/worker_operations_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -646,7 +646,7 @@ catch {^message message} (set duplicate message))
   test "interactive terminal control stays on its one local surface":
     when defined(posix):
       buildGeneCli()
-      let fixture = "examples/ai_agent/terminal_authority_test.gene"
+      let fixture = "examples/ai_agent/src/terminal_authority_test.gene"
       defer:
         if fileExists(fixture): removeFile(fixture)
       writeFile(fixture, """
@@ -728,7 +728,7 @@ catch {^message message} (set duplicate message))
   #       "-u ENV SHELL=/bin/sh " &
   #       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE= GENE_AGENT_RESUME=0 " &
   #       "TERM=xterm-256color " & shellQuote(geneExe) &
-  #       " run examples/ai_agent/tui.gene"
+  #       " run examples/ai_agent/src/tui.gene"
   #     let expectScript =
   #       "set timeout 20\n" &
   #       "log_file -noappend " & outputFile & "\n" &
@@ -813,7 +813,7 @@ catch {^message message} (set duplicate message))
       "/1 sleep 0.2; if [ ! -e " & marker & " ]; then echo lease-preserved; fi\\n" &
       "/1 close\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
@@ -826,7 +826,7 @@ catch {^message message} (set duplicate message))
     let command =
       "printf '/pane new shell\\necho routed-to-shell\\n/workers\\n/1 close\\n/workers\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
@@ -837,7 +837,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent worker input addresses shell and rejects remote REPL eval":
     buildGeneCli()
-    let fixture = "examples/ai_agent/headless_process_input_test.gene"
+    let fixture = "examples/ai_agent/src/headless_process_input_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -891,7 +891,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent model supervision tools use the application registries":
     buildGeneCli()
-    let fixture = "examples/ai_agent/application_tools_test.gene"
+    let fixture = "examples/ai_agent/src/application_tools_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -969,22 +969,22 @@ catch {^message message} (set duplicate message))
   test "ai agent opens stats event-tail and shared file-view workers":
     buildGeneCli()
     let command =
-      "printf '/stats\\n/1 max\\n/tail worker_started\\n/pane new view examples/ai_agent/design.md\\n/pane new view /etc/passwd\\n/workers\\n/quit\\n' | " &
+      "printf '/stats\\n/1 max\\n/tail worker_started\\n/pane new view examples/ai_agent/docs/design.md\\n/pane new view /etc/passwd\\n/workers\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
     check "maximized pane 1" in ran.output
     check "w1 stats idle pane=1 stats" in ran.output
     check "w2 log_tail idle pane=2 event tail" in ran.output
-    check "w3 file_view idle pane=3 view examples/ai_agent/design.md" in ran.output
+    check "w3 file_view idle pane=3 view examples/ai_agent/docs/design.md" in ran.output
     check "cannot open /etc/passwd" in ran.output
     check "w4 file_view" notin ran.output
 
   test "ai agent persists and delivers bounded supervisor results":
     buildGeneCli()
-    let fixture = "examples/ai_agent/supervisor_inbox_test.gene"
+    let fixture = "examples/ai_agent/src/supervisor_inbox_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1031,7 +1031,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent terminal results are structured linked unread and explicit":
     buildGeneCli()
-    let fixture = "examples/ai_agent/structured_agent_result_test.gene"
+    let fixture = "examples/ai_agent/src/structured_agent_result_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1134,7 +1134,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent restore isolates malformed records across every saved section":
     buildGeneCli()
-    let fixture = "examples/ai_agent/restore_isolation_test.gene"
+    let fixture = "examples/ai_agent/src/restore_isolation_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1162,7 +1162,7 @@ catch {^message message} (set duplicate message))
 (open_output_pane "notes")
 (open_log_tail_pane "worker_started")
 (open_stats_pane)
-(open_file_view_pane "examples/ai_agent/design.md")
+(open_file_view_pane "examples/ai_agent/docs/design.md")
 (var saved (application_snapshot first))
 (var saved_surface (surface_snapshot first))
 (saved/main_worker ~ put! "result" {^outcome 7})
@@ -1219,7 +1219,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent shell remains usable while a sub-agent operation runs":
     buildGeneCli()
-    let fixture = "examples/ai_agent/concurrent_shell_agent_test.gene"
+    let fixture = "examples/ai_agent/src/concurrent_shell_agent_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1253,7 +1253,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent maximized log tail follows checks and restores":
     buildGeneCli()
-    let fixture = "examples/ai_agent/maximized_log_tail_test.gene"
+    let fixture = "examples/ai_agent/src/maximized_log_tail_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1286,7 +1286,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent keeps independent focused-pane scroll state":
     buildGeneCli()
-    let fixture = "examples/ai_agent/pane_scroll_test.gene"
+    let fixture = "examples/ai_agent/src/pane_scroll_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1320,7 +1320,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent shares one cancellable workspace lease across sessions":
     buildGeneCli()
-    let fixture = "examples/ai_agent/workspace_coordinator_test.gene"
+    let fixture = "examples/ai_agent/src/workspace_coordinator_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1358,7 +1358,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent confirms destructive work before taking the workspace lease":
     buildGeneCli()
-    let fixture = "examples/ai_agent/workspace_confirmation_test.gene"
+    let fixture = "examples/ai_agent/src/workspace_confirmation_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1411,7 +1411,7 @@ catch {^message message} (set duplicate message))
     buildGeneCli()
     let marker = "tmp/model-detached-writer-must-not-run"
     removeFile(marker)
-    let fixture = "examples/ai_agent/foreground_contract_test.gene"
+    let fixture = "examples/ai_agent/src/foreground_contract_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
       removeFile(marker)
@@ -1454,7 +1454,7 @@ catch {^message message} (set duplicate message))
     buildGeneCli()
     let marker = "tmp/preflight-cancel-must-not-run"
     removeFile(marker)
-    let fixture = "examples/ai_agent/preflight_cancel_test.gene"
+    let fixture = "examples/ai_agent/src/preflight_cancel_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
       removeFile(marker)
@@ -1492,7 +1492,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent coalesces legacy approval with destructive confirmation":
     buildGeneCli()
-    let fixture = "examples/ai_agent/single_confirmation_test.gene"
+    let fixture = "examples/ai_agent/src/single_confirmation_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1519,7 +1519,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent Escape restores max then preserves a composed routed draft":
     buildGeneCli()
-    let fixture = "examples/ai_agent/escape_priority_test.gene"
+    let fixture = "examples/ai_agent/src/escape_priority_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1549,7 +1549,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent pane cycling retargets the live editor without losing drafts":
     buildGeneCli()
-    let fixture = "examples/ai_agent/editor_route_cycle_test.gene"
+    let fixture = "examples/ai_agent/src/editor_route_cycle_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1610,7 +1610,7 @@ catch {^message message} (set duplicate message))
         "stty rows 18 cols 80; exec /usr/bin/env " &
         "-u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
         "CODEX_ACCESS_TOKEN=dummy TERM=xterm-256color " &
-        shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+        shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
       let expectScript =
         "set timeout 15\n" &
         "log_file -noappend " & outputFile & "\n" &
@@ -1703,7 +1703,7 @@ catch {^message message} (set duplicate message))
         "stty rows 18 cols 100; exec /usr/bin/env " &
         "-u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
         "CODEX_ACCESS_TOKEN=dummy TERM=xterm-256color " &
-        shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+        shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
       let expectScript =
         "set timeout 15\n" &
         "log_file -noappend " & outputFile & "\n" &
@@ -1741,7 +1741,7 @@ catch {^message message} (set duplicate message))
   test "ai agent coalesces rapid child events without losing routed input":
     when defined(macosx):
       buildGeneCli()
-      let fixture = "examples/ai_agent/repaint_stress_test.gene"
+      let fixture = "examples/ai_agent/src/repaint_stress_test.gene"
       let outputFile = cliDir / "agent_repaint_stress_pty.out"
       defer:
         if fileExists(fixture): removeFile(fixture)
@@ -1811,7 +1811,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent worker output drops oldest bytes with explicit loss metadata":
     buildGeneCli()
-    let fixture = "examples/ai_agent/worker_output_bound_test.gene"
+    let fixture = "examples/ai_agent/src/worker_output_bound_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1846,7 +1846,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent main transcript reports exact bounded loss metadata":
     buildGeneCli()
-    let fixture = "examples/ai_agent/transcript_overflow_test.gene"
+    let fixture = "examples/ai_agent/src/transcript_overflow_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1881,7 +1881,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent projection workers do not amplify the event journal":
     buildGeneCli()
-    let fixture = "examples/ai_agent/projection_amplification_test.gene"
+    let fixture = "examples/ai_agent/src/projection_amplification_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1928,7 +1928,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent shared worker snapshots exclude local surface state":
     buildGeneCli()
-    let fixture = "examples/ai_agent/surface_independent_snapshot_test.gene"
+    let fixture = "examples/ai_agent/src/surface_independent_snapshot_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -1988,7 +1988,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent live worker and agent bounds are configurable":
     buildGeneCli()
-    let fixture = "examples/ai_agent/live_worker_bound_test.gene"
+    let fixture = "examples/ai_agent/src/live_worker_bound_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -2013,7 +2013,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent restarts stopped process workers with a successor id":
     buildGeneCli()
-    let fixture = "examples/ai_agent/worker_restart_test.gene"
+    let fixture = "examples/ai_agent/src/worker_restart_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -2044,7 +2044,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent bounds retained stopped worker snapshots":
     buildGeneCli()
-    let fixture = "examples/ai_agent/stopped_worker_bound_test.gene"
+    let fixture = "examples/ai_agent/src/stopped_worker_bound_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -2079,7 +2079,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent summarizes oversized event records atomically":
     buildGeneCli()
-    let fixture = "examples/ai_agent/oversized_event_test.gene"
+    let fixture = "examples/ai_agent/src/oversized_event_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -2110,7 +2110,7 @@ catch {^message message} (set duplicate message))
     writeFile(editor,
       "#!/bin/sh\nsleep 0.2\nprintf 'composed\\nsecond line' > \"$1\"\n")
     setFilePermissions(editor, {fpUserRead, fpUserWrite, fpUserExec})
-    let fixture = "examples/ai_agent/external_editor_test.gene"
+    let fixture = "examples/ai_agent/src/external_editor_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
       if fileExists(editor): removeFile(editor)
@@ -2159,7 +2159,7 @@ catch {^message message} (set duplicate message))
         "TERM=xterm-256color GENE_GATEWAY_TOKEN=editor-gateway " &
         "EDITOR=" & shellQuote(editor) & " " &
         shellQuote(geneExe) &
-        " run examples/ai_agent/tui.gene -- --gateway=8996"
+        " run examples/ai_agent/src/tui.gene -- --gateway=8996"
       let expectScript =
         "set timeout 15\n" &
         "log_file -noappend " & outputFile & "\n" &
@@ -2229,7 +2229,7 @@ catch {^message message} (set duplicate message))
     buildGeneCli()
     let command = "printf '   \\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "agent>" notin ran.output
@@ -2238,7 +2238,7 @@ catch {^message message} (set duplicate message))
     buildGeneCli()
     let command = "printf '/exit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
 
@@ -2284,7 +2284,7 @@ catch {^message message} (set duplicate message))
                   "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
                   "OPENAI_BASE_URL=http://127.0.0.1:8958/v1 " &
                   "OPENAI_MODEL=fake-chat " & shellQuote(geneExe) &
-                  " run examples/ai_agent/tui.gene"
+                  " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
@@ -2368,7 +2368,7 @@ catch {^message message} (set duplicate message))
                   "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
                   "OPENAI_BASE_URL=http://127.0.0.1:8957/v1 " &
                   "OPENAI_MODEL=fake-chat " & shellQuote(geneExe) &
-                  " run examples/ai_agent/tui.gene"
+                  " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
@@ -2381,7 +2381,7 @@ catch {^message message} (set duplicate message))
     buildGeneCli()
     let command = "printf '/repl\\n/1 session/config/model\\n/1 (var x 41)\\n/1 (+ x 1)\\n/1 close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "REPL pane 1" in ran.output
@@ -2395,7 +2395,7 @@ catch {^message message} (set duplicate message))
     buildGeneCli()
     let command = "printf '/repl\\n/1 session/main_agent/id\\n/1 close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "\"main\"" in ran.output
@@ -2414,7 +2414,7 @@ catch {^message message} (set duplicate message))
                   "\\n/export " & mainOut & "\\n/1 export " & replOut &
                   "\\n/1 export /etc/evil.txt\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "exported pane 1 repl" in ran.output
@@ -2438,7 +2438,7 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "-u OPENAI_REASONING_EFFORT " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) &
-      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+      " " & shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene")
     check first.exitCode == 0
     check "remembered: project uses Gene" in first.output
     check "state: " & stateDir in first.output
@@ -2458,7 +2458,7 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "-u OPENAI_REASONING_EFFORT " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) &
-      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+      " " & shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene")
     check second.exitCode == 0
     check "memory:\nproject uses Gene" in second.output
     check "state: " & stateDir in second.output
@@ -2478,13 +2478,13 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "OPENAI_REASONING_EFFORT=low CODEX_ACCESS_TOKEN=dummy " &
       "GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) & " " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene")
     check overridden.exitCode == 0
     check "current effort: low" in overridden.output
 
   test "ai agent serializes reasoning effort for both OpenAI wire shapes":
     buildGeneCli()
-    let fixture = "examples/ai_agent/reasoning_effort_request_test.gene"
+    let fixture = "examples/ai_agent/src/reasoning_effort_request_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -2533,7 +2533,7 @@ catch {^message message} (set duplicate message))
       "/model 1\\n/model 1 child-two\\n/model 1\\n/agents\\n/status\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_STATE " &
       "-u GENE_AGENT_HOME CODEX_ACCESS_TOKEN=dummy " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     if ran.exitCode != 0: checkpoint ran.output
     check ran.exitCode == 0
@@ -2546,7 +2546,7 @@ catch {^message message} (set duplicate message))
 
   test "ai agent persists and sends each agent model":
     buildGeneCli()
-    let fixture = "examples/ai_agent/per_agent_model_test.gene"
+    let fixture = "examples/ai_agent/src/per_agent_model_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -2604,7 +2604,7 @@ catch {^message message} (set duplicate message))
     let agentArgs = ["-u", "OPENAI_AUTH_TOKEN", "-u", "OPENAI_API_KEY",
                      "-u", "GENE_AGENT_HOME", "CODEX_ACCESS_TOKEN=dummy",
                      "GENE_AGENT_STATE=fs:" & stateDir, geneExe, "run",
-                     "examples/ai_agent/tui.gene"]
+                     "examples/ai_agent/src/tui.gene"]
     let agentProc = startProcess("/usr/bin/env", args = agentArgs,
                                  options = {poUsePath, poStdErrToStdOut})
     defer:
@@ -2646,7 +2646,7 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY -u GENE_AGENT_HOME " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" &
       shellQuote("fs:" & stateDir) & " " & shellQuote(geneExe) &
-      " run examples/ai_agent/tui.gene")
+      " run examples/ai_agent/src/tui.gene")
     if restored.exitCode != 0:
       checkpoint restored.output
     check restored.exitCode == 0
@@ -2657,7 +2657,7 @@ catch {^message message} (set duplicate message))
     let stateDir = cliDir / "ai-agent-tool-checkpoint"
     if dirExists(stateDir):
       removeDir(stateDir)
-    let fixture = "examples/ai_agent/agent_tool_checkpoint_test.gene"
+    let fixture = "examples/ai_agent/src/agent_tool_checkpoint_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -2697,7 +2697,7 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "-u GENE_AGENT_RESUME GENE_AGENT_STATE= " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_HOME=" & shellQuote(homeDir) &
-      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+      " " & shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene")
     if first.exitCode != 0:
       checkpoint first.output
     check first.exitCode == 0
@@ -2712,7 +2712,7 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "-u GENE_AGENT_STATE -u GENE_AGENT_RESUME " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_HOME=" & shellQuote(homeDir) &
-      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+      " " & shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene")
     if restored.exitCode != 0:
       checkpoint restored.output
     check restored.exitCode == 0
@@ -2724,7 +2724,7 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "-u GENE_AGENT_STATE -u GENE_AGENT_RESUME " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_HOME=" & shellQuote(otherHome) &
-      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+      " " & shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene")
     if isolated.exitCode != 0:
       checkpoint isolated.output
     check isolated.exitCode == 0
@@ -2743,7 +2743,7 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "-u GENE_AGENT_HOME -u GENE_AGENT_RESUME " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateSpec) &
-      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+      " " & shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene")
     if first.exitCode != 0:
       checkpoint first.output
     check first.exitCode == 0
@@ -2755,7 +2755,7 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "-u GENE_AGENT_HOME -u GENE_AGENT_RESUME " &
       "CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateSpec) &
-      " " & shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+      " " & shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene")
     if restored.exitCode != 0:
       checkpoint restored.output
     check restored.exitCode == 0
@@ -2773,7 +2773,7 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "CODEX_ACCESS_TOKEN=pin-secret GENE_AGENT_STATE=" &
       shellQuote("fs:" & stateDir) & " " & shellQuote(geneExe) &
-      " run examples/ai_agent/tui.gene")
+      " run examples/ai_agent/src/tui.gene")
     if first.exitCode != 0: checkpoint first.output
     check first.exitCode == 0
     check "pinned artifact:1 sha256:" in first.output
@@ -2797,7 +2797,7 @@ catch {^message message} (set duplicate message))
       "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
       "CODEX_ACCESS_TOKEN=pin-secret GENE_AGENT_STATE=" &
       shellQuote("fs:" & stateDir) & " " & shellQuote(geneExe) &
-      " run examples/ai_agent/tui.gene")
+      " run examples/ai_agent/src/tui.gene")
     if restored.exitCode != 0: checkpoint restored.output
     check restored.exitCode == 0
     check "auth-***REDACTED***" in restored.output
@@ -2810,7 +2810,7 @@ catch {^message message} (set duplicate message))
     let stateDir = cliDir / "ai-agent-handler-refs"
     if dirExists(stateDir):
       removeDir(stateDir)
-    let fixture = "examples/ai_agent/handler_ref_restore_test.gene"
+    let fixture = "examples/ai_agent/src/handler_ref_restore_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -2883,7 +2883,7 @@ catch {^message message} (set duplicate message))
     let stateDir = cliDir / "ai-agent-workspace-owner"
     if dirExists(stateDir):
       removeDir(stateDir)
-    let fixture = "examples/ai_agent/workspace_owner_test.gene"
+    let fixture = "examples/ai_agent/src/workspace_owner_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -3015,7 +3015,7 @@ catch {^message message} (set duplicate message))
                         "OPENAI_BASE_URL=http://127.0.0.1:8987/v1 " &
                         "OPENAI_MODEL=fake-chat " &
                         shellQuote(geneExe) &
-                        " run examples/ai_agent/tui.gene 'what is here?'")
+                        " run examples/ai_agent/src/tui.gene 'what is here?'")
     check ran.exitCode == 0
     check "tool list_dir" in ran.output
     check "verdict: roundtrip-ok" in ran.output
@@ -3061,7 +3061,7 @@ catch {^message message} (set duplicate message))
                         "OPENAI_BASE_URL=http://127.0.0.1:8996 " &
                         "OPENAI_MODEL=fake-responses " &
                         shellQuote(geneExe) &
-                        " run examples/ai_agent/tui.gene")
+                        " run examples/ai_agent/src/tui.gene")
     check ran.exitCode == 0
     check "OpenAI API error 401: Unauthorized" in ran.output
     check ran.output.count("\"type\":\"agent_finished\"") == 2
@@ -3122,12 +3122,12 @@ catch {^message message} (set duplicate message))
           (when 1 (tool-turn "list_dir" {^path "."} "call-list"))
           (when 2
             (tool-turn "grep"
-              {^pattern "fn" ^path "examples/ai_agent/tui.gene"
+              {^pattern "fn" ^path "examples/ai_agent/src/tui.gene"
                ^max_results 2}
               "call-grep"))
           (when 3
             (tool-turn "read_file"
-              {^path "examples/ai_agent/design.md"
+              {^path "examples/ai_agent/docs/design.md"
                ^start_line 1 ^max_lines 2}
               "call-read"))
           (else (answer "research succeeded"))))))
@@ -3161,7 +3161,7 @@ catch {^message message} (set duplicate message))
       "OPENAI_BASE_URL=http://127.0.0.1:8970/v1 " &
       "OPENAI_MODEL=fake-research GENE_AGENT_STATE=" &
       shellQuote("fs:" & stateDir) & " " & shellQuote(geneExe) &
-      " run examples/ai_agent/tui.gene")
+      " run examples/ai_agent/src/tui.gene")
     if first.exitCode != 0: checkpoint first.output
     check first.exitCode == 0
     check "extension 1 completed: research succeeded" in first.output
@@ -3189,7 +3189,7 @@ catch {^message message} (set duplicate message))
       "OPENAI_BASE_URL=http://127.0.0.1:8970/v1 " &
       "OPENAI_MODEL=fake-research GENE_AGENT_STATE=" &
       shellQuote("fs:" & stateDir) & " " & shellQuote(geneExe) &
-      " run examples/ai_agent/tui.gene")
+      " run examples/ai_agent/src/tui.gene")
     if restored.exitCode != 0: checkpoint restored.output
     check restored.exitCode == 0
     check "research succeeded" in restored.output
@@ -3276,7 +3276,7 @@ catch {^message message} (set duplicate message))
                         "OPENAI_BASE_URL=http://127.0.0.1:8991/v1 " &
                         "OPENAI_MODEL=fake-chat " &
                         shellQuote(geneExe) &
-                        " run examples/ai_agent/tui.gene 'print the token'")
+                        " run examples/ai_agent/src/tui.gene 'print the token'")
     check ran.exitCode == 0
     check "verdict: redacted-ok" in ran.output
     check "LEAKED" notin ran.output
@@ -3357,14 +3357,14 @@ catch {^message message} (set duplicate message))
                         "OPENAI_BASE_URL=http://127.0.0.1:8993/v1 " &
                         "OPENAI_MODEL=fake-chat " &
                         shellQuote(geneExe) &
-                        " run examples/ai_agent/tui.gene 'read something'")
+                        " run examples/ai_agent/src/tui.gene 'read something'")
     check ran.exitCode == 0
     check "verdict: schema-ok" in ran.output
 
   test "ai agent path guard rejects traversal segments not safe dotdot names":
     buildGeneCli()
     let target = "tmp/agent-v1..v2.txt"
-    let fixture = "examples/ai_agent/path_segment_guard_test.gene"
+    let fixture = "examples/ai_agent/src/path_segment_guard_test.gene"
     defer:
       if fileExists(target): removeFile(target)
       if fileExists(fixture): removeFile(fixture)
@@ -3395,7 +3395,7 @@ catch {^message message}
     buildGeneCli()
     let command = "printf '/pane new shell\\n/1 rm -rf /nonexistent-gene-guard-root\\n/1 echo ran-normal\\n/1 close\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "denied by catastrophe guard" in ran.output
@@ -3414,7 +3414,7 @@ catch {^message message}
       "/1 (classify_command \"npm test\")\\n" &
       "/1 close\\n/quit\\n' | " &
       "env -u OPENAI_AUTH_TOKEN CODEX_ACCESS_TOKEN=dummy " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check ran.output.count("\"catastrophic\"") == 3
@@ -3488,7 +3488,7 @@ catch {^message message}
                   "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
                   "OPENAI_AUTH_TOKEN=dummy " &
                   "OPENAI_BASE_URL=http://127.0.0.1:8971/v1 OPENAI_MODEL=fake-chat " &
-                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     # #5: no crash — the turn completed with the model's final answer.
@@ -3582,7 +3582,7 @@ catch {^message message}
       "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
       "OPENAI_AUTH_TOKEN=dummy " &
       "OPENAI_BASE_URL=http://127.0.0.1:8969/v1 OPENAI_MODEL=fake-chat " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(script)
     check ran.exitCode == 0
     check "verdict: shape-error-ok" in ran.output
@@ -3672,7 +3672,7 @@ catch {^message message}
                         "OPENAI_BASE_URL=http://127.0.0.1:8994/v1 " &
                         "OPENAI_MODEL=fake-chat " &
                         shellQuote(geneExe) &
-                        " run examples/ai_agent/tui.gene 'clean up the disk'")
+                        " run examples/ai_agent/src/tui.gene 'clean up the disk'")
     check ran.exitCode == 0
     check "verdict: guard-blocked" in ran.output
 
@@ -3684,7 +3684,7 @@ catch {^message message}
     let command = "printf '/trace type=tool_registered\\n/status\\n/quit\\n' | " &
                   "env -u OPENAI_AUTH_TOKEN -u OPENAI_API_KEY " &
                   "CODEX_ACCESS_TOKEN=dummy " &
-                  shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+                  shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "tool_registered read_file (read)" in ran.output
@@ -3754,7 +3754,7 @@ catch {^message message}
             raise
           sleep(50)
 
-    let tui = normalizedPath(absolutePath("examples/ai_agent/tui.gene"))
+    let tui = normalizedPath(absolutePath("examples/ai_agent/src/tui.gene"))
     let input = "go\n/diff\n/pane new shell\n/1 printf external > dirty.txt\n/1 close\n" &
                 "/undo 1\n/undo 3\n/undo 2\n/diff\n" &
                 "/trace type=file_change\n/quit\n"
@@ -3833,7 +3833,7 @@ catch {^message message}
       "OPENAI_AUTH_TOKEN=dummy OPENAI_API=chat " &
       "GENE_AGENT_STATE=" & shellQuote(stateDir) & " " &
       "OPENAI_BASE_URL=http://127.0.0.1:8965/v1 OPENAI_MODEL=fake-chat " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(command)
     check ran.exitCode == 0
     check "REPL pane 1: []" in ran.output
@@ -3850,7 +3850,7 @@ catch {^message message}
       "printf '/trace type=check\n/quit\n' | " &
       "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
       "OPENAI_AUTH_TOKEN=dummy GENE_AGENT_STATE=" & shellQuote(stateDir) & " " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene")
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene")
     check restored.exitCode == 0
     check restored.output.count("check command status=") == 3
 
@@ -3859,8 +3859,8 @@ catch {^message message}
     let stateDir = cliDir / "agent-context-state"
     if dirExists(stateDir): removeDir(stateDir)
     let tui = "./core.gene"
-    let writer = "examples/ai_agent/context_compact_writer_test.gene"
-    let reader = "examples/ai_agent/context_compact_reader_test.gene"
+    let writer = "examples/ai_agent/src/context_compact_writer_test.gene"
+    let reader = "examples/ai_agent/src/context_compact_reader_test.gene"
     defer:
       for path in [writer, reader]:
         if fileExists(path): removeFile(path)
@@ -3931,7 +3931,7 @@ catch {^message message}
       "GENE_AGENT_STATE=" & shellQuote(stateDir) & " " &
       "GENE_AGENT_CONTEXT_MAX_BYTES=1234 GENE_AGENT_CONTEXT_MAX_ITEMS=12 " &
       "GENE_AGENT_CONTEXT_KEEP_TURNS=2 " & shellQuote(geneExe) &
-      " run examples/ai_agent/tui.gene")
+      " run examples/ai_agent/src/tui.gene")
     check status.exitCode == 0
     check "context:" in status.output
     check "tool rounds: max 12" in status.output
@@ -3945,7 +3945,7 @@ catch {^message message}
 
   test "ai agent keeps compaction markers off both model wire shapes":
     buildGeneCli()
-    let fixture = "examples/ai_agent/wire_marker_test.gene"
+    let fixture = "examples/ai_agent/src/wire_marker_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -3994,7 +3994,7 @@ catch {^message message}
 
   test "ai agent improvement tools return structural, bounded guidance":
     buildGeneCli()
-    let fixture = "examples/ai_agent/improvements_test.gene"
+    let fixture = "examples/ai_agent/src/improvements_test.gene"
     let target = "tmp/agent-improvements-target.gene"
     let largeTarget = "tmp/agent-improvements-large.txt"
     defer:
@@ -4270,7 +4270,7 @@ catch {^message message}
           s.close()
           if getMonoTime() > deadline: raise
           sleep(50)
-    let tui = normalizedPath(absolutePath("examples/ai_agent/tui.gene"))
+    let tui = normalizedPath(absolutePath("examples/ai_agent/src/tui.gene"))
     let command = "cd " & shellQuote(workspace) &
       " && printf 'go\n/status\n/repl\n/1 (session/instructions ~ get)\n" &
       "/1 close\n/quit\n' | env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY " &
@@ -4379,7 +4379,7 @@ catch {^message message}
       "env -u CODEX_ACCESS_TOKEN -u OPENAI_API_KEY -u OPENAI_API " &
       "OPENAI_AUTH_TOKEN=dummy " &
       "OPENAI_BASE_URL=http://127.0.0.1:8992/v1 OPENAI_MODEL=fake-chat " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene"
     let ran = execCmdOnce(script)
     check ran.exitCode == 0
     check "verdict: ping-visible" in ran.output
@@ -4428,7 +4428,7 @@ catch {^message message}
                        "OPENAI_BASE_URL=http://127.0.0.1:8968/v1",
                        "OPENAI_API=chat", "OPENAI_MODEL=fake-chat",
                        "GENE_AGENT_STATE=" & stateDir,
-                       geneExe, "run", "examples/ai_agent/tui.gene"]
+                       geneExe, "run", "examples/ai_agent/src/tui.gene"]
       let pidFile = cliDir / "interrupt_agent.pid"
       let outputFile = cliDir / "interrupt_agent.out"
       removeFile(pidFile)
@@ -4513,7 +4513,7 @@ catch {^message message}
                   "TERM=xterm-256color OPENAI_AUTH_TOKEN=dummy " &
                   "GENE_AGENT_STATE=" & shellQuote("fs:" & stateDir) & " " &
                   shellQuote(geneExe) &
-                  " run examples/ai_agent/tui.gene"
+                  " run examples/ai_agent/src/tui.gene"
       let expectScript =
         "set timeout 20\n" &
         "log_file -noappend " & outputFile & "\n" &
@@ -4752,7 +4752,7 @@ catch {^message message}
                   "EDITOR=" & shellQuote(editor) &
                   " CODEX_ACCESS_TOKEN=dummy GENE_AGENT_STATE= " &
                   shellQuote(geneExe) &
-                  " run examples/ai_agent/tui.gene"
+                  " run examples/ai_agent/src/tui.gene"
       let command = "/usr/bin/script -q /dev/null /bin/sh -c " &
                     shellQuote(inner) & " > " & shellQuote(outputFile) &
                     " 2>&1"
@@ -4801,7 +4801,7 @@ catch {^message message}
   test "ai agent typed tools and shell completion use one closed schema and lexer":
     buildGeneCli()
     let candidate = "tmp/agent-c6-completion space.txt"
-    let fixture = "examples/ai_agent/c6_completion_contract_test.gene"
+    let fixture = "examples/ai_agent/src/c6_completion_contract_test.gene"
     defer:
       if fileExists(candidate): removeFile(candidate)
       if fileExists(fixture): removeFile(fixture)
@@ -5339,7 +5339,7 @@ catch {^message message}
       check "\e[?1049l" in output
 
   test "agent gateway runs concurrent sessions over the async transport":
-    ## Milestone 8 e2e (examples/ai_agent/design.md §12): a slow fake chat endpoint
+    ## Milestone 8 e2e (examples/ai_agent/docs/design.md §12): a slow fake chat endpoint
     ## (900ms per response) serves two gateway sessions. Both turns must
     ## complete in well under 2x the endpoint latency — proof that model
     ## calls ride dedicated threads and sessions do not block each other.
@@ -5386,7 +5386,7 @@ catch {^message message}
               "OPENAI_MODEL=fake-chat",
               "GENE_GATEWAY_PORT=8989",
               "GENE_GATEWAY_TOKEN=gw-secret",
-              geneExe, "run", "examples/ai_agent/gateway.gene"],
+              geneExe, "run", "examples/ai_agent/src/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if gatewayProc.running:
@@ -5507,7 +5507,7 @@ catch {^message message}
               "-u", "OPENAI_API_KEY", "GENE_GATEWAY_PORT=8993",
               "GENE_GATEWAY_TOKEN=gw-workers",
               "GENE_GATEWAY_EVENT_MAX_COUNT=5",
-              geneExe, "run", "examples/ai_agent/gateway.gene"],
+              geneExe, "run", "examples/ai_agent/src/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if gatewayProc.running: gatewayProc.terminate()
@@ -5578,7 +5578,7 @@ catch {^message message}
     let transportRun = execCmdEx(
       "/usr/bin/env GENE_AGENT_CONNECT=http://127.0.0.1:8993 " &
       "GENE_GATEWAY_TOKEN=gw-workers GENE_AGENT_SESSION=s1 " &
-      shellQuote(geneExe) & " run examples/ai_agent/remote_client_smoke.gene")
+      shellQuote(geneExe) & " run examples/ai_agent/src/remote_client_smoke.gene")
     if transportRun.exitCode != 0: checkpoint transportRun.output
     check transportRun.exitCode == 0
     check transportRun.output.strip() == "[\"full\" \"s1\" true]"
@@ -5783,7 +5783,7 @@ catch {^message message}
               "-u", "OPENAI_API_KEY", "-u", "TELEGRAM_BOT_TOKEN",
               "GENE_GATEWAY_PORT=8998",
               "GENE_AGENT_STATE=fs:" & stateDir,
-              geneExe, "run", "examples/ai_agent/gateway.gene"],
+              geneExe, "run", "examples/ai_agent/src/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if gatewayProc.running: gatewayProc.terminate()
@@ -5872,7 +5872,7 @@ catch {^message message}
     # In-process-only operations answer the typed local_only error remotely
     # (repl eval is bound to the local surface; the policy is enforced by the
     # core, so exercise it directly with a remote-shaped invocation).
-    let fixture = "examples/ai_agent/remote_local_only_test.gene"
+    let fixture = "examples/ai_agent/src/remote_local_only_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -5918,7 +5918,7 @@ catch {^message message}
       args = ["-u", "OPENAI_AUTH_TOKEN", "-u", "CODEX_ACCESS_TOKEN",
               "-u", "OPENAI_API_KEY", "-u", "TELEGRAM_BOT_TOKEN",
               "GENE_GATEWAY_PORT=9001",
-              geneExe, "run", "examples/ai_agent/gateway.gene"],
+              geneExe, "run", "examples/ai_agent/src/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if gatewayProc.running: gatewayProc.terminate()
@@ -5992,7 +5992,7 @@ console.log(JSON.stringify({
     if jsRun.exitCode != 0: checkpoint jsRun.output
     check jsRun.exitCode == 0
 
-    let fixture = "examples/ai_agent/surface_conformance_test.gene"
+    let fixture = "examples/ai_agent/src/surface_conformance_test.gene"
     defer:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
@@ -6087,7 +6087,7 @@ console.log(JSON.stringify({
       args = ["-u", "OPENAI_AUTH_TOKEN", "-u", "CODEX_ACCESS_TOKEN",
               "-u", "OPENAI_API_KEY", "-u", "TELEGRAM_BOT_TOKEN",
               "GENE_GATEWAY_PORT=8999",
-              geneExe, "run", "examples/ai_agent/gateway.gene"],
+              geneExe, "run", "examples/ai_agent/src/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if gatewayProc.running: gatewayProc.terminate()
@@ -6253,7 +6253,7 @@ console.log(JSON.stringify({
               "-u", "OPENAI_API", "OPENAI_AUTH_TOKEN=dummy",
               "OPENAI_BASE_URL=http://127.0.0.1:8972/v1",
               "OPENAI_MODEL=fake-chat", "GENE_GATEWAY_PORT=8973",
-              geneExe, "run", "examples/ai_agent/gateway.gene"],
+              geneExe, "run", "examples/ai_agent/src/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if gatewayProc.running:
@@ -6355,7 +6355,7 @@ console.log(JSON.stringify({
               "-u", "OPENAI_API", "OPENAI_AUTH_TOKEN=dummy",
               "OPENAI_BASE_URL=http://127.0.0.1:8974/v1",
               "OPENAI_MODEL=fake-chat", "GENE_GATEWAY_PORT=8975",
-              geneExe, "run", "examples/ai_agent/gateway.gene"],
+              geneExe, "run", "examples/ai_agent/src/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if gatewayProc.running: gatewayProc.terminate()
@@ -6468,7 +6468,7 @@ console.log(JSON.stringify({
                 "-u", "TELEGRAM_BOT_TOKEN",
                 "GENE_GATEWAY_PORT=8997",
                 "GENE_GATEWAY_DB=" & dbPath,
-                geneExe, "run", "examples/ai_agent/gateway.gene"],
+                geneExe, "run", "examples/ai_agent/src/gateway.gene"],
         options = {poUsePath, poStdErrToStdOut})
 
     proc waitPort() =
@@ -6881,7 +6881,7 @@ console.log(JSON.stringify({
               "OPENAI_BASE_URL=http://127.0.0.1:9002/v1",
               "OPENAI_MODEL=fake-chat", "GENE_GATEWAY_PORT=9102",
               "GENE_AGENT_STATE=fs:" & stateB,
-              geneExe, "run", "examples/ai_agent/gateway.gene"],
+              geneExe, "run", "examples/ai_agent/src/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if shapeBProc.running: shapeBProc.terminate()
@@ -6907,7 +6907,7 @@ console.log(JSON.stringify({
               "OPENAI_BASE_URL=http://127.0.0.1:9002/v1",
               "OPENAI_MODEL=fake-chat", "GENE_GATEWAY_PORT=9103",
               "GENE_AGENT_STATE=fs:" & stateC,
-              geneExe, "run", "examples/ai_agent/gateway.gene"],
+              geneExe, "run", "examples/ai_agent/src/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if shapeCProc.running: shapeCProc.terminate()
@@ -6990,7 +6990,7 @@ console.log(JSON.stringify({
       "-u TELEGRAM_BOT_TOKEN OPENAI_AUTH_TOKEN=dummy " &
       "OPENAI_BASE_URL=http://127.0.0.1:9002/v1 OPENAI_MODEL=fake-chat " &
       "GENE_AGENT_STATE=fs:" & shellQuote(stateA) & " " &
-      shellQuote(geneExe) & " run examples/ai_agent/tui.gene --gateway=9104"
+      shellQuote(geneExe) & " run examples/ai_agent/src/tui.gene --gateway=9104"
     var shapeAProc = startProcess("/bin/sh", args = ["-c", shapeACmd],
                                   options = {poUsePath, poStdErrToStdOut})
     defer:
@@ -7020,7 +7020,7 @@ console.log(JSON.stringify({
     check shapeB.results == shapeC.results
 
   test "agent gateway bridges telegram chats through the bot api":
-    ## Milestone 9 e2e (examples/ai_agent/design.md §12.6) over loopback: a fake Telegram
+    ## Milestone 9 e2e (examples/ai_agent/docs/design.md §12.6) over loopback: a fake Telegram
     ## Bot API serves one canned getUpdates batch — a message from allowed
     ## chat 42 and one from unlisted chat 99 — and records sendMessage /
     ## editMessageText calls. The gateway (offline demo transport) must route
@@ -7125,7 +7125,7 @@ console.log(JSON.stringify({
               "TELEGRAM_BOT_TOKEN=test-token",
               "TELEGRAM_API_BASE=http://127.0.0.1:8994",
               "TELEGRAM_ALLOWED_CHAT_IDS=42",
-              geneExe, "run", "examples/ai_agent/gateway.gene"],
+              geneExe, "run", "examples/ai_agent/src/gateway.gene"],
       options = {poUsePath, poStdErrToStdOut})
     defer:
       if gatewayProc.running:
