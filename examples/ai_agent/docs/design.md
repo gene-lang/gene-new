@@ -183,15 +183,23 @@ the invariant wins and the text is stale:
 2. Every runnable or output-producing entity is a **worker** with exactly one
    session-stable worker id. Agents are a worker subtype; supervision metadata
    never mints a second id or a second lifecycle.
-3. Workers, agents, tools, the guard, and the event log are session state.
-   Panes, layout, focus, maximize, and scroll are per-surface state; a surface
-   never mutates another surface's presentation.
+3. State has three tiers. **Application state** — workers, agents, tools, the
+   guard, memory, and the event journal — belongs to the one being.
+   **Conversation state** — model context, transcript, in-flight request
+   correlation, and event cursor — belongs to one topic thread.
+   **Surface state** — panes, layout, focus, maximize, scroll — belongs to one
+   attached client; a surface never mutates another surface's presentation.
+   Text written before §13 says "session" for application state; the mapping is
+   §13.2.
 4. A pane attaches exactly one worker and owns no producer lifecycle.
 5. `close` detaches a view; `cancel` interrupts the current operation;
    `stop` ends the worker. Nothing else ends a worker during a live session;
    controlled application shutdown and restore normalization are boundaries.
-6. The event stream's `^v` is a per-session cursor, not a schema version.
-   Vocabulary evolves additively; shipped types/props are never renamed.
+6. `^v` is a cursor, not a schema version. Each conversation carries its own
+   cursor over its own stream, and application-scoped events carry the
+   application cursor (§13.6); no conversation's traffic advances or evicts
+   another's. Vocabulary evolves additively; shipped types/props are never
+   renamed.
 7. Under the default guard posture, normal work auto-approves, destructive
    work takes one confirmation, and catastrophic work is denied.
    `GENE_AGENT_GUARD=0` is an explicit escape from that risk classifier, not
@@ -214,11 +222,12 @@ the invariant wins and the text is stale:
    lifecycle (`running`/`stopped`), last outcome, and unread result state are
    separate facts on every surface.
 13. Restore validates records independently. One malformed or obsolete
-   worker or session record is quarantined with an attributable event and can
-   never prevent the main session from loading, and never causes a host
-   operation to be retried. Pane/layout records are client-owned (C9): each
-   client validates and quarantines its own, and session checkpoints never
-   contain remote layout records.
+   worker, conversation, or application record is quarantined with an
+   attributable event and can never prevent the application from loading, and
+   never causes a host operation to be retried. A quarantined conversation
+   never blocks the others. Pane/layout records are client-owned (C9): each
+   client validates and quarantines its own, and checkpoints never contain
+   remote layout records.
 14. A worker's functionality is exposed only as typed, declared operations
    (§7.2). User command, model tool, peer agent/worker, REPL script, and
    remote adapter all invoke the same operation under the same declared
@@ -244,6 +253,24 @@ the invariant wins and the text is stale:
    events or immutable cell snapshots. A terminal worker has at most one local
    controlling surface, and models, peers, gateways, and channels can neither
    create it nor inject terminal bytes.
+18. The application actor turn is admission and state transition only. It never
+   spans a model call, a host operation, or any unbounded wait: those run
+   outside the turn and settle back through it. One conversation's work never
+   blocks another's admission.
+19. Conversations are concurrent but the being has one set of hands. The
+   workspace mutation lease (§0.1) is unchanged and application-wide, so a
+   conversation needing it waits, and that waiting is observable rather than
+   silent.
+20. A confirmation (§0.7) is answerable only from the conversation that raised
+   it. Approval never transfers between conversations, and a pending
+   confirmation neither blocks nor leaks into another conversation's turn.
+21. There is no confidentiality boundary between conversations. Memory is one
+   application-wide store and any conversation may recall anything in it; the
+   product expectation is a shared assistant, not a confidant. Two consequences
+   are normative rather than advisory: tool and worker output is not
+   automatically promoted to durable memory, and a peer-agent principal's
+   messages are untrusted input that may not drive privileged operations by
+   assertion.
 
 ## 1. What the agent is
 
@@ -3775,3 +3802,167 @@ screenshots:
 - restart restores a stopped bounded snapshot and safe launch configuration,
   then `restart` mints a new worker/process identity rather than replaying PTY
   input or claiming the child survived.
+
+## 13. Concurrent conversations
+
+### 13.1 Why
+
+The driving reason is **topic separation**, not multi-user access. One
+ever-growing context is expensive per turn, degrades retrieval as unrelated
+material accumulates, and forces the user to manage relevance by hand. A
+conversation is a bounded context over the shared being: the model sees one
+topic, while memory, workers, tools, and the workspace stay common.
+
+That multiple people — and other agents — can hold conversations at the same
+time follows from the same mechanism, and is a capability rather than the
+motivation.
+
+### 13.2 Vocabulary
+
+Three nouns, replacing an overloaded one:
+
+| Term | Meaning | Older text calls it |
+|---|---|---|
+| **application** | the being: one identity, one memory, one workspace, one journal | "session", "application session" |
+| **conversation** | one topic thread: its own model context, transcript, and cursor | "model conversation" (informal) |
+| **surface** | one attached client: TUI, web, channel | "surface", "client" (unchanged) |
+
+Prior sections use *session* for what is now *application*; §0.3 records the
+mapping and the §0 preamble already makes the invariants authoritative where
+older text disagrees. Persisted record names keep their `session_*` spelling
+until a schema migration under §0.16 — renaming a field is not additive, so it
+cannot ride along with this change.
+
+### 13.3 What is shared
+
+| Application-wide (the being) | Per conversation |
+|---|---|
+| Identity, memory, tools, operation registry | Model context and transcript |
+| Guard policy and classification | In-flight requests and their correlation |
+| Workers and their session-stable ids (§0.2) | Event cursor and stream |
+| Workspace mutation lease (§0.1) | Pending confirmations |
+| Application event journal | Attached surfaces |
+
+Workers are deliberately application-wide: one being has one set of hands, so a
+sub-agent started from one conversation is visible and addressable from
+another. The consequence is that the workspace can change under a conversation
+that did not act, so the being emits an application-scoped event when a
+workspace mutation originates elsewhere. Unexplained file changes are worse
+than a noisy stream.
+
+### 13.4 Lifecycle
+
+```text
+created -> active -> paused -> active -> ended
+```
+
+A conversation is **active** while at least one surface is attached or a
+request is in flight, and **paused** otherwise. Pausing is not a distinct
+operation: it is the absence of attachment, and it costs nothing beyond the
+durable state already required by §0.16. Resuming means attaching a surface to
+an existing conversation id, from any channel — a conversation started in the
+TUI resumes from web or Telegram, because conversation identity is independent
+of transport (§12 already requires this of surfaces).
+
+Ending is explicit. A paused conversation is retained under the same bounded
+retention and generation rules as other application state; conversation
+records restore independently and quarantine independently (§0.13).
+
+Conversation ownership — proving that the party resuming a conversation is the
+party that started it — is deliberately **out of scope for this slice**. Any
+authenticated principal may attach to any conversation. This is consistent with
+§0.21: the application is a shared assistant, so a conversation is not a
+private channel.
+
+### 13.5 Concurrency
+
+The `ApplicationService` actor boundary (§12) still serializes every mutation,
+which is what makes concurrent conversations safe by construction. What changes
+at more than one conversation is the *duration* of a turn (§0.18): with a single
+conversation, running a model call inside the actor turn is invisible; with
+several it serializes the whole being behind the slowest one.
+
+So the actor turn admits a request, transitions state, and returns; the model
+call and any host operation run outside it and settle back through a later
+turn — the same shape `net/http` uses when a handler becomes a scheduler fiber
+settling a pending `Task` rather than running inline.
+
+Rare application-state mutations from a conversation — registering a tool,
+changing guard posture, writing memory — need no new mechanism: they are
+ordinary operations through the same §7.2 choke point, and the actor already
+gives them a total order.
+
+The workspace lease is unchanged and application-wide (§0.19). Two conversations
+that both want to mutate files serialize, and the waiting conversation is told
+it is waiting. The being may report *that* it is busy and on what kind of work;
+it does not narrate another conversation's content.
+
+### 13.6 Event streams and correlation
+
+Each conversation has its own stream and cursor; application-scoped events —
+worker lifecycle, workspace mutation, guard posture, memory writes — go to an
+application stream that every attached surface may follow.
+
+Two properties come directly from §0.9's bounded buffers. Per-conversation
+streams mean a busy topic cannot evict a quiet one's history and hand it a gap
+it did not earn. And a surface following several conversations receives their
+traffic independently, so a reconnect resumes each from its own cursor rather
+than replaying the union.
+
+Events and results carry `^conversation_id` and, for anything answering a
+request, `^request_id`. Both are additive props over the shipped vocabulary, so
+§0.6 permits them without a schema version. A response is correlated by
+`^request_id`; §0.12's rule that every operation has exactly one durable
+terminal outcome is what makes that correlation total rather than best-effort.
+
+### 13.7 Confirmations
+
+A destructive operation raised in one conversation is confirmed from that
+conversation and no other (§0.20). Approval is not a global mode: it binds to
+the request that raised it, so a second conversation cannot approve work it did
+not request, and a pending confirmation in one conversation never stalls
+another's turn.
+
+### 13.8 Memory
+
+Memory is one application-wide store. Records carry `^source` and
+`^conversation` as **provenance** — so the being can say where it learned
+something, and so a user can audit it — never as an access-control field
+(§0.21). Any conversation may recall any record.
+
+The one rule that is not merely advisory: **tool and worker output is not
+automatically durable memory.** A conversation asking the being to read a file
+puts that content in *that conversation's* context, where it belongs; it enters
+the shared store only through an explicit remember operation. This is not a
+confidentiality mechanism — it is the same bounded-retention discipline §0.9
+applies everywhere, and it keeps the store from filling with transient tool
+output that happened to pass through a turn.
+
+### 13.9 Peer agents
+
+An external agent is an ordinary principal with a capability set (§0.14), so it
+needs no new authorization path. What is new is that its messages are
+**third-party-controlled text arriving inside the being's context** (§0.21).
+It may therefore not drive privileged operations by assertion: an agent
+principal's claims about who it is or what it is permitted to do carry no
+weight against the server-assigned capability set, and the guard classifies its
+requested work exactly as it classifies a model's.
+
+### 13.10 Acceptance
+
+- two conversations run turns concurrently; neither's admission waits on the
+  other's model call;
+- a workspace mutation in one conversation is observable in the other as an
+  application-scoped event, and the second conversation's mutation waits for
+  the lease rather than interleaving;
+- a conversation pauses with no attached surface, and resumes from a different
+  channel with its context intact and its cursor honored;
+- a confirmation raised in one conversation cannot be answered from another;
+- a busy conversation's event volume neither advances nor evicts another
+  conversation's cursor, and each reconnects from its own;
+- every response carries the `^request_id` of the request it answers, including
+  failures and cancellations;
+- one malformed conversation record is quarantined and the remaining
+  conversations restore;
+- a peer-agent principal asserting elevated authority is denied by the same
+  §7.2 choke point that denies a model.
