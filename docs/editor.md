@@ -555,7 +555,7 @@ output. It should remain an adapter, not leak into the model.
 
 The repository has two curses consumers today. `src/gene/stdlib.nim` provides
 the public owned Gene `curses/Screen` surface used by
-`examples/ai_agent/tui.gene`; `src/gene/repl_curses.nim` separately implements
+`examples/ai_agent/src/tui.gene`; `src/gene/repl_curses.nim` separately implements
 the native REPL frontend. The public `curses/draw` call is specialized to a
 transcript + input + status layout, and `next_event` already covers resize,
 Unicode text, mouse wheel, and common navigation but does not distinguish
