@@ -10,9 +10,10 @@ concurrency, and a stable native ABI — is specified under
 [`docs/spec/`](docs/spec/README.md). [`docs/design.md`](docs/design.md) retains
 architecture, rationale, and deferred directions.
 
-> **Status: active implementation.** The implemented surface is summarized in
+> **Status: active implementation.** APIs and the language surface are still
+> evolving. What is implemented today is summarized in
 > [`docs/implementation-status.md`](docs/implementation-status.md) and locked by
-> `nimble spec`. APIs and the language surface are still evolving.
+> `nimble spec`.
 
 ## The node
 
@@ -37,156 +38,39 @@ The pure projections:
 Immutable literals use a `#` prefix (`#[1 2 3]`, `#{^a 1}`). Meta never
 participates in equality or hashing.
 
-## What works today
+## Highlights
 
-- **Reader** (`src/gene/reader.nim`) — tokenizes and parses Gene source into the
-  node model: scalars, lists, maps, nodes, props/meta, immutable literals,
-  string interpolation, char/selector/quote sugars, datum comments as spacing,
-  and multi-form source units via `readAll`.
-- **Value model** (`src/gene/types.nim`) — a 64-bit NaN-boxed `Value` (see
-  [Implementation notes](#implementation-notes)).
-- **Equality & hashing** (`src/gene/equality.nim`) — structural, meta-blind `==`;
-  scalar-value/container-identity `same?`; a matching `hash`.
-- **Printer** (`src/gene/printer.nim`) — prints a value back to canonical Gene
-  source that re-reads to a structurally equal value.
-- **Compiler/GIR/VM** (`src/gene/compiler.nim`, `src/gene/gir.nim`,
-  `src/gene/vm.nim`) — callable-first execution pipeline (design §3/§17):
-  self-evaluating literals, lexical scope, `do`/`if`/`var`/`set`/`fn`/`quote`/
-  `quasiquote`/`ns`/`import`/`mod`/`match`/`for`/`while`/`try`/`fail`/`type` special forms,
-  nominal types
-  with construction, schema validation, and single inheritance (`(type T ^props
-  {…} ^is Parent)`), gradual typed-boundary checks for function parameters,
-  returns, typed construction, fixed-width numeric, C ABI scalar, and opaque
-  C pointer/owned-handle/slice plus boxed `Buffer` boundaries, and
-  `Fn`/`NativeFn`/`Selector`/`Callable` values,
-  positional/named/rest/default function
-  arguments, MVP protocol declarations with `Error`/`Send` marker protocols,
-  nominal message dispatch, parent-type implementation applicability, ambiguity
-  checks, `^impl` requirement checks, and protocol-local `^derive` execution,
-  static and dynamic selector/slash-path access,
-  functional selector updates, namespaces with qualified access and reflection,
-  file-based modules (`import … from "path"`) with a load-once cache, cycle
-  detection, and `this_mod` introspection binding,
-  pattern matching and destructuring (`match`, `(var [x y] …)`, `(var {^k v} …)`,
-  node-shape `(Type ^k v …)`, rest patterns, `%name`, `| & not`), `for`/`while`
-  loops, typed recoverable errors (`Error`, built-in `TypeError`/`MatchError`/
-  `CompileError`, `fail`, `^errors`, `try/catch/ensure`), `panic`, closures,
-  recursion, first-class `Cell`/`AtomicCell` mutable references,
-  a Nim-facing native API foundation (`GeneStatus`, `GeneCall`, value roots,
-  `geneCall`, native module initializer/registration hooks, and opaque C pointer
-  and slice constructors plus checked Buffer accessors, version-checked dynamic
-  native-module initializer lookup, and host-created `$ffi/Load` authority
-  values, non-suspending rooted channel/actor send hooks for attached
-  native code, native-created external-pending tasks with rooted
-  completion/failure/cancellation settlement hooks, deterministic native
-  callback handles, and explicit native thread attachment before callback entry), experimental idle actor state
-  snapshots and handler upgrades for migration tooling,
-  boxed `Buffer` values with checked element boundaries,
-  explicit runtime FFI library loading through `ffi/open` and opaque
-  `$ffi/Library` handles,
-  list/map-backed and lazy helper `Stream` values with selector mapping, quasiquote templates with runtime `unquote`/splicing, parser helpers
-  `lex_all`/`read_one`/`read_all` with `Token`, `LexError`, and `ParseError`,
-  a first typed native-compilation prototype for simple two-argument `Int`,
-  `I64`, and `F64` arithmetic functions through the normal dynamic entry
-  adapter, plus experimental C emission for selected fixed-representation
-  typed functions with direct typed calls, selective generic
-  monomorphization manifests, direct protocol-call dependency metadata,
-  typed-module AOT manifests, non-suspending native frame descriptors for
-  selected AOT functions, mixed typed_native/bytecode recoverable-error frame
-  traces, and task-frame lowering manifests for resumable functions,
-  generated `ffi/fn` adapter wrappers for supported C ABI declarations,
-  including pointer-plus-length `C/Slice`/`Buffer` data views, plus `ffi/struct`,
-  `ffi/union`, callback, and dynamic-signature metadata manifests,
-  generated C ABI type-size/alignment conformance metadata and C struct layout
-  assertions, and runtime `ffi/bind` dynamic calls for MVP C scalar,
-  C-string, opaque pointer, owned-pointer release, and small multi-argument
-  pointer/size signatures,
-  `$device/Compute` authority plus opaque `$device/Buffer` metadata handles,
-  first-class `Env` values with explicit
-  `eval node ^in env`, explicit Env imports/capabilities, `^policy`
-  max-step limits with validation for reserved policy fields, opaque runtime
-  capability library values such as `$fs/ReadDir`, `gene run`
-  entrypoint invocation, line-oriented
-  `gene repl`, GIR disassembly via `gene compile`, module docs via `gene doc`,
-  and built-ins
-  (`+ - * / < > <= >= = same? hash not $ to_str head props body meta assoc_in
-  update_in panic cell Cell/get Cell/set Cell/swap Cell/update atomic_cell
-  AtomicCell/load AtomicCell/store AtomicCell/swap AtomicCell/compare_exchange
-  declarations Namespace/bindings Namespace/lookup Namespace/declarations
-  Module/root_namespace Module/name Module/path Module/meta Module/declarations
-  to_stream to_pairs_stream map filter take into Stream/has_next Stream/peek
-  Stream/next Stream/close Task/cancel Task/detach $fs/read_text_async
-  $fs/write_text_async $net/tcp_read_text_async $net/tcp_write_text_async sleep
-  print println`).
+- **Callable-first VM** — lexical scope, closures, pattern matching and
+  destructuring, namespaces, and file-based modules.
+- **Gradual nominal types** — schema-validated construction, single
+  inheritance, and checked boundaries for parameters, returns, and numeric/C
+  ABI values.
+- **Protocols** with nominal dispatch, scoped visibility, and `derive`.
+- **Typed recoverable errors** — `fail`, `^errors` rows, `try/catch/ensure`,
+  kept distinct from `panic`.
+- **Streams and generators** as lazy pull combinators; a function containing
+  `yield` returns a stream.
+- **Structured concurrency** — tasks, channels, and actors under supervising
+  scopes. Still experimental (see below).
+- **A batteries-light stdlib** — `html`/`css`/`url`/`json`, an event-loop HTTP
+  server and client, SQLite/Postgres behind one `Db` protocol, serialization,
+  durable stores, and structured logging.
+- **Compile to the browser** — `gene build --target web` emits readable
+  TypeScript/ESM from a statically decidable subset, and an embedded
+  `web_module` block lets one source file carry a page's server logic, HTML,
+  CSS, and browser behavior with no build step or bundler.
+- **Native interop** — a Nim-facing native API, runtime FFI, and an
+  experimental typed C backend.
+- **Tooling** — `repl`, `fmt`, `doc`, `compile`, a structural `view` browser,
+  an LSP server, and a wasm build of the VM.
 
-  Stream helper functions `map`, `filter`, and `take` are lazy pull combinators.
-  Functions containing `yield` return lazy streams.
-
-  The typed_native C backend remains experimental. The FFI MVP surface is more
-  concrete: generated `ffi/fn` wrappers are emitted for supported ABI shapes
-  instead of placeholder skeletons, and dynamic `ffi/bind` covers scalar,
-  C-string, pointer, pointer-plus-length slice/buffer, and owned-pointer release
-  cases. Broader production FFI work such as variadics, arbitrary aggregate ABI
-  calls, header parsing, and C++ ABI binding remains outside this surface.
-
-> **Concurrency is still experimental.** By default, tasks run on a cooperative
-> scheduler: `spawn` queues a task body, scheduled fibers yield at VM safepoints,
-> blocking channel ops, actor mailbox send/ask, `await`, and `sleep` park only
-> the current task, and timers wake parked tasks on monotonic deadlines.
-> `sleep 0` is a zero-delay scheduler yield: it gives one queued task a chance
-> to run without waiting for a timer deadline.
-> `Channel/send`/`Channel/recv`, timers, and actor mailbox backpressure suspend
-> and resume the whole task by capturing its heap frame stack. `actor/ask
-> ^timeout_ms N` fails the pending request with `ActorError` if no reply arrives
-> before the timer. `supervisor ^events ch` emits `ActorFailure` events for actor
-> handler failures, supports optional `^dead_letter ch` fallback when the primary
-> event sink is closed, full, or rejects the event, and queues retryable delivery
-> when a full sink has no available fallback.
-> Spawned fibers publish their captured scope/value graph so threaded builds use
-> atomic RC for captured manual-RC values. Spawn bytecode also marks leaf-like
-> bodies that do not mutate outer bindings or contain nested `spawn` as worker
-> candidates; when runtime captures are `Send`, the VM queues that task with an
-> isolated snapshot of the captured parent scope. The cloned snapshot graph is
-> published before worker execution as well, which removes live-parent scope
-> dependence for eligible tasks. In `--mm:atomicArc --threads:on` builds, root
-> program execution and root scheduler pumping for `await`, structured-scope
-> cleanup, channel waits, actor mailbox waits/driving, and `sleep` start a
-> bounded worker lease by default, capped conservatively while the worker
-> lifecycle remains experimental. Set `GENE_WORKERS=N` to choose the worker
-> count explicitly, or `GENE_WORKERS=0` to keep the worker lane disabled. In
-> default non-threaded builds, `GENE_WORKERS` is ignored. The
-> lease lets OS worker threads consume snapshot-isolated worker candidates while
-> unsafe shared-scope tasks stay on the cooperative root lane. Sendable actor
-> handler turns whose handler/state/message/reply graphs pass the same worker
-> safety check can also run on that lane. Nested runtime entries can grow an
-> already-running lease when they request a larger worker count. Root waits also
-> help drain worker candidates after cooperative-only work is exhausted, then
-> wait on scheduler progress notifications while workers own active progress.
-> Worker-candidate timer waiters and `actor/ask` timeouts wake parked workers
-> so eligible timer progress is not tied only to root scheduler pumping.
-> Worker-safe runnable/timer/timeout transitions broadcast to parked workers so
-> a queued eligible backlog can spread across the active lease instead of
-> waking only one parked worker.
-> Native code can create external-pending tasks and settle them later through
-> rooted completion, failure, or cancellation hooks; root `await` treats those
-> tasks as external progress rather than scheduler deadlock, which is the first
-> async-I/O suspension hook for file/network/native operation backends. `$fs/read_text_async`
-> and `$fs/write_text_async` return tasks and, in threaded atomicArc builds with
-> workers enabled, perform text file I/O on the worker lane while the awaiting
-> Gene task is suspended. `$net/tcp_read_text_async` and
-> `$net/tcp_write_text_async` use the same path for bounded TCP connect/read and
-> connect/write operations with explicit `$net/Connect` authority. The worker
-> async-I/O queue is bounded by `GENE_ASYNC_IO_MAX_QUEUE` (default 1024); a full
-> queue returns a failed task so producers receive an explicit backpressure
-> signal. Cancelling a queued async-I/O task settles it as cancelled and workers
-> skip the stale queued request when they reach it.
-> Root-level `await` still drives the run queue until the task settles.
-> Structured scopes wait for live child tasks on normal exit, cancel children on
-> error/cancellation, and run `ensure` cleanup before cancellation is observed.
-> `Task/detach` explicitly removes a task from structured scope ownership. What
-> is *not* built yet: production M:N lifecycle/load-balancing, broader
-> production network/native async-I/O backends, durable failure-event
-> backpressure/acknowledgement, and stable production concurrency semantics.
+> **Concurrency is experimental.** Tasks run on a cooperative scheduler by
+> default: fibers yield at VM safepoints, and channel operations, actor
+> mailboxes, `await`, and `sleep` park only the current task. Threaded
+> `--mm:atomicArc --threads:on` builds can additionally run snapshot-isolated
+> tasks and sendable actor turns on a bounded worker lane (`GENE_WORKERS=N`).
+> Production M:N lifecycle and load balancing, broader async-I/O backends, and
+> stable concurrency semantics are not built yet.
 
 ## Quick start
 
@@ -207,52 +91,49 @@ $ ./bin/gene eval '(+ 1 2)'
 3
 $ ./bin/gene eval '(var fib (fn [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 10)'
 55
-$ echo '(fn main [args] (println "Hello," args/0) nil)' > demo.gene
-$ ./bin/gene run demo.gene
-Hello, void
+$ echo '(fn main [args] ($println "Hello," args/0) nil)' > demo.gene
 $ ./bin/gene run demo.gene Gene
 Hello, Gene
-$ ./bin/gene compile demo.gene
-constants:
-  [0] "Hello,"
-  ...
 ```
 
-`gene parse <file>` prints canonical parsed forms without executing them (a
-read → print round-trip; props print immediately after the head). `gene fmt
-<file>` uses the human-oriented source formatter: two-space indentation,
-reader sugar, wrapped special forms, and preserved comments. The canonical
-policy and executable example live in [`docs/style.md`](docs/style.md) and
-[`examples/style_guide.gene`](examples/style_guide.gene). `gene compile <file>`
-prints the compiled GIR bytecode without running it. `gene doc <file>` loads
-the module, skips `main`, and prints module metadata, normalized imports, and
-root and namespace declarations.
+Two larger programs worth reading:
+[`examples/web_demo.gene`](examples/web_demo.gene) is an end-to-end language
+showcase, and [`examples/todo_app/src/main.gene`](examples/todo_app/src/main.gene)
+is a complete web application — routes, SQLite, HTML, CSS, and browser
+behavior — in one file.
 
-`gene view [--readonly] [--editor COMMAND] [--path GENE/PATH]
-[--line N[:COLUMN]] <file>` opens a native structural source browser. Arrow,
-page, Home/End, mouse-wheel, and `j`/`k` navigation operate on syntax without
-executing it; `e` suspends the terminal and opens `$VISUAL`/`$EDITOR` at the
-selected occurrence.
+### Other commands
+
+| Command | What it does |
+|---|---|
+| `gene parse <file>` | Canonical parsed forms, without executing |
+| `gene fmt <file>` | Human-oriented formatter ([`docs/style.md`](docs/style.md)) |
+| `gene compile <file>` | Compiled GIR bytecode, without running |
+| `gene doc <file>` | Module metadata, imports, and declarations |
+| `gene build --target web <file>` | TypeScript/ESM for the browser |
+| `gene view <file>` | Structural source browser; `e` opens `$EDITOR` in place |
 
 ## Project layout
 
 ```text
 src/
-  gene.nim            CLI entry point (eval / run / parse / compile / view)
+  gene.nim            CLI entry point
   gene/
     reader.nim        source text  -> node values
-    source_index.nim  source text  -> structural occurrence spans
+    printer.nim       node values  -> canonical Gene source
     types.nim         NaN-boxed Value model + constructors/accessors
     equality.nim      equal / same / hash
-    printer.nim       node values -> canonical Gene source
-    compiler.nim      node values -> GIR bytecode chunks
+    compiler.nim      node values  -> GIR bytecode chunks
     gir.nim           bytecode instructions + function prototypes
-    vm.nim            stack VM + runtime built-ins
+    vm.nim            stack VM + runtime
+    stdlib.nim        standard-library surface
+    http_server.nim   event-loop HTTP/WebSocket server
+    web.nim           the `web` profile: Gene -> readable TypeScript
+    native_api.nim    Nim-facing native/FFI boundary
+    lsp/ tui/ viewer/ editor and terminal front ends
 docs/spec/            normative implemented language contract
 docs/design.md        architecture, rationale, and deferred directions
-docs/style.md         canonical human source style and formatter contract
-examples/web_demo.gene  end-to-end language showcase
-examples/style_guide.gene  formatter-stable representative source
+examples/             runnable programs, including the showcase and todo app
 tests/                unit tests + executable language specs
 benchmarks/           release-mode core benchmarks
 ```
@@ -260,58 +141,19 @@ benchmarks/           release-mode core benchmarks
 ## Development
 
 ```bash
-nimble test     # unit tests (tests/test_all.nim)
-nimble spec     # executable language-surface specs (tracks docs/spec/)
-nimble perf     # release-mode core benchmarks (smoke check, no thresholds yet)
-nimble leakcheck # refcount/scope leak assertions (-d:geneRcStats)
+nimble test        # unit tests
+nimble spec        # executable language-surface specs (tracks docs/spec/)
+nimble transpile_spec  # shared VM/web-profile conformance fixtures
+nimble perf        # release-mode core benchmarks (smoke check, no thresholds)
+nimble wasm        # wasm host-ABI build (requires emcc)
+nimble leakcheck   # refcount/scope leak assertions
 nimble threadcheck # threaded atomicArc smoke checks
-nimble verify   # tests + specs + benchmarks + leakcheck + threadcheck
+nimble verify      # everything above
 ```
 
-Performance is a first-class concern for this codebase — value layout, the
-reader hot paths, and allocation behavior are treated as performance-sensitive.
-See [`AGENTS.md`](AGENTS.md) for the conventions contributors and agents follow.
-
-## Implementation notes
-
-`Value` is a single 64-bit word using **NaN boxing** (`src/gene/types.nim`):
-
-- Non-NaN `float64` values are stored directly.
-- The all-zero bit pattern is `nil`, so a zero-initialized `Value` is `nil`.
-- Reserved NaN tags encode `void` / `bool` / small-int / `char` / `+0.0` /
-  symbol immediates (allocation-free), or a heap pointer for compound values
-  (large ints, strings, lists, maps, nodes, functions). Generic objects use
-  `0xFFFF`, with an internal cycle-tracked object tag for Cell/Env values; the
-  concrete kind (namespace, type, …) lives in the object header, so new heap
-  kinds don't each need a NaN-box tag.
-
-`sizeof(Value) == sizeof(uint64)`. Compound values are manually heap-allocated
-with a `refCount` header; `Value`'s `=copy`/`=sink`/`=dup`/`=destroy` hooks drive
-reference counting automatically, so acyclic values free at count 0 — no global
-table, no per-read lock. The common `scope → closure → scope` cycle is broken with
-weak captured-scope edges. Direct mutable Cell/Env reference cycles (e.g. a
-self-referential `cell`) are reclaimed by a conservative trial-deletion pass, and
-Env-bound closures use weak local captures that are strengthened when the Env
-escapes. Symbols are interned to immediate ids. Build with
-`-d:geneRcStats` to expose `liveManaged` and `$runtime/gc_stats` for
-retain/release auditing. Values crossing `Send` boundaries are marked as
-published; in threaded builds, manual-RC heap objects switch to atomic
-retain/release after that marker while thread-local objects stay on the
-non-atomic path. Spawned fibers also publish their captured scope/value graph so
-captured manual-RC values are safe to retain/release from threaded builds.
-Spawned fibers additionally record a worker-candidate bit only when the compiler
-sees no outer-scope mutation or nested `spawn`, and runtime captures satisfy
-`Send`; those eligible tasks receive sparse captured-scope snapshots, publish the
-cloned snapshot graph before worker execution, and no longer read through the
-live parent scope. Unsafe shared-scope tasks remain cooperative. Threaded
-`atomicArc` smoke checks cover values, VM behavior, root-execution/root-wait
-worker-candidate execution, root-lane helping, timer wakeups, and RC leak
-accounting. Worker threads park on a condition-variable wakeup when no eligible
-work or timer exists, root waits use the same progress notification path once
-worker candidates have been handed to the worker lane, nested worker leases can
-grow the running pool, and sendable actor handlers can run there while preserving
-single-message actor execution. Worker orchestration remains experimental and
-limited to snapshot-isolated leaf candidates plus sendable actor turns.
+Performance is a first-class concern — value layout, reader hot paths, and
+allocation behavior are treated as performance-sensitive. See
+[`AGENTS.md`](AGENTS.md) for the conventions contributors and agents follow.
 
 ## License
 
