@@ -150,8 +150,8 @@ proc main() =
     let chunk = compileSource(simpleProgram)
     checksum = checksum + int64(chunk.instructions.len + chunk.constants.len)
 
-  let agentUnit = readAllWithLocs(readFile("examples/ai_agent/tui.gene"),
-                                  "examples/ai_agent/tui.gene")
+  let agentUnit = readAllWithLocs(readFile("examples/ai_agent/src/tui.gene"),
+                                  "examples/ai_agent/src/tui.gene")
   bench("compiler.ai_agent.source_unit_to_gir", 1, i):
     let chunk = compileSourceUnit(agentUnit)
     checksum = checksum + int64(chunk.instructions.len + chunk.constants.len)
