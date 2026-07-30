@@ -83,10 +83,16 @@
 # stops "same file" from quietly becoming "captures the server".
 #
 # The enhancement is progressive: every row below is server-rendered and works
-# with JavaScript off. One delegated listener on the mount root then makes each
-# row's text reveal the id the server already put beside it — including rows a
-# later response adds, which is the property delegation buys over per-row
-# listeners.
+# with JavaScript off. One delegated listener on the mount root then upgrades
+# two interactions in place — including rows a later response adds, which is the
+# property delegation buys over per-row listeners:
+#
+#   - clicking a todo's text reveals the id the server already rendered beside
+#     it;
+#   - clicking its ✓/○ button posts to the JSON API instead of submitting the
+#     form, and rewrites that one row from the response rather than reloading
+#     the page. With JavaScript off the form posts and the page reloads, which
+#     is the behavior this replaces, not a fallback bolted beside it.
 # -----------------------------------------------------------------------------
 
 (web_module todo_client
@@ -101,20 +107,59 @@
       (without_peek classes)
       (str/trim $"${classes} peek")))
 
+  # Row lookup without `querySelector`: the delegated listener already has the
+  # clicked button, and the row is its form's parent.
+  (fn row_for [button : Any] : Any
+    (var form button/parent_element)
+    (if_yes form form/parent_element))
+
+  # The server's own rendering rule, applied to one row. Keeping it in one
+  # function is what stops the optimistic update and the server response from
+  # drifting apart.
+  (fn paint_row [row : Any, button : Any, done : Bool] : Void
+    (var was : Str row/class_name)
+    (var peek (if (peeking? was) " peek" ""))
+    (set! row/class_name (if done $"done${peek}" $"open${peek}"))
+    (set! button/text_content (if done "✓" "○"))
+    void)
+
   # `event` is the DOM `Any` boundary, so each field read is annotated where it
   # re-enters typed code — that annotation is the only place a mistake about
   # the DOM shape can hide, rather than every use downstream of it.
   (fn on_click [event : Any] : Void
     (var target event/target)
     (var target_class : Str target/class_name)
+    ($console/log $"todo_client: click on class=${target_class}")
     (if_yes (== target_class "text")
       (var row target/parent_element)
       (if_yes row
         (var row_class : Str row/class_name)
         (set! row/class_name (toggled row_class))))
+    (if_yes (== target_class "toggle")
+      # Stop the form POST *before* the request goes out: after an await the
+      # browser has already navigated and nothing this handler does can matter.
+      ($dom/prevent_default event)
+      (var id : Str target/dataset/id)
+      (var row (row_for target))
+      (if_yes row
+        ($console/log $"todo_client: toggling todo ${id}")
+        ($http/post_form "/api/todos/toggle" $"id=${id}"
+          (fn [body : Str] : Void
+            # The response is the authoritative list, so the row is painted
+            # from what the server stored rather than from a guess about what
+            # the click did.
+            (var todos : (List Any) ($json/parse body))
+            (for todo in todos
+              (var todo_id : Int todo/id)
+              (if_yes (== $"${todo_id}" id)
+                (var done : Bool todo/done)
+                ($console/log $"todo_client: todo ${id} is now done=${done}")
+                (paint_row row target done)))
+            void))))
     void)
 
   (fn main [root : EventTarget] : Void
+    ($console/log "todo_client: mounted, delegating clicks from the root")
     ($dom/add_event_listener root "click" on_click)))
 
 # -----------------------------------------------------------------------------
@@ -226,10 +271,15 @@
   (var mark (if (done? t) "✓" "○"))
   (var cls (if (done? t) "done" "open"))
   (var hint $"#${id}")
+  # `data-id` on the button is what lets the delegated handler identify the row
+  # without traversing up to find the form's hidden input. It keeps its wire
+  # spelling — `html/render` writes attribute names verbatim, the same rule
+  # `^content-type` follows below. With JavaScript off the form still posts and
+  # the page reloads, exactly as before.
   `(li ^class %cls
      (form ^class "inline" ^method "post" ^action "/todos/toggle"
        (input ^type "hidden" ^name "id" ^value %id)
-       (button ^title "toggle" %mark))
+       (button ^class "toggle" ^data-id %id ^title "toggle" %mark))
      (span ^class "text" %text)
      (span ^class "muted hint" %hint)
      (form ^class "inline" ^method "post" ^action "/todos/delete"

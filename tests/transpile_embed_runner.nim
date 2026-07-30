@@ -356,4 +356,169 @@ if "missing mount reported" notin mountRun.output:
   stderr.write(mountRun.output)
   fail("mount", "a missing mount element was not reported")
 
+# --- 10. the AJAX path: prevent_default, request, repaint from the response --
+#
+# The interaction the todo app actually ships. Driven over a stub fetch so the
+# assertions are about the *generated code* — that the default action is
+# suppressed before the request goes out, that the success callback closes over
+# the click site, and that a failed request repaints nothing.
+
+const ajaxModule = """
+(mod ajax_host)
+
+(web_module widget
+  (fn paint [row : Any, mark : Str] : Void
+    (set! row/text_content mark)
+    void)
+
+  (fn on_click [event : Any] : Void
+    (var target event/target)
+    (var target_class : Str target/class_name)
+    ($console/log $"click ${target_class}")
+    (if_yes (== target_class "toggle")
+      ($dom/prevent_default event)
+      (var id : Str target/dataset/id)
+      ($http/post_form "/api/toggle" $"id=${id}"
+        (fn [body : Str] : Void
+          ($console/log $"response for ${id}: ${body}")
+          (paint target body)
+          void)))
+    void)
+
+  (fn main [root : EventTarget] : Void
+    ($dom/add_event_listener root "click" on_click)))
+"""
+
+let ajaxPath = writeModule(workDir / "ajax", "app", ajaxModule)
+let ajaxApp = newApplication(workDir / "ajax")
+let ajaxAsset = ajaxApp.assetOf(ajaxApp.loadFileModule(ajaxPath), "widget")
+let ajaxEntry = webAssetRoutes(ajaxAsset)[0]
+let ajaxEntryPath = workDir / ajaxEntry.fileName
+writeFile(ajaxEntryPath, ajaxEntry.body)
+
+# The callback closes over `id` from the click site. Without inline callbacks
+# that is unwritable, so this doubles as the lambda-capture regression.
+check("ajax", "=> {" in ajaxEntry.body,
+      "no inline callback was emitted for the response handler")
+
+let ajaxRunnerPath = workDir / "run_embed_ajax.mjs"
+writeFile(ajaxRunnerPath, """
+import { pathToFileURL } from "node:url";
+
+class El {
+  constructor(tag, className = "") {
+    this.tag = tag; this.className = className; this.textContent = "";
+    this.listeners = new Map(); this.dataset = {};
+  }
+  addEventListener(t, f) { this.listeners.set(t, f); }
+  removeEventListener(t) { this.listeners.delete(t); }
+}
+
+let requests = [];
+let mode = "ok";
+globalThis.fetch = (url, init) => {
+  requests.push({ url, method: init.method, body: init.body });
+  if (mode === "http_error")
+    return Promise.resolve({ ok: false, status: 500, statusText: "Server Error",
+                             text: () => Promise.resolve("") });
+  if (mode === "network") return Promise.reject(new Error("offline"));
+  return Promise.resolve({ ok: true, status: 200, statusText: "OK",
+                           text: () => Promise.resolve("done") });
+};
+
+const uncaught = [];
+process.on("uncaughtException", (error) => uncaught.push(String(error.message)));
+
+const root = new El("main");
+const button = new El("button", "toggle");
+button.dataset.id = "7";
+
+const mod = await import(pathToFileURL(""" & $(%ajaxEntryPath) & """).href);
+mod.main(root);
+const click = root.listeners.get("click");
+
+// 1. the default action is suppressed, and suppressed *before* the request:
+//    after a navigation starts, nothing the handler does can still matter.
+let prevented = false;
+click({ target: button, preventDefault() { prevented = true; } });
+if (!prevented) throw new Error("prevent_default was not called");
+if (requests.length !== 1) throw new Error(`expected 1 request, got ${requests.length}`);
+if (requests[0].method !== "POST") throw new Error("wrong method");
+if (requests[0].url !== "/api/toggle") throw new Error(`wrong url: ${requests[0].url}`);
+if (requests[0].body !== "id=7") throw new Error(`wrong body: ${requests[0].body}`);
+
+await new Promise(r => setTimeout(r, 20));
+if (button.textContent !== "done")
+  throw new Error(`success callback did not repaint: ${button.textContent}`);
+
+// 2. a click that is not on the toggle sends nothing at all.
+click({ target: new El("span", "text"), preventDefault() {} });
+if (requests.length !== 1) throw new Error("an unrelated click issued a request");
+
+// 3. a non-2xx must not run the success path, and must not vanish.
+mode = "http_error";
+button.textContent = "before";
+click({ target: button, preventDefault() {} });
+await new Promise(r => setTimeout(r, 20));
+if (button.textContent !== "before")
+  throw new Error("an HTTP error still repainted the row");
+if (!uncaught.some(m => m.includes("500")))
+  throw new Error(`HTTP error was swallowed: ${JSON.stringify(uncaught)}`);
+
+// 4. same for a transport failure.
+mode = "network";
+click({ target: button, preventDefault() {} });
+await new Promise(r => setTimeout(r, 20));
+if (button.textContent !== "before")
+  throw new Error("a network failure still repainted the row");
+if (!uncaught.some(m => m.includes("offline")))
+  throw new Error(`network failure was swallowed: ${JSON.stringify(uncaught)}`);
+
+console.log("embedded ajax handler passed");
+""")
+let ajaxRun = execCmdEx("node " & quoteShell(ajaxRunnerPath))
+if "embedded ajax handler passed" notin ajaxRun.output:
+  stderr.write(ajaxRun.output)
+  fail("ajax", "the AJAX toggle path did not behave as specified")
+
+# --- 11. `$` matches the VM for every scalar it displays --------------------
+#
+# `$"n=${count}"` compiling on the server and failing in the browser is the
+# silent-divergence class §5 exists to prevent, so the conformance claim is
+# tested rather than asserted.
+
+const displayModule = """
+(mod display_host)
+
+(web_module widget
+  (fn render [] : Str
+    (var s "x")
+    $"i=${42} f=${1.5} b=${true} s=${s} n=${nil}")
+
+  (fn main [root : EventTarget] : Void
+    (set! root/text_content (render))
+    void))
+"""
+
+let displayPath = writeModule(workDir / "display", "app", displayModule)
+let displayApp = newApplication(workDir / "display")
+let displayAsset = displayApp.assetOf(
+  displayApp.loadFileModule(displayPath), "widget")
+let displayEntryPath = workDir / "display_entry.mjs"
+writeFile(displayEntryPath, webAssetRoutes(displayAsset)[0].body)
+let displayRunnerPath = workDir / "run_embed_display.mjs"
+writeFile(displayRunnerPath, """
+import { pathToFileURL } from "node:url";
+const mod = await import(pathToFileURL(""" & $(%displayEntryPath) & """).href);
+const actual = mod.render();
+const expected = "i=42 f=1.5 b=true s=x n=nil";
+if (actual !== expected)
+  throw new Error(`web display diverges from the VM: ${actual} !== ${expected}`);
+console.log("embedded display concat passed");
+""")
+let displayRun = execCmdEx("node " & quoteShell(displayRunnerPath))
+if "embedded display concat passed" notin displayRun.output:
+  stderr.write(displayRun.output)
+  fail("display", "web `$` does not display scalars the way the VM does")
+
 echo "embedded web module lifecycle passed"

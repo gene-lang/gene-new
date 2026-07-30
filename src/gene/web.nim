@@ -35,7 +35,7 @@ type
     wekBind, wekSet, wekSetPath, wekWhile, wekLoop, wekRepeat, wekFor,
     wekBreak, wekContinue, wekReturn, wekMatch, wekTry, wekFail,
     wekPath, wekSelector, wekSend, wekNew, wekEnum, wekDomRender,
-    wekDomListener, wekAwait,
+    wekDomListener, wekLambda, wekAwait,
     wekSpawn, wekScope, wekYield, wekMessage
 
   WebExpr* = ref object
@@ -52,6 +52,7 @@ type
     propCount*: int
     keys*: seq[string]
     patterns*: seq[Value]
+    params*: seq[WebParam]     # wekLambda: the inline callback's parameters
 
   WebParam* = object
     sourceName*: string
@@ -992,6 +993,8 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
                  bindings: var Table[string, WebBinding],
                  expected: WebType = nil): WebExpr
 
+proc usesAsyncPrimitive(expr: WebExpr): bool
+
 proc copyBindings(bindings: Table[string, WebBinding]):
     Table[string, WebBinding] =
   result = initTable[string, WebBinding]()
@@ -1424,6 +1427,34 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "json/stringify":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkStr)
+      of "console/log", "console/warn", "console/error":
+        # `Any` rather than `Str`, deliberately: the values worth logging from a
+        # DOM handler are the event and the element, and forcing them through
+        # string interpolation would print "[object HTMLElement]" instead of
+        # something devtools can expand.
+        paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkVoid)
+      of "dom/prevent_default", "dom/stop_propagation":
+        paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkVoid)
+      of "http/post_form", "http/get":
+        # Continuation-passing rather than `Task`-returning, because the only
+        # caller that matters is a DOM event handler: the listener ABI requires
+        # `Callback [Any] Void`, and `spawn` requires an enclosing `scope`, so
+        # an async request cannot be started from a handler at all. A success
+        # callback can.
+        #
+        # Only success is a callback. A non-2xx status or a transport failure
+        # rethrows on the task queue, which makes it an ordinary uncaught error
+        # reaching window.onerror and devtools — the alternative, an optional
+        # error callback, makes silently discarding failures the default.
+        let onOk = webType(wtkCallback)
+        onOk.params = @[webType(wtkStr)]
+        onOk.returnType = webType(wtkVoid)
+        paramTypes =
+          if builtin == "http/get": @[webType(wtkStr), onOk]
+          else: @[webType(wtkStr), webType(wtkStr), onOk]
+        returnType = webType(wtkVoid)
       of "size":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkInt)
@@ -1757,6 +1788,53 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       raise webError(loc, "web await expects Task, got " & typeName(task.typ))
     return WebExpr(kind: wekAwait, typ: task.typ.item, loc: loc,
                    children: @[task])
+  if name == "fn" and value.body.len > 0 and value.body[0].kind == vkList:
+    # An inline callback. The profile has had `Callback` types since P2 but no
+    # way to write one, so every callback had to be a named top-level function
+    # — which closes over nothing, and therefore cannot carry the one thing a
+    # callback usually needs: the values from the site that registered it.
+    #
+    # A named `(fn name [...] ...)` is a declaration handled elsewhere; the
+    # parameter list in body[0] is what distinguishes the two.
+    if value.body.len < 4 or not value.body[1].isSym(":"):
+      raise webError(loc,
+        "web callback requires annotated parameters, a return type, and a body")
+    if containsForm(value, "yield"):
+      raise webError(loc,
+        "web callback cannot be a generator: name it and use (fn name ...)")
+    analysis.validateCallableProps(value, loc, "callback")
+    let params = parseParams(analysis, value.body[0], loc)
+    let returnType = parseWebType(value.body[2], loc)
+    # Copied, not shared: the body may shadow and rebind freely, and those
+    # bindings must not escape into the enclosing scope.
+    var inner = copyBindings(bindings)
+    var seen = initHashSet[string]()
+    for param in params:
+      if param.sourceName in seen:
+        raise webError(param.loc,
+          "duplicate web callback parameter: " & param.sourceName)
+      seen.incl param.sourceName
+      # A parameter shadowing an enclosing binding is ordinary lexical scoping,
+      # and JS gives the arrow function the same rule.
+      inner[param.sourceName] = WebBinding(typ: param.typ)
+    let savedReturn = analysis.currentReturn
+    analysis.currentReturn = returnType
+    var bodyForms: seq[Value]
+    for i in 3 ..< value.body.len: bodyForms.add value.body[i]
+    let body = analysis.analyzeSequence(bodyForms, inner, returnType, loc)
+    analysis.currentReturn = savedReturn
+    requireType(analysis, loc, body.typ, returnType, "return of web callback")
+    if usesAsyncPrimitive(body):
+      # The value's type is `Callback`, which carries no asyncness, so a caller
+      # would drop the `await` and hand a Promise to a typed boundary — the
+      # same rule `checkFunctionValueRefs` enforces for named functions.
+      raise webError(loc,
+        "web callback cannot await: Callback types carry no asyncness")
+    var callbackType = webType(wtkCallback)
+    for param in params: callbackType.params.add param.typ
+    callbackType.returnType = returnType
+    return WebExpr(kind: wekLambda, typ: callbackType, loc: loc,
+                   params: params, children: @[body])
   if name == "do":
     return analysis.analyzeSequence(value.body, bindings, expected, loc)
   if name in ["let", "var"]:
@@ -2008,8 +2086,46 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   # The closed operator set of design §7.4. `//` is the truncated remainder,
   # not integer division: `%` is the unquote prefix and `mod` names the module
   # form, so `%` never denotes arithmetic and is deliberately absent here.
+  if name == "$":
+    # Concatenation is variadic, because `$"a ${x} b"` desugars to one `$` per
+    # *segment*: capping it at two operands rejected every interpolation with
+    # more than one hole, which is most of them.
+    if value.body.len == 0:
+      raise webError(loc, "web $ requires at least one Str value")
+    # Every scalar the VM's `$` displays. Restricting this to `Str` made
+    # `$"n=${count}"` compile on the server and fail in the browser — the exact
+    # silent-divergence class §5 of the proposal exists to prevent. Containers
+    # stay out: their display is `print` semantics, a much larger contract than
+    # interpolation needs.
+    const displayable = {wtkStr, wtkInt, wtkF64, wtkBool, wtkNil, wtkVoid,
+                         wtkSym}
+    var parts: seq[WebExpr]
+    for item in value.body:
+      let part = analysis.analyzeExpr(item, bindings)
+      var kinds: set[WebTypeKind]
+      if part.typ.kind == wtkUnion:
+        for member in part.typ.members: kinds.incl member.kind
+      else:
+        kinds.incl part.typ.kind
+      if not (kinds <= displayable):
+        raise webError(loc, "web $ displays Str, Int, F64, Bool, Nil, Void, " &
+          "and Sym values, got " & typeName(part.typ))
+      parts.add part
+    if parts.len == 1 and parts[0].typ.kind == wtkStr:
+      return parts[0]
+    if parts.len == 1:
+      # `$"${n}"` is a conversion, not a concatenation. Folding against an
+      # empty literal keeps one code path and still yields a Str — returning
+      # the operand unchanged would silently type the whole expression as Int.
+      parts.insert(WebExpr(kind: wekStr, typ: webType(wtkStr), loc: loc,
+                           text: ""), 0)
+    result = parts[0]
+    for i in 1 ..< parts.len:
+      result = WebExpr(kind: wekBinary, typ: webType(wtkStr), loc: loc,
+                       text: "$", children: @[result, parts[i]])
+    return
   if name in ["+", "-", "*", "/", "//", "<", "<=", ">", ">=",
-              "==", "!=", "same?", "$"]:
+              "==", "!=", "same?"]:
     if value.body.len != 2:
       raise webError(loc, "web operator '" & name & "' expects two operands")
     let left = analysis.analyzeExpr(value.body[0], bindings)
@@ -2019,8 +2135,6 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if name in ["+", "-", "*", "/", "//", "<", "<=", ">", ">="] and
         left.typ.kind notin {wtkInt, wtkF64}:
       raise webError(loc, "web operator '" & name & "' requires Int or F64")
-    if name == "$" and left.typ.kind != wtkStr:
-      raise webError(loc, "web $ requires two Str values")
     let resultType =
       if name in ["<", "<=", ">", ">=", "==", "!=", "same?"]:
         webType(wtkBool)
@@ -2793,6 +2907,17 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       "$gene_html_escape(" & arguments[0] & ")"
     of "json/parse": "$gene_json_parse(" & arguments[0] & ")"
     of "json/stringify": "$gene_json_stringify(" & arguments[0] & ")"
+    of "console/log": "console.log(" & arguments[0] & ")"
+    of "console/warn": "console.warn(" & arguments[0] & ")"
+    of "console/error": "console.error(" & arguments[0] & ")"
+    of "dom/prevent_default": "$gene_dom_prevent_default(" & arguments[0] & ")"
+    of "dom/stop_propagation": "$gene_dom_stop_propagation(" & arguments[0] & ")"
+    of "http/get":
+      "$gene_http_request(\"GET\", " & arguments[0] & ", null, " &
+        arguments[1] & ")"
+    of "http/post_form":
+      "$gene_http_request(\"POST\", " & arguments[0] & ", " & arguments[1] &
+        ", " & arguments[2] & ")"
     of "size": "BigInt(Array.isArray(" & arguments[0] & ") || typeof " &
       arguments[0] & " === \"string\" ? " &
       (if emitter.typescript: "(" & arguments[0] & " as any)" else: arguments[0]) &
@@ -2812,8 +2937,16 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     validatorName(expr.typ) & "(" & emitter.emitExpr(expr.children[0]) &
       ", \"typed boundary\")"
   of wekBinary:
-    let left = emitter.emitExpr(expr.children[0])
-    let right = emitter.emitExpr(expr.children[1])
+    var left = emitter.emitExpr(expr.children[0])
+    var right = emitter.emitExpr(expr.children[1])
+    if expr.text == "$":
+      # JS `+` on a non-string does not agree with Gene display — `null` prints
+      # as "null", not "nil" — so anything that is not already a Str goes
+      # through the display helper.
+      if expr.children[0].typ.kind != wtkStr:
+        left = "$gene_str(" & left & ")"
+      if expr.children[1].typ.kind != wtkStr:
+        right = "$gene_str(" & right & ")"
     if expr.text in ["==", "!="] and expr.children[0].typ.kind in
         {wtkList, wtkPropMap, wtkMap, wtkNode, wtkAny, wtkNominal}:
       (if expr.text == "!=": "!" else: "") &
@@ -3092,6 +3225,50 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       enumName & "." & variantName & "(" & arguments.join(", ") & ")"
   of wekDomRender:
     "$gene_dom_render(" & emitter.emitExpr(expr.children[0]) & ")"
+  of wekLambda:
+    # An arrow function, so `this` is not rebound — a Gene callback has no
+    # receiver, and `function` would silently give it one at a DOM call site.
+    # Statements the body needs are emitted into the arrow's own block rather
+    # than hoisted out of it, which is what makes the capture correct.
+    var params: seq[string]
+    for param in expr.params:
+      params.add param.emittedName &
+        (if emitter.typescript: ": " & tsType(param.typ) else: "")
+    let signature = "(" & params.join(", ") & ")" &
+      (if emitter.typescript: ": " & tsType(expr.typ.returnType) else: "")
+    let savedLines = emitter.lines
+    let savedLocs = emitter.lineLocs
+    emitter.lines = @[]
+    emitter.lineLocs = @[]
+    let savedIndent = emitter.indent
+    emitter.indent = savedIndent + 1
+    let bodyValue = emitter.emitExpr(expr.children[0])
+    let bodyLines = emitter.lines
+    let bodyLocs = emitter.lineLocs
+    emitter.indent = savedIndent
+    emitter.lines = savedLines
+    emitter.lineLocs = savedLocs
+    if bodyLines.len == 0:
+      # A pure expression body needs no block, and no statement slot.
+      signature & " => " & bodyValue
+    else:
+      # The body needed statements, so the arrow is bound to a temp and the
+      # call site names it. Always a `const`, never a patched-up line: the
+      # emitter owns every line it writes here, so there is nothing to search
+      # for and nothing to desync.
+      let target = emitter.temp()
+      emitter.line("const " & target & " = " & signature & " => {")
+      for i, text in bodyLines:
+        emitter.lines.add text
+        emitter.lineLocs.add bodyLocs[i]
+      inc emitter.indent
+      if expr.typ.returnType.kind == wtkVoid:
+        emitter.line("void " & bodyValue & ";")
+      else:
+        emitter.line("return " & bodyValue & ";")
+      dec emitter.indent
+      emitter.line("};")
+      target
   of wekDomListener:
     let target = emitter.emitExpr(expr.children[0])
     let eventType = emitter.emitExpr(expr.children[1])
@@ -3267,6 +3444,19 @@ proc usesStructuralEquality(expr: WebExpr): bool =
 
 proc moduleUsesStructuralEquality(module: WebModule): bool =
   module.moduleAny(usesStructuralEquality)
+
+proc usesDisplayConcat(expr: WebExpr): bool =
+  ## A `$` with a non-Str operand, which is what needs the display helper. A
+  ## Str-only concatenation stays a plain `+`.
+  if expr.kind == wekBinary and expr.text == "$" and
+      (expr.children[0].typ.kind != wtkStr or
+       expr.children[1].typ.kind != wtkStr):
+    return true
+  for child in expr.children:
+    if usesDisplayConcat(child): return true
+
+proc moduleUsesDisplayConcat(module: WebModule): bool =
+  module.moduleAny(usesDisplayConcat)
 
 proc usesExprKind(expr: WebExpr, kinds: set[WebExprKind]): bool =
   if expr.kind in kinds: return true
@@ -4249,6 +4439,57 @@ proc emitModule(module: WebModule, typescript: bool,
       ", " & typeParam & ", " & handlerParam & ")" & voidReturn &
       " { target.removeEventListener(type, handler" &
       (if typescript: " as EventListener" else: "") & "); }")
+    emitter.line()
+  if moduleUsesDisplayConcat(module):
+    # Gene display, not JS `String()`: `null` is "nil", `undefined` is "void",
+    # and a symbol is its name. Interpolation is the one place the two
+    # backends have to agree character-for-character, since the result is
+    # usually what the user sees.
+    emitter.line("function $gene_str(value" &
+      (if typescript: ": unknown" else: "") & ")" &
+      (if typescript: ": string" else: "") & " {")
+    inc emitter.indent
+    emitter.line("if (typeof value === \"string\") return value;")
+    emitter.line("if (value === null) return \"nil\";")
+    emitter.line("if (value === undefined) return \"void\";")
+    emitter.line("if (typeof value === \"symbol\") return Symbol.keyFor(value) ?? value.description ?? \"\";")
+    emitter.line("return String(value);")
+    dec emitter.indent
+    emitter.line("}")
+    emitter.line()
+  if moduleUsesBuiltin(module, ["dom/prevent_default", "dom/stop_propagation"]):
+    # Typed as `Any` because an Event has no profile type; the guard is what
+    # keeps a mistaken receiver from failing silently, which is the failure mode
+    # that makes "is my handler even running?" hard to answer.
+    let eventParam = if typescript: "event: any" else: "event"
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_dom_prevent_default(" & eventParam & ")" &
+      voidReturn & " { if (typeof event?.preventDefault !== \"function\") " &
+      "throw new TypeError(\"dom/prevent_default expected an Event\"); " &
+      "event.preventDefault(); }")
+    emitter.line("function $gene_dom_stop_propagation(" & eventParam & ")" &
+      voidReturn & " { if (typeof event?.stopPropagation !== \"function\") " &
+      "throw new TypeError(\"dom/stop_propagation expected an Event\"); " &
+      "event.stopPropagation(); }")
+    emitter.line()
+  if moduleUsesBuiltin(module, ["http/get", "http/post_form"]):
+    let dynamic = if typescript: ": any" else: ""
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_http_request(method" & dynamic & ", url" &
+      dynamic & ", body" & dynamic & ", on_ok" & dynamic & ")" & voidReturn &
+      " {")
+    inc emitter.indent
+    emitter.line("const init = body === null ? { method } : { method, headers: { \"content-type\": \"application/x-www-form-urlencoded\" }, body };")
+    emitter.line("fetch(url, init).then((response) => {")
+    inc emitter.indent
+    # A 4xx/5xx is a resolved promise in fetch, so it has to be turned into a
+    # rejection explicitly or a failed write would run the success path.
+    emitter.line("if (!response.ok) throw new Error(`${method} ${url} failed: ${response.status} ${response.statusText}`);")
+    emitter.line("return response.text();")
+    dec emitter.indent
+    emitter.line("}).then(on_ok).catch((error) => { queueMicrotask(() => { throw error; }); });")
+    dec emitter.indent
+    emitter.line("}")
     emitter.line()
   if moduleUsesBuiltin(module, ["html/escape", "html/attr_escape"]):
     emitter.line("function $gene_html_escape(value" &
