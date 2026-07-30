@@ -5,11 +5,11 @@ flagship example. Full design, roadmap, and architecture: [design.md](design.md)
 
 | File | Role |
 |---|---|
-| `tui.gene` | Main application: terminal agent, native agents/panes, streaming model loop, typed tools, event log, `/repl`, and optional gateway flags. |
-| `gateway_adapter.gene` | UI-neutral HTTP/web/Telegram gateway adapter composed by the main application. |
-| `gateway.gene` | Thin headless compatibility launcher over `core.gene` + `gateway_adapter.gene`; loads no TUI module. |
-| `logging.gene` | Trace-level JSONL diagnostic profile for the agent; writes `logs/agent.jsonl` beside the config. |
-| `design.md` | The design document (formerly `docs/ai-agent.md`) — what exists, what's next, and why. |
+| `src/tui.gene` | Main application: terminal agent, native agents/panes, streaming model loop, typed tools, event log, `/repl`, and optional gateway flags. |
+| `src/gateway_adapter.gene` | UI-neutral HTTP/web/Telegram gateway adapter composed by the main application. |
+| `src/gateway.gene` | Thin headless compatibility launcher over `core.gene` + `gateway_adapter.gene`; loads no TUI module. |
+| `config/logging.gene` | Trace-level JSONL diagnostic profile for the agent; writes `logs/agent.jsonl` beside the config. |
+| `docs/design.md` | The design document (formerly `docs/ai-agent.md`) — what exists, what's next, and why. |
 | `package.gene` | Package manifest. |
 
 ## Quick start
@@ -18,22 +18,22 @@ flagship example. Full design, roadmap, and architecture: [design.md](design.md)
 nimble build   # from the repo root
 
 # Offline demo — no network or key; drives the full tool_call loop:
-bin/gene run examples/ai_agent/tui.gene
+bin/gene run examples/ai_agent/src/tui.gene
 
 # Live against the Codex/ChatGPT Responses backend:
-OPENAI_AUTH_TOKEN=... bin/gene run examples/ai_agent/tui.gene
+OPENAI_AUTH_TOKEN=... bin/gene run examples/ai_agent/src/tui.gene
 
 # Live against any OpenAI-compatible chat endpoint (MiniMax, DeepSeek, vLLM...):
 OPENAI_BASE_URL=https://api.minimax.io/v1 OPENAI_MODEL=MiniMax-M2 \
-OPENAI_API_KEY=... bin/gene run examples/ai_agent/tui.gene
+OPENAI_API_KEY=... bin/gene run examples/ai_agent/src/tui.gene
 
 # One-shot (no interactive prompt):
-OPENAI_AUTH_TOKEN=... bin/gene run examples/ai_agent/tui.gene "explain src/gene/reader.nim"
+OPENAI_AUTH_TOKEN=... bin/gene run examples/ai_agent/src/tui.gene "explain src/gene/reader.nim"
 
 # Detailed structured diagnostics (prompts, model text, tool args/output, and
 # credentials are deliberately excluded):
-bin/gene run --log-config examples/ai_agent/logging.gene \
-  examples/ai_agent/tui.gene
+bin/gene run --log-config examples/ai_agent/config/logging.gene \
+  examples/ai_agent/src/tui.gene
 ```
 
 ## Diagnostic logging
@@ -127,13 +127,13 @@ enforce foreground lifetime independently of that optional classifier; use
 
 ```bash
 # Integrated headless gateway:
-bin/gene run examples/ai_agent/tui.gene -- --gateway --headless
+bin/gene run examples/ai_agent/src/tui.gene -- --gateway --headless
 
 # TUI and gateway in one process (explicit port overrides the environment):
-OPENAI_AUTH_TOKEN=... bin/gene run examples/ai_agent/tui.gene -- --gateway=8090
+OPENAI_AUTH_TOKEN=... bin/gene run examples/ai_agent/src/tui.gene -- --gateway=8090
 
 # Compatibility launcher:
-GENE_GATEWAY_PORT=8090 bin/gene run examples/ai_agent/gateway.gene
+GENE_GATEWAY_PORT=8090 bin/gene run examples/ai_agent/src/gateway.gene
 # then open http://127.0.0.1:8090/ for the web chat
 ```
 
