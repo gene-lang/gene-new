@@ -2,8 +2,12 @@
 
 import std/[algorithm, base64, dynlib, json, locks, math, monotimes, net, os,
             osproc, sets, strutils, tables, times, unicode]
-import ./[compiler, diagnostics, equality, fmt, gir, logging, printer, reader,
-          types]
+import ./[compiler, diagnostics, equality, fmt, gir, logging, package, printer,
+          reader, types]
+export package.Package, package.PackageKind, package.PackageOrigin,
+       package.PackageError, package.PackageErrorClass, package.DependencyDecl,
+       package.packageIdentity, package.userStoreDir,
+       package.applicationStoreDir, package.ManifestFileName
 
 when not defined(geneWasm):
   # The web backend is host-only: `web_module` assets exist to be *served*, and
@@ -338,7 +342,27 @@ type
     implScopeIndex: Table[tuple[receiver, message: uint64], seq[Scope]]
     baseScopes: seq[Scope] # enumerable module/program bases for reload checks
     currentModuleDir: string
-    packageRoot: string
+    # --- packages (docs/proposals/package.md) --------------------------------
+    #
+    # `appPackage` is the application package selected at startup — either the
+    # nearest ancestor `package.gene` or a synthesized ad-hoc package. It
+    # replaces the old bare `packageRoot` string: the root is still there
+    # (`appPackage.root`), but a package now also carries identity, a source
+    # layout, and a declared dependency allow-list.
+    appPackage: Package
+    # The package owning the module currently being compiled or initialized.
+    # Saved/restored alongside `currentModuleDir`, so a dependency's own
+    # relative imports and boundary checks are evaluated against *its* package,
+    # never the application's.
+    currentPackage: Package
+    launchDir: string          # canonical launch cwd, captured once (§4)
+    userStoreRoot: string      # canonical `~/.gene/packages` (§7)
+    packagesByName: Table[string, Package]   # the resolved package table
+    packagesByRoot: Table[string, Package]   # manifest cache, canonical root
+    packageEdges: Table[string, seq[string]] # resolved dependency edges
+    packageRequirements: Table[string, seq[PackageRequirement]]
+    packageGraphWalked: HashSet[string]      # names whose subgraph is resolved
+    moduleIdentities: Table[string, string]  # abs module path -> §10 identity
     # Experimental URL module sources (design §15.9). Enabled only by the
     # `gene runurl` entry; when off, URL module paths are rejected at
     # resolution time. Fetched sources are cached per run so compile-time
@@ -491,6 +515,7 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
                        receiverValue = NIL) {.noreturn.}
 proc rejectCallerEnvEscape(where: string, value: Value) {.noinline.}
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool
+proc isUrlModulePath*(path: string): bool
 # The AOT loader lives in the included stdlib, which is spliced in well before
 # these are defined.
 proc validateAotTypeRequirements*(reqs: openArray[AotTypeRequirement]): string
@@ -523,6 +548,9 @@ proc application*(scope: Scope): Application
 proc builtinsScope*(app: Application): Scope
 proc builtinsScope*(): Scope
 proc resolveModulePath*(app: Application, rawPath: string): string
+proc resolveApplicationModulePath*(app: Application, rawPath: string): string
+proc applicationPackage*(app: Application): Package
+proc moduleIdentityFor*(app: Application, absPath: string): string
 
 proc builtinTypeBinding(scope: Scope, name: string, value: var Value): bool =
   ## Resolve a standard-library type the VM raises or checks against (`Error`,
@@ -3646,7 +3674,7 @@ proc declarationKind*(value: Value): string =
 proc exportedBinding(ns: Value, name: string): Value =
   if ns.kind != vkNamespace:
     return VOID
-  if ns.nsIsModuleRoot and name == "this_mod":
+  if ns.nsIsModuleRoot and name in ["this_mod", "this_pkg"]:
     return VOID
   if name in ns.nsScope.exportExcludedNames:
     return VOID
@@ -3655,7 +3683,7 @@ proc exportedBinding(ns: Value, name: string): Value =
 
 proc namespaceDeclarationNodes(ns: Value): seq[Value] =
   for name in sortedBindingNames(ns.nsScope):
-    if ns.nsIsModuleRoot and name == "this_mod":
+    if ns.nsIsModuleRoot and name in ["this_mod", "this_pkg"]:
       continue
     let value = ns.nsScope.vars[name]
     var props = initPropTable()
@@ -6285,10 +6313,16 @@ proc newSchedulerState(): SchedulerState =
   when compileOption("threads") and defined(gcAtomicArc):
     initCond(result.workerCond)
 
-proc newApplication*(entryDir = ""): Application =
-  ## Create the runtime owner for one Gene program. MVP packages are represented
-  ## by the root directory used for absolute/bare module resolution.
-  let root = normalizedDir(entryDir)
+proc resolvePackageGraph(app: Application, root: Package)
+
+proc newApplication*(startDir = ""): Application =
+  ## Create the runtime owner for one Gene program and select its application
+  ## package (proposal §4). `startDir` is the *discovery start directory*: the
+  ## entry file's parent for a file-oriented command, the launch working
+  ## directory for a file-less entry. Discovery walks toward the filesystem
+  ## root and stops at the first `package.gene`; with none, an ad-hoc package
+  ## is synthesized at `startDir` so an unconfigured script needs no manifest.
+  let root = normalizedDir(startDir)
   result = Application(moduleCache: initTable[string, Value](),
                        moduleLoading: initHashSet[string](),
                        moduleCompileHeaders:
@@ -6300,7 +6334,292 @@ proc newApplication*(entryDir = ""): Application =
                          initTable[tuple[receiver, message: uint64], seq[Scope]](),
                        scheduler: newSchedulerState(),
                        currentModuleDir: root,
-                       packageRoot: root)
+                       launchDir: normalizedDir(""),
+                       userStoreRoot: userStoreDir())
+  result.appPackage = discoverApplicationPackage(root)
+  result.currentPackage = result.appPackage
+  result.packagesByRoot[result.appPackage.root] = result.appPackage
+  if result.appPackage.kind == pkRegular:
+    result.packagesByName[result.appPackage.name] = result.appPackage
+    # The declared graph is walked once, up front. A version conflict is a
+    # property of two requirements (§9), so it is only detectable when the
+    # whole requirement table exists — resolving lazily per import would make
+    # the reported error depend on which import ran first.
+    result.resolvePackageGraph(result.appPackage)
+
+proc newApplicationForEntryFile*(entryFile: string): Application =
+  ## Discovery for a file-oriented command: start at the entry file's canonical
+  ## parent directory, so `gene run /elsewhere/script.gene` keeps working from
+  ## any working directory and a script tree carries its package with it (§4).
+  newApplication(parentDir(normalizedPath(absolutePath(entryFile))))
+
+proc applicationPackage*(app: Application): Package =
+  app.appPackage
+
+proc packageRoot*(app: Application): string =
+  app.appPackage.root
+
+proc launchDirectory*(app: Application): string =
+  app.launchDir
+
+proc userStore*(app: Application): string =
+  app.userStoreRoot
+
+# ---------------------------------------------------------------------------
+# Package resolution (docs/proposals/package.md §7-§9)
+# ---------------------------------------------------------------------------
+
+proc packageAt(app: Application, root: string, origin: PackageOrigin): Package =
+  ## Read — or return the cached — manifest for a package root. Records and
+  ## manifests are cached per Application, so a diamond in the graph parses
+  ## each manifest once and no import hot path ever reparses one.
+  let canonical = normalizedPath(absolutePath(root))
+  if app.packagesByRoot.hasKey(canonical):
+    return app.packagesByRoot[canonical]
+  result = loadPackageAt(canonical, origin)
+  app.packagesByRoot[canonical] = result
+
+proc storeSearchPaths(app: Application, name: string): array[2, string] =
+  ## Both stores, in precedence order. The candidate path is *constructed*
+  ## (§7); the stores are never enumerated, so neither the result nor the cost
+  ## of resolution depends on what else happens to be installed.
+  [storeCandidateDir(applicationStoreDir(app.appPackage.root), name),
+   storeCandidateDir(app.userStoreRoot, name)]
+
+proc selectStoreCandidate(app: Application, name, context: string): Package =
+  ## §9 step 5. The application store wins, and when it holds a candidate the
+  ## user store is not consulted at all — an existing application candidate is
+  ## authoritative even when it is broken, so machine-local state can never
+  ## mask a tampered or malformed vendored package.
+  let paths = app.storeSearchPaths(name)
+  for i, dir in paths:
+    if fileExists(dir / ManifestFileName):
+      return app.packageAt(dir,
+                           if i == 0: poApplicationStore else: poUserStore)
+  raisePackageError(pecNotFound, "no package named " & name & " was found",
+    [context,
+     "searched application store: " & paths[0] / ManifestFileName,
+     "searched user store: " & paths[1] / ManifestFileName])
+
+proc requireIdentity(candidate: Package, name, context, source: string) =
+  if candidate.name != name:
+    raisePackageError(pecIdentityMismatch,
+      "package at " & candidate.root & " declares ^name " & candidate.name &
+      ", not " & name,
+      [context, source & ": " & candidate.manifestPath])
+
+proc selectDeclaredCandidate(app: Application, declaring: Package,
+                             dep: DependencyDecl): Package =
+  ## §9 steps 4-6 for one declaration.
+  let context = "declared by: " & declaring.describe
+  if dep.hasPath:
+    # A path dependency may point anywhere the author can name and becomes its
+    # own package with its own root (§8). `..` is legal *here* and illegal in a
+    # module path: the two rules constrain different things, and applying the
+    # traversal check at this level would break sibling-checkout development.
+    let root = normalizedPath(absolutePath(dep.path, declaring.root))
+    if not fileExists(root / ManifestFileName):
+      raisePackageError(pecNotFound,
+        "path dependency " & dep.name & " has no " & ManifestFileName,
+        [context, "searched: " & root / ManifestFileName])
+    result = app.packageAt(root, poPathDependency)
+  else:
+    result = app.selectStoreCandidate(dep.name, context)
+    # A stored dependency must be a regular package declaring both ^name and
+    # ^version (§8). A sibling checkout reached through ^path may omit it.
+    if result.version.len == 0:
+      raisePackageError(pecManifestInvalid,
+        "a package in a store must declare ^version: " & dep.name,
+        [context, "candidate: " & result.manifestPath])
+  result.requireIdentity(dep.name, context, "candidate")
+
+proc validatePackageVersions(app: Application) =
+  ## §9 phase 2. Selecting a candidate and validating a version cannot happen
+  ## in the same step: a conflict is a property of two *requirements*, so no
+  ## procedure that examines one import at a time can detect one. Failures are
+  ## reported sorted by package name, then by requiring package, so the
+  ## diagnostic for a given graph is identical on every run and every machine.
+  var names: seq[string]
+  for name in app.packageRequirements.keys:
+    names.add name
+  names.sort()
+  for name in names:
+    var requirements = app.packageRequirements[name]
+    requirements.sort(proc (a, b: PackageRequirement): int =
+      result = cmp(a.requiredBy, b.requiredBy)
+      if result == 0:
+        result = cmp(a.version, b.version))
+    var versions: seq[string]
+    for requirement in requirements:
+      if requirement.version notin versions:
+        versions.add requirement.version
+    if versions.len == 0:
+      continue
+    let candidate =
+      if app.packagesByName.hasKey(name): app.packagesByName[name]
+      else: nil
+    if versions.len > 1:
+      var requirers: seq[string]
+      var details: seq[string]
+      for requirement in requirements:
+        if requirement.requiredBy notin requirers:
+          requirers.add requirement.requiredBy
+        details.add requirement.requiredBy & " requires " & name & " " &
+          requirement.version
+      if candidate != nil:
+        details.add "single candidate: " & candidate.manifestPath &
+          " (found version " & candidate.version & ")"
+      raisePackageError(pecVersionConflict,
+        requirers.join(" and ") & " require incompatible " & name &
+        " versions", details)
+    if candidate != nil and candidate.version != versions[0]:
+      var details = @["required by: " & requirements[0].requiredBy,
+                      "candidate: " & candidate.manifestPath,
+                      "found version: " & candidate.version]
+      if candidate.origin == poApplicationStore:
+        details.add "user store was not searched because an application " &
+          "candidate exists"
+      raisePackageError(pecVersionMismatch,
+        requirements[0].requiredBy & " requires " & name & " " & versions[0],
+        details)
+
+proc resolvePackageGraph(app: Application, root: Package) =
+  ## §9 phase 1 (select and collect) followed by phase 2 (validate versions),
+  ## over the subgraph reachable from `root`. Requirements accumulate on the
+  ## Application, so a lazily added ad-hoc subgraph is validated against every
+  ## requirement already collected.
+  var chain: seq[string]
+  var onChain = initHashSet[string]()
+
+  proc walkKey(pkg: Package): string =
+    if pkg.kind == pkRegular: pkg.name else: "<ad_hoc>:" & pkg.root
+
+  proc visit(pkg: Package) =
+    let key = walkKey(pkg)
+    if key in app.packageGraphWalked:
+      return
+    if key in onChain:
+      var cycle = chain
+      cycle.add key
+      raisePackageError(pecDependencyCycle,
+        "dependency cycle: " & cycle.join(" -> "))
+    onChain.incl key
+    chain.add key
+    # Dependencies are walked in package-name order rather than manifest
+    # order, so both the reachable set and the first failure reported are
+    # properties of the graph, never of how a manifest happens to be written.
+    var deps = pkg.dependencies
+    deps.sort(proc (a, b: DependencyDecl): int = cmp(a.name, b.name))
+    var edges: seq[string]
+    for dep in deps:
+      if dep.hasVersion:
+        # No version is validated in this phase.
+        app.packageRequirements.mgetOrPut(dep.name, @[]).add(
+          PackageRequirement(requiredBy: pkg.name, version: dep.version))
+      let selected = app.selectDeclaredCandidate(pkg, dep)
+      if app.packagesByName.hasKey(dep.name):
+        let existing = app.packagesByName[dep.name]
+        if existing.root != selected.root:
+          raisePackageError(pecIdentityMismatch,
+            "two packages claim the name " & dep.name,
+            ["candidate: " & existing.manifestPath,
+             "candidate: " & selected.manifestPath])
+      else:
+        app.packagesByName[dep.name] = selected
+      edges.add dep.name
+      visit(selected)
+    app.packageEdges[key] = edges
+    chain.setLen(chain.len - 1)
+    onChain.excl key
+    app.packageGraphWalked.incl key
+
+  visit(root)
+  app.validatePackageVersions()
+
+proc packageForImport(app: Application, importer: Package,
+                      pkgName: string): Package =
+  ## §9 steps 1-3 at an import site. The candidate itself was chosen, and its
+  ## version agreed, by the graph walk; this only decides *which* name the
+  ## importer is allowed to reach.
+  validatePackageName(pkgName, "^pkg in " & importer.describe)
+  if importer.kind == pkRegular and importer.name == pkgName:
+    return importer
+  if importer.kind == pkRegular:
+    var declared = false
+    for dep in importer.dependencies:
+      if dep.name == pkgName:
+        declared = true
+        break
+    if not declared:
+      # Transitive presence in a package store does not grant a direct import.
+      raisePackageError(pecNotDeclared,
+        importer.name & " does not declare a dependency on " & pkgName,
+        ["add (dep \"" & pkgName & "\" \"<version>\") to " &
+         importer.manifestPath])
+  elif not app.packagesByName.hasKey(pkgName):
+    # An ad-hoc package has no manifest, so a named import resolves directly
+    # against the two stores (§8). It still receives ambiguity, identity, and
+    # boundary checks; it just has no declared allow-list to check against.
+    let context = "imported by: " & importer.describe
+    let candidate = app.selectStoreCandidate(pkgName, context)
+    candidate.requireIdentity(pkgName, context, "candidate")
+    app.packagesByName[pkgName] = candidate
+    app.resolvePackageGraph(candidate)
+  if not app.packagesByName.hasKey(pkgName):
+    raisePackageError(pecNotFound,
+      "package " & pkgName & " was declared but never resolved",
+      ["imported by: " & importer.describe])
+  app.packagesByName[pkgName]
+
+proc owningPackage*(app: Application, absPath: string): Package =
+  ## The deepest resolved package whose root contains `absPath`. Nested
+  ## packages are real boundaries, so the deepest root wins.
+  var bestLen = -1
+  for root, pkg in app.packagesByRoot:
+    if root.len > bestLen and containsPath(root, absPath):
+      result = pkg
+      bestLen = root.len
+
+proc moduleIdentityFor*(app: Application, absPath: string): string =
+  ## `<package_identity>::<normalized_module_path>` (§10), memoized. The
+  ## filesystem path is retained for diagnostics and source loading, but the
+  ## Application's load-once cache keys on this, so two packages with identical
+  ## relative layouts cannot collide.
+  if absPath.isUrlModulePath:
+    return absPath
+  if app.moduleIdentities.hasKey(absPath):
+    return app.moduleIdentities[absPath]
+  let pkg = app.owningPackage(absPath)
+  result =
+    if pkg == nil: absPath
+    else: pkg.moduleIdentity(absPath)
+  app.moduleIdentities[absPath] = result
+
+proc resolvedPackages*(app: Application): seq[Package] =
+  ## Every package in the resolved table, in name order. `gene pkg show` reads
+  ## this; it never re-resolves anything.
+  var names: seq[string]
+  for name in app.packagesByName.keys:
+    names.add name
+  names.sort()
+  for name in names:
+    result.add app.packagesByName[name]
+
+proc dependencyEdgesOf*(app: Application, name: string): seq[string] =
+  app.packageEdges.getOrDefault(name, @[])
+
+proc locatePackage*(app: Application, name: string): Package =
+  ## Resolve `name` the way an import from the application package would
+  ## (§9 steps 1-3), so `gene pkg locate` reports exactly what an import
+  ## would get, including the store it came from.
+  app.packageForImport(app.appPackage, name)
+
+proc packageForModule(app: Application, absPath: string): Package =
+  if absPath.isUrlModulePath:
+    return app.appPackage
+  result = app.owningPackage(absPath)
+  if result == nil:
+    result = app.appPackage
 
 proc currentApplication(): Application =
   if gApplication == nil:
@@ -6401,19 +6720,54 @@ proc loadNativeFast(scope: Scope, kind: NativeFastKind, name: string): Value =
   if result.kind == vkNil:
     return scope.lookup(name)
 
-proc bindThisModule*(scope: Scope, name: string, path = ""): Value =
+proc packageValue*(pkg: Package): Value =
+  ## The Gene-facing view of a Package record (proposal §11). Every key uses
+  ## `snake_case`, including `source_dir`, `main_module`, and `test_dir`, so
+  ## `this_pkg/source_dir` reads like every other Gene-facing name.
+  var entries = initPropTable()
+  entries["kind"] = newStr($pkg.kind)
+  entries["name"] = if pkg.name.len > 0: newStr(pkg.name) else: NIL
+  entries["version"] = if pkg.version.len > 0: newStr(pkg.version) else: NIL
+  entries["description"] =
+    if pkg.description.len > 0: newStr(pkg.description) else: NIL
+  entries["root"] = newStr(pkg.root)
+  entries["manifest_path"] =
+    if pkg.manifestPath.len > 0: newStr(pkg.manifestPath) else: NIL
+  entries["source_dir"] = newStr(pkg.sourceDir)
+  entries["main_module"] =
+    if pkg.mainModule.len > 0: newStr(pkg.mainModule) else: NIL
+  entries["test_dir"] = newStr(pkg.testDir)
+  entries["origin"] = newStr($pkg.origin)
+  var deps: seq[Value]
+  for dep in pkg.dependencies:
+    var entry = initPropTable()
+    entry["name"] = newStr(dep.name)
+    entry["version"] = if dep.hasVersion: newStr(dep.version) else: NIL
+    entry["path"] = if dep.hasPath: newStr(dep.path) else: NIL
+    deps.add newMap(entry)
+  entries["dependencies"] = newList(deps)
+  newMap(entries)
+
+proc bindThisModule*(scope: Scope, name: string, path = "",
+                     pkg: Package = nil): Value =
   ## Create the first-class module value for a module root scope. The root
   ## namespace owns declarations; the Module value carries identity, path, and
   ## metadata and is exposed through the compiler-provided `this_mod` binding.
+  ## `this_pkg` is bound the same way: each loaded Module links to its owning
+  ## Package lexically, never through a process-global current package.
   let root = newNamespace(name, scope, path, moduleRoot = true)
   scope.moduleRoot = true
   scope.moduleStatic = true
   # A named module base is enumerable for reload (file modules, the reload
   # replacement, native modules). Already retained by moduleCache, so this adds
   # no lifetime beyond the module itself.
-  scope.application().trackBaseScope(scope)
+  let app = scope.application()
+  app.trackBaseScope(scope)
   result = newModule(name, root, path)
   scope.define("this_mod", result)
+  let owner = if pkg != nil: pkg else: app.currentPackage
+  if owner != nil:
+    scope.define("this_pkg", owner.packageValue())
 
 # ---------------------------------------------------------------------------
 # Module loading (design §15.4/§15.6)
@@ -6427,13 +6781,11 @@ proc initModuleContext*(entryDir: string): Application {.discardable.} =
   gApplication
 
 proc isWithinPackageRoot(app: Application, path: string): bool =
-  let root = normalizedPath(absolutePath(app.packageRoot))
-  if path == root:
-    return true
-  let prefix =
-    if root.len > 0 and root[^1] == DirSep: root
-    else: root & $DirSep
-  path.startsWith(prefix)
+  ## Containment against the *application* package. Host entry points
+  ## (`loadFileModule`, `compileFileModule`, `reloadFileModule`) use this;
+  ## source-level imports check the importing module's own package instead,
+  ## because a dependency owns its own boundary.
+  app.appPackage.contains(path)
 
 # --- URL module sources (design §15.9, experimental) ------------------------
 #
@@ -6519,8 +6871,76 @@ proc validateModuleUrl(app: Application, url, rawPath: string): string =
     normalized &= ".gene"
   normalized
 
-proc resolveModulePath*(app: Application, rawPath: string): string =
-  ## Normalize a `from "path"` string to a stable absolute module identity.
+proc moduleCandidate(base, relPath: string): string =
+  ## One module base plus one module name, with the MVP extension policy
+  ## applied. A name without an extension resolves to `<name>.gene`; a file
+  ## literally named `<name>` sitting beside it makes the reference ambiguous
+  ## rather than silently resolving to one of the two.
+  let direct = normalizedPath(absolutePath(relPath, base))
+  if splitFile(relPath).ext.len > 0:
+    return direct
+  result = direct & ".gene"
+  if fileExists(result) and fileExists(direct):
+    raisePackageError(pecModuleAmbiguous,
+      "module reference \"" & relPath & "\" matches two files",
+      ["candidate: " & result, "candidate: " & direct])
+
+proc resolveInModuleBases(pkg: Package, relPath: string): string =
+  ## Search a package's module bases in order (§10): the declared `source_dir`
+  ## first, then the package root. The root fallback supports intentionally
+  ## flat packages and migration from ad-hoc layouts; no other base is added.
+  ## When nothing exists the first candidate is returned so the caller reports
+  ## "module not found" against the primary base.
+  var fallback = ""
+  for base in pkg.moduleBases():
+    let candidate = moduleCandidate(base, relPath)
+    if fallback.len == 0:
+      fallback = candidate
+    if fileExists(candidate):
+      return candidate
+  fallback
+
+proc resolvePackageModule*(app: Application, pkg: Package,
+                           rawPath: string): string =
+  ## Module selection inside an already-selected package (§10). Every module
+  ## name resolves literally; `"."` is the only path the resolver rewrites, and
+  ## it rewrites to `main_module`. `"."` can never collide with a real module
+  ## because `.` does not name a file, and it works identically for regular and
+  ## ad-hoc packages.
+  var p = rawPath
+  if p == PackageEntryModulePath:
+    if pkg.mainModule.len == 0:
+      raisePackageError(pecModuleNotFound,
+        "\".\" has no entry module in " & pkg.describe)
+    p = pkg.mainModule
+  if p.isUrlModulePath:
+    raisePackageError(pecBoundary,
+      "a package-qualified import cannot name a URL: " & rawPath,
+      ["package: " & pkg.describe])
+  if p.len == 0 or p.isAbsolute or p[0] == '/':
+    raisePackageError(pecBoundary,
+      "a package-qualified module path must be package-relative: " & rawPath,
+      ["package: " & pkg.describe])
+  for segment in p.replace('\\', '/').split('/'):
+    if segment == "..":
+      raisePackageError(pecBoundary,
+        "a package-qualified import cannot use `..`: " & rawPath,
+        ["package: " & pkg.describe])
+  result = resolveInModuleBases(pkg, p)
+  if not pkg.contains(result):
+    raisePackageError(pecBoundary,
+      "module path escapes package root: " & rawPath,
+      ["package: " & pkg.describe, "root: " & pkg.root])
+
+proc resolveModuleRef*(app: Application, rawPath: string,
+                       pkgName = ""): string =
+  ## Normalize a `from "path"` reference to a stable absolute module identity.
+  ## `pkgName` is the import's `^pkg`: it selects a *package* before any module
+  ## name is interpreted, which is what keeps module selection separate from
+  ## package selection (§9, §10).
+  if pkgName.len > 0:
+    return app.resolvePackageModule(
+      app.packageForImport(app.currentPackage, pkgName), rawPath)
   if rawPath.isUrlModulePath:
     return app.validateModuleUrl(rawPath, rawPath)
   if app.currentModuleDir.isUrlModulePath:
@@ -6528,17 +6948,37 @@ proc resolveModulePath*(app: Application, rawPath: string): string =
     # importing module's URL — a remote module can never name a local file.
     return app.validateModuleUrl(
       resolveUrlRef(app.currentModuleDir, rawPath), rawPath)
-  var p = rawPath
-  if splitFile(p).ext.len == 0:
-    p = p & ".gene"          # MVP extension policy
-  let base =
-    if p.startsWith("./") or p.startsWith("../"): app.currentModuleDir
-    else: app.packageRoot    # bare and leading-"/" resolve from the root
-  if p.startsWith("/"):
-    p = p[1 .. ^1]
-  result = normalizedPath(absolutePath(p, base))
-  if not app.isWithinPackageRoot(result):
-    raise newException(GeneError, "module path escapes package root: " & rawPath)
+  let pkg = app.currentPackage
+  if rawPath == PackageEntryModulePath:
+    return app.resolvePackageModule(pkg, rawPath)
+  if rawPath.startsWith("./") or rawPath.startsWith("../"):
+    result = moduleCandidate(app.currentModuleDir, rawPath)
+  else:
+    var p = rawPath
+    if p.startsWith("/"):     # bare and leading-"/" resolve from the package
+      p = p[1 .. ^1]
+    result = resolveInModuleBases(pkg, p)
+  if not pkg.contains(result):
+    raisePackageError(pecBoundary,
+      "module path escapes package root: " & rawPath,
+      ["package: " & pkg.describe, "root: " & pkg.root])
+
+proc resolveModulePath*(app: Application, rawPath: string): string =
+  app.resolveModuleRef(rawPath)
+
+proc resolveApplicationModulePath*(app: Application, rawPath: string): string =
+  ## Resolve against the *application* package regardless of which module is
+  ## executing. Serde module refs are written relative to the application, so
+  ## they must be read back that way too.
+  let savedPkg = app.currentPackage
+  let savedDir = app.currentModuleDir
+  app.currentPackage = app.appPackage
+  app.currentModuleDir = app.appPackage.root
+  try:
+    app.resolveModuleRef(rawPath)
+  finally:
+    app.currentPackage = savedPkg
+    app.currentModuleDir = savedDir
 
 proc fetchUrlModuleSource(app: Application, url: string):
     tuple[finalUrl, body: string] =
@@ -11597,7 +12037,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var source: Value
           if spec.fromModule:
             let app = scope.application()
-            source = loadModuleValue(app, app.resolveModulePath(spec.modulePath))
+            source = loadModuleValue(app,
+              app.resolveModuleRef(spec.modulePath, spec.pkgName))
           else:
             # Resolve the import-source root as initialized-local → builtin →
             # error. `lookupOptional` walks the scope chain (nearer in-file
@@ -22582,20 +23023,21 @@ proc collectStaticImportForms(forms: openArray[Value], first = 0): seq[Value] =
 
 proc moduleCompileHeader(app: Application,
                          absPath: string): ModuleCompileHeader =
-  if app.moduleCompileHeaders.hasKey(absPath):
-    return app.moduleCompileHeaders[absPath]
+  let identity = app.moduleIdentityFor(absPath)
+  if app.moduleCompileHeaders.hasKey(identity):
+    return app.moduleCompileHeaders[identity]
   let source =
     if absPath.isUrlModulePath:
       app.fetchUrlModuleSource(absPath).body
     else:
       if not fileExists(absPath):
-        raise newException(GeneError, "module not found: " & absPath)
+        raisePackageError(pecModuleNotFound, "module not found: " & absPath)
       readFile(absPath)
   let unit = readAllWithLocs(source, absPath)
   result = ModuleCompileHeader(unit: unit,
                                compileInterface:
                                  buildCompileInterface(unit.forms, absPath))
-  app.moduleCompileHeaders[absPath] = result
+  app.moduleCompileHeaders[identity] = result
 
 proc compileModuleArtifact(app: Application,
                            absPath: string): ModuleCompileArtifact =
@@ -22603,15 +23045,18 @@ proc compileModuleArtifact(app: Application,
   ## executing top-level code. Wildcards and aliases consume lightweight
   ## headers; macros and explicit re-exports may require a dependency artifact.
   ## Value-only cycles remain runtime cycles.
-  if app.moduleCompileArtifacts.hasKey(absPath):
-    return app.moduleCompileArtifacts[absPath]
-  if absPath in app.moduleCompileLoading:
+  let identity = app.moduleIdentityFor(absPath)
+  if app.moduleCompileArtifacts.hasKey(identity):
+    return app.moduleCompileArtifacts[identity]
+  if identity in app.moduleCompileLoading:
     raise newException(GeneError,
       "compile-time macro dependency cycle at " & absPath)
   let header = app.moduleCompileHeader(absPath)
-  app.moduleCompileLoading.incl absPath
+  app.moduleCompileLoading.incl identity
   let savedDir = app.currentModuleDir
+  let savedPkg = app.currentPackage
   app.currentModuleDir = app.moduleSourceDir(absPath)
+  app.currentPackage = app.packageForModule(absPath)
   try:
     var importedMacros = initTable[string, Table[string, MacroDef]]()
     var importedSyntaxFns = initTable[string, seq[string]]()
@@ -22621,12 +23066,13 @@ proc compileModuleArtifact(app: Application,
     var importSpecs: seq[ImportSpec]
     var ownInterface = cloneCompileInterface(header.compileInterface)
     for form in collectStaticImportForms(header.unit.forms):
-      let raw = importFromPath(form)
-      if raw.len == 0:
+      if importFromPath(form).len == 0:
         continue
       let importSpec = parseImportSpec(form)
       importSpecs.add importSpec
-      let depPath = app.resolveModulePath(raw)
+      let raw = importSpec.importKey
+      let depPath = app.resolveModuleRef(importSpec.modulePath,
+                                         importSpec.pkgName)
       let depHeader = app.moduleCompileHeader(depPath)
       var depInterface = depHeader.compileInterface
       var dependency: ModuleCompileArtifact
@@ -22690,9 +23136,9 @@ proc compileModuleArtifact(app: Application,
     var macroExports = compiled.macroExports
     var syntaxFnExports = compiled.syntaxFnExports
     for spec in importSpecs:
-      if not spec.reexport or not dependencies.hasKey(spec.modulePath):
+      if not spec.reexport or not dependencies.hasKey(spec.importKey):
         continue
-      let dependency = dependencies[spec.modulePath]
+      let dependency = dependencies[spec.importKey]
       for selection in spec.selections:
         if dependency.macroExports.hasKey(selection.name):
           macroExports[selection.local] =
@@ -22724,36 +23170,42 @@ proc compileModuleArtifact(app: Application,
                                    macroExports: macroExports,
                                    syntaxFnExports: syntaxFnExports,
                                    compileInterface: ownInterface)
-    app.moduleCompileArtifacts[absPath] = result
+    app.moduleCompileArtifacts[identity] = result
   finally:
     app.currentModuleDir = savedDir
-    app.moduleCompileLoading.excl absPath
+    app.currentPackage = savedPkg
+    app.moduleCompileLoading.excl identity
 
 proc loadModuleValue(app: Application, absPath: string): Value =
   ## Initialize/cache the runtime phase of a compiled module. Compile-time
   ## macro discovery has a separate artifact cache and cycle set above and does
   ## not create scopes, grant capabilities, or execute top-level forms.
-  if app.moduleCache.hasKey(absPath):
-    return app.moduleCache[absPath]
-  if absPath in app.moduleLoading:
+  let identity = app.moduleIdentityFor(absPath)
+  if app.moduleCache.hasKey(identity):
+    return app.moduleCache[identity]
+  if identity in app.moduleLoading:
     raise newException(GeneError,
       "runtime module initialization cycle at " & absPath)
   if not absPath.isUrlModulePath and not fileExists(absPath):
-    raise newException(GeneError, "module not found: " & absPath)
-  app.moduleLoading.incl absPath
+    raisePackageError(pecModuleNotFound, "module not found: " & absPath)
+  app.moduleLoading.incl identity
   let modScope = newGlobalScope(app)
   modScope.implStageRoot = true
-  result = bindThisModule(modScope, splitFile(absPath).name, absPath)
   let savedDir = app.currentModuleDir
+  let savedPkg = app.currentPackage
   app.currentModuleDir = app.moduleSourceDir(absPath)
+  app.currentPackage = app.packageForModule(absPath)
+  result = bindThisModule(modScope, splitFile(absPath).name, absPath,
+                          app.currentPackage)
   try:
     let artifact = compileModuleArtifact(app, absPath)
     discard run(artifact.chunk, modScope)
     activateStagedImpls(modScope)
   finally:
     app.currentModuleDir = savedDir
-    app.moduleLoading.excl absPath
-  app.moduleCache[absPath] = result
+    app.currentPackage = savedPkg
+    app.moduleLoading.excl identity
+  app.moduleCache[identity] = result
 
 proc validateImplCollection(impls: openArray[ProtocolImpl]) =
   for i in 0 ..< impls.len:
@@ -22823,14 +23275,17 @@ proc reloadFileModule*(app: Application, path: string): Value =
     p &= ".gene"
   let absPath = normalizedPath(absolutePath(p))
   if not app.isWithinPackageRoot(absPath):
-    raise newException(GeneError, "module path escapes package root: " & path)
-  if not app.moduleCache.hasKey(absPath):
+    raisePackageError(pecBoundary,
+      "module path escapes package root: " & path,
+      ["package: " & app.appPackage.describe, "root: " & app.appPackage.root])
+  let identity = app.moduleIdentityFor(absPath)
+  if not app.moduleCache.hasKey(identity):
     return loadModuleValue(app, absPath)
-  if absPath in app.moduleLoading:
+  if identity in app.moduleLoading:
     raise newException(GeneError,
       "cannot reload a module during initialization: " & absPath)
   if not fileExists(absPath):
-    raise newException(GeneError, "module not found: " & absPath)
+    raisePackageError(pecModuleNotFound, "module not found: " & absPath)
 
   let oldRootImpls = app.builtinsScope().impls
   let oldModuleCache = app.moduleCache
@@ -22843,21 +23298,23 @@ proc reloadFileModule*(app: Application, path: string): Value =
   let oldSerdeValueOrigins = app.serdeValueOrigins
   let oldSerdeOriginModules = app.serdeOriginModules
   let oldSerdeBuiltinsDone = app.serdeOriginBuiltinsDone
-  let oldModule = app.moduleCache[absPath]
+  let oldModule = app.moduleCache[identity]
   let oldScope = oldModule.moduleRootNamespace.nsScope
   let oldInterface =
-    if oldArtifacts.hasKey(absPath): oldArtifacts[absPath].compileInterface
+    if oldArtifacts.hasKey(identity): oldArtifacts[identity].compileInterface
     else: nil
 
-  app.moduleCompileHeaders.del(absPath)
-  app.moduleCompileArtifacts.del(absPath)
-  app.moduleLoading.incl absPath
+  app.moduleCompileHeaders.del(identity)
+  app.moduleCompileArtifacts.del(identity)
+  app.moduleLoading.incl identity
   let replacementScope = newGlobalScope(app)
   replacementScope.implStageRoot = true
-  let replacement = bindThisModule(replacementScope,
-    splitFile(absPath).name, absPath)
   let savedDir = app.currentModuleDir
+  let savedPkg = app.currentPackage
   app.currentModuleDir = parentDir(absPath)
+  app.currentPackage = app.packageForModule(absPath)
+  let replacement = bindThisModule(replacementScope,
+    splitFile(absPath).name, absPath, app.currentPackage)
   try:
     let artifact = compileModuleArtifact(app, absPath)
     if oldInterface != nil and
@@ -22905,7 +23362,7 @@ proc reloadFileModule*(app: Application, path: string): Value =
     replacementScope.impls = retained
     for update in updatedScopes:
       update.scope.impls = update.impls
-    app.moduleCache[absPath] = replacement
+    app.moduleCache[identity] = replacement
     var bases: seq[Scope]
     for scope in app.baseScopes:
       if scope != oldScope:
@@ -22933,7 +23390,8 @@ proc reloadFileModule*(app: Application, path: string): Value =
     raise
   finally:
     app.currentModuleDir = savedDir
-    app.moduleLoading.excl absPath
+    app.currentPackage = savedPkg
+    app.moduleLoading.excl identity
 
 proc loadUrlModule*(app: Application, url: string): Value =
   ## Experimental `gene runurl` entry (design §15.9): load a remote module
@@ -22941,25 +23399,47 @@ proc loadUrlModule*(app: Application, url: string): Value =
   ## resolveModulePath validates the scheme and normalizes the identity.
   loadModuleValue(app, app.resolveModulePath(url))
 
+proc entryModulePath(app: Application, path: string): string =
+  ## Host file path -> absolute module path, with the boundary check every
+  ## entry point shares.
+  var p = path
+  if splitFile(p).ext.len == 0:
+    p = p & ".gene"
+  result = normalizedPath(absolutePath(p))
+  if not app.isWithinPackageRoot(result):
+    raisePackageError(pecBoundary,
+      "module path escapes package root: " & path,
+      ["package: " & app.appPackage.describe, "root: " & app.appPackage.root])
+
+proc requireEntryWithinPackage*(app: Application, entryPath: string) =
+  ## With an explicit package-root override in effect, the entry file must be
+  ## inside the override root (§4). Entry-relative discovery satisfies this by
+  ## construction, so this only ever fires for an override.
+  let absPath = normalizedPath(absolutePath(entryPath))
+  if not app.isWithinPackageRoot(absPath):
+    raisePackageError(pecBoundary,
+      "entry file is outside the selected package root: " & absPath,
+      ["package: " & app.appPackage.describe, "root: " & app.appPackage.root])
+
+proc adoptEntryModule(app: Application, absPath: string) =
+  ## An ad-hoc package's `main_module` is the entry module the command
+  ## supplied (§5), which is what makes `"."` mean the same thing there as it
+  ## does in a regular package. A regular package takes it from its manifest.
+  if app.appPackage.kind == pkAdHoc and app.appPackage.mainModule.len == 0 and
+      app.appPackage.contains(absPath):
+    app.appPackage.mainModule = app.appPackage.relativeModulePath(absPath)
+
 proc loadFileModule*(app: Application, path: string): Value =
   ## Load a host file path as an application module. This is used by program
   ## startup; source-level `from "path"` imports still go through
   ## `resolveModulePath` so leading slash stays package-root-relative there.
-  var p = path
-  if splitFile(p).ext.len == 0:
-    p = p & ".gene"
-  let absPath = normalizedPath(absolutePath(p))
-  if not app.isWithinPackageRoot(absPath):
-    raise newException(GeneError, "module path escapes package root: " & path)
+  let absPath = app.entryModulePath(path)
+  app.adoptEntryModule(absPath)
   loadModuleValue(app, absPath)
 
 proc compileFileModule*(app: Application, path: string): Chunk =
   ## Compile a file module and its macro dependencies without running any
   ## module's runtime phase. Used by tooling/cross-compilation surfaces.
-  var p = path
-  if splitFile(p).ext.len == 0:
-    p = p & ".gene"
-  let absPath = normalizedPath(absolutePath(p))
-  if not app.isWithinPackageRoot(absPath):
-    raise newException(GeneError, "module path escapes package root: " & path)
+  let absPath = app.entryModulePath(path)
+  app.adoptEntryModule(absPath)
   compileModuleArtifact(app, absPath).chunk

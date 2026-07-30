@@ -315,6 +315,8 @@ type
   ImportSpec* = object
     fromModule*: bool                 # true: `from "path"`; false: namespace path
     modulePath*: string               # the `from "path"` string
+    pkgName*: string                  # `^pkg "owner/name"`, or "" for the
+                                      # importing module's own package
     nsSegments*: seq[string]          # namespace-path segments (e.g. std/stream)
     alias*: string                    # `* : alias` / `source : alias`, or ""
     wildcard*: bool                   # bare/aliased `*` or `n/*`
@@ -690,6 +692,17 @@ proc addTry*(chunk: Chunk, tp: TryProto): int =
 proc addSubchunk*(chunk: Chunk, body: Chunk): int =
   result = chunk.subchunks.len
   chunk.subchunks.add body
+
+proc importKey*(pkgName, modulePath: string): string =
+  ## The key a compile phase uses to remember one module dependency. `^pkg`
+  ## participates, because the same module path in two different packages is
+  ## two different modules — keying on the path alone would let one shadow the
+  ## other's macros and compile interface.
+  if pkgName.len == 0: modulePath
+  else: pkgName & "\x00" & modulePath
+
+proc importKey*(spec: ImportSpec): string =
+  importKey(spec.pkgName, spec.modulePath)
 
 proc addImport*(chunk: Chunk, spec: ImportSpec): int =
   result = chunk.imports.len

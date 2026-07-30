@@ -6170,19 +6170,10 @@ proc serdeEmitStrLit(w: var SerdeWriter, s: string) =
 # --- origin index (stage 3): definition value -> (module, internal path) -----
 
 proc serdeModuleRelPath(app: Application, absPath: string): string =
-  ## Package-root-relative module identity without extension, '/'-separated.
-  ## Matches what resolveModulePath accepts as a bare path, so refs resolve the
-  ## same on any machine.
-  let root = normalizedPath(absolutePath(app.packageRoot))
-  var rel = absPath
-  let prefix = (if root.len > 0 and root[^1] == DirSep: root else: root & $DirSep)
-  if absPath.startsWith(prefix):
-    rel = absPath[prefix.len .. ^1]
-  if rel.endsWith(".gene"):
-    rel = rel[0 ..< rel.len - ".gene".len]
-  when DirSep != '/':
-    rel = rel.replace($DirSep, "/")
-  rel
+  ## Package-relative module identity without extension, '/'-separated.
+  ## Matches what `resolveApplicationModulePath` accepts as a bare path, so
+  ## refs resolve the same on any machine.
+  app.applicationPackage.relativeModulePath(absPath)
 
 proc serdeRecordOrigin(app: Application, v: Value, module, path: string) =
   ## First name wins for a given value, so a stable path is chosen across
@@ -6244,15 +6235,18 @@ proc serdeEnsureOrigins(app: Application) =
   if not app.serdeOriginBuiltinsDone:
     serdeIndexScope(app, app.builtinsScope(), "", "", visited)
     app.serdeOriginBuiltinsDone = true
-  for absPath, modVal in app.moduleCache:
-    if absPath in app.serdeOriginModules:
+  # Keyed by §10 module identity; the Module value still carries the
+  # filesystem path a serde ref is written against.
+  for identity, modVal in app.moduleCache:
+    if identity in app.serdeOriginModules:
       continue
-    app.serdeOriginModules.incl absPath
+    app.serdeOriginModules.incl identity
     if modVal.kind == vkModule:
       let rootNs = modVal.moduleRootNamespace
       if rootNs.kind == vkNamespace:
         serdeIndexScope(app, rootNs.nsScope,
-                        serdeModuleRelPath(app, absPath), "", visited)
+                        serdeModuleRelPath(app, modVal.modulePath), "",
+                        visited)
 
 proc serdeOriginOf(w: var SerdeWriter, v: Value):
     tuple[found: bool, module, path: string] =
@@ -6836,14 +6830,15 @@ proc serdeResolveModuleScope(r: var SerdeReader, module: string): Scope =
     return r.app.builtinsScope()
   var absPath: string
   try:
-    absPath = r.app.resolveModulePath(module)
+    absPath = r.app.resolveApplicationModulePath(module)
   except CatchableError as e:
     raiseSerdeError(r.scope, "cannot resolve module '" & module & "': " &
                     e.msg, r.path)
-  if not r.app.moduleCache.hasKey(absPath):
+  let identity = r.app.moduleIdentityFor(absPath)
+  if not r.app.moduleCache.hasKey(identity):
     raiseSerdeError(r.scope, "module not loaded: " & module &
       " (import it before deserializing references to it)", r.path)
-  let modVal = r.app.moduleCache.getOrDefault(absPath)
+  let modVal = r.app.moduleCache.getOrDefault(identity)
   if modVal.kind != vkModule:
     raiseSerdeError(r.scope, "module '" & module & "' is not a module", r.path)
   let rootNs = modVal.moduleRootNamespace

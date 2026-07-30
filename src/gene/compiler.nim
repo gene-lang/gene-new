@@ -9,13 +9,13 @@ type
     returnType: Value
 
   StaticWildcardCandidate = object
-    modulePath: string
+    importKey: string   # gir.importKey: `^pkg`-aware module dependency key
     exportPath: seq[string]
     category: CompileBindingCategory
     sourceLabel: string
 
   StaticAliasInterface = object
-    modulePath: string
+    importKey: string
     exportPrefix: seq[string]
     namespace: CompileNamespaceInterface
 
@@ -2323,8 +2323,8 @@ proc expandSourceUnitMacros*(unit: SourceUnit,
     if form.kind == vkNode and form.head.isSymbol("import"):
       let spec = parseImportSpec(form)
       var exported: Table[string, MacroDef]
-      if spec.fromModule and importedMacros.hasKey(spec.modulePath):
-        exported = importedMacros[spec.modulePath]
+      if spec.fromModule and importedMacros.hasKey(spec.importKey):
+        exported = importedMacros[spec.importKey]
       elif not spec.fromModule:
         exported = builtinNamespaceMacros(spec.nsSegments)
       for selection in spec.selections:
@@ -3988,15 +3988,25 @@ proc nsPathSegments(v: Value): seq[string]
 proc parseImportSpec*(node: Value): ImportSpec =
   if node.kind != vkNode or not node.head.isSymbol("import"):
     raise newException(GeneError, "expected import form")
+  # The allow-list stays closed and exhaustive: `^export` selects re-export,
+  # `^pkg` selects a package (docs/proposals/package.md §9), `^as` names its
+  # own removal, and everything else is an error.
   for key, value in node.props:
-    if key != "export":
-      if key == "as":
+    case key
+    of "export":
+      if value.kind != vkBool:
+        raise newException(GeneError, "import ^export must be Bool")
+      result.reexport = value.boolVal
+    of "pkg":
+      if value.kind != vkString or value.strVal.len == 0:
         raise newException(GeneError,
-          "import ^as was removed; use `source : alias`")
+          "import ^pkg must be a non-empty package name string")
+      result.pkgName = value.strVal
+    of "as":
+      raise newException(GeneError,
+        "import ^as was removed; use `source : alias`")
+    else:
       raise newException(GeneError, "import got unexpected option: ^" & key)
-    if value.kind != vkBool:
-      raise newException(GeneError, "import ^export must be Bool")
-    result.reexport = value.boolVal
 
   let body = node.body
   var fromIndex = -1
@@ -4057,6 +4067,14 @@ proc parseImportSpec*(node: Value): ImportSpec =
       raise newException(GeneError,
         "namespace import requires selections or `source : alias`")
     result.sourceLabel = result.nsSegments.join("/")
+  if result.pkgName.len > 0 and not result.fromModule:
+    # `^pkg` is valid only on the `from` form. A bare namespace path never
+    # selects a package, so package selection is always explicit.
+    raise newException(GeneError,
+      "import ^pkg requires `from \"path\"`; a namespace-path import never " &
+      "selects a package")
+  if result.pkgName.len > 0:
+    result.sourceLabel = result.pkgName & "::" & result.sourceLabel
   if result.wildcard and result.alias.len == 0 and result.reexport:
     raise newException(GeneError,
       "bare wildcards do not re-export; use an alias or explicit selections")
@@ -4678,9 +4696,9 @@ proc prepareStaticImportForm(c: var Compiler, form: Value) =
   of "import":
     let spec = parseImportSpec(form)
     if not spec.fromModule or
-        not c.importedInterfaces.hasKey(spec.modulePath):
+        not c.importedInterfaces.hasKey(spec.importKey):
       return
-    let rootInterface = c.importedInterfaces[spec.modulePath]
+    let rootInterface = c.importedInterfaces[spec.importKey]
     for selection in spec.selections:
       let resolved = compileInterfaceEntryAt(
         rootInterface, selection.name.split('/'))
@@ -4694,14 +4712,14 @@ proc prepareStaticImportForm(c: var Compiler, form: Value) =
       return
     if spec.alias.len > 0:
       c.aliasInterfaces[spec.alias] = StaticAliasInterface(
-        modulePath: spec.modulePath,
+        importKey: spec.importKey,
         exportPrefix: spec.wildcardSegments,
         namespace: iface)
       c.addAliasedCompileEntries(spec.alias, iface)
     else:
       for name, entry in iface.entries:
         let candidate = StaticWildcardCandidate(
-          modulePath: spec.modulePath,
+          importKey: spec.importKey,
           exportPath: spec.wildcardSegments & @[name],
           category: entry.category,
           sourceLabel: spec.sourceLabel)
@@ -4715,7 +4733,7 @@ proc prepareStaticImportForm(c: var Compiler, form: Value) =
         let bucket = c.wildcardCandidates.mgetOrPut(name, @[])
         var duplicate = false
         for existing in bucket:
-          if existing.modulePath == candidate.modulePath and
+          if existing.importKey == candidate.importKey and
               existing.exportPath == candidate.exportPath:
             duplicate = true
             break
@@ -4737,10 +4755,10 @@ proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first: int) 
     if candidates.len != 1 or name in c.declaredUnitNames:
       continue
     let candidate = candidates[0]
-    if not c.importedInterfaces.hasKey(candidate.modulePath):
+    if not c.importedInterfaces.hasKey(candidate.importKey):
       continue
     let resolved = compileInterfaceEntryAt(
-      c.importedInterfaces[candidate.modulePath], candidate.exportPath)
+      c.importedInterfaces[candidate.importKey], candidate.exportPath)
     if resolved.found:
       c.importedCompileEntries[name] = resolved.entry
   if c.useLocalSlots:
@@ -4786,7 +4804,7 @@ proc importedPathEntry(c: Compiler, value: Value):
   if not resolved.found:
     return
   (true, StaticWildcardCandidate(
-    modulePath: alias.modulePath,
+    importKey: alias.importKey,
     exportPath: alias.exportPrefix & relative,
     category: resolved.entry.category,
     sourceLabel: segments[0]))
@@ -4810,11 +4828,11 @@ proc importedMacroForHead(c: Compiler, value: Value):
   if candidates.len != 1 or candidates[0].category != cbcMacro:
     return
   let candidate = candidates[0]
-  if not c.importedMacroSets.hasKey(candidate.modulePath):
+  if not c.importedMacroSets.hasKey(candidate.importKey):
     raise newException(GeneError,
       "missing compile-time macro artifact for " & candidate.sourceLabel)
   let path = candidate.exportPath.join("/")
-  let definitions = c.importedMacroSets[candidate.modulePath]
+  let definitions = c.importedMacroSets[candidate.importKey]
   if not definitions.hasKey(path):
     raise newException(GeneError,
       "module compile interface marked a missing macro: " & path)
@@ -4851,8 +4869,8 @@ proc importMacroLocals(c: Compiler, node: Value): HashSet[string] =
   let spec = parseImportSpec(node)
   var exported: Table[string, MacroDef]
   if spec.fromModule:
-    if c.importedMacroSets.hasKey(spec.modulePath):
-      exported = c.importedMacroSets[spec.modulePath]
+    if c.importedMacroSets.hasKey(spec.importKey):
+      exported = c.importedMacroSets[spec.importKey]
   else:
     exported = builtinNamespaceMacros(spec.nsSegments)
   if exported.len == 0:
@@ -5459,13 +5477,13 @@ proc compileImport(c: var Compiler, node: Value) =
       "wildcard, alias, and re-export imports must be unconditional " &
       "top-level forms")
   if spec.fromModule and (spec.wildcard or spec.alias.len > 0):
-    if not c.importedInterfaces.hasKey(spec.modulePath):
+    if not c.importedInterfaces.hasKey(spec.importKey):
       if spec.alias.len == 0:
         raise newException(GeneError,
           "bare wildcard import requires module-loader compilation: " &
-          spec.modulePath)
+          spec.sourceLabel)
     else:
-      let iface = compileInterfaceAt(c.importedInterfaces[spec.modulePath],
+      let iface = compileInterfaceAt(c.importedInterfaces[spec.importKey],
                                      spec.wildcardSegments)
       if iface == nil:
         raise newException(GeneError,
@@ -5476,8 +5494,8 @@ proc compileImport(c: var Compiler, node: Value) =
   # module become compile-time definitions here and are stripped from the
   # runtime spec (macros are not runtime namespace bindings). The opImport
   # still runs so the module executes and its impls become visible.
-  if spec.fromModule and c.importedMacroSets.hasKey(spec.modulePath):
-    let exported = c.importedMacroSets[spec.modulePath]
+  if spec.fromModule and c.importedMacroSets.hasKey(spec.importKey):
+    let exported = c.importedMacroSets[spec.importKey]
     var runtimeSelections: seq[ImportSelection]
     for sel in spec.selections:
       if exported.hasKey(sel.name):
@@ -5518,8 +5536,8 @@ proc compileImport(c: var Compiler, node: Value) =
   # Cross-module fn! names (design §3/§11.1): the values import as ordinary
   # runtime bindings above; the name set keeps the importer's call sites on
   # the syntax_call path. Registered after reserveLocal, which clears names.
-  if spec.fromModule and c.importedSyntaxFnSets.hasKey(spec.modulePath):
-    let exported = c.importedSyntaxFnSets[spec.modulePath]
+  if spec.fromModule and c.importedSyntaxFnSets.hasKey(spec.importKey):
+    let exported = c.importedSyntaxFnSets[spec.importKey]
     for sel in spec.selections:
       if sel.name in exported:
         c.syntaxFnNames[sel.local] = true

@@ -3946,27 +3946,123 @@ Ordinary Gene code receives application-level authority only through explicit ca
 
 ### 15.3 Package
 
-A package groups modules and may later carry version, dependency, build, native-library, and publishing metadata.
-
-MVP package behavior is intentionally small:
+A package groups modules and carries identity, a source layout, and declared
+dependencies. There are two kinds of application package:
 
 ```text
-entry package = package containing the entry module
-package root  = directory/root used for absolute module path resolution
-package cache = map of normalized module paths to loaded modules
+application package
+├── ad-hoc package: no package.gene was found
+└── regular package: rooted at the nearest package.gene
 ```
 
-A package exists so module identity and absolute paths have a stable root even before full dependency management exists.
+Starting an Application selects one of them by walking *ancestors* from a
+discovery start directory. A file-oriented command (`run`, `compile`, `build`,
+`doc`) starts at the entry file's canonical parent directory, so
+`gene run /elsewhere/script.gene` keeps working from any working directory and
+a script tree carries its package with it. A file-less entry (`eval`, `repl`,
+`runurl`, `pkg`) starts at the launch working directory, captured once. The
+first `package.gene` found wins, so a nested package is a real boundary.
+Nothing is generated implicitly: adding a `package.gene` later deliberately
+turns a directory into a regular package.
 
-Deferred package features:
+`--package-root <dir>` replaces the discovery start directory explicitly. It
+never changes the process working directory, and with it in effect the entry
+file must be inside the override root.
 
-- package version constraints;
-- dependency resolver;
-- lockfiles;
-- remote registry;
-- package publishing;
+A regular package's `package.gene` is exactly one map datum, read with
+`readAll` as **data**. It is never executed: a manifest is read during
+*resolution*, before any import of that package has been admitted, so
+executing it would run third-party code before trust exists, make the
+dependency set unreproducible, and give resolution no upper bound in time.
+
+```gene
+{
+  ^name "acme/my_app"
+  ^version "0.1.0"
+  ^description "…"
+  ^source_dir "src"
+  ^main_module "index"
+  ^test_dir "tests"
+  ^dependencies [
+    (dep "acme/json" "1.4.2")
+    (dep "acme/local_tools" ^path "../local_tools")
+  ]
+}
+```
+
+Only `^name` is required; the values above are the defaults. Unknown fields are
+rejected. Package names are `<owner>/<name>` with lowercase `snake_case`
+segments — string *values* governed by this grammar rather than by the
+registered-name convention, though both land on `snake_case`. The dependency
+head is the plain symbol `dep`: `$dep` is sugar for the `gene/dep` member path
+and reads as `((path gene dep) …)`, so a manifest can never appear to name
+something in the standard library.
+
+Named dependencies come from two stores, application before user:
+
+```text
+application store: <application_root>/vendor/packages/
+user store:        ~/.gene/packages/
+```
+
+Both are addressed by constructed path — `<store>/<owner>/<name>/package.gene`
+— and never enumerated, so resolution does not depend on what else is
+installed. An existing application candidate is authoritative: if it is
+malformed, misnamed, or the wrong version, resolution fails rather than
+falling through to machine-local state.
+
+Resolution runs in two phases, because a version conflict is a property of two
+*requirements* and no procedure that examines one import at a time can see one.
+Phase 1 walks declared dependencies and selects one candidate per name; phase 2
+validates versions over the whole requirement table. Versions are exact:
+`PACKAGE_VERSION_MISMATCH` is one requirement against one candidate,
+`PACKAGE_VERSION_CONFLICT` is two requirements that cannot both hold. Failures
+are reported sorted by package name, so a given graph produces the same
+diagnostic on every run and every machine.
+
+A regular package may import only itself and its declared direct dependencies;
+transitive presence in a store grants nothing. An ad-hoc package has no
+manifest, so named imports resolve straight against the two stores — with the
+same identity, ambiguity, and boundary checks.
+
+A package record carries:
+
+```text
+kind: ad_hoc | regular
+name, version, description
+root, manifest_path
+source_dir, main_module, test_dir
+dependencies
+origin: entry | application_store | user_store | path_dependency
+```
+
+`origin` is provenance for diagnostics and `gene pkg locate`; it never
+participates in identity. Each module body receives a compiler-provided lexical
+`this_pkg` binding alongside `this_mod` — a map whose keys are the fields
+above, in `snake_case` — never a process-global current package.
+
+Module identity is logical, not a filesystem path:
+
+```text
+<package_identity>::<normalized_module_path>
+
+acme/json@1.4.2::schema
+<ad_hoc:application>::tools/inspect
+```
+
+The Application's load-once cache keys on that, so two packages with identical
+relative layouts cannot collide. Absolute paths remain provenance for
+diagnostics and source loading.
+
+Deferred package features (`docs/proposals/package.md` §17):
+
+- hosted registries and remote discovery;
+- command-valued manifest fields;
+- semver range solving;
+- lockfiles and content-addressed storage;
+- package publishing, signatures, and trust policy;
 - multi-package workspaces;
-- build profiles.
+- multiple active versions of one name in a single store.
 
 ### 15.4 Module
 
@@ -4263,18 +4359,38 @@ are removed in a major version.
 Path interpretation for `from "path"`:
 
 ```text
-"x"     search-path/package-relative module path
+"x"     package-relative: <root>/<source_dir>/x, then <root>/x
 "./x"   relative to current module directory
 "../x"  parent-relative
-"/x"    absolute from root
+"/x"    package-relative, same bases as "x"
+"."     the package entry, i.e. its `main_module` (§15.3)
 ```
+
+`"."` is the only module path the resolver rewrites, and it can never collide
+with a real module because `.` does not name a file. No module *name* is magic:
+a package whose `main_module` is `boot` still reaches a literal
+`<source_dir>/index.gene` as `"index"`.
+
+`^pkg "owner/name"` selects the package a module path is resolved in:
+
+```gene
+(import [parse] from "." ^pkg "acme/json")        # the package entry
+(import [schema] from "schema" ^pkg "acme/json")  # a named module
+```
+
+`^pkg` is valid only on the `from` form — a bare namespace path never selects a
+package, so package selection is always explicit. A package-qualified path is
+always package-relative: it cannot be absolute, name a URL, or use `..`. It
+joins `^export` as the only other recognized `import` prop; every other prop is
+still an error, and `^as` still names its own removal.
 
 Normalization rules:
 
 - collapse repeated separators;
 - remove `.` segments;
 - resolve `..` segments;
-- reject paths that escape above the package/application root;
+- reject paths that escape above the *selected* package's root, checked after
+  canonicalization so a symlink cannot leave a package unnoticed;
 - canonicalize the module extension policy;
 - produce a stable normalized module identity used for caching.
 
@@ -5028,10 +5144,30 @@ gene parse
 gene compile
 gene fmt
 gene doc
+gene pkg
 gene view
 ```
 
 `gene run path.gene args...` creates an `Application`, loads the entry package/module, executes the entry module top to bottom, and calls `main` with command-line arguments if present. The experimental `gene runurl <https-url>` runs a remote entry module under the URL-module rules of §15.9 and folds into `gene run` once stable.
+
+Every command that creates an `Application` — `run`, `runurl`, `eval`, `repl`,
+`compile`, `build`, `doc`, `pkg` — determines its package context the same way
+(§15.3) and preserves the process working directory. Pure reader commands
+(`parse`, `fmt`) have no package context.
+
+`gene pkg` inspects that context without executing a program:
+
+```text
+gene pkg show                 the application package, its stores, and its dependencies
+gene pkg locate owner/name    which store supplies a package, with its origin
+gene pkg graph                resolved dependency edges
+gene pkg install <dir> [--user|--app]   copy a validated package into a store
+```
+
+`pkg install` validates the source manifest first and keys the destination on
+the manifest's own `^name`, so a store never acquires a package that resolution
+would then reject. It is a local copy, not a registry client: fetching,
+lockfiles, and integrity verification are deferred (§15.3).
 
 `gene eval` creates or reuses an application/runtime context, parses the supplied source as an eval module-like unit, evaluates it in an explicit or CLI-created `Env`, and prints the final result when appropriate.
 
@@ -5059,7 +5195,7 @@ Prop print order should be deterministic. MVP recommendation: preserve source or
 
 1. Reader + canonical node model: props, meta, templates, spread, pipe, `~`, slash selectors, qualified-name/path tokens, `/` tokenization, and `#[]`/`#{}`/`#()` literals.
 2. Runtime values, `nil`/`void`/`Never`, mutable and shallow-immutable containers, equality, hashing, `Cell`, and `AtomicCell` foundations.
-3. Application/module foundation: `Application`, package root placeholder, module identity, root namespaces, `ns`, namespace imports, `from` module paths, normalized module identities, module cache, and top-level execution.
+3. Application/module foundation: `Application`, package discovery and manifests, module identity, root namespaces, `ns`, namespace imports, `from` module paths, normalized module identities, module cache, and top-level execution.
 4. Callable-first evaluator: `var`, `set`, `do`, `if`, `fn`, `Call`, `Callable`, and `~`.
 5. First-class `Env`: immutable binding maps, parent chains, module/import resolution, capability/policy fields, and tracing-GC integration.
 6. Native call foundation: `NativeFn`, opaque runtime API, native registration, rooting contract, and `gene_call`-style VM trampoline.

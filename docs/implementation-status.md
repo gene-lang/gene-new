@@ -78,8 +78,17 @@ dependency-graph question. `examples/native` drives `cc` from a shell script
 meanwhile. Loaded AOT libraries are pinned for the process lifetime, because
 their callables and release shims can outlive any individual call.
 
+Package support is shipped through `docs/proposals/package.md` Stage 3: ad-hoc
+and regular application packages discovered from the nearest ancestor
+`package.gene`, data-only manifests, the application and user stores with
+deterministic precedence, two-phase exact-version resolution, `^pkg` imports
+with per-package module boundaries, package/module identity as the module-cache
+key, and `gene pkg show|locate|graph|install`. Hosted registries, semver
+solving, lockfiles, content addressing, publishing, and multiple installed
+versions of one name are not.
+
 Deferred work is explicitly non-normative. Major deferred areas include package
-version resolution/registries, static effect rows, full hygienic compile-time
+registries and lockfiles, static effect rows, full hygienic compile-time
 function macros, partial protocol impl composition, static enum exhaustiveness,
 arbitrary escaping foreign callbacks/foreign-thread VM entry, JIT, and AOT
 beyond the experimental backend described above.

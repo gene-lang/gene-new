@@ -12,7 +12,7 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, strutils, tables]
-import gene/[compiler, diagnostics, fmt, gir, printer, reader, repl,
+import gene/[compiler, diagnostics, fmt, gir, package, printer, reader, repl,
              repl_curses, logging, logging_config, types, vm, web]
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
@@ -27,7 +27,7 @@ proc usage() =
   echo "Usage:"
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
   echo "  gene repl [--curses]   read/eval/print source lines from stdin"
-  echo "  gene run [--log-config path] [--debug] <file.gene>"
+  echo "  gene run [--log-config path] [--package-root dir] [--debug] <file.gene>"
   echo "           [--grant name=expr] [--] [args...]"
   echo "                              execute a file and explicitly grant main capabilities"
   echo "  gene runurl <https-url> [args...]  (experimental) run a remote entry module;"
@@ -38,6 +38,10 @@ proc usage() =
   echo "  gene compile --target c <file.gene> print experimental typed_native C"
   echo "  gene build --target web [--out-dir dir] <file.gene> emit web ESM + types"
   echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
+  echo "  gene pkg show           show the application package and its dependencies"
+  echo "  gene pkg locate <owner/name>  show which store supplies a package"
+  echo "  gene pkg graph          print resolved dependency edges"
+  echo "  gene pkg install <dir> [--user|--app]  copy a package into a store"
   echo "  gene view [options] <file.gene> browse source structure and edit externally"
   echo "  gene lsp                run the language server over stdio (docs/lsp.md)"
 
@@ -165,6 +169,7 @@ type RunCli = object
   path: string
   args: seq[string]
   logConfig: string
+  packageRoot: string
   debugging: bool
 
 proc parseRunCli(label = "run", pathNoun = "a file path"): RunCli =
@@ -172,16 +177,19 @@ proc parseRunCli(label = "run", pathNoun = "a file path"): RunCli =
   while i <= paramCount() and result.path.len == 0:
     let arg = paramStr(i)
     case arg
-    of "--log-config":
+    of "--log-config", "--package-root":
       inc i
       if i > paramCount():
-        raise newException(ValueError, "--log-config expects a path")
-      result.logConfig = paramStr(i)
+        raise newException(ValueError, arg & " expects a path")
+      if arg == "--log-config": result.logConfig = paramStr(i)
+      else: result.packageRoot = paramStr(i)
     of "--debug":
       result.debugging = true
     else:
       if arg.startsWith("--log-config="):
         result.logConfig = arg[13 .. ^1]
+      elif arg.startsWith("--package-root="):
+        result.packageRoot = arg[15 .. ^1]
       else:
         result.path = arg
     inc i
@@ -309,7 +317,23 @@ proc invokeEntryMain(scope: Scope, args: openArray[string]) =
     let result = mainBinding.call(positional, grantNames, grantValues, scope)
     exitFromMain(scope, result)
 
-proc cmdRun(path: string, args: openArray[string] = []) =
+proc applicationForEntry(absPath, packageRootOverride: string): Application =
+  ## Package discovery for a file-oriented command (proposal §4). An explicit
+  ## `--package-root` replaces the discovery start directory; it never changes
+  ## the process working directory, and the entry file must be inside it.
+  ## Without an override the root is an ancestor of the entry's directory by
+  ## construction, so the containment check only bites here and on `import`.
+  if packageRootOverride.len == 0:
+    return newApplicationForEntryFile(absPath)
+  let root = normalizedPath(absolutePath(packageRootOverride))
+  if not dirExists(root):
+    raise newException(GeneError, "--package-root is not a directory: " &
+                       packageRootOverride)
+  result = newApplication(root)
+  result.requireEntryWithinPackage(absPath)
+
+proc cmdRun(path: string, args: openArray[string] = [],
+            packageRootOverride = "") =
   if not fileExists(path):
     stderr.writeLine "Error: file not found: " & path
     quit(1)
@@ -317,7 +341,7 @@ proc cmdRun(path: string, args: openArray[string] = []) =
   var replScope: Scope = nil
   try:
     let absPath = normalizedPath(absolutePath(path))
-    app = newApplication(parentDir(absPath))
+    app = applicationForEntry(absPath, packageRootOverride)
     let entryModule = app.loadFileModule(absPath)
     let scope = entryModule.moduleRootNamespace.nsScope
     replScope = scope
@@ -334,16 +358,21 @@ proc cmdRun(path: string, args: openArray[string] = []) =
     maybeReplOnError(replScope, app)
     quit(1)
 
-proc cmdRunUrl(url: string, args: openArray[string] = []) =
+proc cmdRunUrl(url: string, args: openArray[string] = [],
+               packageRootOverride = "") =
   ## Experimental URL entry (design §15.9): run a remote module graph. URL
-  ## sources are enabled only for this entry; `gene run` never fetches.
+  ## sources are enabled only for this entry; `gene run` never fetches, and
+  ## package resolution never fetches for either entry. A URL entry has no
+  ## entry file, so its application package is discovered from the launch
+  ## working directory (proposal §4, §13).
   if not (url.startsWith("https://") or url.startsWith("http://")):
     stderr.writeLine "Error: 'runurl' needs an https:// (or localhost http://) URL"
     quit(1)
   var app: Application = nil
   var replScope: Scope = nil
   try:
-    app = newApplication(getCurrentDir())
+    app = newApplication(if packageRootOverride.len > 0: packageRootOverride
+                         else: getCurrentDir())
     app.allowUrlModules = true
     let entryModule = app.loadUrlModule(url)
     let scope = entryModule.moduleRootNamespace.nsScope
@@ -384,7 +413,7 @@ proc cmdFmt(path: string) =
 proc cmdCompile(path: string) =
   let absPath = normalizedPath(absolutePath(path))
   try:
-    let app = newApplication(parentDir(absPath))
+    let app = newApplicationForEntryFile(absPath)
     echo app.compileFileModule(absPath).disassemble()
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
@@ -399,7 +428,7 @@ proc cmdCompile(path: string) =
 proc cmdCompileC(path: string) =
   let absPath = normalizedPath(absolutePath(path))
   try:
-    let app = newApplication(parentDir(absPath))
+    let app = newApplicationForEntryFile(absPath)
     echo app.compileFileModule(absPath).emitExperimentalC()
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
@@ -463,7 +492,7 @@ proc cmdBuildWeb(options: BuildWebCli) =
 proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
   scope.materializeMirroredVars()
   for name in scope.vars.keys:
-    if includeThisModule or name != "this_mod":
+    if includeThisModule or name notin ["this_mod", "this_pkg"]:
       result.add name
   result.sort()
 
@@ -509,8 +538,10 @@ proc docSelectionText(sel: ImportSelection): string =
 
 proc docImportText(app: Application, spec: ImportSpec): string =
   if spec.fromModule:
-    result = "- from \"" & spec.modulePath & "\" -> " &
-      app.resolveModulePath(spec.modulePath)
+    result = "- from \"" & spec.modulePath & "\""
+    if spec.pkgName.len > 0:
+      result.add " ^pkg \"" & spec.pkgName & "\""
+    result.add " -> " & app.resolveModuleRef(spec.modulePath, spec.pkgName)
   else:
     result = "- " & spec.nsSegments.join("/")
   if spec.alias.len > 0:
@@ -537,7 +568,7 @@ proc cmdDoc(path: string) =
     quit(1)
   try:
     let absPath = normalizedPath(absolutePath(path))
-    let app = newApplication(parentDir(absPath))
+    let app = newApplicationForEntryFile(absPath)
     let chunk = compileSource(readSourceFile(absPath), absPath)
     let module = app.loadFileModule(absPath)
     echo "Module: " & module.moduleName
@@ -564,6 +595,176 @@ proc cmdDoc(path: string) =
     quit(1)
   except GeneError as e:
     stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+    quit(1)
+
+# ---------------------------------------------------------------------------
+# gene pkg (docs/proposals/package.md §14)
+# ---------------------------------------------------------------------------
+
+proc pkgApplication(packageRootOverride: string): Application =
+  ## `pkg` is a file-less entry, so discovery starts at the launch working
+  ## directory unless an explicit root replaces it. Neither path changes the
+  ## process working directory.
+  newApplication(if packageRootOverride.len > 0: packageRootOverride
+                 else: getCurrentDir())
+
+proc writePackageSummary(pkg: Package, indent = "") =
+  echo indent & "kind:          " & $pkg.kind
+  echo indent & "name:          " & (if pkg.name.len > 0: pkg.name else: "(none)")
+  echo indent & "version:       " &
+    (if pkg.version.len > 0: pkg.version else: "(none)")
+  if pkg.description.len > 0:
+    echo indent & "description:   " & pkg.description
+  echo indent & "root:          " & pkg.root
+  echo indent & "manifest_path: " &
+    (if pkg.manifestPath.len > 0: pkg.manifestPath else: "(none)")
+  echo indent & "source_dir:    " &
+    (if pkg.sourceDir.len > 0: pkg.sourceDir else: "(root)")
+  echo indent & "main_module:   " &
+    (if pkg.mainModule.len > 0: pkg.mainModule else: "(none)")
+  echo indent & "test_dir:      " & pkg.testDir
+  echo indent & "origin:        " & $pkg.origin
+
+proc cmdPkgShow(packageRootOverride: string) =
+  let app = pkgApplication(packageRootOverride)
+  echo "Application package:"
+  writePackageSummary(app.applicationPackage, "  ")
+  echo "Stores:"
+  echo "  application: " & applicationStoreDir(app.applicationPackage.root)
+  echo "  user:        " & app.userStore
+  let packages = app.resolvedPackages
+  var dependencies: seq[Package]
+  for pkg in packages:
+    if pkg != app.applicationPackage:
+      dependencies.add pkg
+  if dependencies.len == 0:
+    echo "Dependencies: none"
+    return
+  echo "Dependencies:"
+  for pkg in dependencies:
+    echo "  " & pkg.name & " " &
+      (if pkg.version.len > 0: pkg.version else: "(no version)") &
+      "  [" & $pkg.origin & "]"
+    echo "    root: " & pkg.root
+    let edges = app.dependencyEdgesOf(pkg.name)
+    if edges.len > 0:
+      echo "    requires: " & edges.join(", ")
+
+proc cmdPkgLocate(name, packageRootOverride: string) =
+  let app = pkgApplication(packageRootOverride)
+  let pkg = app.locatePackage(name)
+  writePackageSummary(pkg)
+
+proc cmdPkgGraph(packageRootOverride: string) =
+  ## The resolved dependency edges. Cycles never reach here: resolution
+  ## rejects them with PACKAGE_DEPENDENCY_CYCLE and the package chain.
+  let app = pkgApplication(packageRootOverride)
+  let root = app.applicationPackage
+  echo (if root.name.len > 0: root.name else: "(ad_hoc)")
+  for pkg in app.resolvedPackages:
+    let edges = app.dependencyEdgesOf(pkg.name)
+    if pkg == root or edges.len > 0:
+      for edge in edges:
+        echo "  " & pkg.name & " -> " & edge
+
+proc copyPackageTree(source, target: string) =
+  if dirExists(target):
+    removeDir(target)
+  createDir(parentDir(target))
+  copyDir(source, target)
+
+proc cmdPkgInstall(source, packageRootOverride: string, toUser: bool) =
+  ## Copy a package directory into a store. The manifest is validated first, so
+  ## a store never acquires a package that resolution would then reject, and
+  ## the destination is keyed by the manifest's own `^name` (§7).
+  let sourceRoot = normalizedPath(absolutePath(source))
+  if not fileExists(sourceRoot / ManifestFileName):
+    stderr.writeLine "Error: " & sourceRoot & " has no " & ManifestFileName
+    quit(1)
+  let pkg = loadPackageAt(sourceRoot, poPathDependency)
+  if pkg.version.len == 0:
+    stderr.writeLine "Error: a package in a store must declare ^version: " &
+      pkg.manifestPath
+    quit(1)
+  let app = pkgApplication(packageRootOverride)
+  let store =
+    if toUser: app.userStore
+    else: applicationStoreDir(app.applicationPackage.root)
+  let target = storeCandidateDir(store, pkg.name)
+  if normalizedPath(target) == sourceRoot:
+    stderr.writeLine "Error: source and destination are the same directory"
+    quit(1)
+  copyPackageTree(sourceRoot, target)
+  echo pkg.name & " " & pkg.version & " -> " & target
+
+type PkgCli = object
+  action: string
+  argument: string
+  packageRoot: string
+  toUser: bool
+
+proc parsePkgCli(): PkgCli =
+  var i = 2
+  var positional: seq[string]
+  while i <= paramCount():
+    let arg = paramStr(i)
+    case arg
+    of "--package-root":
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, "--package-root expects a path")
+      result.packageRoot = paramStr(i)
+    of "--user": result.toUser = true
+    of "--app": result.toUser = false
+    else:
+      if arg.startsWith("--package-root="):
+        result.packageRoot = arg[15 .. ^1]
+      elif arg.startsWith("-"):
+        raise newException(ValueError, "unknown pkg option: " & arg)
+      else:
+        positional.add arg
+    inc i
+  if positional.len == 0:
+    raise newException(ValueError,
+      "'pkg' needs a subcommand: show, locate, graph, or install")
+  result.action = positional[0]
+  if positional.len > 2:
+    raise newException(ValueError, "'pkg " & result.action &
+      "' accepts at most one argument")
+  if positional.len == 2:
+    result.argument = positional[1]
+
+proc cmdPkg() =
+  var options: PkgCli
+  try:
+    options = parsePkgCli()
+  except ValueError as e:
+    stderr.writeLine "Error: " & e.msg
+    quit(1)
+  try:
+    case options.action
+    of "show":
+      cmdPkgShow(options.packageRoot)
+    of "locate":
+      if options.argument.len == 0:
+        stderr.writeLine "Error: 'pkg locate' needs a package name"
+        quit(1)
+      cmdPkgLocate(options.argument, options.packageRoot)
+    of "graph":
+      cmdPkgGraph(options.packageRoot)
+    of "install":
+      if options.argument.len == 0:
+        stderr.writeLine "Error: 'pkg install' needs a package directory"
+        quit(1)
+      cmdPkgInstall(options.argument, options.packageRoot, options.toUser)
+    else:
+      stderr.writeLine "Error: unknown pkg subcommand: " & options.action
+      quit(1)
+  except GeneError as e:
+    stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+    quit(1)
+  except OSError as e:
+    stderr.writeLine "Error: " & e.msg
     quit(1)
 
 proc main() =
@@ -598,7 +799,7 @@ proc main() =
     except CatchableError as e:
       stderr.writeLine "Error: " & e.msg
       quit(1)
-    cmdRun(options.path, options.args)
+    cmdRun(options.path, options.args, options.packageRoot)
   of "runurl":
     var options: RunCli
     try:
@@ -607,7 +808,7 @@ proc main() =
     except CatchableError as e:
       stderr.writeLine "Error: " & e.msg
       quit(1)
-    cmdRunUrl(options.path, options.args)
+    cmdRunUrl(options.path, options.args, options.packageRoot)
   of "parse":
     if paramCount() < 2:
       stderr.writeLine "Error: 'parse' needs a file path"
@@ -648,6 +849,8 @@ proc main() =
       stderr.writeLine "Error: 'doc' needs a file path"
       quit(1)
     cmdDoc(paramStr(2))
+  of "pkg":
+    cmdPkg()
   of "view":
     try:
       quit(viewer_app.runViewer(parseViewCli()))

@@ -7890,3 +7890,106 @@ suite "cli — gene doc":
       "Namespace source:",
       "- item : Int"
     ]
+
+suite "cli — gene pkg (docs/proposals/package.md §14)":
+  proc pkgCliDir(): string =
+    result = cliDir / "pkg"
+    removeDir(result)
+    createDir(result)
+
+  proc writePkgFile(path, source: string) =
+    createDir(parentDir(path))
+    writeFile(path, source)
+
+  proc runGeneIn(dir: string,
+                 args: openArray[string]): tuple[output: string,
+                                                 exitCode: int] =
+    ## Run the CLI with a different working directory, which is what makes the
+    ## "file commands discover from the entry file" rule observable from
+    ## outside the process.
+    buildGeneCli()
+    let saved = getCurrentDir()
+    setCurrentDir(dir)
+    try:
+      result = runGene(args)
+    finally:
+      setCurrentDir(saved)
+
+  test "pkg show reports the application package and its stores":
+    let root = pkgCliDir()
+    writePkgFile(root / "app" / "package.gene",
+      "{^name \"acme/app\" ^version \"0.1.0\" " &
+      "^dependencies [(dep \"acme/json\" \"1.4.2\")]}")
+    writePkgFile(root / "app" / "vendor" / "packages" / "acme" / "json" /
+                 "package.gene",
+      "{^name \"acme/json\" ^version \"1.4.2\"}")
+    let shown = runGeneIn(root / "app", ["pkg", "show"])
+    check shown.exitCode == 0
+    check "kind:          regular" in shown.output
+    check "name:          acme/app" in shown.output
+    check "acme/json 1.4.2  [application_store]" in shown.output
+    let located = runGeneIn(root / "app", ["pkg", "locate", "acme/json"])
+    check located.exitCode == 0
+    check "origin:        application_store" in located.output
+    let graph = runGeneIn(root / "app", ["pkg", "graph"])
+    check graph.exitCode == 0
+    check "acme/app -> acme/json" in graph.output
+
+  test "pkg show reports an ad-hoc application package":
+    let root = pkgCliDir()
+    createDir(root / "scratch")
+    let shown = runGeneIn(root / "scratch", ["pkg", "show"])
+    check shown.exitCode == 0
+    check "kind:          ad_hoc" in shown.output
+    check "name:          (none)" in shown.output
+    check "Dependencies: none" in shown.output
+
+  test "pkg install validates a manifest and copies it into a store":
+    let root = pkgCliDir()
+    writePkgFile(root / "app" / "package.gene",
+      "{^name \"acme/app\" ^version \"0.1.0\"}")
+    writePkgFile(root / "source" / "package.gene",
+      "{^name \"acme/json\" ^version \"1.4.2\"}")
+    writePkgFile(root / "source" / "src" / "index.gene", "(var v 1)")
+    let installed = runGeneIn(root / "app",
+                              ["pkg", "install", root / "source"])
+    check installed.exitCode == 0
+    check fileExists(root / "app" / "vendor" / "packages" / "acme" / "json" /
+                     "package.gene")
+    # A package without ^version cannot enter a store, because §7 permits one
+    # active version per name and resolution has nothing to check against.
+    writePkgFile(root / "unversioned" / "package.gene", "{^name \"acme/x\"}")
+    let rejected = runGeneIn(root / "app",
+                             ["pkg", "install", root / "unversioned"])
+    check rejected.exitCode == 1
+    check "must declare ^version" in rejected.output
+
+  test "run discovers from the entry file, and --package-root overrides it":
+    let root = pkgCliDir()
+    writePkgFile(root / "app" / "package.gene",
+      "{^name \"acme/app\" ^version \"0.1.0\"}")
+    writePkgFile(root / "app" / "src" / "main.gene",
+      "(fn main [] ($println this_pkg/name) ($println this_pkg/source_dir))")
+    createDir(root / "elsewhere")
+    let ran = runGeneIn(root / "elsewhere",
+                        ["run", root / "app" / "src" / "main.gene"])
+    check ran.exitCode == 0
+    check ran.output.strip.splitLines == @["acme/app", "src"]
+
+    # An override replaces the discovery start directory; the entry file must
+    # then be inside it.
+    writePkgFile(root / "outside" / "other.gene", "(fn main [] 0)")
+    let rejected = runGeneIn(root / "elsewhere",
+      ["run", "--package-root", root / "app", root / "outside" / "other.gene"])
+    check rejected.exitCode == 1
+    check "PACKAGE_BOUNDARY" in rejected.output
+
+  test "a malformed manifest fails the run with its diagnostic class":
+    let root = pkgCliDir()
+    writePkgFile(root / "app" / "package.gene", "{^name \"bad-name\"}")
+    writePkgFile(root / "app" / "src" / "main.gene", "(fn main [] 0)")
+    createDir(root / "elsewhere")
+    let ran = runGeneIn(root / "elsewhere",
+                        ["run", root / "app" / "src" / "main.gene"])
+    check ran.exitCode == 1
+    check "PACKAGE_NAME_INVALID" in ran.output
