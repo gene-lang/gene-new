@@ -1,0 +1,6 @@
+{
+  ^name "todo-app"
+  ^description "Gene Todo Example"
+  ^version "0.1.0"
+  ^dependencies []
+}

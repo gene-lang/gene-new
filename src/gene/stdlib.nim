@@ -504,6 +504,94 @@ proc biHtmlRender(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   let scope = if call == nil: nil else: call.dispatchScope
   newStr(renderHtmlValue(args[0], scope))
 
+when not defined(geneWasm):
+  # Composition needs the compiled assets, which are host-only.
+  # --- web: placing generated assets in a page ---------------------------------
+  #
+  # The whole author-facing surface for embedded web modules
+  # (docs/proposals/transpile.md §4.12). Two things: a composition operation
+  # that returns a finished node, and the base those nodes' URLs are built from.
+  # Application code never sees JavaScript, a source map, a hash, or a route
+  # table — and cannot forget to publish one, because referring to an asset is
+  # what publishes it.
+
+  proc webAssetArgument(label: string, value: Value, scope: Scope): WebAsset =
+    let app = scope.application()
+    result = app.webAssetFor(value)
+    if result == nil:
+      raise newException(GeneError, label & " expects a value bound by web_module")
+
+  proc biWebScript(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    ## (web/script asset ^mount "id") -> the complete script node.
+    ##
+    ## The entry is an external module by default: inlining buys no authoring
+    ## property — one file, one command, either way — while dragging nonce/hash
+    ## plumbing, script-data escaping, and a base64 map in every page response
+    ## onto the critical path. `script-src 'self'` admits this with no nonce.
+    requireOne("web/script", args)
+    let scope = if call == nil: nil else: call[].dispatchScope
+    let asset = webAssetArgument("web/script", args[0], scope)
+    var mountId = ""
+    if call != nil:
+      for name in call[].namedNames:
+        if name != "mount":
+          raise newException(GeneError,
+            "web/script got unexpected named argument: " & name)
+      let index = nativeNamedIndex(call, "mount")
+      if index >= 0:
+        requireStr("web/script ^mount", call[].namedValues[index])
+        mountId = call[].namedValues[index].strVal
+    if mountId.len == 0:
+      raise newException(GeneError, "web/script requires a non-empty ^mount element id")
+    var props = initPropTable()
+    props["type"] = newStr("module")
+    props["src"] = newStr(scope.application().webMountScriptUrl(asset, mountId))
+    newNode(newSym("script"), props = props)
+
+  proc biWebStylesheet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    ## (web/stylesheet "name" css_text) -> the complete link node.
+    ##
+    ## The other half of the CSP story. An inline `<style>` needs a nonce or hash
+    ## on every response, and a page function that returns `Str` has nowhere to
+    ## carry one; a generated `.css` route needs only `style-src 'self'`.
+    if args.len != 2:
+      raise newException(GeneError,
+        "web/stylesheet expects (name, css), got " & $args.len & " arguments")
+    requireStr("web/stylesheet name", args[0])
+    requireStr("web/stylesheet css", args[1])
+    let scope = if call == nil: nil else: call[].dispatchScope
+    var props = initPropTable()
+    props["rel"] = newStr("stylesheet")
+    props["href"] = newStr(scope.application().publishWebStylesheet(
+      args[0].strVal, args[1].strVal))
+    newNode(newSym("link"), props = props)
+
+  proc biWebAssetBase(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    if args.len != 0:
+      raise newException(GeneError, "web/asset_base takes no arguments")
+    let scope = if call == nil: nil else: call[].dispatchScope
+    newStr(scope.application().webAssetBase())
+
+  proc biWebSetAssetBase(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    ## Relocate every generated route at once — what a reverse-proxy subpath
+    ## deployment needs, and the reason the base is not a process root.
+    requireOne("web/set_asset_base", args)
+    requireStr("web/set_asset_base", args[0])
+    let scope = if call == nil: nil else: call[].dispatchScope
+    scope.application().webAssetBase = args[0].strVal
+    NIL
+
+  proc biWebSetSourceMaps(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+    ## Whether this application answers for `.map` routes. Dev publishes the
+    ## redacted map; production may withhold it. The maps only ever contain the
+    ## embedded block, so this is a policy knob rather than the safety boundary.
+    requireOne("web/set_source_maps", args)
+    if args[0].kind != vkBool:
+      raise newException(GeneError, "web/set_source_maps expects a Bool")
+    let scope = if call == nil: nil else: call[].dispatchScope
+    scope.application().webSourceMapsEnabled = args[0].boolVal
+    NIL
+
 # CSS is ordered node data. Declarations deliberately live in the body rather
 # than a PropTable: duplicate fallbacks and interleaving with nested rules are
 # observable CSS semantics (docs/proposals/transpile.md §3.1).
@@ -8864,6 +8952,22 @@ proc registerStdlibNamespaces(root: Scope) =
   htmlScope.define("render", newNativeCallFn("html/render", biHtmlRender,
                                               acceptsNamed = false))
   root.define("html", newNamespace("html", htmlScope))
+  when not defined(geneWasm):
+    let webScope = newScope(root)
+    webScope.define("script", newNativeCallFn("web/script", biWebScript))
+    webScope.define("stylesheet", newNativeCallFn("web/stylesheet",
+                                                  biWebStylesheet,
+                                                  acceptsNamed = false))
+    webScope.define("asset_base", newNativeCallFn("web/asset_base",
+                                                  biWebAssetBase,
+                                                  acceptsNamed = false))
+    webScope.define("set_asset_base", newNativeCallFn("web/set_asset_base",
+                                                      biWebSetAssetBase,
+                                                      acceptsNamed = false))
+    webScope.define("set_source_maps", newNativeCallFn("web/set_source_maps",
+                                                       biWebSetSourceMaps,
+                                                       acceptsNamed = false))
+    root.define("web", newNamespace("web", webScope))
   let cssScope = newScope(root)
   cssScope.define("css", newNativeFn("css/css", biCss))
   cssScope.define("rule", newNativeFn("css/rule", biCssRule))

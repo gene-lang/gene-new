@@ -326,6 +326,11 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     expect GeneError:
       discard compileSource("(derive)")
     covered.add "derive"
+    # The body is captured, never compiled for this VM — it targets the web
+    # backend — so compiling the host module only has to accept the form.
+    fixture(["web_module"],
+      "(web_module fixture_client " &
+      "(fn main [root : EventTarget] : Void void))")
 
     covered.sort()
     check covered == dispatched

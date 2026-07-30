@@ -7400,11 +7400,11 @@ suite "cli — gene parse/fmt/compile":
 
   test "fmt output is parse-equivalent and idempotent on the todo app":
     buildGeneCli()
-    let f1 = execCmdEx(shellQuote(geneExe) & " fmt examples/todo_app.gene")
+    let f1 = execCmdEx(shellQuote(geneExe) & " fmt examples/todo_app/src/main.gene")
     check f1.exitCode == 0
     let fmtPath = writeCliProgram("todo_fmt.gene", f1.output)
     # Same canonical forms as the original source.
-    let p0 = execCmdEx(shellQuote(geneExe) & " parse examples/todo_app.gene")
+    let p0 = execCmdEx(shellQuote(geneExe) & " parse examples/todo_app/src/main.gene")
     let p1 = execCmdEx(shellQuote(geneExe) & " parse " & shellQuote(fmtPath))
     check p0.exitCode == 0
     check p1.exitCode == 0

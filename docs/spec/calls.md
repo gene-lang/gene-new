@@ -20,7 +20,7 @@ MVP compiler-dispatched heads:
 do if if_yes if_not && || ?? ! let var const set set! new ~ ?~ fn fn! macro quote quasiquote
 select path msg ns env eval import import_impl mod match while loop repeat for break
 continue yield return try scope supervisor spawn await fail panic type alias enum
-protocol impl derive
+protocol impl derive web_module
 ```
 <!-- compiler-head-dispatch:end -->
 

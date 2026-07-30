@@ -14,7 +14,7 @@ Implementation status:
   `UrlError`) — implemented; spec-tested.
 - Phase 3 (`net/http` blocking server: `serve`, `Request`/`Response`/`Server`
   types, `text`/`html`/`json`/`redirect`/`not_found` helpers, `HttpError`,
-  `^max_requests` for tests) — implemented; `examples/todo_app.gene` is the
+  `^max_requests` for tests) — implemented; `examples/todo_app/src/main.gene` is the
   end-to-end proof (HTML page + JSON API). Deviations from this plan: response
   construction uses helpers or `(Response ^status N ^body s)` because type
   constructors take named fields only; `cookie`/`set_cookie`/`static_file` are
@@ -35,7 +35,7 @@ Implementation status:
   is not abstracted). Failures raise catchable `DbError`. `transaction` rolls
   back on recoverable error or panic and commits on normal return. Statement
   values, named parameters, and blob columns are not implemented.
-  `examples/todo_app.gene` persists through `db/sqlite`. Backend impls live
+  `examples/todo_app/src/main.gene` persists through `db/sqlite`. Backend impls live
   on the namespace scopes, so only importing programs pay protocol-dispatch
   cost.
 - Phase 5 (`web/router` etc.) — not started.
@@ -453,6 +453,51 @@ and ordered bodies participate; node source metadata does not. Labels are
 CSS-identifier-sanitized. Rendering a sheet checks any repeated generated
 class against its full canonical form and raises on a digest collision rather
 than silently merging styles.
+
+### `web`
+
+Places compiler-generated browser assets in a page. This is the entire
+author-facing surface for embedded web modules
+(`docs/proposals/transpile.md` §4.12); everything else — JavaScript, source
+maps, content hashes, dependency URLs, the route table — stays behind it.
+
+```gene
+(import $web [script stylesheet])
+
+(web_module todo_client
+  (fn main [root : EventTarget] : Void
+    ($dom/add_event_listener root "click" on_click)))
+
+(fn page [] : Str
+  (render
+    `(html
+       (head %(stylesheet "todo_app" rendered_css))
+       (body
+         (main ^id "todo_root" ...)
+         %(script todo_client ^mount "todo_root")))))
+```
+
+- `script : WebAsset ^mount Str -> Node` — the complete `<script>` node.
+  Referring to the asset is what installs its routes, at module-load time, so
+  there is no route table to receive and none to forget to mount. The mount id
+  is validated here, at the composition site.
+- `stylesheet : Str -> Str -> Node` — publishes CSS as a generated route and
+  returns the `<link>` node. An inline `<style>` would need a nonce or hash on
+  every response, and a page function returning `Str` has nowhere to carry one.
+- `asset_base : -> Str` and `set_asset_base : Str -> Nil` — where this
+  application publishes, defaulting to `/__gene`. Configurable rather than a
+  process root, because an app mounted behind a proxy at `/todo/` never
+  receives a request for `/__gene/…`.
+- `set_source_maps : Bool -> Nil` — whether `.map` routes answer. Maps carry
+  only the embedded block, so this is a policy knob, not the disclosure
+  boundary.
+
+Entries are external ES modules, content-addressed, and served with
+`x-content-type-options: nosniff` and immutable caching justified by the hash.
+Publishing only ever adds routes, so a page from an earlier generation keeps
+fetching its own URLs while a newer one is published. Generated assets are
+owned by the `Application`: every `Server` it starts answers one table, and
+two applications stay isolated.
 
 ### `url`
 

@@ -5,6 +5,14 @@ import std/[algorithm, base64, dynlib, json, locks, math, monotimes, net, os,
 import ./[compiler, diagnostics, equality, fmt, gir, logging, printer, reader,
           types]
 
+when not defined(geneWasm):
+  # The web backend is host-only: `web_module` assets exist to be *served*, and
+  # the serve loop is already excluded from wasm. Importing it unconditionally
+  # linked the whole profile analyzer and emitter into the browser module for
+  # +675 KB (4.5 → 5.2 MB) of payload nothing in that build can reach — and
+  # payload is the wasm target's headline cost (§2 of the transpile proposal).
+  import ./web
+
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import ./tui/terminal as tui_terminal
   import ./[pty_process, terminal_session, vterm]
@@ -348,6 +356,25 @@ type
     serdeValueOrigins: Table[uint64, tuple[module, path: string]]
     serdeOriginBuiltinsDone: bool
     serdeOriginModules: HashSet[string]
+    # Generated web assets (docs/proposals/transpile.md §4.12). The
+    # *Application* owns them, not the Server and not the process: a block is
+    # compiled while a module loads, which happens here, and the composition
+    # operation takes no server. So every Server this application starts
+    # answers one deployment table, two applications stay isolated, and the
+    # asset base is one configured value rather than a hard-coded root that a
+    # subpath deployment behind a proxy could never satisfy.
+    when not defined(geneWasm):
+      webAssets: Table[string, WebAsset]        # identity -> compiled asset
+      webRoutes: Table[string, WebAssetRoute]   # file name -> published bytes
+    webMountCache: Table[string, string]        # identity+mount -> file name
+    webAssetBaseValue: string
+    webAssetBaseSet: bool
+    # Retention: routes are content-addressed, so publishing a new generation
+    # only ever *adds* keys. Nothing is evicted before process exit, which is
+    # what lets an HTML response from generation N keep fetching its N URLs
+    # while N+1 is being published.
+    webSourceMaps: bool
+    webSourceMapsSet: bool
 
 # Current threaded scheduler queues are lock-protected seqs shared with worker
 # threads. Reserve enough room up front so worker parking/enqueue paths do not
@@ -5427,6 +5454,145 @@ proc runReplSessionForEnv*(env: Value,
 proc incrementalReplScopeForEnv*(env: Value): Scope
 proc run*(chunk: Chunk, scope: Scope,
           validateImplRequirements = true): Value
+
+when not defined(geneWasm):
+  # Host-only, for the reason the `web` import above states.
+  # --- Application-owned generated web assets (transpile.md §4.12) -------------
+
+  const defaultWebAssetBase = "/__gene"
+
+  proc webAssetBase*(app: Application): string =
+    ## Where this application publishes generated assets. Configurable, never a
+    ## process root: an app mounted behind a proxy at `/todo/` never receives a
+    ## request for `/__gene/…`, so hard-coding the root would break exactly the
+    ## deployment that most needs the assets to be found.
+    if app.webAssetBaseSet: app.webAssetBaseValue else: defaultWebAssetBase
+
+  proc normalizeAssetBase(base: string): string =
+    result = base
+    while result.len > 1 and result.endsWith("/"):
+      result.setLen(result.len - 1)
+    if result.len == 0: return "/"
+    if not result.startsWith("/"): result = "/" & result
+
+  proc `webAssetBase=`*(app: Application, base: string) =
+    app.webAssetBaseValue = normalizeAssetBase(base)
+    app.webAssetBaseSet = true
+
+  proc webSourceMapsEnabled*(app: Application): bool =
+    ## Dev publishes the redacted map; production may withhold the route. The
+    ## decision lives here rather than in the hashed bytes, so flipping it never
+    ## invalidates a URL a browser already holds.
+    if app.webSourceMapsSet: app.webSourceMaps else: true
+
+  proc `webSourceMapsEnabled=`*(app: Application, enabled: bool) =
+    app.webSourceMaps = enabled
+    app.webSourceMapsSet = true
+
+  proc publishWebRoute(app: Application, route: WebAssetRoute) =
+    ## Content addressing makes this idempotent and makes replacement
+    ## impossible: the same bytes always land on the same key, and different
+    ## bytes always land on a different one.
+    app.webRoutes[route.fileName] = route
+
+  proc webAssetUrl*(app: Application, fileName: string): string =
+    let base = app.webAssetBase()
+    if base == "/": "/" & fileName else: base & "/" & fileName
+
+  proc lookupWebRoute*(app: Application, path: string):
+      tuple[found: bool, route: WebAssetRoute] =
+    ## Resolve a request path against this application's deployment table. Only
+    ## paths under the configured base are considered, so an application with no
+    ## generated assets pays one prefix comparison.
+    if app.webRoutes.len == 0: return
+    let base = app.webAssetBase()
+    var fileName = ""
+    if base == "/":
+      if not path.startsWith("/"): return
+      fileName = path[1 .. ^1]
+    else:
+      if not path.startsWith(base & "/"): return
+      fileName = path[base.len + 1 .. ^1]
+    if fileName.len == 0 or '/' in fileName: return
+    if not app.webRoutes.hasKey(fileName): return
+    let route = app.webRoutes[fileName]
+    if route.isSourceMap and not app.webSourceMapsEnabled(): return
+    (true, route)
+
+  proc webAssetValue(asset: WebAsset): Value =
+    ## What the author's binding holds: a frozen node naming the asset and
+    ## nothing else. No JavaScript, no hash, no URL — application code composes
+    ## with it and never handles what it compiled to.
+    var props = initPropTable()
+    props["name"] = newStr(webAssetName(asset))
+    props["identity"] = newStr(webAssetIdentity(asset))
+    newNode(newSym("WebAsset"), props = props, immutable = true)
+
+  proc webAssetFor*(app: Application, value: Value): WebAsset =
+    if value.kind != vkNode or not value.props.hasKey("identity"):
+      return nil
+    let identity = value.props["identity"]
+    if identity.kind != vkString: return nil
+    app.webAssets.getOrDefault(identity.strVal, nil)
+
+  proc compileEmbeddedWebModule(app: Application, proto: WebModuleProto): Value =
+    ## Compile one embedded block into an asset and publish its routes — once
+    ## per module version, while the module loads. Request handling never
+    ## reaches this: by the time a page renders, the script node it emits names
+    ## bytes that are already finalized.
+    if app.webAssets.hasKey(proto.identity):
+      return webAssetValue(app.webAssets[proto.identity])
+    var unit = SourceUnit(sourceName: proto.identity, source: proto.source)
+    var modProps = initPropTable()
+    modProps["profile"] = newSym("web")
+    unit.forms.add newNode(newSym("mod"), props = modProps,
+                           body = @[newSym(proto.name)])
+    unit.formLocs.add proto.loc
+    for i, form in proto.forms:
+      unit.forms.add form
+      unit.formLocs.add proto.formLocs[i]
+    unit.locs = initTable[uint64, SourceLoc]()
+    for entry in proto.nestedLocs:
+      unit.locs[entry.bits] = entry.loc
+    var asset: WebAsset
+    try:
+      asset = compileWebAsset(unit, proto.identity, proto.name, proto.source)
+    except WebProfileError as e:
+      # The message already carries the position inside the block; the outer loc
+      # points at the declaration so a reader sees both the offending form and
+      # the block it belongs to.
+      var error = newException(GeneError, "web_module " & proto.name & ": " & e.msg)
+      error.loc = proto.loc
+      raise error
+    app.webAssets[proto.identity] = asset
+    for route in webAssetRoutes(asset):
+      app.publishWebRoute(route)
+    webAssetValue(asset)
+
+  proc webMountScriptUrl*(app: Application, asset: WebAsset,
+                          mountId: string): string =
+    ## Resolve (asset, mount) to the URL of its bootstrap module, generating and
+    ## publishing that module the first time the pair is composed. Rendering a
+    ## page after that is a table lookup, which is what keeps "no per-request
+    ## compilation" true for a handler that renders on every request.
+    let key = webAssetIdentity(asset) & "\x1f" & mountId
+    if app.webMountCache.hasKey(key):
+      return app.webAssetUrl(app.webMountCache[key])
+    let route = webAssetMountModule(asset, mountId)
+    app.publishWebRoute(route)
+    app.webMountCache[key] = route.fileName
+    app.webAssetUrl(route.fileName)
+
+  proc publishWebStylesheet*(app: Application, name, css: string): string =
+    ## Publish static CSS as a generated route. This is what lets a page load
+    ## under an ordinary `style-src 'self'`: an inline `<style>` needs a nonce or
+    ## hash on every response, and a `Str` returned from a page function has
+    ## nowhere to carry one.
+    let fileName = name & "-" & webContentHash(css) & ".css"
+    app.publishWebRoute(WebAssetRoute(fileName: fileName,
+                                      contentType: "text/css; charset=utf-8",
+                                      body: css))
+    app.webAssetUrl(fileName)
 
 include ./stdlib
 
@@ -11312,6 +11478,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             scope.registerImpl(inlineProtocols[i], enumType, entries,
               scope.classifyInlineImpl(proto.staticTopLevel))
           spush enumType
+        of opWebModule:
+          when defined(geneWasm):
+            raise newException(GeneError,
+              "web_module requires the host runtime: generated assets exist " &
+              "to be served, and this build has no server")
+          else:
+            spush compileEmbeddedWebModule(scope.application(),
+                                           chunk.webModules[inst[].intArg])
         of opMakeProtocol:
           let proto = chunk.protocolProtos[inst[].intArg]
           var parents = newSeq[Value](proto.parentCount)

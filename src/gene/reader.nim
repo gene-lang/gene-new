@@ -79,6 +79,11 @@ type
 
   SourceUnit* = object
     sourceName*: string
+    ## The text the forms were read from. Kept so a consumer that must
+    ## reproduce a *slice* of the original — an embedded block's own source,
+    ## for a client-only source map — can take the exact characters the author
+    ## wrote instead of re-printing the tree and losing every column.
+    source*: string
     forms*: seq[Value]
     formLocs*: seq[SourceLoc]
     locs*: Table[uint64, SourceLoc]
@@ -1603,6 +1608,11 @@ proc readAllWithLocs*(src: string, sourceName = "",
     result.formLocs.add before.sourceLoc(sourceName)
   result.sourceName = sourceName
   result.locs = r.locs
+  # Moved, not copied: `initReader` already took a copy of the text and the
+  # reader is finished with it here, so carrying the source on the unit costs
+  # nothing beyond the copy the read already paid for. Assigning `src` instead
+  # measured a consistent ~2.3% loss on `reader.web_demo.read_all`.
+  result.source = move(r.src)
 
 proc readAll*(src: string, sourceName = "",
               options: ReadOptions = ReadOptions()): seq[Value] =

@@ -14,8 +14,14 @@
 #               POST /api/todos/toggle     toggle   (form body: id=N)
 #               POST /api/todos/delete     delete   (form body: id=N)
 #
-# Run:  bin/gene run examples/todo_app.gene        (creates ./todo.db)
+# Run:  bin/gene run examples/todo_app/src/main.gene   (creates ./todo.db)
 # Then: open http://127.0.0.1:8090
+#
+# This is one authored source file: server logic, HTML, CSS, and browser
+# behavior. No second file, no build command, no bundler, no hand-written
+# JavaScript. The `web_module` block below is compiled to a browser module
+# while this module loads, and served from a content-addressed route the
+# application owns (docs/proposals/transpile.md §4.12).
 #
 # The store functions only speak the Db protocol (exec/query/execute), so
 # swapping in db/postgres means changing `open` and the SQL placeholder
@@ -29,6 +35,7 @@
 
 (import $html [render])
 (import $css [css rule decl scoped class_name render : render_css])
+(import $web [script stylesheet])
 (import $url [parse_query UrlError])
 (import $json [stringify])
 (import gene/parse [parse_int ParseError])
@@ -67,6 +74,48 @@
 
 (fn done? [t] : Bool
   (!= t/done 0))
+
+# -----------------------------------------------------------------------------
+# Browser behavior, authored here. This block is a web-profile source unit: it
+# sees the web prelude and its own declarations, and nothing from the module
+# around it — not `db`, not the current request, not `styles`. That is what
+# keeps it compilable (the profile has no image for a SQLite handle) and what
+# stops "same file" from quietly becoming "captures the server".
+#
+# The enhancement is progressive: every row below is server-rendered and works
+# with JavaScript off. One delegated listener on the mount root then makes each
+# row's text reveal the id the server already put beside it — including rows a
+# later response adds, which is the property delegation buys over per-row
+# listeners.
+# -----------------------------------------------------------------------------
+
+(web_module todo_client
+  (fn peeking? [classes : Str] : Bool
+    (str/contains? classes "peek"))
+
+  (fn without_peek [classes : Str] : Str
+    (str/trim (str/join (str/split classes "peek") "")))
+
+  (fn toggled [classes : Str] : Str
+    (if (peeking? classes)
+      (without_peek classes)
+      (str/trim $"${classes} peek")))
+
+  # `event` is the DOM `Any` boundary, so each field read is annotated where it
+  # re-enters typed code — that annotation is the only place a mistake about
+  # the DOM shape can hide, rather than every use downstream of it.
+  (fn on_click [event : Any] : Void
+    (var target event/target)
+    (var target_class : Str target/class_name)
+    (if_yes (== target_class "text")
+      (var row target/parent_element)
+      (if_yes row
+        (var row_class : Str row/class_name)
+        (set! row/class_name (toggled row_class))))
+    void)
+
+  (fn main [root : EventTarget] : Void
+    ($dom/add_event_listener root "click" on_click)))
 
 # -----------------------------------------------------------------------------
 # Filter views: every listing route accepts all | active | done. The public URL
@@ -133,7 +182,14 @@
       (rule "li.done .text"
         (decl text_decoration "line-through")
         (decl opacity ".5"))
-      (rule ".text" (decl flex 1))
+      (rule ".text" (decl flex 1) (decl cursor "pointer"))
+      # The server renders every hint; the click handler only toggles `peek`.
+      # With JavaScript off the hints stay hidden and nothing else changes.
+      (rule ".hint"
+        (decl display "none")
+        (decl font_variant_numeric "tabular-nums"))
+      (rule "li.peek" (decl background "#fef9c3"))
+      (rule "li.peek .hint" (decl display "inline"))
       (rule "form.inline" (decl display "inline"))
       (rule "button"
         (decl border 0)
@@ -169,11 +225,13 @@
   (var text t/text)
   (var mark (if (done? t) "✓" "○"))
   (var cls (if (done? t) "done" "open"))
+  (var hint $"#${id}")
   `(li ^class %cls
      (form ^class "inline" ^method "post" ^action "/todos/toggle"
        (input ^type "hidden" ^name "id" ^value %id)
        (button ^title "toggle" %mark))
      (span ^class "text" %text)
+     (span ^class "muted hint" %hint)
      (form ^class "inline" ^method "post" ^action "/todos/delete"
        (input ^type "hidden" ^name "id" ^value %id)
        (button ^title "delete" "✕"))))
@@ -195,12 +253,18 @@
       `(form ^class "inline" ^method "post" ^action "/todos/clear-done"
          (button ^title "delete all done todos" "clear done"))
       ""))
+  # Both the stylesheet and the script are generated routes, so this page
+  # loads under a plain `script-src 'self'; style-src 'self'` — no nonce, no
+  # inline hash, and nothing for a `Str` return type to have to carry.
+  # Referring to the asset is what publishes it; there is no route table to
+  # forget to mount.
   ($ "<!doctype html>"
      (render
        `(html
-          (head (title "Gene TODO") (style %rendered_css))
+          (head (title "Gene TODO")
+                %(stylesheet "todo_app" rendered_css))
           (body ^class %scope_class
-            (main ^class "wrap"
+            (main ^class "wrap" ^id "todo_root"
               (header (h1 "Gene TODO"))
               (section ^class "card"
                 (form ^class "add" ^method "post" ^action "/todos"
@@ -215,7 +279,8 @@
                     %(filter_link flt TodoFilter/active)
                     %(filter_link flt TodoFilter/done))
                   %clear
-                  (a ^href "/api/todos" "JSON")))))))))
+                  (a ^href "/api/todos" "JSON"))))
+            %(script todo_client ^mount "todo_root"))))))
 
 # -----------------------------------------------------------------------------
 # Request helpers. Form bodies are URL-encoded; ids must parse as integers.

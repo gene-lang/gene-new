@@ -55,6 +55,7 @@ task transpile_spec, "Run shared VM/web-profile conformance fixtures":
   exec "nim c -r --path:src --hints:off tests/transpile_web_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_async_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_dom_runner.nim"
+  exec "nim c -r --path:src --hints:off tests/transpile_embed_runner.nim"
 
 task transpile_typecheck, "Type-check emitted web artifacts with pinned TypeScript":
   exec "npm run transpile:typecheck"
@@ -88,6 +89,7 @@ task verify, "Run tests, executable specs, and benchmarks":
   exec "nim c -r --path:src --hints:off tests/transpile_web_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_async_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_dom_runner.nim"
+  exec "nim c -r --path:src --hints:off tests/transpile_embed_runner.nim"
   exec "mkdir -p bin"
   exec "nim c -d:release --path:src --hints:off -o:bin/gene src/gene.nim"
   exec "node benchmarks/transpile_numbers.mjs"

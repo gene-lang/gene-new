@@ -28,7 +28,7 @@ Conflating them is the main way this project fails, so name them first.
 | **T3** | Run **behavior** written in Gene in the browser | Either a Gene runtime in the page, or a Gene→JS compiler | Large |
 
 T1 and T2 are stdlib features. Only T3 is a compiler backend. The existing
-`examples/web_demo.gene` and `examples/todo_app.gene` already model T2 —
+`examples/web_demo.gene` and `examples/todo_app/src/main.gene` already model T2 —
 "HTML is ordinary Gene node data until render time … one `node -> text` edge" —
 but each hand-rolls that edge (§3.2), and both fake T1 with a raw `"""…"""`
 string. That string is the gap you feel; the missing renderer is the one behind
@@ -42,7 +42,7 @@ it.
 
 - **Tier 0 (`gene/css`, `gene/html`)** — CSS and markup as node data with real
   printers. Stdlib only, no compiler backend, no DOM. This removes the raw CSS
-  string from `todo_app.gene`, gives component-scoped styles, and replaces two
+  string from `todo_app`, gives component-scoped styles, and replaces two
   hand-rolled HTML renderers with one. Do this first regardless of Tier 1.
 - **Tier 1 (`gene build --target web`)** — a **`web` profile**: a statically
   decidable subset of Gene compiled to readable **TypeScript**, gated by a
@@ -574,6 +574,386 @@ measured artifact**, not an aspiration:
 Publish the table; let it gate whether a feature earns its place, the way
 `nimble perf` gates allocation.
 
+### 4.12 Embedded web modules — one authored source file
+
+§4.10 describes one delivery mode: `gene build --target web` writes files, and
+something else serves them. This is the second, and the product it is designing
+for is specific enough to state as a goal, because everything below follows from
+it:
+
+> A complete web page is authored in **one Gene source file** — server logic,
+> HTML, CSS, and browser behavior. `gene run app.gene` serves it with no second
+> source file, no build command, no bundler, and no hand-written JavaScript.
+
+The constraint is on **authoring**, not on the wire. Compiler-generated
+dependencies may be served separately from reserved routes (below); what may not
+appear is a second file a human has to write, name, or keep in sync. Drawing the
+line there rather than at "everything is inline" costs nothing the author can
+see and buys browser caching, a smaller per-response payload, and an escape from
+the document-relative import problem — while still refusing the hand-written
+host shim that would quietly make this a two-file product again.
+
+`examples/todo_app` is the driving case: a complete server-rendered app whose
+every interaction is a form POST and a redirect. Adding one Gene-authored click
+handler that changes an existing server-rendered todo row is the smallest change
+that exercises the whole path.
+
+**A client file compiled by path is not that product.** Naming
+`"src/client.gene"` from the server keeps two files, and makes the
+server/client relationship a string that no tool can rename, navigate, or check
+until the moment it executes. The unit of authoring has to be a form in the
+containing module:
+
+```gene
+(mod todo_app)
+
+(web_module todo_client
+  (fn on_click [event : Any] : Void
+    (set! event/target/text_content "…")
+    void)
+
+  (fn main [root : Any] : Void
+    (root ~ add_event_listener "click" on_click)))
+```
+
+`web_module` builds a **synthetic `^profile web` source unit** with a stable
+identity — `app.gene#todo_client` — whose forms keep their original `SourceLoc`
+and macro provenance. It must not print the forms to text and re-read them;
+diagnostics, source maps, and the conformance gate all depend on the block's
+positions being the ones the author wrote.
+
+**One file is not one lexical environment.** The embedded block sees the web
+prelude and its own declarations — nothing else. It cannot close over the
+server's database handle, the current request, a capability value, a mutable
+global, or any enclosing binding. That restriction is what keeps the block
+compilable at all (the profile has no image for those values) and what stops
+"locality" from silently becoming "capture." Sharing types or macros across the
+boundary is a later, explicit compile-time mechanism, never an accident of
+nesting.
+
+#### The author-facing interface
+
+The author sees exactly two things: the embedded declaration, and one operation
+that places it in a page.
+
+```gene
+(web_module todo_client
+  ...)
+
+(fn page [] : Str
+  (render
+    `(html
+       (body
+         (main ^id "todo_root" ...)
+         %($web/script todo_client ^mount "todo_root")))))
+```
+
+The spelling is open; the semantics are not:
+
+- `web_module` binds an **opaque, immutable web-asset value**. Its body is never
+  executed by the server VM, and the binding carries no JS text the author can
+  reach.
+- `$web/script` returns the **complete script node**. Application code never
+  handles JavaScript, source maps, hashes, or dependency URLs.
+- Referring to the asset is what **installs its routes** on the owning
+  `Application` (below), at module-load time rather than at render time. The
+  author never receives a route table and cannot forget to mount one.
+- The mount id and the entry contract are **validated here**, at the composition
+  site. Any placement-specific bootstrap this generates is itself
+  content-addressed.
+- Specify whether `web_module` is top-level only, whether its binding may be
+  exported and imported, and how duplicate asset names are diagnosed.
+
+**CSP metadata needs a data path, and a `Str` has none.** `page` returns a
+string, which cannot carry headers. With external scripts as the default (below)
+script CSP largely disappears — but the inline `<style>` remains, so either the
+composition operation integrates with a response/page value that preserves
+required headers, or the interface explicitly hands back the nonce/hash. Saying
+"the serve adapter produces CSP metadata" does not get it onto
+`Response.headers`; name the mechanism.
+
+#### The seam
+
+A runtime `compile_module(path) -> Str` is the wrong interface. It hands
+ordinary request-handling code the compiler and the filesystem, then erases the
+result to a string, so every caller has to re-derive when to compile, where
+imports resolve, whether to cache, JS versus TS, how to fix the source map, how
+to append the entry call, and how to place the bytes in HTML without breaking
+the document. One seam owns all of it:
+
+```text
+compile_web_asset(source_unit, synthetic_identity) -> WebAsset
+```
+
+`WebAsset` keeps the JS, its source map, entry metadata, dependency facts, and
+content/CSP hashes private. Two adapters sit on it:
+
+- the **file adapter** writes `.mjs`/`.ts`/`.d.ts`/maps for
+  `gene build --target web` — today's behavior, unchanged;
+- the **serve adapter** produces the script node, the generated routes to
+  publish, and the CSP metadata the response needs.
+
+The containing module compiles its embedded assets **once per module version**,
+content-addressed. `gene run --watch` and the module reloader may rebuild in
+dev; request handling never invokes the compiler, and a built or AOT artifact
+carries the already-emitted bytes. This is what dissolves the "runtime call
+versus compile-time macro" question — it was never an authoring choice, only a
+storage strategy behind one interface.
+
+#### The entry is an external module by default
+
+Since the goal constrains authoring rather than the wire, the default
+composition emits a `src` reference, not a script body:
+
+```html
+<script type="module" src="/__gene/todo_client-<hash>.js"></script>
+```
+
+Inlining buys **no authoring property** — the author still edits one file and
+runs one command either way — while dragging four costs onto P6's critical
+path: inline-script nonce/hash plumbing, the HTML script-tokenizer escaping
+mode, a base64 source map in every page response, and repeated entry bytes where
+a content-addressed URL would have been cached. The external module is still
+readable in devtools and still maps back to the embedded Gene block;
+`script-src 'self'` admits it with no nonce.
+
+Inline emission stays a **supported adapter** for deployments that measure a
+reason to prefer it — the handler appearing in view-source is a real teaching
+and debugging property, just not one worth blocking the MVP on. The raw-text
+hardening below is still worth fixing in `html/render`, but it stops being a
+prerequisite.
+
+**Entries stay self-contained.** Each emitted entry keeps its own tree-shaken
+prelude, exactly as modules do today. A shared runtime assembled from the union
+of an application's modules would need a **link stage that does not exist**:
+`compile_web_asset` cannot know the union at per-module compile time, the
+runtime's hash appears in every entry's import specifier, and that changes every
+entry's bytes and therefore every entry's hash — so a discovered or reloaded
+module can invalidate the whole table. With one content-addressed external
+entry the browser already caches the prelude, which was the only thing sharing
+would have bought. Revisit when a real application has two entries and
+measurement shows the duplication matters; the shape it would take is a named
+`link_web_deployment(assets, asset_base) -> WebDeployment` owning the feature
+union, dependency order, URL rewriting, and hashes, with `compile_web_asset`
+demoted to returning *relocatable* content plus runtime requirements.
+
+#### Generated routes
+
+**The `Application` owns generated assets.** Not the `Server`, and not the
+process. This has to be one concrete lifecycle, because it decides where the
+deployment table and the asset base live — and the evidence points one way:
+`web_module` is compiled while *loading* a module, which happens under an
+`Application` (it is the runtime's module-loading context, holding
+`moduleCache`/`moduleLoading`), and `$web/script` takes no `Server` argument.
+So:
+
+- compilation stores immutable `WebAsset` values on the `Application`;
+- `$web/script` derives URLs from that application's configured `asset_base`;
+- every `Server` that application starts answers the same application-owned
+  deployment table before dispatching to its handler;
+- separate `Application` values stay isolated.
+
+This also keeps route installation out of request-time rendering: referring to
+an asset marks it reachable during module loading, and rendering a page only
+emits an already-finalized script node. Should assets ever need to vary per
+`Server`, the author-facing interface would have to take server or request
+context in order to pick a base and a table — a substantially wider surface with
+no driving case in P6.
+
+Modules are published under that application's asset base, with `/__gene/` only
+the default:
+
+```
+<base>/todo_client-<hash>.js       a page entry
+<base>/todo_client-<hash>.js.map   its map, subject to the policy below
+```
+
+- **The base is configurable, not a process root.** A Gene app mounted behind a
+  reverse proxy at `/todo/` never sees a request for `/__gene/…`. Hard-coding
+  the root breaks that deployment.
+- **Generated siblings import each other relatively**, so relocating under a
+  configured prefix is natural and needs no absolute root.
+- **Old generations must outlive their HTML.** A browser can receive a page
+  naming generation *N* immediately before the server publishes *N+1*. Replacing
+  the table eagerly is a race; state the retention policy (a bounded number of
+  generations, or until process exit) and test two interleaved ones.
+- **Response contract:** GET and HEAD, correct `Content-Type`,
+  `X-Content-Type-Options: nosniff`, immutable caching justified by the content
+  hash, and an explicit answer for whether production exposes `.map` routes.
+
+**Hashing must not be self-referential.** If the JavaScript ends with
+`//# sourceMappingURL=todo_client-<hash>.js.map` — as the current file emitter's
+appended URL would — then hashing "the emitted bytes" hashes a name derived from
+those bytes. Fix the order explicitly:
+
+1. build the client-only map, with no content-addressed JS name in its `file`
+   field;
+2. hash the map; that fixes the map URL;
+3. append the map URL to the JavaScript;
+4. hash the final JavaScript; that fixes the script URL.
+
+Or carry the relation in a `SourceMap` response header so it never mutates the
+hashed script. Either way, hashes inside import specifiers force
+dependency-first linking, and map routes follow the disclosure policy below.
+
+#### The entry and mount contract
+
+The serve adapter owns a **checked** entry, not an appended string. A first cut:
+
+```text
+main : <mount value> -> Void
+```
+
+The composition site supplies a mount id; compiler-owned bootstrap resolves that
+element and passes it in. That keeps the mount convention in one place, lets the
+compiler diagnose a missing or mis-typed entry, and means `querySelector` never
+has to be exposed merely to start the program.
+
+**The DOM operation this needs does not exist yet.** The generated allowlist
+produces only the TypeScript declaration in `web/gene_dom.generated.d.ts`; the
+analyzer registers no Gene-facing event registration, so both spellings fail
+today:
+
+```
+(root ~ add_event_listener "click" on_click)
+  ->  web type Any has no message add_event_listener
+($dom/add_event_listener root "click" on_click)
+  ->  portable web stdlib does not provide dom/add_event_listener
+```
+
+So P6 must land a real Gene-facing operation with the checked callback adapter
+and receiver semantics the DOM ABI already promises — or the entry contract must
+express the event and handler itself, rather than pretending `main` performs a
+call it cannot make. This is the item that decides whether progressive
+enhancement is reachable at all; it is not a typing detail.
+
+Resolve the mount type at the same time. `Any` is a workable narrow slice, but
+its generated validator is literally `return value;` — no structural check — so
+it must not be described as validating the mount. A checked `main` needs the
+smallest honest host type (`EventTarget`, or an opaque mount type) validating
+the operations the entry is allowed to perform.
+
+Still to specify: whether exactly one `main` is required; whether an async
+`main` is admitted and how a rejected `Task` surfaces rather than vanishing into
+an unhandled rejection; how a missing or duplicate mount is reported; and
+whether the contract enhances existing markup, replaces the mount's children, or
+leaves that to `main`.
+
+The acceptance example must exercise the chosen answer by **changing an existing
+server-rendered todo element**. Rendering an unrelated fresh subtree does not
+demonstrate progressive enhancement.
+
+#### Inline delivery, when it is chosen
+
+Two claims about inlining need stating more carefully than "it already works",
+since the inline adapter remains supported and the inline `<style>` is on the
+default path regardless.
+
+**CSP is not satisfied by the absence of `eval`.** The profile forbidding
+`eval`/`with`/`Function` (§4.10) answers `unsafe-eval` only. An ordinary
+`script-src` still blocks an inline `<script>` without a matching nonce or hash,
+and `style-src` blocks the inline `<style>` the todo app *already* emits. With
+external entries the script half largely disappears; the style half does not,
+until static styles move to a generated `.css` route too.
+
+**Raw-text escaping is necessary but not sufficient.** `html/render` does emit
+`script`/`style` bodies as raw text and rewrites a case-insensitive `</script`
+to `<\/script` — verified. But the HTML script-data tokenizer also has escaped
+and double-escaped states entered by `<!--` and `<script`, and those pass
+through untouched:
+
+```
+(script ^type "module" "var payload = \"<!--<script>\";")
+  ->  <script type="module">var payload = "<!--<script>";</script>
+```
+
+In double-escaped state a following `</script>` returns the tokenizer to escaped
+state instead of closing the element, so the renderer's own closing tag can be
+consumed and the markup after it swallowed. The fix belongs in the **emitter**,
+which controls every literal it writes: an HTML-embeddable mode encodes `<`
+inside JS string literals and sanitizes generated comments. Do not regex
+finished JavaScript — a blind replacement cannot tell an operator from a string.
+The regression is a real HTML-parser test: `<!--`, `<script`, and `</script>`
+together in Gene strings, followed by markup that must remain a sibling of the
+script.
+
+#### Source maps must not ship the server
+
+§4.10 requires devtools to show `.gene`. That is a disclosure hazard the file
+mode never had: `emitSourceMap` currently sets `sourcesContent` to
+`readFile(module.sourcePath)`, and once the web module lives *inside*
+`app.gene`, that is the whole server file — SQL, routes, comments — reaching
+every browser.
+
+The synthetic source unit needs an explicit policy:
+
+- browser `sourcesContent` carries **only** the embedded block (with blank-line
+  padding if host line numbers are worth preserving);
+- server-only source never enters a browser artifact, by construction rather
+  than by redaction after the fact;
+- production may omit `sourcesContent`, or the map route entirely, while dev
+  publishes the redacted one;
+- the synthetic identity stays stable enough to serve as a devtools name and a
+  cache key.
+
+Test both mapping accuracy *and* the absence of a distinctive server-only string
+in everything the browser can fetch.
+
+#### Imports resolve to generated routes, never to authored files
+
+A relative ESM `import` inside an *inline* module resolves against the document
+URL, which is why an inlined multi-module client cannot work as-is. External
+entries do not have that problem: a generated module importing a generated
+sibling uses an ordinary relative specifier that resolves against the asset
+base, wherever that base is mounted.
+
+What stays rejected inside `web_module` is narrower but firmer:
+
+- **`js/fn ^from` pointing at an author-written file.** Generated routes serve
+  compiler output only. A hand-written host shim is a second authored file
+  wearing a URL, and admitting it is how the one-file property dies quietly.
+- **Bare specifiers**, which have no meaning the server can guarantee.
+  Compile-time macro imports, which disappear before emission, are a different
+  thing and remain admissible.
+
+Browser facilities therefore arrive as compiler-owned typed intrinsics — the
+shape the DOM support already uses. If `fetch` is admitted later it gets an
+explicit typed contract and a measured helper cost against §4.11's table.
+
+The **file** mode (§4.10) is unaffected: there the module graph really is files
+on disk, and a bundler is a reasonable thing to point at them.
+
+#### Acceptance
+
+P6 is complete when `examples/todo_app/src/main.gene` is still the **only
+authored source file**, and contains the server routes and store, the CSS data
+and its `<style>`, the server-rendered HTML, an embedded `web_module` with a
+checked `main`, a visible `$web/script`-style composition operation, and
+compiler-owned mounting onto existing server markup.
+
+`gene run examples/todo_app/src/main.gene` must perform **no web file writes and
+no per-request compilation**. The tests that matter exercise the interfaces and
+the lifecycle, not the internals:
+
+- the entry and its dependencies load from the **configured asset base under a
+  subpath deployment**, not just from the root default;
+- two `Application` values cannot read each other's generated routes, and two
+  `Server` values started by the *same* application both serve its table;
+- an HTML response from generation *N* can still fetch its *N* URLs while *N+1*
+  is being published;
+- the real Gene DOM registration operation **changes an existing SSR row**;
+- script and map hashes are reproducible and non-self-referential, and maps
+  expose only the embedded block;
+- the page loads under the documented CSP, covering **both** `script-src` and
+  `style-src` for whichever delivery modes it selects;
+- async entry errors stay visible rather than becoming unhandled rejections;
+- and, if the inline adapter is exercised, hostile raw-text strings cannot
+  consume following markup.
+
+A compiler test proves that server-value capture, a bare or authored-file
+import, a bad entry signature, and a missing mount contract each fail with a
+location *inside the embedded block*.
+
 ---
 
 ## 5. The drift problem, and the gate that manages it
@@ -723,11 +1103,11 @@ conformance. `unknown` buys a good editing experience, not the semantics.
 
 Each phase ships something usable and is independently abandonable.
 
-**Implementation note (2026-07-29): P0, P0.5, P1, P2, P2.5, P3, P4, and P5
+**Implementation note (2026-07-30): P0, P0.5, P1, P2, P2.5, P3, P4, P5, and P6
 below are complete.** The descriptions remain as the historical delivery gates.
 
 **P0 — `gene/css` + a real `html/render`.** Stdlib only, no compiler, no DOM.
-Deliverable: `todo_app.gene`'s raw CSS string replaced by `(css …)` with scoped
+Deliverable: `todo_app`'s raw CSS string replaced by `(css …)` with scoped
 class generation, and the two examples' hand-rolled renderers replaced by one
 `html/render` with a written escaping/attribute contract.
 *Independently valuable even if Tier 1 never happens.*
@@ -770,6 +1150,55 @@ adversarial tests exist.
 **P5 — DOM breadth.** A generated binding over a *supported subset* of
 `lib.dom.d.ts`, plus the node→DOM edge. Deliverable: an interactive component
 with Gene event handlers.
+
+**P6 — embedded web modules (§4.12).** The `web_module` form and its synthetic
+source unit, the `$web/script` composition operation, the `compile_web_asset`
+seam with its file and serve adapters, the `Application`-owned generated-route
+table and its `gene/net/http` integration, a **Gene-facing DOM event
+registration**
+(which does not exist today), the checked entry/mount contract, non-circular
+content hashing, and a redacted client-only source map. Deliverable:
+`gene run examples/todo_app/src/main.gene` serves a page whose click handler was
+authored in the same file and changes an existing server-rendered row — one
+command, one authored source file, no build step, no bundler. Entries are
+external and content-addressed by default; inline delivery, the script-tokenizer
+escaping mode, and script CSP plumbing are a **later adapter**, not MVP scope.
+This is the first phase whose deliverable is an *application* rather than a
+compiler capability, which is why it is the one that finds what the fixtures
+cannot: the missing DOM operation, the scoping rule, the disclosure hazard in
+`sourcesContent`, and the hash-ordering circularity are all things no
+single-feature fixture would have surfaced.
+
+**P6 is implemented.** `gene run examples/todo_app/src/main.gene` serves the
+one-file app; `tests/transpile_embed_runner.nim` is the lifecycle suite. What
+building it settled, beyond the plan:
+
+- **The entry parameter is `EventTarget`** (open question 8), a new profile
+  type whose validator structurally checks `addEventListener` rather than
+  being `return value;`. `Any` was rejected precisely because describing it as
+  "validating the mount" would have been false.
+- **`$dom/add_event_listener` / `remove_event_listener`** are compiler-owned
+  typed intrinsics: the target is checked, the handler is a checked
+  `Callback [Any] Void`, and the listener is passed through unwrapped so
+  removal can still find it by identity.
+- **Progressive enhancement needed no allowlist growth** (open question 9).
+  Reading and traversing existing markup went through the profile's existing
+  `Any` path accessor, which already camel-maps `parent_element` and
+  `class_name`. Delegation from the mount root covered the todo case exactly
+  as predicted.
+- **Redaction is positional, not textual.** The block's own characters are
+  kept and everything before them is replaced by spaces and newlines, so line
+  *and* column stay exact with no padding fixups, and no host byte can reach a
+  browser by construction.
+- **A gap the phase exposed:** web diagnostics about a bare symbol, string, or
+  number had no position at all, because only containers carry `SourceLoc`.
+  The analyzer now falls back to the nearest enclosing form it descended
+  through, which is what makes "server-value capture fails *inside* the block"
+  a checkable claim rather than a hopeful one.
+- **`$web/stylesheet`** answers the CSP question §4.12 left open by naming a
+  mechanism: static styles become a generated `.css` route, so the page loads
+  under a plain `script-src 'self'; style-src 'self'` and nothing has to travel
+  on a `Str` return type.
 
 **Never:** `fn!`, `eval`, actors, channels, FFI, capabilities. Those are what
 the wasm VM is for, and saying so plainly is what keeps the profile honest.
@@ -816,11 +1245,35 @@ the wasm VM is for, and saying so plainly is what keeps the profile honest.
    component boundary; host-authority APIs remain explicit JS externs.
 5. **Reactivity.** Do not invent a framework — but node-data-as-VDOM (§7.2)
    strongly suggests a small signal/diff layer. Defer past P5, decide with a
-   real app in hand.
+   real app in hand. §4.12's todo app is that app; decide after it works, not
+   before.
 6. ~~**Is P1's factoring acceptable to the VM's performance envelope?**~~
    **Settled by the repository performance gates:** GIR is unchanged and the
    shared expansion artifact is invoked by the web path; `nimble perf` remains
    the VM guard.
+7. ~~**Which embedding mode becomes the default (§4.12)?**~~ **Dissolved, not
+   answered.** Runtime-call versus compile-time macro was never an authoring
+   choice. One seam — `compile_web_asset` — with a file adapter and an inline
+   adapter; `gene run` and a built artifact differ only in *when* the bytes are
+   produced and *where* they are stored. Application authors see neither.
+8. **What is the embedded entry's parameter type (§4.12)?** The profile has no
+   DOM element type, so `main` takes `Any` — and every mount then pays a
+   boundary validator — or the DOM subset grows a nominal type. Bootstrap itself
+   no longer needs `querySelector`, and one delegated `add_event_listener` on
+   the mount root already reaches server-rendered rows, so this is now a typing
+   question rather than a capability one.
+9. **How much DOM does progressive enhancement actually need?** Delegation
+   covers the todo case. The moment an app wants to read or traverse existing
+   markup, the allowlist has to grow under §6's rules — and that is the point
+   where "enhance the server's HTML" stops being cheap. Decide with the second
+   app, not this one.
+10. **When, if ever, does a shared runtime replace self-contained entries
+    (§4.12)?** Deferred out of P6: one content-addressed external entry is
+    already browser-cached, so sharing buys nothing until an application has two
+    of them, and it would require a link stage that per-module compilation
+    cannot provide. Revisit with measurements from a two-entry app; the answer
+    decides whether `compile_web_asset` keeps returning final JS or is demoted
+    to relocatable content plus runtime requirements.
 
 ---
 

@@ -17,10 +17,11 @@ The normative implemented surface lives in `docs/spec/` and is checked by
 `nimble spec`. Unit and integration coverage runs with `nimble test`; broad
 runtime verification uses `nimble verify`.
 
-The front-end transpilation proposal is implemented through its P5 DOM slice.
+The front-end transpilation proposal is implemented through its P6 embedded
+web-module slice.
 `gene/html/render` is the shared node-to-text edge, and `gene/css` supplies
 ordered declaration/rule data, nested/media rendering, deterministic scoped
-classes, and scoped keyframes. `examples/todo_app.gene` and
+classes, and scoped keyframes. `examples/todo_app/src/main.gene` and
 `examples/web_demo.gene` use these APIs instead of local renderers or raw CSS
 strings. A backend-neutral fixture manifest and canonical result envelope run
 under `nimble transpile_spec`; the fixed bigint/JSON spike runs under
@@ -35,6 +36,22 @@ Checked JS exports/imports, callbacks, method edges, and an interactive Gene
 component exercise the ABI. `derive` deliberately remains VM-only; fexprs,
 runtime eval, actors/channels, native FFI, capabilities, scoped impl imports,
 threads, and deep persistent freeze/thaw receive explicit profile diagnostics.
+
+A `web_module` block embeds a web-profile source unit inside an ordinary
+module, so a complete page — server logic, HTML, CSS, and browser behavior — is
+one authored file with no build step, bundler, or hand-written JavaScript.
+`gene run examples/todo_app/src/main.gene` serves a page whose delegated click
+handler was authored in that same file and enhances existing server-rendered
+rows. The block's forms keep their original positions rather than being
+reprinted and re-read, so diagnostics and source maps name the lines the author
+wrote; it sees the web prelude and its own declarations only, so it cannot
+close over a database handle or a request. Compilation happens once per module
+version behind the `compile_web_asset` seam, never per request. The owning
+`Application` holds the resulting immutable assets and their content-addressed
+routes, which every `Server` it starts answers; `$web/script` and
+`$web/stylesheet` return finished nodes, and referring to an asset is what
+publishes it. Source maps carry only the embedded block, so server source never
+enters a browser artifact. `nimble transpile_spec` runs the lifecycle suite.
 
 The experimental `typed_native` C backend (`gene compile --target c`,
 `docs/proposals/native-type.md` Part II) lowers native-pointer parameters,

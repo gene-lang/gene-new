@@ -33,6 +33,11 @@ type
     # string) for each function and scoped body.
     sourceLocs: ref Table[uint64, SourceLoc]
     formLocs: seq[SourceLoc]
+    # The unit's own text and top-level extents, carried only so an embedded
+    # `web_module` block can be quoted back verbatim for its client-only
+    # source map. Nothing else reads them.
+    unitSource: string
+    currentFormIndex: int
     currentLoc: SourceLoc
     selfAvailable: bool
     seenModDecl: bool
@@ -183,7 +188,7 @@ const CoreSpecialFormNames* = [
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
   "supervisor", "spawn", "await", "fail", "panic", "type", "alias", "enum",
-  "protocol", "impl", "derive", "import_impl"
+  "protocol", "impl", "derive", "import_impl", "web_module"
 ]
 
 proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
@@ -2303,6 +2308,7 @@ proc expandSourceUnitMacros*(unit: SourceUnit,
   ## VM compiler continues to use the same `expandMacro` implementation.
   result.original = unit
   result.expanded = SourceUnit(sourceName: unit.sourceName,
+                               source: unit.source,
                                locs: unit.locs)
   result.provenance = initTable[uint64, ExpansionProvenance]()
   result.macroExports = initTable[string, MacroDef]()
@@ -4167,7 +4173,7 @@ proc collectCompileInterfaceForm(form: Value,
       syntaxNames.incl name
       if not form.declarationIsPrivate:
         target.entries[name] = CompileInterfaceEntry(category: cbcSyntaxFn)
-  of "fn":
+  of "fn", "web_module":
     let name = form.declaredName
     if name.len > 0 and not form.declarationIsPrivate:
       target.entries[name] = CompileInterfaceEntry(category: cbcValue)
@@ -4609,7 +4615,7 @@ proc collectDeclaredUnitNames(form: Value, names: var HashSet[string]) =
     return
   case form.head.symVal
   of "var", "let", "const", "fn", "fn!", "macro", "type", "enum", "protocol",
-     "ns", "alias":
+     "ns", "alias", "web_module":
     let name = form.declaredName
     if name.len > 0:
       names.incl name
@@ -4632,7 +4638,7 @@ proc collectRuntimeDeclaredUnitNames(c: Compiler, form: Value,
     return
   case form.head.symVal
   of "var", "let", "const", "fn", "fn!", "type", "enum", "protocol", "ns",
-     "alias":
+     "alias", "web_module":
     let name = form.declaredName
     if name.len > 0:
       names.incl name
@@ -7242,6 +7248,140 @@ proc compileEnum(c: var Compiler, node: Value) =
                                            inlineImpls: inlineImpls)))
   c.emitDefineBinding(name, immutable = true)
 
+proc collectWebModuleLocs(c: Compiler, value: Value,
+                          into: var seq[tuple[bits: uint64, loc: SourceLoc]],
+                          seen: var HashSet[uint64]) =
+  ## Copy out the positions of every container inside the block. The synthetic
+  ## unit the runtime builds gets exactly these, so a diagnostic, a source-map
+  ## entry, and a conformance report all name the line the author wrote —
+  ## which printing the tree back to text and re-reading it would destroy.
+  if value.kind notin {vkNode, vkList, vkMap, vkSet, vkHashMap}:
+    return
+  if value.bits notin seen:
+    seen.incl value.bits
+    if c.sourceLocs != nil and c.sourceLocs[].hasKey(value.bits):
+      into.add (value.bits, c.sourceLocs[][value.bits])
+  case value.kind
+  of vkNode:
+    c.collectWebModuleLocs(value.head, into, seen)
+    for _, item in value.meta: c.collectWebModuleLocs(item, into, seen)
+    for _, item in value.props: c.collectWebModuleLocs(item, into, seen)
+    for item in value.body: c.collectWebModuleLocs(item, into, seen)
+  of vkList:
+    for item in value.listItems: c.collectWebModuleLocs(item, into, seen)
+  of vkMap:
+    for _, item in value.mapEntries: c.collectWebModuleLocs(item, into, seen)
+  of vkSet:
+    for item in value.setItems: c.collectWebModuleLocs(item, into, seen)
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      c.collectWebModuleLocs(entry.key, into, seen)
+      c.collectWebModuleLocs(entry.val, into, seen)
+  else: discard
+
+proc offsetOfPosition(source: string, line, col: int): int =
+  ## Byte offset of a 1-based (line, col). Only embedded web blocks ask for
+  ## this, so scanning beats keeping a line index on every compile.
+  if line <= 0: return 0
+  var currentLine = 1
+  var i = 0
+  while currentLine < line and i < source.len:
+    if source[i] == '\n': inc currentLine
+    inc i
+  result = min(source.len, i + max(0, col - 1))
+
+proc redactedBlockSource(source: string, startLine, startCol,
+                         limitLine, limitCol: int): string =
+  ## The block's own characters, with everything before it replaced by spaces
+  ## and newlines. Line *and* column stay exact, so the map needs no padding
+  ## fixups — and no byte of the surrounding server module can reach a browser,
+  ## by construction rather than by scrubbing after the fact.
+  ##
+  ## The end is the start of the next top-level form (or EOF); only whitespace
+  ## and comments can sit between, so trimming those off the tail lands on the
+  ## block's own last character.
+  if source.len == 0 or startLine <= 0: return ""
+  let start = offsetOfPosition(source, startLine, startCol)
+  var stop =
+    if limitLine > 0: offsetOfPosition(source, limitLine, limitCol)
+    else: source.len
+  if stop <= start: return ""
+  while stop > start:
+    # Drop trailing blank space, then any whole comment line that followed the
+    # block. A comment *on* the block's last line is not line-leading and stays
+    # — it is as much the author's block as the parenthesis beside it.
+    while stop > start and source[stop - 1] in {' ', '\t', '\r', '\n'}:
+      dec stop
+    var lineStart = stop
+    while lineStart > start and source[lineStart - 1] != '\n': dec lineStart
+    var probe = lineStart
+    while probe < stop and source[probe] in {' ', '\t'}: inc probe
+    if probe < stop and source[probe] == '#':
+      stop = lineStart
+    else:
+      break
+  result = newStringOfCap(stop + 1)
+  for i in 0 ..< stop:
+    if i >= start: result.add source[i]
+    elif source[i] == '\n': result.add '\n'
+    else: result.add ' '
+  result.add '\n'
+
+proc compileWebModule(c: var Compiler, node: Value) =
+  ## `(web_module name form...)` — a web-profile source unit written inside an
+  ## ordinary module. The forms are captured, never compiled for this VM: they
+  ## target a different backend, and the runtime turns them into an asset while
+  ## the containing module loads.
+  let body = node.body
+  if body.len == 0 or body[0].kind != vkSymbol:
+    raise newException(GeneError, "web_module requires a name")
+  let name = body[0].symVal
+  if name.len > 0 and name[0] in {'A'..'Z'}:
+    raise newException(GeneError,
+      "web_module '" & name & "' must start lowercase; uppercase names are " &
+      "types and protocols (design §2.1)")
+  validateBindingName(name)
+  for key in node.props.keys:
+    # The binding is an ordinary immutable module member — exportable and
+    # importable, so two pages in different modules can place one asset — and
+    # `^private` keeps it local like any other declaration.
+    if key != "private":
+      raise newException(GeneError,
+        "web_module got unexpected named argument: " & key)
+  if body.len == 1:
+    raise newException(GeneError, "web_module " & name & " has an empty body")
+  if node.bits notin c.staticTopLevelImpls:
+    # The block is compiled once per module version while that module loads.
+    # A conditional or nested one would have no such moment, and its asset
+    # would have to appear and disappear under a running server.
+    raise newException(GeneError,
+      "web_module must be an unconditional top-level declaration")
+  var forms: seq[Value]
+  var formLocs: seq[SourceLoc]
+  var nestedLocs: seq[tuple[bits: uint64, loc: SourceLoc]]
+  var seen = initHashSet[uint64]()
+  for i in 1 ..< body.len:
+    forms.add body[i]
+    formLocs.add c.sourceLocFor(body[i])
+    c.collectWebModuleLocs(body[i], nestedLocs, seen)
+  let blockLoc = c.sourceLocFor(node)
+  let nextLoc =
+    if c.currentFormIndex + 1 < c.formLocs.len:
+      c.formLocs[c.currentFormIndex + 1]
+    else: SourceLoc()
+  let identity =
+    (if c.sourceName.len > 0: c.sourceName else: "<unit>") & "#" & name
+  discard c.emit(opWebModule,
+                 c.chunk.addWebModule(WebModuleProto(
+                   name: name, identity: identity, forms: forms,
+                   formLocs: formLocs, nestedLocs: nestedLocs,
+                   source: redactedBlockSource(c.unitSource, blockLoc.line,
+                                               blockLoc.col, nextLoc.line,
+                                               nextLoc.col),
+                   loc: blockLoc)),
+                 name = name)
+  c.emitDefineBinding(name, immutable = true)
+
 proc compileProtocol(c: var Compiler, node: Value) =
   let body = node.body
   if body.len == 0 or body[0].kind != vkSymbol:
@@ -7380,10 +7520,11 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   if node.props.hasKey("private"):
     if h.kind != vkSymbol or h.symVal notin
         ["var", "let", "const", "fn", "fn!", "macro", "type", "alias", "enum",
-         "protocol", "ns"]:
+         "protocol", "ns", "web_module"]:
       raise newException(GeneError,
         "^private is only valid on a named declaration " &
-        "(let, var, const, fn, fn!, macro, type, alias, enum, protocol, ns)")
+        "(let, var, const, fn, fn!, macro, type, alias, enum, protocol, ns, " &
+        "web_module)")
     if node.declarationIsPrivate:
       if node.bits notin c.staticTopLevelImpls:
         raise newException(GeneError,
@@ -7559,6 +7700,9 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
     of "enum":
       compileEnum(c, node)
       return
+    of "web_module":
+      compileWebModule(c, node)
+      return
     of "protocol":
       compileProtocol(c, node)
       return
@@ -7684,6 +7828,7 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
   else:
     for i in 0 ..< forms.len:
       let savedLoc = c.currentLoc
+      c.currentFormIndex = i
       if i < c.formLocs.len and c.formLocs[i].hasSourceLoc:
         c.currentLoc = c.formLocs[i]
       try:
@@ -7718,6 +7863,7 @@ proc compileSourceUnit*(unit: SourceUnit,
                    sourceName: unit.sourceName,
                    sourceLocs: sharedSourceLocs(unit.locs),
                    formLocs: unit.formLocs,
+                   unitSource: unit.source,
                    allowAmbientImports: allowAmbientImports,
                    ffiLibraryNames: initTable[string, bool]())
   compileFormsInto(c, unit.forms, useLocalSlots)
@@ -7771,6 +7917,7 @@ proc compileFormsWithMacros*(unit: SourceUnit,
                    sourceName: unit.sourceName,
                    sourceLocs: sharedSourceLocs(unit.locs),
                    formLocs: unit.formLocs,
+                   unitSource: unit.source,
                    allowAmbientImports: true,
                    ffiLibraryNames: initTable[string, bool](),
                    importedMacroSets: importedMacros,

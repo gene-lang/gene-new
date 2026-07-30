@@ -12,7 +12,12 @@ type
   WebTypeKind* = enum
     wtkNil, wtkVoid, wtkBool, wtkStr, wtkSym, wtkInt, wtkF64,
     wtkAny, wtkNever, wtkList, wtkPropMap, wtkMap, wtkNode, wtkRange,
-    wtkCallback, wtkTask, wtkStream, wtkNominal, wtkUnion
+    wtkCallback, wtkTask, wtkStream, wtkNominal, wtkUnion,
+    ## The one host type the profile names. It exists so an entry point and a
+    ## listener registration can be *checked* rather than taking `Any`, whose
+    ## generated validator is `return value;` and therefore validates nothing.
+    ## It admits exactly the operations the DOM ABI allows on a target.
+    wtkDomTarget
 
   WebType* = ref object
     kind*: WebTypeKind
@@ -29,7 +34,8 @@ type
     wekBinary, wekDo,
     wekBind, wekSet, wekSetPath, wekWhile, wekLoop, wekRepeat, wekFor,
     wekBreak, wekContinue, wekReturn, wekMatch, wekTry, wekFail,
-    wekPath, wekSelector, wekSend, wekNew, wekEnum, wekDomRender, wekAwait,
+    wekPath, wekSelector, wekSend, wekNew, wekEnum, wekDomRender,
+    wekDomListener, wekAwait,
     wekSpawn, wekScope, wekYield, wekMessage
 
   WebExpr* = ref object
@@ -168,6 +174,20 @@ type
   WebModule* = ref object
     name*: string
     sourcePath*: string
+    ## Base name for emitted artifacts. Empty means "derive it from
+    ## sourcePath", which is what a file on disk wants; an embedded block has
+    ## no file of its own and names itself.
+    assetName*: string
+    ## Set only for a block embedded in a host module. It holds *that block's*
+    ## text and nothing else, and its presence is what makes the module
+    ## embedded: no file exists to import from, so file imports are rejected
+    ## and the source map may publish this string instead of reading a path
+    ## that would hand a browser the whole server.
+    embeddedSource*: string
+    embedded*: bool
+    ## The `(mod …)` header's position — the one location a diagnostic about
+    ## the module *as a whole* (a missing entry, say) can honestly name.
+    loc*: SourceLoc
     imports*: seq[WebImport]
     externs*: seq[WebExtern]
     functions*: seq[WebFunction]
@@ -228,6 +248,9 @@ type
     currentTypeName: string
     currentNamespace: seq[string]
     currentFunction: string
+    # Nearest enclosing form the analyzer has descended through, so a
+    # diagnostic about a positionless scalar still names a place in the source.
+    currentLoc: SourceLoc
     callSites: seq[WebCallSite]
     functionValueRefs: seq[WebFunctionValueRef]
 
@@ -373,6 +396,7 @@ proc typeName(typ: WebType): string =
   of wtkMap: "(Map " & typeName(typ.params[0]) & " " & typeName(typ.params[1]) & ")"
   of wtkNode: "Node"
   of wtkRange: "Range"
+  of wtkDomTarget: "EventTarget"
   of wtkTask: "(Task " & typeName(typ.item) & ")"
   of wtkStream: "(Stream " & typeName(typ.item) & ")"
   of wtkNominal: typ.name
@@ -403,6 +427,7 @@ proc tsType(typ: WebType): string =
   of wtkMap: "GeneMap<" & tsType(typ.params[0]) & ", " & tsType(typ.params[1]) & ">"
   of wtkNode: "GeneNode"
   of wtkRange: "GeneRange"
+  of wtkDomTarget: "EventTarget"
   of wtkTask: "GeneTask<" & tsType(typ.item) & ">"
   of wtkStream: "GeneStream<" & tsType(typ.item) & ">"
   of wtkNominal: mangleWebName(typ.name)
@@ -431,6 +456,7 @@ proc validatorSuffix(typ: WebType): string =
   of wtkMap: "map_" & validatorSuffix(typ.params[0]) & "_" & validatorSuffix(typ.params[1])
   of wtkNode: "node"
   of wtkRange: "range"
+  of wtkDomTarget: "event_target"
   of wtkTask: "task_" & validatorSuffix(typ.item)
   of wtkStream: "stream_" & validatorSuffix(typ.item)
   of wtkNominal: "nominal_" & mangleWebName(typ.name)
@@ -455,11 +481,18 @@ proc divisorGuard(typ: WebType): string =
 
 proc locFor(analysis: WebAnalysis, value: Value,
             fallback = SourceLoc()): SourceLoc =
+  ## Only containers carry positions, so a diagnostic about a bare symbol,
+  ## string, or number would otherwise have none at all. Falling back to the
+  ## nearest enclosing form the analyzer descended through gives every
+  ## diagnostic a location — the form containing the offending scalar, which is
+  ## what a reader needs to find it.
   if value.kind in {vkNode, vkList, vkMap, vkSet, vkHashMap} and
       analysis.unit.locs.hasKey(value.bits):
     analysis.unit.locs[value.bits]
-  else:
+  elif fallback.hasSourceLoc:
     fallback
+  else:
+    analysis.currentLoc
 
 proc webError(loc: SourceLoc, message: string): ref WebProfileError =
   var prefix = ""
@@ -511,6 +544,7 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
     of "PropMap": return webType(wtkPropMap)
     of "Node": return webType(wtkNode)
     of "Range": return webType(wtkRange)
+    of "EventTarget": return webType(wtkDomTarget)
     else:
       return WebType(kind: wtkNominal, name: value.symVal)
   if value.kind == vkNode and value.head.isSym("List") and
@@ -1314,6 +1348,27 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       return WebExpr(kind: wekDomRender, typ: webType(wtkAny), loc: loc,
         children: @[analysis.analyzeExpr(value.body[0], bindings,
                                          webType(wtkNode))])
+    for listenerOp in ["add_event_listener", "remove_event_listener"]:
+      if not (value.head.isPath(["gene", "dom", listenerOp]) or
+              value.head.isPath(["dom", listenerOp])):
+        continue
+      # The one browser capability progressive enhancement actually needs. It
+      # is a compiler-owned typed intrinsic, not a member on `Any`: the target
+      # is checked, the event type is a `Str`, and the handler is a checked
+      # `Callback` so a wrong arity or return fails here rather than at the
+      # first click.
+      if value.body.len != 3:
+        raise webError(loc, "dom/" & listenerOp &
+          " expects a target, an event type, and a handler")
+      let handlerType = webType(wtkCallback)
+      handlerType.params = @[webType(wtkAny)]
+      handlerType.returnType = webType(wtkVoid)
+      return WebExpr(kind: wekDomListener, typ: webType(wtkVoid), loc: loc,
+        text: listenerOp,
+        children: @[
+          analysis.analyzeExpr(value.body[0], bindings, webType(wtkDomTarget)),
+          analysis.analyzeExpr(value.body[1], bindings, webType(wtkStr)),
+          analysis.analyzeExpr(value.body[2], bindings, handlerType)])
     if value.head.kind == vkNode and value.head.head.isSym("path") and not
         (value.head.body.len == 2 and value.head.body[0].kind == vkSymbol and
          analysis.enumDecls.hasKey(value.head.body[0].symVal)):
@@ -2022,6 +2077,8 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
                  bindings: var Table[string, WebBinding],
                  expected: WebType = nil): WebExpr =
   let loc = analysis.locFor(value)
+  if loc.hasSourceLoc:
+    analysis.currentLoc = loc
   case value.kind
   of vkNil:
     result = WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
@@ -2186,16 +2243,16 @@ proc rejectAsyncBody(body: WebExpr, loc: SourceLoc, label: string) =
     raise webError(loc, "web async is limited to top-level functions: " &
       label & " cannot use scope/await or call an async function")
 
-proc analyzeWebModuleWithImports(source, sourcePath: string,
-                                 imported: Table[string, WebFunctionSig],
-                                 importedTypes: Table[string, WebTypeDecl],
-                                 importedEnums: Table[string, WebEnumDecl],
-                                 importedProtocols: Table[string, WebProtocolDecl],
-                                 importedMacros: Table[string,
-                                   Table[string, MacroDef]],
-                                 macroExports: var Table[string, MacroDef]): WebModule =
-  let frontEnd = expandSourceUnitMacros(
-    readAllWithLocs(source, sourcePath), importedMacros)
+proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
+                               imported: Table[string, WebFunctionSig],
+                               importedTypes: Table[string, WebTypeDecl],
+                               importedEnums: Table[string, WebEnumDecl],
+                               importedProtocols: Table[string, WebProtocolDecl],
+                               importedMacros: Table[string,
+                                 Table[string, MacroDef]],
+                               macroExports: var Table[string, MacroDef],
+                               embedded = false): WebModule =
+  let frontEnd = expandSourceUnitMacros(unit, importedMacros)
   macroExports = frontEnd.macroExports
   var analysis = WebAnalysis(
     unit: frontEnd.expanded,
@@ -2226,7 +2283,8 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
     raise webError(moduleLoc, "web module requires `^profile web`")
   rejectUnknownProps(moduleForm, moduleLoc, "mod", ["profile"])
   result = WebModule(name: moduleForm.body[0].symVal,
-                     sourcePath: sourcePath)
+                     sourcePath: sourcePath, embedded: embedded,
+                     loc: moduleLoc)
   # Declaration names and schemas are collected before executable bodies so
   # annotations, construction, recursion, and sends resolve independent of
   # source order.
@@ -2327,6 +2385,13 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
     if form.kind != vkNode:
       raise webError(loc, "top-level executable data is outside the web profile")
     if form.head.isPath(["js", "fn"]):
+      if result.embedded:
+        # Generated routes serve compiler output only. A `^from` specifier
+        # inside an embedded block is either a bare specifier the server
+        # cannot guarantee, or a hand-written host shim wearing a URL — and
+        # admitting the second is how the one-authored-file property dies.
+        raise webError(loc, "js/fn is outside an embedded web module: " &
+          "generated routes serve compiler output, not authored files")
       let extern = parseWebExtern(analysis, form, loc)
       if analysis.signatures.hasKey(extern.sourceName):
         raise webError(loc, "duplicate web binding: " & extern.sourceName)
@@ -2341,6 +2406,13 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
     if form.head.kind != vkSymbol:
       raise webError(loc, "top-level form is outside the web profile")
     if form.head.symVal == "import":
+      if result.embedded:
+        # A relative path here would name a second file a human has to write
+        # and keep in sync, which is exactly the product this form exists to
+        # refuse. Compile-time macro imports disappear before emission and are
+        # a different thing, but they are a host-module concern.
+        raise webError(loc, "import is outside an embedded web module: " &
+          "the block sees the web prelude and its own declarations only")
       var webImport = parseWebImport(form, loc, sourcePath)
       if importedMacros.hasKey(webImport.sourcePath):
         let macros = importedMacros[webImport.sourcePath]
@@ -2480,6 +2552,18 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
   analysis.checkFunctionValueRefs()
   analysis.currentReturn = nil
   analysis.currentTypeName = ""
+
+proc analyzeWebModuleWithImports(source, sourcePath: string,
+                                 imported: Table[string, WebFunctionSig],
+                                 importedTypes: Table[string, WebTypeDecl],
+                                 importedEnums: Table[string, WebEnumDecl],
+                                 importedProtocols: Table[string, WebProtocolDecl],
+                                 importedMacros: Table[string,
+                                   Table[string, MacroDef]],
+                                 macroExports: var Table[string, MacroDef]): WebModule =
+  analyzeWebUnitWithImports(readAllWithLocs(source, sourcePath), sourcePath,
+    imported, importedTypes, importedEnums, importedProtocols, importedMacros,
+    macroExports)
 
 proc analyzeWebModule*(source, sourcePath: string): WebModule =
   var macroExports: Table[string, MacroDef]
@@ -3008,6 +3092,12 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       enumName & "." & variantName & "(" & arguments.join(", ") & ")"
   of wekDomRender:
     "$gene_dom_render(" & emitter.emitExpr(expr.children[0]) & ")"
+  of wekDomListener:
+    let target = emitter.emitExpr(expr.children[0])
+    let eventType = emitter.emitExpr(expr.children[1])
+    let handler = emitter.emitExpr(expr.children[2])
+    "$gene_dom_" & expr.text & "(" & target & ", " & eventType & ", " &
+      handler & ")"
   of wekTry:
     let target = emitter.temp()
     emitter.line("let " & target & ";")
@@ -3454,6 +3544,15 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
       emitter.line("}")
     of wtkNode:
       emitter.line("if (!$gene_is_node(value)) $gene_type_error(where, \"Node\", value);")
+    of wtkDomTarget:
+      # The honest check: exactly the operations the DOM ABI lets a target
+      # receive. Structural rather than `instanceof EventTarget` so a node in
+      # another realm (an iframe, a test document) still validates.
+      emitter.line("if (value === null || (typeof value !== \"object\" && " &
+        "typeof value !== \"function\") || typeof (value" &
+        (if emitter.typescript: " as { addEventListener?: unknown }" else: "") &
+        ").addEventListener !== \"function\") " &
+        "$gene_type_error(where, \"EventTarget\", value);")
     of wtkRange:
       emitter.line("if (!(value instanceof GeneRange)) $gene_type_error(where, \"Range\", value);")
     of wtkTask:
@@ -3825,6 +3924,8 @@ proc emitModule(module: WebModule, typescript: bool,
     moduleUsesExprKind(module, {wekRange})
   needsPath = moduleUsesExprKind(module, {wekPath, wekSelector, wekSetPath})
   needsDom = moduleUsesExprKind(module, {wekDomRender})
+  let needsDomEvents = moduleUsesExprKind(module, {wekDomListener}) or
+    moduleUsesTypeKind(module, wtkDomTarget)
   needsMap = moduleUsesTypeKind(module, wtkMap) or
     moduleUsesExprKind(module, {wekMap})
   needsStream = moduleUsesTypeKind(module, wtkStream)
@@ -4127,6 +4228,27 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("return element;")
     dec emitter.indent
     emitter.line("}")
+    emitter.line()
+  if needsDomEvents:
+    # The listener is passed through unwrapped so `remove_event_listener` can
+    # find it again by identity. There is nothing to adapt: the analyzer has
+    # already required a `Callback [Any] Void`, and the emitted Gene function
+    # validates its own parameter, so the checking the ABI promises happens at
+    # the registration site and inside the handler rather than in a wrapper the
+    # remover could not reproduce.
+    let targetParam = if typescript: "target: EventTarget" else: "target"
+    let typeParam = if typescript: "type: string" else: "type"
+    let handlerParam =
+      if typescript: "handler: (event: unknown) => void" else: "handler"
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_dom_add_event_listener(" & targetParam &
+      ", " & typeParam & ", " & handlerParam & ")" & voidReturn &
+      " { target.addEventListener(type, handler" &
+      (if typescript: " as EventListener" else: "") & "); }")
+    emitter.line("function $gene_dom_remove_event_listener(" & targetParam &
+      ", " & typeParam & ", " & handlerParam & ")" & voidReturn &
+      " { target.removeEventListener(type, handler" &
+      (if typescript: " as EventListener" else: "") & "); }")
     emitter.line()
   if moduleUsesBuiltin(module, ["html/escape", "html/attr_escape"]):
     emitter.line("function $gene_html_escape(value" &
@@ -4450,6 +4572,19 @@ proc sourceMappings(lineLocs: openArray[SourceLoc]): string =
     previousSourceLine = sourceLine
     previousSourceCol = sourceCol
 
+proc webAssetName*(module: WebModule): string =
+  ## The base name for this module's artifacts. A file on disk is named by its
+  ## path; an embedded block has no file and carries its own name.
+  if module.assetName.len > 0: module.assetName
+  else: splitFile(module.sourcePath).name
+
+proc sourceMapContent(module: WebModule): string =
+  ## What a browser is allowed to read. For an embedded block that is the
+  ## block's own text and nothing else — reading `sourcePath` here would hand
+  ## every browser the entire server module the block happens to live in.
+  if module.embedded: module.embeddedSource
+  else: readFile(module.sourcePath)
+
 proc emitSourceMap(module: WebModule, outputName: string,
                    lineLocs: openArray[SourceLoc]): string =
   $(%*{
@@ -4457,7 +4592,7 @@ proc emitSourceMap(module: WebModule, outputName: string,
     "file": outputName,
     "sourceRoot": "",
     "sources": [module.sourcePath],
-    "sourcesContent": [readFile(module.sourcePath)],
+    "sourcesContent": [sourceMapContent(module)],
     "names": newSeq[string](),
     "mappings": sourceMappings(lineLocs)
   })
@@ -4467,17 +4602,247 @@ proc emitWebArtifacts*(module: WebModule): WebArtifacts =
   result.js = emitModule(module, false, jsLocs)
   result.ts = emitModule(module, true, tsLocs)
   result.declarations = emitDeclarations(module)
-  let base = splitFile(module.sourcePath).name
+  let base = module.webAssetName()
   result.sourceMap = emitSourceMap(module, base & ".mjs", jsLocs)
   result.tsSourceMap = emitSourceMap(module, base & ".ts", tsLocs)
   result.js.add "//# sourceMappingURL=" & base & ".mjs.map\n"
   result.ts.add "//# sourceMappingURL=" & base & ".ts.map\n"
 
+# --- the compile_web_asset seam ----------------------------------------------
+#
+# One interface owns everything a caller would otherwise re-derive: when to
+# compile, where the bytes go, how the map is redacted, how the entry is
+# checked, and what URLs the result answers to. Two adapters sit on it — the
+# file adapter above (`gene build --target web`, unchanged) and the serve
+# adapter the runtime uses. Neither application code nor request handling ever
+# sees JavaScript, a hash, or a source map.
+
+type
+  WebAssetRoute* = object
+    ## One publishable file. The name is relative to whatever asset base the
+    ## owning application is configured with, so relocating the whole
+    ## deployment under a reverse-proxy prefix moves every route at once.
+    fileName*: string
+    contentType*: string
+    body*: string
+    isSourceMap*: bool
+
+  WebAsset* = ref object
+    ## An immutable compiled entry. Everything a caller might be tempted to
+    ## reach for — the JavaScript, its map, the hashes, the entry's name — is
+    ## private; the only public surface is "what routes do you publish" and
+    ## "what does a script tag for you look like".
+    name: string
+    identity: string
+    entryFile: string
+    mapFile: string
+    js: string
+    sourceMap: string
+    entryName: string
+    entryAsync: bool
+
+# A compact SHA-256. Content addressing is the cache-correctness boundary for
+# every generated route, so a hash collision would serve stale bytes under a
+# fresh URL; that rules out the cheap non-cryptographic hashes. Kept local
+# rather than pulling in `std/sha1` (deprecated) or a new dependency.
+const sha256K: array[64, uint32] = [
+  0x428a2f98'u32, 0x71374491'u32, 0xb5c0fbcf'u32, 0xe9b5dba5'u32,
+  0x3956c25b'u32, 0x59f111f1'u32, 0x923f82a4'u32, 0xab1c5ed5'u32,
+  0xd807aa98'u32, 0x12835b01'u32, 0x243185be'u32, 0x550c7dc3'u32,
+  0x72be5d74'u32, 0x80deb1fe'u32, 0x9bdc06a7'u32, 0xc19bf174'u32,
+  0xe49b69c1'u32, 0xefbe4786'u32, 0x0fc19dc6'u32, 0x240ca1cc'u32,
+  0x2de92c6f'u32, 0x4a7484aa'u32, 0x5cb0a9dc'u32, 0x76f988da'u32,
+  0x983e5152'u32, 0xa831c66d'u32, 0xb00327c8'u32, 0xbf597fc7'u32,
+  0xc6e00bf3'u32, 0xd5a79147'u32, 0x06ca6351'u32, 0x14292967'u32,
+  0x27b70a85'u32, 0x2e1b2138'u32, 0x4d2c6dfc'u32, 0x53380d13'u32,
+  0x650a7354'u32, 0x766a0abb'u32, 0x81c2c92e'u32, 0x92722c85'u32,
+  0xa2bfe8a1'u32, 0xa81a664b'u32, 0xc24b8b70'u32, 0xc76c51a3'u32,
+  0xd192e819'u32, 0xd6990624'u32, 0xf40e3585'u32, 0x106aa070'u32,
+  0x19a4c116'u32, 0x1e376c08'u32, 0x2748774c'u32, 0x34b0bcb5'u32,
+  0x391c0cb3'u32, 0x4ed8aa4a'u32, 0x5b9cca4f'u32, 0x682e6ff3'u32,
+  0x748f82ee'u32, 0x78a5636f'u32, 0x84c87814'u32, 0x8cc70208'u32,
+  0x90befffa'u32, 0xa4506ceb'u32, 0xbef9a3f7'u32, 0xc67178f2'u32]
+
+proc rotr(value: uint32, bits: int): uint32 {.inline.} =
+  (value shr bits) or (value shl (32 - bits))
+
+proc sha256Hex(data: string): string =
+  var state: array[8, uint32] = [
+    0x6a09e667'u32, 0xbb67ae85'u32, 0x3c6ef372'u32, 0xa54ff53a'u32,
+    0x510e527f'u32, 0x9b05688c'u32, 0x1f83d9ab'u32, 0x5be0cd19'u32]
+  var padded = data
+  padded.add '\x80'
+  while padded.len mod 64 != 56: padded.add '\0'
+  let bitLen = uint64(data.len) * 8
+  for i in countdown(7, 0):
+    padded.add char((bitLen shr (i * 8)) and 0xff)
+  var w: array[64, uint32]
+  var offset = 0
+  while offset < padded.len:
+    for i in 0 ..< 16:
+      let base = offset + i * 4
+      w[i] = (uint32(byte(padded[base])) shl 24) or
+             (uint32(byte(padded[base + 1])) shl 16) or
+             (uint32(byte(padded[base + 2])) shl 8) or
+             uint32(byte(padded[base + 3]))
+    for i in 16 ..< 64:
+      let s0 = rotr(w[i - 15], 7) xor rotr(w[i - 15], 18) xor (w[i - 15] shr 3)
+      let s1 = rotr(w[i - 2], 17) xor rotr(w[i - 2], 19) xor (w[i - 2] shr 10)
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1
+    var a = state[0]
+    var b = state[1]
+    var c = state[2]
+    var d = state[3]
+    var e = state[4]
+    var f = state[5]
+    var g = state[6]
+    var h = state[7]
+    for i in 0 ..< 64:
+      let s1 = rotr(e, 6) xor rotr(e, 11) xor rotr(e, 25)
+      let ch = (e and f) xor ((not e) and g)
+      let temp1 = h + s1 + ch + sha256K[i] + w[i]
+      let s0 = rotr(a, 2) xor rotr(a, 13) xor rotr(a, 22)
+      let maj = (a and b) xor (a and c) xor (b and c)
+      let temp2 = s0 + maj
+      h = g; g = f; f = e
+      e = d + temp1
+      d = c; c = b; b = a
+      a = temp1 + temp2
+    state[0] += a; state[1] += b; state[2] += c; state[3] += d
+    state[4] += e; state[5] += f; state[6] += g; state[7] += h
+    offset += 64
+  const hexDigits = "0123456789abcdef"
+  for word in state:
+    for i in countdown(7, 0):
+      result.add hexDigits[int((word shr (i * 4)) and 0xf)]
+
+proc webContentHash*(bytes: string): string =
+  ## The content address every generated route is named by. Truncated to 128
+  ## bits: still far past any collision an application can produce, and short
+  ## enough that a URL stays readable in devtools.
+  sha256Hex(bytes)[0 ..< 32]
+
+proc jsIdentifierIsSafe(name: string): bool =
+  if name.len == 0: return false
+  for i, c in name:
+    case c
+    of 'A'..'Z', 'a'..'z', '_', '$': discard
+    of '0'..'9':
+      if i == 0: return false
+    else: return false
+  true
+
+proc webAssetEntryFile*(asset: WebAsset): string = asset.entryFile
+proc webAssetIdentity*(asset: WebAsset): string = asset.identity
+proc webAssetName*(asset: WebAsset): string = asset.name
+
+proc webAssetRoutes*(asset: WebAsset): seq[WebAssetRoute] =
+  ## Everything this asset publishes. The map is listed even when a deployment
+  ## chooses not to answer for it, so the decision stays with the server rather
+  ## than being baked into bytes that are already hashed.
+  @[WebAssetRoute(fileName: asset.entryFile,
+                  contentType: "text/javascript; charset=utf-8",
+                  body: asset.js),
+    WebAssetRoute(fileName: asset.mapFile,
+                  contentType: "application/json; charset=utf-8",
+                  body: asset.sourceMap, isSourceMap: true)]
+
+proc webAssetMountModule*(asset: WebAsset, mountId: string): WebAssetRoute =
+  ## The placement bootstrap: the only code that knows a mount id. It is a
+  ## generated sibling importing a generated sibling by a relative specifier,
+  ## so the pair relocates together under any asset base, and its own content
+  ## address covers both the mount id and the entry hash it names — which is
+  ## why the entry has to be hashed first.
+  var lines: seq[string]
+  lines.add "// Generated mount for " & asset.identity & "; do not edit."
+  lines.add "import { " & asset.entryName & " } from " &
+    jsString("./" & asset.entryFile) & ";"
+  lines.add "const root = document.getElementById(" & jsString(mountId) & ");"
+  lines.add "if (root === null) throw new Error(" &
+    jsString("gene web mount \"" & mountId & "\" is not in the document") & ");"
+  if asset.entryAsync:
+    # A rejected entry must not decay into an unhandled rejection, which many
+    # pages never surface. Rethrowing on the task queue makes it an ordinary
+    # uncaught error: it reaches window.onerror, the console, and any error
+    # reporter already installed.
+    lines.add "Promise.resolve(" & asset.entryName &
+      "(root)).catch((error) => { queueMicrotask(() => { throw error; }); });"
+  else:
+    lines.add asset.entryName & "(root);"
+  let body = lines.join("\n") & "\n"
+  WebAssetRoute(fileName: asset.name & ".mount-" & webContentHash(body) & ".js",
+                contentType: "text/javascript; charset=utf-8", body: body)
+
+proc checkWebEntry(module: WebModule, identity: string):
+    tuple[name: string, async: bool] =
+  ## `main : EventTarget -> Void`, verified against the analyzed module rather
+  ## than against a string appended after emission. A missing, duplicated, or
+  ## mis-typed entry is reported at the declaration the author wrote.
+  var found: WebFunction = nil
+  for fn in module.functions:
+    if fn.namespacePath.len == 0 and fn.sourceName == "main":
+      if found != nil:
+        raise webError(fn.loc, "web module " & identity &
+          " declares more than one `main`")
+      found = fn
+  if found == nil:
+    raise webError(module.loc, "web module " & identity &
+      " has no entry: it must declare `(fn main [root : EventTarget] : Void ...)`")
+  if found.generator:
+    raise webError(found.loc, "web module entry `main` must not be a generator")
+  if found.params.len != 1:
+    raise webError(found.loc,
+      "web module entry `main` takes exactly one mount parameter, got " &
+      $found.params.len)
+  if found.params[0].typ.kind != wtkDomTarget:
+    raise webError(found.loc,
+      "web module entry `main` must take `EventTarget`, got " &
+      typeName(found.params[0].typ))
+  if found.returnType.kind != wtkVoid:
+    raise webError(found.loc,
+      "web module entry `main` must return Void, got " &
+      typeName(found.returnType))
+  if not jsIdentifierIsSafe(found.emittedName):
+    raise webError(found.loc, "web module entry `main` has no emittable name")
+  (found.emittedName, found.async)
+
+proc compileWebAsset*(unit: SourceUnit, identity, assetName,
+                      embeddedSource: string): WebAsset =
+  ## The seam. In: one synthetic source unit and the stable identity it is
+  ## known by. Out: an immutable asset that knows its own URLs. Hashing order
+  ## is fixed here and nowhere else, because it is genuinely circular
+  ## otherwise: the JavaScript ends with the map's URL, so the map has to be
+  ## finished and named before the JavaScript can be.
+  var macroExports: Table[string, MacroDef]
+  let module = analyzeWebUnitWithImports(unit, identity,
+    initTable[string, WebFunctionSig](),
+    initTable[string, WebTypeDecl](),
+    initTable[string, WebEnumDecl](),
+    initTable[string, WebProtocolDecl](),
+    initTable[string, Table[string, MacroDef]](), macroExports,
+    embedded = true)
+  module.assetName = assetName
+  module.embeddedSource = embeddedSource
+  let entry = checkWebEntry(module, identity)
+  var jsLocs: seq[SourceLoc]
+  var js = emitModule(module, false, jsLocs)
+  # 1. the map names a stable file, never a content-addressed one;
+  let sourceMap = emitSourceMap(module, assetName & ".js", jsLocs)
+  # 2. hashing it fixes the map's URL;
+  let mapFile = assetName & "-" & webContentHash(sourceMap) & ".js.map"
+  # 3. only now may that URL be appended to the JavaScript;
+  js.add "//# sourceMappingURL=" & mapFile & "\n"
+  # 4. and hashing the finished JavaScript fixes the entry's URL.
+  let entryFile = assetName & "-" & webContentHash(js) & ".js"
+  WebAsset(name: assetName, identity: identity, entryFile: entryFile,
+           mapFile: mapFile, js: js, sourceMap: sourceMap,
+           entryName: entry.name, entryAsync: entry.async)
+
 proc writeWebModule(module: WebModule, outDir: string,
                     resultPaths: var seq[string]) =
   let artifacts = emitWebArtifacts(module)
   createDir(outDir)
-  let base = splitFile(module.sourcePath).name
+  let base = module.webAssetName()
   let outputs = [
     (outDir / (base & ".mjs"), artifacts.js),
     (outDir / (base & ".ts"), artifacts.ts),

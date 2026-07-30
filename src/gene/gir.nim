@@ -39,6 +39,7 @@ type
     opMakeType
     opMakeAlias        # pop a type expr, push a transparent alias named `name`
     opMakeEnum
+    opWebModule        # compile the embedded web block, push its asset value
     opMakeProtocol
     opMakeImpl
     opImport
@@ -558,6 +559,22 @@ type
   InlineImplProto* = object
     messages*: seq[ImplMessageProto]
 
+  ## One `(web_module name ...)` block, captured verbatim by the compiler and
+  ## compiled to a web asset by the runtime while its containing module loads.
+  ## The forms are the *original* trees, so their positions are the ones the
+  ## author wrote — printing them back to text and re-reading would move every
+  ## diagnostic, source-map entry, and conformance report off the real source.
+  ## `source` is the block's own characters only (host lines blanked out), the
+  ## single text a browser is ever allowed to see.
+  WebModuleProto* = ref object
+    name*: string
+    identity*: string          # "<host module>#<name>", a stable devtools name
+    forms*: seq[Value]         # the block body, minus the `web_module` header
+    formLocs*: seq[SourceLoc]
+    nestedLocs*: seq[tuple[bits: uint64, loc: SourceLoc]]
+    source*: string
+    loc*: SourceLoc
+
   TopLevelFormInfo* = object
     loc*: SourceLoc
     label*: string
@@ -594,6 +611,7 @@ type
     nodeBuilds*: seq[NodeBuildProto]
     typeProtos*: seq[TypeProto]
     enumProtos*: seq[EnumProto]
+    webModules*: seq[WebModuleProto]
     protocolProtos*: seq[ProtocolProto]
     implProtos*: seq[ImplProto]
     ffiLibraries*: seq[FfiLibraryProto]
@@ -644,6 +662,10 @@ proc addType*(chunk: Chunk, tp: TypeProto): int =
 proc addEnum*(chunk: Chunk, ep: EnumProto): int =
   result = chunk.enumProtos.len
   chunk.enumProtos.add ep
+
+proc addWebModule*(chunk: Chunk, wp: WebModuleProto): int =
+  result = chunk.webModules.len
+  chunk.webModules.add wp
 
 proc addProtocol*(chunk: Chunk, pp: ProtocolProto): int =
   result = chunk.protocolProtos.len
@@ -828,6 +850,10 @@ proc formatInstruction(inst: Instruction): string =
     result.add " name=" & inst.name
   of opMakeEnum:
     result.add " enum=" & $inst.intArg
+  of opWebModule:
+    result.add " web_module=" & $inst.intArg
+    if inst.name.len > 0:
+      result.add " name=" & inst.name
   of opMakeProtocol:
     result.add " protocol=" & $inst.intArg
   of opMakeImpl:

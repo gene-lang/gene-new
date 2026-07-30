@@ -1341,6 +1341,37 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         (simpleHttpWirePayload(500, "Internal Server Error"), 500)
 
     proc dispatchConn(conn: HttpConn, request: Value) =
+      # Generated assets are answered before the application's own routing, by
+      # every server this application starts (transpile.md §4.12). They are
+      # already-compiled bytes in a table, so this never enters the in-flight
+      # accounting or the handler dispatch path at all.
+      block generatedAssets:
+        let requestMethod = request.props["method"].strVal
+        if requestMethod notin ["GET", "HEAD"]:
+          break generatedAssets
+        let found = scope.application().lookupWebRoute(
+          request.props["path"].strVal)
+        if not found.found:
+          break generatedAssets
+        var headers = initOrderedTable[string, string]()
+        headers["content-type"] = found.route.contentType
+        # The URL contains a hash of exactly these bytes, so a changed asset
+        # is a changed URL and this response can never go stale.
+        headers["cache-control"] = "public, max-age=31536000, immutable"
+        headers["x-content-type-options"] = "nosniff"
+        var payload = httpWirePayload(200, found.route.body, headers)
+        if requestMethod == "HEAD":
+          # Identical headers to the GET — including its content-length — with
+          # the body dropped. Building the full payload and truncating is what
+          # keeps the two in agreement; recomputing headers for an empty body
+          # would report `content-length: 0`.
+          let headerEnd = payload.find("\r\n\r\n")
+          if headerEnd >= 0:
+            payload.setLen(headerEnd + 4)
+        inc rt.completedRequests
+        logAccess(conn, 200)
+        startWrite(conn, payload)
+        return
       if maxInFlight > 0 and rt.inFlight >= maxInFlight:
         respondOverloaded(conn)
         return
