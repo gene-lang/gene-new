@@ -1,0 +1,6 @@
+(mod web_async_dep ^profile web)
+
+(fn produce [] : Int
+  (scope
+    (let task (spawn 42))
+    (await task)))

@@ -1,0 +1,24 @@
+(mod web_async ^profile web)
+
+(import [produce] from "./web_async_dep.gene")
+
+# Neither function below mentions scope, spawn, or await: their asyncness comes
+# only from the callee's signature, across a module boundary and then again
+# within this module. `tsc` reports TS1308 for an `await` in a plain function,
+# so this module is the typecheck gate's guard against a caller losing `async`.
+(fn relay [] : Int
+  (produce))
+
+(fn total [] : Int
+  (+ (relay) (relay)))
+
+# A Gene error type may declare its own `^kind Str`, so the emitted cancellation
+# rethrow guard brands with a registry symbol rather than testing that field.
+# This is also the typecheck gate's only module carrying a Gene catch.
+(type RelayError ^props {^kind Str})
+(impl Error for RelayError)
+
+(fn guarded [] : Int
+  (try
+    (relay)
+    catch (RelayError ^kind kind) ($size kind)))

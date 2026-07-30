@@ -1,0 +1,30 @@
+(mod web_numeric ^profile web)
+
+# `/` is truncating division and `//` is the truncated remainder, over both
+# numeric types. Both route the divisor through a guard that raises the VM's
+# Gene error, so the guards have to type-check against `bigint` and `number`.
+(fn quotient [a : Int b : Int] : Int
+  (/ a b))
+
+(fn remainder [a : Int b : Int] : Int
+  (// a b))
+
+(fn ratio [a : F64 b : F64] : F64
+  (/ a b))
+
+(fn f64_remainder [a : F64 b : F64] : F64
+  (// a b))
+
+# A zero divisor raises the VM's `(Error ^message ...)` node, so a Gene catch
+# pattern whose head names no declared type has to read it as node data.
+(fn quotient_or_reason [a : Int b : Int] : Str
+  (try
+    (do (/ a b) "ok")
+    catch (Error ^message message) message))
+
+# ES modules are always strict, so these two names cannot be emitted verbatim.
+(fn arguments [value : Int] : Int
+  value)
+
+(fn eval [value : Int] : Int
+  value)

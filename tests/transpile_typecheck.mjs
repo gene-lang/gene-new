@@ -23,6 +23,8 @@ const sources = [
   join(root, "tests", "transpile", "web_interop.gene"),
   join(root, "tests", "transpile", "web_advanced.gene"),
   join(root, "tests", "transpile", "web_namespace.gene"),
+  join(root, "tests", "transpile", "web_async.gene"),
+  join(root, "tests", "transpile", "web_numeric.gene"),
   join(root, "examples", "web_component.gene"),
 ];
 for (const source of sources) {
@@ -41,6 +43,9 @@ const generated = [
   join(work, "web_host.mjs"),
   join(work, "web_advanced.ts"),
   join(work, "web_namespace.ts"),
+  join(work, "web_async.ts"),
+  join(work, "web_async_dep.ts"),
+  join(work, "web_numeric.ts"),
   join(work, "web_component.ts"),
   join(root, "web", "gene_dom.generated.d.ts"),
 ];

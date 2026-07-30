@@ -196,6 +196,21 @@ type
     typ: WebType
     mutable: bool
 
+  WebCallSite = object
+    ## One statically resolved call, recorded during the single analysis pass so
+    ## asyncness can be propagated over the call graph afterwards instead of by
+    ## re-analyzing bodies. `caller` is empty for calls in a method, constructor,
+    ## or impl body, which cannot be async and so contribute no edge.
+    expr: WebExpr
+    callee: string
+    caller: string
+
+  WebFunctionValueRef = object
+    ## A function referenced as a value. Whether that is legal depends on the
+    ## callee's final asyncness, which is not known until propagation ends.
+    name: string
+    loc: SourceLoc
+
   WebAnalysis = ref object
     unit: SourceUnit
     signatures: Table[string, WebFunctionSig]
@@ -212,6 +227,9 @@ type
     protocolImplTargets: HashSet[string]
     currentTypeName: string
     currentNamespace: seq[string]
+    currentFunction: string
+    callSites: seq[WebCallSite]
+    functionValueRefs: seq[WebFunctionValueRef]
 
   WebEmitter = object
     lines: seq[string]
@@ -221,10 +239,14 @@ type
     typescript: bool
     currentLoc: SourceLoc
     scopeStack: seq[string]
+    nominalTypes: HashSet[string] # decides node-vs-class patterns
 
 const jsReserved = [
-  "await", "break", "case", "catch", "class", "const", "continue",
-  "debugger", "default", "delete", "do", "else", "enum", "export",
+  # `arguments` and `eval` are not keywords, but ES modules are always strict
+  # and strict mode forbids binding either name, so they need the same prefix
+  # escape as a reserved word.
+  "arguments", "await", "break", "case", "catch", "class", "const", "continue",
+  "debugger", "default", "delete", "do", "else", "enum", "eval", "export",
   "extends", "false", "finally", "for", "function", "if", "implements",
   "import", "in", "instanceof", "interface", "let", "new", "null",
   "package", "private", "protected", "public", "return", "static", "super",
@@ -425,6 +447,12 @@ proc validatorSuffix(typ: WebType): string =
 proc validatorName(typ: WebType): string =
   "$gene_check_" & validatorSuffix(typ)
 
+proc divisorGuard(typ: WebType): string =
+  ## `/` and `//` route their divisor through this so a zero divisor raises the
+  ## same Gene error the VM raises (`vm.nim` `biDiv`/`biRem`) instead of
+  ## producing `Infinity` (F64) or a JS `RangeError` (Int).
+  if typ.kind == wtkF64: "$gene_f64_divisor" else: "$gene_int_divisor"
+
 proc locFor(analysis: WebAnalysis, value: Value,
             fallback = SourceLoc()): SourceLoc =
   if value.kind in {vkNode, vkList, vkMap, vkSet, vkHashMap} and
@@ -438,6 +466,32 @@ proc webError(loc: SourceLoc, message: string): ref WebProfileError =
   if loc.hasSourceLoc:
     prefix = loc.sourceName & ":" & $loc.line & ":" & $loc.col & ": "
   newException(WebProfileError, prefix & message)
+
+proc rejectUnknownProps(form: Value, loc: SourceLoc, label: string,
+                        admitted: openArray[string]) =
+  ## "Anything not admitted here is rejected before emission with a
+  ## source-located reason" (docs/web-profile.md) has to hold for declaration
+  ## properties too. Silently ignoring one turns a typo into a type with no
+  ## fields and turns a documented exclusion — Gene spells derive as
+  ## `^derive [P]` on the type, and `^repr native_wrapper` forbids direct
+  ## construction — into a silently dropped prop.
+  for key in form.props.keys:
+    if key in admitted: continue
+    case key
+    of "derive":
+      raise webError(loc,
+        "derive is outside the web profile: it remains VM module-initialization behavior")
+    of "repr", "native":
+      raise webError(loc, label & " ^" & key &
+        " is outside the web profile: native representations require the native loader")
+    of "effects":
+      raise webError(loc,
+        "^effects is outside the web profile: static effect rows are reserved and browser authority is explicit")
+    of "private":
+      raise webError(loc, label & " ^private is outside the web profile: " &
+        "web module visibility is the emitted export list")
+    else:
+      raise webError(loc, label & " got unexpected named argument: " & key)
 
 proc parseWebType(value: Value, loc: SourceLoc): WebType =
   if value.kind == vkSymbol:
@@ -562,15 +616,12 @@ proc parseFunctionHeader(analysis: WebAnalysis, form: Value): WebFunction =
                        emittedName: mangleWebName(form.body[0].symVal),
                        params: parseParams(analysis, form.body[1], loc),
                        returnType: parseWebType(form.body[3], loc), loc: loc)
+  # `async` is not a syntactic property of one body — see `resolveAsync`.
   result.generator = containsForm(form, "yield")
-  result.async = containsForm(form, "await") or containsForm(form, "spawn") or
-                 containsForm(form, "scope")
 
 proc validateCallableProps(analysis: WebAnalysis, form: Value,
                            loc: SourceLoc, label: string) =
-  if form.props.hasKey("effects"):
-    raise webError(loc,
-      "^effects is outside the web profile: static effect rows are reserved and browser authority is explicit")
+  rejectUnknownProps(form, loc, label, ["errors"])
   if not form.props.hasKey("errors"): return
   let row = form.props["errors"]
   if row.kind != vkList:
@@ -595,6 +646,7 @@ proc parseWebImport(form: Value, loc: SourceLoc,
       not form.body[1].isSym("from") or form.body[2].kind != vkString:
     raise webError(loc,
       "web imports must be `(import [names] from \"./relative.gene\")`")
+  rejectUnknownProps(form, loc, "import", [])
   result.sourcePath = form.body[2].strVal
   if not (result.sourcePath.startsWith("./") or
           result.sourcePath.startsWith("../")):
@@ -632,6 +684,7 @@ proc parseWebExtern(analysis: WebAnalysis, form: Value,
       form.body[1].kind != vkList or not form.body[2].isSym(":"):
     raise webError(loc,
       "js/fn requires a name, annotated parameters, and return type")
+  rejectUnknownProps(form, loc, "js/fn", ["from", "import"])
   if not form.props.hasKey("from") or form.props["from"].kind != vkString:
     raise webError(loc, "js/fn requires a Str ^from module specifier")
   result.sourceName = form.body[0].symVal
@@ -661,6 +714,7 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
                       loc: SourceLoc): WebTypeDecl =
   if form.body.len < 1 or form.body[0].kind != vkSymbol:
     raise webError(loc, "web type requires a name")
+  rejectUnknownProps(form, loc, "type", ["is", "props", "body"])
   result = WebTypeDecl(sourceName: form.body[0].symVal,
     emittedName: mangleWebName(form.body[0].symVal), loc: loc)
   if form.props.hasKey("is"):
@@ -720,6 +774,7 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
 proc parseWebEnumDecl(form: Value, loc: SourceLoc): WebEnumDecl =
   if form.body.len < 2 or form.body[0].kind != vkSymbol:
     raise webError(loc, "web enum requires a name and variants")
+  rejectUnknownProps(form, loc, "enum", [])
   result = WebEnumDecl(sourceName: form.body[0].symVal,
     identityName: form.body[0].symVal,
     emittedName: mangleWebName(form.body[0].symVal), loc: loc)
@@ -731,6 +786,11 @@ proc parseWebEnumDecl(form: Value, loc: SourceLoc): WebEnumDecl =
       result.variants.add WebEnumVariant(sourceName: variant.symVal,
         emittedName: mangleWebName(variant.symVal))
     elif variant.kind == vkNode and variant.head.kind == vkSymbol:
+      # Only the ordered tuple payload is consumed. Named fields would be a
+      # struct variant, which this profile does not emit, so accepting them
+      # silently would drop them.
+      rejectUnknownProps(variant, loc,
+        "enum variant " & variant.head.symVal, [])
       var payload: seq[WebType]
       for annotation in variant.body:
         payload.add parseWebType(annotation, loc)
@@ -761,6 +821,7 @@ proc parseWebProtocolDecl(analysis: WebAnalysis, form: Value,
                           loc: SourceLoc): WebProtocolDecl =
   if form.body.len < 1 or form.body[0].kind != vkSymbol:
     raise webError(loc, "web protocol requires a name")
+  rejectUnknownProps(form, loc, "protocol", [])
   result = WebProtocolDecl(sourceName: form.body[0].symVal,
     emittedName: mangleWebName(form.body[0].symVal), loc: loc)
   for i in 1 ..< form.body.len:
@@ -770,6 +831,9 @@ proc parseWebProtocolDecl(analysis: WebAnalysis, form: Value,
         member.body[1].kind != vkList or not member.body[2].isSym(":"):
       raise webError(loc, "web protocol accepts message signatures")
     let name = member.body[0].symVal
+    # A signature's `^errors` row is erased; the types in it are checked on the
+    # impl side, where `impl Error for T` has already been registered.
+    rejectUnknownProps(member, loc, "protocol message " & name, ["errors"])
     result.messages.add WebProtocolMessage(sourceName: name,
       symbolName: "$" & result.emittedName & "$" & mangleWebName(name),
       params: parseProtocolParams(analysis, member.body[1], loc),
@@ -787,6 +851,7 @@ proc parseWebImplDecl(analysis: WebAnalysis, form: Value,
   if form.body.len < 3 or form.body[0].kind != vkSymbol or
       not form.body[1].isSym("for") or form.body[2].kind != vkSymbol:
     raise webError(loc, "web impl requires `impl Protocol for Type`")
+  rejectUnknownProps(form, loc, "impl", [])
   result = WebImplDecl(protocolName: form.body[0].symVal,
     targetName: form.body[2].symVal, loc: loc)
   if not analysis.protocolDecls.hasKey(result.protocolName):
@@ -1096,6 +1161,12 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
     text: signature.callName, external: signature.external,
     paramTypes: signature.params, immutable: signature.generator,
     boolValue: signature.async)
+  # An extern can never become async; a call through a callback binding names no
+  # entry in `signatures`. Everything else is a call-graph edge, and its
+  # `boolValue` is rewritten once propagation settles.
+  if not signature.external and analysis.signatures.hasKey(sourceName):
+    analysis.callSites.add WebCallSite(expr: result, callee: sourceName,
+                                       caller: analysis.currentFunction)
   if result.typ.kind == wtkAny and expected != nil: result.typ = expected
   for i, argument in value.body:
     let analyzed = analysis.analyzeExpr(argument, bindings,
@@ -1879,7 +1950,10 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       raise webError(loc, "web " & name & " operands do not join into " &
         typeName(expected))
     return
-  if name in ["+", "-", "*", "/", "//", "%", "<", "<=", ">", ">=",
+  # The closed operator set of design §7.4. `//` is the truncated remainder,
+  # not integer division: `%` is the unquote prefix and `mod` names the module
+  # form, so `%` never denotes arithmetic and is deliberately absent here.
+  if name in ["+", "-", "*", "/", "//", "<", "<=", ">", ">=",
               "==", "!=", "same?", "$"]:
     if value.body.len != 2:
       raise webError(loc, "web operator '" & name & "' expects two operands")
@@ -1887,7 +1961,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     let right = analysis.analyzeExpr(value.body[1], bindings, left.typ)
     if not sameType(left.typ, right.typ):
       raise webError(loc, "web operator '" & name & "' requires identical types")
-    if name in ["+", "-", "*", "/", "//", "%", "<", "<=", ">", ">="] and
+    if name in ["+", "-", "*", "/", "//", "<", "<=", ">", ">="] and
         left.typ.kind notin {wtkInt, wtkF64}:
       raise webError(loc, "web operator '" & name & "' requires Int or F64")
     if name == "$" and left.typ.kind != wtkStr:
@@ -1971,6 +2045,12 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
                        text: mangleWebName(value.symVal))
     elif analysis.signatures.hasKey(value.symVal):
       let signature = analysis.signatures[value.symVal]
+      # A callback type carries no asyncness, so a caller invoking it through
+      # the binding would drop the `await` and hand a Promise to a typed
+      # boundary. Whether this callee is async is only known after propagation,
+      # so record the reference and check it there.
+      analysis.functionValueRefs.add WebFunctionValueRef(name: value.symVal,
+                                                         loc: loc)
       result = WebExpr(kind: wekBinding,
         typ: WebType(kind: wtkCallback, params: signature.params,
                      returnType: signature.returnType),
@@ -2024,6 +2104,88 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
         children: @[result])
     requireType(analysis, loc, result.typ, expected, "web expression")
 
+proc awaitsAtRuntime(expr: WebExpr): bool =
+  ## Every construct the emitter lowers with a JS `await`: the enclosing
+  ## function has to be `async` or the emitted module does not parse. A call is
+  ## included when its callee is async, which is what makes asyncness a property
+  ## of the call graph rather than of one body. Only meaningful once
+  ## `resolveAsync` has settled every call site.
+  if expr == nil: return false
+  if expr.kind in {wekAwait, wekScope}: return true
+  if expr.kind == wekCall and expr.boolValue: return true
+  for child in expr.children:
+    if awaitsAtRuntime(child): return true
+
+proc usesAsyncPrimitive(expr: WebExpr): bool =
+  ## The two forms that make a function async on their own. `spawn` is not one:
+  ## it is only legal inside a `scope`, which already is.
+  if expr == nil: return false
+  if expr.kind in {wekAwait, wekScope}: return true
+  for child in expr.children:
+    if usesAsyncPrimitive(child): return true
+
+proc checkFunctionValueRefs(analysis: WebAnalysis) =
+  for reference in analysis.functionValueRefs:
+    if analysis.signatures.hasKey(reference.name) and
+        analysis.signatures[reference.name].async:
+      raise webError(reference.loc, "web async function '" & reference.name &
+        "' cannot be used as a callback value: callback types are synchronous")
+  analysis.functionValueRefs.setLen(0)
+
+proc resolveAsync(analysis: WebAnalysis, functions: openArray[WebFunction]) =
+  ## Asyncness is a property of the call graph: the emitter writes `await` at a
+  ## call site because the *callee* is async, so the caller must be async too,
+  ## transitively and across module boundaries.
+  ##
+  ## One reverse-edge worklist pass over the edges recorded during analysis
+  ## settles this in O(functions + call sites). Re-analyzing every body until the
+  ## flags converge costs a full analysis pass per link in the longest caller
+  ## chain, which is quadratic on a chain of mutually calling functions.
+  var callers = initTable[string, seq[string]]()
+  for site in analysis.callSites:
+    if site.caller.len == 0: continue # a method body cannot become async
+    callers.mgetOrPut(site.callee, @[]).add site.caller
+  var asyncNames = initHashSet[string]()
+  var pending: seq[string]
+  proc mark(name: string) =
+    if name.len == 0 or name in asyncNames: return
+    asyncNames.incl name
+    pending.add name
+  # An imported signature already carries its own module's resolved asyncness,
+  # which is what carries the property across the module graph.
+  for name, signature in analysis.signatures:
+    if signature.async: mark(name)
+  for fn in functions:
+    if usesAsyncPrimitive(fn.body): mark(fn.sourceName)
+  while pending.len > 0:
+    let callee = pending.pop()
+    if not callers.hasKey(callee): continue
+    for caller in callers[callee]: mark(caller)
+  for fn in functions:
+    if fn.sourceName notin asyncNames: continue
+    fn.async = true
+    var signature = analysis.signatures[fn.sourceName]
+    signature.async = true
+    analysis.signatures[fn.sourceName] = signature
+    if fn.generator:
+      raise webError(fn.loc, "web generator '" & fn.sourceName &
+        "' cannot be async: GeneStream wraps a synchronous iterator")
+  # Each call site recorded whatever the callee's flag was mid-pass; rewrite them
+  # all from the settled signatures.
+  for site in analysis.callSites:
+    site.expr.boolValue = analysis.signatures[site.callee].async
+  analysis.callSites.setLen(0)
+  analysis.checkFunctionValueRefs()
+
+proc rejectAsyncBody(body: WebExpr, loc: SourceLoc, label: string) =
+  ## Only top-level functions carry an `async` flag through to emission — a
+  ## method or constructor has nowhere to put one, and a send has nowhere to put
+  ## the matching `await`. Reject instead of emitting an `await` in a plain
+  ## method body.
+  if awaitsAtRuntime(body):
+    raise webError(loc, "web async is limited to top-level functions: " &
+      label & " cannot use scope/await or call an async function")
+
 proc analyzeWebModuleWithImports(source, sourcePath: string,
                                  imported: Table[string, WebFunctionSig],
                                  importedTypes: Table[string, WebTypeDecl],
@@ -2062,6 +2224,7 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
   if not moduleForm.props.hasKey("profile") or
       not moduleForm.props["profile"].isSym("web"):
     raise webError(moduleLoc, "web module requires `^profile web`")
+  rejectUnknownProps(moduleForm, moduleLoc, "mod", ["profile"])
   result = WebModule(name: moduleForm.body[0].symVal,
                      sourcePath: sourcePath)
   # Declaration names and schemas are collected before executable bodies so
@@ -2138,6 +2301,7 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
                          loc: SourceLoc) =
     if form.body.len < 1 or form.body[0].kind != vkSymbol:
       raise webError(loc, "web ns requires a static name")
+    rejectUnknownProps(form, loc, "ns", [])
     let path = parentPath & @[form.body[0].symVal]
     let declaration = WebNamespace(sourceName: form.body[0].symVal,
       emittedName: mangleWebName(path.join("$")), path: path)
@@ -2216,6 +2380,7 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
       bindings[param.sourceName] = WebBinding(typ: param.typ)
     analysis.currentReturn = header.fn.returnType
     analysis.currentNamespace = header.fn.namespacePath
+    analysis.currentFunction = header.fn.sourceName
     if header.fn.generator:
       if header.fn.returnType.kind != wtkStream:
         raise webError(header.fn.loc,
@@ -2244,6 +2409,8 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
                   header.fn.returnType,
                   "return of " & header.fn.sourceName)
     result.functions.add header.fn
+  analysis.currentFunction = ""
+  analysis.resolveAsync(result.functions)
   analysis.currentReturn = nil
   analysis.currentNamespace = @[]
   for declaration in result.types:
@@ -2265,6 +2432,8 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
       requireType(analysis, methodDecl.loc, methodDecl.body.typ,
                   methodDecl.returnType,
                   "return of message " & methodDecl.sourceName)
+      rejectAsyncBody(methodDecl.body, methodDecl.loc,
+        "message " & methodDecl.sourceName)
     if declaration.constructor != nil:
       var bindings = initTable[string, WebBinding]()
       bindings["self"] = WebBinding(typ: selfType)
@@ -2279,6 +2448,8 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
         declaration.constructor.loc, "constructor " & declaration.sourceName)
       declaration.constructor.body = analysis.analyzeSequence(forms, bindings,
         nil, declaration.constructor.loc)
+      rejectAsyncBody(declaration.constructor.body,
+        declaration.constructor.loc, "constructor " & declaration.sourceName)
   for implementation in result.impls:
     let selfType = case implementation.targetName
       of "Nil": webType(wtkNil)
@@ -2302,6 +2473,11 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
       requireType(analysis, implMethod.loc, implMethod.body.typ,
                   implMethod.returnType,
                   "return of protocol message " & implMethod.message.sourceName)
+      rejectAsyncBody(implMethod.body, implMethod.loc,
+        "protocol message " & implMethod.message.sourceName)
+  # Method bodies were analyzed after propagation, so their references are
+  # already checkable against settled signatures.
+  analysis.checkFunctionValueRefs()
   analysis.currentReturn = nil
   analysis.currentTypeName = ""
 
@@ -2420,10 +2596,6 @@ proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
           target & ".$gene_values[" & $i & "]", declarations)
       "(" & tests.join(" && ") & ")"
     elif pattern.head.kind == vkSymbol:
-      var tests = @[target & " instanceof " & mangleWebName(pattern.head.symVal)]
-      for key, item in pattern.props:
-        tests.add emitter.emitPattern(item,
-          target & "[" & jsString(key) & "]", declarations)
       var bodyPatterns: seq[Value]
       for item in pattern.body:
         if item.kind == vkNode and item.head.isSym("...") and
@@ -2431,8 +2603,26 @@ proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
           bodyPatterns.add newSym(item.body[0].symVal & "...")
         else:
           bodyPatterns.add item
+      # One pattern form over two representations, as in the VM: a plain symbol
+      # head matches a type instance *and* Gene node data carrying that head.
+      # Gene node data is the shape the VM raises builtin errors as, which is
+      # what lets `catch (Error ^message m)` read the same value here. Listed
+      # props must be present (extra props in the data are ignored) and the body
+      # must match exactly.
+      let nodeTest = "($gene_is_node(" & target & ") && " & target &
+        ".head === Symbol.for(" & jsString(pattern.head.symVal) & "))"
+      var tests: seq[string]
+      if pattern.head.symVal in emitter.nominalTypes:
+        tests.add "(" & target & " instanceof " &
+          mangleWebName(pattern.head.symVal) & " || " & nodeTest & ")"
+      else:
+        tests.add nodeTest
+      for key, item in pattern.props:
+        tests.add "$gene_has_field(" & target & ", " & jsString(key) & ")"
+        tests.add emitter.emitPattern(item,
+          "$gene_field(" & target & ", " & jsString(key) & ")", declarations)
       tests.add emitter.emitPattern(newList(bodyPatterns),
-        target & ".$gene_body", declarations)
+        "$gene_body_of(" & target & ")", declarations)
       "(" & tests.join(" && ") & ")"
     else:
       raise newException(WebProfileError, "unsupported emitted web pattern")
@@ -2550,9 +2740,15 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         elif expr.text == "!=": "!=="
         elif expr.text == "same?": "==="
         elif expr.text == "$": "+"
-        elif expr.text == "//": "/"
+        elif expr.text == "//": "%" # Gene `//` is the truncated remainder.
         else: expr.text
-      "(" & left & " " & op & " " & right & ")"
+      # `/` truncates for two Ints (bigint division already does) and `//` is
+      # the truncated remainder, but both raise the VM's Gene error on a zero
+      # divisor instead of returning Infinity or throwing a JS RangeError.
+      let guarded =
+        if expr.text in ["/", "//"]: divisorGuard(expr.typ) & "(" & right & ")"
+        else: right
+      "(" & left & " " & op & " " & guarded & ")"
   of wekNot:
     "!" & truthy(emitter.emitExpr(expr.children[0]))
   of wekIf:
@@ -2824,8 +3020,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       let caught = emitter.temp()
       emitter.line("catch (" & caught & ") {")
       inc emitter.indent
-      emitter.line("if (typeof GeneCancellation !== \"undefined\" && " & caught &
-        " instanceof GeneCancellation) throw " & caught & ";")
+      emitter.line("if ($gene_cancelled(" & caught & ")) throw " & caught & ";")
       for i, pattern in expr.patterns:
         var declarations: seq[string]
         let condition = emitter.emitPattern(pattern, caught, declarations)
@@ -2952,6 +3147,26 @@ proc collectValidatorTypes(typ: WebType, types: var seq[WebType]) =
     if sameType(existing, typ): return
   types.add typ
 
+iterator expressionRoots(module: WebModule): WebExpr =
+  ## Every analyzed expression tree the emitter will walk. Emission
+  ## prerequisites — which runtime classes, helpers, and validators a module
+  ## needs — are all "does any expression anywhere do X", so they share this one
+  ## definition of "anywhere" rather than each restating it.
+  for fn in module.functions:
+    if fn.body != nil: yield fn.body
+  for declaration in module.types:
+    for methodDecl in declaration.methods:
+      if methodDecl.body != nil: yield methodDecl.body
+    if declaration.constructor != nil and declaration.constructor.body != nil:
+      yield declaration.constructor.body
+  for implementation in module.impls:
+    for implMethod in implementation.methods:
+      if implMethod.body != nil: yield implMethod.body
+
+proc moduleAny(module: WebModule, predicate: proc(expr: WebExpr): bool): bool =
+  for root in module.expressionRoots:
+    if predicate(root): return true
+
 proc usesStructuralEquality(expr: WebExpr): bool =
   if expr.kind == wekBinary and expr.text in ["==", "!="] and
       expr.children[0].typ.kind in
@@ -2961,23 +3176,16 @@ proc usesStructuralEquality(expr: WebExpr): bool =
     if usesStructuralEquality(child): return true
 
 proc moduleUsesStructuralEquality(module: WebModule): bool =
-  for fn in module.functions:
-    if usesStructuralEquality(fn.body): return true
-  for declaration in module.types:
-    for methodDecl in declaration.methods:
-      if methodDecl.body != nil and usesStructuralEquality(methodDecl.body):
-        return true
-    if declaration.constructor != nil and declaration.constructor.body != nil and
-        usesStructuralEquality(declaration.constructor.body): return true
-  for implementation in module.impls:
-    for methodDecl in implementation.methods:
-      if methodDecl.body != nil and usesStructuralEquality(methodDecl.body):
-        return true
+  module.moduleAny(usesStructuralEquality)
 
 proc usesExprKind(expr: WebExpr, kinds: set[WebExprKind]): bool =
   if expr.kind in kinds: return true
   for child in expr.children:
     if usesExprKind(child, kinds): return true
+
+proc moduleUsesExprKind(module: WebModule,
+                        kinds: set[WebExprKind]): bool =
+  module.moduleAny(proc(expr: WebExpr): bool = usesExprKind(expr, kinds))
 
 proc usesStrictSelector(expr: WebExpr): bool =
   if expr.kind == wekSelector and expr.boolValue: return true
@@ -2985,16 +3193,7 @@ proc usesStrictSelector(expr: WebExpr): bool =
     if usesStrictSelector(child): return true
 
 proc moduleUsesStrictSelector(module: WebModule): bool =
-  for fn in module.functions:
-    if usesStrictSelector(fn.body): return true
-  for declaration in module.types:
-    for methodDecl in declaration.methods:
-      if methodDecl.body != nil and usesStrictSelector(methodDecl.body): return true
-    if declaration.constructor != nil and declaration.constructor.body != nil and
-        usesStrictSelector(declaration.constructor.body): return true
-  for implementation in module.impls:
-    for methodDecl in implementation.methods:
-      if methodDecl.body != nil and usesStrictSelector(methodDecl.body): return true
+  module.moduleAny(usesStrictSelector)
 
 proc usesPatternMatching(expr: WebExpr): bool =
   if expr.kind == wekMatch or expr.patterns.len > 0: return true
@@ -3002,29 +3201,60 @@ proc usesPatternMatching(expr: WebExpr): bool =
     if usesPatternMatching(child): return true
 
 proc moduleUsesPatternMatching(module: WebModule): bool =
-  for fn in module.functions:
-    if usesPatternMatching(fn.body): return true
-  for declaration in module.types:
-    for methodDecl in declaration.methods:
-      if methodDecl.body != nil and usesPatternMatching(methodDecl.body): return true
-    if declaration.constructor != nil and declaration.constructor.body != nil and
-        usesPatternMatching(declaration.constructor.body): return true
-  for implementation in module.impls:
-    for methodDecl in implementation.methods:
-      if methodDecl.body != nil and usesPatternMatching(methodDecl.body): return true
+  module.moduleAny(usesPatternMatching)
 
-proc moduleUsesExprKind(module: WebModule,
-                        kinds: set[WebExprKind]): bool =
-  for fn in module.functions:
-    if usesExprKind(fn.body, kinds): return true
-  for declaration in module.types:
-    for methodDecl in declaration.methods:
-      if methodDecl.body != nil and usesExprKind(methodDecl.body, kinds): return true
-    if declaration.constructor != nil and declaration.constructor.body != nil and
-        usesExprKind(declaration.constructor.body, kinds): return true
-  for implementation in module.impls:
-    for implMethod in implementation.methods:
-      if implMethod.body != nil and usesExprKind(implMethod.body, kinds): return true
+proc usesGeneCatch(expr: WebExpr): bool =
+  if expr.kind == wekTry and expr.patterns.len > 0: return true
+  for child in expr.children:
+    if usesGeneCatch(child): return true
+
+proc moduleUsesGeneCatch(module: WebModule): bool =
+  module.moduleAny(usesGeneCatch)
+
+const patternFormHeads = ["path", "unquote", "not", "|", "&", "..."]
+
+proc patternHasSymbolHead(pattern: Value): bool =
+  ## Mirrors `emitPattern`'s dispatch: a node pattern with a plain-symbol head is
+  ## the two-representation form, so the module needs the node brand and the
+  ## field accessors whether or not that head names a declared type.
+  case pattern.kind
+  of vkList:
+    for item in pattern.listItems:
+      if patternHasSymbolHead(item): return true
+  of vkMap:
+    for _, item in pattern.mapEntries:
+      if patternHasSymbolHead(item): return true
+  of vkNode:
+    if pattern.head.kind == vkSymbol and
+        pattern.head.symVal notin patternFormHeads:
+      return true
+    for _, item in pattern.props:
+      if patternHasSymbolHead(item): return true
+    for item in pattern.body:
+      if patternHasSymbolHead(item): return true
+  else: discard
+
+proc usesSymbolHeadPattern(expr: WebExpr): bool =
+  for pattern in expr.patterns:
+    if patternHasSymbolHead(pattern): return true
+  for child in expr.children:
+    if usesSymbolHeadPattern(child): return true
+
+proc nominalTypeNames(module: WebModule): HashSet[string] =
+  for declaration in module.types: result.incl declaration.sourceName
+  for declaration in module.visibleTypes: result.incl declaration.sourceName
+
+proc moduleUsesSymbolHeadPattern(module: WebModule): bool =
+  module.moduleAny(usesSymbolHeadPattern)
+
+proc usesDivision(expr: WebExpr, kind: WebTypeKind): bool =
+  if expr.kind == wekBinary and expr.text in ["/", "//"] and
+      expr.typ.kind == kind: return true
+  for child in expr.children:
+    if usesDivision(child, kind): return true
+
+proc moduleUsesDivision(module: WebModule, kind: WebTypeKind): bool =
+  module.moduleAny(proc(expr: WebExpr): bool = usesDivision(expr, kind))
 
 proc usesBuiltin(expr: WebExpr, names: openArray[string]): bool =
   if expr.kind == wekBuiltin and expr.text in names: return true
@@ -3032,16 +3262,8 @@ proc usesBuiltin(expr: WebExpr, names: openArray[string]): bool =
     if usesBuiltin(child, names): return true
 
 proc moduleUsesBuiltin(module: WebModule, names: openArray[string]): bool =
-  for fn in module.functions:
-    if usesBuiltin(fn.body, names): return true
-  for declaration in module.types:
-    for methodDecl in declaration.methods:
-      if methodDecl.body != nil and usesBuiltin(methodDecl.body, names): return true
-    if declaration.constructor != nil and declaration.constructor.body != nil and
-        usesBuiltin(declaration.constructor.body, names): return true
-  for implementation in module.impls:
-    for implMethod in implementation.methods:
-      if implMethod.body != nil and usesBuiltin(implMethod.body, names): return true
+  let admitted = @names
+  module.moduleAny(proc(expr: WebExpr): bool = usesBuiltin(expr, admitted))
 
 proc containsTypeKind(typ: WebType, kind: WebTypeKind): bool =
   if typ == nil: return false
@@ -3104,18 +3326,7 @@ proc exprUsesTypeKind(expr: WebExpr, kind: WebTypeKind): bool =
     if exprUsesTypeKind(child, kind): return true
 
 proc moduleExprUsesTypeKind(module: WebModule, kind: WebTypeKind): bool =
-  for fn in module.functions:
-    if exprUsesTypeKind(fn.body, kind): return true
-  for declaration in module.types:
-    for methodDecl in declaration.methods:
-      if methodDecl.body != nil and exprUsesTypeKind(methodDecl.body, kind):
-        return true
-    if declaration.constructor != nil and declaration.constructor.body != nil and
-        exprUsesTypeKind(declaration.constructor.body, kind): return true
-  for implementation in module.impls:
-    for methodDecl in implementation.methods:
-      if methodDecl.body != nil and exprUsesTypeKind(methodDecl.body, kind):
-        return true
+  module.moduleAny(proc(expr: WebExpr): bool = exprUsesTypeKind(expr, kind))
 
 proc emitStructuralEquality(emitter: var WebEmitter,
                             includeMaps, includeObjects: bool) =
@@ -3242,7 +3453,7 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
       dec emitter.indent
       emitter.line("}")
     of wtkNode:
-      emitter.line("if (!(value instanceof GeneNode)) $gene_type_error(where, \"Node\", value);")
+      emitter.line("if (!$gene_is_node(value)) $gene_type_error(where, \"Node\", value);")
     of wtkRange:
       emitter.line("if (!(value instanceof GeneRange)) $gene_type_error(where, \"Range\", value);")
     of wtkTask:
@@ -3576,7 +3787,8 @@ proc emitImplDeclaration(emitter: var WebEmitter,
 
 proc emitModule(module: WebModule, typescript: bool,
                 lineLocs: var seq[SourceLoc]): string =
-  var emitter = WebEmitter(typescript: typescript)
+  let nominalTypes = nominalTypeNames(module)
+  var emitter = WebEmitter(typescript: typescript, nominalTypes: nominalTypes)
   emitter.line("// Generated from " & module.sourcePath & "; target es2022.")
   for imported in module.imports:
     emitter.currentLoc = imported.loc
@@ -3604,8 +3816,11 @@ proc emitModule(module: WebModule, typescript: bool,
   var needsAsync = false
   var needsDom = false
   var needsMap = false
+  let needsIntDivisor = moduleUsesDivision(module, wtkInt)
+  let needsF64Divisor = moduleUsesDivision(module, wtkF64)
   needsNode = moduleUsesTypeKind(module, wtkNode) or
-    moduleUsesExprKind(module, {wekNode})
+    moduleUsesExprKind(module, {wekNode}) or
+    needsIntDivisor or needsF64Divisor # the divisor guards raise a Gene node
   needsRange = moduleUsesTypeKind(module, wtkRange) or
     moduleUsesExprKind(module, {wekRange})
   needsPath = moduleUsesExprKind(module, {wekPath, wekSelector, wekSetPath})
@@ -3613,12 +3828,65 @@ proc emitModule(module: WebModule, typescript: bool,
   needsMap = moduleUsesTypeKind(module, wtkMap) or
     moduleUsesExprKind(module, {wekMap})
   needsStream = moduleUsesTypeKind(module, wtkStream)
-  needsAsync = moduleUsesTypeKind(module, wtkTask)
+  # Keyed on what the emitted code actually references, not on `fn.async`: a
+  # function is async as soon as it calls one, and such a caller may never touch
+  # `scope`, `spawn`, `await`, or a `Task` value of its own.
+  needsAsync = moduleUsesTypeKind(module, wtkTask) or
+    moduleExprUsesTypeKind(module, wtkTask) or
+    moduleUsesExprKind(module, {wekScope, wekSpawn, wekAwait})
+  let needsGeneCatch = moduleUsesGeneCatch(module)
+  let needsPatternFields = moduleUsesSymbolHeadPattern(module)
+  let needsNodeBrand = needsNode or needsPath or needsDom or needsPatternFields
   for fn in module.functions:
     if fn.generator: needsStream = true
-    if fn.async: needsAsync = true
   if moduleUsesBuiltin(module, ["to_stream", "map", "filter", "into"]):
     needsStream = true
+  if needsAsync or needsGeneCatch:
+    # Cancellation is branded with a registry symbol, not a `kind` string: a
+    # nominal Gene type may declare its own `^kind Str` field, and a structural
+    # test would make `(fail (T ^kind "gene_cancellation"))` uncatchable. A
+    # symbol key cannot collide with a Gene field name, and `Symbol.for` is the
+    # one identity that survives the module boundary the class does not.
+    emitter.line("const $gene_cancellation = Symbol.for(\"gene.cancellation\");")
+    emitter.line()
+  if needsNodeBrand:
+    # Same reasoning for node identity. `instanceof GeneNode` is false for a node
+    # built in another module, which silently turned an imported node's prop read
+    # into `undefined` and would keep node catch patterns from ever matching.
+    emitter.line("const $gene_node = Symbol.for(\"gene.node\");")
+    # A type predicate, not a `boolean`: a Gene catch variable is `unknown` under
+    # strict TypeScript, and the pattern tests that follow read `.head`/`.props`.
+    emitter.line("function $gene_is_node(value" &
+      (if typescript: ": unknown" else: "") & ")" &
+      (if typescript:
+         ": value is { head: symbol; props: Record<string, unknown>; body: unknown[] }"
+       else: "") &
+      " { return typeof value === \"object\" && value !== null && " &
+      "$gene_node in value; }")
+    emitter.line()
+  if needsPatternFields:
+    # A symbol-head pattern matches a type instance *or* Gene node data with
+    # that head, exactly as the VM does, so its accessors have to read both
+    # shapes. Presence is separate from value: naming an absent optional field
+    # is a non-match in the VM, not a binding of `nil`.
+    let valueParam = if typescript: "value: unknown" else: "value"
+    let keyParam = if typescript: "key: string" else: "key"
+    emitter.line("function $gene_has_field(" & valueParam & ", " & keyParam &
+      ")" & (if typescript: ": boolean" else: "") &
+      " { return $gene_is_node(value) ? " &
+      "Object.prototype.hasOwnProperty.call(value.props, key) : " &
+      "Object.prototype.hasOwnProperty.call(value" &
+      (if typescript: " as object" else: "") & ", key); }")
+    emitter.line("function $gene_field(" & valueParam & ", " & keyParam & ")" &
+      (if typescript: ": unknown" else: "") &
+      " { return $gene_is_node(value) ? value.props[key] : (value" &
+      (if typescript: " as Record<string, unknown>" else: "") & ")[key]; }")
+    emitter.line("function $gene_body_of(" & valueParam & ")" &
+      (if typescript: ": unknown[]" else: "") &
+      " { return $gene_is_node(value) ? value.body : (value" &
+      (if typescript: " as { $gene_body: unknown[] }" else: "") &
+      ").$gene_body; }")
+    emitter.line()
   if needsMap:
     emitter.line("export class GeneMap" &
       (if typescript: "<K, V>" else: "") & " {")
@@ -3653,6 +3921,8 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("export class GeneNode {")
     inc emitter.indent
     let publicField = if typescript: "public " else: ""
+    emitter.line((if typescript: "readonly " else: "") &
+      "[$gene_node] = true;")
     emitter.line("constructor(" & publicField & "head" &
       (if typescript: ": symbol" else: "") & ", " & publicField & "props" &
       (if typescript: ": Record<string, unknown> = {}" else: " = {}") &
@@ -3664,6 +3934,23 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.lines[^1] = emitter.lines[^1][0 .. ^4] & " { this.head = head; this.props = props; this.body = body; if (immutable) { Object.freeze(this.props); Object.freeze(this.body); Object.freeze(this); } }"
     dec emitter.indent
     emitter.line("}")
+    emitter.line()
+  if needsIntDivisor or needsF64Divisor:
+    # A zero divisor is a catchable Gene error in the VM for both numeric types
+    # (`vm.nim` `biDiv`/`biRem`), so raise the VM's own value rather than
+    # letting JS return Infinity or throw a RangeError.
+    let divisionByZero = "throw new GeneNode(Symbol.for(\"Error\"), " &
+      "{ message: \"division by zero\" }, [], true);"
+    if needsIntDivisor:
+      let intType = if typescript: ": bigint" else: ""
+      emitter.line("function $gene_int_divisor(divisor" & intType & ")" &
+        intType & " { if (divisor === 0n) " & divisionByZero &
+        " return divisor; }")
+    if needsF64Divisor:
+      let f64Type = if typescript: ": number" else: ""
+      emitter.line("function $gene_f64_divisor(divisor" & f64Type & ")" &
+        f64Type & " { if (divisor === 0) " & divisionByZero &
+        " return divisor; }")
     emitter.line()
   if needsRange:
     emitter.line("export class GeneRange {")
@@ -3765,6 +4052,8 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("export class GeneCancellation {")
     inc emitter.indent
     if typescript: emitter.line("readonly kind: \"gene_cancellation\";")
+    emitter.line((if typescript: "readonly " else: "") &
+      "[$gene_cancellation] = true;")
     emitter.line("constructor() { this.kind = \"gene_cancellation\"; }")
     dec emitter.indent
     emitter.line("}")
@@ -3806,6 +4095,16 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line()
+  if needsGeneCatch:
+    # Emitted for every module with a Gene catch, whether or not that module
+    # uses async: cancellation can arrive from an imported async function, and
+    # it must never be offered to a Gene catch pattern.
+    emitter.line("function $gene_cancelled(error" &
+      (if typescript: ": unknown" else: "") & ")" &
+      (if typescript: ": boolean" else: "") &
+      " { return typeof error === \"object\" && error !== null && " &
+      "$gene_cancellation in error; }")
+    emitter.line()
   if needsDom:
     let anyType = if typescript: ": any" else: ""
     emitter.line("function $gene_dom_render(value" & anyType & ", doc" & anyType &
@@ -3813,7 +4112,7 @@ proc emitModule(module: WebModule, typescript: bool,
     inc emitter.indent
     emitter.line("if (value == null || value === false) return doc.createTextNode(\"\");")
     emitter.line("if (Array.isArray(value)) { const fragment = doc.createDocumentFragment(); for (const child of value) fragment.append($gene_dom_render(child, doc)); return fragment; }")
-    emitter.line("if (!(value instanceof GeneNode)) return doc.createTextNode(String(typeof value === \"symbol\" ? (Symbol.keyFor(value) ?? value.description) : value));")
+    emitter.line("if (!$gene_is_node(value)) return doc.createTextNode(String(typeof value === \"symbol\" ? (Symbol.keyFor(value) ?? value.description) : value));")
     emitter.line("const tag = Symbol.keyFor(value.head) ?? value.head.description;")
     emitter.line("const element = doc.createElement(tag);")
     emitter.line("for (const [rawName, prop] of Object.entries(value.props)) {")
@@ -3883,7 +4182,7 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("if (typeof key === \"bigint\") key = Number(key);")
     emitter.line("if (value?.$gene_map === true) return value.get(key);")
     emitter.line("if (Array.isArray(value?.$gene_body) && typeof key === \"number\") return value.$gene_body[key];")
-    emitter.line("if (value instanceof GeneNode && typeof key === \"string\" && Object.prototype.hasOwnProperty.call(value.props, key)) return value.props[key];")
+    emitter.line("if ($gene_is_node(value) && typeof key === \"string\" && Object.prototype.hasOwnProperty.call(value.props, key)) return value.props[key];")
     emitter.line("if (typeof key === \"string\" && !(key in Object(value))) { const camel = key.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase()); if (camel in Object(value)) key = camel; }")
     emitter.line("return value[key];")
     dec emitter.indent
@@ -3897,7 +4196,7 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("if (value?.$gene_map === true) throw new TypeError(\"cannot mutate an immutable Map\");")
     emitter.line("if (Array.isArray(value?.$gene_body) && typeof key === \"number\") { const length = value.$gene_body.length; const previous = value.$gene_body[key]; value.$gene_body[key] = next === undefined ? null : next; try { value.$gene_validate(); } catch (error) { value.$gene_body.length = length; if (key < length) value.$gene_body[key] = previous; throw error; } return next; }")
     emitter.line("if (Array.isArray(value) && next === undefined) next = null;")
-    emitter.line("if (value instanceof GeneNode && typeof key === \"string\") { if (next === undefined) delete value.props[key]; else value.props[key] = next; return next; }")
+    emitter.line("if ($gene_is_node(value) && typeof key === \"string\") { if (next === undefined) delete value.props[key]; else value.props[key] = next; return next; }")
     emitter.line("if (typeof key === \"string\" && !(key in Object(value))) key = key.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase());")
     emitter.line("const had = Object.prototype.hasOwnProperty.call(value, key); const previous = value[key];")
     emitter.line("if (next === undefined) delete value[key]; else value[key] = next;")

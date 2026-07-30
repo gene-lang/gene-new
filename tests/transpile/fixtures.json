@@ -65,6 +65,16 @@
       "profile": {"status": "eligible"}
     },
     {
+      "id": "naming.strict_mode_restricted",
+      "source": "(fn arguments [x : Int] : Int x) (arguments 5)",
+      "web_source": "(mod naming_reserved ^profile web) (fn arguments [x : Int] : Int x) (fn run [] : Int (arguments 5))",
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "5"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
       "id": "numeric.bigint_exact",
       "source": "(fn add [x : Int y : Int] : Int (+ x y)) (add 9007199254740993 7)",
       "web_source": "(mod bigint_exact ^profile web) (fn add [x : Int y : Int] : Int (+ x y)) (fn run [] : Int (add 9007199254740993 7))",
@@ -87,6 +97,193 @@
           {"kind": "int", "value": "11"}
         ]
       },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "numeric.division_and_remainder",
+      "source": "[(/ 7 2) (// 7 2) (/ -7 2) (// -7 2)]",
+      "web_source": "(mod numeric_division ^profile web) (fn run [] : (List Int) [(/ 7 2) (// 7 2) (/ -7 2) (// -7 2)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {"kind": "int", "value": "3"},
+          {"kind": "int", "value": "1"},
+          {"kind": "int", "value": "-3"},
+          {"kind": "int", "value": "-1"}
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "numeric.f64_division_and_remainder",
+      "source": "[(/ 7.5 2.0) (// 7.5 2.0) (// -7.5 2.0)]",
+      "web_source": "(mod numeric_f64_division ^profile web) (fn run [] : (List F64) [(/ 7.5 2.0) (// 7.5 2.0) (// -7.5 2.0)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {"kind": "f64", "value": "3.75"},
+          {"kind": "f64", "value": "1.5"},
+          {"kind": "f64", "value": "-1.5"}
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "numeric.int_division_by_zero",
+      "source": "(try (/ 7 0) catch e e)",
+      "web_source": "(mod numeric_int_div_zero ^profile web) (fn run [] : Any (try (/ 7 0) catch e e))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "node",
+        "head": {"kind": "sym", "value": "Error"},
+        "props": [{"key": "message", "value": {"kind": "str", "value": "division by zero"}}],
+        "body": []
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "numeric.f64_division_by_zero",
+      "source": "(try (/ 7.0 0.0) catch e e)",
+      "web_source": "(mod numeric_f64_div_zero ^profile web) (fn run [] : Any (try (/ 7.0 0.0) catch e e))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "node",
+        "head": {"kind": "sym", "value": "Error"},
+        "props": [{"key": "message", "value": {"kind": "str", "value": "division by zero"}}],
+        "body": []
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "numeric.remainder_by_zero",
+      "source": "(try (// 7 0) catch e e)",
+      "web_source": "(mod numeric_rem_zero ^profile web) (fn run [] : Any (try (// 7 0) catch e e))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "node",
+        "head": {"kind": "sym", "value": "Error"},
+        "props": [{"key": "message", "value": {"kind": "str", "value": "division by zero"}}],
+        "body": []
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "errors.builtin_typed_catch",
+      "source": "(fn div_msg [a : Int b : Int] : Str (try (do (/ a b) \"ok\") catch (Error ^message m) m)) [(div_msg 7 0) (div_msg 7 2)]",
+      "web_source": "(mod errors_builtin_catch ^profile web) (fn div_msg [a : Int b : Int] : Str (try (do (/ a b) \"ok\") catch (Error ^message m) m)) (fn run [] : (List Str) [(div_msg 7 0) (div_msg 7 2)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {"kind": "str", "value": "division by zero"},
+          {"kind": "str", "value": "ok"}
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "pattern.node_data_match",
+      "source": "(fn m [n : Node] : Str (match n (when (Error ^message msg) msg) (else \"no-match\"))) [(m (quote (Error ^message \"x\"))) (m (quote (Error ^message \"x\" 1 2))) (m (quote (Bar ^message \"x\"))) (m (quote (Error ^other 1))) (m (quote (Error ^message \"x\" ^extra 1)))]",
+      "web_source": "(mod pattern_node_data ^profile web) (fn m [n : Node] : Str (match n (when (Error ^message msg) msg) (else \"no-match\"))) (fn run [] : (List Str) [(m (quote (Error ^message \"x\"))) (m (quote (Error ^message \"x\" 1 2))) (m (quote (Bar ^message \"x\"))) (m (quote (Error ^other 1))) (m (quote (Error ^message \"x\" ^extra 1)))])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {"kind": "str", "value": "x"},
+          {"kind": "str", "value": "no-match"},
+          {"kind": "str", "value": "no-match"},
+          {"kind": "str", "value": "no-match"},
+          {"kind": "str", "value": "x"}
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "pattern.node_data_body_match",
+      "source": "(fn m [n : Node] : (List Any) (match n (when (Foo a b) [a b]) (else []))) (m (quote (Foo 1 2)))",
+      "web_source": "(mod pattern_node_body ^profile web) (fn m [n : Node] : (List Any) (match n (when (Foo a b) [a b]) (else []))) (fn run [] : (List Any) (m (quote (Foo 1 2))))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [{"kind": "int", "value": "1"}, {"kind": "int", "value": "2"}]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "errors.imported_builtin_typed_catch",
+      "source": "(fn q [a : Int b : Int] : Int (/ a b)) (fn reason [] : Str (try (do (q 7 0) \"ok\") catch (Error ^message m) m)) (reason)",
+      "web_source": "(mod errors_imported_builtin ^profile web) (import [q] from \"./fixture_div_dep.gene\") (fn reason [] : Str (try (do (q 7 0) \"ok\") catch (Error ^message m) m))",
+      "web_files": {
+        "fixture_div_dep.gene": "(mod fixture_div_dep ^profile web)\n(fn q [a : Int b : Int] : Int (/ a b))\n"
+      },
+      "web_export": "reason",
+      "expected_value": {"kind": "str", "value": "division by zero"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "pattern.symbol_head_matches_both_shapes",
+      "source": "(type P ^props {^a Int}) [(match (P ^a 1) (when (P ^a x) x) (else \"no-match\")) (match (quote (P ^a 1)) (when (P ^a x) x) (else \"no-match\"))]",
+      "web_source": "(mod pattern_both_shapes ^profile web) (type P ^props {^a Int}) (fn run [] : (List Any) [(match (P ^a 1) (when (P ^a x) x) (else \"no-match\")) (match (quote (P ^a 1)) (when (P ^a x) x) (else \"no-match\"))])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [{"kind": "int", "value": "1"}, {"kind": "int", "value": "1"}]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "pattern.declared_error_type_does_not_shadow",
+      "source": "(type Error ^props {^m Str}) (try (/ 7 0) catch (Error ^message x) x)",
+      "web_source": "(mod pattern_error_shadow ^profile web) (type Error ^props {^m Str}) (fn run [] : Str (try (do (/ 7 0) \"ok\") catch (Error ^message x) x))",
+      "web_export": "run",
+      "expected_value": {"kind": "str", "value": "division by zero"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "pattern.absent_optional_field_is_no_match",
+      "source": "(type P ^props {^a Int ^b Str?}) (match (P ^a 1) (when (P ^b x) x) (else \"no-match\"))",
+      "web_source": "(mod pattern_absent_optional ^profile web) (type P ^props {^a Int ^b Str?}) (fn run [] : Any (match (P ^a 1) (when (P ^b x) x) (else \"no-match\")))",
+      "web_export": "run",
+      "expected_value": {"kind": "str", "value": "no-match"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "module.imported_node_prop",
+      "source": "(fn make [] : Node (quote (card ^title \"hello\"))) (let n (make)) n/title",
+      "web_source": "(mod imported_node_prop ^profile web) (import [make] from \"./fixture_node_dep.gene\") (fn run [] : Any (let n (make)) n/title)",
+      "web_files": {
+        "fixture_node_dep.gene": "(mod fixture_node_dep ^profile web)\n(fn make [] : Node (quote (card ^title \"hello\")))\n"
+      },
+      "web_export": "run",
+      "expected_value": {"kind": "str", "value": "hello"},
       "expected_error": null,
       "expected_stdout": "",
       "profile": {"status": "eligible"}
@@ -483,6 +680,39 @@
       "profile": {"status": "eligible"}
     },
     {
+      "id": "async.composed_call",
+      "source": "(fn inner [] : Int (scope (let task (spawn 42)) (await task))) (fn outer [] : Int (inner)) (outer)",
+      "web_source": "(mod async_composed ^profile web) (fn inner [] : Int (scope (let task (spawn 42)) (await task))) (fn outer [] : Int (inner)) (fn run [] : Int (outer))",
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "42"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "async.imported_composed_call",
+      "source": "(fn inner [] : Int (scope (let task (spawn 42)) (await task))) (fn run [] : Int (inner)) (run)",
+      "web_source": "(mod async_imported_composed ^profile web) (import [inner] from \"./fixture_async_dep.gene\") (fn run [] : Int (inner))",
+      "web_files": {
+        "fixture_async_dep.gene": "(mod fixture_async_dep ^profile web)\n(fn inner [] : Int (scope (let task (spawn 42)) (await task)))\n"
+      },
+      "web_export": "run",
+      "expected_value": {"kind": "int", "value": "42"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
+      "id": "async.cancellation_brand_does_not_collide",
+      "source": "(type AppError ^props {^kind Str}) (impl Error for AppError) (fn boom [] : Never (fail (AppError ^kind \"gene_cancellation\"))) (fn run [] : Str (try (boom) catch (AppError ^kind kind) kind)) (run)",
+      "web_source": "(mod cancel_brand_collision ^profile web) (type AppError ^props {^kind Str}) (impl Error for AppError) (fn boom [] : Never (fail (AppError ^kind \"gene_cancellation\"))) (fn run [] : Str (try (boom) catch (AppError ^kind kind) kind))",
+      "web_export": "run",
+      "expected_value": {"kind": "str", "value": "gene_cancellation"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "eligible"}
+    },
+    {
       "id": "stdlib.string_and_lossless_json",
       "source": "[($str/join [\"a\" \"b\"] \"-\") ($json/stringify ($json/parse \"{\\\"n\\\":9007199254740993}\"))]",
       "web_source": "(mod stdlib_string_json ^profile web) (fn run [] : (List Str) [($str/join [\"a\" \"b\"] \"-\") ($json/stringify ($json/parse \"{\\\"n\\\":9007199254740993}\"))])",
@@ -618,6 +848,69 @@
       "expected_error": null,
       "expected_stdout": "",
       "profile": {"status": "rejected", "reason": "inheritance must be acyclic", "diagnostic": "web type inheritance cycle includes"}
+    },
+    {
+      "id": "rejected.type_unknown_prop",
+      "source": "1",
+      "web_source": "(mod rejected_type_prop ^profile web) (type Example ^propz {^name Str})",
+      "expected_value": {"kind": "int", "value": "1"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "a mistyped declaration prop must not be silently dropped", "diagnostic": "type got unexpected named argument: propz"}
+    },
+    {
+      "id": "rejected.type_derive_prop",
+      "source": "1",
+      "web_source": "(mod rejected_type_derive ^profile web) (type Example ^props {^name Str} ^derive [HasLabel])",
+      "expected_value": {"kind": "int", "value": "1"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "Gene spells derive as a prop on the type, not a standalone form", "diagnostic": "derive is outside the web profile"}
+    },
+    {
+      "id": "rejected.type_native_repr",
+      "source": "1",
+      "web_source": "(mod rejected_type_repr ^profile web) (type Example ^props {^name Str} ^repr native_wrapper)",
+      "expected_value": {"kind": "int", "value": "1"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "the VM forbids direct construction of a native_wrapper type", "diagnostic": "^repr is outside the web profile"}
+    },
+    {
+      "id": "rejected.enum_variant_prop",
+      "source": "1",
+      "web_source": "(mod rejected_enum_variant_prop ^profile web) (enum Shape (circle ^radius F64))",
+      "expected_value": {"kind": "int", "value": "1"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "struct variants are not emitted, so named payload fields would be dropped", "diagnostic": "enum variant circle got unexpected named argument: radius"}
+    },
+    {
+      "id": "rejected.async_message",
+      "source": "1",
+      "web_source": "(mod rejected_async_message ^profile web) (fn inner [] : Int (scope (await (spawn 42)))) (type Example ^props {} (message get [] : Int (inner)))",
+      "expected_value": {"kind": "int", "value": "1"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "a method has nowhere to carry async and a send has nowhere to carry the await", "diagnostic": "web async is limited to top-level functions"}
+    },
+    {
+      "id": "rejected.async_callback_value",
+      "source": "1",
+      "web_source": "(mod rejected_async_callback ^profile web) (fn inner [] : Int (scope (await (spawn 42)))) (fn apply [f : (Callback [] Int)] : Int (f)) (fn run [] : Int (apply inner))",
+      "expected_value": {"kind": "int", "value": "1"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "callback types carry no asyncness, so the await would be dropped", "diagnostic": "cannot be used as a callback value"}
+    },
+    {
+      "id": "rejected.async_generator",
+      "source": "1",
+      "web_source": "(mod rejected_async_generator ^profile web) (fn inner [] : Int (scope (await (spawn 42)))) (fn numbers [] : (Stream Int Never) (yield (inner)))",
+      "expected_value": {"kind": "int", "value": "1"},
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {"status": "rejected", "reason": "GeneStream wraps a synchronous iterator", "diagnostic": "cannot be async"}
     }
   ]
 }

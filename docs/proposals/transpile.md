@@ -336,7 +336,7 @@ the profile:
 | `List`, nodes, typed instances | Mutation, `void` normalization (prop deleted vs. list slot → `nil`), and closed-schema revalidation on every `set!` |
 | `type` → `class` | The class is the easy half; direct `(T …)` vs. `new T` (§7.1.1), required/unknown-field checks, and the in-progress publication marker are runtime |
 | `Any` → `unknown` | **TS `unknown` performs no runtime check.** It is a static discipline; Gene's gradual boundary demands emitted validators, including nested generics and protocol conformance |
-| `try/catch`, `^errors` | TS cannot express a checked error row; typed catch patterns need runtime tests, and cancellation must not be interceptable by an ordinary `catch` |
+| `try/catch`, `^errors` | TS cannot express a checked error row; typed catch patterns need runtime tests, and cancellation must not be interceptable by an ordinary `catch`. A symbol-head pattern also matches two representations — a class instance and Gene node data — because the VM's builtin errors *are* node data |
 | `Stream`, `yield` | A generator is not the contract: `peek`, `has_next` vs. `EndOfStream`, terminal producer errors, `yield void` skipping, idempotent `close`, upstream-close, `ensure` unwinding |
 | `Task`/`spawn`/`scope` | §4.8 — deferred |
 
@@ -384,6 +384,13 @@ in `transpile-numbers.md`. Two things shaped the experiment:
   survives its rejection rules, which cannot be answered before those rules and
   the analysis in §4.3 exist. Sequence accordingly: B's numbers first, C′'s
   verdict alongside the first emitter slice.
+
+Representation is not the whole numeric model. The operator names are Gene's, not
+JavaScript's: `//` is the truncated **remainder** (`%` is the unquote prefix and
+`mod` names the module form), and a zero divisor is a catchable Gene error in the
+VM for both numeric types — so neither `Infinity` nor a JS `RangeError` is a
+faithful lowering. `tests/transpile/fixtures.json` covers `/` and `//` and the
+zero divisor over `Int` and `F64`.
 
 ### 4.6 Hazard 2 — truthiness, `==`, and short-circuit operators
 
@@ -470,6 +477,25 @@ cancellation around suspension, cancellation is a non-`Error` control value
 that emitted catches rethrow, and `ensure` still runs. The adversarial runner
 cancels a child before suspension, attempts to swallow it with `catch _`, and
 checks that `ensure` ran exactly once.
+
+Two consequences of the emission model, both learned the hard way:
+
+- **Asyncness is a call-graph property.** `await` appears at a *call site*
+  because the callee is async, so the caller must be async too. It is carried
+  across module boundaries with the signature; only top-level functions can carry
+  it, so async in a method, constructor, generator, or callback value is
+  rejected. Resolve it by recording call edges during the single analysis pass
+  and running one reverse-edge worklist over them — iterating analysis until the
+  flags converge costs one full pass per link in the longest caller chain.
+- **The cancellation test must be a symbol brand.** `GeneCancellation` is emitted
+  per module, so `instanceof` is false across a module boundary and the class may
+  be absent from a module that only catches — but a structural `kind` string is
+  no better, because a nominal Gene type can declare its own `^kind Str` field
+  and would become uncatchable. The rethrow guard tests a
+  `Symbol.for("gene.cancellation")` brand, which no Gene field name can produce.
+  `GeneNode` needs the same treatment for the same reason: every emitted runtime
+  class is per-module, so `instanceof` is the wrong tool for any identity that a
+  value carries across an import.
 
 Actors are rejected outright: a bounded mailbox with backpressure and sequential
 handlers is a scheduler, and shipping a scheduler to the browser is shipping the

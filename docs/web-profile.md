@@ -26,7 +26,16 @@ Their public JS functions validate both directions around an internal
 implementation. Namespace functions receive the same checks at their exported
 object edge. Names are mangled injectively: `$` → `$$`, `?` → `$q`, `!` →
 `$b`, `-` → `$h`, other bytes → `$xHH`, with prefixes for leading digits and
-reserved JS words.
+reserved JS words. `eval` and `arguments` take the reserved-word prefix too:
+they are not keywords, but ES modules are always strict and strict mode forbids
+binding either name.
+
+Every declaration form admits a closed property set — `mod ^profile`,
+`type ^is`/`^props`/`^body`, `js/fn ^from`/`^import`, `^errors` on callables —
+and rejects anything else with a source-located reason. That is what makes the
+`derive` and `^repr native_wrapper` exclusions real: Gene spells both as
+properties on the type (`^derive [P]`, `^repr native_wrapper`), so a guard on
+the standalone `(derive …)` form alone would never fire.
 
 ## Analysis and values
 
@@ -49,6 +58,15 @@ types. Calls check arity and arguments. Branches form explicit unions. Numeric
 operators require identical `Int` or identical `F64` operands. `==` is
 kind-strict and structural where Gene requires it; `same?` is identity. `Any`
 entering a typed position creates a runtime check.
+
+The numeric operator set is the closed set of design §7.4. `/` on two `Int`s is
+integer division truncating toward zero (`bigint` division already is); on two
+`F64`s it is ordinary floating-point division. `//` is the truncated
+**remainder** for both types and lowers to JS `%`. `%` is the unquote prefix and
+never denotes arithmetic. A zero divisor raises the VM's own catchable
+`(Error ^message "division by zero")` for both numeric types, so `F64` division
+does not yield `Infinity` and `Int` division does not surface a JS `RangeError`.
+Because it really is the VM's value, `catch (Error ^message m)` matches it.
 
 Supported control/data forms include mutable and immutable locals, `set` and
 path `set!`, compact and clause `if`, guards, short-circuit operators, all core
@@ -78,6 +96,21 @@ patterns and `ensure` lower to `catch`/`finally`. `^errors` rows are validated
 at compile time and erased; duplicate, non-error, and malformed rows are
 rejected. `^effects` remains reserved and is rejected.
 
+A pattern whose head is a plain symbol is one form over two representations, as
+in the VM: it matches a **type instance** of that name *and* **Gene node data**
+carrying that head symbol. A head naming no declared type simply has no instance
+half. Then the listed props must be **present** — naming an absent optional field
+is a non-match, not a `nil` binding — and the body must match exactly, or through
+a trailing rest pattern. Because Gene node data is the shape the VM raises
+builtin errors as, `catch (Error ^message m)` binds the same message here as in
+the VM, and it keeps doing so in a module that declares its own type named
+`Error`.
+
+Node identity is a `Symbol.for("gene.node")` brand rather than
+`instanceof GeneNode`, which is per-module and so false for any node that crossed
+an import — that staleness also silently read an imported node's prop as
+`undefined` through `$gene_get`.
+
 Generators are wrapped as `GeneStream`: `peek`, `has_next`, `next`, terminal
 errors, `yield void` skipping, idempotent `close`, iterator cleanup, and
 upstream-close through `map`/`filter`/`into` are preserved.
@@ -87,14 +120,35 @@ upstream-close through `map`/`filter`/`into` are preserved.
 `scope` owns every child created by `spawn`. Normal scope exit waits for live
 children. Exceptional exit requests cancellation, waits for all children to
 settle, then rethrows. `await` checks cancellation before and after suspension.
-Cancellation is represented by `GeneCancellation`, deliberately not an
-`Error`; emitted ordinary catches rethrow it before testing Gene catch
-patterns. `finally` still runs exactly once. JavaScript cannot preempt running
-code, so cancellation is observed at generated suspension points; actors and
-channels remain VM-only because their semantics require the scheduler.
+`finally` still runs exactly once. JavaScript cannot preempt running code, so
+cancellation is observed at generated suspension points; actors and channels
+remain VM-only because their semantics require the scheduler.
+
+Asyncness is a property of the **call graph**, not of one body. A function is
+async if it uses `scope`/`await` or calls an async function, and it is carried
+across module boundaries with the imported signature — otherwise a caller's
+`await` would land inside a plain `function` and the module would not parse.
+Bodies are analyzed once, recording call edges; asyncness is then settled by a
+single reverse-edge worklist pass, so the cost is linear in functions plus call
+sites even though call graphs are recursive. Only top-level functions carry the
+flag, so a type message, a constructor, a protocol message, a generator, and a
+callback value are each rejected with a source-located reason rather than
+emitting an `await` with nowhere to hang it.
+
+Cancellation is represented by `GeneCancellation`, deliberately not an `Error`;
+emitted ordinary catches rethrow it before testing Gene catch patterns. The test
+is a `Symbol.for("gene.cancellation")` brand rather than `instanceof` or a `kind`
+string. `instanceof` is wrong because the class is emitted per module, so
+identity does not survive a module boundary and a module holding only a Gene
+catch never emits the class. A string field is wrong because a nominal Gene type
+may declare its own `^kind Str`, which would make
+`(fail (T ^kind "gene_cancellation"))` uncatchable; a registry symbol cannot
+collide with any Gene field name.
 
 `tests/transpile_async_runner.nim` adversarially checks that a cancelled child
-cannot be swallowed by `catch _` and that `ensure` runs once.
+cannot be swallowed by `catch _` and that `ensure` runs once, in both a
+single-module and a two-module shape, and that a Gene error carrying
+`^kind "gene_cancellation"` is still catchable.
 
 ## Portable standard library and DOM
 
@@ -115,8 +169,10 @@ DOM-shaped host.
 ## Deliberate exclusions
 
 The compiler gives dedicated diagnostics for `fn!`/`caller_env`, runtime
-`eval`, `derive` (which remains VM module-initialization behavior), actors,
-channels and supervisors, native FFI, capability values, `import_impl`,
-`AtomicCell`/threads, and deep freeze/thaw. These features require an evaluator,
-scheduler, native loader, authority model, dynamic impl visibility, or
-persistent-data-structure runtime; full fidelity belongs to the wasm VM.
+`eval`, `derive` (which remains VM module-initialization behavior, and is
+rejected as the `^derive` property as well as the standalone form), actors,
+channels and supervisors, native FFI, `^repr native_wrapper`/`^native`,
+capability values, `import_impl`, `AtomicCell`/threads, and deep freeze/thaw.
+These features require an evaluator, scheduler, native loader, authority model,
+dynamic impl visibility, or persistent-data-structure runtime; full fidelity
+belongs to the wasm VM.
