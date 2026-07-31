@@ -153,7 +153,8 @@ perf baseline are things the web profile wants anyway.
 
 ### D5.1 Result — **PASS**
 
-Built in `examples/new_world/spike/`: `sprites.gene` (the sim), `canvas.mjs`
+Built in `examples/new_world/spike/`, its own nested package: `src/sprites.gene`
+(the sim), `canvas.mjs`
 (externs), `bench.mjs` (node harness with a hand-written JS baseline),
 `index.html` (browser). Node v25.9.0, 600 frames, structure-of-arrays, all `F64`.
 
@@ -254,7 +255,7 @@ profile offers no way to mark a boundary already-validated.
   `(var ignored (set! …))` and every `: Void` body ended in a bookkeeping
   `void`. **Fixed** — `docs/design.md` §7.7 makes `Nil` and `Void` *statement*
   signatures on both backends: the body's trailing value is discarded, the
-  frame yields the declared unit, and `(return)` needs no argument. `world.gene`
+  frame yields the declared unit, and `(return)` needs no argument. `src/world.gene`
   lost eight trailing `void`s and the `poke` helper's throwaway binding; the
   spike lost four more. This is the awkwardness log working as intended — a
   friction the game hit repeatedly became a language change rather than a
@@ -274,17 +275,18 @@ should be rewritten relative to `--out-dir`.
 ## D5.3 The game — first playable slice
 
 `examples/new_world/`, alongside this doc — see the [README](../README.md) to
-build and run it. Side-view, per D2. `./build.sh` runs the whole pipeline:
+build and run it. It is a Gene package (`gene/new_world`), so all Gene source
+lives under `src/`. Side-view, per D2. `./build.sh` runs the whole pipeline:
 assets, then `gene build --target web`, then the host shim, then the page.
 
 **In Gene**, through two different paths:
 
-- `world.gene` (~330 lines) compiles to TypeScript/ESM through the **`web`
+- `src/world.gene` (~330 lines) compiles to TypeScript/ESM through the **`web`
   profile**: value-noise terrain with three octaves, biome layering, caves,
   depth-banded ores, trees, AABB collision with sub-stepping, walking and
   jumping, mining and placing with a reach check, and the visible-window render
   walk.
-- `page.gene` runs on the **VM at build time** and emits `index.html` —
+- `src/page.gene` runs on the **VM at build time** and emits `index.html` —
   `gene/css` for the stylesheet and `gene/html` for the markup, both ordinary
   node data until one `render` edge. This is Tier 0 of `transpile.md`: no
   compiler backend involved, just the stdlib. Being a normal module rather than
@@ -292,7 +294,7 @@ assets, then `gene build --target web`, then the host shim, then the page.
   named bindings instead of being repeated as hex literals.
 
 **In JavaScript**: canvas calls, the keyboard, the arrays Gene writes into, and
-a run-length-encoded `localStorage` save. `world.gene` holds no state at all,
+a run-length-encoded `localStorage` save. `src/world.gene` holds no state at all,
 because the profile rejects top-level `var` — the world is a flat `(List F64)`
 the host owns and hands back each frame.
 
@@ -318,7 +320,7 @@ cannot mine out of reach or seal yourself inside a wall.
 encoder — so the palette D2 calls the visual identity is re-tunable by editing
 numbers rather than by repainting a file nobody has the source for. It also
 emits an 8× review blow-up, and `tools/screenshot.mjs` composites a real
-viewport to PNG through the same atlas and the same `world.gene`, so the world
+viewport to PNG through the same atlas and the same `src/world.gene`, so the world
 can be reviewed and regressions caught from a terminal with no browser running.
 
 Three things that review caught, in order of how much they mattered:

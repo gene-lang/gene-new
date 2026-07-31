@@ -1,0 +1,12 @@
+{
+  ^name "gene/new_world"
+  ^description "A side-view Minecraft-like written in Gene"
+  ^version "0.1.0"
+  # Neither module is a conventional "run this" entry, so `main_module` names
+  # the substantive one rather than the runnable one: `world` is the game —
+  # terrain, physics, mining — compiled to JavaScript by `gene build --target
+  # web` and executed by the browser. `page` is a build-time tool that prints
+  # index.html on the VM; `./build.sh` runs both.
+  ^main_module "world"
+  ^dependencies []
+}

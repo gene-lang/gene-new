@@ -1,0 +1,7 @@
+{
+  ^name "gene/new_world_spike"
+  ^description "Perf spike: can the web profile hold 60 fps? (design.md D5)"
+  ^version "0.1.0"
+  ^main_module "sprites"
+  ^dependencies []
+}

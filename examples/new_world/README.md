@@ -57,7 +57,7 @@ tiles (or the world is unwalkable however good it looks), ore rarity is ordered,
 the player lands and comes to rest without drifting, a jump leaves the ground
 and returns, and you cannot mine out of reach or seal yourself inside a wall.
 
-`tools/screenshot.mjs` renders through the same atlas and the same `world.gene`
+`tools/screenshot.mjs` renders through the same atlas and the same `src/world.gene`
 the browser runs, so the world can be reviewed — and regressions caught — from a
 terminal with no browser open. It is how the cave-backdrop and tile-repetition
 problems were found.
@@ -70,17 +70,17 @@ Gene reaches the browser by **two different routes**, and the difference matters
 
 | File | Runs | How |
 |---|---|---|
-| `world.gene` | in the browser | compiled to TypeScript/ESM by the **`web` profile** (`gene build --target web`) |
-| `page.gene` | at build time | on the **VM**, emitting `index.html` via `gene/html` + `gene/css` |
+| `src/world.gene` | in the browser | compiled to TypeScript/ESM by the **`web` profile** (`gene build --target web`) |
+| `src/page.gene` | at build time | on the **VM**, emitting `index.html` via `gene/html` + `gene/css` |
 | `host.mjs` | in the browser | hand-written JS — canvas, atlas blitting, the player sprite |
 | `main.mjs` | in the browser | hand-written JS — state, input, camera, save/load, the rAF loop |
 
-`world.gene` holds **no state at all**. The web profile rejects top-level `var`,
+`src/world.gene` holds **no state at all**. The web profile rejects top-level `var`,
 so the world is a flat `(List F64)` that `main.mjs` owns and hands back on every
 call. That is a real constraint, not a stylistic choice, and it shapes the whole
 module.
 
-`page.gene` is an ordinary VM module, so it *can* hold top-level `var` — which is
+`src/page.gene` is an ordinary VM module, so it *can* hold top-level `var` — which is
 why the palette lives in named bindings there (`ink`, `accent`, `panel`) instead
 of the same hex literal appearing in five rules. The two Gene files in this
 project sit on opposite sides of that restriction, which makes them a decent
@@ -91,7 +91,7 @@ illustration of what the profile costs and where it does not apply.
 [`transpile.md`](../../docs/proposals/transpile.md) §4.5 lowers Gene's `Int` to JavaScript **`bigint`** and `F64` to
 `number`. BigInt arithmetic is roughly an order of magnitude slower, throws when
 mixed with `number`, and cannot cross into a canvas call — so **every hot value
-in `world.gene` is `F64`**, including loop counters and tile ids.
+in `src/world.gene` is `F64`**, including loop counters and tile ids.
 
 This is the single most important thing to know before editing the Gene. An
 innocuous `(var i 0)` instead of `(var i 0.0)` puts a bigint on the hot path.
@@ -100,21 +100,35 @@ innocuous `(var i 0)` instead of `(var i 0.0)` puts a bigint on the hot path.
 
 ## Layout
 
+This is a Gene package (`gene/new_world`), so all Gene source lives under
+`src/` and `package.gene` is the manifest. Everything else is host-side
+JavaScript, tooling, or build output.
+
 ```
-docs/design.md        direction (Part I) and the deferred larger design (Part II)
-world.gene            terrain, physics, collision, mining, render walk
-page.gene             the HTML page, as gene/html + gene/css node data
+package.gene          manifest: name, version, source_dir, main_module
+src/world.gene        terrain, physics, collision, mining, render walk
+src/page.gene         the HTML page, as gene/html + gene/css node data
 host.mjs              canvas externs — the boundary Gene calls out through
 main.mjs              game shell: state, input, camera, save/load, loop
 test.mjs              28 headless checks
 build.sh              assets -> Gene -> index.html
 tools/gen_atlas.mjs   generates assets/tiles.png (and an 8x review blow-up)
 tools/screenshot.mjs  composites a viewport to PNG, headless
-spike/                the D5 performance spike (see below)
+spike/                the D5 performance spike — its own nested package
 assets/               generated atlas + screenshots
 dist/                 generated JS/TS — gitignored, never edit
 index.html            generated — gitignored, never edit
 ```
+
+`gene pkg show` reports the resolved manifest. `main_module` is `world`
+because that is the substantive module — the one a dependent importing
+`from "."` would want — even though `page` is the only module you `gene run`.
+
+The spike carries its own `package.gene` (`gene/new_world_spike`) rather than
+living in this package's `src/`. It is a measurement rig, not part of the game,
+and a nested manifest is a real package boundary: discovery stops at the
+nearest one, so `gene build` on a spike file selects the spike package from any
+working directory.
 
 ### Assets are generated, not drawn
 
@@ -124,7 +138,7 @@ whose source nobody has. Re-tune the art by editing numbers and re-running.
 
 Two things about the atlas are load-bearing:
 
-- **Tile order is the ABI.** `world.gene`'s `t_*` functions index into it
+- **Tile order is the ABI.** `src/world.gene`'s `t_*` functions index into it
   positionally. Inserting a tile mid-array silently renumbers everything after
   it — that bug shipped once and rendered stone as dirt.
 - **Ids 12–14 are render-only variants.** The world stores stone as `t_stone`
@@ -141,7 +155,7 @@ compiled by the [`web` profile](../../docs/proposals/transpile.md) hold 60 fps?
 
 ```sh
 cd spike
-../../../bin/gene build --target web sprites.gene --out-dir dist
+../../../bin/gene build --target web src/sprites.gene --out-dir dist
 cp canvas.mjs dist/
 node bench.mjs [sprites] [frames]
 ```
