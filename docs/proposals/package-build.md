@@ -50,22 +50,25 @@ and it is where the cost of producing an artifact belongs.
 
 ---
 
-## 3. A build step is declared, not scripted
+## 3. Steps declare their inputs; some steps are commands
 
-**Idempotence forces this, before any security argument does.**
+**Idempotence needs known inputs, not a restricted vocabulary.**
 
-A step is idempotent only if the system can decide it has already run. That
-requires knowing the step's complete inputs. A shell command's inputs are
-unknowable — it may read any file, any environment variable, the network, the
-clock. There is no fingerprint that means "this command's result is still
-valid," so a shell step can only ever be re-run blindly or skipped blindly.
+A step can be skipped only if the system can decide it has already run, which
+requires knowing everything its output depends on. The tempting conclusion is
+that steps must therefore be declarative and a shell escape hatch is impossible.
+That is wrong, and Cargo shows why: `build.rs` is arbitrary Rust, and it is
+still incremental, because the script emits `cargo:rerun-if-changed=PATH` and
+thereby **declares its own inputs**.
 
-A declared step has exactly known inputs, so it can be keyed (§5), skipped when
-current, and cached across machines as a distribution (§6). The safety property
-— that installing a package cannot run arbitrary code — falls out of the same
-decision rather than being bolted on.
+So the axis is not declarative-versus-shell. It is *who declares the inputs*.
+A command whose inputs and outputs are declared is exactly as fingerprintable
+as a built-in step, and the developer carries the obligation the declaration
+implies.
 
-Initial step vocabulary, kept deliberately small:
+Two kinds of step, sharing one keying rule:
+
+**Built-in steps** know their own inputs, because the runtime performs them:
 
 ```gene
 (c_library "sqlite_shim"
@@ -78,25 +81,41 @@ Initial step vocabulary, kept deliberately small:
   ^entry "src/client.gene")   # gene build --target web
 ```
 
-`c_library` and `web_module` cover the two artifact kinds that exist today. A
-step kind is added only when something needs it, and each one has to be
-fingerprintable to qualify.
+**Command steps** run a program, and must declare what they read and write:
 
-`web_module` the step deliberately reuses the name of the source-level
-`(web_module name …)` form (design §3). They never collide — one is manifest
-data, the other program code — but "they cannot collide" is not on its own a
-reason to share a name. The reason is that they must **produce the same
-artifact by the same path**: the step is the compilation the source form
-already triggers, declared from outside instead of from inside. Sharing the
-name is right only while that holds, so if the two ever diverge in output or
-options, the step is renamed rather than allowed to drift into a second meaning
-of one word.
+```gene
+(command "atlas"
+  ^run ["node" "tools/gen_atlas.mjs"]
+  ^inputs ["tools/gen_atlas.mjs"]
+  ^outputs ["assets/tiles.png" "assets/tiles_preview.png"])
+```
 
-**No shell escape hatch in v1.** If a package genuinely cannot express its build
-declaratively, the answer is to ship a distribution (§6) built by its author,
-not to hand every consumer a shell. Revisit only with evidence.
+- `^run` is an argv vector, never a shell string: no word splitting, no glob
+  expansion, no `$VAR` interpolation, no `&&`. A shell is available by asking
+  for one explicitly (`^run ["sh" "-c" "…"]`), which makes that choice visible
+  in review rather than implicit in every step.
+- `^inputs` is required and may be empty only if the command genuinely depends
+  on nothing in the package. It is what the key hashes.
+- `^outputs` is required. It is what gets moved into the keyed build directory,
+  and what a distribution can carry.
+- The command runs with the package root as its working directory and a
+  **minimal environment** — `PATH`, `HOME`, and anything the step names in
+  `^env` — so that an unrelated variable in a developer's shell cannot change
+  the result without changing the key.
 
----
+**The developer owns idempotence, and the runtime checks the part it can.**
+After a command step runs, every path in `^outputs` must exist or the step
+fails. Under `--verify-steps` the step is run a second time into a scratch
+directory and the outputs compared, which turns "I believe this is idempotent"
+into something CI can answer. That check is opt-in because it doubles build
+time; it is the mechanism a package author uses before publishing, not
+something every consumer pays for.
+
+What the runtime cannot check is a command that reads an undeclared input — a
+file outside `^inputs`, a network resource, the clock. Such a step will be
+skipped when it should have run, and the symptom is a stale artifact. This is
+the same contract Cargo's `rerun-if-changed` has, with the same failure mode,
+and it is the price of the escape hatch being genuinely useful.
 
 ## 4. Manifest additions
 
@@ -123,7 +142,7 @@ not to hand every consumer a shell. Revisit only with evidence.
 | Field | Required | Default | Meaning |
 |---|---:|---|---|
 | `^native_dependencies` | no | `[]` | External native libraries, by name |
-| `^build` | no | `[]` | Declared build steps, run at install |
+| `^build` | no | `[]` | Build steps — built-in or `command` (§3) |
 | `^platform` | no | `nil` | Set only on a distribution package (§6) |
 
 `^native_dependencies` names a library and how to find it; it never contains a
@@ -159,7 +178,11 @@ acme/sqlite/
 ```
 
 `build/` is generated, gitignored, and safe to delete: deleting it costs a
-rebuild and nothing else.
+rebuild and nothing else. It is also the only place a step may write. A
+`command` step declares `^outputs` as paths relative to the package root
+because that is where the command naturally puts them, and the runtime moves
+them into the keyed directory afterwards — so a command cannot leave the
+package dirty, and two targets cannot overwrite each other.
 
 There are two keys, because the local rebuild decision and cross-machine
 distribution matching answer different questions.
@@ -169,7 +192,10 @@ is reproducible from the same inputs on any machine:
 
 - the step declaration, canonically printed;
 - the contents of every input file it names — for an entry-based step such as
-  `web_module`, the transitive closure of modules the entry imports;
+  `web_module`, the transitive closure of modules the entry imports; for a
+  `command` step, exactly the paths in `^inputs`, which is where the developer's
+  obligation from §3 lands;
+- the values of any environment variables the step names in `^env`;
 - the resolved native dependencies (name and version, as discovered);
 - the target triple.
 
@@ -241,51 +267,69 @@ toolchain.
 
 ---
 
-## 7. `gene pkg build`
+## 7. Command surface
 
-`gene pkg install <dir>` already ships, and it does something else: it copies a
-package tree into the application or user store (`gene pkg install <dir>
-[--user|--app]`). The operation proposed here takes no directory and is a build
-and verify pass over the application package and its dependency graph.
-Distinguishing them by argument count would be overloading one verb with two
-meanings.
+The verbs follow Cargo, because the model is the same one: a package with
+declared inputs, a keyed output directory, and a build that is a no-op when
+nothing changed.
 
-Two ways out, and the cheaper one is not the obvious one:
+| Command | Does | Status |
+|---|---|---|
+| `gene pkg build` | run the application package's steps and its dependencies' | v1 |
+| `gene pkg clean` | delete `build/`, or one target under it | v1 |
+| `gene pkg install <dir>` | copy a package into a store **and build it** | v1, extends the existing command |
+| `gene pkg release` | optimized build, then emit a distribution package (§6) | later |
 
-- **Rename the new operation.** `gene pkg build` says what it does, leaves a
-  shipped command alone, and reads correctly next to `gene build --target web`.
-- **Rename the existing one** to `gene pkg add <dir>`, freeing `install` for the
-  build pass. This matches how `npm install` and `cargo build` are understood,
-  but it breaks a command that already works.
+**`install` keeps its current meaning and gains a build.** `gene pkg install
+<dir> [--user|--app]` already ships as "copy a package into a store," and that
+is the same sense Cargo uses — `cargo install` makes something available beyond
+the current project. Installing therefore runs the package's build steps as
+part of making it usable, which is what "the build step should be invoked when
+a package is installed" asks for. Because steps are keyed (§5), installing an
+already-built package does no work.
 
-**Recommendation: `gene pkg build`.** The argument for taking the `install` name
-is that users expect install-means-build from other ecosystems; the argument
-against is that Gene's `install` already has a meaning here, and a rename buys
-familiarity at the cost of a break. Naming the new thing is free.
+`gene pkg build` is a separate verb rather than a zero-argument `install`
+because it operates on the *current* application and its graph, not on a
+package being brought in from elsewhere. Distinguishing two operations by
+argument count would be overloading one word with two meanings.
+
+**`clean` deletes only generated output.** `build/` is the sole location a step
+may write into the package (§5), so `clean` is `rm -rf build/` and cannot touch
+source. `gene pkg clean --target aarch64-macos` drops one target's outputs;
+`--older-than <duration>` drops stale keys while keeping current ones, since a
+long-lived checkout accumulates a directory per input change.
+
+**`release` is deferred but shapes v1.** A release build is not a different
+build — it is the same steps at a different optimization level, plus emitting
+§6's `^platform`/`^provides` manifest. The only thing v1 must get right for it
+is that the optimization level is part of the source key, so a debug artifact
+can never be mistaken for a release one.
 
 ```console
 $ gene pkg build
-acme/sqlite 0.1.0   distribution aarch64-macos   verified
-acme/imaging 2.1.0  building c_library "resize"  3.2s
-gene/utils 0.1.0    no build steps
+acme/sqlite 0.1.0    distribution aarch64-macos   verified
+acme/imaging 2.1.0   c_library "resize"           3.2s
+gene/new_world 0.1.0 command "atlas"              0.4s
+                     web_module "world"           1.1s
+gene/utils 0.1.0     no build steps
+
+$ gene pkg build
+5 packages, nothing to do
 ```
 
-- Idempotent by §5: a second run reports and does nothing.
-- Runs for the application package and its dependency graph.
 - `--offline` refuses to fetch a distribution and builds from source.
 - `--rebuild` ignores existing keys, for diagnosing a stale-artifact suspicion.
+- `--verify-steps` re-runs each command step and compares outputs (§3).
 
-Building is reported per package with its duration, because a silent multi-second
-install is how build steps become invisible.
-
----
+Building is reported per package per step with its duration, because a silent
+multi-second build is how steps become invisible. A build that does nothing
+says so in one line.
 
 ## 8. Non-goals for the first version
 
 - **Cross-compilation.** Build for the host triple only. Producing distributions
   for other platforms is the publisher's problem, solved with real machines or
   CI, not with a cross-toolchain contract invented here.
-- **A shell step** (§3).
 - **Publishing distributions.** This proposal defines what a distribution *is*
   and how it is consumed. How one is uploaded, signed, and discovered belongs
   with the registry work. `distribution.md` is a different kind of distribution
@@ -306,13 +350,14 @@ install is how build steps become invisible.
 2. **`c_library` steps and build keys.** `build/<target>/<key>/`, `stamp.gene`,
    idempotent re-run. `gene pkg build` lands.
    `examples/native` drops its shell script.
-3. **`web_module` steps.** Folds `gene build --target web` into the same
-   mechanism. `examples/new_world/build.sh`'s four `--target web` invocations
-   become `web_module` steps; the `node` atlas tool and the `gene run` that
-   prints `index.html` stay outside v1's vocabulary — the shell-escape-hatch
-   ban in §3 is exactly why they must.
-4. **Distribution packages.** `^platform`, `^provides`, hash verification,
-   preference order.
+3. **`web_module` and `command` steps.** Folds `gene build --target web` into
+   the same mechanism, and gives command steps their input declaration,
+   sandboxed environment, and output check. `examples/new_world/build.sh`
+   becomes a manifest in full — four `web_module` steps, plus `command` steps
+   for the atlas generator and the `gene run` that prints `index.html` — which
+   is the test of whether the vocabulary is real.
+4. **Distribution packages and `release`.** `^platform`, `^provides`, hash
+   verification, preference order, and the optimized build that produces one.
 
 Stages 1-2 are what `native-type.md` was waiting for. Stage 3 is a
 simplification with no new concepts. Stage 4 is what makes a toolchain optional.
@@ -327,6 +372,14 @@ simplification with no new concepts. Stage 4 is what makes a toolchain optional.
   coarser identity risks reusing an artifact across a toolchain change that
   mattered. Leaning toward compiler name plus major version, and accepting
   occasional over-caching in exchange for stability.
+- **How far to sandbox a command step.** A minimal environment and an argv
+  vector (§3) stop accidental non-determinism, not a deliberate escape. Whether
+  to go further — a working-directory jail, no network — is a real question, and
+  the answer probably differs between a package you wrote and one you installed.
+- **Whether `--verify-steps` should be required before publishing.** It is the
+  only mechanism that turns a claimed idempotence into a checked one, and a
+  distribution built from a non-idempotent step is exactly the artifact nobody
+  can reproduce.
 - **Where a pkg-config result enters the key.** Recording the resolved version
   is right; recording the resolved *paths* would make a key machine-specific and
   defeat distribution matching.
