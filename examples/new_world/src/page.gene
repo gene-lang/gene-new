@@ -112,6 +112,5 @@
             %(controls)
             (script ^type "module" ^src "./boot.mjs"))))))
 
-(fn main []
-  ($print (page))
-  nil)
+(fn main [] : Nil
+  ($print (page)))

@@ -55,6 +55,7 @@ const contract = [
   ["dom/text", "Node", "textContent", "read"],
   ["dom/set_class", "Element", "classList", "read"],
   ["dom/set_class (toggle)", "DOMTokenList", "toggle", "call", 2],
+  ["dom/window (is an EventTarget)", "Window", "addEventListener", "call", 2],
   ["dom/inner_width", "Window", "innerWidth", "read"],
   ["dom/inner_height", "Window", "innerHeight", "read"],
   ["dom/rect_*", "Element", "getBoundingClientRect", "call", 0],

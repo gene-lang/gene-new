@@ -181,6 +181,13 @@ type
     methods*: seq[WebImplMethod]
     loc*: SourceLoc
 
+  WebConstant* = ref object
+    sourceName*: string
+    emittedName*: string
+    typ*: WebType
+    value*: WebExpr
+    loc*: SourceLoc
+
   WebModule* = ref object
     name*: string
     sourcePath*: string
@@ -200,6 +207,12 @@ type
     loc*: SourceLoc
     imports*: seq[WebImport]
     externs*: seq[WebExtern]
+    ## Module-level constants: `(let name value)` whose value is a literal.
+    ## Emitted as JS `const`. Restricted to literals on purpose — the profile
+    ## has no module-initialization phase, and giving it one would need the
+    ## ordering, cycle, and provenance contract §2 excludes. A literal needs
+    ## none of that: it cannot observe another module, cycle, or have effects.
+    constants*: seq[WebConstant]
     functions*: seq[WebFunction]
     types*: seq[WebTypeDecl]
     visibleTypes*: seq[WebTypeDecl]
@@ -244,6 +257,8 @@ type
   WebAnalysis = ref object
     unit: SourceUnit
     signatures: Table[string, WebFunctionSig]
+    ## Module-level `let` constants, visible to every function body.
+    constants: Table[string, WebConstant]
     loopDepth: int
     currentReturn: WebType
     asyncDepth: int
@@ -1200,6 +1215,25 @@ proc analyzeTemplate(analysis: WebAnalysis, value: Value,
   else:
     result = analysis.analyzeDatum(value, loc)
 
+proc isLiteralConstant(expr: WebExpr): bool =
+  ## A value the emitter can write as a JS literal with no evaluation order:
+  ## a scalar, or an immutable aggregate whose elements are themselves
+  ## literals. Anything that can call, read a binding, or observe state is
+  ## excluded — that is exactly what makes a module-level `const` safe here.
+  if expr == nil: return false
+  case expr.kind
+  of wekNil, wekVoid, wekBool, wekStr, wekSym, wekInt, wekF64:
+    true
+  of wekList, wekPropMap, wekMap:
+    # Mutability of the literal form does not matter here: a module constant
+    # is emitted frozen, so `["a" "b"]` and `#["a" "b"]` are equally safe as
+    # a `const`. What matters is that every element is itself a literal.
+    for child in expr.children:
+      if not isLiteralConstant(child): return false
+    true
+  else:
+    false
+
 proc isStatementType(typ: WebType): bool {.inline.} =
   ## `Nil` and `Void` are statement signatures: the body's trailing value is
   ## discarded and the function yields the declared unit. Mirrors the VM's
@@ -1525,6 +1559,12 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "dom/set_class":
         paramTypes = @[webType(wtkDomTarget), webType(wtkStr), webType(wtkBool)]
         returnType = webType(wtkVoid)
+      of "dom/window":
+        # Keyboard events do not reach an element unless it is focusable and
+        # focused, so a game's key handlers belong on the window. Same for
+        # `mouseup`: a release outside the canvas must still end the drag.
+        paramTypes = @[]
+        returnType = webType(wtkDomTarget)
       of "dom/inner_width", "dom/inner_height":
         paramTypes = @[]
         returnType = webType(wtkF64)
@@ -2410,6 +2450,10 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
         typ: WebType(kind: wtkCallback, params: signature.params,
                      returnType: signature.returnType),
         loc: loc, text: signature.valueName)
+    elif analysis.constants.hasKey(value.symVal):
+      let constant = analysis.constants[value.symVal]
+      result = WebExpr(kind: wekBinding, typ: constant.typ, loc: loc,
+                       text: constant.emittedName)
     else:
       raise webError(loc, "unresolved web binding: " & value.symVal)
   of vkList:
@@ -2549,12 +2593,15 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
                                importedMacros: Table[string,
                                  Table[string, MacroDef]],
                                macroExports: var Table[string, MacroDef],
-                               embedded = false): WebModule =
+                               embedded = false,
+    importedConstants: Table[string, WebConstant] =
+      initTable[string, WebConstant]()): WebModule =
   let frontEnd = expandSourceUnitMacros(unit, importedMacros)
   macroExports = frontEnd.macroExports
   var analysis = WebAnalysis(
     unit: frontEnd.expanded,
     signatures: imported,
+    constants: importedConstants,
     typeDecls: importedTypes,
     enumDecls: importedEnums,
     protocolDecls: importedProtocols,
@@ -2583,6 +2630,11 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   result = WebModule(name: moduleForm.body[0].symVal,
                      sourcePath: sourcePath, embedded: embedded,
                      loc: moduleLoc)
+  # Imported constants are emitted as local `const`s: the value is a literal,
+  # so copying it is exact and avoids a cross-module read the profile has no
+  # initialization order for.
+  for name, constant in importedConstants:
+    result.constants.add constant
   # Declaration names and schemas are collected before executable bodies so
   # annotations, construction, recursion, and sends resolve independent of
   # source order.
@@ -2632,6 +2684,36 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
           implementation.protocolName)
   var headers: seq[tuple[form: Value, fn: WebFunction]]
   let moduleResult = result
+  proc registerConstant(form: Value, loc: SourceLoc): WebConstant =
+    ## `(let name value)` / `(let name : T value)` where `value` is a literal.
+    ## Only literals qualify: the profile has no module-initialization phase
+    ## (docs/proposals/transpile.md §2), and a computed initializer would need
+    ## the ordering and cycle contract that phase was excluded to avoid. A
+    ## literal has no such hazard, so it lowers to a plain JS `const`.
+    var body = form.body
+    if body.len notin {2, 4} or body[0].kind != vkSymbol:
+      raise webError(loc, "web let expects a name and a literal value")
+    let name = body[0].symVal
+    var declared: WebType = nil
+    var valueIndex = 1
+    if body.len == 4:
+      if not body[1].isSym(":"):
+        raise webError(loc, "web let type annotation requires ':'")
+      declared = parseWebType(body[2], loc)
+      valueIndex = 3
+    var empty = initTable[string, WebBinding]()
+    let value = analysis.analyzeExpr(body[valueIndex], empty, declared)
+    if not value.isLiteralConstant:
+      raise webError(loc, "top-level 'let' requires a literal value: " &
+        "the web profile has no module-initialization phase, so a computed " &
+        "constant would need an evaluation order it does not define")
+    if analysis.signatures.hasKey(name) or
+        analysis.constants.hasKey(name):
+      raise webError(loc, "duplicate web declaration: " & name)
+    result = WebConstant(sourceName: name, emittedName: mangleWebName(name),
+                         typ: value.typ, value: value, loc: loc)
+    analysis.constants[name] = result
+
   proc registerFunction(form: Value, namespacePath: seq[string],
                         loc: SourceLoc) =
     let fn = parseFunctionHeader(analysis, form)
@@ -2645,6 +2727,9 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       fn.publicExport = true
     if analysis.signatures.hasKey(fn.sourceName):
       raise webError(loc, "duplicate web function: " & fn.sourceName)
+    if analysis.constants.hasKey(fn.sourceName):
+      raise webError(loc, "duplicate web declaration: " & fn.sourceName &
+        " is already a module constant")
     var paramTypes: seq[WebType]
     for param in fn.params: paramTypes.add param.typ
     analysis.signatures[fn.sourceName] = WebFunctionSig(
@@ -2738,9 +2823,17 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       registerNamespace(form, @[], loc)
       continue
     else: discard
+    if form.head.symVal == "let":
+      result.constants.add registerConstant(form, loc)
+      continue
     if form.head.symVal != "fn":
+      let hint =
+        if form.head.symVal == "var":
+          ": module-level state has no initialization order here; " &
+          "use (let name <literal>) for a constant"
+        else: ""
       raise webError(loc, "top-level '" & form.head.symVal &
-        "' is outside the web profile")
+        "' is outside the web profile" & hint)
     registerFunction(form, @[], loc)
   for header in headers:
     var bindings = initTable[string, WebBinding]()
@@ -2864,10 +2957,12 @@ proc analyzeWebModuleWithImports(source, sourcePath: string,
                                  importedProtocols: Table[string, WebProtocolDecl],
                                  importedMacros: Table[string,
                                    Table[string, MacroDef]],
-                                 macroExports: var Table[string, MacroDef]): WebModule =
+                                 macroExports: var Table[string, MacroDef],
+    importedConstants: Table[string, WebConstant] =
+      initTable[string, WebConstant]()): WebModule =
   analyzeWebUnitWithImports(readAllWithLocs(source, sourcePath), sourcePath,
     imported, importedTypes, importedEnums, importedProtocols, importedMacros,
-    macroExports)
+    macroExports, importedConstants = importedConstants)
 
 proc analyzeWebModule*(source, sourcePath: string): WebModule =
   var macroExports: Table[string, MacroDef]
@@ -3217,6 +3312,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "dom/set_class":
       "(" & arguments[0] & ".classList.toggle(" & arguments[1] & ", " &
         arguments[2] & "), undefined)"
+    of "dom/window": "window"
     of "dom/inner_width": "window.innerWidth"
     of "dom/inner_height": "window.innerHeight"
     of "dom/rect_left": "$gene_dom_rect(" & arguments[0] & ", \"left\")"
@@ -4501,14 +4597,24 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.currentLoc = imported.loc
     var selections: seq[string]
     for selection in imported.selections:
+      # A module constant is copied by value at analysis time, so it is
+      # emitted as a local `const` and must not appear in the import list —
+      # the other module has no binding to export.
+      var isConstant = false
+      for constant in module.constants:
+        if constant.sourceName == selection.localName:
+          isConstant = true
+          break
+      if isConstant: continue
       let sourceName = mangleWebName(selection.sourceName)
       let localName = mangleWebName(selection.localName)
       if sourceName == localName: selections.add sourceName
       else: selections.add sourceName & " as " & localName
     let target = "./" & splitFile(imported.resolvedPath).name &
       (if typescript: ".js" else: ".mjs")
-    emitter.line("import { " & selections.join(", ") & " } from " &
-                 jsString(target) & ";")
+    if selections.len > 0:
+      emitter.line("import { " & selections.join(", ") & " } from " &
+                   jsString(target) & ";")
   for extern in module.externs:
     emitter.currentLoc = extern.loc
     emitter.line("import { " & extern.importName & " as " &
@@ -5149,6 +5255,23 @@ proc emitModule(module: WebModule, typescript: bool,
       moduleExprUsesTypeKind(module, wtkAny)
     emitter.emitStructuralEquality(needsMap, needsObjectEquality)
   emitter.emitValidators(module)
+  # Constants first: a literal has no dependencies, so one pass in source
+  # order is enough and no ordering contract is needed.
+  for constant in module.constants:
+    emitter.currentLoc = constant.loc
+    let annotation = if typescript: " : " & tsType(constant.typ) else: ""
+    let rendered = emitter.emitExpr(constant.value)
+    # An aggregate constant is frozen: a module-level binding is reachable from
+    # every function, so a mutable one would be shared mutable state — the very
+    # thing rejecting top-level `var` avoids.
+    let body =
+      if constant.value.kind in {wekList, wekPropMap, wekMap}:
+        "Object.freeze(" & rendered & ")"
+      else: rendered
+    emitter.line("const " & constant.emittedName & annotation & " = " &
+                 body & ";")
+  if module.constants.len > 0:
+    emitter.line()
   for fn in module.functions:
     emitter.emitFunction(fn)
   if module.namespaces.len > 0:
@@ -5642,6 +5765,7 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
       visit(spec.resolvedPath)
     var imported = initTable[string, WebFunctionSig]()
     var importedTypes = initTable[string, WebTypeDecl]()
+    var importedConstants = initTable[string, WebConstant]()
     var importedEnums = initTable[string, WebEnumDecl]()
     var importedProtocols = initTable[string, WebProtocolDecl]()
     var importedMacros = initTable[string, Table[string, MacroDef]]()
@@ -5663,6 +5787,22 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
             found = fn
             break
         if found == nil:
+          var foundConstant: WebConstant = nil
+          for constant in dependency.constants:
+            if constant.sourceName == selection.sourceName:
+              foundConstant = constant
+              break
+          if foundConstant != nil:
+            # A constant is a literal, so importing it copies the value rather
+            # than referencing the other module. There is no initialization
+            # order to get wrong, which is the whole reason literals are the
+            # only thing allowed at module level.
+            importedConstants[selection.localName] = WebConstant(
+              sourceName: selection.localName,
+              emittedName: mangleWebName(selection.localName),
+              typ: foundConstant.typ, value: foundConstant.value,
+              loc: spec.loc)
+            continue
           var foundDeclaration = false
           for declaration in dependency.types:
             if declaration.sourceName == selection.sourceName:
@@ -5722,7 +5862,8 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
     let module = analyzeWebModuleWithImports(source, path, imported,
                                              importedTypes, importedEnums,
                                              importedProtocols,
-                                             importedMacros, macroExports)
+                                             importedMacros, macroExports,
+                                             importedConstants)
     let base = splitFile(path).name
     if basenames.hasKey(base) and basenames[base] != path:
       raise newException(WebProfileError,

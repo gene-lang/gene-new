@@ -47,7 +47,8 @@ is deeper still.
 ### Checks
 
 ```sh
-node tools/test.mjs                # 41 headless checks, no browser needed
+node tools/test.mjs                # 41 logic checks, no browser needed
+node tools/test_input.mjs          # input wiring and the frame loop
 node tools/screenshot.mjs [seed]   # composite a real viewport to a PNG
 ```
 
@@ -124,7 +125,8 @@ src/png.gene          a PNG encoder in Gene: CRC32, zlib, chunks
 src/main.gene         state, input, save/load, the frame loop
 boot.mjs              three-line browser entry point
 build.sh              assets -> Gene -> index.html
-tools/test.mjs        41 headless checks
+tools/test.mjs        41 logic checks
+tools/test_input.mjs  input wiring: listener targets, movement, frame loop
 tools/gen_atlas.mjs   generates assets/tiles.png (and an 8x review blow-up)
 tools/screenshot.mjs  composites a viewport to PNG, headless
 spike/                the D5 performance spike — its own nested package

@@ -54,11 +54,15 @@
 (fn boot [] : Void
   (var w (world_w))
   (var h (world_h))
-  (var ts (tile_size))
+  (var ts tile_size)
 
   (var stage ($dom/element "stage"))
   (var hud ($dom/element "hud"))
   (var bar ($dom/element "bar"))
+  # Keyboard events never reach a canvas — an element receives them only when
+  # it is focusable and focused — so key handlers go on the window. `mouseup`
+  # too: a release outside the canvas must still end the drag.
+  (var win ($dom/window))
   (var ctx ($canvas/context stage))
   # The atlas is not loaded yet and the profile has no null EventTarget, so it
   # starts as the canvas and is replaced by `image/load` before the first
@@ -182,11 +186,11 @@
       (cycle_slot selected (if (> ($event/delta_y event) 0.0) 1.0 -1.0)
                   (slot_count)))))
 
-  ($dom/add_event_listener stage "mouseup" (fn [event : Any] : Void
+  ($dom/add_event_listener win "mouseup" (fn [event : Any] : Void
     (set mining 0.0)
     (set placing 0.0)))
 
-  ($dom/add_event_listener stage "keydown" (fn [event : Any] : Void
+  ($dom/add_event_listener win "keydown" (fn [event : Any] : Void
     (var code ($event/code event))
     (if_yes (|| (== code "KeyA") (== code "ArrowLeft")) (set left 1.0))
     (if_yes (|| (== code "KeyD") (== code "ArrowRight")) (set right 1.0))
@@ -201,7 +205,7 @@
       (if_yes (== code ($ "Digit" ($math/round (+ d 1.0)))) (set selected d))
       (set d (+ d 1.0)))))
 
-  ($dom/add_event_listener stage "keyup" (fn [event : Any] : Void
+  ($dom/add_event_listener win "keyup" (fn [event : Any] : Void
     (var code ($event/code event))
     (if_yes (|| (== code "KeyA") (== code "ArrowLeft")) (set left 0.0))
     (if_yes (|| (== code "KeyD") (== code "ArrowRight")) (set right 0.0))
@@ -227,16 +231,14 @@
     (var ty ($math/floor (/ (+ mouse_y cam_y) ts)))
 
     (if_yes (> mining 0.5)
-      (do
-        (var got (mine tiles player tx ty w h))
-        (if_yes (> got 0.5)
-          (set! inventory/%got (+ inventory/%got 1.0)))))
+      (var got (mine tiles player tx ty w h))
+      (if_yes (> got 0.5)
+        (set! inventory/%got (+ inventory/%got 1.0))))
     (if_yes (> placing 0.5)
-      (do
-        (var id (slot_tile selected))
-        (if_yes (> inventory/%id 0.5)
-          (if_yes (> (place tiles player tx ty id w h) 0.5)
-            (set! inventory/%id (- inventory/%id 1.0))))))
+      (var id (slot_tile selected))
+      (if_yes (&& (> inventory/%id 0.5)
+                  (> (place tiles player tx ty id w h) 0.5))
+        (set! inventory/%id (- inventory/%id 1.0))))
 
     # Sky: depth is legible before a single number is read.
     (var depth (depth_shade cam_y 40.0 90.0 1.0))
@@ -254,9 +256,8 @@
     # running out, and a single rect costs one draw instead of thousands.
     (var dark (depth_shade cam_y 76.0 110.0 0.55))
     (if_yes (> dark 0.01)
-      (do
-        ($canvas/set_fill ctx ($ "rgba(4,6,12," dark ")"))
-        ($canvas/fill_rect ctx 0.0 0.0 vw vh)))
+      ($canvas/set_fill ctx ($ "rgba(4,6,12," dark ")"))
+      ($canvas/fill_rect ctx 0.0 0.0 vw vh))
 
     ($dom/set_text hud
       ($ "x " ($math/round player/0) "  y " ($math/round player/1)
