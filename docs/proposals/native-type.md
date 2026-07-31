@@ -251,6 +251,12 @@ There is no `gene build` producing a linked artifact; `examples/native` drives
 `cc` from a shell script. That is deliberate and waits on package and
 dependency support.
 
+**Update:** package support Stages 1-3 shipped, but they model Gene
+dependencies only — there is still no declaration for a native library, its
+headers, or its link flags, which is exactly the graph this deferral named.
+`package-build.md` designs that piece; its Stages 1-2 are what unblocks build
+integration here.
+
 A build command's whole job is deciding what to compile and what to link
 against, and both answers come from the dependency graph — which libraries a
 module needs, where their headers and archives live, and what the compiled

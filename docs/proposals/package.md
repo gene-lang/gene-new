@@ -972,6 +972,9 @@ or re-walked — not that parsing got slower.
 This proposal intentionally defers:
 
 - hosted registries and remote discovery;
+- **build steps, native dependencies, and distribution packages** — designed in
+  `package-build.md`, which adds an explicit *install* phase distinct from the
+  resolution phase §13 keeps inert;
 - command-valued manifest fields (designed in §6, not implemented; literal
   manifests only through Stage 2);
 - semver range solving;
