@@ -10,12 +10,7 @@
 
 (mod shell ^profile web)
 
-(js/fn floor ^from "./host.mjs" ^import "floor" [x : F64] : F64)
-
 (fn tile_size [] : F64 16.0)
-
-(fn clamp [x : F64 lo : F64 hi : F64] : F64
-  (if (< x lo) lo (if (> x hi) hi x)))
 
 # --- camera ----------------------------------------------------------------
 # cam is [x y]; the host owns it so this module stays stateless.
@@ -31,13 +26,13 @@
   (var ty (- (* py ts) (/ view_h 2.0)))
   (var cx (+ cam/0 (* (- tx cam/0) ease)))
   (var cy (+ cam/1 (* (- ty cam/1) ease)))
-  (set! cam/0 (clamp cx 0.0 (- (* w ts) view_w)))
-  (set! cam/1 (clamp cy 0.0 (- (* h ts) view_h))))
+  (set! cam/0 ($math/clamp cx 0.0 (- (* w ts) view_w)))
+  (set! cam/1 ($math/clamp cy 0.0 (- (* h ts) view_h))))
 
 # How dark the world is at this camera height: 0 at the surface, rising
 # underground. Drives both the sky gradient and the depth overlay.
 (fn depth_shade [cam_y : F64 start : F64 span : F64 limit : F64] : F64
-  (clamp (/ (- (/ cam_y (tile_size)) start) span) 0.0 limit))
+  ($math/clamp (/ (- (/ cam_y (tile_size)) start) span) 0.0 limit))
 
 # --- spawn -----------------------------------------------------------------
 

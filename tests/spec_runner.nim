@@ -3604,6 +3604,40 @@ suite "spec — native wrapper types (design §16.6)":
                "[(same? c ($thaw c)) (same? c ($freeze_shallow c))]",
                "[true true]")
 
+suite "spec — gene/math from design (§7.8)":
+  test "rounding is kind-preserving":
+    # Float in, Float out: `(== 1 1.0)` is false, and the web profile lowers
+    # Int to bigint, so a rounding step that changed kind would break both.
+    check_eval("[($math/floor 3.7) ($math/ceil 3.2) ($math/trunc -3.9)]",
+               "[3.0 4.0 -3.0]")
+    check_eval("[($math/floor 3) ($math/ceil 3) ($math/round 3)]", "[3 3 3]")
+    check_eval("($math/round 2.5)", "3.0")
+  test "abs and sign preserve kind":
+    check_eval("[($math/abs -4) ($math/abs -4.5) ($math/abs 4)]", "[4 4.5 4]")
+    check_eval("[($math/sign -9) ($math/sign 0.0) ($math/sign 2.5)]",
+               "[-1 0.0 1.0]")
+  test "transcendental functions return Float":
+    check_eval("[($math/sqrt 16.0) ($math/sqrt 16) ($math/pow 2 10)]",
+               "[4.0 4.0 1024.0]")
+    check_eval("[($math/sin 0.0) ($math/cos 0.0) ($math/hypot 3 4)]",
+               "[0.0 1.0 5.0]")
+  test "min, max, and clamp keep the winning argument":
+    # Returning the argument rather than a rebuilt value keeps Int precision
+    # past the Float mantissa, and keeps the result's kind predictable.
+    check_eval("[($math/min 1 2) ($math/max 1 2) ($math/min 1 2.0)]",
+               "[1 2 1.0]")
+    check_eval("[($math/clamp 15 0 10) ($math/clamp -5 0 10) ($math/clamp 5 0 10)]",
+               "[10 0 5]")
+  test "domain violations raise rather than returning NaN":
+    check_runtime_error("($math/sqrt -1.0)", "non-negative")
+    check_runtime_error("($math/log 0.0)", "positive")
+    check_runtime_error("($math/asin 2.0)", "-1..1")
+    check_runtime_error("($math/clamp 1 10 0)", "lower bound")
+    check_runtime_error("($math/floor \"x\")", "expects a number")
+  test "the namespace is reachable both ways":
+    check_eval("[($math/floor 9.9) (gene/math/floor 9.9)]", "[9.0 9.0]")
+    check_eval("($math/floor $math/pi)", "3.0")
+
 suite "spec — statement return types from design (§7.7)":
   test "a Nil return discards the body value and yields nil":
     check_eval("(fn f [] : Nil 42) (f)", "nil")

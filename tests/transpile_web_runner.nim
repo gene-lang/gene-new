@@ -63,7 +63,11 @@ function envelope(value) {
   if (typeof value === "boolean") return {kind: "bool", value};
   if (typeof value === "string") return {kind: "str", value};
   if (typeof value === "bigint") return {kind: "int", value: value.toString()};
-  if (typeof value === "number") return {kind: "f64", value: String(value)};
+  // Gene's float printer renders a whole F64 as "4.0"; JS String(4) is "4".
+  // Without this the two backends disagree on every integral float result,
+  // which is a rendering artifact of the harness rather than a real
+  // divergence — and it would mask the divergences this suite exists to catch.
+  if (typeof value === "number") return {kind: "f64", value: Number.isInteger(value) && Number.isFinite(value) ? value.toFixed(1) : String(value)};
   if (typeof value === "symbol") return {kind: "sym", value: Symbol.keyFor(value) ?? value.description};
   if (Array.isArray(value)) return {kind: "list", items: value.map(envelope)};
   if (value instanceof Map || value?.constructor?.name === "GeneMap") return {kind: "map", entries: [...value].map(([key, item]) => ({key: envelope(key), value: envelope(item)}))};

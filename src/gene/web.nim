@@ -1440,6 +1440,23 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "json/stringify":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkStr)
+      # gene/math. F64 in, F64 out — deliberately not accepting Int, and not
+      # kind-preserving the way the VM's are. Int lowers to `bigint` here, and
+      # `Math.floor` on a bigint throws, so a polymorphic signature would
+      # compile and then fail at runtime on exactly the argument the annotation
+      # invited. Requiring F64 turns that into a compile error instead.
+      of "math/floor", "math/ceil", "math/trunc", "math/round", "math/abs",
+         "math/sign", "math/sqrt", "math/exp", "math/log", "math/log2",
+         "math/log10", "math/sin", "math/cos", "math/tan", "math/asin",
+         "math/acos", "math/atan":
+        paramTypes = @[webType(wtkF64)]
+        returnType = webType(wtkF64)
+      of "math/atan2", "math/pow", "math/hypot", "math/min", "math/max":
+        paramTypes = @[webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkF64)
+      of "math/clamp":
+        paramTypes = @[webType(wtkF64), webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkF64)
       of "console/log", "console/warn", "console/error":
         # `Any` rather than `Str`, deliberately: the values worth logging from a
         # DOM handler are the event and the element, and forcing them through
@@ -3011,6 +3028,35 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       "$gene_html_escape(" & arguments[0] & ")"
     of "json/parse": "$gene_json_parse(" & arguments[0] & ")"
     of "json/stringify": "$gene_json_stringify(" & arguments[0] & ")"
+    # gene/math lowers straight to `Math`, which is where the semantics were
+    # borrowed from: the VM's floor/ceil/round follow C and JS rather than
+    # rounding to an integer type, so the two backends agree by construction
+    # instead of by a translation layer that could drift.
+    of "math/floor": "Math.floor(" & arguments[0] & ")"
+    of "math/ceil": "Math.ceil(" & arguments[0] & ")"
+    of "math/trunc": "Math.trunc(" & arguments[0] & ")"
+    of "math/abs": "Math.abs(" & arguments[0] & ")"
+    of "math/sign": "Math.sign(" & arguments[0] & ")"
+    of "math/sqrt": "$gene_math_sqrt(" & arguments[0] & ")"
+    of "math/exp": "Math.exp(" & arguments[0] & ")"
+    of "math/log": "$gene_math_log(" & arguments[0] & ", \"math/log\", Math.log)"
+    of "math/log2": "$gene_math_log(" & arguments[0] & ", \"math/log2\", Math.log2)"
+    of "math/log10":
+      "$gene_math_log(" & arguments[0] & ", \"math/log10\", Math.log10)"
+    of "math/sin": "Math.sin(" & arguments[0] & ")"
+    of "math/cos": "Math.cos(" & arguments[0] & ")"
+    of "math/tan": "Math.tan(" & arguments[0] & ")"
+    of "math/asin": "$gene_math_arc(" & arguments[0] & ", \"math/asin\", Math.asin)"
+    of "math/acos": "$gene_math_arc(" & arguments[0] & ", \"math/acos\", Math.acos)"
+    of "math/atan": "Math.atan(" & arguments[0] & ")"
+    of "math/atan2": "Math.atan2(" & arguments[0] & ", " & arguments[1] & ")"
+    of "math/pow": "Math.pow(" & arguments[0] & ", " & arguments[1] & ")"
+    of "math/hypot": "Math.hypot(" & arguments[0] & ", " & arguments[1] & ")"
+    of "math/min": "Math.min(" & arguments[0] & ", " & arguments[1] & ")"
+    of "math/max": "Math.max(" & arguments[0] & ", " & arguments[1] & ")"
+    of "math/clamp":
+      "$gene_math_clamp(" & arguments[0] & ", " & arguments[1] & ", " &
+        arguments[2] & ")"
     of "console/log": "console.log(" & arguments[0] & ")"
     of "console/warn": "console.warn(" & arguments[0] & ")"
     of "console/error": "console.error(" & arguments[0] & ")"
@@ -4581,6 +4627,38 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line()
+  # The VM raises on a domain violation rather than returning NaN, so the web
+  # backend has to as well — otherwise `(sqrt -1)` is an error on the server and
+  # a silent NaN in the browser, and the whole point of one language on both
+  # sides is that it does not do that.
+  if moduleUsesBuiltin(module, ["math/sqrt"]):
+    let numParam = if typescript: "x: number" else: "x"
+    let numReturn = if typescript: ": number" else: ""
+    emitter.line("function $gene_math_sqrt(" & numParam & ")" & numReturn &
+      " { if (x < 0) throw new RangeError(" &
+      "\"math/sqrt expects a non-negative number\"); return Math.sqrt(x); }")
+  if moduleUsesBuiltin(module, ["math/log", "math/log2", "math/log10"]):
+    let logParams = if typescript: "x: number, where: string, op: (n: number) => number"
+                    else: "x, where, op"
+    let numReturn = if typescript: ": number" else: ""
+    emitter.line("function $gene_math_log(" & logParams & ")" & numReturn &
+      " { if (x <= 0) throw new RangeError(where + " &
+      "\" expects a positive number\"); return op(x); }")
+  if moduleUsesBuiltin(module, ["math/asin", "math/acos"]):
+    let arcParams = if typescript: "x: number, where: string, op: (n: number) => number"
+                    else: "x, where, op"
+    let numReturn = if typescript: ": number" else: ""
+    emitter.line("function $gene_math_arc(" & arcParams & ")" & numReturn &
+      " { if (x < -1 || x > 1) throw new RangeError(where + " &
+      "\" expects a number in -1..1\"); return op(x); }")
+  if moduleUsesBuiltin(module, ["math/clamp"]):
+    let clampParams = if typescript: "x: number, lo: number, hi: number"
+                      else: "x, lo, hi"
+    let numReturn = if typescript: ": number" else: ""
+    emitter.line("function $gene_math_clamp(" & clampParams & ")" & numReturn &
+      " { if (lo > hi) throw new RangeError(" &
+      "\"math/clamp lower bound exceeds upper bound\"); " &
+      "return x < lo ? lo : x > hi ? hi : x; }")
   if moduleUsesBuiltin(module, ["dom/prevent_default", "dom/stop_propagation"]):
     # Typed as `Any` because an Event has no profile type; the guard is what
     # keeps a mistaken receiver from failing silently, which is the failure mode

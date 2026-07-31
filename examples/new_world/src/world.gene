@@ -13,10 +13,9 @@
 (mod world ^profile web)
 
 # --- host ------------------------------------------------------------------
+# Only the canvas remains a JavaScript boundary. floor/abs/sin used to be here
+# too, purely because Gene had no math library; they are `gene/math` now.
 
-(js/fn floor ^from "./host.mjs" ^import "floor" [x : F64] : F64)
-(js/fn abs ^from "./host.mjs" ^import "abs" [x : F64] : F64)
-(js/fn sin ^from "./host.mjs" ^import "sin" [x : F64] : F64)
 (js/fn draw_tile ^from "./host.mjs" ^import "draw_tile"
   [id : F64 sx : F64 sy : F64] : Void)
 (js/fn draw_player ^from "./host.mjs" ^import "draw_player"
@@ -60,16 +59,16 @@
 # One hash, used at three scales. Deterministic from the seed, so a world is
 # reproducible from a single number and needs no stored heightmap.
 
-(fn frac [x : F64] : F64 (- x (floor x)))
+(fn frac [x : F64] : F64 (- x ($math/floor x)))
 
 (fn hash2 [x : F64 y : F64 seed : F64] : F64
-  (frac (* (sin (+ (* x 127.1) (+ (* y 311.7) (* seed 74.7)))) 43758.5453)))
+  (frac (* ($math/sin (+ (* x 127.1) (+ (* y 311.7) (* seed 74.7)))) 43758.5453)))
 
 # Value noise: bilinear blend of four lattice corners, smoothed so the terrain
 # has rolling hills rather than visible triangles.
 (fn noise2 [x : F64 y : F64 seed : F64] : F64
-  (var xi (floor x))
-  (var yi (floor y))
+  (var xi ($math/floor x))
+  (var yi ($math/floor y))
   (var xf (- x xi))
   (var yf (- y yi))
   (var u (* (* xf xf) (- 3.0 (* 2.0 xf))))
@@ -89,7 +88,7 @@
         (* 0.2 (noise2 (* x 4.0) (* y 4.0) (+ seed 2.0))))))
 
 (fn surface_at [x : F64 seed : F64] : F64
-  (floor (+ (sea_level)
+  ($math/floor (+ (sea_level)
             (- (* 26.0 (fbm (* x 0.045) 0.0 seed)) 11.0))))
 
 # --- world storage ---------------------------------------------------------
@@ -117,14 +116,14 @@
 
 (fn place_tree [tiles : (List F64) x : F64 ground : F64
                 w : F64 h : F64 seed : F64] : Void
-  (var trunk (+ 4.0 (floor (* 3.0 (hash2 x 7.0 seed)))))
+  (var trunk (+ 4.0 ($math/floor (* 3.0 (hash2 x 7.0 seed)))))
   (var top (- ground trunk))
   # Canopy first, so the trunk is drawn through it rather than buried by it.
   (var ly (- top 2.0))
   (while (<= ly (+ top 1.0))
     (var lx (- x 2.0))
     (while (<= lx (+ x 2.0))
-      (var d (+ (abs (- lx x)) (abs (- ly top))))
+      (var d (+ ($math/abs (- lx x)) ($math/abs (- ly top))))
       (if_yes (&& (< d 3.5) (> (hash2 lx ly seed) 0.18))
         (if_yes (! (solid? (get_tile tiles lx ly w h)))
           (set_tile tiles lx ly w h (t_leaves))))
@@ -139,7 +138,7 @@
   (var x 0.0)
   (while (< x w)
     (var ground (surface_at x seed))
-    (var beach (< (abs (- ground (sea_level))) 2.5))
+    (var beach (< ($math/abs (- ground (sea_level))) 2.5))
     (var y 0.0)
     (while (< y h)
       (var id (t_air))
@@ -185,10 +184,10 @@
 
 # Does the player box at (px, py) overlap any solid tile?
 (fn blocked? [tiles : (List F64) px : F64 py : F64 w : F64 h : F64] : Bool
-  (var x0 (floor (- px (/ (p_width) 2.0))))
-  (var x1 (floor (+ px (/ (p_width) 2.0))))
-  (var y0 (floor py))
-  (var y1 (floor (+ py (- (p_height) 0.02))))
+  (var x0 ($math/floor (- px (/ (p_width) 2.0))))
+  (var x1 ($math/floor (+ px (/ (p_width) 2.0))))
+  (var y0 ($math/floor py))
+  (var y1 ($math/floor (+ py (- (p_height) 0.02))))
   (var hit false)
   (var ty y0)
   (while (<= ty y1)
@@ -219,7 +218,7 @@
 
   # Axis-separated resolution: move x, undo if it hit; then the same for y.
   # Sub-stepping keeps a fast fall from tunnelling through a one-tile floor.
-  (var steps (+ 1.0 (floor (* (abs vy) 2.0))))
+  (var steps (+ 1.0 ($math/floor (* ($math/abs vy) 2.0))))
   (var s 0.0)
   (while (< s steps)
     (var nx (+ px (* (/ (* vx dt) steps) 1.0)))
@@ -270,9 +269,9 @@
   (var target (get_tile tiles tx ty w h))
   (if (&& (in_reach? p tx ty)
           (&& (|| (< target 0.5) (== target (t_water)))
-              (! (&& (== (floor p/0) tx)
-                     (|| (== (floor p/1) ty)
-                         (== (floor (+ p/1 1.0)) ty))))))
+              (! (&& (== ($math/floor p/0) tx)
+                     (|| (== ($math/floor p/1) ty)
+                         (== ($math/floor (+ p/1 1.0)) ty))))))
     (do (set_tile tiles tx ty w h id) 1.0)
     0.0))
 
@@ -295,10 +294,10 @@
             cam_x : F64 cam_y : F64
             view_w : F64 view_h : F64 seed : F64] : Void
   (var ts (tile_size))
-  (var x0 (floor (/ cam_x ts)))
-  (var y0 (floor (/ cam_y ts)))
-  (var x1 (+ x0 (+ 2.0 (floor (/ view_w ts)))))
-  (var y1 (+ y0 (+ 2.0 (floor (/ view_h ts)))))
+  (var x0 ($math/floor (/ cam_x ts)))
+  (var y0 ($math/floor (/ cam_y ts)))
+  (var x1 (+ x0 (+ 2.0 ($math/floor (/ view_w ts)))))
+  (var y1 (+ y0 (+ 2.0 ($math/floor (/ view_h ts)))))
   (if_yes (< x0 0.0) (set x0 0.0))
   (if_yes (< y0 0.0) (set y0 0.0))
   (if_yes (> x1 w) (set x1 w))

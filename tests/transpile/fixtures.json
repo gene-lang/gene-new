@@ -1691,6 +1691,81 @@
         "reason": "a Nil/Void signature yields the declared unit, so a returned value could only be discarded",
         "diagnostic": "takes no value"
       }
+    },
+    {
+      "id": "math.rounding_agrees",
+      "source": "(fn run [] : F64 (+ ($math/floor 3.7) (+ ($math/ceil 3.2) ($math/trunc -3.9)))) (run)",
+      "web_source": "(mod math_round ^profile web) (fn run [] : F64 (+ ($math/floor 3.7) (+ ($math/ceil 3.2) ($math/trunc -3.9))))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "4.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "math.sqrt_pow_agree",
+      "source": "(fn run [] : F64 (+ ($math/sqrt 16.0) ($math/pow 2.0 10.0))) (run)",
+      "web_source": "(mod math_sp ^profile web) (fn run [] : F64 (+ ($math/sqrt 16.0) ($math/pow 2.0 10.0)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "1028.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "math.clamp_agrees",
+      "source": "(fn run [] : F64 (+ ($math/clamp 15.0 0.0 10.0) ($math/clamp -5.0 0.0 10.0))) (run)",
+      "web_source": "(mod math_cl ^profile web) (fn run [] : F64 (+ ($math/clamp 15.0 0.0 10.0) ($math/clamp -5.0 0.0 10.0)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "10.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "math.abs_sign_agree",
+      "source": "(fn run [] : F64 (+ ($math/abs -4.5) ($math/sign -9.0))) (run)",
+      "web_source": "(mod math_as ^profile web) (fn run [] : F64 (+ ($math/abs -4.5) ($math/sign -9.0)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "3.5"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "math.min_max_agree",
+      "source": "(fn run [] : F64 (+ ($math/min 1.0 2.0) ($math/max 3.0 4.0))) (run)",
+      "web_source": "(mod math_mm ^profile web) (fn run [] : F64 (+ ($math/min 1.0 2.0) ($math/max 3.0 4.0)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "5.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     }
   ]
 }

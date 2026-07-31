@@ -2267,6 +2267,54 @@ a `Nil`/`Void` function evaluates its body for effect and returns `null` /
 `undefined`. The two backends must stay in step, or the same source means
 different things depending on where it runs.
 
+### 7.8 `gene/math`
+
+The numeric primitives, in one namespace reachable as `gene/math` or `$math`:
+
+```gene
+($math/floor 3.7)          # => 3.0
+($math/clamp 15 0 10)      # => 10
+($math/hypot 3 4)          # => 5.0
+```
+
+| | |
+|---|---|
+| rounding | `floor` `ceil` `trunc` `round` |
+| sign | `abs` `sign` |
+| powers | `sqrt` `pow` `exp` `log` `log2` `log10` `hypot` |
+| trigonometry | `sin` `cos` `tan` `asin` `acos` `atan` `atan2` |
+| ordering | `min` `max` `clamp` |
+| constants | `pi` `e` `tau` |
+
+Two rules decide the surface, and both follow from §7.4:
+
+**Rounding and sign are kind-preserving.** `(floor 3.7)` is `3.0`, not `3`; an
+Int argument yields an Int. That follows C and JavaScript rather than the
+tidier-sounding "rounding produces an integer", because kind-strict equality
+makes a silent `Float`→`Int` hop a live hazard in a comparison chain, and
+because the web profile lowers `Int` to `bigint` — so a rounding step that
+returned `Int` would drop a bigint into otherwise-`number` arithmetic and throw
+at the first mixed operation. Use `to_int` when an Int is wanted. The
+transcendental functions always return `Float`, which is the only honest result
+kind for them.
+
+`min`, `max`, and `clamp` return the winning *argument* rather than a rebuilt
+value, so an Int past the Float mantissa keeps its precision.
+
+**A domain violation raises; it never returns NaN.** `(sqrt -1)`, `(log 0)`,
+`(asin 2)`, and a `clamp` whose bounds are inverted are all errors. NaN
+propagates silently to the far end of a computation and reports the wrong place
+as the failure.
+
+The web profile provides the same namespace, lowering to `Math.*` with guards
+only where the VM raises — so `(sqrt -1)` fails on both backends rather than
+erroring on the server and yielding NaN in the browser. It is stricter in one
+way: the profile's signatures are `F64`, not kind-preserving, because
+`Math.floor` on a bigint throws. A polymorphic signature would compile and then
+fail at runtime on exactly the argument the annotation invited, so the profile
+rejects `Int` at compile time instead. `tests/transpile/fixtures.json` pins the
+agreement.
+
 ---
 
 ## 8. Pattern matching and destructuring

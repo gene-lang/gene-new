@@ -262,24 +262,22 @@ profile offers no way to mark a boundary already-validated.
   convention everyone copies.
 - **An empty list literal needs an expected type** (`(var a : (List S) [])`).
 
-**There is no math library.** Not on either backend: `floor`, `ceil`, `sqrt`,
-`sin`, `cos`, `abs`, `round`, and `pow` are absent from the stdlib entirely, and
-both backends say so — `(x ~ floor)` is "no message floor on Float" on the VM
-and "web type F64 has no message floor" in the profile, while `$math/floor` is
-rejected as "portable web stdlib does not provide math/floor". This is why
-`world.gene` declares `floor`, `abs`, and `sin` as **JavaScript externs**: not
-because a game wants them from the host, but because Gene cannot supply them.
-A terrain generator is mostly arithmetic, and three of its seven `js/fn`
-declarations exist only to reach `Math`.
+**There was no math library.** `floor`, `ceil`, `sqrt`, `sin`, `cos`, `abs`,
+`round`, and `pow` were absent from the stdlib entirely, on both backends —
+which is why `world.gene` declared `floor`, `abs`, and `sin` as *JavaScript
+externs*: not because a game wants them from the host, but because Gene could
+not supply them. **Fixed** — `docs/design.md` §7.8 adds `gene/math` on the VM
+and the web profile, lowering to `Math.*` in the browser with guards only where
+the VM raises, and `tests/transpile/fixtures.json` pins the two backends
+together. The game dropped three of its seven `js/fn` declarations and its
+hand-rolled `clamp`; only the four canvas externs remain, which are the real
+boundary. The screenshot is byte-identical across the change.
 
-The consequence is larger than the inconvenience. Those externs are what make
-`world.gene` **unrunnable on the VM** — `js/fn` is a web-profile form, so
-importing the module on the VM fails with "undefined symbol: js". So the game's
-logic cannot be tested on both backends against one source, which is precisely
-the conformance property `transpile.md` is built around. A `gene/math`
-namespace would drop three externs, make the pure half VM-runnable, and turn
-`tools/test.mjs` into a Gene script that proves VM/web agreement. It is the
-highest-leverage stdlib gap this project has hit.
+Adding it also surfaced a gap in the conformance harness: the web runner
+rendered a whole `F64` as `"4"` where the VM prints `"4.0"`, so *any* integral
+float result would have looked like a backend divergence. Fixed in
+`tests/transpile_web_runner.nim` — a rendering artifact that would have masked
+the real divergences the suite exists to catch.
 
 **Binary output is out of reach**, which is why the atlas and screenshot tools
 stay JavaScript. A PNG needs CRC32, deflate, and a binary write. CRC32 and a

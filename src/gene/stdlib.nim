@@ -252,6 +252,184 @@ static void gene_turn_interrupt_end(void) {
   var cursesFocusedTerminalRect:
     tuple[valid: bool, top, left, height, width: int]
 
+# --- gene/math ---------------------------------------------------------------
+# Numeric model (design §7.4) decides the return kinds here, and the choice is
+# not obvious, so it is stated once:
+#
+# `floor`, `ceil`, `round`, `trunc`, and `abs` are **kind-preserving**: an Int
+# argument yields an Int, a Float yields a Float. `(floor 3.7)` is `3.0`, not
+# `3`. That follows C and JavaScript rather than the arguably tidier "rounding
+# produces an integer", for two reasons. Kind-strict equality (`(== 1 1.0)` is
+# false) makes a silent Float->Int hop a real hazard in a comparison chain, and
+# the web profile lowers Int to `bigint`, so a rounding step that returned Int
+# would drop a bigint into the middle of otherwise-`number` arithmetic and
+# throw at the first mixed operation. Use `to_int` when an Int is wanted.
+#
+# The transcendental functions always return Float, because that is the only
+# honest result kind for them.
+
+proc requireNum(name: string, v: Value) =
+  if v.kind notin {vkInt, vkFloat}:
+    raise newException(GeneError, name & " expects a number, got " & $v.kind)
+
+proc requireNumOne(name: string, args: openArray[Value]): Value =
+  requireOne(name, args)
+  requireNum(name, args[0])
+  args[0]
+
+proc requireNumTwo(name: string, args: openArray[Value]) =
+  if args.len != 2:
+    raise newException(GeneError,
+      name & " expects 2 arguments, got " & $args.len)
+  requireNum(name, args[0])
+  requireNum(name, args[1])
+
+## Apply a float rounding op while preserving the argument's numeric kind.
+template mathRounding(name: string, op: untyped): Value =
+  let v = requireNumOne(name, args)
+  if v.kind == vkInt: v            # an Int is already integral
+  else: newFloat(op(v.floatVal))
+
+proc biMathFloor(args: openArray[Value]): Value {.nimcall.} =
+  mathRounding("math/floor", floor)
+
+proc biMathCeil(args: openArray[Value]): Value {.nimcall.} =
+  mathRounding("math/ceil", ceil)
+
+proc biMathTrunc(args: openArray[Value]): Value {.nimcall.} =
+  mathRounding("math/trunc", trunc)
+
+proc biMathRound(args: openArray[Value]): Value {.nimcall.} =
+  ## Half away from zero, matching Nim's `round` — not banker's rounding.
+  mathRounding("math/round", round)
+
+proc biMathAbs(args: openArray[Value]): Value {.nimcall.} =
+  let v = requireNumOne("math/abs", args)
+  if v.kind == vkInt:
+    let i = v.intVal
+    if i < 0: newInt(-i) else: v
+  else:
+    newFloat(abs(v.floatVal))
+
+proc biMathSign(args: openArray[Value]): Value {.nimcall.} =
+  ## -1, 0, or 1, kind-preserving so it composes with the argument.
+  let v = requireNumOne("math/sign", args)
+  if v.kind == vkInt:
+    let i = v.intVal
+    newInt(if i > 0: 1 elif i < 0: -1 else: 0)
+  else:
+    let f = v.floatVal
+    newFloat(if f > 0.0: 1.0 elif f < 0.0: -1.0 else: 0.0)
+
+## Float-in, float-out: the transcendentals have no integral result to preserve.
+template mathFloatFn(name: string, op: untyped): Value =
+  let v = requireNumOne(name, args)
+  newFloat(op(v.toFloat))
+
+proc biMathSqrt(args: openArray[Value]): Value {.nimcall.} =
+  let v = requireNumOne("math/sqrt", args)
+  let f = v.toFloat
+  if f < 0.0:
+    raise newException(GeneError, "math/sqrt expects a non-negative number")
+  newFloat(sqrt(f))
+
+proc biMathExp(args: openArray[Value]): Value {.nimcall.} =
+  mathFloatFn("math/exp", exp)
+
+proc biMathLog(args: openArray[Value]): Value {.nimcall.} =
+  let v = requireNumOne("math/log", args)
+  let f = v.toFloat
+  if f <= 0.0:
+    raise newException(GeneError, "math/log expects a positive number")
+  newFloat(ln(f))
+
+proc biMathLog2(args: openArray[Value]): Value {.nimcall.} =
+  let v = requireNumOne("math/log2", args)
+  let f = v.toFloat
+  if f <= 0.0:
+    raise newException(GeneError, "math/log2 expects a positive number")
+  newFloat(log2(f))
+
+proc biMathLog10(args: openArray[Value]): Value {.nimcall.} =
+  let v = requireNumOne("math/log10", args)
+  let f = v.toFloat
+  if f <= 0.0:
+    raise newException(GeneError, "math/log10 expects a positive number")
+  newFloat(log10(f))
+
+proc biMathSin(args: openArray[Value]): Value {.nimcall.} =
+  mathFloatFn("math/sin", sin)
+
+proc biMathCos(args: openArray[Value]): Value {.nimcall.} =
+  mathFloatFn("math/cos", cos)
+
+proc biMathTan(args: openArray[Value]): Value {.nimcall.} =
+  mathFloatFn("math/tan", tan)
+
+proc biMathAsin(args: openArray[Value]): Value {.nimcall.} =
+  let v = requireNumOne("math/asin", args)
+  let f = v.toFloat
+  if f < -1.0 or f > 1.0:
+    raise newException(GeneError, "math/asin expects a number in -1..1")
+  newFloat(arcsin(f))
+
+proc biMathAcos(args: openArray[Value]): Value {.nimcall.} =
+  let v = requireNumOne("math/acos", args)
+  let f = v.toFloat
+  if f < -1.0 or f > 1.0:
+    raise newException(GeneError, "math/acos expects a number in -1..1")
+  newFloat(arccos(f))
+
+proc biMathAtan(args: openArray[Value]): Value {.nimcall.} =
+  mathFloatFn("math/atan", arctan)
+
+proc biMathAtan2(args: openArray[Value]): Value {.nimcall.} =
+  requireNumTwo("math/atan2", args)
+  newFloat(arctan2(args[0].toFloat, args[1].toFloat))
+
+proc biMathPow(args: openArray[Value]): Value {.nimcall.} =
+  requireNumTwo("math/pow", args)
+  newFloat(pow(args[0].toFloat, args[1].toFloat))
+
+proc biMathHypot(args: openArray[Value]): Value {.nimcall.} =
+  requireNumTwo("math/hypot", args)
+  newFloat(hypot(args[0].toFloat, args[1].toFloat))
+
+## `min`/`max` keep both kinds when they agree and widen to Float when mixed,
+## so `(min 1 2)` is an Int while `(min 1 2.0)` is a Float. Returning the
+## winning *argument* rather than a rebuilt value keeps Int precision beyond
+## the Float mantissa.
+template mathExtremum(name: string, keepFirst: untyped): Value =
+  requireNumTwo(name, args)
+  let a = args[0]
+  let b = args[1]
+  if a.kind == vkInt and b.kind == vkInt:
+    if keepFirst(a.intVal, b.intVal): a else: b
+  else:
+    if keepFirst(a.toFloat, b.toFloat): a.toFloat.newFloat
+    else: b.toFloat.newFloat
+
+proc biMathMin(args: openArray[Value]): Value {.nimcall.} =
+  mathExtremum("math/min", `<=`)
+
+proc biMathMax(args: openArray[Value]): Value {.nimcall.} =
+  mathExtremum("math/max", `>=`)
+
+proc biMathClamp(args: openArray[Value]): Value {.nimcall.} =
+  ## Three-argument clamp, the shape every graphics and UI path re-derives.
+  if args.len != 3:
+    raise newException(GeneError,
+      "math/clamp expects 3 arguments, got " & $args.len)
+  requireNum("math/clamp", args[0])
+  requireNum("math/clamp", args[1])
+  requireNum("math/clamp", args[2])
+  let lo = args[1].toFloat
+  let hi = args[2].toFloat
+  if lo > hi:
+    raise newException(GeneError, "math/clamp lower bound exceeds upper bound")
+  let x = args[0].toFloat
+  if x < lo: args[1] elif x > hi: args[2] else: args[0]
+
 proc biStrJoin(args: openArray[Value]): Value {.nimcall.} =
   if args.len notin 1..2:
     raise newException(GeneError, "str/join expects 1..2 arguments, got " & $args.len)
@@ -8926,6 +9104,35 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("stream", newNamespace("stream", stdStreamScope))
   root.define("node", newNamespace("node", stdNodeScope))
   root.define("parse", newNamespace("parse", stdParseScope))
+  # `gene/math`, reachable as `$math/floor` like every other root namespace.
+  let mathScope = newScope(root)
+  mathScope.define("floor", newNativeFn("math/floor", biMathFloor))
+  mathScope.define("ceil", newNativeFn("math/ceil", biMathCeil))
+  mathScope.define("trunc", newNativeFn("math/trunc", biMathTrunc))
+  mathScope.define("round", newNativeFn("math/round", biMathRound))
+  mathScope.define("abs", newNativeFn("math/abs", biMathAbs))
+  mathScope.define("sign", newNativeFn("math/sign", biMathSign))
+  mathScope.define("sqrt", newNativeFn("math/sqrt", biMathSqrt))
+  mathScope.define("exp", newNativeFn("math/exp", biMathExp))
+  mathScope.define("log", newNativeFn("math/log", biMathLog))
+  mathScope.define("log2", newNativeFn("math/log2", biMathLog2))
+  mathScope.define("log10", newNativeFn("math/log10", biMathLog10))
+  mathScope.define("sin", newNativeFn("math/sin", biMathSin))
+  mathScope.define("cos", newNativeFn("math/cos", biMathCos))
+  mathScope.define("tan", newNativeFn("math/tan", biMathTan))
+  mathScope.define("asin", newNativeFn("math/asin", biMathAsin))
+  mathScope.define("acos", newNativeFn("math/acos", biMathAcos))
+  mathScope.define("atan", newNativeFn("math/atan", biMathAtan))
+  mathScope.define("atan2", newNativeFn("math/atan2", biMathAtan2))
+  mathScope.define("pow", newNativeFn("math/pow", biMathPow))
+  mathScope.define("hypot", newNativeFn("math/hypot", biMathHypot))
+  mathScope.define("min", newNativeFn("math/min", biMathMin))
+  mathScope.define("max", newNativeFn("math/max", biMathMax))
+  mathScope.define("clamp", newNativeFn("math/clamp", biMathClamp))
+  mathScope.define("pi", newFloat(PI))
+  mathScope.define("e", newFloat(E))
+  mathScope.define("tau", newFloat(TAU))
+  root.define("math", newNamespace("math", mathScope))
   let strScope = newScope(root)
   strScope.define("join", newNativeFn("str/join", biStrJoin))
   strScope.define("split", newNativeFn("str/split", biStrSplit))

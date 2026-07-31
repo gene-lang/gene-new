@@ -134,21 +134,19 @@ index.html            generated — gitignored, never edit
 Only `host.mjs` and `main.mjs` ship to the browser; everything under `tools/`
 is build- and test-time.
 
-**The `tools/` scripts cannot currently be Gene**, for two reasons worth
-knowing before trying:
+**The `tools/` scripts are still JavaScript**, for one remaining reason:
+writing a PNG needs CRC32, deflate, and a *binary* write. The first two are
+writable in Gene; `Bytes` is literal-only and `fs/write_text` takes a `Str`, so
+the third is not.
 
-- *No math library.* `floor`, `sqrt`, `sin`, `abs` and friends do not exist on
-  either backend — that is why `src/world.gene` declares `floor`, `abs`, and
-  `sin` as JavaScript externs. Because `js/fn` is a web-profile form, those
-  externs also make the module unimportable on the VM, so a Gene test script
-  has nothing to call.
-- *No binary output.* The PNG tools need CRC32, deflate, and a binary write.
-  The first two are writable in Gene; `Bytes` is literal-only and
-  `fs/write_text` takes a `Str`, so the third is not.
+The other blocker is gone. Gene had no math library at all, which is why
+`src/world.gene` used to declare `floor`, `abs`, and `sin` as JavaScript
+externs — `gene/math` (design.md §7.8) now provides them on both backends, and
+the game dropped three of its seven `js/fn` declarations. The four that remain
+are canvas calls, which are the genuine boundary.
 
-Both are recorded in [`docs/design.md`](docs/design.md) §D5.2. A `gene/math`
-namespace is the higher-leverage of the two: it would drop three externs and
-let the game's logic run on the VM as well as the browser.
+Both are recorded in [`docs/design.md`](docs/design.md) §D5.2 — the first as
+resolved, since that is what the awkwardness log is for.
 
 `gene pkg show` reports the resolved manifest. `main_module` is `world`
 because that is the substantive module — the one a dependent importing
