@@ -1,0 +1,59 @@
+# Perf spike for examples/new_world/docs/design.md D5.
+#
+# 10,000 sprites, structure-of-arrays, every hot value an F64 so it lowers to a
+# plain JS number. Int would lower to bigint (transpile.md §4.5) and both the
+# arithmetic and the canvas boundary would pay for it.
+#
+# Two entry points on purpose:
+#   advance  - one frame; called per rAF tick, so it pays the exported-boundary
+#              validation cost once per frame per array
+#   bench    - runs `frames` frames behind a single exported call, so the
+#              boundary is paid once and the number isolates the loop itself
+
+(mod sprites ^profile web)
+
+(js/fn now_ms ^from "./canvas.mjs" ^import "now_ms" [] : F64)
+(js/fn clear ^from "./canvas.mjs" ^import "clear" [] : Void)
+(js/fn set_fill ^from "./canvas.mjs" ^import "set_fill"
+  [r : F64 g : F64 b : F64] : Void)
+(js/fn fill_rect ^from "./canvas.mjs" ^import "fill_rect"
+  [x : F64 y : F64 w : F64 h : F64] : Void)
+
+(fn advance [xs : (List F64) ys : (List F64)
+             vxs : (List F64) vys : (List F64)
+             n : F64 w : F64 h : F64] : Void
+  (var i 0.0)
+  (while (< i n)
+    (var vx vxs/%i)
+    (var vy vys/%i)
+    (var x (+ xs/%i vx))
+    (var y (+ ys/%i vy))
+    (if_yes (|| (< x 0.0) (> x w))
+      (set vx (- 0.0 vx)))
+    (if_yes (|| (< y 0.0) (> y h))
+      (set vy (- 0.0 vy)))
+    (var sx (set! xs/%i (+ xs/%i vx)))
+    (var sy (set! ys/%i (+ ys/%i vy)))
+    (var svx (set! vxs/%i vx))
+    (var svy (set! vys/%i vy))
+    (set i (+ i 1.0)))
+  void)
+
+(fn bench [xs : (List F64) ys : (List F64)
+           vxs : (List F64) vys : (List F64)
+           n : F64 frames : F64 w : F64 h : F64] : F64
+  (var t0 (now_ms))
+  (var f 0.0)
+  (while (< f frames)
+    (advance xs ys vxs vys n w h)
+    (set f (+ f 1.0)))
+  (- (now_ms) t0))
+
+(fn draw [xs : (List F64) ys : (List F64) n : F64 size : F64] : Void
+  (clear)
+  (set_fill 122.0 162.0 247.0)
+  (var i 0.0)
+  (while (< i n)
+    (fill_rect xs/%i ys/%i size size)
+    (set i (+ i 1.0)))
+  void)

@@ -1,0 +1,117 @@
+# Generates index.html. Markup and CSS stay ordinary node data right up to the
+# one render edge, which is Tier 0 of docs/proposals/transpile.md — no compiler
+# backend involved, just the stdlib.
+#
+# This runs on the VM at build time, not in the browser, so it is a normal
+# module: top-level `var` is fine here in a way it is not in world.gene.
+#
+#   gene run page.gene > index.html
+
+(import $html [render])
+(import $css [css rule decl render : render_css])
+
+(var ink "#c9d1d9")
+(var ink_bright "#e6edf3")
+(var ink_dim "#8b949e")
+(var accent "#7ee787")
+(var panel "#161b22")
+(var line "#30363d")
+(var bg "#0d1117")
+
+(var page_css
+  (css
+    (rule ":root" (decl color_scheme "dark"))
+    (rule "body"
+      (decl margin 0)
+      (decl padding "14px 16px 20px")
+      (decl background bg)
+      (decl color ink)
+      (decl font "13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace")
+      (decl display "flex")
+      (decl flex_direction "column")
+      (decl align_items "center")
+      (decl gap "8px"))
+    (rule "h1"
+      (decl font_size "14px")
+      (decl font_weight 600)
+      (decl margin 0)
+      (decl color ink_bright))
+    (rule "h1 span" (decl color ink_dim) (decl font_weight 400))
+    (rule "canvas"
+      (decl border $"1px solid ${line}")
+      (decl border_radius "3px")
+      # Nearest-neighbour scaling: a 16px tile blurred by the browser undoes
+      # every decision in tools/gen_atlas.mjs.
+      (decl image_rendering "pixelated")
+      (decl cursor "crosshair")
+      (decl max_width "100%"))
+    (rule "#hud" (decl color accent) (decl min_height "1.5em"))
+    (rule "#bar"
+      (decl display "flex")
+      (decl flex_wrap "wrap")
+      (decl gap "6px")
+      (decl justify_content "center"))
+    (rule ".slot"
+      (decl border $"1px solid ${line}")
+      (decl border_radius "3px")
+      (decl padding "2px 8px")
+      (decl color ink_dim)
+      (decl background panel))
+    (rule ".slot.on"
+      (decl border_color accent)
+      (decl color ink_bright)
+      (decl background "#1c2530"))
+    (rule ".slot b" (decl color ink_bright) (decl font_weight 600))
+    (rule "#help"
+      (decl color ink_dim)
+      (decl text_align "center")
+      (decl max_width "900px"))
+    (rule "kbd"
+      (decl background "#21262d")
+      (decl border $"1px solid ${line}")
+      (decl border_bottom_width "2px")
+      (decl border_radius "3px")
+      (decl padding "0 4px")
+      (decl color ink)
+      (decl font_size "11px"))))
+
+(fn key [label : Str] : Node
+  `(kbd %label))
+
+(fn controls [] : Node
+  `(p ^id "help"
+     %(key "A") %(key "D") " move · "
+     %(key "Space") " jump · "
+     %(key "left-click") " mine · "
+     %(key "right-click") " place · "
+     %(key "1") "–" %(key "9") " / " %(key "scroll") " select · "
+     %(key "N") " new world · "
+     %(key "S") " save · "
+     %(key "L") " load"
+     (br)
+     "You can only place what you have mined. Dig down — coal is shallow, iron is deeper, gold is deeper still."))
+
+(fn page [] : Str
+  # `html/render` writes attribute names verbatim, so wire spellings such as
+  # `http-equiv` and `initial-scale` keep their protocol form even though every
+  # Gene name in this repo is snake_case.
+  ($ "<!doctype html>\n"
+     (render
+       `(html ^lang "en"
+          (head
+            (meta ^charset "utf-8")
+            (meta ^name "viewport" ^content "width=device-width, initial-scale=1")
+            (title "New World — a Minecraft-like written in Gene")
+            (style %(render_css page_css)))
+          (body
+            (h1 "New World "
+                (span "— world generation, physics, and mining written in Gene"))
+            (div ^id "hud" "loading…")
+            (canvas ^id "stage")
+            (div ^id "bar")
+            %(controls)
+            (script ^type "module" ^src "./main.mjs"))))))
+
+(fn main []
+  ($print (page))
+  nil)
