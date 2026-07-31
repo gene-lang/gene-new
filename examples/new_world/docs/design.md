@@ -250,8 +250,15 @@ profile offers no way to mark a boundary already-validated.
   restriction most likely to shape the architecture.
 - **`List` has no `push!`, `at`, or `len`** in the profile — only `size`, which
   returns a bigint. Collections must be built and sized outside Gene.
-- **`set!` yields the assigned value**, so a write in statement position needs
-  `(var ignored (set! …))`. It is noise on every line of a mutation-heavy loop.
+- **`set!` yields the assigned value**, so a write in tail position needed
+  `(var ignored (set! …))` and every `: Void` body ended in a bookkeeping
+  `void`. **Fixed** — `docs/design.md` §7.7 makes `Nil` and `Void` *statement*
+  signatures on both backends: the body's trailing value is discarded, the
+  frame yields the declared unit, and `(return)` needs no argument. `world.gene`
+  lost eight trailing `void`s and the `poke` helper's throwaway binding; the
+  spike lost four more. This is the awkwardness log working as intended — a
+  friction the game hit repeatedly became a language change rather than a
+  convention everyone copies.
 - **An empty list literal needs an expected type** (`(var a : (List S) [])`).
 
 **A syntax trap worth a diagnostic.** `xs/i` is a *static* path — the member

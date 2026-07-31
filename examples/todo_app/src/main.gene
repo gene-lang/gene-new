@@ -65,20 +65,16 @@
   (db ~ Db:query "select id, text, done from todos order by id"))
 
 (fn add_todo [text : Str] : Nil
-  (db ~ Db:execute "insert into todos(text) values (?)" text)
-  nil)
+  (db ~ Db:execute "insert into todos(text) values (?)" text))
 
 (fn toggle_todo [id : Int] : Nil
-  (db ~ Db:execute "update todos set done = 1 - done where id = ?" id)
-  nil)
+  (db ~ Db:execute "update todos set done = 1 - done where id = ?" id))
 
 (fn delete_todo [id : Int] : Nil
-  (db ~ Db:execute "delete from todos where id = ?" id)
-  nil)
+  (db ~ Db:execute "delete from todos where id = ?" id))
 
 (fn clear_done [] : Nil
-  (db ~ Db:execute "delete from todos where done = 1")
-  nil)
+  (db ~ Db:execute "delete from todos where done = 1"))
 
 (fn done? [t] : Bool
   (!= t/done 0))
@@ -128,8 +124,7 @@
     (var was : Str row/class_name)
     (var peek (if (peeking? was) " peek" ""))
     (set! row/class_name (if done $"done${peek}" $"open${peek}"))
-    (set! button/text_content (if done "✓" "○"))
-    void)
+    (set! button/text_content (if done "✓" "○")))
 
   # `event` is the DOM `Any` boundary, so each field read is annotated where it
   # re-enters typed code — that annotation is the only place a mistake about
@@ -162,9 +157,7 @@
               (if_yes (== $"${todo_id}" id)
                 (var done : Bool todo/done)
                 ($console/log $"todo_client: todo ${id} is now done=${done}")
-                (paint_row row target done)))
-            void))))
-    void)
+                (paint_row row target done))))))))
 
   (fn main [root : EventTarget] : Void
     ($console/log "todo_client: mounted, delegating clicks from the root")

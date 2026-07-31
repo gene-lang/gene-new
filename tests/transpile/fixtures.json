@@ -1620,6 +1620,77 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "statement_return.nil_discards_body",
+      "source": "(fn f [] : Nil 42) (f)",
+      "web_source": "(mod stmt_nil ^profile web) (fn f [] : Nil 42.0) (fn run [] : Nil (f))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "nil"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "statement_return.void_discards_body",
+      "source": "(fn f [] : Void 42) (f)",
+      "web_source": "(mod stmt_void ^profile web) (fn f [] : Void 42.0) (fn run [] : Void (f))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "void"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "statement_return.bare_return",
+      "source": "(fn f [] : Nil (return)) (f)",
+      "web_source": "(mod stmt_ret ^profile web) (fn f [] : Nil (return)) (fn run [] : Nil (f))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "nil"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "statement_return.body_runs_for_effect",
+      "source": "(fn note [log : (List Int) x : Int] : Nil (set! log/0 x)) (var log [0]) (note log 7) log/0",
+      "web_source": "(mod stmt_eff ^profile web) (fn note [log : (List Int) x : Int] : Nil (set! log/0 x)) (fn run [] : Int (var log [0]) (note log 7) log/0)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "statement_return.valued_return_rejected",
+      "source": "(fn f [] : Nil (return 42)) (f)",
+      "web_source": "(mod stmt_reject ^profile web) (fn run [] : Nil (return 42.0))",
+      "web_export": "run",
+      "expected_value": null,
+      "expected_error": "takes no value",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "a Nil/Void signature yields the declared unit, so a returned value could only be discarded",
+        "diagnostic": "takes no value"
+      }
     }
   ]
 }

@@ -2219,6 +2219,54 @@ regex operations as unavailable until PCRE is linked into the wasm artifact.
 Named-capture extraction records the common PCRE group declaration forms
 `(?<name>...)`, `(?'name'...)`, and `(?P<name>...)`.
 
+### 7.7 Statement return types: `Nil` and `Void`
+
+A function declared `: Nil` or `: Void` is a **statement signature**. Its body's
+trailing value is discarded and the call yields the declared unit — `nil` for
+`Nil`, `void` for `Void` — whatever the body last evaluated.
+
+```gene
+(fn note [entry : Str] : Nil        # no trailing `nil` needed
+  (log ~ push! entry))
+
+(fn reset [cell : (Cell Int)] : Nil
+  (if_yes (< (cell ~ get) 0) (return))   # `return` needs no argument
+  (cell ~ set 0))
+```
+
+Three consequences, all deliberate:
+
+- **A body may end on real work.** Without this rule, every effectful function
+  ends in a bookkeeping `nil` that exists only to satisfy the annotation, and a
+  statement in tail position has to be wrapped in a throwaway binding purely to
+  discard its value.
+- **`(return)` takes no argument**, and `(return nil)` means the same thing. A
+  bare `return` previously yielded `void` and so was rejected by a `: Nil`
+  signature — a rule with no upside.
+- **`(return <value>)` is a compile error**, not a silent discard:
+
+  ```text
+  return in a Nil/Void function takes no value; use (return) or (return nil)
+  ```
+
+  The distinction is between a value the author *wrote* and one that merely
+  happens to be in tail position. Discarding the trailing value is the point of
+  the rule; discarding an explicit `(return 42)` would hide a mistake, since the
+  only reason to write it is a belief that the caller receives it. The check is
+  syntactic — the argument must be absent or the literal `nil` or `void` — so it
+  is decidable without inference and reads the same in the compiler and in the
+  head. It fires at compile time on both backends.
+
+Only the **bare** `Nil` and `Void` symbols select this behavior. `Int?` is a
+union that happens to admit nil, and it adapts its value normally — so
+`(fn f [x : Int] : Int? (if (> x 0) x))` still returns the `Int` when there is
+one.
+
+The web profile (`docs/proposals/transpile.md`) implements the identical rule:
+a `Nil`/`Void` function evaluates its body for effect and returns `null` /
+`undefined`. The two backends must stay in step, or the same source means
+different things depending on where it runs.
+
 ---
 
 ## 8. Pattern matching and destructuring

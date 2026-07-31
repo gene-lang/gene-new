@@ -264,6 +264,9 @@ type
     currentLoc: SourceLoc
     scopeStack: seq[string]
     nominalTypes: HashSet[string] # decides node-vs-class patterns
+    # Enclosing function's declared return type, so `wekReturn` can yield the
+    # declared unit under a `Nil`/`Void` signature instead of the given value.
+    currentReturnType: WebType
 
 const jsReserved = [
   # `arguments` and `eval` are not keywords, but ES modules are always strict
@@ -1180,6 +1183,16 @@ proc analyzeTemplate(analysis: WebAnalysis, value: Value,
   else:
     result = analysis.analyzeDatum(value, loc)
 
+proc isStatementType(typ: WebType): bool {.inline.} =
+  ## `Nil` and `Void` are statement signatures: the body's trailing value is
+  ## discarded and the function yields the declared unit. Mirrors the VM's
+  ## `isStatementReturnType`, and the two must stay in step or the same source
+  ## means different things on the two backends.
+  typ != nil and (typ.kind == wtkNil or typ.kind == wtkVoid)
+
+proc statementUnit(typ: WebType): string {.inline.} =
+  if typ != nil and typ.kind == wtkVoid: "undefined" else: "null"
+
 proc requireType(analysis: WebAnalysis, loc: SourceLoc, actual,
                  expected: WebType, label: string) =
   if not accepts(analysis, expected, actual):
@@ -1821,9 +1834,11 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     analysis.currentReturn = returnType
     var bodyForms: seq[Value]
     for i in 3 ..< value.body.len: bodyForms.add value.body[i]
-    let body = analysis.analyzeSequence(bodyForms, inner, returnType, loc)
+    let bodyExpected = if returnType.isStatementType: nil else: returnType
+    let body = analysis.analyzeSequence(bodyForms, inner, bodyExpected, loc)
     analysis.currentReturn = savedReturn
-    requireType(analysis, loc, body.typ, returnType, "return of web callback")
+    if not returnType.isStatementType:
+      requireType(analysis, loc, body.typ, returnType, "return of web callback")
     if usesAsyncPrimitive(body):
       # The value's type is `Callback`, which carries no asyncness, so a caller
       # would drop the `await` and hand a Promise to a typed boundary — the
@@ -1998,10 +2013,19 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   if name == "return":
     if value.body.len > 1:
       raise webError(loc, "web return expects zero or one value")
+    # Same rule as the VM compiler: under a `Nil`/`Void` signature the frame
+    # yields the declared unit, so a returned value could only be discarded.
+    if analysis.currentReturn != nil and
+        analysis.currentReturn.isStatementType and value.body.len == 1 and
+        value.body[0].kind notin {vkNil, vkVoid}:
+      raise webError(loc,
+        "return in a Nil/Void function takes no value; " &
+        "use (return) or (return nil)")
     let returned = if value.body.len == 0:
       WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
     else: analysis.analyzeExpr(value.body[0], bindings, analysis.currentReturn)
-    if analysis.currentReturn != nil:
+    if analysis.currentReturn != nil and
+        not analysis.currentReturn.isStatementType:
       requireType(analysis, loc, returned.typ, analysis.currentReturn,
         "web return")
     return WebExpr(kind: wekReturn, typ: webType(wtkNever), loc: loc,
@@ -2576,7 +2600,8 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     let forms = header.form.body
     var bodyExprs: seq[WebExpr]
     for i in 4 ..< forms.len:
-      let expected = if i == forms.high and not header.fn.generator:
+      let expected = if i == forms.high and not header.fn.generator and
+                        not header.fn.returnType.isStatementType:
                        header.fn.returnType
                      else: nil
       bodyExprs.add analysis.analyzeExpr(forms[i], bindings, expected)
@@ -2590,7 +2615,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     if header.fn.generator:
       dec analysis.generatorDepth
       analysis.currentYield = nil
-    else:
+    elif not header.fn.returnType.isStatementType:
       requireType(analysis, header.fn.loc, header.fn.body.typ,
                   header.fn.returnType,
                   "return of " & header.fn.sourceName)
@@ -2614,10 +2639,12 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.validateCallableProps(methodDecl.sourceForm, methodDecl.loc,
         "message " & methodDecl.sourceName)
       methodDecl.body = analysis.analyzeSequence(forms, bindings,
-        methodDecl.returnType, methodDecl.loc)
-      requireType(analysis, methodDecl.loc, methodDecl.body.typ,
-                  methodDecl.returnType,
-                  "return of message " & methodDecl.sourceName)
+        (if methodDecl.returnType.isStatementType: nil
+         else: methodDecl.returnType), methodDecl.loc)
+      if not methodDecl.returnType.isStatementType:
+        requireType(analysis, methodDecl.loc, methodDecl.body.typ,
+                    methodDecl.returnType,
+                    "return of message " & methodDecl.sourceName)
       rejectAsyncBody(methodDecl.body, methodDecl.loc,
         "message " & methodDecl.sourceName)
     if declaration.constructor != nil:
@@ -2655,10 +2682,13 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.validateCallableProps(implMethod.sourceForm, implMethod.loc,
         "protocol message " & implMethod.message.sourceName)
       implMethod.body = analysis.analyzeSequence(forms, bindings,
-        implMethod.returnType, implMethod.loc)
-      requireType(analysis, implMethod.loc, implMethod.body.typ,
-                  implMethod.returnType,
-                  "return of protocol message " & implMethod.message.sourceName)
+        (if implMethod.returnType.isStatementType: nil
+         else: implMethod.returnType), implMethod.loc)
+      if not implMethod.returnType.isStatementType:
+        requireType(analysis, implMethod.loc, implMethod.body.typ,
+                    implMethod.returnType,
+                    "return of protocol message " &
+                      implMethod.message.sourceName)
       rejectAsyncBody(implMethod.body, implMethod.loc,
         "protocol message " & implMethod.message.sourceName)
   # Method bodies were analyzed after propagation, so their references are
@@ -3152,7 +3182,12 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     emitter.line("continue;")
     "undefined"
   of wekReturn:
-    emitter.line("return " & emitter.emitExpr(expr.children[0]) & ";")
+    let returned = emitter.emitExpr(expr.children[0])
+    if emitter.currentReturnType.isStatementType:
+      emitter.line("void " & returned & ";")
+      emitter.line("return " & statementUnit(emitter.currentReturnType) & ";")
+    else:
+      emitter.line("return " & returned & ";")
     "undefined"
   of wekFail:
     emitter.line("throw " & emitter.emitExpr(expr.children[0]) & ";")
@@ -3442,9 +3477,19 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
                "$gene_impl_" & fn.emittedName & "(" & params.join(", ") &
                ")" & implementationReturn & " {")
   inc emitter.indent
+  let savedReturnType = emitter.currentReturnType
+  emitter.currentReturnType = if fn.generator: nil else: fn.returnType
   let value = emitter.emitExpr(fn.body)
+  emitter.currentReturnType = savedReturnType
   if fn.generator:
     emitter.line("void " & value & ";")
+  elif fn.returnType.isStatementType:
+    # Evaluate the body for effect, then yield the declared unit — the same
+    # rule the VM applies in `frameReturn`. A body typed `Never` already
+    # returned or threw, so a trailing return would only be dead code.
+    if fn.body.typ.kind != wtkNever:
+      emitter.line("void " & value & ";")
+      emitter.line("return " & statementUnit(fn.returnType) & ";")
   else:
     emitter.line("return " & value & ";")
   dec emitter.indent

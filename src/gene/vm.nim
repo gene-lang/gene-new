@@ -1280,6 +1280,23 @@ proc toFloat(v: Value): float64 = (if v.kind == vkInt: v.intToFloat else: v.floa
 proc isBareIntType(expr: Value): bool {.inline.} =
   expr.kind == vkSymbol and expr.symVal == "Int"
 
+proc isBareNilType(expr: Value): bool {.inline.} =
+  ## A declared `: Nil` return, as opposed to `NIL` meaning "no declared type".
+  ## Only the bare symbol counts: `Int?` is a union that happens to admit nil
+  ## and must still adapt its value normally.
+  expr.kind == vkSymbol and expr.symVal == "Nil"
+
+proc isBareVoidType(expr: Value): bool {.inline.} =
+  expr.kind == vkSymbol and expr.symVal == "Void"
+
+proc isStatementReturnType(expr: Value): bool {.inline.} =
+  ## `Nil` and `Void` are *statement* signatures: the function is declared to
+  ## produce no useful value, so the body's trailing expression is discarded
+  ## and the frame yields the declared unit. That is what lets a body end on
+  ## real work instead of a bookkeeping `nil`, and what makes a bare `(return)`
+  ## legal in a `: Nil` function.
+  expr.isBareNilType or expr.isBareVoidType
+
 proc scopelessIntArgsOk(stack: seq[Value], argsStart, argCount: int):
     bool {.noinline.} =
   ## Typed scopeless admission requires every positional param to be bare
@@ -11345,15 +11362,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## return type, then pop to the caller and push the result — or, if this is
     ## the outermost frame, return to runLoop's caller. A `try` body completing
     ## normally instead runs its ensure block and resumes the enclosing frame.
-    var retValue = escapeWeakFunctions(rawValue)
-    if returnType.kind != vkNil:
-      if not (returnType.isBareIntType and retValue.kind == vkInt):
-        let label =
-          if returnLabel.len == 0 and curFnName.len > 0:
-            "return from '" & curFnName & "'"
-          else:
-            returnLabel
-        retValue = adaptBoundary(label, returnType, retValue, scope)
+    var retValue: Value
+    if returnType.isStatementReturnType:
+      # Declared `Nil`/`Void`: the frame yields the declared unit whatever the
+      # body left behind. No trailing `nil`, and `(return)` needs no argument.
+      retValue = if returnType.isBareNilType: NIL else: VOID
+    else:
+      retValue = escapeWeakFunctions(rawValue)
+      if returnType.kind != vkNil:
+        if not (returnType.isBareIntType and retValue.kind == vkInt):
+          let label =
+            if returnLabel.len == 0 and curFnName.len > 0:
+              "return from '" & curFnName & "'"
+            else:
+              returnLabel
+          retValue = adaptBoundary(label, returnType, retValue, scope)
     finishFrameReturn(retValue)
 
   template frameReturnBareInt(rawValue: Value) =

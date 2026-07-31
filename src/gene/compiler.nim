@@ -44,6 +44,10 @@ type
     allowYield: bool
     sawYield: bool
     sawNonVoidReturn: bool
+    # Enclosing function is declared `: Nil` or `: Void`, so `return` may not
+    # carry a value (design.md §7.7). Per-function: a child compiler is built
+    # fresh for each `fn`, so this never leaks into a nested one.
+    inStatementFn: bool
     inFunction: bool
     inGenerator: bool
     loopDepth: int
@@ -3226,6 +3230,8 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       raise newException(GeneError, "duplicate parameter binding: " & specs.rest)
     seenLocals[specs.rest] = true
   var fnCompiler = c.childCompiler()
+  fnCompiler.inStatementFn =
+    returnType.kind == vkSymbol and returnType.symVal in ["Nil", "Void"]
   fnCompiler.enableLocalSlots()
   fnCompiler.parentSlots = c.parentFrames()
   fnCompiler.parentFunctionSigs = c.parentFunctionSigFrames()
@@ -6683,6 +6689,13 @@ proc compileReturn(c: var Compiler, node: Value) =
   if c.inGenerator and node.body.len == 1 and node.body[0].kind != vkVoid:
     raise newException(GeneError,
       "generator return value must be void")
+  # A `: Nil` / `: Void` function yields the declared unit, so an explicit
+  # returned value could only be silently discarded. Rejecting it keeps the
+  # signature the single source of truth about what a call produces.
+  if c.inStatementFn and node.body.len == 1 and
+      node.body[0].kind notin {vkNil, vkVoid}:
+    raise newException(GeneError,
+      "return in a Nil/Void function takes no value; use (return) or (return nil)")
   if node.body.len == 1 and node.body[0].kind != vkVoid:
     c.sawNonVoidReturn = true
   if node.body.len == 0:

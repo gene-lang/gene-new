@@ -3604,6 +3604,47 @@ suite "spec — native wrapper types (design §16.6)":
                "[(same? c ($thaw c)) (same? c ($freeze_shallow c))]",
                "[true true]")
 
+suite "spec — statement return types from design (§7.7)":
+  test "a Nil return discards the body value and yields nil":
+    check_eval("(fn f [] : Nil 42) (f)", "nil")
+    check_eval("(fn f [] : Nil \"anything\") (f)", "nil")
+    # The point of the rule: a body may end on real work with no trailing `nil`.
+    check_eval("(var log []) " &
+               "(fn note [x] : Nil (log ~ push! x)) " &
+               "(note 1) (note 2) log",
+               "[1 2]")
+  test "a Void return discards the body value and yields void":
+    check_eval("(fn f [] : Void 42) (f)", "void")
+    check_eval("(fn f [] : Void \"anything\") (f)", "void")
+  test "return needs no argument under a statement signature":
+    check_eval("(fn f [] : Nil (return)) (f)", "nil")
+    check_eval("(fn f [] : Nil (return nil)) (f)", "nil")
+    check_eval("(fn f [] : Void (return)) (f)", "void")
+    # An explicit value is a compile error, not a silent discard: the
+    # signature stays the single source of truth about what a call produces.
+    check_compile_error("(fn f [] : Nil (return 42)) (f)",
+                        "takes no value")
+    check_compile_error("(fn f [x] : Void (return x)) (f 1)",
+                        "takes no value")
+    # The implicit trailing value is still discarded — that is the whole point.
+    check_eval("(fn f [] : Nil 42) (f)", "nil")
+    # A nested function keeps its own signature.
+    check_eval("(fn outer [] : Nil (fn inner [] : Int (return 7)) (inner)) " &
+               "(outer)",
+               "nil")
+    # Early return still cuts the body short.
+    check_eval("(var log []) " &
+               "(fn f [x] : Nil (if_yes (< x 0) (return)) (log ~ push! x)) " &
+               "(f -1) (f 3) log",
+               "[3]")
+  test "statement returns are bare Nil and Void, not any nil-admitting type":
+    # `Int?` is a union that happens to admit nil; it still adapts normally.
+    check_eval("(fn f [x : Int] : Int? (if (> x 0) x)) [(f 5) (f 0)]",
+               "[5 nil]")
+    check_runtime_error("(fn f [x : Int] : Int? \"bad\") (f 1)",
+                        "expected")
+    check_runtime_error("(fn f [] : Int \"bad\") (f)", "expected Int")
+
 suite "spec — typed variable boundaries from design":
   test "var annotations check gradual boundaries":
     check_eval("(var result : Int (eval (quote (+ 20 22)) ^in (env))) result",

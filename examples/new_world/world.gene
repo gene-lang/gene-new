@@ -98,10 +98,9 @@
 (fn idx [x : F64 y : F64 w : F64] : F64 (+ x (* y w)))
 
 (fn poke [tiles : (List F64) i : F64 v : F64] : Void
-  # `set!` yields the assigned value, so a write in statement position needs a
-  # binding. One helper keeps that noise out of every call site.
-  (var written (set! tiles/%i v))
-  void)
+  # A `: Void` signature discards the body's value (design.md §7.7), so the
+  # assignment can just be the body.
+  (set! tiles/%i v))
 
 (fn get_tile [tiles : (List F64) x : F64 y : F64 w : F64 h : F64] : F64
   # A `%` path segment takes a symbol, not a call, so the index is bound first.
@@ -112,8 +111,7 @@
 
 (fn set_tile [tiles : (List F64) x : F64 y : F64 w : F64 h : F64 v : F64] : Void
   (if_yes (&& (&& (>= x 0.0) (< x w)) (&& (>= y 0.0) (< y h)))
-    (poke tiles (idx x y w) v))
-  void)
+    (poke tiles (idx x y w) v)))
 
 # --- generation ------------------------------------------------------------
 
@@ -135,8 +133,7 @@
   (var ty (- ground 1.0))
   (while (>= ty top)
     (set_tile tiles x ty w h (t_log))
-    (set ty (- ty 1.0)))
-  void)
+    (set ty (- ty 1.0))))
 
 (fn generate [tiles : (List F64) w : F64 h : F64 seed : F64] : Void
   (var x 0.0)
@@ -177,8 +174,7 @@
     (if_yes (&& (<= ground (sea_level))
                 (> (hash2 x 3.0 (+ seed 11.0)) 0.88))
       (place_tree tiles x ground w h seed))
-    (set x (+ x 1.0)))
-  void)
+    (set x (+ x 1.0))))
 
 # --- player ----------------------------------------------------------------
 # State is a (List F64) the host owns: 0 x, 1 y, 2 vx, 3 vy, 4 on_ground,
@@ -249,8 +245,7 @@
   (poke p 2.0 vx)
   (poke p 3.0 vy)
   (poke p 4.0 grounded)
-  (poke p 5.0 facing)
-  void)
+  (poke p 5.0 facing))
 
 # --- interaction -----------------------------------------------------------
 
@@ -326,20 +321,17 @@
         (if_yes (> y ground)
           (draw_backdrop sx sy (- y ground))))
       (set y (+ y 1.0)))
-    (set x (+ x 1.0)))
-  void)
+    (set x (+ x 1.0))))
 
 (fn render_cursor [tiles : (List F64) p : (List F64)
                    tx : F64 ty : F64 cam_x : F64 cam_y : F64
                    w : F64 h : F64] : Void
   (var ts (tile_size))
   (draw_highlight (- (* tx ts) cam_x) (- (* ty ts) cam_y)
-    (if (in_reach? p tx ty) 1.0 0.0))
-  void)
+    (if (in_reach? p tx ty) 1.0 0.0)))
 
 (fn render_player [p : (List F64) cam_x : F64 cam_y : F64] : Void
   (var ts (tile_size))
   (draw_player (- (* (- p/0 (/ (p_width) 2.0)) ts) cam_x)
                (- (* p/1 ts) cam_y)
-               p/5)
-  void)
+               p/5))
