@@ -3604,6 +3604,47 @@ suite "spec — native wrapper types (design §16.6)":
                "[(same? c ($thaw c)) (same? c ($freeze_shallow c))]",
                "[true true]")
 
+suite "spec — sequence indexing by integral Float (§7.4)":
+  test "an integral Float indexes a List for both read and write":
+    # The web profile lowers an `F64` index to `xs[i]`, which JavaScript
+    # accepts. Without this the same source reads a list in the browser and
+    # yields `void` on the VM — silently, because `void` is a legal value.
+    check_eval("(var l [10 20 30]) (var i 1.0) l/%i", "20")
+    check_eval("(var l [10 20 30]) (var i 1.0) (set! l/%i 99) l", "[10 99 30]")
+    check_eval("(var l [10 20 30]) (var i 1) l/%i", "20")
+  test "a non-integral Float names no element":
+    check_eval("(var l [10 20 30]) (var i 1.5) l/%i", "void")
+    check_runtime_error("(var l [10 20 30]) (var i 1.5) (set! l/%i 9)",
+                        "whole-number index")
+
+suite "spec — loop body scoping from design (§9)":
+  test "a var in a loop body is one declaration run many times":
+    # `for` always worked; `while`, `loop`, and `repeat` share one scope on the
+    # VM and would report the second iteration as a duplicate binding.
+    check_eval("(var i 0) (var acc []) " &
+               "(while (< i 3) (var x (* i 2)) (acc ~ push! x) (set i (+ i 1))) " &
+               "acc",
+               "[0 2 4]")
+    check_eval("(fn f [] (var i 0) (var acc []) " &
+               "  (while (< i 3) (var x (* i 2)) (acc ~ push! x) (set i (+ i 1))) " &
+               "  acc) (f)",
+               "[0 2 4]")
+    check_eval("(var acc []) (for i in [0 1 2] (var x (* i 2)) (acc ~ push! x)) acc",
+               "[0 2 4]")
+  test "a genuine redeclaration is still an error":
+    check_runtime_error("(fn f [] (var x 1) (var x 2) x) (f)", "duplicate binding")
+    check_runtime_error("(var y 1) (var y 2) y", "duplicate binding")
+  test "branch shadowing and nested functions keep the strict rule":
+    # Two `var` forms in mutually exclusive branches are not a redeclaration.
+    check_eval("(fn f [c] (if c (var x 1) (var x 2)) x) [(f true) (f false)]",
+               "[1 2]")
+    # A function defined inside a loop starts at loop depth zero, so its own
+    # body still rejects a real duplicate.
+    check_runtime_error("(var i 0) " &
+                        "(while (< i 1) (var g (fn [] (var z 1) (var z 2) z)) " &
+                        "  (g) (set i (+ i 1)))",
+                        "duplicate binding")
+
 suite "spec — gene/bit and gene/binary from design (§7.9)":
   test "bitwise operations work over Int":
     check_eval("[($bit/and 12 10) ($bit/or 12 10) ($bit/xor 12 10)]",

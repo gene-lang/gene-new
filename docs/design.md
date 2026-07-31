@@ -2352,6 +2352,41 @@ high bit set survives instead of being mangled by UTF-8 handling.
 `examples/new_world/src/png.gene` is the worked example — CRC32, Adler-32, a
 zlib stream, and PNG chunk layout, all in Gene with no host help.
 
+### 7.10 Loop bodies are scopes; integral Floats index sequences
+
+Two rules that keep the VM and the web profile meaning the same thing.
+
+**A loop body is a scope.** A `var` inside `while`, `loop`, or `repeat` is one
+declaration executed once per iteration, not a redeclaration, so it rebinds:
+
+```gene
+(while (< i 3)
+  (var x (* i 2))        # fresh each iteration
+  (set i (+ i 1)))
+```
+
+`for` already behaved this way, and JavaScript block scope gives the web
+profile the same thing — so before this the same source ran transpiled and
+failed on the VM with "duplicate binding". A genuine redeclaration
+(`(var x 1) (var x 2)` in one scope) is still an error, and two `var` forms in
+mutually exclusive branches are still legal, because the compiler distinguishes
+them by loop depth rather than by name alone. A function defined inside a loop
+starts at depth zero and keeps the strict rule.
+
+**An integral Float indexes a List or Node**, for reads and writes alike:
+
+```gene
+(var i 1.0)
+xs/%i            # => the second element
+(set! xs/%i 99)
+```
+
+The web profile lowers an `F64` index to `xs[i]`, which JavaScript accepts, so
+rejecting it on the VM made the same source index a list in the browser and
+fail — or worse, on the read path, silently yield `void`, which is a legal
+value rather than an error. A *non*-integral Float still names no element:
+`xs/%1.5` is a bug in any backend, and truncating it is how that bug survives.
+
 ---
 
 ## 8. Pattern matching and destructuring

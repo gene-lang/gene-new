@@ -620,10 +620,18 @@ proc emitDefineBinding(c: var Compiler, name: string, immutable = false) =
   # Record the binding even when this body compiles without slots, so the
   # bare-name lint can tell a declaration from a standard-library reference.
   c.declaredNames.incl name
+  # Inside a loop body, one `var` form runs once per iteration. That is a
+  # re-execution of a single declaration, not a redeclaration, so it overwrites
+  # rather than tripping the duplicate check — which is what `for` bodies
+  # already get from their own compiler, and what the web profile already gets
+  # from JavaScript block scope. `childCompiler` does not inherit `loopDepth`,
+  # so a `fn` defined inside a loop starts fresh and keeps the strict rule.
+  let inLoop = c.loopDepth > 0
   if c.useLocalSlots:
-    discard c.emit(opDefineLocal, c.reserveLocal(name), name = name)
+    discard c.emit(if inLoop: opRedefineLocal else: opDefineLocal,
+                   c.reserveLocal(name), name = name)
   else:
-    discard c.emit(opDefineName, name = name)
+    discard c.emit(if inLoop: opRedefineName else: opDefineName, name = name)
   # Named declarations (fn/type/enum/protocol/ns/macro/alias) are let-class
   # (design §12.1): their bindings are fixed, so `(set name ...)` is a compile
   # error. `var`/loop bindings pass immutable=false and stay rebindable. Marked

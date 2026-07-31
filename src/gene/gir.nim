@@ -19,6 +19,13 @@ type
     opLoadOuterLocal
     opDefineName
     opDefineLocal
+    # Loop-body variants of the two defines. A `var` inside a loop body is one
+    # declaration executed many times, not many declarations — so it overwrites
+    # its binding instead of tripping the duplicate check. The compiler picks
+    # these purely from `loopDepth`, so behaviour outside a loop is unchanged
+    # and legal branch shadowing — `(if c (var x 1) (var x 2))` — still works.
+    opRedefineName
+    opRedefineLocal
     opSetName
     opSetLocal
     opSetOuterLocal
@@ -811,9 +818,10 @@ proc formatInstruction(inst: Instruction): string =
   case inst.op
   of opPushConst:
     result.add " const=" & $inst.intArg
-  of opLoadName, opLoadNativeFast, opDefineName, opSetName:
+  of opLoadName, opLoadNativeFast, opDefineName, opRedefineName, opSetName:
     result.add " name=" & inst.name
-  of opLoadLocal, opLoadLocalFast, opLoadArg, opDefineLocal, opSetLocal:
+  of opLoadLocal, opLoadLocalFast, opLoadArg, opDefineLocal, opRedefineLocal,
+     opSetLocal:
     result.add " slot=" & $inst.intArg
     if inst.name.len > 0:
       result.add " name=" & inst.name

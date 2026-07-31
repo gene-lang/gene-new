@@ -974,11 +974,11 @@ proc raiseUndefinedSymbol(name: string) {.noReturn.} =
   raise error
 
 proc storeSlot(scope: Scope, index: int, name: string, v: Value,
-               requireExisting: bool) =
+               requireExisting: bool, permitRedefine = false) =
   scope.checkSlot(index, name)
   if requireExisting and not scope.slotDefined(index):
     raise newException(GeneError, "set of undefined symbol: " & name)
-  if not requireExisting and scope.slotDefined(index):
+  if not requireExisting and not permitRedefine and scope.slotDefined(index):
     raise newException(GeneError, "duplicate binding: " & name)
   let value =
     if requireExisting and index < scope.slotTypes.len:
@@ -1038,6 +1038,13 @@ proc loadSlot(scope: Scope, index: int, name: string): Value =
 
 proc loadSlotAt(scope: Scope, depth, index: int, name: string): Value =
   scope.scopeAtDepth(depth, name).loadSlot(index, name)
+
+proc redefineSlot(scope: Scope, index: int, name: string, v: Value) =
+  ## A loop body's `var`, on any iteration after the first. The slot is already
+  ## defined by construction, so the duplicate check that `defineSlot` applies
+  ## would reject a correct program.
+  scope.storeSlot(index, name, v, requireExisting = false,
+                  permitRedefine = true)
 
 proc defineSlot(scope: Scope, index: int, name: string, v: Value) =
   # vars is empty in plain (non-mirrored) slot scopes — the common case for
@@ -1152,6 +1159,15 @@ proc define*(scope: Scope, name: string, v: Value) =
     return
   if scope.vars.hasKey(name):
     raise newException(GeneError, "duplicate binding: " & name)
+  scope.vars[name] = functionForScopeStorage(v, scope)
+
+proc redefine*(scope: Scope, name: string, v: Value) =
+  ## `define` for a loop body's `var`: the binding exists from the previous
+  ## iteration, so overwrite it rather than reporting a duplicate. Only the
+  ## compiler's loop-body path reaches this, so a genuine redeclaration outside
+  ## a loop still errors.
+  if scope.storeNamedSlot(name, v, requireExisting = false):
+    return
   scope.vars[name] = functionForScopeStorage(v, scope)
 
 proc defineOverlay(scope: Scope, name: string, v: Value) =
@@ -11591,6 +11607,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in var")
           scope.defineSlot(inst[].intArg, inst[].name, stack[sp - 1])
+        of opRedefineLocal:
+          if sp == 0:
+            raise newException(GeneError, "VM stack underflow in var")
+          scope.redefineSlot(inst[].intArg, inst[].name, stack[sp - 1])
+        of opRedefineName:
+          if sp == 0:
+            raise newException(GeneError, "VM stack underflow in var")
+          scope.redefine(inst[].name, stack[sp - 1])
         of opSetName:
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in set")
@@ -17391,6 +17415,20 @@ proc staticLookup(target, segment: Value): Value =
       if segment.intFitsInt64: lookupIndex(target.body, segment.intVal) else: VOID
     else:
       VOID
+  of vkFloat:
+    # An integral Float indexes a sequence, matching `set!` and matching the
+    # web profile, which lowers an `F64` index to `xs[i]`. Without this the
+    # same source reads a list in the browser and yields `void` on the VM —
+    # silently, because `void` is a legal value rather than an error. A
+    # non-integral Float stays absent: `xs/%1.5` names no element.
+    let f = segment.floatVal
+    if f != f.trunc or f.classify notin {fcNormal, fcZero, fcNegZero}:
+      VOID
+    else:
+      case target.kind
+      of vkList: lookupIndex(target.listItems, int64(f))
+      of vkNode: lookupIndex(target.body, int64(f))
+      else: VOID
   of vkSymbol, vkString:
     # A symbol segment's payload is directly a PropTable key id — no string,
     # no intern-table probe. A string segment probes lookup-only: an
