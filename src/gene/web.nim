@@ -23,6 +23,10 @@ type
     ## `addEventListener` — so the two cannot share a validator, and `Any`
     ## would validate nothing at all.
     wtkDomCanvas
+    ## A CanvasGradient. Its own kind for the same reason as Canvas2D: it
+    ## shares no operation with any other host type, so `Any` would be the
+    ## only alternative and `Any` validates nothing.
+    wtkDomGradient
 
   WebType* = ref object
     kind*: WebTypeKind
@@ -407,6 +411,7 @@ proc typeName(typ: WebType): string =
   of wtkRange: "Range"
   of wtkDomTarget: "EventTarget"
   of wtkDomCanvas: "Canvas2D"
+  of wtkDomGradient: "Gradient"
   of wtkTask: "(Task " & typeName(typ.item) & ")"
   of wtkStream: "(Stream " & typeName(typ.item) & ")"
   of wtkNominal: typ.name
@@ -439,6 +444,7 @@ proc tsType(typ: WebType): string =
   of wtkRange: "GeneRange"
   of wtkDomTarget: "EventTarget"
   of wtkDomCanvas: "CanvasRenderingContext2D"
+  of wtkDomGradient: "CanvasGradient"
   of wtkTask: "GeneTask<" & tsType(typ.item) & ">"
   of wtkStream: "GeneStream<" & tsType(typ.item) & ">"
   of wtkNominal: mangleWebName(typ.name)
@@ -469,6 +475,7 @@ proc validatorSuffix(typ: WebType): string =
   of wtkRange: "range"
   of wtkDomTarget: "event_target"
   of wtkDomCanvas: "canvas2d"
+  of wtkDomGradient: "gradient"
   of wtkTask: "task_" & validatorSuffix(typ.item)
   of wtkStream: "stream_" & validatorSuffix(typ.item)
   of wtkNominal: "nominal_" & mangleWebName(typ.name)
@@ -558,6 +565,7 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
     of "Range": return webType(wtkRange)
     of "EventTarget": return webType(wtkDomTarget)
     of "Canvas2D": return webType(wtkDomCanvas)
+    of "Gradient": return webType(wtkDomGradient)
     else:
       return WebType(kind: wtkNominal, name: value.symVal)
   if value.kind == vkNode and value.head.isSym("List") and
@@ -1351,6 +1359,21 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         else: webType(wtkInt)
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, params: params, returnType: returnType, loc: loc)
+    if methodDecl == nil and receiver.typ.kind == wtkList and
+        messageName in ["push!", "pop!", "size", "clear!"]:
+      # The minimum a List needs to be built and measured. Without `push!` a
+      # program cannot construct a collection at all, which is why every
+      # accumulator in this profile had to be pre-sized by its caller.
+      let params = case messageName
+        of "push!": @[WebParam(sourceName: "item", emittedName: "item",
+                               typ: receiver.typ.item, loc: loc)]
+        else: newSeq[WebParam]()
+      let returnType = case messageName
+        of "pop!": receiver.typ.item
+        of "size": webType(wtkF64)   # F64, so a length composes with F64 math
+        else: webType(wtkVoid)
+      methodDecl = WebMethod(sourceName: messageName,
+        emittedName: messageName, params: params, returnType: returnType, loc: loc)
     if methodDecl == nil:
       raise webError(loc, "web type " & typeName(receiver.typ) &
         " has no message " & messageName)
@@ -1476,6 +1499,69 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "dom/prevent_default", "dom/stop_propagation":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkVoid)
+      # --- document, window, events, storage, timing ----------------------
+      # The surface a browser program needs to own its own main loop. Every one
+      # of these is checked against lib.dom.d.ts by tools/check_host_bindings.
+      of "dom/element":
+        # Throws when the id is missing, rather than returning `EventTarget?`.
+        # The profile does not narrow a union on a truthiness test, so a
+        # nullable return would be unusable — and a missing mount point is a
+        # programming error, not a recoverable condition. Same reasoning as
+        # `canvas/context` rejecting a non-canvas.
+        paramTypes = @[webType(wtkStr)]
+        returnType = webType(wtkDomTarget)
+      of "dom/create_element":
+        paramTypes = @[webType(wtkStr)]
+        returnType = webType(wtkDomTarget)
+      of "dom/append":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkDomTarget)]
+        returnType = webType(wtkVoid)
+      of "dom/set_text":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "dom/text":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkStr)
+      of "dom/set_class":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkStr), webType(wtkBool)]
+        returnType = webType(wtkVoid)
+      of "dom/inner_width", "dom/inner_height":
+        paramTypes = @[]
+        returnType = webType(wtkF64)
+      of "dom/rect_left", "dom/rect_top", "dom/rect_width", "dom/rect_height":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkF64)
+      of "event/code", "event/key":
+        paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkStr)
+      of "event/button", "event/client_x", "event/client_y", "event/delta_y":
+        paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkF64)
+      of "frame/request":
+        # The callback receives the frame timestamp, so a program can pace
+        # itself without reaching for a clock separately.
+        let onFrame = webType(wtkCallback)
+        onFrame.params = @[webType(wtkF64)]
+        onFrame.returnType = webType(wtkVoid)
+        paramTypes = @[onFrame]
+        returnType = webType(wtkVoid)
+      of "time/now":
+        paramTypes = @[]
+        returnType = webType(wtkF64)
+      of "storage/get":
+        paramTypes = @[webType(wtkStr)]
+        returnType = unionType(webType(wtkStr), webType(wtkNil))
+      of "storage/set":
+        paramTypes = @[webType(wtkStr), webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "image/load":
+        # Load-then-callback rather than a Task, for the same reason http/get
+        # is: a Task needs an enclosing `scope`, and page bootstrap has none.
+        let onLoad = webType(wtkCallback)
+        onLoad.params = @[webType(wtkDomTarget)]
+        onLoad.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkStr), onLoad]
+        returnType = webType(wtkVoid)
       # --- canvas ---------------------------------------------------------
       # Enough of CanvasRenderingContext2D to draw a game: a context handle, a
       # fill and stroke colour, rectangles, and a blit. Every coordinate is
@@ -1504,6 +1590,16 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "canvas/fill_rect", "canvas/stroke_rect", "canvas/clear_rect":
         paramTypes = @[webType(wtkDomCanvas), webType(wtkF64), webType(wtkF64),
                        webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "canvas/linear_gradient":
+        paramTypes = @[webType(wtkDomCanvas), webType(wtkF64), webType(wtkF64),
+                       webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkDomGradient)
+      of "canvas/add_color_stop":
+        paramTypes = @[webType(wtkDomGradient), webType(wtkF64), webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "canvas/set_fill_gradient":
+        paramTypes = @[webType(wtkDomCanvas), webType(wtkDomGradient)]
         returnType = webType(wtkVoid)
       of "canvas/draw_image":
         # The nine-argument form: source rect and destination rect. A tile
@@ -3111,6 +3207,35 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "console/log": "console.log(" & arguments[0] & ")"
     of "console/warn": "console.warn(" & arguments[0] & ")"
     of "console/error": "console.error(" & arguments[0] & ")"
+    of "dom/element": "$gene_dom_element(" & arguments[0] & ")"
+    of "dom/create_element": "document.createElement(" & arguments[0] & ")"
+    of "dom/append":
+      "(" & arguments[0] & ".appendChild(" & arguments[1] & "), undefined)"
+    of "dom/set_text":
+      "(" & arguments[0] & ".textContent = " & arguments[1] & ", undefined)"
+    of "dom/text": "(" & arguments[0] & ".textContent ?? \"\")"
+    of "dom/set_class":
+      "(" & arguments[0] & ".classList.toggle(" & arguments[1] & ", " &
+        arguments[2] & "), undefined)"
+    of "dom/inner_width": "window.innerWidth"
+    of "dom/inner_height": "window.innerHeight"
+    of "dom/rect_left": "$gene_dom_rect(" & arguments[0] & ", \"left\")"
+    of "dom/rect_top": "$gene_dom_rect(" & arguments[0] & ", \"top\")"
+    of "dom/rect_width": "$gene_dom_rect(" & arguments[0] & ", \"width\")"
+    of "dom/rect_height": "$gene_dom_rect(" & arguments[0] & ", \"height\")"
+    of "event/code": "$gene_event_str(" & arguments[0] & ", \"code\")"
+    of "event/key": "$gene_event_str(" & arguments[0] & ", \"key\")"
+    of "event/button": "$gene_event_num(" & arguments[0] & ", \"button\")"
+    of "event/client_x": "$gene_event_num(" & arguments[0] & ", \"clientX\")"
+    of "event/client_y": "$gene_event_num(" & arguments[0] & ", \"clientY\")"
+    of "event/delta_y": "$gene_event_num(" & arguments[0] & ", \"deltaY\")"
+    of "frame/request": "(requestAnimationFrame(" & arguments[0] & "), undefined)"
+    of "time/now": "performance.now()"
+    of "storage/get": "localStorage.getItem(" & arguments[0] & ")"
+    of "storage/set":
+      "(localStorage.setItem(" & arguments[0] & ", " & arguments[1] & "), undefined)"
+    of "image/load":
+      "$gene_image_load(" & arguments[0] & ", " & arguments[1] & ")"
     of "canvas/context": "$gene_canvas_context(" & arguments[0] & ")"
     of "canvas/set_size":
       "$gene_canvas_set_size(" & arguments[0] & ", " & arguments[1] & ", " &
@@ -3128,6 +3253,13 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       arguments[0] & ".strokeRect(" & arguments[1 .. 4].join(", ") & ")"
     of "canvas/clear_rect":
       arguments[0] & ".clearRect(" & arguments[1 .. 4].join(", ") & ")"
+    of "canvas/linear_gradient":
+      arguments[0] & ".createLinearGradient(" & arguments[1 .. 4].join(", ") & ")"
+    of "canvas/add_color_stop":
+      "(" & arguments[0] & ".addColorStop(" & arguments[1] & ", " &
+        arguments[2] & "), undefined)"
+    of "canvas/set_fill_gradient":
+      "(" & arguments[0] & ".fillStyle = " & arguments[1] & ", undefined)"
     of "canvas/draw_image":
       arguments[0] & ".drawImage(" & arguments[1 .. 9].join(", ") & ")"
     of "dom/prevent_default": "$gene_dom_prevent_default(" & arguments[0] & ")"
@@ -3406,6 +3538,18 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     var arguments: seq[string]
     for i in 1 ..< expr.children.len:
       arguments.add emitter.emitExpr(expr.children[i])
+    # List messages lower to the JS array operations they name. `size` is F64
+    # rather than bigint so a length composes with the rest of F64 arithmetic;
+    # a JS array length is already a `number`.
+    if expr.children[0].typ != nil and expr.children[0].typ.kind == wtkList:
+      let target = if emitter.typescript: "(" & receiver & " as any[])"
+                   else: receiver
+      case expr.text
+      of "push!": return "(" & target & ".push(" & arguments[0] & "), undefined)"
+      of "pop!": return target & ".pop()"
+      of "size": return target & ".length"
+      of "clear!": return "(" & target & ".splice(0), undefined)"
+      else: discard
     if expr.keys.len == 2 and expr.keys[1] == "$builtin":
       return expr.keys[0] & "(" & receiver &
         (if arguments.len > 0: ", " & arguments.join(", ") else: "") & ")"
@@ -3803,6 +3947,18 @@ proc containsTypeKind(typ: WebType, kind: WebTypeKind): bool =
     false
   else: false
 
+proc exprUsesTypeKind(expr: WebExpr, kind: WebTypeKind): bool =
+  ## A validator can be needed by a coercion the analyzer inserted rather than
+  ## by any declared signature: passing a `(List Any)` element where a
+  ## `DomTarget` is expected emits `$gene_check_event_target` at that boundary.
+  ## Scanning declarations alone missed those, so an emitted module could call
+  ## a helper it never defined — a runtime ReferenceError in a program that
+  ## compiled and type-checked cleanly.
+  if expr == nil: return false
+  if containsTypeKind(expr.typ, kind): return true
+  for child in expr.children:
+    if exprUsesTypeKind(child, kind): return true
+
 proc moduleUsesTypeKind(module: WebModule, kind: WebTypeKind): bool =
   for fn in module.functions:
     if containsTypeKind(fn.returnType, kind): return true
@@ -3839,11 +3995,8 @@ proc moduleUsesTypeKind(module: WebModule, kind: WebTypeKind): bool =
       if containsTypeKind(methodDecl.returnType, kind): return true
       for param in methodDecl.params:
         if containsTypeKind(param.typ, kind): return true
-
-proc exprUsesTypeKind(expr: WebExpr, kind: WebTypeKind): bool =
-  if containsTypeKind(expr.typ, kind): return true
-  for child in expr.children:
-    if exprUsesTypeKind(child, kind): return true
+  module.moduleAny(proc(expr: WebExpr): bool =
+    exprUsesTypeKind(expr, kind))
 
 proc moduleExprUsesTypeKind(module: WebModule, kind: WebTypeKind): bool =
   module.moduleAny(proc(expr: WebExpr): bool = exprUsesTypeKind(expr, kind))
@@ -3917,6 +4070,16 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
     for implMethod in implementation.methods:
       for param in implMethod.params: collectValidatorTypes(param.typ, types)
       collectValidatorTypes(implMethod.returnType, types)
+  # Declarations are not the whole story: the analyzer inserts a `wekCheck`
+  # wherever an `Any` reaches a typed boundary, and that check calls a
+  # validator no signature mentions. Missing it emitted a call to a helper the
+  # module never defined — a ReferenceError at runtime in a program that
+  # compiled and type-checked cleanly.
+  proc collectFromChecks(expr: WebExpr, types: var seq[WebType]) =
+    if expr == nil: return
+    if expr.kind == wekCheck: collectValidatorTypes(expr.typ, types)
+    for child in expr.children: collectFromChecks(child, types)
+  for root in module.expressionRoots: collectFromChecks(root, types)
   let errorParams =
     if emitter.typescript: "where: string, expected: string, value: unknown"
     else: "where, expected, value"
@@ -3992,6 +4155,12 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
         (if emitter.typescript: " as { fillRect?: unknown }" else: "") &
         ").fillRect !== \"function\") " &
         "$gene_type_error(where, \"Canvas2D\", value);")
+    of wtkDomGradient:
+      emitter.line("if (value === null || typeof value !== \"object\" || " &
+        "typeof (value" &
+        (if emitter.typescript: " as { addColorStop?: unknown }" else: "") &
+        ").addColorStop !== \"function\") " &
+        "$gene_type_error(where, \"Gradient\", value);")
     of wtkRange:
       emitter.line("if (!(value instanceof GeneRange)) $gene_type_error(where, \"Range\", value);")
     of wtkTask:
@@ -4743,6 +4912,43 @@ proc emitModule(module: WebModule, typescript: bool,
       " { if (lo > hi) throw new RangeError(" &
       "\"math/clamp lower bound exceeds upper bound\"); " &
       "return x < lo ? lo : x > hi ? hi : x; }")
+  if moduleUsesBuiltin(module, ["dom/element"]):
+    let idParam = if typescript: "id: string" else: "id"
+    let ret = if typescript: ": EventTarget" else: ""
+    emitter.line("function $gene_dom_element(" & idParam & ")" & ret &
+      " { const el = document.getElementById(id); if (!el) " &
+      "throw new TypeError(`dom/element: no element with id ${id}`); " &
+      "return el; }")
+  if moduleUsesBuiltin(module, ["dom/rect_left", "dom/rect_top",
+                                "dom/rect_width", "dom/rect_height"]):
+    let rectParams = if typescript:
+                       "el: EventTarget, which: \"left\" | \"top\" | \"width\" | \"height\""
+                     else: "el, which"
+    let numReturn = if typescript: ": number" else: ""
+    emitter.line("function $gene_dom_rect(" & rectParams & ")" & numReturn &
+      " { return (el" & (if typescript: " as Element" else: "") &
+      ").getBoundingClientRect()[which]; }")
+  if moduleUsesBuiltin(module, ["event/code", "event/key"]):
+    let evParams = if typescript: "event: any, field: string" else: "event, field"
+    let strReturn = if typescript: ": string" else: ""
+    emitter.line("function $gene_event_str(" & evParams & ")" & strReturn &
+      " { const v = event?.[field]; if (typeof v !== \"string\") " &
+      "throw new TypeError(`event has no string ${field}`); return v; }")
+  if moduleUsesBuiltin(module, ["event/button", "event/client_x",
+                                "event/client_y", "event/delta_y"]):
+    let evParams = if typescript: "event: any, field: string" else: "event, field"
+    let numReturn = if typescript: ": number" else: ""
+    emitter.line("function $gene_event_num(" & evParams & ")" & numReturn &
+      " { const v = event?.[field]; if (typeof v !== \"number\") " &
+      "throw new TypeError(`event has no numeric ${field}`); return v; }")
+  if moduleUsesBuiltin(module, ["image/load"]):
+    let imgParams = if typescript: "src: string, onLoad: (image: EventTarget) => void"
+                    else: "src, onLoad"
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_image_load(" & imgParams & ")" & voidReturn &
+      " { const image = new Image(); image.onload = () => onLoad(image); " &
+      "image.onerror = () => { throw new Error(`image/load failed: ${src}`); }; " &
+      "image.src = src; }")
   if moduleUsesBuiltin(module, ["canvas/context"]):
     let elParam = if typescript: "element: EventTarget" else: "element"
     let ctxReturn = if typescript: ": CanvasRenderingContext2D" else: ""

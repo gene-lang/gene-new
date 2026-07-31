@@ -45,6 +45,31 @@ const contract = [
   ["canvas/stroke_rect", "CanvasRenderingContext2D", "strokeRect", "call", 4],
   ["canvas/clear_rect", "CanvasRenderingContext2D", "clearRect", "call", 4],
   ["canvas/draw_image", "CanvasRenderingContext2D", "drawImage", "call", 9],
+  ["canvas/linear_gradient", "CanvasRenderingContext2D", "createLinearGradient", "call", 4],
+  ["canvas/add_color_stop", "CanvasGradient", "addColorStop", "call", 2],
+  // document, window, storage, timing
+  ["dom/element", "Document", "getElementById", "call", 1],
+  ["dom/create_element", "Document", "createElement", "call", 1],
+  ["dom/append", "Node", "appendChild", "call", 1],
+  ["dom/set_text", "Node", "textContent", "assign"],
+  ["dom/text", "Node", "textContent", "read"],
+  ["dom/set_class", "Element", "classList", "read"],
+  ["dom/set_class (toggle)", "DOMTokenList", "toggle", "call", 2],
+  ["dom/inner_width", "Window", "innerWidth", "read"],
+  ["dom/inner_height", "Window", "innerHeight", "read"],
+  ["dom/rect_*", "Element", "getBoundingClientRect", "call", 0],
+  ["event/code", "KeyboardEvent", "code", "read"],
+  ["event/key", "KeyboardEvent", "key", "read"],
+  ["event/button", "MouseEvent", "button", "read"],
+  ["event/client_x", "MouseEvent", "clientX", "read"],
+  ["event/client_y", "MouseEvent", "clientY", "read"],
+  ["event/delta_y", "WheelEvent", "deltaY", "read"],
+  ["frame/request", "Window", "requestAnimationFrame", "call", 1],
+  ["time/now", "Performance", "now", "call", 0],
+  ["storage/get", "Storage", "getItem", "call", 1],
+  ["storage/set", "Storage", "setItem", "call", 2],
+  ["image/load (src)", "HTMLImageElement", "src", "assign"],
+  ["image/load (onload)", "HTMLImageElement", "onload", "assign"],
   // events — the existing surface, checked by the same rule
   ["dom/prevent_default", "Event", "preventDefault", "call", 0],
   ["dom/stop_propagation", "Event", "stopPropagation", "call", 0],
@@ -145,15 +170,27 @@ for (const [label, ifaceName, member, kind, arity] of contract) {
       continue;
     }
   } else {
+    // Modern lib.dom.d.ts declares many members as accessor pairs
+    // (`get classList(): DOMTokenList; set classList(value: string);`) rather
+    // than as `readonly` properties, so both spellings have to be understood
+    // or the checker rejects real DOM members.
     const props = found.filter(ts.isPropertySignature);
-    if (props.length === 0) {
-      fail(label, `${ifaceName}.${member} is not a property`);
+    const getters = found.filter(ts.isGetAccessor);
+    const setters = found.filter(ts.isSetAccessor);
+    if (props.length === 0 && getters.length === 0 && setters.length === 0) {
+      fail(label, `${ifaceName}.${member} is not a property or accessor`);
       continue;
     }
-    if (kind === "assign" && props.every((p) => p.modifiers?.some(
-      (m) => m.kind === ts.SyntaxKind.ReadonlyKeyword,
-    ))) {
-      fail(label, `${ifaceName}.${member} is readonly and cannot be assigned`);
+    if (kind === "assign") {
+      const writableProp = props.some((p) => !p.modifiers?.some(
+        (m) => m.kind === ts.SyntaxKind.ReadonlyKeyword,
+      ));
+      if (!writableProp && setters.length === 0) {
+        fail(label, `${ifaceName}.${member} is readonly and cannot be assigned`);
+        continue;
+      }
+    } else if (props.length === 0 && getters.length === 0) {
+      fail(label, `${ifaceName}.${member} is write-only`);
       continue;
     }
   }

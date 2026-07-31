@@ -110,7 +110,7 @@
             (canvas ^id "stage")
             (div ^id "bar")
             %(controls)
-            (script ^type "module" ^src "./main.mjs"))))))
+            (script ^type "module" ^src "./boot.mjs"))))))
 
 (fn main []
   ($print (page))

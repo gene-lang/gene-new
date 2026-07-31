@@ -1,0 +1,284 @@
+# The game shell: state, input, camera, save/load, and the frame loop.
+#
+# This was main.mjs. It is Gene now because the web profile reaches the DOM
+# directly — `$dom/*`, `$event/*`, `$frame/*`, `$storage/*` — so there is no
+# JavaScript left in the game at all.
+#
+# All state lives in `boot`'s locals. The profile rejects top-level `var`, and
+# that turns out to be the right shape anyway: the frame callback is a closure
+# over them, so nothing is reachable from outside the program's own loop.
+
+(mod main ^profile web)
+
+(import [generate get_tile mine place step_player tile_size] from "./world.gene")
+(import [render render_player render_cursor] from "./render.gene")
+(import [spawn_y rle_encode rle_decode cycle_slot follow_camera depth_shade]
+  from "./shell.gene")
+
+(fn world_w [] : F64 512.0)
+(fn world_h [] : F64 192.0)
+(fn save_key [] : Str "new_world.save.v1")
+(fn slot_count [] : F64 10.0)
+
+# Hotbar slot -> tile id. Air and water are not placeable.
+(fn slot_tile [i : F64] : F64
+  (var ids : (List F64) [1.0 2.0 3.0 4.0 5.0 6.0 8.0 9.0 10.0 11.0])
+  ids/%i)
+
+(fn tile_count [] : F64 12.0)
+
+(fn tile_name [id : F64] : Str
+  (var names : (List Str)
+    ["air" "grass" "dirt" "stone" "log" "leaves"
+     "sand" "water" "coal" "iron" "gold" "plank"])
+  (if (< id (tile_count)) names/%id "?"))
+
+# --- helpers -----------------------------------------------------------------
+
+(fn zeroed [n : F64] : (List F64)
+  (var out : (List F64) [])
+  (var i 0.0)
+  (while (< i n)
+    (out ~ push! 0.0)
+    (set i (+ i 1.0)))
+  out)
+
+(fn sky_top [depth : F64] : Str
+  (if (> depth 0.5) "#0b0d12" "#8fc4e8"))
+
+(fn sky_bottom [depth : F64] : Str
+  (if (> depth 0.2) "#0b0d12" "#cfe6f4"))
+
+# --- boot --------------------------------------------------------------------
+
+(fn boot [] : Void
+  (var w (world_w))
+  (var h (world_h))
+  (var ts (tile_size))
+
+  (var stage ($dom/element "stage"))
+  (var hud ($dom/element "hud"))
+  (var bar ($dom/element "bar"))
+  (var ctx ($canvas/context stage))
+  # The atlas is not loaded yet and the profile has no null EventTarget, so it
+  # starts as the canvas and is replaced by `image/load` before the first
+  # frame — the loop does not start until then.
+  (var atlas stage)
+  ($canvas/set_smoothing ctx false)
+
+  (var tiles (zeroed (* w h)))
+  (var player (zeroed 6.0))
+  (var inventory (zeroed 16.0))
+  (var cam (zeroed 2.0))
+  (var selected 0.0)
+  (var seed 1.0)
+
+  # Input. Individual flags rather than a key set: the game has three movement
+  # intents, and naming them is clearer than a membership test per frame.
+  (var left 0.0)
+  (var right 0.0)
+  (var jump 0.0)
+  (var mouse_x 0.0)
+  (var mouse_y 0.0)
+  (var mining 0.0)
+  (var placing 0.0)
+  (var flash_text "")
+  (var flash_until 0.0)
+
+  (var say (fn [message : Str] : Void
+    (set flash_text message)
+    (set flash_until (+ ($time/now) 1200.0))))
+
+  (var respawn (fn [] : Void
+    (var x ($math/floor (/ w 2.0)))
+    (set! player/0 (+ x 0.5))
+    (set! player/1 (spawn_y tiles x w h))
+    (set! player/2 0.0)
+    (set! player/3 0.0)
+    (set! player/4 0.0)
+    (set! player/5 1.0)))
+
+  (var new_world (fn [next_seed : F64] : Void
+    (set seed next_seed)
+    (var i 0.0)
+    (while (< i (* w h))
+      (set! tiles/%i 0.0)
+      (set i (+ i 1.0)))
+    (var started ($time/now))
+    (generate tiles w h seed)
+    (set i 0.0)
+    (while (< i 16.0)
+      (set! inventory/%i 0.0)
+      (set i (+ i 1.0)))
+    (respawn)
+    ($console/log ($ "generated in " ($math/round (- ($time/now) started)) " ms"))))
+
+  (var save (fn [] : Void
+    (var out (zeroed (* w h)))
+    (var pairs (rle_encode tiles (* w h) out (* w h)))
+    (var runs : (List F64) [])
+    (var i 0.0)
+    (while (< i (* pairs 2.0))
+      (runs ~ push! out/%i)
+      (set i (+ i 1.0)))
+    ($storage/set (save_key)
+      ($json/stringify {^seed seed ^player player ^inventory inventory
+                        ^pairs pairs ^runs runs}))
+    (say "saved")))
+
+  (var load (fn [] : Void
+    (var raw (?? ($storage/get (save_key)) ""))
+    (if (== raw "")
+      (say "no save")
+      (do
+        (var saved ($json/parse raw))
+        (var runs : (List F64) saved/runs)
+        (rle_decode runs saved/pairs tiles (* w h))
+        (var p : (List F64) saved/player)
+        (var inv : (List F64) saved/inventory)
+        (var i 0.0)
+        (while (< i 6.0) (set! player/%i p/%i) (set i (+ i 1.0)))
+        (set i 0.0)
+        (while (< i 16.0) (set! inventory/%i inv/%i) (set i (+ i 1.0)))
+        (set seed saved/seed)
+        (say "loaded")))))
+
+  # --- hotbar ----------------------------------------------------------------
+  # Built once from static data and mutated in place, so no markup is assembled
+  # from values at runtime and no DOM is rebuilt per frame.
+  (var slot_els : (List Any) [])
+  (var count_els : (List Any) [])
+  (var s 0.0)
+  (while (< s (slot_count))
+    (var el ($dom/create_element "span"))
+    ($dom/set_class el "slot" true)
+    (var label ($dom/create_element "span"))
+    ($dom/set_text label ($ ($math/round (+ s 1.0)) " " (tile_name (slot_tile s)) " "))
+    (var count ($dom/create_element "b"))
+    ($dom/set_text count "0")
+    ($dom/append el label)
+    ($dom/append el count)
+    ($dom/append bar el)
+    (slot_els ~ push! el)
+    (count_els ~ push! count)
+    (set s (+ s 1.0)))
+
+  # --- input -----------------------------------------------------------------
+
+  ($dom/add_event_listener stage "mousemove" (fn [event : Any] : Void
+    (var scale (/ ($canvas/width stage) ($dom/rect_width stage)))
+    (set mouse_x (* (- ($event/client_x event) ($dom/rect_left stage)) scale))
+    (set mouse_y (* (- ($event/client_y event) ($dom/rect_top stage)) scale))))
+
+  ($dom/add_event_listener stage "mousedown" (fn [event : Any] : Void
+    (if (== ($event/button event) 0.0) (set mining 1.0) (set placing 1.0))))
+
+  ($dom/add_event_listener stage "contextmenu" (fn [event : Any] : Void
+    ($dom/prevent_default event)))
+
+  ($dom/add_event_listener stage "wheel" (fn [event : Any] : Void
+    ($dom/prevent_default event)
+    (set selected
+      (cycle_slot selected (if (> ($event/delta_y event) 0.0) 1.0 -1.0)
+                  (slot_count)))))
+
+  ($dom/add_event_listener stage "mouseup" (fn [event : Any] : Void
+    (set mining 0.0)
+    (set placing 0.0)))
+
+  ($dom/add_event_listener stage "keydown" (fn [event : Any] : Void
+    (var code ($event/code event))
+    (if_yes (|| (== code "KeyA") (== code "ArrowLeft")) (set left 1.0))
+    (if_yes (|| (== code "KeyD") (== code "ArrowRight")) (set right 1.0))
+    (if_yes (|| (== code "Space") (|| (== code "KeyW") (== code "ArrowUp")))
+      (do ($dom/prevent_default event) (set jump 1.0)))
+    (if_yes (== code "KeyN") (new_world ($math/floor (* ($time/now) 7.0))))
+    (if_yes (== code "KeyS") (save))
+    (if_yes (== code "KeyL") (load))
+    # Digit1..Digit9 select a hotbar slot.
+    (var d 0.0)
+    (while (< d (slot_count))
+      (if_yes (== code ($ "Digit" ($math/round (+ d 1.0)))) (set selected d))
+      (set d (+ d 1.0)))))
+
+  ($dom/add_event_listener stage "keyup" (fn [event : Any] : Void
+    (var code ($event/code event))
+    (if_yes (|| (== code "KeyA") (== code "ArrowLeft")) (set left 0.0))
+    (if_yes (|| (== code "KeyD") (== code "ArrowRight")) (set right 0.0))
+    (if_yes (|| (== code "Space") (|| (== code "KeyW") (== code "ArrowUp")))
+      (set jump 0.0))))
+
+  # --- frame -----------------------------------------------------------------
+
+  # Declared before it is defined so the body can schedule the next frame.
+  # The closure captures the binding, not the value, so the reassignment below
+  # is what the callback sees.
+  (var draw_frame : (Callback [F64] Void) (fn [now : F64] : Void void))
+  (set draw_frame (fn [now : F64] : Void
+    (var vw ($canvas/width stage))
+    (var vh ($canvas/height stage))
+
+    (step_player tiles player left right jump w h 1.0)
+    (follow_camera cam player/0 player/1 w h vw vh 0.18)
+    (var cam_x cam/0)
+    (var cam_y cam/1)
+
+    (var tx ($math/floor (/ (+ mouse_x cam_x) ts)))
+    (var ty ($math/floor (/ (+ mouse_y cam_y) ts)))
+
+    (if_yes (> mining 0.5)
+      (do
+        (var got (mine tiles player tx ty w h))
+        (if_yes (> got 0.5)
+          (set! inventory/%got (+ inventory/%got 1.0)))))
+    (if_yes (> placing 0.5)
+      (do
+        (var id (slot_tile selected))
+        (if_yes (> inventory/%id 0.5)
+          (if_yes (> (place tiles player tx ty id w h) 0.5)
+            (set! inventory/%id (- inventory/%id 1.0))))))
+
+    # Sky: depth is legible before a single number is read.
+    (var depth (depth_shade cam_y 40.0 90.0 1.0))
+    (var sky ($canvas/linear_gradient ctx 0.0 0.0 0.0 vh))
+    ($canvas/add_color_stop sky 0.0 (sky_top depth))
+    ($canvas/add_color_stop sky 1.0 (sky_bottom depth))
+    ($canvas/set_fill_gradient ctx sky)
+    ($canvas/fill_rect ctx 0.0 0.0 vw vh)
+
+    (render ctx atlas tiles w h cam_x cam_y vw vh seed)
+    (render_player ctx player cam_x cam_y)
+    (render_cursor ctx tiles player tx ty cam_x cam_y w h)
+
+    # One overlay rather than per-tile shading: depth should feel like light
+    # running out, and a single rect costs one draw instead of thousands.
+    (var dark (depth_shade cam_y 76.0 110.0 0.55))
+    (if_yes (> dark 0.01)
+      (do
+        ($canvas/set_fill ctx ($ "rgba(4,6,12," dark ")"))
+        ($canvas/fill_rect ctx 0.0 0.0 vw vh)))
+
+    ($dom/set_text hud
+      ($ "x " ($math/round player/0) "  y " ($math/round player/1)
+         "   ·   seed " ($math/round seed)
+         (if (< now flash_until) ($ "   ·   " flash_text) "")))
+
+    (var i 0.0)
+    (while (< i (slot_count))
+      ($dom/set_class slot_els/%i "on" (== i selected))
+      (var held (slot_tile i))
+      ($dom/set_text count_els/%i ($ ($math/round inventory/%held)))
+      (set i (+ i 1.0)))
+
+    ($frame/request draw_frame)))
+
+  # --- start -----------------------------------------------------------------
+
+  ($canvas/set_size stage
+    ($math/min 1280.0 (- ($dom/inner_width) 32.0))
+    ($math/min 720.0 (- ($dom/inner_height) 150.0)))
+
+  ($image/load "./assets/tiles.png" (fn [image : EventTarget] : Void
+    (set atlas image)
+    (new_world 1.0)
+    ($frame/request draw_frame))))

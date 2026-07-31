@@ -75,31 +75,26 @@ Gene reaches the browser by **two different routes**, and the difference matters
 | `src/world.gene` | **VM and browser** | terrain, physics, mining — no host calls at all |
 | `src/render.gene` | in the browser | drawing, straight onto `CanvasRenderingContext2D` |
 | `src/shell.gene` | in the browser | camera, spawn, save encoding, hotbar |
+| `src/main.gene` | in the browser | state, input, save/load, the frame loop |
 | `src/page.gene` | at build time | on the **VM**, emitting `index.html` |
-| `main.mjs` | in the browser | the last JavaScript: keyboard, localStorage, rAF |
+| `boot.mjs` | in the browser | three lines: a `<script src>` entry that calls `boot()` |
 
-**There are no `js/fn` externs left.** Drawing reaches
-`CanvasRenderingContext2D` through the web profile's own `$canvas/*` surface,
-so `host.mjs` is gone: the atlas blit, the player sprite, the cursor, and the
-cave backdrop are all Gene. `main.mjs` remains because something must own the
-keyboard, `localStorage`, and the frame callback — that is the next surface to
-land, not a limit.
+**The game is Gene.** There are no `js/fn` externs and no JavaScript game code:
+the canvas, the keyboard, `localStorage`, `requestAnimationFrame`, and image
+loading are all reached through the web profile's own host surface
+(`$canvas/*`, `$dom/*`, `$event/*`, `$frame/*`, `$storage/*`, `$image/*`).
+`boot.mjs` exists only because a browser needs an entry point it can
+`<script src>` — an ES module's export is not self-executing.
+
+Every one of those host operations is verified against the pinned
+`lib.dom.d.ts` by `tools/check_host_bindings.mjs`, which runs in
+`nimble transpile_spec`. The compiler is the source of truth for what Gene can
+call; TypeScript is the oracle for whether those calls are real.
 
 `src/world.gene` makes **no host calls at all**, which is what lets it run on
-the Gene VM as well as compile to JavaScript. That is the property worth having:
-a disagreement between the two backends is a compiler bug, and there is now one
-source to find it with.
-
-`src/world.gene` holds **no state at all**. The web profile rejects top-level `var`,
-so the world is a flat `(List F64)` that `main.mjs` owns and hands back on every
-call. That is a real constraint, not a stylistic choice, and it shapes the whole
-module.
-
-`src/page.gene` is an ordinary VM module, so it *can* hold top-level `var` — which is
-why the palette lives in named bindings there (`ink`, `accent`, `panel`) instead
-of the same hex literal appearing in five rules. The two Gene files in this
-project sit on opposite sides of that restriction, which makes them a decent
-illustration of what the profile costs and where it does not apply.
+the Gene VM as well as compile to JavaScript. That is the property worth
+having: a disagreement between the two backends is a compiler bug, and there is
+one source to find it with.
 
 ### Everything hot is `F64`
 
@@ -126,7 +121,8 @@ src/render.gene       drawing, direct to canvas
 src/shell.gene        camera, spawn, save encoding, hotbar
 src/page.gene         the HTML page, as gene/html + gene/css node data
 src/png.gene          a PNG encoder in Gene: CRC32, zlib, chunks
-main.mjs              the last JavaScript: keyboard, localStorage, rAF
+src/main.gene         state, input, save/load, the frame loop
+boot.mjs              three-line browser entry point
 build.sh              assets -> Gene -> index.html
 tools/test.mjs        41 headless checks
 tools/gen_atlas.mjs   generates assets/tiles.png (and an 8x review blow-up)
