@@ -2702,6 +2702,80 @@ proc jsString(value: string): string =
 proc truthy(value: string): string =
   "(" & value & " !== false && " & value & " != null)"
 
+proc isRepeatable(value: string): bool =
+  ## True when a JS expression can be interpolated twice with no second
+  ## evaluation: a bare identifier, a keyword literal, or a numeric literal.
+  ## Anything else — a call, a property read that may hit a getter, arithmetic —
+  ## must be bound to a temp before `truthy` doubles it.
+  if value.len == 0: return false
+  if value in ["true", "false", "null", "undefined"]: return true
+  var i = 0
+  if value[0] in {'A'..'Z', 'a'..'z', '_', '$'}:
+    while i < value.len and value[i] in {'A'..'Z', 'a'..'z', '0'..'9', '_', '$'}:
+      inc i
+    return i == value.len
+  while i < value.len and value[i] in {'0'..'9', '.', 'n'}:
+    inc i
+  i > 0 and i == value.len
+
+proc truthyExpr(emitter: var WebEmitter, value: string): string =
+  ## `truthy` interpolates its operand twice, so a condition that can evaluate
+  ## must be bound first. Without this, `(if (f) …)` and `(while (f) …)` call
+  ## `f` twice per test — a miscompilation whenever `f` has an effect.
+  if isRepeatable(value): truthy(value)
+  else:
+    let slot = emitter.temp()
+    emitter.line("const " & slot & " = " & value & ";")
+    truthy(slot)
+
+proc isJsIdent(name: string): bool =
+  if name.len == 0: return false
+  if name[0] notin {'A'..'Z', 'a'..'z', '_', '$'}: return false
+  for ch in name:
+    if ch notin {'A'..'Z', 'a'..'z', '0'..'9', '_', '$'}: return false
+  true
+
+proc isNumericKey(key: string): bool =
+  key.len > 0 and key.allCharsInSet({'0'..'9'})
+
+proc directRead(emitter: WebEmitter, expr: WebExpr, base: string,
+                segments: seq[string]): string =
+  ## `$gene_get` is a six-branch generic helper, and on a path the analysis has
+  ## already resolved every one of those branches is dead. Emitting the property
+  ## read directly is what lets V8 see a monomorphic access instead of a
+  ## megamorphic call — the difference is the bulk of the web profile's gap to
+  ## hand-written JS on a hot loop.
+  ##
+  ## Only a single proven hop qualifies. `analyzeExpr` types a path of one
+  ## segment and falls back to `Any` beyond that, so a longer path has no
+  ## proven intermediate type to reason about. Returns "" when the general
+  ## helper must be kept.
+  if expr.keys.len != 1: return ""
+  let baseType = expr.children[0].typ
+  if baseType == nil: return ""
+  let key = expr.keys[0]
+  if key.len > 0:
+    # A declared class: never a node (no `$gene_node`), never nil (`T?` is a
+    # union, not a nominal), and the field name is stored unmangled by the
+    # constructor's `Object.assign`, so the camelCase fallback cannot fire.
+    # Numeric keys are excluded: those mean body slots, not properties.
+    if baseType.kind == wtkNominal and baseType.name in emitter.nominalTypes and
+        not isNumericKey(key):
+      return (if isJsIdent(key): base & "." & key
+              else: base & "[" & jsString(key) & "]")
+    if baseType.kind == wtkList and isNumericKey(key):
+      return base & "[" & key & "]"
+    return ""
+  # Dynamic `%` index into a list. A plain array carries no `$gene_body` and no
+  # `$gene_node`, so only the bigint coercion is live — and only for `Int`.
+  if baseType.kind != wtkList: return ""
+  let indexType = expr.children[1].typ
+  if indexType == nil or segments.len != 1: return ""
+  case indexType.kind
+  of wtkF64: return base & "[" & segments[0] & "]"
+  of wtkInt: return base & "[Number(" & segments[0] & ")]"
+  else: return ""
+
 proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
                  declarations: var seq[string]): string =
   case pattern.kind
@@ -2967,12 +3041,13 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         else: right
       "(" & left & " " & op & " " & guarded & ")"
   of wekNot:
-    "!" & truthy(emitter.emitExpr(expr.children[0]))
+    "!" & emitter.truthyExpr(emitter.emitExpr(expr.children[0]))
   of wekIf:
     let condition = emitter.emitExpr(expr.children[0])
+    let guard = emitter.truthyExpr(condition)
     let target = emitter.temp()
     emitter.line("let " & target & ";")
-    emitter.line("if " & truthy(condition) & " {")
+    emitter.line("if " & guard & " {")
     inc emitter.indent
     let yes = emitter.emitExpr(expr.children[1])
     emitter.line(target & " = " & yes & ";")
@@ -3029,7 +3104,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     emitter.line("while (true) {")
     inc emitter.indent
     let condition = emitter.emitExpr(expr.children[0])
-    emitter.line("if (!" & truthy(condition) & ") break;")
+    emitter.line("if (!" & emitter.truthyExpr(condition) & ") break;")
     let body = emitter.emitExpr(expr.children[1])
     if expr.children[1].typ.kind != wtkNever: emitter.line("void " & body & ";")
     dec emitter.indent
@@ -3105,14 +3180,18 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   of wekPath:
     var current = emitter.emitExpr(expr.children[0])
     var dynamicIndex = 1
+    var segments: seq[string]
     for key in expr.keys:
-      let segment = if key.len > 0: jsString(key)
-                    else:
-                      let emitted = emitter.emitExpr(expr.children[dynamicIndex])
-                      inc dynamicIndex
-                      emitted
-      current = "$gene_get(" & current & ", " & segment & ")"
-    current
+      if key.len > 0: segments.add jsString(key)
+      else:
+        segments.add emitter.emitExpr(expr.children[dynamicIndex])
+        inc dynamicIndex
+    let direct = emitter.directRead(expr, current, segments)
+    if direct.len > 0: direct
+    else:
+      for segment in segments:
+        current = "$gene_get(" & current & ", " & segment & ")"
+      current
   of wekSelector:
     let receiver = emitter.temp()
     let current = emitter.temp()
