@@ -72,18 +72,23 @@ Gene reaches the browser by **two different routes**, and the difference matters
 
 | File | Runs | How |
 |---|---|---|
-| `src/world.gene` | in the browser | compiled to TypeScript/ESM by the **`web` profile** (`gene build --target web`) |
-| `src/shell.gene` | in the browser | same route — camera, spawn, save encoding, hotbar |
-| `src/page.gene` | at build time | on the **VM**, emitting `index.html` via `gene/html` + `gene/css` |
-| `host.mjs` | in the browser | hand-written JS — the canvas boundary |
-| `main.mjs` | in the browser | hand-written JS — DOM wiring and the rAF loop |
+| `src/world.gene` | **VM and browser** | terrain, physics, mining — no host calls at all |
+| `src/render.gene` | in the browser | drawing, straight onto `CanvasRenderingContext2D` |
+| `src/shell.gene` | in the browser | camera, spawn, save encoding, hotbar |
+| `src/page.gene` | at build time | on the **VM**, emitting `index.html` |
+| `main.mjs` | in the browser | the last JavaScript: keyboard, localStorage, rAF |
 
-**JavaScript is only what the profile cannot reach.** `host.mjs` exists because
-`js/fn` binds to a real JS module and the profile's DOM subset has no canvas;
-`main.mjs` exists because something must own the keyboard, `localStorage`, and
-the frame callback. Everything that was arithmetic or an array walk moved to
-`src/shell.gene`, including the save encoding — so the format of a saved world
-is decided in Gene, not in the shell that stores it.
+**There are no `js/fn` externs left.** Drawing reaches
+`CanvasRenderingContext2D` through the web profile's own `$canvas/*` surface,
+so `host.mjs` is gone: the atlas blit, the player sprite, the cursor, and the
+cave backdrop are all Gene. `main.mjs` remains because something must own the
+keyboard, `localStorage`, and the frame callback — that is the next surface to
+land, not a limit.
+
+`src/world.gene` makes **no host calls at all**, which is what lets it run on
+the Gene VM as well as compile to JavaScript. That is the property worth having:
+a disagreement between the two backends is a compiler bug, and there is now one
+source to find it with.
 
 `src/world.gene` holds **no state at all**. The web profile rejects top-level `var`,
 so the world is a flat `(List F64)` that `main.mjs` owns and hands back on every
@@ -116,12 +121,12 @@ JavaScript, tooling, or build output.
 
 ```
 package.gene          manifest: name, version, source_dir, main_module
-src/world.gene        terrain, physics, collision, mining, render walk
+src/world.gene        terrain, physics, collision, mining — runs on VM too
+src/render.gene       drawing, direct to canvas
 src/shell.gene        camera, spawn, save encoding, hotbar
 src/page.gene         the HTML page, as gene/html + gene/css node data
 src/png.gene          a PNG encoder in Gene: CRC32, zlib, chunks
-host.mjs              canvas externs — the boundary Gene calls out through
-main.mjs              DOM wiring: keyboard, localStorage, the rAF loop
+main.mjs              the last JavaScript: keyboard, localStorage, rAF
 build.sh              assets -> Gene -> index.html
 tools/test.mjs        41 headless checks
 tools/gen_atlas.mjs   generates assets/tiles.png (and an 8x review blow-up)

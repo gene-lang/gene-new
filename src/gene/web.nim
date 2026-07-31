@@ -18,6 +18,11 @@ type
     ## generated validator is `return value;` and therefore validates nothing.
     ## It admits exactly the operations the DOM ABI allows on a target.
     wtkDomTarget
+    ## The 2D drawing context. Distinct from `DomTarget` because a
+    ## CanvasRenderingContext2D is *not* an EventTarget — it has no
+    ## `addEventListener` — so the two cannot share a validator, and `Any`
+    ## would validate nothing at all.
+    wtkDomCanvas
 
   WebType* = ref object
     kind*: WebTypeKind
@@ -401,6 +406,7 @@ proc typeName(typ: WebType): string =
   of wtkNode: "Node"
   of wtkRange: "Range"
   of wtkDomTarget: "EventTarget"
+  of wtkDomCanvas: "Canvas2D"
   of wtkTask: "(Task " & typeName(typ.item) & ")"
   of wtkStream: "(Stream " & typeName(typ.item) & ")"
   of wtkNominal: typ.name
@@ -432,6 +438,7 @@ proc tsType(typ: WebType): string =
   of wtkNode: "GeneNode"
   of wtkRange: "GeneRange"
   of wtkDomTarget: "EventTarget"
+  of wtkDomCanvas: "CanvasRenderingContext2D"
   of wtkTask: "GeneTask<" & tsType(typ.item) & ">"
   of wtkStream: "GeneStream<" & tsType(typ.item) & ">"
   of wtkNominal: mangleWebName(typ.name)
@@ -461,6 +468,7 @@ proc validatorSuffix(typ: WebType): string =
   of wtkNode: "node"
   of wtkRange: "range"
   of wtkDomTarget: "event_target"
+  of wtkDomCanvas: "canvas2d"
   of wtkTask: "task_" & validatorSuffix(typ.item)
   of wtkStream: "stream_" & validatorSuffix(typ.item)
   of wtkNominal: "nominal_" & mangleWebName(typ.name)
@@ -549,6 +557,7 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
     of "Node": return webType(wtkNode)
     of "Range": return webType(wtkRange)
     of "EventTarget": return webType(wtkDomTarget)
+    of "Canvas2D": return webType(wtkDomCanvas)
     else:
       return WebType(kind: wtkNominal, name: value.symVal)
   if value.kind == vkNode and value.head.isSym("List") and
@@ -1466,6 +1475,44 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         returnType = webType(wtkVoid)
       of "dom/prevent_default", "dom/stop_propagation":
         paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkVoid)
+      # --- canvas ---------------------------------------------------------
+      # Enough of CanvasRenderingContext2D to draw a game: a context handle, a
+      # fill and stroke colour, rectangles, and a blit. Every coordinate is
+      # F64, never Int, because the DOM takes `number` and a bigint crossing
+      # this boundary would throw.
+      of "canvas/context":
+        # The element is an EventTarget (a canvas is one); the result is the
+        # 2D context, which is not.
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkDomCanvas)
+      of "canvas/set_size":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "canvas/width", "canvas/height":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkF64)
+      of "canvas/set_fill", "canvas/set_stroke":
+        paramTypes = @[webType(wtkDomCanvas), webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "canvas/set_line_width":
+        paramTypes = @[webType(wtkDomCanvas), webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "canvas/set_smoothing":
+        paramTypes = @[webType(wtkDomCanvas), webType(wtkBool)]
+        returnType = webType(wtkVoid)
+      of "canvas/fill_rect", "canvas/stroke_rect", "canvas/clear_rect":
+        paramTypes = @[webType(wtkDomCanvas), webType(wtkF64), webType(wtkF64),
+                       webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "canvas/draw_image":
+        # The nine-argument form: source rect and destination rect. A tile
+        # atlas needs exactly this, and the shorter overloads are a strict
+        # subset a caller can express by passing the full rect.
+        paramTypes = @[webType(wtkDomCanvas), webType(wtkDomTarget),
+                       webType(wtkF64), webType(wtkF64), webType(wtkF64),
+                       webType(wtkF64), webType(wtkF64), webType(wtkF64),
+                       webType(wtkF64), webType(wtkF64)]
         returnType = webType(wtkVoid)
       of "http/post_form", "http/get":
         # Continuation-passing rather than `Task`-returning, because the only
@@ -3035,6 +3082,10 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "math/floor": "Math.floor(" & arguments[0] & ")"
     of "math/ceil": "Math.ceil(" & arguments[0] & ")"
     of "math/trunc": "Math.trunc(" & arguments[0] & ")"
+    # JS Math.round breaks ties toward +Infinity; the VM's rounds half away
+    # from zero. They differ only on negative halves (-2.5), and agreeing with
+    # the VM is what the conformance suite is for.
+    of "math/round": "$gene_math_round(" & arguments[0] & ")"
     of "math/abs": "Math.abs(" & arguments[0] & ")"
     of "math/sign": "Math.sign(" & arguments[0] & ")"
     of "math/sqrt": "$gene_math_sqrt(" & arguments[0] & ")"
@@ -3060,6 +3111,25 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "console/log": "console.log(" & arguments[0] & ")"
     of "console/warn": "console.warn(" & arguments[0] & ")"
     of "console/error": "console.error(" & arguments[0] & ")"
+    of "canvas/context": "$gene_canvas_context(" & arguments[0] & ")"
+    of "canvas/set_size":
+      "$gene_canvas_set_size(" & arguments[0] & ", " & arguments[1] & ", " &
+        arguments[2] & ")"
+    of "canvas/width": "$gene_canvas_dim(" & arguments[0] & ", \"width\")"
+    of "canvas/height": "$gene_canvas_dim(" & arguments[0] & ", \"height\")"
+    of "canvas/set_fill": "(" & arguments[0] & ".fillStyle = " & arguments[1] & ", undefined)"
+    of "canvas/set_stroke": "(" & arguments[0] & ".strokeStyle = " & arguments[1] & ", undefined)"
+    of "canvas/set_line_width": "(" & arguments[0] & ".lineWidth = " & arguments[1] & ", undefined)"
+    of "canvas/set_smoothing":
+      "(" & arguments[0] & ".imageSmoothingEnabled = " & arguments[1] & ", undefined)"
+    of "canvas/fill_rect":
+      arguments[0] & ".fillRect(" & arguments[1 .. 4].join(", ") & ")"
+    of "canvas/stroke_rect":
+      arguments[0] & ".strokeRect(" & arguments[1 .. 4].join(", ") & ")"
+    of "canvas/clear_rect":
+      arguments[0] & ".clearRect(" & arguments[1 .. 4].join(", ") & ")"
+    of "canvas/draw_image":
+      arguments[0] & ".drawImage(" & arguments[1 .. 9].join(", ") & ")"
     of "dom/prevent_default": "$gene_dom_prevent_default(" & arguments[0] & ")"
     of "dom/stop_propagation": "$gene_dom_stop_propagation(" & arguments[0] & ")"
     of "http/get":
@@ -3913,6 +3983,15 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
         (if emitter.typescript: " as { addEventListener?: unknown }" else: "") &
         ").addEventListener !== \"function\") " &
         "$gene_type_error(where, \"EventTarget\", value);")
+    of wtkDomCanvas:
+      # Structural, like the EventTarget check above, so a context from another
+      # realm still validates. `fillRect` is the operation every drawing path
+      # here needs, which makes it the honest probe.
+      emitter.line("if (value === null || typeof value !== \"object\" || " &
+        "typeof (value" &
+        (if emitter.typescript: " as { fillRect?: unknown }" else: "") &
+        ").fillRect !== \"function\") " &
+        "$gene_type_error(where, \"Canvas2D\", value);")
     of wtkRange:
       emitter.line("if (!(value instanceof GeneRange)) $gene_type_error(where, \"Range\", value);")
     of wtkTask:
@@ -4631,6 +4710,11 @@ proc emitModule(module: WebModule, typescript: bool,
   # backend has to as well — otherwise `(sqrt -1)` is an error on the server and
   # a silent NaN in the browser, and the whole point of one language on both
   # sides is that it does not do that.
+  if moduleUsesBuiltin(module, ["math/round"]):
+    let numParam = if typescript: "x: number" else: "x"
+    let numReturn = if typescript: ": number" else: ""
+    emitter.line("function $gene_math_round(" & numParam & ")" & numReturn &
+      " { return x < 0 ? -Math.round(-x) : Math.round(x); }")
   if moduleUsesBuiltin(module, ["math/sqrt"]):
     let numParam = if typescript: "x: number" else: "x"
     let numReturn = if typescript: ": number" else: ""
@@ -4659,6 +4743,29 @@ proc emitModule(module: WebModule, typescript: bool,
       " { if (lo > hi) throw new RangeError(" &
       "\"math/clamp lower bound exceeds upper bound\"); " &
       "return x < lo ? lo : x > hi ? hi : x; }")
+  if moduleUsesBuiltin(module, ["canvas/context"]):
+    let elParam = if typescript: "element: EventTarget" else: "element"
+    let ctxReturn = if typescript: ": CanvasRenderingContext2D" else: ""
+    emitter.line("function $gene_canvas_context(" & elParam & ")" & ctxReturn &
+      " { const ctx = (element" &
+      (if typescript: " as HTMLCanvasElement" else: "") &
+      ").getContext(\"2d\"); if (!ctx) throw new TypeError(" &
+      "\"canvas/context expects a canvas element\"); return ctx; }")
+  if moduleUsesBuiltin(module, ["canvas/set_size"]):
+    let sizeParams = if typescript: "element: EventTarget, w: number, h: number"
+                     else: "element, w, h"
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_canvas_set_size(" & sizeParams & ")" &
+      voidReturn & " { const c = element" &
+      (if typescript: " as HTMLCanvasElement" else: "") &
+      "; c.width = w; c.height = h; }")
+  if moduleUsesBuiltin(module, ["canvas/width", "canvas/height"]):
+    let dimParams = if typescript: "element: EventTarget, which: \"width\" | \"height\""
+                    else: "element, which"
+    let numReturn = if typescript: ": number" else: ""
+    emitter.line("function $gene_canvas_dim(" & dimParams & ")" & numReturn &
+      " { return (element" &
+      (if typescript: " as HTMLCanvasElement" else: "") & ")[which]; }")
   if moduleUsesBuiltin(module, ["dom/prevent_default", "dom/stop_propagation"]):
     # Typed as `Any` because an Event has no profile type; the guard is what
     # keeps a mistaken receiver from failing silently, which is the failure mode

@@ -7,7 +7,8 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generate, get_tile, surface_at, render_variant } from "../dist/world.mjs";
+import { generate, get_tile, surface_at } from "../dist/world.mjs";
+import { render_variant } from "../dist/render.mjs";
 import { atlasPixels, TILE, COLS, ATLAS_W, encodePng } from "./gen_atlas.mjs";
 
 const W = 512;

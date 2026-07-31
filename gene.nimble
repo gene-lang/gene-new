@@ -51,6 +51,7 @@ task spec, "Run executable language surface specs":
   exec "nim c -r --path:src --hints:off tests/spec_runner.nim"
 
 task transpile_spec, "Run shared VM/web-profile conformance fixtures":
+  exec "node tools/check_host_bindings.mjs"
   exec "nim c -r --path:src --hints:off tests/transpile_fixture_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_web_runner.nim"
   exec "nim c -r --path:src --hints:off tests/transpile_async_runner.nim"
@@ -60,8 +61,11 @@ task transpile_spec, "Run shared VM/web-profile conformance fixtures":
 task transpile_typecheck, "Type-check emitted web artifacts with pinned TypeScript":
   exec "npm run transpile:typecheck"
 
-task dom_bindings, "Regenerate the supported lib.dom.d.ts binding subset":
-  exec "node tools/generate_dom_bindings.mjs"
+task host_bindings, "Check the web profile's host surface against lib.dom.d.ts":
+  ## The compiler is the source of truth for what Gene can call; TypeScript is
+  ## the oracle that says whether those calls exist. Run by `test`, so drift
+  ## fails the build instead of producing a document nobody reads.
+  exec "node tools/check_host_bindings.mjs"
 
 task transpile_perf, "Measure web-profile numeric, compile, runtime, and size baselines":
   exec "mkdir -p bin"

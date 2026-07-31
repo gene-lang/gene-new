@@ -1766,6 +1766,21 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "math.round_ties_away_from_zero",
+      "source": "(fn run [] : F64 (+ ($math/round 2.5) ($math/round -2.5))) (run)",
+      "web_source": "(mod math_rd ^profile web) (fn run [] : F64 (+ ($math/round 2.5) ($math/round -2.5)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "0.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     }
   ]
 }

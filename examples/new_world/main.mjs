@@ -10,6 +10,7 @@ import {
   get_tile,
 } from "./dist/world.mjs";
 import { render, render_player, render_cursor } from "./dist/render.mjs";
+
 // From dist/, not from here: dist/world.mjs imports "./host.mjs" relative to
 // itself, and importing a second copy would give bind() a different module
 // instance than draw_tile() reads from.
@@ -32,6 +33,7 @@ const PLACEABLE = [1, 2, 3, 4, 5, 6, 8, 9, 10, 11];
 
 const canvas = document.getElementById("stage");
 const ctx = canvas.getContext("2d", { alpha: false });
+ctx.imageSmoothingEnabled = false;
 const hud = document.getElementById("hud");
 const bar = document.getElementById("bar");
 
@@ -174,7 +176,7 @@ function frame() {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, vw, vh);
 
-  render(tiles, W, H, camX, camY, vw, vh, seed);
+  render(ctx, atlas, tiles, W, H, camX, camY, vw, vh, seed);
 
   // One overlay rather than per-tile shading: depth should feel like light
   // running out, and a single gradient costs one draw instead of 3,600.
@@ -183,8 +185,8 @@ function frame() {
     ctx.fillStyle = `rgba(4,6,12,${dark.toFixed(3)})`;
     ctx.fillRect(0, 0, vw, vh);
   }
-  render_player(player, camX, camY);
-  render_cursor(tiles, player, tx, ty, camX, camY, W, H);
+  render_player(ctx, player, camX, camY);
+  render_cursor(ctx, tiles, player, tx, ty, camX, camY, W, H);
   const t2 = performance.now();
 
   simAcc += t1 - t0;
@@ -238,7 +240,6 @@ resize();
 const atlas = new Image();
 atlas.src = "./assets/tiles.png";
 atlas.onload = () => {
-  bind(ctx, atlas);
   newWorld(1);
   requestAnimationFrame(frame);
 };
