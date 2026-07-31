@@ -262,12 +262,32 @@ profile offers no way to mark a boundary already-validated.
   convention everyone copies.
 - **An empty list literal needs an expected type** (`(var a : (List S) [])`).
 
-**Binary output is out of reach.** The atlas and screenshot tools stay
-JavaScript because a PNG needs CRC32, deflate, and a binary file write. CRC32
-and a stored-block deflate are both writable in Gene, but the runtime has no
-`\x` string escape and `fs/write_text` takes a `Str`, so a byte with the high
-bit set cannot be expressed or written. A `fs/write_bytes` over the existing
-`Bytes` type is the missing piece, and it is small.
+**There is no math library.** Not on either backend: `floor`, `ceil`, `sqrt`,
+`sin`, `cos`, `abs`, `round`, and `pow` are absent from the stdlib entirely, and
+both backends say so — `(x ~ floor)` is "no message floor on Float" on the VM
+and "web type F64 has no message floor" in the profile, while `$math/floor` is
+rejected as "portable web stdlib does not provide math/floor". This is why
+`world.gene` declares `floor`, `abs`, and `sin` as **JavaScript externs**: not
+because a game wants them from the host, but because Gene cannot supply them.
+A terrain generator is mostly arithmetic, and three of its seven `js/fn`
+declarations exist only to reach `Math`.
+
+The consequence is larger than the inconvenience. Those externs are what make
+`world.gene` **unrunnable on the VM** — `js/fn` is a web-profile form, so
+importing the module on the VM fails with "undefined symbol: js". So the game's
+logic cannot be tested on both backends against one source, which is precisely
+the conformance property `transpile.md` is built around. A `gene/math`
+namespace would drop three externs, make the pure half VM-runnable, and turn
+`tools/test.mjs` into a Gene script that proves VM/web agreement. It is the
+highest-leverage stdlib gap this project has hit.
+
+**Binary output is out of reach**, which is why the atlas and screenshot tools
+stay JavaScript. A PNG needs CRC32, deflate, and a binary write. CRC32 and a
+stored-block deflate are both writable in Gene, but `Bytes` is a literal-only
+type — no `size`, no construction from integers, no concatenation — there is no
+`\x` string escape, and `fs/write_text` takes a `Str`, so a byte with the high
+bit set can neither be built nor written. `fs/write_bytes` plus a byte-building
+API is the missing piece.
 
 **A syntax trap worth a diagnostic.** `xs/i` is a *static* path — the member
 named `"i"` — and lowers to `$gene_get(xs, "i")`, which returns `undefined` at
