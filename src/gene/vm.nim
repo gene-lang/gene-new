@@ -4793,10 +4793,24 @@ proc setMutableChild(target, segment, value: Value): Value =
   of vkList:
     if target.listImmutable:
       raise newException(GeneError, "cannot mutate immutable List")
-    if segment.kind != vkInt:
-      raise newException(GeneError, "set! into a List requires an Int index")
-    index = updateIndex("set!", target.listItems.len,
-                        requireInt64("set!", segment))
+    # An integral Float indexes a List, because the web profile lowers an
+    # `F64` index to `xs[i]` and JavaScript accepts it — rejecting it here
+    # would mean the same source indexes a list on one backend and fails on
+    # the other. A *non*-integral Float is still an error: `xs/%1.5` is a bug
+    # in any backend, and silently truncating it is how that bug survives.
+    var listIndex: int64
+    if segment.kind == vkInt:
+      listIndex = requireInt64("set!", segment)
+    elif segment.kind == vkFloat:
+      let f = segment.floatVal
+      if f != f.trunc or f.classify notin {fcNormal, fcZero, fcNegZero}:
+        raise newException(GeneError,
+          "set! into a List requires a whole-number index, got " & $f)
+      listIndex = int64(f)
+    else:
+      raise newException(GeneError,
+        "set! into a List requires an Int index")
+    index = updateIndex("set!", target.listItems.len, listIndex)
     stored = if value.kind == vkVoid: NIL else: value
     target.setListItem(index, stored)
     result = stored

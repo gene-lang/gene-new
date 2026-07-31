@@ -14,6 +14,7 @@ node "$here/tools/gen_atlas.mjs"
 
 "$gene" build --target web "$here/src/world.gene" --out-dir "$here/dist"
 "$gene" build --target web "$here/src/shell.gene" --out-dir "$here/dist"
+"$gene" build --target web "$here/src/render.gene" --out-dir "$here/dist"
 # `js/fn ^from` paths are emitted verbatim, so the host module has to sit next
 # to the generated module rather than next to the source.
 cp "$here/host.mjs" "$here/dist/host.mjs"

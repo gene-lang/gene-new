@@ -12,18 +12,6 @@
 
 (mod world ^profile web)
 
-# --- host ------------------------------------------------------------------
-# Only the canvas remains a JavaScript boundary. floor/abs/sin used to be here
-# too, purely because Gene had no math library; they are `gene/math` now.
-
-(js/fn draw_tile ^from "./host.mjs" ^import "draw_tile"
-  [id : F64 sx : F64 sy : F64] : Void)
-(js/fn draw_player ^from "./host.mjs" ^import "draw_player"
-  [sx : F64 sy : F64 facing : F64] : Void)
-(js/fn draw_highlight ^from "./host.mjs" ^import "draw_highlight"
-  [sx : F64 sy : F64 ok : F64] : Void)
-(js/fn draw_backdrop ^from "./host.mjs" ^import "draw_backdrop"
-  [sx : F64 sy : F64 shade : F64] : Void)
 
 # --- tile ids (must match the atlas order in tools/gen_atlas.mjs) -----------
 # The profile has no top-level constants, so these are nullary functions. V8
@@ -274,63 +262,3 @@
                          (== ($math/floor (+ p/1 1.0)) ty))))))
     (do (set_tile tiles tx ty w h id) 1.0)
     0.0))
-
-# --- render ----------------------------------------------------------------
-# Only the visible window is walked, so world size costs nothing per frame.
-
-# Gameplay id and drawn id are different things: the world stores stone as
-# `t_stone` so mining and inventory stay simple, while the renderer picks one of
-# several stamps so a cliff face is not one texture repeated.
-(fn render_variant [id : F64 x : F64 y : F64] : F64
-  (if (== id (t_stone))
-    (do
-      (var r (hash2 x y 777.0))
-      (if (< r 0.34) id (if (< r 0.67) 12.0 13.0)))
-    (if (== id (t_dirt))
-      (if (< (hash2 x y 778.0) 0.5) id 14.0)
-      id)))
-
-(fn render [tiles : (List F64) w : F64 h : F64
-            cam_x : F64 cam_y : F64
-            view_w : F64 view_h : F64 seed : F64] : Void
-  (var ts (tile_size))
-  (var x0 ($math/floor (/ cam_x ts)))
-  (var y0 ($math/floor (/ cam_y ts)))
-  (var x1 (+ x0 (+ 2.0 ($math/floor (/ view_w ts)))))
-  (var y1 (+ y0 (+ 2.0 ($math/floor (/ view_h ts)))))
-  (if_yes (< x0 0.0) (set x0 0.0))
-  (if_yes (< y0 0.0) (set y0 0.0))
-  (if_yes (> x1 w) (set x1 w))
-  (if_yes (> y1 h) (set y1 h))
-  # Column-major so each column's surface height is computed once rather than
-  # once per tile. That height is what tells a cave from open sky.
-  (var x x0)
-  (while (< x x1)
-    (var ground (surface_at x seed))
-    (var y y0)
-    (while (< y y1)
-      (var i (idx x y w))
-      (var id tiles/%i)
-      (var sx (- (* x ts) cam_x))
-      (var sy (- (* y ts) cam_y))
-      (if (> id 0.5)
-        (draw_tile (render_variant id x y) sx sy)
-        # Sub-surface air is a cave, not a window: put a wall behind it that
-        # darkens with depth, or the underground reads as a hole in the world.
-        (if_yes (> y ground)
-          (draw_backdrop sx sy (- y ground))))
-      (set y (+ y 1.0)))
-    (set x (+ x 1.0))))
-
-(fn render_cursor [tiles : (List F64) p : (List F64)
-                   tx : F64 ty : F64 cam_x : F64 cam_y : F64
-                   w : F64 h : F64] : Void
-  (var ts (tile_size))
-  (draw_highlight (- (* tx ts) cam_x) (- (* ty ts) cam_y)
-    (if (in_reach? p tx ty) 1.0 0.0)))
-
-(fn render_player [p : (List F64) cam_x : F64 cam_y : F64] : Void
-  (var ts (tile_size))
-  (draw_player (- (* (- p/0 (/ (p_width) 2.0)) ts) cam_x)
-               (- (* p/1 ts) cam_y)
-               p/5))

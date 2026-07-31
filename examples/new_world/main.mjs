@@ -5,13 +5,11 @@
 import {
   generate,
   step_player,
-  render,
-  render_player,
-  render_cursor,
   mine,
   place,
   get_tile,
 } from "./dist/world.mjs";
+import { render, render_player, render_cursor } from "./dist/render.mjs";
 // From dist/, not from here: dist/world.mjs imports "./host.mjs" relative to
 // itself, and importing a second copy would give bind() a different module
 // instance than draw_tile() reads from.
