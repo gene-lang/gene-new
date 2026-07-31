@@ -1,0 +1,135 @@
+# A PNG encoder in Gene.
+#
+# This exists to answer a question the project kept hitting: the atlas and
+# screenshot tools were JavaScript only because Gene could not write a binary
+# file. With `gene/bit`, `gene/binary`, and `fs/write_bytes` it can, and this
+# module is the proof — CRC32, Adler-32, a zlib stream, and the chunk layout,
+# all in Gene with no host help.
+#
+# Compression is deflate's *stored* mode: valid, trivially correct, and larger
+# than a real deflate. A 64x64 atlas is not worth a Huffman coder, and the
+# alternative was staying in JavaScript.
+
+(mod png)
+
+(import $bit [and : band or : bor xor : bxor shl shr])
+(import $binary [from_list to_list from_str concat size get])
+
+# --- checksums ---------------------------------------------------------------
+
+# Note the decimal constants: `0x…` is a *Bytes* literal in Gene (design §7.5),
+# not a hex integer, so 3988292384 is the CRC polynomial 0xEDB88320 and
+# 4294967295 is the 0xFFFFFFFF mask.
+#
+# CRC32 without a precomputed table: 8 shifts per byte is fast enough for an
+# atlas and keeps the module free of a 256-entry literal.
+(fn crc32_byte [c : Int b : Int] : Int
+  (var x (bxor c b))
+  (var k 0)
+  (while (< k 8)
+    (if (== (band x 1) 1)
+      (set x (bxor 3988292384 (shr x 1)))
+      (set x (shr x 1)))
+    (set k (+ k 1)))
+  x)
+
+(fn crc32 [data : (List Int)] : Int
+  (var c 4294967295)
+  (for b in data
+    (set c (crc32_byte c b)))
+  (bxor c 4294967295))
+
+# `//` is the truncated remainder; `%` is the unquote prefix (design §2.1).
+(fn adler32 [data : (List Int)] : Int
+  (var a 1)
+  (var b 0)
+  (for byte in data
+    (set a (// (+ a byte) 65521))
+    (set b (// (+ b a) 65521)))
+  (bor (shl b 16) a))
+
+# --- byte helpers ------------------------------------------------------------
+
+(fn u32_be [n : Int] : (List Int)
+  [(band (shr n 24) 255) (band (shr n 16) 255)
+   (band (shr n 8) 255) (band n 255)])
+
+(fn u16_le [n : Int] : (List Int)
+  [(band n 255) (band (shr n 8) 255)])
+
+(fn append_all [target : (List Int) items : (List Int)] : Nil
+  (for i in items (target ~ push! i)))
+
+# --- chunks ------------------------------------------------------------------
+
+(fn chunk [tag : Str payload : (List Int)] : (List Int)
+  (var body : (List Int) [])
+  (append_all body (to_list (from_str tag)))
+  (append_all body payload)
+  (var acc : (List Int) [])
+  (append_all acc (u32_be (payload ~ size)))
+  (append_all acc body)
+  (append_all acc (u32_be (crc32 body)))
+  acc)
+
+# Deflate stored blocks: BFINAL/BTYPE header, LEN, ~LEN, then the raw bytes.
+# 65535 is the largest a single stored block can carry.
+(fn zlib_stored [data : (List Int)] : (List Int)
+  (var acc : (List Int) [120 1])
+  (var total (data ~ size))
+  (var at 0)
+  (var remaining 0)
+  (var n 0)
+  (var final 0)
+  (if (== total 0)
+    (append_all acc [1 0 0 255 255])
+    (while (< at total)
+      (set remaining (- total at))
+      (set n (if (> remaining 65535) 65535 remaining))
+      (set final (if (== (+ at n) total) 1 0))
+      (acc ~ push! final)
+      (append_all acc (u16_le n))
+      (append_all acc (u16_le (bxor n 65535)))
+      (var k 0)
+      (var src 0)
+      (while (< k n)
+        (set src (+ at k))
+        (acc ~ push! data/%src)
+        (set k (+ k 1)))
+      (set at (+ at n))))
+  (append_all acc (u32_be (adler32 data)))
+  acc)
+
+# --- public ------------------------------------------------------------------
+
+# `pixels` is RGBA, row-major, 4 bytes per pixel, width*height*4 long.
+(fn encode [width : Int height : Int pixels : (List Int)] : Bytes
+  (var ihdr : (List Int) [])
+  (append_all ihdr (u32_be width))
+  (append_all ihdr (u32_be height))
+  (append_all ihdr [8 6 0 0 0])          # 8-bit depth, RGBA, no interlace
+
+  # Each scanline is prefixed with filter byte 0 (None).
+  # `while` shares one scope across iterations on the VM (unlike `for`), so the
+  # loop bindings are hoisted and assigned rather than redeclared.
+  (var raw : (List Int) [])
+  (var y 0)
+  (var x 0)
+  (var row_start 0)
+  (var src 0)
+  (var stride (* width 4))
+  (while (< y height)
+    (raw ~ push! 0)
+    (set x 0)
+    (set row_start (* y stride))
+    (while (< x stride)
+      (set src (+ row_start x))
+      (raw ~ push! pixels/%src)
+      (set x (+ x 1)))
+    (set y (+ y 1)))
+
+  (var acc : (List Int) [137 80 78 71 13 10 26 10])   # PNG signature
+  (append_all acc (chunk "IHDR" ihdr))
+  (append_all acc (chunk "IDAT" (zlib_stored raw)))
+  (append_all acc (chunk "IEND" []))
+  (from_list acc))

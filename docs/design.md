@@ -2315,6 +2315,43 @@ fail at runtime on exactly the argument the annotation invited, so the profile
 rejects `Int` at compile time instead. `tests/transpile/fixtures.json` pins the
 agreement.
 
+### 7.9 `gene/bit` and `gene/binary`
+
+The primitives a binary format needs. Without them a checksum cannot be written
+in Gene at all, which is what kept every binary encoder in a host language.
+
+```gene
+($bit/xor 12 10)                    # => 6
+($binary/from_list [137 80 78 71])  # => 0x89504e47
+($fs/write_bytes $fs/WriteDir "out.png" data)
+```
+
+**`gene/bit`** — `and` `or` `xor` `not` `shl` `shr`, over Int. Operands are the
+I64 fast path rather than the arbitrary-precision range: a bit operation on a
+value wider than 64 bits has no single obvious meaning — two's complement of
+what width? — so it is rejected rather than silently truncated. Shift counts
+outside `0..63` are an error for the same reason. **`shr` is logical**, not
+arithmetic: an arithmetic shift would sign-extend and corrupt the high byte of
+every masked value, which is precisely what a checksum loop does.
+
+**`gene/binary`** — `from_list` `to_list` `size` `get` `concat` `slice`
+`from_str` `to_str`, over the immutable `Bytes` value (§7.5). Building one is a
+two-step job: accumulate into an ordinary mutable `List` of Int, then convert
+once. That keeps `Bytes` immutable as designed instead of introducing a second
+mutable sequence type whose only purpose is construction.
+
+The namespace is `binary` and not the obvious `bytes` because `bytes` is
+already a global function — `(bytes "hi")` gives a Str's bytes as a List of
+Int — and shadowing a shipped name to gain a tidier spelling is not a trade
+worth making.
+
+**`fs/write_bytes`** completes the path: same capability and same path
+confinement as `fs/write_text`, but the payload is `Bytes`, so a byte with the
+high bit set survives instead of being mangled by UTF-8 handling.
+
+`examples/new_world/src/png.gene` is the worked example — CRC32, Adler-32, a
+zlib stream, and PNG chunk layout, all in Gene with no host help.
+
 ---
 
 ## 8. Pattern matching and destructuring

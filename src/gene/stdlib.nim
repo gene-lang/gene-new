@@ -252,6 +252,152 @@ static void gene_turn_interrupt_end(void) {
   var cursesFocusedTerminalRect:
     tuple[valid: bool, top, left, height, width: int]
 
+# --- gene/bit ----------------------------------------------------------------
+# Bitwise operations over Int. These are the primitives a checksum or a binary
+# format needs; without them CRC32 and Adler-32 cannot be written in Gene at
+# all, which is what kept every binary encoder in the host language.
+#
+# Operands are the I64 fast path, not the arbitrary-precision range: a bit
+# operation on a value wider than 64 bits has no single obvious meaning (two's
+# complement of what width?), so it is rejected rather than silently truncated.
+
+proc requireBitInt(name: string, v: Value): int64 =
+  if v.kind != vkInt:
+    raise newException(GeneError, name & " expects an Int, got " & $v.kind)
+  v.intVal
+
+proc requireBitTwo(name: string, args: openArray[Value]): (int64, int64) =
+  if args.len != 2:
+    raise newException(GeneError,
+      name & " expects 2 arguments, got " & $args.len)
+  (requireBitInt(name, args[0]), requireBitInt(name, args[1]))
+
+proc requireShift(name: string, v: Value): int64 =
+  let n = requireBitInt(name, v)
+  if n < 0 or n > 63:
+    raise newException(GeneError, name & " shift count must be in 0..63")
+  n
+
+proc biBitAnd(args: openArray[Value]): Value {.nimcall.} =
+  let (a, b) = requireBitTwo("bit/and", args)
+  newInt(a and b)
+
+proc biBitOr(args: openArray[Value]): Value {.nimcall.} =
+  let (a, b) = requireBitTwo("bit/or", args)
+  newInt(a or b)
+
+proc biBitXor(args: openArray[Value]): Value {.nimcall.} =
+  let (a, b) = requireBitTwo("bit/xor", args)
+  newInt(a xor b)
+
+proc biBitNot(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("bit/not", args)
+  newInt(not requireBitInt("bit/not", args[0]))
+
+proc biBitShl(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "bit/shl expects 2 arguments")
+  let v = requireBitInt("bit/shl", args[0])
+  newInt(v shl requireShift("bit/shl", args[1]))
+
+proc biBitShr(args: openArray[Value]): Value {.nimcall.} =
+  ## Logical (zero-filling) shift, so it composes with masking the way a
+  ## checksum expects. An arithmetic shift on a negative value would sign-extend
+  ## and corrupt the high byte.
+  if args.len != 2:
+    raise newException(GeneError, "bit/shr expects 2 arguments")
+  let v = cast[uint64](requireBitInt("bit/shr", args[0]))
+  newInt(cast[int64](v shr uint64(requireShift("bit/shr", args[1]))))
+
+# --- gene/binary -------------------------------------------------------------
+# Operations on the immutable `Bytes` value (design §7.5). Building one is a
+# two-step job: accumulate into an ordinary mutable List of Int, then convert
+# once. That keeps the value type honest and avoids a second mutable sequence
+# type whose only purpose is construction.
+#
+# The namespace is `binary` rather than the obvious `bytes` because `bytes` is
+# already a global function — `(bytes "hi")` gives a Str's bytes as a List of
+# Int — and shadowing a shipped name to gain a tidier spelling is not a trade
+# worth making.
+
+proc requireBytes(name: string, v: Value) =
+  if v.kind != vkBytes:
+    raise newException(GeneError, name & " expects Bytes, got " & $v.kind)
+
+proc biBytesFromList(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("binary/from_list", args)
+  if args[0].kind != vkList:
+    raise newException(GeneError, "bytes/from_list expects a List")
+  var acc = newStringOfCap(args[0].listItems.len)
+  for item in args[0].listItems:
+    if item.kind != vkInt:
+      raise newException(GeneError,
+        "bytes/from_list expects Int elements, got " & $item.kind)
+    let b = item.intVal
+    if b < 0 or b > 255:
+      raise newException(GeneError,
+        "bytes/from_list element acc of range 0..255: " & $b)
+    acc.add char(b)
+  newBytes(acc)
+
+proc biBytesToList(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("binary/to_list", args)
+  requireBytes("binary/to_list", args[0])
+  var items: seq[Value]
+  for ch in args[0].bytesVal:
+    items.add newInt(int(uint8(ch)))
+  newList(items)
+
+proc biBytesSize(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("binary/size", args)
+  requireBytes("binary/size", args[0])
+  newInt(args[0].bytesVal.len)
+
+proc biBytesGet(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError, "bytes/get expects (bytes, index)")
+  requireBytes("binary/get", args[0])
+  if args[1].kind != vkInt:
+    raise newException(GeneError, "bytes/get index must be an Int")
+  let i = args[1].intVal
+  if i < 0 or i >= args[0].bytesVal.len:
+    raise newException(GeneError, "bytes/get index out of range: " & $i)
+  newInt(int(uint8(args[0].bytesVal[int(i)])))
+
+proc biBytesConcat(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("binary/concat", args)
+  if args[0].kind != vkList:
+    raise newException(GeneError, "bytes/concat expects a List of Bytes")
+  var acc = ""
+  for item in args[0].listItems:
+    requireBytes("bytes/concat item", item)
+    acc.add item.bytesVal
+  newBytes(acc)
+
+proc biBytesSlice(args: openArray[Value]): Value {.nimcall.} =
+  if args.len != 3:
+    raise newException(GeneError, "bytes/slice expects (bytes, start, len)")
+  requireBytes("binary/slice", args[0])
+  if args[1].kind != vkInt or args[2].kind != vkInt:
+    raise newException(GeneError, "bytes/slice start and len must be Int")
+  let total = args[0].bytesVal.len
+  let start = args[1].intVal
+  let count = args[2].intVal
+  if start < 0 or count < 0 or start + count > total:
+    raise newException(GeneError, "bytes/slice range out of bounds")
+  newBytes(args[0].bytesVal[int(start) ..< int(start + count)])
+
+proc biBytesFromStr(args: openArray[Value]): Value {.nimcall.} =
+  ## The string's UTF-8 encoding, which is what a wire format wants.
+  requireOne("binary/from_str", args)
+  requireStr("binary/from_str", args[0])
+  newBytes(args[0].strVal)
+
+proc biBytesToStr(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("binary/to_str", args)
+  requireBytes("binary/to_str", args[0])
+  newStr(args[0].bytesVal)
+
 # --- gene/math ---------------------------------------------------------------
 # Numeric model (design §7.4) decides the return kinds here, and the choice is
 # not obvious, so it is stated once:
@@ -5534,6 +5680,25 @@ proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nim
     raiseOsError("fs/read_text: " & e.msg, scope)
     NIL
 
+proc biFsWriteBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## The binary sibling of fs/write_text. Same capability, same path
+  ## confinement — the only difference is that the payload is Bytes, so a byte
+  ## with the high bit set survives instead of being mangled by UTF-8 handling.
+  if args.len != 3:
+    raise newException(GeneError,
+      "fs/write_bytes expects (fs/WriteDir, path, bytes)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireFsWriteDir("fs/write_bytes", args[0])
+  requireStr("fs/write_bytes path", args[1])
+  if args[2].kind != vkBytes:
+    raise newException(GeneError,
+      "fs/write_bytes expects Bytes, got " & $args[2].kind)
+  try:
+    writeFile(args[1].strVal, args[2].bytesVal)
+  except IOError as e:
+    raiseOsError("fs/write_bytes: " & e.msg, scope)
+  NIL
+
 proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "fs/write_text expects (fs/WriteDir, path, text)")
@@ -9104,6 +9269,25 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("stream", newNamespace("stream", stdStreamScope))
   root.define("node", newNamespace("node", stdNodeScope))
   root.define("parse", newNamespace("parse", stdParseScope))
+  # `gene/bit` and `gene/bytes` — the primitives a binary format needs.
+  let bitScope = newScope(root)
+  bitScope.define("and", newNativeFn("bit/and", biBitAnd))
+  bitScope.define("or", newNativeFn("bit/or", biBitOr))
+  bitScope.define("xor", newNativeFn("bit/xor", biBitXor))
+  bitScope.define("not", newNativeFn("bit/not", biBitNot))
+  bitScope.define("shl", newNativeFn("bit/shl", biBitShl))
+  bitScope.define("shr", newNativeFn("bit/shr", biBitShr))
+  root.define("bit", newNamespace("bit", bitScope))
+  let bytesScope = newScope(root)
+  bytesScope.define("from_list", newNativeFn("binary/from_list", biBytesFromList))
+  bytesScope.define("to_list", newNativeFn("binary/to_list", biBytesToList))
+  bytesScope.define("size", newNativeFn("binary/size", biBytesSize))
+  bytesScope.define("get", newNativeFn("binary/get", biBytesGet))
+  bytesScope.define("concat", newNativeFn("binary/concat", biBytesConcat))
+  bytesScope.define("slice", newNativeFn("binary/slice", biBytesSlice))
+  bytesScope.define("from_str", newNativeFn("binary/from_str", biBytesFromStr))
+  bytesScope.define("to_str", newNativeFn("binary/to_str", biBytesToStr))
+  root.define("binary", newNamespace("binary", bytesScope))
   # `gene/math`, reachable as `$math/floor` like every other root namespace.
   let mathScope = newScope(root)
   mathScope.define("floor", newNativeFn("math/floor", biMathFloor))
@@ -9656,6 +9840,8 @@ proc registerStdlibNamespaces(root: Scope) =
       newNativeCallFn("fs/read_text", biFsReadTextSync, acceptsNamed = false))
     fsNs.nsScope.define("write_text",
       newNativeCallFn("fs/write_text", biFsWriteTextSync, acceptsNamed = false))
+    fsNs.nsScope.define("write_bytes",
+      newNativeCallFn("fs/write_bytes", biFsWriteBytesSync, acceptsNamed = false))
     fsNs.nsScope.define("exists?",
       newNativeCallFn("fs/exists?", biFsExists, acceptsNamed = false))
     fsNs.nsScope.define("list_dir",

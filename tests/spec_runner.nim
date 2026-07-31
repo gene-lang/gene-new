@@ -3604,6 +3604,40 @@ suite "spec — native wrapper types (design §16.6)":
                "[(same? c ($thaw c)) (same? c ($freeze_shallow c))]",
                "[true true]")
 
+suite "spec — gene/bit and gene/binary from design (§7.9)":
+  test "bitwise operations work over Int":
+    check_eval("[($bit/and 12 10) ($bit/or 12 10) ($bit/xor 12 10)]",
+               "[8 14 6]")
+    check_eval("[($bit/shl 1 8) ($bit/shr 256 8) ($bit/not 0)]",
+               "[256 1 -1]")
+  test "shr is logical, so a checksum's high byte survives":
+    # An arithmetic shift would sign-extend and corrupt every masked byte.
+    check_eval("($bit/shr -1 56)", "255")
+  test "shift counts outside 0..63 are rejected":
+    check_runtime_error("($bit/shl 1 64)", "0..63")
+    check_runtime_error("($bit/shr 1 -1)", "0..63")
+    check_runtime_error("($bit/and 1 1.5)", "expects an Int")
+  test "Bytes round-trip through a List of Int":
+    check_eval("($binary/from_list [137 80 78 71])", "0x89504e47")
+    check_eval("($binary/to_list ($binary/from_list [1 2 255]))", "[1 2 255]")
+    check_eval("($binary/size ($binary/from_list [1 2 3]))", "3")
+    check_eval("($binary/get ($binary/from_list [9 8 7]) 1)", "8")
+  test "Bytes concatenate and slice":
+    check_eval("($binary/concat [($binary/from_list [1 2]) " &
+               "($binary/from_list [3])])",
+               "0x010203")
+    check_eval("($binary/slice ($binary/from_list [1 2 3 4]) 1 2)", "0x0203")
+  test "Bytes carry a string's UTF-8 encoding":
+    check_eval("($binary/from_str \"Hi\")", "0x4869")
+    check_eval("($binary/to_str ($binary/from_str \"Hi\"))", "\"Hi\"")
+  test "out-of-range bytes and indices are rejected":
+    check_runtime_error("($binary/from_list [256])", "0..255")
+    check_runtime_error("($binary/from_list [-1])", "0..255")
+    check_runtime_error("($binary/get ($binary/from_list [1]) 5)",
+                        "out of range")
+    check_runtime_error("($binary/slice ($binary/from_list [1 2]) 1 5)",
+                        "out of bounds")
+
 suite "spec — gene/math from design (§7.8)":
   test "rounding is kind-preserving":
     # Float in, Float out: `(== 1 1.0)` is false, and the web profile lowers

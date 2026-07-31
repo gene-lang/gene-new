@@ -119,6 +119,7 @@ package.gene          manifest: name, version, source_dir, main_module
 src/world.gene        terrain, physics, collision, mining, render walk
 src/shell.gene        camera, spawn, save encoding, hotbar
 src/page.gene         the HTML page, as gene/html + gene/css node data
+src/png.gene          a PNG encoder in Gene: CRC32, zlib, chunks
 host.mjs              canvas externs — the boundary Gene calls out through
 main.mjs              DOM wiring: keyboard, localStorage, the rAF loop
 build.sh              assets -> Gene -> index.html
@@ -134,19 +135,25 @@ index.html            generated — gitignored, never edit
 Only `host.mjs` and `main.mjs` ship to the browser; everything under `tools/`
 is build- and test-time.
 
-**The `tools/` scripts are still JavaScript**, for one remaining reason:
-writing a PNG needs CRC32, deflate, and a *binary* write. The first two are
-writable in Gene; `Bytes` is literal-only and `fs/write_text` takes a `Str`, so
-the third is not.
+**The `tools/` scripts are still JavaScript, but no longer because they have
+to be.** Both original blockers are fixed:
 
-The other blocker is gone. Gene had no math library at all, which is why
-`src/world.gene` used to declare `floor`, `abs`, and `sin` as JavaScript
-externs — `gene/math` (design.md §7.8) now provides them on both backends, and
-the game dropped three of its seven `js/fn` declarations. The four that remain
-are canvas calls, which are the genuine boundary.
+- *No math library* — `gene/math` (design.md §7.8) now provides floor, sqrt,
+  sin and the rest on both backends. `src/world.gene` dropped three of its
+  seven `js/fn` externs; the four that remain are canvas calls, the genuine
+  boundary.
+- *No binary output* — `gene/bit`, `gene/binary`, and `fs/write_bytes`
+  (§7.9) make a PNG writable in Gene. `src/png.gene` is the worked encoder:
+  CRC32, Adler-32, zlib stream, chunk layout, no host help.
 
-Both are recorded in [`docs/design.md`](docs/design.md) §D5.2 — the first as
-resolved, since that is what the awkwardness log is for.
+What remains is porting the two PNG tools' *drawing* code onto `src/png.gene`,
+which is ordinary work rather than a missing capability.
+
+Both are recorded as resolved in [`docs/design.md`](docs/design.md) §D5.2,
+along with four Gene gotchas that writing the encoder turned up — `0x…` is a
+Bytes literal rather than a hex Int, `//` is the remainder because `%` is
+unquote, `while` shares one scope across iterations, and an empty `[]` needs a
+type annotation.
 
 `gene pkg show` reports the resolved manifest. `main_module` is `world`
 because that is the substantive module — the one a dependent importing

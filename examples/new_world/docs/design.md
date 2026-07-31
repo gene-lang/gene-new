@@ -279,13 +279,26 @@ float result would have looked like a backend divergence. Fixed in
 `tests/transpile_web_runner.nim` — a rendering artifact that would have masked
 the real divergences the suite exists to catch.
 
-**Binary output is out of reach**, which is why the atlas and screenshot tools
-stay JavaScript. A PNG needs CRC32, deflate, and a binary write. CRC32 and a
-stored-block deflate are both writable in Gene, but `Bytes` is a literal-only
-type — no `size`, no construction from integers, no concatenation — there is no
-`\x` string escape, and `fs/write_text` takes a `Str`, so a byte with the high
-bit set can neither be built nor written. `fs/write_bytes` plus a byte-building
-API is the missing piece.
+**Binary output was out of reach**, which is what pinned the two PNG tools in
+JavaScript. **Fixed** — `docs/design.md` §7.9 adds `gene/bit` (bitwise ops over
+Int, with a *logical* `shr` so a checksum's high byte survives), `gene/binary`
+(Bytes built from a List of Int, plus size/get/concat/slice/from_str/to_str),
+and `fs/write_bytes`. `src/png.gene` is the proof: CRC32, Adler-32, a zlib
+stream, and PNG chunk layout, all in Gene, producing a file whose every CRC
+validates and whose stream decompresses.
+
+Writing it turned up four Gene gotchas worth knowing, none of them documented
+where a newcomer would look:
+
+- **`0x…` is a `Bytes` literal, not a hex Int** (§7.5). `0xFFFFFFFF` as a mask
+  silently becomes a four-byte value; the constants have to be decimal.
+- **`%` is the unquote prefix, so the remainder operator is `//`** (§2.1).
+  `(% a b)` fails with "undefined symbol: unquote".
+- **`while` shares one scope across iterations** on the VM, unlike `for`, so a
+  `var` in the body is a duplicate binding on the second pass. Loop temporaries
+  must be hoisted and assigned.
+- **An empty `[]` has no element type to infer**, so an accumulator passed to a
+  `(List Int)` parameter needs `(var acc : (List Int) [])`.
 
 **A syntax trap worth a diagnostic.** `xs/i` is a *static* path — the member
 named `"i"` — and lowers to `$gene_get(xs, "i")`, which returns `undefined` at
