@@ -657,7 +657,8 @@ suite "vm — literals and self-evaluation":
       discard runStr("(Set [1])")
     ck "(Set #[1])", "(Set #[1])"
   test "bytes literals are self-evaluating":
-    ck "[0!01000001 0x4869 0#SGk=]", "[0x41 0x4869 0x4869]"
+    ck "[#B#01000001 #B16#4869 #B64#SGk=]",
+       "[#B16#41 #B16#4869 #B16#4869]"
   test "regex literals and constructor are self-evaluating":
     ck "[#\"\\d+\" (Regex \"\\\\d+\") (Regex ^flags \"mi\" \"abc\")]",
        "[#\"\\d+\" #\"\\d+\" #\"abc\"im]"

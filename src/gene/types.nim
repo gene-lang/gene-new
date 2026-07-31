@@ -1444,6 +1444,24 @@ proc parseBigDecimal(s: string): BigIntValue =
   if result.sign != 0:
     result.sign = sign
 
+proc parseBigHex(s: string, start: int): BigIntValue =
+  ## `s` is the full lexeme; `start` points just past the `0x` prefix. The
+  ## reader only admits `0x` hex-digit runs (design §2.2), so `start` is a
+  ## valid hex digit here.
+  result = bigZero()
+  var i = start
+  while i < s.len:
+    let ch = s[i]
+    let v =
+      case ch
+      of '0'..'9': ord(ch) - ord('0')
+      of 'a'..'f': ord(ch) - ord('a') + 10
+      of 'A'..'F': ord(ch) - ord('A') + 10
+      else: raise newException(FieldDefect, "invalid hexadecimal integer literal")
+    result = addBig(mulAbsSmall(result, 16),
+                    bigFromUInt64(uint64(v), 1))
+    inc i
+
 proc bigToString(x: BigIntValue): string =
   if x.sign == 0:
     return "0"
@@ -4124,6 +4142,17 @@ proc bigToValue(x: BigIntValue): Value =
 
 proc newIntFromDecimal*(s: string): Value =
   bigToValue(parseBigDecimal(s))
+
+proc newIntFromHex*(s: string): Value =
+  ## s is the full hex literal lexeme, optionally signed: `0x1f` or `-0x1f`
+  ## (design §2.2 hex_integer). The reader classifies the whole atom, so the
+  ## sign arrives here rather than being lexed separately.
+  if s.len > 0 and s[0] == '-':
+    var v = parseBigHex(s, 3)
+    if v.sign != 0: v.sign = -v.sign
+    bigToValue(v)
+  else:
+    bigToValue(parseBigHex(s, 2))
 
 proc intToString*(v: Value): string =
   case v.bits shr TAG_SHIFT

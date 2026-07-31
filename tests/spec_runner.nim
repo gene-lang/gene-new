@@ -195,12 +195,14 @@ suite "spec — reader surface from design":
                "[#(x) #[1] #{^a 1} {{\"k\" : 2}}]")
     check_read("[#\"a#b\"im #\"\"\"x+y\"\"\"i]",
                "[#\"a#b\"im #\"x+y\"i]")
-    check_read("[0!01000001 0x41 0#QQ==]", "[0x41 0x41 0x41]")
+    check_read("[#B#01000001 #B16#41 #B64#QQ==]",
+               "[#B16#41 #B16#41 #B16#41]")
+    check_read("[0x1f 0x20 0x4869]", "[31 32 18537]")
     check_read("[2026-07-04 09:30 2026-07-04T09:30Z]",
                "[2026-07-04 09:30 2026-07-04T09:30:00Z]")
     check_read("['a' \"s\" \"\"\"long\"\"\" $\"x ${name}\"]",
                "['a' \"s\" \"long\" ($ \"x \" name)]")
-    let forms = readAll("0#QQ== # comment\n#\"x#y\"")
+    let forms = readAll("#B64#QQ== # comment\n#\"x#y\"")
     check forms.len == 2
     check forms[0].kind == vkBytes
     check forms[1].kind == vkRegex
@@ -211,7 +213,7 @@ suite "spec — reader surface from design":
 
   test "each literal family rejects a recognized malformed form":
     for source in ["#(x", "#[1", "#{^a 1", "{{\"k\" : }}",
-                   "#\"\"\"unterminated", "0!1", "'ab'", "\"unterminated",
+                   "#\"\"\"unterminated", "#B#1", "'ab'", "\"unterminated",
                    "$\"unterminated ${x\"", "2026-02-30", "09:99"]:
       expect ReadError:
         discard read(source)
@@ -222,7 +224,7 @@ suite "spec — reader surface from design":
 
   test "unrecognized '#' forms are reserved read errors":
     for source in ["#a", "#A", "#1", "#tag x", "##", "#-x", "#=", "#'c'",
-                   "(a #b)"]:
+                   "(a #b)", "#B", "#Bz", "#B#", "#B16#", "#B64#"]:
       expect ReadError:
         discard read(source)
 
@@ -3005,9 +3007,17 @@ suite "spec — strings from design":
 
 suite "spec — hashable collections and bytes from design":
   test "Bytes literals read as immutable byte strings":
-    check_eval("[0!01000001 0x4869 0#SGk=]", "[0x41 0x4869 0x4869]")
-    check_eval("[0!01001000~ 01101001 0x48~ 69 0#SGk=]",
-               "[0x4869 0x4869 0x4869]")
+    check_eval("[#B#01000001 #B16#4869 #B64#SGk=]",
+               "[#B16#41 #B16#4869 #B16#4869]")
+    check_eval("[#B#01001000~ 01101001 #B16#48~ 69 #B64#SGk=]",
+               "[#B16#4869 #B16#4869 #B16#4869]")
+    check_eval("[#B64#SGVs~ bG8=]", "[#B16#48656c6c6f]")
+
+  test "hex integers are Int values, not bytes":
+    check_eval("[0x0 0x1f 0x4869 (== 0x1f 31)]",
+               "[0 31 18537 true]")
+    check_eval("(+ 0x10 0x10)", "32")
+    check_eval("0x10000000000000000", "18446744073709551616")
 
   test "Set deduplicates hash-stable values in insertion order":
     check_eval("[(Set 1 2 1) ($set_has? (Set \"a\" \"b\") \"b\")]",
@@ -3659,17 +3669,18 @@ suite "spec — gene/bit and gene/binary from design (§7.9)":
     check_runtime_error("($bit/shr 1 -1)", "0..63")
     check_runtime_error("($bit/and 1 1.5)", "expects an Int")
   test "Bytes round-trip through a List of Int":
-    check_eval("($binary/from_list [137 80 78 71])", "0x89504e47")
+    check_eval("($binary/from_list [137 80 78 71])", "#B16#89504e47")
     check_eval("($binary/to_list ($binary/from_list [1 2 255]))", "[1 2 255]")
     check_eval("($binary/size ($binary/from_list [1 2 3]))", "3")
     check_eval("($binary/get ($binary/from_list [9 8 7]) 1)", "8")
   test "Bytes concatenate and slice":
     check_eval("($binary/concat [($binary/from_list [1 2]) " &
                "($binary/from_list [3])])",
-               "0x010203")
-    check_eval("($binary/slice ($binary/from_list [1 2 3 4]) 1 2)", "0x0203")
+               "#B16#010203")
+    check_eval("($binary/slice ($binary/from_list [1 2 3 4]) 1 2)",
+               "#B16#0203")
   test "Bytes carry a string's UTF-8 encoding":
-    check_eval("($binary/from_str \"Hi\")", "0x4869")
+    check_eval("($binary/from_str \"Hi\")", "#B16#4869")
     check_eval("($binary/to_str ($binary/from_str \"Hi\"))", "\"Hi\"")
   test "out-of-range bytes and indices are rejected":
     check_runtime_error("($binary/from_list [256])", "0..255")

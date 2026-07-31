@@ -197,40 +197,30 @@ proc isHexDigit(c: char): bool =
 proc isBase64Char(c: char): bool =
   c in {'A'..'Z', 'a'..'z', '0'..'9', '+', '/', '='}
 
-proc isBytesPrefix(c: char): bool =
-  c in {'!', 'x', '#'}
-
 proc isBytesDigit(prefix, c: char): bool =
+  ## Internal prefix char: '!' binary, 'x' hex, '#' base64 (design §2.2
+  ## byte literal dispatch).
   case prefix
   of '!': c in {'0', '1'}
   of 'x': isHexDigit(c)
   of '#': isBase64Char(c)
   else: false
 
-proc isBytesLexeme(lexeme: string): bool =
-  if lexeme.len <= 2 or lexeme[0] != '0':
+proc isHexIntLexeme(lexeme: string): bool =
+  ## A complete `0x` hex-digit run, with an optional leading `-` exactly as
+  ## `isIntLexeme` allows for decimal. Classification happens on the whole
+  ## atom rather than by scanning eagerly, so `0x1fg` is the single symbol
+  ## `0x1fg` — the way `12abc` and `1-2` already lex — instead of splitting
+  ## into `0x1f` and `g`, which would silently change a call's arity.
+  var i = 0
+  if lexeme.len > 0 and lexeme[0] == '-':
+    i = 1
+  if lexeme.len < i + 3 or lexeme[i] != '0' or lexeme[i + 1] != 'x':
     return false
-  case lexeme[1]
-  of '!':
-    if lexeme.len == 2: return false
-    for i in 2 ..< lexeme.len:
-      if lexeme[i] notin {'0', '1'}:
-        return false
-    true
-  of 'x':
-    if lexeme.len == 2: return false
-    for i in 2 ..< lexeme.len:
-      if not isHexDigit(lexeme[i]):
-        return false
-    true
-  of '#':
-    if lexeme.len == 2: return false
-    for i in 2 ..< lexeme.len:
-      if not isBase64Char(lexeme[i]):
-        return false
-    true
-  else:
-    false
+  for j in i + 2 ..< lexeme.len:
+    if not isHexDigit(lexeme[j]):
+      return false
+  true
 
 proc isDigit(c: char): bool {.inline.} =
   c in {'0'..'9'}
@@ -243,16 +233,34 @@ proc nextChar(r: var Reader): char
 proc advance(r: var Reader)
 proc advanceBytes(r: var Reader, count: int)
 
-proc tryScanBytesLexeme(r: var Reader, lexeme: var string): bool =
-  if r.pos + 2 >= r.src.len or r.src[r.pos] != '0' or
-      not isBytesPrefix(r.src[r.pos + 1]) or
-      not isBytesDigit(r.src[r.pos + 1], r.src[r.pos + 2]):
+proc tryScanHashBytesLexeme(r: var Reader, lexeme: var string): bool =
+  ## r.pos is just past a '#' (next char is 'B'). Recognizes the three byte
+  ## spellings #B#, #B16#, #B64# (design §2.2 / §7.5) and scans the body,
+  ## including `~` continuations. Returns false without consuming anything
+  ## when the prefix is not a byte literal, leaving the form reserved.
+  let hashPos = r.pos - 1
+  var prefix = '\0'
+  var bodyStart = 0
+  if r.pos + 1 < r.src.len and r.src[r.pos] == 'B' and r.src[r.pos + 1] == '#':
+    prefix = '!'
+    bodyStart = r.pos + 2
+  elif r.pos + 3 < r.src.len and r.src[r.pos] == 'B' and
+       r.src[r.pos + 1] == '1' and r.src[r.pos + 2] == '6' and
+       r.src[r.pos + 3] == '#':
+    prefix = 'x'
+    bodyStart = r.pos + 4
+  elif r.pos + 3 < r.src.len and r.src[r.pos] == 'B' and
+       r.src[r.pos + 1] == '6' and r.src[r.pos + 2] == '4' and
+       r.src[r.pos + 3] == '#':
+    prefix = '#'
+    bodyStart = r.pos + 4
+  else:
     return false
-  let prefix = r.src[r.pos + 1]
-  lexeme = "0"
-  lexeme.add prefix
-  r.advance()
-  r.advance()
+  # The ordered dispatch requires a digit right after the prefix.
+  if bodyStart >= r.src.len or not isBytesDigit(prefix, r.src[bodyStart]):
+    return false
+  lexeme = r.src[hashPos ..< bodyStart]
+  r.advanceBytes(bodyStart - r.pos)
   while r.pos < r.src.len:
     let c = r.nextChar()
     if isBytesDigit(prefix, c):
@@ -394,29 +402,33 @@ proc tryScanTemporalLexeme(r: var Reader, lexeme: var string,
   false
 
 proc parseBytesLiteral(r: var Reader, lexeme: string): Value =
-  case lexeme[1]
-  of '!':
-    let bitLen = lexeme.len - 2
+  ## lexeme is one of the #B family: #B# bits, #B16# hex, #B64# base64.
+  ## The reader accepts all three spellings; the printer emits #B16# hex.
+  if lexeme.startsWith("#B#"):
+    let bitStart = 3
+    let bitLen = lexeme.len - bitStart
     if bitLen mod 8 != 0:
       r.raiseReadError("bit byte literal must contain a multiple of 8 bits")
     var data = newString(bitLen div 8)
     for byteIdx in 0 ..< data.len:
       var b = 0
       for bitIdx in 0 ..< 8:
-        b = (b shl 1) or (if lexeme[2 + byteIdx * 8 + bitIdx] == '1': 1 else: 0)
+        b = (b shl 1) or
+            (if lexeme[bitStart + byteIdx * 8 + bitIdx] == '1': 1 else: 0)
       data[byteIdx] = char(b)
     newBytes(data)
-  of 'x':
-    let hexLen = lexeme.len - 2
+  elif lexeme.startsWith("#B16#"):
+    let hexStart = 5
+    let hexLen = lexeme.len - hexStart
     if hexLen mod 2 != 0:
       r.raiseReadError("hex byte literal must contain an even number of digits")
     var data = newString(hexLen div 2)
     for i in 0 ..< data.len:
-      data[i] = char((hexValue(lexeme[2 + i * 2]) shl 4) or
-                     hexValue(lexeme[3 + i * 2]))
+      data[i] = char((hexValue(lexeme[hexStart + i * 2]) shl 4) or
+                     hexValue(lexeme[hexStart + 1 + i * 2]))
     newBytes(data)
-  of '#':
-    var encoded = lexeme[2 .. ^1]
+  elif lexeme.startsWith("#B64#"):
+    var encoded = lexeme[5 .. ^1]
     let pad = encoded.len mod 4
     if pad != 0:
       encoded.add repeat("=", 4 - pad)
@@ -758,6 +770,22 @@ proc trackInterpolationCloser(interpolationClosers: var InterpolationCloserStack
   else: discard
   false
 
+proc raiseReservedHashForm(r: var Reader, c2: char,
+                           startLine, startCol: int) {.noReturn.} =
+  ## '#' followed by something that is not a recognized continuation: that
+  ## lexical space is reserved for future reader syntax (design §2.2).
+  var snippet = "#"
+  var j = r.pos
+  while j < r.src.len and snippet.len < 13 and isSymbolChar(r.src[j]):
+    snippet.add r.src[j]
+    inc j
+  if snippet.len == 1:
+    snippet.add c2
+  raiseReadErrorAt(r.sourceName, startLine, startCol,
+    "unknown '#' form \"" & snippet & "\": '#' starts a comment only " &
+    "when followed by whitespace or '!'; other '#' forms are reserved. " &
+    "Write \"# " & snippet[1 .. ^1] & "\" for a comment")
+
 proc tokenizeImpl(r: var Reader,
                   interpolationClosers: ptr InterpolationCloserStack,
                   interpolationClosed: var bool,
@@ -831,6 +859,14 @@ proc tokenizeImpl(r: var Reader,
         if r.captureTrivia:
           r.addToken(tkBlockComment, r.src[startByte ..< r.pos],
                      startLine, startCol, startByte)
+      of 'B':
+        # #B# / #B16# / #B64# byte literals (design §2.2 / §7.5).
+        var bytesLexeme = ""
+        if r.tryScanHashBytesLexeme(bytesLexeme):
+          r.addToken(tkBytes, bytesLexeme, startLine, startCol, startByte)
+        else:
+          # '#B…' without a valid byte-literal prefix is reserved.
+          r.raiseReservedHashForm(c2, startLine, startCol)
       of ' ', '\t', '\r', '\n', '\0', '!':
         # Line comment: '#' followed by whitespace, end of line/input, or '!'
         # ('#!' stays a plain line comment so a first-line shebang works).
@@ -844,17 +880,7 @@ proc tokenizeImpl(r: var Reader,
         # Every other '#' form is reserved for future reader syntax
         # (design §2.2). Rejecting here keeps '#comment'-without-space a
         # loud error instead of a silent comment or symbol.
-        var snippet = "#"
-        var j = r.pos
-        while j < r.src.len and snippet.len < 13 and isSymbolChar(r.src[j]):
-          snippet.add r.src[j]
-          inc j
-        if snippet.len == 1:
-          snippet.add c2
-        raiseReadErrorAt(r.sourceName, startLine, startCol,
-          "unknown '#' form \"" & snippet & "\": '#' starts a comment only " &
-          "when followed by whitespace or '!'; other '#' forms are reserved. " &
-          "Write \"# " & snippet[1 .. ^1] & "\" for a comment")
+        r.raiseReservedHashForm(c2, startLine, startCol)
     of '(':
       r.advance(); r.addToken(tkLParen, "(", startLine, startCol, startByte)
       trackDelimiter(tkLParen)
@@ -971,10 +997,6 @@ proc tokenizeImpl(r: var Reader,
       let lexeme = r.parseCharLiteral()
       r.addToken(tkChar, lexeme, startLine, startCol, startByte)
     else:
-      var bytesLexeme = ""
-      if r.tryScanBytesLexeme(bytesLexeme):
-        r.addToken(tkBytes, bytesLexeme, startLine, startCol, startByte)
-        continue
       var temporalLexeme = ""
       var temporalKind = tkDate
       if r.tryScanTemporalLexeme(temporalLexeme, temporalKind):
@@ -992,11 +1014,9 @@ proc tokenizeImpl(r: var Reader,
         continue
       let lexeme = r.src[start ..< r.pos]
 
-      # Check if it's a byte literal or number.
+      # Check if it's a number or symbol.
       var valFloat: float
-      if isBytesLexeme(lexeme):
-        r.addToken(tkBytes, lexeme, startLine, startCol, startByte)
-      elif lexeme.isIntLexeme:
+      if lexeme.isHexIntLexeme or lexeme.isIntLexeme:
         r.addToken(tkInt, lexeme, startLine, startCol, startByte)
       elif parseutils.parseFloat(lexeme, valFloat) == lexeme.len:
         r.addToken(tkFloat, lexeme, startLine, startCol, startByte)
@@ -1175,7 +1195,9 @@ proc desugarPath*(lexeme: string): Value =
           newSym(inner)
       body.add newNode(newSym("unquote"), body = @[escaped])
     else:
-      if p.isIntLexeme:
+      if p.isHexIntLexeme:
+        body.add newIntFromHex(p)
+      elif p.isIntLexeme:
         body.add newIntFromDecimal(p)
       else:
         body.add newSym(p)
@@ -1496,7 +1518,10 @@ proc parseForm(r: var Reader, inList = false): Value =
     r.recordSourceLoc(parsed, tok)
     return parsed
   case tok.kind
-  of tkInt: finish newIntFromDecimal(tok.lexeme)
+  of tkInt:
+    if tok.lexeme.isHexIntLexeme:
+      finish newIntFromHex(tok.lexeme)
+    finish newIntFromDecimal(tok.lexeme)
   of tkFloat: finish newFloat(parseFloat(tok.lexeme))
   of tkString: finish newStr(tok.lexeme)
   of tkBytes: finish r.parseBytesLiteral(tok.lexeme)

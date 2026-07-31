@@ -15,6 +15,26 @@ suite "reader — atoms and containers":
   test "immutable map":      check_read("#{^a 1}",   "#{^a 1}")
   test "integer":            check_read("42",         "42")
   test "big integer":        check_read("9223372036854775808", "9223372036854775808")
+  test "hex integer":
+    check_read("0x0", "0")
+    check_read("0x1f", "31")
+    check_read("0x4869", "18537")
+    check_read("0xDEADbeef", "3735928559")
+    check_read("0x7fffffffffffffff", "9223372036854775807")
+    check_read("0x10000000000000000", "18446744073709551616")
+    check read("0x4869").kind == vkInt
+    check read("0x4869").intToString == "18537"
+  test "a hex literal is classified from the whole atom":
+    # A hex run followed by a symbol char is one atom, exactly as `1-2` and
+    # `12abc` already are. Splitting it would silently change call arity:
+    # `(f 0x1fg)` would pass two arguments instead of failing.
+    check_read("0x1f-3a", "0x1f-3a")
+    check_read("0x1fg", "0x1fg")
+    check_read("-0x1f", "-31")
+    check_read("0x1f", "31")
+    # `0x` not followed by a hex digit stays a symbol.
+    check_read("0x", "0x")
+    check_read("0xg", "0xg")
   test "float":              check_read("3.14",       "3.14")
   test "bool true":          check_read("true",       "true")
   test "bool false":         check_read("false",      "false")
@@ -27,11 +47,13 @@ suite "reader — atoms and containers":
     check_read("\"\"\"say \"hi\" now\"\"\"", "\"say \\\"hi\\\" now\"")
     check_read("\"\"\"hello \"Gene\\\"\"\"\"", "\"hello \\\"Gene\\\"\"")
   test "bytes":
-    check_read("0!01000001", "0x41")
-    check_read("0x4869", "0x4869")
-    check_read("0#SGk=", "0x4869")
-    check_read("0!01001000~ 01101001", "0x4869")
-    check_read("0x48~\n 69", "0x4869")
+    check_read("#B#01000001", "#B16#41")
+    check_read("#B16#4869", "#B16#4869")
+    check_read("#B64#SGk=", "#B16#4869")
+    check_read("#B#01001000~ 01101001", "#B16#4869")
+    check_read("#B16#48~\n 69", "#B16#4869")
+    check_read("#B64#SGVs~ bG8=", "#B16#48656c6c6f")
+    check read("#B16#4869").kind == vkBytes
   test "regex":
     check_read("#\"\\d+\"im", "#\"\\d+\"im")
     let quoted = read("#\"hello\\\"Gene\"")
@@ -160,7 +182,7 @@ suite "reader — reserved '#' forms are rejected":
     check read("#{^a 1}").print() == "#{^a 1}"
     check read("#(h 1)").print() == "#(h 1)"
     check read("#\"\\d+\"").print() == "#\"\\d+\""
-    check read("0#SGk=").print() == "0x4869"   # bytes print canonically as hex
+    check read("#B64#SGk=").print() == "#B16#4869"  # bytes print canonically
 
 suite "reader — datum comments are spacing":
   test "discards next top-level form":

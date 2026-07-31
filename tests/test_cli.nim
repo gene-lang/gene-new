@@ -7391,7 +7391,7 @@ suite "cli — gene parse/fmt/compile":
       "#\"a#b\"im # after regex\n" &
       "$\"\"\"hello ${name}\"\"\" # after interpolation\n" &
       "'a' # after char\n" &
-      "0#SGk= # after bytes\n" &
+      "#B64#SGk= # after bytes\n" &
       "2026-07-04T09:30Z # after datetime\n")
     let lexicalFmt = runGene(["fmt", lexical])
     check lexicalFmt.exitCode == 0

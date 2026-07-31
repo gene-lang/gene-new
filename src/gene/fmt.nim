@@ -56,17 +56,12 @@ proc hasInteriorComment(src: string, a, b: int): bool =
       if j < src.len and src[j] == '\\': inc j
       while j < src.len and src[j] notin {'\'', '\n'}: inc j
       i = (if j < src.len and src[j] == '\'': j + 1 else: i + 1)
-    of '0':
-      if i + 2 < src.len and src[i + 1] in {'!', 'x', '#'}:
-        var j = i + 2
-        while j < src.len and src[j] notin {'(', ')', '[', ']', '{', '}',
-            ' ', '\t', '\n', '\r', ',', ';', '"', '\'', '`', '#'}:
-          inc j
-        if j > i + 2: i = j
-        else: inc i
-      else: inc i
     of '#':
       if i + 1 < src.len and src[i + 1] == '"': i = skipStringRaw(src, i + 1)
+      elif i + 1 < src.len and src[i + 1] == 'B':
+        # #B# / #B16# / #B64# byte literal; its '#' is not a comment start.
+        let e = span.hashBytesLiteralEnd(src, i)
+        i = (if e > 0: e else: i + 1)
       elif i + 1 < src.len and src[i + 1] in {'(', '[', '{'}: inc i
       else:
         # Reserved '#' forms are read errors in the reader; this raw span

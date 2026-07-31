@@ -44,7 +44,9 @@ proc escapeChar(r: Rune): string =
       $r
 
 proc printBytes(data: string): string =
-  result = "0x"
+  ## Canonical spelling is #B16#<hex> (design §7.5); #B# and #B64# are
+  ## input spellings and round-trip through this form.
+  result = "#B16#"
   for ch in data:
     result.add toHex(ord(ch), 2).toLowerAscii
 

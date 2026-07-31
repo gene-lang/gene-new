@@ -2006,7 +2006,7 @@ suite "types — function boundaries":
     ck "(fn count [s : (Set Int)] ($size s)) (count (Set 1 2 1))", "2"
     ck "(try (fn count [s : (Set Int)] s) (count (Set 1 \"bad\")) " &
        "catch (TypeError ^expected e) e)", "\"(Set Int)\""
-    ck "(fn len [b : Bytes] ($size b)) (len 0x4869)", "2"
+    ck "(fn len [b : Bytes] ($size b)) (len #B16#4869)", "2"
 
   test "fixed-width integer annotations range-check boundaries":
     ck "(fn f [x : SignedInt] x) [(f -1) (f 0) (f 1)]", "[-1 0 1]"

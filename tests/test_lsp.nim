@@ -131,9 +131,9 @@ suite "lsp — analysis":
     check wordAt(src, starts, LspPos(line: 0, character: 8)) == "alpha"
 
   test "bytes literals do not read as comments in the raw scanner":
-    # 0#base64's # must not start a line comment; otherwise the closing
+    # #B64#base64's # must not start a line comment; otherwise the closing
     # paren is swallowed and the form's range leaks into the next form.
-    let src = "(var blob 0#SGVsbG8=)\n(var after 1)"
+    let src = "(var blob #B64#SGVsbG8=)\n(var after 1)"
     let a = analyze(src)
     check a.parsed
     check a.symbols.len == 2

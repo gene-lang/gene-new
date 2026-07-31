@@ -113,26 +113,56 @@ proc charLiteralEnd(src: string, start: int): int =
     return i + 1
   -1
 
-proc bytesLiteralEnd(src: string, start: int): int =
-  ## `start` is at a `0`. Bytes literals are 0!binary / 0xhex / 0#base64
-  ## (src/gene/reader.nim tryScanBytesLexeme). Returns the offset past the
-  ## token, or -1 when this is not a bytes literal. Without this, the `#` of
-  ## a base64 literal would read as a line comment and swallow the rest of
-  ## the line, corrupting form ranges.
-  if start + 2 >= src.len or src[start] != '0':
+proc hashBytesLiteralEnd*(src: string, start: int): int =
+  ## `start` is at a `#`. Recognizes the #B# / #B16# / #B64# byte literals
+  ## (src/gene/reader.nim tryScanHashBytesLexeme). Returns the offset past
+  ## the token, or -1 when this is not a bytes literal. Without this, the
+  ## leading `#` of a byte literal would read as a reserved form and the raw
+  ## scanner would swallow the rest of the line, corrupting form ranges.
+  if start + 1 >= src.len or src[start] != '#' or src[start + 1] != 'B':
     return -1
-  let prefix = src[start + 1]
+  var prefix = '\0'
+  var bodyStart = 0
+  if start + 3 < src.len and src[start + 2] == '#':
+    prefix = '!'
+    bodyStart = start + 3
+  elif start + 5 < src.len and src[start + 2] == '1' and
+       src[start + 3] == '6' and src[start + 4] == '#':
+    prefix = 'x'
+    bodyStart = start + 5
+  elif start + 5 < src.len and src[start + 2] == '6' and
+       src[start + 3] == '4' and src[start + 4] == '#':
+    prefix = '#'
+    bodyStart = start + 5
+  else:
+    return -1
   let digitOk =
     case prefix
-    of '!': src[start + 2] in {'0', '1'}
-    of 'x': src[start + 2] in {'0'..'9', 'a'..'f', 'A'..'F'}
-    of '#': src[start + 2] in {'A'..'Z', 'a'..'z', '0'..'9', '+', '/', '='}
+    of '!': src[bodyStart] in {'0', '1'}
+    of 'x': src[bodyStart] in {'0'..'9', 'a'..'f', 'A'..'F'}
+    of '#': src[bodyStart] in {'A'..'Z', 'a'..'z', '0'..'9', '+', '/', '='}
     else: false
   if not digitOk:
     return -1
-  var i = start + 2
-  while i < src.len and src[i] notin symbolStop:
-    inc i
+  var i = bodyStart + 1
+  while i < src.len:
+    let c = src[i]
+    let isDigit =
+      case prefix
+      of '!': c in {'0', '1'}
+      of 'x': c in {'0'..'9', 'a'..'f', 'A'..'F'}
+      of '#': c in {'A'..'Z', 'a'..'z', '0'..'9', '+', '/', '='}
+      else: false
+    if isDigit:
+      inc i
+    elif c == '~':
+      inc i
+      while i < src.len and src[i] in {' ', '\t', '\r', '\n'}:
+        inc i
+      if i >= src.len:
+        return -1   # dangling continuation: error-tolerant
+    else:
+      return i
   i
 
 proc skipCommentOrAtom(src: string, i: var int): bool =
@@ -158,16 +188,20 @@ proc skipCommentOrAtom(src: string, i: var int): bool =
       true
     else:
       false
-  of '0':
-    let e = bytesLiteralEnd(src, i)
-    if e > 0:
-      i = e
-      true
-    else:
-      false
   of '#':
     if i + 1 < src.len:
       case src[i + 1]
+      of 'B':
+        let e = hashBytesLiteralEnd(src, i)
+        if e > 0:
+          i = e
+          true
+        else:
+          # Reserved '#B…' forms are read errors in the reader; this raw
+          # scanner stays error-tolerant and skips them like comments.
+          while i < src.len and src[i] != '\n':
+            inc i
+          true
       of '"':
         i = skipString(src, i + 1)
         true

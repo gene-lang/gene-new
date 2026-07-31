@@ -354,14 +354,14 @@ Reader literal/comment dispatch examples:
 #! shebang
 #"[a-z]+"im                # regular expression
 #"""multi-line regex"""i # triple-quoted regular expression
-0!01000001                  # binary Bytes
-0x4869                      # hexadecimal Bytes
-0#SGk=                      # base64 Bytes
+#B#01000001                 # binary Bytes
+#B16#4869                   # hexadecimal Bytes
+#B64#SGk=                   # base64 Bytes
 ```
 
 Reader precedence follows the ordered dispatch table in §2.2. In particular,
-`#"` begins a regex and `0#` is part of a base64 byte literal. A `#` begins a
-line comment only when followed by whitespace, `!`, or end of line/input;
+`#"` begins a regex and `#B#`/`#B16#`/`#B64#` begin byte literals. A `#` begins
+a line comment only when followed by whitespace, `!`, or end of line/input;
 every other `#` sequence (such as `#a`, `#1`, or `##`) is a read error
 reserved for future reader syntax. `#_` followed by EOF is a read error.
 
@@ -504,9 +504,9 @@ interpolated_string = "$", ( string | long_string ) ;
 regex          = "#", ( string | long_string ), { ascii_letter } ;
 char           = "'", ( unicode_scalar | char_escape ), "'" ;
 bytes          = binary_bytes | hex_bytes | base64_bytes ;
-binary_bytes   = "0!", binary_digit, { binary_digit | byte_continuation } ;
-hex_bytes      = "0x", hex_digit, { hex_digit | byte_continuation } ;
-base64_bytes   = "0#", base64_digit, { base64_digit | byte_continuation } ;
+binary_bytes   = "#B#", binary_digit, { binary_digit | byte_continuation } ;
+hex_bytes      = "#B16#", hex_digit, { hex_digit | byte_continuation } ;
+base64_bytes   = "#B64#", base64_digit, { base64_digit | byte_continuation } ;
 byte_continuation = "~", whitespace, { whitespace } ;
 
 date           = digit, digit, digit, digit, "-", digit, digit, "-",
@@ -526,7 +526,9 @@ selector_literal = "/", path_segment, { "/", path_segment } ;
 access_or_qualified_path = atom, "/", path_segment, { "/", path_segment } ;
 path_segment   = symbol | integer | "%", symbol | "~", symbol ;
 
-atom           = float | integer | "true" | "false" | "nil" | "void" | symbol ;
+atom           = float | integer | hex_integer | "true" | "false"
+               | "nil" | "void" | symbol ;
+hex_integer    = [ "-" ], "0x", hex_digit, { hex_digit } ;
 separator      = spacing, [ "," ], spacing ;
 spacing        = { whitespace | line_comment | block_comment | datum_comment } ;
 line_comment   = "#", ( whitespace | "!" | newline | eof ),
@@ -536,15 +538,18 @@ datum_comment  = "#_", spacing, form ;
 ```
 
 A `#` not followed by one of the recognized continuations (`(`, `[`, `{`,
-`"`, `_`, `<`, `!`, whitespace, or end of line/input) is a read error: that
-lexical space is reserved for future reader syntax such as parser macros or
-tagged literals.
+`"`, `_`, `<`, `!`, `B`, whitespace, or end of line/input) is a read error:
+that lexical space is reserved for future reader syntax such as parser macros
+or tagged literals.
 
 Ordered lexical dispatch:
 
 | Prefix | Reader branch |
 |---|---|
-| `0!`, `0x`, `0#` followed by a valid digit | binary, hexadecimal, or base64 `Bytes` (recognized while scanning a `0` atom, before `#` comments) |
+| `0x` followed by a hex digit | hexadecimal `Int` literal (§7.4), when the run ends the atom |
+| `#B#` followed by a binary digit | binary `Bytes` |
+| `#B16#` followed by a hex digit | hexadecimal `Bytes` |
+| `#B64#` followed by a base64 digit | base64 `Bytes` |
 | `#(`, `#[`, `#{` | shallow immutable node, list, or prop map |
 | `#"` / `#"""` | regular or triple-quoted regex, followed by optional ASCII flags |
 | `#_` | datum comment; discard exactly the next form as spacing |
@@ -2135,22 +2140,25 @@ accepts both `PropMap` and general maps for compatibility; `PropMap` and
 `Buffer` (§16). Three literal notations:
 
 ```gene
-0!01010101   # bits
-0x1f3a       # hex
-0#SGVsbG8=   # base64
+#B#01010101    # bits
+#B16#1f3a      # hex
+#B64#SGVsbG8=  # base64
 ```
 
 Bytes are currently heap-backed; inlining 1–4 byte values into the NaN-boxed
-payload remains an optimization option. `0x` is reserved for bytes rather than
-hex integers. Bit literals must contain a multiple of 8 bits. Base64 literals
-accept standard padded or unpadded input and print canonically as hex bytes. A
-`~` separator may appear between byte groups and may be followed by whitespace,
-including newlines:
+payload remains an optimization option. `0x` is a hexadecimal integer literal
+(§7.4); bytes use the `#B#` family above. Bit literals must contain a multiple
+of 8 bits. The reader accepts all three spellings and the printer emits one
+canonical form, `#B16#<hex>`, so `#B#` and `#B64#` are input spellings and the
+value round-trips whichever way it was written. Base64 literals accept padded
+or unpadded input; an unpadded literal ends at the first non-base64 character
+(whitespace or a closing `)`/`]`). A `~` separator may appear between byte
+groups and may be followed by whitespace, including newlines:
 
 ```gene
-0!11111111~ 11111111~ 11111111
-0xaaaa~ aaaa
-0#SGVs~ bG8=
+#B#11111111~ 11111111~ 11111111
+#B16#aaaa~ aaaa
+#B64#SGVs~ bG8=
 ```
 
 ### 7.6 Regular expressions
@@ -2322,7 +2330,7 @@ in Gene at all, which is what kept every binary encoder in a host language.
 
 ```gene
 ($bit/xor 12 10)                    # => 6
-($binary/from_list [137 80 78 71])  # => 0x89504e47
+($binary/from_list [137 80 78 71])  # => #B16#89504e47
 ($fs/write_bytes $fs/WriteDir "out.png" data)
 ```
 
