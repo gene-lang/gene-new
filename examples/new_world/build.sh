@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the game end to end:
 #   assets  — tools/gen_atlas.mjs writes assets/tiles.png from a palette + hash
-#   logic   — src/world.gene -> dist/ via the `web` profile (Gene -> TS/ESM)
+#   logic   — src/*.gene -> dist/ via the `web` profile (Gene -> TS/ESM)
 #   page    — src/page.gene -> index.html via gene/html + gene/css on the VM
 #
 # index.html and dist/ are generated; do not edit them.
@@ -13,6 +13,7 @@ gene="$root/bin/gene"
 node "$here/tools/gen_atlas.mjs"
 
 "$gene" build --target web "$here/src/world.gene" --out-dir "$here/dist"
+"$gene" build --target web "$here/src/shell.gene" --out-dir "$here/dist"
 # `js/fn ^from` paths are emitted verbatim, so the host module has to sit next
 # to the generated module rather than next to the source.
 cp "$here/host.mjs" "$here/dist/host.mjs"

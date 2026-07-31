@@ -15,6 +15,9 @@ import {
 // From dist/, not from here: dist/world.mjs imports "./host.mjs" relative to
 // itself, and importing a second copy would give bind() a different module
 // instance than draw_tile() reads from.
+import {
+  follow_camera, depth_shade, spawn_y, rle_encode, rle_decode, cycle_slot,
+} from "./dist/shell.mjs";
 import { bind } from "./dist/host.mjs";
 
 const W = 512;   // world width in tiles
@@ -71,16 +74,13 @@ addEventListener("mouseup", () => {
 });
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  selected = (selected + (e.deltaY > 0 ? 1 : PLACEABLE.length - 1)) % PLACEABLE.length;
+  selected = cycle_slot(selected, e.deltaY > 0 ? 1 : -1, PLACEABLE.length);
 }, { passive: false });
 
 // ------------------------------------------------------------------ world ---
 function spawn() {
-  // Drop the player down the middle column until they land on something.
   const x = Math.floor(W / 2);
-  let y = 0;
-  while (y < H - 3 && get_tile(tiles, x, y + 2, W, H) < 0.5) y++;
-  player = [x + 0.5, y, 0, 0, 0, 1];
+  player = [x + 0.5, spawn_y(tiles, x, W, H), 0, 0, 0, 1];
 }
 
 function newWorld(withSeed) {
@@ -97,19 +97,10 @@ function newWorld(withSeed) {
 
 // ------------------------------------------------------------------- save ---
 function save() {
-  // Run-length encode: a world is mostly long runs of stone and air.
-  const runs = [];
-  let last = tiles[0];
-  let n = 0;
-  for (let i = 0; i < tiles.length; i++) {
-    if (tiles[i] === last) n++;
-    else {
-      runs.push(last, n);
-      last = tiles[i];
-      n = 1;
-    }
-  }
-  runs.push(last, n);
+  // Encoding is shell.gene's; this function only moves the result to storage.
+  const out = new Array(W * H).fill(0);
+  const pairs = rle_encode(tiles, W * H, out, out.length);
+  const runs = out.slice(0, pairs * 2);
   localStorage.setItem(SAVE_KEY, JSON.stringify({ seed, player, inventory, runs }));
   flash("saved");
 }
@@ -118,11 +109,8 @@ function load() {
   const raw = localStorage.getItem(SAVE_KEY);
   if (!raw) return flash("no save");
   const s = JSON.parse(raw);
-  tiles = new Array(W * H);
-  let i = 0;
-  for (let r = 0; r < s.runs.length; r += 2) {
-    for (let k = 0; k < s.runs[r + 1]; k++) tiles[i++] = s.runs[r];
-  }
+  tiles = new Array(W * H).fill(0);
+  rle_decode(s.runs, s.runs.length / 2, tiles, W * H);
   seed = s.seed;
   player = s.player;
   inventory = s.inventory;
@@ -143,8 +131,7 @@ addEventListener("keydown", (e) => {
 });
 
 // ------------------------------------------------------------------- loop ---
-let camX = 0;
-let camY = 0;
+const cam = [0, 0];
 let frames = 0;
 let simAcc = 0;
 let drawAcc = 0;
@@ -164,13 +151,9 @@ function frame() {
     W, H, 1,
   );
 
-  // Camera centres the player, then clamps so the view never leaves the world.
-  const targetX = player[0] * TILE - vw / 2;
-  const targetY = player[1] * TILE - vh / 2;
-  camX += (targetX - camX) * 0.18;
-  camY += (targetY - camY) * 0.18;
-  camX = Math.max(0, Math.min(W * TILE - vw, camX));
-  camY = Math.max(0, Math.min(H * TILE - vh, camY));
+  follow_camera(cam, player[0], player[1], W, H, vw, vh, 0.18);
+  const camX = cam[0];
+  const camY = cam[1];
 
   const tx = Math.floor((mouseX + camX) / TILE);
   const ty = Math.floor((mouseY + camY) / TILE);
@@ -186,7 +169,7 @@ function frame() {
   const t1 = performance.now();
 
   // Sky gradient: depth is legible before you read a single number.
-  const depth = Math.min(1, Math.max(0, (camY / TILE - 40) / 90));
+  const depth = depth_shade(camY, 40, 90, 1);
   const g = ctx.createLinearGradient(0, 0, 0, vh);
   g.addColorStop(0, depth > 0.5 ? "#0b0d12" : "#8fc4e8");
   g.addColorStop(1, depth > 0.2 ? "#0b0d12" : "#cfe6f4");
@@ -197,7 +180,7 @@ function frame() {
 
   // One overlay rather than per-tile shading: depth should feel like light
   // running out, and a single gradient costs one draw instead of 3,600.
-  const dark = Math.min(0.55, Math.max(0, (camY / TILE - 76) / 110));
+  const dark = depth_shade(camY, 76, 110, 0.55);
   if (dark > 0.01) {
     ctx.fillStyle = `rgba(4,6,12,${dark.toFixed(3)})`;
     ctx.fillRect(0, 0, vw, vh);

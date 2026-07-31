@@ -2,10 +2,10 @@
 // sim doing exactly the same arithmetic, so the ratio isolates what the web
 // profile's lowering costs rather than what the algorithm costs.
 //
-//   node examples/new_world/spike/bench.mjs [sprites] [frames]
+//   node examples/new_world/spike/tools/bench.mjs [sprites] [frames]
 
-import { advance, bench } from "./dist/sprites.mjs";
-import { now_ms } from "./canvas.mjs";
+import { advance, bench } from "../dist/sprites.mjs";
+import { now_ms } from "../canvas.mjs";
 
 const N = Number(process.argv[2] ?? 10000);
 const FRAMES = Number(process.argv[3] ?? 600);

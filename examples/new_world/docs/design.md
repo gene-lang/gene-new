@@ -262,6 +262,13 @@ profile offers no way to mark a boundary already-validated.
   convention everyone copies.
 - **An empty list literal needs an expected type** (`(var a : (List S) [])`).
 
+**Binary output is out of reach.** The atlas and screenshot tools stay
+JavaScript because a PNG needs CRC32, deflate, and a binary file write. CRC32
+and a stored-block deflate are both writable in Gene, but the runtime has no
+`\x` string escape and `fs/write_text` takes a `Str`, so a byte with the high
+bit set cannot be expressed or written. A `fs/write_bytes` over the existing
+`Bytes` type is the missing piece, and it is small.
+
 **A syntax trap worth a diagnostic.** `xs/i` is a *static* path — the member
 named `"i"` — and lowers to `$gene_get(xs, "i")`, which returns `undefined` at
 runtime with no compile-time complaint. The dynamic index is `xs/%i`. The
@@ -281,8 +288,8 @@ assets, then `gene build --target web`, then the host shim, then the page.
 
 **In Gene**, through two different paths:
 
-- `src/world.gene` (~330 lines) compiles to TypeScript/ESM through the **`web`
-  profile**: value-noise terrain with three octaves, biome layering, caves,
+- `src/world.gene` and `src/shell.gene` compile to TypeScript/ESM through the
+  **`web` profile**: value-noise terrain with three octaves, biome layering, caves,
   depth-banded ores, trees, AABB collision with sub-stepping, walking and
   jumping, mining and placing with a reach check, and the visible-window render
   walk.
@@ -293,8 +300,13 @@ assets, then `gene build --target web`, then the host shim, then the page.
   a profile one, it can hold top-level `var`, which is how the palette lives in
   named bindings instead of being repeated as hex literals.
 
-**In JavaScript**: canvas calls, the keyboard, the arrays Gene writes into, and
-a run-length-encoded `localStorage` save. `src/world.gene` holds no state at all,
+**In JavaScript**: only what the profile cannot reach — the canvas boundary
+(`js/fn` binds to a real JS module, and the generated DOM subset has no canvas)
+and the DOM wiring that owns the keyboard, `localStorage`, and the frame
+callback. Camera, spawn, save encoding, and the hotbar started in JavaScript
+and moved to `src/shell.gene` once it was clear none of them had a reason not
+to be Gene; the save *format* is now decided in Gene rather than in the shell
+that stores it. `src/world.gene` holds no state at all,
 because the profile rejects top-level `var` — the world is a flat `(List F64)`
 the host owns and hands back each frame.
 
@@ -306,9 +318,9 @@ simulation are all Gene; JavaScript is the host boundary and nothing else.
 |---|---|
 | world | 512 × 192 = 98,304 tiles, generated in **14 ms** |
 | composition | 46.5% stone, 48.1% air, ores 0.7 / 0.5 / 0.1% coal / iron / gold |
-| checks | 28/28 in `test.mjs` — headless, no browser |
+| checks | 41/41 in `tools/test.mjs` — headless, no browser |
 
-`test.mjs` asserts the properties that actually matter rather than pixel output:
+`tools/test.mjs` asserts the properties that actually matter rather than pixel output:
 generation is deterministic for a seed (or a save that stores only a seed is
 worthless), the surface never steps more than 3 tiles (or the world is
 unwalkable however good it looks), ore rarity is ordered, the player lands and

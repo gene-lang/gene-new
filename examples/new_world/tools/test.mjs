@@ -1,11 +1,14 @@
 // Headless check of world.gene: generation shape, physics, and interaction,
 // with no canvas involved. Run after build.sh.
 //
-//   node examples/new_world/game/test.mjs
+//   node examples/new_world/tools/test.mjs
 
 import {
   generate, step_player, mine, place, get_tile, surface_at, solid$q as isSolid,
-} from "./dist/world.mjs";
+} from "../dist/world.mjs";
+import {
+  follow_camera, depth_shade, spawn_y, rle_encode, rle_decode, cycle_slot,
+} from "../dist/shell.mjs";
 
 const W = 512;
 const H = 192;
@@ -118,6 +121,45 @@ check("cannot place out of reach", place(tiles, p, farX, ty, 3, W, H) === 0);
 // Sealing yourself into a wall is the classic griefing-yourself bug.
 check("cannot place inside the player",
   place(tiles, p, Math.floor(p[0]), Math.floor(p[1]), 3, W, H) === 0);
+
+// ---------------------------------------------------------------- shell ---
+// The camera, spawn scan, save encoding, and hotbar live in shell.gene. The
+// save round-trip is the one that matters most: a wrong pair count would
+// silently truncate somebody's world.
+console.log("\nshell\n");
+
+const out = new Array(W * H).fill(0);
+const pairs = rle_encode(tiles, W * H, out, out.length);
+const runs = out.slice(0, pairs * 2);
+const back = new Array(W * H).fill(0);
+rle_decode(runs, runs.length / 2, back, W * H);
+check("save round-trips every tile", back.every((v, i) => v === tiles[i]),
+  `${pairs} pairs, ${((pairs * 2 / (W * H)) * 100).toFixed(1)}% of raw`);
+check("run lengths sum to the whole world",
+  (() => { let s = 0; for (let i = 1; i < runs.length; i += 2) s += runs[i]; return s === W * H; })());
+
+const sx = Math.floor(W / 2);
+const sy = spawn_y(tiles, sx, W, H);
+check("spawn stands on solid ground", get_tile(tiles, sx, sy + 2, W, H) > 0.5, `y=${sy}`);
+check("spawn head is clear", get_tile(tiles, sx, sy, W, H) < 0.5);
+
+const cam = [0, 0];
+for (let i = 0; i < 200; i++) follow_camera(cam, 5, 5, W, H, 1280, 720, 0.18);
+check("camera clamps at the near edge", cam[0] === 0 && cam[1] === 0, `[${cam}]`);
+for (let i = 0; i < 400; i++) follow_camera(cam, W - 1, H - 1, W, H, 1280, 720, 0.18);
+check("camera clamps at the far edge",
+  cam[0] === W * 16 - 1280 && cam[1] === H * 16 - 720, `[${cam}]`);
+const cam2 = [0, 0];
+follow_camera(cam2, 100, 100, W, H, 1280, 720, 0.18);
+check("camera eases rather than snapping", cam2[0] > 0 && cam2[0] < 100 * 16 - 640,
+  cam2[0].toFixed(1));
+
+check("depth_shade clamps to its limit", depth_shade(99999, 76, 110, 0.55) === 0.55);
+check("depth_shade floors at zero", depth_shade(0, 76, 110, 0.55) === 0);
+
+check("hotbar wraps forward", cycle_slot(9, 1, 10) === 0);
+check("hotbar wraps backward", cycle_slot(0, -1, 10) === 9);
+check("hotbar steps normally", cycle_slot(3, 1, 10) === 4);
 
 console.log(`\n${failures === 0 ? "all checks passed" : `${failures} FAILED`}\n`);
 process.exit(failures === 0 ? 0 : 1);

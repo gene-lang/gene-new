@@ -47,15 +47,17 @@ is deeper still.
 ### Checks
 
 ```sh
-node test.mjs                      # 28 headless checks, no browser needed
+node tools/test.mjs                # 41 headless checks, no browser needed
 node tools/screenshot.mjs [seed]   # composite a real viewport to a PNG
 ```
 
-`test.mjs` asserts the properties that matter rather than pixel output:
+`tools/test.mjs` asserts the properties that matter rather than pixel output:
 generation is deterministic for a seed, the surface never steps more than three
 tiles (or the world is unwalkable however good it looks), ore rarity is ordered,
 the player lands and comes to rest without drifting, a jump leaves the ground
 and returns, and you cannot mine out of reach or seal yourself inside a wall.
+For `src/shell.gene` it round-trips all 98,304 tiles through the save encoder,
+because a wrong pair count would silently truncate somebody's world.
 
 `tools/screenshot.mjs` renders through the same atlas and the same `src/world.gene`
 the browser runs, so the world can be reviewed — and regressions caught — from a
@@ -71,9 +73,17 @@ Gene reaches the browser by **two different routes**, and the difference matters
 | File | Runs | How |
 |---|---|---|
 | `src/world.gene` | in the browser | compiled to TypeScript/ESM by the **`web` profile** (`gene build --target web`) |
+| `src/shell.gene` | in the browser | same route — camera, spawn, save encoding, hotbar |
 | `src/page.gene` | at build time | on the **VM**, emitting `index.html` via `gene/html` + `gene/css` |
-| `host.mjs` | in the browser | hand-written JS — canvas, atlas blitting, the player sprite |
-| `main.mjs` | in the browser | hand-written JS — state, input, camera, save/load, the rAF loop |
+| `host.mjs` | in the browser | hand-written JS — the canvas boundary |
+| `main.mjs` | in the browser | hand-written JS — DOM wiring and the rAF loop |
+
+**JavaScript is only what the profile cannot reach.** `host.mjs` exists because
+`js/fn` binds to a real JS module and the profile's DOM subset has no canvas;
+`main.mjs` exists because something must own the keyboard, `localStorage`, and
+the frame callback. Everything that was arithmetic or an array walk moved to
+`src/shell.gene`, including the save encoding — so the format of a saved world
+is decided in Gene, not in the shell that stores it.
 
 `src/world.gene` holds **no state at all**. The web profile rejects top-level `var`,
 so the world is a flat `(List F64)` that `main.mjs` owns and hands back on every
@@ -107,11 +117,12 @@ JavaScript, tooling, or build output.
 ```
 package.gene          manifest: name, version, source_dir, main_module
 src/world.gene        terrain, physics, collision, mining, render walk
+src/shell.gene        camera, spawn, save encoding, hotbar
 src/page.gene         the HTML page, as gene/html + gene/css node data
 host.mjs              canvas externs — the boundary Gene calls out through
-main.mjs              game shell: state, input, camera, save/load, loop
-test.mjs              28 headless checks
+main.mjs              DOM wiring: keyboard, localStorage, the rAF loop
 build.sh              assets -> Gene -> index.html
+tools/test.mjs        41 headless checks
 tools/gen_atlas.mjs   generates assets/tiles.png (and an 8x review blow-up)
 tools/screenshot.mjs  composites a viewport to PNG, headless
 spike/                the D5 performance spike — its own nested package
@@ -119,6 +130,12 @@ assets/               generated atlas + screenshots
 dist/                 generated JS/TS — gitignored, never edit
 index.html            generated — gitignored, never edit
 ```
+
+Only `host.mjs` and `main.mjs` ship to the browser; everything under `tools/`
+is build- and test-time. The two PNG tools stay JavaScript because writing a
+PNG needs CRC32, deflate, and a *binary* file write, and Gene today has no
+`\x` string escape and only `fs/write_text` — so a byte with the high bit set
+cannot survive the trip.
 
 `gene pkg show` reports the resolved manifest. `main_module` is `world`
 because that is the substantive module — the one a dependent importing
@@ -157,7 +174,7 @@ compiled by the [`web` profile](../../docs/proposals/transpile.md) hold 60 fps?
 cd spike
 ../../../bin/gene build --target web src/sprites.gene --out-dir dist
 cp canvas.mjs dist/
-node bench.mjs [sprites] [frames]
+node tools/bench.mjs [sprites] [frames]
 ```
 
 **Result: 10,000 moving sprites cost 4.5% of a 60 fps frame**, with headroom
