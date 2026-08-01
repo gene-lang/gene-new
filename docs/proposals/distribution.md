@@ -1,8 +1,15 @@
 # Gene Distribution Design
 
-**Status:** draft design, decisions incorporated, pre-implementation  
-**Scope:** packaging and executable distribution for simple and complex Gene applications  
-**Revision date:** 2026-06-28
+**Status:** draft image-format design, reconciled with the current
+package/build proposals; pre-implementation
+
+**Scope:** application images and executable distribution for simple and
+complex Gene applications
+
+**Builds on:** `package.md` for exact package graphs and `package-build.md` for
+planning, artifacts, assembly, and installation. If older dependency/build
+wording in this document conflicts with those proposals, they take precedence.
+**Revision date:** 2026-08-01
 
 ---
 
@@ -17,9 +24,13 @@ GIR application image = canonical deployable program representation
 Standalone executable = target launcher + embedded application image
 ```
 
-A Gene application does **not** need to be fully native-compiled to become a standalone executable. The default distribution path should embed the Gene runtime/VM plus a precompiled application image containing GIR bytecode, module metadata, resources, and optional native components.
+A Gene application does **not** need typed-native compilation to become a
+standalone executable. The default distribution path embeds the Gene runtime/VM
+plus a precompiled application image containing GIR bytecode, module metadata,
+resources, and optional native artifacts.
 
-Native compilation remains an optimization layer, not a prerequisite for distribution.
+The typed-native backend remains an optimization layer, not a prerequisite for
+distribution.
 
 The durable artifact is the application image. The executable is a target-specific delivery wrapper around that image.
 
@@ -33,7 +44,8 @@ A running Gene program. At startup, Gene creates an `Application`, loads the ent
 
 ### Package
 
-A collection of modules, resources, metadata, and optional native dependencies. Full package dependency resolution can evolve later, but a package is the natural unit for complex builds.
+A source, identity, and dependency unit that declares library/application
+targets. Its exact model and resolution semantics are defined by `package.md`.
 
 ### Module
 
@@ -79,11 +91,6 @@ Gene should support four distribution artifacts.
 
 ### 3.1 Portable application image
 
-```bash
-gene pack . -o app.gapp
-gene run app.gapp
-```
-
 A `.gapp` contains the compiled Gene application but not the runtime executable. It can run on any compatible Gene runtime that supports the image format, GIR ABI, value ABI, and required features.
 
 Use this for:
@@ -92,13 +99,9 @@ Use this for:
 - plugin distribution;
 - testing;
 - server environments where Gene is already installed;
-- cross-platform package distribution when target-specific native dependencies are absent.
+- cross-platform package distribution when target-specific native artifacts are absent.
 
 ### 3.2 Standalone VM executable
-
-```bash
-gene build . -o app
-```
 
 This embeds:
 
@@ -110,11 +113,7 @@ application image
 
 This should be the default end-user distribution mode. It supports dynamic Gene features while requiring no separate Gene installation.
 
-### 3.3 Mixed native executable
-
-```bash
-gene build . --mode mixed -o app
-```
+### 3.3 Mixed-code executable
 
 This embeds:
 
@@ -125,17 +124,12 @@ native-compiled typed functions/modules where available
 application image metadata
 ```
 
-Typed-to-typed calls may use direct native calls. Dynamic, reflective, untyped, or unsupported functions remain GIR/VM code. Mixed mode preserves the same source semantics as VM mode and must preserve GIR fallback by default.
-
-A future fully native mode may exist, but it should be optional and stricter.
+Typed-to-typed calls may use direct native calls. Dynamic, reflective, untyped,
+or unsupported functions remain GIR/VM code. Mixed mode preserves the same
+source semantics as VM mode and must preserve GIR fallback. Format 1 defines
+only `vm` and `mixed`; a strict fully native product is not designed here.
 
 ### 3.4 Multi-target distribution bundle
-
-```bash
-gene bundle . \
-  --targets aarch64-apple-darwin,x86_64-unknown-linux-gnu,x86_64-pc-windows-msvc \
-  -o app.gbundle
-```
 
 A bundle may contain:
 
@@ -157,7 +151,10 @@ The bundle is not the canonical program representation. The `.gapp` remains cano
 
 A Gene application image should be a deterministic indexed image format.
 
-The semantic format is **Gene-specific**. It should not be defined as arbitrary ZIP, arbitrary tar, or arbitrary Gene source syntax. A Phase 1 implementation may use a restricted ZIP-like container for convenience, but the reader and writer must enforce Gene image semantics.
+The semantic format is **Gene-specific**. It should not be defined as arbitrary
+ZIP, arbitrary tar, or arbitrary Gene source syntax. The first format-1 writer
+may use a restricted ZIP-like container for convenience, but the reader and
+writer must enforce Gene image semantics.
 
 Conceptual binary layout:
 
@@ -211,7 +208,7 @@ Required canonicalization rules:
 - explicit offset, stored size, and uncompressed size per indexed blob.
 ```
 
-### 4.1 Restricted ZIP-like Phase 1 option
+### 4.1 Restricted ZIP-like format-1 option
 
 A restricted ZIP-like implementation is acceptable for the MVP if and only if Gene treats ZIP as an implementation detail.
 
@@ -257,28 +254,31 @@ Every application image has a manifest. The manifest should be canonical, inspec
 Example conceptual form:
 
 ```gene
-(AppImage
-  ^format-version 1
-  ^compiler-version "0.1.0"
-  ^value-abi 1
-  ^gir-abi 1
-  ^requires (Runtime
-    ^min-format-version 1
-    ^min-value-abi 1
-    ^min-gir-abi 1
+(app_image
+  ^format_version 1
+  ^compiler_version "0.1.0"
+  ^value_abi 1
+  ^gir_abi 1
+  ^requires (runtime
+    ^min_format_version 1
+    ^min_value_abi 1
+    ^min_gir_abi 1
     ^features [vm streams modules])
-  ^entry-package "app"
-  ^entry-module "/main"
+  ^root_package_id "pkg:acme/widget@1.2.0#sha256:..."
+  ^application_target "widget"
+  ^entry_module "src/apps/widget.gene"
   ^mode vm
-  ^profile sealed
-  ^debug-info min
+  ^profile release
+  ^sealing sealed
+  ^debug_info min
   ^portable true
   ^targets []
-  ^module-graph-hash "sha256:..."
-  ^lock-hash nil
+  ^module_graph_digest "sha256:..."
+  ^source_lock_digest "sha256:..."
+  ^package_graph_digest "sha256:..."
+  ^package_graph_blob "metadata/package_graph.gene"
   ^modules {}
   ^resources {}
-  ^dependencies []
   ^native {}
   ^signatures {})
 ```
@@ -290,19 +290,25 @@ The manifest should include:
 - runtime/value ABI version;
 - GIR ABI version;
 - compatibility requirements and required runtime features;
-- entry package;
+- immutable root package instance and application target;
 - entry module;
-- build mode: `vm`, `mixed`, or future `native`;
-- image profile: `sealed`, `open`, `debug`, `release`, `portable`, or `targeted` as applicable;
+- image mode: `vm` or `mixed`;
+- build profile name and effective sealing mode (`sealed` or `open`);
 - debug-info level: `full`, `min`, or `none`;
 - target triples when target-specific content exists;
 - module table;
 - resource table;
-- dependency metadata table;
-- native dependency table;
+- complete frozen package-instance graph and its digest;
+- native artifact table;
 - content hashes for all included content;
 - image digest metadata;
 - optional signature metadata.
+
+`source_lock_digest` identifies the exact source resolution consumed by the
+build. `package_graph_digest` identifies the image graph after mutable
+workspace/path nodes have been frozen to source-tree digests. The graph blob is
+Canonical Gene Data v1 from `package.md` §6.3 and is itself covered by the image
+content index.
 
 Use `^targets` rather than a single top-level `^target` for images that may contain multiple target-specific native artifacts. A singular target field is acceptable only for a fully target-specific image or executable metadata wrapper.
 
@@ -313,19 +319,19 @@ Use `^targets` rather than a single top-level `^target` for images that may cont
 Each module entry should contain:
 
 ```gene
-(ModuleEntry
+(module_entry
   ^id "/app/main"
-  ^package "app"
-  ^logical-path "/main"
-  ^source-kind gene
-  ^source-hash "sha256:..."
-  ^gir-hash "sha256:..."
-  ^gir-blob "modules/app/main.gir"
+  ^package_id "pkg:acme/widget@1.2.0#sha256:..."
+  ^logical_path "/main"
+  ^source_kind gene
+  ^source_digest "sha256:..."
+  ^gir_digest "sha256:..."
+  ^gir_blob "modules/app/main.gir"
   ^imports [...]
   ^exports [...]
-  ^debug-source? nil
-  ^sourcemap? nil
-  ^native? [...])
+  ^debug_source nil
+  ^sourcemap nil
+  ^native [...])
 ```
 
 Rules:
@@ -336,7 +342,8 @@ Rules:
 - Namespace identity is derived from package plus module logical path.
 - Source text may be included in debug builds and omitted in release builds.
 - Full source maps are omitted by default from sealed release builds.
-- Minimal stack-trace metadata is preserved by default unless `--debug-info=none` is requested.
+- Minimal stack-trace metadata is preserved by default unless the effective
+  `debug_info` level is `none`.
 - GIR is the required portable executable form in `vm` and `mixed` modes.
 - Native code, when present, is an optional acceleration for selected typed functions/modules.
 
@@ -374,130 +381,88 @@ Int -> that exit code
 other value -> TypeError / startup error
 ```
 
-The executable startup model should match `gene run` as closely as possible. The difference is where modules and resources are loaded from.
+Image startup should match source-application execution semantics as closely as
+possible. The difference is where modules and resources are loaded from.
 
 ---
 
-## 8. Simple application build
+## 8. Assembly input
 
-For a single source file:
+This document begins at the `Assembler` seam defined by `package-build.md`.
+The assembler receives an `AssemblyRequest` and verified `BuildResult`; it does
+not discover packages, resolve imports, compile modules, execute recipes, or
+choose toolchains. Its input already identifies the application target,
+profile, mode, target triples, frozen source snapshots, artifacts, and source
+lock digest.
 
-```bash
-gene build hello.gene -o hello
-```
-
-The builder creates an ad hoc package:
-
-```text
-package: <adhoc>
-entry module: hello.gene
-resources: none unless specified
-native dependencies: none unless specified
-```
-
-The builder then:
-
-```text
-read source
-parse
-compile to GIR
-create minimal app image
-embed app image in launcher
-write executable
-verify executable and embedded image
-```
-
-A `package.gene` file is not required for single-file applications.
+The same interface accepts an ad-hoc application or a regular package target.
+How those roots become a `BuildResult` belongs to `package.md` and
+`package-build.md`; the image format does not encode a second build path for
+single-file programs.
 
 ---
 
-## 9. Complex package build
+## 9. Assembly output
 
-For a package directory:
-
-```bash
-gene build . --release -o my-app
-```
-
-The builder should:
-
-```text
-read package.gene
-resolve entry package/module
-resolve imports
-build module graph
-reject import cycles unless a future cycle-safe mode is defined
-compile each module to GIR
-collect resources
-collect approved native dependencies
-write resolver-neutral dependency metadata
-write manifest and content index
-write application image
-embed image in launcher when building an executable
-verify resulting artifact
-```
-
-Package dependency resolution, registry support, semver, hosted packages, and lockfile policy can evolve separately. The image format should already have stable fields for dependency hashes, package identity, module graph hashes, and lock metadata.
+The assembler returns one verified `ApplicationArtifact`: a portable `.gapp`,
+a target-specific launcher containing that image, or a multi-target bundle.
+It may sign, embed, and encode already-built artifacts, but it never mutates the
+source lock or artifact store. Registry, SemVer, workspace, build recipe,
+toolchain, system-dependency discovery, and cross-compilation policy remain
+owned by the upstream package/build modules.
 
 ---
 
-## 10. Dependency metadata
+## 10. Frozen package graph
 
-The image should include minimal dependency metadata before the full dependency resolver exists. This metadata should be resolver-neutral and content-addressed.
-
-Example conceptual form:
+Every image contains the complete runtime projection of the resolved package
+graph. It is not resolver-neutral metadata and it is not an invitation to solve
+again at startup. Each entry is:
 
 ```gene
-(Dependency
-  ^id "pkg:example"
-  ^name "example"
-  ^version nil
-  ^source nil
-  ^resolved nil
-  ^content-hash "sha256:..."
-  ^module-graph-hash "sha256:..."
-  ^modules [...])
+(image_package
+  ^id "pkg:acme/widget@1.2.0#sha256:..."
+  ^source_id "workspace:acme/widget@1.2.0#sha256:..."
+  ^name "acme/widget"
+  ^version "1.2.0"
+  ^tree_digest "sha256:..."
+  ^manifest_digest "sha256:..."
+  ^features []
+  ^dependencies {
+    ^json (locked_edge
+      ^scope runtime
+      ^target "pkg:acme/json@1.4.2#sha256:...")
+  }
+  ^modules [...]
+  ^capabilities [...])
 ```
 
-Include now:
+`id`, `name`, `version`, `tree_digest`, `manifest_digest`, `features`,
+`dependencies`, `modules`, and `capabilities` are required. `source_id` is
+required when the source lock node had a different mutable identity; otherwise
+it is omitted. Entries and alias maps use the lock ordering rules. Development
+and host build edges are excluded from the runnable projection, but their
+source/artifact provenance remains in the signed build statement.
 
-```text
-- declared package identity;
-- package name when known;
-- optional version string when known;
-- content hashes;
-- module graph hashes;
-- target-specific native dependency records;
-- capability declarations;
-- optional provenance/signature fields;
-- optional lockfile hash when a lockfile exists.
-```
-
-Defer until package management is designed:
-
-```text
-- registry URL semantics;
-- semver interpretation;
-- lockfile schema details;
-- hosted package trust model;
-- dependency override policy;
-- workspace policy;
-- transitive dependency conflict resolution.
-```
-
-This gives Gene reproducibility hooks without freezing the package manager too early.
+Every workspace/path node is snapshotted and assigned the ordinary immutable
+`pkg:<name>@<version>#sha256:<instance_identity_hex>` image ID. Its canonical
+frozen source identity includes the original source ID, and its instance digest
+also covers the frozen tree digest. All incoming locked edges are rewritten to
+that ID. Distinct versions remain distinct entries, so an image
+may contain C 1.0, 1.1, and 1.2 simultaneously. The image loader builds one
+package-ID table and one alias table per package; runtime imports perform no
+manifest parsing, directory search, hashing, version solving, or network I/O.
 
 ---
 
-## 11. Open and sealed builds
+## 11. Open and sealed images
 
-Gene should support two important build profiles.
+Gene should support two sealing modes, selected by a profile or an explicit
+per-build override.
 
 ### 11.1 Sealed application
 
-```bash
-gene build . --sealed -o app
-```
+A sealed image records `^sealing sealed`.
 
 A sealed app has these properties:
 
@@ -513,9 +478,7 @@ A sealed app may still use macros/templates expanded during build. It may still 
 
 ### 11.2 Open application
 
-```bash
-gene build . --open -o app
-```
+An open image records `^sealing open`.
 
 An open app may include:
 
@@ -527,17 +490,14 @@ An open app may include:
 - runtime-generated code;
 - optional FFI/native loading authority.
 
-Open apps are larger and require stricter capability control, but they are suitable for REPLs, plugin hosts, development tools, and self-evolving systems.
+Open apps are larger and require stricter capability control, but they are
+suitable for REPLs, plugin hosts, development tools, and runtime-extensible
+systems.
 
 ### 11.3 Debug information profiles
 
-Gene should support explicit debug-info levels:
-
-```bash
-gene build . --release --sealed --debug-info=min
-gene build . --release --sealed --debug-info=none
-gene build . --release --sealed --debug-info=full
-```
+The image manifest records an explicit `debug_info` level: `full`, `min`, or
+`none`.
 
 Recommended defaults:
 
@@ -548,7 +508,7 @@ release open build      -> min
 hardened release build  -> none, only when explicitly requested
 ```
 
-The `min` profile should retain enough metadata for useful diagnostics:
+The `min` level should retain enough metadata for useful diagnostics:
 
 ```text
 - module id;
@@ -558,13 +518,14 @@ The `min` profile should retain enough metadata for useful diagnostics:
 - symbol table data needed for stack traces.
 ```
 
-The `full` profile may include source maps and optional source snippets. The `none` profile strips everything not required by the VM.
+The `full` level may include source maps and optional source snippets. The
+`none` level strips everything not required by the VM.
 
 Default recommendation:
 
 ```text
 simple CLI/server app -> sealed
-REPL/plugin/self-evolving app -> open
+REPL/plugin/runtime-extensible app -> open
 sealed release app -> omit full source maps, keep minimal stack-trace metadata
 ```
 
@@ -618,16 +579,16 @@ Rules:
 Each resource entry should include encoding metadata and dual hashes:
 
 ```gene
-(ResourceEntry
+(resource_entry
   ^path "/assets/app.css"
-  ^content-type "text/css"
+  ^content_type "text/css"
   ^encoding zstd
-  ^encoding-level 6
-  ^content-hash "sha256:..."      ; hash of uncompressed logical bytes
-  ^blob-hash "sha256:..."         ; hash of stored encoded bytes
-  ^uncompressed-size 48291
-  ^stored-size 9172
-  ^blob-offset 1048576)
+  ^encoding_level 6
+  ^content_digest "sha256:..."      ; hash of uncompressed logical bytes
+  ^blob_digest "sha256:..."         ; hash of stored encoded bytes
+  ^uncompressed_size 48291
+  ^stored_size 9172
+  ^blob_offset 1048576)
 ```
 
 Initial compression methods:
@@ -660,9 +621,12 @@ temporary directory
 
 ---
 
-## 14. Native dependencies and FFI
+## 14. Native artifact entries
 
-Native dependencies are target-specific.
+This section uses **native artifact** to mean target machine code already
+produced or selected by `BuildEngine`. It does not define typed Gene lowering
+(`native-type.md`) or system-library discovery (`package-build.md` §8).
+Native artifacts are target-specific.
 
 The image may contain:
 
@@ -674,29 +638,31 @@ native/x86_64-pc-windows-msvc/foo.dll
 
 Rules:
 
-- Prefer static linking into the launcher when practical.
-- Otherwise include dynamic libraries per target triple.
-- Hash native artifacts in the manifest.
+- Store each artifact under its target record with its artifact kind, logical
+  load name, ABI metadata, and content digest.
 - Verify hashes before loading.
-- When the OS cannot load from memory, extract libraries into a content-addressed cache before loading.
-- Arbitrary dynamic loading requires an explicit `$ffi/Load` capability.
-- Raw pointer/unsafe FFI APIs may require `$ffi/Unsafe`.
+- When the OS cannot load from memory, extract libraries into a
+  content-addressed runtime cache before loading.
+- Arbitrary dynamic loading requires an explicit `$ffi/load` capability.
+- Raw pointer/unsafe FFI APIs may require `$ffi/unsafe`.
 - Native artifacts should not change the logical identity of portable GIR modules.
 
 A standalone executable is target-specific even if its GIR modules are portable.
 
 ---
 
-## 15. Native compilation inside distribution
+## 15. Mixed-code image records
 
-Native compilation should be optional.
+This section uses **mixed image** to mean an image containing GIR plus eligible
+typed Gene machine-code artifacts. `native-type.md` owns the compiler backend;
+`package-build.md` owns eligibility, compilation, link planning, and target
+selection. The distribution reader only validates and exposes the records.
 
 Modes:
 
 ```text
 vm       GIR only; VM executes all Gene code
 mixed    GIR fallback plus native code for eligible typed functions/modules
-native   future stricter mode; all reachable code must be native-compatible
 ```
 
 Mixed mode behavior:
@@ -721,58 +687,35 @@ Mixed mode must keep GIR fallback by default. This protects:
 - cross-target portability of the image;
 - runtime deoptimization;
 - unsupported language features;
-- overlays and self-evolving applications;
+- runtime overlays;
 - typed/untyped boundary behavior.
 ```
 
-Stripping GIR fallback belongs to a future strict native mode or explicit expert profile, for example:
-
-```bash
-gene build . --mode native --no-gir-fallback
-```
-
-A `mixed` build should not silently remove GIR fallback.
+Format 1 requires GIR fallback for every native-accelerated Gene module. A
+reader rejects a mixed record whose fallback is absent.
 
 ---
 
-## 16. Cross-compilation and platform-specific launchers
+## 16. Target records and launchers
 
-Launchers are target-specific artifacts. A single standalone executable should target one OS/architecture/runtime environment.
-
-Recommended commands:
-
-```bash
-# Build one target-specific executable
-gene build . --target x86_64-unknown-linux-gnu -o app-linux
-
-# Build portable image only
-gene pack . -o app.gapp
-
-# Build multiple target-specific executables
-gene build . \
-  --target aarch64-apple-darwin \
-  --target x86_64-unknown-linux-gnu \
-  --out-dir dist/
-
-# Build a multi-target distribution bundle
-gene bundle . \
-  --targets aarch64-apple-darwin,x86_64-unknown-linux-gnu \
-  -o app.gbundle
-```
+This document records target-specific content; it does not define
+cross-compilation. `package-build.md` owns target/toolchain selection and emits
+one verified artifact set per target. A standalone launcher names exactly one
+OS/architecture/runtime environment, while a bundle may index several.
 
 A target record should use conventional target triples:
 
 ```gene
-(Target
+(target
   ^triple "x86_64-unknown-linux-gnu"
-  ^launcher-abi 1
+  ^launcher_abi 1
   ^native [...]
-  ^runtime-features [...])
+  ^runtime_features [...])
 ```
 
 Rules:
 
-- One standalone executable is emitted per target.
+- One standalone launcher entry exists per target.
 - Multi-target distribution uses a bundle/index layer.
 - The `.gapp` remains the canonical application image.
 - Target-specific native libraries and launchers are represented as target records.
@@ -827,11 +770,11 @@ Requirements:
 - content hashes for all modules/resources/native files;
 - encoded blob hashes for stored blobs;
 - compiler/version/ABI metadata;
-- optional dependency lock hash;
+- required source lock and frozen package-graph digests;
 - canonical image digest;
 - optional signature block.
 
-`gene verify` should check:
+The image verifier checks:
 
 ```text
 image format
@@ -868,16 +811,16 @@ Layer 5: deployment trust policy
 Conceptual signature block:
 
 ```gene
-(SignatureBlock
-  ^image-digest "sha256:..."
+(signature_block
+  ^image_digest "sha256:..."
   ^signatures [
-    (Signature
-      ^scheme cose-sign1
-      ^key-id "..."
-      ^cert-chain [...]
-      ^transparency-entry nil
+    (signature
+      ^scheme cose_sign1
+      ^key_id "..."
+      ^cert_chain [...]
+      ^transparency_entry nil
       ^timestamp "..."
-      ^signature-bytes #"...")])
+      ^signature_bytes #"...")])
 ```
 
 Trust roots should not be hard-coded into the image. They should come from one or more external policies:
@@ -887,7 +830,7 @@ Trust roots should not be hard-coded into the image. They should come from one o
 - enterprise trust policy;
 - OS trust store, where appropriate;
 - Gene registry trust metadata;
-- explicit command-line trust configuration;
+- explicit invocation trust policy;
 - deployment orchestrator policy.
 ```
 
@@ -906,131 +849,41 @@ standalone executables
 
 Do not rely only on platform code signing. OS code signing verifies the executable as an OS artifact; Gene still needs to verify the embedded application image as a Gene artifact.
 
-Commands:
+---
 
-```bash
-gene inspect app.gapp
-gene verify app.gapp
-gene inspect ./app
-gene verify ./app
-gene sign app.gapp --key developer.key
-gene verify app.gapp --trust-policy policy.gene
-```
+## 19. Runtime overlays do not mutate images
+
+A `.gapp`, its embedded package graph, and its signatures are immutable.
+Format 1 has no self-update or persistent code-activation protocol. An open
+application may evaluate temporary code or load a host-managed external overlay
+when explicit runtime capabilities allow it, but that overlay is not part of
+the image identity and cannot rewrite the mounted package graph.
+
+Any future persistent overlay protocol requires a concrete consumer and a
+separate design for provenance, activation, rollback, and trust. It must keep
+the signed base image intact rather than teaching the image writer or loader to
+modify installed applications.
 
 ---
 
-## 19. Self-evolving applications
+## 20. Command ownership
 
-The embedded base image is immutable.
-
-Generated or replacement code should live in external overlays:
-
-```text
-base application image        immutable
-runtime eval overlay          temporary / GC-managed
-activated module versions     persistent external version store
-application data              external writable state
-```
-
-Do **not** rewrite the running executable. Rewriting the executable conflicts with:
-
-- code signing;
-- OS loader behavior;
-- rollback;
-- file locks;
-- security review;
-- deterministic deployment.
-
-Future self-evolution should use explicit operations:
-
-```text
-generate candidate
--> eval/test in isolated Env
--> compile module artifact
--> activate versioned overlay
--> rollback if needed
-```
-
-The distribution design should preserve stable base-image identity while allowing runtime overlays.
+This document defines no command names or flags. `package-build.md` §13 is the
+single command-surface contract for building, packing, running, inspecting,
+verifying, signing, bundling, and installing application artifacts. Image
+readers/writers expose internal interfaces used by those commands; they do not
+grow a parallel distribution CLI.
 
 ---
 
-## 20. CLI design
+## 21. Assembly pipeline
 
-Recommended commands:
-
-```bash
-# Run source, image, or executable-like image
-gene run app.gene
-gene run app.gapp
-
-# Build standalone executable
-gene build hello.gene -o hello
-gene build . -o app
-gene build . --release -o app
-gene build . --target aarch64-apple-darwin -o app
-gene build . --mode vm -o app
-gene build . --mode mixed -o app
-gene build . --sealed -o app
-gene build . --open -o app
-gene build . --release --sealed --debug-info=min -o app
-gene build . --release --sealed --debug-info=none -o app
-
-# Create portable app image only
-gene pack . -o app.gapp
-gene pack hello.gene -o hello.gapp
-
-# Build multi-target releases
-gene build . \
-  --target aarch64-apple-darwin \
-  --target x86_64-unknown-linux-gnu \
-  --out-dir dist/
-gene bundle . \
-  --targets aarch64-apple-darwin,x86_64-unknown-linux-gnu \
-  -o app.gbundle
-
-# Inspect/verify artifacts
-gene inspect app.gapp
-gene verify app.gapp
-gene inspect app
-gene verify app
-
-# Signing
-gene sign app.gapp --key developer.key
-gene verify app.gapp --trust-policy policy.gene
-```
-
-Potential later commands:
-
-```bash
-gene extract app.gapp ./out
-gene list-modules app.gapp
-gene list-resources app.gapp
-gene list-targets app.gapp
-gene list-signatures app.gapp
-gene verify-bundle app.gbundle
-```
-
----
-
-## 21. Build pipeline
-
-Conceptual build pipeline:
+The distribution-owned portion of the pipeline is:
 
 ```text
-input source/package
--> resolve package context
--> resolve imports
--> build module graph
--> read + parse modules
--> macro/template expansion
--> type/protocol/impl checks
--> compile modules to GIR
--> optionally native-compile typed functions/modules
--> collect resources
--> choose per-resource compression
--> collect native dependencies
--> write resolver-neutral dependency metadata
+AssemblyRequest + verified BuildResult
+-> freeze mutable package nodes into the image package graph
+-> close the runtime module/resource/native graph
 -> write canonical manifest
 -> write canonical content index
 -> write deterministic application image
@@ -1039,14 +892,11 @@ input source/package
 -> verify resulting artifact
 ```
 
-Builds should fail if:
+Assembly fails if:
 
-- imports cannot be resolved;
-- cycles are detected in MVP;
-- selected exported bindings are missing;
-- module graph is target-incompatible;
-- required native artifacts are unavailable for the target;
-- sealed build encounters forbidden dynamic behavior;
+- a required artifact or frozen package node is missing or stale;
+- an artifact is incompatible with the requested target, mode, or ABI;
+- a sealed image contains forbidden dynamic capability metadata;
 - runtime ABI/GIR ABI mismatch is detected;
 - image canonicalization fails;
 - hash verification fails after writing;
@@ -1054,74 +904,25 @@ Builds should fail if:
 
 ---
 
-## 22. Implementation phases
+## 22. Delivery order and promotion gates
 
-### Phase 1: Deterministic GIR application image
+These are artifact increments inside the single `Assembler` module, not a
+second phase plan. Preserve the final image/assembler interfaces, but promote
+an increment only when its consumer exists:
 
-- Define `.gapp` header, manifest, content index, and footer.
-- Use a deterministic indexed image writer.
-- A restricted ZIP-like backend is acceptable if it obeys Gene image rules.
-- Store GIR modules and resources.
-- Support `store` and deterministic `zstd` resource encodings.
-- Record content hashes and encoded blob hashes.
-- Implement `gene pack`.
-- Implement `gene run app.gapp`.
-- Implement `gene inspect` and basic `gene verify`.
-- Preserve an mmap-compatible layout even if mmap is not implemented yet.
+| Increment | Demand that justifies it |
+|---|---|
+| Portable deterministic `.gapp` | an application must run without source checkout or compiler work |
+| Embedded VM launcher | users must run that image without a separately installed Gene runtime |
+| Sealed/open encoding | a deployment or plugin host needs an enforceable dynamic-code distinction |
+| Native artifact entries and mixed records | `BuildEngine` produces a real native artifact consumed by an application |
+| Signing and trust policy | images cross an untrusted transport or deployment requires signer identity |
+| Multi-target bundle | one release operation must publish more than one target launcher |
 
-### Phase 2: Standalone VM executable
-
-- Build target-native launcher.
-- Append/embed image.
-- Read image footer at startup.
-- Support subrange image reader.
-- Mount image as read-only module/resource store.
-- Support `gene build . -o app`.
-- Verify embedded image before startup.
-
-### Phase 3: Sealed/open profiles and debug-info profiles
-
-- Implement sealed build checks.
-- Implement open build support.
-- Optionally omit reader/compiler from sealed launchers.
-- Include reader/compiler in open launchers.
-- Add capability metadata.
-- Implement `--debug-info=full|min|none`.
-- Default sealed release builds to `--debug-info=min` and omit full source maps.
-
-### Phase 4: Native dependencies
-
-- Include target-specific native libraries.
-- Extract/load dynamic libs safely when memory loading is not supported.
-- Verify native artifact hashes.
-- Integrate with `$ffi/Load` capability.
-- Add target table support.
-
-### Phase 5: Mixed native mode
-
-- Add native-compiled typed function artifacts.
-- Keep GIR fallback by default.
-- Generate dynamic/typed adapters.
-- Preserve uniform stack traces and error behavior.
-- Reject stripping GIR fallback in mixed mode unless a future explicit expert policy is introduced.
-
-### Phase 6: Signing, trust policy, and reproducibility
-
-- Implement deterministic image digest.
-- Implement signature block.
-- Keep trust roots external to the image.
-- Add local developer key signing.
-- Add trust-policy verification.
-- Integrate lockfile/dependency hash metadata when package resolution exists.
-- Add optional provenance/transparency metadata later.
-
-### Phase 7: Multi-target bundles
-
-- Implement `gene bundle`.
-- Represent one `.gapp` plus per-target launchers.
-- Add bundle index.
-- Verify all launchers and the shared image.
-- Support target listing and bundle inspection.
+Each increment adds behavior behind `Assembler.assemble`; it does not add a
+parallel resolver, build planner, or command surface. Exact implementation
+tasks and acceptance tests live in `package-build.md` once the corresponding
+demand gate is open.
 
 ---
 
@@ -1131,7 +932,9 @@ The previous open questions are resolved as follows.
 
 ### 23.1 Physical image format
 
-Use a deterministic indexed Gene image format. A restricted ZIP-like backend is acceptable for the MVP only if Gene enforces canonical image semantics.
+Use a deterministic indexed Gene image format. A restricted ZIP-like backend
+is acceptable for the first writer only if Gene enforces canonical image
+semantics.
 
 ### 23.2 Memory mapping
 
@@ -1139,11 +942,15 @@ Make the v1 layout mmap-compatible. The first implementation may still use ordin
 
 ### 23.3 Source maps in sealed release builds
 
-Omit full source maps by default. Preserve minimal stack-trace metadata unless `--debug-info=none` is requested.
+Omit full source maps by default. Preserve minimal stack-trace metadata unless
+the effective `debug_info` level is `none`.
 
-### 23.4 Early dependency metadata
+### 23.4 Frozen package graph
 
-Include resolver-neutral, content-addressed dependency metadata now. Defer registry, semver, lockfile, and override policy.
+Embed the exact frozen package-instance graph from §10 in format 1. Registry,
+SemVer, workspace, lockfile, and multiple-version semantics are not deferred or
+redefined by the image format; `package.md` owns them. The image stores their
+resolved result and never invokes them at load time.
 
 ### 23.5 Resource compression
 
@@ -1155,7 +962,8 @@ Emit one launcher per target. Use a separate bundle/index for multi-target distr
 
 ### 23.7 GIR fallback in mixed mode
 
-Mixed mode preserves GIR fallback by default. Stripping fallback belongs to future strict native or expert profiles.
+Mixed mode always preserves GIR fallback in format 1. Strict native execution
+is outside this proposal.
 
 ### 23.8 Signing keys and trust roots
 
@@ -1173,6 +981,10 @@ standalone executable = target launcher + embedded .gapp
 multi-target bundle = .gapp + per-target launchers + bundle index
 ```
 
-This gives Gene a simple path for one-file scripts, complex packages, server apps, desktop tools, and future native/mixed builds while preserving dynamic Gene semantics.
+This gives Gene a simple path for one-file scripts, complex packages, server
+apps, desktop tools, and mixed builds while preserving dynamic Gene semantics.
 
-The default build should be VM/GIR-based and robust. Native compilation, FFI bundling, signing, dependency resolution, and self-evolving overlays can be layered on top without changing the core distribution model.
+The default build should be VM/GIR-based and robust. Exact package resolution
+precedes every image build; native artifacts, FFI bundling, signing, and
+host-managed runtime overlays can be layered on top without changing the core
+distribution model.

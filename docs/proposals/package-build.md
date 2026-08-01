@@ -13,6 +13,13 @@ native dependencies, application assembly, prebuilt artifacts, and installation
 
 ---
 
+Terminology is deliberately split: a **system dependency** is an external ABI
+requirement discovered through §8; a **native artifact** is target machine code
+consumed or produced by the build graph; the **typed-native backend** in
+`native-type.md` lowers eligible Gene code; and a **mixed image** in
+`distribution.md` packages native artifacts alongside mandatory GIR fallback.
+None of these terms implies the others.
+
 ## 1. Decision summary
 
 Gene should use one build engine for libraries and applications, with these
@@ -86,15 +93,13 @@ Targets describe what a package produces. They are not build steps.
 ```gene
 ^library {
   ^entry "src/index.gene"
-  ^resources [templates]
-  ^uses [sqlite_shim]
+  ^uses [sqlite_shim templates]
 }
 
 ^applications [
   (application "widget"
     ^entry "src/apps/widget.gene"
-    ^resources [templates web_assets]
-    ^uses [sqlite_shim])
+    ^uses [sqlite_shim templates web_assets])
 ]
 ```
 
@@ -103,10 +108,12 @@ The primary target kinds are:
 | Target | Product | Typical consumer |
 |---|---|---|
 | Library | compiled Gene module bundle plus metadata | another package build or runtime |
-| Application | `.gapp` image | `gene run`, launcher assembly, or installation |
-| Standalone application | target launcher plus embedded `.gapp` | end user |
+| Application | verified GIR/resource/native artifact set | `gene run` or `Assembler` |
 | Test | isolated test application | `gene test` |
 | Documentation | generated package documentation | publisher or local author |
+
+`.gapp`, standalone launcher, and multi-target bundle are assembly outputs
+selected by an `AssemblyRequest`; they are not additional manifest targets.
 
 The library target is implicit in dependency builds: if a package is present as
 a runtime dependency, its library target is built when the selected backend
@@ -131,10 +138,28 @@ warm no-op build does not re-read or re-hash every member file. Changed metadata
 causes content revalidation; correctness never depends on directory enumeration
 order or timestamps alone.
 
-Profiles (`dev`, `test`, `release`, and custom profiles) modify optimization,
-debug information, assertions, sealing, and linker policy. They never change
-dependency source selection; profile-dependent source graphs would make one
-lockfile describe multiple programs ambiguously.
+The built-in profiles are `dev`, `test`, and `release`. A custom profile is
+declared in the top-level `^profiles` map:
+
+```gene
+^profiles {
+  ^release_small (profile
+    ^inherits release
+    ^optimization size
+    ^debug_info min
+    ^assertions false
+    ^sealing sealed
+    ^lto true)
+}
+```
+
+A `profile` has exactly `inherits`, `optimization`, `debug_info`, `assertions`,
+`sealing`, and `lto`. `inherits` is one built-in profile and is required;
+omitted properties inherit it. Optimization is `none`, `speed`, or `size`;
+debug information is `full`, `min`, or `none`; sealing is `open` or
+`sealed`; the remaining values are booleans. Profiles never change dependency
+source selection or activate features; profile-dependent source graphs would
+make one lockfile describe multiple programs ambiguously.
 
 ## 4. Build recipes and the build DAG
 
@@ -156,7 +181,7 @@ other recipes:
     ^entry "src/web/client.gene")
 
   (command "atlas"
-    ^program "asset_tool"
+    ^program "dep:asset_tool"
     ^args ["build" "{src}/resources/atlas.gene" "{out}/atlas"]
     ^inputs ["resources/atlas.gene" "resources/images/**"]
     ^outputs ["atlas/**"]
@@ -188,14 +213,42 @@ Built-ins know their complete input closure and emit typed artifacts. A
 link flags. A `resource_bundle` produces an indexed resource artifact, not
 files copied into an unspecified directory.
 
+All recipe schemas are closed. Every recipe body contains exactly one local
+recipe name and the common `^needs [<recipe_name> ...]` property defaults to an
+empty list. The initial recipe-specific properties are:
+
+| Recipe | Required properties | Optional properties |
+|---|---|---|
+| `c_library` | `^sources [<pattern> ...]` | `^headers [...]`, `^public_headers [...]`, `^include_dirs [...]`, `^defines {<string>: <string>}`, `^standard <c11|c17|c23>`, `^kind <static|shared>`, `^uses_system [<alias> ...]`, `^needs [...]` |
+| `resource_bundle` | `^inputs [<pattern> ...]` | `^strip_prefix <path>`, `^needs [...]` |
+| `web_module` | `^entry <path>` | `^format <esm|iife>`, `^needs [...]` |
+| `command` | `^program <coordinate>`, `^args [<string> ...]`, `^inputs [<pattern> ...]`, `^outputs [<pattern> ...]` | `^env {<string>: <string>}`, `^authority [<name> ...]`, `^timeout_ms <integer>`, `^needs [...]` |
+
+Required lists are non-empty except `command.args`, which may be empty.
+Patterns use the package pattern grammar from `package.md` §5.1. Header and
+include paths are package-relative; public headers must be selected by
+`headers`. `standard` defaults to `c11`, `kind` to `static`, and web `format` to
+`esm`. Define and environment keys are strings because their spelling is a
+foreign toolchain protocol, not a Gene name. Every input pattern must match at
+least one regular file; every output pattern must match at least one produced
+file. `strip_prefix` must contain every resource input and defaults to their
+longest common directory. The only
+initial extra authority is `network`; it is forbidden for release or published
+prebuilt derivations. `timeout_ms` is positive and defaults from host policy.
+Unknown properties and artifact-name collisions are errors.
+
 ### 4.2 Command recipes
 
 A command recipe invokes a tool from `^build_dependencies` or a host toolchain
-selected by policy. `^program` never resolves through ambient shell aliases or
-the current directory.
+selected by policy. `^program` is either `dep:<alias>/<application>` or
+`tool:<tool_name>`. The application segment may be omitted only when the build
+dependency declares exactly one application target. Build dependencies execute
+for the host platform even during cross-compilation. Host tool names are
+resolved only through the injected `ToolchainSet`; `^program` never searches
+ambient `PATH`, shell aliases, or the current directory.
 
 `^args` is an argv vector, not a shell string. The build engine recognizes only
-whole-argument placeholders:
+these path placeholders:
 
 ```text
 {src}   read-only package source root
@@ -204,9 +257,12 @@ whole-argument placeholders:
 {tmp}   private temporary root
 ```
 
-There is no implicit word splitting, glob expansion, environment interpolation,
-pipe, redirect, or `&&`. A shell can be a declared build dependency and invoked
-explicitly, subject to the same sandbox and trust policy.
+A placeholder may be the whole argument or its first path segment followed by
+`/`; it cannot occur later, occur twice, or be concatenated with other text.
+Expansion always yields one argv item. There is no implicit word splitting,
+glob expansion, environment interpolation, pipe, redirect, or `&&`. A shell
+can be a declared build dependency and invoked explicitly, subject to the same
+sandbox and trust policy.
 
 `^inputs` and `^outputs` are required. Globs are evaluated by the build engine,
 sorted by normalized logical path, and included in the derivation. Every output
@@ -246,6 +302,13 @@ Default authority is:
 - no writes to package sources, stores, sibling sandboxes, or installation
   prefixes.
 
+These are semantic guarantees, not best-effort requests. A host adapter that
+cannot enforce read isolation, output confinement, environment clearing, and
+network denial for a recipe reports `BUILD_SANDBOX_UNAVAILABLE`; it does not
+silently run with weaker authority. Host policy may select a stronger adapter
+or explicitly allow an interactive, non-publishable unsafe development run,
+which is never cached, installed, or used for an attestation.
+
 Environment variables are empty except for deterministic build variables and
 those explicitly declared by the recipe and allowed by policy. Declared values
 enter the derivation key. Secrets are never reproducible inputs and cannot be
@@ -269,12 +332,21 @@ The planner consumes:
 ```text
 BuildRequest
 MaterializedGraph
-ToolchainSet
-BuildPolicy
+BuildEnvironment
 ```
 
 and returns an immutable DAG of derivations. A derivation is one recipe or one
 compiler/linker action with all effective inputs named.
+
+`BuildRequest` identifies one root package instance, product target, target
+triple, profile plus effective mode/sealing/debug values, prebuilt/source
+preference, rebuild mode, reproducibility mode, and maximum parallelism. It
+cannot alter locked features or dependency edges. `BuildEnvironment` supplies
+the toolchain set, system-dependency providers, build policy, source
+snapshotter, local/remote artifact sources,
+artifact store, and sandbox runner. Those capabilities are injected once when
+constructing a `BuildEngine`; neither the planner nor a recipe reads process
+globals to find them.
 
 ### 6.1 Derivation key
 
@@ -313,9 +385,25 @@ input/provenance statement
 reproducibility status
 ```
 
+An artifact digest hashes `gene-artifact-v1\0`, the artifact-type tag, its
+Canonical Gene Data v1 metadata (`package.md` §6.3), and a Canonical Source
+Tree v1 payload. Artifact metadata contains only logical paths and stable
+compatibility/provenance fields; timestamps, store locations, sandbox paths,
+and installation prefixes are excluded. Typed single-file artifacts use a
+one-entry payload. Each artifact kind defines which metadata fields are
+semantic, and golden vectors prevent adapters from inventing a second encoding.
+
 Two builders using the same derivation should produce the same artifact. If
 they do not, the build is non-reproducible and both outputs remain distinct by
-digest; the cache never aliases them silently.
+digest; the cache never aliases them silently. The first successful observation
+may serve as a cache hit while it is the only observation. If a later local or
+trusted remote result has a different digest, insertion atomically marks the
+derivation **poisoned**, retains every observation, and fails the current
+build. A poisoned derivation never serves a cache hit and cannot be cleared for
+that derivation ID: a known byte disagreement is part of its permanent
+provenance. Recovery requires fixing or declaring the missing input, tool, or
+engine rule, which produces a new derivation ID. Artifact objects remain
+available to existing references but cannot support a reproducibility claim.
 
 System dependencies make a build reproducible only when their headers,
 libraries, and relevant tool identity are themselves digest-addressed. Merely
@@ -329,7 +417,9 @@ source packages:
 
 ```text
 ~/.gene/artifacts/
-├── derivations/sha256/<derivation_id>/record.gene
+├── derivations/sha256/<derivation_id>/
+│   ├── index.gene             # active/poisoned state and observation set
+│   └── observations/<artifact_digest>.gene
 ├── objects/sha256/<artifact_digest>/...
 └── tmp/
 ```
@@ -352,9 +442,12 @@ shared artifacts still referenced by another project or installation. `gene
 pkg cache gc` traces lockfiles, project references, and installation receipts
 before deleting unreferenced source or artifact objects.
 
-Artifacts and derivation records are inserted atomically and are immutable.
-Concurrent builders may race to produce the same derivation; one verified
-record wins, and a differing result is reported rather than overwritten.
+Artifacts and observation records are inserted atomically and are immutable.
+Concurrent builders that produce the same digest converge on one observation;
+different digests atomically poison the derivation as specified in §6.2. The
+derivation index may transition only from empty to active or active to
+poisoned. Garbage collection may remove the complete record only when no lock,
+project, installation, attestation, or retained diagnostic refers to it.
 
 One workspace root owns `.gene/build/`. Its view is grouped by package instance
 and target so equal target names in `app`, `pkg1`, and `pkg2` cannot collide.
@@ -374,22 +467,40 @@ facility.
   ^sqlite (system_library
     ^name "sqlite3"
     ^version ">=3.40 <4"
-    ^providers [pkg_config vcpkg system_framework])
+    ^providers [pkg_config vcpkg system_framework]
+    ^linkage either)
 }
 ```
+
+A `system_library` has no positional body values. `name` and `version` are
+required. `providers` defaults to the host policy order and may contain only
+`pkg_config`, `vcpkg`, `system_framework`, or `policy_mapping`; `linkage` is
+`static`, `dynamic`, or `either` and defaults to `either`; optional
+`components` is a list of foreign provider component strings. Unknown
+properties are errors. The package aliases (`sqlite` above) are `snake_case`,
+while foreign names and components are strings with provider-defined spelling.
 
 Recipes refer to the alias (`sqlite`), not raw flags. A system-dependency
 adapter returns a normalized result:
 
 ```text
-version
-target and ABI
-header roots and digests
+package alias and foreign name/version
+target triple and ABI
+header roots and per-file/tree digests
 library files and digests
-required link names/options
-provider identity
-redistribution metadata
+ordered compile definitions/options and link names/options
+provider kind, executable/configuration identity, and query
+linkage kind and redistribution metadata
 ```
+
+The `SystemDependencyResolver.resolve(request) -> result` module is the only
+consumer-facing seam. Its request contains the closed manifest requirement,
+target triple, toolchain identity, and host policy. Provider adapters may use
+absolute host paths internally, but their normalized result is canonical data
+and every output-relevant value enters the derivation key. `pkg_config` runs
+with an explicit executable, sysroot, search path, and environment supplied by
+policy; it never inherits ambient `PKG_CONFIG_PATH` during a reproducible
+build.
 
 Initial adapters may include `pkg_config`, `vcpkg`, macOS frameworks, and an
 explicit host-policy mapping. The manifest expresses requirements; host policy
@@ -448,7 +559,8 @@ An application image records:
 
 - root package and application target;
 - co-lived workspace members frozen to exact source snapshot digests;
-- complete locked package-instance graph and lock digest;
+- source lock digest plus the complete frozen image package graph and its
+  digest;
 - module identities and source/GIR digests;
 - artifact derivations and content digests;
 - required runtime and ABI versions;
@@ -560,11 +672,19 @@ runnable application available outside its project.
 | `gene build [target]` | build a library or application target |
 | `gene build --all` | build every declared target in the current workspace |
 | `gene run [application]` | build as needed and run a project application |
+| `gene run <path.gapp>` | verify and run an assembled image |
 | `gene test [selector]` | build and run package tests with dev dependencies |
-| `gene pack [application]` | assemble a verified `.gapp` without installing |
+| `gene pack [application] [-o path.gapp]` | assemble a verified portable `.gapp` |
+| `gene pack [application] --standalone -o path` | assemble one target launcher with embedded `.gapp` |
+| `gene bundle [application] --target <triple>... -o path` | assemble a multi-target distribution bundle |
+| `gene inspect <artifact>` | print canonical image, target, package, and signature metadata |
+| `gene verify <artifact> [--trust_policy file]` | verify structure, digests, compatibility, and requested trust policy |
+| `gene sign <artifact> --key <file> -o path` | produce a newly signed immutable artifact |
 | `gene clean` | remove project build views and abandoned sandboxes |
-| `gene install <package>[@version] [--app name]` | build/acquire and atomically install an application |
+| `gene install <package>[@version] [--app name] [--prefix dir]` | resolve/build and atomically install an application |
+| `gene install <path.gapp> [--prefix dir]` | verify and atomically install an assembled image |
 | `gene uninstall <package> [--app name]` | remove an installation receipt and command selection |
+| `gene rollback <package> [--app name]` | atomically select the previous retained installation receipt |
 | `gene installed` | list receipts, selected commands, and retained versions |
 
 Common build options include:
@@ -572,6 +692,9 @@ Common build options include:
 ```text
 --target <triple>
 --profile <name>
+--mode vm|mixed
+--sealed | --open
+--debug_info full|min|none
 --locked
 --offline
 --jobs <n>
@@ -580,6 +703,21 @@ Common build options include:
 --explain
 --policy <file>
 ```
+
+`--release` is shorthand for `--profile release`. `--sealed`, `--open`, and
+`--debug_info` are explicit per-request overrides of the selected profile and
+enter every affected derivation and the image manifest. Conflicting shorthand
+and explicit values are errors. Format 1 supports only `vm` and `mixed`, and
+mixed images always retain GIR fallback; `native` and `--no_gir_fallback` are
+not recognized options.
+
+`gene build` writes only the keyed project build view and never interprets
+`-o`. `gene pack` and `gene bundle` are the only build-family commands that
+materialize a user-named distribution artifact. Inspection, verification, and
+signing consume existing artifacts and never resolve packages or execute build
+recipes. Before a demand-gated feature in §17 exists, its final command spelling
+returns a stable `BUILD_FEATURE_UNAVAILABLE` diagnostic rather than doing a
+weaker operation.
 
 `--explain` reports why a derivation was reused or rebuilt. `--rebuild` bypasses
 lookup but still writes an immutable result and detects non-reproducibility.
@@ -590,8 +728,13 @@ lookup but still writes an immutable result and detects non-reproducibility.
 The system has three deep modules with narrow interfaces:
 
 ```text
+new_build_engine(BuildEnvironment) -> BuildEngine
 BuildEngine.build(BuildRequest, MaterializedGraph) -> BuildResult
+
+new_assembler(AssemblyEnvironment) -> Assembler
 Assembler.assemble(AssemblyRequest, BuildResult) -> ApplicationArtifact
+
+new_installer(InstallEnvironment) -> Installer
 Installer.install(InstallRequest, ApplicationArtifact) -> InstallReceipt
 ```
 
@@ -600,11 +743,16 @@ sandboxing, scheduling, toolchains, derivation keys, caches, and provenance.
 `Assembler` hides image and launcher formats. `Installer` hides prefix layout,
 atomic switching, receipts, conflicts, rollback, and uninstall bookkeeping.
 
-Their local-I/O seams use temporary filesystem adapters in tests. The build
-engine has real internal adapters for local/remote artifact sources, toolchains,
-and system-dependency providers. The installer has adapters for user and
-explicit-prefix layouts. These adapters remain internal; callers and tests
-exercise observable outcomes through the three interfaces above.
+Construction is the single composition seam. `BuildEnvironment` contains the
+`ToolchainSet`, `BuildPolicy`, `SourceSnapshotter`, `ArtifactSources`,
+`ArtifactStore`, `SandboxRunner`, and `SystemDependencyProviders` described in
+§6. `AssemblyEnvironment` contains image/launcher writers, signing policy, and
+an artifact reader. `InstallEnvironment` contains the clock plus user and
+explicit-prefix filesystem adapters. Production constructors assemble host
+adapters; tests provide temporary filesystem and in-memory adapters. After
+construction, callers and tests exercise observable outcomes through the three
+operation interfaces above, and no module silently consults ambient global
+configuration.
 
 Deleting any one of these modules would spread substantial policy across every
 CLI and embedder, which is the leverage the interfaces are intended to retain.
@@ -615,6 +763,7 @@ Build and install failures use stable families:
 
 ```text
 BUILD_PLAN_*
+BUILD_FEATURE_*
 BUILD_RECIPE_*
 BUILD_AUTHORITY_*
 BUILD_TOOLCHAIN_*
@@ -659,26 +808,40 @@ Build-time authority never becomes runtime authority. Network access granted
 to an authoring tool, if policy ever permits it, does not grant network access
 to the resulting `.gapp`.
 
-## 16.1 The shortest path to unblocking AOT
+### 16.1 The shortest path to unblocking AOT
 
 This design began from a specific blocker: `native-type.md` deferred build
 integration on 2026-07-28 because "both answers come from the dependency
-graph," and no declaration for a native library existed. That blocker is
-cleared by **`system_library` (§8) alone** — the manifest declaration plus the
-`pkg_config` adapter — with no derivations, no artifact store, no sandbox, and
-no prebuilt selection.
+graph," and no declaration for a native library existed. The
+declaration/discovery half of that blocker is cleared by the Phase 0
+`system_library` slice (§8): the closed manifest declaration, normalized
+resolver, `pkg_config` adapter, and integration with the existing experimental
+AOT harness. It needs no derivation engine, artifact store, sandbox, or prebuilt
+selection.
 
-That is worth stating because the rest of this document is a large system, and
-a large system is a poor reason to keep a small blocker open. `examples/native`
-can drop its hardcoded paths as soon as §8 exists, and the typed-native backend
-becomes usable from a package before any of §§4-7 are built. The phases in §17
-should be read with that in mind: §8 is not phase four of a pipeline, it is a
-standalone increment that pays for itself immediately.
+That slice lets `examples/native` drop hardcoded discovery and lets the
+experimental compiler consume package-declared headers/link metadata. It does
+**not** claim that `gene build` can already produce a linked native artifact;
+managed native artifacts, sandboxed compilation, link planning, caching, and
+application assembly arrive through Phases 1-3. This separates an immediately
+useful adapter from the complete build product without describing either as
+the other.
 
 ## 17. Implementation phases after approval
 
 The final interfaces and artifact identities should land first. Later phases
 deepen the implementations rather than introduce parallel build systems.
+
+### Phase 0: native dependency declaration and discovery
+
+- Begin after the format-1 manifest reader in `package.md` Phase 1 exists.
+- Implement the final `system_library` schema,
+  `SystemDependencyResolver` interface, `pkg_config` provider, canonical result,
+  and diagnostics.
+- Route the existing experimental AOT/native example harness through that
+  result so it has no hardcoded header or library discovery.
+- Keep the harness output explicitly experimental and unmanaged; this phase
+  does not create `gene build` native products or a second build system.
 
 ### Phase 1: target graph and pure Gene artifacts
 
@@ -688,17 +851,21 @@ deepen the implementations rather than introduce parallel build systems.
 - Implement `gene build`, `gene run`, `gene test`, and explainable no-op builds.
 - Use the final `BuildEngine` interface with a simple local artifact store.
 
-### Phase 2: immutable artifact store and assembly
+### Phase 2: complete identities and portable application assembly
 
-- Add the content-addressed artifact store, atomic concurrent insertion,
-  complete derivation keys, `.gapp` assembly, verification, and `gene pack`.
+- Add complete derivation keys, `.gapp` assembly, verification, `gene pack`,
+  `gene inspect`, and `gene verify`.
+- Keep the Phase 1 local `ArtifactStore` adapter until cross-project reuse or
+  measured rebuild cost justifies the user-level content-addressed adapter;
+  adding that adapter does not change `BuildEngine` or `Assembler`.
 - Integrate lock/package provenance from `package.md`.
 
 ### Phase 3: built-in native and resource recipes
 
-- Add `resource_bundle`, `web_module`, `c_library`, toolchain adapters, system
-  dependency adapters, native link planning, and ABI validation.
-- Migrate repository build scripts only after equivalent built-ins exist.
+- Add `resource_bundle`, `web_module`, `c_library`, remaining toolchain/system
+  dependency adapters, native link planning, linked products, and ABI
+  validation.
+- Replace repository build scripts only after equivalent built-ins exist.
 
 ### Phase 4: sandboxed command recipes
 
@@ -708,17 +875,44 @@ deepen the implementations rather than introduce parallel build systems.
 
 ### Phase 5: application installation
 
+- Add standalone launcher assembly first if its deployment gate is open.
 - Add user/prefix installation layouts, receipts, atomic command switching,
   rollback, uninstall, and GC roots.
 - Support source builds and local prebuilt artifacts through one installer
   interface.
 
-### Phase 6: remote prebuilts and supply-chain hardening
+### Phase 6: signing, remote prebuilts, and supply-chain hardening
 
-- Add artifact-registry transport, signatures, builder provenance,
+- Add local artifact signing and trust verification when its gate is open.
+- Add artifact-registry transport, builder provenance,
   transparency proofs, compatibility selection, and reproducible-build
   attestations.
 - Add cross-compilation only through explicit toolchain adapters.
+- Add `gene sign` and multi-target `gene bundle` only when their corresponding
+  promotion gates are open.
+
+### Promotion criteria
+
+Phase 0 is intentionally independent and its demand gate is already open: the
+experimental AOT harness needs declared system libraries. Promote later work
+only for a concrete consumer or measured cost:
+
+| Increment | Demand gate |
+|---|---|
+| Target graph and pure Gene build | a package declares more than one product or a workspace member must build independently |
+| Portable `.gapp` assembly | an application must run without source checkout/compiler work |
+| User-level artifact CAS | warm rebuild or cross-project duplication is measurably expensive |
+| Native/resource built-ins | a repository target needs that artifact kind |
+| Command recipes | a real build cannot be represented by approved built-ins |
+| Standalone launcher | users must run a `.gapp` without an installed Gene runtime |
+| Application installation | a runnable target must be selected outside its project checkout |
+| Artifact signing | an image crosses an untrusted transport or deployment requires signer identity |
+| Remote prebuilts | a consumer lacks a toolchain or CI build cost justifies trusted transport |
+| Multi-target bundle | one release must publish more than one target launcher |
+
+An unopened gate does not justify a second temporary interface. The preceding
+module and adapter interfaces remain the implementation path when demand
+arrives.
 
 Every phase requires end-to-end CLI tests, crash/transaction tests, cache and
 parallelism stress tests, security tests, and before/after build benchmarks.
@@ -748,7 +942,15 @@ The final design requires coverage for:
 - system dependency provider selection and complete ABI diagnostics;
 - stable transitive native link ordering;
 - deterministic `.gapp` assembly from identical artifacts;
+- `gene build` producing only project build views while `gene pack`/`bundle`
+  alone materialize user-named distribution artifacts;
+- inspect, verify, and sign performing no resolution, source acquisition, or
+  recipe execution;
+- every mixed image retaining verified GIR fallback for native-accelerated
+  modules;
 - install conflict, atomic upgrade, rollback, and uninstall behavior;
+- coordinate and direct-`.gapp` installation producing the same verified
+  receipt shape, with direct images never invoking a build;
 - failed install preserving the prior selected command;
 - project-local run requiring no installation;
 - acquired libraries never becoming ambient imports;

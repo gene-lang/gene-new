@@ -10,6 +10,11 @@ This is not a choice between two dynamic `Value` encodings. The allocation-free
 path belongs in native code generation, where exact representations are already
 known.
 
+Here **typed-native** names a compiler representation/backend only. It is not a
+system-library requirement (`package-build.md` §8), a generic native build
+artifact, or the `mixed` application-image mode in `distribution.md`; those
+modules consume this backend only when their own contracts explicitly say so.
+
 ---
 
 # Part I — Current managed wrappers
@@ -251,11 +256,14 @@ There is no `gene build` producing a linked artifact; `examples/native` drives
 `cc` from a shell script. That is deliberate and waits on package and
 dependency support.
 
-**Update:** package support Stages 1-3 shipped, but they model Gene
-dependencies only — there is still no declaration for a native library, its
-headers, or its link flags, which is exactly the graph this deferral named.
-`package-build.md` designs that piece; its Stages 1-2 are what unblocks build
-integration here.
+**Update:** the package prototype models Gene dependencies only — there is
+still no declaration for a native library, its
+headers, or its link metadata, which is exactly the graph this deferral named.
+`package-build.md` now separates two deliverables: its Phase 0
+`system_library` resolver removes hardcoded native discovery from the existing
+experimental harness, while its Phases 1-3 produce managed, linked `gene build`
+artifacts. Phase 0 unblocks package-aware experimentation; Phase 3 completes
+the build integration deferred here.
 
 A build command's whole job is deciding what to compile and what to link
 against, and both answers come from the dependency graph — which libraries a

@@ -1,8 +1,7 @@
 # Gene package organization and dependency management
 
-**Status:** design proposal for the end state; an earlier, smaller version of
-this proposal is already implemented (§0). Work beyond that begins only after
-approval.
+**Status:** greenfield end-state design proposal; implementation begins only
+after approval
 
 **Scope:** package organization, manifests, dependency resolution, lockfiles,
 package stores, vendoring, publication, and runtime package identity
@@ -14,22 +13,21 @@ package stores, vendoring, publication, and runtime package identity
 
 ---
 
-## 0. What already ships
+This proposal resolves Gene source packages only. A system dependency, native
+build artifact, typed-native compiler backend, and mixed application image are
+distinct concepts owned by `package-build.md`, `native-type.md`, and
+`distribution.md`; none changes source package identity or resolution.
 
-This document describes a desired end state, but it is not a greenfield: an
-earlier, smaller version of this proposal was implemented and is in the tree.
-Anything below that contradicts shipped behavior is a **migration**, not a
-blank-slate choice, and the phases in §14 must say which.
+## 0. Prototype status
 
-Implemented today (previously "Stages 1-3"): package discovery, ad-hoc and
-regular packages, the data-only manifest, path and named dependencies, package
-stores, and package-aware module resolution. The normative surface lives in
-`docs/design.md` §15.3/§15.6 and `docs/spec/modules.md`; executable coverage is
-the "spec — packages" suite in `tests/spec_runner.nim` and the "cli — gene pkg"
-suite in `tests/test_cli.nim`.
+The tree contains an earlier package prototype, but this is a greenfield
+contract. The prototype is implementation evidence, not a compatibility
+surface. Format-1 implementation replaces its manifest reader, dependency
+model, store layout, import rules, and package commands directly. There is no
+legacy adapter, migration command, dual-read period, old-store conversion, or
+deprecated CLI alias in the end-state design.
 
-Three questions this document left open were settled during that work, and the
-answers are load-bearing rather than incidental:
+Three prototype findings remain useful because they protect the final model:
 
 - **Symlinks.** A package keeps both a lexical `root` and a fully resolved
   `real_root`. Containment is checked against the lexical root first (so `../`
@@ -38,17 +36,17 @@ answers are load-bearing rather than incidental:
   the resolved path). Module identities keep the lexical spelling.
 - **`MODULE_AMBIGUOUS`.** It fires when extension defaulting has two matches — a
   reference `"x"` where both `x.gene` and a file literally named `x` exist in
-  the same base — rather than silently resolving to one. Precedence between the
-  two module bases (`source_dir` before the root) is precedence, not ambiguity,
-  and does not raise.
+  the same module root — rather than silently resolving to one.
 - **User store location.** `~/.gene/packages` is the normative spelling; the
   `GENE_USER_PACKAGES` environment variable overrides it so tests and sandboxed
   runs never write to a real home directory.
 
-`gene pkg install <dir> [--user|--app]` also ships, and it copies a package
-tree into a store. §11 and `package-build.md` §12 reassign the word `install`
-to applications, which makes that command's removal or rename a breaking change
-this proposal owns rather than inherits.
+Prototype manifests without `^format 1` are rejected. Prototype store contents
+may be deleted and reacquired. The prototype `gene pkg install` command is
+removed without replacement; source objects enter the private immutable store
+only through `gene pkg sync`, while `gene install` installs applications. This
+keeps store mechanics out of the package-manager interface and every
+downstream caller.
 
 ## 1. Decision summary
 
@@ -78,8 +76,8 @@ that contain both. The important decisions are:
 - Package resolution, acquisition, building, and installation are separate
   phases with separate interfaces and failure modes.
 
-This proposal describes the desired end state. Existing behavior may be
-migrated in phases; it does not constrain the design.
+This proposal is the implementation contract. Prototype behavior does not
+constrain it.
 
 ## 2. Package lifecycle
 
@@ -146,7 +144,7 @@ defaults and conventions:
 - `.gene/` contains generated state and is safe to remove.
 
 Published source archives exclude `.gene/`, application-local `vendor/`, VCS
-metadata, editor state, and undeclared files. Build outputs never modify
+metadata, editor state, and files excluded by `^files`. Build outputs never modify
 `src/`, `resources/`, or another package's source tree.
 
 ### 3.1 Package, library, and application
@@ -244,7 +242,7 @@ Discovery starts from the entry, not unconditionally from process `cwd`:
 - file-oriented commands start at the entry file's parent directory;
 - directory-oriented and file-less commands start at the supplied directory or
   captured launch working directory;
-- an explicit `--package <dir>` replaces the discovery start.
+- an explicit `--package_root <dir>` replaces the discovery start.
 
 The runtime walks ancestors and selects the nearest `package.gene` as the
 active package:
@@ -332,6 +330,7 @@ executed. Unknown fields are errors for the declared manifest format.
     ^json (dep "acme/json" "^1.4.0")
     ^http (dep "gene/http" "~2.3.0" ^features [tls])
     ^pkg1 (dep "acme/pkg1" "^1.0.0" ^workspace true)
+    ^tls_backend (dep "acme/tls_backend" "^2.0.0" ^optional true)
   }
 
   ^dev_dependencies {
@@ -340,6 +339,20 @@ executed. Unknown fields are errors for the declared manifest format.
 
   ^build_dependencies {
     ^asset_tool (dep "acme/asset_tool" "^3.0.0")
+  }
+
+  ^features {
+    ^tls ["dep:tls_backend" "dep:http/tls"]
+  }
+  ^default_features []
+
+  ^tests {
+    ^root "tests"
+  }
+
+  ^files {
+    ^include ["**/*"]
+    ^exclude ["scratch/**"]
   }
 }
 ```
@@ -353,7 +366,7 @@ standard-library path and has different reader semantics.
 |---|---:|---|---|
 | `^format` | yes | none | Manifest schema version |
 | `^name` | yes for regular packages | none | Registry identity `<owner>/<name>` |
-| `^version` | yes for published packages | none | Semantic version |
+| `^version` | yes for regular packages | none | Semantic version |
 | `^description` | no | `nil` | Short documentation string |
 | `^license` | required to publish | none | SPDX expression |
 | `^repository` | no | `nil` | Canonical source repository |
@@ -364,23 +377,84 @@ standard-library path and has different reader semantics.
 | `^dev_dependencies` | no | `{}` | Tests and authoring only |
 | `^build_dependencies` | no | `{}` | Tools used only while building |
 | `^features` | no | `{}` | Optional, additive package capabilities |
+| `^default_features` | no | `[]` | Feature names enabled unless an incoming edge disables defaults |
 | `^singleton` | no | `false` | Package instances may not coexist in one graph |
-| `^resources` | no | `[]` | Declared runtime resources |
+| `^tests` | no | `nil` | Package test source root |
+| `^files` | no | default set below | Publication and source-tree file selection |
+| `^profiles` | no | `{}` | Custom build profiles defined by `package-build.md` |
 | `^build` | no | `[]` | Build recipes defined by `package-build.md` |
 | `^system_dependencies` | no | `{}` | Host ABI requirements defined by `package-build.md` |
 
 At least one of `^library` or `^applications` is required for publication.
 Local regular packages may temporarily omit both while being initialized.
 
+`format` is the integer `1`; `name`, `version`, `description`, `license`, and
+`repository` are UTF-8 strings when present; `singleton` is a boolean. An
+omitted optional field takes its table default—explicit `nil` is not a second
+spelling. Dependency, feature, profile, and system-dependency fields are maps;
+applications and recipes are vectors. Map keys that name Gene entities are
+symbols, not strings.
+
 Package-name segments and dependency aliases use lowercase `snake_case`.
-Package names contain exactly one or more owner segments plus a final name,
-separated by `/`; `.`, `..`, empty segments, backslashes, and percent-encoded
-separators are invalid.
+Package names contain exactly two segments, `<owner>/<name>`, separated by one
+`/`; `.`, `..`, empty segments, additional slashes, backslashes, and
+percent-encoded separators are invalid. This keeps package identity shallow
+and leaves registry federation to registry
+metadata rather than encoding it into the name.
 
 All manifest paths are normalized UTF-8 relative paths. They cannot be
 absolute, contain `..`, or escape through symlinks. A `^path` dependency is the
 one exception: its root path may leave the declaring package because the
 dependency becomes a separate package with its own boundary.
+
+Every nested schema is closed: unknown properties, extra positional values,
+duplicate map keys after symbol normalization, and a value of the wrong kind
+are manifest errors. The format-1 shapes are:
+
+- `^workspace` is `{ ^members [<pattern> ...] }`. It is valid only in the
+  workspace root; `members` is required and non-empty.
+- `^library` is `{ ^entry <path> ^uses [<recipe_name> ...] }`. `entry` is
+  required; `uses` defaults to empty. The library root is the entry's parent
+  directory: `^pkg "alias"` with module `"."` selects the exact entry, while
+  every other logical module path is relative to that root.
+- Each application is `(application <target_name> ^entry <path>
+  ^command <command_name> ^uses [...])`. The body contains exactly one target
+  name, `entry` is required, `command` defaults to the target name, and `uses`
+  defaults to empty. Target and command names are
+  package-local `snake_case` names and must be unique in their namespaces.
+- `^tests` is `{ ^root <path> }`. Test discovery beneath that root belongs to
+  `gene test`; the directory is not a runtime module root.
+- `^files` is `{ ^include [<pattern> ...] ^exclude [<pattern> ...]
+  ^executable [<pattern> ...] }`. `include` defaults to `["**/*"]`; `exclude`
+  and `executable` default to `[]`. The immutable
+  default exclusions are `package.gene.lock`, `.gene/**`, `vendor/**`,
+  `.git/**`, `.hg/**`, `.svn/**`, `.DS_Store`, `Thumbs.db`, `*~`, `*.swp`, and
+  `*.tmp`. Explicit
+  exclusions are subtracted after the include union. Executable patterns set
+  the portable executable bit instead of inheriting host filesystem modes.
+  Exclusions cannot exclude
+  `package.gene`, a declared target entry, resource, native source, or recipe
+  input.
+
+Manifest patterns use `/` separators. `*` matches within one segment and `**`
+matches zero or more complete segments; no brace expansion, character classes,
+negation, or platform-dependent escaping is supported. Matches are made
+against normalized relative paths and sorted by their UTF-8 bytes.
+
+`^features` maps a feature name to a list of strings in one of three forms:
+`"feature:<name>"` enables another feature of the same package,
+`"dep:<alias>"` enables an optional dependency, and
+`"dep:<alias>/<feature>"` enables a dependency feature. Cycles are allowed and
+collapse to a fixed point. A referenced dependency feature is sent only when
+that dependency edge is enabled. `^default_features` names keys in this map;
+unknown feature or dependency references are errors.
+
+Dependency scope is structural. `^dependencies` edges are runtime edges and
+are transitive. `^dev_dependencies` are available only to tests, examples, and
+authoring commands of an active workspace member; they never propagate when
+that member is consumed. `^build_dependencies` form a host-platform tool graph
+for every package recipe that uses them; they do not enter the target runtime
+graph. One alias may appear in only one scope in a manifest.
 
 ### 5.2 Dependency aliases
 
@@ -419,6 +493,40 @@ A dependency selects exactly one source kind:
 (dep "acme/pkg1" "^1.0.0" ^workspace true)
 ```
 
+A `dep` node has one or two positional values: the package name and an
+optional constraint string. The constraint is required for registry and
+workspace dependencies and optional for path and git development dependencies.
+Its allowed properties are:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `^registry <name>` | configured default | select a registry source |
+| `^git <url>` | none | select a git source |
+| `^commit`, `^tag`, or `^branch` | none | exactly one selector for a git source |
+| `^path <path>` | none | select a manifest-relative filesystem source |
+| `^workspace true` | `false` | select a declared workspace member |
+| `^features [<name> ...]` | `[]` | requested dependency features |
+| `^default_features <bool>` | `true` | enable that package's defaults |
+| `^optional <bool>` | `false` | require activation through a feature |
+
+Exactly one of registry, git, path, or workspace is selected; the absence of
+all source properties means the configured default registry. `^registry`
+cannot be combined with another source property. `^workspace` accepts only
+`true`, and a git dependency has exactly one of `commit`, `tag`, or `branch`.
+The lock always records an exact commit. When a path or git dependency includes
+a constraint, its manifest version must satisfy it. Optional dependencies are
+allowed only in `^dependencies`, must be named by at least one feature, and are
+absent from the graph until enabled. Unknown properties are errors.
+
+Registry and git identity URLs use one canonical URI form. Only `https` and
+`ssh` are accepted initially; scheme and DNS host are lowercase, IDNs use
+lowercase IDNA A-labels, default ports are omitted, dot segments are removed,
+and percent escapes use uppercase hex after decoding unreserved bytes. A URI
+has no password, query, or fragment; SSH may include a username. SCP-like git
+spellings are rejected rather than rewritten. Path case and a trailing `.git`
+are retained. Registry names and configured URLs have a one-to-one mapping
+within a resolution policy.
+
 Registry requirements use SemVer constraints. Git dependencies pin a commit
 in the lockfile even when the manifest names a tag or branch. Path dependencies
 record a normalized locator and manifest digest in the lockfile, but remain
@@ -435,6 +543,21 @@ Features are additive. A package cannot use features to remove dependencies or
 change the meaning of existing public declarations. Selected features are part
 of the locked graph and build derivation.
 
+### 5.4 Versions and constraints
+
+Package versions use SemVer 2.0.0. The initial constraint language supports an
+exact version, `=`, `<`, `<=`, `>`, `>=`, caret, tilde, `*`, and a whitespace-
+separated intersection of comparators. It deliberately does not support `||`,
+hyphen ranges, or ecosystem-specific wildcard spellings; unsupported syntax is
+a manifest error rather than an approximate interpretation.
+
+Caret and tilde follow SemVer compatibility, including the `0.x` rules. Build
+metadata is retained in identity but ignored for precedence. A prerelease is
+eligible only when at least one comparator in that requirement explicitly
+names a prerelease with the same major, minor, and patch tuple. Registry
+metadata provides a total tie-break for versions equal in SemVer precedence;
+the canonical version string, then archive digest, is compared by UTF-8 bytes.
+
 ## 6. Resolution
 
 Resolution consumes root requirements and produces an immutable graph before
@@ -442,17 +565,46 @@ the VM loads an application module.
 
 ### 6.1 Solver policy
 
-The solver:
+The solver consumes canonical root manifests, one immutable metadata snapshot
+per registry, source metadata for path/workspace/git requirements, host policy,
+and an optional existing lock. Filesystem or network enumeration order is never
+an input.
 
-1. reads manifests and signed registry metadata as data;
-2. resolves explicit workspace requirements against declared co-lived members;
-3. selects the highest non-yanked version satisfying all constraints for a
-   package instance when one version can satisfy them;
-4. permits multiple versions when constraints are incompatible;
-5. unifies selected features per package instance;
-6. honors an existing lockfile unless an update was requested;
-7. sorts candidates and diagnostics canonically, never by enumeration order;
-8. produces the same graph from the same inputs and registry snapshot.
+Lock preservation happens before optimization. `gene pkg sync --locked` treats
+the complete lock as immutable. `gene pkg resolve` retains every locked edge
+whose requirement, source identity, selected features, and target node remain
+valid; a changed root requirement unlocks that edge and only the now-unreachable
+or incompatible portion of its closure. `gene pkg update <alias>` unlocks the
+selected root edge and its reachable closure while retaining valid nodes shared
+by locked roots. `gene pkg update` unlocks every external edge. A yanked locked
+version remains usable unless policy forbids it, but a fresh solution does not
+select a yanked version.
+
+For the remaining finite candidate graph, the solver chooses the unique
+solution with the following lexicographic objective:
+
+1. satisfy all version, source, feature, compatibility, and singleton
+   constraints;
+2. minimize the total number of package instances;
+3. for each canonical `(package_name, source_identity)` in UTF-8 byte order,
+   minimize its instance count, then maximize its descending SemVer vector;
+4. among versions equal in SemVer precedence, choose the greatest canonical
+   version string by UTF-8 bytes; reject registry records that give one exact
+   source/name/version more than one immutable digest;
+5. serialize nodes and diagnostics in canonical package-ID and alias order.
+
+This deliberately allows the solver to use one version for overlapping
+constraints when possible, while producing two or more instances when that is
+required by incompatible constraints, including constraints on direct aliases.
+It is a specified result, not a promise about a particular solving algorithm; an implementation
+may use incompatibility propagation plus branch-and-bound as long as it proves
+the objective before emitting a lock.
+
+Feature expansion is a monotone fixed point. Requests unify only on the same
+selected package instance; two versions do not share feature state. Enabling an
+optional dependency adds an ordinary requirement edge and may therefore change
+the solution. Runtime, development, and host build graphs are solved together
+so aliases have one locked meaning, then projected by scope for a command.
 
 Multiple versions are safe because every dependency edge is keyed by local
 alias and points to a package instance. Packages that bind process-global
@@ -471,48 +623,159 @@ unsatisfiable.
 ```gene
 {
   ^lock_format 1
-  ^manifest_digest "sha256:..."
+  ^root_manifest_digest "sha256:..."
   ^workspace_digest "sha256:..."
   ^registry_snapshots [
-    (registry "gene" ^index_digest "sha256:...")
+    (registry "gene" ^url "https://packages.example.invalid/gene/"
+      ^index_digest "sha256:...")
   ]
-  ^roots {
-    ^json "pkg:acme/json@1.4.2#sha256:..."
-    ^http "pkg:gene/http@2.3.4#sha256:..."
-  }
+  ^roots ["workspace:acme/a@1.0.0#sha256:w..."]
   ^packages [
     (locked_package
-      ^id "pkg:acme/json@1.4.2#sha256:..."
-      ^source (registry "gene")
-      ^archive_digest "sha256:..."
-      ^tree_digest "sha256:..."
+      ^id "workspace:acme/a@1.0.0#sha256:w..."
+      ^name "acme/a"
+      ^version "1.0.0"
+      ^manifest_digest "sha256:..."
+      ^source (workspace ^path ".")
       ^features []
-      ^dependencies {})
+      ^dependencies {
+        ^b (locked_edge ^scope runtime ^target "pkg:acme/b@1.0.0#sha256:b...")
+        ^c (locked_edge ^scope runtime ^target "pkg:acme/c@1.1.0#sha256:c11...")
+        ^d (locked_edge ^scope runtime ^target "pkg:acme/d@1.0.0#sha256:d...")
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.4 <0.5"))
+    (locked_package
+      ^id "pkg:acme/b@1.0.0#sha256:b..."
+      ^name "acme/b"
+      ^version "1.0.0"
+      ^manifest_digest "sha256:bm..."
+      ^source (registry "gene" ^archive_digest "sha256:ba..."
+        ^tree_digest "sha256:b...")
+      ^features []
+      ^dependencies {
+        ^c (locked_edge ^scope runtime ^target "pkg:acme/c@1.0.0#sha256:c10...")
+      }
+      ^yanked false
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.4 <0.5"))
+    (locked_package
+      ^id "pkg:acme/c@1.0.0#sha256:c10..."
+      ^name "acme/c" ^version "1.0.0"
+      ^manifest_digest "sha256:c10m..."
+      ^source (registry "gene" ^archive_digest "sha256:c10a..."
+        ^tree_digest "sha256:c10...")
+      ^features [] ^dependencies {} ^yanked false
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.4 <0.5"))
+    (locked_package
+      ^id "pkg:acme/c@1.1.0#sha256:c11..."
+      ^name "acme/c" ^version "1.1.0"
+      ^manifest_digest "sha256:c11m..."
+      ^source (registry "gene" ^archive_digest "sha256:c11a..."
+        ^tree_digest "sha256:c11...")
+      ^features [] ^dependencies {} ^yanked false
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.4 <0.5"))
+    (locked_package
+      ^id "pkg:acme/d@1.0.0#sha256:d..."
+      ^name "acme/d" ^version "1.0.0"
+      ^manifest_digest "sha256:dm..."
+      ^source (registry "gene" ^archive_digest "sha256:da..."
+        ^tree_digest "sha256:d...")
+      ^features []
+      ^dependencies {
+        ^c (locked_edge ^scope runtime ^target "pkg:acme/c@1.2.0#sha256:c12...")
+      }
+      ^yanked false
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.4 <0.5"))
+    (locked_package
+      ^id "pkg:acme/c@1.2.0#sha256:c12..."
+      ^name "acme/c" ^version "1.2.0"
+      ^manifest_digest "sha256:c12m..."
+      ^source (registry "gene" ^archive_digest "sha256:c12a..."
+        ^tree_digest "sha256:c12...")
+      ^features [] ^dependencies {} ^yanked false
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.4 <0.5"))
   ]
 }
 ```
+
+The example intentionally locks three `acme/c` instances: `a -> b -> c@1.0`,
+`a -> c@1.1`, and `a -> d -> c@1.2`. Each importing package follows its own
+alias edge in O(1); no global “current version of C” exists.
 
 Each locked node records:
 
 - package instance ID;
 - name and exact version;
 - canonical source identity;
-- archive and unpacked-tree digests;
+- archive and unpacked-tree digests for immutable sources;
 - selected features;
 - dependency-alias edges to other instance IDs;
 - yanked status at resolution time;
 - required runtime, compiler, and package-format compatibility.
 
+The top-level lock schema contains exactly `lock_format`,
+`root_manifest_digest`, `workspace_digest`, `registry_snapshots`, `roots`, and
+`packages`. `roots` is a non-empty list of package instance IDs. `packages` is
+sorted by ID and contains every root and transitive node exactly once. A
+`locked_package` always has `id`, `name`, `version`, `manifest_digest`,
+`source`, `features`, `dependencies`, and `compatibility`; immutable nodes
+additionally require `yanked`. A `registry` source has one registry name plus `archive_digest` and
+`tree_digest`. A `git` source has one normalized URL plus `commit` and
+`tree_digest`; a transport archive digest is optional. A `workspace` source has
+only its root-relative `path`. A `path` source has only its
+declaring-manifest-relative `path`. The compatibility node
+has `package_format`, `runtime`, and optional `compiler`; all are checked before
+materialization. No other lock fields are accepted in format 1.
+
+`registry_snapshots` is sorted by registry name and contains exactly one
+`(registry <name> ^url <canonical_url> ^index_digest <digest>)` for each
+registry consulted by the solution. Duplicate names or URLs are errors.
+Signature and transparency evidence is verified acquisition metadata
+referenced by the index digest, not an
+open-ended field in lock format 1.
+
+`^dependencies` maps the declaring package's alias to
+`(locked_edge ^scope <runtime|development|build> ^target <package_id>)`.
+Aliases are unique across scopes, every target must exist, and no undeclared
+transitive package may be addressed directly. The graph may contain cycles only
+in feature expansion metadata, never in package dependency edges. Lock format 1
+describes one machine-independent source graph and does not encode host paths;
+the build engine interprets build edges for the host platform and runtime edges
+for the target platform when selecting artifacts.
+
 `^workspace_digest` covers the root workspace declaration, the canonical
 member list, and every member manifest digest. It does not cover ordinary
 member source files; those are build inputs rather than resolution inputs.
 
-An immutable registry/git/archive node uses its tree digest in the package
-instance ID. A mutable workspace/path node instead records its source kind,
-workspace- or manifest-relative locator, package identity, and manifest digest.
+An immutable registry/git node uses an instance-identity digest
+covering its canonical source identity and tree digest. A mutable
+workspace/path node instead records its source kind, workspace- or
+manifest-relative locator, package identity, and manifest digest.
 Its live tree digest belongs to the build derivation. This keeps dependency
 resolution stable while a developer edits `packages/pkg1`, without allowing a
 release artifact to omit the exact source snapshot it used.
+
+Instance IDs are canonical strings: immutable IDs are
+`pkg:<name>@<version>#sha256:<instance_identity_hex>`, where the final digest
+covers the Canonical Gene Data v1 tuple `(source_identity, tree_digest)`;
+workspace IDs are
+`workspace:<name>@<version>#sha256:<source_identity_hex>`; path IDs are
+`path:<name>@<version>#sha256:<source_identity_hex>`. The path source-identity
+digest covers the declaring package's canonical source identity plus the
+normalized relative locator and dependency manifest digest, so equal spellings
+in different packages cannot collide. A workspace source-identity digest
+covers the root package name/version, root-relative member path, and that
+member's manifest digest; an unrelated member edit therefore does not change
+this identity. Git source
+identity covers normalized repository URL and exact commit; its immutable
+package ID also covers the verified tree digest. IDs are unique
+within a lock and are treated as opaque lookup keys by import code.
+
+Canonical registry source identity is `(registry, canonical_registry_url)`;
+canonical git source identity is `(git, canonical_repository_url, commit)`.
+The configured local registry nickname is recorded for diagnostics but is not
+the trust identity. Workspace and path source identities are the tuples
+described above. Source-kind tags are part of every tuple, so equal URL/path
+bytes from different adapters cannot collide.
 
 The lockfile contains no machine-specific absolute paths. Path dependencies use
 manifest-relative paths in the serialized lock and are re-canonicalized on the
@@ -524,17 +787,81 @@ dependency package's development lock and resolve from its published manifest.
 The development lock is not included in a published library-only source
 archive.
 
-A published package containing application targets includes a release lock for
-those applications. The installer treats that lock as the publisher's complete
-application graph; a consumer importing the same package as a library ignores
-it. A mixed package can therefore publish reproducible applications without
-pinning the versions chosen by downstream library consumers.
+A published package containing application targets includes the generated
+`package.gene.release.lock` for those applications. The installer treats that
+lock as the publisher's complete application graph; a consumer importing the
+same package as a library ignores it. A mixed package can therefore publish
+reproducible applications without pinning the versions chosen by downstream
+library consumers.
 
-`gene pkg sync --locked` fails if the root manifest, workspace membership, or a
-member manifest disagrees with the lockfile. Editing ordinary source beneath a
-member does not require resolving again.
+`gene pkg sync --locked` fails if the root manifest, workspace membership, or
+any workspace/path manifest disagrees with the lockfile. Editing ordinary
+source beneath a mutable package does not require resolving again.
 Only `gene pkg resolve`, `gene pkg update`, `gene pkg add`, and `gene pkg
 remove` may intentionally rewrite the lockfile.
+
+### 6.3 Canonical bytes and digests
+
+All `sha256:` values in package identities use SHA-256 and a named canonical
+encoding; implementations may not hash pretty-printed Gene text, directory
+enumeration order, archive timestamps, or host-native paths.
+
+**Canonical Gene Data v1.** Manifests, locks, registry records, and derivation
+metadata are encoded recursively with unsigned 64-bit big-endian lengths and
+counts. The one-byte tags are `0x00` nil, `0x01` false, `0x02` true, `0x03`
+integer, `0x04` string, `0x05` symbol, `0x06` vector, `0x07` map, and `0x08`
+Gene node. An integer is a length followed by the shortest ASCII decimal
+representation. Strings and symbols are a length followed by their raw UTF-8
+bytes. A vector is a count followed by its values. A map is a count followed by
+key/value pairs sorted by the complete canonical bytes of each key and rejects
+duplicate encoded keys. A node encodes its head value, its property map, then a
+body count and ordered body values. Floats and all executable/runtime-only
+values are forbidden in these data formats. The
+byte stream starts with `gene-data-v1\0`; golden encoding vectors are part of
+the format test suite.
+
+Identifiers and manifest paths are validated before encoding. Package names,
+aliases, features, target names, and properties are ASCII `snake_case` where
+their schema requires names. Paths are Unicode NFC, use `/`, and have no empty,
+`.` or `..` segment. Descriptive strings and file contents are not Unicode- or
+line-ending-normalized.
+
+**Canonical Source Tree v1.** File selection follows `^files`; directories are
+implicit and empty directories do not contribute. Entries are sorted by
+normalized path UTF-8 bytes. A regular-file record is tag `0x01`, path length
+and bytes, one `0x00`/`0x01` executable byte selected by `^files.^executable`,
+then content length and raw bytes. A symlink record is tag `0x02`, path length
+and bytes, then normalized relative-target length and bytes. All lengths are
+unsigned 64-bit big-endian. Symlinks with absolute targets, a `..` escape, a
+cycle, or a target outside the selected tree are rejected. Other mode bits,
+owners, ACLs, extended attributes, timestamps, and host directory separators
+do not contribute. The stream starts with `gene-tree-v1\0`; its SHA-256 is the
+tree digest. The prefix is followed by the unsigned 64-bit entry count and then
+the records. Duplicate normalized paths and Unicode or case-fold collisions are
+rejected on every platform, not only on platforms where they collide. Unicode
+normalization and Default Case Folding use the Unicode 15.1 tables fixed by
+package format 1; changing those tables requires a new package format.
+
+The archive digest hashes the exact `.gpkg` transport bytes and is independent
+of the tree digest. The root manifest digest hashes its Canonical Gene Data v1
+value. `workspace_digest` hashes a canonical vector containing the root
+workspace declaration (or `nil`) followed by
+`(relative_member_path, manifest_digest)` pairs for declared members in path
+order. A standalone regular package therefore hashes `[nil]`. The lock digest
+hashes the entire canonical lock value; the lock has no self-digest field.
+Every producer writes canonical ordering and every reader recomputes the
+relevant digests before trusting an identity.
+
+**Source Package v1.** A `.gpkg` is an uncompressed deterministic container,
+not a tar or ZIP dialect. Its bytes are `gene-gpkg-v1\0`, an unsigned 64-bit
+length, one Canonical Gene Data v1 metadata value, an unsigned 64-bit entry
+count, then the Canonical Source Tree v1 entry records in the same order and
+encoding (without repeating the tree stream's domain prefix). Metadata contains
+exactly `format`, `name`, `version`, `manifest_digest`, and `tree_digest`; it
+cannot contain the archive digest. The SHA-256 of the complete container is the
+archive digest. HTTP content encoding may compress transport, but registries
+store and verify the decoded canonical `.gpkg` bytes. Adding container-level
+compression or random access requires a new source-package format.
 
 ## 7. Package stores and acquisition
 
@@ -804,7 +1131,9 @@ implementation without later command or manifest churn.
 
 ### Phase 1: package and target model
 
-- Finalize the manifest format and migration rules.
+- Replace the prototype reader and model with the closed format-1 manifest
+  schema. Reject manifests without `^format 1`; do not add a compatibility
+  adapter.
 - Implement discovery, ad-hoc packages, library/application targets, dependency
   aliases, co-lived workspace members, package instances, and package-aware
   module identities.
@@ -836,6 +1165,23 @@ implementation without later command or manifest churn.
   concurrent store insertion, robust GC, and large-graph performance work.
 - Validate integration with application images and binary artifact registries.
 
+### Promotion criteria
+
+The phase order is architectural, not a commitment to build speculative
+machinery. Promote only when the preceding interface is stable and the named
+demand exists:
+
+| Phase | Demand gate |
+|---|---|
+| 1 | the format-1 package/workspace model is approved for source and tests |
+| 2 | a resolved graph must survive restart, run offline, or reproduce on another machine |
+| 3 | a real graph needs ranges, duplicate versions, or workspace/path/git sources rather than exact local requirements |
+| 4 | a package must be shared outside its repository rather than through a path/workspace edge |
+| 5 | registry/store measurements or incidents justify mirrors, resumability, transparency, or scale work |
+
+The required graph with incompatible versions opens the Phase 3 gate; later
+registry hardening remains closed until there is corresponding use or evidence.
+
 Each phase requires executable language examples, CLI integration tests,
 corruption/adversarial archive tests, and before/after package-resolution
 benchmarks.
@@ -846,7 +1192,15 @@ The final design requires coverage for:
 
 - nearest-manifest and ad-hoc discovery from file and file-less commands;
 - manifest schema, target, alias, path, and `snake_case` validation;
+- rejection of missing/unknown manifest formats without fallback parsing;
 - two direct aliases selecting two versions of one package;
+- the `A -> B -> C@1.0`, `A -> C@1.1`, `A -> D -> C@1.2` graph producing three
+  isolated C module identities and exact alias edges;
+- vendoring that graph materializing all three C objects at distinct
+  version/digest paths and reproducing the same edges offline;
+- solver objective tests for overlapping constraints, lock retention, selected
+  updates, yanked pins, prereleases, singleton conflicts, and registry-order
+  independence;
 - deterministic lock output and deterministic conflict explanations;
 - application lockfiles versus dependency development lockfiles;
 - active-package discovery inside `<app>/packages/pkg1` using the workspace
@@ -868,6 +1222,8 @@ The final design requires coverage for:
 - module-cache isolation for duplicate package versions;
 - path dependencies outside the root retaining their own package boundary;
 - package publication reproducibility from two clean directories;
+- golden Canonical Gene Data v1 and Canonical Source Tree v1 vectors, including
+  Unicode, mode, symlink, collision, timestamp, and line-ending cases;
 - safe concurrent sync and garbage collection.
 
 ## 16. Deferred policy, not deferred structure
