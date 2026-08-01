@@ -259,7 +259,7 @@ Example conceptual form:
   ^compiler_version "0.1.0"
   ^value_abi 1
   ^gir_abi 1
-  ^requires (runtime
+  ^requires ($runtime
     ^min_format_version 1
     ^min_value_abi 1
     ^min_gir_abi 1

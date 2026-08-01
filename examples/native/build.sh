@@ -21,18 +21,19 @@ if [[ ! -x "$GENE" ]]; then
   exit 1
 fi
 
-# SQLite headers/libs. Homebrew keeps its copy keg-only, and macOS ships the
-# library but not always the header, so prefer an explicit prefix when present.
-sqlite_cflags=""
-sqlite_libs="-lsqlite3"
-if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sqlite3; then
-  sqlite_cflags="$(pkg-config --cflags sqlite3)"
-  sqlite_libs="$(pkg-config --libs sqlite3)"
-elif command -v brew >/dev/null 2>&1 && brew --prefix sqlite >/dev/null 2>&1; then
-  prefix="$(brew --prefix sqlite)"
-  sqlite_cflags="-I$prefix/include"
-  sqlite_libs="-L$prefix/lib -lsqlite3"
-fi
+# Resolve the package-declared `sqlite` system dependency through the same
+# normalized resolver that build derivations consume. Nothing here probes
+# Homebrew, guesses a library name, or inherits PKG_CONFIG_PATH implicitly.
+sqlite_cflags=()
+sqlite_libs=()
+while IFS=$'\t' read -r kind flag; do
+  if [[ "$kind" == "C" ]]; then
+    sqlite_cflags+=("$flag")
+  elif [[ "$kind" == "L" ]]; then
+    sqlite_libs+=("$flag")
+  fi
+done < <(cd "$root" && nim r --path:src --hints:off \
+  tools/system_dependency_flags.nim "$here" sqlite)
 
 mkdir -p "$out"
 
@@ -40,10 +41,9 @@ echo "==> generating C from sqlite_rows.gene"
 "$GENE" compile --target c "$here/sqlite_rows.gene" > "$out/sqlite_rows.c"
 
 echo "==> compiling"
-# shellcheck disable=SC2086
-"$CC" -std=c11 -O2 -Wall $sqlite_cflags \
+"$CC" -std=c11 -O2 -Wall "${sqlite_cflags[@]}" \
   "$out/sqlite_rows.c" "$here/main.c" \
-  -o "$out/sqlite_example" $sqlite_libs
+  -o "$out/sqlite_example" "${sqlite_libs[@]}"
 
 echo "==> built $out/sqlite_example"
 

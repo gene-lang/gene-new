@@ -25,8 +25,9 @@ total: 340
 ```
 
 `total` is `(10*3) + (20*5) + (30*7)`. Build artifacts go to
-`build/native-example/`. The script uses `pkg-config`, then Homebrew's
-keg-only prefix, then a bare `-lsqlite3`; override with `CC=` or `GENE=`.
+`build/native-example/`. The script resolves the manifest's `sqlite` system
+dependency through the package resolver's explicit `pkg_config` policy;
+override the explicit tools with `CC=`, `GENE=`, or `PKG_CONFIG=`.
 
 ## Files
 

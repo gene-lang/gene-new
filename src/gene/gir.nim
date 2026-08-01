@@ -293,6 +293,29 @@ type
     name*: string         # exported name in the source
     local*: string        # local name to bind (== name unless aliased)
 
+  MacroDefault* = object
+    optional*: bool
+    hasExpr*: bool
+    defaultExpr*: Value
+
+  MacroParam* = object
+    pattern*: Value
+    defaultValue*: MacroDefault
+
+  MacroNamedParam* = object
+    arg*: string
+    pattern*: Value
+    defaultValue*: MacroDefault
+
+  MacroDef* = object
+    ## Portable compile-time data carried by library artifacts. Macros are
+    ## reader values, not executable host closures, so their definitions can
+    ## cross an artifact boundary deterministically.
+    params*: seq[MacroParam]
+    named*: seq[MacroNamedParam]
+    rest*: string
+    body*: seq[Value]
+
   CompileBindingCategory* = enum
     cbcValue
     cbcMacro
@@ -642,6 +665,20 @@ type
                              # with a different parent copies the body instead
                              # of re-stamping it (`stampSuperType`), so a stamp
                              # never changes meaning under a running send.
+
+  CompiledModule* = object
+    ## One portable module identity plus everything another package's compiler
+    ## or runtime needs. Artifacts carry module bundles, never filesystem
+    ## paths or a requirement to re-read dependency source.
+    identity*: string
+    chunk*: Chunk
+    macroExports*: Table[string, MacroDef]
+    syntaxFnExports*: seq[string]
+    compileInterface*: CompileNamespaceInterface
+
+  ExecutableGir* = object
+    entryIdentity*: string
+    modules*: seq[CompiledModule]
 
 proc newChunk*(sourceName = ""): Chunk =
   Chunk(sourceName: sourceName, constants: @[], instructions: @[],

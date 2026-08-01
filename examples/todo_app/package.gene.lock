@@ -1,0 +1,31 @@
+{
+  ^lock_format 1
+  ^root_manifest_digest "sha256:0f4be90eb3728e690e1e5d638316dd5c321daebdd01f6bb0b832b3ca644d87b6"
+  ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
+  ^registry_snapshots [
+  ]
+  ^roots [ "workspace:gene/todo_app@0.1.0#sha256:b2aafe9ab428101657aee4a4074835d05bbbba060a0e27e3a00a68776bec3bb6"]
+  ^packages [
+    (locked_package
+      ^id "path:gene/utils@0.1.0#sha256:9c5962d1c242dc0301f23ecc4fee9f761edd47271eea7e285ebb884ca9d1eafe"
+      ^name "gene/utils"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:60df6f759b7b1b8c735686f4af689b1f02b62183f2ae78c9208e9892fa8919ee"
+      ^source (path ^path "../utils")
+      ^features []
+      ^dependencies {
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+    (locked_package
+      ^id "workspace:gene/todo_app@0.1.0#sha256:b2aafe9ab428101657aee4a4074835d05bbbba060a0e27e3a00a68776bec3bb6"
+      ^name "gene/todo_app"
+      ^version "0.1.0"
+      ^manifest_digest "sha256:0f4be90eb3728e690e1e5d638316dd5c321daebdd01f6bb0b832b3ca644d87b6"
+      ^source (workspace ^path ".")
+      ^features []
+      ^dependencies {
+        ^utils (locked_edge ^scope runtime ^target "path:gene/utils@0.1.0#sha256:9c5962d1c242dc0301f23ecc4fee9f761edd47271eea7e285ebb884ca9d1eafe")
+      }
+      ^compatibility (compatibility ^package_format 1 ^runtime ">=0.1.0 <0.2.0"))
+  ]
+}

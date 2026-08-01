@@ -45,6 +45,7 @@ type
 
   ReadOptions* = object
     maxDepth*: int              # 0 means unlimited
+    rejectDuplicateProps*: bool
 
   ReadContextEntry = object
     kind: TokenKind
@@ -1345,6 +1346,8 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
           r.raiseReadErrorAt(keyTok,
             "property '^" & key & "' requires a value")
         val = r.parseForm()
+      if r.options.rejectDuplicateProps and props.hasKey(key):
+        r.raiseReadErrorAt(keyTok, "duplicate property '^" & key & "'")
       props[key] = val
     of tkAt, tkAtAt:
       if r.tokIdx + 1 >= r.tokens.len or r.tokens[r.tokIdx + 1].kind != tkSymbol:
@@ -1369,6 +1372,8 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
             r.raiseReadErrorAt(keyTok,
               "meta property '@" & key & "' requires a value")
           val = r.parseForm()
+        if r.options.rejectDuplicateProps and meta.hasKey(key):
+          r.raiseReadErrorAt(keyTok, "duplicate meta property '@" & key & "'")
         meta[key] = val
     of tkSemi:
       # Pipe folding: (a; b) -> ((a) b)
@@ -1414,6 +1419,8 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
     let key = r.parsePropKey()
     if tok.kind == tkCaretCaret:
       # `^^k` is true-flag sugar, same as in node props; it consumes no value.
+      if r.options.rejectDuplicateProps and items.hasKey(key):
+        r.raiseReadErrorAt(keyTok, "duplicate map property '^" & key & "'")
       items[key] = TRUE
       if r.peekKind() == tkComma: discard r.next()
       continue
@@ -1426,6 +1433,8 @@ proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
       r.raiseReadErrorAt(keyTok,
         "map property '^" & key & "' requires a value")
     val = r.parseForm()
+    if r.options.rejectDuplicateProps and items.hasKey(key):
+      r.raiseReadErrorAt(keyTok, "duplicate map property '^" & key & "'")
     items[key] = val
     if r.peekKind() == tkComma: discard r.next()
   if r.peekKind() == tkEof:

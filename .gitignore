@@ -39,9 +39,10 @@ __pycache__/
 .venv/
 venv/
 target/
-vendor/*
+vendor/
 !vendor/libvterm/
 !vendor/libvterm/**
+logs/
 *.log
 *.out
 coverage/

@@ -1,0 +1,14 @@
+{^format 1
+ ^name "gene/native_examples"
+ ^version "0.1.0"
+ ^library {^entry "sqlite_rows.gene"}
+ ^applications [
+   (application "call_from_gene" ^entry "call_from_gene.gene")
+ ]
+ ^system_dependencies {
+   ^sqlite (system_library
+     ^name "sqlite3"
+     ^version ">=3.0.0 <4"
+     ^providers [pkg_config]
+     ^linkage either)}}
+

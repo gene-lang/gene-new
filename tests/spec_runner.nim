@@ -6898,9 +6898,6 @@ suite "spec — modules from design":
     check_eval("(var x 1) (ns m (var x 2)) [x (/x m)]", "[1 2]")
 
 suite "spec — packages (docs/proposals/package.md)":
-  # The §16 test matrix. Every case here is filesystem-shaped, so each test
-  # builds its own tree under a scratch root and reads it back through the same
-  # Application the CLI creates.
   proc packagesRoot(): string =
     result = getTempDir() / "gene_spec_packages"
     removeDir(result)
@@ -6910,37 +6907,6 @@ suite "spec — packages (docs/proposals/package.md)":
     let path = dir / rel
     createDir(parentDir(path))
     writeFile(path, source)
-
-  proc manifest(name, version: string, extra = ""): string =
-    result = "{^name \"" & name & "\""
-    if version.len > 0:
-      result.add " ^version \"" & version & "\""
-    if extra.len > 0:
-      result.add " " & extra
-    result.add "}"
-
-  proc makeStorePackage(store, name, version: string, extra = "",
-                        indexBody = "(var origin \"store\")") =
-    let dir = store / name
-    writeIn(dir, "package.gene", manifest(name, version, extra))
-    writeIn(dir, "src/index.gene", indexBody)
-
-  template withUserStore(path: string, body: untyped) =
-    ## The user store is `~/.gene/packages`; the env override exists so a test
-    ## never writes to a real home directory.
-    putEnv(UserStoreEnvVar, path)
-    try:
-      body
-    finally:
-      delEnv(UserStoreEnvVar)
-
-  template withCwd(path: string, body: untyped) =
-    let savedCwd = getCurrentDir()
-    setCurrentDir(path)
-    try:
-      body
-    finally:
-      setCurrentDir(savedCwd)
 
   proc moduleValueText(m: Value, name: string): string =
     let nsScope = m.moduleRootNamespace.nsScope
@@ -6954,536 +6920,76 @@ suite "spec — packages (docs/proposals/package.md)":
       return e.class
     raise newException(ValueError, "expected a PackageError")
 
-  proc packageErrorText(body: proc ()): string =
-    try:
-      body()
-    except PackageError as e:
-      return e.msg
-    raise newException(ValueError, "expected a PackageError")
-
-  test "discovery stops at the nearest ancestor manifest":
-    let root = packagesRoot()
-    writeIn(root, "package.gene", manifest("outer/app", "0.1.0"))
-    writeIn(root, "tools/package.gene", manifest("outer/tools", "0.1.0"))
-    writeIn(root, "tools/inspect.gene", "(var who \"tools\")")
-    let app = newApplicationForEntryFile(root / "tools" / "inspect.gene")
-    check app.applicationPackage.name == "outer/tools"
-    check app.applicationPackage.root == normalizedPath(root / "tools")
-    # A file-less entry started in the outer directory selects the outer
-    # package instead: discovery is by ancestors, from a start directory the
-    # entry decides.
-    check newApplication(root).applicationPackage.name == "outer/app"
-
-  test "file commands discover from the entry file, not the working directory":
-    let root = packagesRoot()
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0"))
-    writeIn(root, "app/src/main.gene", "(var here \"main\")")
-    createDir(root / "elsewhere")
-    withCwd(root / "elsewhere"):
-      let app = newApplicationForEntryFile(root / "app" / "src" / "main.gene")
-      check app.applicationPackage.name == "acme/app"
-      check moduleValueText(
-        app.loadFileModule(root / "app" / "src" / "main.gene"), "here") ==
-        "\"main\""
-
-  test "an ad-hoc package appears with no manifest and creates none":
-    let root = packagesRoot()
-    writeIn(root, "scratch/hello.gene", "(var greeting \"hi\")")
-    let app = newApplicationForEntryFile(root / "scratch" / "hello.gene")
-    check app.applicationPackage.kind == pkAdHoc
-    check app.applicationPackage.name == ""
-    check app.applicationPackage.root == normalizedPath(root / "scratch")
-    check app.applicationPackage.manifestPath == ""
-    discard app.loadFileModule(root / "scratch" / "hello.gene")
-    # No manifest is ever generated implicitly.
-    check not fileExists(root / "scratch" / "package.gene")
-    # A file-less entry anchors at the launch working directory instead.
-    withCwd(root / "scratch"):
-      check newApplication(getCurrentDir()).applicationPackage.root ==
-        normalizedPath(getCurrentDir())
-
-  test "an explicit package-root override rejects an outside entry file":
-    let root = packagesRoot()
-    writeIn(root, "inside/main.gene", "(var x 1)")
-    writeIn(root, "outside/other.gene", "(var x 2)")
-    let app = newApplication(root / "inside")
-    app.requireEntryWithinPackage(root / "inside" / "main.gene")
-    check packageErrorClass(proc () =
-      app.requireEntryWithinPackage(root / "outside" / "other.gene")) ==
-      pecBoundary
-
-  test "regular manifest defaults and validation":
-    let root = packagesRoot()
-    writeIn(root, "package.gene", manifest("acme/defaults", "0.1.0"))
-    let defaults = newApplication(root).applicationPackage
-    check defaults.kind == pkRegular
-    check defaults.sourceDir == "src"
-    check defaults.mainModule == "index"
-    check defaults.testDir == "tests"
-    check defaults.description == ""
-    check defaults.dependencies.len == 0
-
-    writeIn(root, "package.gene", manifest("acme/custom", "2.0.0",
-      "^description \"d\" ^source_dir \"lib\" ^main_module \"boot\" " &
-      "^test_dir \"t\""))
-    let custom = newApplication(root).applicationPackage
-    check custom.sourceDir == "lib"
-    check custom.mainModule == "boot"
-    check custom.testDir == "t"
-    check custom.description == "d"
-
-    for bad in ["{^name \"acme/x\" ^source_dir \"/abs\"}",
-                "{^name \"acme/x\" ^source_dir \"../up\"}",
-                "{^name \"acme/x\" ^version 1}",
-                "{^name \"acme/x\" ^dependencies {}}",
-                "{^version \"1.0.0\"}"]:
-      writeIn(root, "package.gene", bad)
-      check packageErrorClass(proc () =
-        discard newApplication(root)) == pecManifestInvalid
-
-  test "package names must be <owner>/<name> in lowercase snake_case":
-    for good in ["acme/json", "gene/todo_app", "a1/b2_c3"]:
-      check good.isValidPackageName
-    for bad in ["todo-app", "genni-agent", "acme/Json", "acme", "a/b/c",
-                "/json", "acme/", "acme/..", "acme/_", ""]:
-      check not bad.isValidPackageName
-
-  test "imports resolve inside ad-hoc and regular package roots":
-    let root = packagesRoot()
-    writeIn(root, "adhoc/lib.gene", "(var v \"adhoc-lib\")")
-    writeIn(root, "adhoc/main.gene",
-      "(import [v] from \"./lib\")\n(var seen v)")
-    let adhoc = newApplicationForEntryFile(root / "adhoc" / "main.gene")
-    check moduleValueText(adhoc.loadFileModule(root / "adhoc" / "main.gene"),
-                          "seen") == "\"adhoc-lib\""
-
-    writeIn(root, "regular/package.gene", manifest("acme/regular", "0.1.0"))
-    writeIn(root, "regular/src/lib.gene", "(var v \"src-lib\")")
-    writeIn(root, "regular/src/main.gene",
-      "(import [v] from \"lib\")\n(var seen v)")
-    let regular = newApplicationForEntryFile(
-      root / "regular" / "src" / "main.gene")
-    check moduleValueText(
-      regular.loadFileModule(root / "regular" / "src" / "main.gene"),
-      "seen") == "\"src-lib\""
-
-  test "the application store resolves, shadows, and blocks user fallback":
-    let root = packagesRoot()
-    let userStore = root / "user_store"
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/json\" \"1.4.2\")]"))
-    writeIn(root, "app/src/main.gene",
-      "(import [origin] from \".\" ^pkg \"acme/json\")\n(var seen origin)")
-    makeStorePackage(userStore, "acme/json", "1.4.2",
-                     indexBody = "(var origin \"user\")")
-
-    withUserStore(userStore):
-      # user-store fallback: nothing is vendored yet
-      let fallback = newApplicationForEntryFile(
-        root / "app" / "src" / "main.gene")
-      check fallback.locatePackage("acme/json").origin == poUserStore
-      check moduleValueText(
-        fallback.loadFileModule(root / "app" / "src" / "main.gene"),
-        "seen") == "\"user\""
-
-      # application store shadows the user store
-      makeStorePackage(root / "app/vendor/packages", "acme/json", "1.4.2",
-                       indexBody = "(var origin \"vendored\")")
-      let shadowed = newApplicationForEntryFile(
-        root / "app" / "src" / "main.gene")
-      check shadowed.locatePackage("acme/json").origin == poApplicationStore
-      check moduleValueText(
-        shadowed.loadFileModule(root / "app" / "src" / "main.gene"),
-        "seen") == "\"vendored\""
-
-      # an invalid application candidate never falls through to the user store
-      writeIn(root, "app/vendor/packages/acme/json/package.gene",
-              manifest("acme/other", "1.4.2"))
-      check packageErrorClass(proc () =
-        discard newApplicationForEntryFile(
-          root / "app" / "src" / "main.gene")) == pecIdentityMismatch
-
-  test "exact versions are validated against the selected candidate":
-    let root = packagesRoot()
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/json\" \"1.4.2\")]"))
-    makeStorePackage(root / "app/vendor/packages", "acme/json", "1.3.0")
-    let message = packageErrorText(proc () =
-      discard newApplication(root / "app"))
-    check message.startsWith("PACKAGE_VERSION_MISMATCH: ")
-    check "acme/app requires acme/json 1.4.2" in message
-    check "found version: 1.3.0" in message
-    check "user store was not searched because an application candidate exists" in
-      message
-
-  test "two requirements that cannot both hold are a conflict, not a mismatch":
-    let root = packagesRoot()
-    let vendor = root / "app/vendor/packages"
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/http\" \"2.0.0\") " &
-      "(dep \"acme/json\" \"1.4.2\")]"))
-    makeStorePackage(vendor, "acme/json", "1.4.2")
-    makeStorePackage(vendor, "acme/http", "2.0.0",
-      "^dependencies [(dep \"acme/json\" \"1.3.0\")]")
-    let first = packageErrorText(proc () = discard newApplication(root / "app"))
-    check first.startsWith("PACKAGE_VERSION_CONFLICT: ")
-    check "acme/app requires acme/json 1.4.2" in first
-    check "acme/http requires acme/json 1.3.0" in first
-    check "PACKAGE_VERSION_MISMATCH" notin first
-
-    # The two-phase split exists so the diagnostic is a property of the graph.
-    # Reversing the order the requirements are written in must not change a
-    # single byte of it.
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/json\" \"1.4.2\") " &
-      "(dep \"acme/http\" \"2.0.0\")]"))
-    let reversed = packageErrorText(proc () =
-      discard newApplication(root / "app"))
-    check reversed == first
-
-  test "a ^path dependency without a version contributes no requirement":
-    let root = packagesRoot()
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/tools\" ^path \"../tools\")]"))
-    writeIn(root, "app/src/main.gene",
-      "(import [origin] from \".\" ^pkg \"acme/tools\")\n(var seen origin)")
-    # No ^version anywhere: neither version failure can fire.
-    writeIn(root, "tools/package.gene", manifest("acme/tools", ""))
-    writeIn(root, "tools/src/index.gene", "(var origin \"sibling\")")
-    let app = newApplicationForEntryFile(root / "app" / "src" / "main.gene")
-    let tools = app.locatePackage("acme/tools")
-    check tools.origin == poPathDependency
-    check tools.version == ""
-    # A path dependency resolves outside the application root by construction,
-    # and its own modules still cannot leave its package root.
-    check not app.applicationPackage.contains(tools.root)
-    check moduleValueText(
-      app.loadFileModule(root / "app" / "src" / "main.gene"),
-      "seen") == "\"sibling\""
-    check packageErrorClass(proc () =
-      discard app.resolvePackageModule(tools, "../../app/src/main")) ==
-      pecBoundary
-
-  test "a regular package may import only itself and its declared dependencies":
-    let root = packagesRoot()
-    let vendor = root / "app/vendor/packages"
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/json\" \"1.4.2\")]"))
-    writeIn(root, "app/src/index.gene", "(var own \"self\")")
-    makeStorePackage(vendor, "acme/json", "1.4.2")
-    # Transitive presence in a store does not grant a direct import.
-    makeStorePackage(vendor, "acme/secret", "1.0.0")
-    let app = newApplication(root / "app")
-    check app.locatePackage("acme/app") == app.applicationPackage
-    check packageErrorClass(proc () =
-      discard app.locatePackage("acme/secret")) == pecNotDeclared
-    check packageErrorClass(proc () =
-      discard app.locatePackage("acme/missing")) == pecNotDeclared
-    check packageErrorClass(proc () =
-      discard app.locatePackage("Acme/Json")) == pecNameInvalid
-
-  test "store dependencies need an exact version; ^path dependencies do not":
-    let root = packagesRoot()
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/json\")]"))
-    check packageErrorClass(proc () =
-      discard newApplication(root / "app")) == pecManifestInvalid
-
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/tools\" ^path \"../tools\")]"))
-    writeIn(root, "tools/package.gene", manifest("acme/tools", ""))
-    check newApplication(root / "app").locatePackage("acme/tools").name ==
-      "acme/tools"
-
-    # A package that lives in a store must declare ^version even though the
-    # declaration named one.
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/json\" \"1.4.2\")]"))
-    makeStorePackage(root / "app/vendor/packages", "acme/json", "")
-    check packageErrorClass(proc () =
-      discard newApplication(root / "app")) == pecManifestInvalid
-
-  test "^pkg is valid only on the from form":
-    check parseImportSpec(read(
-      "(import [parse] from \".\" ^pkg \"acme/json\")")).pkgName == "acme/json"
-    # A bare namespace path never selects a package.
-    check parseImportSpec(read("(import acme/json [parse])")).pkgName == ""
-    expect GeneError:
-      discard parseImportSpec(read(
-        "(import gene/str [join] ^pkg \"acme/json\")"))
-    expect GeneError:
-      discard parseImportSpec(read("(import [x] from \"./m\" ^pkg 7)"))
-    expect GeneError:
-      discard parseImportSpec(read("(import [x] from \"./m\" ^nope true)"))
-
-  test "\".\" is the package entry and no module name is magic":
-    let root = packagesRoot()
-    # main_module is not "index", and a real `index` module stays reachable
-    # under its own literal name.
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^main_module \"boot\""))
-    writeIn(root, "app/src/boot.gene", "(var who \"boot\")")
-    writeIn(root, "app/src/index.gene", "(var who \"index\")")
-    writeIn(root, "app/src/main.gene",
-      "(import [who : entry] from \".\" ^pkg \"acme/app\")\n" &
-      "(import [who : literal] from \"index\" ^pkg \"acme/app\")\n" &
-      "(var pair [entry literal])")
-    let app = newApplicationForEntryFile(root / "app" / "src" / "main.gene")
-    check moduleValueText(
-      app.loadFileModule(root / "app" / "src" / "main.gene"),
-      "pair") == "[\"boot\" \"index\"]"
-
-    # For an ad-hoc package the entry module is the one the command supplied,
-    # so "." means the same thing there as it does in a regular package.
-    writeIn(root, "scratch/entry.gene", "(var role \"entry\")")
-    writeIn(root, "scratch/use.gene",
-      "(import [role] from \".\")\n(var seen role)")
-    let adhoc = newApplicationForEntryFile(root / "scratch" / "entry.gene")
-    check adhoc.applicationPackage.mainModule == ""
-    discard adhoc.loadFileModule(root / "scratch" / "entry.gene")
-    check adhoc.applicationPackage.mainModule == "entry"
-    check adhoc.resolveModulePath(".") ==
-      normalizedPath(root / "scratch" / "entry.gene")
-    check moduleValueText(
-      adhoc.loadFileModule(root / "scratch" / "use.gene"), "seen") ==
-      "\"entry\""
-
-  test "an ad-hoc package imports named packages straight from the stores":
-    let root = packagesRoot()
-    let userStore = root / "user_store"
-    makeStorePackage(userStore, "acme/json", "1.4.2",
-                     indexBody = "(var origin \"user\")")
-    writeIn(root, "scratch/main.gene",
-      "(import [origin] from \".\" ^pkg \"acme/json\")\n(var seen origin)")
-    withUserStore(userStore):
-      let app = newApplicationForEntryFile(root / "scratch" / "main.gene")
-      check app.applicationPackage.kind == pkAdHoc
-      check moduleValueText(
-        app.loadFileModule(root / "scratch" / "main.gene"),
-        "seen") == "\"user\""
-      # Identity is still checked for an ad-hoc importer.
-      writeIn(userStore, "acme/wrong/package.gene",
-              manifest("acme/other", "1.0.0"))
-      check packageErrorClass(proc () =
-        discard newApplicationForEntryFile(root / "scratch" / "main.gene")
-          .locatePackage("acme/wrong")) == pecIdentityMismatch
-      check packageErrorClass(proc () =
-        discard newApplicationForEntryFile(root / "scratch" / "main.gene")
-          .locatePackage("acme/absent")) == pecNotFound
-
-  test "dependency head must be the literal symbol dep":
-    let root = packagesRoot()
-    # `$dep` is reader sugar for the gene/dep member path, so it reads as a
-    # node whose head is `(path gene dep)` rather than a symbol.
-    check read("($dep \"acme/json\" \"1.4.2\")").head.kind == vkNode
-    for bad in ["^dependencies [($dep \"acme/json\" \"1.4.2\")]",
-                "^dependencies [(depends \"acme/json\" \"1.4.2\")]",
-                "^dependencies [[\"acme/json\" \"1.4.2\"]]",
-                "^dependencies [(dep \"acme/json\" \"1.4.2\" \"extra\")]",
-                "^dependencies [(dep \"acme/json\" \"1.0\" ^nope 1)]",
-                "^dependencies [(dep \"acme/json\" \"1.0\") " &
-                  "(dep \"acme/json\" \"1.0\")]"]:
-      writeIn(root, "package.gene", manifest("acme/app", "0.1.0", bad))
-      check packageErrorClass(proc () =
-        discard newApplication(root)) == pecManifestInvalid
-
-  test "manifests are one map datum and reject unknown fields":
+  test "format 1 is required and nested schemas are closed":
     let root = packagesRoot()
     writeIn(root, "package.gene",
-      "{^name \"acme/app\"}\n(var extra 1)")
-    check packageErrorText(proc () = discard newApplication(root)).contains(
-      "exactly one map datum")
-    writeIn(root, "package.gene", "")
+      "{^name \"acme/app\" ^version \"1.0.0\"}")
     check packageErrorClass(proc () =
-      discard newApplication(root)) == pecManifestInvalid
-    writeIn(root, "package.gene", "[^name \"acme/app\"]")
-    check packageErrorClass(proc () =
-      discard newApplication(root)) == pecManifestInvalid
+      discard loadPackageAt(root, poEntry)) == pecManifestInvalid
     writeIn(root, "package.gene",
-      manifest("acme/app", "0.1.0", "^scripts {} ^authors []"))
-    check packageErrorText(proc () = discard newApplication(root)).contains(
-      "unknown field(s): ^authors, ^scripts")
+      "{^format 1 ^name \"acme/app\" ^version \"1.0.0\" " &
+      "^library {^entry \"src/index.gene\" ^surprise true}}")
+    check packageErrorClass(proc () =
+      discard loadPackageAt(root, poEntry)) == pecManifestInvalid
 
-  test "the committed example manifests validate against the schema":
-    for dir in ["examples/todo_app", "examples/ai_agent", "examples/utils"]:
-      let pkg = loadPackageAt(dir, poEntry)
-      check pkg.kind == pkRegular
-      check pkg.name.isValidPackageName
-      check pkg.version.len > 0
-      check pkg.description.len > 0
+  test "nearest manifest and ad-hoc discovery retain package boundaries":
+    let root = packagesRoot()
+    writeIn(root, "package.gene",
+      "{^format 1 ^name \"acme/outer\" ^version \"1.0.0\" " &
+      "^library {^entry \"src/index.gene\"}}")
+    writeIn(root, "packages/tool/package.gene",
+      "{^format 1 ^name \"acme/tool\" ^version \"1.0.0\" " &
+      "^library {^entry \"src/index.gene\"}}")
+    check discoverApplicationPackage(root / "packages/tool/src").name ==
+      "acme/tool"
+    let scratch = packagesRoot() / "scratch"
+    createDir(scratch)
+    check discoverApplicationPackage(scratch).kind == pkAdHoc
+
+  test "running inside a co-lived member selects the member package":
+    let root = packagesRoot()
+    writeIn(root, "package.gene",
+      "{^format 1 ^name \"acme/app\" ^version \"1.0.0\" " &
+      "^workspace {^members [\"packages/*\"]} " &
+      "^applications [(application \"app\" ^entry \"src/main.gene\")] " &
+      "^dependencies {^tool (dep \"acme/tool\" \"1.0.0\" ^workspace true)}}")
+    writeIn(root, "packages/tool/package.gene",
+      "{^format 1 ^name \"acme/tool\" ^version \"1.0.0\" " &
+      "^library {^entry \"src/index.gene\"}}")
+    writeIn(root, "packages/tool/src/index.gene", "(var answer 42)")
+    let app = newApplication(root / "packages/tool/src")
+    check app.applicationPackage.name == "acme/tool"
+    check app.applicationPackage.root == normalizedPath(root / "packages/tool")
+
+  test "dependency aliases isolate duplicate package versions":
+    let root = packagesRoot()
+    writeIn(root, "app/package.gene",
+      "{^format 1 ^name \"acme/app\" ^version \"1.0.0\" " &
+      "^applications [(application \"app\" ^entry \"src/main.gene\")] " &
+      "^dependencies {" &
+      "^old (dep \"acme/value\" \"1.0.0\" ^path \"../old\") " &
+      "^new (dep \"acme/value\" \"2.0.0\" ^path \"../new\")}}")
+    for (dir, version, value) in [("old", "1.0.0", "old"),
+                                  ("new", "2.0.0", "new")]:
+      writeIn(root, dir & "/package.gene",
+        "{^format 1 ^name \"acme/value\" ^version \"" & version &
+        "\" ^library {^entry \"src/index.gene\"}}")
+      writeIn(root, dir & "/src/index.gene",
+        "(var value \"" & value & "\")")
+    writeIn(root, "app/src/main.gene",
+      "(import [value : old] from \".\" ^pkg \"old\")\n" &
+      "(import [value : new] from \".\" ^pkg \"new\")\n" &
+      "(var values [old new])")
+    let app = newApplicationForEntryFile(root / "app/src/main.gene")
+    check moduleValueText(app.loadFileModule(root / "app/src/main.gene"),
+                          "values") == "[\"old\" \"new\"]"
+    check app.locatePackage("old").id != app.locatePackage("new").id
+
+  test "the committed examples use format 1":
     check loadPackageAt("examples/todo_app", poEntry).name == "gene/todo_app"
     check loadPackageAt("examples/ai_agent", poEntry).name == "gene/ai_agent"
-    check loadPackageAt("examples/utils", poEntry).name == "gene/utils"
-
-  test "the committed example packages resolve across a ^path dependency":
-    # `examples/todo_app` depends on the sibling `examples/utils` by path, so a
-    # fresh clone resolves it with no install step. This is the committed case
-    # for §8's "a path dependency resolves outside the application root by
-    # construction" — the checkout layout is the only thing making it work.
-    let app = newApplicationForEntryFile("examples/todo_app/src/main.gene")
-    check app.applicationPackage.name == "gene/todo_app"
-    let utils = app.locatePackage("gene/utils")
-    check utils.origin == poPathDependency
-    check utils.name == "gene/utils"
-    check not app.applicationPackage.contains(utils.root)
-    # `^main_module "form"` is not `index`, so `"."` is doing real work here.
-    check utils.mainModule == "form"
-    check app.resolvePackageModule(utils, ".") ==
-      normalizedPath(absolutePath("examples/utils/src/form.gene"))
-    # The dependency is declared, so it is importable; nothing else is.
-    check packageErrorClass(proc () =
-      discard app.locatePackage("gene/ai_agent")) == pecNotDeclared
-
-  test "module and package paths cannot escape a root, symlinks included":
-    let root = packagesRoot()
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0"))
-    writeIn(root, "app/src/index.gene", "(var v 1)")
-    writeIn(root, "secret.gene", "(var v 2)")
-    let app = newApplication(root / "app")
-    let pkg = app.applicationPackage
-    for bad in ["../secret", "/../secret"]:
-      check packageErrorClass(proc () =
-        discard app.resolvePackageModule(pkg, bad)) == pecBoundary
-    check packageErrorClass(proc () =
-      discard app.resolvePackageModule(pkg, "https://example.com/x.gene")) ==
-      pecBoundary
-    when defined(posix):
-      # A symlink inside the package whose target is outside it is rejected on
-      # the resolved path, not merely on the spelling.
-      createSymlink(root / "secret.gene", root / "app" / "src" / "link.gene")
-      check packageErrorClass(proc () =
-        discard app.resolvePackageModule(pkg, "link")) == pecBoundary
-
-  test "identical module names in two packages do not collide in the cache":
-    let root = packagesRoot()
-    let vendor = root / "app/vendor/packages"
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/one\" \"1.0.0\") " &
-      "(dep \"acme/two\" \"1.0.0\")]"))
-    for entry in [("acme/one", "one"), ("acme/two", "two")]:
-      let (name, tag) = entry
-      writeIn(vendor / name, "package.gene", manifest(name, "1.0.0"))
-      writeIn(vendor / name, "src/util.gene", "(var tag \"" & tag & "\")")
-    writeIn(root, "app/src/main.gene",
-      "(import [tag : a] from \"util\" ^pkg \"acme/one\")\n" &
-      "(import [tag : b] from \"util\" ^pkg \"acme/two\")\n" &
-      "(var pair [a b])")
-    let app = newApplicationForEntryFile(root / "app" / "src" / "main.gene")
-    check moduleValueText(
-      app.loadFileModule(root / "app" / "src" / "main.gene"),
-      "pair") == "[\"one\" \"two\"]"
-    check app.moduleIdentityFor(
-      normalizedPath(vendor / "acme/one" / "src" / "util.gene")) ==
-      "acme/one@1.0.0::util"
-    check app.moduleIdentityFor(
-      normalizedPath(root / "app" / "src" / "main.gene")) ==
-      "acme/app@0.1.0::main"
-
-  test "a package module loads once across repeated imports":
-    let root = packagesRoot()
-    let vendor = root / "app/vendor/packages"
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/counter\" \"1.0.0\")]"))
-    writeIn(vendor / "acme/counter", "package.gene",
-            manifest("acme/counter", "1.0.0"))
-    writeIn(vendor / "acme/counter", "src/index.gene",
-      "(var loads ($cell 0))\n(loads ~ update (fn [n] (+ n 1)))")
-    writeIn(root, "app/src/a.gene",
-      "(import [loads] from \".\" ^pkg \"acme/counter\")\n(var seen loads)")
-    writeIn(root, "app/src/main.gene",
-      "(import [loads] from \".\" ^pkg \"acme/counter\")\n" &
-      "(import [seen] from \"a\")\n" &
-      "(var count (loads ~ get))")
-    let app = newApplicationForEntryFile(root / "app" / "src" / "main.gene")
-    check moduleValueText(
-      app.loadFileModule(root / "app" / "src" / "main.gene"),
-      "count") == "1"
-
-  test "dependency cycles report the package chain":
-    let root = packagesRoot()
-    let vendor = root / "app/vendor/packages"
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/a\" \"1.0.0\")]"))
-    makeStorePackage(vendor, "acme/a", "1.0.0",
-      "^dependencies [(dep \"acme/b\" \"1.0.0\")]")
-    makeStorePackage(vendor, "acme/b", "1.0.0",
-      "^dependencies [(dep \"acme/a\" \"1.0.0\")]")
-    let message = packageErrorText(proc () =
-      discard newApplication(root / "app"))
-    check message.startsWith("PACKAGE_DEPENDENCY_CYCLE: ")
-    check "acme/app -> acme/a -> acme/b -> acme/a" in message
-
-  test "package discovery and imports never change the working directory":
-    let root = packagesRoot()
-    let vendor = root / "app/vendor/packages"
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/json\" \"1.4.2\")]"))
-    makeStorePackage(vendor, "acme/json", "1.4.2")
-    writeIn(root, "app/src/main.gene",
-      "(import [origin] from \".\" ^pkg \"acme/json\")\n(var seen origin)")
-    let before = getCurrentDir()
-    let app = newApplicationForEntryFile(root / "app" / "src" / "main.gene")
-    discard app.loadFileModule(root / "app" / "src" / "main.gene")
-    check getCurrentDir() == before
-    check app.launchDirectory == normalizedPath(before)
-
-  test "a URL entry discovers its package from the launch cwd, offline":
-    let root = packagesRoot()
-    let userStore = root / "user_store"
-    writeIn(root, "launch/package.gene", manifest("acme/launcher", "0.1.0",
-      "^dependencies [(dep \"acme/json\" \"1.4.2\")]"))
-    makeStorePackage(userStore, "acme/json", "1.4.2")
-    withUserStore(userStore):
-      withCwd(root / "launch"):
-        # `gene runurl` builds its Application exactly this way.
-        let app = newApplication(getCurrentDir())
-        app.allowUrlModules = true
-        check app.applicationPackage.name == "acme/launcher"
-        # Package resolution reached only the two local stores; no manifest
-        # lookup may go to the network.
-        check app.locatePackage("acme/json").origin == poUserStore
-        check packageErrorClass(proc () =
-          discard app.resolvePackageModule(app.locatePackage("acme/json"),
-                                           "https://example.com/x.gene")) ==
-          pecBoundary
-
-  test "every package-facing name is snake_case":
-    let root = packagesRoot()
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.2.0",
-      "^description \"d\" ^source_dir \"src\" ^main_module \"index\" " &
-      "^test_dir \"tests\" ^dependencies [(dep \"acme/x\" ^path \"../x\")]"))
-    writeIn(root, "x/package.gene", manifest("acme/x", ""))
-    let value = newApplication(root / "app").applicationPackage.packageValue()
-    for key in value.mapEntries.keys:
-      check '-' notin key
-      check key == key.toLowerAscii()
-    check value.mapEntries.hasKey("source_dir")
-    check value.mapEntries.hasKey("main_module")
-    check value.mapEntries.hasKey("test_dir")
-    check value.mapEntries.hasKey("manifest_path")
-    for dep in value.mapEntries["dependencies"].listItems:
-      for key in dep.mapEntries.keys:
-        check '-' notin key
-
-  test "a cached import re-reads no manifest and re-walks no ancestor":
-    let root = packagesRoot()
-    let vendor = root / "app/vendor/packages"
-    writeIn(root, "app/package.gene", manifest("acme/app", "0.1.0",
-      "^dependencies [(dep \"acme/json\" \"1.4.2\")]"))
-    makeStorePackage(vendor, "acme/json", "1.4.2")
-    writeIn(root, "app/src/main.gene",
-      "(import [origin] from \".\" ^pkg \"acme/json\")\n(var seen origin)")
-    let app = newApplicationForEntryFile(root / "app" / "src" / "main.gene")
-    discard app.loadFileModule(root / "app" / "src" / "main.gene")
-    # Delete every manifest and the store itself: a resolved package table and
-    # a warm module cache must answer without touching the filesystem again.
-    removeFile(root / "app" / "package.gene")
-    removeDir(vendor)
-    check app.locatePackage("acme/json").version == "1.4.2"
-    check moduleValueText(
-      app.loadFileModule(root / "app" / "src" / "main.gene"),
-      "seen") == "\"store\""
-
+    check loadPackageAt("examples/utils", poEntry).library.entry ==
+      "src/form.gene"
 suite "spec — macros across modules (design §11/§15)":
   # Macros are compile-time definitions, so `from "path"` imports pre-load the
   # dependency and splice its macro exports into the importer's compiler.

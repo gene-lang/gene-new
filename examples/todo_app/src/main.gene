@@ -49,7 +49,7 @@
 # sibling package rather than at the bottom of this file. `"."` is that
 # package's entry module (docs/proposals/package.md §10); the dependency is
 # declared in package.gene, and only a declared dependency can be imported.
-(import [with_str with_int] from "." ^pkg "gene/utils")
+(import [with_str with_int] from "." ^pkg "utils")
 
 # -----------------------------------------------------------------------------
 # Store: SQLite via the Db protocol. `done` is stored as 0/1.

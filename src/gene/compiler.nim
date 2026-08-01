@@ -2,6 +2,7 @@
 
 import std/[algorithm, os, sets, strutils, tables]
 import ./[equality, gir, reader, types]
+export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
 
 type
   KnownFunctionSig = object
@@ -142,29 +143,6 @@ type
   ParamAdornment = object
     typeExpr: Value
     defaultValue: ParamDefault
-
-  MacroDefault = object
-    optional: bool
-    hasExpr: bool
-    defaultExpr: Value
-
-  MacroParam = object
-    pattern: Value
-    defaultValue: MacroDefault
-
-  MacroNamedParam = object
-    arg: string
-    pattern: Value
-    defaultValue: MacroDefault
-
-  ## Exported so the module loader can carry a module's macro definitions to
-  ## the compilers of importing modules (design §11 + §15: macros are module
-  ## exports). The fields stay private — embedders only shuttle the values.
-  MacroDef* = object
-    params: seq[MacroParam]
-    named: seq[MacroNamedParam]
-    rest: string
-    body: seq[Value]
 
   ExpansionProvenance* = object
     ## Provenance for a container created by template expansion. `sourceLoc`

@@ -11,9 +11,10 @@
 ##   gene compile --target c <file> print experimental typed_native C
 ##   gene doc <file>     print module metadata, imports, and declarations
 
-import std/[algorithm, os, strutils, tables]
-import gene/[compiler, diagnostics, fmt, gir, package, printer, reader, repl,
-             repl_curses, logging, logging_config, types, vm, web]
+import std/[algorithm, os, osproc, sets, streams, strutils, tables]
+import gene/[build, compiler, diagnostics, fmt, gir, package, printer, reader, repl,
+             repl_curses, logging, logging_config, system_dependency, types, vm,
+             web]
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
 # executable's dynamic symbol table for a dlopened AOT library to resolve.
@@ -36,12 +37,13 @@ proc usage() =
   echo "  gene fmt <file.gene>    format source through the canonical printer"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
   echo "  gene compile --target c <file.gene> print experimental typed_native C"
+  echo "  gene build [target] [options] build a package product"
+  echo "  gene build --all [options] build every workspace product"
   echo "  gene build --target web [--out-dir dir] <file.gene> emit web ESM + types"
+  echo "  gene test [selector]     build and run package tests"
+  echo "  gene clean               remove project build views and sandboxes"
   echo "  gene doc <file.gene>    print module metadata, imports, and declarations"
-  echo "  gene pkg show           show the application package and its dependencies"
-  echo "  gene pkg locate <owner/name>  show which store supplies a package"
-  echo "  gene pkg graph          print resolved dependency edges"
-  echo "  gene pkg install <dir> [--user|--app]  copy a package into a store"
+  echo "  gene pkg <command>      init/add/remove/resolve/update/sync/vendor/members/tree/why"
   echo "  gene view [options] <file.gene> browse source structure and edit externally"
   echo "  gene lsp                run the language server over stdio (docs/lsp.md)"
 
@@ -171,29 +173,97 @@ type RunCli = object
   logConfig: string
   packageRoot: string
   debugging: bool
+  targetTriple: string
+  profile: string
+  mode: BuildMode
+  sealed: bool
+  open: bool
+  debugInfo: string
+  locked: bool
+  offline: bool
+  preferBinary: bool
+  sourceOnly: bool
+  rebuild: bool
+  explain: bool
+  jobs: int
 
-proc parseRunCli(label = "run", pathNoun = "a file path"): RunCli =
+proc parseRunCli(label = "run", pathNoun = "a file path",
+                 pathRequired = true): RunCli =
+  result.profile = "dev"
+  result.mode = bmVm
+  var profileExplicit = false
+  var release = false
   var i = 2
   while i <= paramCount() and result.path.len == 0:
     let arg = paramStr(i)
     case arg
-    of "--log-config", "--package-root":
+    of "--log-config", "--package-root", "--target", "--profile", "--mode",
+       "--debug_info", "--jobs":
       inc i
       if i > paramCount():
-        raise newException(ValueError, arg & " expects a path")
-      if arg == "--log-config": result.logConfig = paramStr(i)
-      else: result.packageRoot = paramStr(i)
+        raise newException(ValueError, arg & " expects a value")
+      let value = paramStr(i)
+      case arg
+      of "--log-config": result.logConfig = value
+      of "--package-root": result.packageRoot = value
+      of "--target": result.targetTriple = value
+      of "--profile":
+        result.profile = value
+        profileExplicit = true
+      of "--mode":
+        case value
+        of "vm": result.mode = bmVm
+        of "mixed": result.mode = bmMixed
+        else: raise newException(ValueError, "--mode expects vm or mixed")
+      of "--debug_info": result.debugInfo = value
+      of "--jobs": result.jobs = parseInt(value)
+      else: discard
     of "--debug":
       result.debugging = true
+    of "--sealed": result.sealed = true
+    of "--open": result.open = true
+    of "--locked": result.locked = true
+    of "--offline": result.offline = true
+    of "--prefer_binary": result.preferBinary = true
+    of "--source": result.sourceOnly = true
+    of "--rebuild": result.rebuild = true
+    of "--explain": result.explain = true
+    of "--release": release = true
     else:
       if arg.startsWith("--log-config="):
         result.logConfig = arg[13 .. ^1]
       elif arg.startsWith("--package-root="):
         result.packageRoot = arg[15 .. ^1]
+      elif arg.startsWith("--target="):
+        result.targetTriple = arg[9 .. ^1]
+      elif arg.startsWith("--profile="):
+        result.profile = arg[10 .. ^1]
+        profileExplicit = true
+      elif arg.startsWith("--mode="):
+        case arg[7 .. ^1]
+        of "vm": result.mode = bmVm
+        of "mixed": result.mode = bmMixed
+        else: raise newException(ValueError, "--mode expects vm or mixed")
+      elif arg.startsWith("--debug_info="):
+        result.debugInfo = arg[13 .. ^1]
+      elif arg.startsWith("--jobs="):
+        result.jobs = parseInt(arg[7 .. ^1])
+      elif arg.startsWith("-"):
+        raise newException(ValueError, "unknown run option: " & arg)
       else:
         result.path = arg
     inc i
-  if result.path.len == 0:
+  if result.sealed and result.open:
+    raise newException(ValueError, "--sealed and --open conflict")
+  if result.preferBinary and result.sourceOnly:
+    raise newException(ValueError, "--prefer_binary and --source conflict")
+  if release and profileExplicit:
+    raise newException(ValueError, "--release conflicts with --profile")
+  if release:
+    result.profile = "release"
+  if result.jobs < 0:
+    raise newException(ValueError, "--jobs cannot be negative")
+  if pathRequired and result.path.len == 0:
     raise newException(ValueError, "'" & label & "' needs " & pathNoun)
   result.args = commandArgs(i)
 
@@ -489,6 +559,378 @@ proc cmdBuildWeb(options: BuildWebCli) =
     stderr.writeLine "Error: " & e.msg
     quit(1)
 
+type ProjectBuildCli = object
+  product: string
+  packageRoot: string
+  targetTriple: string
+  profile: string
+  profileExplicit: bool
+  mode: BuildMode
+  debugInfo: string
+  all: bool
+  sealed: bool
+  open: bool
+  locked: bool
+  offline: bool
+  preferBinary: bool
+  sourceOnly: bool
+  rebuild: bool
+  explain: bool
+  verifyReproducible: bool
+  jobs: int
+
+proc isDirectWebBuild(): bool =
+  var i = 2
+  while i <= paramCount():
+    let arg = paramStr(i)
+    if arg == "--target" and i < paramCount() and paramStr(i + 1) == "web":
+      return true
+    if arg == "--target=web":
+      return true
+    inc i
+
+proc parseProjectBuildCli(label = "build"): ProjectBuildCli =
+  result.profile = "dev"
+  result.mode = bmVm
+  var profileExplicit = false
+  var release = false
+  var i = 2
+  while i <= paramCount():
+    let arg = paramStr(i)
+    case arg
+    of "--target", "--profile", "--mode", "--debug_info", "--jobs",
+       "--package-root":
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, arg & " expects a value")
+      let value = paramStr(i)
+      case arg
+      of "--target": result.targetTriple = value
+      of "--profile":
+        result.profile = value
+        profileExplicit = true
+        result.profileExplicit = true
+      of "--mode":
+        case value
+        of "vm": result.mode = bmVm
+        of "mixed": result.mode = bmMixed
+        else: raise newException(ValueError, "--mode expects vm or mixed")
+      of "--debug_info": result.debugInfo = value
+      of "--jobs": result.jobs = parseInt(value)
+      of "--package-root": result.packageRoot = value
+      else: discard
+    of "--all": result.all = true
+    of "--sealed": result.sealed = true
+    of "--open": result.open = true
+    of "--locked": result.locked = true
+    of "--offline": result.offline = true
+    of "--prefer_binary": result.preferBinary = true
+    of "--source": result.sourceOnly = true
+    of "--rebuild": result.rebuild = true
+    of "--explain": result.explain = true
+    of "--verify_reproducible": result.verifyReproducible = true
+    of "--release": release = true
+    else:
+      if arg.startsWith("--target="):
+        result.targetTriple = arg[9 .. ^1]
+      elif arg.startsWith("--profile="):
+        result.profile = arg[10 .. ^1]
+        profileExplicit = true
+        result.profileExplicit = true
+      elif arg.startsWith("--mode="):
+        let value = arg[7 .. ^1]
+        case value
+        of "vm": result.mode = bmVm
+        of "mixed": result.mode = bmMixed
+        else: raise newException(ValueError, "--mode expects vm or mixed")
+      elif arg.startsWith("--debug_info="):
+        result.debugInfo = arg[13 .. ^1]
+      elif arg.startsWith("--jobs="):
+        result.jobs = parseInt(arg[7 .. ^1])
+      elif arg.startsWith("--package-root="):
+        result.packageRoot = arg[15 .. ^1]
+      elif arg.startsWith("-"):
+        raise newException(ValueError, "unknown " & label & " option: " & arg)
+      elif result.product.len == 0:
+        result.product = arg
+      else:
+        raise newException(ValueError,
+          label & " accepts at most one target or selector")
+    inc i
+  if result.all and result.product.len > 0:
+    raise newException(ValueError, "--all conflicts with a product target")
+  if result.sealed and result.open:
+    raise newException(ValueError, "--sealed and --open conflict")
+  if result.preferBinary and result.sourceOnly:
+    raise newException(ValueError, "--prefer_binary and --source conflict")
+  if release and profileExplicit:
+    raise newException(ValueError, "--release conflicts with --profile")
+  if release:
+    result.profile = "release"
+    result.profileExplicit = true
+  if result.jobs < 0:
+    raise newException(ValueError, "--jobs cannot be negative")
+
+proc materializeProject(start: string, locked, offline,
+                        includeDevelopment: bool): MaterializedGraph =
+  let root = workspaceRootFor(start)
+  if root.kind == pkAdHoc:
+    raise newException(ValueError,
+      "project build requires a package.gene; use gene run for an ad-hoc file")
+  let manager = newPackageManager()
+  let resolution =
+    if locked:
+      manager.loadResolutionLock(start)
+    else:
+      let solved = manager.resolve(ResolveRequest(
+        startDir: start, includeDevelopment: includeDevelopment,
+        offline: offline))
+      discard solved.writeResolutionLock()
+      solved
+  result = manager.sync(resolution, SyncPolicy(offline: offline,
+                                               locked: locked))
+  result.includeDevelopment = includeDevelopment
+  result.includeBuild = false
+
+proc projectBuildEngine(): BuildEngine =
+  newBuildEngine(BuildEnvironment(
+    artifactStore: newLocalArtifactStore(userArtifactStoreDir()),
+    toolchains: newToolchainSet(runningCompilerIdentity(),
+                               hostCPU & "-" & hostOS),
+    systemDependencyProviders: newSystemDependencyResolver()))
+
+proc buildRequest(options: ProjectBuildCli, packageId, target: string):
+                  BuildRequest =
+  BuildRequest(rootPackageId: packageId, target: target,
+    targetTriple: options.targetTriple, profile: options.profile,
+    mode: options.mode, sealed: options.sealed, open: options.open,
+    debugInfo: options.debugInfo, preferBinary: options.preferBinary,
+    sourceOnly: options.sourceOnly, rebuild: options.rebuild,
+    verifyReproducible: options.verifyReproducible,
+    maxParallelism: options.jobs)
+
+proc declaredTargets(pkg: Package): seq[string] =
+  if pkg.hasLibrary:
+    result.add "library"
+  for application in pkg.applications:
+    result.add application.name
+
+proc childBuildArgs(options: ProjectBuildCli, packageRoot,
+                    target: string): seq[string] =
+  result = @["build", target, "--package-root", packageRoot, "--locked",
+             "--profile", options.profile, "--mode", $options.mode,
+             "--jobs", "1"]
+  if options.targetTriple.len > 0:
+    result.add @["--target", options.targetTriple]
+  if options.debugInfo.len > 0:
+    result.add @["--debug_info", options.debugInfo]
+  if options.sealed: result.add "--sealed"
+  if options.open: result.add "--open"
+  if options.offline: result.add "--offline"
+  if options.preferBinary: result.add "--prefer_binary"
+  if options.sourceOnly: result.add "--source"
+  if options.rebuild: result.add "--rebuild"
+  if options.explain: result.add "--explain"
+  if options.verifyReproducible: result.add "--verify_reproducible"
+
+proc runParallelBuilds(options: ProjectBuildCli, graph: MaterializedGraph,
+                       work: seq[tuple[packageId, target: string]]) =
+  ## Pure-Gene compiler actions are process-isolated so independent workspace
+  ## products can build concurrently without sharing VM heaps. Outputs are
+  ## collected and emitted in plan order for deterministic logs.
+  let requested = if options.jobs > 0: options.jobs else: countProcessors()
+  let parallelism = max(1, min(requested, work.len))
+  type RunningBuild = object
+    index: int
+    process: Process
+  var running: seq[RunningBuild]
+  var outputs = newSeq[string](work.len)
+  var statuses = newSeq[int](work.len)
+  var next = 0
+  while next < work.len or running.len > 0:
+    while next < work.len and running.len < parallelism:
+      let item = work[next]
+      let packageRoot = graph.packagesById[item.packageId].root
+      let process = startProcess(getAppFilename(), graph.workspaceRoot,
+        args = childBuildArgs(options, packageRoot, item.target),
+        options = {poStdErrToStdOut})
+      running.add RunningBuild(index: next, process: process)
+      inc next
+    let current = running[0]
+    outputs[current.index] = current.process.outputStream.readAll()
+    statuses[current.index] = current.process.waitForExit()
+    current.process.close()
+    running.delete(0)
+  var failed = false
+  for i, output in outputs:
+    stdout.write output
+    if statuses[i] != 0:
+      failed = true
+  if failed:
+    raise newException(ValueError,
+      "one or more workspace products failed to build")
+
+proc cmdProjectBuild(options: ProjectBuildCli) =
+  let start =
+    if options.packageRoot.len > 0: options.packageRoot else: getCurrentDir()
+  let graph = materializeProject(start, options.locked, options.offline, false)
+  let engine = projectBuildEngine()
+  var work: seq[tuple[packageId, target: string]]
+  if options.all:
+    var roots = graph.rootPackageIds
+    roots.sort(proc (a, b: string): int =
+      cmp(graph.packagesById[a].root, graph.packagesById[b].root))
+    for id in roots:
+      for target in declaredTargets(graph.packagesById[id]):
+        work.add (id, target)
+  else:
+    work.add (graph.activePackageId, options.product)
+  if work.len == 0:
+    raise newException(ValueError, "workspace declares no build targets")
+  if options.all and work.len > 1 and options.jobs != 1:
+    runParallelBuilds(options, graph, work)
+    return
+  for item in work:
+    let built = engine.build(options.buildRequest(item.packageId, item.target),
+                             graph)
+    let artifact = built.rootArtifact
+    echo "Built " & artifact.packageName & ":" & artifact.target & " -> " &
+      built.projectView
+    if options.explain:
+      echo built.explanation
+
+proc selectedApplication(pkg: Package, name: string): ApplicationTarget =
+  if name.len == 0:
+    if pkg.applications.len != 1:
+      raise newException(ValueError,
+        "run requires an application name unless the package declares exactly one")
+    return pkg.applications[0]
+  for application in pkg.applications:
+    if application.name == name:
+      return application
+  raise newException(ValueError,
+    "package has no application target named " & name)
+
+proc cmdProjectRun(options: RunCli) =
+  let start =
+    if options.packageRoot.len > 0: options.packageRoot else: getCurrentDir()
+  try:
+    let graph = materializeProject(start, options.locked, options.offline,
+                                   false)
+    let pkg = graph.packagesById[graph.activePackageId]
+    let application = selectedApplication(pkg, options.path)
+    let engine = projectBuildEngine()
+    let built = engine.build(BuildRequest(rootPackageId: pkg.id,
+      target: application.name, targetTriple: options.targetTriple,
+      profile: options.profile, mode: options.mode, sealed: options.sealed,
+      open: options.open, debugInfo: options.debugInfo,
+      preferBinary: options.preferBinary, sourceOnly: options.sourceOnly,
+      rebuild: options.rebuild, maxParallelism: options.jobs), graph)
+    if options.explain:
+      echo built.explanation
+    let executionGraph = built.executionGraph
+    let executionPackage = executionGraph.packagesById[pkg.id]
+    let app = newApplication(executionGraph, executionPackage.root)
+    for artifact in built.artifacts:
+      app.installCompiledModules(artifact.compiledModules)
+    let chunk = built.rootArtifact.compiledChunk
+    if chunk == nil:
+      raise newException(ValueError,
+        "build produced no executable GIR artifact")
+    let entry = app.loadCompiledFileModule(
+      executionPackage.root / application.entry, chunk)
+    invokeEntryMain(entry.moduleRootNamespace.nsScope, options.args)
+  except ReadError as error:
+    stderr.writeLine formatDiagnostic("Read error", error.msg,
+                                      error.readErrorLoc)
+    quit(1)
+  except GenePanic as error:
+    stderr.writeLine "Panic: " & error.msg
+    quit(1)
+  except GeneError as error:
+    stderr.writeLine formatDiagnostic("Error", error.msg, error.loc)
+    quit(1)
+  except CatchableError as error:
+    stderr.writeLine "Error: " & error.msg
+    quit(1)
+
+proc cmdProjectTest(options: ProjectBuildCli) =
+  try:
+    if options.all:
+      raise newException(ValueError, "gene test does not accept --all")
+    let start =
+      if options.packageRoot.len > 0: options.packageRoot else: getCurrentDir()
+    let graph = materializeProject(start, options.locked, options.offline, true)
+    let pkg = graph.packagesById[graph.activePackageId]
+    if not pkg.hasTests:
+      raise newException(ValueError, pkg.name & " has no ^tests target")
+    let testRoot = pkg.root / pkg.tests.root
+    if not dirExists(testRoot):
+      raise newException(ValueError, "test root does not exist: " & testRoot)
+    var paths: seq[string]
+    let selector = options.product
+    for path in walkDirRec(testRoot, yieldFilter = {pcFile}):
+      let relative = relativePath(path, pkg.root).replace('\\', '/')
+      if path.endsWith(".gene") and
+          (selector.len == 0 or selector in relative):
+        paths.add relative
+    paths.sort()
+    if paths.len == 0:
+      raise newException(ValueError, "no package tests matched: " & selector)
+    let engine = projectBuildEngine()
+    for relative in paths:
+      var request = options.buildRequest(pkg.id, "test")
+      request.testEntry = relative
+      if not options.profileExplicit:
+        request.profile = "test"
+      let built = engine.build(request, graph)
+      if options.explain:
+        echo built.explanation
+      let executionGraph = built.executionGraph
+      let executionPackage = executionGraph.packagesById[pkg.id]
+      let app = newApplication(executionGraph, executionPackage.root)
+      for artifact in built.artifacts:
+        app.installCompiledModules(artifact.compiledModules)
+      let chunk = built.rootArtifact.compiledChunk
+      if chunk == nil:
+        raise newException(ValueError,
+          "build produced no executable GIR artifact")
+      let entry = app.loadCompiledFileModule(
+        executionPackage.root / relative, chunk)
+      invokeEntryMain(entry.moduleRootNamespace.nsScope, @[])
+      echo "[OK] " & relative
+  except ReadError as error:
+    stderr.writeLine formatDiagnostic("Read error", error.msg,
+                                      error.readErrorLoc)
+    quit(1)
+  except GenePanic as error:
+    stderr.writeLine "Panic: " & error.msg
+    quit(1)
+  except GeneError as error:
+    stderr.writeLine formatDiagnostic("Error", error.msg, error.loc)
+    quit(1)
+  except CatchableError as error:
+    stderr.writeLine "Error: " & error.msg
+    quit(1)
+
+proc cmdClean() =
+  let root = workspaceRootFor(getCurrentDir()).root
+  var removed: seq[string]
+  for path in [root / ".gene" / "build", root / ".gene" / "sandboxes"]:
+    if dirExists(path):
+      removeDir(path)
+      removed.add path
+  if removed.len == 0:
+    echo "Project build view is already clean"
+  else:
+    for path in removed:
+      echo "Removed " & path
+
+proc unavailableBuildFeature(command: string) =
+  stderr.writeLine "Error: BUILD_FEATURE_UNAVAILABLE: 'gene " & command &
+    "' has not passed its demand gate"
+  quit(1)
+
 proc docDeclarationNames(scope: Scope, includeThisModule = false): seq[string] =
   scope.materializeMirroredVars()
   for name in scope.vars.keys:
@@ -598,114 +1040,22 @@ proc cmdDoc(path: string) =
     quit(1)
 
 # ---------------------------------------------------------------------------
-# gene pkg (docs/proposals/package.md §14)
 # ---------------------------------------------------------------------------
-
-proc pkgApplication(packageRootOverride: string): Application =
-  ## `pkg` is a file-less entry, so discovery starts at the launch working
-  ## directory unless an explicit root replaces it. Neither path changes the
-  ## process working directory.
-  newApplication(if packageRootOverride.len > 0: packageRootOverride
-                 else: getCurrentDir())
-
-proc writePackageSummary(pkg: Package, indent = "") =
-  echo indent & "kind:          " & $pkg.kind
-  echo indent & "name:          " & (if pkg.name.len > 0: pkg.name else: "(none)")
-  echo indent & "version:       " &
-    (if pkg.version.len > 0: pkg.version else: "(none)")
-  if pkg.description.len > 0:
-    echo indent & "description:   " & pkg.description
-  echo indent & "root:          " & pkg.root
-  echo indent & "manifest_path: " &
-    (if pkg.manifestPath.len > 0: pkg.manifestPath else: "(none)")
-  echo indent & "source_dir:    " &
-    (if pkg.sourceDir.len > 0: pkg.sourceDir else: "(root)")
-  echo indent & "main_module:   " &
-    (if pkg.mainModule.len > 0: pkg.mainModule else: "(none)")
-  echo indent & "test_dir:      " & pkg.testDir
-  echo indent & "origin:        " & $pkg.origin
-
-proc cmdPkgShow(packageRootOverride: string) =
-  let app = pkgApplication(packageRootOverride)
-  echo "Application package:"
-  writePackageSummary(app.applicationPackage, "  ")
-  echo "Stores:"
-  echo "  application: " & applicationStoreDir(app.applicationPackage.root)
-  echo "  user:        " & app.userStore
-  let packages = app.resolvedPackages
-  var dependencies: seq[Package]
-  for pkg in packages:
-    if pkg != app.applicationPackage:
-      dependencies.add pkg
-  if dependencies.len == 0:
-    echo "Dependencies: none"
-    return
-  echo "Dependencies:"
-  for pkg in dependencies:
-    echo "  " & pkg.name & " " &
-      (if pkg.version.len > 0: pkg.version else: "(no version)") &
-      "  [" & $pkg.origin & "]"
-    echo "    root: " & pkg.root
-    let edges = app.dependencyEdgesOf(pkg.name)
-    if edges.len > 0:
-      echo "    requires: " & edges.join(", ")
-
-proc cmdPkgLocate(name, packageRootOverride: string) =
-  let app = pkgApplication(packageRootOverride)
-  let pkg = app.locatePackage(name)
-  writePackageSummary(pkg)
-
-proc cmdPkgGraph(packageRootOverride: string) =
-  ## The resolved dependency edges. Cycles never reach here: resolution
-  ## rejects them with PACKAGE_DEPENDENCY_CYCLE and the package chain.
-  let app = pkgApplication(packageRootOverride)
-  let root = app.applicationPackage
-  echo (if root.name.len > 0: root.name else: "(ad_hoc)")
-  for pkg in app.resolvedPackages:
-    let edges = app.dependencyEdgesOf(pkg.name)
-    if pkg == root or edges.len > 0:
-      for edge in edges:
-        echo "  " & pkg.name & " -> " & edge
-
-proc copyPackageTree(source, target: string) =
-  if dirExists(target):
-    removeDir(target)
-  createDir(parentDir(target))
-  copyDir(source, target)
-
-proc cmdPkgInstall(source, packageRootOverride: string, toUser: bool) =
-  ## Copy a package directory into a store. The manifest is validated first, so
-  ## a store never acquires a package that resolution would then reject, and
-  ## the destination is keyed by the manifest's own `^name` (§7).
-  let sourceRoot = normalizedPath(absolutePath(source))
-  if not fileExists(sourceRoot / ManifestFileName):
-    stderr.writeLine "Error: " & sourceRoot & " has no " & ManifestFileName
-    quit(1)
-  let pkg = loadPackageAt(sourceRoot, poPathDependency)
-  if pkg.version.len == 0:
-    stderr.writeLine "Error: a package in a store must declare ^version: " &
-      pkg.manifestPath
-    quit(1)
-  let app = pkgApplication(packageRootOverride)
-  let store =
-    if toUser: app.userStore
-    else: applicationStoreDir(app.applicationPackage.root)
-  let target = storeCandidateDir(store, pkg.name)
-  if normalizedPath(target) == sourceRoot:
-    stderr.writeLine "Error: source and destination are the same directory"
-    quit(1)
-  copyPackageTree(sourceRoot, target)
-  echo pkg.name & " " & pkg.version & " -> " & target
+# gene pkg (docs/proposals/package.md §11)
+# ---------------------------------------------------------------------------
 
 type PkgCli = object
   action: string
-  argument: string
+  arguments: seq[string]
   packageRoot: string
-  toUser: bool
+  locked: bool
+  offline: bool
+  workspace: bool
+  dependencyPath: string
+  initKind: string
 
 proc parsePkgCli(): PkgCli =
   var i = 2
-  var positional: seq[string]
   while i <= paramCount():
     let arg = paramStr(i)
     case arg
@@ -714,56 +1064,332 @@ proc parsePkgCli(): PkgCli =
       if i > paramCount():
         raise newException(ValueError, "--package-root expects a path")
       result.packageRoot = paramStr(i)
-    of "--user": result.toUser = true
-    of "--app": result.toUser = false
+    of "--path":
+      inc i
+      if i > paramCount():
+        raise newException(ValueError, "--path expects a path")
+      result.dependencyPath = paramStr(i)
+    of "--locked": result.locked = true
+    of "--offline": result.offline = true
+    of "--workspace": result.workspace = true
+    of "--lib", "--app", "--mixed":
+      if result.initKind.len > 0:
+        raise newException(ValueError,
+          "choose exactly one of --lib, --app, or --mixed")
+      result.initKind = arg[2 .. ^1]
     else:
       if arg.startsWith("--package-root="):
         result.packageRoot = arg[15 .. ^1]
+      elif arg.startsWith("--path="):
+        result.dependencyPath = arg[7 .. ^1]
       elif arg.startsWith("-"):
         raise newException(ValueError, "unknown pkg option: " & arg)
+      elif result.action.len == 0:
+        result.action = arg
       else:
-        positional.add arg
+        result.arguments.add arg
     inc i
-  if positional.len == 0:
+  if result.action.len == 0:
     raise newException(ValueError,
-      "'pkg' needs a subcommand: show, locate, graph, or install")
-  result.action = positional[0]
-  if positional.len > 2:
-    raise newException(ValueError, "'pkg " & result.action &
-      "' accepts at most one argument")
-  if positional.len == 2:
-    result.argument = positional[1]
+      "'pkg' needs a subcommand: init, add, remove, resolve, update, sync, " &
+      "vendor, members, tree, why, publish, or cache")
+
+proc pkgStart(options: PkgCli): string =
+  if options.packageRoot.len > 0: options.packageRoot else: getCurrentDir()
+
+proc pkgResolution(manager: PackageManager, start: string): Resolution =
+  let lockPath = packageLockPathFor(start)
+  if fileExists(lockPath): manager.loadResolutionLock(start)
+  else: manager.resolve(ResolveRequest(startDir: start))
+
+proc cmdPkgResolve(options: PkgCli) =
+  let start = options.pkgStart()
+  let manager = newPackageManager()
+  if options.action == "resolve" and options.arguments.len > 0:
+    raise newException(ValueError, "'pkg resolve' accepts no arguments")
+  if options.action == "update" and options.arguments.len > 1:
+    raise newException(ValueError, "'pkg update' accepts at most one alias")
+  if options.action == "update" and options.locked:
+    raise newException(ValueError, "--locked forbids dependency updates")
+  if options.locked:
+    let resolution = manager.loadResolutionLock(start)
+    echo "Lock is current: " & packageLockPathFor(start)
+    echo "Instances: " & $resolution.packagesById.len
+    return
+  let unlocked =
+    if options.action == "update": options.arguments
+    else: @[]
+  let resolution = manager.resolve(ResolveRequest(startDir: start,
+                                                  unlockAliases: unlocked,
+                                                  unlockAll:
+                                                    options.action == "update" and
+                                                    unlocked.len == 0,
+                                                  offline: options.offline))
+  let lockPath = resolution.writeResolutionLock()
+  echo "Resolved " & $resolution.packagesById.len & " package instance(s)"
+  echo "Lock: " & lockPath
+
+proc cmdPkgSync(options: PkgCli): MaterializedGraph =
+  let start = options.pkgStart()
+  let manager = newPackageManager()
+  let resolution = manager.loadResolutionLock(start)
+  result = manager.sync(resolution,
+    SyncPolicy(offline: options.offline, locked: options.locked))
+  echo "Synchronized " & $result.packagesById.len & " package instance(s)"
+
+proc cmdPkgVendor(options: PkgCli) =
+  let graph = cmdPkgSync(options)
+  let manager = newPackageManager()
+  let receipt = manager.vendor(graph, VendorRequest())
+  echo "Vendored " & $receipt.packagePaths.len & " immutable package object(s)"
+  echo "Vendor root: " & receipt.root
+
+proc cmdPkgMembers(options: PkgCli) =
+  let start = options.pkgStart()
+  let root = workspaceRootFor(start)
+  echo root.name & " " & root.root
+  for member in workspaceMembers(start):
+    echo member.name & " " & member.root
+
+proc cmdPkgTree(options: PkgCli) =
+  let start = options.pkgStart()
+  let manager = newPackageManager()
+  let resolution = manager.pkgResolution(start)
+  var ids: seq[string]
+  for id in resolution.packagesById.keys:
+    ids.add id
+  ids.sort()
+  for id in ids:
+    let pkg = resolution.packagesById[id]
+    let marker = if id == resolution.activePackageId: "* " else: "  "
+    echo marker & pkg.name & " " & pkg.version & " [" & id & "]"
+    var aliases: seq[string]
+    for alias in pkg.dependencyEdges.keys:
+      aliases.add alias
+    aliases.sort()
+    for alias in aliases:
+      echo "    " & alias & " -> " & pkg.dependencyEdges[alias]
+
+proc cmdPkgWhy(options: PkgCli) =
+  if options.arguments.len != 1:
+    raise newException(ValueError, "'pkg why' needs one package name or id")
+  let needle = options.arguments[0]
+  let manager = newPackageManager()
+  let resolution = manager.pkgResolution(options.pkgStart())
+  type PathItem = tuple[id, path: string]
+  var pending: seq[PathItem]
+  var seen = initHashSet[string]()
+  pending.add (resolution.activePackageId,
+               resolution.packagesById[resolution.activePackageId].name)
+  var found = false
+  while pending.len > 0:
+    let item = pending[0]
+    pending.delete(0)
+    if item.id in seen:
+      continue
+    seen.incl item.id
+    let pkg = resolution.packagesById[item.id]
+    if item.id == needle or pkg.name == needle:
+      echo item.path & " [" & item.id & "]"
+      found = true
+    var aliases: seq[string]
+    for alias in pkg.dependencyEdges.keys:
+      aliases.add alias
+    aliases.sort()
+    for alias in aliases:
+      let target = pkg.dependencyEdges[alias]
+      pending.add (target, item.path & " --" & alias & "--> " &
+        resolution.packagesById[target].name)
+  if not found:
+    raise newException(ValueError, "package is not present in the graph: " & needle)
+
+proc localPackageName(path: string): string =
+  var name = extractFilename(normalizedPath(absolutePath(path))).toLowerAscii()
+  for ch in name.mitems:
+    if ch notin {'a' .. 'z', '0' .. '9', '_'}:
+      ch = '_'
+  while name.len > 0 and name[0] == '_':
+    name = if name.len == 1: "" else: name[1 .. ^1]
+  if name.len == 0:
+    name = "package"
+  "local/" & name
+
+proc registerWorkspaceMember(memberRoot: string):
+    tuple[manifestPath, original: string, changed: bool] =
+  let parentManifestRoot = findManifestDir(parentDir(memberRoot))
+  if parentManifestRoot.len == 0:
+    return
+  let workspaceRoot = workspaceRootFor(parentDir(memberRoot))
+  if workspaceRoot.kind != pkRegular or workspaceRoot.root == memberRoot or
+      not containsPath(workspaceRoot.realRoot, canonicalPath(memberRoot)):
+    return
+  result.manifestPath = workspaceRoot.manifestPath
+  result.original = readFile(result.manifestPath)
+  let forms = readAll(result.original, result.manifestPath,
+                      ReadOptions(rejectDuplicateProps: true))
+  if forms.len != 1 or forms[0].kind != vkMap:
+    raise newException(ValueError, "workspace package.gene must contain one map")
+  var manifest = initPropTable()
+  for key, value in forms[0].mapEntries:
+    manifest[key] = value
+  var workspace = initPropTable()
+  var members: seq[Value]
+  if manifest.hasKey("workspace"):
+    if manifest["workspace"].kind != vkMap:
+      raise newException(ValueError, "^workspace must be a map")
+    for key, value in manifest["workspace"].mapEntries:
+      workspace[key] = value
+    if workspace.hasKey("members"):
+      if workspace["members"].kind != vkList:
+        raise newException(ValueError, "^workspace.^members must be a list")
+      members = workspace["members"].listItems
+  let relative = relativePath(memberRoot, workspaceRoot.root).replace('\\', '/')
+  for value in members:
+    if value.kind == vkString and
+        workspaceMemberMatches(value.strVal, relative):
+      return
+  members.add newStr(relative)
+  workspace["members"] = newList(members)
+  manifest["workspace"] = newMap(workspace)
+  writeFile(result.manifestPath, newMap(manifest).print() & "\n")
+  result.changed = true
+
+proc cmdPkgInit(options: PkgCli) =
+  if options.initKind.len == 0:
+    raise newException(ValueError,
+      "'pkg init' requires exactly one of --lib, --app, or --mixed")
+  if options.arguments.len > 1:
+    raise newException(ValueError, "'pkg init' accepts at most one directory")
+  let root = normalizedPath(absolutePath(
+    if options.arguments.len == 1: options.arguments[0]
+    else: options.pkgStart()))
+  let manifestPath = root / ManifestFileName
+  if fileExists(manifestPath):
+    raise newException(ValueError, "package already exists: " & manifestPath)
+  createDir(root)
+  let name = localPackageName(root)
+  var manifest = "{^format 1 ^name \"" & name & "\" ^version \"0.1.0\""
+  if options.initKind in ["lib", "mixed"]:
+    manifest.add " ^library {^entry \"src/index.gene\"}"
+    createDir(root / "src")
+    writeFile(root / "src/index.gene", "")
+  if options.initKind in ["app", "mixed"]:
+    manifest.add " ^applications [(application \"" & name.split('/')[1] &
+      "\" ^entry \"src/main.gene\")]"
+    createDir(root / "src")
+    writeFile(root / "src/main.gene", "(fn main [] 0)\n")
+  if options.initKind == "mixed":
+    createDir(root / "packages")
+  manifest.add "}\n"
+  writeFile(manifestPath, manifest)
+  let registration = registerWorkspaceMember(root)
+  try:
+    let resolution = newPackageManager().resolve(ResolveRequest(startDir: root))
+    discard resolution.writeResolutionLock()
+  except CatchableError:
+    if registration.changed:
+      writeFile(registration.manifestPath, registration.original)
+    raise
+  echo "Initialized " & name & " at " & root
+
+proc parseDependencyCoordinate(text: string): tuple[alias, name, constraint: string] =
+  let equals = text.find('=')
+  let at = text.rfind('@')
+  if equals <= 0 or at <= equals + 1 or at == text.high:
+    raise newException(ValueError,
+      "dependency must be <alias>=<owner/name>@<constraint>")
+  result.alias = text[0 ..< equals]
+  result.name = text[equals + 1 ..< at]
+  result.constraint = text[at + 1 .. ^1]
+
+proc rewriteDependencies(options: PkgCli, remove: bool) =
+  if options.locked:
+    raise newException(ValueError, "--locked forbids manifest and lock rewrites")
+  if options.arguments.len != 1:
+    raise newException(ValueError,
+      "'pkg " & options.action & "' needs one dependency argument")
+  let start = options.pkgStart()
+  let packageRoot = findManifestDir(start)
+  if packageRoot.len == 0:
+    raise newException(ValueError, "no package.gene found from " & start)
+  let manifestPath = packageRoot / ManifestFileName
+  let original = readFile(manifestPath)
+  let forms = readAll(original, manifestPath,
+                      ReadOptions(rejectDuplicateProps: true))
+  if forms.len != 1 or forms[0].kind != vkMap:
+    raise newException(ValueError, "package.gene must contain one map")
+  var manifestEntries = initPropTable()
+  for key, value in forms[0].mapEntries:
+    manifestEntries[key] = value
+  var dependencies = initPropTable()
+  if manifestEntries.hasKey("dependencies"):
+    if manifestEntries["dependencies"].kind != vkMap:
+      raise newException(ValueError, "^dependencies must be a map")
+    for key, value in manifestEntries["dependencies"].mapEntries:
+      dependencies[key] = value
+  let alias =
+    if remove: options.arguments[0]
+    else: parseDependencyCoordinate(options.arguments[0]).alias
+  if remove:
+    if not dependencies.hasKey(alias):
+      raise newException(ValueError, "dependency alias is not declared: " & alias)
+    dependencies.del(alias)
+  else:
+    let coordinate = parseDependencyCoordinate(options.arguments[0])
+    if dependencies.hasKey(coordinate.alias):
+      raise newException(ValueError,
+        "dependency alias is already declared: " & coordinate.alias)
+    var props = initPropTable()
+    if options.workspace:
+      props["workspace"] = TRUE
+    if options.dependencyPath.len > 0:
+      props["path"] = newStr(options.dependencyPath)
+    if options.workspace and options.dependencyPath.len > 0:
+      raise newException(ValueError, "--workspace and --path are mutually exclusive")
+    dependencies[coordinate.alias] = newNode(newSym("dep"), props,
+      @[newStr(coordinate.name), newStr(coordinate.constraint)])
+  manifestEntries["dependencies"] = newMap(dependencies)
+  writeFile(manifestPath, newMap(manifestEntries).print() & "\n")
+  try:
+    let resolution = newPackageManager().resolve(ResolveRequest(startDir: packageRoot))
+    discard resolution.writeResolutionLock()
+  except CatchableError:
+    writeFile(manifestPath, original)
+    raise
+  echo (if remove: "Removed " else: "Added ") & alias
 
 proc cmdPkg() =
   var options: PkgCli
   try:
     options = parsePkgCli()
-  except ValueError as e:
-    stderr.writeLine "Error: " & e.msg
-    quit(1)
-  try:
     case options.action
-    of "show":
-      cmdPkgShow(options.packageRoot)
-    of "locate":
-      if options.argument.len == 0:
-        stderr.writeLine "Error: 'pkg locate' needs a package name"
-        quit(1)
-      cmdPkgLocate(options.argument, options.packageRoot)
-    of "graph":
-      cmdPkgGraph(options.packageRoot)
-    of "install":
-      if options.argument.len == 0:
-        stderr.writeLine "Error: 'pkg install' needs a package directory"
-        quit(1)
-      cmdPkgInstall(options.argument, options.packageRoot, options.toUser)
+    of "init": cmdPkgInit(options)
+    of "add": rewriteDependencies(options, false)
+    of "remove": rewriteDependencies(options, true)
+    of "resolve", "update": cmdPkgResolve(options)
+    of "sync": discard cmdPkgSync(options)
+    of "vendor": cmdPkgVendor(options)
+    of "members": cmdPkgMembers(options)
+    of "tree": cmdPkgTree(options)
+    of "why": cmdPkgWhy(options)
+    of "publish":
+      raise newException(ValueError,
+        "'pkg publish' requires a configured registry adapter")
+    of "cache":
+      if options.arguments != @["gc"]:
+        raise newException(ValueError, "usage: gene pkg cache gc")
+      let collected = newPackageManager().cacheGc()
+      echo "Package cache GC: kept " & $collected.keptObjects &
+        ", removed " & $collected.removedObjects &
+        " object(s); removed " & $collected.removedRootReceipts &
+        " stale root receipt(s)"
     else:
-      stderr.writeLine "Error: unknown pkg subcommand: " & options.action
-      quit(1)
+      raise newException(ValueError,
+        "unknown pkg subcommand: " & options.action)
   except GeneError as e:
     stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
     quit(1)
-  except OSError as e:
+  except CatchableError as e:
     stderr.writeLine "Error: " & e.msg
     quit(1)
 
@@ -794,12 +1420,19 @@ proc main() =
   of "run":
     var options: RunCli
     try:
-      options = parseRunCli()
+      options = parseRunCli(pathRequired = false)
       configureRunLogging(options)
     except CatchableError as e:
       stderr.writeLine "Error: " & e.msg
       quit(1)
-    cmdRun(options.path, options.args, options.packageRoot)
+    if options.path.len > 0 and fileExists(options.path):
+      cmdRun(options.path, options.args, options.packageRoot)
+    elif options.path.endsWith(".gapp"):
+      stderr.writeLine "Error: BUILD_FEATURE_UNAVAILABLE: portable .gapp " &
+        "execution is not implemented"
+      quit(1)
+    else:
+      cmdProjectRun(options)
   of "runurl":
     var options: RunCli
     try:
@@ -840,10 +1473,33 @@ proc main() =
       cmdCompile(paramStr(2))
   of "build":
     try:
-      cmdBuildWeb(parseBuildWebCli())
-    except ValueError as e:
+      if isDirectWebBuild():
+        cmdBuildWeb(parseBuildWebCli())
+      else:
+        cmdProjectBuild(parseProjectBuildCli())
+    except GeneError as e:
+      stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+      quit(1)
+    except CatchableError as e:
       stderr.writeLine "Error: " & e.msg
       quit(1)
+  of "test":
+    try:
+      cmdProjectTest(parseProjectBuildCli("test"))
+    except GeneError as e:
+      stderr.writeLine formatDiagnostic("Error", e.msg, e.loc)
+      quit(1)
+    except CatchableError as e:
+      stderr.writeLine "Error: " & e.msg
+      quit(1)
+  of "clean":
+    if paramCount() != 1:
+      stderr.writeLine "Error: 'clean' accepts no arguments"
+      quit(1)
+    cmdClean()
+  of "pack", "bundle", "inspect", "verify", "sign", "install",
+     "uninstall", "rollback", "installed":
+    unavailableBuildFeature(cmd)
   of "doc":
     if paramCount() < 2:
       stderr.writeLine "Error: 'doc' needs a file path"

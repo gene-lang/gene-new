@@ -10,6 +10,9 @@ include test_terminal_session
 include test_values
 include test_vm
 include test_modules
+include test_package
+include test_system_dependency
+include test_build
 include test_match
 include test_errors
 include test_types

@@ -1,4 +1,11 @@
-{^name "gene/ai_agent"
+{^format 1
+ ^name "gene/ai_agent"
  ^description "Genni - your special agent"
  ^version "0.1.0"
- ^dependencies []}
+ ^library {^entry "src/core.gene"}
+ ^applications [
+   (application "tui" ^entry "src/tui.gene")
+   (application "gateway" ^entry "src/gateway.gene")
+   (application "remote_client_smoke" ^entry "src/remote_client_smoke.gene")
+ ]
+ ^dependencies {}}

@@ -4,16 +4,20 @@ when defined(posix):
   import std/posix
 when defined(macosx):
   const SigWinch = 28
-import gene/[repl, vm, web]
+import gene/[package, repl, vm, web]
 
 let cliDir = getTempDir() / "gene_cli_tests"
 let geneExe = cliDir / "gene-test-bin"
+let cliArtifactStore = cliDir / "artifact_store"
 var cliBuilt = false
 
 proc buildGeneCli() =
   if cliBuilt:
     return
   createDir(cliDir)
+  if dirExists(cliArtifactStore):
+    makeMaterializedTreeWritable(cliArtifactStore)
+    removeDir(cliArtifactStore)
   let build = execCmdEx("nim c --path:src --hints:off -o:" & geneExe & " src/gene.nim")
   if build.exitCode != 0:
     checkpoint build.output
@@ -55,7 +59,14 @@ proc runGene(args: openArray[string]): tuple[output: string, exitCode: int] =
   var command = shellQuote(geneExe)
   for arg in args:
     command.add " " & shellQuote(arg)
-  execCmdEx(command)
+  let hadStore = existsEnv("GENE_ARTIFACT_STORE")
+  let savedStore = getEnv("GENE_ARTIFACT_STORE")
+  putEnv("GENE_ARTIFACT_STORE", cliArtifactStore)
+  try:
+    result = execCmdEx(command)
+  finally:
+    if hadStore: putEnv("GENE_ARTIFACT_STORE", savedStore)
+    else: delEnv("GENE_ARTIFACT_STORE")
 
 proc runGeneInput(args: openArray[string],
                   input: string): tuple[output: string, exitCode: int] =
@@ -63,7 +74,14 @@ proc runGeneInput(args: openArray[string],
   var command = shellQuote(geneExe)
   for arg in args:
     command.add " " & shellQuote(arg)
-  execCmdEx(command, input = input)
+  let hadStore = existsEnv("GENE_ARTIFACT_STORE")
+  let savedStore = getEnv("GENE_ARTIFACT_STORE")
+  putEnv("GENE_ARTIFACT_STORE", cliArtifactStore)
+  try:
+    result = execCmdEx(command, input = input)
+  finally:
+    if hadStore: putEnv("GENE_ARTIFACT_STORE", savedStore)
+    else: delEnv("GENE_ARTIFACT_STORE")
 
 proc agentStateRecordPath(root, key: string): string =
   ## Agent checkpoints publish a generation atomically. Tests inspect the
@@ -7891,7 +7909,110 @@ suite "cli — gene doc":
       "- item : Int"
     ]
 
-suite "cli — gene pkg (docs/proposals/package.md §14)":
+suite "cli — Gene package builds":
+  proc buildCliRoot(): string =
+    result = cliDir / "package_build"
+    if dirExists(result):
+      removeDir(result)
+    createDir(result)
+
+  proc writeBuildFixture(path, source: string) =
+    createDir(parentDir(path))
+    writeFile(path, source)
+
+  proc runBuildGeneIn(dir: string,
+                      args: openArray[string]): tuple[output: string,
+                                                      exitCode: int] =
+    buildGeneCli()
+    let saved = getCurrentDir()
+    setCurrentDir(dir)
+    try:
+      result = runGene(args)
+    finally:
+      setCurrentDir(saved)
+
+  test "build selects products, writes views, and explains no-op reuse":
+    let root = buildCliRoot()
+    writeBuildFixture(root / "package.gene", """
+{^format 1 ^name "acme/app" ^version "1.0.0"
+ ^applications [
+   (application "cli" ^entry "src/cli.gene")
+   (application "admin" ^entry "src/admin.gene")]}
+""")
+    writeBuildFixture(root / "src/cli.gene", "(fn main [] 0)")
+    writeBuildFixture(root / "src/admin.gene", "(fn main [] 0)")
+
+    var ran = runGene(["build", "--package-root", root, "cli", "--explain"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "Built acme/app:cli -> " in ran.output
+    check "rebuilt 1 derivation" in ran.output
+    check fileExists(root / "package.gene.lock")
+
+    ran = runGene(["build", "--package-root", root, "cli", "--locked",
+                   "--explain"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "cache hit" in ran.output
+
+  test "build all includes independent co-lived workspace products":
+    let root = buildCliRoot()
+    writeBuildFixture(root / "package.gene", """
+{^format 1 ^name "acme/app" ^version "1.0.0"
+ ^workspace {^members ["packages/*"]}
+ ^applications [(application "app" ^entry "src/main.gene")]}
+""")
+    writeBuildFixture(root / "src/main.gene", "(fn main [] 0)")
+    writeBuildFixture(root / "packages/tool/package.gene", """
+{^format 1 ^name "acme/tool" ^version "1.0.0"
+ ^library {^entry "src/index.gene"}
+ ^applications [(application "tool" ^entry "src/main.gene")]}
+""")
+    writeBuildFixture(root / "packages/tool/src/index.gene", "(var answer 42)")
+    writeBuildFixture(root / "packages/tool/src/main.gene", "(fn main [] 0)")
+
+    let ran = runGene(["build", "--package-root", root, "--all"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "Built acme/app:app -> " in ran.output
+    check "Built acme/tool:library -> " in ran.output
+    check "Built acme/tool:tool -> " in ran.output
+
+  test "run builds a named project application before executing it":
+    let root = buildCliRoot()
+    writeBuildFixture(root / "package.gene", """
+{^format 1 ^name "acme/app" ^version "1.0.0"
+ ^applications [(application "cli" ^entry "src/main.gene")]}
+""")
+    writeBuildFixture(root / "src/main.gene",
+      "(fn main [args] ($println args/0))")
+    let ran = runGene(["run", "--package-root", root, "cli", "hello"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check ran.output.strip == "hello"
+    check dirExists(root / ".gene/build")
+    let cached = runGene(["run", "--package-root", root, "cli", "again"])
+    if cached.exitCode != 0: checkpoint cached.output
+    check cached.exitCode == 0
+    check cached.output.strip == "again"
+
+  test "test discovers, builds, and runs isolated Gene test entries":
+    let root = buildCliRoot()
+    writeBuildFixture(root / "package.gene", """
+{^format 1 ^name "acme/app" ^version "1.0.0"
+ ^library {^entry "src/index.gene"}
+ ^tests {^root "tests"}}
+""")
+    writeBuildFixture(root / "src/index.gene", "(var answer 42)")
+    writeBuildFixture(root / "tests/one.gene", "(fn main [] nil)")
+    writeBuildFixture(root / "tests/two.gene", "(fn main [] nil)")
+    let ran = runBuildGeneIn(root, ["test", "one"])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "[OK] tests/one.gene" in ran.output
+    check "tests/two.gene" notin ran.output
+
+suite "cli — gene pkg (docs/proposals/package.md §11)":
   proc pkgCliDir(): string =
     result = cliDir / "pkg"
     removeDir(result)
@@ -7904,9 +8025,6 @@ suite "cli — gene pkg (docs/proposals/package.md §14)":
   proc runGeneIn(dir: string,
                  args: openArray[string]): tuple[output: string,
                                                  exitCode: int] =
-    ## Run the CLI with a different working directory, which is what makes the
-    ## "file commands discover from the entry file" rule observable from
-    ## outside the process.
     buildGeneCli()
     let saved = getCurrentDir()
     setCurrentDir(dir)
@@ -7915,81 +8033,136 @@ suite "cli — gene pkg (docs/proposals/package.md §14)":
     finally:
       setCurrentDir(saved)
 
-  test "pkg show reports the application package and its stores":
-    let root = pkgCliDir()
-    writePkgFile(root / "app" / "package.gene",
-      "{^name \"acme/app\" ^version \"0.1.0\" " &
-      "^dependencies [(dep \"acme/json\" \"1.4.2\")]}")
-    writePkgFile(root / "app" / "vendor" / "packages" / "acme" / "json" /
-                 "package.gene",
-      "{^name \"acme/json\" ^version \"1.4.2\"}")
-    let shown = runGeneIn(root / "app", ["pkg", "show"])
-    check shown.exitCode == 0
-    check "kind:          regular" in shown.output
-    check "name:          acme/app" in shown.output
-    check "acme/json 1.4.2  [application_store]" in shown.output
-    let located = runGeneIn(root / "app", ["pkg", "locate", "acme/json"])
-    check located.exitCode == 0
-    check "origin:        application_store" in located.output
-    let graph = runGeneIn(root / "app", ["pkg", "graph"])
-    check graph.exitCode == 0
-    check "acme/app -> acme/json" in graph.output
+  test "pkg init writes a format-1 package and lock":
+    let root = pkgCliDir() / "mixed_app"
+    createDir(root)
+    let initialized = runGeneIn(root, ["pkg", "init", "--mixed"])
+    check initialized.exitCode == 0
+    check fileExists(root / "package.gene")
+    check fileExists(root / "package.gene.lock")
+    check "^format 1" in readFile(root / "package.gene")
+    check dirExists(root / "packages")
+    check fileExists(root / "src/index.gene")
+    check fileExists(root / "src/main.gene")
 
-  test "pkg show reports an ad-hoc application package":
-    let root = pkgCliDir()
-    createDir(root / "scratch")
-    let shown = runGeneIn(root / "scratch", ["pkg", "show"])
-    check shown.exitCode == 0
-    check "kind:          ad_hoc" in shown.output
-    check "name:          (none)" in shown.output
-    check "Dependencies: none" in shown.output
+  test "pkg init registers a co-lived package in the enclosing workspace":
+    let root = pkgCliDir() / "workspace_init"
+    writePkgFile(root / "package.gene", """
+{^format 1 ^name "acme/app" ^version "1.0.0"
+ ^applications [(application "app" ^entry "src/main.gene")]}
+""")
+    writePkgFile(root / "src/main.gene", "(fn main [] 0)")
+    let initialized = runGeneIn(root,
+      ["pkg", "init", "packages/pkg1", "--lib"])
+    if initialized.exitCode != 0: checkpoint initialized.output
+    check initialized.exitCode == 0
+    check fileExists(root / "packages/pkg1/package.gene")
+    check "packages/pkg1" in readFile(root / "package.gene")
+    check fileExists(root / "package.gene.lock")
+    let members = runGeneIn(root / "packages/pkg1", ["pkg", "members"])
+    check members.exitCode == 0
+    check "local/pkg1 " & canonicalPath(root / "packages/pkg1") in
+      members.output
 
-  test "pkg install validates a manifest and copies it into a store":
+  test "resolve, sync, tree, why, and members share one workspace graph":
     let root = pkgCliDir()
-    writePkgFile(root / "app" / "package.gene",
-      "{^name \"acme/app\" ^version \"0.1.0\"}")
-    writePkgFile(root / "source" / "package.gene",
-      "{^name \"acme/json\" ^version \"1.4.2\"}")
-    writePkgFile(root / "source" / "src" / "index.gene", "(var v 1)")
-    let installed = runGeneIn(root / "app",
-                              ["pkg", "install", root / "source"])
-    check installed.exitCode == 0
-    check fileExists(root / "app" / "vendor" / "packages" / "acme" / "json" /
-                     "package.gene")
-    # A package without ^version cannot enter a store, because §7 permits one
-    # active version per name and resolution has nothing to check against.
-    writePkgFile(root / "unversioned" / "package.gene", "{^name \"acme/x\"}")
-    let rejected = runGeneIn(root / "app",
-                             ["pkg", "install", root / "unversioned"])
-    check rejected.exitCode == 1
-    check "must declare ^version" in rejected.output
+    writePkgFile(root / "app/package.gene", """
+{^format 1
+ ^name "acme/app"
+ ^version "1.0.0"
+ ^workspace {^members ["packages/*"]}
+ ^applications [(application "app" ^entry "src/main.gene")]
+ ^dependencies {
+   ^tool (dep "acme/tool" "1.0.0" ^workspace true)}}
+""")
+    writePkgFile(root / "app/src/main.gene", "(fn main [] 0)")
+    writePkgFile(root / "app/packages/tool/package.gene", """
+{^format 1
+ ^name "acme/tool"
+ ^version "1.0.0"
+ ^library {^entry "src/index.gene"}}
+""")
+    writePkgFile(root / "app/packages/tool/src/index.gene", "(var answer 42)")
 
-  test "run discovers from the entry file, and --package-root overrides it":
+    let resolved = runGeneIn(root / "app", ["pkg", "resolve"])
+    check resolved.exitCode == 0
+    check "Resolved 2 package instance(s)" in resolved.output
+    check fileExists(root / "app/package.gene.lock")
+
+    let synced = runGeneIn(root / "app", ["pkg", "sync", "--locked", "--offline"])
+    check synced.exitCode == 0
+    check "Synchronized 2 package instance(s)" in synced.output
+
+    let tree = runGeneIn(root / "app", ["pkg", "tree"])
+    check tree.exitCode == 0
+    check "acme/app 1.0.0" in tree.output
+    check "tool -> workspace:acme/tool@1.0.0#" in tree.output
+
+    let why = runGeneIn(root / "app", ["pkg", "why", "acme/tool"])
+    check why.exitCode == 0
+    check "acme/app --tool--> acme/tool" in why.output
+
+    let members = runGeneIn(root / "app/packages/tool", ["pkg", "members"])
+    check members.exitCode == 0
+    check "acme/app " & canonicalPath(root / "app") in members.output
+    check "acme/tool " & canonicalPath(root / "app/packages/tool") in
+      members.output
+
+  test "pkg add and remove mutate aliases transactionally":
     let root = pkgCliDir()
-    writePkgFile(root / "app" / "package.gene",
-      "{^name \"acme/app\" ^version \"0.1.0\"}")
-    writePkgFile(root / "app" / "src" / "main.gene",
-      "(fn main [] ($println this_pkg/name) ($println this_pkg/source_dir))")
+    writePkgFile(root / "app/package.gene", """
+{^format 1
+ ^name "acme/app"
+ ^version "1.0.0"
+ ^workspace {^members ["packages/*"]}
+ ^applications [(application "app" ^entry "src/main.gene")]}
+""")
+    writePkgFile(root / "app/src/main.gene", "(fn main [] 0)")
+    writePkgFile(root / "app/packages/tool/package.gene", """
+{^format 1
+ ^name "acme/tool"
+ ^version "1.0.0"
+ ^library {^entry "src/index.gene"}}
+""")
+    writePkgFile(root / "app/packages/tool/src/index.gene", "(var answer 42)")
+
+    let added = runGeneIn(root / "app",
+      ["pkg", "add", "tool=acme/tool@1.0.0", "--workspace"])
+    check added.exitCode == 0
+    let manifest = readFile(root / "app/package.gene")
+    check "^tool" in manifest
+    check "(dep" in manifest
+    check "^^workspace" in manifest
+    check "\"acme/tool\"" in manifest
+    check fileExists(root / "app/package.gene.lock")
+
+    let removed = runGeneIn(root / "app", ["pkg", "remove", "tool"])
+    check removed.exitCode == 0
+    check not readFile(root / "app/package.gene").contains("^tool")
+
+  test "prototype pkg commands and manifests are rejected":
+    let root = pkgCliDir()
+    writePkgFile(root / "package.gene",
+      "{^name \"acme/app\" ^version \"1.0.0\"}")
+    let oldManifest = runGeneIn(root, ["pkg", "resolve"])
+    check oldManifest.exitCode == 1
+    check "manifest requires ^format 1" in oldManifest.output
+    let oldCommand = runGeneIn(root, ["pkg", "install", root])
+    check oldCommand.exitCode == 1
+    check "unknown pkg subcommand: install" in oldCommand.output
+
+  test "run discovers a format-1 package from the entry file":
+    let root = pkgCliDir()
+    writePkgFile(root / "app/package.gene", """
+{^format 1
+ ^name "acme/app"
+ ^version "1.0.0"
+ ^applications [(application "app" ^entry "src/main.gene")]}
+""")
+    writePkgFile(root / "app/src/main.gene",
+      "(fn main [] ($println this_pkg/name))")
     createDir(root / "elsewhere")
     let ran = runGeneIn(root / "elsewhere",
-                        ["run", root / "app" / "src" / "main.gene"])
+      ["run", root / "app/src/main.gene"])
     check ran.exitCode == 0
-    check ran.output.strip.splitLines == @["acme/app", "src"]
-
-    # An override replaces the discovery start directory; the entry file must
-    # then be inside it.
-    writePkgFile(root / "outside" / "other.gene", "(fn main [] 0)")
-    let rejected = runGeneIn(root / "elsewhere",
-      ["run", "--package-root", root / "app", root / "outside" / "other.gene"])
-    check rejected.exitCode == 1
-    check "PACKAGE_BOUNDARY" in rejected.output
-
-  test "a malformed manifest fails the run with its diagnostic class":
-    let root = pkgCliDir()
-    writePkgFile(root / "app" / "package.gene", "{^name \"bad-name\"}")
-    writePkgFile(root / "app" / "src" / "main.gene", "(fn main [] 0)")
-    createDir(root / "elsewhere")
-    let ran = runGeneIn(root / "elsewhere",
-                        ["run", root / "app" / "src" / "main.gene"])
-    check ran.exitCode == 1
-    check "PACKAGE_NAME_INVALID" in ran.output
+    check ran.output.strip == "acme/app"
