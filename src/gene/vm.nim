@@ -6391,13 +6391,22 @@ proc newApplication*(startDir = ""): Application =
   ## is synthesized at `startDir` so an unconfigured script needs no manifest.
   let root = normalizedDir(startDir)
   result = newApplicationState(root)
-  let manager = newPackageManager(result.userStoreRoot)
-  let lockPath = packageLockPathFor(root)
-  let resolution =
-    if fileExists(lockPath): manager.loadResolutionLock(root)
-    else: manager.resolve(ResolveRequest(startDir: root))
-  result.attachPackageGraph(manager.sync(resolution,
-    SyncPolicy(userStoreRoot: result.userStoreRoot)))
+  when defined(geneWasm):
+    # A wasm guest has no package store, no registry, and no second process to
+    # coordinate with, so there is nothing to resolve or acquire: the
+    # discovered package *is* the graph. Running the manager here would take
+    # the store's hard-link GC barrier, which MEMFS cannot create — every eval
+    # would then fail with PACKAGE_STORE_BUSY.
+    result.attachPackageGraph(
+      singlePackageGraph(discoverApplicationPackage(root)))
+  else:
+    let manager = newPackageManager(result.userStoreRoot)
+    let lockPath = packageLockPathFor(root)
+    let resolution =
+      if fileExists(lockPath): manager.loadResolutionLock(root)
+      else: manager.resolve(ResolveRequest(startDir: root))
+    result.attachPackageGraph(manager.sync(resolution,
+      SyncPolicy(userStoreRoot: result.userStoreRoot)))
 
 proc newApplication*(graph: MaterializedGraph, startDir = ""): Application =
   ## Construct directly from the immutable graph supplied by the package

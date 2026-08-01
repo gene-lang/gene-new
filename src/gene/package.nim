@@ -1350,6 +1350,18 @@ proc newAdHocPackage*(root: string): Package =
           mainModule: "", testDir: DefaultTestDir, origin: poEntry,
           id: "ad_hoc:" & sha256Hex(canonicalRoot), buildRecipes: NIL)
 
+proc singlePackageGraph*(pkg: Package): MaterializedGraph =
+  ## The execution graph of one already-discovered package, with no resolution
+  ## step: no lock, no store, and no dependency acquisition. A host that has no
+  ## package store at all starts here, because resolving would take the store's
+  ## GC barrier for a graph that can only ever contain this one package.
+  result = MaterializedGraph(workspaceRoot: pkg.root,
+                             activePackageId: pkg.id,
+                             developmentPackageId: pkg.id,
+                             rootPackageIds: @[pkg.id],
+                             packagesById: initTable[string, Package]())
+  result.packagesById[pkg.id] = pkg
+
 proc findManifestDir*(startDir: string): string =
   ## The nearest ancestor of `startDir` (inclusive) holding a `package.gene`,
   ## or "" when there is none. Discovery is based on ancestors — never on

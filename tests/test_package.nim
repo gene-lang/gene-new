@@ -739,3 +739,28 @@ suite "package manager — format 1 workspace graph":
     let updatedRoot = updated.packagesById[updated.activePackageId]
     check updated.packagesById[updatedRoot.dependencyEdges["c"]].version ==
       "1.2.0"
+
+  test "a discovered package runs with no store, lock, or resolution step":
+    # The wasm guest has no package store and cannot create the hard link the
+    # store's GC barrier uses, so it starts an Application from the discovered
+    # package alone. That graph must still be a complete execution graph.
+    let root = packageTestRoot("store_free_graph")
+    writePackageFile(root / "package.gene", """
+{^format 1 ^name "acme/standalone" ^version "1.0.0"
+ ^library {^entry "src/index.gene"}}
+""")
+    writePackageFile(root / "src/index.gene", "(var who \"standalone\")")
+    let graph = singlePackageGraph(discoverApplicationPackage(root))
+    check graph.rootPackageIds.len == 1
+    check graph.lockDigest.len == 0
+    check graph.packagesById[graph.activePackageId].name == "acme/standalone"
+
+    let app = newApplication(graph)
+    check app.applicationPackage.name == "acme/standalone"
+    check app.resolvedPackages.len == 1
+    # An ad-hoc tree has no manifest at all and must work the same way.
+    let bare = packageTestRoot("store_free_ad_hoc")
+    writePackageFile(bare / "main.gene", "(var who \"ad_hoc\")")
+    let adHoc = newApplication(singlePackageGraph(
+      discoverApplicationPackage(bare)))
+    check adHoc.applicationPackage.kind == pkAdHoc

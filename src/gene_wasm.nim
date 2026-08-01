@@ -35,7 +35,18 @@ proc geneEvalSource(src: string): GeneResult =
       result.text = e.msg
       result.output = capture[]
       return
-  let scope = newGlobalScope()
+  # Constructing the scope builds the Application on first eval. It has to be
+  # inside a handler: an escaping failure here would leave `gene_eval` with no
+  # handle to return, so the host would see a bare 0 ("rejected input") and no
+  # message at all for what is really a host-environment error.
+  let scope =
+    try:
+      newGlobalScope()
+    except CatchableError as e:
+      result.status = 1
+      result.text = e.msg
+      result.output = capture[]
+      return
   try:
     let value = run(chunk, scope)
     result.status = 0
