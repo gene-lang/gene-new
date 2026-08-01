@@ -67,3 +67,19 @@ in `tests/spec_runner.nim` walks the global scope and fails on any hyphenated
 registration. Wire-format strings that are not Gene names (HTTP header names
 such as `content-type`, MIME types, charset tokens) keep their protocol
 spelling. Examples and docs model the same `snake_case` style for local names.
+
+When touching the NaN-boxed value layer:
+
+- Keep `sizeof(Value) == sizeof(uint64)`.
+- Preserve zero-initialized `Value` as `nil`.
+- Keep hot scalar paths allocation-free where possible.
+- Do not add heap reads on critical paths without considering the planned
+  non-moving arena / reclamation work in `src/gene/types.nim`.
+
+When touching parser/reader code:
+
+- Preserve multi-form source-unit parsing through `readAll`.
+- Keep datum comments as spacing.
+- Keep selector literals distinct from context-neutral slash paths.
+- Add examples to `tests/spec_runner.nim` when behavior comes from the design
+  doc or `examples/web_demo.gene`.
