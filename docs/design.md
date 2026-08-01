@@ -4153,92 +4153,149 @@ dependency set unreproducible, and give resolution no upper bound in time.
 
 ```gene
 {
+  ^format 1
   ^name "acme/my_app"
   ^version "0.1.0"
   ^description "…"
-  ^source_dir "src"
-  ^main_module "index"
-  ^test_dir "tests"
-  ^dependencies [
-    (dep "acme/json" "1.4.2")
-    (dep "acme/local_tools" ^path "../local_tools")
-  ]
+  ^library {^entry "src/index.gene"}
+  ^applications [(application "my_app" ^entry "src/main.gene")]
+  ^dependencies {
+    ^json  (dep "acme/json" "^1.4.0")
+    ^tools (dep "acme/local_tools" ^path "../local_tools")
+  }
 }
 ```
 
-Only `^name` is required; the values above are the defaults. Unknown fields are
-rejected. Package names are `<owner>/<name>` with lowercase `snake_case`
-segments — string *values* governed by this grammar rather than by the
-registered-name convention, though both land on `snake_case`. The dependency
-head is the plain symbol `dep`: `$dep` is sugar for the `gene/dep` member path
-and reads as `((path gene dep) …)`, so a manifest can never appear to name
-something in the standard library.
+`^format 1` and `^name` are required, and a manifest without `^format 1` is
+rejected outright — there is no dual-read period for the earlier prototype
+shape. Unknown fields are rejected, and so is a repeated one: the manifest
+reader runs with duplicate-property rejection on, because two spellings of one
+field would otherwise give a manifest two meanings. Package names are
+`<owner>/<name>` with lowercase `snake_case` segments — string *values*
+governed by this grammar rather than by the registered-name convention, though
+both land on `snake_case`. Manifest paths are `/`-separated, relative, free of
+empty/`.`/`..` segments, and must already be Unicode 15.1 NFC; the tables are
+pinned in-tree so an identity never depends on the host's ICU version.
 
-Named dependencies come from two stores, application before user:
+The dependency head is the plain symbol `dep`: `$dep` is sugar for the
+`gene/dep` member path and reads as `((path gene dep) …)`, so a manifest can
+never appear to name something in the standard library.
+
+A package declares its *targets*, not a source directory to be scanned:
 
 ```text
-application store: <application_root>/vendor/packages/
-user store:        ~/.gene/packages/
+^library      {^entry "…"}                     at most one
+^applications [(application "name" ^entry "…")] any number
+^tests        {^root "tests"}
 ```
 
-Both are addressed by constructed path — `<store>/<owner>/<name>/package.gene`
-— and never enumerated, so resolution does not depend on what else is
-installed. An existing application candidate is authoritative: if it is
-malformed, misnamed, or the wrong version, resolution fails rather than
-falling through to machine-local state.
+The library entry's parent directory is the package's single module base
+(§15.6). `^workspace {^members ["packages/*"]}` makes the package a workspace
+root whose members are independently buildable and share one lock.
 
-Resolution runs in two phases, because a version conflict is a property of two
-*requirements* and no procedure that examines one import at a time can see one.
-Phase 1 walks declared dependencies and selects one candidate per name; phase 2
-validates versions over the whole requirement table. Versions are exact:
-`PACKAGE_VERSION_MISMATCH` is one requirement against one candidate,
-`PACKAGE_VERSION_CONFLICT` is two requirements that cannot both hold. Failures
-are reported sorted by package name, so a given graph produces the same
-diagnostic on every run and every machine.
+Dependencies are a *map keyed by alias*, in three scopes — `^dependencies`,
+`^dev_dependencies`, and `^build_dependencies`. The alias, not the package
+name, is what imports resolve against, so one manifest can depend on two
+versions of one name under two aliases and both are live at runtime. A `dep`
+takes a name and at most one version constraint, and selects at most one source
+— `^registry`, `^git`, `^path`, or `^workspace true` — defaulting to the
+configured registry. A git dependency additionally requires exactly one of
+`^commit`, `^tag`, or `^branch`; registry and workspace dependencies require a
+constraint:
 
-A regular package may import only itself and its declared direct dependencies;
-transitive presence in a store grants nothing. An ad-hoc package has no
-manifest, so named imports resolve straight against the two stores — with the
-same identity, ambiguity, and boundary checks.
+```gene
+^dependencies {
+  ^json (dep "acme/json" "^1.4.0")                     # registry
+  ^wip  (dep "acme/json" ^git "…" ^commit "…")         # one exact commit
+  ^util (dep "acme/util" ^path "../util")              # sibling checkout
+  ^tool (dep "acme/tool" "1.0.0" ^workspace true)      # co-lived member
+}
+```
+
+Resolution runs once, up front, over the whole declared graph — a version
+conflict is a property of two *requirements*, so no procedure that examines one
+import at a time can see one. The solver minimizes the number of instances that
+satisfy every constraint, expands feature selections, and enforces packages
+declared `^singleton` to exactly one instance. `PACKAGE_VERSION_MISMATCH` is one
+requirement against one candidate; `PACKAGE_VERSION_CONFLICT` is two
+requirements that cannot both hold. Failures are reported in sorted order, so a
+given graph produces the same diagnostic on every run and every machine.
+
+The result is written to `package.gene.lock` at the workspace root: one lock
+covering every scope and every member, which each command projects down to the
+subset it needs. A valid locked edge is retained until it is explicitly
+unlocked (`gene pkg update`), so re-resolving does not silently move a
+dependency. `gene pkg sync` materializes the locked graph into the immutable
+store; nothing else writes package objects there.
+
+```text
+user store:   ~/.gene/packages/   (GENE_USER_PACKAGES overrides it)
+vendor store: <workspace>/vendor/packages/  + vendor.gene.lock
+```
+
+Store objects are content-addressed and immutable, so acquisition is never
+partial and never in place. A matching vendor object is authoritative: if it is
+corrupt it is reported rather than falling through to machine-local state.
+
+Each resolved *instance* gets an id of the form
+`<source>:<name>@<version>#<digest>`, where the digest covers what the instance
+actually came from — registry source plus tree digest, git remote plus commit
+plus tree digest, a workspace-relative path plus manifest digest, and so on.
+Identity is therefore the instance, not the name: the same name resolved from
+two registry sources is two packages, and two versions of one name coexist
+without aliasing. An ad-hoc package's id is `ad_hoc:<digest of its root>`.
+
+A regular package may import only itself and its declared direct dependencies,
+by alias; transitive presence in a store grants nothing.
 
 A package record carries:
 
 ```text
 kind: ad_hoc | regular
-name, version, description
+id, format, name, version, description
 root, manifest_path
 source_dir, main_module, test_dir
-dependencies
-origin: entry | application_store | user_store | path_dependency
+dependencies: alias, name, constraint, scope, source, path
+origin: entry | workspace | registry_source | application_store
+      | user_store | path_dependency
 ```
 
-`origin` is provenance for diagnostics and `gene pkg locate`; it never
-participates in identity. Each module body receives a compiler-provided lexical
-`this_pkg` binding alongside `this_mod` — a map whose keys are the fields
-above, in `snake_case` — never a process-global current package.
+`origin` is provenance for diagnostics; it never participates in identity. Each
+module body receives a compiler-provided lexical `this_pkg` binding alongside
+`this_mod` — a map whose keys are the fields above, in `snake_case` — never a
+process-global current package.
 
 Module identity is logical, not a filesystem path:
 
 ```text
 <package_identity>::<normalized_module_path>
 
-acme/json@1.4.2::schema
+pkg:acme/json@1.4.2#sha256:…::schema
 <ad_hoc:application>::tools/inspect
 ```
 
-The Application's load-once cache keys on that, so two packages with identical
-relative layouts cannot collide. Absolute paths remain provenance for
-diagnostics and source loading.
+The package half is the resolved instance id, so two instances of one name
+never share a module identity. The Application's load-once cache keys on the
+whole string, so two packages with identical relative layouts cannot collide.
+Absolute paths remain provenance for diagnostics and source loading.
 
-Deferred package features (`docs/proposals/package.md` §17):
+Every package and module failure is prefixed with one diagnostic class, so a
+reader can tell at a glance whether to fix a store, a manifest, or an import:
 
-- hosted registries and remote discovery;
-- command-valued manifest fields;
-- semver range solving;
-- lockfiles and content-addressed storage;
-- package publishing, signatures, and trust policy;
-- multi-package workspaces;
-- multiple active versions of one name in a single store.
+```text
+PACKAGE_MANIFEST_INVALID   PACKAGE_NAME_INVALID      PACKAGE_NOT_DECLARED
+PACKAGE_NOT_FOUND          PACKAGE_IDENTITY_MISMATCH PACKAGE_VERSION_MISMATCH
+PACKAGE_VERSION_CONFLICT   PACKAGE_BOUNDARY          PACKAGE_DEPENDENCY_CYCLE
+PACKAGE_STORE_BUSY         MODULE_NOT_FOUND          MODULE_AMBIGUOUS
+```
+
+Deferred package features (`docs/proposals/package.md` §14):
+
+- hosted registries and remote discovery — the shipped registry adapter reads a
+  local filesystem tree, and `gene pkg publish` requires an adapter that does
+  not exist yet;
+- package signatures and trust policy;
+- command-valued manifest fields.
 
 ### 15.4 Module
 
@@ -4535,23 +4592,33 @@ are removed in a major version.
 Path interpretation for `from "path"`:
 
 ```text
-"x"     package-relative: <root>/<source_dir>/x, then <root>/x
+"x"     package-relative: <library entry's directory>/x
 "./x"   relative to current module directory
 "../x"  parent-relative
-"/x"    package-relative, same bases as "x"
-"."     the package entry, i.e. its `main_module` (§15.3)
+"/x"    package-relative, same base as "x"
+"."     the package entry, i.e. its declared `^library ^entry` (§15.3)
 ```
 
-`"."` is the only module path the resolver rewrites, and it can never collide
-with a real module because `.` does not name a file. No module *name* is magic:
-a package whose `main_module` is `boot` still reaches a literal
-`<source_dir>/index.gene` as `"index"`.
+A regular package has exactly one module base — the directory holding its
+declared library entry — and no package-root fallback: a package that declares
+no library target has nothing to import by name. Only an ad-hoc package, which
+declares nothing, uses its synthesized root as the base.
 
-`^pkg "owner/name"` selects the package a module path is resolved in:
+`"."` is the only module path the resolver rewrites, and it can never collide
+with a real module because `.` does not name a file. `main_module` is derived
+from the declared library entry rather than configured, and no module *name* is
+magic: a package whose entry is `src/boot.gene` still reaches a literal
+`src/index.gene` as `"index"`.
+
+`^pkg "alias"` selects the package a module path is resolved in. The value is
+the *dependency alias* the importing manifest declared, not the package name —
+that is what lets one manifest depend on two versions of one name and reach
+both:
 
 ```gene
-(import [parse] from "." ^pkg "acme/json")        # the package entry
-(import [schema] from "schema" ^pkg "acme/json")  # a named module
+# ^dependencies {^json (dep "acme/json" "^1.4.0")}
+(import [parse] from "." ^pkg "json")        # the package entry
+(import [schema] from "schema" ^pkg "json")  # a named module
 ```
 
 `^pkg` is valid only on the `from` form — a bare namespace path never selects a

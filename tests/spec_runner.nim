@@ -6985,6 +6985,73 @@ suite "spec — packages (docs/proposals/package.md)":
                           "values") == "[\"old\" \"new\"]"
     check app.locatePackage("old").id != app.locatePackage("new").id
 
+  test "one library root is the only module base and `.` is its entry":
+    # design.md §15.6: a regular package resolves `"x"` under the directory
+    # holding its declared library entry, with no package-root fallback, and
+    # `"."` names that entry.
+    let root = packagesRoot()
+    writeIn(root, "package.gene",
+      "{^format 1 ^name \"acme/lib\" ^version \"1.0.0\" " &
+      "^library {^entry \"src/boot.gene\"}}")
+    writeIn(root, "src/boot.gene", "(var who \"boot\")")
+    writeIn(root, "src/helper.gene", "(var who \"helper\")")
+    writeIn(root, "stray.gene", "(var who \"stray\")")
+    # A probe outside the entry's own import chain, so `"."` is not a self
+    # import.
+    writeIn(root, "src/probe.gene",
+      "(import [who : helper_who] from \"helper\")\n" &
+      "(import [who : entry_who] from \".\")\n" &
+      "(var seen [helper_who entry_who])")
+    let pkg = loadPackageAt(root, poEntry)
+    check pkg.moduleBases() == @[normalizedPath(root / "src")]
+    # `main_module` is derived from the entry, never configured.
+    check pkg.mainModule == "boot"
+    check pkg.sourceDir == "src"
+    # A name resolves under the library root, and `"."` is the entry itself.
+    let libApp = newApplicationForEntryFile(root / "src/probe.gene")
+    check moduleValueText(libApp.loadFileModule(root / "src/probe.gene"),
+                          "seen") == "[\"helper\" \"boot\"]"
+    # `stray.gene` sits at the package root, which is not a module base.
+    writeIn(root, "src/reach.gene", "(import [who] from \"stray\")")
+    let strayApp = newApplicationForEntryFile(root / "src/reach.gene")
+    check packageErrorClass(proc () =
+      discard strayApp.loadFileModule(root / "src/reach.gene")) ==
+      pecModuleNotFound
+
+    # A package with no library target has no module base at all.
+    let appOnly = packagesRoot() / "app_only"
+    writeIn(appOnly, "package.gene",
+      "{^format 1 ^name \"acme/app_only\" ^version \"1.0.0\" " &
+      "^applications [(application \"a\" ^entry \"src/main.gene\")]}")
+    check loadPackageAt(appOnly, poEntry).moduleBases().len == 0
+
+  test "this_pkg exposes the format-1 record with alias-keyed dependencies":
+    # design.md §15.3: every module links to its owning package lexically.
+    let root = packagesRoot()
+    writeIn(root, "package.gene",
+      "{^format 1 ^name \"acme/app\" ^version \"1.0.0\" " &
+      "^description \"d\" " &
+      "^library {^entry \"src/index.gene\"} " &
+      "^dependencies {^util (dep \"acme/util\" \"1.0.0\" ^path \"../util\")}}")
+    writeIn(root, "src/index.gene", "(var pkg this_pkg)")
+    writeIn(root, "../util/package.gene",
+      "{^format 1 ^name \"acme/util\" ^version \"1.0.0\" " &
+      "^library {^entry \"src/index.gene\"}}")
+    writeIn(root, "../util/src/index.gene", "(var value 1)")
+    let app = newApplicationForEntryFile(root / "src/index.gene")
+    let record = app.loadFileModule(root / "src/index.gene")
+    let text = moduleValueText(record, "pkg")
+    for field in ["^kind \"regular\"", "^format 1", "^name \"acme/app\"",
+                  "^version \"1.0.0\"", "^source_dir \"src\"",
+                  "^main_module \"index\"", "^test_dir \"tests\"",
+                  "^alias \"util\"", "^scope \"runtime\"",
+                  "^source \"path\""]:
+      check field in text
+    # The id is the resolved instance, not the bare name.
+    check ("^id \"path:acme/app@1.0.0#" in text) or
+          ("^id \"workspace:acme/app@1.0.0#" in text) or
+          ("^id \"pkg:acme/app@1.0.0#" in text)
+
   test "the committed examples use format 1":
     check loadPackageAt("examples/todo_app", poEntry).name == "gene/todo_app"
     check loadPackageAt("examples/ai_agent", poEntry).name == "gene/ai_agent"
