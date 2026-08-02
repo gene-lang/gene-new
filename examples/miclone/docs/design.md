@@ -493,7 +493,29 @@ symbol `F32` while the value stores the evaluated type and comparison is
 structural. Covered by six new cases in `tests/transpile/fixtures.json`, which
 run on both backends and must agree.
 
-*WebGL2 bindings: still open*, and now the only thing between here and §D6.1.
+*WebGL2 bindings: **landed**.* 39 bindings covering context, buffers, shaders,
+programs, attributes, uniforms, vertex arrays, textures, state, and draw calls.
+`Gl` is its own type; the six handle types (`Gl/Buffer`, `Gl/Shader`,
+`Gl/Program`, `Gl/Texture`, `Gl/VertexArray`, `Gl/UniformLocation`) share one
+kind carrying a name, so a shader still cannot be bound where a buffer is
+expected.
+
+Enum arguments are **compile-time-checked strings** — `($gl/bind_buffer gl
+"array" vbo)`. Gene has no keyword literal (`:foo` reads as two tokens, since
+`:` is the annotation separator), so the earlier sketch in this document using
+`:array` was not valid Gene. Each enum must be a literal from a fixed table and
+is resolved to its WebGL constant during analysis, so a typo is a compile error
+naming the argument rather than an `INVALID_ENUM` on a frame that renders
+nothing.
+
+All 39 are verified against `lib.dom.d.ts` (48 → 87 bindings checked), and the
+emitted TypeScript typechecks under `--strict` — which caught two things the
+binding checker could not: `WebGLVertexArray` is not a DOM type
+(`WebGLVertexArrayObject` is), and every `create*` returns `X | null`, now
+routed through a helper that throws where the failure happens.
+
+**§D6.1 is now unblocked**: the remaining work is the spike itself — a mesher,
+a camera, and a shader — not language support.
 
 **2. Packed typed `Buffer` (VM). Blocks M4, and is the escape hatch for M2.**
 `Buffer` is `seq[Value]` today: 8 bytes per element and a boxed write per
