@@ -5035,6 +5035,48 @@ proc biToStr(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let scope = if call == nil: nil else: call.dispatchScope
   newStr(displayStr(args[0], scope))
 
+proc biToInt(args: openArray[Value]): Value {.nimcall.} =
+  ## The explicit `Float` -> `Int` hop design.md §7.8 points at: rounding is
+  ## kind-preserving, so `(floor 3.7)` is `3.0` and this is how a caller asks
+  ## for `3`. Truncates toward zero, like the `trunc` it usually follows.
+  ##
+  ## A value outside the Int range raises rather than wrapping or saturating,
+  ## for the same reason `(sqrt -1)` raises: a silently wrong integer
+  ## propagates to the far end of a computation and reports the wrong place as
+  ## the failure.
+  requireOne("to_int", args)
+  let v = args[0]
+  case v.kind
+  of vkInt:
+    result = v
+  of vkFloat:
+    let f = v.floatVal
+    if f != f:
+      raise newException(GeneError, "to_int got NaN")
+    let truncated = trunc(f)
+    # 2^63 exactly; the first float above the Int range. The low end is exact
+    # as a float, so it can be compared directly.
+    if truncated >= 9223372036854775808.0 or
+        truncated < -9223372036854775808.0:
+      raise newException(GeneError, "to_int is out of Int range: " & $f)
+    result = newInt(int64(truncated))
+  else:
+    raiseTypeError("to_int", "Int or Float", v, nil)
+
+proc biToFloat(args: openArray[Value]): Value {.nimcall.} =
+  ## The other half of the §7.4 rule that Int and Float never mix implicitly.
+  ## Widening is exact up to 2^53; past that the nearest Float is returned,
+  ## which is the same answer the arithmetic would have produced anyway.
+  requireOne("to_float", args)
+  let v = args[0]
+  case v.kind
+  of vkFloat:
+    result = v
+  of vkInt:
+    result = newFloat(float64(v.intVal))
+  else:
+    raiseTypeError("to_float", "Int or Float", v, nil)
+
 proc biChars(args: openArray[Value]): Value {.nimcall.} =
   requireOne("chars", args)
   requireStr("chars", args[0])
@@ -5994,6 +6036,8 @@ proc buildBuiltins(app: Application): Scope =
                 newNativeFn("construct_type", biConstructType))
   result.define("to_str", newNativeCallFn("to_str", biToStr,
                                           acceptsNamed = false))
+  result.define("to_int", newNativeFn("to_int", biToInt))
+  result.define("to_float", newNativeFn("to_float", biToFloat))
   result.define("chars", newNativeFn("chars", biChars))
   result.define("bytes", newNativeFn("bytes", biBytes))
   result.define("graphemes", newNativeFn("graphemes", biGraphemes))

@@ -3698,6 +3698,18 @@ suite "spec — gene/math from design (§7.8)":
                "[3.0 4.0 -3.0]")
     check_eval("[($math/floor 3) ($math/ceil 3) ($math/round 3)]", "[3 3 3]")
     check_eval("($math/round 2.5)", "3.0")
+  test "to_int and to_float are the explicit numeric conversions":
+    # §7.4 makes every mixed operation an error, so the hop between kinds has
+    # to be written down. Rounding stays kind-preserving; these are how a
+    # caller asks for the other kind.
+    check_eval("[($to_int 3.7) ($to_int -2.9) ($to_int 42)]", "[3 -2 42]")
+    check_eval("($to_int ($math/floor 3.7))", "3")
+    check_eval("[($to_float 3) ($to_float 3.0)]", "[3.0 3.0]")
+    # Out of range raises rather than wrapping or saturating, for the same
+    # reason a domain violation does.
+    check_runtime_error("($to_int 1e30)", "out of Int range")
+    check_runtime_error("($to_int \"x\")", "expected Int or Float")
+    check_runtime_error("($to_float \"x\")", "expected Int or Float")
   test "abs and sign preserve kind":
     check_eval("[($math/abs -4) ($math/abs -4.5) ($math/abs 4)]", "[4 4.5 4]")
     check_eval("[($math/sign -9) ($math/sign 0.0) ($math/sign 2.5)]",

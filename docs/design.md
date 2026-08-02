@@ -2302,9 +2302,28 @@ tidier-sounding "rounding produces an integer", because kind-strict equality
 makes a silent `Float`→`Int` hop a live hazard in a comparison chain, and
 because the web profile lowers `Int` to `bigint` — so a rounding step that
 returned `Int` would drop a bigint into otherwise-`number` arithmetic and throw
-at the first mixed operation. Use `to_int` when an Int is wanted. The
-transcendental functions always return `Float`, which is the only honest result
-kind for them.
+at the first mixed operation. The transcendental functions always return
+`Float`, which is the only honest result kind for them.
+
+Because §7.4 makes every mixed operation an error, the conversion has to be
+written down, and the two builtins that do it are `to_int` and `to_float`:
+
+```gene
+($to_int 3.7)     # 3     — truncates toward zero, like the trunc it follows
+($to_int -2.9)    # -2
+($to_int 42)      # 42    — already an Int
+($to_float 3)     # 3.0
+($to_float 3.0)   # 3.0   — already a Float
+```
+
+`to_int` raises on NaN and on any Float outside the Int range, for the same
+reason `(sqrt -1)` raises: a silently wrapped or saturated integer propagates
+to the far end of a computation and reports the wrong place as the failure.
+`to_float` is exact up to 2^53 and returns the nearest Float beyond it, which
+is the value the arithmetic would have produced anyway. Neither is in the
+portable web stdlib — the profile has one numeric kind, so a module that needs
+them is a VM module and the profile says so rather than lowering them to
+something that only looks equivalent.
 
 `min`, `max`, and `clamp` return the winning *argument* rather than a rebuilt
 value, so an Int past the Float mantissa keeps its precision.
