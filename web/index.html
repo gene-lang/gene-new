@@ -130,7 +130,7 @@
       core:
 `# Core: bindings, typed functions, lists, maps
 (var greeting "hello from Gene in wasm")
-(println greeting)
+($println greeting)
 
 (fn add [a : Int, b : Int] : Int (+ a b))
 
@@ -138,7 +138,7 @@
 {^sum (add 40 2) ^first nums/0 ^count (nums ~ size)}`,
       streams:
 `# Lazy streams: map / filter / collect
-(import std/stream [to_stream map filter into])
+(import $stream [to_stream map filter into])
 
 (var kept
   ((to_stream [1 2 3 4 5 6])
@@ -146,19 +146,19 @@
     ; ~ filter (fn [x] (> x 10))
     ; ~ into []))
 
-(println "squares over 10:" kept)
+($println "squares over 10:" kept)
 kept`,
       json:
 `# JSON + string helpers (both pure stdlib -> available in wasm)
-(import json [stringify])
-(import str [join lower])
+(import $json [stringify])
+(import $str [join lower])
 
 (var user {^name "Ada" ^langs ["Gene" "Nim"] ^active true})
-(println (lower (join user/langs ", ")))
+($println (lower (join user/langs ", ")))
 (stringify user)`,
       match:
 `# Pattern matching + typed recoverable errors
-(import std/parse [parse_int ParseError])
+(import $parse [parse_int ParseError])
 
 (fn classify [s : Str] : Str
   (try
