@@ -1,0 +1,144 @@
+# design.md §D6.2 — the divergence probe.
+#
+# The cheapest of the three M0 probes and the one that de-risks the most. It
+# runs the exact F64 chains mapgen and physics depend on, on both backends, and
+# reports the bit patterns. It does not pass or fail; it *decides* §D3.1 with
+# data rather than with reasoning about what IEEE-754 promises.
+#
+# Run it on both and diff:
+#
+#     gene run divergence                     # the VM
+#     node tools/divergence.mjs               # the web profile, via V8
+#     gene run divergence | diff - <(node tools/divergence.mjs)
+#
+# Output is one `label = sign:exponent:mantissa` line per sample, using
+# `exact/f64_key` rather than printed floats — the two backends format floats
+# differently (`0.0000001` vs `1e-7`) while agreeing on every bit, so text
+# comparison of printed floats would report differences that do not exist.
+#
+# Everything sampled here is in the exact half, so the expected result is zero
+# differing lines. A difference is not a tie-break; it means something in the
+# chain reached a host transcendental and §D3.1's ban has a hole in it.
+
+(mod divergence ^profile web)
+
+(import [f64_key hash3 hash_unit3 wrap32 mix32] from "../core/exact.gene")
+(import [smoothstep lerp value2 value3 fbm2 fbm3 ridged2]
+        from "../core/noise.gene")
+
+(let sample_seed 1337.0)
+
+# Deliberately awkward inputs. Round numbers agree on any two runtimes almost by
+# accident; these are the ones that would expose a difference if there were one
+# — irrational-ish ratios, values straddling a lattice line, and negatives,
+# which is where `floor` and the wrap in `exact/wrap32` disagree if either is
+# implemented as truncation.
+(fn probe_x [i : F64] : F64
+  (- (/ (* i 7.0) 3.0) 11.5))
+
+(fn probe_y [i : F64] : F64
+  (+ (/ (* i 13.0) 7.0) 0.25))
+
+(fn probe_z [i : F64] : F64
+  (- (/ (* i 5.0) 11.0) 3.125))
+
+(fn line [label : Str v : F64] : Str
+  $"${label} = $(f64_key v)")
+
+# --- the primitives, before anything composes them ---------------------------
+#
+# If a difference shows up at all, it shows up here first, and knowing *which*
+# primitive moved is the difference between a five-minute fix and a day of
+# bisecting a terrain generator.
+
+(fn primitive_lines [out : (List Str)] : Nil
+  (var i 0.0)
+  (while (< i 24.0)
+    (var x (probe_x i))
+    (out ~ push! (line $"wrap32[$($to_int i)]" (wrap32 (* x 1000.0))))
+    (out ~ push! (line $"mix32[$($to_int i)]" (mix32 (* i 7919.0))))
+    (out ~ push! (line $"smoothstep[$($to_int i)]" (smoothstep (/ i 24.0))))
+    (out ~ push! (line $"lerp[$($to_int i)]" (lerp -3.25 7.125 (/ i 24.0))))
+    (set i (+ i 1.0))))
+
+# --- the hash, which every terrain value is downstream of --------------------
+
+(fn hash_lines [out : (List Str)] : Nil
+  (var i 0.0)
+  (while (< i 32.0)
+    (var x ($math/floor (probe_x i)))
+    (var y ($math/floor (probe_y i)))
+    (var z ($math/floor (probe_z i)))
+    (out ~ push! (line $"hash3[$($to_int i)]" (hash3 x y z sample_seed)))
+    (out ~ push! (line $"hash_unit3[$($to_int i)]"
+                       (hash_unit3 x y z sample_seed)))
+    (set i (+ i 1.0))))
+
+# --- lattice noise and fractal composition -----------------------------------
+
+(fn noise_lines [out : (List Str)] : Nil
+  (var i 0.0)
+  (while (< i 32.0)
+    (var x (probe_x i))
+    (var y (probe_y i))
+    (var z (probe_z i))
+    (out ~ push! (line $"value2[$($to_int i)]" (value2 x y sample_seed)))
+    (out ~ push! (line $"value3[$($to_int i)]" (value3 x y z sample_seed)))
+    (set i (+ i 1.0))))
+
+# The real shape of a mapgen query: several octaves at terrain frequencies,
+# which is where accumulated rounding would show up if any single operation
+# were even one ULP apart.
+(fn fractal_lines [out : (List Str)] : Nil
+  (var i 0.0)
+  (while (< i 32.0)
+    (var x (* (probe_x i) 0.031))
+    (var y (* (probe_y i) 0.031))
+    (var z (* (probe_z i) 0.017))
+    (out ~ push! (line $"fbm2[$($to_int i)]"
+                       (fbm2 x y sample_seed 5.0 2.0 0.5)))
+    (out ~ push! (line $"fbm3[$($to_int i)]"
+                       (fbm3 x y z sample_seed 4.0 2.0 0.5)))
+    (out ~ push! (line $"ridged2[$($to_int i)]"
+                       (ridged2 x y sample_seed 4.0 2.17 0.55)))
+    (set i (+ i 1.0))))
+
+# --- accumulation over a whole chunk column ----------------------------------
+#
+# The per-sample lines above would catch a difference in one operation. This
+# catches the case that actually matters and that a spot check would miss: a
+# difference so rare that no individual probe input hits it, but which one
+# 512,000-node chunk does. Summing every value in a column and reporting the
+# total's bits turns "one node in a million differs" into a visible change.
+
+(fn column_checksum [seed : F64] : F64
+  (var acc 0.0)
+  (var i 0.0)
+  (while (< i 4096.0)
+    (var x (/ i 64.0))
+    (var z (- i (* ($math/floor x) 64.0)))
+    (set acc (+ acc (fbm3 (* x 0.037) (* i 0.011) (* z 0.043) seed 4.0 2.0 0.5)))
+    (set i (+ i 1.0)))
+  acc)
+
+(fn checksum_lines [out : (List Str)] : Nil
+  (out ~ push! (line "column_checksum[1337]" (column_checksum 1337.0)))
+  (out ~ push! (line "column_checksum[7]" (column_checksum 7.0)))
+  (out ~ push! (line "column_checksum[-19]" (column_checksum -19.0))))
+
+# The whole report, as one string, computed by one code path on both backends.
+#
+# This module deliberately has no entry point and prints nothing. Printing is
+# the one thing the two backends genuinely disagree about — the VM writes to
+# stdout with `$println`, and a browser has no stdout at all — so it belongs to
+# the shells, exactly as design.md §D3 puts every platform edge there.
+# `probes/run_divergence.gene` is the VM shell and `tools/divergence.mjs` is
+# the web one; both call this and neither adds anything to it.
+(fn report [] : Str
+  (var out : (List Str) [])
+  (primitive_lines out)
+  (hash_lines out)
+  (noise_lines out)
+  (fractal_lines out)
+  (checksum_lines out)
+  ($str/join out "\n"))

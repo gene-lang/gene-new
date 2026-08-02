@@ -3769,7 +3769,15 @@ proc bufferElemScope*(v: Value): Scope =
 proc bufferLen*(v: Value): int =
   bufferData(v).items.len
 
-proc bufferItems*(v: Value): seq[Value] =
+proc bufferItems*(v: Value): lent seq[Value] =
+  ## `lent`, and it is load-bearing rather than tidiness. Returning the seq by
+  ## value copied the whole backing store on every call, so `Buffer/get` — which
+  ## reached it through `readIndex` — was **O(n) per element read**, and any
+  ## scan over a buffer was O(n^2). A 512,000-element chunk copied 4 MB per
+  ## read; one full pass moved roughly 2 TB and never finished.
+  ##
+  ## Callers that need their own copy still say so (`copyItems`), which is the
+  ## right place for that decision to be visible.
   bufferData(v).items
 
 proc bufferItem*(v: Value, index: int): Value =

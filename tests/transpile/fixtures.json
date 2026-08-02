@@ -1781,6 +1781,96 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "convert.to_int_truncates_toward_zero",
+      "source": "(fn run [] : Int (+ ($to_int 3.7) ($to_int -3.7))) (run)",
+      "web_source": "(mod conv_ti ^profile web) (fn run [] : Int (+ ($to_int 3.7) ($to_int -3.7)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "convert.to_float_widens",
+      "source": "(fn run [] : F64 (+ ($to_float 7) 0.5)) (run)",
+      "web_source": "(mod conv_tf ^profile web) (fn run [] : F64 (+ ($to_float 7) 0.5))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "7.5"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "buffer.sized_f32_write_and_sum",
+      "source": "(fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b ~ set! i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b ~ len)) (set s (+ s (b ~ get i))) (set i (+ i 1.0))) s) (run)",
+      "web_source": "(mod buf_f32 ^profile web) (fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b ~ set! i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b ~ len)) (set s (+ s (b ~ get i))) (set i (+ i 1.0))) s)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "9.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "buffer.sized_zero_filled",
+      "source": "(fn run [] : F64 (var b ($buffer F64 3.0)) (+ (b ~ get 0.0) (+ (b ~ get 1.0) (b ~ get 2.0)))) (run)",
+      "web_source": "(mod buf_zero ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (+ (b ~ get 0.0) (+ (b ~ get 1.0) (b ~ get 2.0))))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "0.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "buffer.u16_elements_are_int",
+      "source": "(fn run [] : Int (var b ($buffer U16 2.0)) (b ~ set! 0.0 65535) (b ~ set! 1.0 1) (+ (b ~ get 0.0) (b ~ get 1.0))) (run)",
+      "web_source": "(mod buf_u16 ^profile web) (fn run [] : Int (var b ($buffer U16 2.0)) (b ~ set! 0.0 65535) (b ~ set! 1.0 1) (+ (b ~ get 0.0) (b ~ get 1.0)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "65536"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "buffer.parameterized_annotation_matches",
+      "source": "(fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b ~ set! 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b ~ get 0.0)) (fn run [] : F64 (take (make))) (run)",
+      "web_source": "(mod buf_ann ^profile web) (fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b ~ set! 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b ~ get 0.0)) (fn run [] : F64 (take (make)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "2.5"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     }
   ]
 }

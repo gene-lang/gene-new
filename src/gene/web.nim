@@ -27,6 +27,16 @@ type
     ## shares no operation with any other host type, so `Any` would be the
     ## only alternative and `Any` validates nothing.
     wtkDomGradient
+    ## `(Buffer T)` — the VM's typed contiguous storage, lowered to the
+    ## corresponding JavaScript typed array. `name` holds the element type
+    ## (`F32`, `U16`, …), which is a *refinement* of Int or Float rather than a
+    ## web type of its own, so it is carried as a name rather than a `WebType`.
+    ##
+    ## It is deliberately the same `Buffer` the VM has and the same one FFI
+    ## §16.5 names, not a web-only array type: meshing writes vertices into a
+    ## buffer in `core/`, and that module compiles for both backends. A separate
+    ## web-only type would make the one hot module in the system unshareable.
+    wtkBuffer
 
   WebType* = ref object
     kind*: WebTypeKind
@@ -304,6 +314,36 @@ const jsReserved = [
   "switch", "this", "throw", "true", "try", "typeof", "undefined", "var",
   "void", "while", "with", "yield"]
 
+# `(Buffer T)`'s element vocabulary, and the JavaScript typed array each one
+# lowers to. The set is exactly the intersection of the VM's fixed-width numeric
+# refinement types and what JavaScript has a typed array for — so `I64`/`U64`
+# are absent, deliberately: `BigInt64Array` exists but its elements are
+# `bigint`, which would make a `(Buffer I64)` the one buffer whose reads do not
+# compose with F64 math, and silently the slowest thing in any hot loop that
+# touched it. A voxel engine wants `U8`, `U16`, `I32`, and `F32`, all of which
+# are here.
+const bufferElementTypes = [
+  "I8", "I16", "I32", "U8", "U16", "U32", "F32", "F64"]
+
+proc jsTypedArrayName(element: string): string =
+  case element
+  of "I8": "Int8Array"
+  of "I16": "Int16Array"
+  of "I32": "Int32Array"
+  of "U8": "Uint8Array"
+  of "U16": "Uint16Array"
+  of "U32": "Uint32Array"
+  of "F32": "Float32Array"
+  of "F64": "Float64Array"
+  else: ""
+
+# An element read out of a typed array is a JavaScript `number`. For the float
+# buffers that is already the profile's `F64`; for the integer ones it is a
+# whole number that still has to become `Int` — which is `bigint` here — before
+# it can meet the rest of the profile's Int arithmetic.
+proc bufferElementIsFloat(element: string): bool =
+  element in ["F32", "F64"]
+
 proc isSym(value: Value, name: string): bool {.inline.} =
   value.kind == vkSymbol and value.symVal == name
 
@@ -331,6 +371,12 @@ proc sameType(a, b: WebType): bool =
       if not sameType(a.params[i], b.params[i]): return false
     true
   of wtkNominal:
+    a.name == b.name
+  of wtkBuffer:
+    # Element type is part of the identity: a `(Buffer F32)` and a
+    # `(Buffer U16)` are different typed arrays with different element ranges,
+    # and silently accepting one for the other would corrupt vertex data in a
+    # way nothing downstream could diagnose.
     a.name == b.name
   of wtkUnion:
     if a.members.len != b.members.len: return false
@@ -429,6 +475,7 @@ proc typeName(typ: WebType): string =
   of wtkDomGradient: "Gradient"
   of wtkTask: "(Task " & typeName(typ.item) & ")"
   of wtkStream: "(Stream " & typeName(typ.item) & ")"
+  of wtkBuffer: "(Buffer " & typ.name & ")"
   of wtkNominal: typ.name
   of wtkUnion:
     var parts: seq[string]
@@ -462,6 +509,7 @@ proc tsType(typ: WebType): string =
   of wtkDomGradient: "CanvasGradient"
   of wtkTask: "GeneTask<" & tsType(typ.item) & ">"
   of wtkStream: "GeneStream<" & tsType(typ.item) & ">"
+  of wtkBuffer: jsTypedArrayName(typ.name)
   of wtkNominal: mangleWebName(typ.name)
   of wtkUnion:
     var parts: seq[string]
@@ -493,6 +541,7 @@ proc validatorSuffix(typ: WebType): string =
   of wtkDomGradient: "gradient"
   of wtkTask: "task_" & validatorSuffix(typ.item)
   of wtkStream: "stream_" & validatorSuffix(typ.item)
+  of wtkBuffer: "buffer_" & toLowerAscii(typ.name)
   of wtkNominal: "nominal_" & mangleWebName(typ.name)
   of wtkUnion:
     var parts: seq[string]
@@ -586,6 +635,13 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
   if value.kind == vkNode and value.head.isSym("List") and
       value.body.len == 1:
     return webType(wtkList, parseWebType(value.body[0], loc))
+  if value.kind == vkNode and value.head.isSym("Buffer") and
+      value.body.len == 1:
+    if value.body[0].kind != vkSymbol or
+        value.body[0].symVal notin bufferElementTypes:
+      raise webError(loc, "Buffer element type must be one of " &
+        bufferElementTypes.join(", ") & ", got " & value.body[0].print())
+    return WebType(kind: wtkBuffer, name: value.body[0].symVal)
   if value.kind == vkNode and (value.head.isSym("Callback") or
       value.head.isSym("Fn")) and
       value.body.len == 2 and value.body[0].kind == vkList:
@@ -1408,6 +1464,36 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         else: webType(wtkVoid)
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, params: params, returnType: returnType, loc: loc)
+    if methodDecl == nil and receiver.typ.kind == wtkBuffer and
+        messageName in ["get", "set!", "len"]:
+      # Index and length are F64, matching `List/size` just above and the VM's
+      # widened `Buffer/get`/`set!`. An Int index would be a `bigint` here, so
+      # every element access in a mesh-building loop would allocate one — the
+      # hazard the whole F64 discipline exists to avoid, in the one loop that
+      # can least afford it.
+      #
+      # Elements are F64 for the float buffers and Int for the integer ones,
+      # because that is what the element *is*: a `(Buffer U16)` holds whole
+      # numbers, and handing them back as F64 would quietly permit a fractional
+      # write that the typed array then truncates.
+      let element =
+        if bufferElementIsFloat(receiver.typ.name): webType(wtkF64)
+        else: webType(wtkInt)
+      let params = case messageName
+        of "get": @[WebParam(sourceName: "index", emittedName: "index",
+                             typ: webType(wtkF64), loc: loc)]
+        of "set!": @[WebParam(sourceName: "index", emittedName: "index",
+                              typ: webType(wtkF64), loc: loc),
+                     WebParam(sourceName: "item", emittedName: "item",
+                              typ: element, loc: loc)]
+        else: newSeq[WebParam]()
+      let returnType = case messageName
+        of "get": element
+        of "len": webType(wtkF64)
+        else: webType(wtkVoid)
+      methodDecl = WebMethod(sourceName: messageName,
+        emittedName: messageName, params: params, returnType: returnType,
+        loc: loc)
     if methodDecl == nil:
       raise webError(loc, "web type " & typeName(receiver.typ) &
         " has no message " & messageName)
@@ -1522,6 +1608,20 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         returnType = webType(wtkF64)
       of "math/clamp":
         paramTypes = @[webType(wtkF64), webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkF64)
+      # The explicit Int <-> Float hops of design.md §7.8. One direction each,
+      # deliberately. The VM's versions are kind-preserving and accept either
+      # kind, but here `Int` is `bigint` and `Float` is `number`, so a
+      # polymorphic signature would have to accept a union the profile cannot
+      # narrow — the same reasoning that keeps `gene/math` F64-only just above.
+      # Each name therefore means the conversion it is named for, and applying
+      # one to a value that is already the target kind is a compile error rather
+      # than a no-op that would compile here and mean something else on the VM.
+      of "to_int":
+        paramTypes = @[webType(wtkF64)]
+        returnType = webType(wtkInt)
+      of "to_float":
+        paramTypes = @[webType(wtkInt)]
         returnType = webType(wtkF64)
       of "console/log", "console/warn", "console/error":
         # `Any` rather than `Str`, deliberately: the values worth logging from a
@@ -1671,6 +1771,33 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "size":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkInt)
+      of "buffer":
+        # `(buffer T n)` — n zeroed elements, lowered to `new Float32Array(n)`
+        # and friends. Handled here rather than through `paramTypes` because the
+        # first argument is a *type name*, not a value: analysing it as an
+        # expression would look `F32` up as a binding and fail.
+        #
+        # Only the sized form. The VM also accepts `(buffer T [items])`, but the
+        # element list would have to be `(List Int)` for the integer element
+        # types and `(List F64)` for the float ones — an Int/F64 split in the
+        # one construct whose whole purpose is to avoid it. Sized allocation is
+        # what the hot paths use; a literal buffer can be allocated and
+        # assigned.
+        if value.body.len != 2:
+          raise webError(loc,
+            "web buffer expects an element type and a length, as (buffer F32 n)")
+        if value.body[0].kind != vkSymbol or
+            value.body[0].symVal notin bufferElementTypes:
+          raise webError(loc, "Buffer element type must be one of " &
+            bufferElementTypes.join(", ") & ", got " & value.body[0].print())
+        let bufferType = WebType(kind: wtkBuffer, name: value.body[0].symVal)
+        let length = analysis.analyzeExpr(value.body[1], bindings,
+                                          webType(wtkF64))
+        if length.typ.kind notin {wtkF64, wtkAny}:
+          raise webError(loc, "web buffer length must be F64, got " &
+            typeName(length.typ))
+        return WebExpr(kind: wekBuiltin, typ: bufferType, loc: loc,
+          text: "buffer", keys: @[bufferType.name], children: @[length])
       of "node/head":
         paramTypes = @[webType(wtkNode)]
         returnType = webType(wtkSym)
@@ -3299,6 +3426,12 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "math/clamp":
       "$gene_math_clamp(" & arguments[0] & ", " & arguments[1] & ", " &
         arguments[2] & ")"
+    of "buffer": "new " & jsTypedArrayName(expr.keys[0]) & "(" &
+      arguments[0] & ")"
+    of "to_int": "$gene_to_int(" & arguments[0] & ")"
+    # Widening needs no guard: `Number` on a bigint is exact below 2^53 and the
+    # nearest double above it, which is what the VM's `float64(intVal)` does.
+    of "to_float": "Number(" & arguments[0] & ")"
     of "console/log": "console.log(" & arguments[0] & ")"
     of "console/warn": "console.warn(" & arguments[0] & ")"
     of "console/error": "console.error(" & arguments[0] & ")"
@@ -3645,6 +3778,29 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       of "pop!": return target & ".pop()"
       of "size": return target & ".length"
       of "clear!": return "(" & target & ".splice(0), undefined)"
+      else: discard
+    # Buffer messages lower to plain indexed access on the typed array. `get`
+    # and `set!` become `a[i]` and `a[i] = v` rather than method calls, which is
+    # the point of choosing a typed array in the first place: the meshing loop
+    # compiles to the same shape a hand-written renderer would use.
+    if expr.children[0].typ != nil and expr.children[0].typ.kind == wtkBuffer:
+      let target = if emitter.typescript: "(" & receiver & " as any)"
+                   else: receiver
+      let element = expr.children[0].typ.name
+      case expr.text
+      of "len": return target & ".length"
+      of "get":
+        let read = target & "[" & arguments[0] & "]"
+        # An integer buffer's elements are `Int`, which is `bigint` here, so the
+        # read is converted on the way out. The float buffers are already F64
+        # and convert nothing.
+        return if bufferElementIsFloat(element): read
+               else: "BigInt(" & read & ")"
+      of "set!":
+        let written = if bufferElementIsFloat(element): arguments[1]
+                      else: "Number(" & arguments[1] & ")"
+        return "(" & target & "[" & arguments[0] & "] = " & written &
+          ", undefined)"
       else: discard
     if expr.keys.len == 2 and expr.keys[1] == "$builtin":
       return expr.keys[0] & "(" & receiver &
@@ -4219,6 +4375,13 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
         typeName(typ) & "\", value);")
       emitter.line("for (const item of value) " & validatorName(typ.item) &
         "(item, `${where} item`);")
+    of wtkBuffer:
+      # The constructor check is the whole validator. A typed array cannot hold
+      # an element outside its own range — the runtime coerces on write — so
+      # unlike `(List F64)` there is nothing to walk, and a per-element loop
+      # would be pure cost on the largest arrays in the program.
+      emitter.line("if (!(value instanceof " & jsTypedArrayName(typ.name) &
+        ")) $gene_type_error(where, \"" & typeName(typ) & "\", value);")
     of wtkCallback:
       emitter.line("if (typeof value !== \"function\") $gene_type_error(where, \"Callback\", value);")
     of wtkPropMap:
@@ -5010,6 +5173,21 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("function $gene_math_arc(" & arcParams & ")" & numReturn &
       " { if (x < -1 || x > 1) throw new RangeError(where + " &
       "\" expects a number in -1..1\"); return op(x); }")
+  # `to_int` truncates toward zero and refuses NaN and anything outside the
+  # Int64 range, exactly as `biToInt` does. The range check is worth a note: the
+  # profile's `Int` is `bigint` and could represent 2^63 perfectly well, so this
+  # limit is not one JavaScript imposes — it is the VM's, mirrored on purpose.
+  # A portable builtin that accepted here what raises there would be a
+  # divergence the shared fixtures exist to prevent.
+  if moduleUsesBuiltin(module, ["to_int"]):
+    let numParam = if typescript: "x: number" else: "x"
+    let bigReturn = if typescript: ": bigint" else: ""
+    emitter.line("function $gene_to_int(" & numParam & ")" & bigReturn &
+      " { if (Number.isNaN(x)) throw new RangeError(\"to_int got NaN\"); " &
+      "const t = Math.trunc(x); " &
+      "if (t >= 9223372036854775808 || t < -9223372036854775808) " &
+      "throw new RangeError(\"to_int is out of Int range: \" + x); " &
+      "return BigInt(t); }")
   if moduleUsesBuiltin(module, ["math/clamp"]):
     let clampParams = if typescript: "x: number, lo: number, hi: number"
                       else: "x, lo, hi"

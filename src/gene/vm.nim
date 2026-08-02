@@ -412,6 +412,24 @@ var gBuiltinSurfaceTypes: HashSet[uint64]
   ## to tell "the annotation named the built-in" from "a local declaration
   ## shadows it".
 
+var gBareScalarAnnotations: seq[tuple[id: int32, kind: ValueKind]]
+  ## Interned symbol id -> the value kind that satisfies it, for the bare
+  ## built-in scalar annotations `bareScalarSatisfied` accepts.
+  ##
+  ## Populated once from `buildBuiltins`, which is where interning is already
+  ## safe — never at module init, which crashes the wasm build. Symbol ids are
+  ## process-wide, so a second `Application` finds the table already filled.
+
+var gRefinementTypes: HashSet[uint64]
+  ## Identities of the fixed-width numeric types — `I8`..`U64`, `F32`, `F64`.
+  ##
+  ## These are *refinements* of `vkInt` and `vkFloat`, not value kinds of their
+  ## own, so `gScalarTypes` cannot answer for them and a nominal instance check
+  ## would reject every value. They resolve by name through
+  ## `matchesBuiltinType`, and this set is what tells `isInstanceOfType` to ask
+  ## it — by identity rather than by name, so a user's own `(type F32 …)` stays
+  ## an ordinary nominal type and does not get hijacked.
+
 # ---------------------------------------------------------------------------
 # Built-in surface singletons
 # ---------------------------------------------------------------------------
@@ -1294,6 +1312,41 @@ proc isNumber(v: Value): bool = v.kind == vkInt or v.kind == vkFloat
 proc toFloat(v: Value): float64 = (if v.kind == vkInt: v.intToFloat else: v.floatVal)
 proc isBareIntType(expr: Value): bool {.inline.} =
   expr.kind == vkSymbol and expr.symVal == "Int"
+
+proc bareScalarSatisfied*(typeExpr, value: Value): bool {.inline.} =
+  ## True when `typeExpr` is a bare built-in scalar annotation that `value`
+  ## already satisfies, so the typed boundary has nothing to do.
+  ##
+  ## The general path is expensive in a way that only shows up in a loop. It
+  ## builds its `parameter 'x'` label by string concatenation *before* checking
+  ## anything — one heap allocation per typed parameter per call, for a message
+  ## used only on failure — and then reaches its answer through roughly ten
+  ## string comparisons in `matchesTypeExpr`. Measured on a one-argument
+  ## function: 183 ns/call untyped, 430 ns with `[x : F64]`, 557 ns with
+  ## `[x : F64] : F64`. The annotations cost twice the call they annotate.
+  ##
+  ## `Int` already had this fast path open-coded at a dozen call sites; this
+  ## generalizes it to the rest of the exact-kind scalars rather than adding a
+  ## second mechanism beside it.
+  ##
+  ## **Only exact-kind names belong here.** Every entry must agree with
+  ## `matchesBuiltinType`, and the list is deliberately a subset of it: the
+  ## refinement types (`I8`..`U64`, `F32`) carry range checks and the container
+  ## and nominal types can convert, so they stay on the general path. The
+  ## asymmetry is what makes this safe — a name omitted here merely takes the
+  ## slow path, while a name wrongly added here would skip a real check.
+  ## Dispatch is on the symbol's interned **id**, not its text. Reading
+  ## `symVal` indexes a global name table and then compares strings, which
+  ## measured ~70 ns per check — most of what this fast path was meant to
+  ## remove. An id is already in the value's payload bits, so the whole check
+  ## becomes a handful of integer comparisons over a table this short.
+  if typeExpr.kind != vkSymbol:
+    return false
+  let id = typeExpr.symbolId
+  for entry in gBareScalarAnnotations:
+    if entry.id == id:
+      return value.kind == entry.kind
+  false
 
 proc isBareNilType(expr: Value): bool {.inline.} =
   ## A declared `: Nil` return, as opposed to `NIL` meaning "no declared type".
@@ -4930,6 +4983,57 @@ proc setCheckedBufferItem*(buffer: Value, index: int, item: Value,
   result = checkedBufferItem(buffer, item, "Buffer/set! item", scope)
   buffer.setBufferItem(actualIndex, result)
 
+proc requireBufferIndex(where: string, value: Value): int64 =
+  ## A buffer index may be an `Int` or an *integral* `Float`.
+  ##
+  ## The Float arm is deliberate rather than lax. Buffer indices live in the
+  ## innermost loops in a program — mesh building, voxel scans — and in the web
+  ## profile `Int` is `bigint`, so requiring `Int` would make every element
+  ## access in such a loop allocate a BigInt. The profile already resolved the
+  ## same tension the same way by giving `List/size` an F64 result, so an
+  ## F64-indexed buffer is what lets one module index a buffer on both backends
+  ## without a per-access conversion.
+  ##
+  ## What is *not* accepted is a fractional index: 2.5 is a mistake, not a
+  ## rounding opportunity, and silently truncating it would put the write one
+  ## element away from where the author meant.
+  case value.kind
+  of vkInt:
+    requireInt64(where, value)
+  of vkFloat:
+    let f = value.floatVal
+    if f != f or f != trunc(f):
+      raise newException(GeneError,
+        where & " index must be a whole number, got " & $f)
+    if f >= 9223372036854775808.0 or f < -9223372036854775808.0:
+      raise newException(GeneError, where & " index is out of range: " & $f)
+    int64(f)
+  else:
+    raiseTypeError(where & " index", "Int or Float", value, nil)
+    0
+
+proc zeroForElementType(elemType: Value, scope: Scope): Value =
+  ## The fill value for a sized `(buffer T n)`. Only the fixed-width numeric
+  ## refinements have one: `U16`'s zero is `0` and `F32`'s is `0.0`, and the two
+  ## are not interchangeable because the element boundary would reject the
+  ## wrong kind on the very first write.
+  ##
+  ## Every other element type raises instead of defaulting to `nil`. A buffer
+  ## whose declared type is `Str` cannot be pre-filled with anything that
+  ## satisfies it, and silently filling it with `nil` would produce a value that
+  ## passes construction and fails at the first read.
+  let closed = closeTypeExpr(elemType, scope)
+  if closed.kind == vkType:
+    case closed.typeName
+    of "I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64", "Int":
+      return newInt(0)
+    of "F32", "F64", "Float":
+      return newFloat(0.0)
+    else: discard
+  raise newException(GeneError,
+    "buffer with a length needs a numeric element type (I8..U64, F32, F64), " &
+    "got " & closed.print())
+
 proc biBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let scope = if call == nil: nil else: call.dispatchScope
   var source: Value
@@ -4939,6 +5043,23 @@ proc biBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
     source = args[0]
     newCheckedBuffer(NIL, source.listItems, scope)
   of 2:
+    # `(buffer T n)` — n zeroed elements. The sized form exists because the
+    # list form cannot express the sizes this is for: a 16^3 block is 4,096
+    # elements and a chunk mesh is hundreds of thousands, and building a List
+    # of that length only to copy it into a Buffer costs more than everything
+    # the buffer is subsequently used for. An Int second argument is
+    # unambiguous — the list form has always required a List there.
+    if args[1].kind in {vkInt, vkFloat}:
+      let length = requireBufferIndex("buffer length", args[1])
+      if length < 0:
+        raise newException(GeneError,
+          "buffer length must be non-negative, got " & $length)
+      let elemType = closeTypeExpr(bufferTypeExprArg("buffer", args[0]), scope)
+      let zero = zeroForElementType(elemType, scope)
+      var items = newSeq[Value](int(length))
+      for i in 0 ..< int(length):
+        items[i] = zero
+      return newBuffer(elemType, items)
     requireList("buffer", args[1])
     source = args[1]
     newCheckedBuffer(args[0], source.listItems, scope)
@@ -4956,7 +5077,7 @@ proc biBufferGet(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError,
       "Buffer/get expects 2 arguments, got " & $args.len)
   requireBuffer("Buffer/get", args[0])
-  getCheckedBufferItem(args[0], int(requireInt64("Buffer/get", args[1])))
+  getCheckedBufferItem(args[0], int(requireBufferIndex("Buffer/get", args[1])))
 
 proc biBufferSetBang(args: openArray[Value],
                      call: ptr NativeCall): Value {.nimcall.} =
@@ -4965,7 +5086,7 @@ proc biBufferSetBang(args: openArray[Value],
       "Buffer/set! expects 3 arguments, got " & $args.len)
   requireBuffer("Buffer/set!", args[0])
   let scope = if call == nil: nil else: call.dispatchScope
-  setCheckedBufferItem(args[0], int(requireInt64("Buffer/set!", args[1])),
+  setCheckedBufferItem(args[0], int(requireBufferIndex("Buffer/set!", args[1])),
                        args[2], scope)
 
 proc biBufferToList(args: openArray[Value]): Value {.nimcall.} =
@@ -6166,6 +6287,38 @@ proc buildBuiltins(app: Application): Scope =
                             acceptsNamed = false),
     "to_list": newNativeFn("Buffer/to_list", biBufferToList),
     "elem_type": newNativeFn("Buffer/elem_type", biBufferElemType)})
+  # The fixed-width numeric names, bound as values so they can be *passed*
+  # rather than only annotated. `matchesBuiltinType` has always known them, so
+  # `(fn f [x : F32] ...)` already worked; what did not work was
+  # `($buffer F32 …)`, because evaluating the element-type argument looked the
+  # name up in scope and found nothing.
+  #
+  # They deliberately do not go through `defineBuiltinType`: that registers a
+  # `gScalarTypes[kind]` entry, and these are refinements of `vkInt`/`vkFloat`
+  # rather than kinds of their own — registering them would rebind the receiver
+  # type for *every* Int or Float. So they are plain named types, and the
+  # boundary check continues to resolve them by name, which is why a
+  # `(Buffer F32)` rejects a non-F32 item with the same message any other typed
+  # boundary produces.
+  for name in ["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64",
+               "F32", "F64"]:
+    let refinement = newType(name, NIL, @[], @[], nil)
+    withBuiltinSurfaceLock:
+      gRefinementTypes.incl refinement.bits
+    result.define(name, refinement)
+  # The `bareScalarSatisfied` dispatch table. Interning happens here rather than
+  # at module init, and the entries must stay in step with the exact-kind arms
+  # of `matchesBuiltinType` — see that proc's contract for why only exact-kind
+  # names may appear.
+  withBuiltinSurfaceLock:
+    if gBareScalarAnnotations.len == 0:
+      for entry in [("Int", vkInt), ("Integer", vkInt),
+                    ("Float", vkFloat), ("F64", vkFloat),
+                    ("Str", vkString), ("String", vkString),
+                    ("Bool", vkBool),
+                    ("Sym", vkSymbol), ("Symbol", vkSymbol),
+                    ("Char", vkChar)]:
+        gBareScalarAnnotations.add (newSym(entry[0]).symbolId, entry[1])
   let deviceScope = newScope(result)
   deviceScope.define("Compute", newCapability("device/Compute"))
   deviceScope.define("buffer", newNativeCallFn("device/buffer", biDeviceBuffer,
@@ -7737,7 +7890,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     if proto.hasParamTypes and i < proto.paramTypes.len and
         proto.paramTypes[i].kind != vkNil:
       declaredType = proto.paramTypes[i]
-      if not (declaredType.isBareIntType and value.kind == vkInt):
+      if not (bareScalarSatisfied(declaredType, value)):
         value = adaptBoundary("parameter '" & proto.params[i] & "'",
                               declaredType, value, result)
     result.defineFreshCallSlot(proto.positionalSlots[i], value)
@@ -7750,7 +7903,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     var declaredType = NIL
     if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
       declaredType = p.typeExpr
-      if not (declaredType.isBareIntType and value.kind == vkInt):
+      if not (bareScalarSatisfied(declaredType, value)):
         value = adaptBoundary("parameter '" & p.local & "'", declaredType,
                               value, result)
     result.defineFreshCallSlot(proto.namedSlots[i], value)
@@ -7795,7 +7948,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     if proto.hasParamTypes and i < proto.paramTypes.len and
         proto.paramTypes[i].kind != vkNil:
       declaredType = proto.paramTypes[i]
-      if not (declaredType.isBareIntType and value.kind == vkInt):
+      if not (bareScalarSatisfied(declaredType, value)):
         value = adaptBoundary("parameter '" & proto.params[i] & "'",
                               declaredType, value, result)
     result.defineFreshCallSlot(proto.positionalSlots[i], value)
@@ -7808,7 +7961,7 @@ proc bindRequiredNamedCallScope(callee: Value, proto: FunctionProto,
     var declaredType = NIL
     if proto.hasNamedParamTypes and p.typeExpr.kind != vkNil:
       declaredType = p.typeExpr
-      if not (declaredType.isBareIntType and value.kind == vkInt):
+      if not (bareScalarSatisfied(declaredType, value)):
         value = adaptBoundary("parameter '" & p.local & "'", declaredType,
                               value, result)
     result.defineFreshCallSlot(proto.namedSlots[i], value)
@@ -11281,7 +11434,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     else:
       retValue = escapeWeakFunctions(rawValue)
       if returnType.kind != vkNil:
-        if not (returnType.isBareIntType and retValue.kind == vkInt):
+        if not (bareScalarSatisfied(returnType, retValue)):
           let label =
             if returnLabel.len == 0 and curFnName.len > 0:
               "return from '" & curFnName & "'"
@@ -15482,7 +15635,7 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
     var lhs = args[0]
     if proto.hasParamTypes and proto.paramTypes[0].kind != vkNil:
       let typeExpr = proto.paramTypes[0]
-      if not (typeExpr.isBareIntType and lhs.kind == vkInt):
+      if not (bareScalarSatisfied(typeExpr, lhs)):
         lhs = adaptBoundary("parameter '" & positional[0] & "'",
                             typeExpr, lhs, callee.fnScope)
     var rhs = NIL
@@ -15490,7 +15643,7 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
       rhs = args[1]
       if proto.hasParamTypes and proto.paramTypes[1].kind != vkNil:
         let typeExpr = proto.paramTypes[1]
-        if not (typeExpr.isBareIntType and rhs.kind == vkInt):
+        if not (bareScalarSatisfied(typeExpr, rhs)):
           rhs = adaptBoundary("parameter '" & positional[1] & "'",
                               typeExpr, rhs, callee.fnScope)
     var selected =
@@ -15506,7 +15659,7 @@ proc applyNativeCompiled(callee: Value, proto: FunctionProto,
         if proto.hasParamTypes and i < proto.paramTypes.len and
             proto.paramTypes[i].kind != vkNil:
           let typeExpr = proto.paramTypes[i]
-          if not (typeExpr.isBareIntType and value.kind == vkInt):
+          if not (bareScalarSatisfied(typeExpr, value)):
             value = adaptBoundary("parameter '" & positional[i] & "'",
                                   typeExpr, value, callee.fnScope)
         if i == proto.nativeParamIndex:
@@ -16080,7 +16233,19 @@ proc raiseMessageError(message, receiverType: string, scope: Scope,
   e.hasErrVal = true
   raise e
 
+proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool]
+
 proc isInstanceOfType(value, expected: Value): bool =
+  # A fixed-width numeric type refines `Int` or `Float` rather than naming a
+  # kind, so it is answered by the same name-keyed predicate the annotation path
+  # uses. Without this, `($buffer F32 …)` and `[x : F32]` would disagree about
+  # what an F32 is — the annotation would accept 1.5 and the buffer boundary
+  # would reject it, which is exactly the kind of split a single predicate
+  # exists to prevent.
+  if expected.kind == vkType and gRefinementTypes.contains(expected.bits):
+    let refined = matchesBuiltinType(expected.typeName, value)
+    if refined.known:
+      return refined.ok
   if expected.isEnumType:
     let enumType = value.enumValueEnum
     return enumType.kind == vkType and enumType.isSubtypeOf(expected)
@@ -16578,6 +16743,31 @@ proc matchesCSliceType(name: string, args: openArray[Value],
     return false
   cPtrTargetMatches(args[0], value.cSliceTargetType, scope)
 
+proc typeExprIdentity(expr: Value): Value =
+  ## Normalize a built-in or refinement Type *value* to the symbol that names
+  ## it.
+  ##
+  ## The two spellings denote the same type but are different values, and type
+  ## expression comparison is deliberately structural (`canonicalTypeExpr`
+  ## resolves no names, so that it stays phase-independent). A buffer stores its
+  ## element type as the evaluated `Int`/`F32` type, while the annotation
+  ## `(Buffer Int)` carries the bare symbol — so without this step they never
+  ## compared equal and the parameterized `(Buffer T)` annotation rejected every
+  ## buffer, whatever its element type.
+  ##
+  ## Normalizing towards the symbol rather than towards the value is what keeps
+  ## the comparison independent of which `Application` minted the built-in, and
+  ## it is the same direction `runtimeTypeExpr` already reports types in.
+  ##
+  ## Top level only: element types are scalars, and recursing would allocate on
+  ## a comparison path that runs at every typed boundary.
+  if expr.kind == vkType and
+      (gBuiltinSurfaceTypes.contains(expr.bits) or
+       gRefinementTypes.contains(expr.bits)):
+    newSym(expr.typeName)
+  else:
+    expr
+
 proc matchesBufferType(args: openArray[Value], value: Value,
                        scope: Scope): bool =
   if value.kind != vkBuffer:
@@ -16592,7 +16782,8 @@ proc matchesBufferType(args: openArray[Value], value: Value,
   let actual = value.bufferElemType
   if actual.kind == vkNil or actual.isAnyTypeValue:
     return false
-  typeExprEqual(expected, closeTypeExpr(actual, value.bufferElemScope))
+  typeExprEqual(typeExprIdentity(expected),
+                typeExprIdentity(closeTypeExpr(actual, value.bufferElemScope)))
 
 proc matchesDeviceBufferType(args: openArray[Value], value: Value,
                              scope: Scope): bool =
@@ -16608,7 +16799,8 @@ proc matchesDeviceBufferType(args: openArray[Value], value: Value,
   let actual = value.deviceBufferElemType
   if actual.kind == vkNil or actual.isAnyTypeValue:
     return false
-  typeExprEqual(expected, closeTypeExpr(actual, scope))
+  typeExprEqual(typeExprIdentity(expected),
+                typeExprIdentity(closeTypeExpr(actual, scope)))
 
 proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
   if expr.kind == vkNil:
@@ -22323,7 +22515,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
                                          proto.typeParams)
       declaredType = typeExpr
-      if not (typeExpr.isBareIntType and value.kind == vkInt):
+      if not (bareScalarSatisfied(typeExpr, value)):
         value = adaptBoundary("parameter '" & positional[i] & "'",
                               typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
@@ -22341,7 +22533,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
         let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
                                            proto.typeParams)
         declaredType = typeExpr
-        if not (typeExpr.isBareIntType and value.kind == vkInt):
+        if not (bareScalarSatisfied(typeExpr, value)):
           value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                                 value, callScope)
       if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:
@@ -22363,7 +22555,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       let typeExpr = instantiateTypeExpr(proto.paramTypes[i], typeBindings,
                                          proto.typeParams)
       declaredType = typeExpr
-      if not (typeExpr.isBareIntType and value.kind == vkInt):
+      if not (bareScalarSatisfied(typeExpr, value)):
         boundValue = adaptBoundary("parameter '" & positional[i] & "'",
                                    typeExpr, value, callScope)
     if i < proto.positionalSlots.len and proto.positionalSlots[i] >= 0:
@@ -22393,7 +22585,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
           let typeExpr = instantiateTypeExpr(p.typeExpr, typeBindings,
                                              proto.typeParams)
           declaredType = typeExpr
-          if not (typeExpr.isBareIntType and value.kind == vkInt):
+          if not (bareScalarSatisfied(typeExpr, value)):
             value = adaptBoundary("parameter '" & p.local & "'", typeExpr,
                                   value, callScope)
         if pIndex < proto.namedSlots.len and proto.namedSlots[pIndex] >= 0:

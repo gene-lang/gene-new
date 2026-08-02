@@ -328,6 +328,51 @@ proc main() =
     let v = run(typedChunk, typedScope)
     checksum = checksum + v.intVal
 
+  # Float-annotated calls. Every other typed benchmark here annotates `Int`,
+  # which has had a boundary fast path since long before `bareScalarSatisfied`
+  # generalized it — so an `Int` benchmark cannot see a regression in the path
+  # every *other* scalar annotation takes. These can, and they are the shape
+  # numeric code actually has: `examples/miclone`'s noise kernels are F64
+  # throughout, and their annotations used to cost more than the calls they
+  # annotated (183 ns/call untyped against 557 ns for `[x : F64] : F64`).
+  let typedFloatScope = newGlobalScope()
+  typedFloatScope.define("scale_f64",
+    run(compileSource("(fn [x : F64] : F64 (* x 1.5))"), typedFloatScope))
+  let typedFloatChunk = compileSource("(scale_f64 2.0)")
+  bench("vm.typed_f64_call.compiled_chunk", 500_000, i):
+    let v = run(typedFloatChunk, typedFloatScope)
+    checksum = checksum + int(v.floatVal)
+
+  # Seven F64 parameters, the arity of `fbm3`. Guards the per-parameter half of
+  # the boundary cost, which a one-argument benchmark barely exercises.
+  let typedFloat7Scope = newGlobalScope()
+  typedFloat7Scope.define("sum7_f64",
+    run(compileSource(
+      "(fn [a : F64 b : F64 c : F64 d : F64 e : F64 f : F64 g : F64] : F64 " &
+      "  (+ a (+ b (+ c (+ d (+ e (+ f g)))))))"), typedFloat7Scope))
+  let typedFloat7Chunk =
+    compileSource("(sum7_f64 1.0 2.0 3.0 4.0 5.0 6.0 7.0)")
+  bench("vm.typed_f64_call7.compiled_chunk", 500_000, i):
+    let v = run(typedFloat7Chunk, typedFloat7Scope)
+    checksum = checksum + int(v.floatVal)
+
+  # Buffer element access. `Buffer/get` reached its elements through a proc
+  # returning the backing seq *by value*, so a read copied the whole buffer and
+  # any scan was O(n^2) — a 512,000-element chunk moved 4 MB per read. This
+  # benchmark is sized so that regression would be unmissable rather than slow.
+  let bufferScope = newGlobalScope()
+  discard run(compileSource(
+    "(var buf ($buffer F64 4096.0)) " &
+    "(var scan (fn [] " &
+    "  (var i 0.0) (var acc 0.0) " &
+    "  (while (< i 4096.0) " &
+    "    (do (set acc (+ acc (buf ~ get i))) (set i (+ i 1.0)))) " &
+    "  acc))"), bufferScope)
+  let bufferChunk = compileSource("(scan)")
+  bench("vm.buffer_scan_4096.compiled_chunk", 200, i):
+    let v = run(bufferChunk, bufferScope)
+    checksum = checksum + int(v.floatVal)
+
   let globalFourScope = newGlobalScope()
   globalFourScope.define("sum4",
     run(compileSource("(fn [a b c d] (+ (+ a b) (+ c d)))"), globalFourScope))

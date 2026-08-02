@@ -1,0 +1,17 @@
+# The VM shell for design.md §D6.2's divergence probe.
+#
+#   gene run divergence
+#
+# All it does is print. The probe itself is `probes/divergence.gene`, which is a
+# `^profile web` module and therefore runs unchanged on both backends — this
+# file exists because stdout does not: `$println` is a VM builtin, and the web
+# profile has no equivalent because a browser has nowhere to print to. Keeping
+# it here rather than behind a conditional inside the probe is the same rule
+# design.md §D3 applies to the whole system: platform edges live in shells.
+
+(mod run_divergence)
+
+(import [report] from "./divergence.gene")
+
+(fn main [args] : Nil
+  ($println (report)))

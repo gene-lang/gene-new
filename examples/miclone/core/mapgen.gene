@@ -1,0 +1,128 @@
+# Terrain generation — design.md §3, stages 1 through 4.
+#
+# This is deliberately the real pipeline shape rather than a probe-sized
+# stand-in, because §D6.3 measures how long it takes and a measurement of
+# something simpler would not answer the question. What is missing is breadth
+# (biome registry, ore types, decorations, schematics), not depth: the cost per
+# node is already what it will be.
+#
+# Everything here is §D3.1's *exact half* — see `core/exact.gene`. Node ids are
+# `F64` for the same reason every hot value in this project is: `Int` lowers to
+# `bigint` in the web profile, and this code runs 512,000 times per chunk.
+
+(mod mapgen ^profile web)
+
+(import [fbm2 fbm3 ridged2] from "./noise.gene")
+(import [hash_unit3] from "./exact.gene")
+
+# --- chunk geometry ----------------------------------------------------------
+#
+# 5x5x5 blocks of 16, which is upstream's `chunksize` default. Generating a
+# whole chunk at once rather than a block at a time is what lets caves and ore
+# cross block borders without a second pass.
+
+(let block_size 16.0)
+(let chunk_blocks 5.0)
+(let chunk_size 80.0)                  # block_size * chunk_blocks
+(let chunk_nodes 512000.0)             # chunk_size ^ 3
+
+# --- node ids ----------------------------------------------------------------
+#
+# `Int`, not `F64`, because §1 says a node's content is a `u16` and these are
+# that — they index the registry and are never arithmetic. They live in a
+# `(Buffer U16)`, which is the same 2 bytes per node the data model specifies.
+#
+# This is the one place the file departs from the F64-everywhere rule, and it
+# departs deliberately: an id is an identifier. Coordinates and noise stay F64,
+# so the loop indices below never become `bigint`.
+#
+# Provisional and positional, exactly like `examples/new_world`'s tile order:
+# these become registry-assigned content ids in M1 (§2), and the registry is
+# what makes them stable across a world's lifetime. Nothing should hardcode
+# them past that point.
+
+(let n_air 0)
+(let n_stone 1)
+(let n_dirt 2)
+(let n_grass 3)
+(let n_sand 4)
+(let n_water 5)
+
+# --- terrain shape -----------------------------------------------------------
+
+(let sea_level 8.0)
+(let terrain_scale 0.0125)
+(let terrain_octaves 5.0)
+(let terrain_amplitude 44.0)
+(let terrain_base 4.0)
+
+# Surface height at a world column. One `fbm2` at terrain frequency, which is
+# the single most-called function in the generator: once per column, so 6,400
+# times per chunk against the 512,000 node visits below.
+(fn surface_height [wx : F64 wz : F64 seed : F64] : F64
+  ($math/floor (+ terrain_base
+                  (* terrain_amplitude
+                     (fbm2 (* wx terrain_scale) (* wz terrain_scale)
+                           seed terrain_octaves 2.0 0.5)))))
+
+# --- caves -------------------------------------------------------------------
+#
+# Ridged 3D noise thresholded into tubes, which gives connected passages rather
+# than the isolated bubbles a plain `fbm3` threshold produces. Sampled per node
+# and only below the surface, so the cost is bounded by how much of a chunk is
+# underground rather than by its volume.
+
+(let cave_scale 0.055)
+(let cave_octaves 3.0)
+(let cave_threshold 0.82)
+
+(fn cave? [wx : F64 wy : F64 wz : F64 seed : F64] : Bool
+  (> (fbm3 (* wx cave_scale) (* wy cave_scale) (* wz cave_scale)
+           (+ seed 991.0) cave_octaves 2.0 0.5)
+     cave_threshold))
+
+# --- material selection ------------------------------------------------------
+#
+# The §3 stage-2 stand-in: depth below the surface picks the material, and a
+# beach band near sea level picks sand. A biome registry replaces this in M2.
+
+(fn material [wy : F64 surface : F64] : Int
+  (var depth (- surface wy))
+  (if (< depth 0.0)
+    (then (if (<= wy sea_level) n_water n_air))
+    (elif (< depth 1.0)
+      (if (<= surface (+ sea_level 1.0)) n_sand n_grass))
+    (elif (< depth 4.0) n_dirt)
+    (else n_stone)))
+
+# --- the generator -----------------------------------------------------------
+#
+# Writes `chunk_nodes` ids into `out`, indexed `x + 80y + 6400z` — the same
+# x-fastest order as a block (§1), one scale up.
+#
+# The column loop hoists `surface_height` out of the y loop, which is the one
+# structural optimisation that matters here: leaving it inside would multiply
+# the fbm2 count by 80 and dominate everything else in the function.
+(fn generate_chunk [out : (Buffer U16) ox : F64 oy : F64 oz : F64
+                    seed : F64] : Nil
+  (var z 0.0)
+  (while (< z chunk_size)
+    (var wz (+ oz z))
+    (var x 0.0)
+    (while (< x chunk_size)
+      (var wx (+ ox x))
+      (var surface (surface_height wx wz seed))
+      (var column_base (+ x (* z 6400.0)))
+      (var y 0.0)
+      (while (< y chunk_size)
+        (var wy (+ oy y))
+        (var id (material wy surface))
+        # Caves carve stone and dirt but never water or air, so a cave that
+        # reaches the seabed does not drain the ocean into it.
+        (if_yes (&& (> id n_air) (!= id n_water))
+          (if_yes (cave? wx wy wz seed)
+            (set id n_air)))
+        (out ~ set! (+ column_base (* y 80.0)) id)
+        (set y (+ y 1.0)))
+      (set x (+ x 1.0)))
+    (set z (+ z 1.0))))

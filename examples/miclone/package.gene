@@ -1,0 +1,13 @@
+{
+  ^format 1
+  ^name "gene/miclone"
+  ^description "A voxel game engine with Luanti's architecture, written in Gene"
+  ^version "0.1.0"
+  ^library {^entry "core/world.gene"}
+  ^applications [
+    # design.md §D6 — the three M0 probes. Each one is allowed to kill or
+    # reshape the design, so each is its own runnable target.
+    (application "divergence" ^entry "probes/run_divergence.gene")
+    (application "worldgen" ^entry "probes/run_worldgen.gene")
+  ]
+}

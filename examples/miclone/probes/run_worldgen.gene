@@ -1,0 +1,86 @@
+# The VM shell for design.md §D6.3's worldgen throughput probe.
+#
+#   gene run worldgen
+#
+# The VM is the backend under test: this is the server's workload, and §D4 is
+# precisely the observation that it cannot move to the faster runtime.
+
+(mod run_worldgen)
+
+(import [chunk_size chunk_nodes] from "../core/mapgen.gene")
+(import [columns_per_chunk allocate_chunk sample_surface sample_caves
+         sample_material sample_writes column_profile cave_fraction]
+        from "./worldgen.gene")
+
+(let budget_ms 300.0)
+(let seed 1337.0)
+
+# Sample counts, chosen so each stage takes a second or so rather than an hour.
+(let surface_samples 2000.0)
+(let cave_samples 2000.0)
+(let scalar_samples 100000.0)
+
+(fn ms_since [t0 : Int] : Float
+  ($to_float (- ($os/monotonic_ms) t0)))
+
+# Per-call cost in microseconds, from a timed run of `samples` iterations.
+(fn us_per_call [ms : Float samples : Float] : Float
+  (/ (* ms 1000.0) samples))
+
+(fn stage [label : Str ms : Float samples : Float per_chunk : Float] : Float
+  (var us (us_per_call ms samples))
+  (var chunk_ms (/ (* us per_chunk) 1000.0))
+  ($println $"  ${label}")
+  ($println $"      ${us} us/call x $($to_int per_chunk) calls = ${chunk_ms} ms/chunk")
+  chunk_ms)
+
+(fn main [args] : Nil
+  ($println "")
+  ($println $"design.md §D6.3 — worldgen throughput, one $($to_int chunk_size)^3 chunk ($($to_int chunk_nodes) nodes)")
+  ($println $"measured on the VM at reduced sample counts, extrapolated by exact call counts")
+  ($println "")
+
+  (var t ($os/monotonic_ms))
+  (var chunk (allocate_chunk))
+  (var alloc_ms (ms_since t))
+  ($println $"  allocate (Buffer U16 $($to_int chunk_nodes))")
+  ($println $"      ${alloc_ms} ms")
+
+  (set t ($os/monotonic_ms))
+  (sample_surface surface_samples seed)
+  (var surface_ms (stage "stage 1: surface_height (fbm2, 5 octaves)"
+                         (ms_since t) surface_samples columns_per_chunk))
+
+  (set t ($os/monotonic_ms))
+  (sample_caves cave_samples seed)
+  (var cave_ms (stage "stage 3: cave? (fbm3, 3 octaves)"
+                      (ms_since t) cave_samples chunk_nodes))
+
+  (set t ($os/monotonic_ms))
+  (sample_material scalar_samples)
+  (var material_ms (stage "stage 2: material (comparisons only)"
+                          (ms_since t) scalar_samples chunk_nodes))
+
+  (set t ($os/monotonic_ms))
+  (sample_writes chunk scalar_samples)
+  (var write_ms (stage "buffer writes" (ms_since t) scalar_samples chunk_nodes))
+
+  (var total_ms (+ alloc_ms (+ surface_ms (+ cave_ms (+ material_ms write_ms)))))
+
+  ($println "")
+  ($println $"  terrain check   $(column_profile seed 12.0 34.0)")
+  ($println $"  cave fraction   $(cave_fraction seed 2000.0)")
+  ($println "")
+  ($println $"  projected total ${total_ms} ms/chunk")
+  ($println "")
+  (if (<= total_ms budget_ms)
+    (then ($println $"PASS — ${total_ms} ms is within the ${budget_ms} ms budget"))
+    (else
+      ($println $"FAIL — ${total_ms} ms exceeds the ${budget_ms} ms budget by $(/ total_ms budget_ms)x")
+      ($println "")
+      ($println "§D6.3's mitigation ladder, cheapest first:")
+      ($println "  1. fewer octaves / 2D-dominant terrain")
+      ($println "  2. generate at reduced resolution and interpolate")
+      ($println "  3. pre-generate a bounded world at creation time")
+      ($println "  4. typed functions + packed Buffer (§D7.2)")))
+  ($println ""))

@@ -1,0 +1,120 @@
+# Deterministic value noise — design.md §D7.5, and squarely inside §D3.1's
+# *exact half*.
+#
+# Every value here must come out bit-identical on the VM and in V8, because the
+# server and the client both generate terrain from it and a single differing bit
+# means two different worlds. That is enforceable rather than hopeful: the whole
+# file is `+ - * /`, `floor`, and comparisons, all of which IEEE-754 requires to
+# be correctly rounded, so two conforming runtimes agree exactly.
+#
+# The thing to *not* do is the standard shader-book hash:
+#
+#     frac(sin(x * 12.9898 + y * 78.233) * 43758.5453)
+#
+# `examples/new_world/src/world.gene` uses exactly that, and it is fine there —
+# that game generates its world in one place. Here it would be a latent
+# world-splitting bug, because `sin` carries no cross-runtime accuracy guarantee
+# whatsoever. `core/exact.gene` supplies an integer hash instead, and the ban is
+# the point of §D3.1 rather than a stylistic preference.
+
+(mod noise ^profile web)
+
+(import [hash_unit2 hash_unit3] from "./exact.gene")
+
+# --- interpolation kernels ---------------------------------------------------
+
+# Hermite smoothstep, 3t^2 - 2t^3, factored to keep the multiply count down.
+# Its derivative vanishes at both ends, which is what stops lattice noise from
+# showing its grid as visible creases.
+(fn smoothstep [t : F64] : F64
+  (* (* t t) (- 3.0 (* 2.0 t))))
+
+# `a + (b - a) * t` rather than `a * (1 - t) + b * t`. The two differ in
+# rounding, so the choice is part of the format: changing it later would move
+# terrain everywhere. This form is also exact at both endpoints, which the other
+# is not.
+(fn lerp [a : F64 b : F64 t : F64] : F64
+  (+ a (* (- b a) t)))
+
+# --- lattice value noise -----------------------------------------------------
+
+(fn value2 [x : F64 y : F64 seed : F64] : F64
+  (var xi ($math/floor x))
+  (var yi ($math/floor y))
+  (var u (smoothstep (- x xi)))
+  (var v (smoothstep (- y yi)))
+  (var x1 (+ xi 1.0))
+  (var y1 (+ yi 1.0))
+  (lerp (lerp (hash_unit2 xi yi seed) (hash_unit2 x1 yi seed) u)
+        (lerp (hash_unit2 xi y1 seed) (hash_unit2 x1 y1 seed) u)
+        v))
+
+(fn value3 [x : F64 y : F64 z : F64 seed : F64] : F64
+  (var xi ($math/floor x))
+  (var yi ($math/floor y))
+  (var zi ($math/floor z))
+  (var u (smoothstep (- x xi)))
+  (var v (smoothstep (- y yi)))
+  (var w (smoothstep (- z zi)))
+  (var x1 (+ xi 1.0))
+  (var y1 (+ yi 1.0))
+  (var z1 (+ zi 1.0))
+  (var z0_face
+    (lerp (lerp (hash_unit3 xi yi zi seed) (hash_unit3 x1 yi zi seed) u)
+          (lerp (hash_unit3 xi y1 zi seed) (hash_unit3 x1 y1 zi seed) u)
+          v))
+  (var z1_face
+    (lerp (lerp (hash_unit3 xi yi z1 seed) (hash_unit3 x1 yi z1 seed) u)
+          (lerp (hash_unit3 xi y1 z1 seed) (hash_unit3 x1 y1 z1 seed) u)
+          v))
+  (lerp z0_face z1_face w))
+
+# --- fractal composition -----------------------------------------------------
+#
+# Octaves are summed then divided by the summed amplitude, so the result stays
+# in [0, 1) regardless of octave count and persistence. Normalising by a
+# constant instead would make octave count change the terrain's *range* as well
+# as its detail, which turns tuning into whack-a-mole.
+#
+# Each octave offsets the seed rather than the coordinates. Offsetting
+# coordinates is the usual trick and it is subtly wrong: the octaves stay on one
+# lattice and their features line up, which reads as a grid at low frequencies.
+
+(fn fbm2 [x : F64 y : F64 seed : F64 octaves : F64
+          lacunarity : F64 persistence : F64] : F64
+  (var sum 0.0)
+  (var norm 0.0)
+  (var amp 1.0)
+  (var freq 1.0)
+  (var i 0.0)
+  (while (< i octaves)
+    (set sum (+ sum (* amp (value2 (* x freq) (* y freq) (+ seed i)))))
+    (set norm (+ norm amp))
+    (set amp (* amp persistence))
+    (set freq (* freq lacunarity))
+    (set i (+ i 1.0)))
+  (/ sum norm))
+
+(fn fbm3 [x : F64 y : F64 z : F64 seed : F64 octaves : F64
+          lacunarity : F64 persistence : F64] : F64
+  (var sum 0.0)
+  (var norm 0.0)
+  (var amp 1.0)
+  (var freq 1.0)
+  (var i 0.0)
+  (while (< i octaves)
+    (set sum (+ sum (* amp (value3 (* x freq) (* y freq) (* z freq)
+                                   (+ seed i)))))
+    (set norm (+ norm amp))
+    (set amp (* amp persistence))
+    (set freq (* freq lacunarity))
+    (set i (+ i 1.0)))
+  (/ sum norm))
+
+# Ridged noise, for mountain crests and cave tubes: fold the field around its
+# midpoint so the maxima become sharp ridges instead of rounded hills.
+(fn ridged2 [x : F64 y : F64 seed : F64 octaves : F64
+             lacunarity : F64 persistence : F64] : F64
+  (var v (fbm2 x y seed octaves lacunarity persistence))
+  (var d (- v 0.5))
+  (- 1.0 (* 2.0 (if (< d 0.0) (- 0.0 d) d))))
