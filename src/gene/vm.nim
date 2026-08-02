@@ -23482,7 +23482,13 @@ proc compileFileModuleBundle*(app: Application, path,
       # them here would turn transitive dependency source into a hidden input
       # and duplicate compiler work.
       return
-    let savedDir = app.currentModuleDir
+    # `savedDir` has to own its bytes. ORC infers a cursor for a `let` bound
+    # straight to a field, and the very next line reassigns that field and
+    # frees the buffer the cursor points at — restoring it in `finally` then
+    # reads memory that has already been reused. Built through a `var` so the
+    # copy survives the reassignment.
+    var savedDir = newStringOfCap(app.currentModuleDir.len)
+    savedDir.add app.currentModuleDir
     let savedPackage = app.currentPackage
     app.currentModuleDir = app.moduleSourceDir(absPath)
     app.currentPackage = owner
