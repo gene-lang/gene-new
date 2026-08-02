@@ -1,0 +1,51 @@
+# A nearest-neighbour blow-up of the atlas, purely so the art can be judged at
+# a size a human can see. Not shipped to the game.
+#
+# This is its own target rather than part of `gene run build` because the
+# blow-up is 64x the atlas and encoding it costs far more than everything else
+# the build does put together. The art only needs reviewing when it changes.
+#
+#   gene run preview --grant out=$fs/WriteDir
+
+(mod preview)
+
+(import [build width : atlas_width height : atlas_height] from "./atlas.gene")
+(import [encode] from "./png.gene")
+
+(let scale 8)
+
+(fn round_half [v : Float] : Int ($to_int ($math/floor (+ v 0.5))))
+
+(fn main [args, ^out : Capability] : Nil
+  (var atlas (build))
+  (var pw (* atlas_width scale))
+  (var ph (* atlas_height scale))
+  (var px : (List Int) [])
+  (var y 0)
+  (var x 0)
+  (var si 0)
+  (var a 0.0)
+  (var inv 0.0)
+  (var chk 0)
+  (var k 0)
+  (while (< y ph)
+    (set x 0)
+    (while (< x pw)
+      (set si (* (+ (* (/ y scale) atlas_width) (/ x scale)) 4))
+      (set k (+ si 3))
+      (set a (/ ($to_float atlas/%k) 255.0))
+      (set inv (- 1.0 a))
+      # Composite over a checker so a transparent pixel is visibly transparent
+      # rather than merely dark.
+      (set chk (if (== (// (+ (/ x (* scale 2)) (/ y (* scale 2))) 2) 0) 58 80))
+      (var c 0)
+      (while (< c 3)
+        (var s (+ si c))
+        (px ~ push! (round_half (+ (* ($to_float atlas/%s) a)
+                                   (* ($to_float chk) inv))))
+        (set c (+ c 1)))
+      (px ~ push! 255)
+      (set x (+ x 1)))
+    (set y (+ y 1)))
+  ($fs/write_bytes out "assets/tiles_preview.png" (encode pw ph px))
+  ($println $"wrote assets/tiles_preview.png (${pw}x${ph} review blow-up)"))

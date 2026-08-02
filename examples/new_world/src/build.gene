@@ -1,0 +1,56 @@
+# Builds the game end to end.
+#
+#   assets  — src/atlas.gene draws assets/tiles.png through src/png.gene
+#   logic   — src/*.gene -> dist/ via the `web` profile (Gene -> TS/ESM)
+#   page    — src/page.gene -> index.html through gene/html + gene/css
+#
+# This replaced a shell script. The two steps that used to need a host were the
+# ones a shell was there for: the atlas needed `node`, and writing index.html
+# needed `>` redirection. Neither does now — the atlas is Gene, and the page is
+# a string this module writes with `fs/write_text`.
+#
+# The web builds are still a subprocess, because the `web` profile's compiler
+# is the `gene` binary itself and there is no in-process seam for it yet. It
+# re-invokes the *running* executable rather than a name looked up on PATH, so
+# a build cannot silently use a different compiler than the one driving it.
+#
+# `index.html` and `dist/` are generated; do not edit them.
+#
+#   gene run build --grant out=$fs/WriteDir --grant exec=$os/Exec
+
+(mod build)
+
+(import [build : draw_atlas width : atlas_width height : atlas_height]
+        from "./atlas.gene")
+(import [encode] from "./png.gene")
+(import [page] from "./page.gene")
+
+(let web_modules ["world" "shell" "render" "main"])
+
+(fn build_atlas [out : Capability] : Nil
+  ($println "atlas   assets/tiles.png")
+  ($fs/write_bytes out "assets/tiles.png"
+    (encode atlas_width atlas_height (draw_atlas))))
+
+(fn build_web [exec : Capability] : Nil
+  # `gene` is a reserved standard-library root, so the compiler path cannot be
+  # bound under that name.
+  (var compiler ($os/executable_path))
+  (for name in web_modules
+    ($println $"web     src/${name}.gene -> dist/")
+    (var run ($os/exec exec ^cmd compiler
+               ^args ["build" "--target" "web" ($ "src/" name ".gene")
+                      "--out-dir" "dist"]))
+    (if_yes (!= run/status 0)
+      ($panic ($ "web build failed for src/" name ".gene (status "
+                 run/status ")\n" run/stderr)))))
+
+(fn build_page [out : Capability] : Nil
+  ($println "page    index.html")
+  ($fs/write_text out "index.html" (page)))
+
+(fn main [args, ^out : Capability ^exec : Capability] : Nil
+  (build_atlas out)
+  (build_web exec)
+  (build_page out)
+  ($println "done"))

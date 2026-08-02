@@ -1,5 +1,5 @@
 // Headless check of world.gene: generation shape, physics, and interaction,
-// with no canvas involved. Run after build.sh.
+// with no canvas involved. Run after `gene run build`.
 //
 //   node examples/new_world/tools/test.mjs
 

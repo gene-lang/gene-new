@@ -15,16 +15,21 @@ design for a much larger game and is **not** what this code is.
 
 ## Build and run
 
-Requires **Node** (any recent version) and a built `bin/gene`.
+Requires a built `bin/gene` and a static server. Node is only needed to run
+`tools/test.mjs`; nothing in the build uses it any more.
 
 ```sh
 cd <repo root>
 nimble build                       # once, produces bin/gene
 
 cd examples/new_world
-./build.sh                         # assets + Gene -> JS + index.html
+gene run build --grant out=$fs/WriteDir --grant exec=$os/Exec
 python3 -m http.server 8000        # any static server will do
 ```
+
+The build writes files and shells out to the compiler for the web modules, so
+it asks for exactly those two authorities and gets nothing else — no ambient
+filesystem or process access (`docs/design.md` §15.2).
 
 Then open <http://localhost:8000/>. It must be served over HTTP — the page uses
 ES modules, which `file://` will not load.
@@ -49,7 +54,9 @@ is deeper still.
 ```sh
 node tools/test.mjs                # 41 logic checks, no browser needed
 node tools/test_input.mjs          # input wiring and the frame loop
-node tools/screenshot.mjs [seed]   # composite a real viewport to a PNG
+
+# composite a real viewport to a PNG
+gene run screenshot --grant out_dir=$fs/WriteDir -- [seed] [cam_x] [cam_y]
 ```
 
 `tools/test.mjs` asserts the properties that matter rather than pixel output:
@@ -60,10 +67,10 @@ and returns, and you cannot mine out of reach or seal yourself inside a wall.
 For `src/shell.gene` it round-trips all 98,304 tiles through the save encoder,
 because a wrong pair count would silently truncate somebody's world.
 
-`tools/screenshot.mjs` renders through the same atlas and the same `src/world.gene`
-the browser runs, so the world can be reviewed — and regressions caught — from a
-terminal with no browser open. It is how the cave-backdrop and tile-repetition
-problems were found.
+`src/screenshot.gene` renders through the same atlas and the same
+`src/world.gene` the browser runs, so the world can be reviewed — and
+regressions caught — from a terminal with no browser open. It is how the
+cave-backdrop and tile-repetition problems were found.
 
 ---
 
@@ -116,30 +123,45 @@ This is a Gene package (`gene/new_world`), so all Gene source lives under
 JavaScript, tooling, or build output.
 
 ```
-package.gene          manifest: name, version, source_dir, main_module
+package.gene          manifest: name, version, library and application targets
 src/world.gene        terrain, physics, collision, mining — runs on VM too
 src/render.gene       drawing, direct to canvas
 src/shell.gene        camera, spawn, save encoding, hotbar
 src/page.gene         the HTML page, as gene/html + gene/css node data
-src/png.gene          a PNG encoder in Gene: CRC32, zlib, chunks
 src/main.gene         state, input, save/load, the frame loop
+src/png.gene          a PNG encoder in Gene: CRC32, LZ77 + Huffman, chunks
+src/atlas.gene        the tile atlas: palette, seeded hash, tile drawing
+src/build.gene        the build: atlas, then web modules, then index.html
+src/preview.gene      an 8x blow-up of the atlas, for reviewing the art
+src/screenshot.gene   composites a viewport to PNG, headless
 boot.mjs              three-line browser entry point
-build.sh              assets -> Gene -> index.html
 tools/test.mjs        41 logic checks
 tools/test_input.mjs  input wiring: listener targets, movement, frame loop
-tools/gen_atlas.mjs   generates assets/tiles.png (and an 8x review blow-up)
-tools/screenshot.mjs  composites a viewport to PNG, headless
 spike/                the D5 performance spike — its own nested package
 assets/               generated atlas + screenshots
 dist/                 generated JS/TS — gitignored, never edit
 index.html            generated — gitignored, never edit
 ```
 
-Only `host.mjs` and `main.mjs` ship to the browser; everything under `tools/`
-is build- and test-time.
+Only `boot.mjs` and the generated `dist/` modules ship to the browser;
+everything under `tools/` is test-time.
 
-**The `tools/` scripts are still JavaScript, but no longer because they have
-to be.** Both original blockers are fixed:
+`package.gene` declares four application targets, so each build step is a
+named thing you can run rather than a line in a script:
+
+| | |
+|---|---|
+| `gene run build` | the whole pipeline — atlas, web modules, page |
+| `gene run page` | prints `index.html` to stdout |
+| `gene run preview` | `assets/tiles_preview.png`, an 8x review blow-up |
+| `gene run screenshot` | `assets/screenshot_seed<N>.png` |
+
+`preview` and `screenshot` are separate from `build` because both encode
+images far larger than the atlas and the art only needs reviewing when it
+changes.
+
+**Nothing in the build is JavaScript any more.** Both original blockers were
+fixed, and then the tools that existed because of them were ported:
 
 - *No math library* — `gene/math` (design.md §7.8) now provides floor, sqrt,
   sin and the rest on both backends. `src/world.gene` dropped three of its
@@ -147,20 +169,30 @@ to be.** Both original blockers are fixed:
   boundary.
 - *No binary output* — `gene/bit`, `gene/binary`, and `fs/write_bytes`
   (§7.9) make a PNG writable in Gene. `src/png.gene` is the worked encoder:
-  CRC32, Adler-32, zlib stream, chunk layout, no host help.
+  CRC32, Adler-32, LZ77 with fixed Huffman codes, chunk layout, no host help.
 
-What remains is porting the two PNG tools' *drawing* code onto `src/png.gene`,
-which is ordinary work rather than a missing capability.
+`build.sh` is gone with them. The two steps that needed a shell were the two
+the ports removed: the atlas needed `node`, and writing `index.html` needed `>`
+redirection. `src/build.gene` does both directly, and `src/screenshot.gene`
+runs `world.gene` and `render.gene` on the VM rather than through their
+transpiled output — so a screenshot no longer needs `dist/` to exist and can
+never drift from the source the browser is given.
 
-Both are recorded as resolved in [`docs/design.md`](docs/design.md) §D5.2,
-along with four Gene gotchas that writing the encoder turned up — `0x…` is a
-Bytes literal rather than a hex Int, `//` is the remainder because `%` is
+The ports are byte-exact: `tiles.png`, `tiles_preview.png`, and both committed
+screenshots decode to exactly the pixels the JavaScript produced. That
+mattered more than it sounds, because the atlas hash leans on JavaScript
+float64 semantics — see the comments in `src/atlas.gene`.
+
+Both blockers are recorded as resolved in [`docs/design.md`](docs/design.md)
+§D5.2, along with four Gene gotchas that writing the encoder turned up — `0x…`
+is a Bytes literal rather than a hex Int, `//` is the remainder because `%` is
 unquote, `while` shares one scope across iterations, and an empty `[]` needs a
 type annotation.
 
-`gene pkg show` reports the resolved manifest. `main_module` is `world`
-because that is the substantive module — the one a dependent importing
-`from "."` would want — even though `page` is the only module you `gene run`.
+`gene pkg tree` reports the resolved manifest. The library entry is
+`src/world.gene` because that is the substantive module — the one a dependent
+importing `from "."` would want — even though it is not any of the things you
+`gene run`.
 
 The spike carries its own `package.gene` (`gene/new_world_spike`) rather than
 living in this package's `src/`. It is a measurement rig, not part of the game,
@@ -170,9 +202,9 @@ working directory.
 
 ### Assets are generated, not drawn
 
-`tools/gen_atlas.mjs` writes `assets/tiles.png` from a named palette and a
-seeded hash, using its own PNG encoder — no image editor and no binary blob
-whose source nobody has. Re-tune the art by editing numbers and re-running.
+`src/atlas.gene` writes `assets/tiles.png` from a named palette and a seeded
+hash, through `src/png.gene` — no image editor and no binary blob whose source
+nobody has. Re-tune the art by editing numbers and re-running `gene run build`.
 
 Two things about the atlas are load-bearing:
 

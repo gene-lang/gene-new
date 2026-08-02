@@ -1,0 +1,364 @@
+# The tile atlas, drawn in Gene.
+#
+# Procedural rather than hand-drawn, because design.md §5.1 makes the palette
+# effectively unchangeable after launch: generating it from a named palette and
+# a seeded hash means it can be re-tuned by editing numbers here and re-running,
+# rather than by repainting a file nobody has the source for.
+#
+# This was JavaScript until `gene/bit`, `gene/binary`, and `fs/write_bytes`
+# (design.md §7.9) made a PNG writable in Gene. It runs on the VM at build
+# time, so it is a normal module — top-level `var` is fine here in a way it is
+# not in world.gene.
+#
+# **Tile order is the ABI.** `src/world.gene`'s `t_*` constants index into this
+# array positionally, so inserting a tile mid-list silently renumbers every
+# tile after it and every saved world becomes wrong.
+
+(mod atlas)
+
+(import $bit [xor : bxor shr])
+
+(let tile 16)
+(let cols 4)
+(let width 64)          # tile * cols
+(let height 64)         # tile * rows
+
+# --- the JS hash, reproduced exactly -----------------------------------------
+# This is a transcription of the hash the JavaScript generator used, and it has
+# to be exact: the atlas is committed, and a hash that differs in one bit
+# repaints every tile.
+#
+# JS Numbers are float64, so `seed * 1442695040888963407` is *not* the integer
+# product — the constant itself does not survive as a double, and the product
+# is rounded to 53 significant bits before `| 0` ever sees it. Doing this in Int
+# arithmetic would be exact and therefore wrong. Every step below stays in
+# Float for that reason, and only the bit mixing drops to Int.
+
+(fn u32 [f : Float] : Int
+  # JS `ToUint32`. Dividing and multiplying by a power of two is exact in
+  # floating point, and the remainder is below 2^32, so the subtraction is
+  # exact too — no value here is ever large enough to lose a low bit.
+  ($to_int (- f (* ($math/floor (/ f 4294967296.0)) 4294967296.0))))
+
+(fn i32 [u : Int] : Float
+  # The signed reading of a u32, as a Float, because JS multiplies the result
+  # of `^` (an int32) as a Number.
+  (if (>= u 2147483648)
+    ($to_float (- u 4294967296))
+    ($to_float u)))
+
+(fn hash [x : Float y : Float seed : Float] : Float
+  # The nesting matters. JS sums left to right, so the two small terms are
+  # added exactly and only then folded into the huge seed term. Adding the
+  # seed term first instead rounds in a different place and repaints a tenth
+  # of the atlas.
+  (var s (+ (+ (* x 374761393.0) (* y 668265263.0))
+            (* seed 1442695040888963407.0)))
+  (var h (u32 s))
+  (var mixed (bxor h (shr h 13)))
+  (var t (* (i32 mixed) 1274126177.0))
+  (var h2 (u32 t))
+  (/ ($to_float (bxor h2 (shr h2 16))) 4294967295.0))
+
+# --- palette -----------------------------------------------------------------
+# One coherent earthy set. Every tile draws from it so districts read as
+# composition rather than as unrelated art.
+
+(fn rgb [r : Int g : Int b : Int] : (List Int) [r g b])
+
+(var c_grass      (rgb 106 153  85))
+(var c_grass_dark (rgb  79 122  61))
+(var c_dirt       (rgb 139 104  73))
+(var c_dirt_dark  (rgb 109  80  55))
+(var c_stone      (rgb 125 132 145))
+(var c_stone_dark (rgb  99 106 118))
+(var c_log        (rgb 107  79  52))
+(var c_log_dark   (rgb  82  59  38))
+(var c_leaf       (rgb  79 122  66))
+(var c_leaf_dark  (rgb  61  97  51))
+(var c_sand       (rgb 214 192 138))
+(var c_sand_dark  (rgb 192 168 113))
+(var c_water      (rgb  63 127 181))
+(var c_water_dark (rgb  53 109 158))
+(var c_coal       (rgb  43  47  54))
+(var c_iron       (rgb 200 154 107))
+(var c_gold       (rgb 217 176  74))
+(var c_plank      (rgb 169 121  63))
+(var c_plank_dark (rgb 138  96  48))
+(var c_white      (rgb 255 255 255))
+(var c_black      (rgb   0   0   0))
+
+# --- pixel buffer ------------------------------------------------------------
+# RGBA, row-major. Air is left fully transparent, which is why the buffer
+# starts as zeros rather than as a background colour.
+
+(var pixels : (List Int) [])
+
+(fn reset [] : Nil
+  (set pixels [])
+  (var n (* (* width height) 4))
+  (var i 0)
+  (while (< i n)
+    (pixels ~ push! 0)
+    (set i (+ i 1))))
+
+(fn put4 [i : Int r : Int g : Int b : Int a : Int] : Nil
+  (var k i)
+  (set! pixels/%k r)
+  (set k (+ i 1)) (set! pixels/%k g)
+  (set k (+ i 2)) (set! pixels/%k b)
+  (set k (+ i 3)) (set! pixels/%k a))
+
+(fn put_a [x : Int y : Int c : (List Int) a : Int] : Nil
+  (if_yes (&& (&& (>= x 0) (< x width)) (&& (>= y 0) (< y height)))
+    (put4 (* (+ (* y width) x) 4) c/0 c/1 c/2 a)))
+
+(fn put [x : Int y : Int c : (List Int)] : Nil
+  (put_a x y c 255))
+
+# JS `Math.round` is floor(x + 0.5); every channel here is non-negative, so
+# that is also what half-away-from-zero would give, but the spelling is the
+# one being reproduced.
+(fn round_channel [v : Float] : Int
+  ($to_int ($math/floor (+ v 0.5))))
+
+(fn mix [a : (List Int) b : (List Int) t : Float] : (List Int)
+  (fn lerp [from : Int to : Int] : Int
+    (round_channel (+ ($to_float from) (* ($to_float (- to from)) t))))
+  [(lerp a/0 b/0) (lerp a/1 b/1) (lerp a/2 b/2)])
+
+# --- texture primitives ------------------------------------------------------
+
+# Three-tone speckle. Two tones read as flat at 16px because half the pixels
+# land on the base colour; adding a highlight gives the eye a grain to catch.
+(fn speckle [ox : Int oy : Int base : (List Int) dark : (List Int)
+             seed : Int density : Float] : Nil
+  (var light (mix base c_white 0.16))
+  (var deep (mix dark c_black 0.18))
+  (var fseed ($to_float seed))
+  (var y 0)
+  (while (< y tile)
+    (var x 0)
+    (while (< x tile)
+      (var n (hash ($to_float x) ($to_float y) fseed))
+      (put (+ ox x) (+ oy y)
+        (if (< n (* density 0.35)) deep
+          (if (< n density) dark
+            (if (> n (- 1.0 (* density 0.4))) light
+              base))))
+      (set x (+ x 1)))
+    (set y (+ y 1))))
+
+# A few 2x2 clumps, so a material has structure at a scale above the pixel.
+(fn pebbles [ox : Int oy : Int colour : (List Int) seed : Int
+             count : Int] : Nil
+  (var fseed ($to_float seed))
+  (var i 0)
+  (while (< i count)
+    (var fi ($to_float i))
+    (var cx ($to_int ($math/floor (* (hash fi 2.0 fseed) 15.0))))
+    (var cy ($to_int ($math/floor (* (hash fi 5.0 fseed) 15.0))))
+    (var y 0)
+    (while (< y 2)
+      (var x 0)
+      (while (< x 2)
+        (put (+ (+ ox cx) x) (+ (+ oy cy) y) colour)
+        (set x (+ x 1)))
+      (set y (+ y 1)))
+    (set i (+ i 1))))
+
+(fn ore_blobs [ox : Int oy : Int colour : (List Int) seed : Int
+               count : Int] : Nil
+  (var fseed ($to_float seed))
+  (var shade_seed ($to_float (+ seed 91)))
+  (var i 0)
+  (while (< i count)
+    (var fi ($to_float i))
+    (var cx (+ 2 ($to_int ($math/floor (* (hash fi 7.0 fseed) 11.0)))))
+    (var cy (+ 2 ($to_int ($math/floor (* (hash fi 13.0 fseed) 11.0)))))
+    (var r (+ 1.2 (* (hash fi 29.0 fseed) 1.1)))
+    (var rr (* r r))
+    (var y -3)
+    (while (<= y 3)
+      (var x -3)
+      (while (<= x 3)
+        (if_yes (<= ($to_float (+ (* x x) (* y y))) rr)
+          (do
+            (var tx (+ cx x))
+            (var ty (+ cy y))
+            (if_yes (&& (&& (>= tx 0) (< tx tile)) (&& (>= ty 0) (< ty tile)))
+              (do
+                (var shade (* (hash ($to_float tx) ($to_float ty) shade_seed)
+                              0.35))
+                (put (+ ox tx) (+ oy ty) (mix colour c_black shade))))))
+        (set x (+ x 1)))
+      (set y (+ y 1)))
+    (set i (+ i 1))))
+
+# --- tiles -------------------------------------------------------------------
+# Index order must match the `t_*` constants in world.gene.
+
+(fn t_air [ox : Int oy : Int] : Nil)   # left transparent
+
+(fn t_grass [ox : Int oy : Int] : Nil
+  (speckle ox oy c_dirt c_dirt_dark 11 0.42)
+  (var x 0)
+  (while (< x tile)
+    (var fx ($to_float x))
+    (var depth (+ 3 ($to_int ($math/floor (* (hash fx 0.0 5.0) 3.0)))))
+    (var y 0)
+    (while (< y depth)
+      (var n (hash fx ($to_float y) 17.0))
+      (put (+ ox x) (+ oy y) (if (< n 0.4) c_grass_dark c_grass))
+      (set y (+ y 1)))
+    # A few blades breaking the line, so the surface is not a ruler edge.
+    (if_yes (< (hash fx 99.0 23.0) 0.3)
+      (put (+ ox x) (+ oy depth) c_grass_dark))
+    (set x (+ x 1))))
+
+(fn t_dirt [ox : Int oy : Int] : Nil
+  (speckle ox oy c_dirt c_dirt_dark 31 0.5)
+  (pebbles ox oy (mix c_dirt_dark c_black 0.25) 33 3))
+
+(fn t_stone [ox : Int oy : Int] : Nil
+  (speckle ox oy c_stone c_stone_dark 43 0.5)
+  # Faint fracture lines give scale to a big underground expanse.
+  (var seam (mix c_stone_dark c_black 0.3))
+  (var i 0)
+  (while (< i 3)
+    (var fi ($to_float i))
+    (var x ($to_int ($math/floor (* (hash fi 3.0 47.0) 16.0))))
+    (var y ($to_int ($math/floor (* (hash fi 9.0 47.0) 16.0))))
+    (var s 0)
+    (while (< s 5)
+      (if_yes (&& (&& (>= x 0) (< x tile)) (&& (>= y 0) (< y tile)))
+        (put (+ ox x) (+ oy y) seam))
+      (if_yes (< (hash ($to_float s) fi 51.0) 0.5) (set x (+ x 1)))
+      (if_yes (< (hash ($to_float s) fi 53.0) 0.5) (set y (+ y 1)))
+      (set s (+ s 1)))
+    (set i (+ i 1))))
+
+(fn t_log [ox : Int oy : Int] : Nil
+  (speckle ox oy c_log c_log_dark 61 0.3)
+  (var y 0)
+  (while (< y tile)
+    (put (+ ox 3) (+ oy y) c_log_dark)
+    (put (+ ox 11) (+ oy y) c_log_dark)
+    (set y (+ y 1))))
+
+(fn t_leaves [ox : Int oy : Int] : Nil
+  (var y 0)
+  (while (< y tile)
+    (var x 0)
+    (while (< x tile)
+      (var n (hash ($to_float x) ($to_float y) 71.0))
+      # Holes let sky through, which is what stops a canopy reading as a box.
+      (if_yes (>= n 0.16)
+        (put (+ ox x) (+ oy y) (if (< n 0.5) c_leaf_dark c_leaf)))
+      (set x (+ x 1)))
+    (set y (+ y 1))))
+
+(fn t_sand [ox : Int oy : Int] : Nil
+  (speckle ox oy c_sand c_sand_dark 83 0.55)
+  (pebbles ox oy (mix c_sand_dark c_black 0.18) 87 2))
+
+(fn t_water [ox : Int oy : Int] : Nil
+  (var y 0)
+  (while (< y tile)
+    (var x 0)
+    (while (< x tile)
+      (var band (+ (* ($math/sin (+ (* ($to_float y) 0.9)
+                                    (* ($math/sin (* ($to_float x) 0.55)) 1.3)))
+                      0.5)
+                   0.5))
+      (var crest (if (> band 0.82) 0.5 0.0))
+      (put_a (+ ox x) (+ oy y)
+             (mix (mix c_water_dark c_water band) c_white (* crest 0.35))
+             205)
+      (set x (+ x 1)))
+    (set y (+ y 1))))
+
+(fn t_coal_ore [ox : Int oy : Int] : Nil
+  (speckle ox oy c_stone c_stone_dark 43 0.5)
+  (ore_blobs ox oy c_coal 101 4))
+
+(fn t_iron_ore [ox : Int oy : Int] : Nil
+  (speckle ox oy c_stone c_stone_dark 43 0.5)
+  (ore_blobs ox oy c_iron 113 3))
+
+(fn t_gold_ore [ox : Int oy : Int] : Nil
+  (speckle ox oy c_stone c_stone_dark 43 0.5)
+  (ore_blobs ox oy c_gold 127 3))
+
+(fn t_plank [ox : Int oy : Int] : Nil
+  (speckle ox oy c_plank c_plank_dark 131 0.25)
+  (var y 3)
+  (while (< y tile)
+    (var x 0)
+    (while (< x tile)
+      (put (+ ox x) (+ oy y) c_plank_dark)
+      (set x (+ x 1)))
+    (set y (+ y 5)))
+  (set y 0)
+  (while (< y tile)
+    (var seam (if (< y 3) 6 (if (< y 8) 12 4)))
+    (put (+ ox seam) (+ oy y) c_plank_dark)
+    (set y (+ y 1))))
+
+# 12-14: render-only variants. The world stores stone as 3 and dirt as 2; these
+# exist purely so a cliff face is not the same 16px stamp repeated three
+# hundred times, which is the single most obvious tell of tile art.
+
+(fn t_stone_b [ox : Int oy : Int] : Nil
+  (speckle ox oy c_stone c_stone_dark 211 0.46)
+  (pebbles ox oy (mix c_stone_dark c_black 0.22) 213 2))
+
+(fn t_stone_c [ox : Int oy : Int] : Nil
+  (speckle ox oy c_stone c_stone_dark 223 0.54)
+  (var streak (mix c_stone_dark c_black 0.28))
+  (var i 0)
+  (while (< i 2)
+    (var fi ($to_float i))
+    (var y (+ 3 ($to_int ($math/floor (* (hash fi 1.0 227.0) 10.0)))))
+    (var x 2)
+    (while (< x (- tile 2))
+      (var jitter (if (< (hash ($to_float x) fi 229.0) 0.3) 1 0))
+      (put (+ ox x) (+ (+ oy y) jitter) streak)
+      (set x (+ x 1)))
+    (set i (+ i 1))))
+
+(fn t_dirt_b [ox : Int oy : Int] : Nil
+  (speckle ox oy c_dirt c_dirt_dark 233 0.44)
+  (pebbles ox oy (mix c_dirt_dark c_black 0.3) 239 4))
+
+# --- public ------------------------------------------------------------------
+
+(var tile_names
+  ["air" "grass" "dirt" "stone" "log" "leaves" "sand" "water"
+   "coal_ore" "iron_ore" "gold_ore" "plank" "stone_b" "stone_c" "dirt_b"])
+
+(fn build [] : (List Int)
+  # Draw every tile and return the RGBA buffer, `width * height * 4` long.
+  # Tiles are drawn in index order into a 4x4 grid; `/` is integer division
+  # and `//` is the remainder, so the pair gives the grid cell.
+  (reset)
+  (var slot 0)
+  (fn at [draw : Any] : Nil
+    (draw (* (// slot cols) tile) (* (/ slot cols) tile))
+    (set slot (+ slot 1)))
+  (at t_air)
+  (at t_grass)
+  (at t_dirt)
+  (at t_stone)
+  (at t_log)
+  (at t_leaves)
+  (at t_sand)
+  (at t_water)
+  (at t_coal_ore)
+  (at t_iron_ore)
+  (at t_gold_ore)
+  (at t_plank)
+  (at t_stone_b)
+  (at t_stone_c)
+  (at t_dirt_b)
+  pixels)

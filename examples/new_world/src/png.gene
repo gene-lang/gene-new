@@ -6,9 +6,11 @@
 # module is the proof — CRC32, Adler-32, a zlib stream, and the chunk layout,
 # all in Gene with no host help.
 #
-# Compression is deflate's *stored* mode: valid, trivially correct, and larger
-# than a real deflate. A 64x64 atlas is not worth a Huffman coder, and the
-# alternative was staying in JavaScript.
+# Compression is deflate with fixed Huffman codes (RFC 1951 §3.2.6) over a
+# hash-chain LZ77 matcher. Fixed codes rather than dynamic ones because the
+# code-length table is most of the complexity of a real deflate and worth
+# little on images this size; stored mode was the earlier answer and cost 5x
+# the bytes, which is too much for a file that ships with the game.
 
 (mod png)
 
@@ -72,31 +74,203 @@
   (append_all acc (u32_be (crc32 body)))
   acc)
 
-# Deflate stored blocks: BFINAL/BTYPE header, LEN, ~LEN, then the raw bytes.
-# 65535 is the largest a single stored block can carry.
-(fn zlib_stored [data : (List Int)] : (List Int)
-  (var acc : (List Int) [120 1])
-  (var total (data ~ size))
+# --- deflate -----------------------------------------------------------------
+#
+# RFC 1951 packs a bit stream two different ways in the same byte, and getting
+# this backwards produces a stream that inflates to garbage rather than to an
+# error: plain values go in least-significant bit first, while Huffman codes go
+# most-significant bit first.
+
+(var bit_out : (List Int) [])
+(var bit_acc 0)
+(var bit_count 0)
+
+(fn bits_reset [] : Nil
+  (set bit_out [])
+  (set bit_acc 0)
+  (set bit_count 0))
+
+(fn put_bit [b : Int] : Nil
+  (set bit_acc (bor bit_acc (shl b bit_count)))
+  (set bit_count (+ bit_count 1))
+  (if_yes (== bit_count 8)
+    (do
+      (bit_out ~ push! bit_acc)
+      (set bit_acc 0)
+      (set bit_count 0))))
+
+(fn put_value [v : Int n : Int] : Nil
+  # A plain data element: least-significant bit first.
+  (var i 0)
+  (while (< i n)
+    (put_bit (band (shr v i) 1))
+    (set i (+ i 1))))
+
+(fn put_code [code : Int n : Int] : Nil
+  # A Huffman code: most-significant bit first.
+  (var i (- n 1))
+  (while (>= i 0)
+    (put_bit (band (shr code i) 1))
+    (set i (- i 1))))
+
+(fn bits_flush [] : Nil
+  (if_yes (> bit_count 0)
+    (do
+      (bit_out ~ push! bit_acc)
+      (set bit_acc 0)
+      (set bit_count 0))))
+
+# The fixed literal/length alphabet, from the RFC's code-length table.
+(fn put_literal [sym : Int] : Nil
+  (if (< sym 144)
+    (put_code (+ 48 sym) 8)                    # 0-143    -> 8 bits
+    (if (< sym 256)
+      (put_code (+ 400 (- sym 144)) 9)         # 144-255  -> 9 bits
+      (if (< sym 280)
+        (put_code (- sym 256) 7)               # 256-279  -> 7 bits
+        (put_code (+ 192 (- sym 280)) 8)))))   # 280-287  -> 8 bits
+
+(var length_base
+  [3 4 5 6 7 8 9 10 11 13 15 17 19 23 27 31 35 43 51 59 67 83 99 115 131 163
+   195 227 258])
+(var length_extra
+  [0 0 0 0 0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4 5 5 5 5 0])
+(var dist_base
+  [1 2 3 4 5 7 9 13 17 25 33 49 65 97 129 193 257 385 513 769 1025 1537 2049
+   3073 4097 6145 8193 12289 16385 24577])
+(var dist_extra
+  [0 0 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13])
+
+(fn table_slot [table : (List Int) value : Int] : Int
+  # The largest index whose base is still <= value. Both tables are short, so
+  # a scan is cheaper than the arithmetic that would replace it.
+  (var i 0)
+  (var found 0)
+  (while (< i (table ~ size))
+    (if_yes (<= table/%i value) (set found i))
+    (set i (+ i 1)))
+  found)
+
+(fn put_match [length : Int distance : Int] : Nil
+  (var li (table_slot length_base length))
+  (put_literal (+ 257 li))
+  (var lx length_extra/%li)
+  (if_yes (> lx 0) (put_value (- length length_base/%li) lx))
+  (var di (table_slot dist_base distance))
+  (put_code di 5)                              # fixed distances are 5 bits
+  (var dx dist_extra/%di)
+  (if_yes (> dx 0) (put_value (- distance dist_base/%di) dx)))
+
+# --- LZ77 --------------------------------------------------------------------
+#
+# A hash chain over three-byte prefixes: `head` holds the most recent position
+# for a prefix and `prev` links each position to the one before it. The chain
+# walk is capped because the tail of a long chain almost never improves the
+# match, and an image row repeats often enough to make that tail long.
+
+(let hash_bits 15)
+(let hash_size 32768)          # 1 shl hash_bits
+(let max_match 258)
+(let min_match 3)
+(let max_chain 128)
+(let window 32768)
+
+(fn hash3 [a : Int b : Int c : Int] : Int
+  (band (bxor (bxor (shl a 10) (shl b 5)) c) (- hash_size 1)))
+
+(fn deflate_fixed [data : (List Int)] : (List Int)
+  (bits_reset)
+  (put_value 1 1)                 # BFINAL
+  (put_value 1 2)                 # BTYPE = 01, fixed Huffman
+  (var n (data ~ size))
+  (var head : (List Int) [])
+  (var i 0)
+  (while (< i hash_size)
+    (head ~ push! -1)
+    (set i (+ i 1)))
+  (var prev : (List Int) [])
+  (set i 0)
+  (while (< i n)
+    (prev ~ push! -1)
+    (set i (+ i 1)))
+
+  # A `%` path segment takes a symbol rather than a call, so every index is
+  # bound to a name before it is used. `while` shares one scope across
+  # iterations, so these are hoisted and assigned rather than redeclared.
+  (var pos 0)
+  (var best_len 0)
+  (var best_dist 0)
+  (var candidate 0)
+  (var chain 0)
+  (var limit 0)
+  (var k 0)
+  (var h 0)
   (var at 0)
-  (var remaining 0)
-  (var n 0)
-  (var final 0)
-  (if (== total 0)
-    (append_all acc [1 0 0 255 255])
-    (while (< at total)
-      (set remaining (- total at))
-      (set n (if (> remaining 65535) 65535 remaining))
-      (set final (if (== (+ at n) total) 1 0))
-      (acc ~ push! final)
-      (append_all acc (u16_le n))
-      (append_all acc (u16_le (bxor n 65535)))
-      (var k 0)
-      (var src 0)
-      (while (< k n)
-        (set src (+ at k))
-        (acc ~ push! data/%src)
-        (set k (+ k 1)))
-      (set at (+ at n))))
+  (var i1 0)
+  (var i2 0)
+  (var ahead 0)
+  (var back 0)
+  (while (< pos n)
+    (set best_len 0)
+    (set best_dist 0)
+    (if_yes (<= (+ pos min_match) n)
+      (do
+        (set i1 (+ pos 1))
+        (set i2 (+ pos 2))
+        (set h (hash3 data/%pos data/%i1 data/%i2))
+        (set candidate head/%h)
+        (set chain 0)
+        (set limit (- pos window))
+        (while (&& (>= candidate 0) (< chain max_chain))
+          (if_yes (<= candidate limit) (break))
+          (set k 0)
+          (set ahead pos)
+          (set back candidate)
+          (while (&& (< k max_match)
+                     (&& (< ahead n) (== data/%ahead data/%back)))
+            (set k (+ k 1))
+            (set ahead (+ pos k))
+            (set back (+ candidate k)))
+          (if_yes (> k best_len)
+            (do
+              (set best_len k)
+              (set best_dist (- pos candidate))))
+          (if_yes (>= best_len max_match) (break))
+          (set candidate prev/%candidate)
+          (set chain (+ chain 1)))
+        # Register this position before moving on, so later positions can find
+        # it. Only whole prefixes go in the table.
+        (set! prev/%pos head/%h)
+        (set! head/%h pos)))
+    (if (>= best_len min_match)
+      (do
+        (put_match best_len best_dist)
+        # Every position covered by the match still has to enter the chain, or
+        # the matcher goes blind to everything inside it.
+        (set k 1)
+        (while (< k best_len)
+          (set at (+ pos k))
+          (if_yes (<= (+ at min_match) n)
+            (do
+              (set i1 (+ at 1))
+              (set i2 (+ at 2))
+              (set h (hash3 data/%at data/%i1 data/%i2))
+              (set! prev/%at head/%h)
+              (set! head/%h at)))
+          (set k (+ k 1)))
+        (set pos (+ pos best_len)))
+      (do
+        (put_literal data/%pos)
+        (set pos (+ pos 1)))))
+  (put_literal 256)               # end of block
+  (bits_flush)
+  bit_out)
+
+(fn zlib_deflate [data : (List Int)] : (List Int)
+  # CMF 0x78 / FLG 0x01: deflate, 32K window, and (0x78*256 + 0x01) is a
+  # multiple of 31 as the header check requires.
+  (var acc : (List Int) [120 1])
+  (append_all acc (deflate_fixed data))
   (append_all acc (u32_be (adler32 data)))
   acc)
 
@@ -130,6 +304,6 @@
 
   (var acc : (List Int) [137 80 78 71 13 10 26 10])   # PNG signature
   (append_all acc (chunk "IHDR" ihdr))
-  (append_all acc (chunk "IDAT" (zlib_stored raw)))
+  (append_all acc (chunk "IDAT" (zlib_deflate raw)))
   (append_all acc (chunk "IEND" []))
   (from_list acc))

@@ -314,8 +314,11 @@ should be rewritten relative to `--out-dir`.
 
 `examples/new_world/`, alongside this doc — see the [README](../README.md) to
 build and run it. It is a Gene package (`gene/new_world`), so all Gene source
-lives under `src/`. Side-view, per D2. `./build.sh` runs the whole pipeline:
-assets, then `gene build --target web`, then the host shim, then the page.
+lives under `src/`. Side-view, per D2. `gene run build` runs the whole
+pipeline: assets, then `gene build --target web`, then the page. It is a
+declared application target rather than a shell script, and it asks for the
+two authorities it needs — a write directory and process execution — instead
+of inheriting ambient access to either.
 
 **In Gene**, through two different paths:
 
@@ -358,13 +361,21 @@ unwalkable however good it looks), ore rarity is ordered, the player lands and
 comes to rest without drifting, a jump leaves the ground and returns, and you
 cannot mine out of reach or seal yourself inside a wall.
 
-**Assets are generated, not drawn.** `tools/gen_atlas.mjs` writes
-`assets/tiles.png` from a named palette and a seeded hash, with its own PNG
-encoder — so the palette D2 calls the visual identity is re-tunable by editing
-numbers rather than by repainting a file nobody has the source for. It also
-emits an 8× review blow-up, and `tools/screenshot.mjs` composites a real
-viewport to PNG through the same atlas and the same `src/world.gene`, so the world
-can be reviewed and regressions caught from a terminal with no browser running.
+**Assets are generated, not drawn.** `src/atlas.gene` writes
+`assets/tiles.png` from a named palette and a seeded hash, through the
+`src/png.gene` encoder — so the palette D2 calls the visual identity is
+re-tunable by editing numbers rather than by repainting a file nobody has the
+source for. `src/preview.gene` emits an 8× review blow-up, and
+`src/screenshot.gene` composites a real viewport to PNG through the same atlas
+and the same `src/world.gene`, so the world can be reviewed and regressions
+caught from a terminal with no browser running.
+
+All three were JavaScript until the §D5.2 blockers were fixed. Porting them
+kept every committed asset byte-for-byte: the atlas hash depends on JavaScript
+`Number` semantics — a constant that does not survive as a float64, and a sum
+whose left-to-right association decides a tenth of the pixels — so the Gene
+version reproduces the float64 arithmetic deliberately rather than computing
+the "same" hash in exact integers.
 
 Three things that review caught, in order of how much they mattered:
 

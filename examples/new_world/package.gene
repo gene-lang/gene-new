@@ -4,5 +4,10 @@
   ^description "A side-view Minecraft-like written in Gene"
   ^version "0.1.0"
   ^library {^entry "src/world.gene"}
-  ^applications [(application "page" ^entry "src/page.gene")]
+  ^applications [
+    (application "build" ^entry "src/build.gene")
+    (application "page" ^entry "src/page.gene")
+    (application "preview" ^entry "src/preview.gene")
+    (application "screenshot" ^entry "src/screenshot.gene")
+  ]
 }

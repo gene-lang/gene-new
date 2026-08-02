@@ -1,0 +1,215 @@
+# Composites a real viewport of a generated world to a PNG.
+#
+# No canvas and no browser, so the world can be reviewed — and regressions
+# seen — from a terminal. It runs `src/world.gene` and `src/render.gene`
+# directly on the VM rather than through their transpiled output, so a
+# screenshot needs no `dist/` and can never drift from the source the browser
+# will be given.
+#
+# This was JavaScript until `src/png.gene` could write a PNG.
+#
+#   gene run screenshot --grant out=$fs/WriteDir -- [seed] [cam_x] [cam_y]
+
+(mod screenshot)
+
+(import [generate get_tile surface_at] from "./world.gene")
+(import [render_variant] from "./render.gene")
+(import [build width : atlas_width] from "./atlas.gene")
+(import [encode] from "./png.gene")
+
+(let tile 16)
+(let cols 4)
+(let map_w 512)
+(let map_h 192)
+(let view_w 960)
+(let view_h 480)
+
+# --- the output buffer -------------------------------------------------------
+
+(var out : (List Int) [])
+
+# JS `Math.round`, which is floor(x + 0.5) rather than half-away-from-zero.
+(fn round_half [v : Float] : Int ($to_int ($math/floor (+ v 0.5))))
+
+(fn out_index [x : Int y : Int] : Int (* (+ (* y view_w) x) 4))
+
+(fn set_rgb [i : Int r : Int g : Int b : Int] : Nil
+  (var k i)
+  (set! out/%k r)
+  (set k (+ i 1)) (set! out/%k g)
+  (set k (+ i 2)) (set! out/%k b))
+
+(fn rect [x : Int y : Int w : Int h : Int
+          r : Int g : Int b : Int] : Nil
+  (var j 0)
+  (var i 0)
+  (var dx 0)
+  (var dy 0)
+  (while (< j h)
+    (set i 0)
+    (while (< i w)
+      (set dx (+ x i))
+      (set dy (+ y j))
+      (if_yes (&& (&& (>= dx 0) (< dx view_w)) (&& (>= dy 0) (< dy view_h)))
+        (set_rgb (out_index dx dy) r g b))
+      (set i (+ i 1)))
+    (set j (+ j 1))))
+
+# --- compositing -------------------------------------------------------------
+
+(fn blit [atlas : (List Int) id : Int sx : Int sy : Int] : Nil
+  # Source-over with the atlas alpha, matching what the canvas does in the
+  # browser. Fully transparent atlas pixels are skipped rather than blended,
+  # so air over sky stays exactly the sky colour.
+  (var ax (* (// id cols) tile))
+  (var ay (* (/ id cols) tile))
+  (var y 0)
+  (var x 0)
+  (var dy 0)
+  (var dx 0)
+  (var si 0)
+  (var di 0)
+  (var a 0.0)
+  (var inv 0.0)
+  (var k 0)
+  (while (< y tile)
+    (set dy (+ sy y))
+    (if_yes (&& (>= dy 0) (< dy view_h))
+      (do
+        (set x 0)
+        (while (< x tile)
+          (set dx (+ sx x))
+          (if_yes (&& (>= dx 0) (< dx view_w))
+            (do
+              (set si (* (+ (* (+ ay y) atlas_width) (+ ax x)) 4))
+              (set k (+ si 3))
+              (set a (/ ($to_float atlas/%k) 255.0))
+              (if_yes (> a 0.0)
+                (do
+                  (set inv (- 1.0 a))
+                  (set di (out_index dx dy))
+                  (var c 0)
+                  (while (< c 3)
+                    (var s (+ si c))
+                    (var d (+ di c))
+                    (set! out/%d
+                      ($to_int (+ (* ($to_float atlas/%s) a)
+                                  (* ($to_float out/%d) inv))))
+                    (set c (+ c 1)))))))
+          (set x (+ x 1)))))
+    (set y (+ y 1))))
+
+# --- the shot ----------------------------------------------------------------
+
+(fn sky [cam_y : Float] : Nil
+  # Matches the gradient main.gene paints, so the screenshot is representative
+  # rather than merely correct.
+  (var depth ($math/clamp (/ (- (/ cam_y 16.0) 40.0) 90.0) 0.0 1.0))
+  (var deep (> depth 0.5))
+  (var dim (> depth 0.2))
+  (var top_r (if deep 11 143)) (var top_g (if deep 13 196))
+  (var top_b (if deep 18 232))
+  (var bot_r (if dim 11 207)) (var bot_g (if dim 13 230))
+  (var bot_b (if dim 18 244))
+  (var y 0)
+  (var t 0.0)
+  (var r 0) (var g 0) (var b 0)
+  (var x 0)
+  (while (< y view_h)
+    (set t (/ ($to_float y) ($to_float view_h)))
+    (set r ($to_int (+ ($to_float top_r) (* ($to_float (- bot_r top_r)) t))))
+    (set g ($to_int (+ ($to_float top_g) (* ($to_float (- bot_g top_g)) t))))
+    (set b ($to_int (+ ($to_float top_b) (* ($to_float (- bot_b top_b)) t))))
+    (set x 0)
+    (while (< x view_w)
+      (set_rgb (out_index x y) r g b)
+      (set x (+ x 1)))
+    (set y (+ y 1))))
+
+(fn shoot [seed : Float cam_x : Float cam_y : Float] : (List Int)
+  # Returns the RGBA viewport, `view_w * view_h * 4` long.
+  (var atlas (build))
+  (set out [])
+  (var n (* (* view_w view_h) 4))
+  (var i 0)
+  (while (< i n)
+    (out ~ push! 255)
+    (set i (+ i 1)))
+  (sky cam_y)
+
+  (var tiles : (List Float) [])
+  (var cells (* map_w map_h))
+  (set i 0)
+  (while (< i cells)
+    (tiles ~ push! 0.0)
+    (set i (+ i 1)))
+  (generate tiles ($to_float map_w) ($to_float map_h) seed)
+
+  (var x0 ($to_int ($math/floor (/ cam_x 16.0))))
+  (var y0 ($to_int ($math/floor (/ cam_y 16.0))))
+  (var ty y0)
+  (var tx 0)
+  (var id 0.0)
+  (var ground 0.0)
+  (var shade 0.0)
+  (while (< ty (+ (+ y0 (/ view_h tile)) 2))
+    (set tx x0)
+    (while (< tx (+ (+ x0 (/ view_w tile)) 2))
+      (set id (get_tile tiles ($to_float tx) ($to_float ty)
+                        ($to_float map_w) ($to_float map_h)))
+      (if (> id 0.0)
+        (blit atlas
+              ($to_int (render_variant id ($to_float tx) ($to_float ty)))
+              ($to_int (- ($to_float (* tx tile)) cam_x))
+              ($to_int (- ($to_float (* ty tile)) cam_y)))
+        (do
+          # Below the surface but empty: a cave, shaded by depth so the void
+          # does not read as sky.
+          (set ground (surface_at ($to_float tx) seed))
+          (if_yes (> ($to_float ty) ground)
+            (do
+              (set shade ($math/clamp (/ (- ($to_float ty) ground) 55.0)
+                                      0.0 1.0))
+              (rect ($to_int (- ($to_float (* tx tile)) cam_x))
+                    ($to_int (- ($to_float (* ty tile)) cam_y))
+                    tile tile
+                    (round_half (- 58.0 (* 34.0 shade)))
+                    (round_half (- 64.0 (* 38.0 shade)))
+                    (round_half (- 76.0 (* 44.0 shade))))))))
+      (set tx (+ tx 1)))
+    (set ty (+ ty 1)))
+
+  # The player, drawn the way the shell draws them.
+  (var centre_x (/ map_w 2))
+  (var px (round_half (- (* (+ ($to_float centre_x) 0.2) 16.0) cam_x)))
+  (var py (round_half (- (- (* (surface_at ($to_float centre_x) seed) 16.0)
+                            cam_y)
+                         28.8)))
+  (rect px (+ py 19) 10 10 47 53 66)
+  (rect px (+ py 8) 10 11 200 90 84)
+  (rect (- px 1) py 12 9 232 195 158)
+  out)
+
+(fn default_cam_x [] : Float
+  (- (* ($to_float (/ map_w 2)) 16.0) (/ ($to_float view_w) 2.0)))
+
+(fn default_cam_y [seed : Float] : Float
+  (* (- (surface_at ($to_float (/ map_w 2)) seed) 8.0) 16.0))
+
+(fn main [args, ^out_dir : Capability] : Nil
+  # Whole tiles only: a fractional camera would land the blit on a
+  # non-integer pixel index, which the JavaScript this replaces silently
+  # turned into a blank frame.
+  (var argv ($body args))
+  (var argc (argv ~ size))
+  (var seed (if (> argc 0)
+              ($to_float ($parse/parse_int argv/0)) 1.0))
+  (var cam_x (if (> argc 1)
+               ($to_float ($parse/parse_int argv/1)) (default_cam_x)))
+  (var cam_y (if (> argc 2)
+               ($to_float ($parse/parse_int argv/2)) (default_cam_y seed)))
+  (var pixels (shoot seed cam_x cam_y))
+  (var path ($ "assets/screenshot_seed" ($to_int seed) ".png"))
+  ($fs/write_bytes out_dir path (encode view_w view_h pixels))
+  ($println "wrote " path "  (seed " ($to_int seed)
+            ", cam " ($to_int cam_x) "," ($to_int cam_y) ")"))
