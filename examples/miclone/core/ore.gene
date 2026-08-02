@@ -1,0 +1,272 @@
+# The ore registry — design.md §3, stage 4.
+#
+# §3's third registry, and upstream's `OreManager` in shape: an ore declares
+# what it places, what it may replace, an altitude band, a rarity, and one of
+# three distributions. `scatter` is the coal-and-iron case, `blob` is the
+# pocket-of-gravel case, and `sheet` is the sedimentary-band case; upstream has
+# more (`puff`, `vein`, `stratum`) and they are the same machinery with more
+# parameters.
+#
+# **`wherein` is what makes ores composable.** An ore replaces only the node it
+# names, so an ore registered against stone cannot eat a cave, a lake, or
+# another ore, and two mods that know nothing about each other cannot corrupt
+# each other's output. It is also why ore runs *after* caves in §3's pipeline:
+# once a tunnel is carved its nodes are air, so no ore floats in the open, with
+# no second pass to clean up.
+#
+# The cost model is the one §D6.3 forces on every stage — the work is
+# proportional to the ore actually placed, not to the volume searched. A cell
+# that rolls no ore costs one `mix32`.
+
+(mod ore ^profile web)
+
+(import [mix32 hash3] from "./exact.gene")
+
+(let two32 4294967296.0)
+(let max_ores 64.0)
+
+(let shape_scatter 0.0)
+(let shape_sheet 1.0)
+(let shape_blob 2.0)
+
+# The world is partitioned into cubic cells; each cell rolls once per
+# registered ore. Rarity is therefore "how often a cell hosts this ore" rather
+# than upstream's `clust_scarcity` in nodes, which is the same quantity divided
+# by the cell volume and easier to reason about at a registration site.
+(let cell 16.0)
+
+# The farthest a cluster anchored in a cell may extend past it, and so how many
+# cells a block has to ask. Understating it drops the clusters that straddle a
+# border — deterministically, which is the kind of gap that never shows up as
+# flakiness.
+(let reach 8.0)
+
+(let ore_seed_offset 4211.0)
+
+(fn unit32 [h : F64] : F64
+  (/ h two32))
+
+# --- the registry ------------------------------------------------------------
+
+(type OreRegistry
+  ^props {^names    (List Str)
+          ^node     (Buffer F32)   # what is placed
+          ^wherein  (Buffer F32)   # the only node it may replace
+          ^shape    (Buffer F32)
+          ^y_min    (Buffer F64)
+          ^y_max    (Buffer F64)
+          ^chance   (Buffer F64)   # 0..1, per cell
+          ^size     (Buffer F64)   # scatter: cube side; blob: radius; sheet: thickness
+          ^amount   (Buffer F64)   # scatter: nodes per cluster
+          ^count    (Buffer F32)}
+
+  (ctor []
+    (set! self/names [])
+    (set! self/node ($buffer F32 max_ores))
+    (set! self/wherein ($buffer F32 max_ores))
+    (set! self/shape ($buffer F32 max_ores))
+    (set! self/y_min ($buffer F64 max_ores))
+    (set! self/y_max ($buffer F64 max_ores))
+    (set! self/chance ($buffer F64 max_ores))
+    (set! self/size ($buffer F64 max_ores))
+    (set! self/amount ($buffer F64 max_ores))
+    (set! self/count ($buffer F32 1.0))))
+
+(fn ore_count [o : OreRegistry] : F64
+  (o/count ~ get 0.0))
+
+(type OreRegistryFull
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for OreRegistryFull)
+
+(fn register_ore [o : OreRegistry name : Str node : F64 wherein : F64
+                  shape : F64 y_min : F64 y_max : F64
+                  chance : F64 size : F64 amount : F64] : F64
+  (var id (ore_count o))
+  (var slot id)
+  (if_yes (>= slot max_ores)
+    (fail (new OreRegistryFull $"ore registry is full at ${max_ores} entries")))
+  (o/names ~ push! name)
+  (o/node ~ set! slot node)
+  (o/wherein ~ set! slot wherein)
+  (o/shape ~ set! slot shape)
+  (o/y_min ~ set! slot y_min)
+  (o/y_max ~ set! slot y_max)
+  (o/chance ~ set! slot chance)
+  (o/size ~ set! slot size)
+  (o/amount ~ set! slot amount)
+  (o/count ~ set! 0.0 (+ id 1.0))
+  id)
+
+(fn ore_name [o : OreRegistry id : F64] : Str
+  (var names o/names)
+  (var i id)
+  names/%i)
+
+# --- placement ---------------------------------------------------------------
+
+# One node, if it is inside the buffer, inside the ore's altitude band, and
+# currently the node the ore is allowed to replace. Every shape below goes
+# through here, so those three rules are stated once.
+(fn place [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+           wx : F64 wy : F64 wz : F64
+           node : F64 wherein : F64 y_min : F64 y_max : F64] : Nil
+  (var x (- wx ox))
+  (var y (- wy oy))
+  (var z (- wz oz))
+  (if_yes (&& (&& (&& (>= x 0.0) (< x dim)) (&& (>= y 0.0) (< y dim)))
+              (&& (&& (>= z 0.0) (< z dim)) (&& (>= wy y_min) (<= wy y_max))))
+    (var i (+ x (+ (* y dim) (* z (* dim dim)))))
+    (if_yes (== (out ~ get i) wherein)
+      (out ~ set! i node))))
+
+# `amount` nodes at hashed positions inside a `size³` cube, which is upstream's
+# `ore_scatter`. The cube is anchored anywhere in the cell, so clusters do not
+# line up on the cell grid — the failure this avoids is coal appearing in a
+# visible lattice, which is what anchoring at the cell origin produces.
+(fn place_scatter [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+                   cox : F64 coy : F64 coz : F64 h0 : F64
+                   node : F64 wherein : F64 y_min : F64 y_max : F64
+                   size : F64 amount : F64] : Nil
+  (var h (mix32 h0))
+  (var ax (+ cox (* (unit32 h) (- cell size))))
+  (set h (mix32 h))
+  (var ay (+ coy (* (unit32 h) (- cell size))))
+  (set h (mix32 h))
+  (var az (+ coz (* (unit32 h) (- cell size))))
+  (var k 0.0)
+  (while (< k amount)
+    (set h (mix32 h))
+    (var dx ($math/floor (* (unit32 h) size)))
+    (set h (mix32 h))
+    (var dy ($math/floor (* (unit32 h) size)))
+    (set h (mix32 h))
+    (var dz ($math/floor (* (unit32 h) size)))
+    (place out dim ox oy oz ($math/floor (+ ax dx)) ($math/floor (+ ay dy))
+           ($math/floor (+ az dz)) node wherein y_min y_max)
+    (set k (+ k 1.0))))
+
+# A sphere of radius `size` centred anywhere in the cell — gravel and dirt
+# pockets in stone.
+(fn place_blob [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+                cox : F64 coy : F64 coz : F64 h0 : F64
+                node : F64 wherein : F64 y_min : F64 y_max : F64
+                size : F64] : Nil
+  (var h (mix32 h0))
+  (var cx (+ cox (* (unit32 h) cell)))
+  (set h (mix32 h))
+  (var cy (+ coy (* (unit32 h) cell)))
+  (set h (mix32 h))
+  (var cz (+ coz (* (unit32 h) cell)))
+  (var r2 (* size size))
+  # Clipped to the buffer before iterating, not inside `place`. A cell reaches
+  # `reach` nodes past the buffer on every axis by construction, so an unclipped
+  # blob spends most of its loop discovering that nodes are out of range — the
+  # ore stage measured 7.6 ms/block that way against caves' 4.3, for a stage
+  # that places two orders of magnitude fewer nodes.
+  (var z ($math/max oz ($math/ceil (- cz size))))
+  (var z1 ($math/min (+ oz (- dim 1.0)) ($math/floor (+ cz size))))
+  (var y0 ($math/max oy ($math/ceil (- cy size))))
+  (var y1 ($math/min (+ oy (- dim 1.0)) ($math/floor (+ cy size))))
+  (var x0 ($math/max ox ($math/ceil (- cx size))))
+  (var x1 ($math/min (+ ox (- dim 1.0)) ($math/floor (+ cx size))))
+  (while (<= z z1)
+    (var dz (- z cz))
+    (var d_z (* dz dz))
+    (var y y0)
+    (while (<= y y1)
+      (var dy (- y cy))
+      (var d_yz (+ d_z (* dy dy)))
+      (if_yes (<= d_yz r2)
+        (var x x0)
+        (while (<= x x1)
+          (var dx (- x cx))
+          (if_yes (<= (+ d_yz (* dx dx)) r2)
+            (place out dim ox oy oz x y z node wherein y_min y_max))
+          (set x (+ x 1.0))))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
+# A horizontal slab `size` nodes thick across the cell's whole footprint, at a
+# hashed altitude inside it. Confined to the cell footprint on purpose: it means
+# a sheet needs no horizontal margin, so `reach` is set by the other two shapes
+# alone, and adjacent cells produce offset bands rather than one flat plane
+# across the world.
+(fn place_sheet [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+                 cox : F64 coy : F64 coz : F64 h0 : F64
+                 node : F64 wherein : F64 y_min : F64 y_max : F64
+                 size : F64] : Nil
+  (var h (mix32 h0))
+  (var base ($math/floor (+ coy (* (unit32 h) (- cell size)))))
+  # Clipped to the buffer, for `place_blob`'s reason and more so: a full-cell
+  # slab is 512 nodes and at most a fraction of one lands in any given block.
+  (var z ($math/max oz coz))
+  (var z1 ($math/min (+ oz (- dim 1.0)) (+ coz (- cell 1.0))))
+  (var y0 ($math/max oy base))
+  (var y1 ($math/min (+ oy (- dim 1.0)) (+ base (- size 1.0))))
+  (var x0 ($math/max ox cox))
+  (var x1 ($math/min (+ ox (- dim 1.0)) (+ cox (- cell 1.0))))
+  (while (<= z z1)
+    (var y y0)
+    (while (<= y y1)
+      (var x x0)
+      (while (<= x x1)
+        (place out dim ox oy oz x y z node wherein y_min y_max)
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
+# Every registered ore's roll for one cell.
+#
+# One `hash3` per cell, shared by every ore, with the per-ore rolls taken from
+# successive `mix32` rounds off it — the same arithmetic as `core/cave.gene`,
+# for the same reason. The rarity roll comes first and a miss costs exactly one
+# `mix32`, so registering an ore that almost never appears is almost free.
+(fn cell_ores [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+               o : OreRegistry cx : F64 cy : F64 cz : F64 seed : F64] : Nil
+  (var cox (* cx cell))
+  (var coy (* cy cell))
+  (var coz (* cz cell))
+  (var h (hash3 cx cy cz (+ seed ore_seed_offset)))
+  (var n (ore_count o))
+  (var i 0.0)
+  (while (< i n)
+    (set h (mix32 h))
+    (if_yes (< (unit32 h) (o/chance ~ get i))
+      (var node (o/node ~ get i))
+      (var wherein (o/wherein ~ get i))
+      (var y_min (o/y_min ~ get i))
+      (var y_max (o/y_max ~ get i))
+      (var size (o/size ~ get i))
+      (var shape (o/shape ~ get i))
+      (if (== shape shape_scatter)
+        (then (place_scatter out dim ox oy oz cox coy coz h node wherein
+                             y_min y_max size (o/amount ~ get i)))
+        (elif (== shape shape_blob)
+          (place_blob out dim ox oy oz cox coy coz h node wherein
+                      y_min y_max size))
+        (else (place_sheet out dim ox oy oz cox coy coz h node wherein
+                           y_min y_max size))))
+    (set i (+ i 1.0))))
+
+# Place every ore that can reach the region buffer.
+(fn place_all [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+               o : OreRegistry seed : F64] : Nil
+  (var cx0 ($math/floor (/ (- ox reach) cell)))
+  (var cx1 ($math/floor (/ (+ (+ ox dim) reach) cell)))
+  (var cy0 ($math/floor (/ (- oy reach) cell)))
+  (var cy1 ($math/floor (/ (+ (+ oy dim) reach) cell)))
+  (var cz0 ($math/floor (/ (- oz reach) cell)))
+  (var cz1 ($math/floor (/ (+ (+ oz dim) reach) cell)))
+  (var cz cz0)
+  (while (<= cz cz1)
+    (var cy cy0)
+    (while (<= cy cy1)
+      (var cx cx0)
+      (while (<= cx cx1)
+        (cell_ores out dim ox oy oz o cx cy cz seed)
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0))))

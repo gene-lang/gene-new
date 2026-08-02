@@ -6,6 +6,33 @@
 # inherited so the serialized layout and the loop order of any algorithm read
 # from Luanti agree with ours instead of being silently transposed.
 #
+# **A content id is an `F64`, and `u16` is the storage width rather than the
+# representation.** §1 says a node's content is a `u16`, and it is — on disk
+# (§11) and on the wire (§10), which is where the width buys anything. In memory
+# the buffer is `F32`, because §D7.1 types integer-buffer elements as `Int` and
+# `Int` lowers to `bigint` in the web profile. Measured over 5,832 elements:
+#
+#   scan   an `Int`-typed buffer    60.4 µs      an `F32`-typed one   6.8 µs
+#   scan and use the value as an index
+#          `Int`                    93.0 µs      `F32`                6.9 µs
+#
+# 9x and 13.5x, because an `Int` read emits `BigInt(arr[i])` — an allocation —
+# and indexing with it emits `Number(...)` to undo it. §5's mesher does exactly
+# that seven times per node, so this is the difference between meshing a chunk
+# in 0.09 ms and 0.44 ms.
+#
+# §D6.1 requires that "no `bigint` appears anywhere on the meshing or render hot
+# path" and recorded the criterion as **not met**, with the compiler-side fix
+# (§D7.10's numeric-elision pass) attempted and reverted as unsound. This is the
+# source-side answer to the same problem, and it is sound because it changes
+# what the storage holds rather than eliding a conversion out of it: every value
+# is a float, everywhere, so there is no second representation to disagree with.
+#
+# It costs 2 bytes per node in the client's memory and nothing on the VM, whose
+# `Buffer` is a boxed `seq[Value]` either way (§D7.2). `F32` represents every
+# integer below 2^24 exactly and `core/registry.gene` caps content at 4,096, so
+# no id is ever rounded and the two backends cannot disagree about one.
+#
 # **Storage is three parallel arrays, not one array of 4-byte structs.**
 # Upstream packs a `MapNode` per element; we do not, because the two hot
 # readers want different things. Meshing (§5) scans content and never touches
@@ -38,12 +65,12 @@
 # `first_dynamic_content` upward at load (§2).
 #
 # `air` is 0 so that a freshly allocated block is already all air: a zeroed
-# `(Buffer U16)` needs no fill pass, and generation writes only what is solid.
+# content buffer needs no fill pass, and generation writes only what is solid.
 
-(let content_air 0)
-(let content_unknown 1)   # definition missing — drawn, walkable, never deleted
-(let content_ignore 2)    # not generated yet — never sent, never walkable
-(let first_dynamic_content 3)
+(let content_air 0.0)
+(let content_unknown 1.0)  # definition missing — drawn, walkable, never deleted
+(let content_ignore 2.0)   # not generated yet — never sent, never walkable
+(let first_dynamic_content 3.0)
 
 # --- coordinates -------------------------------------------------------------
 #
@@ -99,33 +126,33 @@
 # --- the block ---------------------------------------------------------------
 
 (type Block
-  ^props {^content (Buffer U16)
-          ^param1  (Buffer U8)
-          ^param2  (Buffer U8)}
+  ^props {^content (Buffer F32)
+          ^param1  (Buffer F32)
+          ^param2  (Buffer F32)}
 
   (ctor []
     # Zeroed, which is already an all-air block with no light: `content_air` is
     # 0 by construction (see above), so this needs no fill pass.
-    (set! self/content ($buffer U16 block_nodes))
-    (set! self/param1 ($buffer U8 block_nodes))
-    (set! self/param2 ($buffer U8 block_nodes))))
+    (set! self/content ($buffer F32 block_nodes))
+    (set! self/param1 ($buffer F32 block_nodes))
+    (set! self/param2 ($buffer F32 block_nodes))))
 
-(fn get_content [b : Block x : F64 y : F64 z : F64] : Int
+(fn get_content [b : Block x : F64 y : F64 z : F64] : F64
   (b/content ~ get (block_index x y z)))
 
-(fn set_content [b : Block x : F64 y : F64 z : F64 id : Int] : Nil
+(fn set_content [b : Block x : F64 y : F64 z : F64 id : F64] : Nil
   (b/content ~ set! (block_index x y z) id))
 
-(fn get_param1 [b : Block x : F64 y : F64 z : F64] : Int
+(fn get_param1 [b : Block x : F64 y : F64 z : F64] : F64
   (b/param1 ~ get (block_index x y z)))
 
-(fn set_param1 [b : Block x : F64 y : F64 z : F64 v : Int] : Nil
+(fn set_param1 [b : Block x : F64 y : F64 z : F64 v : F64] : Nil
   (b/param1 ~ set! (block_index x y z) v))
 
-(fn get_param2 [b : Block x : F64 y : F64 z : F64] : Int
+(fn get_param2 [b : Block x : F64 y : F64 z : F64] : F64
   (b/param2 ~ get (block_index x y z)))
 
-(fn set_param2 [b : Block x : F64 y : F64 z : F64 v : Int] : Nil
+(fn set_param2 [b : Block x : F64 y : F64 z : F64 v : F64] : Nil
   (b/param2 ~ set! (block_index x y z) v))
 
 # --- light, packed into param1 (§4) -------------------------------------------
@@ -134,19 +161,20 @@
 # interpolated at render time by the time of day, which is why both travel in
 # one byte rather than being computed per frame.
 
-(let light_max 15)
+(let light_max 15.0)
 
-(fn light_day [packed : Int] : Int
+(fn light_day [packed : F64] : F64
   (bit_shift_right packed))
 
-(fn light_night [packed : Int] : Int
-  (- packed (* (bit_shift_right packed) 16)))
+(fn light_night [packed : F64] : F64
+  (- packed (* (bit_shift_right packed) 16.0)))
 
-(fn pack_light [day : Int night : Int] : Int
-  (+ (* day 16) night))
+(fn pack_light [day : F64 night : F64] : F64
+  (+ (* day 16.0) night))
 
 # `$bit` is a VM namespace and not in the portable web stdlib, so the nibble
 # split is arithmetic. Division by 16 is exact for the values in a byte, and
-# `to_float`/`to_int` keep it inside the `Int` the caller has.
-(fn bit_shift_right [v : Int] : Int
-  ($to_int ($math/floor (/ ($to_float v) 16.0))))
+# `floor` is exact by definition, so this is a shift written as arithmetic
+# rather than an approximation of one.
+(fn bit_shift_right [v : F64] : F64
+  ($math/floor (/ v 16.0)))

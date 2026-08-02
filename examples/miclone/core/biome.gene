@@ -1,0 +1,170 @@
+# The biome registry — design.md §3, stage 2.
+#
+# §3: "Every stage is a registry a mod can add to, which is Luanti's design and
+# the reason its games look nothing alike." This is the first of those
+# registries, and its shape is upstream's `BiomeManager`: a biome is a point in
+# (heat, humidity) space plus an altitude band, and a column belongs to the
+# **nearest registered point** rather than to a hand-partitioned region of the
+# space. That is what makes the registry open — a mod adds a point and the
+# space repartitions around it, with no table of boundaries for it to
+# contradict.
+#
+# Storage is parallel arrays keyed by biome id, for `core/registry.gene`'s
+# reason: selection runs once per column, 324 times per padded block, and an
+# indexed read into a typed array is the cheapest thing both backends have.
+#
+# **Node references are content ids, not names.** The caller resolves them
+# through the node registry at registration; nothing here ever compares a name
+# on the generation path (§2). Ids are `F64` and the columns holding them are
+# `F32`, for the reason `core/world.gene` measures.
+
+(mod biome ^profile web)
+
+(let max_biomes 256.0)
+
+# --- the registry ------------------------------------------------------------
+
+(type BiomeRegistry
+  ^props {^names           (List Str)
+          ^heat            (Buffer F64)   # 0..100, upstream's scale
+          ^humidity        (Buffer F64)   # 0..100
+          ^y_min           (Buffer F64)
+          ^y_max           (Buffer F64)
+          ^node_top        (Buffer F32)   # the surface node
+          ^node_filler     (Buffer F32)   # under the surface
+          ^node_stone      (Buffer F32)   # under the filler, to the bottom
+          ^node_underwater (Buffer F32)   # replaces top+filler below sea level
+          ^depth_top       (Buffer F32)
+          ^depth_filler    (Buffer F32)
+          ^count           (Buffer F32)}  # one cell, as core/registry.gene
+
+  (ctor []
+    (set! self/names [])
+    (set! self/heat ($buffer F64 max_biomes))
+    (set! self/humidity ($buffer F64 max_biomes))
+    (set! self/y_min ($buffer F64 max_biomes))
+    (set! self/y_max ($buffer F64 max_biomes))
+    (set! self/node_top ($buffer F32 max_biomes))
+    (set! self/node_filler ($buffer F32 max_biomes))
+    (set! self/node_stone ($buffer F32 max_biomes))
+    (set! self/node_underwater ($buffer F32 max_biomes))
+    (set! self/depth_top ($buffer F32 max_biomes))
+    (set! self/depth_filler ($buffer F32 max_biomes))
+    (set! self/count ($buffer F32 1.0))))
+
+(fn biome_count [b : BiomeRegistry] : F64
+  (b/count ~ get 0.0))
+
+(type BiomeRegistryFull
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for BiomeRegistryFull)
+
+(fn register_biome [b : BiomeRegistry name : Str
+                    heat : F64 humidity : F64 y_min : F64 y_max : F64
+                    node_top : F64 depth_top : F64
+                    node_filler : F64 depth_filler : F64
+                    node_stone : F64 node_underwater : F64] : F64
+  (var id (biome_count b))
+  (var slot id)
+  (if_yes (>= slot max_biomes)
+    (fail (new BiomeRegistryFull
+               $"biome registry is full at ${max_biomes} entries")))
+  (b/names ~ push! name)
+  (b/heat ~ set! slot heat)
+  (b/humidity ~ set! slot humidity)
+  (b/y_min ~ set! slot y_min)
+  (b/y_max ~ set! slot y_max)
+  (b/node_top ~ set! slot node_top)
+  (b/depth_top ~ set! slot depth_top)
+  (b/node_filler ~ set! slot node_filler)
+  (b/depth_filler ~ set! slot depth_filler)
+  (b/node_stone ~ set! slot node_stone)
+  (b/node_underwater ~ set! slot node_underwater)
+  (b/count ~ set! 0.0 (+ id 1.0))
+  id)
+
+(fn biome_name [b : BiomeRegistry id : F64] : Str
+  (var names b/names)
+  (var i id)
+  names/%i)
+
+# --- selection ---------------------------------------------------------------
+#
+# Nearest point in (heat, humidity) space among the biomes whose altitude band
+# contains the column's surface, by squared distance — the square root is
+# monotonic, so taking it would only cost a `sqrt` and change nothing, and
+# `sqrt` is one of the few transcendental-adjacent operations §D3.1 does allow.
+# Skipping it is about the 324 calls per block, not about the rule.
+#
+# The scan is linear over the whole registry and deliberately so: a real game
+# registers on the order of ten biomes, and a spatial index over ten points
+# would be a second structure to keep in step with the columns for no
+# measurable gain. If a game ever registers hundreds, this is the line to
+# revisit and the profile will say so.
+#
+# **Ties go to the lower id**, enforced by the strict `<`. A tie is reachable —
+# two biomes registered at the same point, or a column exactly between them —
+# and "whichever the loop saw last" would make terrain depend on registration
+# order in a way that a mod reordering its `depends` could silently change.
+(fn biome_at [b : BiomeRegistry heat : F64 humidity : F64 y : F64] : F64
+  (var n (biome_count b))
+  (var best 0.0)
+  (var best_d -1.0)
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (&& (>= y (b/y_min ~ get i)) (<= y (b/y_max ~ get i)))
+      (var dh (- heat (b/heat ~ get i)))
+      (var dm (- humidity (b/humidity ~ get i)))
+      (var d (+ (* dh dh) (* dm dm)))
+      (if_yes (|| (< best_d 0.0) (< d best_d))
+        (set best_d d)
+        (set best i)))
+    (set i (+ i 1.0)))
+  best)
+
+# --- column materials --------------------------------------------------------
+#
+# The node at `depth` below the surface, for a column whose surface is at
+# `surface`. Depth 0 is the surface node itself.
+#
+# Below sea level the top and filler bands are replaced wholesale by
+# `node_underwater`, which is upstream's `node_riverbed` idea: a lake bed is
+# sand or gravel whatever the biome above the water line is, and without this
+# rule a desert shore and a forest shore look identical because both are just
+# "the biome's top node, wet".
+(fn column_node [b : BiomeRegistry id : F64 depth : F64
+                 underwater : Bool] : F64
+  (var i id)
+  (var top_d (b/depth_top ~ get i))
+  (if (< depth top_d)
+    (then (if underwater (b/node_underwater ~ get i) (b/node_top ~ get i)))
+    (elif (< depth (+ top_d (b/depth_filler ~ get i)))
+      (if underwater (b/node_underwater ~ get i) (b/node_filler ~ get i)))
+    (else (b/node_stone ~ get i))))
+
+# How deep the top and filler bands reach together, so a caller can fill the
+# stone run in one go instead of asking per node.
+(fn cover_depth [b : BiomeRegistry id : F64] : F64
+  (var i id)
+  (+ (b/depth_top ~ get i) (b/depth_filler ~ get i)))
+
+# Column accessors, for the run-based filler in `core/mapgen.gene`. It needs the
+# band boundaries and the node of each band once per column, not the node at a
+# depth once per node — which is the whole of §D6.3's "run-length column
+# filling, not per-node writes".
+(fn top_depth [b : BiomeRegistry id : F64] : F64
+  (b/depth_top ~ get id))
+
+(fn top_node [b : BiomeRegistry id : F64] : F64
+  (b/node_top ~ get id))
+
+(fn filler_node [b : BiomeRegistry id : F64] : F64
+  (b/node_filler ~ get id))
+
+(fn stone_node [b : BiomeRegistry id : F64] : F64
+  (b/node_stone ~ get id))
+
+(fn underwater_node [b : BiomeRegistry id : F64] : F64
+  (b/node_underwater ~ get id))

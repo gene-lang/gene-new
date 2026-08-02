@@ -16,6 +16,8 @@
 
 (mod mesh ^profile web)
 
+(import [Registry draw_airlike] from "./registry.gene")
+
 # --- geometry constants ------------------------------------------------------
 
 (let chunk_dim 16.0)
@@ -45,28 +47,22 @@
 
 # --- node classification -----------------------------------------------------
 #
-# Ids are `Int` because §1 says a node's content is a `u16` (see
-# `core/mapgen.gene`); everything geometric below is `F64`.
-
-(let n_air 0)
-(let n_water 5)
-
-(fn opaque? [id : Int] : Bool
-  (&& (!= id n_air) (!= id n_water)))
-
-# Which atlas tile a node shows on a given face. Grass is the reason this takes
-# a face at all: its top is grass, its sides are a grass/dirt transition, and
-# its bottom is plain dirt.
-(fn tile_for [id : Int top : Bool bottom : Bool] : F64
-  (if (== id 1)
-    (then 0.0)                                   # stone
-    (elif (== id 2) 1.0)                         # dirt
-    (elif (== id 3)
-      (if top
-        (then 2.0)
-        (else (if bottom 1.0 3.0))))             # grass: top / dirt / side
-    (elif (== id 4) 4.0)                         # sand
-    (else 0.0)))
+# Ids are `F64`, like everything geometric here — see `core/world.gene`. This is
+# the loop that made that rule pay: it reads node content seven times per node,
+# and as `Int` each of those reads allocated a `BigInt` and then converted it
+# back to index a registry column.
+#
+# **The classification lives in the registry, not here.** This file used to
+# carry a hardcoded `opaque?` over ids 0 and 5 and a `tile_for` table over ids
+# 1 to 4, which was right for the four nodes §D6.1's spike generated and is
+# wrong for anything a mod registers — the ids are assigned at load and mean
+# nothing to a mesher (§2). §2 puts drawtype, transparency, and tiles in the
+# client half of the registry precisely so the mesher can ask.
+#
+# Two questions, not one: a face exists when its owner is **drawn** and its
+# neighbour is not **opaque**. Collapsing them was survivable while the node set
+# had no glass in it; it is what makes glass either invisible or solid-looking
+# the moment one exists.
 
 # --- padded-neighbourhood access ---------------------------------------------
 #
@@ -77,12 +73,20 @@
 (fn pad_index [x : F64 y : F64 z : F64] : F64
   (+ (+ x 1.0) (+ (* (+ y 1.0) pad_stride_y) (* (+ z 1.0) pad_stride_z))))
 
-(fn node_at [padded : (Buffer U16) x : F64 y : F64 z : F64] : Int
+(fn node_at [padded : (Buffer F32) x : F64 y : F64 z : F64] : F64
   (padded ~ get (pad_index x y z)))
 
-# A face is drawn when the node is opaque and the neighbour it faces is not.
-(fn face_visible? [padded : (Buffer U16) x : F64 y : F64 z : F64] : Bool
-  (! (opaque? (node_at padded x y z))))
+# A face exists when the neighbour it faces does not hide it.
+#
+# Both traversals below hoist the two columns they need out of the registry
+# once per chunk and index them directly, rather than calling `opaque?` and
+# `drawn?` per neighbour. The registry is still the source of truth — these are
+# its columns, not a copy — but the lookup happens 28,672 times per chunk, and
+# at that count the cross-module call and the property load off `reg` cost more
+# than the array read they wrap.
+(fn face_visible? [opaque_col : (Buffer F32) padded : (Buffer F32)
+                   x : F64 y : F64 z : F64] : Bool
+  (!= (opaque_col ~ get (node_at padded x y z)) 1.0))
 
 # --- pass one: count ---------------------------------------------------------
 #
@@ -91,7 +95,9 @@
 # upload a sub-range, which is a binding that does not exist. Counting costs one
 # extra traversal of 4,096 nodes and buys exactly-sized buffers.
 
-(fn count_faces [padded : (Buffer U16)] : F64
+(fn count_faces [reg : Registry padded : (Buffer F32)] : F64
+  (var opaque_col reg/opaque)
+  (var drawtype_col reg/drawtype)
   (var faces 0.0)
   (var z 0.0)
   (while (< z chunk_dim)
@@ -99,13 +105,19 @@
     (while (< y chunk_dim)
       (var x 0.0)
       (while (< x chunk_dim)
-        (if_yes (opaque? (node_at padded x y z))
-          (if_yes (face_visible? padded (+ x 1.0) y z) (set faces (+ faces 1.0)))
-          (if_yes (face_visible? padded (- x 1.0) y z) (set faces (+ faces 1.0)))
-          (if_yes (face_visible? padded x (+ y 1.0) z) (set faces (+ faces 1.0)))
-          (if_yes (face_visible? padded x (- y 1.0) z) (set faces (+ faces 1.0)))
-          (if_yes (face_visible? padded x y (+ z 1.0)) (set faces (+ faces 1.0)))
-          (if_yes (face_visible? padded x y (- z 1.0)) (set faces (+ faces 1.0))))
+        (if_yes (!= (drawtype_col ~ get (node_at padded x y z)) draw_airlike)
+          (if_yes (face_visible? opaque_col padded (+ x 1.0) y z)
+            (set faces (+ faces 1.0)))
+          (if_yes (face_visible? opaque_col padded (- x 1.0) y z)
+            (set faces (+ faces 1.0)))
+          (if_yes (face_visible? opaque_col padded x (+ y 1.0) z)
+            (set faces (+ faces 1.0)))
+          (if_yes (face_visible? opaque_col padded x (- y 1.0) z)
+            (set faces (+ faces 1.0)))
+          (if_yes (face_visible? opaque_col padded x y (+ z 1.0))
+            (set faces (+ faces 1.0)))
+          (if_yes (face_visible? opaque_col padded x y (- z 1.0))
+            (set faces (+ faces 1.0))))
         (set x (+ x 1.0)))
       (set y (+ y 1.0)))
     (set z (+ z 1.0)))
@@ -128,6 +140,11 @@
 
 # Two triangles over the four corners just written, in the order that makes the
 # quad front-facing from outside.
+#
+# `idx` stays `(Buffer U32)` while everything else here moved to floats: it is
+# written six times per face and never read by Gene code — WebGL reads it — and
+# its element type has to be what `drawElements` expects. The `$to_int` per
+# write is the whole cost, against seven reads per *node* on the other side.
 #
 # Winding is what `cull_face "back"` reads, and getting it wrong does not draw
 # the face inside-out — it does not draw it at all. The two Z faces were
@@ -167,8 +184,14 @@
 # Fill `verts` and `idx` from the padded neighbourhood, offset into world space
 # by the chunk's origin. Returns the face count, which is what the caller needs
 # for its draw call — index count is `faces * 6`.
-(fn build_mesh [padded : (Buffer U16) verts : (Buffer F32) idx : (Buffer U32)
+(fn build_mesh [reg : Registry padded : (Buffer F32)
+                verts : (Buffer F32) idx : (Buffer U32)
                 ox : F64 oy : F64 oz : F64] : F64
+  (var opaque_col reg/opaque)
+  (var drawtype_col reg/drawtype)
+  (var top_col reg/tile_top)
+  (var side_col reg/tile_side)
+  (var bottom_col reg/tile_bottom)
   (var face 0.0)
   (var z 0.0)
   (while (< z chunk_dim)
@@ -177,35 +200,35 @@
       (var x 0.0)
       (while (< x chunk_dim)
         (var id (node_at padded x y z))
-        (if_yes (opaque? id)
+        (if_yes (!= (drawtype_col ~ get id) draw_airlike)
           (var wx (+ ox x))
           (var wy (+ oy y))
           (var wz (+ oz z))
           (var x1 (+ wx 1.0))
           (var y1 (+ wy 1.0))
           (var z1 (+ wz 1.0))
-          (var side (tile_for id false false))
-          (if_yes (face_visible? padded (+ x 1.0) y z)
+          (var side (side_col ~ get id))
+          (if_yes (face_visible? opaque_col padded (+ x 1.0) y z)
             (put_quad verts idx face side light_side_x
                       x1 wy z1  x1 wy wz  x1 y1 wz  x1 y1 z1)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? padded (- x 1.0) y z)
+          (if_yes (face_visible? opaque_col padded (- x 1.0) y z)
             (put_quad verts idx face side light_side_x
                       wx wy wz  wx wy z1  wx y1 z1  wx y1 wz)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? padded x (+ y 1.0) z)
-            (put_quad verts idx face (tile_for id true false) light_top
+          (if_yes (face_visible? opaque_col padded x (+ y 1.0) z)
+            (put_quad verts idx face (top_col ~ get id) light_top
                       wx y1 z1  x1 y1 z1  x1 y1 wz  wx y1 wz)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? padded x (- y 1.0) z)
-            (put_quad verts idx face (tile_for id false true) light_bottom
+          (if_yes (face_visible? opaque_col padded x (- y 1.0) z)
+            (put_quad verts idx face (bottom_col ~ get id) light_bottom
                       wx wy wz  x1 wy wz  x1 wy z1  wx wy z1)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? padded x y (+ z 1.0))
+          (if_yes (face_visible? opaque_col padded x y (+ z 1.0))
             (put_quad verts idx face side light_side_z
                       wx wy z1  x1 wy z1  x1 y1 z1  wx y1 z1)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? padded x y (- z 1.0))
+          (if_yes (face_visible? opaque_col padded x y (- z 1.0))
             (put_quad verts idx face side light_side_z
                       x1 wy wz  wx wy wz  wx y1 wz  x1 y1 wz)
             (set face (+ face 1.0))))

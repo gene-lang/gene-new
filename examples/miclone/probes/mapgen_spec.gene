@@ -1,0 +1,534 @@
+# Cross-backend spec for the mapgen pipeline — design.md §14 layers 2 and 3.
+#
+# Every assertion runs on the VM and through the web profile and must produce
+# byte-identical output, and mapgen is §D3.1's *exact half*, so "identical"
+# here means bit-identical rather than close: the server and the client both
+# generate terrain from this code and one differing bit is two different worlds.
+#
+# Float comparisons go through `f64_key`, which decomposes a float into the
+# three integers IEEE-754 says it is. Comparing printed floats would be wrong in
+# both directions — the VM prints 1e-7 as `0.0000001`, so a text diff reports a
+# difference that is not there, and a shared rounding of the printed form can
+# hide one that is.
+#
+# It reports rather than throws, as `probes/world_spec.gene` does: a diff of two
+# reports names *which* assertion moved, where a thrown error names only the
+# first.
+
+(mod mapgen_spec ^profile web)
+
+(import [f64_key wrap32] from "../core/exact.gene")
+(import [fbm2] from "../core/noise.gene")
+(import [lattice_origin lattice_dim sample_lattice lattice_value]
+        from "../core/field.gene")
+(import [BiomeRegistry register_biome biome_count biome_at biome_name
+         column_node cover_depth top_depth top_node filler_node stone_node
+         underwater_node]
+        from "../core/biome.gene")
+(import [OreRegistry register_ore ore_count ore_name place shape_scatter]
+        from "../core/ore.gene")
+(import [carve_sphere] from "../core/cave.gene")
+(import [new_registry id_of registered_count name_of drawn? opaque?
+         tile_top_of tile_side_of tile_bottom_of]
+        from "../core/registry.gene")
+(import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
+(import [block_dim block_nodes pad_dim pad_nodes
+         terrain_scale terrain_octaves sea_level
+         surface_height surface_from_noise terrain_noise heat_at humidity_at
+         fill_run generate_block fill_padded]
+        from "../core/mapgen.gene")
+
+# --- reporting ---------------------------------------------------------------
+#
+# A passing line carries the label and nothing else, so two agreeing backends
+# produce byte-identical reports. A failing line prints both values, because by
+# then the run has failed and the detail is what the reader needs.
+
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out ~ push! $"ok   ${label}"))
+    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_i [out : (List Str) label : Str got : Int want : Int] : Nil
+  (check out label $"${got}" $"${want}"))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
+
+# Integral floats only — counts, indices, and coordinates. Interpolated field
+# values go through `check_bits`.
+(fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label $"$($to_int got)" $"$($to_int want)"))
+
+# Bit-exact float equality, via the IEEE-754 decomposition. This is the
+# assertion §D3.1's exact half is made of.
+(fn check_bits [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label (f64_key got) (f64_key want)))
+
+# --- §D6.3 rung 2: the lattice reproduces the field it approximates ----------
+#
+# The load-bearing test of `core/field.gene`. At step 1 the lattice has a sample
+# at every node and the interpolation fraction is always zero, so
+# `lattice_value` must return exactly what `fbm2` would have returned — not
+# nearly. If that holds, the coarse lattice is a resolution choice; if it does
+# not, the interpolation has its own idea of the field and every other terrain
+# assertion is measuring the wrong thing.
+
+(fn field_checks [out : (List Str)] : Nil
+  # World-anchored, so a block never lays out its own lattice (see the header of
+  # core/field.gene: the failure mode is a wall of cliffs on every block seam).
+  (check_f out "lattice_origin(0,4)" (lattice_origin 0.0 4.0) 0.0)
+  (check_f out "lattice_origin(3,4)" (lattice_origin 3.0 4.0) 0.0)
+  (check_f out "lattice_origin(4,4)" (lattice_origin 4.0 4.0) 4.0)
+  (check_f out "lattice_origin(-1,4)" (lattice_origin -1.0 4.0) -4.0)
+  (check_f out "lattice_origin(-4,4)" (lattice_origin -4.0 4.0) -4.0)
+  (check_f out "lattice_origin(-5,4)" (lattice_origin -5.0 4.0) -8.0)
+
+  # A padded block spans 18 nodes from `ox - 1`; at step 4 that needs 7 points.
+  (check_f out "lattice_dim(-1,18,4)" (lattice_dim -1.0 18.0 4.0) 7.0)
+  (check_f out "lattice_dim(0,16,4)" (lattice_dim 0.0 16.0 4.0) 5.0)
+  (check_f out "lattice_dim(-1,18,16)" (lattice_dim -1.0 18.0 16.0) 4.0)
+  (check_f out "lattice_dim(0,1,4)" (lattice_dim 0.0 1.0 4.0) 2.0)
+
+  # Step 1: identity, bit for bit, at every one of 36 positions.
+  (var d (lattice_dim 0.0 6.0 1.0))
+  (var g ($buffer F64 (* d d)))
+  (sample_lattice g d 0.0 0.0 1.0 terrain_scale 7.0 terrain_octaves)
+  (var bad 0.0)
+  (var z 0.0)
+  (while (< z 6.0)
+    (var x 0.0)
+    (while (< x 6.0)
+      (var got (lattice_value g d 0.0 0.0 1.0 x z))
+      (var want (fbm2 (* x terrain_scale) (* z terrain_scale) 7.0
+                      terrain_octaves 2.0 0.5))
+      (if_yes (!= (f64_key got) (f64_key want))
+        (set bad (+ bad 1.0)))
+      (set x (+ x 1.0)))
+    (set z (+ z 1.0)))
+  (check_f out "step-1 lattice is the field, bit for bit, over 36 points"
+           bad 0.0)
+
+  # A lattice point is exact at any step, since the fraction is zero there.
+  (var d4 (lattice_dim 0.0 16.0 4.0))
+  (var g4 ($buffer F64 (* d4 d4)))
+  (sample_lattice g4 d4 0.0 0.0 4.0 terrain_scale 7.0 terrain_octaves)
+  (check_bits out "step-4 lattice is exact on its own points"
+              (lattice_value g4 d4 0.0 0.0 4.0 8.0 4.0)
+              (fbm2 (* 8.0 terrain_scale) (* 4.0 terrain_scale) 7.0
+                    terrain_octaves 2.0 0.5))
+
+  # Halfway between two points is their mean, which is what makes the
+  # interpolation a linear filter of the field rather than a reshaping of it.
+  (var a (fbm2 0.0 0.0 7.0 terrain_octaves 2.0 0.5))
+  (var b (fbm2 (* 4.0 terrain_scale) 0.0 7.0 terrain_octaves 2.0 0.5))
+  (check_bits out "step-4 midpoint is the mean of its two points"
+              (lattice_value g4 d4 0.0 0.0 4.0 2.0 0.0)
+              (+ a (* (- b a) 0.5))))
+
+# --- §3 stage 2: the biome registry -----------------------------------------
+
+(fn biome_checks [out : (List Str)] : Nil
+  (var b (new BiomeRegistry))
+  (check_f out "empty biome registry" (biome_count b) 0.0)
+  # Ids are positional, as everywhere else in this engine.
+  (var cold (register_biome b "cold" 10.0 50.0 -100.0 100.0
+                            11.0 1.0 12.0 2.0 13.0 14.0))
+  (var hot (register_biome b "hot" 90.0 50.0 -100.0 100.0
+                           21.0 2.0 22.0 3.0 23.0 24.0))
+  (var high (register_biome b "high" 50.0 50.0 200.0 300.0
+                            31.0 1.0 32.0 1.0 33.0 34.0))
+  (check_f out "first biome id" cold 0.0)
+  (check_f out "second biome id" hot 1.0)
+  (check_f out "biome count" (biome_count b) 3.0)
+  (check out "biome_name" (biome_name b hot) "hot")
+
+  # Nearest point wins, and the altitude band filters before the distance does.
+  (check_f out "biome at cold end" (biome_at b 12.0 50.0 0.0) cold)
+  (check_f out "biome at hot end" (biome_at b 88.0 50.0 0.0) hot)
+  (check_f out "biome band excludes high" (biome_at b 50.0 50.0 0.0) cold)
+  (check_f out "biome band admits high" (biome_at b 50.0 50.0 250.0) high)
+
+  # A tie must resolve to the lower id. Both `cold` and `hot` are 40 away from
+  # heat 50, so "whichever the loop saw last" would make terrain depend on
+  # registration order — and a mod reordering its `depends` would move it.
+  (check_f out "exact tie goes to the lower id" (biome_at b 50.0 50.0 0.0) cold)
+
+  # The column bands: `depth_top` of the top node, then `depth_filler` of the
+  # filler, then stone to the bottom.
+  (check_f out "depth 0 is the top node" (column_node b hot 0.0 false) 21.0)
+  (check_f out "depth 1 is still top" (column_node b hot 1.0 false) 21.0)
+  (check_f out "depth 2 is filler" (column_node b hot 2.0 false) 22.0)
+  (check_f out "depth 4 is filler" (column_node b hot 4.0 false) 22.0)
+  (check_f out "depth 5 is stone" (column_node b hot 5.0 false) 23.0)
+  (check_f out "depth 99 is stone" (column_node b hot 99.0 false) 23.0)
+  # Underwater replaces top and filler together, never the stone under them.
+  (check_f out "underwater top" (column_node b hot 0.0 true) 24.0)
+  (check_f out "underwater filler" (column_node b hot 3.0 true) 24.0)
+  (check_f out "underwater stone is unchanged" (column_node b hot 9.0 true) 23.0)
+
+  (check_f out "cover_depth" (cover_depth b hot) 5.0)
+  (check_f out "top_depth" (top_depth b hot) 2.0)
+  (check_f out "top_node" (top_node b hot) 21.0)
+  (check_f out "filler_node" (filler_node b hot) 22.0)
+  (check_f out "stone_node" (stone_node b hot) 23.0)
+  (check_f out "underwater_node" (underwater_node b hot) 24.0))
+
+# --- §3 stage 4: the ore registry -------------------------------------------
+
+(fn ore_checks [out : (List Str)] : Nil
+  (var o (new OreRegistry))
+  (var coal (register_ore o "coal" 40.0 1.0 shape_scatter 0.0 30.0 0.5 3.0 6.0))
+  (check_f out "first ore id" coal 0.0)
+  (check_f out "ore count" (ore_count o) 1.0)
+  (check out "ore_name" (ore_name o coal) "coal")
+
+  # `place` is where all three of an ore's rules live, so it is tested directly
+  # rather than through a shape.
+  (var buf ($buffer F32 27.0))
+  (var i 0.0)
+  (while (< i 27.0) (buf ~ set! i 1.0) (set i (+ i 1.0)))
+
+  (place buf 3.0 0.0 0.0 0.0  1.0 1.0 1.0  40.0 1.0 0.0 10.0)
+  (check_f out "place writes where wherein matches" (buf ~ get 13.0) 40.0)
+
+  # Wrong `wherein`: an ore may not eat another ore, a cave, or a lake.
+  (place buf 3.0 0.0 0.0 0.0  1.0 1.0 1.0  41.0 1.0 0.0 10.0)
+  (check_f out "place refuses a node it may not replace" (buf ~ get 13.0) 40.0)
+
+  # Outside the altitude band.
+  (place buf 3.0 0.0 0.0 0.0  0.0 0.0 0.0  40.0 1.0 5.0 10.0)
+  (check_f out "place refuses below y_min" (buf ~ get 0.0) 1.0)
+  (place buf 3.0 0.0 0.0 0.0  0.0 2.0 0.0  40.0 1.0 0.0 1.0)
+  (check_f out "place refuses above y_max" (buf ~ get 6.0) 1.0)
+
+  # Outside the buffer, on each axis and each side. A cell reaches past the
+  # buffer by construction, so this is the common case rather than the odd one.
+  (place buf 3.0 0.0 0.0 0.0  -1.0 0.0 0.0  40.0 1.0 0.0 10.0)
+  (place buf 3.0 0.0 0.0 0.0  3.0 0.0 0.0  40.0 1.0 0.0 10.0)
+  (place buf 3.0 0.0 0.0 0.0  0.0 0.0 -1.0  40.0 1.0 0.0 10.0)
+  (var placed 0.0)
+  (set i 0.0)
+  (while (< i 27.0)
+    (if_yes (== (buf ~ get i) 40.0) (set placed (+ placed 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "out-of-buffer placements write nothing" placed 1.0))
+
+# --- §3 stage 3: carving ----------------------------------------------------
+
+(fn cave_checks [out : (List Str)] : Nil
+  # A 5³ buffer of stone with one water node and one air node in it.
+  (var buf ($buffer F32 125.0))
+  (var i 0.0)
+  (while (< i 125.0) (buf ~ set! i 1.0) (set i (+ i 1.0)))
+  (buf ~ set! 0.0 7.0)                       # water in the corner
+  (buf ~ set! 124.0 0.0)                     # already air
+
+  (carve_sphere buf 5.0 0.0 0.0 0.0  2.0 2.0 2.0  9.0  0.0 7.0)
+  (check_f out "carve removes rock" (buf ~ get 62.0) 0.0)
+  (check_f out "carve does not drain water" (buf ~ get 0.0) 7.0)
+  (check_f out "carve leaves air alone" (buf ~ get 124.0) 0.0)
+
+  # A sphere of radius 1 centred on a node removes that node and its six
+  # face neighbours, and nothing else: the radius is a distance, not a box.
+  (var b2 ($buffer F32 125.0))
+  (set i 0.0)
+  (while (< i 125.0) (b2 ~ set! i 1.0) (set i (+ i 1.0)))
+  (carve_sphere b2 5.0 0.0 0.0 0.0  2.0 2.0 2.0  1.0  0.0 7.0)
+  (var holes 0.0)
+  (set i 0.0)
+  (while (< i 125.0)
+    (if_yes (== (b2 ~ get i) 0.0) (set holes (+ holes 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "radius 1 removes a node and its six neighbours" holes 7.0)
+
+  # A sphere entirely outside the buffer changes nothing.
+  (var b3 ($buffer F32 125.0))
+  (set i 0.0)
+  (while (< i 125.0) (b3 ~ set! i 1.0) (set i (+ i 1.0)))
+  (carve_sphere b3 5.0 0.0 0.0 0.0  -20.0 -20.0 -20.0  3.0  0.0 7.0)
+  (var untouched 0.0)
+  (set i 0.0)
+  (while (< i 125.0)
+    (if_yes (== (b3 ~ get i) 1.0) (set untouched (+ untouched 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "a distant sphere writes nothing" untouched 125.0))
+
+# --- run-length filling agrees with the per-node definition ------------------
+#
+# §D6.3's run rewrite is a change in how the generator is written, not in what
+# it produces — so the two have to be checked against each other. `fill_run` is
+# the fast path and `column_node` in `core/biome.gene` is the rule stated per
+# node; this walks a column of both.
+
+(fn run_checks [out : (List Str)] : Nil
+  (var b (new BiomeRegistry))
+  (var id (register_biome b "t" 50.0 50.0 -1000.0 1000.0
+                          21.0 2.0 22.0 3.0 23.0 24.0))
+
+  (var dim 16.0)
+  (var buf ($buffer F32 (* dim (* dim dim))))
+  (var surface 9.0)
+  (var oy 0.0)
+  (var s_local (- surface oy))
+  (var cover (cover_depth b id))
+  (var top_d (top_depth b id))
+  (var column 0.0)
+  (fill_run buf dim column (+ s_local 1.0) (- dim 1.0) 0.0)
+  (fill_run buf dim column (- (+ s_local 1.0) top_d) s_local (top_node b id))
+  (fill_run buf dim column (- (+ s_local 1.0) cover) (- s_local top_d)
+            (filler_node b id))
+  (fill_run buf dim column 0.0 (- s_local cover) (stone_node b id))
+
+  (var bad 0.0)
+  (var y 0.0)
+  (while (< y dim)
+    (var got (buf ~ get (* y dim)))
+    (var depth (- surface (+ oy y)))
+    (var want (if (< depth 0.0) 0.0 (column_node b id depth false)))
+    (if_yes (!= got want) (set bad (+ bad 1.0)))
+    (set y (+ y 1.0)))
+  (check_f out "run fill equals the per-node rule over a 16-node column"
+           bad 0.0)
+
+  # A run entirely outside the buffer writes nothing; a partly-outside run is
+  # clipped. This is what lets the caller state the bands without clipping them.
+  (var b2 ($buffer F32 (* dim (* dim dim))))
+  (fill_run b2 dim 0.0 -50.0 -1.0 5.0)
+  (fill_run b2 dim 0.0 dim (+ dim 40.0) 5.0)
+  (fill_run b2 dim 0.0 -3.0 1.0 6.0)
+  (check_f out "run below the buffer writes nothing" (b2 ~ get 0.0) 6.0)
+  (check_f out "clipped run fills only what is inside" (b2 ~ get dim) 6.0)
+  (check_f out "clipped run stops where it should" (b2 ~ get (* 2.0 dim)) 0.0))
+
+# --- the seam: two shapes of the same world must agree -----------------------
+#
+# This is the assertion the whole M2 design rests on, and the one that would
+# catch the failure it was built to avoid.
+#
+# §3's 80³ chunk existed so caves, ore, and structures could cross block
+# borders. `core/mapgen.gene` replaces it with a per-block unit on the argument
+# that every stage is derived from *world* position — the height lattice is
+# anchored to world coordinates, cave worms come from world regions, ore
+# clusters from world cells — so two differently-shaped views of the same world
+# node must produce the same node. If they do not, the granularity change is
+# unsound and the tunnels have seams in them.
+#
+# It compares a bare 16³ block against the 18³ padded neighbourhood of the
+# block next to it, whose margin covers that block's outermost layer.
+
+(fn seam_checks [out : (List Str)] : Nil
+  (var r (new_registry))
+  (setup_nodes r)
+  (var biomes (setup_biomes r))
+  (var ores (setup_ores r))
+  (var seed 1337.0)
+  (var air (id_of r "air"))
+  (var water (id_of r "miclone:water"))
+
+  (var blk ($buffer F32 block_nodes))
+  (generate_block blk 0.0 0.0 0.0 biomes ores seed air water)
+
+  # The padded neighbourhood of the block at x = 16 starts at world x = 15, so
+  # its x = 0 layer is the block above's x = 15 layer.
+  (var pad ($buffer F32 pad_nodes))
+  (fill_padded pad 16.0 0.0 0.0 biomes ores seed air water)
+
+  (var bad 0.0)
+  (var z 0.0)
+  (while (< z block_dim)
+    (var y 0.0)
+    (while (< y block_dim)
+      (var from_block (blk ~ get (+ 15.0 (+ (* y block_dim)
+                                            (* z (* block_dim block_dim))))))
+      # world (15, y, z) sits at padded (0, y + 1, z + 1)
+      (var from_pad (pad ~ get (+ 0.0 (+ (* (+ y 1.0) pad_dim)
+                                         (* (+ z 1.0) (* pad_dim pad_dim))))))
+      (if_yes (!= from_block from_pad) (set bad (+ bad 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  (check_f out "block edge equals the neighbour's padding, over 256 nodes"
+           bad 0.0)
+
+  # And the block's own padded neighbourhood must agree with it everywhere, all
+  # 4,096 nodes, which covers the interior as well as the seam.
+  (var own ($buffer F32 pad_nodes))
+  (fill_padded own 0.0 0.0 0.0 biomes ores seed air water)
+  (var bad2 0.0)
+  (set z 0.0)
+  (while (< z block_dim)
+    (var y 0.0)
+    (while (< y block_dim)
+      (var x 0.0)
+      (while (< x block_dim)
+        (var a (blk ~ get (+ x (+ (* y block_dim)
+                                  (* z (* block_dim block_dim))))))
+        (var c (own ~ get (+ (+ x 1.0) (+ (* (+ y 1.0) pad_dim)
+                                          (* (+ z 1.0) (* pad_dim pad_dim))))))
+        (if_yes (!= a c) (set bad2 (+ bad2 1.0)))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  (check_f out "bare block equals its own padded neighbourhood, 4096 nodes"
+           bad2 0.0))
+
+# --- §14 layer 3: golden worlds ---------------------------------------------
+#
+# "A seed and a chunk position produce a known checksum. A mapgen change that
+# alters terrain has to change the golden value deliberately, in the same
+# commit, with a reason."
+#
+# The checksum is a 32-bit rolling hash in the exact-F64 discipline of
+# `core/exact.gene`, so it is order-sensitive — a block whose contents were
+# permuted would not pass — and every intermediate stays under 2^53, so the two
+# backends compute it identically by the standard rather than by luck.
+
+(fn block_checksum [buf : (Buffer F32) n : F64] : F64
+  (var h 2166136261.0)
+  (var i 0.0)
+  (while (< i n)
+    (set h (wrap32 (+ (* h 31.0) (buf ~ get i))))
+    (set i (+ i 1.0)))
+  h)
+
+(fn golden_checks [out : (List Str)] : Nil
+  (var r (new_registry))
+  (setup_nodes r)
+  (var biomes (setup_biomes r))
+  (var ores (setup_ores r))
+  (var air (id_of r "air"))
+  (var water (id_of r "miclone:water"))
+  (var blk ($buffer F32 block_nodes))
+
+  # Three blocks chosen to exercise different parts of the pipeline: one at the
+  # origin spanning the surface, one deep enough to be all rock and cave, and
+  # one far from the origin so the hash is not being asked only about small
+  # coordinates.
+  (generate_block blk 0.0 0.0 0.0 biomes ores 1337.0 air water)
+  (check_bits out "golden 1337 (0,0,0)" (block_checksum blk block_nodes)
+              2645630097.0)
+  (generate_block blk 0.0 -64.0 0.0 biomes ores 1337.0 air water)
+  (check_bits out "golden 1337 (0,-64,0)" (block_checksum blk block_nodes)
+              3728653385.0)
+  (generate_block blk 4096.0 16.0 -2048.0 biomes ores 1337.0 air water)
+  (check_bits out "golden 1337 (4096,16,-2048)" (block_checksum blk block_nodes)
+              32426351.0)
+  # A different seed must produce a different world, or the seed is decorative.
+  (generate_block blk 0.0 0.0 0.0 biomes ores 20260802.0 air water)
+  (check_bits out "golden 20260802 (0,0,0)" (block_checksum blk block_nodes)
+              626489287.0))
+
+# --- §2: the content set registers what §3 and §5 expect ---------------------
+
+(fn content_checks [out : (List Str)] : Nil
+  (var r (new_registry))
+  (setup_nodes r)
+  (check_f out "content set size" (registered_count r) 15.0)
+  (check_f out "air is still 0" (id_of r "air") 0.0)
+  # Ids are assigned at load, so this pins the order rather than the numbers.
+  (check_f out "stone follows the reserved ids" (id_of r "miclone:stone") 3.0)
+  (check out "name round trip" (name_of r (id_of r "miclone:gold_ore"))
+         "miclone:gold_ore")
+
+  # §5 asks two questions, not one, and this is the node set where they differ.
+  (check_b out "air is not drawn" (drawn? r (id_of r "air")) false)
+  (check_b out "stone is drawn" (drawn? r (id_of r "miclone:stone")) true)
+  (check_b out "water is drawn" (drawn? r (id_of r "miclone:water")) true)
+  (check_b out "air hides nothing" (opaque? r (id_of r "air")) false)
+
+  # Grass is the reason the mesher asks per face.
+  (var grass (id_of r "miclone:grass"))
+  (check_f out "grass top tile" (tile_top_of r grass) 2.0)
+  (check_f out "grass side tile" (tile_side_of r grass) 3.0)
+  (check_f out "grass bottom tile is dirt" (tile_bottom_of r grass) 1.0)
+  (var stone (id_of r "miclone:stone"))
+  (check_f out "stone is uniform" (tile_side_of r stone) (tile_top_of r stone))
+
+  # Every registered biome and ore must name nodes that exist, or the
+  # generator writes an id nothing can draw.
+  (var b (setup_biomes r))
+  (var o (setup_ores r))
+  (check_f out "biome count" (biome_count b) 6.0)
+  (check_f out "ore count" (ore_count o) 6.0)
+  (var n (registered_count r))
+  (var bad 0.0)
+  (var i 0.0)
+  (while (< i (biome_count b))
+    (if_yes (|| (|| (>= (top_node b i) n) (>= (filler_node b i) n))
+                (|| (>= (stone_node b i) n) (>= (underwater_node b i) n)))
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "every biome names registered nodes" bad 0.0))
+
+# --- terrain shape, as measured ---------------------------------------------
+#
+# Not a golden value but a property: the surface has to stay in a band that the
+# sea level and the ore altitude bands were chosen against. A terrain change
+# that quietly moved the world out from under them would otherwise show up as
+# "the ocean disappeared" three milestones later.
+
+(fn terrain_checks [out : (List Str)] : Nil
+  (var seed 1337.0)
+  (check_bits out "surface_from_noise is floor(base + amplitude * n)"
+              (surface_from_noise 0.5) 26.0)
+  (check_bits out "surface_height agrees with its two halves"
+              (surface_height 37.0 -19.0 seed)
+              (surface_from_noise (terrain_noise 37.0 -19.0 seed)))
+
+  (var lo 100000.0)
+  (var hi -100000.0)
+  (var under 0.0)
+  (var n 24.0)
+  (var j 0.0)
+  (while (< j n)
+    (var i 0.0)
+    (while (< i n)
+      (var s (surface_height (* (- i 12.0) 61.0) (* (- j 12.0) 61.0) seed))
+      (set lo ($math/min lo s))
+      (set hi ($math/max hi s))
+      (if_yes (< s sea_level) (set under (+ under 1.0)))
+      (set i (+ i 1.0)))
+    (set j (+ j 1.0)))
+  (check_b out "surface stays above the ore bands' floor" (>= lo 0.0) true)
+  (check_b out "surface stays inside the sampled band"
+            (&& (>= lo 9.0) (<= hi 44.0)) true)
+  (check_b out "the sea covers between a tenth and a third of the columns"
+            (&& (> (/ under (* n n)) 0.10) (< (/ under (* n n)) 0.33)) true)
+
+  # Heat and humidity must be different fields. They share a scale and an
+  # octave count, so a seed offset that failed to separate them would give a
+  # world where every hot place is also wet — and the biome map would collapse
+  # onto a diagonal rather than filling the space.
+  (check_b out "heat and humidity are not the same field"
+            (!= (f64_key (heat_at 100.0 200.0 seed))
+                (f64_key (humidity_at 100.0 200.0 seed))) true))
+
+# --- the report --------------------------------------------------------------
+
+(fn collect [out : (List Str)] : Nil
+  (field_checks out)
+  (biome_checks out)
+  (ore_checks out)
+  (cave_checks out)
+  (run_checks out)
+  (content_checks out)
+  (terrain_checks out)
+  (seam_checks out)
+  (golden_checks out))
+
+(fn report [] : Str
+  (var out : (List Str) [])
+  (collect out)
+  ($str/join out "\n"))
+
+(fn failures [] : F64
+  (var out : (List Str) [])
+  (collect out)
+  (var bad 0.0)
+  (var i 0.0)
+  (var n (out ~ size))
+  (while (< i n)
+    (if_yes ($str/starts_with? out/%i "FAIL")
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)

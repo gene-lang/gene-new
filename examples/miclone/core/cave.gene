@@ -1,0 +1,219 @@
+# Caves — design.md §3, stage 3, rewritten against §D6.3's finding.
+#
+# §3 originally specified "3D noise thresholds plus tunnel carving". §D6.3
+# measured the threshold half and it is not available on the VM: one `fbm3` per
+# node is 438 µs, so a 16³ block would spend **1.8 seconds** deciding which of
+# its 4,096 nodes are cave. That is not a tuning problem. A per-node 3D field
+# costs one noise evaluation per node by construction, and the budget is under
+# one message send per node.
+#
+# So caves are **carved, not sampled**: cost scales with the volume actually
+# removed rather than with the volume examined. This is upstream's
+# `CavesRandomWalk` in shape, and it is what §D6.3 meant by "sparse carving".
+#
+# The path is a **quadratic Bézier through three hashed control points** rather
+# than a stepped random walk. A walk needs fresh randomness at every step —
+# `hash3` is 16 µs on the VM, so 24 steps would be 384 µs per worm before any
+# carving — while a Bézier evaluates in nine multiplies and no hashing at all.
+# It also curves the way a tunnel should, which a walk only does on average, and
+# it is entirely `+ - *` so it stays in §D3.1's exact half.
+#
+# **A worm carves rock and nothing else.** It never removes air (so a worm
+# passing above the terrain costs a bounding-box test and stops) and never
+# removes water (so a tunnel reaching the sea floor does not drain the ocean
+# into itself). That rule is also why caves need no ceiling parameter: a worm
+# that misses the ground is already free.
+
+(mod cave ^profile web)
+
+(import [mix32 hash3] from "./exact.gene")
+
+(let two32 4294967296.0)
+
+# --- worm geometry -----------------------------------------------------------
+#
+# The world is partitioned into cubic regions; each hosts a fixed number of
+# worms whose parameters are a pure function of the region coordinate and the
+# seed. A block asks every region within reach, so a worm crossing a region
+# border is generated identically by both blocks it passes through.
+
+# Measured over 147,456 nodes at y -64, which is far below the lowest surface so
+# every hole there was carved rather than left over the ground: 0 worms gives
+# 0.00%, 2 gives 0.82%, 3 gives 1.47%, 6 gives 3.05%. Linear in the worm count,
+# at about half a percent each, which is what a stage whose cost scales with
+# output should look like.
+#
+# Three it is — sparse enough that a tunnel is a find rather than the default
+# state of the world, which is the balance upstream strikes. Measuring this at
+# a depth with no sky in it mattered: the same count taken over y 0..15 reads
+# 1.4% at *any* worm count, because at that height most of the air is the space
+# above a low column and the caves are lost in it.
+(let region 64.0)
+(let worms_per_region 3.0)
+(let worm_steps 24.0)
+
+# Each control point is offset from the previous by up to `worm_span` on each
+# axis, so a worm strays at most `2 * worm_span` from its start.
+(let worm_span 26.0)
+(let radius_min 1.7)
+(let radius_span 2.3)
+
+# The farthest a worm can reach from its own region, and therefore how many
+# regions a block has to ask. `2 * worm_span + radius_min + radius_span`, and
+# it must stay this way: understating it drops the tunnels that would have
+# entered from outside, and the hole is deterministic, so no amount of
+# re-running finds it.
+(let reach 56.0)
+
+# Folded into the seed so caves do not correlate with terrain height, which
+# shares the seed and would otherwise put every tunnel under the same hills.
+(let cave_seed_offset 8117.0)
+
+(fn unit32 [h : F64] : F64
+  (/ h two32))
+
+# --- carving -----------------------------------------------------------------
+
+# Remove a sphere of rock. The region buffer is `dim³`, x-fastest, with its
+# `(0,0,0)` at world `(ox, oy, oz)` — the same layout as a block (§1) and as
+# `core/mesh.gene`'s padded neighbourhood, one formula for both.
+#
+# The y and z loops hoist their squared distances, so the innermost test is one
+# multiply and one comparison; and the y row is skipped whole when the sphere
+# does not reach it, which is most of the bounding box for a sphere.
+(fn carve_sphere [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+                  cx : F64 cy : F64 cz : F64 r : F64
+                  air : F64 water : F64] : Nil
+  (var r2 (* r r))
+  (var hi (- dim 1.0))
+  (var x0 ($math/max 0.0 ($math/ceil (- (- cx r) ox))))
+  (var x1 ($math/min hi ($math/floor (- (+ cx r) ox))))
+  (var y0 ($math/max 0.0 ($math/ceil (- (- cy r) oy))))
+  (var y1 ($math/min hi ($math/floor (- (+ cy r) oy))))
+  (var z0 ($math/max 0.0 ($math/ceil (- (- cz r) oz))))
+  (var z1 ($math/min hi ($math/floor (- (+ cz r) oz))))
+  (var plane (* dim dim))
+  (var z z0)
+  (while (<= z z1)
+    (var dz (- (+ oz z) cz))
+    (var d_z (* dz dz))
+    (var y y0)
+    (while (<= y y1)
+      (var dy (- (+ oy y) cy))
+      (var d_yz (+ d_z (* dy dy)))
+      (if_yes (<= d_yz r2)
+        (var row (+ (* y dim) (* z plane)))
+        (var x x0)
+        (while (<= x x1)
+          (var dx (- (+ ox x) cx))
+          (if_yes (<= (+ d_yz (* dx dx)) r2)
+            (var i (+ x row))
+            (var cur (out ~ get i))
+            (if_yes (&& (!= cur air) (!= cur water))
+              (out ~ set! i air)))
+          (set x (+ x 1.0))))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
+# Walk one worm through the region buffer.
+#
+# The bounding-box test comes first and does the real work: a quadratic Bézier
+# lies inside the convex hull of its control points, so the min/max of the three
+# points expanded by the radius is a sound bound, and the great majority of the
+# worms a block asks about are rejected by six comparisons before a single step
+# is evaluated.
+#
+# Step spacing is `2 * worm_span / worm_steps` at most, roughly 2.2 nodes
+# against a diameter of at least 3.4, so consecutive spheres always overlap and
+# the tunnel cannot come out beaded.
+(fn carve_worm [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+                p0x : F64 p0y : F64 p0z : F64
+                p1x : F64 p1y : F64 p1z : F64
+                p2x : F64 p2y : F64 p2z : F64
+                radius : F64 air : F64 water : F64] : Nil
+  (var lo_x (- ($math/min p0x ($math/min p1x p2x)) radius))
+  (var hi_x (+ ($math/max p0x ($math/max p1x p2x)) radius))
+  (var lo_y (- ($math/min p0y ($math/min p1y p2y)) radius))
+  (var hi_y (+ ($math/max p0y ($math/max p1y p2y)) radius))
+  (var lo_z (- ($math/min p0z ($math/min p1z p2z)) radius))
+  (var hi_z (+ ($math/max p0z ($math/max p1z p2z)) radius))
+  (if_yes (&& (&& (&& (> hi_x ox) (< lo_x (+ ox dim)))
+                  (&& (> hi_y oy) (< lo_y (+ oy dim))))
+              (&& (> hi_z oz) (< lo_z (+ oz dim))))
+    (var i 0.0)
+    (while (<= i worm_steps)
+      (var s (/ i worm_steps))
+      (var m (- 1.0 s))
+      (var a (* m m))
+      (var bq (* 2.0 (* m s)))
+      (var c (* s s))
+      (carve_sphere out dim ox oy oz
+                    (+ (* a p0x) (+ (* bq p1x) (* c p2x)))
+                    (+ (* a p0y) (+ (* bq p1y) (* c p2y)))
+                    (+ (* a p0z) (+ (* bq p1z) (* c p2z)))
+                    radius air water)
+      (set i (+ i 1.0)))))
+
+# Every worm belonging to one region.
+#
+# One `hash3` seeds the region and the eleven parameters come from successive
+# `mix32` rounds off it. That is deliberate arithmetic: `hash3` is twelve nested
+# calls and 16 µs, `mix32` is one and 1.4 µs, so deriving eleven values from one
+# hash costs 31 µs instead of 176 µs — and the LCG's high bits, which is all
+# `unit32` keeps, are the half it is good at.
+(fn spawn_region [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+                  rx : F64 ry : F64 rz : F64
+                  seed : F64 air : F64 water : F64] : Nil
+  (var rox (* rx region))
+  (var roy (* ry region))
+  (var roz (* rz region))
+  (var w 0.0)
+  (while (< w worms_per_region)
+    (var h (hash3 rx ry rz (+ seed (+ cave_seed_offset (* w 131.0)))))
+    (set h (mix32 h))
+    (var p0x (+ rox (* (unit32 h) region)))
+    (set h (mix32 h))
+    (var p0y (+ roy (* (unit32 h) region)))
+    (set h (mix32 h))
+    (var p0z (+ roz (* (unit32 h) region)))
+    (set h (mix32 h))
+    (var p1x (+ p0x (* (- (unit32 h) 0.5) (* 2.0 worm_span))))
+    (set h (mix32 h))
+    (var p1y (+ p0y (* (- (unit32 h) 0.5) (* 2.0 worm_span))))
+    (set h (mix32 h))
+    (var p1z (+ p0z (* (- (unit32 h) 0.5) (* 2.0 worm_span))))
+    (set h (mix32 h))
+    (var p2x (+ p1x (* (- (unit32 h) 0.5) (* 2.0 worm_span))))
+    (set h (mix32 h))
+    (var p2y (+ p1y (* (- (unit32 h) 0.5) (* 2.0 worm_span))))
+    (set h (mix32 h))
+    (var p2z (+ p1z (* (- (unit32 h) 0.5) (* 2.0 worm_span))))
+    (set h (mix32 h))
+    (carve_worm out dim ox oy oz p0x p0y p0z p1x p1y p1z p2x p2y p2z
+                (+ radius_min (* (unit32 h) radius_span)) air water)
+    (set w (+ w 1.0))))
+
+# Carve every worm that can reach the region buffer.
+#
+# The region range is derived from the buffer's own bounds expanded by `reach`,
+# so it is correct for any `dim` rather than tuned for one — a bare 16³ block
+# and an 18³ padded neighbourhood ask different region sets and get the same
+# tunnels through the nodes they share.
+(fn carve [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+           seed : F64 air : F64 water : F64] : Nil
+  (var rx0 ($math/floor (/ (- ox reach) region)))
+  (var rx1 ($math/floor (/ (+ (+ ox dim) reach) region)))
+  (var ry0 ($math/floor (/ (- oy reach) region)))
+  (var ry1 ($math/floor (/ (+ (+ oy dim) reach) region)))
+  (var rz0 ($math/floor (/ (- oz reach) region)))
+  (var rz1 ($math/floor (/ (+ (+ oz dim) reach) region)))
+  (var rz rz0)
+  (while (<= rz rz1)
+    (var ry ry0)
+    (while (<= ry ry1)
+      (var rx rx0)
+      (while (<= rx rx1)
+        (spawn_region out dim ox oy oz rx ry rz seed air water)
+        (set rx (+ rx 1.0)))
+      (set ry (+ ry 1.0)))
+    (set rz (+ rz 1.0))))

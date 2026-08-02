@@ -1,167 +1,255 @@
 # Terrain generation — design.md §3, stages 1 through 4.
 #
-# This is deliberately the real pipeline shape rather than a probe-sized
-# stand-in, because §D6.3 measures how long it takes and a measurement of
-# something simpler would not answer the question. What is missing is breadth
-# (biome registry, ore types, decorations, schematics), not depth: the cost per
-# node is already what it will be.
+# ## The generation unit is a block, and that is §D6.3's finding applied
 #
-# Everything here is §D3.1's *exact half* — see `core/exact.gene`. Node ids are
-# `F64` for the same reason every hot value in this project is: `Int` lowers to
-# `bigint` in the web profile, and this code runs 512,000 times per chunk.
+# §3 specified generation in Luanti's unit: a chunk of 5x5x5 blocks, 512,000
+# nodes, "generated as a whole so that caves, ore, and structures can cross
+# block borders". §D6.3 measured that unit at 302 s and concluded the unit was
+# wrong. This file is the replacement.
+#
+# **The chunk existed to make cross-border features possible, and it is not the
+# only way to get them.** Upstream carves a cave into a chunk-sized voxel
+# manipulator because its cave generator works from chunk-local state. Ours does
+# not: `core/cave.gene` derives every worm from a *world* region coordinate and
+# `core/ore.gene` derives every cluster from a *world* cell coordinate, so both
+# ask "which features reach this buffer" rather than "which features start
+# inside it". Two adjacent blocks generated a week apart on different machines
+# see the same worm and carve the two halves of one tunnel. The larger unit buys
+# nothing once the stages are position-derived, and it costs 125x the latency.
+#
+# So generation is per block, and the same staged pipeline fills either shape:
+# a bare 16³ block for the server to store (§1, §11), or the 18³ padded
+# neighbourhood the client meshes from (§5). `fill_region` is the pipeline;
+# `generate_block` and `fill_padded` are the two shapes.
+#
+# ## What the stages cost, and why they are written the way they are
+#
+# Every stage obeys one rule, which is §D6.3 restated: **cost must scale with
+# output, not with volume.** A message send is ~500 ns on the VM, so anything
+# that touches all 5,832 nodes of a padded block has already spent 3.5 ms.
+#
+#   stage 1  terrain     coarse-lattice 2D fields, `core/field.gene`
+#   stage 2  biomes      one registry lookup per column, `core/biome.gene`
+#            fill        run-length column writes, not per-node decisions
+#   stage 3  caves       carved, not sampled, `core/cave.gene`
+#   stage 4  ore         placed, not searched for, `core/ore.gene`
+#
+# Stages 5 (decorations) and 6 (lighting) are §3's and belong to M2's successor
+# and M3 respectively.
+#
+# Everything here is §D3.1's *exact half* — see `core/exact.gene`. Coordinates,
+# noise, and content ids are all `F64`, because `Int` lowers to `bigint` in the
+# web profile and every one of them is read on a hot path — `core/world.gene`
+# carries the measurement behind that rule.
 
 (mod mapgen ^profile web)
 
-(import [fbm2 fbm3 ridged2] from "./noise.gene")
-(import [hash_unit3] from "./exact.gene")
+(import [fbm2] from "./noise.gene")
+(import [lattice_origin lattice_dim sample_lattice lattice_value]
+        from "./field.gene")
+(import [BiomeRegistry biome_at cover_depth top_depth top_node filler_node
+         stone_node underwater_node]
+        from "./biome.gene")
+(import [OreRegistry place_all] from "./ore.gene")
+(import [carve] from "./cave.gene")
 
-# --- chunk geometry ----------------------------------------------------------
-#
-# 5x5x5 blocks of 16, which is upstream's `chunksize` default. Generating a
-# whole chunk at once rather than a block at a time is what lets caves and ore
-# cross block borders without a second pass.
+# --- block geometry ----------------------------------------------------------
 
-(let block_size 16.0)
-(let chunk_blocks 5.0)
-(let chunk_size 80.0)                  # block_size * chunk_blocks
-(let chunk_nodes 512000.0)             # chunk_size ^ 3
+(let block_dim 16.0)
+(let block_nodes 4096.0)
 
-# --- node ids ----------------------------------------------------------------
-#
-# `Int`, not `F64`, because §1 says a node's content is a `u16` and these are
-# that — they index the registry and are never arithmetic. They live in a
-# `(Buffer U16)`, which is the same 2 bytes per node the data model specifies.
-#
-# This is the one place the file departs from the F64-everywhere rule, and it
-# departs deliberately: an id is an identifier. Coordinates and noise stay F64,
-# so the loop indices below never become `bigint`.
-#
-# Provisional and positional, exactly like `examples/new_world`'s tile order:
-# these become registry-assigned content ids in M1 (§2), and the registry is
-# what makes them stable across a world's lifetime. Nothing should hardcode
-# them past that point.
-
-(let n_air 0)
-(let n_stone 1)
-(let n_dirt 2)
-(let n_grass 3)
-(let n_sand 4)
-(let n_water 5)
-
-# --- terrain shape -----------------------------------------------------------
-
-(let sea_level 8.0)
-(let terrain_scale 0.0125)
-(let terrain_octaves 5.0)
-(let terrain_amplitude 44.0)
-(let terrain_base 4.0)
-
-# Surface height at a world column. One `fbm2` at terrain frequency, which is
-# the single most-called function in the generator: once per column, so 6,400
-# times per chunk against the 512,000 node visits below.
-(fn surface_height [wx : F64 wz : F64 seed : F64] : F64
-  ($math/floor (+ terrain_base
-                  (* terrain_amplitude
-                     (fbm2 (* wx terrain_scale) (* wz terrain_scale)
-                           seed terrain_octaves 2.0 0.5)))))
-
-# --- caves -------------------------------------------------------------------
-#
-# Ridged 3D noise thresholded into tubes, which gives connected passages rather
-# than the isolated bubbles a plain `fbm3` threshold produces. Sampled per node
-# and only below the surface, so the cost is bounded by how much of a chunk is
-# underground rather than by its volume.
-
-(let cave_scale 0.055)
-(let cave_octaves 3.0)
-(let cave_threshold 0.82)
-
-(fn cave? [wx : F64 wy : F64 wz : F64 seed : F64] : Bool
-  (> (fbm3 (* wx cave_scale) (* wy cave_scale) (* wz cave_scale)
-           (+ seed 991.0) cave_octaves 2.0 0.5)
-     cave_threshold))
-
-# --- material selection ------------------------------------------------------
-#
-# The §3 stage-2 stand-in: depth below the surface picks the material, and a
-# beach band near sea level picks sand. A biome registry replaces this in M2.
-
-(fn material [wy : F64 surface : F64] : Int
-  (var depth (- surface wy))
-  (if (< depth 0.0)
-    (then (if (<= wy sea_level) n_water n_air))
-    (elif (< depth 1.0)
-      (if (<= surface (+ sea_level 1.0)) n_sand n_grass))
-    (elif (< depth 4.0) n_dirt)
-    (else n_stone)))
-
-# --- block-scale generation, for meshing --------------------------------------
-#
-# §D6.3 measured the 80³ generator below at 302 s/chunk on the VM and concluded
-# that the unit is wrong, not the terrain. This is the replacement shape: one
-# 16³ block at a time, filled **by column** so the expensive part — a `fbm2`
-# per column — runs 324 times instead of 512,000, and the per-node work is a
-# depth comparison and a store.
-#
-# It produces the 18³ padded neighbourhood `core/mesh.gene` needs rather than a
-# bare 16³ block, because a mesher that cannot see one node past its own edge
-# grows a wall of faces at every chunk border (§5). Generating the margin is
-# cheaper than fetching it from neighbours that may not exist yet, and for a
-# deterministic generator it is the same answer.
-
+# §5: a mesher that cannot see one node past its own edge grows a wall of faces
+# at every chunk border, so the client generates an 18³ neighbourhood rather
+# than fetching the margin from blocks that may not exist yet. For a
+# deterministic generator those are the same answer, and generating it is
+# cheaper than asking.
 (let pad_dim 18.0)
-(let pad_stride_y 18.0)
-(let pad_stride_z 324.0)
 (let pad_nodes 5832.0)
 
-(fn fill_padded [out : (Buffer U16) ox : F64 oy : F64 oz : F64
-                 seed : F64] : Nil
-  (var pz 0.0)
-  (while (< pz pad_dim)
-    (var wz (+ oz (- pz 1.0)))
-    (var px 0.0)
-    (while (< px pad_dim)
-      (var wx (+ ox (- px 1.0)))
-      # Hoisted out of the y loop: this is the only noise call in the function,
-      # and leaving it inside would multiply its count by 18.
-      (var surface (surface_height wx wz seed))
-      (var column (+ px (* pz pad_stride_z)))
-      (var py 0.0)
-      (while (< py pad_dim)
-        (out ~ set! (+ column (* py pad_stride_y))
-              (material (+ oy (- py 1.0)) surface))
-        (set py (+ py 1.0)))
-      (set px (+ px 1.0)))
-    (set pz (+ pz 1.0))))
+# --- terrain shape -----------------------------------------------------------
+#
+# Four octaves rather than §D6.1's five, and that is a consequence of the
+# lattice rather than a taste change: `core/field.gene` interpolates between
+# samples 4 nodes apart, which cannot represent a feature finer than that. At
+# `terrain_scale` 0.0125 one noise unit is 80 nodes, so octave 4 has features 10
+# nodes across and octave 5 would have 5 — under the lattice step, where it
+# would alias into noise instead of appearing. Asking for it and not getting it
+# would be the worse outcome, because it would still cost 55 µs a sample.
 
-# --- the generator -----------------------------------------------------------
+# Chosen from the measured height distribution rather than picked: the surface
+# spans y 9 to 44 with a median of 25, and a sea at 20 puts a fifth of all
+# columns under water. A sea at 12 — this generator's first value — flooded
+# 1.4% of them, which is a world with puddles in it and no coastline.
+(let sea_level 20.0)
+(let terrain_scale 0.0125)
+(let terrain_octaves 4.0)
+(let terrain_amplitude 44.0)
+(let terrain_base 4.0)
+(let terrain_step 4.0)
+
+# Heat and humidity vary on the scale a player walks between biomes — about 550
+# nodes per noise unit — so they are sampled on a lattice four times coarser
+# than terrain's and with two octaves instead of four. A biome boundary is a
+# Voronoi edge in (heat, humidity) space (§3, `core/biome.gene`), and detail
+# below the lattice step only makes that edge ragged at a cost of 112 µs a
+# sample.
+
+(let biome_scale 0.0018)
+(let biome_octaves 2.0)
+(let biome_step 16.0)
+
+# Offsets that separate the three fields' seeds. They must clear the octave
+# offsets `fbm2` adds internally — it seeds octave `i` with `seed + i` — or the
+# humidity field would be a shifted copy of the heat field, and every hot place
+# would be wet.
+(let heat_seed_offset 1301.0)
+(let humidity_seed_offset 2903.0)
+
+# The height field, as a raw noise value in [0, 1). Kept separate from
+# `surface_height` so the lattice can interpolate the smooth field and the
+# quantisation to whole nodes happens once, afterwards — interpolating the
+# floored height instead would put a step in the middle of every lattice cell.
+(fn terrain_noise [wx : F64 wz : F64 seed : F64] : F64
+  (fbm2 (* wx terrain_scale) (* wz terrain_scale) seed terrain_octaves 2.0 0.5))
+
+(fn surface_from_noise [n : F64] : F64
+  ($math/floor (+ terrain_base (* terrain_amplitude n))))
+
+# The surface height at a world column, sampled directly.
 #
-# Writes `chunk_nodes` ids into `out`, indexed `x + 80y + 6400z` — the same
-# x-fastest order as a block (§1), one scale up.
+# This is the *definition* of the height field; the generator reads an
+# interpolated approximation of it (§D6.3's ladder, rung 2). Keeping the exact
+# form is what lets `probes/mapgen_spec.gene` assert that a step-1 lattice
+# reproduces it bit for bit, which pins the approximation to the field it
+# approximates instead of to itself.
+(fn surface_height [wx : F64 wz : F64 seed : F64] : F64
+  (surface_from_noise (terrain_noise wx wz seed)))
+
+(fn heat_at [wx : F64 wz : F64 seed : F64] : F64
+  (* 100.0 (fbm2 (* wx biome_scale) (* wz biome_scale)
+                 (+ seed heat_seed_offset) biome_octaves 2.0 0.5)))
+
+(fn humidity_at [wx : F64 wz : F64 seed : F64] : F64
+  (* 100.0 (fbm2 (* wx biome_scale) (* wz biome_scale)
+                 (+ seed humidity_seed_offset) biome_octaves 2.0 0.5)))
+
+# --- run-length column filling -----------------------------------------------
 #
-# The column loop hoists `surface_height` out of the y loop, which is the one
-# structural optimisation that matters here: leaving it inside would multiply
-# the fbm2 count by 80 and dominate everything else in the function.
-(fn generate_chunk [out : (Buffer U16) ox : F64 oy : F64 oz : F64
-                    seed : F64] : Nil
+# §D6.3: "A column is a handful of runs — air, then a surface node, then dirt,
+# then stone — so a generator that writes runs touches thousands of nodes per
+# chunk instead of hundreds of thousands. This is a change in how the generator
+# is written, not in what it produces."
+#
+# The literal reading is about writes, and it is not the load-bearing half: a
+# buffer has no fill primitive, so every node in a run is still stored one at a
+# time. What runs remove is the *decision* — the old generator called `material`
+# 5,832 times per padded block at 1.27 µs each, and this calls five run fills
+# per column and none per node. `column_node` in `core/biome.gene` still states
+# the same rule per node, and the spec asserts the two agree, so the fast path
+# has a slow definition to be checked against.
+
+# Local-y range `[y0, y1]`, clipped to the buffer. An empty or fully-clipped run
+# writes nothing, which is what makes a zero-depth band cost nothing to declare.
+(fn fill_run [out : (Buffer F32) dim : F64 column : F64
+              y0 : F64 y1 : F64 id : F64] : Nil
+  (var y ($math/max 0.0 y0))
+  (var top ($math/min (- dim 1.0) y1))
+  (while (<= y top)
+    (out ~ set! (+ column (* y dim)) id)
+    (set y (+ y 1.0))))
+
+# --- the pipeline ------------------------------------------------------------
+
+# Fill a `dim³` region whose `(0,0,0)` is world `(ox, oy, oz)`, x-fastest — §1's
+# block order at any size.
+#
+# The three lattices are allocated per call rather than passed in. They are 49,
+# 16, and 16 `F64` at the padded size, so the allocation is under a kilobyte
+# against a stage that costs milliseconds; making them caller-supplied would put
+# three scratch buffers in every signature to save nothing measurable.
+(fn fill_region [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+                 biomes : BiomeRegistry ores : OreRegistry
+                 seed : F64 air : F64 water : F64] : Nil
+
+  # --- stage 1: the 2D fields, on world-anchored lattices ---------------------
+  (var hx (lattice_origin ox terrain_step))
+  (var hz (lattice_origin oz terrain_step))
+  (var hd (lattice_dim ox dim terrain_step))
+  (var height ($buffer F64 (* hd hd)))
+  (sample_lattice height hd hx hz terrain_step terrain_scale seed
+                  terrain_octaves)
+
+  (var bx (lattice_origin ox biome_step))
+  (var bz (lattice_origin oz biome_step))
+  (var bd (lattice_dim ox dim biome_step))
+  (var heat ($buffer F64 (* bd bd)))
+  (sample_lattice heat bd bx bz biome_step biome_scale
+                  (+ seed heat_seed_offset) biome_octaves)
+  (var humidity ($buffer F64 (* bd bd)))
+  (sample_lattice humidity bd bx bz biome_step biome_scale
+                  (+ seed humidity_seed_offset) biome_octaves)
+
+  # --- stage 2: biome per column, then the column's runs ---------------------
+  (var plane (* dim dim))
+  (var sea_local (- sea_level oy))
   (var z 0.0)
-  (while (< z chunk_size)
+  (while (< z dim)
     (var wz (+ oz z))
+    (var zbase (* z plane))
     (var x 0.0)
-    (while (< x chunk_size)
+    (while (< x dim)
       (var wx (+ ox x))
-      (var surface (surface_height wx wz seed))
-      (var column_base (+ x (* z 6400.0)))
-      (var y 0.0)
-      (while (< y chunk_size)
-        (var wy (+ oy y))
-        (var id (material wy surface))
-        # Caves carve stone and dirt but never water or air, so a cave that
-        # reaches the seabed does not drain the ocean into it.
-        (if_yes (&& (> id n_air) (!= id n_water))
-          (if_yes (cave? wx wy wz seed)
-            (set id n_air)))
-        (out ~ set! (+ column_base (* y 80.0)) id)
-        (set y (+ y 1.0)))
+      (var surface (surface_from_noise
+                     (lattice_value height hd hx hz terrain_step wx wz)))
+      (var b (biome_at biomes
+                       (* 100.0 (lattice_value heat bd bx bz biome_step wx wz))
+                       (* 100.0
+                          (lattice_value humidity bd bx bz biome_step wx wz))
+                       surface))
+      (var underwater (< surface sea_level))
+      (var cover (cover_depth biomes b))
+      (var top_d (top_depth biomes b))
+      (var surf (top_node biomes b))
+      (var fill (filler_node biomes b))
+      (if_yes underwater
+        (var under (underwater_node biomes b))
+        (set surf under)
+        (set fill under))
+
+      (var s_local (- surface oy))
+      (var column (+ x zbase))
+      # Top down: air, then the sea, then the biome's cover, then stone. The
+      # runs are written whole rather than clipped by hand — `fill_run` clips —
+      # so a block entirely above or entirely below the surface falls out as
+      # four empty runs and one full one.
+      (fill_run out dim column
+                (+ ($math/max s_local sea_local) 1.0) (- dim 1.0) air)
+      (if_yes underwater
+        (fill_run out dim column (+ s_local 1.0) sea_local water))
+      (fill_run out dim column (- (+ s_local 1.0) top_d) s_local surf)
+      (fill_run out dim column (- (+ s_local 1.0) cover) (- s_local top_d) fill)
+      (fill_run out dim column 0.0 (- s_local cover) (stone_node biomes b))
       (set x (+ x 1.0)))
-    (set z (+ z 1.0))))
+    (set z (+ z 1.0)))
+
+  # --- stage 3: caves, then stage 4: ore -------------------------------------
+  #
+  # Ore after caves, as upstream: once a tunnel is air it is no longer the node
+  # any ore may replace, so no ore is left floating in the open and there is no
+  # cleanup pass.
+  (carve out dim ox oy oz seed air water)
+  (place_all out dim ox oy oz ores seed))
+
+# The server's shape: one 16³ block, §1's storage unit.
+(fn generate_block [out : (Buffer F32) ox : F64 oy : F64 oz : F64
+                    biomes : BiomeRegistry ores : OreRegistry
+                    seed : F64 air : F64 water : F64] : Nil
+  (fill_region out block_dim ox oy oz biomes ores seed air water))
+
+# The client's shape: the 18³ neighbourhood `core/mesh.gene` reads, whose
+# `(0,0,0)` is one node outside the block on every axis.
+(fn fill_padded [out : (Buffer F32) ox : F64 oy : F64 oz : F64
+                 biomes : BiomeRegistry ores : OreRegistry
+                 seed : F64 air : F64 water : F64] : Nil
+  (fill_region out pad_dim (- ox 1.0) (- oy 1.0) (- oz 1.0)
+               biomes ores seed air water))

@@ -6,25 +6,37 @@
 //   node tools/mesh_bench.mjs
 
 import { fill_padded } from "../dist/mapgen.mjs";
+import { count_faces, build_mesh } from "../dist/mesh.mjs";
+import { new_registry, id_of, opaque$q } from "../dist/registry.mjs";
+import { setup_nodes, setup_biomes, setup_ores } from "../dist/content.mjs";
 
 // 18^3 — the padded neighbourhood core/mesh.gene reads. The web profile
 // exports functions, not `let` constants, so the geometry is restated here.
 const PAD_NODES = 18 * 18 * 18;
-import { count_faces, build_mesh } from "../dist/mesh.mjs";
 
 const SEED = 1337;
-const CHUNKS = 64;
 
-const padded = new Uint16Array(PAD_NODES);
+// M2: the generator and the mesher both read the registries rather than
+// hardcoded ids, so the harness builds the same content set the client does.
+// Content ids are `F64` and the node buffer is a Float32Array — see
+// core/world.gene for why the obvious Uint16Array is 9x slower to read.
+const reg = new_registry();
+setup_nodes(reg);
+const biomes = setup_biomes(reg);
+const ores = setup_ores(reg);
+const AIR = id_of(reg, "air");
+const WATER = id_of(reg, "miclone:water");
+
+const padded = new Float32Array(PAD_NODES);
 
 function meshOne(cx, cy, cz) {
   const t0 = performance.now();
-  fill_padded(padded, cx * 16, cy * 16, cz * 16, SEED);
+  fill_padded(padded, cx * 16, cy * 16, cz * 16, biomes, ores, SEED, AIR, WATER);
   const tGen = performance.now();
-  const faces = count_faces(padded);
+  const faces = count_faces(reg, padded);
   const verts = new Float32Array(faces * 4 * 6);
   const idx = new Uint32Array(faces * 6);
-  build_mesh(padded, verts, idx, cx * 16, cy * 16, cz * 16);
+  build_mesh(reg, padded, verts, idx, cx * 16, cy * 16, cz * 16);
   const tMesh = performance.now();
   return { gen: tGen - t0, mesh: tMesh - tGen, faces, verts: verts.length / 6 };
 }
@@ -74,24 +86,24 @@ console.log(`  non-empty     ${busy} of ${CHUNK_COUNT} (${empty} fully interior 
 {
   // Search for a chunk that straddles the surface: an interior chunk emits no
   // quads at all, so checking a fixed one can silently check nothing.
-  const pad = new Uint16Array(PAD_NODES);
+  const pad = new Float32Array(PAD_NODES);
   let faces = 0, ox = 0, oy = 0, oz = 0;
   outer:
   for (let cy = 0; cy < SPAN_Y; cy++)
     for (let cx = 0; cx < SPAN_X; cx++)
       for (let cz = 0; cz < SPAN_Z; cz++) {
-        fill_padded(pad, cx * 16, cy * 16, cz * 16, SEED);
-        faces = count_faces(pad);
+        fill_padded(pad, cx * 16, cy * 16, cz * 16, biomes, ores, SEED, AIR, WATER);
+        faces = count_faces(reg, pad);
         if (faces > 100) { ox = cx*16; oy = cy*16; oz = cz*16; break outer; }
       }
   if (faces <= 100) {
     console.log("\nFAIL — winding: found no chunk with enough geometry to check");
     process.exit(1);
   }
-  fill_padded(pad, ox, oy, oz, SEED);
+  fill_padded(pad, ox, oy, oz, biomes, ores, SEED, AIR, WATER);
   const verts = new Float32Array(faces * 4 * 6);
   const idx = new Uint32Array(faces * 6);
-  build_mesh(pad, verts, idx, ox, oy, oz);
+  build_mesh(reg, pad, verts, idx, ox, oy, oz);
 
   // The invariant, checked per quad rather than by which directions happen to
   // occur: the normal implied by the winding must point from the solid node
@@ -100,10 +112,11 @@ console.log(`  non-empty     ${busy} of ${CHUNK_COUNT} (${empty} fully interior 
   // (A heightfield legitimately produces no downward faces, which is why
   // "all six directions appear" is the wrong test.)
   const at = (v) => [verts[v * 6 + 0], verts[v * 6 + 1], verts[v * 6 + 2]];
-  const solid = (x, y, z) => {
-    const v = pad[(x + 1) + (y + 1) * 18 + (z + 1) * 324];
-    return v !== 0 && v !== 5;
-  };
+  // Asks the registry rather than testing against ids 0 and 5, which is the
+  // same change M2 made in core/mesh.gene: ids are assigned at load, so a
+  // hardcoded pair is only ever right for one content set.
+  const solid = (x, y, z) =>
+    opaque$q(reg, pad[(x + 1) + (y + 1) * 18 + (z + 1) * 324]);
   const seen = new Set();
   let inverted = 0, degenerate = 0;
   for (let f = 0; f < faces; f++) {

@@ -6,16 +6,33 @@
 # fetch, and a load event from the spike — `examples/new_world` needed all three
 # and writes its own encoder to get them.
 #
-# The layout is `core/mesh.gene`'s 4x4 grid, and **tile order is the ABI**: the
-# `tile_for` mapping there indexes this positionally, so inserting a tile
-# renumbers every tile after it.
+# The layout is `core/mesh.gene`'s 4x4 grid, and **tile order is the ABI** —
+# but the ABI now has one owner. The slot numbers are `core/content.gene`'s
+# constants, imported rather than restated, because M2 moved tiles into the node
+# registry (§2): the mesher reads a node's tile out of a registry column that
+# `setup_nodes` filled from those same constants. Before, this file and
+# `core/mesh.gene` each carried half of a positional agreement that nothing
+# checked.
 
 (mod atlas ^profile web)
 
 (import [hash_unit2] from "../core/exact.gene")
+(import [tile_stone tile_dirt tile_grass_top tile_grass_side tile_sand
+         tile_water tile_gravel tile_snow tile_sandstone
+         tile_coal tile_iron tile_gold tile_diamond]
+        from "../core/content.gene")
 
 (let tile_px 16.0)
 (let atlas_px 64.0)
+(let atlas_cols 4.0)
+
+# Tile index to grid position, the inverse of what `core/mesh.gene` does to
+# reach the atlas: index `t` lives at column `t mod 4`, row `t / 4`.
+(fn tile_col [t : F64] : F64
+  (- t (* ($math/floor (/ t atlas_cols)) atlas_cols)))
+
+(fn tile_row [t : F64] : F64
+  ($math/floor (/ t atlas_cols)))
 
 # Per-texel variation from the same deterministic hash the world generator
 # uses, so the atlas is reproducible from its seed rather than from a file
@@ -29,11 +46,11 @@
   ($canvas/set_fill ctx $"rgb($($math/floor r),$($math/floor g),$($math/floor b))")
   ($canvas/fill_rect ctx x y 1.0 1.0))
 
-# One tile at grid position (col, row), tinted from a base colour.
-(fn paint_tile [ctx : Canvas2D col : F64 row : F64
+# One tile at atlas slot `t`, tinted from a base colour.
+(fn paint_tile [ctx : Canvas2D t : F64
                 r : F64 g : F64 b : F64 spread : F64 seed : F64] : Nil
-  (var ox (* col tile_px))
-  (var oy (* row tile_px))
+  (var ox (* (tile_col t) tile_px))
+  (var oy (* (tile_row t) tile_px))
   (var y 0.0)
   (while (< y tile_px)
     (var x 0.0)
@@ -47,9 +64,9 @@
 
 # Grass seen from the side: dirt with a band of grass over the top few texels,
 # with a ragged boundary so the two do not meet in a straight line.
-(fn paint_grass_side [ctx : Canvas2D col : F64 row : F64] : Nil
-  (var ox (* col tile_px))
-  (var oy (* row tile_px))
+(fn paint_grass_side [ctx : Canvas2D t : F64] : Nil
+  (var ox (* (tile_col t) tile_px))
+  (var oy (* (tile_row t) tile_px))
   (var y 0.0)
   (while (< y tile_px)
     (var x 0.0)
@@ -67,11 +84,46 @@
       (set x (+ x 1.0)))
     (set y (+ y 1.0))))
 
-# Tile order, matching `core/mesh.gene`'s `tile_for`:
-#   0 stone   1 dirt   2 grass top   3 grass side   4 sand
+# An ore: the stone tile with speckles of the ore's colour through it.
+#
+# The speckle test is hashed on the texel coordinate *halved and floored*, so a
+# hit covers a 2x2 patch rather than a single texel. Per-texel specks read as
+# noise at any distance; 2x2 blobs read as ore, which is the whole point of
+# drawing them.
+(fn paint_ore [ctx : Canvas2D t : F64
+               r : F64 g : F64 b : F64 seed : F64 density : F64] : Nil
+  (paint_tile ctx t 128.0 128.0 132.0 30.0 20.0)
+  (var ox (* (tile_col t) tile_px))
+  (var oy (* (tile_row t) tile_px))
+  (var y 0.0)
+  (while (< y tile_px)
+    (var x 0.0)
+    (while (< x tile_px)
+      (var bx ($math/floor (/ x 2.0)))
+      (var by ($math/floor (/ y 2.0)))
+      (if_yes (> (hash_unit2 bx by seed) density)
+        (paint_texel ctx (+ ox x) (+ oy y)
+                     (shade r x y (+ seed 3.0) 24.0)
+                     (shade g x y (+ seed 4.0) 24.0)
+                     (shade b x y (+ seed 5.0) 24.0)))
+      (set x (+ x 1.0)))
+    (set y (+ y 1.0))))
+
+# The atlas, in `core/content.gene`'s slot order. Thirteen of sixteen slots are
+# used; §6's atlas gains a row before a fourteenth node type does.
 (fn paint [ctx : Canvas2D] : Nil
-  (paint_tile ctx 0.0 0.0 128.0 128.0 132.0 30.0 20.0)   # stone
-  (paint_tile ctx 1.0 0.0 134.0 102.0 72.0 22.0 10.0)    # dirt
-  (paint_tile ctx 2.0 0.0 96.0 152.0 72.0 26.0 40.0)     # grass top
-  (paint_grass_side ctx 3.0 0.0)                          # grass side
-  (paint_tile ctx 0.0 1.0 214.0 200.0 152.0 18.0 60.0))  # sand
+  (paint_tile ctx tile_stone 128.0 128.0 132.0 30.0 20.0)
+  (paint_tile ctx tile_dirt 134.0 102.0 72.0 22.0 10.0)
+  (paint_tile ctx tile_grass_top 96.0 152.0 72.0 26.0 40.0)
+  (paint_grass_side ctx tile_grass_side)
+  (paint_tile ctx tile_sand 214.0 200.0 152.0 18.0 60.0)
+  # Water is drawn by the opaque pass in M2 (see core/content.gene), so it wants
+  # a flat surface colour rather than something to see through.
+  (paint_tile ctx tile_water 46.0 98.0 168.0 16.0 70.0)
+  (paint_tile ctx tile_gravel 140.0 136.0 132.0 46.0 80.0)
+  (paint_tile ctx tile_snow 236.0 240.0 248.0 12.0 90.0)
+  (paint_tile ctx tile_sandstone 204.0 180.0 124.0 20.0 100.0)
+  (paint_ore ctx tile_coal 38.0 38.0 42.0 110.0 0.62)
+  (paint_ore ctx tile_iron 192.0 148.0 116.0 120.0 0.66)
+  (paint_ore ctx tile_gold 232.0 196.0 78.0 130.0 0.70)
+  (paint_ore ctx tile_diamond 128.0 224.0 232.0 140.0 0.72))

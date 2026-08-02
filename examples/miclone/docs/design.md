@@ -368,6 +368,19 @@ and 51,387 faces — twice the 60 fps criterion, and the median frame of 8.3 ms
 is the display's refresh interval rather than the renderer's cost, so the
 budget is not the binding constraint at this view distance.
 
+*M2 note.* The spike now draws 231 meshes and 62,580 faces — 22% more geometry
+through an unchanged render path (`client/render.gene` is untouched) — and it
+stands at world (-1440, 3168) rather than the origin. §3 gives biomes a
+~555-node scale, this view is 192 nodes across, so wherever it stands it sees
+one or two biomes; at the origin it stands in the cold quadrant and is uniformly
+snow. The site was found by scanning for the view with the most distinct biomes
+and a coastline in it, and nothing in the generator is tuned for it. **The fps
+figure was not re-taken**: the browser-automation tab reports `document.hidden`,
+where Chrome throttles `requestAnimationFrame` to about 5 fps, and a screen
+capture of a visible window needs a permission this environment does not have.
+The meshing budget, which is the criterion this probe exists for, was re-taken
+and is in §5.
+
 Two measurement traps worth recording, because both produced numbers that
 looked like results:
 
@@ -415,6 +428,45 @@ was scoped as "conservative analysis" and is really "audit every emit site".
 It is worth doing and it is not worth doing half-way, so it is recorded in
 §D7.10 rather than shipped. Nothing is blocked meanwhile: meshing passes with
 20x margin *including* the conversion.
+
+#### M2 update — the criterion is met, from the source side
+
+The paragraph above is right about the compiler and wrong about the conclusion
+it drew from it. "Representation change, not use-site elision" is exactly
+correct — and a representation change is something the *source* can make.
+
+M2 declared node content `F32` rather than `U16` and content ids `F64` rather
+than `Int`, everywhere: `Block`'s three columns (§1), the node registry's
+columns (§2), the biome and ore registries' node references, and the buffers
+mapgen writes and the mesher reads. Measured over 5,832 elements in the web
+profile:
+
+| | `Int`-typed buffer | `F32`-typed buffer |
+|---|---:|---:|
+| scan | 60.4 µs | 6.8 µs |
+| scan and use the value as an index | 93.0 µs | 6.9 µs |
+
+9x and 13.5x, because an `Int` read emits `BigInt(arr[i])` — an allocation — and
+indexing with it emits `Number(...)` to undo it. §5's mesher does exactly that
+seven times per node.
+
+This is sound where the compiler pass was not, and for the reason the compiler
+pass failed: it changes what the storage holds, so there is no second
+representation for a comparison, a return site, or a validator to disagree with.
+`0 === 0n` cannot arise because no `0n` is produced. It costs 2 bytes per node
+in the client's memory and nothing on the VM, whose `Buffer` is a boxed
+`seq[Value]` either way (§D7.2). `F32` represents every integer below 2^24
+exactly and §2 caps content at 4,096 ids, so no id is ever rounded and the two
+backends cannot disagree about one.
+
+§1's "content is a `u16`" is unchanged and still means what it said — it is the
+width for the wire (§10) and the disk (§11), which is where a width buys
+anything.
+
+**§D7.10's numeric-elision pass is still worth doing** and is still the general
+answer; this is the specific one, available because an engine gets to choose its
+own storage types. What it does not cover is `Int` arithmetic that is genuinely
+integer — the pass would still earn its keep there.
 
 ### D6.2 The divergence probe
 
@@ -552,6 +604,12 @@ optimisation this project could ask for, and it is recorded as §D7.10 rather
 than acted on here: it is a large piece of work, it benefits every Gene
 program, and the engine has a shape that fits within today's costs.
 
+**M2 acted on this and §3.3 carries the result.** The 16³ block is the
+generation unit, the stages are position-derived rather than chunk-derived, and
+a block with biomes, caves, and ore generates in 31.8 ms. This probe stays as it
+is — it is the record of an 80³ chunk, which is a thing this engine no longer
+generates — and `gene run worldgen` now measures the unit that replaced it.
+
 **All three are contributions regardless of outcome.** WebGL2 bindings and
 typed arrays are things the web profile wants anyway; a measured 3D baseline
 for the transpiled path does not exist today; and a cross-backend FP divergence
@@ -617,7 +675,8 @@ routed through a helper that throws where the failure happens.
 **§D6.1 is now unblocked**: the remaining work is the spike itself — a mesher,
 a camera, and a shader — not language support.
 
-**2. Packed typed `Buffer` (VM). Blocks M4, and is the escape hatch for M2.**
+**2. Packed typed `Buffer` (VM). Blocks M4. No longer M2's escape hatch —
+M2 did not need one.**
 `Buffer` is `seq[Value]` today: 8 bytes per element and a boxed write per
 `set!`. A 16³ block is 4,096 nodes; at 4 bytes per node that is 16 KB packed
 and 32 KB boxed for content ids alone, before the two parameter arrays.
@@ -645,6 +704,16 @@ allocation-free hot paths all apply.
 It is also the heavy mitigation if §D6.3's worldgen probe fails, which is why
 it may get pulled forward ahead of its listed milestone.
 
+*M2 update: not pulled forward, and the reason is worth recording.* §D6.3 did
+fail, and the ladder's cheap rungs plus the granularity change were enough —
+31.8 ms against a 300 ms budget (§3.3). What M2 did discover is that on the
+**web** side the element type is not a footprint question at all but a
+representation one: an `Int`-typed buffer allocates a `BigInt` per read, and
+declaring the same data `F32` is 9x faster (§D6.1's M2 update). That is a source
+change, not a VM change, and it leaves this item where it was: the VM's `Buffer`
+is still `seq[Value]`, still 8 bytes and a boxed write per element, and the
+consumers listed above still want it packed.
+
 **3. `fs/read_bytes` + binary integer/float codecs. Blocks M4.**
 `fs/write_bytes` exists and `fs/read_bytes` does not, which is enough on its own.
 `$binary` can slice and concatenate but cannot read a `u16` LE or write an `f32`;
@@ -658,7 +727,13 @@ hundred lines, portable, and the decode side is the one we need first), or bind
 zlib once the FFI question is settled. Note that `examples/new_world/src/atlas.gene`
 already writes a valid PNG from Gene, so the neighbourhood is not unexplored.
 
-**5. Deterministic noise library (pure Gene). Blocks M2.**
+**5. Deterministic noise library (pure Gene). Blocks M2. Landed.**
+`core/noise.gene` and `core/exact.gene`, confirmed bit-identical across backends
+by §D6.2 and used by all of §3. `core/field.gene` sits on top of it and is the
+part §D6.3 forced: the library is exact, and sampling it once per node is
+unaffordable, so the field is sampled on a coarse world-anchored lattice and
+interpolated (§3.2).
+
 Value/Perlin/simplex plus fractal octaves, matching the shape of Luanti's
 `src/noise.cpp` and its `NoiseParams`. No VM change; it is a library. It sits in
 §D3.1's exact half — bit-identical across the VM and the web profile, or the
@@ -794,8 +869,8 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | | milestone | ends with | needs |
 |---|---|---|---|
 | **M0** | **The three probes (§D6)** | fly through a static voxel world at 60 fps, plus a decided determinism rule and a measured worldgen cost | backlog 1, 6 |
-| M1 | World model + registries | a world you can query and mutate in tests | — |
-| M2 | Mapgen | recognizable terrain: biomes, caves, ore | backlog 5 |
+| ~~M1~~ | **World model + registries — done** | 63 cross-backend checks; §1 and §2 | — |
+| ~~M2~~ | **Mapgen — done** | biomes, caves, and ore, drawn by the M0 renderer; §3 | backlog 5 |
 | M3 | Lighting + meshing in `core/` | the M0 renderer drawing a *generated* lit world | backlog 2 |
 | M4 | Persistence | quit and come back to the same world | backlog 3, 4 |
 | M5 | Player: physics, dig, place, inventory | a playable singleplayer creative-ish loop | — |
@@ -882,6 +957,14 @@ they are inherited (§D1).
 | `param1` | `u8` | light: day in the high nibble, night in the low |
 | `param2` | `u8` | per-drawtype: facedir, level, liquid depth, color index |
 
+**M2: `u16` is the storage width, not the in-memory representation.** The
+widths above are what a node costs on the wire (§10) and on disk (§11), and they
+are unchanged. In memory the three columns are `F32` and a content id is an
+`F64`, because `Int` lowers to `bigint` in the web profile and §5 reads node
+content seven times per node — 9x to 13.5x, measured, in §D6.1's M2 update.
+`F32` holds every integer below 2^24 exactly and §2 caps content at 4,096 ids,
+so the round trip through the narrower wire format is lossless.
+
 Content ids are **per-world and assigned at load**, never hardcoded; the
 `name → id` mapping is stored with the world so that a saved block still means
 what it meant. Three ids are reserved with Luanti's meanings: `unknown` (a
@@ -930,7 +1013,10 @@ The registry splits into two halves on purpose, because they have different
 audiences and different lifetimes:
 
 - **the client half** — drawtype, tiles, transparency, light propagation, light
-  source, collision box, selection box. Serialized to the client on join. Pure
+  source, collision box, selection box. Serialized to the client on join.
+  *M2: built, less the collision and selection boxes, which M5 needs and M2 does
+  not. Tiles are three columns — top, side, bottom — because grass needs three,
+  and §5 reads them per face instead of carrying its own table.* Pure
   data; no code crosses the wire. The two light fields are here for prediction,
   not for authority — the client needs them to relight around its own edits
   (§4, §7.1), never to derive a received block's light from scratch.
@@ -955,44 +1041,150 @@ each other.
 
 ## 3. Mapgen
 
-Generation happens in a **chunk** of 5×5×5 blocks (80³ nodes), Luanti's unit,
-generated as a whole so that caves, ore, and structures can cross block borders.
+**Revised by M2 against §D6.3's measurement.** The first draft of this section
+specified generation in a **chunk** of 5×5×5 blocks (80³ nodes), Luanti's unit,
+"generated as a whole so that caves, ore, and structures can cross block
+borders". §D6.3 measured that unit at 302 s and concluded the unit was wrong,
+not the terrain. What follows is what was built.
 
-The pipeline, per chunk:
+### 3.1 The generation unit is a block
 
-1. **base terrain** — 3D noise for density, 2D noise for height and
-   heat/humidity
-2. **biomes** — a registry keyed by heat/humidity, choosing surface, filler, and
-   stone nodes
-3. **caves** — 3D noise thresholds plus tunnel carving
-4. **ore** — registered ore types (scatter, sheet, blob) with height and wherein
-   constraints
-5. **decorations** — registered simple and schematic decorations, placed on
-   surfaces
-6. **lighting** — §4, seeded from the top of the chunk down
+Generation happens in one **16³ block** — §1's storage unit — and the same
+staged pipeline fills either shape: a bare 16³ block for the server to store,
+or the 18³ padded neighbourhood the client meshes from (§5).
+
+**The chunk existed to make cross-border features possible, and it is not the
+only way to get them.** Upstream carves a cave into a chunk-sized voxel
+manipulator because its cave generator works from chunk-local state. Ours does
+not: every stage is derived from *world* position — the height lattice is
+anchored to world coordinates, cave worms come from world regions, ore clusters
+from world cells — so each asks "which features reach this buffer" rather than
+"which features start inside it". Two adjacent blocks generated a week apart on
+different machines see the same worm and carve the two halves of one tunnel.
+
+That is an argument, so it is also an assertion: `probes/mapgen_spec.gene`
+generates a bare block and the padded neighbourhood of the block beside it and
+requires the 256 nodes they share to be identical, and requires a block to equal
+its own padded neighbourhood over all 4,096. If the granularity change were
+unsound, those are the checks that would say so.
+
+### 3.2 The pipeline
+
+| | stage | shape | module |
+|---|---|---|---|
+| 1 | base terrain | 2D height, heat, humidity on a coarse world-anchored lattice | `core/field.gene` |
+| 2 | biomes | nearest point in (heat, humidity), then run-length column fill | `core/biome.gene` |
+| 3 | caves | carved along hashed Bézier worms | `core/cave.gene` |
+| 4 | ore | placed from hashed world cells, scatter / sheet / blob | `core/ore.gene` |
+| 5 | decorations | *not built* — the next milestone's | |
+| 6 | lighting | *not built* — M3's, §4 | |
 
 Every stage is a registry a mod can add to (§9), which is Luanti's design and
-the reason its games look nothing alike.
+the reason its games look nothing alike. `core/content.gene` populates them with
+a provisional node set, six biomes, and six ores; M7 replaces that file with a
+mod and nothing else should have to move.
 
-**Determinism is a hard requirement.** One `(seed, chunk_pos)` produces one
-chunk, on either backend, forever. Mapgen is §D3.1's exact half, so this is
-enforceable rather than hoped for: the whole pipeline stays inside `+ − × ÷`,
-comparisons, and integer hashing, with no host transcendental anywhere in it.
-Cross-backend fixtures assert bit-identical output and CI fails on one
-differing bit. §D6.2 confirms the constraint holds before M2 relies on it.
+**Every stage obeys one rule, and it is §D6.3 restated: cost scales with output,
+not with volume.** That rule is what rewrote stage 3. A per-node `fbm3` threshold
+— the first draft's design — costs one noise evaluation per node by
+construction, which is 1.8 s for a 16³ block on the VM. Carving costs what it
+removes. The same rule put stage 1 on a lattice coarser than the node grid
+(§D6.3's mitigation ladder, rung 2) and stage 4 on cells that are cheap to
+reject.
+
+### 3.3 What it costs
+
+Measured by `gene run worldgen` on the VM (`nimble speedy`, Darwin arm64), by
+generating whole blocks rather than extrapolating from samples:
+
+| stage | ms per 16³ block |
+|---|---:|
+| 1 + 2 terrain, biomes, run fill | 22.3 |
+| 3 caves | 4.2 |
+| 4 ore | 6.1 |
+| **one 16³ block (4,096 nodes)** | **32.6** |
+| one 18³ padded neighbourhood (5,832 nodes) | 44.2 |
+
+Medians of three consecutive runs on an otherwise idle machine, which spread by
+about 4%. An earlier reading taken while `nimble perf` was running reported the
+bare block at 61 ms and the *padded* block — half again as many nodes — at 49,
+which is impossible and is the tell: on a loaded machine these numbers are
+contention, not cost.
+
+For comparison, the M0 generator — no biomes, no caves, no ore — took **103.8 ms**
+for the padded block, of which 92.3 ms was 324 direct `fbm2` calls. Three more
+stages at 43% of the cost.
+
+**§D6.3's budget, read three ways**, because shrinking the unit by 125× and
+keeping the same 300 ms would weaken the requirement by 125× while appearing to
+pass:
+
+| | reading | result |
+|---|---|---|
+| A | 300 ms per generation unit, §D6.3 as written | **PASS** — 32.6 ms, 9.2× margin |
+| B | the node rate the 80³ unit implied, 1,706,667 nodes/s | **FAIL** — 125,644 nodes/s, 13.6× under |
+| C | one lane ahead of a 4 node/s player at §D6.1's view | **PASS** — 32.6 ms against 76.9 ms |
+
+B fails and is expected to. It is reported rather than dropped because it is the
+strict reading and the granularity change is exactly what makes it easier;
+hiding it would make the milestone look like it closed a gap it did not. C
+replaces it, and C is the only one of the three derived from the game rather
+than from an arbitrary volume: a player crossing a block boundary every four
+seconds pulls in a slab of 13 blocks per second at the spike's view distance,
+and one lane sustains that with 2.4× to spare. §D7.11's AOT path is what would
+close B.
+
+### 3.4 What it produces
+
+A generator that is fast because it emits one id is not a passing probe, so
+`gene run worldgen` reports composition next to timing:
+
+- **surface** y 9 to 44, median 25, with the sea at 20 — **16.5%** of columns
+  under water. The sea level was chosen from that measured distribution; the
+  first value, 20 nodes lower, flooded 1.4% of the world and gave it puddles
+  instead of a coastline.
+- **biomes** tundra 15.0%, taiga 15.0%, rainforest 21.2%, savanna 12.5%,
+  desert 23.4%, grassland 13.0%.
+- **caves** 1.5% of rock below the lowest surface, linear in the worm count
+  (0 worms 0.00%, 2 → 0.82%, 3 → 1.47%, 6 → 3.05%).
+- **ore** coal 0.072%, iron 0.033%, gold 0.006% of a y 0..47 volume, plus
+  gravel blobs and sandstone sheets.
+
+**Two mistakes worth recording, because both were silent and both were found by
+measuring rather than by looking.**
+
+*The first: a biome nobody could visit.* `fbm2` normalises to [0, 1), so the
+obvious thing is to place biome points across 0..100. But value noise is a mean
+of lattice hashes, and its realised distribution is a bell around the middle:
+heat comes out over 11..80 and humidity over 17..85. Desert was placed at
+(94, 6) — outside anything the field generates — so **desert covered 0% of the
+world** and nothing said so. The six points now sit on a circle of radius 13
+about (48, 48), inside the range the field actually produces.
+
+*The second: a cave density that read the same at every worm count.* Measured
+over y 0..15, the air fraction is ~1.4% whether the generator makes two worms or
+six, because at that height most of the air is the sky above a low column and
+the caves are lost in it. The number only means something measured below every
+surface in the world.
+
+### 3.5 Determinism
+
+**A hard requirement.** One `(seed, block_pos)` produces one block, on either
+backend, forever. Mapgen is §D3.1's exact half, so this is enforceable rather
+than hoped for: the whole pipeline stays inside `+ − × ÷`, comparisons, and
+integer hashing, with no host transcendental anywhere in it — including the
+lattice interpolation, whose step is a power of two so the fraction is exact.
+
+`probes/mapgen_spec.gene` is §14 layers 2 and 3: **82 checks** that run on the
+VM and through the web profile and must produce byte-identical output, including
+the two seam assertions above and four golden block checksums. It passes, as
+does `probes/world_spec.gene`'s 69.
 
 Generation runs on the server. `spawn` places worldgen tasks on worker lanes,
 which requires the captured graph to pass the `Send` check
 (`docs/spec/concurrency.md`) — worldgen input is a seed, a position, and frozen
 registries, so it is a natural fit, but the registries must be genuinely frozen
 and that is a design constraint on §2, not an implementation detail.
-
-**Throughput is the open question, not correctness** (§D4, §D6.3). An 80³ chunk
-is 512,000 nodes on an interpreter that does ~11M operations a second, and
-worker lanes multiply throughput without improving the per-chunk latency a
-player feels at the edge of the loaded region. §D6.3 measures it and lists the
-mitigations; whichever is chosen changes this section, so it is measured before
-this section is implemented.
 
 ## 4. Lighting
 
@@ -1048,6 +1240,36 @@ per-vertex light. M0 measures without it; if M0 passes, it stays out until
 something needs it.
 
 Meshing is the hot loop of the whole engine (§D6, §D10).
+
+**M2: the mesher asks the registry rather than carrying a table.** §D6.1's
+spike hardcoded "opaque unless id 0 or 5" and a five-entry tile table, which was
+right for the four nodes it generated and wrong for anything a mod registers —
+ids are assigned at load and mean nothing to a mesher (§2). It now reads
+drawtype, opacity, and the three tiles out of the registry's columns.
+
+Two questions, not one: **a face exists when its owner is *drawn* and its
+neighbour is not *opaque*.** Collapsing them into one predicate was survivable
+while no node was both drawn and transparent; it is what would make glass either
+invisible or solid-looking the moment one exists.
+
+That cost 5.6x on the first attempt — 0.084 to 0.468 ms/chunk — and the whole of
+it was the `Int`/`bigint` boundary described in §D6.1's M2 update, plus a
+cross-module call per lookup. With content typed `F32`/`F64` and the two columns
+the loop needs hoisted out of the registry once per chunk, meshing is **0.071
+ms/chunk** (median of three; 0.069–0.071): 16% *faster* than the hardcoded
+version it replaced, over fifteen node types instead of five.
+
+The full §D6.1 harness, on the same terrain M0 measured at the origin:
+
+| | M0 | M2 |
+|---|---:|---:|
+| generate | 0.087 | 0.125 |
+| mesh | 0.084 | 0.071 |
+| **total per chunk** | **0.172** | **0.196** |
+| worst chunk | 0.398 | 0.85 |
+
+Generation costs 44% more for three stages M0 did not have, meshing costs less,
+and the worst chunk is 0.85 ms against §D6.1's 8 ms budget.
 
 ## 6. Rendering
 
@@ -1332,6 +1554,13 @@ Four layers, and the second is the one that matters most here.
 3. **Golden worlds.** A seed and a chunk position produce a known checksum. A
    mapgen change that alters terrain has to change the golden value
    deliberately, in the same commit, with a reason.
+
+   *M2: built, in `probes/mapgen_spec.gene`. Four blocks — one spanning the
+   surface, one deep enough to be all rock and cave, one far from the origin so
+   the hash is not only asked about small coordinates, and one on a second seed
+   so that the seed is demonstrably not decorative. The checksum is a 32-bit
+   rolling hash in `core/exact.gene`'s discipline, so it is order-sensitive and
+   both backends compute it identically by the standard rather than by luck.*
 4. **A headless server + scripted client** for the protocol: join, load blocks,
    dig, place, disconnect, reconnect, and find the world unchanged. It also
    covers §7.1's reconciliation, including the case that only shows up under

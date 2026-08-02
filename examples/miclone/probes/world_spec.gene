@@ -21,7 +21,8 @@
         from "../core/world.gene")
 (import [Registry new_registry register id_of name_of registered?
          registered_count solid? opaque? propagates_light? light_source_of
-         drawtype_of draw_normal draw_airlike draw_glasslike draw_liquid]
+         drawtype_of drawn? tile_top_of tile_side_of tile_bottom_of
+         draw_normal draw_airlike draw_glasslike draw_liquid]
         from "../core/registry.gene")
 
 # A passing line carries the label and nothing else, so the two backends'
@@ -118,35 +119,38 @@
 (fn block_checks [out : (List Str)] : Nil
   (var b (new Block))
   # A fresh block is already all air, which is why `content_air` is 0.
-  (check_i out "fresh block is air" (get_content b 3.0 4.0 5.0) content_air)
-  (check_i out "fresh param1 is 0" (get_param1 b 3.0 4.0 5.0) 0)
+  (check_f out "fresh block is air" (get_content b 3.0 4.0 5.0) content_air)
+  (check_f out "fresh param1 is 0" (get_param1 b 3.0 4.0 5.0) 0.0)
 
-  (set_content b 3.0 4.0 5.0 42)
-  (check_i out "set/get content" (get_content b 3.0 4.0 5.0) 42)
-  (check_i out "neighbour untouched" (get_content b 4.0 4.0 5.0) content_air)
+  (set_content b 3.0 4.0 5.0 42.0)
+  (check_f out "set/get content" (get_content b 3.0 4.0 5.0) 42.0)
+  (check_f out "neighbour untouched" (get_content b 4.0 4.0 5.0) content_air)
 
   # The three arrays are independent storage, not views of one another.
-  (set_param1 b 3.0 4.0 5.0 200)
-  (set_param2 b 3.0 4.0 5.0 7)
-  (check_i out "param1 independent" (get_param1 b 3.0 4.0 5.0) 200)
-  (check_i out "param2 independent" (get_param2 b 3.0 4.0 5.0) 7)
-  (check_i out "content unchanged by params" (get_content b 3.0 4.0 5.0) 42)
+  (set_param1 b 3.0 4.0 5.0 200.0)
+  (set_param2 b 3.0 4.0 5.0 7.0)
+  (check_f out "param1 independent" (get_param1 b 3.0 4.0 5.0) 200.0)
+  (check_f out "param2 independent" (get_param2 b 3.0 4.0 5.0) 7.0)
+  (check_f out "content unchanged by params" (get_content b 3.0 4.0 5.0) 42.0)
 
   # u16 content and u8 params, so these are the widest values each holds.
-  (set_content b 0.0 0.0 0.0 65535)
-  (check_i out "content holds u16 max" (get_content b 0.0 0.0 0.0) 65535)
-  (set_param1 b 0.0 0.0 0.0 255)
-  (check_i out "param1 holds u8 max" (get_param1 b 0.0 0.0 0.0) 255))
+  # The widths §1 names for the wire and disk formats (§10, §11) still round
+  # trip, even though the in-memory column is `F32` — which is the whole claim
+  # that change rests on.
+  (set_content b 0.0 0.0 0.0 65535.0)
+  (check_f out "content holds u16 max" (get_content b 0.0 0.0 0.0) 65535.0)
+  (set_param1 b 0.0 0.0 0.0 255.0)
+  (check_f out "param1 holds u8 max" (get_param1 b 0.0 0.0 0.0) 255.0))
 
 # --- §4 light packing --------------------------------------------------------
 
 (fn light_checks [out : (List Str)] : Nil
-  (check_i out "pack_light(0,0)" (pack_light 0 0) 0)
-  (check_i out "pack_light(15,15)" (pack_light light_max light_max) 255)
-  (check_i out "day of pack(12,3)" (light_day (pack_light 12 3)) 12)
-  (check_i out "night of pack(12,3)" (light_night (pack_light 12 3)) 3)
-  (check_i out "day of pack(0,15)" (light_day (pack_light 0 light_max)) 0)
-  (check_i out "night of pack(15,0)" (light_night (pack_light light_max 0)) 0))
+  (check_f out "pack_light(0,0)" (pack_light 0.0 0.0) 0.0)
+  (check_f out "pack_light(15,15)" (pack_light light_max light_max) 255.0)
+  (check_f out "day of pack(12,3)" (light_day (pack_light 12.0 3.0)) 12.0)
+  (check_f out "night of pack(12,3)" (light_night (pack_light 12.0 3.0)) 3.0)
+  (check_f out "day of pack(0,15)" (light_day (pack_light 0.0 light_max)) 0.0)
+  (check_f out "night of pack(15,0)" (light_night (pack_light light_max 0.0)) 0.0))
 
 # --- §2 registry -------------------------------------------------------------
 
@@ -155,23 +159,28 @@
 
   # The reserved ids of §1 are a consequence of registration order, so this is
   # what pins that order down.
-  (check_i out "air id" (id_of r "air") content_air)
-  (check_i out "unknown id" (id_of r "unknown") content_unknown)
-  (check_i out "ignore id" (id_of r "ignore") content_ignore)
-  (check_i out "reserved count" (registered_count r) first_dynamic_content)
+  (check_f out "air id" (id_of r "air") content_air)
+  (check_f out "unknown id" (id_of r "unknown") content_unknown)
+  (check_f out "ignore id" (id_of r "ignore") content_ignore)
+  (check_f out "reserved count" (registered_count r) first_dynamic_content)
 
   # Ids are assigned at load, never hardcoded: the first mod node lands
   # immediately after the reserved block, whatever it is called.
-  (var stone (register r "default:stone" draw_normal true true false 0))
-  (var glass (register r "default:glass" draw_glasslike true false true 0))
-  (var lamp (register r "default:lamp" draw_normal true true false 14))
-  (check_i out "first dynamic id" stone first_dynamic_content)
-  (check_i out "second dynamic id" glass (+ first_dynamic_content 1))
+  # Ten arguments: the physical half, then the three atlas tiles §5 reads per
+  # face. Grass is why a node carries three rather than one.
+  (var stone (register r "default:stone" draw_normal true true false 0.0
+                       0.0 0.0 0.0))
+  (var glass (register r "default:glass" draw_glasslike true false true 0.0
+                       1.0 1.0 1.0))
+  (var lamp (register r "default:lamp" draw_normal true true false 14.0
+                      2.0 3.0 4.0))
+  (check_f out "first dynamic id" stone first_dynamic_content)
+  (check_f out "second dynamic id" glass (+ first_dynamic_content 1.0))
 
   (check out "name_of round trip" (name_of r stone) "default:stone")
   (check_b out "registered? known" (registered? r "default:stone") true)
   (check_b out "registered? unknown" (registered? r "nosuch:node") false)
-  (check_i out "id_of unknown name" (id_of r "nosuch:node") content_unknown)
+  (check_f out "id_of unknown name" (id_of r "nosuch:node") content_unknown)
 
   # The client half is what meshing and physics read.
   (check_b out "stone is solid" (solid? r stone) true)
@@ -181,9 +190,20 @@
   (check_b out "glass is solid" (solid? r glass) true)
   (check_b out "glass is not opaque" (opaque? r glass) false)
   (check_b out "glass propagates light" (propagates_light? r glass) true)
-  (check_i out "lamp emits" (light_source_of r lamp) 14)
-  (check_i out "stone emits nothing" (light_source_of r stone) 0)
-  (check_i out "glass drawtype" (drawtype_of r glass) draw_glasslike)
+  (check_f out "lamp emits" (light_source_of r lamp) 14.0)
+  (check_f out "stone emits nothing" (light_source_of r stone) 0.0)
+  (check_f out "glass drawtype" (drawtype_of r glass) draw_glasslike)
+
+  # §5 asks two questions, not one, and glass is the node where they differ:
+  # it is drawn and it hides nothing behind it.
+  (check_b out "glass is drawn" (drawn? r glass) true)
+  (check_b out "glass is not opaque" (opaque? r glass) false)
+  (check_b out "air is not drawn" (drawn? r content_air) false)
+
+  # Tiles are per face, so a node can show three different ones.
+  (check_f out "lamp top tile" (tile_top_of r lamp) 2.0)
+  (check_f out "lamp side tile" (tile_side_of r lamp) 3.0)
+  (check_f out "lamp bottom tile" (tile_bottom_of r lamp) 4.0)
 
   # `unknown` is drawn and walkable and never deleted (§1) — a node whose
   # definition went missing must not become a hole in the world.

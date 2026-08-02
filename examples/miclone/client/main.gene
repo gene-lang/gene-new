@@ -13,6 +13,8 @@
 
 (import [fill_padded] from "../core/mapgen.gene")
 (import [count_faces build_mesh] from "../core/mesh.gene")
+(import [new_registry id_of] from "../core/registry.gene")
+(import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
 (import [build_program init_state upload_atlas upload_chunk begin_frame
          set_view_projection draw_chunk]
         from "./render.gene")
@@ -27,6 +29,23 @@
 (let span_x 12.0)
 (let span_y 4.0)
 (let span_z 12.0)
+
+# **Where the spike stands, and why it is not the origin.**
+#
+# §3 gives biomes a noise scale of one unit per ~555 nodes, which is upstream's
+# order (its default biome `spread` is 1000) and the right order for a game: a
+# player should walk for a while to leave a biome. This view is 192 nodes
+# across — a third of one biome cell — so wherever it stands it shows one or two
+# biomes, and at the origin it happens to stand in the cold quadrant and is
+# uniformly snow.
+#
+# That is the world being right and the window being small, so the window moves
+# rather than the world. This site was found by scanning ±4,000 nodes for the
+# view containing the most distinct biomes with a coastline in it; it has all
+# six and 23% water. Nothing about the generator is tuned for it — change the
+# seed and it is an ordinary place again.
+(let origin_x -1440.0)
+(let origin_z 3168.0)
 
 (let move_speed 22.0)
 (let look_speed 0.0022)
@@ -46,13 +65,26 @@
   (paint ($canvas/context atlas_canvas))
   (upload_atlas gl atlas_canvas)
 
+  # --- content ---------------------------------------------------------------
+  #
+  # M2: the generator and the mesher both read these rather than hardcoded ids
+  # (§2, §3). The same three calls run on the server, which is what keeps the
+  # two sides generating one world (§D3) — and in M7 they become a mod's
+  # registrations instead of a built-in call.
+  (var reg (new_registry))
+  (setup_nodes reg)
+  (var biomes (setup_biomes reg))
+  (var ores (setup_ores reg))
+  (var air (id_of reg "air"))
+  (var water (id_of reg "miclone:water"))
+
   # --- build the world -------------------------------------------------------
   #
   # One scratch neighbourhood, reused for every chunk: the padded buffer is
   # only an input to meshing, so allocating 576 of them would be 6 MB of
   # garbage for no reason.
 
-  (var padded ($buffer U16 pad_nodes))
+  (var padded ($buffer F32 pad_nodes))
   (var meshes : (List Gl/VertexArray) [])
   (var counts : (List F64) [])
   (var faces_total 0.0)
@@ -63,17 +95,17 @@
     (while (< cy span_y)
       (var cx 0.0)
       (while (< cx span_x)
-        (var ox (* cx chunk_dim))
+        (var ox (+ origin_x (* cx chunk_dim)))
         (var oy (* cy chunk_dim))
-        (var oz (* cz chunk_dim))
-        (fill_padded padded ox oy oz seed)
-        (var faces (count_faces padded))
+        (var oz (+ origin_z (* cz chunk_dim)))
+        (fill_padded padded ox oy oz biomes ores seed air water)
+        (var faces (count_faces reg padded))
         # A chunk with no visible faces is fully interior or fully air. Most of
         # a column is one or the other, so skipping them is most of the world.
         (if_yes (> faces 0.0)
           (var verts ($buffer F32 (* faces 24.0)))
           (var idx ($buffer U32 (* faces 6.0)))
-          (build_mesh padded verts idx ox oy oz)
+          (build_mesh reg padded verts idx ox oy oz)
           (meshes ~ push! (upload_chunk gl verts idx))
           (counts ~ push! (* faces 6.0))
           (set faces_total (+ faces_total faces)))
@@ -85,9 +117,9 @@
 
   # --- camera ----------------------------------------------------------------
 
-  (var eye_x (* (/ span_x 2.0) chunk_dim))
+  (var eye_x (+ origin_x (* (/ span_x 2.0) chunk_dim)))
   (var eye_y 78.0)
-  (var eye_z (* (/ span_z 2.0) chunk_dim))
+  (var eye_z (+ origin_z (* (/ span_z 2.0) chunk_dim)))
   (var yaw 0.6)
   (var pitch -0.25)
   (var fwd 0.0)

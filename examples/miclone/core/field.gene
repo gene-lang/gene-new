@@ -1,0 +1,91 @@
+# Coarse-lattice 2D noise fields — design.md §D6.3's mitigation ladder, rung 2.
+#
+# §3's terrain, heat, and humidity are 2D fields sampled once per world column.
+# Sampling them directly costs one `fbm2` per column, and on the VM an `fbm2`
+# over five octaves is **271 µs**. A padded 16³ block has 324 columns, so three
+# directly-sampled fields are ~277 ms/block — past §D6.3's whole budget before
+# a single node is written.
+#
+# So they are sampled on a lattice coarser than the node grid and bilinearly
+# interpolated between, which is what upstream's `Noise::gradientMap2D` does
+# with its `spread` and what §D6.3 lists as "generate at reduced resolution and
+# interpolate". A step-4 lattice over a padded block is 7x7 = 49 samples in
+# place of 324, and the cost falls by 6.6x.
+#
+# **The lattice is anchored to world coordinates, not to the block.** This is
+# the whole correctness argument: a lattice laid out from each block's own
+# origin would put neighbouring blocks on different lattices, and their
+# interpolated heights would disagree along the shared edge — a seam of cliffs
+# at every block border, deterministic and therefore invisible to a
+# single-block test. Anchoring to `floor(w / step) * step` means two blocks
+# reading the same world column read the same two lattice points and the same
+# fraction, so they cannot disagree.
+#
+# It stays in §D3.1's *exact half*: `step` is a power of two, so `(w - l0) /
+# step` is an exponent shift, `floor` is exact, and bilinear interpolation is
+# `+ - *`. Nothing here can differ between the VM and V8.
+#
+# **What it costs is detail, and the amount is knowable.** Interpolation is a
+# low-pass filter with a cutoff at the lattice step, so octaves whose features
+# are finer than `step` are attenuated into noise rather than reproduced. The
+# fix is to not ask for them: §3 pairs a step-4 lattice with four octaves,
+# whose finest feature is 10 nodes. Terrain is quantised to whole nodes by
+# `floor` afterwards, which hides the C0 creases bilinear interpolation leaves
+# along lattice lines.
+
+(mod field ^profile web)
+
+(import [fbm2 lerp] from "./noise.gene")
+
+# The lattice point at or below `w`. `step` must be a power of two for this to
+# be exact; §3 uses 4 and 16.
+(fn lattice_origin [w : F64 step : F64] : F64
+  (* ($math/floor (/ w step)) step))
+
+# How many lattice points per axis are needed to interpolate anywhere in
+# `[w0, w0 + span - 1]`. The `+ 2` is the pair the last node sits between, not
+# a margin: reading at exactly the last lattice point still needs the point
+# after it, because the interpolation is written uniformly rather than
+# special-casing the upper edge.
+(fn lattice_dim [w0 : F64 span : F64 step : F64] : F64
+  (var l0 (lattice_origin w0 step))
+  (var last (lattice_origin (+ w0 (- span 1.0)) step))
+  (+ (/ (- last l0) step) 2.0))
+
+# Fill `out` with `dim * dim` samples of one fBm field, in x-fastest order.
+# Lacunarity and persistence are fixed at 2.0 / 0.5 — the octave normalisation
+# in `fbm2` divides by the summed amplitude, so those two are the shape of the
+# field rather than free parameters, and every field in §3 wants the same shape.
+(fn sample_lattice [out : (Buffer F64) dim : F64 lx : F64 lz : F64 step : F64
+                    scale : F64 seed : F64 octaves : F64] : Nil
+  (var j 0.0)
+  (while (< j dim)
+    (var wz (+ lz (* j step)))
+    (var row (* j dim))
+    (var i 0.0)
+    (while (< i dim)
+      (var wx (+ lx (* i step)))
+      (out ~ set! (+ i row)
+            (fbm2 (* wx scale) (* wz scale) seed octaves 2.0 0.5))
+      (set i (+ i 1.0)))
+    (set j (+ j 1.0))))
+
+# Bilinear read at world `(wx, wz)`.
+#
+# At `step` 1 this is the identity: the fraction is 0, and `lerp a b 0` is `a`
+# exactly, by the endpoint-exactness of the `a + (b - a) * t` form `core/noise`
+# chose. `probes/mapgen_spec.gene` asserts that against direct `fbm2` sampling,
+# which is what pins the interpolation to the field it approximates rather than
+# to itself.
+(fn lattice_value [grid : (Buffer F64) dim : F64 lx : F64 lz : F64 step : F64
+                   wx : F64 wz : F64] : F64
+  (var fx (/ (- wx lx) step))
+  (var fz (/ (- wz lz) step))
+  (var ix ($math/floor fx))
+  (var iz ($math/floor fz))
+  (var tx (- fx ix))
+  (var tz (- fz iz))
+  (var base (+ ix (* iz dim)))
+  (lerp (lerp (grid ~ get base) (grid ~ get (+ base 1.0)) tx)
+        (lerp (grid ~ get (+ base dim)) (grid ~ get (+ base (+ dim 1.0))) tx)
+        tz))

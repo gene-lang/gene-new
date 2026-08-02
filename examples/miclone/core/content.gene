@@ -1,0 +1,150 @@
+# The provisional content set — design.md §3's registries, populated.
+#
+# **This is the game, and it should not be here.** §D8's M7 is the point of the
+# project: a `default`-equivalent game defined as a Gene mod, through §9's API,
+# with the rule that "if it needs an engine change, the API is wrong". Until
+# there is a mod loader, the engine needs *some* content to generate and draw,
+# and one portable module that both shells call is the honest placeholder — it
+# keeps the client and the server generating the same world, which is the
+# property §D3 exists to protect, and it puts every registration in one file
+# for M7 to lift out.
+#
+# Nothing outside this file knows a content id. Callers resolve names through
+# `core/registry.gene` at load and pass ids down; the generation stages read ids
+# out of the biome and ore registries, which stored them at registration (§2).
+
+(mod content ^profile web)
+
+(import [Registry register register_uniform id_of
+         draw_normal draw_liquid]
+        from "./registry.gene")
+(import [BiomeRegistry register_biome] from "./biome.gene")
+(import [OreRegistry register_ore shape_scatter shape_sheet shape_blob]
+        from "./ore.gene")
+
+# --- the atlas ABI -----------------------------------------------------------
+#
+# `client/atlas.gene` paints these slots in this order and `core/mesh.gene`
+# reads them out of the node registry, so the number is the contract between
+# them. Inserting a tile renumbers every tile after it; append instead.
+# The atlas is 4x4, so 16 is the ceiling before §6's atlas gains a row.
+
+(let tile_stone 0.0)
+(let tile_dirt 1.0)
+(let tile_grass_top 2.0)
+(let tile_grass_side 3.0)
+(let tile_sand 4.0)
+(let tile_water 5.0)
+(let tile_gravel 6.0)
+(let tile_snow 7.0)
+(let tile_sandstone 8.0)
+(let tile_coal 9.0)
+(let tile_iron 10.0)
+(let tile_gold 11.0)
+(let tile_diamond 12.0)
+
+# --- nodes -------------------------------------------------------------------
+#
+# Registered after the three reserved ids of §1, which `new_registry` installs.
+#
+# **Water is registered opaque, and that is an M2 compromise rather than a
+# claim about water.** `opaque` means "hides the face behind it", and marking
+# water opaque puts the sea surface in the opaque draw pass — visible, and with
+# no faces wasted on the sea floor. §5's transparent pass, sorted back to front,
+# is what water actually wants, and it belongs with M3's meshing work. This one
+# line is the whole of the compromise, and it is the line to change.
+(fn setup_nodes [r : Registry] : Nil
+  (register_uniform r "miclone:stone" draw_normal true true false 0.0 tile_stone)
+  (register_uniform r "miclone:dirt" draw_normal true true false 0.0 tile_dirt)
+  (register r "miclone:grass" draw_normal true true false 0.0
+            tile_grass_top tile_grass_side tile_dirt)
+  (register_uniform r "miclone:sand" draw_normal true true false 0.0 tile_sand)
+  (register_uniform r "miclone:water" draw_liquid false true true 0.0 tile_water)
+  (register_uniform r "miclone:gravel" draw_normal true true false 0.0 tile_gravel)
+  (register_uniform r "miclone:snow" draw_normal true true false 0.0 tile_snow)
+  (register_uniform r "miclone:sandstone" draw_normal true true false 0.0
+                    tile_sandstone)
+  (register_uniform r "miclone:coal_ore" draw_normal true true false 0.0 tile_coal)
+  (register_uniform r "miclone:iron_ore" draw_normal true true false 0.0 tile_iron)
+  (register_uniform r "miclone:gold_ore" draw_normal true true false 0.0 tile_gold)
+  (register_uniform r "miclone:diamond_ore" draw_normal true true false 0.0
+                    tile_diamond))
+
+# --- biomes ------------------------------------------------------------------
+#
+# Six points over (heat, humidity), which §3's nearest-point rule turns into six
+# regions. The band is deliberately the whole world height: altitude biomes are
+# a real part of upstream's model and worth having in the registry, but a world
+# whose terrain spans y 9..44 has no altitude to band.
+#
+# **The points are placed in the range the fields actually produce, and that had
+# to be measured.** `fbm2` normalises to [0, 1), but value noise is a mean of
+# lattice hashes, so its realised distribution is a bell around the middle
+# rather than a uniform spread: heat comes out over 11..80 and humidity over
+# 17..85, both centred near 48. The first version of this file used the nominal
+# range and put desert at (94, 6) — outside everything the field ever generates,
+# so **desert was unreachable and covered 0% of the world**, silently. A biome
+# nobody can visit is not a bug that surfaces on its own.
+#
+# So the six sit on a circle of radius 13 about (48, 48), spread by angle, which
+# splits the dense middle of the distribution between them instead of leaving
+# five of them on its edge. Heat runs left to right and humidity bottom to top,
+# so the assignment is the obvious one: hot-and-dry is desert, cold-and-wet is
+# taiga. The measured shares are in design.md §3.
+#
+# `no_altitude_limit` is §1's world limit rather than a large number, so a biome
+# that means "everywhere" says so in the same units a bounded one would.
+
+(let no_altitude_limit 31000.0)
+
+(fn setup_biomes [r : Registry] : BiomeRegistry
+  (var b (new BiomeRegistry))
+  (var stone (id_of r "miclone:stone"))
+  (var dirt (id_of r "miclone:dirt"))
+  (var grass (id_of r "miclone:grass"))
+  (var sand (id_of r "miclone:sand"))
+  (var gravel (id_of r "miclone:gravel"))
+  (var snow (id_of r "miclone:snow"))
+  (var sandstone (id_of r "miclone:sandstone"))
+  (var lo (- 0.0 no_altitude_limit))
+  (register_biome b "miclone:tundra" 35.0 48.0 lo no_altitude_limit
+                  snow 1.0 dirt 3.0 stone gravel)
+  (register_biome b "miclone:taiga" 41.5 59.3 lo no_altitude_limit
+                  snow 1.0 dirt 3.0 stone gravel)
+  (register_biome b "miclone:rainforest" 54.5 59.3 lo no_altitude_limit
+                  grass 1.0 dirt 4.0 stone sand)
+  (register_biome b "miclone:savanna" 61.0 48.0 lo no_altitude_limit
+                  grass 1.0 dirt 2.0 stone sand)
+  (register_biome b "miclone:desert" 54.5 36.7 lo no_altitude_limit
+                  sand 2.0 sand 3.0 sandstone sand)
+  (register_biome b "miclone:grassland" 41.5 36.7 lo no_altitude_limit
+                  grass 1.0 dirt 4.0 stone sand)
+  b)
+
+# --- ores --------------------------------------------------------------------
+#
+# Four scatter ores on the usual deeper-is-rarer ladder, one blob, and one
+# sheet — so all three of §3's distributions are exercised by content rather
+# than only by the spec.
+#
+# The altitude bands are set against this generator's measured terrain, which
+# spans y 9 to 44 with a sea at 20: coal reaches almost to the surface and
+# diamond stays in the bottom six nodes, so a player walking a cliff face or a
+# cave wall sees the ladder without digging for it.
+
+(fn setup_ores [r : Registry] : OreRegistry
+  (var o (new OreRegistry))
+  (var stone (id_of r "miclone:stone"))
+  (register_ore o "miclone:coal_ore" (id_of r "miclone:coal_ore") stone
+                shape_scatter 0.0 44.0 0.85 3.0 12.0)
+  (register_ore o "miclone:iron_ore" (id_of r "miclone:iron_ore") stone
+                shape_scatter 0.0 30.0 0.55 3.0 8.0)
+  (register_ore o "miclone:gold_ore" (id_of r "miclone:gold_ore") stone
+                shape_scatter 0.0 12.0 0.25 2.0 5.0)
+  (register_ore o "miclone:diamond_ore" (id_of r "miclone:diamond_ore") stone
+                shape_scatter 0.0 6.0 0.12 2.0 4.0)
+  (register_ore o "miclone:gravel" (id_of r "miclone:gravel") stone
+                shape_blob 0.0 40.0 0.10 2.6 0.0)
+  (register_ore o "miclone:sandstone" (id_of r "miclone:sandstone") stone
+                shape_sheet 0.0 28.0 0.05 2.0 0.0)
+  o)

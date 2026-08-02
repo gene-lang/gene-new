@@ -10,5 +10,7 @@
     (application "divergence" ^entry "probes/run_divergence.gene")
     (application "worldgen" ^entry "probes/run_worldgen.gene")
     (application "world_spec" ^entry "probes/run_world_spec.gene")
+    # design.md §14 layers 2 and 3 for M2's mapgen pipeline.
+    (application "mapgen_spec" ^entry "probes/run_mapgen_spec.gene")
   ]
 }

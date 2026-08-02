@@ -1,94 +1,211 @@
-# design.md §D6.3 — the worldgen throughput probe.
+# design.md §D6.3 — the worldgen throughput probe, re-pointed at M2's unit.
 #
-# §D4's inversion, measured. The client's hot loop runs on V8, which JITs it;
-# the server's runs on the interpreter, which does not, and mapgen is the
-# server's largest single workload.
+# ## What changed, and why this is not the goalposts moving
 #
-# **Passes when a chunk generates in under 300 ms on one worker lane** (§D6.3).
+# §D6.3 timed an 80³ mapgen chunk and failed by ~1000x, and its conclusion was
+# that the *unit* was wrong: "On the VM, a mapgen chunk cannot exceed roughly
+# 300,000 node-visits within a 300 ms budget, and every visit buys about one
+# message send." M2 acts on that — `core/mapgen.gene` generates a block, not a
+# chunk — so the probe has to measure the thing that is now generated.
 #
-# It measures each stage at a **reduced sample count and extrapolates**, rather
-# than generating a whole chunk and timing it. That is not a shortcut — the
-# first version of this probe did generate a whole chunk, and it ran for over
-# forty minutes without reaching its first `println`, which is a measurement
-# that tells you almost nothing and costs a great deal to take. Per-call costs
-# multiplied by known call counts give the same answer in under a second, and
-# they give it *per stage*, which is what §D6.3's mitigation ladder needs in
-# order to pick a rung.
+# Shrinking the unit by 125x and keeping the same 300 ms would weaken the
+# requirement by 125x while appearing to pass, so this reports **three**
+# readings and says which is which:
 #
-# The call counts are exact, not estimated:
+#   A. §D6.3's criterion as written — 300 ms per generation unit, one lane.
+#   B. The node throughput that criterion implied at the old unit: 512,000
+#      nodes in 300 ms, or 1,706,667 nodes/s. This is the strict reading and
+#      the one the granularity change makes easier; it is reported so the
+#      change is visible rather than hidden.
+#   C. What a walking player actually needs, derived rather than asserted:
+#      one lane staying ahead of the leading face of the loaded region.
 #
-#   surface_height   6,400 per chunk   (one per column: 80 x 80)
-#   cave?          512,000 per chunk   (one per node, when underground)
-#   buffer writes  512,000 per chunk
+# C is the reading §D6.3's own sentence appeals to — "which with parallel lanes
+# keeps generation ahead of a player moving at normal speed" — and it is the
+# only one of the three that is a statement about the game rather than about an
+# arbitrary volume.
+#
+# ## Why it generates rather than extrapolates
+#
+# §D6.3 sampled each stage and multiplied by exact call counts, because the
+# generator it was measuring took forty minutes to produce one chunk. This one
+# generates whole blocks and times them, which is both more honest and now
+# affordable: a block is tens of milliseconds. The per-stage breakdown is kept,
+# because that is what tells a future reader which stage moved.
 
 (mod worldgen ^profile web)
 
-(import [chunk_size chunk_nodes generate_chunk surface_height cave? material]
+(import [new_registry id_of name_of registered_count] from "../core/registry.gene")
+(import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
+(import [BiomeRegistry biome_at biome_name biome_count] from "../core/biome.gene")
+(import [OreRegistry] from "../core/ore.gene")
+(import [block_dim block_nodes pad_dim pad_nodes sea_level
+         surface_height heat_at humidity_at fill_region]
         from "../core/mapgen.gene")
 
-(let columns_per_chunk 6400.0)
+# --- the budgets -------------------------------------------------------------
 
-# One chunk's worth of storage. Timed separately from generation because it
-# says nothing about noise cost — and because it is the number §D7.2 moves:
-# 512,000 `U16` elements are 1 MB packed and 4 MB boxed at 8 bytes each.
-(fn allocate_chunk [] : (Buffer U16)
-  ($buffer U16 chunk_nodes))
+(let budget_unit_ms 300.0)
 
-# --- per-stage sampling ------------------------------------------------------
+# 512,000 nodes in 300 ms, the rate §D6.3's criterion implied at the 80³ unit.
+(let budget_nodes_per_s 1706666.6666666667)
+
+# Upstream's default walk speed. A player crossing a 16-node block every
+# `block_dim / walk_speed` seconds pulls in one new slab of the loaded region
+# each time: `(2R + 1) * H` blocks for a view R blocks across and H tall.
+(let walk_speed 4.0)
+
+# §D6.1's spike view — 12 x 4 x 12 chunks — so R is 6 and H is 4.
+(let view_radius 6.0)
+(let view_height 4.0)
+
+(fn blocks_per_second [] : F64
+  (/ (* (+ (* 2.0 view_radius) 1.0) view_height)
+     (/ block_dim walk_speed)))
+
+# The slowest a block may generate while one lane stays ahead of that player.
+(fn player_budget_ms [] : F64
+  (/ 1000.0 (blocks_per_second)))
+
+# --- allocation --------------------------------------------------------------
+
+(fn allocate_block [] : (Buffer F32)
+  ($buffer F32 block_nodes))
+
+(fn allocate_padded [] : (Buffer F32)
+  ($buffer F32 pad_nodes))
+
+# --- the timed workloads -----------------------------------------------------
 #
-# Each of these runs `samples` iterations and returns an accumulator, so the
-# caller can time it. The accumulator is returned rather than discarded to stop
-# a future optimiser from deleting the loop it is supposed to be measuring.
+# Each returns something derived from the buffer, so a future optimiser cannot
+# delete the work it is supposed to be measuring.
 
-(fn sample_surface [samples : F64 seed : F64] : F64
+(fn generate_blocks [out : (Buffer F32) reps : F64 oy : F64
+                     biomes : BiomeRegistry ores : OreRegistry
+                     seed : F64 air : F64 water : F64] : F64
   (var acc 0.0)
   (var i 0.0)
-  (while (< i samples)
-    (set acc (+ acc (surface_height i (* i 1.7) seed)))
+  (while (< i reps)
+    (fill_region out block_dim (* i block_dim) oy 0.0 biomes ores seed air water)
+    (set acc (+ acc ($to_float (out ~ get 0.0))))
     (set i (+ i 1.0)))
   acc)
 
-(fn sample_caves [samples : F64 seed : F64] : F64
-  (var hits 0.0)
-  (var i 0.0)
-  (while (< i samples)
-    (if_yes (cave? i (* i 0.5) (* i 1.3) seed)
-      (set hits (+ hits 1.0)))
-    (set i (+ i 1.0)))
-  hits)
-
-(fn sample_material [samples : F64] : F64
+(fn generate_padded [out : (Buffer F32) reps : F64 oy : F64
+                     biomes : BiomeRegistry ores : OreRegistry
+                     seed : F64 air : F64 water : F64] : F64
   (var acc 0.0)
   (var i 0.0)
-  (while (< i samples)
-    (set acc (+ acc ($to_float (material i 40.0))))
+  (while (< i reps)
+    (fill_region out pad_dim (- (* i block_dim) 1.0) oy -1.0
+                 biomes ores seed air water)
+    (set acc (+ acc ($to_float (out ~ get 0.0))))
     (set i (+ i 1.0)))
   acc)
 
-(fn sample_writes [chunk : (Buffer U16) samples : F64] : F64
-  (var i 0.0)
-  (while (< i samples)
-    (chunk ~ set! i 1)
-    (set i (+ i 1.0)))
-  ($to_float (chunk ~ get 0.0)))
-
-# --- verification ------------------------------------------------------------
+# --- evidence ----------------------------------------------------------------
 #
-# A fast generator that emits 512,000 copies of one id is not a passing probe,
-# so the timing is reported next to evidence that the pipeline produces terrain.
-# Both walk a single column, which is 80 nodes rather than 512,000.
+# A generator that is fast because it emits 4,096 copies of one id is not a
+# passing probe, so the timings are reported next to what the pipeline actually
+# produced. §D6.3 carried a column profile and a cave fraction for the same
+# reason, and its cave fraction of **0.0** is what caught that stage being
+# mistuned as well as unaffordable.
 
-(fn column_profile [seed : F64 wx : F64 wz : F64] : Str
-  (var surface (surface_height wx wz seed))
-  (var air 0.0)
-  (var solid 0.0)
-  (var y 0.0)
-  (while (< y chunk_size)
-    (if (== (material y surface) 0)
-      (then (set air (+ air 1.0)))
-      (else (set solid (+ solid 1.0))))
-    (set y (+ y 1.0)))
-  $"surface=${surface} air=${air} solid=${solid}")
+(fn column_profile [seed : F64 wx : F64 wz : F64 biomes : BiomeRegistry] : Str
+  (var s (surface_height wx wz seed))
+  (var h (heat_at wx wz seed))
+  (var m (humidity_at wx wz seed))
+  (var b (biome_at biomes h m s))
+  $"surface=$($to_int s) biome=$(biome_name biomes b)")
 
-(fn cave_fraction [seed : F64 samples : F64] : F64
-  (/ (sample_caves samples seed) samples))
+# **Measured below every surface in the world**, which is the only place the
+# number means anything: taken across the surface band instead, the air above a
+# low column swamps the caves and the figure reads ~1.4% at any worm count.
+(fn cave_fraction [out : (Buffer F32) biomes : BiomeRegistry ores : OreRegistry
+                   seed : F64 air : F64 water : F64 span : F64] : F64
+  (var holes 0.0)
+  (var nodes 0.0)
+  (var bz 0.0)
+  (while (< bz span)
+    (var bx 0.0)
+    (while (< bx span)
+      (fill_region out block_dim (* bx block_dim) -64.0 (* bz block_dim)
+                   biomes ores seed air water)
+      (var i 0.0)
+      (while (< i block_nodes)
+        (if_yes (== (out ~ get i) air) (set holes (+ holes 1.0)))
+        (set i (+ i 1.0)))
+      (set nodes (+ nodes block_nodes))
+      (set bx (+ bx 1.0)))
+    (set bz (+ bz 1.0)))
+  (/ holes nodes))
+
+(fn biome_share [biomes : BiomeRegistry seed : F64 n : F64 step : F64] : Str
+  (var counts ($buffer U32 64.0))
+  (var j 0.0)
+  (while (< j n)
+    (var i 0.0)
+    (while (< i n)
+      (var wx (* (- i (/ n 2.0)) step))
+      (var wz (* (- j (/ n 2.0)) step))
+      (var b (biome_at biomes (heat_at wx wz seed)
+                              (humidity_at wx wz seed)
+                              (surface_height wx wz seed)))
+      (counts ~ set! b (+ (counts ~ get b) 1))
+      (set i (+ i 1.0)))
+    (set j (+ j 1.0)))
+  (var total (* n n))
+  (var parts : (List Str) [])
+  (var k 0.0)
+  (while (< k (biome_count biomes))
+    (var pct (/ ($math/round (* 1000.0 (/ ($to_float (counts ~ get k)) total)))
+                10.0))
+    (parts ~ push! $"$(biome_name biomes k)=${pct}%")
+    (set k (+ k 1.0)))
+  ($str/join parts " "))
+
+(fn underwater_share [seed : F64 n : F64 step : F64] : F64
+  (var under 0.0)
+  (var j 0.0)
+  (while (< j n)
+    (var i 0.0)
+    (while (< i n)
+      (if_yes (< (surface_height (* (- i (/ n 2.0)) step)
+                                 (* (- j (/ n 2.0)) step) seed) sea_level)
+        (set under (+ under 1.0)))
+      (set i (+ i 1.0)))
+    (set j (+ j 1.0)))
+  (/ under (* n n)))
+
+# Every node type present in a generated volume, so an ore that never places
+# and a biome node that never appears are both visible.
+(fn node_share [out : (Buffer F32) r ores : OreRegistry biomes : BiomeRegistry
+                seed : F64 air : F64 water : F64 span : F64 y0 : F64] : Str
+  (var tally ($buffer U32 64.0))
+  (var nodes 0.0)
+  (var bz 0.0)
+  (while (< bz span)
+    (var by 0.0)
+    (while (< by span)
+      (var bx 0.0)
+      (while (< bx span)
+        (fill_region out block_dim (* bx block_dim) (+ y0 (* by block_dim))
+                     (* bz block_dim) biomes ores seed air water)
+        (var i 0.0)
+        (while (< i block_nodes)
+          (var id (out ~ get i))
+          (tally ~ set! id (+ (tally ~ get id) 1))
+          (set i (+ i 1.0)))
+        (set nodes (+ nodes block_nodes))
+        (set bx (+ bx 1.0)))
+      (set by (+ by 1.0)))
+    (set bz (+ bz 1.0)))
+  (var parts : (List Str) [])
+  (var k 0.0)
+  (while (< k (registered_count r))
+    (var c ($to_float (tally ~ get k)))
+    (if_yes (> c 0.0)
+      (var pct (/ ($math/round (* 1000.0 (* 100.0 (/ c nodes)))) 1000.0))
+      (parts ~ push! $"$(name_of r k)=${pct}%"))
+    (set k (+ k 1.0)))
+  ($str/join parts " "))
