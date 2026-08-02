@@ -4991,6 +4991,17 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
     emitter.line("super(fields, body, true);")
   emitter.line("Object.assign(this, fields);")
   emitter.line("this.$gene_body = body.map(value => value === undefined ? null : value);")
+  # An instance under construction is marked, so `$gene_set` can tell a ctor's
+  # field write from an ordinary one. Without it, a ctor that fills two fields
+  # could not run at all: the first `set!` triggered a whole-schema check while
+  # the second field was still missing, and a type with more than one prop was
+  # unconstructable. The VM's rule is that the in-progress `self` accepts
+  # writes and the schema is checked at ctor completion (design.md §7.1.1);
+  # this is what makes the two backends agree on it.
+  #
+  # Non-enumerable so the closed-schema loop over `Object.keys` cannot see it
+  # and reject the instance for carrying an undeclared field.
+  emitter.line("if ($in_progress) Object.defineProperty(this, \"$gene_in_progress\", { value: true, writable: true, configurable: true, enumerable: false });")
   emitter.line("if (!$in_progress) { this.$gene_validate(); if (immutable) { Object.freeze(this.$gene_body); Object.freeze(this); } }")
   dec emitter.indent
   emitter.line("}")
@@ -5047,6 +5058,10 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
     emitter.line("const self = new " & declaration.emittedName & "({}, [], true);")
     let body = emitter.emitExpr(constructor.body)
     emitter.line("void " & body & ";")
+    # Construction is over: drop the marker, then check the schema once. This
+    # is the point the VM checks at too — every declared field must be present
+    # and well-typed before the instance escapes the ctor.
+    emitter.line("delete self.$gene_in_progress;")
     emitter.line("self.$gene_validate();")
     emitter.line("return self;")
     dec emitter.indent
@@ -5812,13 +5827,21 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("if (Object.isFrozen(value)) throw new TypeError(\"cannot mutate a frozen value\");")
     emitter.line("if (typeof key === \"bigint\") key = Number(key);")
     emitter.line("if (value?.$gene_map === true) throw new TypeError(\"cannot mutate an immutable Map\");")
-    emitter.line("if (Array.isArray(value?.$gene_body) && typeof key === \"number\") { const length = value.$gene_body.length; const previous = value.$gene_body[key]; value.$gene_body[key] = next === undefined ? null : next; try { value.$gene_validate(); } catch (error) { value.$gene_body.length = length; if (key < length) value.$gene_body[key] = previous; throw error; } return next; }")
+    emitter.line("if (Array.isArray(value?.$gene_body) && typeof key === \"number\") { const length = value.$gene_body.length; const previous = value.$gene_body[key]; value.$gene_body[key] = next === undefined ? null : next; if (!value.$gene_in_progress) { try { value.$gene_validate(); } catch (error) { value.$gene_body.length = length; if (key < length) value.$gene_body[key] = previous; throw error; } } return next; }")
     emitter.line("if (Array.isArray(value) && next === undefined) next = null;")
     emitter.line("if ($gene_is_node(value) && typeof key === \"string\") { if (next === undefined) delete value.props[key]; else value.props[key] = next; return next; }")
-    emitter.line("if (typeof key === \"string\" && !(key in Object(value))) key = key.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase());")
+    # snake_case -> camelCase is for *host* objects, whose properties are spelled
+    # the DOM's way. A declared Gene type's fields are exactly its declared
+    # props, so the mapping must not apply to one — during a ctor its fields do
+    # not exist yet, and rewriting `light_source` to `lightSource` would create
+    # an undeclared key that the closed-schema check then rejects. `$gene_validate`
+    # is what distinguishes the two, since only declared types carry it.
+    emitter.line("if (typeof key === \"string\" && !(key in Object(value)) && typeof value?.$gene_validate !== \"function\") key = key.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase());")
     emitter.line("const had = Object.prototype.hasOwnProperty.call(value, key); const previous = value[key];")
     emitter.line("if (next === undefined) delete value[key]; else value[key] = next;")
-    emitter.line("if (typeof value.$gene_validate === \"function\") { try { value.$gene_validate(); } catch (error) { if (had) value[key] = previous; else delete value[key]; throw error; } }")
+    # An instance still inside its ctor is exempt: its schema is incomplete by
+    # construction, and `$gene_new` checks it once when the ctor finishes.
+    emitter.line("if (typeof value.$gene_validate === \"function\" && !value.$gene_in_progress) { try { value.$gene_validate(); } catch (error) { if (had) value[key] = previous; else delete value[key]; throw error; } }")
     emitter.line("return next;")
     dec emitter.indent
     emitter.line("}")

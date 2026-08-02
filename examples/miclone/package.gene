@@ -9,5 +9,6 @@
     # reshape the design, so each is its own runnable target.
     (application "divergence" ^entry "probes/run_divergence.gene")
     (application "worldgen" ^entry "probes/run_worldgen.gene")
+    (application "world_spec" ^entry "probes/run_world_spec.gene")
   ]
 }

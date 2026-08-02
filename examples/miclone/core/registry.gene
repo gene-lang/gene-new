@@ -1,0 +1,161 @@
+# The node registry — design.md §2, client half.
+#
+# §2 splits a node definition in two, because the halves have different
+# audiences and lifetimes: the *client half* (drawtype, tiles, transparency,
+# light behaviour, collision) is serialized to every client on join and is pure
+# data, while the *server half* (`on_dig`, `on_timer`, drops, ABMs) never
+# leaves the server. This file is the client half, and it is portable for the
+# reason that split exists — it is what lets a client mesh and predict without
+# executing mod code (§D5).
+#
+# **Content ids are assigned at load, never hardcoded.** A world stores its own
+# `name -> id` mapping so that a saved block still means what it meant after a
+# mod is added, removed, or reordered (§1, §11). Nothing outside this file
+# should compare a content id against a literal; ask the registry.
+#
+# Storage is parallel arrays indexed by content id rather than a map or a list
+# of records, because every lookup here is on the meshing hot path — `solid?`
+# and `light_propagates?` run per neighbour per node — and an indexed read into
+# a typed array is the cheapest thing available in both backends.
+
+(mod registry ^profile web)
+
+(import [content_air content_unknown content_ignore first_dynamic_content]
+        from "./world.gene")
+
+(let max_content 4096.0)
+
+# --- drawtypes ---------------------------------------------------------------
+#
+# §2's M0–M5 set. Luanti has 18 (`src/nodedef.h`); `nodebox` and `mesh` are the
+# expensive ones and wait for M8. Numbered rather than named because they index
+# the same arrays as everything else here.
+
+(let draw_normal 0)
+(let draw_airlike 1)
+(let draw_glasslike 2)
+(let draw_allfaces 3)
+(let draw_plantlike 4)
+(let draw_liquid 5)
+
+# --- the registry ------------------------------------------------------------
+#
+# `names` is deliberately a `(List Str)` while every other column is a typed
+# buffer: it is read once at join to build the wire mapping and never on a hot
+# path, and there is no typed-array representation of a string anyway.
+
+(type Registry
+  ^props {^names        (List Str)
+          ^drawtype     (Buffer U8)
+          ^solid        (Buffer U8)     # blocks movement
+          ^opaque       (Buffer U8)     # hides the face behind it
+          ^propagates   (Buffer U8)     # light passes through
+          ^light_source (Buffer U8)     # light emitted, 0..15
+          ^count        (Buffer U16)    # one cell; see `registered_count`
+
+  }
+
+  (ctor []
+    (set! self/names [])
+    (set! self/drawtype ($buffer U8 max_content))
+    (set! self/solid ($buffer U8 max_content))
+    (set! self/opaque ($buffer U8 max_content))
+    (set! self/propagates ($buffer U8 max_content))
+    (set! self/light_source ($buffer U8 max_content))
+    (set! self/count ($buffer U16 1.0))))
+
+# The registry's own size lives in a one-cell buffer rather than an `Int` prop.
+# A web-profile type's fields are checked on construction and the count changes
+# on every registration; keeping it in the same storage as the columns means
+# one mutation path instead of two, and `Buffer/set!` is already the mutator
+# every other column uses.
+(fn registered_count [r : Registry] : Int
+  (r/count ~ get 0.0))
+
+(fn set_registered_count [r : Registry n : Int] : Nil
+  (r/count ~ set! 0.0 n))
+
+(fn bool_byte [v : Bool] : Int
+  (if v 1 0))
+
+# --- registration ------------------------------------------------------------
+
+# Overflow is a programming error rather than a condition to recover from —
+# 4,096 node types is far past any real game — but it is raised rather than
+# ignored, because the alternative is writing past the columns and mis-typing
+# every node registered afterwards.
+(type RegistryFull
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for RegistryFull)
+
+(fn register [r : Registry name : Str drawtype : Int
+              solid : Bool opaque : Bool propagates : Bool
+              light_source : Int] : Int
+  (var id (registered_count r))
+  (if_yes (>= ($to_float id) max_content)
+    (fail (new RegistryFull $"node registry is full at ${max_content} entries")))
+  (var slot ($to_float id))
+  (r/names ~ push! name)
+  (r/drawtype ~ set! slot drawtype)
+  (r/solid ~ set! slot (bool_byte solid))
+  (r/opaque ~ set! slot (bool_byte opaque))
+  (r/propagates ~ set! slot (bool_byte propagates))
+  (r/light_source ~ set! slot light_source)
+  (set_registered_count r (+ id 1))
+  id)
+
+# The three reserved ids of §1, registered first so their numbering is a
+# consequence of the order rather than a claim made in two places. A registry
+# that has not had these installed is not usable, so this is the constructor
+# every caller should reach for.
+(fn new_registry [] : Registry
+  (var r (new Registry))
+  (register r "air" draw_airlike false false true 0)
+  (register r "unknown" draw_normal true true false 0)
+  (register r "ignore" draw_airlike false true false 0)
+  r)
+
+# --- lookup ------------------------------------------------------------------
+#
+# Hot-path readers. Each is an indexed load, which is what the parallel-array
+# layout is for.
+
+(fn name_of [r : Registry id : Int] : Str
+  (var names r/names)
+  (var i ($to_float id))
+  names/%i)
+
+(fn drawtype_of [r : Registry id : Int] : Int
+  (r/drawtype ~ get ($to_float id)))
+
+(fn solid? [r : Registry id : Int] : Bool
+  (== (r/solid ~ get ($to_float id)) 1))
+
+(fn opaque? [r : Registry id : Int] : Bool
+  (== (r/opaque ~ get ($to_float id)) 1))
+
+(fn propagates_light? [r : Registry id : Int] : Bool
+  (== (r/propagates ~ get ($to_float id)) 1))
+
+(fn light_source_of [r : Registry id : Int] : Int
+  (r/light_source ~ get ($to_float id)))
+
+# Linear, and deliberately so: this runs once per name at world load to build
+# the `name -> id` mapping, never per node. A hashed index would be a second
+# structure to keep in step with the columns for no measurable gain.
+(fn id_of [r : Registry name : Str] : Int
+  (var names r/names)
+  (var found content_unknown)
+  (var i 0.0)
+  (var n ($to_float (registered_count r)))
+  (while (< i n)
+    (if_yes (== names/%i name)
+      (set found ($to_int i))
+      (set i n))
+    (set i (+ i 1.0)))
+  found)
+
+(fn registered? [r : Registry name : Str] : Bool
+  (!= (id_of r name) content_unknown))

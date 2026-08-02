@@ -1858,6 +1858,21 @@
       }
     },
     {
+      "id": "type.ctor_fills_several_fields",
+      "source": "(type Vec3 ^props {^x Int ^y Int ^z Int} (ctor [a : Int b : Int c : Int] (set! self/x a) (set! self/y b) (set! self/z c))) (fn run [] : Int (var v (new Vec3 1 2 3)) (+ v/x (+ v/y v/z))) (run)",
+      "web_source": "(mod ctor_multi ^profile web) (type Vec3 ^props {^x Int ^y Int ^z Int} (ctor [a : Int b : Int c : Int] (set! self/x a) (set! self/y b) (set! self/z c))) (fn run [] : Int (var v (new Vec3 1 2 3)) (+ v/x (+ v/y v/z)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "6"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
       "id": "buffer.parameterized_annotation_matches",
       "source": "(fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b ~ set! 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b ~ get 0.0)) (fn run [] : F64 (take (make))) (run)",
       "web_source": "(mod buf_ann ^profile web) (fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b ~ set! 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b ~ get 0.0)) (fn run [] : F64 (take (make)))",

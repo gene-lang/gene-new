@@ -1,0 +1,218 @@
+# Cross-backend spec for the world model and registry — design.md §14 layer 2.
+#
+# Every assertion here runs on the VM and through the web profile and must
+# produce byte-identical output. That is the mechanism §D3 depends on: `core/`
+# is one source compiled twice, and the only thing that keeps the two honest is
+# running them against the same inputs and diffing.
+#
+# It reports rather than throws, for the same reason `probes/divergence.gene`
+# does — a diff of two reports names *which* assertion moved, where a thrown
+# error names only the first.
+
+(mod world_spec ^profile web)
+
+(import [block_dim block_nodes world_limit
+         content_air content_unknown content_ignore first_dynamic_content
+         node_to_block block_origin node_in_block in_world?
+         block_index index_x index_y index_z in_block?
+         Block get_content set_content get_param1 set_param1
+         get_param2 set_param2
+         light_day light_night pack_light light_max]
+        from "../core/world.gene")
+(import [Registry new_registry register id_of name_of registered?
+         registered_count solid? opaque? propagates_light? light_source_of
+         drawtype_of draw_normal draw_airlike draw_glasslike draw_liquid]
+        from "../core/registry.gene")
+
+# A passing line carries the label and nothing else, so the two backends'
+# reports are byte-identical when they agree — the VM prints a float as `0.0`
+# and JavaScript prints `0`, so echoing values would make every run "differ"
+# for a reason that is not a difference. A *failing* line does print both
+# values, because by then the run has already failed and the detail is what
+# the reader needs.
+#
+# The status is computed before the interpolation rather than inside it: a
+# string literal within `$(...)` closes the string it is embedded in, so
+# `$(if p "ok" "no")` does not read.
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out ~ push! $"ok   ${label}"))
+    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_i [out : (List Str) label : Str got : Int want : Int] : Nil
+  (check out label $"${got}" $"${want}"))
+
+(fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label $"${got}" $"${want}"))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
+
+# --- §1 coordinates ----------------------------------------------------------
+#
+# The negative cases are the point. `node_to_block` must floor rather than
+# truncate, or blocks -1 and 0 fold together and every position west or south
+# of the origin lands in the wrong block — a bug that is invisible until a
+# world grows past its first quadrant.
+
+(fn coordinate_checks [out : (List Str)] : Nil
+  (check_f out "node_to_block(0)" (node_to_block 0.0) 0.0)
+  (check_f out "node_to_block(15)" (node_to_block 15.0) 0.0)
+  (check_f out "node_to_block(16)" (node_to_block 16.0) 1.0)
+  (check_f out "node_to_block(-1)" (node_to_block -1.0) -1.0)
+  (check_f out "node_to_block(-16)" (node_to_block -16.0) -1.0)
+  (check_f out "node_to_block(-17)" (node_to_block -17.0) -2.0)
+
+  (check_f out "block_origin(-2)" (block_origin -2.0) -32.0)
+
+  # Always 0..15, including below the origin.
+  (check_f out "node_in_block(0)" (node_in_block 0.0) 0.0)
+  (check_f out "node_in_block(15)" (node_in_block 15.0) 15.0)
+  (check_f out "node_in_block(16)" (node_in_block 16.0) 0.0)
+  (check_f out "node_in_block(-1)" (node_in_block -1.0) 15.0)
+  (check_f out "node_in_block(-16)" (node_in_block -16.0) 0.0)
+
+  (check_b out "in_world?(0,0,0)" (in_world? 0.0 0.0 0.0) true)
+  (check_b out "in_world? at limit" (in_world? world_limit 0.0 0.0) true)
+  (check_b out "in_world? past limit"
+            (in_world? (+ world_limit 1.0) 0.0 0.0) false)
+  (check_b out "in_world? past -limit"
+            (in_world? 0.0 (- 0.0 (+ world_limit 1.0)) 0.0) false))
+
+# --- §1 block indexing -------------------------------------------------------
+#
+# `x + 16y + 256z`, upstream's order. The round trip is checked over every one
+# of the 4,096 cells rather than a sample: an indexing scheme that is right for
+# most inputs and wrong at a stride boundary is the kind of bug that shows up
+# as one corrupt row per block.
+
+(fn index_checks [out : (List Str)] : Nil
+  (check_f out "block_index(0,0,0)" (block_index 0.0 0.0 0.0) 0.0)
+  (check_f out "block_index(1,0,0)" (block_index 1.0 0.0 0.0) 1.0)
+  (check_f out "block_index(0,1,0)" (block_index 0.0 1.0 0.0) 16.0)
+  (check_f out "block_index(0,0,1)" (block_index 0.0 0.0 1.0) 256.0)
+  (check_f out "block_index(15,15,15)" (block_index 15.0 15.0 15.0) 4095.0)
+
+  (var bad 0.0)
+  (var z 0.0)
+  (while (< z block_dim)
+    (var y 0.0)
+    (while (< y block_dim)
+      (var x 0.0)
+      (while (< x block_dim)
+        (var i (block_index x y z))
+        (if_yes (|| (|| (!= (index_x i) x) (!= (index_y i) y)) (!= (index_z i) z))
+          (set bad (+ bad 1.0)))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  (check_f out "index round trip over all 4096 cells" bad 0.0)
+
+  (check_b out "in_block?(0,0,0)" (in_block? 0.0 0.0 0.0) true)
+  (check_b out "in_block?(15,15,15)" (in_block? 15.0 15.0 15.0) true)
+  (check_b out "in_block?(16,0,0)" (in_block? 16.0 0.0 0.0) false)
+  (check_b out "in_block?(-1,0,0)" (in_block? -1.0 0.0 0.0) false))
+
+# --- §1 block storage --------------------------------------------------------
+
+(fn block_checks [out : (List Str)] : Nil
+  (var b (new Block))
+  # A fresh block is already all air, which is why `content_air` is 0.
+  (check_i out "fresh block is air" (get_content b 3.0 4.0 5.0) content_air)
+  (check_i out "fresh param1 is 0" (get_param1 b 3.0 4.0 5.0) 0)
+
+  (set_content b 3.0 4.0 5.0 42)
+  (check_i out "set/get content" (get_content b 3.0 4.0 5.0) 42)
+  (check_i out "neighbour untouched" (get_content b 4.0 4.0 5.0) content_air)
+
+  # The three arrays are independent storage, not views of one another.
+  (set_param1 b 3.0 4.0 5.0 200)
+  (set_param2 b 3.0 4.0 5.0 7)
+  (check_i out "param1 independent" (get_param1 b 3.0 4.0 5.0) 200)
+  (check_i out "param2 independent" (get_param2 b 3.0 4.0 5.0) 7)
+  (check_i out "content unchanged by params" (get_content b 3.0 4.0 5.0) 42)
+
+  # u16 content and u8 params, so these are the widest values each holds.
+  (set_content b 0.0 0.0 0.0 65535)
+  (check_i out "content holds u16 max" (get_content b 0.0 0.0 0.0) 65535)
+  (set_param1 b 0.0 0.0 0.0 255)
+  (check_i out "param1 holds u8 max" (get_param1 b 0.0 0.0 0.0) 255))
+
+# --- §4 light packing --------------------------------------------------------
+
+(fn light_checks [out : (List Str)] : Nil
+  (check_i out "pack_light(0,0)" (pack_light 0 0) 0)
+  (check_i out "pack_light(15,15)" (pack_light light_max light_max) 255)
+  (check_i out "day of pack(12,3)" (light_day (pack_light 12 3)) 12)
+  (check_i out "night of pack(12,3)" (light_night (pack_light 12 3)) 3)
+  (check_i out "day of pack(0,15)" (light_day (pack_light 0 light_max)) 0)
+  (check_i out "night of pack(15,0)" (light_night (pack_light light_max 0)) 0))
+
+# --- §2 registry -------------------------------------------------------------
+
+(fn registry_checks [out : (List Str)] : Nil
+  (var r (new_registry))
+
+  # The reserved ids of §1 are a consequence of registration order, so this is
+  # what pins that order down.
+  (check_i out "air id" (id_of r "air") content_air)
+  (check_i out "unknown id" (id_of r "unknown") content_unknown)
+  (check_i out "ignore id" (id_of r "ignore") content_ignore)
+  (check_i out "reserved count" (registered_count r) first_dynamic_content)
+
+  # Ids are assigned at load, never hardcoded: the first mod node lands
+  # immediately after the reserved block, whatever it is called.
+  (var stone (register r "default:stone" draw_normal true true false 0))
+  (var glass (register r "default:glass" draw_glasslike true false true 0))
+  (var lamp (register r "default:lamp" draw_normal true true false 14))
+  (check_i out "first dynamic id" stone first_dynamic_content)
+  (check_i out "second dynamic id" glass (+ first_dynamic_content 1))
+
+  (check out "name_of round trip" (name_of r stone) "default:stone")
+  (check_b out "registered? known" (registered? r "default:stone") true)
+  (check_b out "registered? unknown" (registered? r "nosuch:node") false)
+  (check_i out "id_of unknown name" (id_of r "nosuch:node") content_unknown)
+
+  # The client half is what meshing and physics read.
+  (check_b out "stone is solid" (solid? r stone) true)
+  (check_b out "stone is opaque" (opaque? r stone) true)
+  (check_b out "air is not solid" (solid? r content_air) false)
+  (check_b out "air propagates light" (propagates_light? r content_air) true)
+  (check_b out "glass is solid" (solid? r glass) true)
+  (check_b out "glass is not opaque" (opaque? r glass) false)
+  (check_b out "glass propagates light" (propagates_light? r glass) true)
+  (check_i out "lamp emits" (light_source_of r lamp) 14)
+  (check_i out "stone emits nothing" (light_source_of r stone) 0)
+  (check_i out "glass drawtype" (drawtype_of r glass) draw_glasslike)
+
+  # `unknown` is drawn and walkable and never deleted (§1) — a node whose
+  # definition went missing must not become a hole in the world.
+  (check_b out "unknown is solid" (solid? r content_unknown) true)
+  (check_b out "ignore is not solid" (solid? r content_ignore) false))
+
+(fn report [] : Str
+  (var out : (List Str) [])
+  (coordinate_checks out)
+  (index_checks out)
+  (block_checks out)
+  (light_checks out)
+  (registry_checks out)
+  ($str/join out "\n"))
+
+# The count of failing lines, so a shell can exit non-zero without parsing the
+# report it just printed.
+(fn failures [] : F64
+  (var out : (List Str) [])
+  (coordinate_checks out)
+  (index_checks out)
+  (block_checks out)
+  (light_checks out)
+  (registry_checks out)
+  (var bad 0.0)
+  (var i 0.0)
+  (var n (out ~ size))
+  (while (< i n)
+    (if_yes ($str/starts_with? out/%i "FAIL")
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)

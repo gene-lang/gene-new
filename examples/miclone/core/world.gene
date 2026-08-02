@@ -1,0 +1,152 @@
+# The world model — design.md §1.
+#
+# A node is 4 bytes: a `u16` content id into the registry (§2) and two
+# parameter bytes. A block is 16x16x16 of them, indexed `x + 16y + 256z`, which
+# is upstream's order (`ystride = 16`, `zstride = 256` in `src/mapblock.h`) —
+# inherited so the serialized layout and the loop order of any algorithm read
+# from Luanti agree with ours instead of being silently transposed.
+#
+# **Storage is three parallel arrays, not one array of 4-byte structs.**
+# Upstream packs a `MapNode` per element; we do not, because the two hot
+# readers want different things. Meshing (§5) scans content and never touches
+# the parameters, so a packed layout would pull 4 bytes per node through cache
+# to use 2. Lighting (§4) writes `param1` over a region without reading
+# content. Splitting them halves the traffic for both. The cost is three
+# allocations per block instead of one, which is paid 4,096 times less often
+# than the reads.
+
+(mod world ^profile web)
+
+# --- geometry ----------------------------------------------------------------
+
+(let block_dim 16.0)
+(let block_stride_y 16.0)
+(let block_stride_z 256.0)
+(let block_nodes 4096.0)
+
+# §1's world limit: +/-31,000 nodes. Not arbitrary — it keeps a node coordinate
+# inside an `s16` and a block coordinate comfortably inside one, which is what
+# makes the wire and disk formats able to name a position in two bytes.
+(let world_limit 31000.0)
+
+# --- reserved content ids ----------------------------------------------------
+#
+# Three ids are reserved with Luanti's meanings, and the numbers are ours
+# rather than upstream's — §D9 rules out wire compatibility, so there is no
+# reason to inherit 125/126/127 and every reason to put the reserved ids where
+# they are obvious. Everything a mod registers is assigned from
+# `first_dynamic_content` upward at load (§2).
+#
+# `air` is 0 so that a freshly allocated block is already all air: a zeroed
+# `(Buffer U16)` needs no fill pass, and generation writes only what is solid.
+
+(let content_air 0)
+(let content_unknown 1)   # definition missing — drawn, walkable, never deleted
+(let content_ignore 2)    # not generated yet — never sent, never walkable
+(let first_dynamic_content 3)
+
+# --- coordinates -------------------------------------------------------------
+#
+# §1 asks for `NodePos`, `BlockPos`, and `Vec3` to be distinct types so they
+# cannot be mixed up. They are not declared as types here, because the web
+# profile's nominal types are reference objects: a `NodePos` per node visit
+# would allocate three million times over a chunk, which is exactly the hot
+# path this engine cannot afford.
+#
+# What the distinction buys instead is naming discipline — a function takes
+# `nx ny nz` or `bx by bz`, never bare `x y z` — plus these conversions, so the
+# shift never appears open-coded at a call site. `floor` rather than a shift
+# because the coordinates are `F64` (§D4) and negative division truncates
+# toward zero in a way that would fold blocks -1 and 0 together.
+
+(fn node_to_block [n : F64] : F64
+  ($math/floor (/ n block_dim)))
+
+(fn block_origin [b : F64] : F64
+  (* b block_dim))
+
+# Position within a block, always 0..15 even for negative world coordinates.
+(fn node_in_block [n : F64] : F64
+  (- n (* (node_to_block n) block_dim)))
+
+(fn in_world? [nx : F64 ny : F64 nz : F64] : Bool
+  (&& (&& (<= (abs_f64 nx) world_limit) (<= (abs_f64 ny) world_limit))
+      (<= (abs_f64 nz) world_limit)))
+
+(fn abs_f64 [v : F64] : F64
+  (if (< v 0.0) (- 0.0 v) v))
+
+# --- block indexing ----------------------------------------------------------
+
+(fn block_index [x : F64 y : F64 z : F64] : F64
+  (+ x (+ (* y block_stride_y) (* z block_stride_z))))
+
+(fn index_x [i : F64] : F64
+  (- i (* ($math/floor (/ i block_stride_y)) block_stride_y)))
+
+(fn index_y [i : F64] : F64
+  (var within (- i (* ($math/floor (/ i block_stride_z)) block_stride_z)))
+  ($math/floor (/ within block_stride_y)))
+
+(fn index_z [i : F64] : F64
+  ($math/floor (/ i block_stride_z)))
+
+(fn in_block? [x : F64 y : F64 z : F64] : Bool
+  (&& (&& (&& (>= x 0.0) (< x block_dim))
+          (&& (>= y 0.0) (< y block_dim)))
+      (&& (>= z 0.0) (< z block_dim))))
+
+# --- the block ---------------------------------------------------------------
+
+(type Block
+  ^props {^content (Buffer U16)
+          ^param1  (Buffer U8)
+          ^param2  (Buffer U8)}
+
+  (ctor []
+    # Zeroed, which is already an all-air block with no light: `content_air` is
+    # 0 by construction (see above), so this needs no fill pass.
+    (set! self/content ($buffer U16 block_nodes))
+    (set! self/param1 ($buffer U8 block_nodes))
+    (set! self/param2 ($buffer U8 block_nodes))))
+
+(fn get_content [b : Block x : F64 y : F64 z : F64] : Int
+  (b/content ~ get (block_index x y z)))
+
+(fn set_content [b : Block x : F64 y : F64 z : F64 id : Int] : Nil
+  (b/content ~ set! (block_index x y z) id))
+
+(fn get_param1 [b : Block x : F64 y : F64 z : F64] : Int
+  (b/param1 ~ get (block_index x y z)))
+
+(fn set_param1 [b : Block x : F64 y : F64 z : F64 v : Int] : Nil
+  (b/param1 ~ set! (block_index x y z) v))
+
+(fn get_param2 [b : Block x : F64 y : F64 z : F64] : Int
+  (b/param2 ~ get (block_index x y z)))
+
+(fn set_param2 [b : Block x : F64 y : F64 z : F64 v : Int] : Nil
+  (b/param2 ~ set! (block_index x y z) v))
+
+# --- light, packed into param1 (§4) -------------------------------------------
+#
+# Two 4-bit channels: day in the high nibble, night in the low. They are
+# interpolated at render time by the time of day, which is why both travel in
+# one byte rather than being computed per frame.
+
+(let light_max 15)
+
+(fn light_day [packed : Int] : Int
+  (bit_shift_right packed))
+
+(fn light_night [packed : Int] : Int
+  (- packed (* (bit_shift_right packed) 16)))
+
+(fn pack_light [day : Int night : Int] : Int
+  (+ (* day 16) night))
+
+# `$bit` is a VM namespace and not in the portable web stdlib, so the nibble
+# split is arithmetic. Division by 16 is exact for the values in a byte, and
+# `to_float`/`to_int` keep it inside the `Int` the caller has.
+(fn bit_shift_right [v : Int] : Int
+  ($to_int ($math/floor (/ ($to_float v) 16.0))))

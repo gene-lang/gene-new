@@ -1,0 +1,18 @@
+# The VM shell for the world/registry cross-backend spec.
+#
+#   gene run world_spec
+#
+# Pair with `node tools/world_spec.mjs` and diff: the two must agree exactly,
+# which is what design.md §14 layer 2 asks of every `core/` module.
+
+(mod run_world_spec)
+
+(import [report failures] from "./world_spec.gene")
+
+(fn main [args] : Nil
+  ($println (report))
+  (var bad (failures))
+  ($println "")
+  (if (== bad 0.0)
+    (then ($println "PASS — every check agrees"))
+    (else ($println $"FAIL — ${bad} check(s) failed"))))
