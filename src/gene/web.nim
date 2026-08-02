@@ -37,6 +37,19 @@ type
     ## buffer in `core/`, and that module compiles for both backends. A separate
     ## web-only type would make the one hot module in the system unshareable.
     wtkBuffer
+    ## A `WebGL2RenderingContext`. Its own kind for the same reason `Canvas2D`
+    ## is: it shares no operation with any other host type, so `Any` would be
+    ## the only alternative and `Any` validates nothing.
+    wtkGl
+    ## An opaque WebGL resource — buffer, shader, program, texture, vertex
+    ## array, or uniform location. `name` says which.
+    ##
+    ## One kind carrying a name rather than six kinds, because the alternative
+    ## is thirty more `case` arms across five exhaustive dispatches for types
+    ## that are all opaque handles with no operations of their own. The name is
+    ## still compared in `sameType`, so a shader cannot be bound where a buffer
+    ## is expected — the same trick `wtkBuffer` uses for its element type.
+    wtkGlObject
 
   WebType* = ref object
     kind*: WebTypeKind
@@ -344,6 +357,96 @@ proc jsTypedArrayName(element: string): string =
 proc bufferElementIsFloat(element: string): bool =
   element in ["F32", "F64"]
 
+# WebGL enum arguments, as compile-time-checked strings.
+#
+# Gene has no keyword literal — `:foo` reads as the two tokens `:` and `foo`,
+# because `:` is the type-annotation separator — so an enum argument is spelled
+# as a string, the way `dom/create_element` already takes a tag name. The
+# string must be a literal and must be in this table, so a typo is a compile
+# error naming the position, rather than an `INVALID_ENUM` discovered on a
+# frame that renders nothing.
+#
+# Gene-side names are snake_case per the repository's naming rule; the values
+# are the WebGL constant names they stand for.
+const glEnums = {
+  # buffer targets and usage
+  "array": "ARRAY_BUFFER",
+  "element_array": "ELEMENT_ARRAY_BUFFER",
+  "static": "STATIC_DRAW",
+  "dynamic": "DYNAMIC_DRAW",
+  "stream": "STREAM_DRAW",
+  # shader stages
+  "vertex": "VERTEX_SHADER",
+  "fragment": "FRAGMENT_SHADER",
+  # primitives
+  "triangles": "TRIANGLES",
+  "triangle_strip": "TRIANGLE_STRIP",
+  "lines": "LINES",
+  "points": "POINTS",
+  # element index and attribute component types
+  "u8": "UNSIGNED_BYTE",
+  "u16": "UNSIGNED_SHORT",
+  "u32": "UNSIGNED_INT",
+  "f32": "FLOAT",
+  # capabilities
+  "depth_test": "DEPTH_TEST",
+  "cull_face": "CULL_FACE",
+  "blend": "BLEND",
+  # depth and face
+  "less": "LESS",
+  "lequal": "LEQUAL",
+  "back": "BACK",
+  "front": "FRONT",
+  # textures
+  "texture_2d": "TEXTURE_2D",
+  "rgba": "RGBA",
+  "min_filter": "TEXTURE_MIN_FILTER",
+  "mag_filter": "TEXTURE_MAG_FILTER",
+  "wrap_s": "TEXTURE_WRAP_S",
+  "wrap_t": "TEXTURE_WRAP_T",
+  "nearest": "NEAREST",
+  "linear": "LINEAR",
+  "nearest_mipmap_linear": "NEAREST_MIPMAP_LINEAR",
+  "clamp_to_edge": "CLAMP_TO_EDGE",
+  "repeat": "REPEAT"}.toTable
+
+proc glEnumConstant(name: string): string =
+  glEnums.getOrDefault(name, "")
+
+proc glObjectTsType(name: string): string =
+  ## The DOM interface behind each `Gl/...` handle.
+  ##
+  ## Mostly `WebGL` + the name, but not always — `Gl/VertexArray` is
+  ## `WebGLVertexArrayObject`, and concatenating blindly produced
+  ## `WebGLVertexArray`, which does not exist. `tsc` caught that against
+  ## lib.dom.d.ts; `tools/check_host_bindings` could not, because it verifies
+  ## the *methods* exist, not the types the emitter writes down.
+  case name
+  of "VertexArray": "WebGLVertexArrayObject"
+  else: "WebGL" & name
+
+# Which arguments of each `gl/...` builtin are enums rather than ordinary
+# strings. Positions are into the call's argument list, so 0 is the context.
+# A `Str` parameter absent from this table is real text — a shader's source, an
+# attribute name — and is passed through untouched.
+const glEnumArgs = {
+  "gl/enable": @[1],
+  "gl/disable": @[1],
+  "gl/depth_func": @[1],
+  "gl/cull_face": @[1],
+  "gl/generate_mipmap": @[1],
+  "gl/bind_buffer": @[1],
+  "gl/create_shader": @[1],
+  "gl/attrib_pointer": @[3],
+  "gl/bind_texture": @[1],
+  "gl/tex_image_2d": @[1],
+  "gl/tex_parameter": @[1, 2, 3],
+  "gl/draw_arrays": @[1],
+  "gl/draw_elements": @[1, 3]}.toTable
+
+proc glEnumArgPositions(builtin: string): seq[int] =
+  glEnumArgs.getOrDefault(builtin, @[])
+
 proc isSym(value: Value, name: string): bool {.inline.} =
   value.kind == vkSymbol and value.symVal == name
 
@@ -378,6 +481,10 @@ proc sameType(a, b: WebType): bool =
     # and silently accepting one for the other would corrupt vertex data in a
     # way nothing downstream could diagnose.
     a.name == b.name
+  of wtkGlObject:
+    a.name == b.name
+  of wtkGl:
+    true
   of wtkUnion:
     if a.members.len != b.members.len: return false
     for i in 0 ..< a.members.len:
@@ -476,6 +583,8 @@ proc typeName(typ: WebType): string =
   of wtkTask: "(Task " & typeName(typ.item) & ")"
   of wtkStream: "(Stream " & typeName(typ.item) & ")"
   of wtkBuffer: "(Buffer " & typ.name & ")"
+  of wtkGl: "Gl"
+  of wtkGlObject: "Gl/" & typ.name
   of wtkNominal: typ.name
   of wtkUnion:
     var parts: seq[string]
@@ -510,6 +619,8 @@ proc tsType(typ: WebType): string =
   of wtkTask: "GeneTask<" & tsType(typ.item) & ">"
   of wtkStream: "GeneStream<" & tsType(typ.item) & ">"
   of wtkBuffer: jsTypedArrayName(typ.name)
+  of wtkGl: "WebGL2RenderingContext"
+  of wtkGlObject: glObjectTsType(typ.name)
   of wtkNominal: mangleWebName(typ.name)
   of wtkUnion:
     var parts: seq[string]
@@ -542,6 +653,8 @@ proc validatorSuffix(typ: WebType): string =
   of wtkTask: "task_" & validatorSuffix(typ.item)
   of wtkStream: "stream_" & validatorSuffix(typ.item)
   of wtkBuffer: "buffer_" & toLowerAscii(typ.name)
+  of wtkGl: "gl"
+  of wtkGlObject: "gl_" & toLowerAscii(typ.name)
   of wtkNominal: "nominal_" & mangleWebName(typ.name)
   of wtkUnion:
     var parts: seq[string]
@@ -630,8 +743,29 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
     of "EventTarget": return webType(wtkDomTarget)
     of "Canvas2D": return webType(wtkDomCanvas)
     of "Gradient": return webType(wtkDomGradient)
+    of "Gl": return webType(wtkGl)
+    of "Gl/Buffer", "Gl/Shader", "Gl/Program", "Gl/Texture",
+       "Gl/VertexArray", "Gl/UniformLocation":
+      # A slash-qualified annotation reaches here already flattened to one
+      # symbol. Without this arm it fell through to the nominal case and became
+      # a *different* type that printed the same name, so a mismatch reported
+      # "expected Gl/Program, got Gl/Program".
+      return WebType(kind: wtkGlObject,
+                     name: value.symVal[3 .. ^1])
     else:
       return WebType(kind: wtkNominal, name: value.symVal)
+  # `Gl/Program` and friends read as a path, the same slash-qualified spelling
+  # the VM uses for `device/Buffer`. The handle types have no operations of
+  # their own, so the name is the whole type.
+  if value.kind == vkNode and value.head.isSym("path") and
+      value.body.len == 2 and value.body[0].isSym("Gl") and
+      value.body[1].kind == vkSymbol:
+    const glObjects = ["Buffer", "Shader", "Program", "Texture",
+                       "VertexArray", "UniformLocation"]
+    if value.body[1].symVal notin glObjects:
+      raise webError(loc, "unknown Gl handle type: Gl/" &
+        value.body[1].symVal & " (expected one of " & glObjects.join(", ") & ")")
+    return WebType(kind: wtkGlObject, name: value.body[1].symVal)
   if value.kind == vkNode and value.head.isSym("List") and
       value.body.len == 1:
     return webType(wtkList, parseWebType(value.body[0], loc))
@@ -1707,6 +1841,171 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       # fill and stroke colour, rectangles, and a blit. Every coordinate is
       # F64, never Int, because the DOM takes `number` and a bigint crossing
       # this boundary would throw.
+      # --- WebGL2 -----------------------------------------------------------
+      # The 3D counterpart of the canvas block below. Every entry is checked
+      # against lib.dom.d.ts by tools/check_host_bindings, exactly as the 2D
+      # ones are.
+      of "gl/context":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkGl)
+      of "gl/viewport":
+        paramTypes = @[webType(wtkGl), webType(wtkF64), webType(wtkF64),
+                       webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "gl/clear_color":
+        paramTypes = @[webType(wtkGl), webType(wtkF64), webType(wtkF64),
+                       webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "gl/clear":
+        # Colour and depth together. Separating them would mean exposing the
+        # bitmask, and no renderer here wants one without the other.
+        paramTypes = @[webType(wtkGl)]
+        returnType = webType(wtkVoid)
+      of "gl/enable", "gl/disable", "gl/depth_func", "gl/cull_face",
+         "gl/generate_mipmap":
+        paramTypes = @[webType(wtkGl), webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "gl/create_buffer":
+        paramTypes = @[webType(wtkGl)]
+        returnType = WebType(kind: wtkGlObject, name: "Buffer")
+      of "gl/bind_buffer":
+        paramTypes = @[webType(wtkGl), webType(wtkStr),
+                       WebType(kind: wtkGlObject, name: "Buffer")]
+        returnType = webType(wtkVoid)
+      of "gl/buffer_data":
+        # Handled here rather than through `paramTypes` because the element
+        # type varies with the call: vertices are `(Buffer F32)` and indices
+        # `(Buffer U16)`, and a fixed signature would have to name one. Any
+        # buffer is accepted and its own type is checked; what is *not*
+        # accepted is a `List`, which would need a copy and a conversion on
+        # every upload.
+        if value.body.len != 4:
+          raise webError(loc, "web gl/buffer_data expects 4 argument(s)")
+        let context = analysis.analyzeExpr(value.body[0], bindings,
+                                           webType(wtkGl))
+        let data = analysis.analyzeExpr(value.body[2], bindings)
+        if data.typ.kind != wtkBuffer:
+          raise webError(loc, "gl/buffer_data expects a (Buffer T), got " &
+            typeName(data.typ))
+        var resolved: seq[string]
+        for i in [1, 3]:
+          if value.body[i].kind != vkString:
+            raise webError(loc,
+              "gl/buffer_data target and usage must be literal strings")
+          let constant = glEnumConstant(value.body[i].strVal)
+          if constant.len == 0:
+            raise webError(loc, "unknown WebGL enum: " & value.body[i].strVal)
+          resolved.add constant
+        # Target and usage are resolved to their WebGL constant names here, so
+        # the emitter never sees a Gene-side spelling.
+        return WebExpr(kind: wekBuiltin, typ: webType(wtkVoid), loc: loc,
+          text: builtin, keys: resolved, children: @[context, data])
+      of "gl/create_shader":
+        paramTypes = @[webType(wtkGl), webType(wtkStr)]
+        returnType = WebType(kind: wtkGlObject, name: "Shader")
+      of "gl/shader_source":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "Shader"),
+                       webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "gl/compile_shader":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "Shader")]
+        returnType = webType(wtkVoid)
+      of "gl/shader_compiled?":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "Shader")]
+        returnType = webType(wtkBool)
+      of "gl/shader_log":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "Shader")]
+        returnType = webType(wtkStr)
+      of "gl/create_program":
+        paramTypes = @[webType(wtkGl)]
+        returnType = WebType(kind: wtkGlObject, name: "Program")
+      of "gl/attach_shader":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "Program"),
+                       WebType(kind: wtkGlObject, name: "Shader")]
+        returnType = webType(wtkVoid)
+      of "gl/link_program", "gl/use_program":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "Program")]
+        returnType = webType(wtkVoid)
+      of "gl/program_linked?":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "Program")]
+        returnType = webType(wtkBool)
+      of "gl/program_log":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "Program")]
+        returnType = webType(wtkStr)
+      of "gl/attrib_location":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "Program"),
+                       webType(wtkStr)]
+        returnType = webType(wtkF64)
+      of "gl/enable_attrib":
+        paramTypes = @[webType(wtkGl), webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "gl/attrib_pointer":
+        # location, size, component type, normalized, stride, offset
+        paramTypes = @[webType(wtkGl), webType(wtkF64), webType(wtkF64),
+                       webType(wtkStr), webType(wtkBool), webType(wtkF64),
+                       webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "gl/uniform_location":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "Program"),
+                       webType(wtkStr)]
+        returnType = WebType(kind: wtkGlObject, name: "UniformLocation")
+      of "gl/uniform_f", "gl/uniform_i":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "UniformLocation"),
+                       webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "gl/uniform_3f":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "UniformLocation"),
+                       webType(wtkF64), webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "gl/uniform_matrix4":
+        # The one uniform that takes bulk data, and the reason `(Buffer F32)`
+        # had to reach the profile before any of this could be written.
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "UniformLocation"),
+                       WebType(kind: wtkBuffer, name: "F32")]
+        returnType = webType(wtkVoid)
+      of "gl/create_vertex_array":
+        paramTypes = @[webType(wtkGl)]
+        returnType = WebType(kind: wtkGlObject, name: "VertexArray")
+      of "gl/bind_vertex_array":
+        paramTypes = @[webType(wtkGl),
+                       WebType(kind: wtkGlObject, name: "VertexArray")]
+        returnType = webType(wtkVoid)
+      of "gl/create_texture":
+        paramTypes = @[webType(wtkGl)]
+        returnType = WebType(kind: wtkGlObject, name: "Texture")
+      of "gl/bind_texture":
+        paramTypes = @[webType(wtkGl), webType(wtkStr),
+                       WebType(kind: wtkGlObject, name: "Texture")]
+        returnType = webType(wtkVoid)
+      of "gl/tex_image_2d":
+        # Sourced from a loaded image, which is what `$image/load` returns.
+        paramTypes = @[webType(wtkGl), webType(wtkStr), webType(wtkDomTarget)]
+        returnType = webType(wtkVoid)
+      of "gl/tex_parameter":
+        paramTypes = @[webType(wtkGl), webType(wtkStr), webType(wtkStr),
+                       webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "gl/draw_arrays":
+        paramTypes = @[webType(wtkGl), webType(wtkStr), webType(wtkF64),
+                       webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "gl/draw_elements":
+        paramTypes = @[webType(wtkGl), webType(wtkStr), webType(wtkF64),
+                       webType(wtkStr), webType(wtkF64)]
+        returnType = webType(wtkVoid)
       of "canvas/context":
         # The element is an EventTarget (a canvas is one); the result is the
         # 2D context, which is not.
@@ -1851,6 +2150,19 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           $paramTypes.len & " argument(s)")
       result = WebExpr(kind: wekBuiltin, typ: returnType, loc: loc,
                        text: builtin)
+      # WebGL enum arguments are resolved at compile time. Each one must be a
+      # literal from `glEnums`, and the resolved constant names travel in
+      # `keys` in argument order — so `INVALID_ENUM` becomes a compile error
+      # with a position instead of a frame that silently draws nothing.
+      for position in glEnumArgPositions(builtin):
+        if position >= value.body.len or value.body[position].kind != vkString:
+          raise webError(loc, "web " & builtin & " argument " & $position &
+            " must be a literal WebGL enum string")
+        let constant = glEnumConstant(value.body[position].strVal)
+        if constant.len == 0:
+          raise webError(loc, "unknown WebGL enum: " &
+            value.body[position].strVal)
+        result.keys.add constant
       for i, item in value.body:
         result.children.add analysis.analyzeExpr(item, bindings, paramTypes[i])
       return
@@ -3465,6 +3777,106 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       "(localStorage.setItem(" & arguments[0] & ", " & arguments[1] & "), undefined)"
     of "image/load":
       "$gene_image_load(" & arguments[0] & ", " & arguments[1] & ")"
+    # --- WebGL2 ---
+    # Enum arguments were resolved to constant names during analysis and live
+    # in `expr.keys`; they are read from the context object here, which is
+    # where WebGL defines them.
+    of "gl/context": "$gene_gl_context(" & arguments[0] & ")"
+    of "gl/viewport":
+      arguments[0] & ".viewport(" & arguments[1] & ", " & arguments[2] &
+        ", " & arguments[3] & ", " & arguments[4] & ")"
+    of "gl/clear_color":
+      arguments[0] & ".clearColor(" & arguments[1] & ", " & arguments[2] &
+        ", " & arguments[3] & ", " & arguments[4] & ")"
+    of "gl/clear":
+      arguments[0] & ".clear(" & arguments[0] & ".COLOR_BUFFER_BIT | " &
+        arguments[0] & ".DEPTH_BUFFER_BIT)"
+    of "gl/enable":
+      arguments[0] & ".enable(" & arguments[0] & "." & expr.keys[0] & ")"
+    of "gl/disable":
+      arguments[0] & ".disable(" & arguments[0] & "." & expr.keys[0] & ")"
+    of "gl/depth_func":
+      arguments[0] & ".depthFunc(" & arguments[0] & "." & expr.keys[0] & ")"
+    of "gl/cull_face":
+      arguments[0] & ".cullFace(" & arguments[0] & "." & expr.keys[0] & ")"
+    of "gl/generate_mipmap":
+      arguments[0] & ".generateMipmap(" & arguments[0] & "." & expr.keys[0] & ")"
+    of "gl/create_buffer":
+      "$gene_gl_require(" & arguments[0] & ".createBuffer(), \"gl/create_buffer\")"
+    of "gl/bind_buffer":
+      arguments[0] & ".bindBuffer(" & arguments[0] & "." & expr.keys[0] &
+        ", " & arguments[2] & ")"
+    of "gl/buffer_data":
+      # children are (context, data); target and usage came through `keys`.
+      arguments[0] & ".bufferData(" & arguments[0] & "." & expr.keys[0] &
+        ", " & arguments[1] & ", " & arguments[0] & "." & expr.keys[1] & ")"
+    of "gl/create_shader":
+      "$gene_gl_require(" & arguments[0] & ".createShader(" & arguments[0] & "." & expr.keys[0] & "), \"gl/create_shader\")"
+    of "gl/shader_source":
+      arguments[0] & ".shaderSource(" & arguments[1] & ", " & arguments[2] & ")"
+    of "gl/compile_shader":
+      arguments[0] & ".compileShader(" & arguments[1] & ")"
+    of "gl/shader_compiled?":
+      arguments[0] & ".getShaderParameter(" & arguments[1] & ", " &
+        arguments[0] & ".COMPILE_STATUS) === true"
+    of "gl/shader_log":
+      "(" & arguments[0] & ".getShaderInfoLog(" & arguments[1] & ") ?? \"\")"
+    of "gl/create_program":
+      "$gene_gl_require(" & arguments[0] & ".createProgram(), \"gl/create_program\")"
+    of "gl/attach_shader":
+      arguments[0] & ".attachShader(" & arguments[1] & ", " & arguments[2] & ")"
+    of "gl/link_program": arguments[0] & ".linkProgram(" & arguments[1] & ")"
+    of "gl/use_program": arguments[0] & ".useProgram(" & arguments[1] & ")"
+    of "gl/program_linked?":
+      arguments[0] & ".getProgramParameter(" & arguments[1] & ", " &
+        arguments[0] & ".LINK_STATUS) === true"
+    of "gl/program_log":
+      "(" & arguments[0] & ".getProgramInfoLog(" & arguments[1] & ") ?? \"\")"
+    of "gl/attrib_location":
+      arguments[0] & ".getAttribLocation(" & arguments[1] & ", " &
+        arguments[2] & ")"
+    of "gl/enable_attrib":
+      arguments[0] & ".enableVertexAttribArray(" & arguments[1] & ")"
+    of "gl/attrib_pointer":
+      arguments[0] & ".vertexAttribPointer(" & arguments[1] & ", " &
+        arguments[2] & ", " & arguments[0] & "." & expr.keys[0] & ", " &
+        arguments[4] & ", " & arguments[5] & ", " & arguments[6] & ")"
+    of "gl/uniform_location":
+      "$gene_gl_require(" & arguments[0] & ".getUniformLocation(" & arguments[1] & ", " & arguments[2] & "), \"gl/uniform_location\")"
+    of "gl/uniform_f":
+      arguments[0] & ".uniform1f(" & arguments[1] & ", " & arguments[2] & ")"
+    of "gl/uniform_i":
+      arguments[0] & ".uniform1i(" & arguments[1] & ", " & arguments[2] & ")"
+    of "gl/uniform_3f":
+      arguments[0] & ".uniform3f(" & arguments[1] & ", " & arguments[2] &
+        ", " & arguments[3] & ", " & arguments[4] & ")"
+    of "gl/uniform_matrix4":
+      arguments[0] & ".uniformMatrix4fv(" & arguments[1] & ", false, " &
+        arguments[2] & ")"
+    of "gl/create_vertex_array":
+      "$gene_gl_require(" & arguments[0] & ".createVertexArray(), \"gl/create_vertex_array\")"
+    of "gl/bind_vertex_array":
+      arguments[0] & ".bindVertexArray(" & arguments[1] & ")"
+    of "gl/create_texture":
+      "$gene_gl_require(" & arguments[0] & ".createTexture(), \"gl/create_texture\")"
+    of "gl/bind_texture":
+      arguments[0] & ".bindTexture(" & arguments[0] & "." & expr.keys[0] &
+        ", " & arguments[2] & ")"
+    of "gl/tex_image_2d":
+      arguments[0] & ".texImage2D(" & arguments[0] & "." & expr.keys[0] &
+        ", 0, " & arguments[0] & ".RGBA, " & arguments[0] & ".RGBA, " &
+        arguments[0] & ".UNSIGNED_BYTE, " & arguments[2] & ")"
+    of "gl/tex_parameter":
+      arguments[0] & ".texParameteri(" & arguments[0] & "." & expr.keys[0] &
+        ", " & arguments[0] & "." & expr.keys[1] & ", " & arguments[0] &
+        "." & expr.keys[2] & ")"
+    of "gl/draw_arrays":
+      arguments[0] & ".drawArrays(" & arguments[0] & "." & expr.keys[0] &
+        ", " & arguments[2] & ", " & arguments[3] & ")"
+    of "gl/draw_elements":
+      arguments[0] & ".drawElements(" & arguments[0] & "." & expr.keys[0] &
+        ", " & arguments[2] & ", " & arguments[0] & "." & expr.keys[1] &
+        ", " & arguments[4] & ")"
     of "canvas/context": "$gene_canvas_context(" & arguments[0] & ")"
     of "canvas/set_size":
       "$gene_canvas_set_size(" & arguments[0] & ", " & arguments[1] & ", " &
@@ -4382,6 +4794,15 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
       # would be pure cost on the largest arrays in the program.
       emitter.line("if (!(value instanceof " & jsTypedArrayName(typ.name) &
         ")) $gene_type_error(where, \"" & typeName(typ) & "\", value);")
+    of wtkGl, wtkGlObject:
+      # WebGL resource classes are not constructible and, in a worker or a
+      # headless test, may not exist as globals at all — `value instanceof
+      # WebGLBuffer` would throw a ReferenceError rather than reject. A
+      # non-null object check is what can actually be asserted here; passing
+      # the wrong handle is caught by WebGL itself, which reports it through
+      # `getError` on the context that owns it.
+      emitter.line("if (value === null || typeof value !== \"object\") " &
+        "$gene_type_error(where, \"" & typeName(typ) & "\", value);")
     of wtkCallback:
       emitter.line("if (typeof value !== \"function\") $gene_type_error(where, \"Callback\", value);")
     of wtkPropMap:
@@ -5241,6 +5662,34 @@ proc emitModule(module: WebModule, typescript: bool,
       (if typescript: " as HTMLCanvasElement" else: "") &
       ").getContext(\"2d\"); if (!ctx) throw new TypeError(" &
       "\"canvas/context expects a canvas element\"); return ctx; }")
+  if moduleUsesBuiltin(module, ["gl/context"]):
+    let glParam = if typescript: "element: EventTarget" else: "element"
+    let glReturn = if typescript: ": WebGL2RenderingContext" else: ""
+    # Throws rather than returning null, matching `canvas/context`. A missing
+    # WebGL2 context is an environment failure, not a value to branch on — and
+    # the profile does not narrow a union on a truthiness test, so a nullable
+    # return would be unusable anyway.
+    emitter.line("function $gene_gl_context(" & glParam & ")" & glReturn &
+      " { const gl = (element" &
+      (if typescript: " as HTMLCanvasElement" else: "") &
+      ").getContext(\"webgl2\"); if (!gl) throw new TypeError(" &
+      "\"gl/context requires a canvas with WebGL2 support\"); return gl; }")
+  if moduleUsesBuiltin(module, ["gl/create_buffer", "gl/create_shader",
+                                "gl/create_program", "gl/create_texture",
+                                "gl/create_vertex_array",
+                                "gl/uniform_location"]):
+    let reqParams = if typescript: "value: unknown, what: string" else: "value, what"
+    # WebGL's creators all return `X | null` — null on context loss, or on a
+    # uniform name the linked program does not have. Gene's types say
+    # non-null, and this is what makes that true: it throws where the failure
+    # happens instead of handing back a null that fails at the draw call, which
+    # is the same choice `canvas/context` makes. The profile cannot narrow a
+    # union on a truthiness test, so a nullable handle would be unusable
+    # anyway.
+    emitter.line("function $gene_gl_require(" & reqParams & ")" &
+      (if typescript: ": any" else: "") &
+      " { if (value === null || value === undefined) throw new TypeError(" &
+      "what + \" returned no handle\"); return value; }")
   if moduleUsesBuiltin(module, ["canvas/set_size"]):
     let sizeParams = if typescript: "element: EventTarget, w: number, h: number"
                      else: "element, w, h"

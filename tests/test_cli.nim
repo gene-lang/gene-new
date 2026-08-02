@@ -7565,6 +7565,48 @@ suite "cli — gene parse/fmt/compile":
     check ran.exitCode == 0
     check "gene_native_ratio" notin ran.output
 
+  # A dedicated root, because `gene build` leaves package state beside its
+  # input; sharing `cliDir` with the workspace-build tests made those resolve
+  # against it and fail.
+  proc writeGlProgram(name, src: string): string =
+    let root = cliDir / "web_gl_root"
+    createDir(root)
+    result = root / name
+    writeFile(result, src)
+
+  test "build target web emits WebGL2 calls with compile-time enums":
+    let path = writeGlProgram("web_gl.gene",
+      "(mod web_gl ^profile web)\n" &
+      "(fn upload [gl : Gl verts : (Buffer F32)] : Gl/Buffer\n" &
+      "  (var vbo ($gl/create_buffer gl))\n" &
+      "  ($gl/bind_buffer gl \"array\" vbo)\n" &
+      "  ($gl/buffer_data gl \"array\" verts \"static\")\n" &
+      "  ($gl/draw_elements gl \"triangles\" 36.0 \"u16\" 0.0)\n" &
+      "  vbo)\n")
+    let outDir = cliDir / "web_gl_root" / "out"
+    let ran = runGene(["build", "--target", "web", path, "--out-dir", outDir])
+    check ran.exitCode == 0
+    let emitted = readFile(outDir / "web_gl.mjs")
+    # Enum arguments are resolved to WebGL constants at compile time, so no
+    # Gene-side spelling survives into the output.
+    check "gl.bindBuffer(gl.ARRAY_BUFFER, vbo)" in emitted
+    check "gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW)" in emitted
+    check "gl.drawElements(gl.TRIANGLES, 36.0, gl.UNSIGNED_SHORT, 0.0)" in emitted
+    check "\"array\"" notin emitted
+    check "\"static\"" notin emitted
+    # `createBuffer` returns `WebGLBuffer | null`; Gene's type says non-null,
+    # so the null is refused where it happens rather than at the draw call.
+    check "$gene_gl_require(gl.createBuffer()" in emitted
+
+  test "build target web rejects an unknown WebGL enum at compile time":
+    let path = writeGlProgram("web_gl_bad.gene",
+      "(mod web_gl_bad ^profile web)\n" &
+      "(fn go [gl : Gl] : Nil ($gl/enable gl \"depth_testing\"))\n")
+    let ran = runGene(["build", "--target", "web", path,
+                       "--out-dir", cliDir / "web_gl_root" / "bad_out"])
+    check ran.exitCode == 1
+    check "unknown WebGL enum: depth_testing" in ran.output
+
   test "compile rejects reserved native targets explicitly":
     let path = writeCliProgram("compile_reserved_target.gene",
       "(fn main [] nil)")
