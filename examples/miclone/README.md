@@ -74,7 +74,7 @@ profile compiles. Printing is not in that intersection — `$println` is a VM
 builtin and a browser has no stdout — which is why each probe is a portable
 module with a shell per backend rather than one module with a conditional.
 
-### §D6.1 — render spike: meshing **PASS**, frame rate not yet measured
+### §D6.1 — render spike: **PASS**
 
 ```sh
 cd examples/miclone
@@ -87,7 +87,10 @@ node tools/mesh_bench.mjs        # headless: generation + meshing budget
 python3 -m http.server 8000      # then open http://localhost:8000/
 ```
 
-Worst chunk **0.398 ms** against an 8 ms budget over a 8×4×8 volume. The page
-renders a 12×4×12-chunk world with a fly camera — drag to look, WASD to move,
-space/shift for up and down — but the 60 fps criterion has not been checked in
-a browser yet, so §D6.1 is only half answered.
+**121 fps** drawing 186 chunk meshes and 51,387 faces, and a worst chunk of
+**0.44 ms** against an 8 ms meshing budget. Drag to look, WASD to move,
+space/shift for up and down.
+
+Two traps when re-measuring: a backgrounded tab throttles `requestAnimationFrame`
+to nothing (the fps reads 1), and `http.server` sends no `Cache-Control`, so a
+plain reload can silently re-run the previous build.

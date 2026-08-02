@@ -127,8 +127,15 @@
   (verts ~ set! (+ o 5.0) light))
 
 # Two triangles over the four corners just written, in the order that makes the
-# quad front-facing from outside. Winding is what `cull_face "back"` reads, so
-# getting it wrong makes a world you can only see from inside.
+# quad front-facing from outside.
+#
+# Winding is what `cull_face "back"` reads, and getting it wrong does not draw
+# the face inside-out — it does not draw it at all. The two Z faces were
+# reversed in the first version of this file, and the symptom was pale
+# rectangles scattered over the terrain: not mis-shaded geometry but *holes*,
+# showing the fog through walls that were being culled. Nothing errors, so the
+# check is arithmetic: for corners a, b, c the cross product (b-a) x (c-b) must
+# point out of the block, away from the node the face belongs to.
 (fn put_face_indices [idx : (Buffer U32) face : F64 base : F64] : Nil
   (var o (* face indices_per_face))
   (idx ~ set! o ($to_int base))
@@ -196,11 +203,11 @@
             (set face (+ face 1.0)))
           (if_yes (face_visible? padded x y (+ z 1.0))
             (put_quad verts idx face side light_side_z
-                      x1 wy z1  wx wy z1  wx y1 z1  x1 y1 z1)
+                      wx wy z1  x1 wy z1  x1 y1 z1  wx y1 z1)
             (set face (+ face 1.0)))
           (if_yes (face_visible? padded x y (- z 1.0))
             (put_quad verts idx face side light_side_z
-                      wx wy wz  x1 wy wz  x1 y1 wz  wx y1 wz)
+                      x1 wy wz  wx wy wz  wx y1 wz  x1 y1 wz)
             (set face (+ face 1.0))))
         (set x (+ x 1.0)))
       (set y (+ y 1.0)))

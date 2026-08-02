@@ -316,7 +316,7 @@ networking, no mods.
 | render calls too slow | per-call boundary cost | batch through typed arrays; fewer, larger draws |
 | the profile can't express it at all | the subset is too narrow for 3D | escalate to the wasm host-bridge path, which new_world's D3 costed and rejected for a 2D game and which a 3D game may justify |
 
-#### Result — meshing **PASS** with ~20x headroom; frame rate not yet measured
+#### Result — **PASS**. 121 fps, worst chunk 0.44 ms against an 8 ms budget
 
 Built as `core/mesh.gene` (face-culled meshing over an 18³ padded
 neighbourhood), `core/vec.gene`, `client/render.gene`, `client/atlas.gene`, and
@@ -343,10 +343,42 @@ Two things worth carrying forward:
 - **The 16³ block and run-free column fill are what made it fit**, which is
   §D6.3's conclusion applied rather than restated.
 
-**The frame-rate half of §D6.1 is not yet measured** — it needs a browser, and
-the harness here is headless. The renderer compiles, emits ordinary WebGL2
-calls, and typechecks against `lib.dom.d.ts` under `--strict`; what has not
-happened is a run at 1280×720 against the 60 fps criterion.
+**One rendering bug, and the shape of it is the lesson.** The first build drew
+pale rectangles scattered over the terrain. They were not mis-shaded geometry
+but *holes*: the two Z faces were wound backwards, so `cull_face "back"`
+discarded them and the fog showed through. A backwards quad is not drawn
+inside-out — it is not drawn at all, nothing errors, and `getError` stays
+clean, so the only signal is pixels that are not there.
+
+Three hypotheses were tested and killed against data before the real cause
+turned up by computing the winding: that the pale faces were sand (the world
+contains none at that depth), that they were stone washed out by fog (100% of
+side faces are grass), and that the atlas had unpainted tiles being sampled
+(all five tiles read back correctly). Guessing from a screenshot was the slow
+path; the cross product answered it in one step.
+
+`tools/mesh_bench.mjs` now checks the invariant directly — for every quad, the
+normal implied by its winding must point from the solid node that owns the face
+into the transparent node it faces. Reintroducing the bug makes it report 12
+inverted quads. "All six directions appear" would have been the wrong test: a
+heightfield legitimately emits no downward faces.
+
+**Frame rate: 121 fps** at a 1290×846 backing store, drawing 186 chunk meshes
+and 51,387 faces — twice the 60 fps criterion, and the median frame of 8.3 ms
+is the display's refresh interval rather than the renderer's cost, so the
+budget is not the binding constraint at this view distance.
+
+Two measurement traps worth recording, because both produced numbers that
+looked like results:
+
+- **A backgrounded tab throttles `requestAnimationFrame` to nothing.** The
+  first reading was "1 fps" with a 14.6 s frame — not the world build, just
+  Chrome pausing the loop. Any fps figure has to be taken with the tab
+  focused.
+- **`python3 -m http.server` sends no `Cache-Control`,** so Chrome caches the
+  ES modules heuristically and a plain reload silently re-runs the *old*
+  build. A rebuild that changes nothing on screen is this until proven
+  otherwise; `fetch(url, {cache: "reload"})` per module forces the refresh.
 
 #### The bigint criterion is not met, and the fix was reverted
 
