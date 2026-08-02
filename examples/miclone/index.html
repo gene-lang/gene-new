@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>miclone — render spike</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #9ec2f0; }
+  #stage { display: block; width: 100vw; height: 100vh; cursor: grab; }
+  #stage:active { cursor: grabbing; }
+  #hud {
+    position: fixed; left: 12px; top: 10px;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #0d2338; background: rgba(255,255,255,.68);
+    padding: 5px 9px; border-radius: 5px; pointer-events: none;
+  }
+  #help {
+    position: fixed; left: 12px; bottom: 10px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #0d2338; background: rgba(255,255,255,.55);
+    padding: 5px 9px; border-radius: 5px; pointer-events: none;
+  }
+</style>
+<canvas id="stage"></canvas>
+<div id="hud">building world…</div>
+<div id="help">drag to look · W A S D to move · space / shift for up and down</div>
+<script type="module">
+  import { main } from "./dist/main.mjs";
+  main();
+</script>

@@ -1,0 +1,77 @@
+# The texture atlas, drawn at startup into an offscreen canvas.
+#
+# Procedural rather than a shipped PNG, and drawn with the 2D canvas bindings
+# rather than encoded: `texImage2D` accepts a canvas element directly, so the
+# atlas never has to become a file. That removes a PNG encoder, an asset to
+# fetch, and a load event from the spike — `examples/new_world` needed all three
+# and writes its own encoder to get them.
+#
+# The layout is `core/mesh.gene`'s 4x4 grid, and **tile order is the ABI**: the
+# `tile_for` mapping there indexes this positionally, so inserting a tile
+# renumbers every tile after it.
+
+(mod atlas ^profile web)
+
+(import [hash_unit2] from "../core/exact.gene")
+
+(let tile_px 16.0)
+(let atlas_px 64.0)
+
+# Per-texel variation from the same deterministic hash the world generator
+# uses, so the atlas is reproducible from its seed rather than from a file
+# nobody has the source for.
+(fn shade [base : F64 x : F64 y : F64 seed : F64 spread : F64] : F64
+  (var n (- (hash_unit2 x y seed) 0.5))
+  ($math/floor ($math/clamp (+ base (* n spread)) 0.0 255.0)))
+
+(fn paint_texel [ctx : Canvas2D x : F64 y : F64
+                 r : F64 g : F64 b : F64] : Nil
+  ($canvas/set_fill ctx $"rgb($($math/floor r),$($math/floor g),$($math/floor b))")
+  ($canvas/fill_rect ctx x y 1.0 1.0))
+
+# One tile at grid position (col, row), tinted from a base colour.
+(fn paint_tile [ctx : Canvas2D col : F64 row : F64
+                r : F64 g : F64 b : F64 spread : F64 seed : F64] : Nil
+  (var ox (* col tile_px))
+  (var oy (* row tile_px))
+  (var y 0.0)
+  (while (< y tile_px)
+    (var x 0.0)
+    (while (< x tile_px)
+      (paint_texel ctx (+ ox x) (+ oy y)
+                   (shade r x y seed spread)
+                   (shade g x y (+ seed 1.0) spread)
+                   (shade b x y (+ seed 2.0) spread))
+      (set x (+ x 1.0)))
+    (set y (+ y 1.0))))
+
+# Grass seen from the side: dirt with a band of grass over the top few texels,
+# with a ragged boundary so the two do not meet in a straight line.
+(fn paint_grass_side [ctx : Canvas2D col : F64 row : F64] : Nil
+  (var ox (* col tile_px))
+  (var oy (* row tile_px))
+  (var y 0.0)
+  (while (< y tile_px)
+    (var x 0.0)
+    (while (< x tile_px)
+      (var edge (+ 3.0 ($math/floor (* (hash_unit2 x 0.0 91.0) 2.5))))
+      (if (< y edge)
+        (then (paint_texel ctx (+ ox x) (+ oy y)
+                           (shade 96.0 x y 40.0 26.0)
+                           (shade 152.0 x y 41.0 26.0)
+                           (shade 72.0 x y 42.0 26.0)))
+        (else (paint_texel ctx (+ ox x) (+ oy y)
+                           (shade 134.0 x y 10.0 22.0)
+                           (shade 102.0 x y 11.0 22.0)
+                           (shade 72.0 x y 12.0 22.0))))
+      (set x (+ x 1.0)))
+    (set y (+ y 1.0))))
+
+# Tile order, matching `core/mesh.gene`'s `tile_for`:
+#   0 stone   1 dirt   2 grass top   3 grass side   4 sand
+(fn paint [ctx : Canvas2D] : Nil
+  (paint_tile ctx 0.0 0.0 128.0 128.0 132.0 30.0 20.0)   # stone
+  (paint_tile ctx 1.0 0.0 134.0 102.0 72.0 22.0 10.0)    # dirt
+  (paint_tile ctx 2.0 0.0 96.0 152.0 72.0 26.0 40.0)     # grass top
+  (paint_grass_side ctx 3.0 0.0)                          # grass side
+  (paint_tile ctx 0.0 1.0 214.0 200.0 152.0 18.0 60.0))  # sand

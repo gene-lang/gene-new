@@ -316,6 +316,74 @@ networking, no mods.
 | render calls too slow | per-call boundary cost | batch through typed arrays; fewer, larger draws |
 | the profile can't express it at all | the subset is too narrow for 3D | escalate to the wasm host-bridge path, which new_world's D3 costed and rejected for a 2D game and which a 3D game may justify |
 
+#### Result — meshing **PASS** with ~20x headroom; frame rate not yet measured
+
+Built as `core/mesh.gene` (face-culled meshing over an 18³ padded
+neighbourhood), `core/vec.gene`, `client/render.gene`, `client/atlas.gene`, and
+`client/main.gene`, with `tools/mesh_bench.mjs` as the headless harness.
+
+| | ms/chunk | ms/non-empty chunk |
+|---|---:|---:|
+| generate (16³ block, column-filled) | 0.087 | 0.094 |
+| mesh | 0.084 | 0.112 |
+| **total** | **0.172** | **0.206** |
+
+Worst single chunk **0.398 ms** against the 8 ms budget, over a 8×4×8 volume;
+90 of 256 chunks produce geometry, averaging 258 faces. The first version of
+this harness sampled only y 0–15 and reported 60 of 64 chunks empty — a chunk
+fully below the surface legitimately meshes to nothing, so a run confined to
+one slab measures almost nothing and reports a budget it never tested.
+
+Two things worth carrying forward:
+
+- **§D4's inversion, confirmed from the other side.** The same column-based
+  generator that projects to hundreds of milliseconds on the VM (§D6.3) runs in
+  **0.094 ms** on V8. Generation and meshing cost about the same on the client;
+  on the server, generation is three orders of magnitude worse.
+- **The 16³ block and run-free column fill are what made it fit**, which is
+  §D6.3's conclusion applied rather than restated.
+
+**The frame-rate half of §D6.1 is not yet measured** — it needs a browser, and
+the harness here is headless. The renderer compiles, emits ordinary WebGL2
+calls, and typechecks against `lib.dom.d.ts` under `--strict`; what has not
+happened is a run at 1280×720 against the 60 fps criterion.
+
+#### The bigint criterion is not met, and the fix was reverted
+
+§D6.1 requires no `bigint` on the meshing hot path. There is one: a
+`(Buffer U16)` read emits `BigInt(arr[i])`, because §D7.1 types integer-buffer
+elements as `Int` to match the VM. Measured at **6.4x** against a raw typed-array
+scan, and it happens once per neighbour test — roughly 28,000 times per chunk.
+
+The chosen fix was to elide the conversion in the compiler rather than diverge
+the two backends: mark `Int` values that are already exact JS numbers and let a
+comparison between two of them skip the conversion. That was implemented —
+buffer reads, local bindings, function returns, and parameters, propagated to a
+fixpoint over the call graph — and **reverted**, because it was not sound.
+
+Two failures, both from the numeric form escaping into a context expecting a
+bigint:
+
+- a parameter proven numeric at every call site was compared against a
+  module-level `let` constant, which is still emitted as `0n`. In JavaScript
+  `0 === 0n` is false, so `opaque?` answered "solid" for every node and the
+  mesher emitted **zero faces for every chunk**;
+- an exported function whose result was numeric returned a number into
+  `$gene_check_int`, which requires a bigint and throws.
+
+Both were caught immediately — the benchmark reports face counts, and mixing
+the two representations is loud in JavaScript rather than silent. That is the
+one encouraging part of the episode, and it is why the pass was attempted in
+that shape.
+
+The lesson is that this is a **representation change, not a use-site elision**:
+making a value numeric changes what its storage holds, so every consumer — every
+return site, call argument, binding, and validator — has to agree. The option
+was scoped as "conservative analysis" and is really "audit every emit site".
+It is worth doing and it is not worth doing half-way, so it is recorded in
+§D7.10 rather than shipped. Nothing is blocked meanwhile: meshing passes with
+20x margin *including* the conversion.
+
 ### D6.2 The divergence probe
 
 The cheapest of the three and the one that de-risks the most. Run the exact

@@ -106,6 +106,8 @@ const contract = [
   ["event/client_x", "MouseEvent", "clientX", "read"],
   ["event/client_y", "MouseEvent", "clientY", "read"],
   ["event/delta_y", "WheelEvent", "deltaY", "read"],
+  ["event/movement_x", "MouseEvent", "movementX", "read"],
+  ["event/movement_y", "MouseEvent", "movementY", "read"],
   ["frame/request", "Window", "requestAnimationFrame", "call", 1],
   ["time/now", "Performance", "now", "call", 0],
   ["storage/get", "Storage", "getItem", "call", 1],

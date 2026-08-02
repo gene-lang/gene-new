@@ -1808,7 +1808,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "event/code", "event/key":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkStr)
-      of "event/button", "event/client_x", "event/client_y", "event/delta_y":
+      of "event/button", "event/client_x", "event/client_y", "event/delta_y",
+         "event/movement_x", "event/movement_y":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkF64)
       of "frame/request":
@@ -3770,6 +3771,11 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "event/client_x": "$gene_event_num(" & arguments[0] & ", \"clientX\")"
     of "event/client_y": "$gene_event_num(" & arguments[0] & ", \"clientY\")"
     of "event/delta_y": "$gene_event_num(" & arguments[0] & ", \"deltaY\")"
+    # Pointer motion since the previous event, which is what a look control
+    # needs: absolute coordinates stop changing once the pointer is locked or
+    # reaches a screen edge, and a drag-look built on them sticks there.
+    of "event/movement_x": "$gene_event_num(" & arguments[0] & ", \"movementX\")"
+    of "event/movement_y": "$gene_event_num(" & arguments[0] & ", \"movementY\")"
     of "frame/request": "(requestAnimationFrame(" & arguments[0] & "), undefined)"
     of "time/now": "performance.now()"
     of "storage/get": "localStorage.getItem(" & arguments[0] & ")"
@@ -5640,7 +5646,8 @@ proc emitModule(module: WebModule, typescript: bool,
       " { const v = event?.[field]; if (typeof v !== \"string\") " &
       "throw new TypeError(`event has no string ${field}`); return v; }")
   if moduleUsesBuiltin(module, ["event/button", "event/client_x",
-                                "event/client_y", "event/delta_y"]):
+                                "event/client_y", "event/delta_y",
+                                "event/movement_x", "event/movement_y"]):
     let evParams = if typescript: "event: any, field: string" else: "event, field"
     let numReturn = if typescript: ": number" else: ""
     emitter.line("function $gene_event_num(" & evParams & ")" & numReturn &

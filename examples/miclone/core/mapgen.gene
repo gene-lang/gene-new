@@ -95,6 +95,45 @@
     (elif (< depth 4.0) n_dirt)
     (else n_stone)))
 
+# --- block-scale generation, for meshing --------------------------------------
+#
+# §D6.3 measured the 80³ generator below at 302 s/chunk on the VM and concluded
+# that the unit is wrong, not the terrain. This is the replacement shape: one
+# 16³ block at a time, filled **by column** so the expensive part — a `fbm2`
+# per column — runs 324 times instead of 512,000, and the per-node work is a
+# depth comparison and a store.
+#
+# It produces the 18³ padded neighbourhood `core/mesh.gene` needs rather than a
+# bare 16³ block, because a mesher that cannot see one node past its own edge
+# grows a wall of faces at every chunk border (§5). Generating the margin is
+# cheaper than fetching it from neighbours that may not exist yet, and for a
+# deterministic generator it is the same answer.
+
+(let pad_dim 18.0)
+(let pad_stride_y 18.0)
+(let pad_stride_z 324.0)
+(let pad_nodes 5832.0)
+
+(fn fill_padded [out : (Buffer U16) ox : F64 oy : F64 oz : F64
+                 seed : F64] : Nil
+  (var pz 0.0)
+  (while (< pz pad_dim)
+    (var wz (+ oz (- pz 1.0)))
+    (var px 0.0)
+    (while (< px pad_dim)
+      (var wx (+ ox (- px 1.0)))
+      # Hoisted out of the y loop: this is the only noise call in the function,
+      # and leaving it inside would multiply its count by 18.
+      (var surface (surface_height wx wz seed))
+      (var column (+ px (* pz pad_stride_z)))
+      (var py 0.0)
+      (while (< py pad_dim)
+        (out ~ set! (+ column (* py pad_stride_y))
+              (material (+ oy (- py 1.0)) surface))
+        (set py (+ py 1.0)))
+      (set px (+ px 1.0)))
+    (set pz (+ pz 1.0))))
+
 # --- the generator -----------------------------------------------------------
 #
 # Writes `chunk_nodes` ids into `out`, indexed `x + 80y + 6400z` — the same

@@ -1,0 +1,174 @@
+# design.md §D6.1 — the render spike.
+#
+# A fly-through of a static voxel world: generate a fixed grid of chunks, mesh
+# them, upload them, and draw. No game logic, no server, no networking, no
+# mods — those are M1 and later. The question this answers is only whether the
+# web profile can hold a 3D frame budget.
+#
+# Everything lives inside `main` because the profile rejects top-level `var`:
+# a module has no mutable state, so the frame loop is a closure over `main`'s
+# locals. `examples/new_world` is built the same way and for the same reason.
+
+(mod main ^profile web)
+
+(import [fill_padded] from "../core/mapgen.gene")
+(import [count_faces build_mesh] from "../core/mesh.gene")
+(import [build_program init_state upload_atlas upload_chunk begin_frame
+         set_view_projection draw_chunk]
+        from "./render.gene")
+(import [paint] from "./atlas.gene")
+(import [forward_x forward_y forward_z] from "../core/vec.gene")
+
+(let seed 1337.0)
+(let pad_nodes 5832.0)             # 18^3
+(let chunk_dim 16.0)
+
+# §D6.1's stated view: 12 x 4 x 12 chunks, 576 in all, ~2.4M nodes.
+(let span_x 12.0)
+(let span_y 4.0)
+(let span_z 12.0)
+
+(let move_speed 22.0)
+(let look_speed 0.0022)
+(let pitch_limit 1.5533)           # just under pi/2; see `forward_*`
+(let fog_far 260.0)
+
+(fn main [] : Nil
+  (var stage ($dom/element "stage"))
+  (var gl ($gl/context stage))
+  (var prog (build_program gl))
+  (init_state gl)
+
+  # The atlas is drawn into an offscreen canvas and handed straight to WebGL,
+  # so there is no image to fetch and no load event to wait for.
+  (var atlas_canvas ($dom/create_element "canvas"))
+  ($canvas/set_size atlas_canvas 64.0 64.0)
+  (paint ($canvas/context atlas_canvas))
+  (upload_atlas gl atlas_canvas)
+
+  # --- build the world -------------------------------------------------------
+  #
+  # One scratch neighbourhood, reused for every chunk: the padded buffer is
+  # only an input to meshing, so allocating 576 of them would be 6 MB of
+  # garbage for no reason.
+
+  (var padded ($buffer U16 pad_nodes))
+  (var meshes : (List Gl/VertexArray) [])
+  (var counts : (List F64) [])
+  (var faces_total 0.0)
+
+  (var cz 0.0)
+  (while (< cz span_z)
+    (var cy 0.0)
+    (while (< cy span_y)
+      (var cx 0.0)
+      (while (< cx span_x)
+        (var ox (* cx chunk_dim))
+        (var oy (* cy chunk_dim))
+        (var oz (* cz chunk_dim))
+        (fill_padded padded ox oy oz seed)
+        (var faces (count_faces padded))
+        # A chunk with no visible faces is fully interior or fully air. Most of
+        # a column is one or the other, so skipping them is most of the world.
+        (if_yes (> faces 0.0)
+          (var verts ($buffer F32 (* faces 24.0)))
+          (var idx ($buffer U32 (* faces 6.0)))
+          (build_mesh padded verts idx ox oy oz)
+          (meshes ~ push! (upload_chunk gl verts idx))
+          (counts ~ push! (* faces 6.0))
+          (set faces_total (+ faces_total faces)))
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0)))
+
+  ($console/log $"miclone spike: $(meshes ~ size) chunk meshes, ${faces_total} faces")
+
+  # --- camera ----------------------------------------------------------------
+
+  (var eye_x (* (/ span_x 2.0) chunk_dim))
+  (var eye_y 78.0)
+  (var eye_z (* (/ span_z 2.0) chunk_dim))
+  (var yaw 0.6)
+  (var pitch -0.25)
+  (var fwd 0.0)
+  (var strafe 0.0)
+  (var lift 0.0)
+  (var dragging false)
+
+  (var proj ($buffer F32 16.0))
+  (var view ($buffer F32 16.0))
+  (var vp ($buffer F32 16.0))
+
+  (var last_ms 0.0)
+  (var frames 0.0)
+  (var fps_since 0.0)
+
+  ($dom/add_event_listener ($dom/window) "keydown" (fn [ev : Any] : Void
+    (var k ($event/key ev))
+    (if_yes (== k "w") (set fwd 1.0))
+    (if_yes (== k "s") (set fwd -1.0))
+    (if_yes (== k "a") (set strafe -1.0))
+    (if_yes (== k "d") (set strafe 1.0))
+    (if_yes (== k " ") (set lift 1.0))
+    (if_yes (== k "Shift") (set lift -1.0))))
+
+  ($dom/add_event_listener ($dom/window) "keyup" (fn [ev : Any] : Void
+    (var k ($event/key ev))
+    (if_yes (|| (== k "w") (== k "s")) (set fwd 0.0))
+    (if_yes (|| (== k "a") (== k "d")) (set strafe 0.0))
+    (if_yes (|| (== k " ") (== k "Shift")) (set lift 0.0))))
+
+  ($dom/add_event_listener stage "mousedown" (fn [ev : Any] : Void
+    (set dragging true)))
+  ($dom/add_event_listener ($dom/window) "mouseup" (fn [ev : Any] : Void
+    (set dragging false)))
+  ($dom/add_event_listener ($dom/window) "mousemove" (fn [ev : Any] : Void
+    (if_yes dragging
+      (set yaw (+ yaw (* ($event/movement_x ev) look_speed)))
+      (set pitch ($math/clamp (- pitch (* ($event/movement_y ev) look_speed))
+                              (- 0.0 pitch_limit) pitch_limit)))))
+
+  # --- frame -----------------------------------------------------------------
+
+  # Declared before it is defined so the body can schedule itself. A nested
+  # `fn` declaration is not a form the profile has; a `var` holding a closure
+  # is, and the placeholder is what lets the real one refer to the binding.
+  (var frame : (Callback [F64] Void) (fn [now : F64] : Void void))
+  (set frame (fn [now : F64] : Void
+    (var dt (if (> last_ms 0.0) ($math/min 0.05 (/ (- now last_ms) 1000.0)) 0.0))
+    (set last_ms now)
+
+    (var dx (forward_x yaw pitch))
+    (var dy (forward_y yaw pitch))
+    (var dz (forward_z yaw pitch))
+    # Strafe is the horizontal perpendicular of the view direction, so looking
+    # up does not shorten sideways movement.
+    (var rx (forward_x (+ yaw 1.5708) 0.0))
+    (var rz (forward_z (+ yaw 1.5708) 0.0))
+    (var step (* move_speed dt))
+    (set eye_x (+ eye_x (* step (+ (* dx fwd) (* rx strafe)))))
+    (set eye_y (+ eye_y (* step (+ (* dy fwd) lift))))
+    (set eye_z (+ eye_z (* step (+ (* dz fwd) (* rz strafe)))))
+
+    (var w ($canvas/width stage))
+    (var h ($canvas/height stage))
+    (begin_frame gl prog w h)
+    (set_view_projection gl prog proj view vp w h
+                         eye_x eye_y eye_z dx dy dz fog_far)
+
+    (var i 0.0)
+    (while (< i (meshes ~ size))
+      (draw_chunk gl meshes/%i counts/%i)
+      (set i (+ i 1.0)))
+
+    # Frame rate over a one-second window, which is what §D6.1 measures.
+    (set frames (+ frames 1.0))
+    (if_yes (> (- now fps_since) 1000.0)
+      ($dom/set_text ($dom/element "hud")
+        $"$($math/round frames) fps · $(meshes ~ size) chunks · $($math/round faces_total) faces")
+      (set frames 0.0)
+      (set fps_since now))
+    ($frame/request frame)))
+
+  ($canvas/set_size stage ($dom/inner_width) ($dom/inner_height))
+  ($frame/request frame))

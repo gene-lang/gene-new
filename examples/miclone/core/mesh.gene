@@ -1,0 +1,208 @@
+# Face-culled chunk meshing — design.md §5.
+#
+# The hot loop of the whole engine (§D6.1, §D10), and the one piece that cannot
+# move off the runtime it runs on: the client meshes, and the client is V8.
+#
+# Input is an **18³ padded neighbourhood**, not a bare 16³ block. A face is
+# emitted when its neighbour is transparent, so the outermost layer of nodes
+# has to be readable or every chunk border would grow a wall of faces against
+# its neighbour (§5). The caller fills the padding; this module never looks
+# outside the buffer it is given.
+#
+# Output is written into caller-supplied buffers in the exact layout WebGL
+# wants, so there is no copy and no conversion between meshing and upload —
+# which is why `(Buffer T)` had to reach the web profile before this could be
+# written at all (§D7.1).
+
+(mod mesh ^profile web)
+
+# --- geometry constants ------------------------------------------------------
+
+(let chunk_dim 16.0)
+(let pad_dim 18.0)                 # chunk_dim + 2, one node of margin each side
+(let pad_stride_y 18.0)
+(let pad_stride_z 324.0)           # pad_dim * pad_dim
+
+# Position, texture coordinate, and a per-vertex light multiplier.
+(let floats_per_vertex 6.0)
+(let vertices_per_face 4.0)
+(let indices_per_face 6.0)
+
+# The atlas is a 4x4 grid of tiles, so a tile index maps to a corner by
+# `(tile mod 4, tile / 4)` scaled by the tile size. Keeping the grid square and
+# power-of-two means the shader needs no atlas metadata beyond this constant.
+(let atlas_cols 4.0)
+(let atlas_step 0.25)              # 1 / atlas_cols
+
+# Fixed directional shading, in place of §4's propagated light. The spike has no
+# light data and would be unreadable flat-lit: without some difference between
+# a top face and a side face, a voxel landscape reads as a silhouette. These are
+# the multipliers a real light value will scale once §4 exists.
+(let light_top 1.0)
+(let light_side_z 0.86)
+(let light_side_x 0.72)
+(let light_bottom 0.55)
+
+# --- node classification -----------------------------------------------------
+#
+# Ids are `Int` because §1 says a node's content is a `u16` (see
+# `core/mapgen.gene`); everything geometric below is `F64`.
+
+(let n_air 0)
+(let n_water 5)
+
+(fn opaque? [id : Int] : Bool
+  (&& (!= id n_air) (!= id n_water)))
+
+# Which atlas tile a node shows on a given face. Grass is the reason this takes
+# a face at all: its top is grass, its sides are a grass/dirt transition, and
+# its bottom is plain dirt.
+(fn tile_for [id : Int top : Bool bottom : Bool] : F64
+  (if (== id 1)
+    (then 0.0)                                   # stone
+    (elif (== id 2) 1.0)                         # dirt
+    (elif (== id 3)
+      (if top
+        (then 2.0)
+        (else (if bottom 1.0 3.0))))             # grass: top / dirt / side
+    (elif (== id 4) 4.0)                         # sand
+    (else 0.0)))
+
+# --- padded-neighbourhood access ---------------------------------------------
+#
+# Coordinates are chunk-local, 0..15; the padding is reached by the +1 offset
+# built into the index. A neighbour lookup at the chunk edge therefore reads
+# real data from the adjacent chunk rather than falling off the buffer.
+
+(fn pad_index [x : F64 y : F64 z : F64] : F64
+  (+ (+ x 1.0) (+ (* (+ y 1.0) pad_stride_y) (* (+ z 1.0) pad_stride_z))))
+
+(fn node_at [padded : (Buffer U16) x : F64 y : F64 z : F64] : Int
+  (padded ~ get (pad_index x y z)))
+
+# A face is drawn when the node is opaque and the neighbour it faces is not.
+(fn face_visible? [padded : (Buffer U16) x : F64 y : F64 z : F64] : Bool
+  (! (opaque? (node_at padded x y z))))
+
+# --- pass one: count ---------------------------------------------------------
+#
+# Two passes, so the caller can allocate exactly. The alternative — a
+# worst-case scratch buffer — is 2.4 MB per chunk and would need a way to
+# upload a sub-range, which is a binding that does not exist. Counting costs one
+# extra traversal of 4,096 nodes and buys exactly-sized buffers.
+
+(fn count_faces [padded : (Buffer U16)] : F64
+  (var faces 0.0)
+  (var z 0.0)
+  (while (< z chunk_dim)
+    (var y 0.0)
+    (while (< y chunk_dim)
+      (var x 0.0)
+      (while (< x chunk_dim)
+        (if_yes (opaque? (node_at padded x y z))
+          (if_yes (face_visible? padded (+ x 1.0) y z) (set faces (+ faces 1.0)))
+          (if_yes (face_visible? padded (- x 1.0) y z) (set faces (+ faces 1.0)))
+          (if_yes (face_visible? padded x (+ y 1.0) z) (set faces (+ faces 1.0)))
+          (if_yes (face_visible? padded x (- y 1.0) z) (set faces (+ faces 1.0)))
+          (if_yes (face_visible? padded x y (+ z 1.0)) (set faces (+ faces 1.0)))
+          (if_yes (face_visible? padded x y (- z 1.0)) (set faces (+ faces 1.0))))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  faces)
+
+# --- pass two: emit ----------------------------------------------------------
+
+# One vertex: position, atlas coordinate, light. `at` is a vertex index, not a
+# float offset, so callers never do the stride arithmetic themselves.
+(fn put_vertex [verts : (Buffer F32) at : F64
+                px : F64 py : F64 pz : F64
+                u : F64 v : F64 light : F64] : Nil
+  (var o (* at floats_per_vertex))
+  (verts ~ set! o px)
+  (verts ~ set! (+ o 1.0) py)
+  (verts ~ set! (+ o 2.0) pz)
+  (verts ~ set! (+ o 3.0) u)
+  (verts ~ set! (+ o 4.0) v)
+  (verts ~ set! (+ o 5.0) light))
+
+# Two triangles over the four corners just written, in the order that makes the
+# quad front-facing from outside. Winding is what `cull_face "back"` reads, so
+# getting it wrong makes a world you can only see from inside.
+(fn put_face_indices [idx : (Buffer U32) face : F64 base : F64] : Nil
+  (var o (* face indices_per_face))
+  (idx ~ set! o ($to_int base))
+  (idx ~ set! (+ o 1.0) ($to_int (+ base 1.0)))
+  (idx ~ set! (+ o 2.0) ($to_int (+ base 2.0)))
+  (idx ~ set! (+ o 3.0) ($to_int base))
+  (idx ~ set! (+ o 4.0) ($to_int (+ base 2.0)))
+  (idx ~ set! (+ o 5.0) ($to_int (+ base 3.0))))
+
+# Emit one quad. The four corners arrive already in winding order; this only
+# adds the atlas offset and the shared light value.
+(fn put_quad [verts : (Buffer F32) idx : (Buffer U32) face : F64 tile : F64
+              light : F64
+              ax : F64 ay : F64 az : F64  bx : F64 by : F64 bz : F64
+              cx : F64 cy : F64 cz : F64  dx : F64 dy : F64 dz : F64] : Nil
+  (var base (* face vertices_per_face))
+  (var col (- (/ tile atlas_cols) ($math/floor (/ tile atlas_cols))))
+  (var tu (* col atlas_cols))
+  (var u0 (* tu atlas_step))
+  (var v0 (* ($math/floor (/ tile atlas_cols)) atlas_step))
+  (var u1 (+ u0 atlas_step))
+  (var v1 (+ v0 atlas_step))
+  (put_vertex verts base ax ay az u0 v1 light)
+  (put_vertex verts (+ base 1.0) bx by bz u1 v1 light)
+  (put_vertex verts (+ base 2.0) cx cy cz u1 v0 light)
+  (put_vertex verts (+ base 3.0) dx dy dz u0 v0 light)
+  (put_face_indices idx face base))
+
+# Fill `verts` and `idx` from the padded neighbourhood, offset into world space
+# by the chunk's origin. Returns the face count, which is what the caller needs
+# for its draw call — index count is `faces * 6`.
+(fn build_mesh [padded : (Buffer U16) verts : (Buffer F32) idx : (Buffer U32)
+                ox : F64 oy : F64 oz : F64] : F64
+  (var face 0.0)
+  (var z 0.0)
+  (while (< z chunk_dim)
+    (var y 0.0)
+    (while (< y chunk_dim)
+      (var x 0.0)
+      (while (< x chunk_dim)
+        (var id (node_at padded x y z))
+        (if_yes (opaque? id)
+          (var wx (+ ox x))
+          (var wy (+ oy y))
+          (var wz (+ oz z))
+          (var x1 (+ wx 1.0))
+          (var y1 (+ wy 1.0))
+          (var z1 (+ wz 1.0))
+          (var side (tile_for id false false))
+          (if_yes (face_visible? padded (+ x 1.0) y z)
+            (put_quad verts idx face side light_side_x
+                      x1 wy z1  x1 wy wz  x1 y1 wz  x1 y1 z1)
+            (set face (+ face 1.0)))
+          (if_yes (face_visible? padded (- x 1.0) y z)
+            (put_quad verts idx face side light_side_x
+                      wx wy wz  wx wy z1  wx y1 z1  wx y1 wz)
+            (set face (+ face 1.0)))
+          (if_yes (face_visible? padded x (+ y 1.0) z)
+            (put_quad verts idx face (tile_for id true false) light_top
+                      wx y1 z1  x1 y1 z1  x1 y1 wz  wx y1 wz)
+            (set face (+ face 1.0)))
+          (if_yes (face_visible? padded x (- y 1.0) z)
+            (put_quad verts idx face (tile_for id false true) light_bottom
+                      wx wy wz  x1 wy wz  x1 wy z1  wx wy z1)
+            (set face (+ face 1.0)))
+          (if_yes (face_visible? padded x y (+ z 1.0))
+            (put_quad verts idx face side light_side_z
+                      x1 wy z1  wx wy z1  wx y1 z1  x1 y1 z1)
+            (set face (+ face 1.0)))
+          (if_yes (face_visible? padded x y (- z 1.0))
+            (put_quad verts idx face side light_side_z
+                      wx wy wz  x1 wy wz  x1 y1 wz  wx y1 wz)
+            (set face (+ face 1.0))))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  face)

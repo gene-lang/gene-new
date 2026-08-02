@@ -1,0 +1,157 @@
+# The WebGL2 renderer — design.md §6, at the scale §D6.1's spike needs.
+#
+# One program, one atlas, one draw call per chunk. No occlusion culling and no
+# greedy meshing: §5 says both stay out until something needs them, and the
+# point of the spike is to find out whether anything does.
+
+(mod render ^profile web)
+
+(import [mat4_identity mat4_perspective mat4_view mat4_multiply]
+        from "../core/vec.gene")
+
+# --- shaders -----------------------------------------------------------------
+#
+# Vertex layout matches `core/mesh.gene`'s `put_vertex`: position, atlas
+# coordinate, light. The light is a single interpolated float rather than a
+# colour, because §4's model is one value per vertex and the shader is what
+# turns it into shading.
+
+(fn vertex_source [] : Str
+  "#version 300 es
+precision highp float;
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec2 a_uv;
+layout(location = 2) in float a_light;
+uniform mat4 u_view_projection;
+out vec2 v_uv;
+out float v_light;
+out float v_depth;
+void main() {
+  vec4 clip = u_view_projection * vec4(a_position, 1.0);
+  gl_Position = clip;
+  v_uv = a_uv;
+  v_light = a_light;
+  v_depth = clip.w;
+}")
+
+(fn fragment_source [] : Str
+  "#version 300 es
+precision highp float;
+in vec2 v_uv;
+in float v_light;
+in float v_depth;
+uniform sampler2D u_atlas;
+uniform vec3 u_fog;
+uniform float u_fog_far;
+out vec4 frag_color;
+void main() {
+  vec4 texel = texture(u_atlas, v_uv);
+  vec3 lit = texel.rgb * v_light;
+  // Linear distance fog, so the loaded-region boundary fades instead of
+  // ending in mid-air.
+  float fog = clamp(v_depth / u_fog_far, 0.0, 1.0);
+  frag_color = vec4(mix(lit, u_fog, fog), 1.0);
+}")
+
+# --- program construction ----------------------------------------------------
+
+# Takes an already-created shader rather than a stage name, because a WebGL
+# enum argument must be a *literal* — that is what lets the compiler resolve it
+# to a constant and reject a typo (§D7.1). So the stage cannot be threaded
+# through a parameter, and `create_shader` stays at the call site. The trade is
+# deliberate and cheap: a shader stage is always statically known.
+(fn compile_stage [gl : Gl sh : Gl/Shader source : Str] : Gl/Shader
+  ($gl/shader_source gl sh source)
+  ($gl/compile_shader gl sh)
+  (if_not ($gl/shader_compiled? gl sh)
+    ($console/error ($gl/shader_log gl sh)))
+  sh)
+
+(fn build_program [gl : Gl] : Gl/Program
+  (var prog ($gl/create_program gl))
+  ($gl/attach_shader gl prog
+    (compile_stage gl ($gl/create_shader gl "vertex") (vertex_source)))
+  ($gl/attach_shader gl prog
+    (compile_stage gl ($gl/create_shader gl "fragment") (fragment_source)))
+  ($gl/link_program gl prog)
+  (if_not ($gl/program_linked? gl prog)
+    ($console/error ($gl/program_log gl prog)))
+  prog)
+
+(fn init_state [gl : Gl] : Nil
+  ($gl/enable gl "depth_test")
+  ($gl/depth_func gl "lequal")
+  ($gl/enable gl "cull_face")
+  ($gl/cull_face gl "back")
+  ($gl/clear_color gl 0.62 0.76 0.94 1.0))
+
+# --- texture -----------------------------------------------------------------
+#
+# Nearest filtering, and no mipmaps. A voxel atlas wants hard texel edges, and
+# mipmapping an atlas bleeds neighbouring tiles into each other at distance
+# unless every tile is padded — which §6 notes is an atlas-build decision, not
+# something to paper over in the sampler.
+
+(fn upload_atlas [gl : Gl image : EventTarget] : Gl/Texture
+  (var tex ($gl/create_texture gl))
+  ($gl/bind_texture gl "texture_2d" tex)
+  ($gl/tex_image_2d gl "texture_2d" image)
+  ($gl/tex_parameter gl "texture_2d" "min_filter" "nearest")
+  ($gl/tex_parameter gl "texture_2d" "mag_filter" "nearest")
+  ($gl/tex_parameter gl "texture_2d" "wrap_s" "clamp_to_edge")
+  ($gl/tex_parameter gl "texture_2d" "wrap_t" "clamp_to_edge")
+  tex)
+
+# --- chunk upload ------------------------------------------------------------
+#
+# A vertex array per chunk, holding its own buffers and attribute layout, so
+# drawing a chunk is one `bindVertexArray` and one `drawElements` rather than
+# five state calls per chunk per frame.
+
+(let stride 24.0)                  # 6 floats * 4 bytes
+
+(fn upload_chunk [gl : Gl verts : (Buffer F32) idx : (Buffer U32)]
+    : Gl/VertexArray
+  (var vao ($gl/create_vertex_array gl))
+  ($gl/bind_vertex_array gl vao)
+
+  (var vbo ($gl/create_buffer gl))
+  ($gl/bind_buffer gl "array" vbo)
+  ($gl/buffer_data gl "array" verts "static")
+  ($gl/enable_attrib gl 0.0)
+  ($gl/attrib_pointer gl 0.0 3.0 "f32" false stride 0.0)
+  ($gl/enable_attrib gl 1.0)
+  ($gl/attrib_pointer gl 1.0 2.0 "f32" false stride 12.0)
+  ($gl/enable_attrib gl 2.0)
+  ($gl/attrib_pointer gl 2.0 1.0 "f32" false stride 20.0)
+
+  (var ebo ($gl/create_buffer gl))
+  ($gl/bind_buffer gl "element_array" ebo)
+  ($gl/buffer_data gl "element_array" idx "static")
+  vao)
+
+# --- frame -------------------------------------------------------------------
+
+(fn set_view_projection [gl : Gl prog : Gl/Program
+                         proj : (Buffer F32) view : (Buffer F32)
+                         vp : (Buffer F32)
+                         width : F64 height : F64
+                         eye_x : F64 eye_y : F64 eye_z : F64
+                         dir_x : F64 dir_y : F64 dir_z : F64
+                         fog_far : F64] : Nil
+  (mat4_perspective proj 1.15 (/ width height) 0.1 fog_far)
+  (mat4_view view eye_x eye_y eye_z dir_x dir_y dir_z)
+  (mat4_multiply vp proj view)
+  ($gl/uniform_matrix4 gl ($gl/uniform_location gl prog "u_view_projection") vp)
+  ($gl/uniform_3f gl ($gl/uniform_location gl prog "u_fog") 0.62 0.76 0.94)
+  ($gl/uniform_f gl ($gl/uniform_location gl prog "u_fog_far") fog_far))
+
+(fn begin_frame [gl : Gl prog : Gl/Program width : F64 height : F64] : Nil
+  ($gl/viewport gl 0.0 0.0 width height)
+  ($gl/clear gl)
+  ($gl/use_program gl prog)
+  ($gl/uniform_i gl ($gl/uniform_location gl prog "u_atlas") 0.0))
+
+(fn draw_chunk [gl : Gl vao : Gl/VertexArray index_count : F64] : Nil
+  ($gl/bind_vertex_array gl vao)
+  ($gl/draw_elements gl "triangles" index_count "u32" 0.0))
