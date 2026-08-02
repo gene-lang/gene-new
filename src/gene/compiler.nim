@@ -93,6 +93,16 @@ type
     # childCompiler copies the set so a nested `var` shadows an outer `let`
     # without un-marking the outer.
     letNames: HashSet[string]
+    # Scalar `let` constants, for typed_native lowering. A numeric kernel names
+    # its magic numbers — `(let two32 4294967296.0)` — and a lowered body has
+    # no way to *read* a module binding, so without this every such function
+    # fell back to the interpreter for want of a constant the compiler already
+    # had in its hand.
+    #
+    # A name bound twice to different values is poisoned with `NIL` rather than
+    # resolved, so shadowing loses the optimization instead of substituting the
+    # wrong number.
+    aotConstants: Table[string, Value]
     # Every name this compiler has bound, slots or not. `localSlots` is empty
     # when a body compiles without slots, so it cannot answer "is this name a
     # binding?"; this set can. It is never pruned on scope exit, which biases
@@ -2787,7 +2797,17 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
   ## read. Unsupported operations are rejected instead of silently boxing.
   if expr.kind == vkSymbol:
     let repr = expr.aotBindingRepr(params, paramReprs, locals)
-    return resultRepr.aotReprAccepts(repr)
+    if repr.kind != arkNone:
+      return resultRepr.aotReprAccepts(repr)
+    ## Not a parameter or local — it may still be a scalar `let` constant, in
+    ## which case it lowers as the literal it was bound to. Parameters and
+    ## locals are checked first, so a binding always shadows a constant of the
+    ## same name.
+    let constValue = c.aotConstants.getOrDefault(expr.symVal, NIL)
+    if constValue.kind == vkNil:
+      return false
+    return c.isTypedNativeAotExpr(constValue, params, paramReprs, resultRepr,
+                                  ffiFns, locals)
   ## Scalar literals. The emitter has always rendered these; without the
   ## matching analysis case even `(+ x 1)` was rejected.
   if expr.kind == vkInt:
@@ -2801,8 +2821,16 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
     return resultRepr.kind == arkNativePtr and resultRepr.nullable
   if expr.kind == vkString:
     return resultRepr.kind == arkCStr
-  if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0 or
-      expr.head.kind != vkSymbol:
+  if expr.kind != vkNode or expr.props.len != 0 or expr.meta.len != 0:
+    return false
+  ## `$math/floor` and friends read as a *path* head, so this is tested before
+  ## the symbol-head guard below rather than alongside the other call forms.
+  if expr.head.aotMathBuiltinCName.len > 0 and expr.body.len == 1:
+    if resultRepr.kind != arkF64:
+      return false
+    return c.isTypedNativeAotExpr(expr.body[0], params, paramReprs, resultRepr,
+                                  ffiFns, locals)
+  if expr.head.kind != vkSymbol:
     return false
   ## Arithmetic, comparison and `if` lower to plain C operators and a ternary.
   ## The emitter has always handled them; analysis had no case, so a body that
@@ -2814,6 +2842,37 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
                                   ffiFns, locals) and
       c.isTypedNativeAotExpr(expr.body[1], params, paramReprs, resultRepr,
                              ffiFns, locals)
+  if expr.head.symVal == "/" and expr.body.len == 2:
+    ## Float division by a *statically non-zero literal*, and no other form.
+    ##
+    ## Gene's `/` raises `division by zero` for floats as well as integers
+    ## (`biDiv`), where C yields an infinity and says nothing. Lowering a
+    ## general division would therefore turn a catchable Gene error into a
+    ## silent `inf` propagating through the rest of the computation — and a
+    ## self-contained AOT function has no runtime ABI with which to raise.
+    ##
+    ## When the divisor is a non-zero literal the divergence cannot arise, so
+    ## the lowering is exact. That is not as narrow as it sounds: scaling by a
+    ## constant is what division in numeric kernels almost always is, and
+    ## `core/exact.gene`'s `wrap32` divides by 2^32.
+    if resultRepr.kind != arkF64:
+      return false
+    ## The divisor is resolved through the constant table first, because
+    ## `(/ v two32)` is how this is actually written — the literal is bound to a
+    ## name at the top of the module. Checking the syntactic operand alone would
+    ## accept the inlined form and reject the idiomatic one.
+    var divisor = expr.body[1]
+    if divisor.kind == vkSymbol:
+      var shadowed = divisor.symVal in params
+      for local in locals:
+        if local.name == divisor.symVal:
+          shadowed = true
+      if not shadowed:
+        divisor = c.aotConstants.getOrDefault(divisor.symVal, NIL)
+    if divisor.kind != vkFloat or divisor.floatVal == 0.0:
+      return false
+    return c.isTypedNativeAotExpr(expr.body[0], params, paramReprs, resultRepr,
+                                  ffiFns, locals)
   if expr.head.symVal in ["<", ">", "<=", ">=", "="] and expr.body.len == 2:
     ## A C comparison yields int, so the result must be I64; the operands may
     ## be either scalar repr as long as they agree.
@@ -2901,10 +2960,19 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
     if callee.params.len != expr.body.len or
         callee.aotParamReprs.len != expr.body.len:
       return false
+    ## Each argument is checked as an *expression* against the parameter's
+    ## representation, not required to be a bare binding.
+    ##
+    ## Requiring a binding meant a nested call could never be an argument, so
+    ## `(mix32 (wrap32 seed))` was unlowerable and every composed numeric
+    ## kernel — which is what these functions are — fell back to the
+    ## interpreter. The FFI branch below had already been given the same
+    ## treatment for literals; this is the direct-call half of it. The emitter
+    ## has always recursed through arguments, so only the analysis was
+    ## narrower than the code it guards.
     for i, arg in expr.body:
-      let argRepr = arg.aotBindingRepr(params, paramReprs, locals)
-      if argRepr.kind == arkNone or
-          not callee.aotParamReprs[i].aotReprAccepts(argRepr):
+      if not c.isTypedNativeAotExpr(arg, params, paramReprs,
+                                    callee.aotParamReprs[i], ffiFns, locals):
         return false
     return resultRepr.aotReprAccepts(callee.aotReturnRepr)
   for ffiFn in ffiFns:
@@ -2958,8 +3026,19 @@ proc isTypedNativeAotStatement(c: Compiler, statement: Value,
   if statement.kind != vkNode or statement.head.kind != vkSymbol:
     return false
   if statement.head.isSymbol("let") or statement.head.isSymbol("var"):
-    if statement.body.len != 4 or statement.body[0].kind != vkSymbol or
-        not statement.body[1].isSymbol(":"):
+    ## Two shapes: `(var x : T init)` states the representation, and
+    ## `(var x init)` infers it from the initializer.
+    ##
+    ## Inference matters more than it looks. Requiring the annotation meant
+    ## every loop counter had to be written `(var i : F64 0.0)` to be
+    ## lowerable, which no Gene anywhere else is written like — so in practice
+    ## no ordinary function lowered, and the restriction read as "loops are not
+    ## supported" rather than "loops need an annotation nobody writes".
+    let annotated = statement.body.len == 4 and
+      statement.body[1].isSymbol(":")
+    if not annotated and statement.body.len != 2:
+      return false
+    if statement.body[0].kind != vkSymbol:
       return false
     let name = statement.body[0].symVal
     if name in params:
@@ -2967,11 +3046,30 @@ proc isTypedNativeAotStatement(c: Compiler, statement: Value,
     for local in locals:
       if local.name == name:
         return false
-    let localRepr = c.resolvedAotRepr(statement.body[2])
-    if localRepr.kind == arkNone or
-        not c.isTypedNativeAotExpr(statement.body[3], params, paramReprs,
-                                   localRepr, ffiFns, locals):
-      return false
+    let initExpr = if annotated: statement.body[3] else: statement.body[1]
+    var localRepr =
+      if annotated: c.resolvedAotRepr(statement.body[2]) else: AotRepr()
+    if annotated:
+      if localRepr.kind == arkNone or
+          not c.isTypedNativeAotExpr(initExpr, params, paramReprs, localRepr,
+                                     ffiFns, locals):
+        return false
+    else:
+      ## Candidates are tried in a fixed order and the first that accepts the
+      ## initializer wins. The two are near-disjoint in practice — a float
+      ## literal only checks as `F64` and an integer literal only as `I64` — so
+      ## this resolves rather than guesses. An initializer that fits neither is
+      ## simply not lowerable, which is the pre-existing answer.
+      var inferred = false
+      for candidate in [AotRepr(kind: arkF64, typeName: "F64"),
+                        AotRepr(kind: arkI64, typeName: "I64")]:
+        if c.isTypedNativeAotExpr(initExpr, params, paramReprs, candidate,
+                                  ffiFns, locals):
+          localRepr = candidate
+          inferred = true
+          break
+      if not inferred:
+        return false
     locals.add AotLocal(name: name, repr: localRepr,
                         mutable: statement.head.isSymbol("var"))
     return true
@@ -3151,6 +3249,41 @@ proc isAotValueExpr(expr: Value, params: openArray[string], typeName: string,
     false
   else:
     false
+
+proc substituteAotConstants(c: Compiler, expr: Value,
+                            params: openArray[string],
+                            locals: openArray[AotLocal]): Value =
+  ## Inline scalar `let` constants into a body that analysis has already
+  ## accepted, so the stored `aotExpr` is self-contained.
+  ##
+  ## Doing it here rather than in the emitter keeps the emitter free of any
+  ## notion of module scope: by the time C is generated, a constant is
+  ## indistinguishable from a literal the author wrote out. A name that is a
+  ## parameter or any of the function's locals is never substituted, so a
+  ## binding always wins over a constant of the same name — the same precedence
+  ## the analysis used to accept the body.
+  if expr.kind == vkSymbol:
+    for param in params:
+      if expr.symVal == param:
+        return expr
+    for local in locals:
+      if local.name == expr.symVal:
+        return expr
+    let constValue = c.aotConstants.getOrDefault(expr.symVal, NIL)
+    if constValue.kind in {vkInt, vkFloat}:
+      return constValue
+    return expr
+  if expr.kind != vkNode:
+    return expr
+  var body: seq[Value]
+  for item in expr.body:
+    body.add c.substituteAotConstants(item, params, locals)
+  var props = initPropTable()
+  for key, item in expr.props:
+    props[key] = c.substituteAotConstants(item, params, locals)
+  newNode(c.substituteAotConstants(expr.head, params, locals),
+          props = props, body = body, meta = expr.meta,
+          immutable = expr.nodeImmutable)
 
 proc detectAotExpr(c: Compiler, name: string, specs: ParamSpecs,
                    body: openArray[Value],
@@ -3372,10 +3505,40 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
           "function in dynamic Gene")
       aotLocals.setLen(0)
     else:
-      aotExpr = lowerBody
+      aotExpr = c.substituteAotConstants(lowerBody, specs.positional, aotLocals)
   else:
-    aotExpr = c.detectAotExpr(name, specs, body, start, returnType,
-                              typeParams, checksErrors, fnCompiler.sawYield)
+    ## Scalar functions get the statement lowering too.
+    ##
+    ## Until now the richer analysis was reachable only through
+    ## `hasNativeRepr`, so a function that touched a native pointer could
+    ## declare locals and run a `while` loop while a pure-`F64` numeric kernel
+    ## — the shape most worth compiling — was restricted to
+    ## `detectAotExpr`'s single expression over `+ - *`, `if`, and calls. That
+    ## is backwards: nothing about locals or loops depends on a pointer being
+    ## in the signature.
+    ##
+    ## It is attempted first and falls back to `detectAotExpr`, so this can
+    ## only widen what lowers. Anything the statement analysis rejects still
+    ## gets exactly the answer it got before.
+    let scalarLowerable = allAotParamsRepresentable and
+      aotReturnRepr.kind in {arkI64, arkF64} and
+      aotParamReprs.len == specs.positional.len and
+      typeParams.len == 0 and not checksErrors and not fnCompiler.sawYield and
+      specs.rest.len == 0 and specs.named.len == 0 and
+      not specs.hasOptionalPositional
+    if scalarLowerable and start < body.len:
+      let lowerBody =
+        if body.len == start + 1: body[start]
+        else: newNode(newSym("do"), body = body[start .. ^1])
+      var scalarLocals: seq[AotLocal]
+      if c.isTypedNativeAotExpr(lowerBody, specs.positional, aotParamReprs,
+                                aotReturnRepr, c.chunk.ffiFns, scalarLocals):
+        aotExpr = c.substituteAotConstants(lowerBody, specs.positional,
+                                           scalarLocals)
+        aotLocals = scalarLocals
+    if aotExpr.kind == vkNil:
+      aotExpr = c.detectAotExpr(name, specs, body, start, returnType,
+                                typeParams, checksErrors, fnCompiler.sawYield)
   if aotExpr.kind != vkNil and not hasNativeRepr:
     # The original scalar AOT path is representation-homogeneous.
     for i in 0 ..< aotParamReprs.len:
@@ -3767,6 +3930,21 @@ proc compileVar(c: var Compiler, node: Value, immutable = false) =
     # name is a compile error; a `var` un-marks a name an outer scope froze.
     if immutable: c.letNames.incl body[0].symVal
     else: c.letNames.excl body[0].symVal
+    # Remember scalar `let` values so typed_native lowering can substitute
+    # them. A `var`, or a second `let` with a different value, poisons the name
+    # — the entry stays but resolves to nothing, so an ambiguous constant costs
+    # the optimization rather than producing a wrong one.
+    let constName = body[0].symVal
+    let constValue =
+      if immutable and body.len > valueIndex and
+          body[valueIndex].kind in {vkInt, vkFloat}:
+        body[valueIndex]
+      else: NIL
+    if c.aotConstants.hasKey(constName) and
+        not equal(c.aotConstants[constName], constValue):
+      c.aotConstants[constName] = NIL
+    else:
+      c.aotConstants[constName] = constValue
     if typed:
       c.recordLocalType(body[0].symVal, body[2])
       c.emitDeclareType(body[0].symVal, body[2])

@@ -1532,6 +1532,35 @@ proc emitAotCSend(expr: Value, params: openArray[string],
                   available: Table[string, AotCFunction],
                   locals: openArray[AotLocal]): tuple[found: bool, code: string]
 
+proc aotMathBuiltinCName*(head: Value): string =
+  ## The `<math.h>` function a `$math/...` head lowers to, or "" for anything
+  ## outside the exact-match set.
+  ##
+  ## `$math/floor` reads as `((path gene math floor) v)`, so the head is a path
+  ## node rather than a symbol — which is why the callers have to test this
+  ## before their `head.kind == vkSymbol` guards rather than inside them.
+  ##
+  ## Membership is decided by semantic identity with Gene, not by availability
+  ## in C. `floor`, `ceil`, `trunc`, and `abs` agree with the VM over their
+  ## whole domain. `sqrt`, `log`, `log2`, `log10`, `asin`, and `acos` are
+  ## deliberately absent: Gene raises on their domain violations and C returns
+  ## NaN, so lowering them would replace a catchable error with a value that
+  ## quietly poisons everything downstream.
+  if head.kind != vkNode or head.body.len != 3 or
+      head.head.kind != vkSymbol or head.head.symVal != "path":
+    return ""
+  for i, segment in ["gene", "math"]:
+    if head.body[i].kind != vkSymbol or head.body[i].symVal != segment:
+      return ""
+  if head.body[2].kind != vkSymbol:
+    return ""
+  case head.body[2].symVal
+  of "floor": "floor"
+  of "ceil": "ceil"
+  of "trunc": "trunc"
+  of "abs": "fabs"
+  else: ""
+
 proc emitAotCExpr(expr: Value, params: openArray[string],
                   paramReprs: openArray[AotRepr],
                   available: Table[string, AotCFunction],
@@ -1552,11 +1581,17 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
     ## A C string literal has static lifetime, so it is always safe to pass.
     cStringLiteral(expr.strVal)
   of vkNode:
+    let mathFn = aotMathBuiltinCName(expr.head)
+    if mathFn.len > 0 and expr.body.len == 1:
+      return mathFn & "(" &
+        emitAotCExpr(expr.body[0], params, paramReprs, available, locals) & ")"
+    if expr.head.kind != vkSymbol:
+      return aotLoweringGap(expr, "call head is not a lowerable name")
     let head = expr.head.symVal
     let send = emitAotCSend(expr, params, paramReprs, available, locals)
     if send.found:
       return send.code
-    if head in ["+", "-", "*"] and expr.body.len == 2:
+    if head in ["+", "-", "*", "/"] and expr.body.len == 2:
       "(" & emitAotCExpr(expr.body[0], params, paramReprs, available, locals) &
         " " & head & " " & emitAotCExpr(expr.body[1], params, paramReprs,
                                            available, locals) & ")"
@@ -1699,8 +1734,16 @@ proc emitAotCStatement(lines: var seq[string], statement: Value,
     if localType.len == 0:
       discard aotLoweringGap(statement,
         "local " & name & " has no resolved machine representation")
+    ## `(var x : T init)` carries the annotation; `(var x init)` had its
+    ## representation inferred during analysis and recorded on `aotLocals`, so
+    ## only the initializer's position differs here.
+    let initExpr =
+      if statement.body.len == 4 and statement.body[1].kind == vkSymbol and
+          statement.body[1].symVal == ":":
+        statement.body[3]
+      else: statement.body[1]
     lines.add indent & localType & " " & cIdent(name, "local") & " = " &
-      emitAotCExpr(statement.body[3], fn.params, fn.aotParamReprs,
+      emitAotCExpr(initExpr, fn.params, fn.aotParamReprs,
                    available, fn.aotLocals) & ";"
   elif statement.kind == vkNode and statement.head.kind == vkSymbol and
       statement.head.symVal == "set" and
@@ -2928,6 +2971,29 @@ proc emitExperimentalC*(chunk: Chunk): string =
     "#include <stdbool.h>",
     "#include <stddef.h>",
     "#include <stdint.h>",
+    # Unconditional rather than emitted only when a `$math/...` call lowered.
+    # Deciding that would mean walking every function's body a second time to
+    # answer a question whose wrong answer is a link error, and `<math.h>`
+    # declares functions without defining anything — an unused include costs a
+    # header parse. Callers still need `-lm` where the platform separates it.
+    "#include <math.h>",
+    "",
+    "/* Gene evaluates every floating-point operation separately, so the",
+    " * compiled form has to as well. C compilers may contract `a * b + c` into",
+    " * a fused multiply-add by default (Clang's -ffp-contract=on), which",
+    " * rounds once instead of twice: more accurate, and a different number.",
+    " *",
+    " * That is not a tolerable difference. A lowered function is supposed to",
+    " * be the same function -- a deterministic world generator compiled this",
+    " * way would produce different terrain from the interpreter, and a shared",
+    " * fixture would start failing with no bug to find. Measured on",
+    " * examples/miclone's noise kernels: 405 of 4000 values differed with",
+    " * contraction on, and none with it off.",
+    " *",
+    " * The pragma is standard C99 and Clang honours it. GCC's support is",
+    " * incomplete, so builds there should also pass -ffp-contract=off rather",
+    " * than rely on this alone. */",
+    "#pragma STDC FP_CONTRACT OFF",
     "typedef struct GeneContext GeneContext;",
     "typedef struct GeneCall GeneCall;",
     "typedef struct GeneValue GeneValue;",

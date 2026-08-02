@@ -7520,6 +7520,51 @@ suite "cli — gene parse/fmt/compile":
     check "GeneStatus gene_ffi_strlen" in ran.output
     check "Panic:" notin ran.output
 
+  test "compile target c lowers scalar kernels with locals, loops, and math":
+    # The shape numeric Gene is actually written in: a module `let` constant, a
+    # `$math/...` call, division by that constant, un-annotated locals, a
+    # `while` loop, and a nested call as an argument. Every one of these used to
+    # push a function back to the interpreter, and together they meant no
+    # ordinary numeric kernel lowered at all.
+    let path = writeCliProgram("compile_c_kernel.gene",
+      "(let two32 4294967296.0)\n" &
+      "(fn wrap32 [v : F64] : F64\n" &
+      "  (- v (* ($math/floor (/ v two32)) two32)))\n" &
+      "(fn mix32 [h : F64] : F64 (wrap32 (+ (* h 1664525.0) 1013904223.0)))\n" &
+      "(fn drive [n : F64] : F64\n" &
+      "  (var acc 0.0)\n" &
+      "  (var i 0.0)\n" &
+      "  (while (< i n)\n" &
+      "    (set acc (+ acc (mix32 (wrap32 i))))\n" &
+      "    (set i (+ i 1.0)))\n" &
+      "  acc)\n" &
+      "(fn main [] (panic \"compile c should not run\"))")
+    let ran = runGene(["compile", "--target", "c", path])
+    check ran.exitCode == 0
+    # The module constant is inlined, so the emitted C never names it.
+    check "floor((v / 4294967296.0))" in ran.output
+    check "two32" notin ran.output
+    # Un-annotated locals get their representation inferred.
+    check "double acc = 0.0;" in ran.output
+    check "while ((i < n))" in ran.output
+    # A nested call as a call argument.
+    check "gene_native_mix32(gene_native_wrap32(i))" in ran.output
+    # Gene rounds every float operation separately, so the compiled form must
+    # not be allowed to contract a multiply-add into an FMA.
+    check "#pragma STDC FP_CONTRACT OFF" in ran.output
+    check "Panic:" notin ran.output
+
+  test "compile target c refuses division by a non-constant divisor":
+    # Gene raises on division by zero; C yields an infinity and says nothing.
+    # A lowered function has no way to raise, so only a provably non-zero
+    # divisor may lower — otherwise the function stays interpreted.
+    let path = writeCliProgram("compile_c_divzero.gene",
+      "(fn ratio [a : F64 b : F64] : F64 (/ a b))\n" &
+      "(fn main [] nil)")
+    let ran = runGene(["compile", "--target", "c", path])
+    check ran.exitCode == 0
+    check "gene_native_ratio" notin ran.output
+
   test "compile rejects reserved native targets explicitly":
     let path = writeCliProgram("compile_reserved_target.gene",
       "(fn main [] nil)")

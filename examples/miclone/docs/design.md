@@ -607,10 +607,62 @@ scan went from *not completing* to 61 ms. Guarded now by
 
 *What it does not do.* 227 s against a 300 ms budget is still **757x**. That
 was the expected shape — an incremental VM pass cannot close three orders of
-magnitude, and §D6.3's conclusion about chunk granularity stands unchanged.
-`vm.typed_f64_call` and `vm.typed_f64_call7` now guard the win, because every
-pre-existing typed benchmark annotates `Int` and so could not have seen this
-regress.
+magnitude. `vm.typed_f64_call` and `vm.typed_f64_call7` now guard the win,
+because every pre-existing typed benchmark annotates `Int` and so could not
+have seen this regress.
+
+**11. The AOT lowerable subset. Landed, and it is the answer §D7.10 is not.**
+
+The interpreter was the wrong thing to optimise. `core/exact.gene` and
+`core/noise.gene` are fully annotated `F64` with no dynamism at all — the exact
+case ahead-of-time compilation exists for, and one where a JIT would have
+nothing to speculate about. `gene compile --target c` and `aot/load` already
+existed; what did not was a lowerable subset wide enough to accept the code.
+
+Measured before: of all of `exact.gene`, exactly one function (`f64_sign`)
+lowered. The subset was straight-line arithmetic over `+ - *`, `if`, and calls
+whose arguments were bare bindings — and functions that failed it were
+**silently omitted** rather than reported. Six changes:
+
+| | why it blocked the kernels |
+|---|---|
+| scalar functions get the statement lowering | locals and `while` were reachable only through `hasNativeRepr`, so a pointer in the signature bought loops that pure numeric code could not have |
+| local type inference | `(var i : F64 0.0)` was required, which no Gene is written like |
+| `/` by a provably non-zero divisor | `wrap32` divides by 2^32 |
+| `$math/floor`/`ceil`/`trunc`/`abs` | every lattice-noise function floors |
+| module `let` constants, inlined | a kernel names its magic numbers |
+| nested calls as call arguments | `(mix32 (wrap32 seed))` — i.e. composition |
+
+Now the whole hash and lattice-noise stack lowers. **`value3`: 1,088 µs
+interpreted → 1.99 µs compiled, 547x.** `hash_unit3`: 55x. The remaining ~2 µs
+is the dynamic entry adapter, not the arithmetic — the boundary is now the cost,
+which is a much better problem to have.
+
+**A correctness finding came with it, and it matters more than the speed.**
+The first compiled build disagreed with the interpreter on **405 of 4,000**
+values. The cause was not a lowering bug: Clang defaults to
+`-ffp-contract=on` and had contracted `a*b + c` into a fused multiply-add,
+rounding once where Gene rounds twice. More accurate, and a different number —
+which for §D3.1's exact half means a compiled server and an interpreted client
+generate different worlds. The backend now emits `#pragma STDC FP_CONTRACT OFF`
+itself, so faithfulness does not depend on the caller passing a flag, and the
+same 4,000 comparisons come back **zero**.
+
+*Still open, and both are now the binding constraints rather than the subset:*
+
+- **Cross-module AOT calls.** `localAotFunction` sees only the current
+  compilation unit, so `noise.gene` calling `exact.gene` does not lower —
+  the kernels must share a module until the callee manifest
+  `jit-pipeline.md` §6 describes exists.
+- **`(/ sum norm)` by a computed divisor**, which is what `fbm2`/`fbm3` end in,
+  so those stay interpreted while everything they call is compiled. Lowering
+  them needs a way for compiled code to raise, which is the runtime ABI.
+
+Projected against §D6.3: `cave?` at 3 compiled `value3` calls is ~7 µs against
+438 µs, so a 16³ block (4,096 nodes) generates in ~29 ms and a 32³ chunk in
+~230 ms. **The chunk-granularity conclusion above still holds — an 80³ chunk
+does not fit — but the margin is now comfortable rather than absent, and it is
+AOT that bought it, not the interpreter work.**
 
 ## D8. Delivery phases
 
