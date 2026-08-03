@@ -1717,6 +1717,17 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           "url/decode_component", "html/escape", "html/attr_escape":
         paramTypes = @[webType(wtkStr)]
         returnType = webType(wtkStr)
+      of "str/to_utf8":
+        # The same name the VM's `str` namespace has, and that is the point:
+        # a module compiled for both backends puts a string on a wire without
+        # knowing which side it is on. `binary/from_str` does this on the VM,
+        # but `Bytes` has no counterpart here, so the portable pair speaks
+        # `(Buffer U8)`.
+        paramTypes = @[webType(wtkStr)]
+        returnType = WebType(kind: wtkBuffer, name: "U8")
+      of "str/from_utf8":
+        paramTypes = @[WebType(kind: wtkBuffer, name: "U8")]
+        returnType = webType(wtkStr)
       of "str/starts_with?", "str/ends_with?", "str/contains?":
         paramTypes = @[webType(wtkStr), webType(wtkStr)]
         returnType = webType(wtkBool)
@@ -3772,6 +3783,8 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "str/starts_with?": arguments[0] & ".startsWith(" & arguments[1] & ")"
     of "str/ends_with?": arguments[0] & ".endsWith(" & arguments[1] & ")"
     of "str/contains?": arguments[0] & ".includes(" & arguments[1] & ")"
+    of "str/to_utf8": "$gene_str_to_utf8(" & arguments[0] & ")"
+    of "str/from_utf8": "$gene_str_from_utf8(" & arguments[0] & ")"
     of "url/encode_component": "encodeURIComponent(" & arguments[0] & ")"
     of "url/decode_component": "decodeURIComponent(" & arguments[0] & ")"
     of "html/escape", "html/attr_escape":
@@ -5765,6 +5778,24 @@ proc emitModule(module: WebModule, typescript: bool,
       " { const image = new Image(); image.onload = () => onLoad(image); " &
       "image.onerror = () => { throw new Error(`image/load failed: ${src}`); }; " &
       "image.src = src; }")
+  # --- portable UTF-8 ---
+  #
+  # One encoder and one decoder, constructed once at module scope rather than
+  # per call: both are stateless for these uses and constructing a TextDecoder
+  # per message showed up as the second-largest allocation in a protocol that
+  # decodes a name per registry entry.
+  if moduleUsesBuiltin(module, ["str/to_utf8"]):
+    let toParams = if typescript: "s: string" else: "s"
+    let bufReturn = if typescript: ": Uint8Array" else: ""
+    emitter.line("const $gene_utf8_encoder = new TextEncoder();")
+    emitter.line("function $gene_str_to_utf8(" & toParams & ")" & bufReturn &
+      " { return $gene_utf8_encoder.encode(s); }")
+  if moduleUsesBuiltin(module, ["str/from_utf8"]):
+    let fromParams = if typescript: "bytes: Uint8Array" else: "bytes"
+    let strReturn = if typescript: ": string" else: ""
+    emitter.line("const $gene_utf8_decoder = new TextDecoder();")
+    emitter.line("function $gene_str_from_utf8(" & fromParams & ")" &
+      strReturn & " { return $gene_utf8_decoder.decode(bytes); }")
   # --- WebSocket ---
   #
   # A socket travels as an `EventTarget`, so each helper casts. The cast is the

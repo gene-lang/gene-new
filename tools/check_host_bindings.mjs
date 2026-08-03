@@ -114,6 +114,11 @@ const contract = [
   ["storage/set", "Storage", "setItem", "call", 2],
   ["image/load (src)", "HTMLImageElement", "src", "assign"],
   ["image/load (onload)", "HTMLImageElement", "onload", "assign"],
+  // portable UTF-8 — the same two names exist in the VM's `str` namespace, so
+  // a module compiled for both backends encodes a string without knowing which
+  // side it is on.
+  ["str/to_utf8", "TextEncoder", "encode", "call", 1],
+  ["str/from_utf8", "TextDecoder", "decode", "call", 1],
   // WebSocket — the client half of the transport whose server half is
   // http/ws_accept on the VM side. `binaryType` is the entry that matters most
   // here: its default is "blob", whose bytes are only reachable through a

@@ -21,6 +21,8 @@
     (application "physics_spec" ^entry "probes/run_physics_spec.gene")
     # design.md §7 and §7.1 — node selection, and what one edit invalidates.
     (application "edit_spec" ^entry "probes/run_edit_spec.gene")
+    # design.md §10 — the wire codec both backends encode messages through.
+    (application "wire_spec" ^entry "probes/run_wire_spec.gene")
     # design.md §2 and §7.1 — stacks, and what a dug node yields.
     (application "inventory_spec" ^entry "probes/run_inventory_spec.gene")
     # design.md §D8's M4 deliverable, run twice: `create` then `verify`.

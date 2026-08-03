@@ -1,0 +1,213 @@
+# The wire codec — design.md §10.
+#
+# A cursor over a `(Buffer U8)`, with the reads and writes a protocol message
+# needs. One module, both backends: the server encodes on the VM and the client
+# decodes in the browser, and §D3's whole point is that they cannot disagree
+# because there is only one of them.
+#
+# ## Why not `$binary`, which already exists
+#
+# Because it exists on one side only. `$binary` is a VM namespace; the web
+# profile has no `Bytes` at all (`server/blockfmt.gene` says so in its header,
+# and it is why that file is `server/` rather than `core/`). A codec written
+# against it would have to be written twice, and two implementations of one
+# wire format is how a protocol acquires a version-skew bug that reproduces on
+# nobody's machine.
+#
+# `(Buffer U8)` is what both have. The VM converts at the socket boundary and
+# nowhere else — `(buf ~ to_bytes)` on the way out, `($binary/to_buffer bytes)`
+# on the way in — which is two calls per message against a codec that runs
+# thousands of times inside one.
+#
+# ## Byte order is big-endian, and stated
+#
+# Network order, which is what every other wire format a reader is likely to
+# know uses, and — more usefully — the order in which a hex dump of a message
+# reads the same way as the numbers that produced it. The `binary/put_*` codecs
+# on the VM already write big-endian, so a message this builds and a blob
+# `server/blockfmt.gene` builds agree without a conversion between them.
+#
+# ## Elements are `Int`, and that is the one wart
+#
+# `(Buffer U8)` elements are `Int`-typed, and `Int` lowers to `bigint` in the
+# web profile — M2's largest performance finding (`core/world.gene` carries the
+# measurement). Every read here therefore costs a `BigInt` allocation.
+#
+# It is accepted here and nowhere else in `core/`, for a reason that does not
+# generalise: **this runs per message, not per node.** A block message is one
+# `decode_block` call that writes 4,096 nodes into an `F32` buffer, and the
+# per-node work on the other side of that call is float arithmetic. Making the
+# wire float-typed would mean a `(Buffer F32)` of byte values — four bytes of
+# memory and four bytes of socket for every one byte of payload — which trades a
+# real 4x on the wire against a cost paid a few hundred times a second.
+#
+# The number to watch is `read_u8` in the run-length loop of a block decode.
+# If a block decode ever shows up in a frame profile, that loop is where to
+# look first, and the fix is to widen the run reader rather than to change the
+# buffer's type.
+
+(mod wire ^profile web)
+
+# --- the cursor --------------------------------------------------------------
+#
+# Position lives in a one-cell `(Buffer F64)` beside the bytes rather than being
+# returned and threaded through every call. Threading it means every reader
+# returns a pair, and neither backend has a cheap pair — the profile's tuples
+# are objects and the VM's are heap values, so a message with two hundred reads
+# in it would allocate two hundred times.
+#
+# `F64` for the position even though it indexes a byte buffer: it is an index,
+# and §D7.1 made buffer indices `F64` on both backends precisely so that
+# indexing never allocates a bigint.
+
+(let c_pos 0.0)
+(let c_cells 1.0)
+
+(fn new_cursor [] : (Buffer F64)
+  ($buffer F64 c_cells))
+
+(fn cursor_at [c : (Buffer F64)] : F64
+  (c ~ get c_pos))
+
+(fn seek [c : (Buffer F64) at : F64] : Nil
+  (c ~ set! c_pos at))
+
+(fn reset [c : (Buffer F64)] : Nil
+  (c ~ set! c_pos 0.0))
+
+# How many bytes are left. A decoder loops on this rather than on a count it
+# was told, so a truncated message stops instead of reading past the end — the
+# buffer would answer `undefined` for an out-of-range index in the web profile,
+# with no error, which is the failure mode this exists to prevent.
+(fn remaining [c : (Buffer F64) b : (Buffer U8)] : F64
+  (- (byte_len b) (c ~ get c_pos)))
+
+(fn exhausted? [c : (Buffer F64) b : (Buffer U8)] : Bool
+  (>= (c ~ get c_pos) (byte_len b)))
+
+# **`Buffer/len` does not have the same type on both backends**, and this is the
+# wrapper that hides it. The VM answers an `Int`; the web profile's underlying
+# `.length` is a `number`, which is `F64`. Arithmetic coerces on both, so using
+# a length as an *operand* — `(- (b ~ len) x)` — works either way. Using it as a
+# *value* does not, and fails on whichever backend you did not try.
+#
+# **`$to_float` cannot fix it**, which is the part worth knowing. On the VM it
+# accepts "Int or Float" and is total on numbers; the web profile deliberately
+# rejects a value already of the target kind — its comment says a no-op
+# conversion "would compile here and mean something else on the VM". So
+# `($to_float (b ~ len))` fails on the *web*, and the bare form fails on the
+# *VM*, and there is no single spelling of the conversion that works.
+#
+# `(+ 0.0 …)` is the spelling that does: mixed arithmetic promotes to Float on
+# the VM and is a no-op on a JavaScript number. Recorded in design.md §D7.12 as
+# a real inconsistency rather than left as folklore in one file — the fix is for
+# `Buffer/len` to answer the same type on both sides, and this wrapper is what
+# an example may do meanwhile.
+(fn byte_len [b : (Buffer U8)] : F64
+  (+ 0.0 (b ~ len)))
+
+# --- reading -----------------------------------------------------------------
+#
+# `$to_float` on every read is what keeps a `bigint` from escaping into the
+# caller's arithmetic. Without it the value would be an `Int`, and every
+# expression it touched downstream would be bigint arithmetic — which is the
+# mechanism behind M2's 9x, not merely the read cost.
+
+(fn read_u8 [c : (Buffer F64) b : (Buffer U8)] : F64
+  (var at (c ~ get c_pos))
+  (c ~ set! c_pos (+ at 1.0))
+  ($to_float (b ~ get at)))
+
+(fn read_u16 [c : (Buffer F64) b : (Buffer U8)] : F64
+  (var at (c ~ get c_pos))
+  (c ~ set! c_pos (+ at 2.0))
+  (+ (* ($to_float (b ~ get at)) 256.0)
+     ($to_float (b ~ get (+ at 1.0)))))
+
+(fn read_u32 [c : (Buffer F64) b : (Buffer U8)] : F64
+  (var at (c ~ get c_pos))
+  (c ~ set! c_pos (+ at 4.0))
+  (+ (* ($to_float (b ~ get at)) 16777216.0)
+     (+ (* ($to_float (b ~ get (+ at 1.0))) 65536.0)
+        (+ (* ($to_float (b ~ get (+ at 2.0))) 256.0)
+           ($to_float (b ~ get (+ at 3.0)))))))
+
+# A signed 32-bit value, for a world coordinate — §1's limit is ±31,000 nodes,
+# which fits, and a block coordinate fits far more easily. Two's complement,
+# computed rather than masked because the profile has no `$bit`.
+(fn read_i32 [c : (Buffer F64) b : (Buffer U8)] : F64
+  (var raw (read_u32 c b))
+  (if (>= raw 2147483648.0) (- raw 4294967296.0) raw))
+
+# --- writing -----------------------------------------------------------------
+#
+# A writer grows nothing: the caller sizes the buffer and the cursor walks it.
+# That is the same contract as every other stage here (§4's queue, §5's vertex
+# buffers) and for the same reason — a growable buffer would reallocate inside
+# the loop that fills it.
+#
+# `$to_int` on every write is the mirror of `$to_float` on every read, and is
+# where the one unavoidable bigint conversion per byte happens.
+
+(fn write_u8 [c : (Buffer F64) b : (Buffer U8) v : F64] : Nil
+  (var at (c ~ get c_pos))
+  (b ~ set! at ($to_int v))
+  (c ~ set! c_pos (+ at 1.0)))
+
+(fn write_u16 [c : (Buffer F64) b : (Buffer U8) v : F64] : Nil
+  (var hi ($math/floor (/ v 256.0)))
+  (write_u8 c b hi)
+  (write_u8 c b (- v (* hi 256.0))))
+
+(fn write_u32 [c : (Buffer F64) b : (Buffer U8) v : F64] : Nil
+  (var b3 ($math/floor (/ v 16777216.0)))
+  (var r3 (- v (* b3 16777216.0)))
+  (var b2 ($math/floor (/ r3 65536.0)))
+  (var r2 (- r3 (* b2 65536.0)))
+  (var b1 ($math/floor (/ r2 256.0)))
+  (write_u8 c b b3)
+  (write_u8 c b b2)
+  (write_u8 c b b1)
+  (write_u8 c b (- r2 (* b1 256.0))))
+
+(fn write_i32 [c : (Buffer F64) b : (Buffer U8) v : F64] : Nil
+  (write_u32 c b (if (< v 0.0) (+ v 4294967296.0) v)))
+
+# --- strings -----------------------------------------------------------------
+#
+# A length-prefixed UTF-8 string, through `str/to_utf8` and `str/from_utf8` —
+# the one pair of names that means the same thing on both backends. The VM
+# widens its already-UTF-8 bytes into a buffer; the profile calls
+# `TextEncoder`/`TextDecoder`. Neither side hand-rolls an encoder, which is
+# what a codec written twice would have had to do.
+#
+# The length prefix is bytes, not characters, because that is what the reader
+# has to advance by. For §2's node names — `miclone:stone` and the like — the
+# two are the same number, but a chat message (§10) is exactly where they stop
+# being, and a decoder that advanced by characters would desynchronise the
+# whole stream rather than mangling one field.
+
+(fn write_str [c : (Buffer F64) b : (Buffer U8) s : Str] : Nil
+  (var encoded ($str/to_utf8 s))
+  (var n (byte_len encoded))
+  (write_u16 c b n)
+  (var i 0.0)
+  (while (< i n)
+    (write_u8 c b ($to_float (encoded ~ get i)))
+    (set i (+ i 1.0))))
+
+(fn read_str [c : (Buffer F64) b : (Buffer U8)] : Str
+  (var n (read_u16 c b))
+  (var slice ($buffer U8 n))
+  (var i 0.0)
+  (while (< i n)
+    (slice ~ set! i ($to_int (read_u8 c b)))
+    (set i (+ i 1.0)))
+  ($str/from_utf8 slice))
+
+# The bytes a string will occupy, so a caller can size a buffer before filling
+# it. Two for the length prefix plus the encoded length — which is *not* the
+# character count, and is why this asks the encoder rather than doing
+# arithmetic on the string.
+(fn str_size [s : Str] : F64
+  (+ 2.0 (byte_len ($str/to_utf8 s))))

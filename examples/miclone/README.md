@@ -79,6 +79,7 @@ core/       portable Gene — compiles for the VM and the web profile
   light.gene    sunlight and light sources, packed into param1 (§4)
   mesh.gene     face-culled meshing (§5)
   loaded.gene   the client's loaded world: one array, one shell (§1.1)
+  wire.gene     the byte codec both backends encode messages through (§10)
   physics.gene  the player box against the voxel grid (§7)
   raycast.gene  Amanatides-Woo node selection (§7)
   edit.gene     one node changes, and what that invalidates (§7.1)
@@ -104,7 +105,7 @@ cd examples/miclone
 for m in core/exact core/noise core/field core/world core/registry \
          core/biome core/cave core/ore core/content core/mapgen \
          core/light core/mesh core/loaded core/physics core/raycast \
-         core/edit core/inventory core/drops core/vec \
+         core/edit core/inventory core/drops core/wire core/vec \
          client/atlas client/render client/main; do
   gene build --target web $m.gene --out-dir dist
 done
@@ -187,6 +188,7 @@ gene run loaded_spec | diff - <(node tools/loaded_spec.mjs)   # §1.1, §4.2
 gene run physics_spec | diff - <(node tools/physics_spec.mjs) # §7
 gene run edit_spec   | diff - <(node tools/edit_spec.mjs)     # §7, §7.1
 gene run inventory_spec | diff - <(node tools/inventory_spec.mjs)  # §2, §7.1
+gene run wire_spec   | diff - <(node tools/wire_spec.mjs)     # §10
 ```
 
 ### §11 — persistence

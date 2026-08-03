@@ -1,0 +1,21 @@
+# The VM shell for the wire codec spec.
+#
+#   gene run wire_spec
+#
+# Pair with `node tools/wire_spec.mjs` and diff. This is the module with the
+# most to lose from a backend disagreement: every other `core/` module produces
+# a result the two sides compare, and this produces the bytes they compare
+# results *through*. A difference here decodes to plausible garbage rather than
+# to an error.
+
+(mod run_wire_spec)
+
+(import [report failures] from "./wire_spec.gene")
+
+(fn main [args] : Nil
+  ($println (report))
+  (var bad (failures))
+  ($println "")
+  (if (== bad 0.0)
+    (then ($println "PASS — every check agrees"))
+    (else ($println $"FAIL — ${bad} check(s) failed"))))

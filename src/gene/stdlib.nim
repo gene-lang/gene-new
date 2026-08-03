@@ -775,6 +775,44 @@ proc biStrByteSize(args: openArray[Value]): Value {.nimcall.} =
   requireStr("str/byte_size", args[0])
   newInt(args[0].strVal.len)
 
+# --- portable UTF-8 -----------------------------------------------------------
+#
+# `str/to_utf8` and `str/from_utf8` exist under the same names in the web
+# profile, which is the whole point of them: a module compiled for both
+# backends can put a string on a wire without knowing which side it is on.
+# `binary/from_str` already does this on the VM, but `Bytes` has no counterpart
+# in the profile, so the portable pair speaks `(Buffer U8)` instead.
+#
+# Gene strings are already UTF-8 internally, so the VM side is a widening of
+# each byte into a buffer cell rather than an encode.
+
+proc biStrToUtf8(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("str/to_utf8", args)
+  requireStr("str/to_utf8", args[0])
+  let raw = args[0].strVal
+  var items = newSeq[Value](raw.len)
+  for i in 0 ..< raw.len:
+    items[i] = newInt(int(byte(raw[i])))
+  newBuffer(newSym("U8"), items)
+
+proc biStrFromUtf8(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("str/from_utf8", args)
+  if args[0].kind != vkBuffer:
+    raise newException(GeneError,
+      "str/from_utf8 expects a (Buffer U8), got " & $args[0].kind)
+  let items = args[0].bufferItems
+  var raw = newString(items.len)
+  for i, item in items:
+    if item.kind != vkInt:
+      raise newException(GeneError,
+        "str/from_utf8 element " & $i & " is not an Int")
+    let v = item.intVal
+    if v < 0 or v > 255:
+      raise newException(GeneError,
+        "str/from_utf8 element " & $i & " out of range 0..255: " & $v)
+    raw[i] = char(byte(v))
+  newStr(raw)
+
 proc biStrSliceBytes(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
@@ -9546,6 +9584,8 @@ proc registerStdlibNamespaces(root: Scope) =
   strScope.define("lower", newNativeFn("str/lower", biStrLower))
   strScope.define("byte_size", newNativeFn("str/byte_size", biStrByteSize))
   strScope.define("slice_bytes", newNativeFn("str/slice_bytes", biStrSliceBytes))
+  strScope.define("to_utf8", newNativeFn("str/to_utf8", biStrToUtf8))
+  strScope.define("from_utf8", newNativeFn("str/from_utf8", biStrFromUtf8))
   strScope.define("starts_with?", newNativeFn("str/starts_with?",
                                               biStrStartsWith))
   strScope.define("ends_with?", newNativeFn("str/ends_with?", biStrEndsWith))

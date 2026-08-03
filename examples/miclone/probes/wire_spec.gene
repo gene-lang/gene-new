@@ -1,0 +1,278 @@
+# Cross-backend spec for the wire codec — design.md §10 and §14 layers 1 and 2.
+#
+# This is the module with the most to lose from a backend disagreement. Every
+# other `core/` module produces a *result* the two sides compare; this produces
+# the bytes they compare results through. If the VM writes a `u32` one way and
+# the browser reads it another, nothing else in the system can be trusted, and
+# the symptom is a message that decodes to plausible garbage rather than an
+# error.
+#
+# So the assertions are mostly properties, and the useful ones are:
+#
+#   * **write-then-read is the identity**, over the boundary values of every
+#     width — 0, 1, the halfway point, the maximum, and for signed values the
+#     two's-complement edges. A codec that is wrong about byte order is still
+#     self-consistent, so this catches a width bug but not an endianness one.
+#   * **the bytes are the exact bytes**, checked against hand-written
+#     big-endian expansions. That is the endianness assertion, and it is the
+#     one that has to be a table of values rather than a property: a property
+#     can only compare the codec to itself.
+#   * **the cursor advances by exactly the width written**, which is what makes
+#     a message with many fields in it decode in step rather than drifting.
+
+(mod wire_spec ^profile web)
+
+(import [new_cursor cursor_at seek reset remaining exhausted?
+         read_u8 read_u16 read_u32 read_i32
+         write_u8 write_u16 write_u32 write_i32
+         write_str read_str str_size]
+        from "../core/wire.gene")
+
+# --- reporting ---------------------------------------------------------------
+
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out ~ push! $"ok   ${label}"))
+    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label $"$($to_int got)" $"$($to_int want)"))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
+
+# The buffer's contents as a decimal byte list, for the endianness checks.
+(fn dump [b : (Buffer U8) n : F64] : Str
+  (var out "")
+  (var i 0.0)
+  (while (< i n)
+    (set out $"${out}$(b ~ get i)")
+    (if_yes (< i (- n 1.0)) (set out $"${out} "))
+    (set i (+ i 1.0)))
+  out)
+
+# --- the cursor --------------------------------------------------------------
+
+(fn cursor_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 16.0))
+  (check_f out "a fresh cursor is at zero" (cursor_at c) 0.0)
+  (check_f out "and the whole buffer remains" (remaining c b) 16.0)
+  (check_b out "and it is not exhausted" (exhausted? c b) false)
+
+  # Each width advances by exactly itself. A field that advanced by the wrong
+  # amount would decode every *subsequent* field wrongly, which is why this is
+  # asserted per width rather than only at the end.
+  (write_u8 c b 1.0)
+  (check_f out "u8 advances one byte" (cursor_at c) 1.0)
+  (write_u16 c b 1.0)
+  (check_f out "u16 advances two" (cursor_at c) 3.0)
+  (write_u32 c b 1.0)
+  (check_f out "u32 advances four" (cursor_at c) 7.0)
+  (write_i32 c b -1.0)
+  (check_f out "i32 advances four" (cursor_at c) 11.0)
+  (check_f out "and the remainder shrank to match" (remaining c b) 5.0)
+
+  (reset c)
+  (check_f out "reset returns to zero" (cursor_at c) 0.0)
+  (seek c 9.0)
+  (check_f out "seek moves where it is told" (cursor_at c) 9.0)
+  (seek c 16.0)
+  (check_b out "a cursor at the end is exhausted" (exhausted? c b) true)
+  (check_f out "with nothing remaining" (remaining c b) 0.0))
+
+# --- byte order --------------------------------------------------------------
+#
+# The table of values, and the only assertion in the file a property could not
+# make: a codec that is internally consistent about a wrong byte order passes
+# every round trip and fails here.
+
+(fn order_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 16.0))
+
+  (write_u16 c b 4660.0)                   # 0x1234
+  (check out "u16 is big-endian" (dump b 2.0) "18 52")
+
+  (reset c)
+  (write_u32 c b 305419896.0)              # 0x12345678
+  (check out "u32 is big-endian" (dump b 4.0) "18 52 86 120")
+
+  # A negative i32 is two's complement, most significant byte first.
+  (reset c)
+  (write_i32 c b -2.0)                     # 0xfffffffe
+  (check out "i32 is two's complement, big-endian"
+         (dump b 4.0) "255 255 255 254")
+
+  # And a world coordinate, since that is what i32 actually carries here.
+  # -1440 is 0xfffffa60.
+  (reset c)
+  (write_i32 c b -1440.0)
+  (check out "a negative world coordinate" (dump b 4.0) "255 255 250 96"))
+
+# --- round trips over the boundary values ------------------------------------
+#
+# Every width, at every value where an off-by-one in a shift or a sign test
+# would show. The middle of a range is the one place a width bug hides, so
+# these are the edges plus one interior value that is not symmetric.
+
+(fn roundtrip_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 8.0))
+
+  (check_f out "u8 0" (through_u8 c b 0.0) 0.0)
+  (check_f out "u8 1" (through_u8 c b 1.0) 1.0)
+  (check_f out "u8 127" (through_u8 c b 127.0) 127.0)
+  (check_f out "u8 128" (through_u8 c b 128.0) 128.0)
+  (check_f out "u8 255" (through_u8 c b 255.0) 255.0)
+
+  (check_f out "u16 0" (through_u16 c b 0.0) 0.0)
+  (check_f out "u16 255" (through_u16 c b 255.0) 255.0)
+  (check_f out "u16 256" (through_u16 c b 256.0) 256.0)
+  (check_f out "u16 32767" (through_u16 c b 32767.0) 32767.0)
+  (check_f out "u16 32768" (through_u16 c b 32768.0) 32768.0)
+  (check_f out "u16 65535" (through_u16 c b 65535.0) 65535.0)
+
+  (check_f out "u32 0" (through_u32 c b 0.0) 0.0)
+  (check_f out "u32 65535" (through_u32 c b 65535.0) 65535.0)
+  (check_f out "u32 65536" (through_u32 c b 65536.0) 65536.0)
+  # The sign boundary: a u32 read that reused the i32 path would return a
+  # negative number here.
+  (check_f out "u32 2147483647" (through_u32 c b 2147483647.0) 2147483647.0)
+  (check_f out "u32 2147483648" (through_u32 c b 2147483648.0) 2147483648.0)
+  (check_f out "u32 4294967295" (through_u32 c b 4294967295.0) 4294967295.0)
+
+  (check_f out "i32 0" (through_i32 c b 0.0) 0.0)
+  (check_f out "i32 1" (through_i32 c b 1.0) 1.0)
+  (check_f out "i32 -1" (through_i32 c b -1.0) -1.0)
+  (check_f out "i32 2147483647" (through_i32 c b 2147483647.0) 2147483647.0)
+  (check_f out "i32 -2147483648" (through_i32 c b -2147483648.0) -2147483648.0)
+  # §1's world limit, which is what this width exists to carry.
+  (check_f out "i32 31000" (through_i32 c b 31000.0) 31000.0)
+  (check_f out "i32 -31000" (through_i32 c b -31000.0) -31000.0))
+
+(fn through_u8 [c : (Buffer F64) b : (Buffer U8) v : F64] : F64
+  (reset c)
+  (write_u8 c b v)
+  (reset c)
+  (read_u8 c b))
+
+(fn through_u16 [c : (Buffer F64) b : (Buffer U8) v : F64] : F64
+  (reset c)
+  (write_u16 c b v)
+  (reset c)
+  (read_u16 c b))
+
+(fn through_u32 [c : (Buffer F64) b : (Buffer U8) v : F64] : F64
+  (reset c)
+  (write_u32 c b v)
+  (reset c)
+  (read_u32 c b))
+
+(fn through_i32 [c : (Buffer F64) b : (Buffer U8) v : F64] : F64
+  (reset c)
+  (write_i32 c b v)
+  (reset c)
+  (read_i32 c b))
+
+# --- a message with several fields -------------------------------------------
+#
+# The property that matters most in practice: fields written in an order read
+# back in the same order, with no drift between them. A width bug in any one
+# field corrupts every field after it, so this is the shape that catches what
+# the per-width checks would miss — a `write_u16` that advanced the cursor by
+# one passes its own round trip and fails this.
+
+(fn message_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 64.0))
+
+  (write_u8 c b 7.0)
+  (write_i32 c b -1440.0)
+  (write_i32 c b 3168.0)
+  (write_u16 c b 4096.0)
+  (write_u8 c b 255.0)
+  (write_u32 c b 123456789.0)
+  (var written (cursor_at c))
+
+  (reset c)
+  (check_f out "message: the tag" (read_u8 c b) 7.0)
+  (check_f out "message: a negative coordinate" (read_i32 c b) -1440.0)
+  (check_f out "message: a positive one" (read_i32 c b) 3168.0)
+  (check_f out "message: a node count" (read_u16 c b) 4096.0)
+  (check_f out "message: a byte" (read_u8 c b) 255.0)
+  (check_f out "message: a wide value" (read_u32 c b) 123456789.0)
+  (check_f out "message: the reader ended where the writer did"
+           (cursor_at c) written)
+  (check_f out "message: and that is the sum of the widths" written 16.0))
+
+# --- strings -----------------------------------------------------------------
+
+(fn string_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 256.0))
+
+  (check out "a node name round-trips" (through_str c b "miclone:stone")
+         "miclone:stone")
+  (check out "an empty string round-trips" (through_str c b "") "")
+  (check out "and one with punctuation"
+         (through_str c b "miclone:diamond_ore") "miclone:diamond_ore")
+
+  (check_f out "str_size counts the length prefix"
+           (str_size "abc") 5.0)
+  (check_f out "and an empty string is just the prefix" (str_size "") 2.0)
+
+  # The size a caller reserves must be the size actually written, or a buffer
+  # sized from `str_size` overflows on the last field of a message.
+  (reset c)
+  (write_str c b "miclone:sandstone")
+  (check_f out "str_size predicts what write_str writes"
+           (cursor_at c) (str_size "miclone:sandstone"))
+
+  # Multi-byte UTF-8: the length prefix is *bytes*, so a decoder that advanced
+  # by characters would desynchronise the stream rather than mangle one field.
+  # Not something M6's protocol carries — §2's names are ASCII — but §10's chat
+  # is exactly where it starts mattering.
+  (check out "a multi-byte character survives" (through_str c b "café") "café")
+  (check_f out "and its size is bytes, not characters" (str_size "café") 7.0)
+
+  # Two strings in a row, which is what a registry sync is: the second must
+  # start where the first ended.
+  (reset c)
+  (write_str c b "air")
+  (write_str c b "miclone:water")
+  (reset c)
+  (check out "two strings in sequence: the first" (read_str c b) "air")
+  (check out "and the second" (read_str c b) "miclone:water"))
+
+(fn through_str [c : (Buffer F64) b : (Buffer U8) s : Str] : Str
+  (reset c)
+  (write_str c b s)
+  (reset c)
+  (read_str c b))
+
+# --- the report --------------------------------------------------------------
+
+(fn collect [out : (List Str)] : Nil
+  (cursor_checks out)
+  (order_checks out)
+  (roundtrip_checks out)
+  (message_checks out)
+  (string_checks out))
+
+(fn report [] : Str
+  (var out : (List Str) [])
+  (collect out)
+  ($str/join out "\n"))
+
+(fn failures [] : F64
+  (var out : (List Str) [])
+  (collect out)
+  (var bad 0.0)
+  (var i 0.0)
+  (var n (out ~ size))
+  (while (< i n)
+    (if_yes ($str/starts_with? out/%i "FAIL")
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)

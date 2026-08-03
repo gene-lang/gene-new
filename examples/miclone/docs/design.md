@@ -946,6 +946,34 @@ Projected against §D6.3: `cave?` at 3 compiled `value3` calls is ~7 µs against
 does not fit — but the margin is now comfortable rather than absent, and it is
 AOT that bought it, not the interpreter work.**
 
+**12. `Buffer/len` answers a different type on each backend. Found by M6.
+Small, and open.**
+
+The VM returns an `Int`; the web profile's underlying `.length` is a `number`,
+which is `F64`. Arithmetic coerces on both, so using a length as an *operand*
+works either way and nothing noticed for four milestones. Using it as a *value*
+— passing it to an `F64` parameter — fails on whichever backend you did not
+try.
+
+**What makes it worth an entry rather than a shrug is that the obvious fix does
+not exist.** `$to_float` is total on numbers on the VM ("Int or Float") and
+deliberately partial in the profile, which rejects a value already of the target
+kind — its comment says a no-op conversion "would compile here and mean
+something else on the VM". So `($to_float (b ~ len))` fails on the *web*, the
+bare form fails on the *VM*, and **no single spelling of the conversion
+compiles for both**. That is a portability hole in the one operation whose
+entire purpose is to be portable.
+
+The workaround is `(+ 0.0 …)`: mixed arithmetic promotes to Float on the VM and
+is a no-op on a JavaScript number. `core/wire.gene` wraps it once as `byte_len`
+and says why, rather than spreading the idiom.
+
+The fix is for `Buffer/len` to answer the same type on both sides. `F64` is the
+right choice and matches §D7.1's reasoning for indices and lengths — an `Int`
+length is a `bigint` in the profile — but it is a VM-surface change with
+existing callers, so it wants doing deliberately rather than inside a game
+milestone.
+
 ## D8. Delivery phases
 
 Each milestone ends in something runnable. No milestone is "infrastructure
