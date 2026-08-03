@@ -1,0 +1,445 @@
+# Cross-backend spec for the loaded world — design.md §1, §5, and §14 layers 1
+# and 2.
+#
+# `core/loaded.gene` is addressing arithmetic and nothing else, which is the
+# kind of code that is either right everywhere or wrong everywhere and looks
+# plausible in both cases. A transposed stride still reads back what it wrote;
+# it just writes it somewhere else. So almost nothing here is a table of
+# expected values — the assertions are properties, in the shape M3's lighting
+# spec found worked:
+#
+#   * every node of the world has its own index, and the index is where the
+#     mesher's stride arithmetic says it is;
+#   * a stored block is at the coordinates `node_at` reports for it;
+#   * one step outside the world is `ignore` on five faces and `air` on the
+#     sixth, and a write out there changes nothing;
+#   * **daylight reaches the bottom of a shaft that crosses a block boundary**,
+#     which is the M3 limitation this module exists to remove and which no
+#     amount of per-block lighting can produce.
+#
+# Runs on the VM and through the web profile and must produce byte-identical
+# output, as every `core/` module's spec does (§14 layer 2).
+
+(mod loaded_spec ^profile web)
+
+(import [Registry new_registry register_uniform id_of registered_count
+         draw_normal]
+        from "../core/registry.gene")
+(import [content_air content_ignore] from "../core/world.gene")
+(import [World new_world store_block block_base open_sky node_at light_at
+         set_node set_light world_index inside? addressable?
+         world_dx world_dy world_dz world_stride_z world_nodes
+         world_min_x world_min_y world_min_z
+         world_span_x world_span_y world_span_z]
+        from "../core/loaded.gene")
+(import [chunk_base] from "../core/mesh.gene")
+(import [light_region queue_overhead day_of light_max]
+        from "../core/light.gene")
+
+# --- reporting ---------------------------------------------------------------
+
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out ~ push! $"ok   ${label}"))
+    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label $"$($to_int got)" $"$($to_int want)"))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
+
+# The world every check below builds unless it says otherwise: a small box off
+# the origin and off the axes, so a sign error or a forgotten origin cannot pass
+# by arithmetic accident. Blocks -3..-2 in x, 0..1 in y, 5..6 in z.
+(let test_bx -3.0)
+(let test_by 0.0)
+(let test_bz 5.0)
+(let test_span 2.0)
+(let block_dim 16.0)
+
+(fn test_world [] : World
+  (new_world test_bx test_by test_bz test_span test_span test_span))
+
+# --- shape -------------------------------------------------------------------
+#
+# The one table of expected values in the file, because these are the numbers
+# every other check is derived from and a property over them would be the
+# definition restated.
+
+(fn shape_checks [out : (List Str)] : Nil
+  (var w (test_world))
+  (check_f out "dx is the world plus a node of shell each side"
+           (world_dx w) 34.0)
+  (check_f out "dy likewise" (world_dy w) 34.0)
+  (check_f out "dz likewise" (world_dz w) 34.0)
+  (check_f out "the z stride is dx * dy" (world_stride_z w) 1156.0)
+  (check_f out "the array is dx * dy * dz" (world_nodes w) 39304.0)
+  (check_f out "the world's lowest x is its corner block's origin"
+           (world_min_x w) -48.0)
+  (check_f out "and its lowest y" (world_min_y w) 0.0)
+  (check_f out "and its lowest z" (world_min_z w) 80.0)
+  (check_f out "the span is kept in blocks" (world_span_x w) test_span)
+  (check_f out "on every axis"
+           (+ (world_span_y w) (world_span_z w)) (* 2.0 test_span)))
+
+# --- indexing ----------------------------------------------------------------
+#
+# The property: over the world proper, `world_index` is injective and lands
+# inside the array. Checked by writing a distinct value at every node through
+# `set_node` and reading it back through `node_at` — if two coordinates shared
+# an index, the second write would overwrite the first and the readback would
+# disagree.
+#
+# The distinct value is `1 + (x - minx) + span*16*((y - miny) + span*16*(z -
+# minz))`, offset by one so no node's marker is `air` and a node the loop never
+# reached reads as a mismatch rather than as a lucky zero.
+
+(fn index_checks [out : (List Str)] : Nil
+  (var w (test_world))
+  (var side (* test_span block_dim))
+  (var minx (world_min_x w))
+  (var miny (world_min_y w))
+  (var minz (world_min_z w))
+
+  (var wrong_write 0.0)
+  (var z 0.0)
+  (while (< z side)
+    (var y 0.0)
+    (while (< y side)
+      (var x 0.0)
+      (while (< x side)
+        (set_node w (+ minx x) (+ miny y) (+ minz z)
+                  (+ 1.0 (+ x (* side (+ y (* side z))))))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+
+  (set z 0.0)
+  (while (< z side)
+    (var y 0.0)
+    (while (< y side)
+      (var x 0.0)
+      (while (< x side)
+        (if_yes (!= (node_at w (+ minx x) (+ miny y) (+ minz z))
+                    (+ 1.0 (+ x (* side (+ y (* side z))))))
+          (set wrong_write (+ wrong_write 1.0)))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  (check_f out "every node keeps its own value, so no two share an index"
+           wrong_write 0.0)
+
+  # And the same for the light array, which is indexed by the same function and
+  # would be a second place for the arithmetic to drift.
+  (var wrong_light 0.0)
+  (set z 0.0)
+  (while (< z side)
+    (var x 0.0)
+    (while (< x side)
+      (set_light w (+ minx x) (+ miny 3.0) (+ minz z) (+ 1.0 (+ x (* side z))))
+      (set x (+ x 1.0)))
+    (set z (+ z 1.0)))
+  (set z 0.0)
+  (while (< z side)
+    (var x 0.0)
+    (while (< x side)
+      (if_yes (!= (light_at w (+ minx x) (+ miny 3.0) (+ minz z))
+                  (+ 1.0 (+ x (* side z))))
+        (set wrong_light (+ wrong_light 1.0)))
+      (set x (+ x 1.0)))
+    (set z (+ z 1.0)))
+  (check_f out "the light array indexes the same way as the node array"
+           wrong_light 0.0))
+
+# --- the mesher's addressing -------------------------------------------------
+#
+# `core/mesh.gene` never calls `world_index`. It takes a base index and two
+# strides and walks by `±1`, `±sy`, `±sz`, which is a second implementation of
+# the same addressing and therefore a second place to be wrong. This is the
+# check that says the two agree — over every node of every block, not over a
+# sample.
+
+(fn mesher_checks [out : (List Str)] : Nil
+  (var w (test_world))
+  (var sy (world_dx w))
+  (var sz (world_stride_z w))
+  (var minx (world_min_x w))
+  (var miny (world_min_y w))
+  (var minz (world_min_z w))
+
+  (var disagree 0.0)
+  (var cz 0.0)
+  (while (< cz test_span)
+    (var cy 0.0)
+    (while (< cy test_span)
+      (var cx 0.0)
+      (while (< cx test_span)
+        (var bx (+ test_bx cx))
+        (var by (+ test_by cy))
+        (var bz (+ test_bz cz))
+        (var base (block_base w bx by bz))
+        (var z 0.0)
+        (while (< z block_dim)
+          (var y 0.0)
+          (while (< y block_dim)
+            (var x 0.0)
+            (while (< x block_dim)
+              (if_yes (!= (+ base (+ x (+ (* y sy) (* z sz))))
+                          (world_index w (+ (* bx block_dim) x)
+                                         (+ (* by block_dim) y)
+                                         (+ (* bz block_dim) z)))
+                (set disagree (+ disagree 1.0)))
+              (set x (+ x 1.0)))
+            (set y (+ y 1.0)))
+          (set z (+ z 1.0)))
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0)))
+  (check_f out "the mesher's base and strides reach the same nodes as world_index"
+           disagree 0.0)
+
+  # And `block_base` is `chunk_base` over the same array coordinates, which is
+  # the one line that would let the two drift apart.
+  (check_f out "block_base is chunk_base in array coordinates"
+           (block_base w test_bx test_by test_bz)
+           (chunk_base 1.0 1.0 1.0 sy sz)))
+
+# --- storing a generated block -----------------------------------------------
+#
+# The property: after `store_block`, the node the world reports at a world
+# coordinate is the node the source buffer held at the matching block-local
+# coordinate. A stride transposed between the block's `x + 16y + 256z` and the
+# array's own order passes a round trip and fails this.
+
+(fn store_checks [out : (List Str)] : Nil
+  (var w (test_world))
+  (var src ($buffer F32 (* block_dim (* block_dim block_dim))))
+
+  (var cz 0.0)
+  (while (< cz test_span)
+    (var cy 0.0)
+    (while (< cy test_span)
+      (var cx 0.0)
+      (while (< cx test_span)
+        # A value that depends on all three block-local coordinates *and* on
+        # which block it is, so a block written to its neighbour's place is a
+        # mismatch rather than a coincidence.
+        (var tag (+ 1.0 (+ cx (* test_span (+ cy (* test_span cz))))))
+        (var z 0.0)
+        (while (< z block_dim)
+          (var y 0.0)
+          (while (< y block_dim)
+            (var x 0.0)
+            (while (< x block_dim)
+              (src ~ set! (+ x (+ (* y block_dim) (* z (* block_dim block_dim))))
+                    (+ (* 10000.0 tag) (+ x (* 16.0 (+ y (* 16.0 z))))))
+              (set x (+ x 1.0)))
+            (set y (+ y 1.0)))
+          (set z (+ z 1.0)))
+        (store_block w (+ test_bx cx) (+ test_by cy) (+ test_bz cz) src)
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0)))
+
+  (var wrong 0.0)
+  (set cz 0.0)
+  (while (< cz test_span)
+    (var cy 0.0)
+    (while (< cy test_span)
+      (var cx 0.0)
+      (while (< cx test_span)
+        (var tag (+ 1.0 (+ cx (* test_span (+ cy (* test_span cz))))))
+        (var ox (* (+ test_bx cx) block_dim))
+        (var oy (* (+ test_by cy) block_dim))
+        (var oz (* (+ test_bz cz) block_dim))
+        (var z 0.0)
+        (while (< z block_dim)
+          (var y 0.0)
+          (while (< y block_dim)
+            (var x 0.0)
+            (while (< x block_dim)
+              (if_yes (!= (node_at w (+ ox x) (+ oy y) (+ oz z))
+                          (+ (* 10000.0 tag) (+ x (* 16.0 (+ y (* 16.0 z))))))
+                (set wrong (+ wrong 1.0)))
+              (set x (+ x 1.0)))
+            (set y (+ y 1.0)))
+          (set z (+ z 1.0)))
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0)))
+  (check_f out "every stored node is where node_at says it is" wrong 0.0))
+
+# --- the shell ---------------------------------------------------------------
+
+(fn shell_checks [out : (List Str)] : Nil
+  (var w (test_world))
+  (var side (* test_span block_dim))
+  (var minx (world_min_x w))
+  (var miny (world_min_y w))
+  (var minz (world_min_z w))
+  (var maxx (+ minx (- side 1.0)))
+  (var maxy (+ miny (- side 1.0)))
+  (var maxz (+ minz (- side 1.0)))
+  (var mid_x (+ minx 8.0))
+  (var mid_y (+ miny 8.0))
+  (var mid_z (+ minz 8.0))
+
+  (check_f out "one node west of the world is ignore"
+           (node_at w (- minx 1.0) mid_y mid_z) content_ignore)
+  (check_f out "one node east" (node_at w (+ maxx 1.0) mid_y mid_z)
+           content_ignore)
+  (check_f out "one node below" (node_at w mid_x (- miny 1.0) mid_z)
+           content_ignore)
+  (check_f out "one node north" (node_at w mid_x mid_y (- minz 1.0))
+           content_ignore)
+  (check_f out "one node south" (node_at w mid_x mid_y (+ maxz 1.0))
+           content_ignore)
+  # The asymmetry, stated: the ceiling admits the sun.
+  (check_f out "one node above the world is air, so sunlight can enter"
+           (node_at w mid_x (+ maxy 1.0) mid_z) content_air)
+  # Including over the shell's own columns, which is what makes the boundary
+  # uniform rather than open over the interior and shut at the rim.
+  (check_f out "and the ceiling is air over the shell's columns too"
+           (node_at w (- minx 1.0) (+ maxy 1.0) (- minz 1.0)) content_air)
+
+  (check_f out "far outside the array reads ignore as well"
+           (node_at w (- minx 400.0) mid_y mid_z) content_ignore)
+  (check_f out "and has no light"
+           (light_at w (- minx 400.0) mid_y mid_z) 0.0)
+
+  (check_b out "a shell node is addressable"
+           (addressable? w (- minx 1.0) mid_y mid_z) true)
+  (check_b out "but is not inside the world"
+           (inside? w (- minx 1.0) mid_y mid_z) false)
+  (check_b out "a corner of the world proper is inside"
+           (inside? w minx miny minz) true)
+  (check_b out "and so is the opposite corner"
+           (inside? w maxx maxy maxz) true)
+  (check_b out "one past it is not" (inside? w (+ maxx 1.0) maxy maxz) false)
+
+  # A refused write changes nothing — not the target, and not the node the
+  # arithmetic would have landed on had the guard been missing.
+  (set_node w (- minx 1.0) mid_y mid_z 7.0)
+  (set_node w (- minx 400.0) mid_y mid_z 7.0)
+  (check_f out "a write to the shell is refused"
+           (node_at w (- minx 1.0) mid_y mid_z) content_ignore)
+  (check_f out "and does not spill into the world"
+           (node_at w minx mid_y mid_z) content_air))
+
+# --- the sky boundary --------------------------------------------------------
+
+(fn sky_checks [out : (List Str)] : Nil
+  (var w (test_world))
+  (var sky ($buffer F32 (* (world_dx w) (world_dz w))))
+  (open_sky w sky)
+  (var wrong 0.0)
+  (var i 0.0)
+  (var n (* (world_dx w) (world_dz w)))
+  (while (< i n)
+    (if_yes (!= (sky ~ get i) light_max) (set wrong (+ wrong 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "open_sky opens every column of the array, shell included"
+           wrong 0.0))
+
+# --- light across a block boundary -------------------------------------------
+#
+# The point of the milestone, as a property.
+#
+# A world two blocks tall, solid to the top of the *upper* block except for a
+# one-node shaft. The shaft's floor is at the bottom of the lower block, sixteen
+# nodes below the boundary between them. Lighting the world in one call must put
+# full daylight all the way down the shaft — §4's sunlight travels down at full
+# strength through anything that admits it — and must leave the rock beside it
+# dark.
+#
+# Per-block lighting cannot produce this and that is the whole point: the lower
+# block's own sky is not open, because there is a solid block above it. M3
+# recorded the symptom as "a cave that breaks the surface is lit in one block
+# and dark in the next". The number that would come back from the old behaviour
+# is 0.
+
+(fn crossing_registry [] : Registry
+  (var r (new_registry))
+  (register_uniform r "t:stone" draw_normal true true false 0.0 0.0)
+  r)
+
+(fn crossing_checks [out : (List Str)] : Nil
+  # One block wide, two tall, one deep — the smallest world with a block
+  # boundary in it.
+  (var w (new_world 0.0 0.0 0.0 1.0 2.0 1.0))
+  (var r (crossing_registry))
+  (var stone (id_of r "t:stone"))
+  (var side block_dim)
+  (var top (- (* 2.0 block_dim) 1.0))
+
+  (var y 0.0)
+  (while (<= y top)
+    (var z 0.0)
+    (while (< z side)
+      (var x 0.0)
+      (while (< x side)
+        (set_node w x y z stone)
+        (set x (+ x 1.0)))
+      (set z (+ z 1.0)))
+    (set y (+ y 1.0)))
+  # The shaft, from the ceiling to the floor of the lower block.
+  (set y 0.0)
+  (while (<= y top)
+    (set_node w 8.0 y 8.0 content_air)
+    (set y (+ y 1.0)))
+
+  (var sky ($buffer F32 (* (world_dx w) (world_dz w))))
+  (open_sky w sky)
+  (var q ($buffer F32 (+ (world_nodes w) queue_overhead)))
+  (light_region w/light w/content (world_dx w) (world_dy w) (world_dz w)
+                r sky q (registered_count r))
+
+  (check_f out "shaft: the node just under the ceiling is full daylight"
+           (day_of (light_at w 8.0 top 8.0)) light_max)
+  (check_f out "shaft: the node just above the block boundary is too"
+           (day_of (light_at w 8.0 block_dim 8.0)) light_max)
+  (check_f out "shaft: and the first node of the block below it"
+           (day_of (light_at w 8.0 (- block_dim 1.0) 8.0)) light_max)
+  (check_f out "shaft: the floor, sixteen nodes into the lower block"
+           (day_of (light_at w 8.0 0.0 8.0)) light_max)
+  (check_f out "shaft: the rock beside the floor is dark"
+           (day_of (light_at w 9.0 0.0 8.0)) 0.0)
+
+  # And the whole shaft at once, so a single lit node cannot carry the check.
+  (var lit 0.0)
+  (set y 0.0)
+  (while (<= y top)
+    (if_yes (== (day_of (light_at w 8.0 y 8.0)) light_max)
+      (set lit (+ lit 1.0)))
+    (set y (+ y 1.0)))
+  (check_f out "shaft: every node of it is full daylight, across the boundary"
+           lit (* 2.0 block_dim)))
+
+# --- the report --------------------------------------------------------------
+
+(fn collect [out : (List Str)] : Nil
+  (shape_checks out)
+  (index_checks out)
+  (mesher_checks out)
+  (store_checks out)
+  (shell_checks out)
+  (sky_checks out)
+  (crossing_checks out))
+
+(fn report [] : Str
+  (var out : (List Str) [])
+  (collect out)
+  ($str/join out "\n"))
+
+(fn failures [] : F64
+  (var out : (List Str) [])
+  (collect out)
+  (var bad 0.0)
+  (var i 0.0)
+  (var n (out ~ size))
+  (while (< i n)
+    (if_yes ($str/starts_with? out/%i "FAIL")
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)

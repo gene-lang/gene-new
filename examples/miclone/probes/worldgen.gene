@@ -108,7 +108,8 @@
   (var i 0.0)
   (while (< i reps)
     (zero_buffer param1 block_nodes)
-    (light_region param1 content block_dim reg sky q registered)
+    (light_region param1 content block_dim block_dim block_dim reg sky q
+                  registered)
     (set i (+ i 1.0)))
   (param1 ~ get 0.0))
 

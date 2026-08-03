@@ -3,8 +3,10 @@
 A voxel game engine with [Luanti](https://github.com/luanti-org/luanti)'s
 architecture, written in Gene, whose mod language is Gene.
 
-**Status: M0 through M4 — a generated, lit world you can fly through, and one
-that survives being quit. There is no game yet.** Read
+**Status: M0 through M4, and M5 in progress — a generated, lit world you can
+fly through, one that survives being quit, and now one the client keeps in
+memory as a single array so it can be walked on and edited. There is no game
+yet.** Read
 [`docs/design.md`](docs/design.md) first — Part I is the direction and the
 decisions, and §D2 is the constraint that shaped the rest.
 
@@ -75,6 +77,7 @@ core/       portable Gene — compiles for the VM and the web profile
   mapgen.gene   the staged pipeline (§3)
   light.gene    sunlight and light sources, packed into param1 (§4)
   mesh.gene     face-culled meshing (§5)
+  loaded.gene   the client's loaded world: one array, one shell (§1.1)
   content.gene  the provisional node/biome/ore set — M7 replaces this with a mod
 server/     VM only: the on-disk block format and the SQLite world store (§11)
 client/     the browser shell: WebGL2 renderer, atlas, camera
@@ -94,11 +97,13 @@ module with a shell per backend rather than one module with a conditional.
 cd examples/miclone
 for m in core/exact core/noise core/field core/world core/registry \
          core/biome core/cave core/ore core/content core/mapgen \
-         core/light core/mesh core/vec client/atlas client/render client/main; do
+         core/light core/mesh core/loaded core/vec \
+         client/atlas client/render client/main; do
   gene build --target web $m.gene --out-dir dist
 done
 
 node tools/mesh_bench.mjs        # headless: generation + meshing budget
+node tools/world_build.mjs       # headless: what opening a world costs
 python3 -m http.server 8000      # then open http://localhost:8000/
 ```
 
@@ -107,6 +112,13 @@ chunk of 0.44 ms against an 8 ms meshing budget. M2 draws 231 meshes and 62,580
 faces — 22% more geometry — and M3 lights every one of them: a chunk now
 generates, lights, and meshes in **0.22 ms** (0.128 + 0.018 + 0.076), worst
 chunk 0.91 ms. Drag to look, WASD to move, space/shift for up and down.
+
+M5 keeps the world instead of dropping it (§1.1) and lights all of it in one
+call (§4.2). `tools/world_build.mjs` reports what that costs: **114 ms** to open
+a 12x4x12 world — 55 ms generating, 24.7 ms lighting 2.48M nodes, 32.8 ms
+meshing 229 non-empty chunks into 62,395 faces. Two faces fewer per border chunk
+than M3, because the world's edge now hides its outward faces against the shell
+rather than against terrain that was generated only to be looked at once.
 
 The spike stands at world (-1440, 3168) rather than the origin, because §3 gives
 biomes a ~555-node scale and this view is 192 nodes across: wherever it stands it
@@ -127,6 +139,7 @@ Both must produce byte-identical output on the VM and through the web profile.
 gene run world_spec  | diff - <(node tools/world_spec.mjs)    # §1, §2
 gene run mapgen_spec | diff - <(node tools/mapgen_spec.mjs)   # §3, §5, §14
 gene run light_spec  | diff - <(node tools/light_spec.mjs)    # §4
+gene run loaded_spec | diff - <(node tools/loaded_spec.mjs)   # §1.1, §4.2
 ```
 
 ### §11 — persistence

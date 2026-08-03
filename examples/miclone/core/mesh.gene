@@ -3,11 +3,27 @@
 # The hot loop of the whole engine (§D6.1, §D10), and the one piece that cannot
 # move off the runtime it runs on: the client meshes, and the client is V8.
 #
-# Input is an **18³ padded neighbourhood**, not a bare 16³ block. A face is
-# emitted when its neighbour is transparent, so the outermost layer of nodes
-# has to be readable or every chunk border would grow a wall of faces against
-# its neighbour (§5). The caller fills the padding; this module never looks
-# outside the buffer it is given.
+# Input is **a 16³ chunk somewhere inside a larger node array**, addressed by
+# the array index of its `(0,0,0)` and the array's two strides. A face is
+# emitted when its neighbour is transparent, so the shell of nodes one step
+# outside the chunk has to be readable or every chunk border would grow a wall
+# of faces against its neighbour (§5). Whoever owns the array guarantees that
+# shell exists; this module never bounds-checks and never looks further than one
+# node out.
+#
+# M3 took an 18³ padded neighbourhood instead, which is the same thing with the
+# shell pressed right up against the chunk — `chunk_base 1 1 1 18 324` is exactly
+# that call, and `tools/mesh_bench.mjs` still makes it. What the general form
+# buys is M5: once a player can dig, the client keeps its whole loaded region in
+# one array (`core/loaded.gene`) and meshes chunks straight out of it, so an edit
+# is one write rather than a write into every padded copy of the node that has
+# one. §3's "generating the margin is cheaper than asking for it" was true while
+# the world was pristine and stops being true the moment it is edited: a
+# regenerated margin does not know about the hole the player just dug.
+#
+# The strides also removed six index computations per node. The padded form
+# recomputed `pad_index` for the owner and all six neighbours; this computes the
+# owner's index once and reaches its neighbours by `±1`, `±sy`, `±sz`.
 #
 # Output is written into caller-supplied buffers in the exact layout WebGL
 # wants, so there is no copy and no conversion between meshing and upload —
@@ -21,9 +37,6 @@
 # --- geometry constants ------------------------------------------------------
 
 (let chunk_dim 16.0)
-(let pad_dim 18.0)                 # chunk_dim + 2, one node of margin each side
-(let pad_stride_y 18.0)
-(let pad_stride_z 324.0)           # pad_dim * pad_dim
 
 # Position, texture coordinate, the packed light byte, and the face's shading
 # factor. §5 asks for "position, normal, UV, and a per-vertex light value; no
@@ -70,22 +83,17 @@
 # had no glass in it; it is what makes glass either invisible or solid-looking
 # the moment one exists.
 
-# --- padded-neighbourhood access ---------------------------------------------
+# --- addressing a chunk inside an array ---------------------------------------
 #
-# Coordinates are chunk-local, 0..15; the padding is reached by the +1 offset
-# built into the index. A neighbour lookup at the chunk edge therefore reads
-# real data from the adjacent chunk rather than falling off the buffer.
-
-(fn pad_index [x : F64 y : F64 z : F64] : F64
-  (+ (+ x 1.0) (+ (* (+ y 1.0) pad_stride_y) (* (+ z 1.0) pad_stride_z))))
-
-(fn node_at [padded : (Buffer F32) x : F64 y : F64 z : F64] : F64
-  (padded ~ get (pad_index x y z)))
-
-# The packed `param1` of a node in the same padded neighbourhood (§4). Read at
-# the *neighbour* of a face, never at the face's own node — see `put_quad`.
-(fn light_at [lit : (Buffer F32) x : F64 y : F64 z : F64] : F64
-  (lit ~ get (pad_index x y z)))
+# `sy` is the array's y stride and `sz` its z stride; `base` is the array index
+# of the chunk's own `(0,0,0)`. Everything below then walks by index, so the
+# only coordinate arithmetic per node is one row offset.
+#
+# Exported because a caller has to produce `base` from wherever its chunk sits:
+# `(chunk_base 1.0 1.0 1.0 18.0 324.0)` for M3's padded 18³ neighbourhood,
+# `core/loaded.gene`'s array coordinates for a loaded world.
+(fn chunk_base [ax : F64 ay : F64 az : F64 sy : F64 sz : F64] : F64
+  (+ ax (+ (* ay sy) (* az sz))))
 
 # A face exists when the neighbour it faces does not hide it.
 #
@@ -95,9 +103,9 @@
 # its columns, not a copy — but the lookup happens 28,672 times per chunk, and
 # at that count the cross-module call and the property load off `reg` cost more
 # than the array read they wrap.
-(fn face_visible? [opaque_col : (Buffer F32) padded : (Buffer F32)
-                   x : F64 y : F64 z : F64] : Bool
-  (!= (opaque_col ~ get (node_at padded x y z)) 1.0))
+(fn face_visible? [opaque_col : (Buffer F32) content : (Buffer F32)
+                   i : F64] : Bool
+  (!= (opaque_col ~ get (content ~ get i)) 1.0))
 
 # --- pass one: count ---------------------------------------------------------
 #
@@ -106,7 +114,8 @@
 # upload a sub-range, which is a binding that does not exist. Counting costs one
 # extra traversal of 4,096 nodes and buys exactly-sized buffers.
 
-(fn count_faces [reg : Registry padded : (Buffer F32)] : F64
+(fn count_faces [reg : Registry content : (Buffer F32)
+                 base : F64 sy : F64 sz : F64] : F64
   (var opaque_col reg/opaque)
   (var drawtype_col reg/drawtype)
   (var faces 0.0)
@@ -114,20 +123,22 @@
   (while (< z chunk_dim)
     (var y 0.0)
     (while (< y chunk_dim)
+      (var row (+ base (+ (* y sy) (* z sz))))
       (var x 0.0)
       (while (< x chunk_dim)
-        (if_yes (!= (drawtype_col ~ get (node_at padded x y z)) draw_airlike)
-          (if_yes (face_visible? opaque_col padded (+ x 1.0) y z)
+        (var i (+ row x))
+        (if_yes (!= (drawtype_col ~ get (content ~ get i)) draw_airlike)
+          (if_yes (face_visible? opaque_col content (+ i 1.0))
             (set faces (+ faces 1.0)))
-          (if_yes (face_visible? opaque_col padded (- x 1.0) y z)
+          (if_yes (face_visible? opaque_col content (- i 1.0))
             (set faces (+ faces 1.0)))
-          (if_yes (face_visible? opaque_col padded x (+ y 1.0) z)
+          (if_yes (face_visible? opaque_col content (+ i sy))
             (set faces (+ faces 1.0)))
-          (if_yes (face_visible? opaque_col padded x (- y 1.0) z)
+          (if_yes (face_visible? opaque_col content (- i sy))
             (set faces (+ faces 1.0)))
-          (if_yes (face_visible? opaque_col padded x y (+ z 1.0))
+          (if_yes (face_visible? opaque_col content (+ i sz))
             (set faces (+ faces 1.0)))
-          (if_yes (face_visible? opaque_col padded x y (- z 1.0))
+          (if_yes (face_visible? opaque_col content (- i sz))
             (set faces (+ faces 1.0))))
         (set x (+ x 1.0)))
       (set y (+ y 1.0)))
@@ -201,11 +212,16 @@
   (put_vertex verts (+ base 3.0) dx dy dz u0 v0 light shade)
   (put_face_indices idx face base))
 
-# Fill `verts` and `idx` from the padded neighbourhood, offset into world space
-# by the chunk's origin. Returns the face count, which is what the caller needs
-# for its draw call — index count is `faces * 6`.
-(fn build_mesh [reg : Registry padded : (Buffer F32) lit : (Buffer F32)
+# Fill `verts` and `idx` from the chunk at `base`, offset into world space by
+# `(ox, oy, oz)`. Returns the face count, which is what the caller needs for its
+# draw call — index count is `faces * 6`.
+#
+# `lit` is indexed the same way as `content` and must therefore be the same
+# shape: §4 keeps the two as parallel arrays over one region (§1), so this is
+# the same index used twice rather than two addressing schemes to keep in step.
+(fn build_mesh [reg : Registry content : (Buffer F32) lit : (Buffer F32)
                 verts : (Buffer F32) idx : (Buffer U32)
+                base : F64 sy : F64 sz : F64
                 ox : F64 oy : F64 oz : F64] : F64
   (var opaque_col reg/opaque)
   (var drawtype_col reg/drawtype)
@@ -217,9 +233,11 @@
   (while (< z chunk_dim)
     (var y 0.0)
     (while (< y chunk_dim)
+      (var row (+ base (+ (* y sy) (* z sz))))
       (var x 0.0)
       (while (< x chunk_dim)
-        (var id (node_at padded x y z))
+        (var i (+ row x))
+        (var id (content ~ get i))
         (if_yes (!= (drawtype_col ~ get id) draw_airlike)
           (var wx (+ ox x))
           (var wy (+ oy y))
@@ -228,34 +246,34 @@
           (var y1 (+ wy 1.0))
           (var z1 (+ wz 1.0))
           (var side (side_col ~ get id))
-          (if_yes (face_visible? opaque_col padded (+ x 1.0) y z)
+          (if_yes (face_visible? opaque_col content (+ i 1.0))
             (put_quad verts idx face side
-                      (light_at lit (+ x 1.0) y z) shade_side_x
+                      (lit ~ get (+ i 1.0)) shade_side_x
                       x1 wy z1  x1 wy wz  x1 y1 wz  x1 y1 z1)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? opaque_col padded (- x 1.0) y z)
+          (if_yes (face_visible? opaque_col content (- i 1.0))
             (put_quad verts idx face side
-                      (light_at lit (- x 1.0) y z) shade_side_x
+                      (lit ~ get (- i 1.0)) shade_side_x
                       wx wy wz  wx wy z1  wx y1 z1  wx y1 wz)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? opaque_col padded x (+ y 1.0) z)
+          (if_yes (face_visible? opaque_col content (+ i sy))
             (put_quad verts idx face (top_col ~ get id)
-                      (light_at lit x (+ y 1.0) z) shade_top
+                      (lit ~ get (+ i sy)) shade_top
                       wx y1 z1  x1 y1 z1  x1 y1 wz  wx y1 wz)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? opaque_col padded x (- y 1.0) z)
+          (if_yes (face_visible? opaque_col content (- i sy))
             (put_quad verts idx face (bottom_col ~ get id)
-                      (light_at lit x (- y 1.0) z) shade_bottom
+                      (lit ~ get (- i sy)) shade_bottom
                       wx wy wz  x1 wy wz  x1 wy z1  wx wy z1)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? opaque_col padded x y (+ z 1.0))
+          (if_yes (face_visible? opaque_col content (+ i sz))
             (put_quad verts idx face side
-                      (light_at lit x y (+ z 1.0)) shade_side_z
+                      (lit ~ get (+ i sz)) shade_side_z
                       wx wy z1  x1 wy z1  x1 y1 z1  wx y1 z1)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? opaque_col padded x y (- z 1.0))
+          (if_yes (face_visible? opaque_col content (- i sz))
             (put_quad verts idx face side
-                      (light_at lit x y (- z 1.0)) shade_side_z
+                      (lit ~ get (- i sz)) shade_side_z
                       x1 wy wz  wx wy wz  wx y1 wz  x1 y1 wz)
             (set face (+ face 1.0))))
         (set x (+ x 1.0)))

@@ -1012,6 +1012,52 @@ Irrlicht wanted larger numbers. One node is 1.0.
 keeps a node coordinate in an `s16` and a block coordinate comfortably inside
 one.
 
+### 1.1 M5 — a block is the unit of generation, not of client memory
+
+Through M4 the client never kept the world. It generated an 18³ padded
+neighbourhood per chunk, meshed it, uploaded the mesh, and dropped the nodes,
+which is exactly right for a fly-through and rests on §3's claim that "for a
+deterministic generator, generating the margin and asking the neighbour for it
+are the same answer, and generating it is cheaper".
+
+**M5 is where that stops being true.** The moment a player digs, a regenerated
+margin describes the world as it was created rather than as it is. Every design
+that keeps padded copies per chunk then has to write an edited node into each of
+the up to eight copies containing it and keep them agreeing forever, and a stale
+copy is a face that should not be there — §4's "invisible in tests and obvious on
+screen", one subsystem over.
+
+So `core/loaded.gene` stores the nodes once: a rectangular box of blocks as
+**one node array**, with a parallel array for §4's `param1`. A block remains the
+unit of generation (§3), of the wire (§10), and of disk (§11). It is not the unit
+of client memory.
+
+What follows from that, and is the reason it is worth the churn:
+
+- **Reads are an index.** Physics and node selection (§7) do thousands per
+  second and each is three subtractions and one array read, with no block lookup
+  in front of it.
+- **Meshing needs no gather** (§5).
+- **Light crosses blocks** (§4.2), which closes the limitation M3 recorded.
+
+**The array is one node larger than the world on every side**, and that shell is
+not decoration: it is what lets §5's mesher read a chunk's neighbours and §4's
+flood test its bounds without either of them bounds-checking. Five faces hold
+`ignore` — opaque, so no face is drawn against it, and non-propagating, so no
+light leaks out. **The sixth, the ceiling, holds `air`**, because sunlight enters
+through it; a shell of `ignore` over the world would stop the sun at the ceiling
+and leave everything under it black. Reads outside the array answer `ignore` too,
+so "the edge of the loaded world stops you" falls out of an existing reserved id
+rather than a special case.
+
+The extent is fixed at construction and does not stream, which is what M5 needs
+and no more. M6 splits client from server and blocks start arriving and leaving;
+the shape that wants is this box sliding over the world, which is a change to who
+fills it rather than to what it is.
+
+For a 12 × 4 × 12 world that is 194 × 66 × 194 nodes: 9.5 MB of content and 9.5
+of light, against 8.1 MB of uploaded geometry.
+
 ## 2. Node and item definitions
 
 A definition is a Gene node — data, not a string DSL and not a closure-laden
@@ -1309,20 +1355,67 @@ are. Recorded in the file so the next reader does not spend the same hour.
   never be corrected. A fresh block is zeroed by construction (§1); a reused one
   is not, and the zeroing is the caller's job.
 
-#### What it does not do yet
+#### What it did not do yet, and what M5 did about it
 
-**Light does not propagate between blocks.** Each region's flood stops at its
-own edge. For a heightfield that is exact — the caller knows from the surface
-height whether a column's sky is open — and it is what the client needs to draw
-a lit world.
+M3 shipped with **light not propagating between blocks**. Each region's flood
+stopped at its own edge. For a heightfield that is exact — the caller knows from
+the surface height whether a column's sky is open — and it was what the client
+needed to draw a lit world.
 
-Where it shows is **a cave that breaks the surface**: the block containing the
-breach is lit down its shaft, and the block below starts dark again. Upstream
-lights a whole 5×5×5 chunk at once for exactly this reason. The fix is top-down
-column lighting across loaded blocks, which is the server's job and wants §11's
-block store first. It is recorded rather than worked around, because the
-workaround would be to relight from scratch on the client and §4 is explicit
-that the client must never do that.
+Where it showed was **a cave that breaks the surface**: the block containing the
+breach was lit down its shaft, and the block below started dark again. Upstream
+lights a whole 5×5×5 chunk at once for exactly this reason. The fix was recorded
+here as top-down column lighting across loaded blocks, wanting §11's block store
+first, rather than worked around — because the workaround would be to relight
+from scratch on the client and §4 is explicit that the client must never do
+that.
+
+### 4.2 M5 — the region stopped being a block
+
+The fix turned out to be smaller than the description of it. Nothing about the
+flood was wrong; the *region* was. `light_region` took one `dim` and was called
+once per block, so a block edge was the only boundary it could have.
+
+M5 gives it three dimensions instead of one, and the client keeps its whole
+loaded world in one array (§1.1). One call then lights 12 × 4 × 12 blocks as a
+single 194 × 66 × 194 box, and the boundary the flood stops at is the edge of
+what is loaded. A shaft is lit to its floor; a torch lights across a block
+border. **No line of the propagation changed** — the day and night floods, the
+sunlight walk, the shadow-wall seeding, and the unspread/spread pair are all
+what M3 wrote — and `probes/light_spec.gene`'s output is byte-identical before
+and after, because its fixture worlds are cubes and a cube is the case where one
+dimension and three agree.
+
+`probes/loaded_spec.gene` asserts the new behaviour as a property rather than a
+value: a one-node shaft through a two-block-tall world is full daylight at every
+node of its depth, including sixteen nodes below the block boundary. Per-block
+lighting cannot produce that, because the lower block's sky is not open — so the
+number the old behaviour returns is 0, not "slightly different".
+
+Two things this cost, both worth stating:
+
+- **`dx × dz` is not the z stride.** In a cube the sky plane and the stride
+  between z slices are the same number and were the same variable. In a box they
+  are `dx*dz` and `dx*dy`, and confusing them transposes the sky.
+- **A per-node registry call over a block is nothing; over a world it is
+  everything.** `seed_sources_night` and `seed_sources_day` each scan the region
+  calling `light_source_of` per node. At 4,096 nodes that is invisible. At 2.5M
+  it is 5M cross-module calls to answer "no" 5M times, and the content set has a
+  lamp registered so `any_light_source?` does not skip them. Hoisting the
+  emission column — the same thing `flood` already did with `propagates` — took
+  the per-chunk lighting figure in `tools/mesh_bench.mjs` from **0.076–0.081 ms
+  to 0.031–0.032 ms**, reproducibly, across three runs each.
+
+A world of 576 blocks opens in **114 ms** on V8: 55 ms to generate,
+**24.7 ms to light all 2.48M nodes in one call**, 32.8 ms to mesh. See
+`tools/world_build.mjs`, which is also where the two invariants are checked.
+
+The lighting queue is sized to §4's contract — the region plus the ring's header
+— which is 9.5 MB for that world. Measured, the initial flood never holds more
+than **40,019 entries, 1.61% of the region**. The contract is kept rather than
+the measurement, because an overflow raises and a raise at world open is worse
+than 9 MB; the number is recorded so a future memory squeeze has somewhere to
+start.
 
 #### The incremental path, and how it is tested
 
@@ -1358,6 +1451,19 @@ Per block, for the six faces of each non-air node, emit a quad when the
 neighbour is transparent or absent. Neighbouring blocks must be loaded to mesh
 correctly at the seams — a block meshes with a 18³ neighbourhood copy, not its
 own 16³.
+
+*M5: the neighbourhood is no longer a copy.* The mesher takes the array index of
+the chunk's own `(0,0,0)` and the array's two strides, so it can read a chunk out
+of any node array that has one node of readable shell around it. `chunk_base 1 1
+1 18 324` is M3's padded neighbourhood expressed in that form, and
+`tools/mesh_bench.mjs` still makes exactly that call. What the general form is
+for is §1.1: the client keeps one array and meshes chunks straight out of it.
+
+The reason it had to change is in §1.1 — a regenerated margin describes the
+world as it was created, not as it is after a dig — and the change paid for
+itself anyway: addressing the owner once and reaching its neighbours by `±1`,
+`±sy`, `±sz` removed six index computations per node, and per-chunk meshing in
+`tools/mesh_bench.mjs` went from **0.072–0.075 ms to 0.055–0.065 ms**.
 
 Output is one vertex buffer per material (opaque, alpha-tested, transparent) as
 typed arrays, ready to hand to WebGL without a conversion pass. Position,

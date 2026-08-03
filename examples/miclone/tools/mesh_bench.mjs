@@ -7,13 +7,18 @@
 
 import { fill_padded } from "../dist/mapgen.mjs";
 import { light_region } from "../dist/light.mjs";
-import { count_faces, build_mesh } from "../dist/mesh.mjs";
+import { chunk_base, count_faces, build_mesh } from "../dist/mesh.mjs";
 import { new_registry, id_of, opaque$q, registered_count } from "../dist/registry.mjs";
 import { setup_nodes, setup_biomes, setup_ores } from "../dist/content.mjs";
 
 // 18^3 — the padded neighbourhood core/mesh.gene reads. The web profile
 // exports functions, not `let` constants, so the geometry is restated here.
 const PAD_NODES = 18 * 18 * 18;
+// core/mesh.gene addresses a chunk inside an arbitrary array by the index of
+// its (0,0,0) and the array's two strides. The padded neighbourhood is that
+// array with the chunk at (1,1,1) and the shell pressed against it.
+const PAD_SY = 18, PAD_SZ = 18 * 18;
+const PAD_BASE = chunk_base(1, 1, 1, PAD_SY, PAD_SZ);
 
 const SEED = 1337;
 
@@ -44,12 +49,13 @@ function meshOne(cx, cy, cz) {
   fill_padded(padded, sky, cx * 16, cy * 16, cz * 16, biomes, ores, SEED, AIR, WATER);
   const tGen = performance.now();
   lit.fill(0);
-  light_region(lit, padded, 18, reg, sky, queue, REGISTERED);
+  light_region(lit, padded, 18, 18, 18, reg, sky, queue, REGISTERED);
   const tLight = performance.now();
-  const faces = count_faces(reg, padded);
+  const faces = count_faces(reg, padded, PAD_BASE, PAD_SY, PAD_SZ);
   const verts = new Float32Array(faces * 4 * FLOATS_PER_VERTEX);
   const idx = new Uint32Array(faces * 6);
-  build_mesh(reg, padded, lit, verts, idx, cx * 16, cy * 16, cz * 16);
+  build_mesh(reg, padded, lit, verts, idx, PAD_BASE, PAD_SY, PAD_SZ,
+             cx * 16, cy * 16, cz * 16);
   const tMesh = performance.now();
   return { gen: tGen - t0, light: tLight - tGen, mesh: tMesh - tLight, faces,
            verts: verts.length / FLOATS_PER_VERTEX };
@@ -109,7 +115,7 @@ console.log(`  non-empty     ${busy} of ${CHUNK_COUNT} (${empty} fully interior 
     for (let cx = 0; cx < SPAN_X; cx++)
       for (let cz = 0; cz < SPAN_Z; cz++) {
         fill_padded(pad, sky, cx * 16, cy * 16, cz * 16, biomes, ores, SEED, AIR, WATER);
-        faces = count_faces(reg, pad);
+        faces = count_faces(reg, pad, PAD_BASE, PAD_SY, PAD_SZ);
         if (faces > 100) { ox = cx*16; oy = cy*16; oz = cz*16; break outer; }
       }
   if (faces <= 100) {
@@ -118,11 +124,12 @@ console.log(`  non-empty     ${busy} of ${CHUNK_COUNT} (${empty} fully interior 
   }
   fill_padded(pad, sky, ox, oy, oz, biomes, ores, SEED, AIR, WATER);
   const padLit = new Float32Array(PAD_NODES);
-  light_region(padLit, pad, 18, reg, sky, new Float32Array(PAD_NODES + 4),
-               REGISTERED);
+  light_region(padLit, pad, 18, 18, 18, reg, sky,
+               new Float32Array(PAD_NODES + 4), REGISTERED);
   const verts = new Float32Array(faces * 4 * FLOATS_PER_VERTEX);
   const idx = new Uint32Array(faces * 6);
-  build_mesh(reg, pad, padLit, verts, idx, ox, oy, oz);
+  build_mesh(reg, pad, padLit, verts, idx, PAD_BASE, PAD_SY, PAD_SZ,
+             ox, oy, oz);
 
   // The invariant, checked per quad rather than by which directions happen to
   // occur: the normal implied by the winding must point from the solid node

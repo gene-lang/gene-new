@@ -1,0 +1,21 @@
+# The VM shell for the loaded-world spec.
+#
+#   gene run loaded_spec
+#
+# Pair with `node tools/loaded_spec.mjs` and diff: the two must agree exactly.
+# Addressing arithmetic is the most portable code in the tree and therefore the
+# easiest to get subtly wrong on one backend only — the whole file is integer
+# index math, so a difference here is two runtimes disagreeing about where a
+# node is.
+
+(mod run_loaded_spec)
+
+(import [report failures] from "./loaded_spec.gene")
+
+(fn main [args] : Nil
+  ($println (report))
+  (var bad (failures))
+  ($println "")
+  (if (== bad 0.0)
+    (then ($println "PASS — every check agrees"))
+    (else ($println $"FAIL — ${bad} check(s) failed"))))

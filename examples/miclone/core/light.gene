@@ -24,22 +24,25 @@
 # the packed form costs nothing per access and saves the allocation and two
 # merge passes over the region.
 #
-# ## What this does not do yet
+# ## The region is a box, and how big it is decides what light can cross
 #
-# **Light does not propagate between blocks.** `light_region` lights the region
-# it is given, seeded at the top by the `sky` buffer its caller supplies, and a
-# block's flood stops at its own edge. For terrain that is a heightfield the
-# result is exact — the caller knows from the surface height whether a column's
-# sky is open — and it is what the client needs to draw a lit world.
+# `light_region` lights the `dx × dy × dz` box it is handed, seeded at the top by
+# the `sky` buffer its caller supplies, and the flood stops at that box's edge.
+# Nothing here knows what a block is.
 #
-# Where it shows is **a cave that breaks the surface**: the block containing the
-# breach is lit down its shaft, and the block below it starts dark again,
-# because nothing carried the light across the boundary. Upstream lights a whole
-# 5×5×5 chunk at once for exactly this reason. The fix is top-down column
-# lighting across loaded blocks, which is the server's job and wants §11's block
-# store to exist first; it is recorded here rather than worked around, because
-# the workaround would be to relight from scratch on the client and §4 is
-# explicit that the client must never do that.
+# M3 shipped this taking one `dim` and lit one block per call, and recorded the
+# cost: **a cave that breaks the surface** is lit down its shaft in the block
+# holding the breach and dark in the block below, because nothing carried the
+# light across the boundary. The fix was named there — "top-down column lighting
+# across loaded blocks" — and was waiting on §11's block store.
+#
+# M5 lands it, and the whole change is that the box stopped being a cube. The
+# client keeps its entire loaded region in one array (`core/loaded.gene`), so a
+# single call lights 12 × 4 × 12 blocks as one 194 × 66 × 194 box: a shaft is lit
+# to its floor, a torch lights across a block border, and the boundary the flood
+# stops at is the edge of the loaded world. §4's rule is untouched — a client
+# renders light it was sent and never re-derives it — and so is every line of the
+# propagation; only the one dimension that was cubic is now three.
 
 (mod light ^profile web)
 
@@ -143,43 +146,53 @@
 
 # --- region geometry ---------------------------------------------------------
 #
-# `x + dim*y + dim²*z`, §1's x-fastest order at any size — the same formula
-# `core/mapgen.gene` and `core/cave.gene` write through.
+# `x + dx*y + dx*dy*z`, §1's x-fastest order at any size — the same formula
+# `core/mapgen.gene` and `core/cave.gene` write through, which for their cubic
+# regions is this with all three dimensions equal.
+#
+# `dz` is not a parameter here because indexing never needs it: it bounds the
+# region but does not scale any stride. Every function below that must *test* a
+# z bound takes it.
 
-(fn region_index [x : F64 y : F64 z : F64 dim : F64] : F64
-  (+ x (+ (* y dim) (* z (* dim dim)))))
+(fn region_index [x : F64 y : F64 z : F64 dx : F64 dy : F64] : F64
+  (+ x (+ (* y dx) (* z (* dx dy)))))
 
 # --- sunlight ----------------------------------------------------------------
 #
-# `sky` is `dim × dim`, x-fastest: the sunlight entering the top of each column.
+# `sky` is `dx × dz`, x-fastest: the sunlight entering the top of each column.
 # The caller owns that boundary condition — mapgen derives it from the surface
-# height it already computed, and a server lighting a column of blocks top-down
-# passes the light leaving the block above.
+# height it already computed, and a client whose loaded region tops out above
+# every mountain in it simply declares the whole plane open.
+#
+# **`dx × dz` is not the z-stride.** In a cube the sky plane and the stride
+# between z slices are the same number and were the same variable; in a box they
+# are `dx*dz` and `dx*dy` and confusing them transposes the sky.
 #
 # Full-strength sunlight does not attenuate going down, which is what makes a
 # deep shaft bright at the bottom rather than fading; anything less than full is
 # an ordinary light value and is left to the flood to spread.
-(fn seed_sunlight [param1 : (Buffer F32) content : (Buffer F32) dim : F64
+(fn seed_sunlight [param1 : (Buffer F32) content : (Buffer F32)
+                   dx : F64 dy : F64 dz : F64
                    reg : Registry sky : (Buffer F32) q : (Buffer F32)] : Nil
   (var prop reg/propagates)
-  (var plane (* dim dim))
+  (var plane (* dx dy))
 
   # Pass one: walk each column down and record how far the sun reached.
-  # `floor` is the lowest y that got sunlight, or `dim` for a column that got
+  # `floor` is the lowest y that got sunlight, or `dy` for a column that got
   # none — so `floor > y` reads as "dark at this height" without a special case.
-  (var floors ($buffer F32 plane))
+  (var floors ($buffer F32 (* dx dz)))
   (var z 0.0)
-  (while (< z dim)
+  (while (< z dz)
     (var x 0.0)
-    (while (< x dim)
-      (var col (+ x (* z dim)))
+    (while (< x dx)
+      (var col (+ x (* z dx)))
       (var s (sky ~ get col))
-      (floors ~ set! col dim)
+      (floors ~ set! col dy)
       (if_yes (> s 0.0)
-        (var y (- dim 1.0))
+        (var y (- dy 1.0))
         (var live true)
         (while (&& live (>= y 0.0))
-          (var i (+ x (+ (* y dim) (* z plane))))
+          (var i (+ x (+ (* y dx) (* z plane))))
           (if (== (prop ~ get (content ~ get i)) 1.0)
             (then
               (var p (param1 ~ get i))
@@ -214,24 +227,24 @@
   # is a column whose sun stopped higher up — the vertical faces of every
   # shadow, and nothing in the open.
   (set z 0.0)
-  (while (< z dim)
+  (while (< z dz)
     (var x 0.0)
-    (while (< x dim)
-      (var col (+ x (* z dim)))
+    (while (< x dx)
+      (var col (+ x (* z dx)))
       (var f (floors ~ get col))
-      (if_yes (< f dim)
+      (if_yes (< f dy)
         # The neighbouring columns' floors, with an out-of-region edge reading
         # as `f` so it never seeds: light leaving the region is not ours.
         (var fxm (if (> x 0.0) (floors ~ get (- col 1.0)) f))
-        (var fxp (if (< x (- dim 1.0)) (floors ~ get (+ col 1.0)) f))
-        (var fzm (if (> z 0.0) (floors ~ get (- col dim)) f))
-        (var fzp (if (< z (- dim 1.0)) (floors ~ get (+ col dim)) f))
+        (var fxp (if (< x (- dx 1.0)) (floors ~ get (+ col 1.0)) f))
+        (var fzm (if (> z 0.0) (floors ~ get (- col dx)) f))
+        (var fzp (if (< z (- dz 1.0)) (floors ~ get (+ col dx)) f))
         (var deepest ($math/max fxm ($math/max fxp ($math/max fzm fzp))))
         # Only the heights where some neighbour is still dark, which is the band
         # from this column's floor up to the deepest neighbouring floor.
         (var y f)
         (while (< y deepest)
-          (queue_push q (+ x (+ (* y dim) (* z plane))))
+          (queue_push q (+ x (+ (* y dx) (* z plane))))
           (set y (+ y 1.0))))
       (set x (+ x 1.0)))
     (set z (+ z 1.0))))
@@ -254,21 +267,11 @@
     (set i (+ i 1.0)))
   found)
 
-(fn seed_sources [param1 : (Buffer F32) content : (Buffer F32) dim : F64
-                  reg : Registry q_day : (Buffer F32) q_night : (Buffer F32)]
-    : Nil
-  (var n (* dim (* dim dim)))
-  (var i 0.0)
-  (while (< i n)
-    (var e (light_source_of reg (content ~ get i)))
-    (if_yes (> e 0.0)
-      (var p (param1 ~ get i))
-      (var d (day_of p))
-      (param1 ~ set! i (with_night (with_day p (if (> e d) e d)) e))
-      (if_yes (>= e light_min_spread)
-        (queue_push q_night i)
-        (if_yes (> e d) (queue_push q_day i))))
-    (set i (+ i 1.0))))
+# A combined `seed_sources` filling a day queue and a night queue in one scan
+# used to sit here. It was dead — `light_region` runs the two floods one after
+# the other and seeds each from its own half — so it is deleted rather than kept
+# for symmetry. M3 removed `light_filled_region` for the same reason: untested
+# code that no caller reaches is a liability, not an API.
 
 # --- the flood ---------------------------------------------------------------
 #
@@ -283,14 +286,17 @@
 # revisited only if a brighter path reaches it later — which cannot happen at
 # all when every seed starts equal, and is bounded by the light range when they
 # do not.
-(fn flood [param1 : (Buffer F32) content : (Buffer F32) dim : F64
+(fn flood [param1 : (Buffer F32) content : (Buffer F32)
+           dx : F64 dy : F64 dz : F64
            reg : Registry q : (Buffer F32) day : Bool] : Nil
   # Hoisted once per flood rather than asked per neighbour: `propagates_light?`
   # is a cross-module call and this loop makes six of them per node, which is
   # the same reason `core/mesh.gene` hoists the columns it reads (§5).
   (var prop reg/propagates)
-  (var plane (* dim dim))
-  (var hi (- dim 1.0))
+  (var plane (* dx dy))
+  (var hi_x (- dx 1.0))
+  (var hi_y (- dy 1.0))
+  (var hi_z (- dz 1.0))
   (while (! (queue_empty? q))
     (var i (queue_pop q))
     (var p (param1 ~ get i))
@@ -299,17 +305,17 @@
     (if_yes (> next 0.0)
       (var z ($math/floor (/ i plane)))
       (var rest (- i (* z plane)))
-      (var y ($math/floor (/ rest dim)))
-      (var x (- rest (* y dim)))
+      (var y ($math/floor (/ rest dx)))
+      (var x (- rest (* y dx)))
 
       # Six neighbours, each guarded by the region bound so the flood never
       # reads outside the buffer it was given.
       (if_yes (> x 0.0) (spread_to param1 content prop (- i 1.0) next day q))
-      (if_yes (< x hi) (spread_to param1 content prop (+ i 1.0) next day q))
-      (if_yes (> y 0.0) (spread_to param1 content prop (- i dim) next day q))
-      (if_yes (< y hi) (spread_to param1 content prop (+ i dim) next day q))
+      (if_yes (< x hi_x) (spread_to param1 content prop (+ i 1.0) next day q))
+      (if_yes (> y 0.0) (spread_to param1 content prop (- i dx) next day q))
+      (if_yes (< y hi_y) (spread_to param1 content prop (+ i dx) next day q))
       (if_yes (> z 0.0) (spread_to param1 content prop (- i plane) next day q))
-      (if_yes (< z hi)
+      (if_yes (< z hi_z)
         (spread_to param1 content prop (+ i plane) next day q)))))
 
 (fn spread_to [param1 : (Buffer F32) content : (Buffer F32) prop : (Buffer F32)
@@ -323,35 +329,46 @@
 
 # --- full relight ------------------------------------------------------------
 
-# Light a whole `dim³` region from scratch. `param1` is assumed zeroed, which is
-# what a freshly allocated block is (§1) and what mapgen hands over.
+# Light a whole `dx × dy × dz` region from scratch. `param1` is assumed zeroed,
+# which is what a freshly allocated block is (§1) and what mapgen hands over.
 #
-# `q` is scratch: at least `dim³ + queue_overhead` elements, reused across blocks.
-(fn light_region [param1 : (Buffer F32) content : (Buffer F32) dim : F64
+# `q` is scratch: at least `dx*dy*dz + queue_overhead` elements, reused across
+# calls.
+(fn light_region [param1 : (Buffer F32) content : (Buffer F32)
+                  dx : F64 dy : F64 dz : F64
                   reg : Registry sky : (Buffer F32) q : (Buffer F32)
                   registered : F64] : Nil
   (queue_reset q)
-  (seed_sunlight param1 content dim reg sky q)
-  (flood param1 content dim reg q true)
+  (seed_sunlight param1 content dx dy dz reg sky q)
+  (flood param1 content dx dy dz reg q true)
   (if_yes (any_light_source? reg registered)
     (queue_reset q)
     # The night seeds are collected into the same queue twice rather than into
     # two, because the two floods run one after the other and a shared ring is
     # one allocation instead of two.
-    (seed_sources_night param1 content dim reg q)
-    (flood param1 content dim reg q false)
+    (seed_sources_night param1 content dx dy dz reg q)
+    (flood param1 content dx dy dz reg q false)
     (queue_reset q)
-    (seed_sources_day param1 content dim reg q)
-    (flood param1 content dim reg q true)))
+    (seed_sources_day param1 content dx dy dz reg q)
+    (flood param1 content dx dy dz reg q true)))
 
-# The two halves of `seed_sources`, split because the day and night floods run
-# separately and each wants only its own frontier.
-(fn seed_sources_night [param1 : (Buffer F32) content : (Buffer F32) dim : F64
+# The two halves of the source seeding, split because the day and night floods
+# run separately and each wants only its own frontier.
+#
+# Both hoist the emission column the way `flood` hoists `propagates` and for the
+# same reason, which M5 made load-bearing: the scan is one pass over the region
+# and the region is now the whole loaded world. At 2.5M nodes a cross-module
+# `light_source_of` per node is 5M calls to answer "no" 5M times, against 5M
+# array reads. The scan itself is still skipped entirely when nothing in the
+# registry emits — see `any_light_source?`.
+(fn seed_sources_night [param1 : (Buffer F32) content : (Buffer F32)
+                        dx : F64 dy : F64 dz : F64
                         reg : Registry q : (Buffer F32)] : Nil
-  (var n (* dim (* dim dim)))
+  (var emit reg/light_source)
+  (var n (* dx (* dy dz)))
   (var i 0.0)
   (while (< i n)
-    (var e (light_source_of reg (content ~ get i)))
+    (var e (emit ~ get (content ~ get i)))
     (if_yes (> e 0.0)
       (var p (param1 ~ get i))
       (if_yes (> e (night_of p))
@@ -359,12 +376,14 @@
         (if_yes (>= e light_min_spread) (queue_push q i))))
     (set i (+ i 1.0))))
 
-(fn seed_sources_day [param1 : (Buffer F32) content : (Buffer F32) dim : F64
+(fn seed_sources_day [param1 : (Buffer F32) content : (Buffer F32)
+                      dx : F64 dy : F64 dz : F64
                       reg : Registry q : (Buffer F32)] : Nil
-  (var n (* dim (* dim dim)))
+  (var emit reg/light_source)
+  (var n (* dx (* dy dz)))
   (var i 0.0)
   (while (< i n)
-    (var e (light_source_of reg (content ~ get i)))
+    (var e (emit ~ get (content ~ get i)))
     (if_yes (> e 0.0)
       (var p (param1 ~ get i))
       (if_yes (> e (day_of p))
@@ -414,11 +433,14 @@
 # is what tells its neighbours whether their light came from it, so zeroing on
 # push destroys the only evidence the pass runs on — the first version of this
 # did exactly that, `here` was always 0, and the unspread silently did nothing.
-(fn unspread [param1 : (Buffer F32) content : (Buffer F32) dim : F64
+(fn unspread [param1 : (Buffer F32) content : (Buffer F32)
+              dx : F64 dy : F64 dz : F64
               reg : Registry q : (Buffer F32) q_seed : (Buffer F32)
               day : Bool] : Nil
-  (var plane (* dim dim))
-  (var hi (- dim 1.0))
+  (var plane (* dx dy))
+  (var hi_x (- dx 1.0))
+  (var hi_y (- dy 1.0))
+  (var hi_z (- dz 1.0))
   (while (! (queue_empty? q))
     (var i (queue_pop q))
     (var here (channel_at param1 i day))
@@ -426,17 +448,17 @@
       (set_channel param1 i 0.0 day)
       (var z ($math/floor (/ i plane)))
       (var rest (- i (* z plane)))
-      (var y ($math/floor (/ rest dim)))
-      (var x (- rest (* y dim)))
+      (var y ($math/floor (/ rest dx)))
+      (var x (- rest (* y dx)))
       (if_yes (> x 0.0)
         (unspread_to param1 content reg (- i 1.0) here day false q q_seed))
-      (if_yes (< x hi)
+      (if_yes (< x hi_x)
         (unspread_to param1 content reg (+ i 1.0) here day false q q_seed))
-      (if_yes (< y hi)
-        (unspread_to param1 content reg (+ i dim) here day false q q_seed))
+      (if_yes (< y hi_y)
+        (unspread_to param1 content reg (+ i dx) here day false q q_seed))
       (if_yes (> z 0.0)
         (unspread_to param1 content reg (- i plane) here day false q q_seed))
-      (if_yes (< z hi)
+      (if_yes (< z hi_z)
         (unspread_to param1 content reg (+ i plane) here day false q q_seed))
       # Downward is the one direction that is not "dimmer means derived":
       # full sunlight travels down *without* falling off (`seed_sunlight`), so
@@ -445,7 +467,7 @@
       # Without this, placing one node in open air leaves a lit column under it
       # and the block casts no shadow.
       (if_yes (> y 0.0)
-        (unspread_to param1 content reg (- i dim) here day
+        (unspread_to param1 content reg (- i dx) here day
                      (&& day (== here light_max)) q q_seed)))))
 
 (fn unspread_to [param1 : (Buffer F32) content : (Buffer F32) reg : Registry
@@ -470,27 +492,27 @@
 
 # Push every neighbour that still holds light, so the re-flood starts from
 # whatever survived.
-(fn seed_neighbours [param1 : (Buffer F32) dim : F64 i : F64 day : Bool
-                     q : (Buffer F32)] : Nil
-  (var plane (* dim dim))
-  (var hi (- dim 1.0))
+(fn seed_neighbours [param1 : (Buffer F32) dx : F64 dy : F64 dz : F64
+                     i : F64 day : Bool q : (Buffer F32)] : Nil
+  (var plane (* dx dy))
   (var z ($math/floor (/ i plane)))
   (var rest (- i (* z plane)))
-  (var y ($math/floor (/ rest dim)))
-  (var x (- rest (* y dim)))
+  (var y ($math/floor (/ rest dx)))
+  (var x (- rest (* y dx)))
   (if_yes (> x 0.0) (seed_one param1 (- i 1.0) day q))
-  (if_yes (< x hi) (seed_one param1 (+ i 1.0) day q))
-  (if_yes (> y 0.0) (seed_one param1 (- i dim) day q))
-  (if_yes (< y hi) (seed_one param1 (+ i dim) day q))
+  (if_yes (< x (- dx 1.0)) (seed_one param1 (+ i 1.0) day q))
+  (if_yes (> y 0.0) (seed_one param1 (- i dx) day q))
+  (if_yes (< y (- dy 1.0)) (seed_one param1 (+ i dx) day q))
   (if_yes (> z 0.0) (seed_one param1 (- i plane) day q))
-  (if_yes (< z hi) (seed_one param1 (+ i plane) day q)))
+  (if_yes (< z (- dz 1.0)) (seed_one param1 (+ i plane) day q)))
 
 (fn seed_one [param1 : (Buffer F32) j : F64 day : Bool q : (Buffer F32)] : Nil
   (if_yes (>= (channel_at param1 j day) light_min_spread)
     (queue_push q j)))
 
 # Relight one channel after the node at `i` changed.
-(fn relight_channel [param1 : (Buffer F32) content : (Buffer F32) dim : F64
+(fn relight_channel [param1 : (Buffer F32) content : (Buffer F32)
+                     dx : F64 dy : F64 dz : F64
                      reg : Registry i : F64 day : Bool
                      q : (Buffer F32) q_seed : (Buffer F32)] : Nil
   (queue_reset q)
@@ -500,7 +522,7 @@
   # it *with its value intact* — `unspread` reads it and zeroes it.
   (if_yes (> (channel_at param1 i day) 0.0)
     (queue_push q i)
-    (unspread param1 content dim reg q q_seed day))
+    (unspread param1 content dx dy dz reg q q_seed day))
 
   # The node's own emission is a seed, and so is any neighbour still lit.
   (var e (light_source_of reg (content ~ get i)))
@@ -508,9 +530,9 @@
     (if_yes (> e (channel_at param1 i day))
       (set_channel param1 i e day))
     (if_yes (>= e light_min_spread) (queue_push q_seed i)))
-  (seed_neighbours param1 dim i day q_seed)
+  (seed_neighbours param1 dx dy dz i day q_seed)
 
-  (flood param1 content dim reg q_seed day))
+  (flood param1 content dx dy dz reg q_seed day))
 
 # Restore the sunlight column below `(x, y, z)` after the node there stopped
 # blocking it.
@@ -520,18 +542,19 @@
 # be lit to 14 by the open air beside it where a full relight would send 15 all
 # the way down. `sky` is the same per-column boundary `light_region` takes, so
 # a hole dug in the top layer of a region is handled the same as one below it.
-(fn resunlight_column [param1 : (Buffer F32) content : (Buffer F32) dim : F64
+(fn resunlight_column [param1 : (Buffer F32) content : (Buffer F32)
+                       dx : F64 dy : F64 dz : F64
                        reg : Registry x : F64 y : F64 z : F64
                        sky : (Buffer F32) q : (Buffer F32)] : Nil
   (var incoming
-    (if (>= (+ y 1.0) dim)
-      (then (sky ~ get (+ x (* z dim))))
-      (else (day_of (param1 ~ get (region_index x (+ y 1.0) z dim))))))
+    (if (>= (+ y 1.0) dy)
+      (then (sky ~ get (+ x (* z dx))))
+      (else (day_of (param1 ~ get (region_index x (+ y 1.0) z dx dy))))))
   (if_yes (== incoming light_max)
     (var yy y)
     (var live true)
     (while (&& live (>= yy 0.0))
-      (var i (region_index x yy z dim))
+      (var i (region_index x yy z dx dy))
       (if (propagates_light? reg (content ~ get i))
         (then
           (var p (param1 ~ get i))
@@ -540,20 +563,21 @@
             (queue_push q i)))
         (else (set live false)))
       (set yy (- yy 1.0)))
-    (flood param1 content dim reg q true)))
+    (flood param1 content dx dy dz reg q true)))
 
 # Relight both channels after the node at `(x, y, z)` changed. This is what a
 # dig or a place calls (§7.1), on the server and on the client's prediction.
 #
 # `sky` is the per-column boundary `light_region` takes; `q` and `q_seed` are
-# scratch of at least `dim³ + queue_overhead` each, and are separate because the
-# unspread pass fills the second while draining the first.
-(fn relight_node [param1 : (Buffer F32) content : (Buffer F32) dim : F64
+# scratch of at least `dx*dy*dz + queue_overhead` each, and are separate because
+# the unspread pass fills the second while draining the first.
+(fn relight_node [param1 : (Buffer F32) content : (Buffer F32)
+                  dx : F64 dy : F64 dz : F64
                   reg : Registry x : F64 y : F64 z : F64
                   sky : (Buffer F32) q : (Buffer F32)
                   q_seed : (Buffer F32)] : Nil
-  (var i (region_index x y z dim))
-  (relight_channel param1 content dim reg i true q q_seed)
+  (var i (region_index x y z dx dy))
+  (relight_channel param1 content dx dy dz reg i true q q_seed)
   (queue_reset q)
-  (resunlight_column param1 content dim reg x y z sky q)
-  (relight_channel param1 content dim reg i false q q_seed))
+  (resunlight_column param1 content dx dy dz reg x y z sky q)
+  (relight_channel param1 content dx dy dz reg i false q q_seed))

@@ -127,15 +127,35 @@ void main() {
 # A vertex array per chunk, holding its own buffers and attribute layout, so
 # drawing a chunk is one `bindVertexArray` and one `drawElements` rather than
 # five state calls per chunk per frame.
+#
+# **The three handles are the caller's, not ours.** M3 created them inside the
+# upload and returned only the vertex array, which is right exactly once: a
+# chunk uploaded once and never touched again. M5 digs, and a dug chunk has to
+# be re-uploaded — so the caller keeps the buffers and hands them back, and the
+# re-upload replaces the data store of the buffers already wired into the vertex
+# array instead of building a second one and orphaning the first. There is no
+# `deleteBuffer` in the bindings (§D7.1), so leaking one per edit is not a small
+# leak; it is the whole world's geometry again every few hundred digs.
 
 (let stride 28.0)                  # 7 floats * 4 bytes
 
-(fn upload_chunk [gl : Gl verts : (Buffer F32) idx : (Buffer U32)]
-    : Gl/VertexArray
-  (var vao ($gl/create_vertex_array gl))
+(fn new_vertex_array [gl : Gl] : Gl/VertexArray
+  ($gl/create_vertex_array gl))
+
+(fn new_buffer [gl : Gl] : Gl/Buffer
+  ($gl/create_buffer gl))
+
+# Fill (or refill) one chunk's buffers and bind its attribute layout.
+#
+# The vertex array is bound first and stays bound for both uploads, which is not
+# tidiness: the element-array binding is part of vertex-array state, so binding
+# the index buffer with the wrong array bound would rewire whichever chunk was
+# bound last.
+(fn upload_chunk [gl : Gl vao : Gl/VertexArray
+                  vbo : Gl/Buffer ebo : Gl/Buffer
+                  verts : (Buffer F32) idx : (Buffer U32)] : Nil
   ($gl/bind_vertex_array gl vao)
 
-  (var vbo ($gl/create_buffer gl))
   ($gl/bind_buffer gl "array" vbo)
   ($gl/buffer_data gl "array" verts "static")
   ($gl/enable_attrib gl 0.0)
@@ -147,10 +167,8 @@ void main() {
   ($gl/enable_attrib gl 3.0)
   ($gl/attrib_pointer gl 3.0 1.0 "f32" false stride 24.0)
 
-  (var ebo ($gl/create_buffer gl))
   ($gl/bind_buffer gl "element_array" ebo)
-  ($gl/buffer_data gl "element_array" idx "static")
-  vao)
+  ($gl/buffer_data gl "element_array" idx "static"))
 
 # --- frame -------------------------------------------------------------------
 

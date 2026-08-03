@@ -1,9 +1,23 @@
-# design.md §D6.1 — the render spike.
+# The client — design.md §D6.1's render spike, grown into M5's loaded world.
 #
-# A fly-through of a static voxel world: generate a fixed grid of chunks, mesh
-# them, upload them, and draw. No game logic, no server, no networking, no
-# mods — those are M1 and later. The question this answers is only whether the
-# web profile can hold a 3D frame budget.
+# M0 asked one question: can the web profile hold a 3D frame budget? It answered
+# yes at 121 fps over a fly-through that generated each chunk, meshed it, and
+# threw the nodes away. M5 needs a world that stays — a player stands on it,
+# digs it, and puts nodes back — so the nodes are kept, once, in one array
+# (`core/loaded.gene`), and everything downstream reads that array instead of a
+# per-chunk copy of part of it.
+#
+# The build is three passes over the same storage rather than one pass per
+# chunk, and that ordering is the point:
+#
+#   1. generate every block into the array          (§3)
+#   2. light the whole array in one call            (§4)
+#   3. mesh each chunk out of the array             (§5)
+#
+# Lighting between 1 and 3 rather than inside the per-chunk loop is what fixes
+# M3's recorded limitation: a flood that runs over the whole loaded world
+# carries light across block borders, so a cave that breaks the surface is lit
+# down its shaft instead of going dark at the first boundary.
 #
 # Everything lives inside `main` because the profile rejects top-level `var`:
 # a module has no mutable state, so the frame loop is a closure over `main`'s
@@ -11,42 +25,34 @@
 
 (mod main ^profile web)
 
-(import [fill_padded] from "../core/mapgen.gene")
+(import [generate_block] from "../core/mapgen.gene")
 (import [count_faces build_mesh] from "../core/mesh.gene")
 (import [light_region queue_overhead] from "../core/light.gene")
 (import [new_registry id_of registered_count] from "../core/registry.gene")
 (import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
-(import [build_program init_state upload_atlas upload_chunk begin_frame
-         set_view_projection draw_chunk]
+(import [World new_world store_block block_base open_sky
+         world_dx world_dy world_dz world_stride_z world_nodes]
+        from "../core/loaded.gene")
+(import [build_program init_state upload_atlas new_vertex_array new_buffer
+         upload_chunk begin_frame set_view_projection draw_chunk]
         from "./render.gene")
 (import [paint] from "./atlas.gene")
 (import [forward_x forward_y forward_z] from "../core/vec.gene")
 
 (let seed 1337.0)
-(let pad_nodes 5832.0)             # 18^3
-(let pad_dim 18.0)
-(let chunk_dim 16.0)
+(let block_dim 16.0)
+(let block_nodes 4096.0)
 
-# The light buffer is reused across chunks, so it carries the previous chunk's
-# values into the next one — and `light_region` only ever raises a value, so a
-# stale bright node would never be corrected. A fresh block is zeroed by
-# construction (§1); a reused one has to be zeroed by hand.
-(fn zero_light [b : (Buffer F32)] : Nil
-  (var i 0.0)
-  (while (< i pad_nodes)
-    (b ~ set! i 0.0)
-    (set i (+ i 1.0))))
-
-# §D6.1's stated view: 12 x 4 x 12 chunks, 576 in all, ~2.4M nodes.
+# §D6.1's stated view: 12 x 4 x 12 blocks, 576 in all, ~2.4M nodes.
 (let span_x 12.0)
 (let span_y 4.0)
 (let span_z 12.0)
 
-# **Where the spike stands, and why it is not the origin.**
+# **Where the world stands, and why it is not the origin.**
 #
 # §3 gives biomes a noise scale of one unit per ~555 nodes, which is upstream's
 # order (its default biome `spread` is 1000) and the right order for a game: a
-# player should walk for a while to leave a biome. This view is 192 nodes
+# player should walk for a while to leave a biome. This world is 192 nodes
 # across — a third of one biome cell — so wherever it stands it shows one or two
 # biomes, and at the origin it happens to stand in the cold quadrant and is
 # uniformly snow.
@@ -56,8 +62,12 @@
 # view containing the most distinct biomes with a coastline in it; it has all
 # six and 23% water. Nothing about the generator is tuned for it — change the
 # seed and it is an ordinary place again.
-(let origin_x -1440.0)
-(let origin_z 3168.0)
+#
+# In blocks, because that is what the loaded box is measured in: node -1440 is
+# block -90 and node 3168 is block 198.
+(let origin_bx -90.0)
+(let origin_by 0.0)
+(let origin_bz 198.0)
 
 (let move_speed 22.0)
 (let look_speed 0.0022)
@@ -67,6 +77,9 @@
 # Noon. §4's two channels are mixed by this at render time, so a day/night cycle
 # is this one number moving rather than a remesh (see `client/render.gene`).
 (let time_of_day 1.0)
+
+(let floats_per_vertex 7.0)
+(let indices_per_face 6.0)
 
 (fn main [] : Nil
   (var stage ($dom/element "stage"))
@@ -93,58 +106,113 @@
   (var ores (setup_ores reg))
   (var air (id_of reg "air"))
   (var water (id_of reg "miclone:water"))
-
-  # --- build the world -------------------------------------------------------
-  #
-  # One scratch neighbourhood, reused for every chunk: the padded buffer is
-  # only an input to meshing, so allocating 576 of them would be 6 MB of
-  # garbage for no reason.
-
-  (var padded ($buffer F32 pad_nodes))
-  # §4's three companions to the node array, all reused across chunks: the
-  # packed light, the per-column sky boundary generation fills in, and the flood
-  # queue `core/light.gene` takes from its caller so a loader allocates once.
-  (var lit ($buffer F32 pad_nodes))
-  (var sky ($buffer F32 (* pad_dim pad_dim)))
-  (var lq ($buffer F32 (+ pad_nodes queue_overhead)))
   (var registered (registered_count reg))
-  (var meshes : (List Gl/VertexArray) [])
-  (var counts : (List F64) [])
-  (var faces_total 0.0)
 
+  # --- pass 1: generate ------------------------------------------------------
+  #
+  # One 16³ scratch block, reused: `generate_block` fills §1's storage unit and
+  # `store_block` copies it into its place in the world array. The `sky` it also
+  # fills is the per-block boundary M3's per-block lighting needed and this no
+  # longer does — the world's own ceiling is the boundary now (see pass 2) — so
+  # it is written and dropped.
+
+  (var world (new_world origin_bx origin_by origin_bz
+                        span_x span_y span_z))
+  (var wdx (world_dx world))
+  (var wdy (world_dy world))
+  (var wdz (world_dz world))
+  (var wsz (world_stride_z world))
+
+  (var t_start ($time/now))
+  (var block ($buffer F32 block_nodes))
+  (var block_sky ($buffer F32 (* block_dim block_dim)))
   (var cz 0.0)
   (while (< cz span_z)
     (var cy 0.0)
     (while (< cy span_y)
       (var cx 0.0)
       (while (< cx span_x)
-        (var ox (+ origin_x (* cx chunk_dim)))
-        (var oy (* cy chunk_dim))
-        (var oz (+ origin_z (* cz chunk_dim)))
-        (fill_padded padded sky ox oy oz biomes ores seed air water)
-        (zero_light lit)
-        (light_region lit padded pad_dim reg sky lq registered)
-        (var faces (count_faces reg padded))
-        # A chunk with no visible faces is fully interior or fully air. Most of
-        # a column is one or the other, so skipping them is most of the world.
-        (if_yes (> faces 0.0)
-          (var verts ($buffer F32 (* faces 28.0)))
-          (var idx ($buffer U32 (* faces 6.0)))
-          (build_mesh reg padded lit verts idx ox oy oz)
-          (meshes ~ push! (upload_chunk gl verts idx))
-          (counts ~ push! (* faces 6.0))
-          (set faces_total (+ faces_total faces)))
+        (var bx (+ origin_bx cx))
+        (var by (+ origin_by cy))
+        (var bz (+ origin_bz cz))
+        (generate_block block block_sky
+                        (* bx block_dim) (* by block_dim) (* bz block_dim)
+                        biomes ores seed air water)
+        (store_block world bx by bz block)
         (set cx (+ cx 1.0)))
       (set cy (+ cy 1.0)))
     (set cz (+ cz 1.0)))
+  (var t_gen ($time/now))
 
-  ($console/log $"miclone spike: $(meshes ~ size) chunk meshes, ${faces_total} faces")
+  # --- pass 2: light ---------------------------------------------------------
+  #
+  # One call over 194 x 66 x 194. The queue is sized to the contract in §4 —
+  # the region plus the ring's header — and is kept afterwards because §7.1's
+  # incremental relight needs one and allocating 10 MB on the first dig is not
+  # something to do inside a click handler.
+
+  (var sky ($buffer F32 (* wdx wdz)))
+  (open_sky world sky)
+  (var lq ($buffer F32 (+ (world_nodes world) queue_overhead)))
+  (light_region world/light world/content wdx wdy wdz reg sky lq registered)
+  (var t_light ($time/now))
+
+  # --- pass 3: mesh ----------------------------------------------------------
+  #
+  # A vertex array per chunk, whether or not it has geometry: an edit can give
+  # an empty chunk faces, so a slot that exists from the start is one less thing
+  # for a dig to have to allocate. `counts` is the index count and doubles as
+  # the "is there anything to draw" flag — most of a column is fully interior or
+  # fully air, and skipping those is most of the world.
+
+  (var chunks (* span_x (* span_y span_z)))
+  (var vaos : (List Gl/VertexArray) [])
+  (var vbos : (List Gl/Buffer) [])
+  (var ebos : (List Gl/Buffer) [])
+  (var counts ($buffer F32 chunks))
+  (var faces_total 0.0)
+
+  (var slot 0.0)
+  (set cz 0.0)
+  (while (< cz span_z)
+    (var cy 0.0)
+    (while (< cy span_y)
+      (var cx 0.0)
+      (while (< cx span_x)
+        (var vao (new_vertex_array gl))
+        (vaos ~ push! vao)
+        (var vbo (new_buffer gl))
+        (vbos ~ push! vbo)
+        (var ebo (new_buffer gl))
+        (ebos ~ push! ebo)
+
+        (var base (block_base world (+ origin_bx cx) (+ origin_by cy)
+                              (+ origin_bz cz)))
+        (var faces (count_faces reg world/content base wdx wsz))
+        (if_yes (> faces 0.0)
+          (var verts ($buffer F32 (* faces (* 4.0 floats_per_vertex))))
+          (var idx ($buffer U32 (* faces indices_per_face)))
+          (build_mesh reg world/content world/light verts idx base wdx wsz
+                      (* (+ origin_bx cx) block_dim)
+                      (* (+ origin_by cy) block_dim)
+                      (* (+ origin_bz cz) block_dim))
+          (upload_chunk gl vao vbo ebo verts idx)
+          (counts ~ set! slot (* faces indices_per_face))
+          (set faces_total (+ faces_total faces)))
+        (set slot (+ slot 1.0))
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0)))
+  (var t_mesh ($time/now))
+
+  ($console/log
+    $"miclone: ${chunks} chunks, $($math/round faces_total) faces · generate $($math/round (- t_gen t_start)) ms · light $($math/round (- t_light t_gen)) ms · mesh $($math/round (- t_mesh t_light)) ms")
 
   # --- camera ----------------------------------------------------------------
 
-  (var eye_x (+ origin_x (* (/ span_x 2.0) chunk_dim)))
+  (var eye_x (* (+ origin_bx (/ span_x 2.0)) block_dim))
   (var eye_y 78.0)
-  (var eye_z (+ origin_z (* (/ span_z 2.0) chunk_dim)))
+  (var eye_z (* (+ origin_bz (/ span_z 2.0)) block_dim))
   (var yaw 0.6)
   (var pitch -0.25)
   (var fwd 0.0)
@@ -213,16 +281,21 @@
     (set_view_projection gl prog proj view vp w h
                          eye_x eye_y eye_z dx dy dz fog_far time_of_day)
 
+    (var drawn 0.0)
     (var i 0.0)
-    (while (< i (meshes ~ size))
-      (draw_chunk gl meshes/%i counts/%i)
+    (while (< i chunks)
+      (var n (counts ~ get i))
+      (if_yes (> n 0.0)
+        (var k i)
+        (draw_chunk gl vaos/%k n)
+        (set drawn (+ drawn 1.0)))
       (set i (+ i 1.0)))
 
     # Frame rate over a one-second window, which is what §D6.1 measures.
     (set frames (+ frames 1.0))
     (if_yes (> (- now fps_since) 1000.0)
       ($dom/set_text ($dom/element "hud")
-        $"$($math/round frames) fps · $(meshes ~ size) chunks · $($math/round faces_total) faces")
+        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces")
       (set frames 0.0)
       (set fps_since now))
     ($frame/request frame)))

@@ -1,0 +1,326 @@
+# The loaded world — design.md §1, §5, and the part of §4 M3 deferred.
+#
+# A rectangular box of blocks held in memory as **one node array**, not as a map
+# of blocks. Everything that reads the world reads this: physics (§7), node
+# selection (§7), the mesher (§5), and the lighting flood (§4).
+#
+# ## Why one array, and why now
+#
+# Through M4 the client never kept the world at all. It generated an 18³ padded
+# neighbourhood per chunk, meshed it, uploaded the mesh, and dropped the nodes —
+# which is exactly right for a fly-through, because §3's generator is
+# deterministic and "generating the margin is cheaper than asking a neighbour
+# for it".
+#
+# **That equivalence is what M5 breaks.** The moment a player digs, a
+# regenerated margin no longer describes the world: it describes the world as it
+# was created. Every design that keeps padded copies per chunk has to write an
+# edited node into each of the up to eight copies that contain it and keep them
+# agreeing forever, and a stale copy shows up as a face that should not be there
+# — §4's "invisible in tests and obvious on screen" failure, one subsystem over.
+#
+# So the nodes are stored once. A block is still §1's unit for generation (§3),
+# for the wire (§10), and for disk (§11); it is not the unit of client memory.
+#
+# What that buys, beyond having one source of truth:
+#
+# - **Reads are an index.** `node_at` is three subtractions and one array read,
+#   with no block lookup in front of it. Physics and the raycast do thousands of
+#   these per second.
+# - **Meshing needs no gather.** `core/mesh.gene` reads a chunk straight out of
+#   the array through a base index and two strides.
+# - **Light crosses blocks.** §4 stopped at a block edge and recorded the
+#   symptom — a cave that breaks the surface is lit in one block and dark in the
+#   next. One array means one call to `light_region` lights the whole loaded
+#   world, and the boundary the flood stops at is the edge of what is loaded.
+#
+# ## The shell
+#
+# The array is one node larger than the world on every side, so a mesher reading
+# a chunk's neighbours and a flood testing its bounds never fall off the end and
+# never bounds-check. The shell is not decoration; it is what the two hot loops
+# are allowed to assume.
+#
+# Five of the six faces hold `ignore` — §1's "not generated yet, never sent" —
+# which is opaque, so no face is drawn against it, and does not propagate light,
+# so nothing leaks out of the world. **The top face holds `air` instead**,
+# because sunlight enters through it: a shell of `ignore` over the world would
+# stop the sun at the ceiling and leave everything below it black. That single
+# asymmetry is the whole boundary condition (§4's `sky`).
+#
+# ## Extent
+#
+# The extent is fixed at construction and does not stream. That is what M5 needs
+# and no more: one singleplayer world, generated once, entirely resident. M6
+# splits client from server and blocks start arriving and leaving; the shape
+# that wants is this box sliding over the world, which is a change to who fills
+# it rather than to what it is.
+#
+# Sizes are `F64` throughout, and the node arrays are `F32` — `core/world.gene`
+# carries the measurement behind that rule, and this is the array it is most
+# about.
+
+(mod loaded ^profile web)
+
+(import [content_air content_ignore] from "./world.gene")
+(import [light_max] from "./light.gene")
+(import [chunk_base] from "./mesh.gene")
+
+(let block_dim 16.0)
+
+# --- the dims cells ----------------------------------------------------------
+#
+# The scalars live in a `(Buffer F32)` beside the node arrays rather than as
+# properties, which is `core/registry.gene`'s pattern and is here for the same
+# reason: one storage kind means one mutation path, and a caller that hoists
+# `w/dims` once pays a single property load for all nine.
+#
+# `sz` is derived (`dx * dy`) and cached because it is the z stride of every
+# index computed below, including the mesher's — recomputing a multiply per node
+# to save one cell would be the wrong trade in the one place that matters.
+
+(let dim_dx 0.0)                   # array extent, world extent + 2
+(let dim_dy 1.0)
+(let dim_dz 2.0)
+(let dim_sz 3.0)                   # z stride, dx * dy
+(let dim_ox 4.0)                   # world node coordinate of array cell 1
+(let dim_oy 5.0)
+(let dim_oz 6.0)
+(let dim_span_x 7.0)               # extent in blocks
+(let dim_span_y 8.0)
+(let dim_span_z 9.0)
+(let dim_cells 10.0)
+
+(type World
+  ^props {^content (Buffer F32)
+          ^light   (Buffer F32)
+          ^dims    (Buffer F32)}
+
+  # `bx, by, bz` are block coordinates: the corner block of the loaded box.
+  (ctor [bx : F64 by : F64 bz : F64
+         span_x : F64 span_y : F64 span_z : F64]
+    (var dx (+ (* span_x block_dim) 2.0))
+    (var dy (+ (* span_y block_dim) 2.0))
+    (var dz (+ (* span_z block_dim) 2.0))
+    (var d ($buffer F32 dim_cells))
+    (d ~ set! dim_dx dx)
+    (d ~ set! dim_dy dy)
+    (d ~ set! dim_dz dz)
+    (d ~ set! dim_sz (* dx dy))
+    (d ~ set! dim_ox (* bx block_dim))
+    (d ~ set! dim_oy (* by block_dim))
+    (d ~ set! dim_oz (* bz block_dim))
+    (d ~ set! dim_span_x span_x)
+    (d ~ set! dim_span_y span_y)
+    (d ~ set! dim_span_z span_z)
+    (set! self/dims d)
+    # Zeroed is all air and no light, as §1's fresh block is — so only the shell
+    # has to be written, and only the five faces of it that are not air.
+    (set! self/content ($buffer F32 (* dx (* dy dz))))
+    (set! self/light ($buffer F32 (* dx (* dy dz))))
+    (seal_shell self/content dx dy dz)))
+
+# The constructor every caller should reach for, as `new_registry` is for §2's
+# registry. A `type`'s own constructor compiles to a `$gene_new` static in the
+# web profile, which is an implementation detail no `tools/*.mjs` harness should
+# have to spell.
+(fn new_world [bx : F64 by : F64 bz : F64
+                span_x : F64 span_y : F64 span_z : F64] : World
+  (new World bx by bz span_x span_y span_z))
+
+# --- shell -------------------------------------------------------------------
+
+# Write `ignore` into the four side faces and the floor, then leave the ceiling
+# as the `air` it was allocated as. Order matters: the side faces are written
+# over their whole height first and the ceiling is restored afterwards, so the
+# twelve edge cells of the top plane end up air rather than ignore and the sun
+# enters over the whole plane instead of over the interior only.
+(fn seal_shell [content : (Buffer F32) dx : F64 dy : F64 dz : F64] : Nil
+  (var sz (* dx dy))
+  (var hi_x (- dx 1.0))
+  (var hi_y (- dy 1.0))
+  (var hi_z (- dz 1.0))
+
+  # Floor.
+  (var z 0.0)
+  (while (< z dz)
+    (var x 0.0)
+    (while (< x dx)
+      (content ~ set! (+ x (* z sz)) content_ignore)
+      (set x (+ x 1.0)))
+    (set z (+ z 1.0)))
+
+  # The two z faces.
+  (var y 0.0)
+  (while (< y dy)
+    (var x 0.0)
+    (while (< x dx)
+      (content ~ set! (+ x (* y dx)) content_ignore)
+      (content ~ set! (+ x (+ (* y dx) (* hi_z sz))) content_ignore)
+      (set x (+ x 1.0)))
+    (set y (+ y 1.0)))
+
+  # The two x faces.
+  (set y 0.0)
+  (while (< y dy)
+    (var zz 0.0)
+    (while (< zz dz)
+      (content ~ set! (+ (* y dx) (* zz sz)) content_ignore)
+      (content ~ set! (+ hi_x (+ (* y dx) (* zz sz))) content_ignore)
+      (set zz (+ zz 1.0)))
+    (set y (+ y 1.0)))
+
+  # Ceiling: air, so sunlight has somewhere to come from.
+  (set z 0.0)
+  (while (< z dz)
+    (var x 0.0)
+    (while (< x dx)
+      (content ~ set! (+ x (+ (* hi_y dx) (* z sz))) content_air)
+      (set x (+ x 1.0)))
+    (set z (+ z 1.0))))
+
+# --- shape -------------------------------------------------------------------
+
+(fn world_dx [w : World] : F64 (w/dims ~ get dim_dx))
+(fn world_dy [w : World] : F64 (w/dims ~ get dim_dy))
+(fn world_dz [w : World] : F64 (w/dims ~ get dim_dz))
+(fn world_stride_z [w : World] : F64 (w/dims ~ get dim_sz))
+
+(fn world_nodes [w : World] : F64
+  (var d w/dims)
+  (* (d ~ get dim_dx) (* (d ~ get dim_dy) (d ~ get dim_dz))))
+
+(fn world_span_x [w : World] : F64 (w/dims ~ get dim_span_x))
+(fn world_span_y [w : World] : F64 (w/dims ~ get dim_span_y))
+(fn world_span_z [w : World] : F64 (w/dims ~ get dim_span_z))
+
+# The lowest world node coordinate inside the world, on each axis. The highest
+# is this plus `span * 16 - 1`; the shell sits one node outside both.
+(fn world_min_x [w : World] : F64 (w/dims ~ get dim_ox))
+(fn world_min_y [w : World] : F64 (w/dims ~ get dim_oy))
+(fn world_min_z [w : World] : F64 (w/dims ~ get dim_oz))
+
+# --- addressing --------------------------------------------------------------
+#
+# World node coordinates in, array indices out. The `+1` is the shell.
+
+(fn array_x [w : World nx : F64] : F64 (+ (- nx (w/dims ~ get dim_ox)) 1.0))
+(fn array_y [w : World ny : F64] : F64 (+ (- ny (w/dims ~ get dim_oy)) 1.0))
+(fn array_z [w : World nz : F64] : F64 (+ (- nz (w/dims ~ get dim_oz)) 1.0))
+
+# True for a node the array can hold, **shell included**. The shell is real
+# storage with real content, and a reader that reaches it is asking a legitimate
+# question — "what is one step outside the world" — whose answer is `ignore`.
+(fn addressable? [w : World nx : F64 ny : F64 nz : F64] : Bool
+  (var d w/dims)
+  (var ax (+ (- nx (d ~ get dim_ox)) 1.0))
+  (var ay (+ (- ny (d ~ get dim_oy)) 1.0))
+  (var az (+ (- nz (d ~ get dim_oz)) 1.0))
+  (&& (&& (&& (>= ax 0.0) (< ax (d ~ get dim_dx)))
+          (&& (>= ay 0.0) (< ay (d ~ get dim_dy))))
+      (&& (>= az 0.0) (< az (d ~ get dim_dz)))))
+
+# True only for a node of the world proper — the shell is outside it. This is
+# the predicate an editor wants: the shell is not a place a player may dig.
+(fn inside? [w : World nx : F64 ny : F64 nz : F64] : Bool
+  (var d w/dims)
+  (var x (- nx (d ~ get dim_ox)))
+  (var y (- ny (d ~ get dim_oy)))
+  (var z (- nz (d ~ get dim_oz)))
+  (&& (&& (&& (>= x 0.0) (< x (* (d ~ get dim_span_x) block_dim)))
+          (&& (>= y 0.0) (< y (* (d ~ get dim_span_y) block_dim))))
+      (&& (>= z 0.0) (< z (* (d ~ get dim_span_z) block_dim)))))
+
+# The array index of a world node. Only meaningful where `addressable?` holds;
+# callers that cannot promise that use `node_at`, which checks.
+(fn world_index [w : World nx : F64 ny : F64 nz : F64] : F64
+  (var d w/dims)
+  (+ (+ (- nx (d ~ get dim_ox)) 1.0)
+     (+ (* (+ (- ny (d ~ get dim_oy)) 1.0) (d ~ get dim_dx))
+        (* (+ (- nz (d ~ get dim_oz)) 1.0) (d ~ get dim_sz)))))
+
+# --- reading and writing -----------------------------------------------------
+
+# Out of the array reads as `ignore`, which is the same answer the shell gives
+# and means the same thing: there is nothing there and you may not have it. A
+# caller therefore never has to ask `addressable?` first, and physics gets the
+# behaviour it wants — the edge of the loaded world stops you — from §1's
+# existing reserved id rather than from a special case.
+(fn node_at [w : World nx : F64 ny : F64 nz : F64] : F64
+  (if (addressable? w nx ny nz)
+    (then (w/content ~ get (world_index w nx ny nz)))
+    (else content_ignore)))
+
+# The packed day/night byte of §4. Unlit — 0 — outside the array, which is what
+# an unloaded node is: no light, rather than dark-because-shadowed.
+(fn light_at [w : World nx : F64 ny : F64 nz : F64] : F64
+  (if (addressable? w nx ny nz)
+    (then (w/light ~ get (world_index w nx ny nz)))
+    (else 0.0)))
+
+# Writes are refused outside the world proper. Silently, because every caller
+# has already decided the edit is legal — §7.1's client-side rejection — and a
+# raise here would turn a mis-aimed click at the world's edge into a crash.
+(fn set_node [w : World nx : F64 ny : F64 nz : F64 id : F64] : Nil
+  (if_yes (inside? w nx ny nz)
+    (w/content ~ set! (world_index w nx ny nz) id)))
+
+(fn set_light [w : World nx : F64 ny : F64 nz : F64 packed : F64] : Nil
+  (if_yes (inside? w nx ny nz)
+    (w/light ~ set! (world_index w nx ny nz) packed)))
+
+# --- blocks ------------------------------------------------------------------
+
+# The array index `core/mesh.gene` needs for the chunk at block `(bx, by, bz)`:
+# the index of that block's own `(0, 0, 0)`.
+(fn block_base [w : World bx : F64 by : F64 bz : F64] : F64
+  (var d w/dims)
+  (chunk_base (+ (- (* bx block_dim) (d ~ get dim_ox)) 1.0)
+              (+ (- (* by block_dim) (d ~ get dim_oy)) 1.0)
+              (+ (- (* bz block_dim) (d ~ get dim_oz)) 1.0)
+              (d ~ get dim_dx)
+              (d ~ get dim_sz)))
+
+# Copy a generated 16³ block (§1's `x + 16y + 256z`) into its place in the array.
+#
+# Row at a time rather than node at a time: the source and destination rows are
+# both contiguous and both 16 long, so the addressing is computed 256 times per
+# block instead of 4,096 times.
+(fn store_block [w : World bx : F64 by : F64 bz : F64
+                 src : (Buffer F32)] : Nil
+  (var d w/dims)
+  (var dx (d ~ get dim_dx))
+  (var sz (d ~ get dim_sz))
+  (var content w/content)
+  (var base (block_base w bx by bz))
+  (var z 0.0)
+  (while (< z block_dim)
+    (var y 0.0)
+    (while (< y block_dim)
+      (var dst (+ base (+ (* y dx) (* z sz))))
+      (var from (+ (* y block_dim) (* z (* block_dim block_dim))))
+      (var x 0.0)
+      (while (< x block_dim)
+        (content ~ set! (+ dst x) (src ~ get (+ from x)))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
+# --- the sky boundary --------------------------------------------------------
+
+# §4's per-column boundary for `light_region`, sized `dx * dz`.
+#
+# **Open everywhere, and that is a claim about the caller's extent, not a
+# default.** It holds exactly when the loaded box tops out above every node that
+# could shadow a column, which for a box whose ceiling is well over the
+# generator's highest terrain is true by construction — and the ceiling is air
+# (see the shell, above) so the sun has a node to enter through. A box cut off
+# at the treeline would need the light leaving the box above it instead, which
+# is the server's business and is why `light_region` takes this rather than
+# assuming it.
+(fn open_sky [w : World sky : (Buffer F32)] : Nil
+  (var n (* (world_dx w) (world_dz w)))
+  (var i 0.0)
+  (while (< i n)
+    (sky ~ set! i light_max)
+    (set i (+ i 1.0))))
