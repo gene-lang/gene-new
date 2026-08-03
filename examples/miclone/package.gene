@@ -27,6 +27,11 @@
     (application "protocol_spec" ^entry "probes/run_protocol_spec.gene")
     # design.md §2 and §7.1 — stacks, and what a dug node yields.
     (application "inventory_spec" ^entry "probes/run_inventory_spec.gene")
+    # design.md §10.1 — what the protocol costs on the VM, which is where the
+    # server encodes it.
+    (application "wire_bench" ^entry "probes/wire_bench.gene")
+    # design.md §D8's M6: the server half, as its own process.
+    (application "server" ^entry "server/main.gene")
     # design.md §D8's M4 deliverable, run twice: `create` then `verify`.
     (application "persistence" ^entry "probes/run_persistence.gene")
   ]

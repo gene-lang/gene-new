@@ -178,6 +178,29 @@ with synthetic events. It found the spawn scan stopping at the first *drawn*
 node — water is drawn, this site is 23% sea, and the player was spawning
 afloat.
 
+### §D8 M6 — client and server as separate processes
+
+```sh
+gene run server                  # generates the world, listens on 8790
+node tools/net_probe.mjs         # joins it, in another shell
+```
+
+The probe is the only harness here that runs two processes: it joins over a
+real WebSocket and drives the whole §10 exchange with the same `core/` modules
+the browser client uses — handshake, registry, flow-controlled block transfer,
+and §7.1's authoritative dig and place, including the server refusing a node
+the client does not hold.
+
+**The client asks for terrain; the server does not push it.** That is flow
+control and it is not optional: the WebSocket outbound queue holds 256 frames
+per connection and `ws_send` drops the oldest when it overflows. Pushing all
+576 blocks from `on_open` delivered 422 of them and reported success.
+
+`gene run wire_bench` reports what a block message costs on the VM: **17.9 ms**
+against V8's 0.032 ms, which is §D6.3's ~500 ns message send met again — a
+block encode is ~16,000 buffer reads. That, not the socket, is why a world
+takes ~12 s to transfer. See design.md §10.1.
+
 ### Cross-backend specs
 
 Both must produce byte-identical output on the VM and through the web profile.

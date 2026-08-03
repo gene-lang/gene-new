@@ -2066,6 +2066,33 @@ and the socket is the slower half regardless. The alternating worst case is
 pinned by the spec at one run per node so the cost is a number rather than a
 worry.
 
+**The server encodes a block in 17.9 ms, and V8 does the same work in 0.032 ms
+— 558x.** That is not a defect in the codec; it is §D6.3's finding arriving
+somewhere new. A message send is ~500 ns on the VM and `(buf ~ get i)` is a
+message send, so a block encode is ~16,000 sends before any arithmetic:
+
+| stage | VM | what it does |
+|---|---|---|
+| `block_size` | 6.4 ms | two counting passes, to size the buffer exactly |
+| `encode_block` | 11.5 ms | two writing passes |
+| `to_bytes` | 0.0 ms | the socket boundary — 4,096 bytes, and free next to the above |
+
+Measured by `gene run wire_bench`. It is what makes a 576-block world take ~12 s
+to transfer rather than the ~0.3 s the 0.32 MB would suggest — **the socket was
+never the bottleneck**, which is worth knowing before anyone optimises the
+wrong half. A world load is a one-time cost and M6 is about the split working,
+so this ships measured rather than fixed.
+
+Two ways out, in the order they are worth trying:
+
+1. **Delete `block_size`'s counting passes**, which is 36% of the cost for a
+   modest change: encode into one worst-case buffer reused across blocks
+   (13 + 4 × 8,192 = 32,781 bytes, allocated once) and convert only the prefix
+   the cursor reached. It needs `Buffer/to_bytes` to take a length, which is a
+   small VM-surface addition.
+2. **§D7.11's AOT path**, which is the general answer and already lowers the
+   noise stack; the codec's inner loops are the same shape.
+
 Three decisions the spec caught rather than the design:
 
 - **Every `encode_*` has a matching `*_size` and the spec asserts the encoder

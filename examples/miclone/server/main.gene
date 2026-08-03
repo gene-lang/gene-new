@@ -1,0 +1,364 @@
+# The server — design.md §10, §12, and §7.1's authoritative half.
+#
+# Owns the world, accepts WebSocket connections, and answers them. VM-only:
+# it holds §11's SQLite store and §2's server half (drops), neither of which
+# the browser has or should have.
+#
+# ## What M6 is, and what it is not
+#
+# §D8's M6 is "the same game, client and server as separate processes". The
+# world, the physics, the lighting, and the protocol are all already portable —
+# M1 through M5 built them in `core/` for exactly this — so what this file adds
+# is not gameplay. It is the part §D3 says should be small: a socket, a
+# dispatch on a message kind, and the authority to say no.
+#
+# **What it is not is a tick loop.** §12 specifies a fixed-step server tick, and
+# there is nothing yet that needs one: no entities (§8), no ABMs (§9), no
+# liquids that flow. Every message this handles is a response to a client
+# action, so the server is reactive and says so rather than running an empty
+# loop at 20 Hz to look like a game server. §12's loop arrives with the first
+# thing that changes without being asked.
+#
+# ## One world, many clients, no player state
+#
+# The world is shared and every client sees every edit. What is *not* shared is
+# the player: each connection carries its own physics state, inventory, and
+# position, and none of it is sent to the other clients — §8's entities are what
+# make a player visible to another player, and they are M8's.
+#
+# So two clients on this server dig the same world and cannot see each other.
+# That is the honest M6 scope: the split is real and the game through it is the
+# same singleplayer game, which is exactly what §D8 asks M6 to demonstrate.
+
+(mod server_main)
+
+(import $net/http [Server serve listen ws_accept ws_send ws_close])
+(import [Registry new_registry registered_count id_of] from "../core/registry.gene")
+(import [setup_nodes setup_biomes setup_ores setup_drops]
+        from "../core/content.gene")
+(import [generate_block] from "../core/mapgen.gene")
+(import [World new_world store_block block_base open_sky node_at
+         world_dx world_dy world_dz world_stride_z world_nodes
+         world_min_y]
+        from "../core/loaded.gene")
+(import [light_region queue_overhead] from "../core/light.gene")
+(import [new_bounds apply_node diggable? placeable?] from "../core/edit.gene")
+(import [solid?] from "../core/registry.gene")
+(import [new_inventory add take slot_item slot_count slot_empty?]
+        from "../core/inventory.gene")
+(import [drop_item drop_count] from "../core/drops.gene")
+(import [new_cursor] from "../core/wire.gene")
+(import [message_kind msg_input msg_dig msg_place msg_request_blocks
+         hello_size encode_hello
+         registry_size encode_registry
+         block_size encode_block
+         node_delta_size encode_node_delta
+         inventory_size encode_inventory
+         new_edit decode_edit edit_x edit_y edit_z edit_id
+         new_request decode_request_blocks req_from req_count]
+        from "../core/protocol.gene")
+
+(let seed 1337.0)
+(let block_dim 16)
+(let block_nodes 4096)
+
+# §D6.1's extent and site, which the client no longer chooses — the server
+# tells it in `hello`, because the server is the one that generated it.
+(let origin_bx -90)
+(let origin_by 0)
+(let origin_bz 198)
+(let span_x 12)
+(let span_y 4)
+(let span_z 12)
+
+(let hotbar_slots 8)
+
+(let port 8790)
+
+# --- the world ---------------------------------------------------------------
+
+(fn build_world [reg : Registry] : World
+  (var biomes (setup_biomes reg))
+  (var ores (setup_ores reg))
+  (var air (id_of reg "air"))
+  (var water (id_of reg "miclone:water"))
+  (var w (new_world ($to_float origin_bx) ($to_float origin_by)
+                    ($to_float origin_bz)
+                    ($to_float span_x) ($to_float span_y) ($to_float span_z)))
+
+  (var block ($buffer F32 ($to_float block_nodes)))
+  (var block_sky ($buffer F32 ($to_float (* block_dim block_dim))))
+  (var cz 0)
+  (while (< cz span_z)
+    (var cy 0)
+    (while (< cy span_y)
+      (var cx 0)
+      (while (< cx span_x)
+        (var bx ($to_float (+ origin_bx cx)))
+        (var by ($to_float (+ origin_by cy)))
+        (var bz ($to_float (+ origin_bz cz)))
+        (generate_block block block_sky
+                        (* bx 16.0) (* by 16.0) (* bz 16.0)
+                        biomes ores seed air water)
+        (store_block w bx by bz block)
+        (set cx (+ cx 1)))
+      (set cy (+ cy 1)))
+    (set cz (+ cz 1)))
+
+  # One flood over the whole loaded world (§4.2), which is what makes light
+  # cross block boundaries — and is why the server sends light rather than
+  # letting the client derive it (§4).
+  (var sky ($buffer F32 (* (world_dx w) (world_dz w))))
+  (open_sky w sky)
+  (var q ($buffer F32 (+ (world_nodes w) queue_overhead)))
+  (light_region w/light w/content (world_dx w) (world_dy w) (world_dz w)
+                reg sky q (registered_count reg))
+  w)
+
+# The spawn, and **the server owns it now** — it goes out in `hello`, because
+# the server is the process that generated the world. The client's copy of this
+# scan is deleted rather than kept in step.
+#
+# Down the middle column to the first node that *blocks*, then east until the
+# column is dry. Two things it must not do, both of which it did first:
+#
+# - **stop at the first `drawn?` node.** Water is drawn, this site was chosen
+#   for its coastline and is 23% sea, and the player spawns afloat. §7's M5 note
+#   records this; porting the scan here reintroduced it, and the probe caught it
+#   as a dig that produced no delta — the node under the player was water, which
+#   §7 leaves unpointable on purpose.
+# - **search up from the floor.** A column with a cave in it has a free position
+#   at the bottom of the cave, which is a spawn underground in the dark.
+(fn find_spawn [w : World reg : Registry into : (Buffer F64)] : Nil
+  (var col_x (* ($to_float (+ origin_bx (/ span_x 2))) 16.0))
+  (var col_z (* ($to_float (+ origin_bz (/ span_z 2))) 16.0))
+  (var top (* ($to_float (+ origin_by span_y)) 16.0))
+  (var bottom (world_min_y w))
+  (var air (id_of reg "air"))
+  (var y top)
+  (var dry false)
+  (var tries 0.0)
+  (while (&& (! dry) (< tries 96.0))
+    (set y top)
+    (var scanning true)
+    (while (&& scanning (> y bottom))
+      (if (solid? reg (node_at w col_x (- y 1.0) col_z))
+        (then (set scanning false))
+        (else (set y (- y 1.0)))))
+    (if (== (node_at w col_x y col_z) air)
+      (then (set dry true))
+      (else
+        (set col_x (+ col_x 1.0))
+        (set tries (+ tries 1.0)))))
+  (into ~ set! 0.0 (+ col_x 0.5))
+  (into ~ set! 1.0 y)
+  (into ~ set! 2.0 (+ col_z 0.5)))
+
+# --- sending -----------------------------------------------------------------
+#
+# Every send is `(buf ~ to_bytes)` then `ws_send`. That conversion is the whole
+# of the VM's I/O boundary: the codec works over a `(Buffer U8)` because the
+# client must run the same code, and `Bytes` is what the socket takes.
+
+(fn send_hello [conn w : World spawn_at : (Buffer F64)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 hello_size))
+  (encode_hello b c seed
+                ($to_float origin_bx) ($to_float origin_by)
+                ($to_float origin_bz)
+                ($to_float span_x) ($to_float span_y) ($to_float span_z)
+                (spawn_at ~ get 0.0) (spawn_at ~ get 1.0) (spawn_at ~ get 2.0))
+  (ws_send conn (b ~ to_bytes)))
+
+(fn send_registry [conn reg : Registry] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 (registry_size reg)))
+  (encode_registry b c reg)
+  (ws_send conn (b ~ to_bytes)))
+
+# Returns `ws_send`'s drop count — see `answer_blocks` for why anything reads it.
+(fn send_block [conn w : World bx : F64 by : F64 bz : F64] : F64
+  (var c (new_cursor))
+  (var base (block_base w bx by bz))
+  (var dx (world_dx w))
+  (var sz (world_stride_z w))
+  (var b ($buffer U8 (block_size w/content w/light base dx sz)))
+  (encode_block b c bx by bz w/content w/light base dx sz)
+  ($to_float (ws_send conn (b ~ to_bytes))))
+
+(fn send_node_delta [conn nx : F64 ny : F64 nz : F64
+                     id : F64 param1 : F64] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 node_delta_size))
+  (encode_node_delta b c nx ny nz id param1)
+  (ws_send conn (b ~ to_bytes)))
+
+(fn send_inventory [conn inv : (Buffer F64)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 (inventory_size ($to_float hotbar_slots))))
+  (encode_inventory b c inv ($to_float hotbar_slots))
+  (ws_send conn (b ~ to_bytes)))
+
+# Answer a client's request for blocks `[from, from + count)` in the linear
+# index the client computes from `hello`'s extent.
+#
+# **The client asks and the server answers; the server does not push.** That is
+# not politeness, it is flow control, and skipping it cost a debugging session:
+# the WebSocket outbound queue holds 256 frames per connection and `ws_send`
+# *drops the oldest* when it overflows. The first version of this file pushed
+# all 576 blocks in a loop from `on_open` — 422 of them arrived, `ws_send`
+# reported the drops, nothing read the report, and the client got a world with
+# holes in it and no error.
+#
+# So this also **checks what `ws_send` returns**. A drop here means the client
+# asked for more than the socket could absorb, which is a bug in the client's
+# window rather than a condition to recover from — but it is said rather than
+# swallowed, which is the whole lesson of the previous commit.
+(fn answer_blocks [conn w : World from : F64 count : F64] : F64
+  (var total ($to_float (* span_x (* span_y span_z))))
+  (var at from)
+  (var last ($math/min total (+ from count)))
+  (var dropped 0.0)
+  (while (< at last)
+    (var cx (- at (* span_x ($math/floor (/ at ($to_float span_x))))))
+    (var rest ($math/floor (/ at ($to_float span_x))))
+    (var cy (- rest (* span_y ($math/floor (/ rest ($to_float span_y))))))
+    (var cz ($math/floor (/ rest ($to_float span_y))))
+    (var drops (send_block conn w
+                           (+ ($to_float origin_bx) cx)
+                           (+ ($to_float origin_by) cy)
+                           (+ ($to_float origin_bz) cz)))
+    (set dropped (+ dropped drops))
+    (set at (+ at 1.0)))
+  (if_yes (> dropped 0.0)
+    ($println $"  WARN dropped $($to_int dropped) frame(s): the client's request window is larger than the socket can absorb"))
+  (- last from))
+
+# --- serving -----------------------------------------------------------------
+
+(fn main [args] : Nil
+  (var reg (new_registry))
+  (setup_nodes reg)
+  (var drops (setup_drops reg))
+  (var air (id_of reg "air"))
+
+  ($println $"miclone server: generating ${span_x}x${span_y}x${span_z} blocks…")
+  (var t0 ($os/monotonic_ms))
+  (var world (build_world reg))
+  (var spawn_at ($buffer F64 3.0))
+  (find_spawn world reg spawn_at)
+  ($println $"  ready in $(- ($os/monotonic_ms) t0) ms; spawn at $(spawn_at ~ get 0.0), $(spawn_at ~ get 1.0), $(spawn_at ~ get 2.0)")
+
+  # §4's scratch, allocated once for the process rather than per edit: the
+  # queues are 10 MB at this extent and an edit happens inside a click.
+  (var sky ($buffer F32 (* (world_dx world) (world_dz world))))
+  (open_sky world sky)
+  (var lq ($buffer F32 (+ (world_nodes world) queue_overhead)))
+  (var lq_seed ($buffer F32 (+ (world_nodes world) queue_overhead)))
+  (var bounds (new_bounds))
+  (var edit (new_edit))
+
+  ($println $"miclone server: listening on ${port}")
+  (serve (listen ^host "127.0.0.1" ^port port)
+    (fn [req]
+      # Per-connection state. A closure over these is what makes each client
+      # its own player without a table keyed by connection.
+      (var inv (new_inventory ($to_float hotbar_slots)))
+      (ws_accept req
+        ^on_open (fn [conn]
+          # Handshake only. The terrain follows when the client asks for it,
+          # which is what keeps the 256-frame queue from overflowing.
+          (send_hello conn world spawn_at)
+          (send_registry conn reg)
+          (send_inventory conn inv)
+          ($println "  client joined"))
+
+        ^on_message (fn [conn payload]
+          # `payload` is `Bytes` for a binary frame (the previous commit's
+          # work); back into a `(Buffer U8)` so the portable codec can read it.
+          (var b ($binary/to_buffer payload))
+          (var c (new_cursor))
+          # **A message shorter than its kind byte is dropped, not decoded.**
+          # A server takes bytes from the network and a peer is entitled to send
+          # anything; without this an empty frame reads `undefined` for the kind
+          # and every comparison below is against Void. That is not theoretical
+          # — a probe with a miscomputed buffer size sent exactly this, and the
+          # handler threw once per message.
+          (if_yes (>= ($binary/size payload) 1)
+          (var kind (message_kind b))
+
+          (if_yes (== kind msg_request_blocks)
+            (var req (new_request))
+            (decode_request_blocks b c req)
+            (answer_blocks conn world (req ~ get req_from)
+                           (req ~ get req_count)))
+
+          # §7.1's authority. The client has already applied the edit
+          # optimistically and predicted nothing about the drop; what goes back
+          # is the node delta that either agrees — and is retired silently — or
+          # does not, and wins.
+          (if (== kind msg_dig)
+            (then
+              (decode_edit b c edit)
+              (var nx (edit ~ get edit_x))
+              (var ny (edit ~ get edit_y))
+              (var nz (edit ~ get edit_z))
+              (if_yes (diggable? world reg nx ny nz)
+                (var was (node_at world nx ny nz))
+                (apply_node world reg nx ny nz air sky lq lq_seed bounds)
+                # The drop is the server's alone (§2, §7.1 step 3).
+                (var yield_n (drop_count drops was))
+                (if_yes (> yield_n 0.0)
+                  (add inv (drop_item drops was) yield_n)
+                  (send_inventory conn inv))
+                (send_node_delta conn nx ny nz air
+                                 (world/light ~ get
+                                   (block_index_of world nx ny nz)))))
+
+            (else
+              (if (== kind msg_place)
+                (then
+                  (decode_edit b c edit)
+                  (var nx (edit ~ get edit_x))
+                  (var ny (edit ~ get edit_y))
+                  (var nz (edit ~ get edit_z))
+                  (var held (edit ~ get edit_id))
+                  # The client says what it is holding and the server checks it
+                  # actually holds it — a client that lies about its inventory
+                  # is the one thing a client must not be believed about.
+                  (var slot (find_slot inv held))
+                  (if_yes (&& (>= slot 0.0) (placeable? world reg nx ny nz))
+                    (take inv slot 1.0)
+                    (apply_node world reg nx ny nz held sky lq lq_seed bounds)
+                    (send_inventory conn inv)
+                    (send_node_delta conn nx ny nz held
+                                     (world/light ~ get
+                                       (block_index_of world nx ny nz)))))
+
+                # §10's input message. Nothing is done with it yet: the client
+                # runs the same physics against the same world (§7), so its
+                # position is already right and there is no second player to
+                # tell about it. It is decoded and dropped rather than not
+                # sent, because the message that proves the client can talk is
+                # worth having before the entity that needs it (§8, M8).
+                (else void)))))))))
+  ($println "miclone server: stopped"))
+
+# The world array index of a node, so a delta can carry the light the relight
+# just wrote. `core/loaded.gene` exports the pieces; this is the one place the
+# server needs the composed index.
+(fn block_index_of [w : World nx : F64 ny : F64 nz : F64] : F64
+  (+ (+ (- nx (* ($to_float origin_bx) 16.0)) 1.0)
+     (+ (* (+ (- ny (* ($to_float origin_by) 16.0)) 1.0) (world_dx w))
+        (* (+ (- nz (* ($to_float origin_bz) 16.0)) 1.0)
+           (world_stride_z w)))))
+
+(fn find_slot [inv : (Buffer F64) item : F64] : F64
+  (var found -1.0)
+  (var i 0.0)
+  (while (< i ($to_float hotbar_slots))
+    (if_yes (&& (== found -1.0)
+                (&& (== (slot_item inv i) item) (> (slot_count inv i) 0.0)))
+      (set found i))
+    (set i (+ i 1.0)))
+  found)

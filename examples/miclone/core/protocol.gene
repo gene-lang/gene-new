@@ -63,11 +63,40 @@
 (let msg_input 64.0)               # client: movement intent, every tick
 (let msg_dig 65.0)                 # client: dig the node at
 (let msg_place 66.0)               # client: place the held item at
+(let msg_request_blocks 67.0)      # client: send me blocks [from, from+count)
 
 # `$to_float` because a `(Buffer U8)` read is `Int` on *both* backends, which is
 # the ordinary case the conversion is for. Contrast `core/wire.gene`'s
 # `byte_len`: `~ len` is the operation whose type differs between them, and it
 # is the only one (§D7.12).
+# --- constants, as functions -------------------------------------------------
+#
+# **The web profile exports functions, not `let` bindings**, so every constant
+# above is invisible to a JavaScript caller. `tools/mesh_bench.mjs` handles that
+# by restating the geometry it needs, which is fine for one number and wrong for
+# a protocol: a harness that restates a message kind is a second definition of
+# the wire format, which is the thing this module exists not to have.
+#
+# So the numbers a non-Gene peer needs are readable. Nothing in Gene calls
+# these — Gene sees the `let`s directly.
+(fn kind_hello [] : F64 msg_hello)
+(fn kind_registry [] : F64 msg_registry)
+(fn kind_block [] : F64 msg_block)
+(fn kind_node_delta [] : F64 msg_node_delta)
+(fn kind_inventory [] : F64 msg_inventory)
+(fn kind_input [] : F64 msg_input)
+(fn kind_dig [] : F64 msg_dig)
+(fn kind_place [] : F64 msg_place)
+(fn kind_request_blocks [] : F64 msg_request_blocks)
+
+(fn size_hello [] : F64 hello_size)
+(fn size_node_delta [] : F64 node_delta_size)
+(fn size_input [] : F64 input_size)
+(fn size_dig [] : F64 dig_size)
+(fn size_place [] : F64 place_size)
+(fn size_request_blocks [] : F64 request_blocks_size)
+(fn version [] : F64 protocol_version)
+
 (fn message_kind [b : (Buffer U8)] : F64
   ($to_float (b ~ get 0.0)))
 
@@ -495,6 +524,48 @@
   (into ~ set! edit_y (read_i32 c b))
   (into ~ set! edit_z (read_i32 c b))
   (into ~ set! edit_id (if (== kind msg_place) (read_u16 c b) 0.0)))
+
+# --- requesting blocks -------------------------------------------------------
+#
+# **The client asks for terrain; the server does not push it.** That is flow
+# control, and it is not optional: the WebSocket server's outbound queue holds
+# 256 frames per connection and `ws_send` *drops the oldest* when it overflows.
+# A server that pushed all 576 blocks of §D6.1's world in a loop would deliver
+# about 70% of them and report success — which is exactly what the first
+# version of `server/main.gene` did, and the symptom was a world with holes in
+# it rather than an error.
+#
+# So the client requests a window it can absorb and asks for the next when the
+# previous arrives. A request cannot outrun its own answers, and the queue
+# cannot overflow however slow the socket is.
+#
+# Blocks are addressed by **linear index** over the world's extent, which the
+# client knows exactly from `hello`: `x + span_x*(y + span_y*z)`. That means a
+# request is four bytes rather than twelve, and — more usefully — it makes "the
+# blocks I do not have yet" a range rather than a set of coordinates.
+
+(let request_blocks_size 5.0)
+
+(fn encode_request_blocks [out : (Buffer U8) c : (Buffer F64)
+                           from : F64 count : F64] : Nil
+  (reset c)
+  (write_u8 c out msg_request_blocks)
+  (write_u16 c out from)
+  (write_u16 c out count))
+
+(let req_from 0.0)
+(let req_count 1.0)
+(let req_cells 2.0)
+
+(fn new_request [] : (Buffer F64)
+  ($buffer F64 req_cells))
+
+(fn decode_request_blocks [b : (Buffer U8) c : (Buffer F64)
+                           into : (Buffer F64)] : Nil
+  (reset c)
+  (read_u8 c b)
+  (into ~ set! req_from (read_u16 c b))
+  (into ~ set! req_count (read_u16 c b)))
 
 # --- inventory ---------------------------------------------------------------
 #

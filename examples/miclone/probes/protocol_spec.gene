@@ -30,7 +30,7 @@
 (import [new_cursor cursor_at reset] from "../core/wire.gene")
 (import [protocol_version message_kind server_message? client_message?
          msg_hello msg_registry msg_block msg_node_delta msg_inventory
-         msg_input msg_dig msg_place
+         msg_input msg_dig msg_place msg_request_blocks
          hello_size encode_hello new_hello decode_hello
          hello_version hello_seed hello_bx hello_by hello_bz
          hello_span_x hello_span_y hello_span_z
@@ -45,6 +45,8 @@
          input_jump input_sneak input_fly
          dig_size place_size encode_dig encode_place new_edit decode_edit
          edit_x edit_y edit_z edit_id
+         request_blocks_size encode_request_blocks new_request
+         decode_request_blocks req_from req_count
          inventory_size encode_inventory decode_inventory]
         from "../core/protocol.gene")
 
@@ -74,13 +76,15 @@
   (check_b out "and not a server one" (server_message? msg_input) false)
   (check_b out "dig is a client message" (client_message? msg_dig) true)
   (check_b out "place is a client message" (client_message? msg_place) true)
+  (check_b out "request_blocks is a client message"
+           (client_message? msg_request_blocks) true)
 
   # Every kind is distinct. A duplicate would make one message decode as
   # another, which is the failure this cheap check exists to prevent — and it
   # is exactly the sort of thing a hand-maintained constant list acquires.
   (var seen 0.0)
   (var kinds [msg_hello msg_registry msg_block msg_node_delta msg_inventory
-              msg_input msg_dig msg_place])
+              msg_input msg_dig msg_place msg_request_blocks])
   (var i 0.0)
   (while (< i (kinds ~ size))
     (var j (+ i 1.0))
@@ -396,6 +400,40 @@
   (check_f out "place: the position" (e ~ get edit_x) -1343.0)
   (check_f out "place: and the id" (e ~ get edit_id) 12.0))
 
+# --- requesting blocks -------------------------------------------------------
+#
+# Flow control, so the numbers that matter are the extremes: a request for zero
+# (which a client makes when it has everything) and one for the whole world.
+
+(fn request_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 request_blocks_size))
+  (var r (new_request))
+
+  (encode_request_blocks b c 128.0 64.0)
+  (check_f out "request: the kind byte" (message_kind b) msg_request_blocks)
+  (check_f out "request: the encoder wrote exactly request_blocks_size bytes"
+           (cursor_at c) request_blocks_size)
+  (decode_request_blocks b c r)
+  (check_f out "request: the start index" (r ~ get req_from) 128.0)
+  (check_f out "request: the count" (r ~ get req_count) 64.0)
+
+  (encode_request_blocks b c 0.0 0.0)
+  (decode_request_blocks b c r)
+  (check_f out "request: a zero-length request survives" (r ~ get req_count) 0.0)
+
+  # The whole world at once, which is what a client would ask for if it did not
+  # know about the 256-frame queue — the request itself must still encode.
+  (encode_request_blocks b c 0.0 576.0)
+  (decode_request_blocks b c r)
+  (check_f out "request: the whole world fits in the count field"
+           (r ~ get req_count) 576.0)
+  # And a u16 holds far more than this world has blocks, so the field is not
+  # what limits the extent.
+  (encode_request_blocks b c 65535.0 65535.0)
+  (decode_request_blocks b c r)
+  (check_f out "request: the field is a full u16" (r ~ get req_from) 65535.0))
+
 # --- inventory ---------------------------------------------------------------
 
 (fn inventory_checks [out : (List Str)] : Nil
@@ -438,6 +476,7 @@
   (delta_checks out)
   (input_checks out)
   (edit_checks out)
+  (request_checks out)
   (inventory_checks out))
 
 (fn report [] : Str
