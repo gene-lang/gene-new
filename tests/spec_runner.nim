@@ -3581,6 +3581,30 @@ suite "spec — native wrapper types (design §16.6)":
                " c/backend]",
                "[\"no\" \"no\" \"sqlite\"]")
 
+  test "Bytes round-trip through a blob column":
+    # A blob bound as text stops at the first NUL and re-interprets the rest as
+    # UTF-8, so a binary payload came back truncated rather than raising. These
+    # bytes are chosen to fail that way: a NUL, a byte above 0x7F, and a byte
+    # after the NUL that a truncating read would drop.
+    check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
+               "(c ~ Db:exec \"create table b (k integer primary key, v blob)\") " &
+               "(var payload ($binary/from_list [0 128 255 65])) " &
+               "(c ~ Db:execute \"insert into b values (?, ?)\" 1 payload) " &
+               "(var rows (c ~ Db:query \"select v from b where k = 1\")) " &
+               "($binary/to_list rows/0/v)",
+               "[0 128 255 65]")
+  test "an empty blob reads back as empty Bytes, not nil":
+    # sqlite ignores the length when the data pointer is NULL and stores SQL
+    # NULL instead, so an empty payload needs a non-NULL pointer to survive as
+    # a blob.
+    check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
+               "(c ~ Db:exec \"create table b (k integer primary key, v blob)\") " &
+               "(c ~ Db:execute \"insert into b values (?, ?)\" 1 " &
+               "  ($binary/from_list [])) " &
+               "(var rows (c ~ Db:query \"select v from b where k = 1\")) " &
+               "($binary/size rows/0/v)",
+               "0")
+
   test "shipped wrappers declare their schema, including the handle flavour":
     # The backends build through the same validated factory an extension uses,
     # so `Type/fields` reports what the value really holds instead of `[]`.
@@ -3689,6 +3713,42 @@ suite "spec — gene/bit and gene/binary from design (§7.9)":
                         "out of range")
     check_runtime_error("($binary/slice ($binary/from_list [1 2]) 1 5)",
                         "out of bounds")
+  test "Bytes carry numbers, little-endian at a byte offset":
+    # Little-endian always: it is what every architecture Gene targets stores
+    # natively and what `DataView` defaults to in the web profile.
+    check_eval("($binary/put_u16 513)", "#B16#0102")
+    check_eval("($binary/put_u32 1)", "#B16#01000000")
+    check_eval("($binary/get_u16 ($binary/put_u16 65535) 0)", "65535")
+    check_eval("($binary/get_u32 ($binary/put_u32 4294967295) 0)", "4294967295")
+    check_eval("($binary/get_f64 ($binary/put_f64 0.1) 0)", "0.1")
+  test "i32 is two's complement, so a negative coordinate round-trips":
+    check_eval("($binary/get_i32 ($binary/put_i32 -1) 0)", "-1")
+    check_eval("($binary/get_i32 ($binary/put_i32 -2147483648) 0)",
+               "-2147483648")
+    check_eval("($binary/get_i32 ($binary/put_i32 2147483647) 0)", "2147483647")
+  test "the offset is in bytes, so mixed-width records read correctly":
+    # A `u8` tag then a `u32` puts the second field at offset 1, which no
+    # per-element index could name.
+    check_eval("(var b ($binary/concat [($binary/put_u8 7) " &
+               "($binary/put_u32 305419896)])) " &
+               "[($binary/get b 0) ($binary/get_u32 b 1)]",
+               "[7 305419896]")
+  test "put_f32 is lossy and says so; get_f32 widens without further loss":
+    # Half the width for values that do not need the precision is the point.
+    check_eval("($binary/get_f32 ($binary/put_f32 0.5) 0)", "0.5")
+    check_eval("(== ($binary/get_f32 ($binary/put_f32 0.1) 0) 0.1)", "false")
+  test "an out-of-range number raises rather than wrapping":
+    # A silently truncated node id is a corrupt world that reads back cleanly,
+    # which is the worst shape a storage bug can take.
+    check_runtime_error("($binary/put_u8 256)", "out of range")
+    check_runtime_error("($binary/put_u16 -1)", "out of range")
+    check_runtime_error("($binary/put_i32 2147483648)", "out of range")
+    check_runtime_error("($binary/put_u32 4294967296)", "out of range")
+  test "reading past the end raises rather than inventing bytes":
+    check_runtime_error("($binary/get_u32 ($binary/put_u16 1) 0)",
+                        "past the end")
+    check_runtime_error("($binary/get_u16 ($binary/put_u16 1) -1)",
+                        "past the end")
 
 suite "spec — gene/math from design (§7.8)":
   test "rounding is kind-preserving":

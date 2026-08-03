@@ -398,6 +398,148 @@ proc biBytesToStr(args: openArray[Value]): Value {.nimcall.} =
   requireBytes("binary/to_str", args[0])
   newStr(args[0].bytesVal)
 
+# --- binary number codecs ----------------------------------------------------
+#
+# `binary` could slice and concatenate but could not read a `u16` or write an
+# `f32`, so every binary format in Gene rebuilt that from `$bit` — arithmetic
+# that is easy to get subtly wrong once per format.
+#
+# **Little-endian, always.** Not a preference: it is what every architecture
+# Gene runs on stores natively, what `DataView` defaults to in the web profile,
+# and what SQLite and the common on-disk formats use. Offering both would double
+# the surface to make the rarer case one character shorter, and a format that
+# needs big-endian can compose two `put_u8` calls.
+#
+# Offsets are byte offsets, not element indices. A record with a `u8` tag
+# followed by a `u32` reads the second at offset 1, which no element index can
+# name — and a per-type index would silently reinterpret a mixed buffer.
+
+proc bytesOffset(name: string, args: openArray[Value], width: int): int =
+  ## Shared bounds check. Reading past the end is the mistake this family exists
+  ## to make impossible, so it raises with the offset rather than returning a
+  ## garbage value assembled from whatever followed.
+  if args.len != 2:
+    raise newException(GeneError, name & " expects (bytes, offset)")
+  requireBytes(name, args[0])
+  if args[1].kind != vkInt:
+    raise newException(GeneError, name & " offset must be an Int")
+  let off = args[1].intVal
+  if off < 0 or off + width > args[0].bytesVal.len:
+    raise newException(GeneError,
+      name & " reads " & $width & " bytes at offset " & $off &
+      ", past the end of a " & $args[0].bytesVal.len & "-byte value")
+  int(off)
+
+template byteAt(v: Value, i: int): uint64 = uint64(uint8(v.bytesVal[i]))
+
+proc biBytesGetU16(args: openArray[Value]): Value {.nimcall.} =
+  let o = bytesOffset("binary/get_u16", args, 2)
+  newInt(int(args[0].byteAt(o) or (args[0].byteAt(o + 1) shl 8)))
+
+proc biBytesGetU32(args: openArray[Value]): Value {.nimcall.} =
+  let o = bytesOffset("binary/get_u32", args, 4)
+  newInt(int(args[0].byteAt(o) or (args[0].byteAt(o + 1) shl 8) or
+             (args[0].byteAt(o + 2) shl 16) or (args[0].byteAt(o + 3) shl 24)))
+
+proc biBytesGetI32(args: openArray[Value]): Value {.nimcall.} =
+  ## Two's complement, so a block coordinate below the origin round trips.
+  let o = bytesOffset("binary/get_i32", args, 4)
+  let raw = args[0].byteAt(o) or (args[0].byteAt(o + 1) shl 8) or
+            (args[0].byteAt(o + 2) shl 16) or (args[0].byteAt(o + 3) shl 24)
+  newInt(int(cast[int32](uint32(raw))))
+
+proc biBytesGetF64(args: openArray[Value]): Value {.nimcall.} =
+  let o = bytesOffset("binary/get_f64", args, 8)
+  var raw: uint64 = 0
+  for i in 0 ..< 8:
+    raw = raw or (args[0].byteAt(o + i) shl (8 * i))
+  newFloat(cast[float64](raw))
+
+proc biBytesGetF32(args: openArray[Value]): Value {.nimcall.} =
+  ## Widens to the `Float` Gene has. A value that made the round trip through
+  ## `f32` is exactly representable as `f64`, so nothing is lost here — the
+  ## precision was spent on the way in, which is what `put_f32` documents.
+  let o = bytesOffset("binary/get_f32", args, 4)
+  var raw: uint32 = 0
+  for i in 0 ..< 4:
+    raw = raw or (uint32(args[0].byteAt(o + i)) shl (8 * i))
+  newFloat(float64(cast[float32](raw)))
+
+proc putRequireInt(name: string, args: openArray[Value]): int64 =
+  if args.len != 1:
+    raise newException(GeneError, name & " expects one value")
+  if args[0].kind != vkInt:
+    raise newException(GeneError, name & " expects an Int, got " & $args[0].kind)
+  args[0].intVal
+
+proc putRequireFloat(name: string, args: openArray[Value]): float64 =
+  ## Accepts an integral Int as well, for the same reason `Buffer/set!` does
+  ## (design.md §D7.1): a caller holding a whole number should not have to
+  ## convert it to hand it to a float field.
+  if args.len != 1:
+    raise newException(GeneError, name & " expects one value")
+  case args[0].kind
+  of vkFloat: args[0].floatVal
+  of vkInt: float64(args[0].intVal)
+  else:
+    raise newException(GeneError,
+      name & " expects a Float, got " & $args[0].kind)
+
+proc requireRange(name: string, v: int64, lo, hi: int64) =
+  ## Out-of-range **raises** rather than truncating. A silently wrapped node id
+  ## is a corrupt world that reads back cleanly, which is the worst shape a
+  ## storage bug can take.
+  if v < lo or v > hi:
+    raise newException(GeneError,
+      name & " value out of range " & $lo & ".." & $hi & ": " & $v)
+
+proc biBytesPutU8(args: openArray[Value]): Value {.nimcall.} =
+  let v = putRequireInt("binary/put_u8", args)
+  requireRange("binary/put_u8", v, 0, 255)
+  newBytes($char(uint8(v)))
+
+proc biBytesPutU16(args: openArray[Value]): Value {.nimcall.} =
+  let v = putRequireInt("binary/put_u16", args)
+  requireRange("binary/put_u16", v, 0, 65535)
+  let u = uint16(v)
+  newBytes($char(uint8(u and 0xFF)) & $char(uint8(u shr 8)))
+
+proc biBytesPutU32(args: openArray[Value]): Value {.nimcall.} =
+  let v = putRequireInt("binary/put_u32", args)
+  requireRange("binary/put_u32", v, 0, 4294967295'i64)
+  let u = uint32(v)
+  var s = newStringOfCap(4)
+  for i in 0 ..< 4:
+    s.add char(uint8((u shr (8 * i)) and 0xFF'u32))
+  newBytes(s)
+
+proc biBytesPutI32(args: openArray[Value]): Value {.nimcall.} =
+  let v = putRequireInt("binary/put_i32", args)
+  requireRange("binary/put_i32", v, -2147483648'i64, 2147483647'i64)
+  let u = cast[uint32](int32(v))
+  var s = newStringOfCap(4)
+  for i in 0 ..< 4:
+    s.add char(uint8((u shr (8 * i)) and 0xFF'u32))
+  newBytes(s)
+
+proc biBytesPutF64(args: openArray[Value]): Value {.nimcall.} =
+  let raw = cast[uint64](putRequireFloat("binary/put_f64", args))
+  var s = newStringOfCap(8)
+  for i in 0 ..< 8:
+    s.add char(uint8((raw shr (8 * i)) and 0xFF'u64))
+  newBytes(s)
+
+proc biBytesPutF32(args: openArray[Value]): Value {.nimcall.} =
+  ## **Lossy, and deliberately so.** Half the width for values that do not need
+  ## the precision is the whole point; a caller who cannot afford the rounding
+  ## wants `put_f64`. Not rejected as out of range, because unlike an integer
+  ## overflow the rounding is the documented behaviour of the type.
+  let raw = cast[uint32](float32(putRequireFloat("binary/put_f32", args)))
+  var s = newStringOfCap(4)
+  for i in 0 ..< 4:
+    s.add char(uint8((raw shr (8 * i)) and 0xFF'u32))
+  newBytes(s)
+
 # --- gene/math ---------------------------------------------------------------
 # Numeric model (design §7.4) decides the return kinds here, and the choice is
 # not obvious, so it is stated once:
@@ -5680,6 +5822,22 @@ proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nim
     raiseOsError("fs/read_text: " & e.msg, scope)
     NIL
 
+proc biFsReadBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## The binary sibling of fs/read_text, and the read half `fs/write_bytes` has
+  ## been missing (design.md §D7.3). Same capability and same path confinement;
+  ## the difference is that the result is Bytes, so a byte with the high bit set
+  ## survives instead of being interpreted as UTF-8 and mangled.
+  if args.len != 2:
+    raise newException(GeneError, "fs/read_bytes expects (fs/ReadDir, path)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireFsReadDir("fs/read_bytes", args[0])
+  requireStr("fs/read_bytes path", args[1])
+  try:
+    newBytes(readFile(args[1].strVal))
+  except IOError as e:
+    raiseOsError("fs/read_bytes: " & e.msg, scope)
+    NIL
+
 proc biFsWriteBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## The binary sibling of fs/write_text. Same capability, same path
   ## confinement — the only difference is that the payload is Bytes, so a byte
@@ -7708,12 +7866,16 @@ type SqliteApi = object
   bindDouble: proc(stmt: pointer, idx: cint, v: cdouble): cint {.cdecl.}
   bindText: proc(stmt: pointer, idx: cint, s: cstring, n: cint,
                  destructor: pointer): cint {.cdecl.}
+  bindBlob: proc(stmt: pointer, idx: cint, data: pointer, n: cint,
+                 destructor: pointer): cint {.cdecl.}
   bindNull: proc(stmt: pointer, idx: cint): cint {.cdecl.}
   columnCount: proc(stmt: pointer): cint {.cdecl.}
   columnType: proc(stmt: pointer, i: cint): cint {.cdecl.}
   columnInt64: proc(stmt: pointer, i: cint): int64 {.cdecl.}
   columnDouble: proc(stmt: pointer, i: cint): cdouble {.cdecl.}
   columnText: proc(stmt: pointer, i: cint): cstring {.cdecl.}
+  columnBlob: proc(stmt: pointer, i: cint): pointer {.cdecl.}
+  columnBytes: proc(stmt: pointer, i: cint): cint {.cdecl.}
   columnName: proc(stmt: pointer, i: cint): cstring {.cdecl.}
 
 var gSqliteApi: SqliteApi
@@ -7748,12 +7910,15 @@ proc loadSqliteApi(scope: Scope) =
   api.bindInt64 = cast[typeof(api.bindInt64)](sym"sqlite3_bind_int64")
   api.bindDouble = cast[typeof(api.bindDouble)](sym"sqlite3_bind_double")
   api.bindText = cast[typeof(api.bindText)](sym"sqlite3_bind_text")
+  api.bindBlob = cast[typeof(api.bindBlob)](sym"sqlite3_bind_blob")
   api.bindNull = cast[typeof(api.bindNull)](sym"sqlite3_bind_null")
   api.columnCount = cast[typeof(api.columnCount)](sym"sqlite3_column_count")
   api.columnType = cast[typeof(api.columnType)](sym"sqlite3_column_type")
   api.columnInt64 = cast[typeof(api.columnInt64)](sym"sqlite3_column_int64")
   api.columnDouble = cast[typeof(api.columnDouble)](sym"sqlite3_column_double")
   api.columnText = cast[typeof(api.columnText)](sym"sqlite3_column_text")
+  api.columnBlob = cast[typeof(api.columnBlob)](sym"sqlite3_column_blob")
+  api.columnBytes = cast[typeof(api.columnBytes)](sym"sqlite3_column_bytes")
   api.columnName = cast[typeof(api.columnName)](sym"sqlite3_column_name")
   api.lib = lib
   gSqliteApi = api
@@ -7766,9 +7931,26 @@ proc sqliteError(db: pointer, where: string, scope: Scope) =
   raiseDbError(where & ": " & msg, scope)
 
 proc sqliteColumnValue(stmt: pointer, i: cint): Value =
+  ## SQLite's storage classes: 1 INTEGER, 2 FLOAT, 3 TEXT, 4 BLOB, 5 NULL.
   case gSqliteApi.columnType(stmt, i)
   of 1: newInt(gSqliteApi.columnInt64(stmt, i))
   of 2: newFloat(gSqliteApi.columnDouble(stmt, i))
+  of 4:
+    # A blob is Bytes, not a string. Reading it through `columnText` — which is
+    # what the `else` branch below used to do — stops at the first NUL byte and
+    # re-interprets the rest as UTF-8, so any binary payload came back
+    # truncated and corrupted rather than raising.
+    let n = int(gSqliteApi.columnBytes(stmt, i))
+    if n <= 0:
+      newBytes("")
+    else:
+      let data = gSqliteApi.columnBlob(stmt, i)
+      if data == nil:
+        newBytes("")
+      else:
+        var buf = newString(n)
+        copyMem(addr buf[0], data, n)
+        newBytes(buf)
   of 5: NIL
   else:
     let text = gSqliteApi.columnText(stmt, i)
@@ -7803,6 +7985,19 @@ proc sqliteRunStmt(db: pointer, sql: string, params: openArray[Value],
       of vkString:
         gSqliteApi.bindText(stmt, idx, param.strVal.cstring,
                             cint(param.strVal.len), SQLITE_TRANSIENT)
+      of vkBytes:
+        # Bound as a blob rather than text, so a NUL or a high byte survives.
+        # `SQLITE_TRANSIENT` because sqlite must copy: the Value may be
+        # collected before the statement is stepped.
+        if param.bytesVal.len == 0:
+          # A NULL data pointer binds SQL NULL and the length is ignored, so an
+          # empty blob needs a non-NULL pointer with zero length — otherwise an
+          # empty payload reads back as nil rather than as empty Bytes.
+          gSqliteApi.bindBlob(stmt, idx, cast[pointer](cstring("")), 0,
+                              SQLITE_TRANSIENT)
+        else:
+          gSqliteApi.bindBlob(stmt, idx, unsafeAddr param.bytesVal[0],
+                              cint(param.bytesVal.len), SQLITE_TRANSIENT)
       else:
         raiseDbError(where & ": unsupported parameter type " & $param.kind,
                      scope)
@@ -9287,6 +9482,18 @@ proc registerStdlibNamespaces(root: Scope) =
   bytesScope.define("slice", newNativeFn("binary/slice", biBytesSlice))
   bytesScope.define("from_str", newNativeFn("binary/from_str", biBytesFromStr))
   bytesScope.define("to_str", newNativeFn("binary/to_str", biBytesToStr))
+  # Number codecs, all little-endian at a byte offset (design.md §D7.3).
+  bytesScope.define("get_u16", newNativeFn("binary/get_u16", biBytesGetU16))
+  bytesScope.define("get_u32", newNativeFn("binary/get_u32", biBytesGetU32))
+  bytesScope.define("get_i32", newNativeFn("binary/get_i32", biBytesGetI32))
+  bytesScope.define("get_f32", newNativeFn("binary/get_f32", biBytesGetF32))
+  bytesScope.define("get_f64", newNativeFn("binary/get_f64", biBytesGetF64))
+  bytesScope.define("put_u8", newNativeFn("binary/put_u8", biBytesPutU8))
+  bytesScope.define("put_u16", newNativeFn("binary/put_u16", biBytesPutU16))
+  bytesScope.define("put_u32", newNativeFn("binary/put_u32", biBytesPutU32))
+  bytesScope.define("put_i32", newNativeFn("binary/put_i32", biBytesPutI32))
+  bytesScope.define("put_f32", newNativeFn("binary/put_f32", biBytesPutF32))
+  bytesScope.define("put_f64", newNativeFn("binary/put_f64", biBytesPutF64))
   root.define("binary", newNamespace("binary", bytesScope))
   # `gene/math`, reachable as `$math/floor` like every other root namespace.
   let mathScope = newScope(root)
@@ -9842,6 +10049,8 @@ proc registerStdlibNamespaces(root: Scope) =
       newNativeCallFn("fs/write_text", biFsWriteTextSync, acceptsNamed = false))
     fsNs.nsScope.define("write_bytes",
       newNativeCallFn("fs/write_bytes", biFsWriteBytesSync, acceptsNamed = false))
+    fsNs.nsScope.define("read_bytes",
+      newNativeCallFn("fs/read_bytes", biFsReadBytesSync, acceptsNamed = false))
     fsNs.nsScope.define("exists?",
       newNativeCallFn("fs/exists?", biFsExists, acceptsNamed = false))
     fsNs.nsScope.define("list_dir",

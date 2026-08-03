@@ -1894,6 +1894,27 @@ suite "vm — cooperative scheduler":
        "[(out ~ get) ($sleep 0) (out ~ get)]",
        "[0 nil 1]"
 
+  test "$fs/read_bytes is the read half fs/write_bytes was missing":
+    # The bytes here are the point: 0x80 and 0xFF are not valid UTF-8 on their
+    # own, so `read_text` would mangle them. A binary format needs the pair
+    # (design.md §D7.3), and until now only the write half existed.
+    let path = getTempDir() / "gene-read-bytes-test.bin"
+    defer:
+      if fileExists(path):
+        removeFile(path)
+    let scope = newGlobalScope()
+    scope.define("path", newStr(path))
+    check run(compileSource(
+        "(var payload ($binary/from_list [0 127 128 255 10])) " &
+        "($fs/write_bytes $fs/WriteDir path payload) " &
+        "(== ($binary/to_list ($fs/read_bytes $fs/ReadDir path)) " &
+        "    ($binary/to_list payload))"),
+      scope).print() == "true"
+    # Reading needs ReadDir, not WriteDir: the capability is checked, not the
+    # fact that the caller happens to hold some fs authority.
+    expect GeneError:
+      discard run(compileSource("($fs/read_bytes $fs/WriteDir path)"), scope)
+
   test "$fs/read_text_async returns an awaitable task":
     let path = getTempDir() / "gene-read-text-async-test.txt"
     writeFile(path, "hello async")
