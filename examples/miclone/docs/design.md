@@ -955,6 +955,13 @@ works either way and nothing noticed for four milestones. Using it as a *value*
 — passing it to an `F64` parameter — fails on whichever backend you did not
 try.
 
+**It is `~ len` specifically, and that is what makes it a defect rather than a
+fact of life.** A buffer *read* is `Int` on both backends, so `($to_float (b ~
+get i))` is the ordinary conversion and compiles everywhere;
+`core/wire.gene` and `core/protocol.gene` use it throughout without comment.
+`~ len` is the one operation in the portable surface whose type depends on which
+side you are on.
+
 **What makes it worth an entry rather than a shrug is that the obvious fix does
 not exist.** `$to_float` is total on numbers on the VM ("Int or Float") and
 deliberately partial in the profile, which rejects a value already of the target
@@ -2024,6 +2031,54 @@ carry a byte — `ws_send` was text-only and an inbound binary frame was dropped
 with no callback, no error and no close, and the web profile had no WebSocket
 binding at all. All three are closed; see §D7.7, which also records the silent
 handler-failure defect the work exposed.
+
+### 10.1 M6 — the codec, and what a world costs on the wire
+
+`core/wire.gene` is a cursor over a `(Buffer U8)`; `core/protocol.gene` is the
+eight messages. Both are `core/`, which is the point: the server encodes on the
+VM and the client decodes in the browser, and a format with two implementations
+is a format two processes can disagree about.
+
+**Everything is bytes, which is narrower than the sentence above.** §10 says
+"Gene nodes except block data", and the exception turned out to be the only part
+that was ever a choice — `docs/serialization.md` is a VM facility and the web
+profile has no reader for it, so a node-encoded message could be written by the
+server and not read by the client. That is a real narrowing: a node-encoded
+message is self-describing and this is not, so a version skew is a misparse
+rather than a missing field. The version byte in `hello` is what stands in, and
+the framing is deliberately just a kind byte so that control messages can move
+back to nodes per-kind once the profile has a reader.
+
+Measured on §3's real terrain, 12 × 4 × 12 blocks:
+
+| | |
+|---|---|
+| a block message | **575 bytes mean**, 5,017 worst, 259 of 576 uniform |
+| the whole world | **0.32 MB** against 9.0 MB raw — **29x** |
+| the registry | 364 bytes for 16 node definitions |
+| codec | 32 µs to encode a block, 16 µs to decode |
+
+Run-length encoded on the finding §11 records — a voxel column is a handful of
+runs — and the mean lands within 6% of `server/blockfmt.gene`'s 612 bytes for
+the same scheme on disk. **No raw fallback, unlike blockfmt**: a stored block
+that doubled is a disk cost paid forever, a message that doubles is paid once,
+and the socket is the slower half regardless. The alternating worst case is
+pinned by the spec at one run per node so the cost is a number rather than a
+worry.
+
+Three decisions the spec caught rather than the design:
+
+- **Every `encode_*` has a matching `*_size` and the spec asserts the encoder
+  writes exactly that.** Three of the six constants were wrong when first
+  written — `hello` by two bytes, `registry` by one per entry, and `block` by
+  two — and an underestimate is a silent overrun in the web profile.
+- **`dig` and `place` needed separate sizes.** One constant for both would
+  either waste two bytes on every dig or overrun on every place.
+- **Yaw travels as a fraction of a full turn**, not in thousandths of a radian.
+  Thousandths was the first version and is worse twice over: it uses 6,283 of
+  65,535 values, and its zero point is π — not a whole number of thousandths —
+  so encode-then-decode loses up to a thousandth *and cannot be made not to*. A
+  turn fraction has no offset to round and resolves 0.0055°.
 
 Message groups: handshake and auth; registry sync (§2's client half, sent
 once on join); block add/remove; node deltas; entity add/remove/update; player

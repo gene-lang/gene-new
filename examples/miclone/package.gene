@@ -23,6 +23,8 @@
     (application "edit_spec" ^entry "probes/run_edit_spec.gene")
     # design.md §10 — the wire codec both backends encode messages through.
     (application "wire_spec" ^entry "probes/run_wire_spec.gene")
+    # design.md §10 — every message, encoded and decoded.
+    (application "protocol_spec" ^entry "probes/run_protocol_spec.gene")
     # design.md §2 and §7.1 — stacks, and what a dug node yields.
     (application "inventory_spec" ^entry "probes/run_inventory_spec.gene")
     # design.md §D8's M4 deliverable, run twice: `create` then `verify`.

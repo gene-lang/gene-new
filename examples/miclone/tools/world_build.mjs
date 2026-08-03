@@ -38,6 +38,11 @@ import {
   new_inventory, add, take, slot_item, slot_count, slot_empty$q, total_of,
 } from "../dist/inventory.mjs";
 import { drop_item, drop_count } from "../dist/drops.mjs";
+import { new_cursor, cursor_at } from "../dist/wire.mjs";
+import {
+  block_size, encode_block, decode_block, new_block_header,
+  registry_size, encode_registry,
+} from "../dist/protocol.mjs";
 import { setup_drops } from "../dist/content.mjs";
 import {
   new_bounds, apply_node, diggable$q, placeable$q,
@@ -418,6 +423,76 @@ console.log(`  dig and place ${dugIds.length} dug and carried ` +
 if (loopBad !== 0) {
   console.log(`FAIL — loop: ${loopBad} step(s) of dig-carry-place went wrong`);
   bad++;
+}
+
+// --- what a world costs on the wire ------------------------------------------
+//
+// §10 moves a block per message and says block data needs "a packed binary
+// encoding because 16 KB of nodes should not become a node tree". This is the
+// number behind that sentence, measured on §3's real terrain rather than on a
+// fixture — a uniform block is one run and tells you nothing.
+
+{
+  const wc = new_cursor();
+  let totalBytes = 0, worstBytes = 0, encodeMs = 0, decodeMs = 0;
+  let emptyBlocks = 0, worstAt = "";
+  const outC = new Float32Array(4096);
+  const outL = new Float32Array(4096);
+  const header = new_block_header();
+  let mismatch = 0;
+
+  for (let cz = 0; cz < SPAN_Z; cz++)
+    for (let cy = 0; cy < SPAN_Y; cy++)
+      for (let cx = 0; cx < SPAN_X; cx++) {
+        const bx = ORIGIN_BX + cx, by = ORIGIN_BY + cy, bz = ORIGIN_BZ + cz;
+        const base = block_base(world, bx, by, bz);
+        const size = block_size(world.content, world.light, base, DX, SZ);
+        const msg = new Uint8Array(size);
+        let t = performance.now();
+        encode_block(msg, wc, bx, by, bz, world.content, world.light,
+                     base, DX, SZ);
+        encodeMs += performance.now() - t;
+        totalBytes += size;
+        if (size > worstBytes) { worstBytes = size; worstAt = `${bx},${by},${bz}`; }
+        if (size <= 21) emptyBlocks++;   // 13 header + two single runs
+
+        // And it decodes back to the same nodes. Checked on every block rather
+        // than a sample: a run encoder's bugs are all about boundaries, and the
+        // world has 576 different boundaries in it.
+        t = performance.now();
+        decode_block(msg, wc, header, outC, outL);
+        decodeMs += performance.now() - t;
+        for (let z = 0; z < 16 && !mismatch; z++)
+          for (let y = 0; y < 16 && !mismatch; y++)
+            for (let x = 0; x < 16; x++) {
+              const src = base + y * DX + z * SZ + x;
+              const dst = x + y * 16 + z * 256;
+              if (outC[dst] !== world.content[src] ||
+                  outL[dst] !== world.light[src]) { mismatch++; break; }
+            }
+      }
+
+  const blocks = SPAN_X * SPAN_Y * SPAN_Z;
+  const raw = blocks * 4096 * 4;      // u16 content + u8 light, padded to 4B/node
+  const rc = new_cursor();
+  const regSize = registry_size(reg);
+  const regMsg = new Uint8Array(regSize);
+  encode_registry(regMsg, rc, reg);
+
+  console.log("");
+  console.log(`  registry msg  ${regSize} bytes for ` +
+    `${registered_count(reg)} node definitions`);
+  console.log(`  block msgs    ${(totalBytes / blocks).toFixed(0)} bytes mean, ` +
+    `${worstBytes} worst (at ${worstAt}), ${emptyBlocks} of ${blocks} uniform`);
+  console.log(`  world on wire ${(totalBytes / (1 << 20)).toFixed(2)} MB ` +
+    `against ${(raw / (1 << 20)).toFixed(1)} MB raw ` +
+    `(${(raw / totalBytes).toFixed(0)}x)`);
+  console.log(`  codec         ${(encodeMs / blocks * 1000).toFixed(0)} us to ` +
+    `encode a block, ${(decodeMs / blocks * 1000).toFixed(0)} us to decode`);
+  if (mismatch) {
+    console.log("FAIL — protocol: a block did not survive the wire codec");
+    bad++;
+  }
 }
 
 console.log("");

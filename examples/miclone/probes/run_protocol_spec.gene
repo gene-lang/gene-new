@@ -1,0 +1,20 @@
+# The VM shell for the protocol spec.
+#
+#   gene run protocol_spec
+#
+# Pair with `node tools/protocol_spec.mjs` and diff. `wire_spec` proves the two
+# backends agree about bytes; this proves they agree about *messages*, which is
+# a different claim — a codec can be byte-identical and still have an encoder
+# and a decoder that disagree with each other, on both backends equally.
+
+(mod run_protocol_spec)
+
+(import [report failures] from "./protocol_spec.gene")
+
+(fn main [args] : Nil
+  ($println (report))
+  (var bad (failures))
+  ($println "")
+  (if (== bad 0.0)
+    (then ($println "PASS — every check agrees"))
+    (else ($println $"FAIL — ${bad} check(s) failed"))))

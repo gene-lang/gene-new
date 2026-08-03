@@ -1,0 +1,458 @@
+# Cross-backend spec for the protocol — design.md §10 and §14 layers 1 and 2.
+#
+# `wire_spec` proves the two backends agree about *bytes*. This proves they
+# agree about *messages*, which is a different claim: a codec can be
+# byte-identical and still have an encoder and a decoder that disagree with each
+# other about a field's order or width, on both backends equally.
+#
+# So the shape here is encode-then-decode, and the assertions worth reading are
+# the ones a fixture could not make:
+#
+#   * **a registry survives the wire, column for column, over every entry** —
+#     checked against the real content set, not a fixture, because §2's whole
+#     claim is that a client's id vocabulary *is* whatever the server sent.
+#   * **a block survives run-length encoding, node for node**, over blocks with
+#     different run structure: uniform, striped, and generated terrain. A run
+#     encoder that drops the final run passes on a block ending in a long run
+#     and fails on one ending in a short one.
+#   * **`*_size` predicts exactly what `encode_*` writes.** The encoder writes
+#     into a buffer the caller sized from that number, so an underestimate is a
+#     silent overrun in the web profile and an overestimate is a message with
+#     garbage on the end.
+
+(mod protocol_spec ^profile web)
+
+(import [Registry new_registry registered_count name_of drawtype_of solid?
+         opaque? propagates_light? light_source_of tile_top_of tile_side_of
+         tile_bottom_of register_uniform draw_normal draw_glasslike draw_liquid]
+        from "../core/registry.gene")
+(import [setup_nodes] from "../core/content.gene")
+(import [new_cursor cursor_at reset] from "../core/wire.gene")
+(import [protocol_version message_kind server_message? client_message?
+         msg_hello msg_registry msg_block msg_node_delta msg_inventory
+         msg_input msg_dig msg_place
+         hello_size encode_hello new_hello decode_hello
+         hello_version hello_seed hello_bx hello_by hello_bz
+         hello_span_x hello_span_y hello_span_z
+         hello_spawn_x hello_spawn_y hello_spawn_z
+         registry_size encode_registry decode_registry
+         block_size encode_block decode_block new_block_header
+         block_bx block_by block_bz count_runs
+         node_delta_size encode_node_delta new_node_delta decode_node_delta
+         delta_x delta_y delta_z delta_id delta_param1
+         input_size encode_input new_input decode_input input_flag?
+         in_wish_x in_wish_z in_flags in_yaw
+         input_jump input_sneak input_fly
+         dig_size place_size encode_dig encode_place new_edit decode_edit
+         edit_x edit_y edit_z edit_id
+         inventory_size encode_inventory decode_inventory]
+        from "../core/protocol.gene")
+
+# --- reporting ---------------------------------------------------------------
+
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out ~ push! $"ok   ${label}"))
+    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label $"$($to_int got)" $"$($to_int want)"))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
+
+# --- kinds -------------------------------------------------------------------
+
+(fn kind_checks [out : (List Str)] : Nil
+  # The direction split, which is what lets a decoder say "this is not for me"
+  # rather than "I do not know this".
+  (check_b out "hello is a server message" (server_message? msg_hello) true)
+  (check_b out "and not a client one" (client_message? msg_hello) false)
+  (check_b out "inventory is a server message"
+           (server_message? msg_inventory) true)
+  (check_b out "input is a client message" (client_message? msg_input) true)
+  (check_b out "and not a server one" (server_message? msg_input) false)
+  (check_b out "dig is a client message" (client_message? msg_dig) true)
+  (check_b out "place is a client message" (client_message? msg_place) true)
+
+  # Every kind is distinct. A duplicate would make one message decode as
+  # another, which is the failure this cheap check exists to prevent — and it
+  # is exactly the sort of thing a hand-maintained constant list acquires.
+  (var seen 0.0)
+  (var kinds [msg_hello msg_registry msg_block msg_node_delta msg_inventory
+              msg_input msg_dig msg_place])
+  (var i 0.0)
+  (while (< i (kinds ~ size))
+    (var j (+ i 1.0))
+    (while (< j (kinds ~ size))
+      (if_yes (== kinds/%i kinds/%j) (set seen (+ seen 1.0)))
+      (set j (+ j 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "every message kind is distinct" seen 0.0))
+
+# --- hello -------------------------------------------------------------------
+
+(fn hello_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 hello_size))
+  (var h (new_hello))
+
+  # The real numbers the client is spawned with, including a negative block
+  # coordinate — the site §D6.1 stands at is at block -90, so a sign bug here
+  # would put every client in a different world from the server.
+  (encode_hello b c 1337.0 -90.0 0.0 198.0 12.0 4.0 12.0
+                -1343.5 21.0 3264.5)
+  (check_f out "hello: the kind byte" (message_kind b) msg_hello)
+  (check_f out "hello: the encoder wrote exactly hello_size bytes"
+           (cursor_at c) hello_size)
+
+  (decode_hello b c h)
+  (check_f out "hello: version" (h ~ get hello_version) protocol_version)
+  (check_f out "hello: seed" (h ~ get hello_seed) 1337.0)
+  (check_f out "hello: a negative block x" (h ~ get hello_bx) -90.0)
+  (check_f out "hello: block y" (h ~ get hello_by) 0.0)
+  (check_f out "hello: block z" (h ~ get hello_bz) 198.0)
+  (check_f out "hello: span x" (h ~ get hello_span_x) 12.0)
+  (check_f out "hello: span y" (h ~ get hello_span_y) 4.0)
+  (check_f out "hello: span z" (h ~ get hello_span_z) 12.0)
+  # The spawn travels in thousandths, so a half-node offset must survive.
+  (check_f out "hello: spawn x, to the millimetre"
+           ($math/round (* (h ~ get hello_spawn_x) 1000.0)) -1343500.0)
+  (check_f out "hello: spawn y" (h ~ get hello_spawn_y) 21.0)
+  (check_f out "hello: spawn z, to the millimetre"
+           ($math/round (* (h ~ get hello_spawn_z) 1000.0)) 3264500.0))
+
+# --- registry ----------------------------------------------------------------
+#
+# Against the *real* content set rather than a fixture, because §2's claim is
+# that a client's id vocabulary is whatever the server sent — so the thing to
+# check is that the vocabulary a real server would send arrives intact.
+
+(fn registry_checks [out : (List Str)] : Nil
+  (var server_reg (new_registry))
+  (setup_nodes server_reg)
+  (var n (registered_count server_reg))
+
+  (var c (new_cursor))
+  (var b ($buffer U8 (registry_size server_reg)))
+  (encode_registry b c server_reg)
+  (check_f out "registry: the kind byte" (message_kind b) msg_registry)
+  (check_f out "registry: the encoder wrote exactly registry_size bytes"
+           (cursor_at c) (registry_size server_reg))
+
+  # The client builds from a *bare* registry, not `new_registry`: the three
+  # reserved ids are the first three the message carries, and installing them
+  # twice would shift every id by three.
+  (var client_reg (new Registry))
+  (var got (decode_registry b c client_reg))
+  (check_f out "registry: the entry count round-trips" got n)
+  (check_f out "registry: and the client has that many"
+           (registered_count client_reg) n)
+
+  # Column for column, over every entry. The property: after the wire, the two
+  # registries answer identically to every question the mesher and the physics
+  # ask (§2, §5, §7).
+  (var name_diff 0.0)
+  (var draw_diff 0.0)
+  (var flag_diff 0.0)
+  (var light_diff 0.0)
+  (var tile_diff 0.0)
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (!= (name_of client_reg i) (name_of server_reg i))
+      (set name_diff (+ name_diff 1.0)))
+    (if_yes (!= (drawtype_of client_reg i) (drawtype_of server_reg i))
+      (set draw_diff (+ draw_diff 1.0)))
+    (if_yes (|| (!= (solid? client_reg i) (solid? server_reg i))
+                (|| (!= (opaque? client_reg i) (opaque? server_reg i))
+                    (!= (propagates_light? client_reg i)
+                        (propagates_light? server_reg i))))
+      (set flag_diff (+ flag_diff 1.0)))
+    (if_yes (!= (light_source_of client_reg i) (light_source_of server_reg i))
+      (set light_diff (+ light_diff 1.0)))
+    (if_yes (|| (!= (tile_top_of client_reg i) (tile_top_of server_reg i))
+                (|| (!= (tile_side_of client_reg i) (tile_side_of server_reg i))
+                    (!= (tile_bottom_of client_reg i)
+                        (tile_bottom_of server_reg i))))
+      (set tile_diff (+ tile_diff 1.0)))
+    (set i (+ i 1.0)))
+
+  (check_f out "registry: every name survives" name_diff 0.0)
+  (check_f out "registry: every drawtype survives" draw_diff 0.0)
+  (check_f out "registry: every transparency flag survives" flag_diff 0.0)
+  (check_f out "registry: every emission survives" light_diff 0.0)
+  (check_f out "registry: every tile index survives" tile_diff 0.0)
+
+  # And the check that the fixture is not vacuous: the content set has to
+  # contain the interesting cases, or the five above are about air and stone.
+  (check_b out "registry: the set has more than the reserved ids"
+           (> n 10.0) true)
+  (var emitters 0.0)
+  (set i 0.0)
+  (while (< i n)
+    (if_yes (> (light_source_of server_reg i) 0.0)
+      (set emitters (+ emitters 1.0)))
+    (set i (+ i 1.0)))
+  (check_b out "registry: and something in it emits light"
+           (> emitters 0.0) true))
+
+# --- blocks ------------------------------------------------------------------
+#
+# Three block shapes with different run structure, because a run-length bug is
+# almost always about a boundary: the last run, a run of one, or a run that
+# spans a row.
+
+(let block_dim 16.0)
+(let block_nodes 4096.0)
+
+(fn block_checks [out : (List Str)] : Nil
+  (var content ($buffer F32 block_nodes))
+  (var light ($buffer F32 block_nodes))
+  (var out_c ($buffer F32 block_nodes))
+  (var out_l ($buffer F32 block_nodes))
+
+  # 1. Uniform: one run over the whole block, which is most of a real world.
+  (fill content block_nodes 5.0)
+  (fill light block_nodes 15.0)
+  (check_f out "block: a uniform block is two runs"
+           (+ (count_runs content 0.0 block_dim 256.0)
+              (count_runs light 0.0 block_dim 256.0))
+           2.0)
+  (roundtrip_block out "uniform" content light out_c out_l)
+
+  # 2. Striped by index parity: the worst case, a run of one per node. This is
+  # what the "no raw fallback" decision above costs, and pinning it means the
+  # cost is a number rather than a worry.
+  (var i 0.0)
+  (while (< i block_nodes)
+    (content ~ set! i (- i (* 2.0 ($math/floor (/ i 2.0)))))
+    (light ~ set! i 0.0)
+    (set i (+ i 1.0)))
+  (check_f out "block: an alternating block is one run per node"
+           (count_runs content 0.0 block_dim 256.0) block_nodes)
+  (roundtrip_block out "alternating" content light out_c out_l)
+
+  # 3. Layered, which is what terrain actually looks like: runs that span rows
+  # and change with height. A run encoder that broke runs at row boundaries
+  # passes 1 and 2 and produces 256 times too many runs here.
+  (set i 0.0)
+  (while (< i block_nodes)
+    (var y ($math/floor (/ (- i (* 256.0 ($math/floor (/ i 256.0)))) 16.0)))
+    (content ~ set! i (if (< y 8.0) 1.0 0.0))
+    (light ~ set! i (if (< y 8.0) 0.0 15.0))
+    (set i (+ i 1.0)))
+  (roundtrip_block out "layered" content light out_c out_l)
+
+  # 4. A single node different from a uniform field, at the very last index —
+  # which is where a dropped final run shows up and nowhere else.
+  (fill content block_nodes 3.0)
+  (fill light block_nodes 4.0)
+  (content ~ set! (- block_nodes 1.0) 99.0)
+  (light ~ set! (- block_nodes 1.0) 1.0)
+  (roundtrip_block out "one odd node at the end" content light out_c out_l))
+
+(fn fill [b : (Buffer F32) n : F64 v : F64] : Nil
+  (var i 0.0)
+  (while (< i n) (b ~ set! i v) (set i (+ i 1.0))))
+
+(fn roundtrip_block [out : (List Str) label : Str
+                     content : (Buffer F32) light : (Buffer F32)
+                     out_c : (Buffer F32) out_l : (Buffer F32)] : Nil
+  (var c (new_cursor))
+  (var size (block_size content light 0.0 block_dim 256.0))
+  (var b ($buffer U8 size))
+  (encode_block b c -90.0 2.0 198.0 content light 0.0 block_dim 256.0)
+  (check_f out $"block: ${label} — the encoder wrote exactly block_size bytes"
+           (cursor_at c) size)
+
+  (var header (new_block_header))
+  (fill out_c block_nodes -1.0)
+  (fill out_l block_nodes -1.0)
+  (decode_block b c header out_c out_l)
+  (check_f out $"block: ${label} — a negative block coordinate survives"
+           (header ~ get block_bx) -90.0)
+
+  (var diff 0.0)
+  (var i 0.0)
+  (while (< i block_nodes)
+    (if_yes (|| (!= (out_c ~ get i) (content ~ get i))
+                (!= (out_l ~ get i) (light ~ get i)))
+      (set diff (+ diff 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out $"block: ${label} — every node and light value survives"
+           diff 0.0))
+
+# --- node delta --------------------------------------------------------------
+
+(fn delta_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 node_delta_size))
+  (var d (new_node_delta))
+
+  (encode_node_delta b c -1343.0 20.0 3264.0 7.0 255.0)
+  (check_f out "delta: the kind byte" (message_kind b) msg_node_delta)
+  (check_f out "delta: the encoder wrote exactly node_delta_size bytes"
+           (cursor_at c) node_delta_size)
+  (decode_node_delta b c d)
+  (check_f out "delta: a negative x" (d ~ get delta_x) -1343.0)
+  (check_f out "delta: y" (d ~ get delta_y) 20.0)
+  (check_f out "delta: z" (d ~ get delta_z) 3264.0)
+  (check_f out "delta: the node id" (d ~ get delta_id) 7.0)
+  # 255 is both nibbles at 15 — the packed byte at its maximum, which is what a
+  # node in full daylight next to a torch holds (§4).
+  (check_f out "delta: the packed light byte" (d ~ get delta_param1) 255.0)
+
+  # And a dig, which is a delta to air with no light.
+  (encode_node_delta b c 0.0 0.0 0.0 0.0 0.0)
+  (decode_node_delta b c d)
+  (check_f out "delta: a dig is id 0" (d ~ get delta_id) 0.0)
+  (check_f out "delta: with no light" (d ~ get delta_param1) 0.0))
+
+# --- input -------------------------------------------------------------------
+
+(fn input_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 input_size))
+  (var in (new_input))
+
+  # A diagonal wish, which is where the thousandths encoding has to hold: the
+  # components are 0.707…, and a rounding that lost them would make diagonal
+  # movement a different speed from straight movement.
+  (encode_input b c 0.7071 -0.7071 true false true 1.5708)
+  (check_f out "input: the kind byte" (message_kind b) msg_input)
+  (check_f out "input: the encoder wrote exactly input_size bytes"
+           (cursor_at c) input_size)
+  (decode_input b c in)
+  (check_f out "input: wish x, to the thousandth"
+           ($math/round (* (in ~ get in_wish_x) 1000.0)) 707.0)
+  (check_f out "input: a negative wish z"
+           ($math/round (* (in ~ get in_wish_z) 1000.0)) -707.0)
+  # A full-turn fraction over the u16 range resolves 0.0055 degrees, so a
+  # thousandth of a radian survives with room to spare.
+  (check_f out "input: yaw, to the thousandth"
+           ($math/round (* (in ~ get in_yaw) 1000.0)) 1571.0)
+
+  # The flags share a byte, so the check that matters is that each is readable
+  # independently of the others rather than that the byte has a value.
+  (check_b out "input: jump is set"
+           (input_flag? (in ~ get in_flags) input_jump) true)
+  (check_b out "input: sneak is not"
+           (input_flag? (in ~ get in_flags) input_sneak) false)
+  (check_b out "input: fly is set"
+           (input_flag? (in ~ get in_flags) input_fly) true)
+
+  # All eight combinations, since a flag decoder that returned the wrong bit
+  # would be right for four of them by accident.
+  (var wrong 0.0)
+  (var i 0.0)
+  (while (< i 8.0)
+    (var want_jump (>= (- i (* 2.0 ($math/floor (/ i 2.0)))) 1.0))
+    (var want_sneak (>= (- ($math/floor (/ i 2.0))
+                           (* 2.0 ($math/floor (/ i 4.0)))) 1.0))
+    (var want_fly (>= ($math/floor (/ i 4.0)) 1.0))
+    (encode_input b c 0.0 0.0 want_jump want_sneak want_fly 0.0)
+    (decode_input b c in)
+    (var flags (in ~ get in_flags))
+    (if_yes (|| (!= (input_flag? flags input_jump) want_jump)
+                (|| (!= (input_flag? flags input_sneak) want_sneak)
+                    (!= (input_flag? flags input_fly) want_fly)))
+      (set wrong (+ wrong 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "input: all eight flag combinations survive" wrong 0.0)
+
+  # Yaw at both ends of its range, since it is encoded with an offset.
+  (encode_input b c 0.0 0.0 false false false -3.14159)
+  (decode_input b c in)
+  (check_f out "input: yaw at -pi"
+           ($math/round (* (in ~ get in_yaw) 100.0)) -314.0)
+  (encode_input b c 0.0 0.0 false false false 3.14159)
+  (decode_input b c in)
+  (check_f out "input: yaw at +pi"
+           ($math/round (* (in ~ get in_yaw) 100.0)) 314.0))
+
+# --- dig and place -----------------------------------------------------------
+
+(fn edit_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 place_size))
+  (var e (new_edit))
+
+  (encode_dig b c -1343.0 19.0 3264.0)
+  (check_f out "dig: the kind byte" (message_kind b) msg_dig)
+  (check_f out "dig: the encoder wrote exactly dig_size bytes"
+           (cursor_at c) dig_size)
+  (decode_edit b c e)
+  (check_f out "dig: the position" (e ~ get edit_x) -1343.0)
+  (check_f out "dig: and y" (e ~ get edit_y) 19.0)
+  (check_f out "dig: and z" (e ~ get edit_z) 3264.0)
+  # A dig is a place of air, which is what makes one decoder serve both.
+  (check_f out "dig: carries no id, so reads as air" (e ~ get edit_id) 0.0)
+
+  (encode_place b c -1343.0 21.0 3264.0 12.0)
+  (check_f out "place: the kind byte" (message_kind b) msg_place)
+  (check_f out "place: the encoder wrote exactly place_size bytes"
+           (cursor_at c) place_size)
+  (decode_edit b c e)
+  (check_f out "place: the position" (e ~ get edit_x) -1343.0)
+  (check_f out "place: and the id" (e ~ get edit_id) 12.0))
+
+# --- inventory ---------------------------------------------------------------
+
+(fn inventory_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var slots 8.0)
+  (var b ($buffer U8 (inventory_size slots)))
+
+  # (id, count) pairs, as `core/inventory.gene` stores them: two full stacks,
+  # a partial, and five empties.
+  (var inv ($buffer F64 (* slots 2.0)))
+  (inv ~ set! 0.0 3.0)  (inv ~ set! 1.0 99.0)
+  (inv ~ set! 2.0 4.0)  (inv ~ set! 3.0 99.0)
+  (inv ~ set! 4.0 7.0)  (inv ~ set! 5.0 12.0)
+
+  (encode_inventory b c inv slots)
+  (check_f out "inventory: the kind byte" (message_kind b) msg_inventory)
+  (check_f out "inventory: the encoder wrote exactly inventory_size bytes"
+           (cursor_at c) (inventory_size slots))
+
+  (var back ($buffer F64 (* slots 2.0)))
+  (var got (decode_inventory b c back))
+  (check_f out "inventory: the slot count round-trips" got slots)
+
+  (var diff 0.0)
+  (var i 0.0)
+  (while (< i (* slots 2.0))
+    (if_yes (!= (back ~ get i) (inv ~ get i)) (set diff (+ diff 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "inventory: every slot survives" diff 0.0)
+  (check_f out "inventory: a full stack is intact" (back ~ get 1.0) 99.0)
+  (check_f out "inventory: and an empty slot stays empty" (back ~ get 15.0) 0.0))
+
+# --- the report --------------------------------------------------------------
+
+(fn collect [out : (List Str)] : Nil
+  (kind_checks out)
+  (hello_checks out)
+  (registry_checks out)
+  (block_checks out)
+  (delta_checks out)
+  (input_checks out)
+  (edit_checks out)
+  (inventory_checks out))
+
+(fn report [] : Str
+  (var out : (List Str) [])
+  (collect out)
+  ($str/join out "\n"))
+
+(fn failures [] : F64
+  (var out : (List Str) [])
+  (collect out)
+  (var bad 0.0)
+  (var i 0.0)
+  (var n (out ~ size))
+  (while (< i n)
+    (if_yes ($str/starts_with? out/%i "FAIL")
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)

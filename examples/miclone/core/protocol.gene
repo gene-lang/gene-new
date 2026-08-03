@@ -1,0 +1,530 @@
+# The protocol — design.md §10.
+#
+# Every message is a `(Buffer U8)` beginning with a one-byte kind, encoded
+# through `core/wire.gene`. One module, both backends, for the reason §D3
+# gives: the server encodes on the VM and the client decodes in the browser, and
+# a format with two implementations is a format two processes can disagree
+# about.
+#
+# ## Bytes, not Gene nodes, and that is narrower than §10 says
+#
+# §10 specifies "Gene nodes encoded with the existing serialization layer for
+# everything except block data". This encodes *everything* as bytes, because
+# the exception is the only part that was ever a choice: `docs/serialization.md`
+# is a VM facility and the web profile has no reader for it, so a node-encoded
+# message could be written by the server and not read by the client.
+#
+# That is a real narrowing and it costs something — a node-encoded message is
+# self-describing and this is not, so a version skew here is a misparse rather
+# than a missing field. §14's answer is the version byte in `hello`, checked
+# before anything else is read. When the profile gains a serde reader, the
+# control messages (everything but blocks) should move back to nodes; the
+# framing below is deliberately just a kind byte so that is a per-kind change.
+#
+# ## Sizes are computed, not guessed
+#
+# Every `encode_*` has a matching `*_size`, and the encoder allocates exactly
+# that. A growable buffer would reallocate inside the loop that fills it, and a
+# fixed "big enough" buffer would have to be sized for the worst case — which
+# for a block is 24,576 bytes against a mean of ~600.
+
+(mod protocol ^profile web)
+
+(import [Registry registered_count name_of drawtype_of solid? opaque?
+         propagates_light? light_source_of tile_top_of tile_side_of
+         tile_bottom_of register max_content]
+        from "./registry.gene")
+(import [new_cursor cursor_at reset remaining exhausted? byte_len
+         read_u8 read_u16 read_u32 read_i32
+         write_u8 write_u16 write_u32 write_i32
+         read_str write_str str_size]
+        from "./wire.gene")
+
+# --- version -----------------------------------------------------------------
+#
+# Bumped whenever a message's layout changes. §14: a client and a server that
+# disagree must say so at the handshake rather than at the first misparse, and
+# a byte compared before anything else is read is the cheapest way to do it.
+(let protocol_version 1.0)
+
+# --- message kinds -----------------------------------------------------------
+#
+# Server to client are 1..63, client to server are 64..127. The split is not
+# cosmetic: a message arriving on the wrong side is a bug worth naming, and a
+# decoder that can tell "this is not for me" from "I do not know this" gives a
+# better diagnostic than a single unknown-kind error.
+
+(let msg_hello 1.0)                # server: version, seed, world extent, spawn
+(let msg_registry 2.0)             # server: §2's client half, once on join
+(let msg_block 3.0)                # server: one block's nodes and light
+(let msg_node_delta 4.0)           # server: one node changed
+(let msg_inventory 5.0)            # server: the whole hotbar
+
+(let msg_input 64.0)               # client: movement intent, every tick
+(let msg_dig 65.0)                 # client: dig the node at
+(let msg_place 66.0)               # client: place the held item at
+
+# `$to_float` because a `(Buffer U8)` read is `Int` on *both* backends, which is
+# the ordinary case the conversion is for. Contrast `core/wire.gene`'s
+# `byte_len`: `~ len` is the operation whose type differs between them, and it
+# is the only one (§D7.12).
+(fn message_kind [b : (Buffer U8)] : F64
+  ($to_float (b ~ get 0.0)))
+
+(fn server_message? [kind : F64] : Bool
+  (&& (>= kind 1.0) (< kind 64.0)))
+
+(fn client_message? [kind : F64] : Bool
+  (&& (>= kind 64.0) (< kind 128.0)))
+
+# --- hello -------------------------------------------------------------------
+#
+# The first message on a connection, and the only one whose layout may never
+# change: a client that cannot read `hello` cannot be told why.
+
+# 1 kind + 1 version + 4 seed + 12 block coords + 6 spans + 12 spawn.
+(let hello_size 36.0)
+
+(fn encode_hello [out : (Buffer U8) c : (Buffer F64)
+                  seed : F64
+                  bx : F64 by : F64 bz : F64
+                  span_x : F64 span_y : F64 span_z : F64
+                  spawn_x : F64 spawn_y : F64 spawn_z : F64] : Nil
+  (reset c)
+  (write_u8 c out msg_hello)
+  (write_u8 c out protocol_version)
+  (write_u32 c out seed)
+  (write_i32 c out bx)
+  (write_i32 c out by)
+  (write_i32 c out bz)
+  (write_u16 c out span_x)
+  (write_u16 c out span_y)
+  (write_u16 c out span_z)
+  # The spawn is a continuous position (§7), so it travels in thousandths of a
+  # node rather than as a float: the wire has no F64 writer, and a millimetre
+  # is far below anything a player can perceive or a physics step can preserve.
+  (write_i32 c out ($math/round (* spawn_x 1000.0)))
+  (write_i32 c out ($math/round (* spawn_y 1000.0)))
+  (write_i32 c out ($math/round (* spawn_z 1000.0))))
+
+# The decoded fields land in a caller-supplied buffer, in this order. A returned
+# record would be an allocation, and a type would be nine property loads on the
+# other side.
+(let hello_version 0.0)
+(let hello_seed 1.0)
+(let hello_bx 2.0)
+(let hello_by 3.0)
+(let hello_bz 4.0)
+(let hello_span_x 5.0)
+(let hello_span_y 6.0)
+(let hello_span_z 7.0)
+(let hello_spawn_x 8.0)
+(let hello_spawn_y 9.0)
+(let hello_spawn_z 10.0)
+(let hello_cells 11.0)
+
+(fn new_hello [] : (Buffer F64)
+  ($buffer F64 hello_cells))
+
+(fn decode_hello [b : (Buffer U8) c : (Buffer F64) into : (Buffer F64)] : Nil
+  (reset c)
+  (read_u8 c b)                    # kind, already dispatched on
+  (into ~ set! hello_version (read_u8 c b))
+  (into ~ set! hello_seed (read_u32 c b))
+  (into ~ set! hello_bx (read_i32 c b))
+  (into ~ set! hello_by (read_i32 c b))
+  (into ~ set! hello_bz (read_i32 c b))
+  (into ~ set! hello_span_x (read_u16 c b))
+  (into ~ set! hello_span_y (read_u16 c b))
+  (into ~ set! hello_span_z (read_u16 c b))
+  (into ~ set! hello_spawn_x (/ (read_i32 c b) 1000.0))
+  (into ~ set! hello_spawn_y (/ (read_i32 c b) 1000.0))
+  (into ~ set! hello_spawn_z (/ (read_i32 c b) 1000.0)))
+
+# --- registry ----------------------------------------------------------------
+#
+# §2's client half: everything the client needs to mesh and to predict, and
+# nothing it does not. Drops, `on_dig`, and ABMs stay on the server — that split
+# is what lets a client render without executing mod code (§D5), and it is why
+# this message carries eight columns rather than a node definition.
+#
+# Sent once on join. §2: "content ids are assigned at load, never hardcoded",
+# so this *is* the client's id vocabulary — before it arrives, no number the
+# client holds means anything.
+
+(fn registry_size [reg : Registry] : F64
+  (var n (registered_count reg))
+  (var total 3.0)                  # kind + count
+  (var i 0.0)
+  (while (< i n)
+    # name, then eight one-byte columns: drawtype, three flags, emission, and
+    # three tiles.
+    (set total (+ total (+ (str_size (name_of reg i)) 8.0)))
+    (set i (+ i 1.0)))
+  total)
+
+(fn bool_byte [v : Bool] : F64
+  (if v 1.0 0.0))
+
+(fn encode_registry [out : (Buffer U8) c : (Buffer F64) reg : Registry] : Nil
+  (reset c)
+  (write_u8 c out msg_registry)
+  (var n (registered_count reg))
+  (write_u16 c out n)
+  (var i 0.0)
+  (while (< i n)
+    (write_str c out (name_of reg i))
+    (write_u8 c out (drawtype_of reg i))
+    (write_u8 c out (bool_byte (solid? reg i)))
+    (write_u8 c out (bool_byte (opaque? reg i)))
+    (write_u8 c out (bool_byte (propagates_light? reg i)))
+    (write_u8 c out (light_source_of reg i))
+    (write_u8 c out (tile_top_of reg i))
+    (write_u8 c out (tile_side_of reg i))
+    (write_u8 c out (tile_bottom_of reg i))
+    (set i (+ i 1.0))))
+
+# Fills a *fresh* registry rather than mutating one, and the caller must pass an
+# empty one: §2's ids are positional, so replaying this over a populated
+# registry would append a second vocabulary and every id would be wrong by the
+# first registry's size. `new_registry` installs the three reserved ids, which
+# are the first three this message carries, so a client builds its registry with
+# a bare `(new Registry)` and lets the wire fill all of it.
+(fn decode_registry [b : (Buffer U8) c : (Buffer F64) reg : Registry] : F64
+  (reset c)
+  (read_u8 c b)
+  (var n (read_u16 c b))
+  (var i 0.0)
+  (while (< i n)
+    (var name (read_str c b))
+    (var drawtype (read_u8 c b))
+    (var solid (== (read_u8 c b) 1.0))
+    (var opaque (== (read_u8 c b) 1.0))
+    (var propagates (== (read_u8 c b) 1.0))
+    (var emits (read_u8 c b))
+    (var top (read_u8 c b))
+    (var side (read_u8 c b))
+    (var bottom (read_u8 c b))
+    (register reg name drawtype solid opaque propagates emits top side bottom)
+    (set i (+ i 1.0)))
+  n)
+
+# --- blocks ------------------------------------------------------------------
+#
+# The message that carries the traffic, and the only one whose size is worth
+# thinking about: 4,096 nodes of content and 4,096 of light, which raw is 12 KB
+# per block and 7 MB for the 576-block world §D6.1 draws.
+#
+# Run-length encoded, on the same finding `server/blockfmt.gene` records: a
+# voxel column is a handful of runs, and runs take a stored block from 24,576
+# bytes to a mean of 612. The scheme here is that one, re-expressed over
+# `core/wire.gene` because blockfmt is `$binary` and therefore VM-only.
+#
+# Each run is a u16 count and a u16 value. A run cannot exceed 4,096 in a block
+# of 4,096 nodes, so no run is ever split.
+#
+# **No raw fallback, unlike blockfmt.** blockfmt stores, and a stored block that
+# doubled in size would be a disk cost paid forever; a message that doubles is
+# paid once and the socket is already the slower half. Leaving it out keeps the
+# decoder to one loop, and the decoder is the half that runs in a frame.
+
+(let block_nodes 4096.0)
+
+# The exact encoded size, computed by counting runs. Two passes over the arrays
+# — once to count, once to write — which is the same trade `core/mesh.gene`
+# makes for the same reason: an exactly-sized buffer against a worst-cased one.
+(fn block_size [content : (Buffer F32) light : (Buffer F32)
+                base : F64 sy : F64 sz : F64] : F64
+  # 1 kind + 12 block coords, then a u16 count and a u16 value per run.
+  (+ 13.0 (* 4.0 (+ (count_runs content base sy sz)
+                    (count_runs light base sy sz)))))
+
+# Runs over a 16³ chunk read out of a larger array — the same base-and-strides
+# addressing `core/mesh.gene` takes, so a server can encode straight out of the
+# world it holds without gathering the block first.
+(fn count_runs [values : (Buffer F32) base : F64 sy : F64 sz : F64] : F64
+  (var runs 0.0)
+  (var previous -1.0)
+  (var started false)
+  (var z 0.0)
+  (while (< z 16.0)
+    (var y 0.0)
+    (while (< y 16.0)
+      (var row (+ base (+ (* y sy) (* z sz))))
+      (var x 0.0)
+      (while (< x 16.0)
+        (var v (values ~ get (+ row x)))
+        (if_yes (|| (! started) (!= v previous))
+          (set runs (+ runs 1.0))
+          (set previous v)
+          (set started true))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  runs)
+
+(fn encode_block [out : (Buffer U8) c : (Buffer F64)
+                  bx : F64 by : F64 bz : F64
+                  content : (Buffer F32) light : (Buffer F32)
+                  base : F64 sy : F64 sz : F64] : Nil
+  (reset c)
+  (write_u8 c out msg_block)
+  (write_i32 c out bx)
+  (write_i32 c out by)
+  (write_i32 c out bz)
+  (write_runs c out content base sy sz)
+  (write_runs c out light base sy sz))
+
+(fn write_runs [c : (Buffer F64) out : (Buffer U8) values : (Buffer F32)
+                base : F64 sy : F64 sz : F64] : Nil
+  # The run head is carried across the row and slice boundaries deliberately:
+  # §1's index order is x-fastest, so a run that ends a row continues into the
+  # next one, and breaking runs at row edges would cost 256 extra runs per
+  # uniform block — which is most of them.
+  (var current -1.0)
+  (var run 0.0)
+  (var z 0.0)
+  (while (< z 16.0)
+    (var y 0.0)
+    (while (< y 16.0)
+      (var row (+ base (+ (* y sy) (* z sz))))
+      (var x 0.0)
+      (while (< x 16.0)
+        (var v (values ~ get (+ row x)))
+        (if (== run 0.0)
+          (then
+            (set current v)
+            (set run 1.0))
+          (else
+            (if (== v current)
+              (then (set run (+ run 1.0)))
+              (else
+                (write_u16 c out run)
+                (write_u16 c out current)
+                (set current v)
+                (set run 1.0)))))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  (if_yes (> run 0.0)
+    (write_u16 c out run)
+    (write_u16 c out current)))
+
+# Decode into two flat 4,096-element arrays in §1's `x + 16y + 256z` order,
+# which is what `core/loaded.gene`'s `store_block` takes.
+(fn decode_block [b : (Buffer U8) c : (Buffer F64) into : (Buffer F64)
+                  content : (Buffer F32) light : (Buffer F32)] : Nil
+  (reset c)
+  (read_u8 c b)
+  (into ~ set! block_bx (read_i32 c b))
+  (into ~ set! block_by (read_i32 c b))
+  (into ~ set! block_bz (read_i32 c b))
+  (read_runs c b content)
+  (read_runs c b light))
+
+(let block_bx 0.0)
+(let block_by 1.0)
+(let block_bz 2.0)
+(let block_cells 3.0)
+
+(fn new_block_header [] : (Buffer F64)
+  ($buffer F64 block_cells))
+
+# Stops on the node count *and* on the buffer running out, so a truncated
+# message fills what it can rather than reading past the end — which in the web
+# profile answers `undefined`, silently, and would write `NaN` into the world.
+(fn read_runs [c : (Buffer F64) b : (Buffer U8) into : (Buffer F32)] : Nil
+  (var at 0.0)
+  (while (&& (< at block_nodes) (>= (remaining c b) 4.0))
+    (var run (read_u16 c b))
+    (var v (read_u16 c b))
+    (var k 0.0)
+    (while (&& (< k run) (< at block_nodes))
+      (into ~ set! at v)
+      (set at (+ at 1.0))
+      (set k (+ k 1.0)))))
+
+# --- node delta --------------------------------------------------------------
+#
+# §7.1's reconciliation: one node changed, with the light that came with it.
+# Small and frequent, so it carries the node's own `param1` rather than a
+# region — the client relights around it with the same `relight_node` the
+# server ran, which is §D3 applied to the one subsystem where a disagreement is
+# visible rather than merely wrong.
+
+(let node_delta_size 16.0)
+
+(fn encode_node_delta [out : (Buffer U8) c : (Buffer F64)
+                       nx : F64 ny : F64 nz : F64
+                       id : F64 param1 : F64] : Nil
+  (reset c)
+  (write_u8 c out msg_node_delta)
+  (write_i32 c out nx)
+  (write_i32 c out ny)
+  (write_i32 c out nz)
+  (write_u16 c out id)
+  (write_u8 c out param1))
+
+(let delta_x 0.0)
+(let delta_y 1.0)
+(let delta_z 2.0)
+(let delta_id 3.0)
+(let delta_param1 4.0)
+(let delta_cells 5.0)
+
+(fn new_node_delta [] : (Buffer F64)
+  ($buffer F64 delta_cells))
+
+(fn decode_node_delta [b : (Buffer U8) c : (Buffer F64)
+                       into : (Buffer F64)] : Nil
+  (reset c)
+  (read_u8 c b)
+  (into ~ set! delta_x (read_i32 c b))
+  (into ~ set! delta_y (read_i32 c b))
+  (into ~ set! delta_z (read_i32 c b))
+  (into ~ set! delta_id (read_u16 c b))
+  (into ~ set! delta_param1 (read_u8 c b)))
+
+# --- player input ------------------------------------------------------------
+#
+# §10: "send position at a fixed low rate, make every position message a full
+# state rather than a delta so a late one is merely stale". This is that message
+# and it is the reason the regression to a reliable-ordered transport is
+# survivable — nothing here refers to a previous message, so an old one that
+# arrives late can be dropped rather than replayed.
+#
+# The wish direction travels in thousandths, like the spawn: it is a unit vector
+# and a millimetre of direction error is far below what a physics step resolves.
+
+(let input_size 12.0)
+
+(let pi 3.141592653589793)
+(let two_pi 6.283185307179586)
+
+(let input_jump 1.0)
+(let input_sneak 2.0)
+(let input_fly 4.0)
+
+(fn encode_input [out : (Buffer U8) c : (Buffer F64)
+                  wish_x : F64 wish_z : F64
+                  jump : Bool sneak : Bool fly : Bool
+                  yaw : F64] : Nil
+  (reset c)
+  (write_u8 c out msg_input)
+  (write_i32 c out ($math/round (* wish_x 1000.0)))
+  (write_i32 c out ($math/round (* wish_z 1000.0)))
+  # Three booleans in one byte rather than three, because the flags are always
+  # sent together and a byte each would make the message half padding.
+  (write_u8 c out (+ (if jump input_jump 0.0)
+                     (+ (if sneak input_sneak 0.0)
+                        (if fly input_fly 0.0))))
+  # Yaw as a **fraction of a full turn** across the whole u16 range, rather
+  # than in thousandths of a radian. Thousandths was the first version and it
+  # is worse twice over: it uses 6,283 of 65,535 values, and its zero point is
+  # pi — which is not a whole number of thousandths, so encode-then-decode
+  # loses up to a thousandth *and cannot be made not to*. A fraction of a turn
+  # has no offset to round and resolves 2pi/65535 = 0.0055 degrees.
+  (write_u16 c out ($math/round (* (/ (+ yaw pi) two_pi) 65535.0))))
+
+(let in_wish_x 0.0)
+(let in_wish_z 1.0)
+(let in_flags 2.0)
+(let in_yaw 3.0)
+(let in_cells 4.0)
+
+(fn new_input [] : (Buffer F64)
+  ($buffer F64 in_cells))
+
+(fn decode_input [b : (Buffer U8) c : (Buffer F64) into : (Buffer F64)] : Nil
+  (reset c)
+  (read_u8 c b)
+  (into ~ set! in_wish_x (/ (read_i32 c b) 1000.0))
+  (into ~ set! in_wish_z (/ (read_i32 c b) 1000.0))
+  (into ~ set! in_flags (read_u8 c b))
+  (into ~ set! in_yaw (- (* (/ (read_u16 c b) 65535.0) two_pi) pi)))
+
+(fn input_flag? [flags : F64 flag : F64] : Bool
+  (var above (* 2.0 flag))
+  (>= (- flags (* above ($math/floor (/ flags above)))) flag))
+
+# --- dig and place -----------------------------------------------------------
+#
+# §7.1's client-side rejection means most attempts never reach the network at
+# all; these are the ones that passed it. The client has already applied the
+# edit optimistically, so what comes back is a `node_delta` that either agrees
+# — and is retired silently — or does not, and wins.
+
+# A dig is 1 kind + 12 coords; a place adds a u16 id. Two constants rather than
+# one, because a caller sizes its buffer from these and the larger would waste
+# two bytes on every dig while the smaller would overrun on every place.
+(let dig_size 13.0)
+(let place_size 15.0)
+
+(fn encode_dig [out : (Buffer U8) c : (Buffer F64)
+                nx : F64 ny : F64 nz : F64] : Nil
+  (reset c)
+  (write_u8 c out msg_dig)
+  (write_i32 c out nx)
+  (write_i32 c out ny)
+  (write_i32 c out nz))
+
+(fn encode_place [out : (Buffer U8) c : (Buffer F64)
+                  nx : F64 ny : F64 nz : F64 id : F64] : Nil
+  (reset c)
+  (write_u8 c out msg_place)
+  (write_i32 c out nx)
+  (write_i32 c out ny)
+  (write_i32 c out nz)
+  (write_u16 c out id))
+
+(let edit_x 0.0)
+(let edit_y 1.0)
+(let edit_z 2.0)
+(let edit_id 3.0)
+(let edit_cells 4.0)
+
+(fn new_edit [] : (Buffer F64)
+  ($buffer F64 edit_cells))
+
+# One decoder for both, because they differ only in the trailing id — a dig
+# leaves it 0, which is `air`, which is what a dig places.
+(fn decode_edit [b : (Buffer U8) c : (Buffer F64) into : (Buffer F64)] : Nil
+  (reset c)
+  (var kind (read_u8 c b))
+  (into ~ set! edit_x (read_i32 c b))
+  (into ~ set! edit_y (read_i32 c b))
+  (into ~ set! edit_z (read_i32 c b))
+  (into ~ set! edit_id (if (== kind msg_place) (read_u16 c b) 0.0)))
+
+# --- inventory ---------------------------------------------------------------
+#
+# §7.1 step 3: "Drops, wear, and stack changes are never predicted." So the
+# hotbar is authoritative and arrives whole — eight slots of (id, count) — after
+# every change that touches it. Whole rather than as a delta for the same reason
+# `input` is: a late one is stale rather than wrong.
+
+(fn inventory_size [slots : F64] : F64
+  (+ 2.0 (* slots 4.0)))
+
+(fn encode_inventory [out : (Buffer U8) c : (Buffer F64)
+                      inv : (Buffer F64) slots : F64] : Nil
+  (reset c)
+  (write_u8 c out msg_inventory)
+  (write_u8 c out slots)
+  (var i 0.0)
+  (while (< i slots)
+    (write_u16 c out (inv ~ get (* i 2.0)))
+    (write_u16 c out (inv ~ get (+ (* i 2.0) 1.0)))
+    (set i (+ i 1.0))))
+
+(fn decode_inventory [b : (Buffer U8) c : (Buffer F64)
+                      inv : (Buffer F64)] : F64
+  (reset c)
+  (read_u8 c b)
+  (var slots (read_u8 c b))
+  (var i 0.0)
+  (while (< i slots)
+    (inv ~ set! (* i 2.0) (read_u16 c b))
+    (inv ~ set! (+ (* i 2.0) 1.0) (read_u16 c b))
+    (set i (+ i 1.0)))
+  slots)
