@@ -24,6 +24,12 @@
   }
   #aim::before { left: 8px; top: 0; width: 2px; height: 18px; }
   #aim::after { top: 8px; left: 0; height: 2px; width: 18px; }
+  #hotbar {
+    position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
+    font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap; color: #0d2338; background: rgba(255,255,255,.72);
+    padding: 5px 9px; border-radius: 5px; pointer-events: none;
+  }
   #help {
     position: fixed; left: 12px; bottom: 10px;
     font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -34,7 +40,8 @@
 <canvas id="stage"></canvas>
 <div id="hud">building world…</div>
 <div id="aim"></div>
-<div id="help">drag to look · W A S D to walk · space to jump · shift to sneak · F to fly · click to dig · right-click to place</div>
+<div id="hotbar"></div>
+<div id="help">drag to look · W A S D to walk · space to jump · shift to sneak · F to fly<br>click to dig · right-click to place · 1-8 or the wheel to pick a slot</div>
 <script type="module">
   import { main } from "./dist/main.mjs";
   main();

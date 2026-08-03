@@ -32,7 +32,13 @@ import {
 } from "../dist/physics.mjs";
 import {
   new_hit, cast, hit$q, hit_x, hit_y, hit_z, before_x, before_y, before_z,
+  pointable$q,
 } from "../dist/raycast.mjs";
+import {
+  new_inventory, add, take, slot_item, slot_count, slot_empty$q, total_of,
+} from "../dist/inventory.mjs";
+import { drop_item, drop_count } from "../dist/drops.mjs";
+import { setup_drops } from "../dist/content.mjs";
 import {
   new_bounds, apply_node, diggable$q, placeable$q,
   bounds_min_x, bounds_min_y, bounds_min_z,
@@ -341,11 +347,85 @@ if (lightDiff !== 0) {
   bad++;
 }
 
+// --- the loop ----------------------------------------------------------------
+//
+// Dig a node, get its drop; place it, lose it from the hand and gain it in the
+// world. That is what M5 set out to end with, so it is asserted rather than
+// left to a screenshot: the client wires these four modules together and the
+// wiring is the only part a spec per module cannot see.
+
+const drops = setup_drops(reg);
+const inv = new_inventory(8);
+let loopBad = 0;
+
+// Three surface nodes beside the spawn column. Deliberately not relative to the
+// player: by this point the walk and the shaft have moved them somewhere the
+// fixture does not control, and a fixture that samples an uncontrolled position
+// is the trap M3 and M4 both fell into.
+const dugIds = [];
+for (let i = 0; i < 3; i++) {
+  const nx = COL_X + 2 + i, nz = COL_Z + 2;
+  // Down to the first *pointable* node, not the first non-air one: the spawn
+  // stands on a coastline and the columns beside it are sea, which §7 leaves
+  // unpointable on purpose. A ray fired at them goes through to the floor, and
+  // so does this.
+  let sy = (ORIGIN_BY + SPAN_Y) * BLOCK - 1;
+  while (sy > ORIGIN_BY * BLOCK &&
+         !pointable$q(reg, node_at(world, nx, sy, nz))) sy--;
+  const ny = sy;
+  if (!diggable$q(world, reg, nx, ny, nz)) { loopBad++; continue; }
+  const was = node_at(world, nx, ny, nz);
+  apply_node(world, reg, nx, ny, nz, AIR_ID, sky, editQueue, editSeed, bounds);
+  const left = add(inv, drop_item(drops, was), drop_count(drops, was));
+  if (left !== 0) loopBad++;
+  if (node_at(world, nx, ny, nz) !== AIR_ID) loopBad++;
+  dugIds.push([nx, ny, nz, drop_item(drops, was)]);
+}
+// Summed over slots rather than over the dug ids: three stone dug is three
+// items in one slot, and totalling per id would report nine.
+let carried = 0;
+for (let i = 0; i < 8; i++) carried += slot_count(inv, i);
+if (dugIds.length !== 3) loopBad++;
+
+// And put them back, spending the stack each time.
+let placed = 0;
+for (const [nx, ny, nz, id] of dugIds) {
+  // Find the slot holding it, as the hotbar would.
+  let slot = -1;
+  for (let i = 0; i < 8; i++)
+    if (!slot_empty$q(inv, i) && slot_item(inv, i) === id) { slot = i; break; }
+  if (slot < 0) { loopBad++; continue; }
+  if (!placeable$q(world, reg, nx, ny, nz)) { loopBad++; continue; }
+  if (take(inv, slot, 1) !== 1) { loopBad++; continue; }
+  apply_node(world, reg, nx, ny, nz, id, sky, editQueue, editSeed, bounds);
+  if (node_at(world, nx, ny, nz) !== id) loopBad++;
+  placed++;
+}
+
+// Grass is the one node in the set whose drop is not itself, so a dug meadow
+// comes back as dirt. If the fixture happened to dig grass, that shows up here
+// as a node that changed identity, which is correct and worth saying.
+const GRASS = id_of(reg, "miclone:grass");
+const DIRT = id_of(reg, "miclone:dirt");
+if (drop_item(drops, GRASS) !== DIRT) loopBad++;
+if (drop_item(drops, id_of(reg, "miclone:stone")) !==
+    id_of(reg, "miclone:stone")) loopBad++;
+
+console.log("");
+console.log(`  dig and place ${dugIds.length} dug and carried ` +
+  `(${carried} items), ${placed} placed back, ` +
+  `hand now ${slot_empty$q(inv, 0) ? "empty" : "holding " + slot_count(inv, 0)}`);
+if (loopBad !== 0) {
+  console.log(`FAIL — loop: ${loopBad} step(s) of dig-carry-place went wrong`);
+  bad++;
+}
+
 console.log("");
 console.log(bad === 0
   ? `PASS — shell intact, daylight crosses block boundaries ` +
     `(${crossings}/${sampled} columns), ${FRAMES} frames of walking never ` +
     `left the world or entered a block, and ${edits.length} edits relit the ` +
-    `world exactly as a full relight would`
+    `world exactly as a full relight would, and a node dug is a node carried ` +
+    `and placed`
   : `FAIL — ${bad} invariant(s) broken`);
 if (bad !== 0) process.exit(1);

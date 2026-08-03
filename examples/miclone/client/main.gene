@@ -29,7 +29,8 @@
 (import [count_faces build_mesh] from "../core/mesh.gene")
 (import [light_region queue_overhead] from "../core/light.gene")
 (import [new_registry id_of registered_count] from "../core/registry.gene")
-(import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
+(import [setup_nodes setup_biomes setup_ores setup_drops]
+        from "../core/content.gene")
 (import [World new_world store_block block_base open_sky
          world_dx world_dy world_dz world_stride_z world_nodes]
         from "../core/loaded.gene")
@@ -49,6 +50,9 @@
          bounds_min_x bounds_min_y bounds_min_z
          bounds_max_x bounds_max_y bounds_max_z]
         from "../core/edit.gene")
+(import [new_inventory add take slot_item slot_count slot_empty?]
+        from "../core/inventory.gene")
+(import [drop_item drop_count] from "../core/drops.gene")
 
 (let seed 1337.0)
 (let block_dim 16.0)
@@ -107,6 +111,11 @@
 # click on the same button, and the only thing that separates them is this.
 (let click_slop 4.0)
 
+# Eight slots, which is what fits across the bottom of a screen as readable text
+# and what a number row addresses without modifiers. §13's real inventory is a
+# formspec and is M8's.
+(let hotbar_slots 8.0)
+
 (fn abs_pixels [v : F64] : F64
   (if (< v 0.0) (- 0.0 v) v))
 
@@ -133,6 +142,9 @@
   (setup_nodes reg)
   (var biomes (setup_biomes reg))
   (var ores (setup_ores reg))
+  # §2's server half. In-process singleplayer holds both halves; M6 is where
+  # this stops being something the client can reach (see `core/drops.gene`).
+  (var drops (setup_drops reg))
   (var air (id_of reg "air"))
   (var water (id_of reg "miclone:water"))
   (var registered (registered_count reg))
@@ -302,9 +314,15 @@
 
   (var hit (new_hit))
   (var bounds (new_bounds))
-  (var stone (id_of reg "miclone:stone"))
   (var edit_ms 0.0)
   (var edit_chunks 0.0)
+
+  # The hotbar is the inventory, for now: eight slots, one selected, and no
+  # second container to move things into. §13's formspec is where a real
+  # inventory screen belongs and it is M8's.
+  (var inv (new_inventory hotbar_slots))
+  (var selected 0.0)
+  (var hotbar_dirty true)
 
   # Rebuild every chunk the last edit's region touched. The region comes from
   # `apply_node` and is the part of the world whose light or content it could
@@ -364,7 +382,17 @@
           reach)
     (if_yes (hit? hit)
       (if_yes (diggable? world reg (hit_x hit) (hit_y hit) (hit_z hit))
-        (apply_edit (hit_x hit) (hit_y hit) (hit_z hit) air)))))
+        (var dug (node_at world (hit_x hit) (hit_y hit) (hit_z hit)))
+        (apply_edit (hit_x hit) (hit_y hit) (hit_z hit) air)
+        # §7.1 step 3 keeps drops off the prediction path. In-process there is
+        # nothing to predict: the edit and its drop are the same call. What is
+        # dropped and does not fit is lost, which is what a game with no
+        # dropped-item entities can do — those are M8's.
+        (var yield_id (drop_item drops dug))
+        (var yield_n (drop_count drops dug))
+        (if_yes (> yield_n 0.0)
+          (add inv yield_id yield_n)
+          (set hotbar_dirty true))))))
 
   (var place : (Callback [] Void) (fn [] : Void void))
   (set place (fn [] : Void
@@ -375,12 +403,32 @@
       (var nx (before_x hit))
       (var ny (before_y hit))
       (var nz (before_z hit))
-      # The last rejection §7.1 leaves to the client: a node placed where the
-      # player is standing is legal by every other test and leaves them inside
-      # it.
-      (if_yes (&& (placeable? world reg nx ny nz)
-                  (! (box_overlaps_node? player nx ny nz)))
-        (apply_edit nx ny nz stone)))))
+      # The last two rejections §7.1 leaves to the client: an empty hand, and a
+      # node placed where the player is standing — legal by every other test,
+      # and it leaves them inside it.
+      (if_yes (&& (! (slot_empty? inv selected))
+                  (&& (placeable? world reg nx ny nz)
+                      (! (box_overlaps_node? player nx ny nz))))
+        (var held (slot_item inv selected))
+        (take inv selected 1.0)
+        (set hotbar_dirty true)
+        (apply_edit nx ny nz held)))))
+
+  # The hotbar as text, rebuilt only when it changes: eight slots is a short
+  # string, and building it every frame would be the only allocation in the
+  # frame loop.
+  (var draw_hotbar : (Callback [] Void) (fn [] : Void void))
+  (set draw_hotbar (fn [] : Void
+    (var parts : (List Str) [])
+    (var i 0.0)
+    (while (< i hotbar_slots)
+      (var label
+        (if (slot_empty? inv i) "—"
+          $"$(name_of reg (slot_item inv i)) x$($to_int (slot_count inv i))"))
+      (var marked (if (== i selected) $"[${label}]" $" ${label} "))
+      (parts ~ push! marked)
+      (set i (+ i 1.0)))
+    ($dom/set_text ($dom/element "hotbar") ($str/join parts " "))))
 
   (var proj ($buffer F32 16.0))
   (var view ($buffer F32 16.0))
@@ -398,6 +446,21 @@
     (if_yes (== k "d") (set strafe 1.0))
     (if_yes (== k " ") (set jump true))
     (if_yes (== k "Shift") (set sneak true))
+    # The number row selects a hotbar slot, spelled out because `$event/key`
+    # gives the character and the portable web stdlib has no `str/index_of` to
+    # turn it back into a position.
+    (var picked -1.0)
+    (if_yes (== k "1") (set picked 0.0))
+    (if_yes (== k "2") (set picked 1.0))
+    (if_yes (== k "3") (set picked 2.0))
+    (if_yes (== k "4") (set picked 3.0))
+    (if_yes (== k "5") (set picked 4.0))
+    (if_yes (== k "6") (set picked 5.0))
+    (if_yes (== k "7") (set picked 6.0))
+    (if_yes (== k "8") (set picked 7.0))
+    (if_yes (>= picked 0.0)
+      (set selected picked)
+      (set hotbar_dirty true))
     # Fly is a toggle rather than a held key, because it is a mode: §7's step
     # takes it as an input and changes what gravity means, and a mode you have
     # to hold down is one you cannot look around in.
@@ -428,6 +491,13 @@
   # Otherwise the right button opens a menu over the world instead of building.
   ($dom/add_event_listener stage "contextmenu" (fn [ev : Any] : Void
     ($dom/prevent_default ev)))
+
+  ($dom/add_event_listener stage "wheel" (fn [ev : Any] : Void
+    ($dom/prevent_default ev)
+    (var next (+ selected (if (> ($event/delta_y ev) 0.0) 1.0 -1.0)))
+    (set selected (if (< next 0.0) (- hotbar_slots 1.0)
+                    (if (>= next hotbar_slots) 0.0 next)))
+    (set hotbar_dirty true)))
   ($dom/add_event_listener ($dom/window) "mousemove" (fn [ev : Any] : Void
     (if_yes dragging
       (set yaw (+ yaw (* ($event/movement_x ev) look_speed)))
@@ -499,6 +569,10 @@
         $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player)) · last edit $($math/round edit_ms) ms over $($math/round edit_chunks) chunks")
       (set frames 0.0)
       (set fps_since now))
+
+    (if_yes hotbar_dirty
+      (draw_hotbar)
+      (set hotbar_dirty false))
     ($frame/request frame)))
 
   ($canvas/set_size stage ($dom/inner_width) ($dom/inner_height))

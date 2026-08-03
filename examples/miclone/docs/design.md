@@ -891,7 +891,7 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | ~~M2~~ | **Mapgen — done** | biomes, caves, and ore, drawn by the M0 renderer; §3 | backlog 5 |
 | ~~M3~~ | **Lighting + meshing in `core/` — done** | the M0 renderer drawing a generated *lit* world; §4, §5 | backlog 2 |
 | ~~M4~~ | **Persistence — done** | quit and come back to the same world; §11 | backlog 3 (landed), 4 (open, not blocking) |
-| M5 | Player: physics, dig, place, inventory | a playable singleplayer creative-ish loop | — |
+| ~~M5~~ | **Player: physics, dig, place, inventory — done** | a playable singleplayer creative-ish loop; §1.1, §4.2, §7, §7.1 | — |
 | M6 | Client/server split over WebSocket | the same game, client and server as separate processes | — |
 | M7 | The mod API | a `default`-equivalent game defined as a Gene mod, not built in | — |
 | M8 | Entities, crafting, UI, sound | a small but complete game | backlog 9 |
@@ -1727,6 +1727,32 @@ Two smaller decisions worth recording:
   pointer-lock binding. A drag turns the view; a click that travelled under
   four pixels digs or places. This is a shell limitation and not a design
   position — a pointer-lock binding (§D7) would remove it.
+
+**Inventory and drops** are `core/inventory.gene` and `core/drops.gene`, plus
+an eight-slot hotbar in the client. Three things about them are decisions
+rather than code:
+
+- **Items are node ids.** §2 gives items their own registry with tools, wear,
+  and per-item stack limits; that registry is M7's, because it is a thing mods
+  define. Until then everything a player can hold is a node they dug, so an item
+  id *is* a content id and the hotbar hands it straight to the edit. The day
+  items get a registry, `core/inventory.gene` changes in one place: what an id
+  means.
+- **A node drops itself unless the table says otherwise.** §2 puts drops on the
+  server side, and the table holds *exceptions*. A default of "nothing" would
+  mean a node whose drop nobody registered vanishes when dug, silently — which
+  is the likeliest failure of a placeholder content set and the hardest to
+  notice, because disappearing is half of what a dig looks like. The provisional
+  set has exactly one exception, grass dropping dirt, and that one line is what
+  makes the table worth having.
+- **`core/drops.gene` is the server half sitting in `core/`, and says so.**
+  In-process singleplayer *is* the server, so the process holding the client
+  holds both halves. It is its own module rather than a column on §2's registry
+  precisely so that M6 moving it is a matter of who imports it.
+
+What is dropped and does not fit is lost. Dropped-item entities are §8's and
+therefore M8's; a full inventory silently eating a dug node is the honest
+placeholder, and it is the behaviour to revisit when entities exist.
 
 `probes/edit_spec.gene` is 45 checks, and three of them are the file:
 

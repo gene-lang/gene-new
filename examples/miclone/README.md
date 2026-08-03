@@ -3,11 +3,11 @@
 A voxel game engine with [Luanti](https://github.com/luanti-org/luanti)'s
 architecture, written in Gene, whose mod language is Gene.
 
-**Status: M0 through M4, and M5 in progress — a generated, lit world you can
-walk around in and change: the client keeps it in memory as a single array
-(§1.1), lights all of it at once (§4.2), stands a player on it with gravity,
-jumping, swimming and a fly toggle (§7), and lets them dig and build (§7.1).
-Inventory is next.** Read
+**Status: M0 through M5 — a generated, lit world you can walk around in, dig,
+carry, and build with. The client keeps it in memory as a single array (§1.1),
+lights all of it at once (§4.2), stands a player on it with gravity, jumping,
+swimming and a fly toggle (§7), and turns a click into a node in your hotbar
+(§7.1). M6 splits client from server.** Read
 [`docs/design.md`](docs/design.md) first — Part I is the direction and the
 decisions, and §D2 is the constraint that shaped the rest.
 
@@ -82,6 +82,8 @@ core/       portable Gene — compiles for the VM and the web profile
   physics.gene  the player box against the voxel grid (§7)
   raycast.gene  Amanatides-Woo node selection (§7)
   edit.gene     one node changes, and what that invalidates (§7.1)
+  inventory.gene  stacks, in a buffer of (item, count) pairs (§7.1)
+  drops.gene    what digging a node yields — §2's server half, for now
   content.gene  the provisional node/biome/ore set — M7 replaces this with a mod
 server/     VM only: the on-disk block format and the SQLite world store (§11)
 client/     the browser shell: WebGL2 renderer, atlas, camera
@@ -102,7 +104,7 @@ cd examples/miclone
 for m in core/exact core/noise core/field core/world core/registry \
          core/biome core/cave core/ore core/content core/mapgen \
          core/light core/mesh core/loaded core/physics core/raycast \
-         core/edit core/vec \
+         core/edit core/inventory core/drops core/vec \
          client/atlas client/render client/main; do
   gene build --target web $m.gene --out-dir dist
 done
@@ -128,7 +130,8 @@ rather than against terrain that was generated only to be looked at once.
 An edit costs **0.40 ms at worst** and names **9.2 chunks** to rebuild on
 average — the region is much larger than the node, because a dig in daylight
 sends light fifteen nodes in every direction and down the shaft it opened
-(§7.1). Thirteen edits relight the world exactly as a full relight would.
+(§7.1). Thirteen edits relight the world exactly as a full relight would, and a
+node dug is a node carried and placed back.
 
 It also walks a player over the real generated terrain for two minutes at
 **1.6 us per physics step**, asserting on every frame that the player is not
@@ -160,6 +163,7 @@ gene run light_spec  | diff - <(node tools/light_spec.mjs)    # §4
 gene run loaded_spec | diff - <(node tools/loaded_spec.mjs)   # §1.1, §4.2
 gene run physics_spec | diff - <(node tools/physics_spec.mjs) # §7
 gene run edit_spec   | diff - <(node tools/edit_spec.mjs)     # §7, §7.1
+gene run inventory_spec | diff - <(node tools/inventory_spec.mjs)  # §2, §7.1
 ```
 
 ### §11 — persistence

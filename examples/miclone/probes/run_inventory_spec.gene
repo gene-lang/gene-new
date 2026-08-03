@@ -1,0 +1,20 @@
+# The VM shell for the inventory-and-drops spec.
+#
+#   gene run inventory_spec
+#
+# Pair with `node tools/inventory_spec.mjs` and diff: the two must agree
+# exactly. §7.1 keeps stack changes off the prediction path, so in M6 this is
+# the server's arithmetic and the client's display of it — two runtimes that
+# must count the same.
+
+(mod run_inventory_spec)
+
+(import [report failures] from "./inventory_spec.gene")
+
+(fn main [args] : Nil
+  ($println (report))
+  (var bad (failures))
+  ($println "")
+  (if (== bad 0.0)
+    (then ($println "PASS — every check agrees"))
+    (else ($println $"FAIL — ${bad} check(s) failed"))))

@@ -21,6 +21,7 @@
 (import [BiomeRegistry register_biome] from "./biome.gene")
 (import [OreRegistry register_ore shape_scatter shape_sheet shape_blob]
         from "./ore.gene")
+(import [DropTable new_drop_table register_drop] from "./drops.gene")
 
 # --- the atlas ABI -----------------------------------------------------------
 #
@@ -78,6 +79,30 @@
   # M5's torch is this node with a placement rule attached.
   (register_uniform r "miclone:lamp" draw_normal true true false 14.0
                     tile_lamp))
+
+# --- drops -------------------------------------------------------------------
+#
+# §2's server half, and a table of exceptions rather than of entries: a node
+# drops itself unless something here says otherwise (see `core/drops.gene`).
+#
+# There is one exception in this content set and one absence, and both are the
+# point of having the table at all:
+#
+# - **grass drops dirt.** The oldest rule in the genre, and the one thing in the
+#   provisional set that a self-drop gets wrong: a player who digs a meadow and
+#   rebuilds it with grass has made a lawn out of nothing.
+# - **water drops nothing**, which nothing here has to say, because §7's raycast
+#   leaves liquids unpointable and a node that cannot be dug has no drop.
+#
+# Ores drop themselves, and that is a placeholder rather than a decision: coal
+# should drop a lump and stone should drop cobble, both of which are *items*
+# that are not nodes, and §2's item registry is M7's. Registering an ore to drop
+# itself is the honest version of "not yet" — the alternative is inventing a
+# node nobody can place.
+(fn setup_drops [r : Registry] : DropTable
+  (var d (new_drop_table))
+  (register_drop d (id_of r "miclone:grass") (id_of r "miclone:dirt") 1.0)
+  d)
 
 # --- biomes ------------------------------------------------------------------
 #

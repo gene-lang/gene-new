@@ -1,0 +1,65 @@
+# What digging a node yields — design.md §2, server half.
+#
+# §2 splits a node definition in two and puts drops on the **server** side,
+# because they are what mod code varies: "protection vetoes a dig, `on_dig`
+# replaces the node with something else, stone drops cobble" (§7.1). Nothing a
+# client is told about a node includes what it drops, and §7.1 step 3 is
+# explicit that a client must not predict one.
+#
+# It lives in `core/` anyway, and that is a statement about M5 rather than about
+# the split. In-process singleplayer *is* the server (§10, §7.1's "the server
+# call is synchronous over the in-memory channel"), so the process holding the
+# client holds both halves. **M6 is where this file stops being reachable from
+# the client**, and it is written as its own module rather than as a column on
+# §2's registry precisely so that moving it is a matter of who imports it.
+#
+# ## A node drops itself unless told otherwise
+#
+# The table holds exceptions, not entries. A default of "nothing" would mean a
+# node whose drop nobody remembered to register vanishes when dug, silently,
+# which is the failure mode a placeholder content set is most likely to have —
+# and the one hardest to notice, because the node does disappear, which is half
+# of what a dig looks like.
+#
+# So `drop_item` answers `id` for anything unregistered, and the table is only
+# for the interesting cases: grass drops dirt, and later stone drops cobble and
+# an ore drops a lump. That is also §2's shape for the M7 API — `^drops` is a
+# field a definition may omit.
+
+(mod drops ^profile web)
+
+(let max_content 4096.0)
+
+# Three parallel columns and a flag, indexed by content id, which is
+# `core/registry.gene`'s layout for the same reason: a lookup is an indexed read
+# rather than a map probe. `F32` throughout, per `core/world.gene`'s rule.
+(type DropTable
+  ^props {^declared (Buffer F32)
+          ^item     (Buffer F32)
+          ^count    (Buffer F32)}
+
+  (ctor []
+    (set! self/declared ($buffer F32 max_content))
+    (set! self/item ($buffer F32 max_content))
+    (set! self/count ($buffer F32 max_content))))
+
+(fn new_drop_table [] : DropTable
+  (new DropTable))
+
+# Declare that digging `id` yields `count` of `item`. A `count` of 0 is a node
+# that drops nothing, which is a real thing to want — upstream's leaves do it —
+# and is why "declared" is its own column rather than being inferred from a
+# count.
+(fn register_drop [t : DropTable id : F64 item : F64 count : F64] : Nil
+  (t/declared ~ set! id 1.0)
+  (t/item ~ set! id item)
+  (t/count ~ set! id count))
+
+(fn declared? [t : DropTable id : F64] : Bool
+  (== (t/declared ~ get id) 1.0))
+
+(fn drop_item [t : DropTable id : F64] : F64
+  (if (declared? t id) (t/item ~ get id) id))
+
+(fn drop_count [t : DropTable id : F64] : F64
+  (if (declared? t id) (t/count ~ get id) 1.0))
