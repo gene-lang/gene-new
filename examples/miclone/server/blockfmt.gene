@@ -1,0 +1,330 @@
+# The on-disk block format — design.md §11.
+#
+# ## Why this is in `server/` and not `core/`
+#
+# §10 says block data crosses the wire in "a packed binary encoding (§D7.3)",
+# which means the client decodes this format eventually and the module wants to
+# be portable. It is not, and the reason is concrete rather than a judgement:
+# **`$binary` does not exist in the web profile.** The profile has `Buffer`
+# (§D7.1) and no `Bytes` at all, so nothing here compiles for it today.
+#
+# The alternative was to encode into a `(Buffer U8)`, which both backends have.
+# That was rejected for M4: a `(Buffer U8)` read allocates a `BigInt` in the
+# profile (see `core/world.gene`), so the portable version would be the slow one
+# on the backend that does not yet need it, in exchange for portability nothing
+# yet uses. When M6 needs the client to decode a block, the honest fix is
+# `$binary` in the web profile — a §D7-shaped item — not a representation this
+# side would pay for meanwhile.
+#
+# ## The format
+#
+# Versioned from the first commit, because §11 says a saved world outliving a
+# format change is the normal case rather than the exception.
+#
+#   offset  width  field
+#   0       4      magic "MICB"
+#   4       2      format version
+#   6       1      block dimension (16), so a reader never assumes it
+#   7       1      flags: bit 0 = payload is run-length encoded
+#   8       2      id_count — how many names follow
+#   10      ...    id_count entries of: u16 length, then that many UTF-8 bytes
+#   ...     4      payload byte length
+#   ...     ...    content, then param1, then param2
+#
+# **The name table is the point of the whole header.** A block stores *names*
+# for the ids it uses, not the ids themselves, because §1 and §2 assign content
+# ids at load: add a mod, and every id shifts. Without the table a saved world
+# silently turns to stone the first time the mod list changes. With it, loading
+# re-resolves each name through the current registry, and a name that is no
+# longer registered becomes `unknown` — which §1 defines as drawn, walkable, and
+# never deleted, precisely so this case does not eat the world.
+#
+# The table is per block rather than per world so a block is self-describing: it
+# can be sent over §10's wire, or copied between worlds, without carrying a
+# separate mapping that has to be kept in step.
+
+(mod blockfmt)
+
+(import [Registry name_of id_of] from "../core/registry.gene")
+
+(let magic "MICB")
+(let format_version 1)
+(let header_fixed 10.0)          # magic + version + dim + flags + id_count
+
+(let flag_rle 1)
+
+# --- errors ------------------------------------------------------------------
+#
+# A corrupt block raises rather than returning a partly-decoded one. Half a
+# block is a world with a hole in it that reads back cleanly, which is the
+# failure mode §11's versioning exists to make impossible.
+
+(type BlockFormatError
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for BlockFormatError)
+
+(fn fail_fmt [message : Str] : Nil
+  (fail (new BlockFormatError message)))
+
+# --- run-length encoding -----------------------------------------------------
+#
+# A voxel column is a handful of runs — that is §D6.3's finding about the
+# *generator*, and it is just as true of the finished block. Runs take a block
+# from 24,576 bytes to a mean of **612**, 40x, for about thirty lines.
+#
+# **They do not replace deflate, and measuring that was the point.** On the
+# busiest kind of block — at the surface, where terrain, water, and light all
+# vary — RLE gives 1,320 bytes and zlib on the same raw arrays gives **228**,
+# so §D7.4 is worth another 5.8x on top of this rather than being made
+# unnecessary by it. §11 was right to specify compression and the guess that
+# runs would cover it was wrong.
+#
+# RLE ships now because it is thirty lines against several hundred for a
+# Huffman coder, and because the flag byte in the header is exactly how a
+# versioned format accommodates the better scheme later.
+#
+# Each run is a u16 count and a u16 value. A run cannot exceed 65,535, which no
+# 4,096-node block can reach, so no run ever has to be split.
+#
+# The encoder emits raw instead when runs would be larger, and the flag in the
+# header says which happened — so a pathological block (every node different
+# from its neighbour) costs one byte of header rather than doubling.
+
+(fn rle_encode [values : (List Int) n : Int] : Bytes
+  (var parts : (List Bytes) [])
+  (var i 0)
+  (while (< i n)
+    (var v values/%i)
+    (var j (+ i 1))
+    (while (&& (< j n) (== values/%j v))
+      (set j (+ j 1)))
+    (var run (- j i))
+    (parts ~ push! ($binary/put_u16 run))
+    (parts ~ push! ($binary/put_u16 v))
+    (set i (+ i run)))
+  ($binary/concat parts))
+
+(fn rle_decode [payload : Bytes offset : Int n : Int] : (List Int)
+  (var out : (List Int) [])
+  (var at offset)
+  (var limit ($binary/size payload))
+  (while (< (out ~ size) n)
+    (if_yes (> (+ at 4) limit)
+      (fail_fmt $"run-length payload ended after $(out ~ size) of ${n} nodes"))
+    (var run ($binary/get_u16 payload at))
+    (var v ($binary/get_u16 payload (+ at 2)))
+    (set at (+ at 4))
+    (var k 0)
+    (while (< k run)
+      (out ~ push! v)
+      (set k (+ k 1))))
+  (if_yes (> (out ~ size) n)
+    (fail_fmt $"run-length payload decoded $(out ~ size) nodes, expected ${n}"))
+  out)
+
+# --- buffers to lists --------------------------------------------------------
+#
+# The arrays are `(Buffer F32)` (see `core/world.gene`) and the codecs take
+# `Int`, so encoding walks one and produces the other. `$to_int` is exact here
+# because every value in these arrays is a whole number below 2^16 by
+# construction — a content id is capped at 4,096 by §2 and a parameter byte is
+# 0..255.
+
+(fn buffer_to_list [b : (Buffer F32) n : Int] : (List Int)
+  (var out : (List Int) [])
+  (var i 0)
+  (while (< i n)
+    (out ~ push! ($to_int (b ~ get ($to_float i))))
+    (set i (+ i 1)))
+  out)
+
+(fn list_to_buffer [values : (List Int) b : (Buffer F32) n : Int] : Nil
+  (var i 0)
+  (while (< i n)
+    (b ~ set! ($to_float i) ($to_float values/%i))
+    (set i (+ i 1))))
+
+# --- the name table ----------------------------------------------------------
+
+# Which content ids a block actually uses, in ascending order. A block with four
+# node types carries four names rather than the registry's fifteen, which is
+# what keeps the header small enough to be worth having per block.
+(fn used_ids [content : (List Int) n : Int] : (List Int)
+  (var seen ($buffer U8 4096.0))
+  (var i 0)
+  (while (< i n)
+    (seen ~ set! ($to_float content/%i) 1)
+    (set i (+ i 1)))
+  (var out : (List Int) [])
+  (var id 0)
+  (while (< id 4096)
+    (if_yes (== (seen ~ get ($to_float id)) 1)
+      (out ~ push! id))
+    (set id (+ id 1)))
+  out)
+
+(fn encode_names [r : Registry ids : (List Int)] : Bytes
+  (var parts : (List Bytes) [])
+  (var i 0)
+  (var n (ids ~ size))
+  (while (< i n)
+    (var name (name_of r ($to_float ids/%i)))
+    (var raw ($binary/from_str name))
+    (parts ~ push! ($binary/put_u16 ($binary/size raw)))
+    (parts ~ push! raw)
+    (set i (+ i 1)))
+  ($binary/concat parts))
+
+# --- encode ------------------------------------------------------------------
+
+# One block to bytes. `dim` is written into the header rather than assumed, so a
+# reader can reject a block from a build with a different block size instead of
+# decoding it into the wrong shape.
+(fn encode_block [r : Registry dim : Int
+                  content : (Buffer F32) param1 : (Buffer F32)
+                  param2 : (Buffer F32)] : Bytes
+  (var n (* dim (* dim dim)))
+  (var c (buffer_to_list content n))
+  (var p1 (buffer_to_list param1 n))
+  (var p2 (buffer_to_list param2 n))
+
+  # Ids are remapped to their index in the block's own name table, so the
+  # payload is independent of the registry that produced it.
+  (var ids (used_ids c n))
+  (var local ($buffer U16 4096.0))
+  (var i 0)
+  (var id_count (ids ~ size))
+  (while (< i id_count)
+    (local ~ set! ($to_float ids/%i) i)
+    (set i (+ i 1)))
+  (var mapped : (List Int) [])
+  (set i 0)
+  (while (< i n)
+    (mapped ~ push! ($to_int (local ~ get ($to_float c/%i))))
+    (set i (+ i 1)))
+
+  (var raw ($binary/concat [(pack_u16_list mapped n) (pack_u16_list p1 n)
+                            (pack_u16_list p2 n)]))
+  (var rle ($binary/concat [(rle_encode mapped n) (rle_encode p1 n)
+                            (rle_encode p2 n)]))
+  # Whichever is smaller. A block whose nodes alternate has no runs to find, and
+  # paying 2x for the attempt would be worse than not trying.
+  (var use_rle (< ($binary/size rle) ($binary/size raw)))
+  (var payload (if use_rle rle raw))
+
+  ($binary/concat
+    [($binary/from_str magic)
+     ($binary/put_u16 format_version)
+     ($binary/put_u8 dim)
+     ($binary/put_u8 (if use_rle flag_rle 0))
+     ($binary/put_u16 id_count)
+     (encode_names r ids)
+     ($binary/put_u32 ($binary/size payload))
+     payload]))
+
+(fn pack_u16_list [values : (List Int) n : Int] : Bytes
+  (var parts : (List Bytes) [])
+  (var i 0)
+  (while (< i n)
+    (parts ~ push! ($binary/put_u16 values/%i))
+    (set i (+ i 1)))
+  ($binary/concat parts))
+
+(fn unpack_u16_list [payload : Bytes offset : Int n : Int] : (List Int)
+  (var out : (List Int) [])
+  (var i 0)
+  (while (< i n)
+    (out ~ push! ($binary/get_u16 payload (+ offset (* i 2))))
+    (set i (+ i 1)))
+  out)
+
+# --- decode ------------------------------------------------------------------
+
+# Bytes back into the three caller-supplied arrays, resolving names through
+# `r` — which is the current registry, not the one that wrote the block.
+#
+# **A name the registry no longer knows becomes `unknown`.** §1 defines that id
+# as drawn, walkable, and never deleted, specifically so removing a mod leaves
+# visible placeholders instead of holes a player falls through.
+(fn decode_block [r : Registry dim : Int payload : Bytes
+                  content : (Buffer F32) param1 : (Buffer F32)
+                  param2 : (Buffer F32)] : Nil
+  (var size ($binary/size payload))
+  (if_yes (< size header_fixed)
+    (fail_fmt $"block is ${size} bytes, shorter than a header"))
+  (if_yes (!= ($binary/to_str ($binary/slice payload 0 4)) magic)
+    (fail_fmt "block does not start with the MICB magic"))
+  (var version ($binary/get_u16 payload 4))
+  (if_yes (!= version format_version)
+    (fail_fmt $"block format version ${version}, this build reads ${format_version}"))
+  (var stored_dim ($binary/get payload 6))
+  (if_yes (!= stored_dim dim)
+    (fail_fmt $"block is ${stored_dim} nodes on a side, expected ${dim}"))
+  (var flags ($binary/get payload 7))
+  (var id_count ($binary/get_u16 payload 8))
+
+  # Resolve the name table against the registry we have now.
+  (var remap : (List Int) [])
+  (var at ($to_int header_fixed))
+  (var i 0)
+  (while (< i id_count)
+    (if_yes (> (+ at 2) size)
+      (fail_fmt "block header ended inside its name table"))
+    (var len ($binary/get_u16 payload at))
+    (set at (+ at 2))
+    (if_yes (> (+ at len) size)
+      (fail_fmt "block name table runs past the end of the block"))
+    (var name ($binary/to_str ($binary/slice payload at len)))
+    (set at (+ at len))
+    (remap ~ push! ($to_int (id_of r name)))
+    (set i (+ i 1)))
+
+  (if_yes (> (+ at 4) size)
+    (fail_fmt "block ended before its payload length"))
+  (var payload_len ($binary/get_u32 payload at))
+  (set at (+ at 4))
+  (if_yes (!= (+ at payload_len) size)
+    (fail_fmt $"block declares a ${payload_len}-byte payload but $(- size at) follow"))
+
+  (var n (* dim (* dim dim)))
+  (var c : (List Int) [])
+  (var p1 : (List Int) [])
+  (var p2 : (List Int) [])
+  (if (== (bit_of flags flag_rle) 1)
+    (then
+      (set c (rle_decode payload at n))
+      (var after_c (+ at (rle_span payload at n)))
+      (set p1 (rle_decode payload after_c n))
+      (var after_p1 (+ after_c (rle_span payload after_c n)))
+      (set p2 (rle_decode payload after_p1 n)))
+    (else
+      (set c (unpack_u16_list payload at n))
+      (set p1 (unpack_u16_list payload (+ at (* n 2)) n))
+      (set p2 (unpack_u16_list payload (+ at (* n 4)) n))))
+
+  # Local index back to a live content id.
+  (var i2 0)
+  (while (< i2 n)
+    (var local c/%i2)
+    (if_yes (>= local id_count)
+      (fail_fmt $"block references name ${local} but carries only ${id_count}"))
+    (content ~ set! ($to_float i2) ($to_float remap/%local))
+    (set i2 (+ i2 1)))
+  (list_to_buffer p1 param1 n)
+  (list_to_buffer p2 param2 n))
+
+# How many bytes one run-length array occupies, so the decoder can find the
+# array after it. Walking the runs again is cheaper than storing three lengths
+# in the header and keeping them honest.
+(fn rle_span [payload : Bytes offset : Int n : Int] : Int
+  (var at offset)
+  (var seen 0)
+  (while (< seen n)
+    (set seen (+ seen ($binary/get_u16 payload at)))
+    (set at (+ at 4)))
+  (- at offset))
+
+(fn bit_of [flags : Int mask : Int] : Int
+  (if (== ($bit/and flags mask) mask) 1 0))

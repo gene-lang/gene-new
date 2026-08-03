@@ -14,5 +14,7 @@
     (application "mapgen_spec" ^entry "probes/run_mapgen_spec.gene")
     # design.md §4 — lighting, with the hand-derived fixture worlds §4 asks for.
     (application "light_spec" ^entry "probes/run_light_spec.gene")
+    # design.md §D8's M4 deliverable, run twice: `create` then `verify`.
+    (application "persistence" ^entry "probes/run_persistence.gene")
   ]
 }

@@ -426,7 +426,7 @@
 (fn content_checks [out : (List Str)] : Nil
   (var r (new_registry))
   (setup_nodes r)
-  (check_f out "content set size" (registered_count r) 15.0)
+  (check_f out "content set size" (registered_count r) 16.0)
   (check_f out "air is still 0" (id_of r "air") 0.0)
   # Ids are assigned at load, so this pins the order rather than the numbers.
   (check_f out "stone follows the reserved ids" (id_of r "miclone:stone") 3.0)

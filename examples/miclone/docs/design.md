@@ -714,18 +714,36 @@ change, not a VM change, and it leaves this item where it was: the VM's `Buffer`
 is still `seq[Value]`, still 8 bytes and a boxed write per element, and the
 consumers listed above still want it packed.
 
-**3. `fs/read_bytes` + binary integer/float codecs. Blocks M4.**
-`fs/write_bytes` exists and `fs/read_bytes` does not, which is enough on its own.
-`$binary` can slice and concatenate but cannot read a `u16` LE or write an `f32`;
-every binary format in Gene currently rebuilds that from `$bit`. Map
-serialization and the protocol both need it. Small, obviously correct, useful
-far beyond this project.
+**3. `fs/read_bytes` + binary integer/float codecs. Blocked M4. Landed.**
+`fs/write_bytes` existed and `fs/read_bytes` did not, which was enough on its
+own. `$binary` could slice and concatenate but could not read a `u16` LE or
+write an `f32`; every binary format in Gene rebuilt that from `$bit`.
 
-**4. Deflate/inflate. Blocks M4, and M6 if block transfer is compressed.**
+*Landed as `fs/read_bytes` plus twelve codecs — `get_u16/u32/i32/f32/f64` and
+`put_u8/u16/u32/i32/f32/f64` — little-endian at a **byte** offset, so a record
+with a `u8` tag followed by a `u32` can name the second field, which no
+per-element index can. Out of range **raises** rather than wrapping: a silently
+truncated node id is a corrupt world that reads back cleanly, which is the worst
+shape a storage bug takes. Reading past the end raises for the same reason
+rather than assembling a value from whatever follows.*
+
+*`db/sqlite` blob support went with it, and was not on this list because nobody
+had checked: `Db/execute` rejected `Bytes` outright and blob columns came back
+through `columnText`, truncated at the first NUL. §11.1 has the detail.*
+
+**4. Deflate/inflate. Wanted by M4, not blocking it. Open, now with a number.**
 Luanti stores blocks zlib-compressed. Options: implement inflate in Gene (a few
 hundred lines, portable, and the decode side is the one we need first), or bind
 zlib once the FFI question is settled. Note that `examples/new_world/src/atlas.gene`
 already writes a valid PNG from Gene, so the neighbourhood is not unexplored.
+
+*M4 shipped run-length encoding instead and measured the gap rather than
+guessing at it: RLE takes a block from 24,576 bytes to a mean of 612 (40x), and
+on the busiest block zlib on the raw arrays reaches 228 where RLE reaches 1,320.
+**Deflate is worth another 5.8x on top of RLE**, so this item survives the
+milestone that was supposed to force it — it is now a size optimisation with a
+measured payoff rather than a blocker, and the format's flags byte is where it
+lands.*
 
 **5. Deterministic noise library (pure Gene). Blocks M2. Landed.**
 `core/noise.gene` and `core/exact.gene`, confirmed bit-identical across backends
@@ -872,7 +890,7 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | ~~M1~~ | **World model + registries — done** | 63 cross-backend checks; §1 and §2 | — |
 | ~~M2~~ | **Mapgen — done** | biomes, caves, and ore, drawn by the M0 renderer; §3 | backlog 5 |
 | ~~M3~~ | **Lighting + meshing in `core/` — done** | the M0 renderer drawing a generated *lit* world; §4, §5 | backlog 2 |
-| M4 | Persistence | quit and come back to the same world | backlog 3, 4 |
+| ~~M4~~ | **Persistence — done** | quit and come back to the same world; §11 | backlog 3 (landed), 4 (open, not blocking) |
 | M5 | Player: physics, dig, place, inventory | a playable singleplayer creative-ish loop | — |
 | M6 | Client/server split over WebSocket | the same game, client and server as separate processes | — |
 | M7 | The mod API | a `default`-equivalent game defined as a Gene mod, not built in | — |
@@ -1632,6 +1650,99 @@ reordered), node metadata, node timers, and static entities.
 
 Writes are batched and asynchronous. A block is written when it is modified and
 unloaded, or on a periodic flush.
+
+### 11.1 M4 — what was built
+
+`server/blockfmt.gene` (the format), `server/storage.gene` (the store), and
+`probes/persistence.gene`, which is run **twice** — `create` then `verify` — in
+two processes, because "quit and come back" is a claim about a process boundary
+and a single process that writes and reads back cannot test it.
+
+#### SQLite could not store a block, and now it can
+
+§11 chose SQLite "because Gene already has `db/sqlite`". It did, and it could
+not hold a block: `Db/execute` rejected `Bytes` with *unsupported parameter
+type*, and a blob column was read back through `sqlite3_column_text`, which
+stops at the first NUL and re-interprets the rest as UTF-8. Every block payload
+would have come back truncated — silently, since nothing raised.
+
+Blob binding and reading landed in `db/sqlite` for this. Three symbols and two
+branches; the fiddly part is that a NULL data pointer binds SQL NULL whatever
+the length says, so an empty blob needs a non-NULL pointer with zero length or
+it reads back as `nil` rather than as empty `Bytes`.
+
+That is the second time this milestone that a stated dependency turned out to be
+half-present: §D7.3's `fs/write_bytes` existed and `fs/read_bytes` did not.
+
+#### The format
+
+Versioned from the first commit, as §11 asks. Magic, version, block dimension,
+a flags byte, then a **per-block name table**, then the payload.
+
+**The name table is the point of the header.** A block stores *names* for the
+ids it uses, not the ids themselves, because §1 and §2 assign content ids at
+load — add a mod and every id shifts. Without it, a saved world turns to stone
+the first time the mod list changes. With it, loading re-resolves each name
+through the current registry, and a name that is gone becomes `unknown`, which
+§1 defines as drawn, walkable, and never deleted precisely so this case leaves
+placeholders rather than holes.
+
+It is per block rather than per world so a block is self-describing, which is
+what lets §10 send one over the wire without a separate mapping to keep in step.
+
+#### Size, and the compression question answered with numbers
+
+| | bytes |
+|---|---:|
+| raw, three `u16` arrays | 24,576 |
+| **run-length encoded** | **612 mean, 31 min, 4,669 max** |
+
+A 40x reduction for about thirty lines, measured over 80 blocks spanning sky,
+surface, shallow, and deep.
+
+**Runs do not replace deflate, and assuming they would was wrong.** On the
+busiest kind of block — at the surface, where terrain, water, and light all
+vary — RLE gives 1,320 bytes and zlib on the same raw arrays gives **228**. So
+§D7.4 is worth another **5.8x** on top of this, and §11 was right to specify
+compression. RLE ships now because it is thirty lines against several hundred
+for a Huffman coder, and because the flags byte is exactly how a versioned
+format takes the better scheme later.
+
+#### What the probe proves, and what it took to make it prove anything
+
+`verify` regenerates every block from the seed and compares it against what came
+off disk — a stronger check than a checksum, because it says *which* node
+differs. The edits are what make it a persistence test rather than a determinism
+test: terrain regenerates from a seed, so a world that only stored generated
+blocks would verify identical whether the store worked or not.
+
+Two versions of the edit failed to test anything, and both failures are worth
+recording because each looked like a pass:
+
+- the first dug **one node deep underground**, where the light was already 0. It
+  differed by exactly one node and `param1` was never exercised — a store that
+  dropped the light array entirely would have passed;
+- the second added a lamp but placed it **in solid rock**, where it correctly
+  lights nothing but itself, because §4's flood only enters a node that
+  propagates light. A lamp needs somewhere for its light to go.
+
+What ships digs a 3×3×3 pocket one node at a time, relighting after each exactly
+as §7.1's dig would, and puts a lamp in the middle. `verify` requires 27 changed
+nodes, the lamp back at 14, and its neighbour at 13 — the last being the check
+that a *neighbourhood* of light survived rather than one value the lamp would
+re-derive from its own definition on load.
+
+`miclone:lamp` is registered in `core/content.gene` for this: it is the first
+node that emits, nothing in §3 places one, so no terrain and no golden checksum
+moved. M5's torch is this node with a placement rule attached.
+
+#### Not built
+
+`players.sqlite` and `mods/` — M5 and M7 own them, and a table nothing writes is
+a schema to migrate rather than a feature. Writes are batched (a transaction, so
+a crash leaves the world as it was rather than partly saved) but not
+asynchronous; that wants the scheduler and a tick to hang a flush off, which is
+M6.
 
 ## 12. Time, tick, and the server loop
 

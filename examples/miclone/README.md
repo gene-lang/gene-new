@@ -3,8 +3,8 @@
 A voxel game engine with [Luanti](https://github.com/luanti-org/luanti)'s
 architecture, written in Gene, whose mod language is Gene.
 
-**Status: M0 through M3 — a generated, lit world you can fly through. There is
-no game yet.** Read
+**Status: M0 through M4 — a generated, lit world you can fly through, and one
+that survives being quit. There is no game yet.** Read
 [`docs/design.md`](docs/design.md) first — Part I is the direction and the
 decisions, and §D2 is the constraint that shaped the rest.
 
@@ -76,6 +76,7 @@ core/       portable Gene — compiles for the VM and the web profile
   light.gene    sunlight and light sources, packed into param1 (§4)
   mesh.gene     face-culled meshing (§5)
   content.gene  the provisional node/biome/ore set — M7 replaces this with a mod
+server/     VM only: the on-disk block format and the SQLite world store (§11)
 client/     the browser shell: WebGL2 renderer, atlas, camera
 probes/     the probes and cross-backend specs; `run_*.gene` are their VM shells
 tools/      the web-profile shells
@@ -127,3 +128,16 @@ gene run world_spec  | diff - <(node tools/world_spec.mjs)    # §1, §2
 gene run mapgen_spec | diff - <(node tools/mapgen_spec.mjs)   # §3, §5, §14
 gene run light_spec  | diff - <(node tools/light_spec.mjs)    # §4
 ```
+
+### §11 — persistence
+
+Run twice, in two processes: "quit and come back" is a claim about a process
+boundary, and one process that writes and reads back cannot test it.
+
+```sh
+gene run persistence create    # generate, dig a lit pocket, save, exit
+gene run persistence verify    # open it fresh and check
+```
+
+A block is **612 bytes** on average against 24,576 raw — run-length encoding,
+40x. Deflate (design.md §D7.4) would be worth another 5.8x and is still open.

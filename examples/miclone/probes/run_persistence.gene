@@ -1,0 +1,43 @@
+# The VM shell for design.md §D8's M4 deliverable.
+#
+#   gene run persistence create    generate a world, edit it, save, exit
+#   gene run persistence verify    open it in a fresh process and check
+#
+# Two invocations on purpose: the milestone's claim is that a world survives the
+# process that made it, and a single process that writes and reads back cannot
+# tell you that.
+
+(mod run_persistence)
+
+(import [create_world verify_report] from "./persistence.gene")
+
+(let default_root "/tmp/miclone_world")
+
+(fn main [args] : Nil
+  # `args` is a Node: `(args ^raw "create /tmp/w" "create" "/tmp/w")`. The
+  # positional arguments are its body; `^raw` is the same line unsplit.
+  (var argv (args ~ body))
+  (var n (argv ~ size))
+  (var mode (if (> n 0) argv/0 "verify"))
+  (var root (if (> n 1) argv/1 default_root))
+  ($println "")
+  (if (== mode "create")
+    (then
+      ($println $"design.md §D8 M4 — creating a world at ${root}")
+      ($println $"  $(create_world root)")
+      ($println "")
+      ($println "Now run `gene run persistence verify` in a fresh process."))
+    (else
+      ($println $"design.md §D8 M4 — verifying the world at ${root}")
+      (var out (verify_report root))
+      ($println ($str/join out "\n"))
+      (var bad 0)
+      (var i 0)
+      (while (< i (out ~ size))
+        (if_yes ($str/starts_with? out/%i "FAIL") (set bad (+ bad 1)))
+        (set i (+ i 1)))
+      ($println "")
+      (if (== bad 0)
+        (then ($println "PASS — the world survived the process that made it"))
+        (else ($println $"FAIL — ${bad} check(s) failed")))))
+  ($println ""))

@@ -19,7 +19,7 @@
 (import [hash_unit2] from "../core/exact.gene")
 (import [tile_stone tile_dirt tile_grass_top tile_grass_side tile_sand
          tile_water tile_gravel tile_snow tile_sandstone
-         tile_coal tile_iron tile_gold tile_diamond]
+         tile_coal tile_iron tile_gold tile_diamond tile_lamp]
         from "../core/content.gene")
 
 (let tile_px 16.0)
@@ -126,4 +126,7 @@
   (paint_ore ctx tile_coal 38.0 38.0 42.0 110.0 0.62)
   (paint_ore ctx tile_iron 192.0 148.0 116.0 120.0 0.66)
   (paint_ore ctx tile_gold 232.0 196.0 78.0 130.0 0.70)
-  (paint_ore ctx tile_diamond 128.0 224.0 232.0 140.0 0.72))
+  (paint_ore ctx tile_diamond 128.0 224.0 232.0 140.0 0.72)
+  # Bright and near-flat, because a light source that reads as dark stone is
+  # confusing in exactly the situation it exists for.
+  (paint_tile ctx tile_lamp 250.0 226.0 150.0 10.0 150.0))

@@ -1,0 +1,155 @@
+# The world store — design.md §11.
+#
+# A world is a directory:
+#
+#   world/
+#     world.gene      metadata: seed, mapgen params, format version
+#     map.sqlite      blocks, keyed by (x, y, z)
+#
+# `players.sqlite` and `mods/` are §11's and belong to M5 and M7; there is no
+# player and no mod to store yet, and a table nothing writes is a schema to
+# migrate rather than a feature.
+#
+# ## SQLite, and the thing that had to be fixed to use it
+#
+# §11 chose SQLite "because Gene already has `db/sqlite`". It did, and it could
+# not store a block: `Db/execute` rejected `Bytes` with "unsupported parameter
+# type", and a blob column read back through `columnText` — which stops at the
+# first NUL and re-interprets the rest as UTF-8. A block payload is binary, so
+# every one of them would have come back truncated.
+#
+# Blob binding and reading landed in `db/sqlite` for this (see the M4 commit),
+# which is why §11's premise holds now rather than approximately. The
+# alternative — a file per block — is what upstream moved *away* from, and for
+# the reason a world hits first: a few hundred thousand files in one directory.
+#
+# ## Keying
+#
+# Blocks are keyed by their block coordinate, not their node coordinate, and the
+# primary key is the triple rather than a packed integer. A packed key would be
+# smaller and would make the table unreadable to anything but this program;
+# `select * from blocks where y = 0` is worth more than the bytes during a
+# milestone that is mostly about finding out whether the format is right.
+
+(mod storage)
+
+(import $db/sqlite [open Db])
+(import [Registry] from "../core/registry.gene")
+(import [encode_block decode_block] from "./blockfmt.gene")
+
+(let store_version 1)
+
+(type WorldStore
+  ^props {^db Any
+          ^root Str}
+  (ctor [db : Any root : Str]
+    (set! self/db db)
+    (set! self/root root)))
+
+# --- opening -----------------------------------------------------------------
+
+# `synchronous = normal` with WAL is the standard durable-enough pairing: a
+# crash loses at most the current transaction rather than the database, and it
+# is roughly an order of magnitude faster than `full` for the write-heavy
+# pattern §11 describes (a block per modification, batched).
+(fn open_world [root : Str] : WorldStore
+  (if_not ($fs/exists? $fs/ReadDir root)
+    ($fs/make_dir $fs/WriteDir root))
+  (var db (open $"${root}/map.sqlite"))
+  (db ~ Db:exec "pragma journal_mode = wal")
+  (db ~ Db:exec "pragma synchronous = normal")
+  (db ~ Db:exec "create table if not exists blocks (
+     x integer not null,
+     y integer not null,
+     z integer not null,
+     data blob not null,
+     primary key (x, y, z))")
+  (new WorldStore db root))
+
+(fn close_world [w : WorldStore] : Nil
+  (var db w/db)
+  (db ~ Db:close))
+
+# --- metadata ----------------------------------------------------------------
+#
+# `world.gene` is Gene text rather than a row in the database, because it is the
+# one thing a human edits or reads when a world misbehaves, and because §11
+# lists it as a file. Written through the serializer the rest of the repo uses,
+# so it round-trips without a hand-written parser.
+
+(fn write_meta [w : WorldStore seed : F64 name : Str] : Nil
+  ($fs/write_text $fs/WriteDir $"${w/root}/world.gene"
+    ($serde/write {^format store_version
+                   ^name name
+                   ^seed seed
+                   ^block_dim 16})))
+
+(fn read_meta [w : WorldStore] : Map
+  ($serde/read ($fs/read_text $fs/ReadDir $"${w/root}/world.gene")))
+
+(fn world_exists? [root : Str] : Bool
+  ($fs/exists? $fs/ReadDir $"${root}/world.gene"))
+
+# --- blocks ------------------------------------------------------------------
+
+(fn put_block [w : WorldStore r : Registry dim : Int
+               bx : Int by : Int bz : Int
+               content : (Buffer F32) param1 : (Buffer F32)
+               param2 : (Buffer F32)] : Nil
+  (var db w/db)
+  (db ~ Db:execute
+    "insert or replace into blocks (x, y, z, data) values (?, ?, ?, ?)"
+    bx by bz (encode_block r dim content param1 param2)))
+
+# `nil` for a block the world has never generated, which the caller has to tell
+# apart from a block that is legitimately all air — those are different states
+# and conflating them is how a loader silently regenerates a mined-out cave.
+(fn get_block [w : WorldStore r : Registry dim : Int
+               bx : Int by : Int bz : Int
+               content : (Buffer F32) param1 : (Buffer F32)
+               param2 : (Buffer F32)] : Bool
+  (var db w/db)
+  (var rows (db ~ Db:query
+    "select data from blocks where x = ? and y = ? and z = ?" bx by bz))
+  (if (== (rows ~ size) 0)
+    (then false)
+    (else
+      (decode_block r dim rows/0/data content param1 param2)
+      true)))
+
+(fn has_block? [w : WorldStore bx : Int by : Int bz : Int] : Bool
+  (var db w/db)
+  (var rows (db ~ Db:query
+    "select 1 as present from blocks where x = ? and y = ? and z = ?"
+    bx by bz))
+  (> (rows ~ size) 0))
+
+(fn block_count [w : WorldStore] : Int
+  (var db w/db)
+  (var rows (db ~ Db:query "select count(*) as n from blocks"))
+  rows/0/n)
+
+(fn stored_bytes [w : WorldStore] : Int
+  (var db w/db)
+  (var rows (db ~ Db:query "select sum(length(data)) as n from blocks"))
+  (if (== rows/0/n nil) 0 rows/0/n))
+
+# --- batching ----------------------------------------------------------------
+#
+# §11: "Writes are batched and asynchronous." Batched is here; asynchronous
+# wants the scheduler and belongs with M6's server loop, when there is a tick to
+# hang a flush off.
+#
+# The batch is a transaction rather than a queue, because that is what makes the
+# write durable *as a unit*: a crash halfway through leaves the world as it was
+# rather than with a third of a region saved. It is also what makes it fast —
+# SQLite commits once instead of per row, which is the difference between one
+# fsync and one per block.
+
+(fn begin_batch [w : WorldStore] : Nil
+  (var db w/db)
+  (db ~ Db:exec "begin"))
+
+(fn commit_batch [w : WorldStore] : Nil
+  (var db w/db)
+  (db ~ Db:exec "commit"))

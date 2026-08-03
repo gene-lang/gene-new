@@ -42,6 +42,7 @@
 (let tile_iron 10.0)
 (let tile_gold 11.0)
 (let tile_diamond 12.0)
+(let tile_lamp 13.0)
 
 # --- nodes -------------------------------------------------------------------
 #
@@ -68,7 +69,15 @@
   (register_uniform r "miclone:iron_ore" draw_normal true true false 0.0 tile_iron)
   (register_uniform r "miclone:gold_ore" draw_normal true true false 0.0 tile_gold)
   (register_uniform r "miclone:diamond_ore" draw_normal true true false 0.0
-                    tile_diamond))
+                    tile_diamond)
+  # The first node that emits. Nothing in §3 places one — mapgen has no
+  # decoration stage yet (stage 5) — so it changes no terrain and no golden
+  # checksum. It is registered now because §4's night channel is otherwise
+  # dead weight in the real content set: with no emitter anywhere, `light_region`
+  # skips the source flood entirely and nothing exercises it outside the spec.
+  # M5's torch is this node with a placement rule attached.
+  (register_uniform r "miclone:lamp" draw_normal true true false 14.0
+                    tile_lamp))
 
 # --- biomes ------------------------------------------------------------------
 #

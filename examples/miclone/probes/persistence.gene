@@ -1,0 +1,262 @@
+# design.md §D8's M4 — "quit and come back to the same world".
+#
+# The milestone's claim is a *round trip across process boundaries*, so this
+# probe is written to be run twice and to prove something different each time:
+#
+#   gene run persistence create   generate a world, edit it, save, exit
+#   gene run persistence verify   open it in a fresh process and check
+#
+# Running it as one process that writes and reads back would test the format and
+# not the milestone. The interesting failures — a schema that only works because
+# the table was already in memory, an id that only resolves because the registry
+# happens to be the one that wrote it — all survive a same-process round trip.
+#
+# **The edits are what make this a persistence test rather than a determinism
+# test.** Terrain regenerates from a seed, so a world that only ever stored
+# generated blocks would verify identical whether or not the store worked at
+# all. `create` makes two changes no seed reproduces:
+#
+#   - **digs a 3x3x3 pocket**, which changes `content`;
+#   - **puts a lamp in the middle of it**, which changes `content` again and
+#     floods `param1` through the pocket.
+#
+# Both details were arrived at by the probe failing. The first version dug a
+# single node deep underground where the light was already 0, so exactly **one**
+# node differed from a fresh generate and `param1` was never tested at all — a
+# store that dropped the light array would have passed. The second version added
+# a lamp but placed it in solid rock, where it correctly lights nothing but
+# itself, because `spread_to` only enters a node that propagates light. A lamp
+# needs somewhere for its light to go, which is why the pocket comes first.
+
+(mod persistence)
+
+(import [Registry new_registry id_of name_of registered_count]
+        from "../core/registry.gene")
+(import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
+(import [block_dim block_nodes generate_block] from "../core/mapgen.gene")
+(import [light_region relight_node queue_overhead day_of night_of]
+        from "../core/light.gene")
+(import [region_index] from "../core/light.gene")
+(import [open_world close_world write_meta read_meta world_exists?
+         put_block get_block has_block? block_count stored_bytes
+         begin_batch commit_batch WorldStore]
+        from "../server/storage.gene")
+
+(let seed 1337.0)
+(let span 4)                 # 4 x 4 blocks, one slab
+(let slab_y 1)
+
+# Where `create` edits: a 3x3x3 pocket centred here, in block (2, 1, 2), with
+# the lamp at its middle. Kept a node clear of every face so the pocket cannot
+# touch the block edge, where the light would leave the region and §4's
+# per-block limit would make the count depend on a neighbour that is not loaded.
+(let edit_bx 2)
+(let edit_bz 2)
+(let pocket_x 5.0)
+(let pocket_y 9.0)
+(let pocket_z 5.0)
+
+(fn scratch [] : (Buffer F32)
+  ($buffer F32 block_nodes))
+
+(fn zero [b : (Buffer F32)] : Nil
+  (var i 0.0)
+  (while (< i block_nodes)
+    (b ~ set! i 0.0)
+    (set i (+ i 1.0))))
+
+# --- shared setup -------------------------------------------------------------
+#
+# Both halves build the registry the same way, and that is the point rather than
+# duplication: a block stores *names*, so `verify` resolving them through a
+# registry it built itself is exactly what the name table exists to survive.
+
+# Carve the pocket one node at a time, relighting after each, which is exactly
+# the sequence a player digging would produce (§7.1) rather than a bulk edit
+# with one relight at the end. It is the slower path and the one that has to
+# work.
+(fn dig_pocket [content : (Buffer F32) p1 : (Buffer F32) r : Registry
+                sky : (Buffer F32) q : (Buffer F32) q2 : (Buffer F32)
+                air : F64] : Nil
+  (var dz -1.0)
+  (while (<= dz 1.0)
+    (var dy -1.0)
+    (while (<= dy 1.0)
+      (var dx -1.0)
+      (while (<= dx 1.0)
+        (var x (+ pocket_x dx))
+        (var y (+ pocket_y dy))
+        (var z (+ pocket_z dz))
+        (content ~ set! (region_index x y z block_dim) air)
+        (relight_node p1 content block_dim r x y z sky q q2)
+        (set dx (+ dx 1.0)))
+      (set dy (+ dy 1.0)))
+    (set dz (+ dz 1.0))))
+
+(fn build_registry [] : Registry
+  (var r (new_registry))
+  (setup_nodes r)
+  r)
+
+# --- create -------------------------------------------------------------------
+
+(fn create_world [root : Str] : Str
+  (var r (build_registry))
+  (var biomes (setup_biomes r))
+  (var ores (setup_ores r))
+  (var air (id_of r "air"))
+  (var water (id_of r "miclone:water"))
+  (var stone (id_of r "miclone:stone"))
+  (var lamp (id_of r "miclone:lamp"))
+  (var d ($to_int block_dim))
+
+  (var content (scratch))
+  (var p1 (scratch))
+  (var p2 (scratch))
+  (var sky ($buffer F32 (* block_dim block_dim)))
+  (var q ($buffer F32 (+ block_nodes queue_overhead)))
+  (var q2 ($buffer F32 (+ block_nodes queue_overhead)))
+
+  (var w (open_world root))
+  (write_meta w seed "persistence probe")
+  (begin_batch w)
+
+  (var edited_node 0.0)
+  (var edited_light 0.0)
+  (var bx 0)
+  (while (< bx span)
+    (var bz 0)
+    (while (< bz span)
+      (generate_block content sky ($to_float (* bx d))
+                      ($to_float (* slab_y d)) ($to_float (* bz d))
+                      biomes ores seed air water)
+      (zero p1)
+      (light_region p1 content block_dim r sky q (registered_count r))
+
+      # The edits, each followed by the incremental relight a dig or a place
+      # runs (§7.1). Nothing about the seed produces either.
+      (if_yes (&& (== bx edit_bx) (== bz edit_bz))
+        (dig_pocket content p1 r sky q q2 air)
+        (content ~ set! (region_index pocket_x pocket_y pocket_z block_dim) lamp)
+        (relight_node p1 content block_dim r pocket_x pocket_y pocket_z sky q q2)
+        (set edited_node
+             (content ~ get (region_index pocket_x pocket_y pocket_z block_dim)))
+        (set edited_light
+             (night_of (p1 ~ get
+                         (region_index pocket_x pocket_y pocket_z block_dim)))))
+
+      (put_block w r d bx slab_y bz content p1 p2)
+      (set bz (+ bz 1)))
+    (set bx (+ bx 1)))
+
+  (commit_batch w)
+  (var report
+    $"created $(block_count w) blocks, $(stored_bytes w) bytes; lamp id $($to_int edited_node) emitting $($to_int edited_light)")
+  (close_world w)
+  report)
+
+# --- verify -------------------------------------------------------------------
+#
+# Regenerates every block from the seed and compares it against what came off
+# disk. That is a stronger check than a checksum: it says *which* node differs,
+# and the one node that is meant to differ is the edit.
+
+(fn verify_report [root : Str] : (List Str)
+  (var out : (List Str) [])
+  (if_not (world_exists? root)
+    (out ~ push! $"FAIL no world at ${root} — run `gene run persistence create` first")
+    (return out))
+
+  (var r (build_registry))
+  (var biomes (setup_biomes r))
+  (var ores (setup_ores r))
+  (var air (id_of r "air"))
+  (var water (id_of r "miclone:water"))
+  (var lamp (id_of r "miclone:lamp"))
+  (var d ($to_int block_dim))
+
+  (var w (open_world root))
+  (var meta (read_meta w))
+  (check out "metadata seed survives" $"${meta/seed}" $"${seed}")
+  (check out "metadata block_dim survives" $"${meta/block_dim}" $"${d}")
+  (check out "every block is present" $"$(block_count w)" $"$(* span span)")
+
+  (var stored_c (scratch))
+  (var stored_p1 (scratch))
+  (var stored_p2 (scratch))
+  (var fresh_c (scratch))
+  (var fresh_p1 (scratch))
+  (var sky ($buffer F32 (* block_dim block_dim)))
+  (var q ($buffer F32 (+ block_nodes queue_overhead)))
+
+  (var differing 0)
+  (var light_differing 0)
+  (var missing 0)
+  (var dig_ok false)
+  (var lamp_ok false)
+  (var lamp_light 0.0)
+  (var neighbour_light 0.0)
+  (var bx 0)
+  (while (< bx span)
+    (var bz 0)
+    (while (< bz span)
+      (if (get_block w r d bx slab_y bz stored_c stored_p1 stored_p2)
+        (then
+          (generate_block fresh_c sky ($to_float (* bx d))
+                          ($to_float (* slab_y d)) ($to_float (* bz d))
+                          biomes ores seed air water)
+          (zero fresh_p1)
+          (light_region fresh_p1 fresh_c block_dim r sky q (registered_count r))
+          (var i 0.0)
+          (while (< i block_nodes)
+            (if_yes (!= (stored_c ~ get i) (fresh_c ~ get i))
+              (set differing (+ differing 1)))
+            (if_yes (!= (stored_p1 ~ get i) (fresh_p1 ~ get i))
+              (set light_differing (+ light_differing 1)))
+            (set i (+ i 1.0)))
+          (if_yes (&& (== bx edit_bx) (== bz edit_bz))
+            (set dig_ok
+                 (== (stored_c ~ get
+                       (region_index (+ pocket_x 1.0) pocket_y pocket_z block_dim))
+                     air))
+            (set lamp_ok
+                 (== (stored_c ~ get
+                       (region_index pocket_x pocket_y pocket_z block_dim))
+                     lamp))
+            (set lamp_light
+                 (night_of (stored_p1 ~ get
+                             (region_index pocket_x pocket_y pocket_z block_dim))))
+            (set neighbour_light
+                 (night_of (stored_p1 ~ get
+                             (region_index (+ pocket_x 1.0) pocket_y pocket_z
+                                           block_dim))))))
+        (else (set missing (+ missing 1))))
+      (set bz (+ bz 1)))
+    (set bx (+ bx 1)))
+
+  (check out "no block is missing" $"${missing}" "0")
+  (check_b out "the dug pocket came back as air" dig_ok true)
+  (check_b out "the placed lamp came back" lamp_ok true)
+  # The lamp's own emission, off disk. This is the assertion the first version
+  # of this probe was missing: it fails if `param1` is dropped, zeroed, or
+  # truncated, none of which the content array would notice.
+  (check out "the lamp's light came back off disk" $"$($to_int lamp_light)" "14")
+  # One node beside the lamp: 14 at the source, 13 one step away (§4). This is
+  # the check that a *neighbourhood* of light survived, not just the one value
+  # the lamp would re-derive from its own definition on load.
+  (check out "light one node from the lamp came back" $"$($to_int neighbour_light)" "13")
+  # The pocket is 27 nodes: 26 dug to air and one holding the lamp.
+  (check out "exactly the pocket differs" $"${differing}" "27")
+  (check_b out "the lamp lit a neighbourhood that also persisted"
+           (> light_differing 20) true)
+  (out ~ push! $"     (${differing} nodes and ${light_differing} light values differ from a fresh generate)")
+  (close_world w)
+  out)
+
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out ~ push! $"ok   ${label}"))
+    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
