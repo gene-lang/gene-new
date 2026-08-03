@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>miclone — render spike</title>
+<title>miclone</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #9ec2f0; }
   #stage { display: block; width: 100vw; height: 100vh; cursor: grab; }
@@ -20,7 +20,7 @@
 </style>
 <canvas id="stage"></canvas>
 <div id="hud">building world…</div>
-<div id="help">drag to look · W A S D to move · space / shift for up and down</div>
+<div id="help">drag to look · W A S D to walk · space to jump · shift to sneak · F to fly</div>
 <script type="module">
   import { main } from "./dist/main.mjs";
   main();

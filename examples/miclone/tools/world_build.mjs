@@ -26,6 +26,10 @@ import {
   world_dx, world_dy, world_dz, world_stride_z, world_nodes,
 } from "../dist/loaded.mjs";
 import { day_of } from "../dist/light.mjs";
+import {
+  new_player, step, player_x, player_y, player_z,
+  on_ground$q, box_blocked$q,
+} from "../dist/physics.mjs";
 
 const SEED = 1337;
 const BLOCK = 16;
@@ -158,8 +162,76 @@ if (sampled === 0 || crossings === 0) {
   bad++;
 }
 
+// --- walking the real world --------------------------------------------------
+//
+// probes/physics_spec.gene checks §7's collision against hand-built fixtures,
+// which is where a derived expected value can exist. What a fixture cannot
+// check is §3's terrain: overhangs, cave mouths, a shoreline, ore pockets, and
+// the seams between 576 blocks. So the same invariant runs here against the
+// world the client actually opens — never inside a block, never below the
+// world — over a walk that crosses it.
+//
+// The spawn is the client's: down the middle column from the ceiling to the
+// first drawn node, which is what puts a player on the surface rather than at
+// the bottom of whatever cave happens to be under them.
+
+// The column is whole — core/loaded.gene indexes with it and a fractional
+// coordinate reads as `undefined` rather than raising. The player stands in the
+// middle of that node, which is the + 0.5 below.
+const COL_X = (ORIGIN_BX + SPAN_X / 2) * BLOCK;
+const COL_Z = (ORIGIN_BZ + SPAN_Z / 2) * BLOCK;
+let spawnY = (ORIGIN_BY + SPAN_Y) * BLOCK;
+while (spawnY > ORIGIN_BY * BLOCK &&
+       node_at(world, COL_X, spawnY - 1, COL_Z) === AIR) spawnY--;
+const SPAWN_X = COL_X + 0.5, SPAWN_Z = COL_Z + 0.5;
+
+const player = new_player(SPAWN_X, spawnY, SPAWN_Z);
+const DT = 1 / 60;
+let insideCount = 0, belowCount = 0, travelled = 0;
+let lowest = spawnY, highest = spawnY;
+const tWalk = performance.now();
+const FRAMES = 7200;                       // two minutes of walking
+for (let f = 0; f < FRAMES; f++) {
+  // Eight compass directions, 240 frames each — sixteen nodes of walking per
+  // leg, so the walk crosses block seams rather than circling one chunk.
+  const leg = Math.floor(f / 240);
+  const dir = (leg * 3) % 8;
+  const wx = [1, 1, 0, -1, -1, -1, 0, 1][dir];
+  const wz = [0, 1, 1, 1, 0, -1, -1, -1][dir];
+  const len = Math.hypot(wx, wz) || 1;
+  const x0 = player_x(player), y0 = player_y(player), z0 = player_z(player);
+  step(player, world, reg, wx / len, wz / len, f % 47 === 0, false, false, DT);
+  travelled += Math.abs(player_x(player) - x0) + Math.abs(player_z(player) - z0);
+  if (box_blocked$q(world, reg, player_x(player), player_y(player), player_z(player)))
+    insideCount++;
+  if (player_y(player) < ORIGIN_BY * BLOCK) belowCount++;
+  lowest = Math.min(lowest, player_y(player));
+  highest = Math.max(highest, player_y(player));
+}
+const walkMs = performance.now() - tWalk;
+
+console.log("");
+console.log(`  spawn         (${SPAWN_X}, ${spawnY}, ${SPAWN_Z})`);
+console.log(`  walk          ${FRAMES} frames in ${walkMs.toFixed(1)} ms ` +
+  `(${(walkMs / FRAMES * 1000).toFixed(1)} us/step), ` +
+  `${travelled.toFixed(0)} nodes travelled, y ${lowest.toFixed(1)}..${highest.toFixed(1)}`);
+if (insideCount > 0) {
+  console.log(`FAIL — physics: inside a block on ${insideCount} of ${FRAMES} frames`);
+  bad++;
+}
+if (belowCount > 0) {
+  console.log(`FAIL — physics: below the world on ${belowCount} frames`);
+  bad++;
+}
+if (travelled < 200) {
+  console.log(`FAIL — physics: the walk covered ${travelled.toFixed(0)} nodes; it is stuck`);
+  bad++;
+}
+
 console.log("");
 console.log(bad === 0
-  ? `PASS — shell intact, daylight crosses block boundaries (${crossings}/${sampled} columns)`
+  ? `PASS — shell intact, daylight crosses block boundaries ` +
+    `(${crossings}/${sampled} columns), and ${FRAMES} frames of walking never ` +
+    `left the world or entered a block`
   : `FAIL — ${bad} invariant(s) broken`);
 if (bad !== 0) process.exit(1);

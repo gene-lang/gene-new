@@ -1,0 +1,20 @@
+# The VM shell for the player-physics spec.
+#
+#   gene run physics_spec
+#
+# Pair with `node tools/physics_spec.mjs` and diff: the two must agree exactly.
+# §7 runs this step on both sides — the client predicts and the server corrects
+# — so a difference here is the two halves of §D3 disagreeing about where a
+# player is, which is the one divergence a correction cannot hide.
+
+(mod run_physics_spec)
+
+(import [report failures] from "./physics_spec.gene")
+
+(fn main [args] : Nil
+  ($println (report))
+  (var bad (failures))
+  ($println "")
+  (if (== bad 0.0)
+    (then ($println "PASS — every check agrees"))
+    (else ($println $"FAIL — ${bad} check(s) failed"))))

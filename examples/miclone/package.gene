@@ -17,6 +17,8 @@
     # design.md §1 and §5 — M5's loaded world: addressing, the shell, and
     # daylight crossing a block boundary.
     (application "loaded_spec" ^entry "probes/run_loaded_spec.gene")
+    # design.md §7 — the collision step, as fixtures and as one invariant.
+    (application "physics_spec" ^entry "probes/run_physics_spec.gene")
     # design.md §D8's M4 deliverable, run twice: `create` then `verify`.
     (application "persistence" ^entry "probes/run_persistence.gene")
   ]

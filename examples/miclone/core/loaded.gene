@@ -203,6 +203,14 @@
 # --- addressing --------------------------------------------------------------
 #
 # World node coordinates in, array indices out. The `+1` is the shell.
+#
+# **Node coordinates are whole numbers, and nothing here checks that.** A
+# fractional coordinate produces a fractional index, which a `(Buffer T)` reads
+# as `undefined` in the web profile — no error, no zero, just a value that
+# compares unequal to everything and propagates. Anything holding a continuous
+# position (§7's player, §7's raycast) floors before it asks. The alternative is
+# three `floor`s inside every read on the physics hot path to defend against a
+# mistake that belongs at the call site.
 
 (fn array_x [w : World nx : F64] : F64 (+ (- nx (w/dims ~ get dim_ox)) 1.0))
 (fn array_y [w : World ny : F64] : F64 (+ (- ny (w/dims ~ get dim_oy)) 1.0))

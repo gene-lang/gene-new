@@ -1,16 +1,16 @@
 {
   ^lock_format 1
-  ^root_manifest_digest "sha256:6f08a7d0d481001a6bf075f195f4f3a5da1878c6182215289a8d8c76a390c97f"
+  ^root_manifest_digest "sha256:b0843933a66c6b3e4eb15faa95528ef2abfce4221a38e4dd37e506941c97a410"
   ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
   ^registry_snapshots [
   ]
-  ^roots [ "workspace:gene/miclone@0.1.0#sha256:5f23c7be23fed66ad457af470183ff6d01badd057c4f258811208d8a433871d7"]
+  ^roots [ "workspace:gene/miclone@0.1.0#sha256:cb473e8760b069f5d01c307b343a39c0924cbbfa4ff00e1035706fd7d057ff0f"]
   ^packages [
     (locked_package
-      ^id "workspace:gene/miclone@0.1.0#sha256:5f23c7be23fed66ad457af470183ff6d01badd057c4f258811208d8a433871d7"
+      ^id "workspace:gene/miclone@0.1.0#sha256:cb473e8760b069f5d01c307b343a39c0924cbbfa4ff00e1035706fd7d057ff0f"
       ^name "gene/miclone"
       ^version "0.1.0"
-      ^manifest_digest "sha256:6f08a7d0d481001a6bf075f195f4f3a5da1878c6182215289a8d8c76a390c97f"
+      ^manifest_digest "sha256:b0843933a66c6b3e4eb15faa95528ef2abfce4221a38e4dd37e506941c97a410"
       ^source (workspace ^path ".")
       ^features []
       ^dependencies {

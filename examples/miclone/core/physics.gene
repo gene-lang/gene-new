@@ -1,0 +1,350 @@
+# Player physics and collision — design.md §7.
+#
+# An axis-aligned box against the voxel grid, resolved one axis at a time. §7:
+# "which is what makes stepping up a single node and sliding along a wall fall
+# out for free rather than needing special cases" — and both do. Sliding is a
+# blocked X leaving Z untouched. Climbing is a jump: Y resolves before X, so a
+# player who has cleared the ledge moves forward into nothing and lands on it.
+# See the note on `PLAYER_DEFAULT_STEPHEIGHT` below for the part that does *not*
+# fall out, and is not in this file as a result.
+#
+# **The step is a function of `(state, input, world) → state`.** The state is a
+# buffer the caller owns and this mutates, which is how every stage in `core/`
+# is written (§4's `param1`, §5's vertex buffers) and for the same reason: a
+# returned record would be an allocation per frame per player. What matters for
+# §D3 is the other half of the sentence — the world is read and never written,
+# the inputs are values, and nothing else is consulted. So the client's
+# prediction and the server's authority run the same function over the same
+# numbers, and a divergence is a bug in one place rather than a mismatch between
+# two implementations of one rule (§D3.1's corrected half).
+#
+# ## Why bisection rather than a computed contact plane
+#
+# The exact form solves for the node boundary the leading face crosses, which is
+# four cases per axis (sign, and whether the face starts on a boundary) and is
+# where this kind of code goes wrong. This searches instead: the position before
+# the move is known clear, the position after is known blocked, so twelve halvings
+# find the furthest clear fraction to within 1/4096 of a node. That is a quarter
+# of a millimetre at this scale, it needs no case analysis, and the invariant it
+# maintains is one sentence — **the player is never at a blocked position** —
+# which is exactly what `probes/physics_spec.gene` asserts over every frame of
+# every fixture.
+#
+# The cost is twelve box tests per blocked axis per substep. A box test reads
+# twelve nodes, and `core/loaded.gene` makes a read an index, so a heavily
+# blocked frame is a few thousand array reads — against a frame that meshes
+# 62,000 faces.
+#
+# ## The box is inset at the top and not at the bottom
+#
+# A box spanning `[min, max]` occupies node cells `floor(min)` through
+# `floor(max - eps)`. The asymmetry is deliberate and was a bug first: inset at
+# both ends and a player resting exactly on a floor can always move down by
+# `eps` more, so bisection hands back a sixty-fourth of a node per frame and the
+# player sinks through the world at walking pace. Inset only where a box that
+# *ends* on a boundary would otherwise claim the cell beyond it.
+
+(mod physics ^profile web)
+
+(import [Registry solid? drawtype_of draw_liquid] from "./registry.gene")
+(import [content_ignore abs_f64] from "./world.gene")
+(import [World node_at] from "./loaded.gene")
+
+# --- the player's shape ------------------------------------------------------
+#
+# Upstream's numbers (`src/content_cao.cpp`, `player.h`): a 0.6-wide, 1.75-tall
+# box with the eye near the top, and `PLAYER_DEFAULT_STEPHEIGHT` at 0.6. §7
+# takes the step height because it is tuned; the rest come with it, because a
+# step height means nothing without the box it lifts.
+
+(let half_width 0.3)
+(let player_height 1.75)
+(let eye_height 1.625)
+
+# **There is no auto-step, and `PLAYER_DEFAULT_STEPHEIGHT` is why.**
+#
+# §7 asks for step height 0.6 and calls stepping up a single node something that
+# falls out of per-axis resolution. Both are right and they are about different
+# things. 0.6 is upstream's number and it is under a node, so it climbs a slab or
+# a stair and **cannot climb a whole node — in upstream either**; walking into a
+# one-node ledge in Luanti and having to jump is not a bug, it is this constant.
+#
+# What per-axis resolution gives for free is the other half: a player who jumps
+# is above the ledge, and resolving Y before X means the forward move is then
+# unobstructed and they land on top. No special case, exactly as §7 says.
+#
+# So an auto-step mechanism was written and then deleted, because §2's content
+# set is full cubes only: every ledge is exactly one node, 0.6 can never reach
+# one, and the code was unreachable and therefore untestable. It comes back with
+# M8's `nodebox` drawtype, which is what makes a 0.6 step exist to be taken.
+# Raising the constant over 1.0 instead would make walking the heightfield
+# smoother and would be a deviation from §7 rather than an implementation of it.
+
+# --- movement constants ------------------------------------------------------
+#
+# Luanti's defaults (`movement_*` in `defaultsettings.cpp`), for the same reason
+# as the box: they are a tuned set and changing one of them in isolation is how
+# a game ends up feeling wrong in a way nobody can name. Fast speed is the
+# creative-mode fly speed, which is what M5's "creative-ish loop" flies at.
+
+(let walk_speed 4.0)
+(let crouch_speed 1.35)
+(let fly_speed 20.0)
+(let jump_speed 6.5)
+(let gravity 9.81)
+
+# In liquid: sinking is slow and swimming up is possible from anywhere in it,
+# which is what makes water something to cross rather than something to drown
+# under.
+(let liquid_speed 2.8)
+(let liquid_sink 1.6)
+(let liquid_rise 3.0)
+
+# Nothing falls faster than this. Not a physical claim — it is what keeps a long
+# fall inside a bounded number of substeps.
+(let terminal_speed 40.0)
+
+# --- integration granularity -------------------------------------------------
+#
+# No substep moves further than this, so the leading face can never skip a node
+# and land clear on the other side of a wall. Under a node, with room to spare
+# for the box's own extent.
+(let max_substep 0.4)
+
+# Twelve halvings of a move of at most `max_substep`: a tenth of a millimetre.
+(let bisect_steps 12.0)
+
+# How far a box is inset at its far edge — see the header. Small enough to be
+# invisible, large enough to survive the float error in a coordinate that has
+# been added to a few thousand times.
+(let collide_eps 0.001)
+
+# --- the state ---------------------------------------------------------------
+#
+# `(x, y, z)` is the centre of the box's **base**, not its middle: it is the
+# point the player stands on, which is what a resting height, a step height, and
+# a spawn coordinate are all naturally about.
+
+(let p_x 0.0)
+(let p_y 1.0)
+(let p_z 2.0)
+(let p_vx 3.0)
+(let p_vy 4.0)
+(let p_vz 5.0)
+(let p_on_ground 6.0)
+(let p_in_liquid 7.0)
+(let p_cells 8.0)
+
+(fn new_player [x : F64 y : F64 z : F64] : (Buffer F64)
+  (var st ($buffer F64 p_cells))
+  (st ~ set! p_x x)
+  (st ~ set! p_y y)
+  (st ~ set! p_z z)
+  st)
+
+(fn player_x [st : (Buffer F64)] : F64 (st ~ get p_x))
+(fn player_y [st : (Buffer F64)] : F64 (st ~ get p_y))
+(fn player_z [st : (Buffer F64)] : F64 (st ~ get p_z))
+(fn player_vy [st : (Buffer F64)] : F64 (st ~ get p_vy))
+(fn player_eye_y [st : (Buffer F64)] : F64 (+ (st ~ get p_y) eye_height))
+(fn on_ground? [st : (Buffer F64)] : Bool (== (st ~ get p_on_ground) 1.0))
+(fn in_liquid? [st : (Buffer F64)] : Bool (== (st ~ get p_in_liquid) 1.0))
+
+(fn set_player_position [st : (Buffer F64) x : F64 y : F64 z : F64] : Nil
+  (st ~ set! p_x x)
+  (st ~ set! p_y y)
+  (st ~ set! p_z z)
+  (st ~ set! p_vx 0.0)
+  (st ~ set! p_vy 0.0)
+  (st ~ set! p_vz 0.0))
+
+# --- what stops a player -----------------------------------------------------
+
+# `ignore` blocks movement, and that is a decision rather than a reading of §1.
+#
+# §1 gives `ignore` as "not generated yet — never sent, never walkable", which
+# upstream implements as *not solid*: you fall through it, because upstream will
+# have loaded the block by the time you get there. A loaded world with a fixed
+# extent (§1.1) has no such block coming, so the alternative to a wall is
+# falling out of the world forever. The edge of what is loaded is a wall, and it
+# is one node outside the world where nothing can see it.
+(fn blocks? [reg : Registry id : F64] : Bool
+  (|| (solid? reg id) (== id content_ignore)))
+
+(fn liquid? [reg : Registry id : F64] : Bool
+  (== (drawtype_of reg id) draw_liquid))
+
+# Is the box standing at `(x, y, z)` inside anything that stops it?
+(fn box_blocked? [w : World reg : Registry x : F64 y : F64 z : F64] : Bool
+  (var x0 ($math/floor (- x half_width)))
+  (var x1 ($math/floor (- (+ x half_width) collide_eps)))
+  (var y0 ($math/floor y))
+  (var y1 ($math/floor (- (+ y player_height) collide_eps)))
+  (var z0 ($math/floor (- z half_width)))
+  (var z1 ($math/floor (- (+ z half_width) collide_eps)))
+  (var hit false)
+  (var ny y0)
+  (while (&& (! hit) (<= ny y1))
+    (var nz z0)
+    (while (&& (! hit) (<= nz z1))
+      (var nx x0)
+      (while (&& (! hit) (<= nx x1))
+        (if_yes (blocks? reg (node_at w nx ny nz)) (set hit true))
+        (set nx (+ nx 1.0)))
+      (set nz (+ nz 1.0)))
+    (set ny (+ ny 1.0)))
+  hit)
+
+# Is any part of the box in liquid? Read at the box rather than at one point,
+# so wading is the same question as swimming asked at a different depth.
+(fn box_in_liquid? [w : World reg : Registry x : F64 y : F64 z : F64] : Bool
+  (var x0 ($math/floor (- x half_width)))
+  (var x1 ($math/floor (- (+ x half_width) collide_eps)))
+  (var y0 ($math/floor y))
+  (var y1 ($math/floor (- (+ y player_height) collide_eps)))
+  (var z0 ($math/floor (- z half_width)))
+  (var z1 ($math/floor (- (+ z half_width) collide_eps)))
+  (var hit false)
+  (var ny y0)
+  (while (&& (! hit) (<= ny y1))
+    (var nz z0)
+    (while (&& (! hit) (<= nz z1))
+      (var nx x0)
+      (while (&& (! hit) (<= nx x1))
+        (if_yes (liquid? reg (node_at w nx ny nz)) (set hit true))
+        (set nx (+ nx 1.0)))
+      (set nz (+ nz 1.0)))
+    (set ny (+ ny 1.0)))
+  hit)
+
+# --- one axis at a time ------------------------------------------------------
+
+(let axis_x 0.0)
+(let axis_y 1.0)
+(let axis_z 2.0)
+
+(fn probe_blocked? [w : World reg : Registry x : F64 y : F64 z : F64
+                    axis : F64 d : F64] : Bool
+  (if (== axis axis_x)
+    (box_blocked? w reg (+ x d) y z)
+    (if (== axis axis_y)
+      (box_blocked? w reg x (+ y d) z)
+      (box_blocked? w reg x y (+ z d)))))
+
+(fn shift [st : (Buffer F64) axis : F64 d : F64] : Nil
+  (var cell (if (== axis axis_x) p_x (if (== axis axis_y) p_y p_z)))
+  (st ~ set! cell (+ (st ~ get cell) d)))
+
+# Move along one axis by `d`, stopping at whatever is in the way. Returns how
+# far it actually got, so a caller can tell "arrived" from "hit something"
+# without a second query.
+(fn resolve_axis [st : (Buffer F64) w : World reg : Registry
+                  axis : F64 d : F64] : F64
+  (var x (st ~ get p_x))
+  (var y (st ~ get p_y))
+  (var z (st ~ get p_z))
+  (if (! (probe_blocked? w reg x y z axis d))
+    (then
+      (shift st axis d)
+      d)
+    (else
+      # `lo` is always a fraction known to be clear and `hi` one known to be
+      # blocked, so the loop only ever narrows the gap between them and the
+      # answer is `lo` whatever happens.
+      (var lo 0.0)
+      (var hi d)
+      (var i 0.0)
+      (while (< i bisect_steps)
+        (var mid (* 0.5 (+ lo hi)))
+        (if (probe_blocked? w reg x y z axis mid)
+          (then (set hi mid))
+          (else (set lo mid)))
+        (set i (+ i 1.0)))
+      (shift st axis lo)
+      lo)))
+
+# --- the step ----------------------------------------------------------------
+
+# `wish_x` and `wish_z` are a direction in world space with length 0 or 1 — the
+# caller owns the yaw, because a server stepping a client's input has the input
+# and not the camera.
+#
+# `dt` is seconds and is the caller's to clamp; a tab that was in the background
+# for a minute must not hand this a minute.
+(fn step [st : (Buffer F64) w : World reg : Registry
+          wish_x : F64 wish_z : F64
+          jump : Bool sneak : Bool fly : Bool dt : F64] : Nil
+  (var swimming (box_in_liquid? w reg (st ~ get p_x) (st ~ get p_y)
+                                (st ~ get p_z)))
+  (st ~ set! p_in_liquid (if swimming 1.0 0.0))
+
+  # Horizontal velocity is set, not accelerated. Upstream does the same for the
+  # player: ground control in this genre is expected to be immediate, and
+  # momentum that outlives the key makes a one-node ledge unwalkable.
+  (var speed
+    (if fly fly_speed (if swimming liquid_speed (if sneak crouch_speed walk_speed))))
+  (st ~ set! p_vx (* wish_x speed))
+  (st ~ set! p_vz (* wish_z speed))
+
+  (if fly
+    (then
+      (st ~ set! p_vy
+        (if jump fly_speed (if sneak (- 0.0 fly_speed) 0.0))))
+    (else
+      (if swimming
+        (then
+          (st ~ set! p_vy (if jump liquid_rise (- 0.0 liquid_sink))))
+        (else
+          (if_yes (&& jump (== (st ~ get p_on_ground) 1.0))
+            (st ~ set! p_vy jump_speed))
+          (var vy (- (st ~ get p_vy) (* gravity dt)))
+          (st ~ set! p_vy
+            (if (< vy (- 0.0 terminal_speed)) (- 0.0 terminal_speed) vy))))))
+
+  (var dx (* (st ~ get p_vx) dt))
+  (var dy (* (st ~ get p_vy) dt))
+  (var dz (* (st ~ get p_vz) dt))
+
+  # Enough substeps that none of the three moves further than `max_substep`.
+  (var reach ($math/max (abs_f64 dx) ($math/max (abs_f64 dy) (abs_f64 dz))))
+  (var n ($math/max 1.0 ($math/ceil (/ reach max_substep))))
+  (var sx (/ dx n))
+  (var sy (/ dy n))
+  (var sz (/ dz n))
+
+  (var i 0.0)
+  (while (< i n)
+    # Y first, so `on_ground` is current before the horizontal moves ask whether
+    # they may step up.
+    (if_yes (!= sy 0.0)
+      (var moved (resolve_axis st w reg axis_y sy))
+      (if (!= moved sy)
+        (then
+          (if (< sy 0.0)
+            (then (st ~ set! p_on_ground 1.0))
+            (else (st ~ set! p_on_ground 0.0)))
+          (st ~ set! p_vy 0.0))
+        (else (st ~ set! p_on_ground 0.0))))
+    # Then X and Z independently, which is the whole of "sliding along a wall":
+    # a blocked X leaves Z untouched, so pressing into a corner still moves
+    # along whichever face is open.
+    (if_yes (!= sx 0.0) (resolve_axis st w reg axis_x sx))
+    (if_yes (!= sz 0.0) (resolve_axis st w reg axis_z sz))
+    (set i (+ i 1.0))))
+
+# --- placing a player --------------------------------------------------------
+
+# The lowest position at or above `y` where the box fits, or `y` itself if there
+# is none below the world's ceiling. Used to spawn without having to know the
+# terrain height, and to unstick a player an edit has buried.
+(fn drop_to_free [w : World reg : Registry x : F64 y : F64 z : F64
+                  limit : F64] : F64
+  (var yy y)
+  (var found false)
+  (var tries 0.0)
+  (while (&& (! found) (< tries limit))
+    (if (box_blocked? w reg x yy z)
+      (then (set yy (+ yy 1.0)))
+      (else (set found true)))
+    (set tries (+ tries 1.0)))
+  yy)

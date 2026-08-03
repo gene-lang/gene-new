@@ -1579,6 +1579,68 @@ Node selection is a voxel ray traversal (Amanatides–Woo), not a stepped
 sample — stepping misses thin nodes at grazing angles and produces the
 "can't click the block I'm looking at" complaint.
 
+### 7.0 M5 — what was built, and one thing that was not
+
+`core/physics.gene`, `probes/physics_spec.gene`, and the client walking on the
+world instead of flying through it. Gravity, jump, sneak, a fly toggle,
+swimming, and the world's edge as a wall.
+
+**The resolver searches rather than solving.** The exact form computes the node
+boundary the leading face crosses, which is four cases per axis and is where
+this kind of code goes wrong. Instead: the position before a move is known
+clear and the position after is known blocked, so twelve halvings find the
+furthest clear fraction to within a quarter of a millimetre. No case analysis,
+and the invariant it maintains is one sentence — *the player is never at a
+blocked position* — which is what the spec asserts on every frame of every
+fixture. A step costs 1.6 µs.
+
+**The box is inset at its far edge and not at its near one.** Inset at both and
+a player resting exactly on a floor can always move down by another `eps`, so
+the resolver hands back a fraction of a node per frame and the player sinks
+through the world at walking pace. That was a real bug, and the spec now stands
+five seconds of standing still against it.
+
+**There is no auto-step, and `PLAYER_DEFAULT_STEPHEIGHT` is why.** §7 above asks
+for 0.6 and calls stepping up a single node something that falls out of per-axis
+resolution. Both are right and they are about different things:
+
+- 0.6 is under a node, so it climbs a slab or a stair and **cannot climb a whole
+  node — in upstream either.** Walking into a one-node ledge in Luanti and
+  having to jump is not a bug, it is this constant.
+- What per-axis resolution does give for free is the jump: Y resolves before X,
+  so a player who has cleared the ledge moves forward into open air and lands on
+  it, with no code that knows what a ledge is.
+
+An auto-step mechanism was written and then deleted, because §2's content set is
+full cubes only: every ledge is exactly one node, 0.6 can never reach one, and
+the code was unreachable and therefore untestable — M3's reason for deleting
+`light_filled_region`, again. It comes back with M8's `nodebox` drawtype, which
+is what makes a 0.6 step exist to be taken. **Raising the constant over 1.0 would
+make walking the heightfield smoother and is a change to §7 rather than an
+implementation of it, so it is not made here.**
+
+A second consequence of upstream's constants, worth stating because it is the
+number a player feels most directly: 6.5 m/s against 9.81 m/s² peaks at 2.15
+nodes, so **a two-node ledge is inside a jump and a three-node one is not.** The
+spec asserts both, so the height cannot drift unnoticed.
+
+**`ignore` blocks movement, which §1 does not say.** §1 gives it as "never
+walkable", which upstream implements as *not solid* — you fall through, because
+upstream will have loaded the block by the time you get there. §1.1's loaded
+world has a fixed extent and no such block coming, so the alternative to a wall
+is falling out of the world forever. The wall sits one node outside the world,
+where nothing can see it.
+
+**Node coordinates are whole numbers and `core/loaded.gene` does not check.** A
+fractional coordinate produces a fractional index, which a `(Buffer T)` reads as
+`undefined` in the web profile: no error, no zero, a value that compares unequal
+to everything and propagates. The client's spawn scan did exactly this — it
+sampled the column at `x + 0.5` — and it *looked* fine, because the scan then
+failed to find the surface and the player fell to it under gravity anyway.
+`tools/world_build.mjs` caught it by walking the real generated world, which is
+the thing a fixture spec cannot do: 7,200 frames across §3's terrain, its cave
+mouths, its shoreline, and 576 block seams, asserting the same invariant.
+
 ### 7.1 Player edits under authority
 
 Digging is the signature interaction of this genre and the one that feels worst

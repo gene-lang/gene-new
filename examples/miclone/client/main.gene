@@ -38,6 +38,11 @@
         from "./render.gene")
 (import [paint] from "./atlas.gene")
 (import [forward_x forward_y forward_z] from "../core/vec.gene")
+(import [new_player step player_x player_y player_z player_eye_y
+         on_ground? in_liquid? set_player_position box_blocked?]
+        from "../core/physics.gene")
+(import [node_at] from "../core/loaded.gene")
+(import [solid? drawn?] from "../core/registry.gene")
 
 (let seed 1337.0)
 (let block_dim 16.0)
@@ -69,7 +74,6 @@
 (let origin_by 0.0)
 (let origin_bz 198.0)
 
-(let move_speed 22.0)
 (let look_speed 0.0022)
 (let pitch_limit 1.5533)           # just under pi/2; see `forward_*`
 (let fog_far 260.0)
@@ -77,6 +81,12 @@
 # Noon. §4's two channels are mixed by this at render time, so a day/night cycle
 # is this one number moving rather than a remesh (see `client/render.gene`).
 (let time_of_day 1.0)
+
+# A frame longer than this is stepped as if it were this long. A tab that was
+# in the background for a minute must not hand the physics a minute: §7's step
+# substeps to stay under a node, so a huge `dt` is not a tunnelling risk, but it
+# is a player who reappears somewhere they did not walk to.
+(let max_dt 0.05)
 
 (let floats_per_vertex 7.0)
 (let indices_per_face 6.0)
@@ -208,16 +218,36 @@
   ($console/log
     $"miclone: ${chunks} chunks, $($math/round faces_total) faces · generate $($math/round (- t_gen t_start)) ms · light $($math/round (- t_light t_gen)) ms · mesh $($math/round (- t_mesh t_light)) ms")
 
-  # --- camera ----------------------------------------------------------------
+  # --- the player ------------------------------------------------------------
+  #
+  # Spawned on the surface of the middle column, found by walking down from the
+  # world's ceiling to the first thing that is drawn. Searching *down* rather
+  # than up from the floor matters: a column with a cave in it has a free
+  # position at the bottom of the cave, and spawning there is spawning
+  # underground in the dark.
 
-  (var eye_x (* (+ origin_bx (/ span_x 2.0)) block_dim))
-  (var eye_y 78.0)
-  (var eye_z (* (+ origin_bz (/ span_z 2.0)) block_dim))
+  # The column is a node coordinate and must be whole — `core/loaded.gene`
+  # indexes with it directly and a fraction reads as `undefined`. The player
+  # then stands in the middle of that node, which is the `+ 0.5`.
+  (var spawn_col_x (* (+ origin_bx (/ span_x 2.0)) block_dim))
+  (var spawn_col_z (* (+ origin_bz (/ span_z 2.0)) block_dim))
+  (var spawn_y (* (+ origin_by span_y) block_dim))
+  (var scanning true)
+  (while (&& scanning (> spawn_y (* origin_by block_dim)))
+    (if (drawn? reg (node_at world spawn_col_x (- spawn_y 1.0) spawn_col_z))
+      (then (set scanning false))
+      (else (set spawn_y (- spawn_y 1.0)))))
+  (var spawn_x (+ spawn_col_x 0.5))
+  (var spawn_z (+ spawn_col_z 0.5))
+  (var player (new_player spawn_x spawn_y spawn_z))
+
   (var yaw 0.6)
   (var pitch -0.25)
   (var fwd 0.0)
   (var strafe 0.0)
-  (var lift 0.0)
+  (var jump false)
+  (var sneak false)
+  (var flying false)
   (var dragging false)
 
   (var proj ($buffer F32 16.0))
@@ -234,14 +264,19 @@
     (if_yes (== k "s") (set fwd -1.0))
     (if_yes (== k "a") (set strafe -1.0))
     (if_yes (== k "d") (set strafe 1.0))
-    (if_yes (== k " ") (set lift 1.0))
-    (if_yes (== k "Shift") (set lift -1.0))))
+    (if_yes (== k " ") (set jump true))
+    (if_yes (== k "Shift") (set sneak true))
+    # Fly is a toggle rather than a held key, because it is a mode: §7's step
+    # takes it as an input and changes what gravity means, and a mode you have
+    # to hold down is one you cannot look around in.
+    (if_yes (== k "f") (set flying (! flying)))))
 
   ($dom/add_event_listener ($dom/window) "keyup" (fn [ev : Any] : Void
     (var k ($event/key ev))
     (if_yes (|| (== k "w") (== k "s")) (set fwd 0.0))
     (if_yes (|| (== k "a") (== k "d")) (set strafe 0.0))
-    (if_yes (|| (== k " ") (== k "Shift")) (set lift 0.0))))
+    (if_yes (== k " ") (set jump false))
+    (if_yes (== k "Shift") (set sneak false))))
 
   ($dom/add_event_listener stage "mousedown" (fn [ev : Any] : Void
     (set dragging true)))
@@ -260,20 +295,34 @@
   # is, and the placeholder is what lets the real one refer to the binding.
   (var frame : (Callback [F64] Void) (fn [now : F64] : Void void))
   (set frame (fn [now : F64] : Void
-    (var dt (if (> last_ms 0.0) ($math/min 0.05 (/ (- now last_ms) 1000.0)) 0.0))
+    (var dt (if (> last_ms 0.0) ($math/min max_dt (/ (- now last_ms) 1000.0)) 0.0))
     (set last_ms now)
 
     (var dx (forward_x yaw pitch))
     (var dy (forward_y yaw pitch))
     (var dz (forward_z yaw pitch))
-    # Strafe is the horizontal perpendicular of the view direction, so looking
-    # up does not shorten sideways movement.
+
+    # The wish direction is horizontal and unit length, which is what §7's step
+    # takes: the camera's pitch belongs to looking, not to walking, and a
+    # diagonal must not be faster than a straight line. Strafe is the
+    # horizontal perpendicular of the view direction.
+    (var fx (forward_x yaw 0.0))
+    (var fz (forward_z yaw 0.0))
     (var rx (forward_x (+ yaw 1.5708) 0.0))
     (var rz (forward_z (+ yaw 1.5708) 0.0))
-    (var step (* move_speed dt))
-    (set eye_x (+ eye_x (* step (+ (* dx fwd) (* rx strafe)))))
-    (set eye_y (+ eye_y (* step (+ (* dy fwd) lift))))
-    (set eye_z (+ eye_z (* step (+ (* dz fwd) (* rz strafe)))))
+    (var wish_x (+ (* fx fwd) (* rx strafe)))
+    (var wish_z (+ (* fz fwd) (* rz strafe)))
+    (var wish_len ($math/sqrt (+ (* wish_x wish_x) (* wish_z wish_z))))
+    (if_yes (> wish_len 0.0)
+      (set wish_x (/ wish_x wish_len))
+      (set wish_z (/ wish_z wish_len)))
+
+    (if_yes (> dt 0.0)
+      (step player world reg wish_x wish_z jump sneak flying dt))
+
+    (var eye_x (player_x player))
+    (var eye_y (player_eye_y player))
+    (var eye_z (player_z player))
 
     (var w ($canvas/width stage))
     (var h ($canvas/height stage))
@@ -294,8 +343,14 @@
     # Frame rate over a one-second window, which is what §D6.1 measures.
     (set frames (+ frames 1.0))
     (if_yes (> (- now fps_since) 1000.0)
+      # The mode is bound first because a string literal inside `$(...)` closes
+      # the string it is embedded in — the interpolation cannot hold one.
+      (var mode
+        (if flying "flying"
+          (if (in_liquid? player) "swimming"
+            (if (on_ground? player) "walking" "falling"))))
       ($dom/set_text ($dom/element "hud")
-        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces")
+        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player))")
       (set frames 0.0)
       (set fps_since now))
     ($frame/request frame)))

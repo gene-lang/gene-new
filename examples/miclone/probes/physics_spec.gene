@@ -1,0 +1,501 @@
+# Cross-backend spec for player physics — design.md §7 and §14 layers 1 and 2.
+#
+# §7 says the step is "a pure function of `(state, input, world) → state`, which
+# makes it directly testable and directly fixture-able across backends". This is
+# that test, and the fixtures are hand-built worlds — a floor, a wall, a step, a
+# ceiling, a pool — rather than generated terrain, so every expected number is
+# one anyone can derive from the box's dimensions.
+#
+# Positions are reported in **centimetres, floored**. Not because a centimetre is
+# the interesting precision, but because the collision resolver converges on a
+# contact plane from one side and lands within a ten-thousandth of it: a
+# millimetre report would sit on a rounding boundary and could differ between
+# two runtimes that agree on every bit of the position itself.
+#
+# The last section is the one that matters most. Fixture checks say the resolver
+# is right about the cases someone thought of; the invariant says it is never
+# wrong about any case at all — **after every step of a long scripted tour, the
+# player is not inside anything that blocks.** That is the property that stands
+# between a player and the inside of a mountain, and it needs no foresight about
+# which corner does it.
+
+(mod physics_spec ^profile web)
+
+(import [Registry new_registry register_uniform id_of draw_normal draw_liquid]
+        from "../core/registry.gene")
+(import [content_air abs_f64] from "../core/world.gene")
+(import [World new_world set_node node_at world_min_y] from "../core/loaded.gene")
+(import [new_player step player_x player_y player_z player_vy
+         on_ground? in_liquid? set_player_position box_blocked? drop_to_free
+         player_eye_y]
+        from "../core/physics.gene")
+
+# --- reporting ---------------------------------------------------------------
+
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out ~ push! $"ok   ${label}"))
+    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label $"$($to_int got)" $"$($to_int want)"))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
+
+# A coordinate as whole centimetres — see the header. Rounded rather than
+# truncated: eight seconds of walking accumulates enough float error that a
+# distance of exactly 8 arrives as 7.999999999999, and truncating that reports
+# 799 against a fixture that says 800.
+(fn cm [v : F64] : F64
+  ($math/round (* v 100.0)))
+
+# Run `n` steps and report the highest the player got, which is what a jump
+# under a ceiling is about: sampling a fixed frame samples the way back down.
+(fn run_peak [st : (Buffer F64) w : World r : Registry
+              jump : Bool n : F64] : F64
+  (var peak (player_y st))
+  (var i 0.0)
+  (while (< i n)
+    (step st w r 0.0 0.0 jump false false dt)
+    (if_yes (> (player_y st) peak) (set peak (player_y st)))
+    (set i (+ i 1.0)))
+  peak)
+
+# --- fixtures ----------------------------------------------------------------
+#
+# One 2x2x2-block world, 32 nodes on a side, floor at y 0..7 so the walkable
+# surface is y = 8. Everything else is placed per fixture.
+
+(let side 32.0)
+(let floor_top 7.0)
+(let ground 8.0)
+(let dt 0.0166666666666667)        # one sixtieth of a second
+
+(fn fixture_registry [] : Registry
+  (var r (new_registry))
+  (register_uniform r "t:stone" draw_normal true true false 0.0 0.0)
+  (register_uniform r "t:water" draw_liquid false true true 0.0 1.0)
+  r)
+
+(fn fill_box [w : World x0 : F64 y0 : F64 z0 : F64
+              x1 : F64 y1 : F64 z1 : F64 id : F64] : Nil
+  (var z z0)
+  (while (<= z z1)
+    (var y y0)
+    (while (<= y y1)
+      (var x x0)
+      (while (<= x x1)
+        (set_node w x y z id)
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
+# A world with nothing in it but the floor.
+(fn flat_world [r : Registry] : World
+  (var w (new_world 0.0 0.0 0.0 2.0 2.0 2.0))
+  (fill_box w 0.0 0.0 0.0 (- side 1.0) floor_top (- side 1.0)
+            (id_of r "t:stone"))
+  w)
+
+# Run `n` steps with one held input.
+(fn run [st : (Buffer F64) w : World r : Registry
+         wish_x : F64 wish_z : F64 jump : Bool sneak : Bool fly : Bool
+         n : F64] : Nil
+  (var i 0.0)
+  (while (< i n)
+    (step st w r wish_x wish_z jump sneak fly dt)
+    (set i (+ i 1.0))))
+
+# --- falling and standing ----------------------------------------------------
+
+(fn falling_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (flat_world r))
+  (var st (new_player 16.0 20.0 16.0))
+
+  (check_b out "a player in mid-air is not on the ground" (on_ground? st) false)
+  # 12 nodes to fall under 9.81 m/s^2 is about 1.6 s; two seconds is enough
+  # with room to spare, and lands on the floor rather than in it.
+  (run st w r 0.0 0.0 false false false 120.0)
+  (check_f out "a dropped player rests on the surface of the floor"
+           (cm (player_y st)) (* 100.0 ground))
+  (check_b out "and reports standing on it" (on_ground? st) true)
+  (check_f out "and has no vertical speed left" (cm (player_vy st)) 0.0)
+  (check_b out "and is not inside anything"
+           (box_blocked? w r (player_x st) (player_y st) (player_z st)) false)
+  (check_f out "the eye is 1.625 above the feet"
+           (cm (player_eye_y st)) (cm (+ ground 1.625)))
+
+  # It stays there. A resolver that hands back a fraction of the inset per frame
+  # would sink visibly over a few seconds, and this is the check that failed
+  # before the box was inset at the top only.
+  (run st w r 0.0 0.0 false false false 300.0)
+  (check_f out "and five more seconds of standing still does not sink it"
+           (cm (player_y st)) (* 100.0 ground))
+
+  # Falling accelerates. Two samples a second apart, so the second must be the
+  # faster — with a terminal speed to stop the substep count running away.
+  (set_player_position st 16.0 30.0 16.0)
+  (run st w r 0.0 0.0 false false false 6.0)
+  (var early (player_vy st))
+  (run st w r 0.0 0.0 false false false 30.0)
+  (check_b out "falling accelerates" (< (player_vy st) early) true))
+
+# --- jumping -----------------------------------------------------------------
+
+(fn jump_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (flat_world r))
+  (var st (new_player 16.0 ground 16.0))
+  (run st w r 0.0 0.0 false false false 4.0)
+
+  (run st w r 0.0 0.0 true false false 1.0)
+  (check_b out "a jump leaves the ground" (on_ground? st) false)
+  # 6.5 m/s under 9.81 peaks about 2.15 above the surface. Checked as a band,
+  # because the exact apex depends on where in the step the sign changes and
+  # asserting a single centimetre there would be asserting the integrator's
+  # rounding rather than the jump.
+  (run st w r 0.0 0.0 false false false 39.0)
+  (var apex (player_y st))
+  (check_b out "and rises about two nodes"
+           (&& (> apex (+ ground 1.9)) (< apex (+ ground 2.3))) true)
+  (run st w r 0.0 0.0 false false false 60.0)
+  (check_f out "and comes back to exactly the surface"
+           (cm (player_y st)) (* 100.0 ground))
+  (check_b out "and is standing again" (on_ground? st) true)
+
+  # A ceiling two nodes above the floor: the head hits it and the rise stops.
+  # The box is 1.75 tall, so standing at 8 the head is at 9.75 and the node at
+  # y = 10 is a quarter of a node away.
+  (var w2 (flat_world r))
+  (fill_box w2 0.0 10.0 0.0 (- side 1.0) 10.0 (- side 1.0) (id_of r "t:stone"))
+  (var st2 (new_player 16.0 ground 16.0))
+  (run st2 w2 r 0.0 0.0 false false false 4.0)
+  (var peak (run_peak st2 w2 r true 40.0))
+  (check_f out "a jump under a low ceiling stops at the ceiling"
+           (cm peak) (cm (- 10.0 1.75)))
+  (check_b out "and does not end up inside it"
+           (box_blocked? w2 r (player_x st2) (player_y st2) (player_z st2))
+           false)
+  (run st2 w2 r 0.0 0.0 false false false 60.0)
+  (check_f out "and falls straight back to the floor"
+           (cm (player_y st2)) (* 100.0 ground)))
+
+# --- walls, sliding, and the world's edge ------------------------------------
+
+(fn wall_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var stone (id_of r "t:stone"))
+  (var w (flat_world r))
+  # A wall at x = 16, tall enough that nothing steps over it.
+  (fill_box w 16.0 ground 0.0 16.0 (+ ground 3.0) (- side 1.0) stone)
+
+  (var st (new_player 12.0 ground 16.0))
+  (run st w r 1.0 0.0 false false false 4.0)
+  (run st w r 1.0 0.0 false false false 120.0)
+  # The box's leading face is at x + 0.3 and may not enter the node at 16, so
+  # the furthest centre is 15.7.
+  (check_f out "walking into a wall stops flush against it"
+           (cm (player_x st)) (cm 15.7))
+  (check_b out "and never enters it"
+           (box_blocked? w r (player_x st) (player_y st) (player_z st)) false)
+
+  # Sliding: pressing into the wall *and* along it moves along it at full speed,
+  # which §7 says falls out of resolving one axis at a time. Two seconds at
+  # 4 m/s is 8 nodes, and nothing in z is in the way.
+  (var z0 (player_z st))
+  (run st w r 1.0 1.0 false false false 120.0)
+  (check_f out "and sliding along it still moves in z"
+           (cm (- (player_z st) z0)) (cm 8.0))
+  (check_f out "while x stays against the wall"
+           (cm (player_x st)) (cm 15.7))
+
+  # The edge of the loaded world is a wall for the same reason: `ignore` blocks.
+  (var w2 (flat_world r))
+  (var st2 (new_player 4.0 ground 16.0))
+  (run st2 w2 r -1.0 0.0 false false false 120.0)
+  (check_f out "the edge of the loaded world stops a player"
+           (cm (player_x st2)) (cm 0.3))
+  (check_b out "without letting them out of it"
+           (box_blocked? w2 r (player_x st2) (player_y st2) (player_z st2))
+           false))
+
+# --- climbing a ledge --------------------------------------------------------
+#
+# There is no auto-step: `PLAYER_DEFAULT_STEPHEIGHT` is 0.6 and a node is 1, so
+# a one-node ledge is climbed by jumping, in upstream and here. See the note in
+# `core/physics.gene`. What §7 says falls out of per-axis resolution is the
+# jump: Y resolves first, so a player who has cleared the ledge moves forward
+# into open air and lands on it, with no code that knows about ledges.
+
+(fn ledge_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var stone (id_of r "t:stone"))
+
+  # A raised **plateau** rather than a one-node-wide ledge. A single column is
+  # something a player climbs and immediately walks off the far side of, so a
+  # fixture made of one is measuring where the walk ended rather than whether
+  # the climb worked — which is what the first version of this check did.
+  (var w (flat_world r))
+  (fill_box w 16.0 ground 0.0 (- side 1.0) ground (- side 1.0) stone)
+  (var st (new_player 12.0 ground 16.0))
+  (run st w r 0.0 0.0 false false false 4.0)
+  (run st w r 1.0 0.0 false false false 120.0)
+  (check_f out "walking at a one-node ledge does not climb it"
+           (cm (player_y st)) (* 100.0 ground))
+  (check_f out "and stops in front of it" (cm (player_x st)) (cm 15.7))
+
+  # Jumping while walking does climb it, and that is the whole mechanism: Y
+  # resolves first, so a player who has cleared the ledge moves forward into
+  # open air. The input is then released and the player given time to land,
+  # because a held jump leaves them mid-air on whichever frame the check lands
+  # on — and a settle shorter than a full jump arc reads as "still falling".
+  (run st w r 1.0 0.0 true false false 120.0)
+  (run st w r 0.0 0.0 false false false 120.0)
+  (check_f out "jumping while walking climbs it"
+           (cm (player_y st)) (* 100.0 (+ ground 1.0)))
+  (check_b out "and the player ends up past it" (> (player_x st) 16.3) true)
+  (check_b out "and standing on it" (on_ground? st) true)
+
+  # **Two nodes is also climbable, and that follows from §7's constants rather
+  # than from a choice made here.** 6.5 m/s against 9.81 m/s^2 peaks at
+  # 6.5^2 / (2 * 9.81) = 2.15 nodes, so a two-node ledge is inside a jump and a
+  # three-node one is not. Both are asserted, because "how high can I get" is
+  # the single number a player feels most directly and it should not be able to
+  # drift without a test noticing.
+  (var w2 (flat_world r))
+  (fill_box w2 16.0 ground 0.0 (- side 1.0) (+ ground 1.0) (- side 1.0) stone)
+  (var st2 (new_player 12.0 ground 16.0))
+  (run st2 w2 r 0.0 0.0 false false false 4.0)
+  (run st2 w2 r 1.0 0.0 true false false 240.0)
+  (run st2 w2 r 0.0 0.0 false false false 120.0)
+  (check_f out "a two-node ledge is within a 2.15-node jump"
+           (cm (player_y st2)) (* 100.0 (+ ground 2.0)))
+
+  # Three is not, so it stays a wall however long the jump key is held.
+  (var w3 (flat_world r))
+  (fill_box w3 16.0 ground 0.0 (- side 1.0) (+ ground 2.0) (- side 1.0) stone)
+  (var st3 (new_player 12.0 ground 16.0))
+  (run st3 w3 r 0.0 0.0 false false false 4.0)
+  (run st3 w3 r 1.0 0.0 true false false 240.0)
+  (run st3 w3 r 0.0 0.0 false false false 120.0)
+  (check_f out "a three-node wall is not"
+           (cm (player_y st3)) (* 100.0 ground))
+  (check_f out "and the player stays in front of it"
+           (cm (player_x st3)) (cm 15.7))
+
+  # Falling past a wall does not climb it either — the failure a mishandled
+  # ground flag would produce.
+  (var w4 (flat_world r))
+  (fill_box w4 16.0 ground 0.0 16.0 (+ ground 6.0) (- side 1.0) stone)
+  (var st4 (new_player 12.0 (+ ground 12.0) 16.0))
+  (run st4 w4 r 1.0 0.0 false false false 30.0)
+  (check_b out "a falling player does not climb a wall"
+           (< (player_x st4) 15.71) true))
+
+# --- falling into a hole -----------------------------------------------------
+#
+# Deliberately its own fixture rather than a thing the tour below happens to do:
+# "walk forward until the floor stops" is the one motion a player makes without
+# meaning to, and asserting it inside a wandering tour would make the assertion
+# depend on where the tour wandered.
+
+(fn trench_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (flat_world r))
+  # Two nodes of the floor removed, all the way across.
+  (fill_box w 0.0 6.0 16.0 (- side 1.0) floor_top 17.0 content_air)
+  (var st (new_player 16.0 ground 8.0))
+  (run st w r 0.0 0.0 false false false 4.0)
+  (run st w r 0.0 1.0 false false false 240.0)
+  (check_f out "walking off the edge of the floor falls into the trench"
+           (cm (player_y st)) 600.0)
+  (check_b out "and lands standing on its floor" (on_ground? st) true)
+  (check_b out "and not inside it"
+           (box_blocked? w r (player_x st) (player_y st) (player_z st)) false)
+  # And cannot walk back out of a two-node trench without a jump.
+  (run st w r 0.0 -1.0 false false false 120.0)
+  (check_f out "and cannot walk back out of it"
+           (cm (player_y st)) 600.0))
+
+# --- water -------------------------------------------------------------------
+
+(fn water_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var stone (id_of r "t:stone"))
+  (var water (id_of r "t:water"))
+  (var w (flat_world r))
+  # A pool eight nodes deep over the floor, from y = 8 to y = 15.
+  (fill_box w 8.0 ground 8.0 23.0 (+ ground 7.0) 23.0 water)
+
+  (var st (new_player 16.0 (+ ground 6.0) 16.0))
+  (step st w r 0.0 0.0 false false false dt)
+  (check_b out "a player in water knows it" (in_liquid? st) true)
+
+  # Sinking is slow: a second of it moves 1.6 nodes, where a second of falling
+  # in air would move nearly five.
+  (var y0 (player_y st))
+  (run st w r 0.0 0.0 false false false 60.0)
+  (check_f out "and sinks slowly" (cm (- y0 (player_y st))) (cm 1.6))
+
+  # And can swim back up, from the bottom of the pool.
+  (run st w r 0.0 0.0 false false false 300.0)
+  (check_f out "and settles on the bottom" (cm (player_y st)) (* 100.0 ground))
+  (run st w r 0.0 0.0 true false false 60.0)
+  (check_f out "and swims up when it jumps"
+           (cm (- (player_y st) ground)) (cm 3.0))
+  (check_b out "and is still in the water" (in_liquid? st) true))
+
+# --- flight ------------------------------------------------------------------
+
+(fn fly_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (flat_world r))
+  (var st (new_player 16.0 ground 16.0))
+  (run st w r 0.0 0.0 false false false 4.0)
+
+  (run st w r 0.0 0.0 true false true 30.0)
+  (check_f out "flying up rises at the fly speed"
+           (cm (- (player_y st) ground)) (cm 10.0))
+  (run st w r 0.0 0.0 false false true 60.0)
+  (check_f out "and holding neither key hovers"
+           (cm (- (player_y st) ground)) (cm 10.0))
+  (run st w r 0.0 0.0 false true true 30.0)
+  (check_f out "and descending comes back down"
+           (cm (- (player_y st) ground)) 0.0)
+  (check_b out "and a flying player does not sink into the floor"
+           (box_blocked? w r (player_x st) (player_y st) (player_z st)) false))
+
+# --- the invariant -----------------------------------------------------------
+#
+# A scripted tour of a deliberately awkward world — pillars, a trench, an
+# overhang, a pool, and the world's own edges — with the input changing every
+# few frames so the player walks into corners, jumps under ceilings, and falls
+# off things.
+#
+# One assertion, checked after every single step: **the player is not inside
+# anything that blocks**. Plus a weaker one that catches the failure this genre
+# actually suffers, which is not "inside a wall" but "underneath everything":
+# the player never gets below the floor.
+#
+# The input schedule is arithmetic rather than random, because a spec that runs
+# on two backends cannot share a generator, and because a failure has to be
+# reproducible by re-running the same file.
+
+(fn awkward_world [r : Registry] : World
+  (var stone (id_of r "t:stone"))
+  (var w (flat_world r))
+  # Sixteen pillars of assorted heights on a 6-node lattice, offset so the
+  # start is between four of them rather than inside one.
+  (var i 0.0)
+  (while (< i 4.0)
+    (var j 0.0)
+    (while (< j 4.0)
+      (var px (+ 5.0 (* i 6.0)))
+      (var pz (+ 5.0 (* j 6.0)))
+      (fill_box w px ground pz px (+ ground (+ 1.0 (* 2.0 (+ i j)))) pz stone)
+      (set j (+ j 1.0)))
+    (set i (+ i 1.0)))
+  # A trench across the world, two deep and right beside the start.
+  (fill_box w 0.0 6.0 13.0 (- side 1.0) floor_top 14.0 content_air)
+  # An overhang over the start, to jump into.
+  (fill_box w 12.0 (+ ground 2.0) 12.0 22.0 (+ ground 2.0) 22.0 stone)
+  # A one-node ledge to jump onto, and a three-node wall to fail on.
+  (fill_box w 24.0 ground 0.0 24.0 ground (- side 1.0) stone)
+  (fill_box w 28.0 ground 0.0 28.0 (+ ground 2.0) (- side 1.0) stone)
+  # And water in the trench, so wading is part of the tour.
+  (fill_box w 0.0 6.0 13.0 (- side 1.0) 7.0 14.0 (id_of r "t:water"))
+  w)
+
+(fn invariant_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (awkward_world r))
+  # On the floor and under the overhang, which is clear: the box is 1.75 tall
+  # so standing at 8 puts the head at 9.75 and the overhang is at 10. Starting
+  # a node higher was the first version and it started *inside* the overhang,
+  # where every axis is blocked and the tour never moved at all — which the
+  # invariant reported as 3,600 frames inside a block, correctly.
+  (var st (new_player 16.5 ground 16.5))
+
+  (var inside 0.0)
+  (var below 0.0)
+  (var travelled 0.0)
+  (var frames 3600.0)               # a minute at sixty a second
+  (var f 0.0)
+  (while (< f frames)
+    # Eight compass directions, each held for 97 frames — about six nodes of
+    # walking, so the player crosses features rather than vibrating on the spot
+    # — and stepped by 3 so consecutive legs are not opposites. Jump on a
+    # 23-frame cycle, which shares no factor with 97.
+    (var leg ($math/floor (/ f 97.0)))
+    (var dir (- (* leg 3.0) (* 8.0 ($math/floor (/ (* leg 3.0) 8.0)))))
+    (var wish_x (if (|| (|| (== dir 7.0) (== dir 0.0)) (== dir 1.0)) 1.0
+                  (if (|| (|| (== dir 3.0) (== dir 4.0)) (== dir 5.0)) -1.0 0.0)))
+    (var wish_z (if (|| (|| (== dir 1.0) (== dir 2.0)) (== dir 3.0)) 1.0
+                  (if (|| (|| (== dir 5.0) (== dir 6.0)) (== dir 7.0)) -1.0 0.0)))
+    (var jump (== (- (/ f 23.0) ($math/floor (/ f 23.0))) 0.0))
+
+    (var x0 (player_x st))
+    (var y0 (player_y st))
+    (var z0 (player_z st))
+    (step st w r wish_x wish_z jump false false dt)
+    (set travelled
+         (+ travelled (+ (abs_f64 (- (player_x st) x0))
+                         (+ (abs_f64 (- (player_y st) y0))
+                            (abs_f64 (- (player_z st) z0))))))
+
+    (if_yes (box_blocked? w r (player_x st) (player_y st) (player_z st))
+      (set inside (+ inside 1.0)))
+    (if_yes (< (player_y st) (world_min_y w))
+      (set below (+ below 1.0)))
+    (set f (+ f 1.0)))
+
+  (check_f out "over 3600 frames of an awkward world, never inside a block"
+           inside 0.0)
+  (check_f out "and never below the world" below 0.0)
+  # Sixty seconds at 4 m/s is 240 nodes if nothing is ever in the way, so a
+  # hundred says the tour was a tour. Without it, a resolver that refused every
+  # move would pass the two checks above perfectly.
+  (check_b out "and the tour actually went somewhere"
+           (> travelled 100.0) true))
+
+# --- placing a player --------------------------------------------------------
+
+(fn drop_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (flat_world r))
+  (check_f out "drop_to_free finds the surface from inside the floor"
+           (cm (drop_to_free w r 16.0 2.0 16.0 64.0)) (* 100.0 ground))
+  (check_f out "and leaves a clear position alone"
+           (cm (drop_to_free w r 16.0 20.0 16.0 64.0)) 2000.0))
+
+# --- the report --------------------------------------------------------------
+
+(fn collect [out : (List Str)] : Nil
+  (falling_checks out)
+  (jump_checks out)
+  (wall_checks out)
+  (ledge_checks out)
+  (trench_checks out)
+  (water_checks out)
+  (fly_checks out)
+  (drop_checks out)
+  (invariant_checks out))
+
+(fn report [] : Str
+  (var out : (List Str) [])
+  (collect out)
+  ($str/join out "\n"))
+
+(fn failures [] : F64
+  (var out : (List Str) [])
+  (collect out)
+  (var bad 0.0)
+  (var i 0.0)
+  (var n (out ~ size))
+  (while (< i n)
+    (if_yes ($str/starts_with? out/%i "FAIL")
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)
