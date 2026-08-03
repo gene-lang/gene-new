@@ -1,0 +1,20 @@
+# The VM shell for the selection-and-edit spec.
+#
+#   gene run edit_spec
+#
+# Pair with `node tools/edit_spec.mjs` and diff: the two must agree exactly.
+# §7.1 runs this on both sides — the client predicts an edit and the server
+# applies the same one — so a difference here is the prediction and the
+# authority disagreeing about what a click did.
+
+(mod run_edit_spec)
+
+(import [report failures] from "./edit_spec.gene")
+
+(fn main [args] : Nil
+  ($println (report))
+  (var bad (failures))
+  ($println "")
+  (if (== bad 0.0)
+    (then ($println "PASS — every check agrees"))
+    (else ($println $"FAIL — ${bad} check(s) failed"))))

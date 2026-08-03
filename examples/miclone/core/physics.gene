@@ -332,6 +332,20 @@
     (if_yes (!= sz 0.0) (resolve_axis st w reg axis_z sz))
     (set i (+ i 1.0))))
 
+# Does the player's box overlap the node cell at `(nx, ny, nz)`?
+#
+# §7.1's client-side rejection needs this: placing a node inside yourself is
+# legal by every other test — the target is air, it is in reach, it is in the
+# world — and leaves the player embedded in it. Asked of a cell rather than of
+# the world, because the node in question does not exist yet.
+(fn box_overlaps_node? [st : (Buffer F64) nx : F64 ny : F64 nz : F64] : Bool
+  (var x (st ~ get p_x))
+  (var y (st ~ get p_y))
+  (var z (st ~ get p_z))
+  (&& (&& (&& (> (+ x half_width) nx) (< (- x half_width) (+ nx 1.0)))
+          (&& (> (+ y player_height) ny) (< y (+ ny 1.0))))
+      (&& (> (+ z half_width) nz) (< (- z half_width) (+ nz 1.0)))))
+
 # --- placing a player --------------------------------------------------------
 
 # The lowest position at or above `y` where the box fits, or `y` itself if there

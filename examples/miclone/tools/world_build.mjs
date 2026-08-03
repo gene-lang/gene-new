@@ -22,7 +22,7 @@ import { count_faces, build_mesh } from "../dist/mesh.mjs";
 import { new_registry, id_of, registered_count } from "../dist/registry.mjs";
 import { setup_nodes, setup_biomes, setup_ores } from "../dist/content.mjs";
 import {
-  new_world, store_block, block_base, open_sky, node_at, light_at,
+  new_world, store_block, block_base, open_sky, node_at, light_at, set_node,
   world_dx, world_dy, world_dz, world_stride_z, world_nodes,
 } from "../dist/loaded.mjs";
 import { day_of } from "../dist/light.mjs";
@@ -30,6 +30,14 @@ import {
   new_player, step, player_x, player_y, player_z,
   on_ground$q, box_blocked$q,
 } from "../dist/physics.mjs";
+import {
+  new_hit, cast, hit$q, hit_x, hit_y, hit_z, before_x, before_y, before_z,
+} from "../dist/raycast.mjs";
+import {
+  new_bounds, apply_node, diggable$q, placeable$q,
+  bounds_min_x, bounds_min_y, bounds_min_z,
+  bounds_max_x, bounds_max_y, bounds_max_z,
+} from "../dist/edit.mjs";
 
 const SEED = 1337;
 const BLOCK = 16;
@@ -228,10 +236,116 @@ if (travelled < 200) {
   bad++;
 }
 
+// --- editing the real world --------------------------------------------------
+//
+// probes/edit_spec.gene proves an incremental relight equals a full one on a
+// hand-built fixture. This asks the same question of §3's terrain, where the
+// light is a real sky over a real heightfield with caves under it — and reports
+// what an edit costs, which is the number a player feels.
+
+const editQueue = new Float32Array(world_nodes(world) + QUEUE_OVERHEAD);
+const editSeed = new Float32Array(world_nodes(world) + QUEUE_OVERHEAD);
+const bounds = new_bounds();
+const AIR_ID = AIR;
+const LAMP = id_of(reg, "miclone:lamp");
+
+// A shaft straight down from the surface, then a lamp at the bottom of it:
+// the two edits with the largest and the most awkward consequences. The shaft
+// carries daylight down with it at every step, and the lamp lights a ball in a
+// place that has never had light.
+const editX = Math.floor(SPAWN_X), editZ = Math.floor(SPAWN_Z);
+const edits = [];
+for (let d = 0; d < 12; d++) edits.push([editX, spawnY - 1 - d, editZ, AIR_ID]);
+edits.push([editX, spawnY - 12, editZ, LAMP]);
+
+let editTotal = 0, worstEdit = 0, chunkTotal = 0, worstChunks = 0;
+for (const [ex, ey, ez, id] of edits) {
+  const t = performance.now();
+  apply_node(world, reg, ex, ey, ez, id, sky, editQueue, editSeed, bounds);
+  const ms = performance.now() - t;
+  // The chunks the caller would have to remesh, counted the way client/main
+  // counts them.
+  const cLo = (v, o) => Math.max(0, Math.floor((v - o * BLOCK) / BLOCK));
+  const cHi = (v, o, span) =>
+    Math.min(span - 1, Math.floor((v - o * BLOCK) / BLOCK));
+  const nChunks =
+    (cHi(bounds_max_x(bounds), ORIGIN_BX, SPAN_X) - cLo(bounds_min_x(bounds), ORIGIN_BX) + 1) *
+    (cHi(bounds_max_y(bounds), ORIGIN_BY, SPAN_Y) - cLo(bounds_min_y(bounds), ORIGIN_BY) + 1) *
+    (cHi(bounds_max_z(bounds), ORIGIN_BZ, SPAN_Z) - cLo(bounds_min_z(bounds), ORIGIN_BZ) + 1);
+  editTotal += ms;
+  worstEdit = Math.max(worstEdit, ms);
+  chunkTotal += nChunks;
+  worstChunks = Math.max(worstChunks, nChunks);
+}
+
+// The property, against §3's terrain: the same world, generated fresh, with the
+// same nodes set and lit from zero, must agree node for node.
+const check = new_world(ORIGIN_BX, ORIGIN_BY, ORIGIN_BZ, SPAN_X, SPAN_Y, SPAN_Z);
+for (let cz = 0; cz < SPAN_Z; cz++)
+  for (let cy = 0; cy < SPAN_Y; cy++)
+    for (let cx = 0; cx < SPAN_X; cx++) {
+      const bx = ORIGIN_BX + cx, by = ORIGIN_BY + cy, bz = ORIGIN_BZ + cz;
+      generate_block(block, blockSky, bx * BLOCK, by * BLOCK, bz * BLOCK,
+                     biomes, ores, SEED, AIR, WATER);
+      store_block(check, bx, by, bz, block);
+    }
+for (const [ex, ey, ez, id] of edits) set_node(check, ex, ey, ez, id);
+light_region(check.light, check.content, DX, DY, DZ, reg, sky,
+             new Float32Array(world_nodes(check) + QUEUE_OVERHEAD), REGISTERED);
+
+let lightDiff = 0, nodeDiff = 0;
+for (let i = 0; i < world.light.length; i++) {
+  if (world.light[i] !== check.light[i]) lightDiff++;
+  if (world.content[i] !== check.content[i]) nodeDiff++;
+}
+
+// The client's own path, minus the DOM: cast from the eye, ask whether the
+// node may be dug, apply. Straight down, so the answer is derivable — the node
+// under the player's feet — and five in a row, so the player is standing on a
+// hole they made and the cast has to keep finding its floor.
+const aim = new_hit();
+let castDug = 0, castWrong = 0;
+for (let i = 0; i < 5; i++) {
+  const px = player_x(player), py = player_y(player), pz = player_z(player);
+  cast(world, reg, aim, px, py + 1.625, pz, 0, -1, 0, 5);
+  if (!hit$q(aim)) break;
+  if (hit_x(aim) !== Math.floor(px) || hit_z(aim) !== Math.floor(pz)) castWrong++;
+  if (!diggable$q(world, reg, hit_x(aim), hit_y(aim), hit_z(aim))) break;
+  apply_node(world, reg, hit_x(aim), hit_y(aim), hit_z(aim), AIR_ID,
+             sky, editQueue, editSeed, bounds);
+  if (node_at(world, hit_x(aim), hit_y(aim), hit_z(aim)) !== AIR_ID) castWrong++;
+  castDug++;
+  // Let the player fall into the hole, as they would on screen.
+  for (let f = 0; f < 30; f++) step(player, world, reg, 0, 0, false, false, false, DT);
+}
+if (castDug !== 5 || castWrong !== 0) {
+  console.log(`FAIL — dig path: dug ${castDug} of 5 nodes by raycast, ` +
+    `${castWrong} landed somewhere unexpected`);
+  bad++;
+}
+
+console.log("");
+console.log(`  dig by ray    ${castDug} nodes straight down, each the node ` +
+  `under the player`);
+console.log(`  edits         ${edits.length} (a 12-node shaft and a lamp): ` +
+  `${editTotal.toFixed(2)} ms total, worst ${worstEdit.toFixed(2)} ms`);
+console.log(`  remesh scope  ${(chunkTotal / edits.length).toFixed(1)} chunks ` +
+  `per edit on average, worst ${worstChunks}`);
+if (nodeDiff !== 0) {
+  console.log(`FAIL — edit: ${nodeDiff} nodes differ from a freshly built world`);
+  bad++;
+}
+if (lightDiff !== 0) {
+  console.log(`FAIL — edit: incremental relight differs from a full relight ` +
+    `at ${lightDiff} nodes`);
+  bad++;
+}
+
 console.log("");
 console.log(bad === 0
   ? `PASS — shell intact, daylight crosses block boundaries ` +
-    `(${crossings}/${sampled} columns), and ${FRAMES} frames of walking never ` +
-    `left the world or entered a block`
+    `(${crossings}/${sampled} columns), ${FRAMES} frames of walking never ` +
+    `left the world or entered a block, and ${edits.length} edits relit the ` +
+    `world exactly as a full relight would`
   : `FAIL — ${bad} invariant(s) broken`);
 if (bad !== 0) process.exit(1);

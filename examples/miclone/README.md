@@ -4,9 +4,10 @@ A voxel game engine with [Luanti](https://github.com/luanti-org/luanti)'s
 architecture, written in Gene, whose mod language is Gene.
 
 **Status: M0 through M4, and M5 in progress — a generated, lit world you can
-walk around in: the client keeps it in memory as a single array (§1.1), lights
-all of it at once (§4.2), and stands a player on it with gravity, jumping,
-swimming, and a fly toggle (§7). Digging and inventory are next.** Read
+walk around in and change: the client keeps it in memory as a single array
+(§1.1), lights all of it at once (§4.2), stands a player on it with gravity,
+jumping, swimming and a fly toggle (§7), and lets them dig and build (§7.1).
+Inventory is next.** Read
 [`docs/design.md`](docs/design.md) first — Part I is the direction and the
 decisions, and §D2 is the constraint that shaped the rest.
 
@@ -79,6 +80,8 @@ core/       portable Gene — compiles for the VM and the web profile
   mesh.gene     face-culled meshing (§5)
   loaded.gene   the client's loaded world: one array, one shell (§1.1)
   physics.gene  the player box against the voxel grid (§7)
+  raycast.gene  Amanatides-Woo node selection (§7)
+  edit.gene     one node changes, and what that invalidates (§7.1)
   content.gene  the provisional node/biome/ore set — M7 replaces this with a mod
 server/     VM only: the on-disk block format and the SQLite world store (§11)
 client/     the browser shell: WebGL2 renderer, atlas, camera
@@ -98,7 +101,8 @@ module with a shell per backend rather than one module with a conditional.
 cd examples/miclone
 for m in core/exact core/noise core/field core/world core/registry \
          core/biome core/cave core/ore core/content core/mapgen \
-         core/light core/mesh core/loaded core/physics core/vec \
+         core/light core/mesh core/loaded core/physics core/raycast \
+         core/edit core/vec \
          client/atlas client/render client/main; do
   gene build --target web $m.gene --out-dir dist
 done
@@ -121,7 +125,12 @@ meshing 229 non-empty chunks into 62,395 faces. Two faces fewer per border chunk
 than M3, because the world's edge now hides its outward faces against the shell
 rather than against terrain that was generated only to be looked at once.
 
-It then walks a player over the real generated terrain for two minutes at
+An edit costs **0.40 ms at worst** and names **9.2 chunks** to rebuild on
+average — the region is much larger than the node, because a dig in daylight
+sends light fifteen nodes in every direction and down the shaft it opened
+(§7.1). Thirteen edits relight the world exactly as a full relight would.
+
+It also walks a player over the real generated terrain for two minutes at
 **1.6 us per physics step**, asserting on every frame that the player is not
 inside a block and has not left the world. That is the check a fixture spec
 cannot make — §7's spec has the derivable numbers, and this has the cave mouths,
@@ -150,6 +159,7 @@ gene run mapgen_spec | diff - <(node tools/mapgen_spec.mjs)   # §3, §5, §14
 gene run light_spec  | diff - <(node tools/light_spec.mjs)    # §4
 gene run loaded_spec | diff - <(node tools/loaded_spec.mjs)   # §1.1, §4.2
 gene run physics_spec | diff - <(node tools/physics_spec.mjs) # §7
+gene run edit_spec   | diff - <(node tools/edit_spec.mjs)     # §7, §7.1
 ```
 
 ### §11 — persistence

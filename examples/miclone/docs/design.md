@@ -1681,6 +1681,69 @@ result", which is a legitimate choice and simpler. We take the harder one
 because M6 is a WebSocket away from the player rather than a LAN UDP socket,
 and because rollback is bounded to one node and one block remesh.
 
+#### M5 — what was built
+
+`core/raycast.gene`, `core/edit.gene`, `probes/edit_spec.gene`, and the client
+digging and building. M5 is in-process singleplayer, so the three-step dance
+collapses exactly as this section predicted: there is no round trip to hide,
+the edit *is* the prediction, and reconciliation agrees on the same frame. What
+survives is **step 1** — the questions a client answers by itself: is there
+anything there, may I build here, is it in reach, and would I be placing a node
+inside myself.
+
+**"rollback is bounded to one node and one block remesh" is the one sentence
+above that M5 has to correct.** One node, yes. One block, no: changing a node
+changes the *light*, and light is not local. Digging through a ceiling sends
+daylight down a shaft and out sideways at every depth of it; a lamp lights a
+ball fourteen nodes across. Whatever the caller has already turned into
+geometry over that whole volume is now wrong, and a chunk it fails to rebuild
+is a hole in the world that nothing reports.
+
+So `apply_node` returns the region it could have invalidated. `relight_node`
+does not report what it touched and should not start: the flood also runs at
+world build over 2.5M nodes (§4.2), and a coordinate decode per changed node
+belongs in neither. The region is **over-approximated from what the edit could
+reach**, for seven reads and no work in the flood:
+
+- light travels at most `light_max` from where it starts, so the box is the
+  edited node grown by the brightest light *already next to it* — 0 in unlit
+  rock, 15 at the surface;
+- except downward, where sunlight does not fall off (§4), so the box first
+  follows the column of nodes light can pass through and *then* grows.
+
+Exact where that is cheap, generous where it is not, and never wrong. Measured
+on §3's terrain: a twelve-node shaft dug down from the surface and a lamp
+placed at the bottom cost **0.60 ms for thirteen edits, worst 0.40 ms**, and
+name **9.2 chunks per edit on average, worst 12** — about 1.3 ms of remeshing,
+inside a frame.
+
+Two smaller decisions worth recording:
+
+- **Liquids are not pointable, glass is.** §5's question — is this drawn — and
+  §7's question — may this be pointed at — are different, and collapsing them
+  either lets a player dig the sea or makes glass unclickable. Upstream leaves
+  liquids unpointable for the same reason.
+- **Looking and acting share a mouse button**, because the web profile has no
+  pointer-lock binding. A drag turns the view; a click that travelled under
+  four pixels digs or places. This is a shell limitation and not a design
+  position — a pointer-lock binding (§D7) would remove it.
+
+`probes/edit_spec.gene` is 45 checks, and three of them are the file:
+
+1. **The traversal never skips.** Over 312 rays fanned across a fixture, every
+   hit is one step from the node the ray was in when it struck, on exactly one
+   axis, with the first pointable and the second not. §7 rejects a stepped
+   sample because it "misses thin nodes at grazing angles"; a stepped sample
+   passes a head-on fixture and fails this.
+2. **An edit's relight equals a full relight**, node for node, over seven edits
+   including a lamp lit and unlit in a sealed cavern. M3's property, reused.
+3. **The reported region contains every node that changed** — checked by
+   copying both arrays before the edit and comparing all 32,768 nodes after,
+   rather than by reasoning about the flood.
+
+`tools/world_build.mjs` asks 2 and 3 again of §3's real terrain, and casts and
+digs five nodes through the client's own path with the DOM removed.
+
 ## 8. Entities
 
 Server-authoritative active objects with a registry mirroring §2: an entity

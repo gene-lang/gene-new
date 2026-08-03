@@ -11,6 +11,19 @@
     color: #0d2338; background: rgba(255,255,255,.68);
     padding: 5px 9px; border-radius: 5px; pointer-events: none;
   }
+  /* The crosshair is the aim point the raycast starts from: the ray leaves the
+     eye along the view direction, so what it hits is whatever is under the
+     centre of the screen. */
+  #aim {
+    position: fixed; left: 50%; top: 50%; width: 18px; height: 18px;
+    margin: -9px 0 0 -9px; pointer-events: none; opacity: .75;
+  }
+  #aim::before, #aim::after {
+    content: ""; position: absolute; background: #0d2338;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.6);
+  }
+  #aim::before { left: 8px; top: 0; width: 2px; height: 18px; }
+  #aim::after { top: 8px; left: 0; height: 2px; width: 18px; }
   #help {
     position: fixed; left: 12px; bottom: 10px;
     font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -20,7 +33,8 @@
 </style>
 <canvas id="stage"></canvas>
 <div id="hud">building world…</div>
-<div id="help">drag to look · W A S D to walk · space to jump · shift to sneak · F to fly</div>
+<div id="aim"></div>
+<div id="help">drag to look · W A S D to walk · space to jump · shift to sneak · F to fly · click to dig · right-click to place</div>
 <script type="module">
   import { main } from "./dist/main.mjs";
   main();

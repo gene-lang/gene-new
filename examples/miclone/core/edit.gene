@@ -1,0 +1,155 @@
+# Node edits — design.md §7.1.
+#
+# One node changes, the light around it is brought back into agreement, and the
+# caller is told which part of the world stopped being what it had drawn.
+#
+# §7.1's policy is "reject locally, apply optimistically, reconcile
+# authoritatively", and this file is the first two thirds of the first clause:
+# the questions a client can answer without asking anyone — is there a node
+# there, is it diggable, may something be placed here — plus the application
+# itself, which in M5's in-process singleplayer *is* the authoritative edit.
+# §7.1: "the server call is synchronous over the in-memory channel, so the
+# prediction is the real edit and step 4 always agrees on the same frame."
+#
+# ## Why an edit has to report a region
+#
+# Changing a node changes the faces of its six neighbours, which is a box of
+# three. It also changes the **light**, and light is not local: digging through
+# a ceiling sends daylight down a shaft and out sideways at every depth, and
+# placing a lamp lights a ball fourteen nodes across. Whatever the caller has
+# already turned into geometry over that whole volume is now wrong.
+#
+# `relight_node` does not report what it touched, and making it do so would put
+# a coordinate decode inside the flood — which also runs at world build over
+# 2.5M nodes (§4.2). So the region is **over-approximated from what the edit
+# could reach**, which costs seven reads and no work in the flood at all:
+#
+#   * light travels at most `light_max` from wherever it starts, so the box is
+#     the edited node grown by the brightest light already next to it — which is
+#     0 in unlit rock, and 15 at the surface;
+#   * except downward, where sunlight does not fall off, so the box first
+#     extends down the column of nodes light can pass through and *then* grows.
+#
+# The result is exact where it is cheap to be (a dig deep underground remeshes
+# one chunk) and generous where it is not (a dig in daylight remeshes the
+# neighbourhood). What it is never is wrong, which is the property that matters:
+# a missed chunk is a hole in the world that nothing reports.
+
+(mod edit ^profile web)
+
+(import [Registry light_source_of propagates_light? drawtype_of draw_liquid]
+        from "./registry.gene")
+(import [content_air] from "./world.gene")
+(import [World node_at light_at set_node inside? world_min_y
+         world_dx world_dy world_dz array_x array_y array_z]
+        from "./loaded.gene")
+(import [relight_node day_of night_of light_max] from "./light.gene")
+(import [pointable?] from "./raycast.gene")
+
+# --- what an edit is allowed to do -------------------------------------------
+
+# What a placement may overwrite: air, and liquids. Upstream calls this
+# `buildable_to` and puts it in the node definition, which is where it belongs
+# once §2's registry has a column for it (M7's `register_node`); until then a
+# drawtype is enough to say it.
+(fn replaceable? [reg : Registry id : F64] : Bool
+  (|| (== id content_air) (== (drawtype_of reg id) draw_liquid)))
+
+# §7.1 step 1, answered with no round trip: out of the world, or nothing there
+# to dig.
+(fn diggable? [w : World reg : Registry nx : F64 ny : F64 nz : F64] : Bool
+  (&& (inside? w nx ny nz) (pointable? reg (node_at w nx ny nz))))
+
+(fn placeable? [w : World reg : Registry nx : F64 ny : F64 nz : F64] : Bool
+  (&& (inside? w nx ny nz) (replaceable? reg (node_at w nx ny nz))))
+
+# --- the region an edit invalidates ------------------------------------------
+
+(let b_min_x 0.0)
+(let b_min_y 1.0)
+(let b_min_z 2.0)
+(let b_max_x 3.0)
+(let b_max_y 4.0)
+(let b_max_z 5.0)
+(let b_cells 6.0)
+
+(fn new_bounds [] : (Buffer F64)
+  ($buffer F64 b_cells))
+
+(fn bounds_min_x [b : (Buffer F64)] : F64 (b ~ get b_min_x))
+(fn bounds_min_y [b : (Buffer F64)] : F64 (b ~ get b_min_y))
+(fn bounds_min_z [b : (Buffer F64)] : F64 (b ~ get b_min_z))
+(fn bounds_max_x [b : (Buffer F64)] : F64 (b ~ get b_max_x))
+(fn bounds_max_y [b : (Buffer F64)] : F64 (b ~ get b_max_y))
+(fn bounds_max_z [b : (Buffer F64)] : F64 (b ~ get b_max_z))
+
+# The brightest either channel is at the node or any of its six neighbours. An
+# edit cannot move more light than was already there to move, so this is the
+# radius its consequences fit inside — and it is 0 in dark rock, which is what
+# makes a deep dig cheap.
+(fn brightest_around [w : World nx : F64 ny : F64 nz : F64] : F64
+  (var best 0.0)
+  (var i 0.0)
+  (while (< i 7.0)
+    (var x (+ nx (if (== i 1.0) -1.0 (if (== i 2.0) 1.0 0.0))))
+    (var y (+ ny (if (== i 3.0) -1.0 (if (== i 4.0) 1.0 0.0))))
+    (var z (+ nz (if (== i 5.0) -1.0 (if (== i 6.0) 1.0 0.0))))
+    (var p (light_at w x y z))
+    (var d (day_of p))
+    (var n (night_of p))
+    (if_yes (> d best) (set best d))
+    (if_yes (> n best) (set best n))
+    (set i (+ i 1.0)))
+  best)
+
+# How far down light can reach from this column. Sunlight travels down at full
+# strength through anything that admits it (§4), so a dig that opens a shaft
+# changes the light at its floor however deep that is — and a placement that
+# shadows one takes it away over the same distance.
+#
+# Run *after* the edit: for a dig it walks the column now open, and for a
+# placement it walks the column now shadowed, which are the same scan.
+(fn open_below [w : World reg : Registry nx : F64 ny : F64 nz : F64] : F64
+  (var y ny)
+  (var bottom (world_min_y w))
+  (var live true)
+  (while (&& live (> y bottom))
+    (if (propagates_light? reg (node_at w nx (- y 1.0) nz))
+      (then (set y (- y 1.0)))
+      (else (set live false))))
+  y)
+
+# --- applying one ------------------------------------------------------------
+
+# Set the node, bring the light back into agreement, and fill `bounds` with the
+# region whose geometry the caller must rebuild.
+#
+# `sky`, `q`, and `q_seed` are §4's scratch, owned by the caller for the reason
+# §4 gives — a loader allocates once rather than per edit. `sky` is the same
+# per-column boundary `light_region` takes and is only read for a node at the
+# very top of the array, which `inside?` already excludes; it is passed so that
+# this calls `relight_node` rather than a special case of it.
+(fn apply_node [w : World reg : Registry nx : F64 ny : F64 nz : F64 id : F64
+                sky : (Buffer F32) q : (Buffer F32) q_seed : (Buffer F32)
+                bounds : (Buffer F64)] : Nil
+  # Before: the light already here is what the edit can redistribute. After:
+  # what the new node emits, which nothing around it has yet.
+  (var reach ($math/max (brightest_around w nx ny nz)
+                        (light_source_of reg id)))
+  (if_yes (> reach light_max) (set reach light_max))
+
+  (set_node w nx ny nz id)
+  # §4.2's region is the whole loaded array, so the relight is in array
+  # coordinates and its flood is free to cross block borders.
+  (relight_node w/light w/content
+                (world_dx w) (world_dy w) (world_dz w) reg
+                (array_x w nx) (array_y w ny) (array_z w nz)
+                sky q q_seed)
+
+  (var deep (open_below w reg nx ny nz))
+  (bounds ~ set! b_min_x (- nx reach))
+  (bounds ~ set! b_max_x (+ nx reach))
+  (bounds ~ set! b_min_z (- nz reach))
+  (bounds ~ set! b_max_z (+ nz reach))
+  (bounds ~ set! b_max_y (+ ny reach))
+  (bounds ~ set! b_min_y (- deep reach)))

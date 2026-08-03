@@ -1,0 +1,401 @@
+# Cross-backend spec for node selection and node edits — design.md §7, §7.1,
+# and §14 layers 1 and 2.
+#
+# Two subjects, one file, because neither is much use without the other: a
+# raycast that names a node nobody can dig, and an edit applied to a node nobody
+# could have pointed at.
+#
+# Three of the checks here are properties rather than values, and they are the
+# ones worth reading:
+#
+#   * **the traversal never skips.** Every hit must be one step from the node the
+#     ray was in when it struck, on exactly one axis, with the first pointable
+#     and the second not. Cast over a few hundred directions, that says the
+#     traversal is a traversal — a stepped sample passes a head-on fixture and
+#     fails this at a grazing angle, which is §7's stated complaint.
+#   * **an edit's relight equals a full relight**, node for node. M3 found three
+#     lighting bugs with the same property and none of them would have shown up
+#     in a table of expected values.
+#   * **the reported region contains every node that changed.** This is the one
+#     that stands between a dig and a hole in the world: the caller remeshes the
+#     region and nothing else, so a node that changed outside it keeps its old
+#     geometry forever and nothing reports it.
+
+(mod edit_spec ^profile web)
+
+(import [Registry new_registry register_uniform id_of registered_count
+         draw_normal draw_liquid draw_glasslike]
+        from "../core/registry.gene")
+(import [content_air] from "../core/world.gene")
+(import [World new_world set_node node_at light_at inside?
+         world_dx world_dy world_dz world_nodes open_sky]
+        from "../core/loaded.gene")
+(import [new_hit cast hit? hit_x hit_y hit_z before_x before_y before_z
+         hit_distance pointable?]
+        from "../core/raycast.gene")
+(import [new_bounds apply_node diggable? placeable? replaceable?
+         bounds_min_x bounds_min_y bounds_min_z
+         bounds_max_x bounds_max_y bounds_max_z]
+        from "../core/edit.gene")
+(import [light_region queue_overhead day_of night_of] from "../core/light.gene")
+
+# --- reporting ---------------------------------------------------------------
+
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out ~ push! $"ok   ${label}"))
+    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label $"$($to_int got)" $"$($to_int want)"))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
+
+# --- the fixture world -------------------------------------------------------
+#
+# 2x2x2 blocks — 32 nodes on a side — with a floor, a hill on it, a sealed
+# cavern under the floor, a pool, and a pane of glass. Enough shapes that an
+# edit has somewhere dark to open onto and somewhere lit to close off, which is
+# what the light properties below need in order to be about anything.
+
+(let side 32.0)
+(let floor_top 11.0)
+(let ground 12.0)
+
+(fn fixture_registry [] : Registry
+  (var r (new_registry))
+  (register_uniform r "t:stone" draw_normal true true false 0.0 0.0)
+  (register_uniform r "t:glass" draw_glasslike true false true 0.0 1.0)
+  (register_uniform r "t:water" draw_liquid false true true 0.0 2.0)
+  (register_uniform r "t:lamp" draw_normal true true false 14.0 3.0)
+  r)
+
+(fn fill_box [w : World x0 : F64 y0 : F64 z0 : F64
+              x1 : F64 y1 : F64 z1 : F64 id : F64] : Nil
+  (var z z0)
+  (while (<= z z1)
+    (var y y0)
+    (while (<= y y1)
+      (var x x0)
+      (while (<= x x1)
+        (set_node w x y z id)
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
+# Built the same way every time it is called, because two of the checks below
+# compare a world that was edited against one that was not.
+(fn fixture_world [r : Registry] : World
+  (var w (new_world 0.0 0.0 0.0 2.0 2.0 2.0))
+  (var stone (id_of r "t:stone"))
+  (fill_box w 0.0 0.0 0.0 (- side 1.0) floor_top (- side 1.0) stone)
+  # A hill, four nodes tall, in one corner of the floor.
+  (fill_box w 4.0 ground 4.0 11.0 (+ ground 3.0) 11.0 stone)
+  # A sealed cavern, well under the floor, so an edit into its roof is an edit
+  # that opens daylight onto somewhere that has never had any.
+  (fill_box w 16.0 4.0 16.0 26.0 8.0 26.0 content_air)
+  # A pool set into the floor.
+  (fill_box w 20.0 (- ground 2.0) 4.0 26.0 (- ground 1.0) 10.0
+            (id_of r "t:water"))
+  # And a pane of glass standing on the floor.
+  (fill_box w 14.0 ground 20.0 14.0 (+ ground 2.0) 22.0 (id_of r "t:glass"))
+  w)
+
+(fn light_world [r : Registry w : World] : Nil
+  (var sky ($buffer F32 (* (world_dx w) (world_dz w))))
+  (open_sky w sky)
+  (var q ($buffer F32 (+ (world_nodes w) queue_overhead)))
+  (light_region w/light w/content (world_dx w) (world_dy w) (world_dz w)
+                r sky q (registered_count r)))
+
+(fn lit_fixture [r : Registry] : World
+  (var w (fixture_world r))
+  (light_world r w)
+  w)
+
+# --- raycast: the cases anyone would think of --------------------------------
+
+(fn cast_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (lit_fixture r))
+  (var h (new_hit))
+
+  # Straight down onto the floor from well above it.
+  (cast w r h 2.5 24.0 2.5  0.0 -1.0 0.0  32.0)
+  (check_b out "looking down finds the floor" (hit? h) true)
+  (check_f out "at the top node of it" (hit_y h) floor_top)
+  (check_f out "and the node above it is where a placement goes"
+           (before_y h) ground)
+  (check_f out "with x unchanged" (hit_x h) 2.0)
+  (check_f out "and the distance is how far it fell"
+           ($math/round (hit_distance h)) 12.0)
+
+  # Straight at the side of the hill.
+  (cast w r h 1.5 (+ ground 1.0) 6.5  1.0 0.0 0.0  16.0)
+  (check_b out "looking sideways finds the hill" (hit? h) true)
+  (check_f out "at its near face" (hit_x h) 4.0)
+  (check_f out "with the empty node before it" (before_x h) 3.0)
+
+  # Into the sky: a miss is a result.
+  (cast w r h 2.5 24.0 2.5  0.0 1.0 0.0  32.0)
+  (check_b out "looking up finds nothing" (hit? h) false)
+
+  # Out of reach: the floor is 12 below and the reach is 4.
+  (cast w r h 2.5 24.0 2.5  0.0 -1.0 0.0  4.0)
+  (check_b out "and neither does a short reach" (hit? h) false)
+
+  # Water is drawn but not pointable, so a ray through the pool reaches the
+  # floor under it rather than stopping at the surface.
+  (cast w r h 22.5 24.0 6.5  0.0 -1.0 0.0  32.0)
+  (check_b out "a liquid is not pointable" (hit? h) true)
+  (check_f out "so the ray goes through it to the floor"
+           (hit_y h) (- ground 3.0))
+
+  # Glass is drawn and *is* pointable — the distinction §5 needs for meshing is
+  # not the one §7 needs for pointing, and this is the check that says so.
+  (cast w r h 10.0 (+ ground 1.0) 21.5  1.0 0.0 0.0  16.0)
+  (check_b out "glass is pointable" (hit? h) true)
+  (check_f out "at the pane" (hit_x h) 14.0))
+
+# --- raycast: the property ---------------------------------------------------
+#
+# §7 rejects a stepped sample because "stepping misses thin nodes at grazing
+# angles". The fixture above would not catch that: every one of those rays is
+# axis-aligned and hits a thick wall head on. So this casts a few hundred rays
+# over a fan of directions and asserts what a traversal guarantees and a sampler
+# does not — **every hit is one step from the node the ray was in**, on exactly
+# one axis, with the first pointable and the second not.
+#
+# The directions are arithmetic rather than random: a spec that runs on two
+# backends cannot share a generator.
+
+(fn fan_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (lit_fixture r))
+  (var h (new_hit))
+
+  (var hits 0.0)
+  (var not_adjacent 0.0)
+  (var wrong_pointable 0.0)
+  (var before_pointable 0.0)
+
+  # From a point above the hill, sweeping a full turn of yaw and a range of
+  # pitch — so most rays graze the hill's corners and edges, which is exactly
+  # where a stepped sample skips a node.
+  (var i 0.0)
+  (while (< i 24.0)
+    (var yaw (* i 0.2617993877991494))          # 2*pi / 24
+    (var j 0.0)
+    (while (< j 13.0)
+      # Steeply downward, from straight down to about 11 degrees off it. Not
+      # taste: this world is 32 nodes across and the eye is 5 above the floor,
+      # so a ray shallower than about 12 degrees leaves the world before it
+      # reaches anything, and a fan made of misses asserts nothing. Every one of
+      # these is still off-axis in two dimensions, which is what makes it graze
+      # node corners — the case §7 says a stepped sample drops.
+      (var pitch (- (* j 0.1) 1.4))
+      (var cp ($math/cos pitch))
+      (var dx (* cp ($math/sin yaw)))
+      (var dy ($math/sin pitch))
+      (var dz (* cp ($math/cos yaw)))
+      (cast w r h 8.37 (+ ground 5.0) 8.63  dx dy dz  48.0)
+      (if_yes (hit? h)
+        (set hits (+ hits 1.0))
+        (var d (+ (abs_f (- (hit_x h) (before_x h)))
+                  (+ (abs_f (- (hit_y h) (before_y h)))
+                     (abs_f (- (hit_z h) (before_z h))))))
+        (if_yes (!= d 1.0) (set not_adjacent (+ not_adjacent 1.0)))
+        (if_not (pointable? r (node_at w (hit_x h) (hit_y h) (hit_z h)))
+          (set wrong_pointable (+ wrong_pointable 1.0)))
+        (if_yes (pointable? r (node_at w (before_x h) (before_y h)
+                                       (before_z h)))
+          (set before_pointable (+ before_pointable 1.0))))
+      (set j (+ j 1.0)))
+    (set i (+ i 1.0)))
+
+  # The fan must actually hit things, or the three properties below are true of
+  # nothing at all.
+  (check_b out "the fan of 312 rays mostly hits something"
+           (> hits 200.0) true)
+  (check_f out "every hit is one node from the node before it" not_adjacent 0.0)
+  (check_f out "every hit node is pointable" wrong_pointable 0.0)
+  (check_f out "and no node before a hit is" before_pointable 0.0))
+
+(fn abs_f [v : F64] : F64
+  (if (< v 0.0) (- 0.0 v) v))
+
+# --- what may be dug and placed ----------------------------------------------
+
+(fn permission_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (lit_fixture r))
+
+  (check_b out "the floor is diggable" (diggable? w r 2.0 floor_top 2.0) true)
+  (check_b out "air is not" (diggable? w r 2.0 ground 2.0) false)
+  (check_b out "water is not" (diggable? w r 22.0 (- ground 1.0) 6.0) false)
+  (check_b out "and neither is anything outside the world"
+           (diggable? w r -1.0 ground 2.0) false)
+
+  (check_b out "air may be built in" (placeable? w r 2.0 ground 2.0) true)
+  (check_b out "so may water" (placeable? w r 22.0 (- ground 1.0) 6.0) true)
+  (check_b out "stone may not" (placeable? w r 2.0 floor_top 2.0) false)
+  (check_b out "and neither may the shell"
+           (placeable? w r 2.0 ground (- side 0.0)) false)
+
+  (check_b out "glass is not replaceable" (replaceable? r (id_of r "t:glass"))
+           false)
+  (check_b out "air is" (replaceable? r content_air) true))
+
+# --- an edit relights exactly as a full relight would ------------------------
+#
+# M3's property, applied to §7.1's edit. `apply_node` runs the incremental
+# path; the comparison world is built from scratch, has the same one node set,
+# and is lit from zero. Every node of both must agree in both channels.
+
+(fn relight_matches [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var stone (id_of r "t:stone"))
+  (var lamp (id_of r "t:lamp"))
+  (var air content_air)
+
+  (edit_matches out r "digging the top of the floor" 2.0 floor_top 2.0 air)
+  (edit_matches out r "digging into the cavern's roof" 20.0 9.0 20.0 air)
+  (edit_matches out r "placing stone in open daylight" 2.0 ground 2.0 stone)
+  (edit_matches out r "placing a lamp in the cavern" 20.0 5.0 20.0 lamp)
+  (edit_matches out r "placing a lamp in daylight" 2.0 ground 2.0 lamp)
+  (edit_matches out r "digging a lamp back out" 20.0 5.0 20.0 air)
+  (edit_matches out r "digging the hill's top" 6.0 (+ ground 3.0) 6.0 air))
+
+(fn edit_matches [out : (List Str) r : Registry label : Str
+                  nx : F64 ny : F64 nz : F64 id : F64] : Nil
+  (var incremental (lit_fixture r))
+  (var sky ($buffer F32 (* (world_dx incremental) (world_dz incremental))))
+  (open_sky incremental sky)
+  (var q ($buffer F32 (+ (world_nodes incremental) queue_overhead)))
+  (var q2 ($buffer F32 (+ (world_nodes incremental) queue_overhead)))
+  (var bounds (new_bounds))
+  (apply_node incremental r nx ny nz id sky q q2 bounds)
+
+  (var full (fixture_world r))
+  (set_node full nx ny nz id)
+  (light_world r full)
+
+  (var differing 0.0)
+  (var n (world_nodes incremental))
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (!= (incremental/light ~ get i) (full/light ~ get i))
+      (set differing (+ differing 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out $"relight: ${label} matches a full relight" differing 0.0))
+
+# --- the reported region contains everything that changed --------------------
+#
+# The property the caller's correctness rests on. `apply_node` promises that a
+# node outside the region it reports is untouched; a caller that remeshes the
+# region and nothing else is only right if that holds.
+#
+# Checked by copying both arrays before the edit and comparing every node after,
+# rather than by reasoning about the flood — the same reason M3 compared against
+# a full relight instead of against expected values.
+
+(fn bounds_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var stone (id_of r "t:stone"))
+  (var lamp (id_of r "t:lamp"))
+
+  (bounds_cover out r "digging the floor into daylight" 2.0 floor_top 2.0
+                content_air)
+  (bounds_cover out r "digging into the cavern's roof" 20.0 9.0 20.0
+                content_air)
+  (bounds_cover out r "placing a lamp in the dark" 20.0 5.0 20.0 lamp)
+  (bounds_cover out r "placing stone over daylight" 2.0 ground 2.0 stone)
+  (bounds_cover out r "digging under the pool" 22.0 (- ground 3.0) 6.0
+                content_air))
+
+(fn bounds_cover [out : (List Str) r : Registry label : Str
+                  nx : F64 ny : F64 nz : F64 id : F64] : Nil
+  (var w (lit_fixture r))
+  (var n (world_nodes w))
+  (var before_c ($buffer F32 n))
+  (var before_l ($buffer F32 n))
+  (var i 0.0)
+  (while (< i n)
+    (before_c ~ set! i (w/content ~ get i))
+    (before_l ~ set! i (w/light ~ get i))
+    (set i (+ i 1.0)))
+
+  (var sky ($buffer F32 (* (world_dx w) (world_dz w))))
+  (open_sky w sky)
+  (var q ($buffer F32 (+ n queue_overhead)))
+  (var q2 ($buffer F32 (+ n queue_overhead)))
+  (var bounds (new_bounds))
+  (apply_node w r nx ny nz id sky q q2 bounds)
+
+  # Walk the world in coordinates rather than indices, because the question is
+  # about a box in space and an index cannot answer it.
+  (var outside 0.0)
+  (var changed 0.0)
+  (var lo_x (bounds_min_x bounds))
+  (var hi_x (bounds_max_x bounds))
+  (var lo_y (bounds_min_y bounds))
+  (var hi_y (bounds_max_y bounds))
+  (var lo_z (bounds_min_z bounds))
+  (var hi_z (bounds_max_z bounds))
+  (var z 0.0)
+  (while (< z side)
+    (var y 0.0)
+    (while (< y side)
+      (var x 0.0)
+      (while (< x side)
+        (var idx (world_index_of w x y z))
+        (if_yes (|| (!= (w/content ~ get idx) (before_c ~ get idx))
+                    (!= (w/light ~ get idx) (before_l ~ get idx)))
+          (set changed (+ changed 1.0))
+          (if_yes (! (&& (&& (&& (>= x lo_x) (<= x hi_x))
+                             (&& (>= y lo_y) (<= y hi_y)))
+                         (&& (>= z lo_z) (<= z hi_z))))
+            (set outside (+ outside 1.0))))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+
+  (check_f out $"bounds: ${label} changed nothing outside the region" outside 0.0)
+  # And the edit did something, or the check above is about nothing. Every one
+  # of these fixtures changes at least the node itself.
+  (check_b out $"bounds: ${label} changed something" (> changed 0.0) true))
+
+# The spec walks the world in world coordinates; `core/loaded.gene` exports the
+# index for exactly this and it is repeated here rather than imported under a
+# second name.
+(fn world_index_of [w : World x : F64 y : F64 z : F64] : F64
+  (+ (+ x 1.0) (+ (* (+ y 1.0) (world_dx w)) (* (+ z 1.0)
+                                                (* (world_dx w)
+                                                   (world_dy w))))))
+
+# --- the report --------------------------------------------------------------
+
+(fn collect [out : (List Str)] : Nil
+  (cast_checks out)
+  (fan_checks out)
+  (permission_checks out)
+  (relight_matches out)
+  (bounds_checks out))
+
+(fn report [] : Str
+  (var out : (List Str) [])
+  (collect out)
+  ($str/join out "\n"))
+
+(fn failures [] : F64
+  (var out : (List Str) [])
+  (collect out)
+  (var bad 0.0)
+  (var i 0.0)
+  (var n (out ~ size))
+  (while (< i n)
+    (if_yes ($str/starts_with? out/%i "FAIL")
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)

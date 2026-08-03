@@ -39,10 +39,16 @@
 (import [paint] from "./atlas.gene")
 (import [forward_x forward_y forward_z] from "../core/vec.gene")
 (import [new_player step player_x player_y player_z player_eye_y
-         on_ground? in_liquid? set_player_position box_blocked?]
+         on_ground? in_liquid? box_overlaps_node?]
         from "../core/physics.gene")
 (import [node_at] from "../core/loaded.gene")
-(import [solid? drawn?] from "../core/registry.gene")
+(import [drawn? name_of] from "../core/registry.gene")
+(import [new_hit cast hit? hit_x hit_y hit_z before_x before_y before_z]
+        from "../core/raycast.gene")
+(import [new_bounds apply_node diggable? placeable?
+         bounds_min_x bounds_min_y bounds_min_z
+         bounds_max_x bounds_max_y bounds_max_z]
+        from "../core/edit.gene")
 
 (let seed 1337.0)
 (let block_dim 16.0)
@@ -90,6 +96,19 @@
 
 (let floats_per_vertex 7.0)
 (let indices_per_face 6.0)
+
+# How far a player can reach to dig or place. Upstream's hand is 4 nodes; this
+# is a creative-ish loop with no tools in it yet (§D8's M5), so it is the
+# slightly longer reach a creative mode usually gets.
+(let reach 5.0)
+
+# A click is a mouse-up that did not travel far from its mouse-down. There is no
+# pointer-lock binding in the web profile, so looking is a drag and digging is a
+# click on the same button, and the only thing that separates them is this.
+(let click_slop 4.0)
+
+(fn abs_pixels [v : F64] : F64
+  (if (< v 0.0) (- 0.0 v) v))
 
 (fn main [] : Nil
   (var stage ($dom/element "stage"))
@@ -164,6 +183,10 @@
   (var sky ($buffer F32 (* wdx wdz)))
   (open_sky world sky)
   (var lq ($buffer F32 (+ (world_nodes world) queue_overhead)))
+  # The unspread pass fills a second queue while draining the first (§4), so an
+  # edit needs both. Allocated here rather than on the first dig: 10 MB inside a
+  # click handler is a visible pause.
+  (var lq_seed ($buffer F32 (+ (world_nodes world) queue_overhead)))
   (light_region world/light world/content wdx wdy wdz reg sky lq registered)
   (var t_light ($time/now))
 
@@ -182,34 +205,51 @@
   (var counts ($buffer F32 chunks))
   (var faces_total 0.0)
 
-  (var slot 0.0)
+  # Mesh one chunk out of the world array and upload it into the slot it
+  # already owns. Used once per chunk to build the world and again per chunk
+  # per edit, which is the reason it is a binding rather than the body of the
+  # loop below.
+  (var mesh_chunk : (Callback [F64 F64 F64] Void) (fn [a : F64 b : F64 c : F64] : Void void))
+  (set mesh_chunk (fn [cx : F64 cy : F64 cz : F64] : Void
+    (var slot (+ cx (+ (* cy span_x) (* cz (* span_x span_y)))))
+    (var k slot)
+    (var bx (+ origin_bx cx))
+    (var by (+ origin_by cy))
+    (var bz (+ origin_bz cz))
+    (var base (block_base world bx by bz))
+    (var faces (count_faces reg world/content base wdx wsz))
+    # `faces_total` is the HUD's, and an edit changes it either way — a dug
+    # node usually adds faces and a placed one usually hides some.
+    (set faces_total (+ (- faces_total (/ (counts ~ get k) indices_per_face))
+                        faces))
+    (counts ~ set! k (* faces indices_per_face))
+    (if_yes (> faces 0.0)
+      (var verts ($buffer F32 (* faces (* 4.0 floats_per_vertex))))
+      (var idx ($buffer U32 (* faces indices_per_face)))
+      (build_mesh reg world/content world/light verts idx base wdx wsz
+                  (* bx block_dim) (* by block_dim) (* bz block_dim))
+      (upload_chunk gl vaos/%k vbos/%k ebos/%k verts idx))))
+
   (set cz 0.0)
   (while (< cz span_z)
     (var cy 0.0)
     (while (< cy span_y)
       (var cx 0.0)
       (while (< cx span_x)
-        (var vao (new_vertex_array gl))
-        (vaos ~ push! vao)
-        (var vbo (new_buffer gl))
-        (vbos ~ push! vbo)
-        (var ebo (new_buffer gl))
-        (ebos ~ push! ebo)
+        (vaos ~ push! (new_vertex_array gl))
+        (vbos ~ push! (new_buffer gl))
+        (ebos ~ push! (new_buffer gl))
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0)))
 
-        (var base (block_base world (+ origin_bx cx) (+ origin_by cy)
-                              (+ origin_bz cz)))
-        (var faces (count_faces reg world/content base wdx wsz))
-        (if_yes (> faces 0.0)
-          (var verts ($buffer F32 (* faces (* 4.0 floats_per_vertex))))
-          (var idx ($buffer U32 (* faces indices_per_face)))
-          (build_mesh reg world/content world/light verts idx base wdx wsz
-                      (* (+ origin_bx cx) block_dim)
-                      (* (+ origin_by cy) block_dim)
-                      (* (+ origin_bz cz) block_dim))
-          (upload_chunk gl vao vbo ebo verts idx)
-          (counts ~ set! slot (* faces indices_per_face))
-          (set faces_total (+ faces_total faces)))
-        (set slot (+ slot 1.0))
+  (set cz 0.0)
+  (while (< cz span_z)
+    (var cy 0.0)
+    (while (< cy span_y)
+      (var cx 0.0)
+      (while (< cx span_x)
+        (mesh_chunk cx cy cz)
         (set cx (+ cx 1.0)))
       (set cy (+ cy 1.0)))
     (set cz (+ cz 1.0)))
@@ -249,6 +289,98 @@
   (var sneak false)
   (var flying false)
   (var dragging false)
+  (var drag_from_x 0.0)
+  (var drag_from_y 0.0)
+
+  # --- digging and placing (§7.1) --------------------------------------------
+  #
+  # In-process singleplayer, so §7.1's three-step dance collapses: there is no
+  # round trip to hide, the edit is the prediction, and reconciliation always
+  # agrees on the same frame. What survives from §7.1 is step 1 — the client
+  # answers "is there anything there", "may I build here", "is it in reach" by
+  # itself — and that is exactly what `core/edit.gene` exports.
+
+  (var hit (new_hit))
+  (var bounds (new_bounds))
+  (var stone (id_of reg "miclone:stone"))
+  (var edit_ms 0.0)
+  (var edit_chunks 0.0)
+
+  # Rebuild every chunk the last edit's region touched. The region comes from
+  # `apply_node` and is the part of the world whose light or content it could
+  # have changed — see §7.1, and note that it is much larger than the node: a
+  # dig in daylight sends light fifteen nodes in every direction and down the
+  # shaft it opened.
+  (var remesh_region : (Callback [] Void) (fn [] : Void void))
+  (set remesh_region (fn [] : Void
+    (var lo_x ($math/max 0.0 ($math/floor (/ (- (bounds_min_x bounds)
+                                                (* origin_bx block_dim))
+                                             block_dim))))
+    (var hi_x ($math/min (- span_x 1.0)
+                         ($math/floor (/ (- (bounds_max_x bounds)
+                                            (* origin_bx block_dim))
+                                         block_dim))))
+    (var lo_y ($math/max 0.0 ($math/floor (/ (- (bounds_min_y bounds)
+                                                (* origin_by block_dim))
+                                             block_dim))))
+    (var hi_y ($math/min (- span_y 1.0)
+                         ($math/floor (/ (- (bounds_max_y bounds)
+                                            (* origin_by block_dim))
+                                         block_dim))))
+    (var lo_z ($math/max 0.0 ($math/floor (/ (- (bounds_min_z bounds)
+                                                (* origin_bz block_dim))
+                                             block_dim))))
+    (var hi_z ($math/min (- span_z 1.0)
+                         ($math/floor (/ (- (bounds_max_z bounds)
+                                            (* origin_bz block_dim))
+                                         block_dim))))
+    # `rx`/`ry`/`rz` rather than `cx`/`cy`/`cz`: the profile rejects a binding
+    # that shadows one already in scope, and `main` is one scope.
+    (set edit_chunks 0.0)
+    (var rz lo_z)
+    (while (<= rz hi_z)
+      (var ry lo_y)
+      (while (<= ry hi_y)
+        (var rx lo_x)
+        (while (<= rx hi_x)
+          (mesh_chunk rx ry rz)
+          (set edit_chunks (+ edit_chunks 1.0))
+          (set rx (+ rx 1.0)))
+        (set ry (+ ry 1.0)))
+      (set rz (+ rz 1.0)))))
+
+  (var apply_edit : (Callback [F64 F64 F64 F64] Void)
+       (fn [a : F64 b : F64 c : F64 d : F64] : Void void))
+  (set apply_edit (fn [nx : F64 ny : F64 nz : F64 id : F64] : Void
+    (var t0 ($time/now))
+    (apply_node world reg nx ny nz id sky lq lq_seed bounds)
+    (remesh_region)
+    (set edit_ms (- ($time/now) t0))))
+
+  (var dig : (Callback [] Void) (fn [] : Void void))
+  (set dig (fn [] : Void
+    (cast world reg hit (player_x player) (player_eye_y player) (player_z player)
+          (forward_x yaw pitch) (forward_y yaw pitch) (forward_z yaw pitch)
+          reach)
+    (if_yes (hit? hit)
+      (if_yes (diggable? world reg (hit_x hit) (hit_y hit) (hit_z hit))
+        (apply_edit (hit_x hit) (hit_y hit) (hit_z hit) air)))))
+
+  (var place : (Callback [] Void) (fn [] : Void void))
+  (set place (fn [] : Void
+    (cast world reg hit (player_x player) (player_eye_y player) (player_z player)
+          (forward_x yaw pitch) (forward_y yaw pitch) (forward_z yaw pitch)
+          reach)
+    (if_yes (hit? hit)
+      (var nx (before_x hit))
+      (var ny (before_y hit))
+      (var nz (before_z hit))
+      # The last rejection §7.1 leaves to the client: a node placed where the
+      # player is standing is legal by every other test and leaves them inside
+      # it.
+      (if_yes (&& (placeable? world reg nx ny nz)
+                  (! (box_overlaps_node? player nx ny nz)))
+        (apply_edit nx ny nz stone)))))
 
   (var proj ($buffer F32 16.0))
   (var view ($buffer F32 16.0))
@@ -278,10 +410,24 @@
     (if_yes (== k " ") (set jump false))
     (if_yes (== k "Shift") (set sneak false))))
 
+  # Look and act share a button, because the web profile has no pointer-lock
+  # binding: a drag turns the view and a click that went nowhere is a dig or a
+  # place. `click_slop` is the whole of the distinction, and it is in pixels
+  # because that is what the mouse reports.
   ($dom/add_event_listener stage "mousedown" (fn [ev : Any] : Void
-    (set dragging true)))
+    (set dragging true)
+    (set drag_from_x ($event/client_x ev))
+    (set drag_from_y ($event/client_y ev))))
   ($dom/add_event_listener ($dom/window) "mouseup" (fn [ev : Any] : Void
+    (if_yes dragging
+      (var moved (+ (abs_pixels (- ($event/client_x ev) drag_from_x))
+                    (abs_pixels (- ($event/client_y ev) drag_from_y))))
+      (if_yes (< moved click_slop)
+        (if (== ($event/button ev) 2.0) (then (place)) (else (dig)))))
     (set dragging false)))
+  # Otherwise the right button opens a menu over the world instead of building.
+  ($dom/add_event_listener stage "contextmenu" (fn [ev : Any] : Void
+    ($dom/prevent_default ev)))
   ($dom/add_event_listener ($dom/window) "mousemove" (fn [ev : Any] : Void
     (if_yes dragging
       (set yaw (+ yaw (* ($event/movement_x ev) look_speed)))
@@ -350,7 +496,7 @@
           (if (in_liquid? player) "swimming"
             (if (on_ground? player) "walking" "falling"))))
       ($dom/set_text ($dom/element "hud")
-        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player))")
+        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player)) · last edit $($math/round edit_ms) ms over $($math/round edit_chunks) chunks")
       (set frames 0.0)
       (set fps_since now))
     ($frame/request frame)))

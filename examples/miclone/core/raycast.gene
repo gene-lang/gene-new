@@ -1,0 +1,156 @@
+# Node selection — design.md §7.
+#
+# §7: "Node selection is a voxel ray traversal (Amanatides–Woo), not a stepped
+# sample — stepping misses thin nodes at grazing angles and produces the 'can't
+# click the block I'm looking at' complaint."
+#
+# The traversal visits every node the ray passes through, in order, and never
+# skips one however shallow the crossing. It keeps one `t` per axis — the ray
+# parameter at which the next boundary on that axis is crossed — and always
+# advances the smallest, which is the whole algorithm.
+#
+# Two things a caller gets that a hit position alone would not give:
+#
+# - **The node in front of the face**, which is where a placement goes (§7.1).
+#   Deriving it from a normal is the same information, and this way the two can
+#   never disagree about which side of a face the player is on.
+# - **Nothing pointable being hit is a result, not an error.** Looking at the
+#   sky is the common case and the caller has to handle it either way.
+#
+# Results come back in a caller-supplied buffer, like every other stage here
+# (§4's `param1`, §5's vertex buffers, §7's player state): a click is not a hot
+# path, but a returned record would be the only allocating call in `core/`.
+
+(mod raycast ^profile web)
+
+(import [Registry drawn? drawtype_of draw_liquid] from "./registry.gene")
+(import [World node_at] from "./loaded.gene")
+
+# --- what can be pointed at ---------------------------------------------------
+
+# Drawn, and not liquid. Water is drawn — §5 meshes its surface — and pointing
+# at it would let a player dig the sea, which upstream also refuses by leaving
+# liquids unpointable. `ignore` is not drawn, so the edge of the loaded world is
+# already excluded and does not need naming here.
+(fn pointable? [reg : Registry id : F64] : Bool
+  (&& (drawn? reg id) (!= (drawtype_of reg id) draw_liquid)))
+
+# --- the result ---------------------------------------------------------------
+
+(let r_hit 0.0)
+(let r_x 1.0)                      # the node the ray struck
+(let r_y 2.0)
+(let r_z 3.0)
+(let r_before_x 4.0)               # the node it was in when it struck
+(let r_before_y 5.0)
+(let r_before_z 6.0)
+(let r_distance 7.0)
+(let r_cells 8.0)
+
+(fn new_hit [] : (Buffer F64)
+  ($buffer F64 r_cells))
+
+(fn hit? [h : (Buffer F64)] : Bool (== (h ~ get r_hit) 1.0))
+(fn hit_x [h : (Buffer F64)] : F64 (h ~ get r_x))
+(fn hit_y [h : (Buffer F64)] : F64 (h ~ get r_y))
+(fn hit_z [h : (Buffer F64)] : F64 (h ~ get r_z))
+(fn before_x [h : (Buffer F64)] : F64 (h ~ get r_before_x))
+(fn before_y [h : (Buffer F64)] : F64 (h ~ get r_before_y))
+(fn before_z [h : (Buffer F64)] : F64 (h ~ get r_before_z))
+(fn hit_distance [h : (Buffer F64)] : F64 (h ~ get r_distance))
+
+# --- the traversal ------------------------------------------------------------
+
+# Stands in for infinity on an axis the ray does not move along. A literal
+# infinity would work in the web profile and is not something to rely on across
+# two runtimes for a value that only ever has to be "larger than any `t` this
+# loop will reach", and `reach` is a handful of nodes.
+(let never 1.0e30)
+
+# `t` at which the ray first crosses a boundary on one axis, and how much `t`
+# each further node on that axis costs.
+(fn first_boundary [origin : F64 dir : F64] : F64
+  (if (> dir 0.0)
+    (then (/ (- (+ ($math/floor origin) 1.0) origin) dir))
+    (else
+      (if (< dir 0.0)
+        (then (/ (- origin ($math/floor origin)) (- 0.0 dir)))
+        (else never)))))
+
+(fn boundary_step [dir : F64] : F64
+  (if (== dir 0.0) never (/ 1.0 (if (< dir 0.0) (- 0.0 dir) dir))))
+
+(fn axis_step [dir : F64] : F64
+  (if (> dir 0.0) 1.0 (if (< dir 0.0) -1.0 0.0)))
+
+# Cast from `(ox, oy, oz)` along `(dx, dy, dz)` — which must be unit length, or
+# `reach` stops meaning nodes — for at most `reach` nodes of travel.
+#
+# `out` is filled either way: `hit?` is false and nothing else is meaningful, or
+# `hit?` is true and the rest is the node struck, the node the ray was in when
+# it struck, and how far along the ray that happened.
+(fn cast [w : World reg : Registry out : (Buffer F64)
+          ox : F64 oy : F64 oz : F64
+          dx : F64 dy : F64 dz : F64 reach : F64] : Nil
+  (var x ($math/floor ox))
+  (var y ($math/floor oy))
+  (var z ($math/floor oz))
+
+  (var step_x (axis_step dx))
+  (var step_y (axis_step dy))
+  (var step_z (axis_step dz))
+
+  (var t_x (first_boundary ox dx))
+  (var t_y (first_boundary oy dy))
+  (var t_z (first_boundary oz dz))
+
+  (var d_x (boundary_step dx))
+  (var d_y (boundary_step dy))
+  (var d_z (boundary_step dz))
+
+  (out ~ set! r_hit 0.0)
+  (out ~ set! r_distance 0.0)
+
+  # The node the eye is already in counts, and its "before" is itself: a caller
+  # that finds itself inside something pointable has nowhere sensible to place,
+  # and saying so is better than reporting a neighbour it never looked at.
+  (var before_x_v x)
+  (var before_y_v y)
+  (var before_z_v z)
+  (var travelled 0.0)
+  (var live true)
+
+  (while live
+    (if (pointable? reg (node_at w x y z))
+      (then
+        (out ~ set! r_hit 1.0)
+        (out ~ set! r_x x)
+        (out ~ set! r_y y)
+        (out ~ set! r_z z)
+        (out ~ set! r_before_x before_x_v)
+        (out ~ set! r_before_y before_y_v)
+        (out ~ set! r_before_z before_z_v)
+        (out ~ set! r_distance travelled)
+        (set live false))
+      (else
+        # Advance across whichever boundary comes first. The node just left is
+        # the one a placement would go into.
+        (set before_x_v x)
+        (set before_y_v y)
+        (set before_z_v z)
+        (if (&& (<= t_x t_y) (<= t_x t_z))
+          (then
+            (set travelled t_x)
+            (set x (+ x step_x))
+            (set t_x (+ t_x d_x)))
+          (else
+            (if (<= t_y t_z)
+              (then
+                (set travelled t_y)
+                (set y (+ y step_y))
+                (set t_y (+ t_y d_y)))
+              (else
+                (set travelled t_z)
+                (set z (+ z step_z))
+                (set t_z (+ t_z d_z))))))
+        (if_yes (> travelled reach) (set live false))))))
