@@ -15,7 +15,7 @@
 # nobody's machine.
 #
 # `(Buffer U8)` is what both have. The VM converts at the socket boundary and
-# nowhere else — `(buf ~ to_bytes)` on the way out, `($binary/to_buffer bytes)`
+# nowhere else — `buf/~to_bytes` on the way out, `($binary/to_buffer bytes)`
 # on the way in — which is two calls per message against a codec that runs
 # thousands of times inside one.
 #
@@ -88,14 +88,14 @@
 # **`Buffer/len` does not have the same type on both backends**, and this is the
 # wrapper that hides it. The VM answers an `Int`; the web profile's underlying
 # `.length` is a `number`, which is `F64`. Arithmetic coerces on both, so using
-# a length as an *operand* — `(- (b ~ len) x)` — works either way. Using it as a
+# a length as an *operand* — `(- b/~len x)` — works either way. Using it as a
 # *value* does not, and fails on whichever backend you did not try.
 #
 # **`$to_float` cannot fix it**, which is the part worth knowing. On the VM it
 # accepts "Int or Float" and is total on numbers; the web profile deliberately
 # rejects a value already of the target kind — its comment says a no-op
 # conversion "would compile here and mean something else on the VM". So
-# `($to_float (b ~ len))` fails on the *web*, and the bare form fails on the
+# `($to_float b/~len)` fails on the *web*, and the bare form fails on the
 # *VM*, and there is no single spelling of the conversion that works.
 #
 # `(+ 0.0 …)` is the spelling that does: mixed arithmetic promotes to Float on
@@ -104,7 +104,7 @@
 # `Buffer/len` to answer the same type on both sides, and this wrapper is what
 # an example may do meanwhile.
 (fn byte_len [b : (Buffer U8)] : F64
-  (+ 0.0 (b ~ len)))
+  (+ 0.0 b/~len))
 
 # --- reading -----------------------------------------------------------------
 #

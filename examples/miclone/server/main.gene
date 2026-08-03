@@ -156,7 +156,7 @@
 
 # --- sending -----------------------------------------------------------------
 #
-# Every send is `(buf ~ to_bytes)` then `ws_send`. That conversion is the whole
+# Every send is `buf/~to_bytes` then `ws_send`. That conversion is the whole
 # of the VM's I/O boundary: the codec works over a `(Buffer U8)` because the
 # client must run the same code, and `Bytes` is what the socket takes.
 
@@ -168,13 +168,13 @@
                 ($to_float origin_bz)
                 ($to_float span_x) ($to_float span_y) ($to_float span_z)
                 (spawn_at ~ get 0.0) (spawn_at ~ get 1.0) (spawn_at ~ get 2.0))
-  (ws_send conn (b ~ to_bytes)))
+  (ws_send conn b/~to_bytes))
 
 (fn send_registry [conn reg : Registry] : Nil
   (var c (new_cursor))
   (var b ($buffer U8 (registry_size reg)))
   (encode_registry b c reg)
-  (ws_send conn (b ~ to_bytes)))
+  (ws_send conn b/~to_bytes))
 
 # Returns `ws_send`'s drop count — see `answer_blocks` for why anything reads it.
 (fn send_block [conn w : World bx : F64 by : F64 bz : F64] : F64
@@ -184,20 +184,20 @@
   (var sz (world_stride_z w))
   (var b ($buffer U8 (block_size w/content w/light base dx sz)))
   (encode_block b c bx by bz w/content w/light base dx sz)
-  ($to_float (ws_send conn (b ~ to_bytes))))
+  ($to_float (ws_send conn b/~to_bytes)))
 
 (fn send_node_delta [conn nx : F64 ny : F64 nz : F64
                      id : F64 param1 : F64] : Nil
   (var c (new_cursor))
   (var b ($buffer U8 node_delta_size))
   (encode_node_delta b c nx ny nz id param1)
-  (ws_send conn (b ~ to_bytes)))
+  (ws_send conn b/~to_bytes))
 
 (fn send_inventory [conn inv : (Buffer F64)] : Nil
   (var c (new_cursor))
   (var b ($buffer U8 (inventory_size ($to_float hotbar_slots))))
   (encode_inventory b c inv ($to_float hotbar_slots))
-  (ws_send conn (b ~ to_bytes)))
+  (ws_send conn b/~to_bytes))
 
 # Answer a client's request for blocks `[from, from + count)` in the linear
 # index the client computes from `hello`'s extent.

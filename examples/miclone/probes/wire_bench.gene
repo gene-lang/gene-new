@@ -52,7 +52,7 @@
   (set t0 ($os/monotonic_ms))
   (set r 0.0)
   (while (< r reps)
-    (b ~ to_bytes)
+    b/~to_bytes
     (set r (+ r 1.0)))
   (var t_bytes ($to_float (- ($os/monotonic_ms) t0)))
 

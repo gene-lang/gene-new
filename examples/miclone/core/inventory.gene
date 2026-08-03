@@ -44,7 +44,7 @@
   ($buffer F64 (* slots cells_per_slot)))
 
 (fn slots_of [inv : (Buffer F64)] : F64
-  (/ (inv ~ len) cells_per_slot))
+  (/ inv/~len cells_per_slot))
 
 (fn slot_item [inv : (Buffer F64) slot : F64] : F64
   (inv ~ get (* slot cells_per_slot)))

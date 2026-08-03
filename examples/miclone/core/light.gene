@@ -118,7 +118,7 @@
   (q ~ set! q_head 0.0)
   (q ~ set! q_tail 0.0)
   (q ~ set! q_count 0.0)
-  (q ~ set! q_cap (- (q ~ len) q_base)))
+  (q ~ set! q_cap (- q/~len q_base)))
 
 (fn queue_capacity [q : (Buffer F32)] : F64
   (q ~ get q_cap))

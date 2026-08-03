@@ -168,6 +168,44 @@ session/user/name
 session/items/-1
 ```
 
+**A send that takes no arguments is written `receiver/~message`.** It is the
+same send as `(receiver ~ message)` — the reader turns a trailing `~name`
+segment of a path into exactly that — and it is preferred because it drops a
+pair of parentheses and two spaces from the most common shape in the language:
+
+```gene
+# Right
+(var n items/~size)
+(while (< i buf/~len) …)
+(ws_send conn payload/~to_bytes)
+
+# Wrong — the parenthesised form for a bare send
+(var n (items ~ size))
+(while (< i (buf ~ len)) …)
+```
+
+**Only when there are no arguments.** With arguments the parenthesised form is
+the spelling, because `(a/~b c)` already means something else and something
+useful: it is `((a ~ b) c)` — a zero-argument send whose *result* is then
+called. That is how a receiver hands back a function you immediately apply, and
+it is why the shortcut cannot be widened to carry arguments.
+
+```gene
+# Right
+(buf ~ set! i v)
+(items ~ push! value)
+
+# Wrong — reads as "send `set!` with no arguments, then call the result"
+(buf/~set! i v)
+```
+
+Chains read left to right and may mix navigation with sends:
+
+```gene
+session/user/~name
+world/content/~len
+```
+
 For a long call, keep the callee on the opening line and indent arguments one
 level. Do not vertically align arguments with arbitrary spaces.
 
