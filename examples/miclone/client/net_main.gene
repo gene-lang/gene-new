@@ -1,0 +1,535 @@
+# The networked client — design.md §D8's M6, browser half.
+#
+# `client/main.gene` generates the world in the tab. This one is handed the
+# world by `server/main.gene` over a WebSocket, and is otherwise the same game:
+# same physics, same mesher, same raycast, same hotbar, because all of them are
+# `core/` and neither side has its own copy.
+#
+# ## Why this is a second file rather than a flag
+#
+# §10 says singleplayer should run a server in-process over "an in-memory
+# channel that presents the same interface as the socket", so that there is one
+# code path. That channel does not exist yet: the profile's `ws/*` bindings talk
+# to a real socket and nothing else, and inventing an in-memory transport that
+# fakes them is the kind of scaffolding that outlives its purpose.
+#
+# So there are two entry points and they share everything below the transport.
+# What is duplicated is `main`'s setup — GL, atlas, camera, input, frame loop —
+# about 120 lines. **The fix is the in-memory channel, not a flag**, and when it
+# lands this file becomes the only client and `main.gene` becomes the
+# in-process server's caller.
+#
+# ## The extent is checked, not received
+#
+# The world's size arrives in `hello`, and this client creates its world array
+# *before* connecting — because `core/loaded.gene`'s `World` is sized at
+# construction and the profile has no way to hold a not-yet-built one (no
+# nullable it can narrow, see `dom/element`). So the client declares the extent
+# it can render, the server states what it has, and a disagreement is an error
+# rather than a resize.
+#
+# That is a real limitation and it is the client's, not the protocol's: `hello`
+# carries the extent precisely so a client that *can* resize should.
+
+(mod net_main ^profile web)
+
+(import [count_faces build_mesh] from "../core/mesh.gene")
+(import [Registry new_registry id_of registered_count name_of solid?]
+        from "../core/registry.gene")
+(import [World new_world store_block block_base node_at
+         world_dx world_dy world_dz world_stride_z world_nodes]
+        from "../core/loaded.gene")
+(import [relight_node queue_overhead] from "../core/light.gene")
+(import [build_program init_state upload_atlas new_vertex_array new_buffer
+         upload_chunk begin_frame set_view_projection draw_chunk]
+        from "./render.gene")
+(import [paint] from "./atlas.gene")
+(import [forward_x forward_y forward_z] from "../core/vec.gene")
+(import [new_player step player_x player_y player_z player_eye_y
+         on_ground? in_liquid? set_player_position box_overlaps_node?]
+        from "../core/physics.gene")
+(import [new_hit cast hit? hit_x hit_y hit_z before_x before_y before_z]
+        from "../core/raycast.gene")
+(import [diggable? placeable?] from "../core/edit.gene")
+(import [new_inventory slot_item slot_count slot_empty?]
+        from "../core/inventory.gene")
+(import [new_cursor] from "../core/wire.gene")
+(import [message_kind msg_hello msg_registry msg_block msg_node_delta
+         msg_inventory
+         new_hello decode_hello hello_version hello_span_x hello_span_y
+         hello_span_z hello_bx hello_by hello_bz
+         hello_spawn_x hello_spawn_y hello_spawn_z
+         decode_registry
+         new_block_header decode_block block_bx block_by block_bz
+         new_node_delta decode_node_delta delta_x delta_y delta_z delta_id
+         delta_param1
+         decode_inventory
+         size_request_blocks encode_request_blocks
+         size_dig encode_dig size_place encode_place
+         protocol_version]
+        from "../core/protocol.gene")
+
+(let block_dim 16.0)
+(let block_nodes 4096.0)
+
+# What this client can render. The server states the same numbers in `hello`
+# and a disagreement stops the join — see the header.
+(let span_x 12.0)
+(let span_y 4.0)
+(let span_z 12.0)
+(let origin_bx -90.0)
+(let origin_by 0.0)
+(let origin_bz 198.0)
+
+# How many blocks to ask for at once. Under the server's 256-frame outbound
+# queue with room to spare — a request cannot outrun its own answers, which is
+# what keeps that queue from dropping the oldest frame (§10.1).
+(let request_window 64.0)
+
+(let look_speed 0.0022)
+(let pitch_limit 1.5533)
+(let fog_far 260.0)
+(let time_of_day 1.0)
+(let max_dt 0.05)
+(let reach 5.0)
+(let click_slop 4.0)
+(let hotbar_slots 8.0)
+(let floats_per_vertex 7.0)
+(let indices_per_face 6.0)
+
+(fn abs_pixels [v : F64] : F64
+  (if (< v 0.0) (- 0.0 v) v))
+
+(fn main [] : Nil
+  (var stage ($dom/element "stage"))
+  (var gl ($gl/context stage))
+  (var prog (build_program gl))
+  (init_state gl)
+
+  (var atlas_canvas ($dom/create_element "canvas"))
+  ($canvas/set_size atlas_canvas 64.0 64.0)
+  (paint ($canvas/context atlas_canvas))
+  (upload_atlas gl atlas_canvas)
+
+  # --- state the network fills ------------------------------------------------
+  #
+  # The registry starts **bare**, not `new_registry`: §2's three reserved ids
+  # are the first three the server sends, and installing them locally would
+  # shift every id by three. Nothing here may assume an id means anything until
+  # the registry message lands.
+  (var reg (new Registry))
+  (var world (new_world origin_bx origin_by origin_bz span_x span_y span_z))
+  (var wdx (world_dx world))
+  (var wdy (world_dy world))
+  (var wdz (world_dz world))
+  (var wsz (world_stride_z world))
+
+  (var player (new_player 0.0 40.0 0.0))
+  (var inv (new_inventory hotbar_slots))
+
+  (var chunks (* span_x (* span_y span_z)))
+  (var vaos : (List Gl/VertexArray) [])
+  (var vbos : (List Gl/Buffer) [])
+  (var ebos : (List Gl/Buffer) [])
+  (var counts ($buffer F32 chunks))
+  (var faces_total 0.0)
+
+  (var cz 0.0)
+  (while (< cz span_z)
+    (var cy 0.0)
+    (while (< cy span_y)
+      (var cx 0.0)
+      (while (< cx span_x)
+        (vaos ~ push! (new_vertex_array gl))
+        (vbos ~ push! (new_buffer gl))
+        (ebos ~ push! (new_buffer gl))
+        (set cx (+ cx 1.0)))
+      (set cy (+ cy 1.0)))
+    (set cz (+ cz 1.0)))
+
+  # §4's scratch, for the relight an incoming node delta drives.
+  (var sky ($buffer F32 (* wdx wdz)))
+  (var lq ($buffer F32 (+ (world_nodes world) queue_overhead)))
+  (var lq_seed ($buffer F32 (+ (world_nodes world) queue_overhead)))
+
+  # Decode targets, allocated once: a message arrives on every frame's worth of
+  # socket traffic and a per-message allocation is the one thing a receive path
+  # must not do.
+  (var wc (new_cursor))
+  (var hello (new_hello))
+  (var header (new_block_header))
+  (var delta (new_node_delta))
+  (var block_c ($buffer F32 block_nodes))
+  (var block_l ($buffer F32 block_nodes))
+
+  (var joined false)
+  (var blocks_in 0.0)
+  (var requested 0.0)
+  (var meshed false)
+  (var status "connecting…")
+
+  # --- meshing ----------------------------------------------------------------
+
+  (var mesh_chunk : (Callback [F64 F64 F64] Void)
+       (fn [a : F64 b : F64 c : F64] : Void void))
+  (set mesh_chunk (fn [cx : F64 cy : F64 cz : F64] : Void
+    (var slot (+ cx (+ (* cy span_x) (* cz (* span_x span_y)))))
+    (var k slot)
+    (var bx (+ origin_bx cx))
+    (var by (+ origin_by cy))
+    (var bz (+ origin_bz cz))
+    (var base (block_base world bx by bz))
+    (var faces (count_faces reg world/content base wdx wsz))
+    (set faces_total (+ (- faces_total (/ (counts ~ get k) indices_per_face))
+                        faces))
+    (counts ~ set! k (* faces indices_per_face))
+    (if_yes (> faces 0.0)
+      (var verts ($buffer F32 (* faces (* 4.0 floats_per_vertex))))
+      (var idx ($buffer U32 (* faces indices_per_face)))
+      (build_mesh reg world/content world/light verts idx base wdx wsz
+                  (* bx block_dim) (* by block_dim) (* bz block_dim))
+      (upload_chunk gl vaos/%k vbos/%k ebos/%k verts idx))))
+
+  (var mesh_all : (Callback [] Void) (fn [] : Void void))
+  (set mesh_all (fn [] : Void
+    (var mz 0.0)
+    (while (< mz span_z)
+      (var my 0.0)
+      (while (< my span_y)
+        (var mx 0.0)
+        (while (< mx span_x)
+          (mesh_chunk mx my mz)
+          (set mx (+ mx 1.0)))
+        (set my (+ my 1.0)))
+      (set mz (+ mz 1.0)))))
+
+  # Remesh the chunk holding a node and its six neighbours' chunks, which is
+  # what a delta needs: the server already relit, and a node on a chunk edge
+  # changes the faces of the chunk beside it.
+  (var remesh_around : (Callback [F64 F64 F64] Void)
+       (fn [a : F64 b : F64 c : F64] : Void void))
+  (set remesh_around (fn [nx : F64 ny : F64 nz : F64] : Void
+    (var lo_x ($math/max 0.0 (- ($math/floor (/ (- nx (* origin_bx block_dim))
+                                                block_dim)) 1.0)))
+    (var hi_x ($math/min (- span_x 1.0)
+                         (+ ($math/floor (/ (- nx (* origin_bx block_dim))
+                                            block_dim)) 1.0)))
+    (var lo_y ($math/max 0.0 (- ($math/floor (/ (- ny (* origin_by block_dim))
+                                                block_dim)) 1.0)))
+    (var hi_y ($math/min (- span_y 1.0)
+                         (+ ($math/floor (/ (- ny (* origin_by block_dim))
+                                            block_dim)) 1.0)))
+    (var lo_z ($math/max 0.0 (- ($math/floor (/ (- nz (* origin_bz block_dim))
+                                                block_dim)) 1.0)))
+    (var hi_z ($math/min (- span_z 1.0)
+                         (+ ($math/floor (/ (- nz (* origin_bz block_dim))
+                                            block_dim)) 1.0)))
+    (var rz lo_z)
+    (while (<= rz hi_z)
+      (var ry lo_y)
+      (while (<= ry hi_y)
+        (var rx lo_x)
+        (while (<= rx hi_x)
+          (mesh_chunk rx ry rz)
+          (set rx (+ rx 1.0)))
+        (set ry (+ ry 1.0)))
+      (set rz (+ rz 1.0)))))
+
+  # --- the socket -------------------------------------------------------------
+
+  (var sock ($ws/connect "ws://127.0.0.1:8790/"))
+
+  (var request_more : (Callback [] Void) (fn [] : Void void))
+  (set request_more (fn [] : Void
+    (var left (- chunks requested))
+    (if_yes (> left 0.0)
+      (var count ($math/min request_window left))
+      (var msg ($buffer U8 (size_request_blocks)))
+      (encode_request_blocks msg wc requested count)
+      ($ws/send_bytes sock msg)
+      (set requested (+ requested count)))))
+
+  ($ws/on_open sock (fn [] : Void
+    (set status "joining…")))
+
+  ($ws/on_close sock (fn [] : Void
+    (set status "disconnected")))
+
+  ($ws/on_bytes sock (fn [b : (Buffer U8)] : Void
+    (var kind (message_kind b))
+
+    (if_yes (== kind msg_hello)
+      (decode_hello b wc hello)
+      # The version check §14 asks for, before anything else is read.
+      (if (!= (hello ~ get hello_version) protocol_version)
+        (then (set status $"version mismatch: server v$(hello ~ get hello_version)"))
+        (else
+          (if (|| (!= (hello ~ get hello_span_x) span_x)
+                  (|| (!= (hello ~ get hello_span_y) span_y)
+                      (!= (hello ~ get hello_span_z) span_z)))
+            (then (set status "world extent mismatch"))
+            (else
+              (set_player_position player
+                                   (hello ~ get hello_spawn_x)
+                                   (hello ~ get hello_spawn_y)
+                                   (hello ~ get hello_spawn_z))
+              (set joined true))))))
+
+    (if_yes (== kind msg_registry)
+      (decode_registry b wc reg)
+      (set status "receiving world…")
+      (request_more))
+
+    (if_yes (== kind msg_block)
+      (decode_block b wc header block_c block_l)
+      (store_block_and_light world (header ~ get block_bx)
+                             (header ~ get block_by) (header ~ get block_bz)
+                             block_c block_l)
+      (set blocks_in (+ blocks_in 1.0))
+      (if_yes (== blocks_in requested) (request_more))
+      (if_yes (&& (== blocks_in chunks) (! meshed))
+        (mesh_all)
+        (set meshed true)
+        (set status "")))
+
+    (if_yes (== kind msg_node_delta)
+      (decode_node_delta b wc delta)
+      # The server is authoritative and has already relit around this node; the
+      # client's optimistic apply either agreed — in which case this is a
+      # no-op — or did not, and this wins (§7.1 step 4).
+      (apply_delta world reg delta sky lq lq_seed)
+      (remesh_around (delta ~ get delta_x) (delta ~ get delta_y)
+                     (delta ~ get delta_z)))
+
+    (if_yes (== kind msg_inventory)
+      (decode_inventory b wc inv))))
+
+  # --- camera and input -------------------------------------------------------
+
+  (var yaw 0.6)
+  (var pitch -0.25)
+  (var fwd 0.0)
+  (var strafe 0.0)
+  (var jump false)
+  (var sneak false)
+  (var flying false)
+  (var dragging false)
+  (var drag_from_x 0.0)
+  (var drag_from_y 0.0)
+  (var selected 0.0)
+  (var hit (new_hit))
+
+  (var send_dig : (Callback [] Void) (fn [] : Void void))
+  (set send_dig (fn [] : Void
+    (cast world reg hit (player_x player) (player_eye_y player)
+          (player_z player)
+          (forward_x yaw pitch) (forward_y yaw pitch) (forward_z yaw pitch)
+          reach)
+    (if_yes (hit? hit)
+      # §7.1 step 1: the client rejects what it can answer alone, so most
+      # misses never reach the network.
+      (if_yes (diggable? world reg (hit_x hit) (hit_y hit) (hit_z hit))
+        (var msg ($buffer U8 (size_dig)))
+        (encode_dig msg wc (hit_x hit) (hit_y hit) (hit_z hit))
+        ($ws/send_bytes sock msg)))))
+
+  (var send_place : (Callback [] Void) (fn [] : Void void))
+  (set send_place (fn [] : Void
+    (cast world reg hit (player_x player) (player_eye_y player)
+          (player_z player)
+          (forward_x yaw pitch) (forward_y yaw pitch) (forward_z yaw pitch)
+          reach)
+    (if_yes (hit? hit)
+      (var nx (before_x hit))
+      (var ny (before_y hit))
+      (var nz (before_z hit))
+      (if_yes (&& (! (slot_empty? inv selected))
+                  (&& (placeable? world reg nx ny nz)
+                      (! (box_overlaps_node? player nx ny nz))))
+        (var msg ($buffer U8 (size_place)))
+        (encode_place msg wc nx ny nz (slot_item inv selected))
+        ($ws/send_bytes sock msg)))))
+
+  ($dom/add_event_listener ($dom/window) "keydown" (fn [ev : Any] : Void
+    (var k ($event/key ev))
+    (if_yes (== k "w") (set fwd 1.0))
+    (if_yes (== k "s") (set fwd -1.0))
+    (if_yes (== k "a") (set strafe -1.0))
+    (if_yes (== k "d") (set strafe 1.0))
+    (if_yes (== k " ") (set jump true))
+    (if_yes (== k "Shift") (set sneak true))
+    (if_yes (== k "f") (set flying (! flying)))
+    (var picked -1.0)
+    (if_yes (== k "1") (set picked 0.0))
+    (if_yes (== k "2") (set picked 1.0))
+    (if_yes (== k "3") (set picked 2.0))
+    (if_yes (== k "4") (set picked 3.0))
+    (if_yes (== k "5") (set picked 4.0))
+    (if_yes (== k "6") (set picked 5.0))
+    (if_yes (== k "7") (set picked 6.0))
+    (if_yes (== k "8") (set picked 7.0))
+    (if_yes (>= picked 0.0) (set selected picked))))
+
+  ($dom/add_event_listener ($dom/window) "keyup" (fn [ev : Any] : Void
+    (var k ($event/key ev))
+    (if_yes (|| (== k "w") (== k "s")) (set fwd 0.0))
+    (if_yes (|| (== k "a") (== k "d")) (set strafe 0.0))
+    (if_yes (== k " ") (set jump false))
+    (if_yes (== k "Shift") (set sneak false))))
+
+  ($dom/add_event_listener stage "mousedown" (fn [ev : Any] : Void
+    (set dragging true)
+    (set drag_from_x ($event/client_x ev))
+    (set drag_from_y ($event/client_y ev))))
+  ($dom/add_event_listener ($dom/window) "mouseup" (fn [ev : Any] : Void
+    (if_yes dragging
+      (var moved (+ (abs_pixels (- ($event/client_x ev) drag_from_x))
+                    (abs_pixels (- ($event/client_y ev) drag_from_y))))
+      (if_yes (&& (< moved click_slop) meshed)
+        (if (== ($event/button ev) 2.0) (then (send_place)) (else (send_dig)))))
+    (set dragging false)))
+  ($dom/add_event_listener stage "contextmenu" (fn [ev : Any] : Void
+    ($dom/prevent_default ev)))
+  ($dom/add_event_listener ($dom/window) "mousemove" (fn [ev : Any] : Void
+    (if_yes dragging
+      (set yaw (+ yaw (* ($event/movement_x ev) look_speed)))
+      (set pitch ($math/clamp (- pitch (* ($event/movement_y ev) look_speed))
+                              (- 0.0 pitch_limit) pitch_limit)))))
+  ($dom/add_event_listener stage "wheel" (fn [ev : Any] : Void
+    ($dom/prevent_default ev)
+    (var next (+ selected (if (> ($event/delta_y ev) 0.0) 1.0 -1.0)))
+    (set selected (if (< next 0.0) (- hotbar_slots 1.0)
+                    (if (>= next hotbar_slots) 0.0 next)))))
+
+  # --- frame ------------------------------------------------------------------
+
+  (var proj ($buffer F32 16.0))
+  (var view ($buffer F32 16.0))
+  (var vp ($buffer F32 16.0))
+  (var last_ms 0.0)
+  (var frames 0.0)
+  (var fps_since 0.0)
+
+  (var frame : (Callback [F64] Void) (fn [now : F64] : Void void))
+  (set frame (fn [now : F64] : Void
+    (var dt (if (> last_ms 0.0) ($math/min max_dt (/ (- now last_ms) 1000.0)) 0.0))
+    (set last_ms now)
+
+    (var dx (forward_x yaw pitch))
+    (var dy (forward_y yaw pitch))
+    (var dz (forward_z yaw pitch))
+    (var fx (forward_x yaw 0.0))
+    (var fz (forward_z yaw 0.0))
+    (var rx (forward_x (+ yaw 1.5708) 0.0))
+    (var rz (forward_z (+ yaw 1.5708) 0.0))
+    (var wish_x (+ (* fx fwd) (* rx strafe)))
+    (var wish_z (+ (* fz fwd) (* rz strafe)))
+    (var wish_len ($math/sqrt (+ (* wish_x wish_x) (* wish_z wish_z))))
+    (if_yes (> wish_len 0.0)
+      (set wish_x (/ wish_x wish_len))
+      (set wish_z (/ wish_z wish_len)))
+
+    # **Physics runs only once the world is here.** Stepping against an empty
+    # array would drop the player through a world of air to the shell and leave
+    # them standing under the terrain when it arrives.
+    (if_yes (&& meshed (> dt 0.0))
+      (step player world reg wish_x wish_z jump sneak flying dt))
+
+    (var eye_x (player_x player))
+    (var eye_y (player_eye_y player))
+    (var eye_z (player_z player))
+
+    (var w ($canvas/width stage))
+    (var h ($canvas/height stage))
+    (begin_frame gl prog w h)
+    (set_view_projection gl prog proj view vp w h
+                         eye_x eye_y eye_z dx dy dz fog_far time_of_day)
+
+    (var drawn 0.0)
+    (var i 0.0)
+    (while (< i chunks)
+      (var n (counts ~ get i))
+      (if_yes (> n 0.0)
+        (var k i)
+        (draw_chunk gl vaos/%k n)
+        (set drawn (+ drawn 1.0)))
+      (set i (+ i 1.0)))
+
+    (set frames (+ frames 1.0))
+    (if_yes (> (- now fps_since) 1000.0)
+      (var mode
+        (if (! meshed) $"${status} $($math/round blocks_in)/$($math/round chunks) blocks"
+          (if flying "flying"
+            (if (in_liquid? player) "swimming"
+              (if (on_ground? player) "walking" "falling")))))
+      ($dom/set_text ($dom/element "hud")
+        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player))")
+      ($dom/set_text ($dom/element "hotbar") (hotbar_text reg inv selected))
+      (set frames 0.0)
+      (set fps_since now))
+    ($frame/request frame)))
+
+  ($canvas/set_size stage ($dom/inner_width) ($dom/inner_height))
+  ($frame/request frame))
+
+# A decoded block carries its own 16³ content and light; `store_block` takes
+# content only, so the light goes in beside it the same way.
+(fn store_block_and_light [w : World bx : F64 by : F64 bz : F64
+                           content : (Buffer F32) light : (Buffer F32)] : Nil
+  (store_block w bx by bz content)
+  (var base (block_base w bx by bz))
+  (var dx (world_dx w))
+  (var sz (world_stride_z w))
+  (var z 0.0)
+  (while (< z block_dim)
+    (var y 0.0)
+    (while (< y block_dim)
+      (var dst (+ base (+ (* y dx) (* z sz))))
+      (var from (+ (* y block_dim) (* z (* block_dim block_dim))))
+      (var x 0.0)
+      (while (< x block_dim)
+        (w/light ~ set! (+ dst x) (light ~ get (+ from x)))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
+# The server's delta wins. Its own light byte comes with it, and the *area*
+# around it is relit locally with the same `relight_node` the server ran — §4
+# forbids deriving a received block's light from scratch, and this is not that:
+# it is the incremental update whose inputs the server just supplied.
+(fn apply_delta [w : World reg : Registry d : (Buffer F64)
+                 sky : (Buffer F32) q : (Buffer F32)
+                 q_seed : (Buffer F32)] : Nil
+  (var nx (d ~ get delta_x))
+  (var ny (d ~ get delta_y))
+  (var nz (d ~ get delta_z))
+  (set_node_at w nx ny nz (d ~ get delta_id))
+  (relight_node w/light w/content (world_dx w) (world_dy w) (world_dz w) reg
+                (array_x_of nx) (array_y_of ny) (array_z_of nz)
+                sky q q_seed))
+
+# World node coordinate to array coordinate. `core/loaded.gene` exports these
+# as `array_x`/`array_y`/`array_z` taking the world; these take the module's
+# origin constants instead, because this client's extent is a constant rather
+# than something it reads back off the world it built.
+(fn array_x_of [nx : F64] : F64 (+ (- nx (* origin_bx block_dim)) 1.0))
+(fn array_y_of [ny : F64] : F64 (+ (- ny (* origin_by block_dim)) 1.0))
+(fn array_z_of [nz : F64] : F64 (+ (- nz (* origin_bz block_dim)) 1.0))
+
+(fn set_node_at [w : World nx : F64 ny : F64 nz : F64 id : F64] : Nil
+  (w/content ~ set!
+    (+ (array_x_of nx)
+       (+ (* (array_y_of ny) (world_dx w))
+          (* (array_z_of nz) (world_stride_z w))))
+    id))
+
+(fn hotbar_text [reg : Registry inv : (Buffer F64) selected : F64] : Str
+  (var parts : (List Str) [])
+  (var i 0.0)
+  (while (< i hotbar_slots)
+    (var label
+      (if (slot_empty? inv i) "—"
+        $"$(name_of reg (slot_item inv i)) x$($to_int (slot_count inv i))"))
+    (parts ~ push! (if (== i selected) $"[${label}]" $" ${label} "))
+    (set i (+ i 1.0)))
+  ($str/join parts " "))

@@ -994,7 +994,7 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | ~~M3~~ | **Lighting + meshing in `core/` — done** | the M0 renderer drawing a generated *lit* world; §4, §5 | backlog 2 |
 | ~~M4~~ | **Persistence — done** | quit and come back to the same world; §11 | backlog 3 (landed), 4 (open, not blocking) |
 | ~~M5~~ | **Player: physics, dig, place, inventory — done** | a playable singleplayer creative-ish loop; §1.1, §4.2, §7, §7.1 | — |
-| M6 | Client/server split over WebSocket | the same game, client and server as separate processes | — |
+| ~~M6~~ | **Client/server split over WebSocket — done** | the same game, client and server as separate processes; §10, §10.1 | backlog 7 (browser half landed) |
 | M7 | The mod API | a `default`-equivalent game defined as a Gene mod, not built in | — |
 | M8 | Entities, crafting, UI, sound | a small but complete game | backlog 9 |
 | M9 | Native shell | the same game outside a browser | backlog 7, 8 |

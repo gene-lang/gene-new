@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>miclone — networked</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #9ec2f0; }
+  #stage { display: block; width: 100vw; height: 100vh; cursor: grab; }
+  #stage:active { cursor: grabbing; }
+  #hud, #help, #hotbar {
+    position: fixed; color: #0d2338; background: rgba(255,255,255,.68);
+    padding: 5px 9px; border-radius: 5px; pointer-events: none;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  #hud { left: 12px; top: 10px; }
+  #help { left: 12px; bottom: 10px; font-size: 12px; }
+  #hotbar { left: 50%; bottom: 44px; transform: translateX(-50%); white-space: nowrap; }
+  #aim { position: fixed; left: 50%; top: 50%; width: 18px; height: 18px;
+         margin: -9px 0 0 -9px; pointer-events: none; opacity: .75; }
+  #aim::before, #aim::after { content: ""; position: absolute; background: #0d2338;
+         box-shadow: 0 0 0 1px rgba(255,255,255,.6); }
+  #aim::before { left: 8px; top: 0; width: 2px; height: 18px; }
+  #aim::after { top: 8px; left: 0; height: 2px; width: 18px; }
+</style>
+<canvas id="stage"></canvas>
+<div id="hud">connecting…</div>
+<div id="aim"></div>
+<div id="hotbar"></div>
+<div id="help">drag to look · W A S D to walk · space to jump · shift to sneak · F to fly<br>click to dig · right-click to place · 1-8 or the wheel to pick a slot</div>
+<script type="module">
+  import { main } from "./dist/net_main.mjs";
+  main();
+</script>
