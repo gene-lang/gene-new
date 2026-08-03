@@ -33,14 +33,20 @@
 (mod server_main)
 
 (import $net/http [Server serve listen ws_accept ws_send ws_close])
+(import $os [get_env Env])
 (import [Registry new_registry registered_count id_of] from "../core/registry.gene")
 (import [setup_nodes setup_biomes setup_ores setup_drops]
         from "../core/content.gene")
 (import [generate_block] from "../core/mapgen.gene")
-(import [World new_world store_block block_base open_sky node_at
+(import [World new_world store_block store_light extract_block block_base
+         open_sky node_at
          world_dx world_dy world_dz world_stride_z world_nodes
          world_min_y]
         from "../core/loaded.gene")
+(import [WorldStore open_world close_world world_exists? write_meta
+         put_block get_block block_count stored_bytes
+         begin_batch commit_batch]
+        from "./storage.gene")
 (import [light_region queue_overhead] from "../core/light.gene")
 (import [new_bounds apply_node diggable? placeable?] from "../core/edit.gene")
 (import [find_spawn] from "../core/physics.gene")
@@ -76,9 +82,26 @@
 
 (let port 8790)
 
+# §11's world, on disk. `GENE_MICLONE_WORLD` overrides it, which is what makes a
+# throwaway world easy to ask for — and M7 will want that constantly, since a
+# mod that changes worldgen wants a world it can discard.
+(let default_world_root "/tmp/miclone_server_world")
+
 # --- the world ---------------------------------------------------------------
 
-(fn build_world [reg : Registry] : World
+# Load what the store has and generate the rest.
+#
+# **The distinction that matters is "stored" versus "never generated", not
+# "stored" versus "all air".** `get_block` answers `false` only for a block the
+# world has never had, which is exactly why §11 made that a separate state: a
+# mined-out cave is legitimately mostly air, and a loader that treated air as
+# absent would regenerate the stone the player dug out.
+#
+# Lighting runs over the whole world afterwards either way (§4.2). A stored
+# block carries its own light and re-flooding it produces the same values, so
+# this costs one pass and removes a class of bug — a world half-lit from disk
+# and half-lit from a flood, with a seam where they meet.
+(fn build_world [reg : Registry store : WorldStore fresh : Bool] : World
   (var biomes (setup_biomes reg))
   (var ores (setup_ores reg))
   (var air (id_of reg "air"))
@@ -88,23 +111,42 @@
                     ($to_float span_x) ($to_float span_y) ($to_float span_z)))
 
   (var block ($buffer F32 ($to_float block_nodes)))
+  (var light ($buffer F32 ($to_float block_nodes)))
+  (var param2 ($buffer F32 ($to_float block_nodes)))
   (var block_sky ($buffer F32 ($to_float (* block_dim block_dim))))
+  (var loaded 0)
+  (var generated 0)
+  (begin_batch store)
   (var cz 0)
   (while (< cz span_z)
     (var cy 0)
     (while (< cy span_y)
       (var cx 0)
       (while (< cx span_x)
-        (var bx ($to_float (+ origin_bx cx)))
-        (var by ($to_float (+ origin_by cy)))
-        (var bz ($to_float (+ origin_bz cz)))
-        (generate_block block block_sky
-                        (* bx 16.0) (* by 16.0) (* bz 16.0)
-                        biomes ores seed air water)
-        (store_block w bx by bz block)
+        (var ibx (+ origin_bx cx))
+        (var iby (+ origin_by cy))
+        (var ibz (+ origin_bz cz))
+        (var bx ($to_float ibx))
+        (var by ($to_float iby))
+        (var bz ($to_float ibz))
+        (if (&& (! fresh)
+                (get_block store reg block_dim ibx iby ibz
+                           block light param2))
+          (then
+            (store_block w bx by bz block)
+            (store_light w bx by bz light)
+            (set loaded (+ loaded 1)))
+          (else
+            (generate_block block block_sky
+                            (* bx 16.0) (* by 16.0) (* bz 16.0)
+                            biomes ores seed air water)
+            (store_block w bx by bz block)
+            (set generated (+ generated 1))))
         (set cx (+ cx 1)))
       (set cy (+ cy 1)))
     (set cz (+ cz 1)))
+  (commit_batch store)
+  ($println $"  ${loaded} block(s) from disk, ${generated} generated")
 
   # One flood over the whole loaded world (§4.2), which is what makes light
   # cross block boundaries — and is why the server sends light rather than
@@ -196,6 +238,33 @@
     ($println $"  WARN dropped $($to_int dropped) frame(s): the client's request window is larger than the socket can absorb"))
   (- last from))
 
+# Write one block of the loaded world back to the store.
+#
+# The three scratch buffers are the caller's, for §4's reason: this runs once
+# per edit and allocating 48 KB inside a click handler is the thing a hot path
+# must not do.
+#
+# `param2` is written as zeros because `core/loaded.gene` does not carry one —
+# §1 gives a node three fields and the loaded world keeps two, since nothing in
+# M0–M6 uses `param2` (it is facedir, liquid level, colour index; all of them
+# arrive with M8's drawtypes). The column exists on disk so that adding it later
+# is a format that already has room rather than a version bump.
+(fn persist_block [store : WorldStore reg : Registry w : World
+                   bx : Int by : Int bz : Int
+                   content : (Buffer F32) light : (Buffer F32)
+                   param2 : (Buffer F32)] : Nil
+  (extract_block w ($to_float bx) ($to_float by) ($to_float bz)
+                 content w/content)
+  (extract_block w ($to_float bx) ($to_float by) ($to_float bz)
+                 light w/light)
+  (put_block store reg block_dim bx by bz content light param2))
+
+# Which block a node belongs to. `$math/floor` rather than a shift, for the
+# reason `core/world.gene` gives: the coordinates are `F64` and negative
+# division truncates toward zero, which would fold blocks -1 and 0 together.
+(fn block_of [n : F64] : Int
+  ($to_int ($math/floor (/ n 16.0))))
+
 # --- serving -----------------------------------------------------------------
 
 (fn main [args] : Nil
@@ -204,9 +273,17 @@
   (var drops (setup_drops reg))
   (var air (id_of reg "air"))
 
-  ($println $"miclone server: generating ${span_x}x${span_y}x${span_z} blocks…")
+  (var root (get_env Env "GENE_MICLONE_WORLD" default_world_root))
+  (var fresh (! (world_exists? root)))
+  (var store (open_world root))
+  (if fresh
+    (then
+      (write_meta store seed "miclone")
+      ($println $"miclone server: new world at ${root}"))
+    (else ($println $"miclone server: opening ${root}")))
+
   (var t0 ($os/monotonic_ms))
-  (var world (build_world reg))
+  (var world (build_world reg store fresh))
   (var spawn_at ($buffer F64 3.0))
     # The scan lives in `core/physics.gene` — it has been got wrong twice, and
   # one definition is the fix. The server owns the *result*: it goes out in
@@ -216,6 +293,27 @@
               (* ($to_float (+ origin_bz (/ span_z 2))) 16.0)
               (* ($to_float (+ origin_by span_y)) 16.0)
               96.0 spawn_at)
+  # A world generated for the first time is written whole, so the next start
+  # loads it. An existing one is already on disk and only its edits are written.
+  (if_yes fresh
+    (var scratch ($buffer F32 ($to_float block_nodes)))
+    (var scratch_l ($buffer F32 ($to_float block_nodes)))
+    (var scratch_p2 ($buffer F32 ($to_float block_nodes)))
+    (begin_batch store)
+    (var sz 0)
+    (while (< sz span_z)
+      (var sy 0)
+      (while (< sy span_y)
+        (var sx 0)
+        (while (< sx span_x)
+          (persist_block store reg world (+ origin_bx sx) (+ origin_by sy)
+                         (+ origin_bz sz) scratch scratch_l scratch_p2)
+          (set sx (+ sx 1)))
+        (set sy (+ sy 1)))
+      (set sz (+ sz 1)))
+    (commit_batch store)
+    ($println $"  saved $(block_count store) blocks, $(stored_bytes store) bytes"))
+
   ($println $"  ready in $(- ($os/monotonic_ms) t0) ms; spawn at $(spawn_at ~ get 0.0), $(spawn_at ~ get 1.0), $(spawn_at ~ get 2.0)")
 
   # §4's scratch, allocated once for the process rather than per edit: the
@@ -226,6 +324,11 @@
   (var lq_seed ($buffer F32 (+ (world_nodes world) queue_overhead)))
   (var bounds (new_bounds))
   (var edit (new_edit))
+  # Scratch for writing an edited block back to disk — allocated here for the
+  # same reason the light queues are: an edit happens inside a click.
+  (var save_c ($buffer F32 ($to_float block_nodes)))
+  (var save_l ($buffer F32 ($to_float block_nodes)))
+  (var save_p2 ($buffer F32 ($to_float block_nodes)))
 
   ($println $"miclone server: listening on ${port}")
   (serve (listen ^host "127.0.0.1" ^port port)
@@ -282,7 +385,16 @@
                   (send_inventory conn inv))
                 (send_node_delta conn nx ny nz air
                                  (world/light ~ get
-                                   (block_index_of world nx ny nz)))))
+                                   (block_index_of world nx ny nz)))
+                # §11's promise — "quit and come back to the same world" — is
+                # only true if an edit reaches the disk. One block per edit:
+                # the *lighting* an edit changes can reach far (§7.1), but the
+                # node itself is in one block, and a neighbour whose light
+                # changed will be re-flooded from its own nodes on the next
+                # load (§4.2 lights the whole world in one pass).
+                (persist_block store reg world
+                               (block_of nx) (block_of ny) (block_of nz)
+                               save_c save_l save_p2)))
 
             (else
               (if (== kind msg_place)
@@ -302,7 +414,10 @@
                     (send_inventory conn inv)
                     (send_node_delta conn nx ny nz held
                                      (world/light ~ get
-                                       (block_index_of world nx ny nz)))))
+                                       (block_index_of world nx ny nz)))
+                    (persist_block store reg world
+                                   (block_of nx) (block_of ny) (block_of nz)
+                                   save_c save_l save_p2)))
 
                 # §10's input message. Nothing is done with it yet: the client
                 # runs the same physics against the same world (§7), so its

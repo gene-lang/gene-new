@@ -314,6 +314,56 @@
       (set y (+ y 1.0)))
     (set z (+ z 1.0))))
 
+# The inverse of `store_block`: copy one block out of the array into a 16³
+# buffer in §1's `x + 16y + 256z` order. What §11's block store takes, and what
+# §10's block message is encoded from.
+#
+# Row at a time, for the same reason `store_block` is: both rows are contiguous
+# and 16 long, so the addressing is computed 256 times per block instead of
+# 4,096 times.
+(fn extract_block [w : World bx : F64 by : F64 bz : F64
+                   dst : (Buffer F32) src : (Buffer F32)] : Nil
+  (var d w/dims)
+  (var dx (d ~ get dim_dx))
+  (var sz (d ~ get dim_sz))
+  (var base (block_base w bx by bz))
+  (var z 0.0)
+  (while (< z block_dim)
+    (var y 0.0)
+    (while (< y block_dim)
+      (var from (+ base (+ (* y dx) (* z sz))))
+      (var to (+ (* y block_dim) (* z (* block_dim block_dim))))
+      (var x 0.0)
+      (while (< x block_dim)
+        (dst ~ set! (+ to x) (src ~ get (+ from x)))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
+# `store_block`'s companion for the light array, so a caller that has both
+# halves of a block puts them back the same way. `store_block` writes content
+# only, because that is what mapgen produces; a block off disk or off the wire
+# carries its light too.
+(fn store_light [w : World bx : F64 by : F64 bz : F64
+                 src : (Buffer F32)] : Nil
+  (var d w/dims)
+  (var dx (d ~ get dim_dx))
+  (var sz (d ~ get dim_sz))
+  (var light w/light)
+  (var base (block_base w bx by bz))
+  (var z 0.0)
+  (while (< z block_dim)
+    (var y 0.0)
+    (while (< y block_dim)
+      (var to (+ base (+ (* y dx) (* z sz))))
+      (var from (+ (* y block_dim) (* z (* block_dim block_dim))))
+      (var x 0.0)
+      (while (< x block_dim)
+        (light ~ set! (+ to x) (src ~ get (+ from x)))
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
 # --- the sky boundary --------------------------------------------------------
 
 # §4's per-column boundary for `light_region`, sized `dx * dz`.

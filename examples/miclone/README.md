@@ -183,7 +183,8 @@ afloat.
 ### §D8 M6 — client and server as separate processes
 
 ```sh
-gene run server                  # generates the world, listens on 8790
+gene run server                  # opens or generates the world, listens on 8790
+                                 # GENE_MICLONE_WORLD=/tmp/w for a throwaway one
 
 node tools/net_probe.mjs         # headless: joins it, in another shell
 
