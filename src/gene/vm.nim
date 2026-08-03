@@ -5100,6 +5100,62 @@ proc biBufferElemType(args: openArray[Value]): Value {.nimcall.} =
   let elemType = args[0].bufferElemType
   if elemType.kind == vkNil: newSym("Any") else: elemType
 
+# --- Buffer <-> Bytes --------------------------------------------------------
+#
+# The bridge between the type a *portable* module can build and the type the
+# VM's byte I/O speaks. `Bytes` does not exist in the web profile at all and
+# `(Buffer U8)` does, so a codec that both backends run has to be written over
+# the buffer — and then the VM side needs to hand the result to something that
+# takes bytes (`ws_send`, `fs/write_bytes`, a blob column).
+#
+# Without these the conversion is `to_list` then `binary/from_list`, which
+# builds an intermediate Gene list of one element per byte. For the 16 KB
+# messages `examples/miclone` §10 moves, that is 16,384 boxed values allocated
+# and discarded per message — the same "cannot express 512,000 elements without
+# building a 512,000-element list first" problem §D7.1 already solved for
+# buffer *construction*, appearing again at the I/O boundary.
+#
+# `U8` only, and deliberately: any other element width has an endianness, and a
+# conversion that silently picked one would be a portability bug that shows up
+# as garbled data on one machine. A caller wanting wider values uses the
+# `binary/put_*` codecs, which state their byte order.
+
+proc biBufferToBytes(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("Buffer/to_bytes", args)
+  requireBuffer("Buffer/to_bytes", args[0])
+  # The element type arrives in one of two shapes and both are legitimate: a
+  # refinement *type value* (`newType("U8", ...)`) when the annotation was
+  # resolved against a scope that binds the fixed-width names, and the bare
+  # symbol `U8` when it was not. Checking only one form makes this work in a
+  # module and fail in a bare eval, which is exactly how it first shipped.
+  let elemType = args[0].bufferElemType
+  var elemName = ""
+  if elemType.kind == vkSymbol:
+    elemName = elemType.symVal
+  else:
+    try:
+      elemName = elemType.typeName
+    except FieldDefect:
+      elemName = ""
+  if elemName != "U8":
+    raise newException(GeneError,
+      "Buffer/to_bytes requires a (Buffer U8), got " &
+      (if elemType.kind == vkNil: "an untyped buffer"
+       elif elemName.len > 0: "(Buffer " & elemName & ")"
+       else: elemType.print()))
+  let items = args[0].bufferItems
+  var raw = newString(items.len)
+  for i, item in items:
+    if item.kind != vkInt:
+      raise newException(GeneError,
+        "Buffer/to_bytes element " & $i & " is not an Int")
+    let v = item.intVal
+    if v < 0 or v > 255:
+      raise newException(GeneError,
+        "Buffer/to_bytes element " & $i & " out of range 0..255: " & $v)
+    raw[i] = char(byte(v))
+  newBytes(raw)
+
 proc biDeviceBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 4:
     raise newException(GeneError,
@@ -6286,6 +6342,7 @@ proc buildBuiltins(app: Application): Scope =
     "set!": newNativeCallFn("Buffer/set!", biBufferSetBang,
                             acceptsNamed = false),
     "to_list": newNativeFn("Buffer/to_list", biBufferToList),
+    "to_bytes": newNativeFn("Buffer/to_bytes", biBufferToBytes),
     "elem_type": newNativeFn("Buffer/elem_type", biBufferElemType)})
   # The fixed-width numeric names, bound as values so they can be *passed*
   # rather than only annotated. `matchesBuiltinType` has always known them, so

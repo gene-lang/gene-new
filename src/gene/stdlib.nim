@@ -340,6 +340,19 @@ proc biBytesFromList(args: openArray[Value]): Value {.nimcall.} =
     acc.add char(b)
   newBytes(acc)
 
+proc biBytesToBuffer(args: openArray[Value]): Value {.nimcall.} =
+  ## (binary/to_buffer bytes) -> (Buffer U8). The inverse of Buffer/to_bytes,
+  ## and the other half of the bridge a portable codec needs: `Bytes` does not
+  ## exist in the web profile, so a module that both backends run works over a
+  ## `(Buffer U8)` and converts only at the VM's I/O boundary.
+  requireOne("binary/to_buffer", args)
+  requireBytes("binary/to_buffer bytes", args[0])
+  let raw = args[0].bytesVal
+  var items = newSeq[Value](raw.len)
+  for i in 0 ..< raw.len:
+    items[i] = newInt(int(byte(raw[i])))
+  newBuffer(newSym("U8"), items)
+
 proc biBytesToList(args: openArray[Value]): Value {.nimcall.} =
   requireOne("binary/to_list", args)
   requireBytes("binary/to_list", args[0])
@@ -9476,6 +9489,8 @@ proc registerStdlibNamespaces(root: Scope) =
   let bytesScope = newScope(root)
   bytesScope.define("from_list", newNativeFn("binary/from_list", biBytesFromList))
   bytesScope.define("to_list", newNativeFn("binary/to_list", biBytesToList))
+  bytesScope.define("to_buffer",
+                    newNativeFn("binary/to_buffer", biBytesToBuffer))
   bytesScope.define("size", newNativeFn("binary/size", biBytesSize))
   bytesScope.define("get", newNativeFn("binary/get", biBytesGet))
   bytesScope.define("concat", newNativeFn("binary/concat", biBytesConcat))

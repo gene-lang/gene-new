@@ -3697,6 +3697,38 @@ suite "spec — gene/bit and gene/binary from design (§7.9)":
     check_eval("($binary/to_list ($binary/from_list [1 2 255]))", "[1 2 255]")
     check_eval("($binary/size ($binary/from_list [1 2 3]))", "3")
     check_eval("($binary/get ($binary/from_list [9 8 7]) 1)", "8")
+  test "Bytes bridge to and from a (Buffer U8)":
+    # `Bytes` does not exist in the web profile and `(Buffer U8)` does, so a
+    # codec both backends run works over the buffer and converts only at the
+    # VM's I/O boundary. Without this pair the conversion goes through a Gene
+    # list of one element per byte, which for a 16 KB message is 16,384 boxed
+    # values allocated and discarded.
+    check_eval("(($binary/to_buffer ($binary/from_list [1 2 255])) ~ to_list)",
+               "[1 2 255]")
+    check_eval("(($binary/to_buffer ($binary/from_list [7])) ~ elem_type)",
+               "U8")
+    check_eval("(var b ($buffer U8 3)) (b ~ set! 0 137) (b ~ set! 1 80) " &
+               "(b ~ set! 2 71) (b ~ to_bytes)",
+               "#B16#895047")
+    # Round trip, both directions, including the byte values a text encoding
+    # could not carry.
+    check_eval("(($binary/to_buffer " &
+               "(($binary/to_buffer ($binary/from_list [0 128 254 255])) " &
+               "~ to_bytes)) ~ to_list)",
+               "[0 128 254 255]")
+    check_eval("(($binary/to_buffer ($binary/from_list [])) ~ to_list)", "[]")
+  test "Buffer/to_bytes accepts only U8":
+    # Any wider element has an endianness, and a conversion that silently
+    # picked one would be a portability bug that shows up as garbled data on
+    # one machine. The `binary/put_*` codecs state their byte order; this
+    # refuses rather than guessing.
+    check_runtime_error("(($buffer F32 2) ~ to_bytes)", "(Buffer U8)")
+    check_runtime_error("(($buffer U16 2) ~ to_bytes)", "(Buffer U16)")
+    # A list-built buffer is not untyped: the element type is *inferred*, so
+    # this reports `(Buffer Int)` rather than "untyped". Worth pinning, because
+    # `Int` is the one element type whose values would each fit in a byte and
+    # so is the likeliest thing to be silently accepted.
+    check_runtime_error("(($buffer [1 2]) ~ to_bytes)", "(Buffer Int)")
   test "Bytes concatenate and slice":
     check_eval("($binary/concat [($binary/from_list [1 2]) " &
                "($binary/from_list [3])])",
