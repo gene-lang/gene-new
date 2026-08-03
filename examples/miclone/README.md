@@ -148,10 +148,23 @@ sees one or two biomes, and at the origin it stands in the cold quadrant and is
 uniformly snow. That site was found by scanning for the view with the most
 distinct biomes and a coastline; nothing in the generator is tuned for it.
 
-Two traps when re-measuring: a backgrounded tab throttles `requestAnimationFrame`
-to nothing (the fps reads 1, and `document.hidden` is the thing to check), and
-`http.server` sends no `Cache-Control`, so a plain reload can silently re-run the
-previous build.
+**M5, measured in a real tab: 166 fps**, drawing 229 chunk meshes and 62,417
+faces while running physics — and that is the display's ceiling rather than the
+engine's. Over 89 sampled frames the median interval was 6.00 ms (166.7 Hz,
+vsync), the slowest was 7.6 ms, and **nothing exceeded 8 ms**. Against M0's 121
+fps over 186 meshes and 51,387 faces, with no player in the world.
+
+Two traps when re-measuring, one of them now with a way around it:
+
+- **A backgrounded tab throttles `requestAnimationFrame`** — measured at 6 fps
+  here, against 166 for the same build a second later. `document.hidden` is the
+  thing to check, and a screenshot *forces* a render, so sampling the HUD right
+  after one reports a burst rather than a rate. This was recorded as "fps cannot
+  be measured through an automation tab" and that is too strong: bring the window
+  to the front first (`osascript -e 'tell application "Google Chrome" to
+  activate'`), confirm `document.hidden` is `false`, then sample.
+- **`http.server` sends no `Cache-Control`**, so a plain reload can silently
+  re-run the previous build.
 
 Which is why `tools/client_smoke.mjs` exists. A browser is the obvious place to
 check that a keypress reaches the physics and a click reaches the edit, and the

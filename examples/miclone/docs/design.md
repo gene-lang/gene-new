@@ -1786,6 +1786,39 @@ chosen for its coastline and is 23% sea, and the player was spawning afloat
 about a quarter of the time. The scan now stops at the first node that blocks
 and steps east until the column is dry.
 
+#### And then the browser came back
+
+Reinstalling the extension made a real tab available again, and everything the
+stub asserts holds there too: a click digs, the drop that arrives is **dirt from
+grass** — the drop table's one exception, live — a right-click spends it, a drag
+turns the view without digging, and the reach limit stops a downward shaft after
+five or six nodes because the sixth is past 5 nodes of arm.
+
+Three things a real tab added that the stub could not:
+
+- **166 fps**, drawing 229 meshes and 62,417 faces with physics running — and
+  that is the display's ceiling, not the engine's: median frame interval 6.00 ms
+  over 89 samples (166.7 Hz, vsync), slowest 7.6 ms, **none over 8 ms**. M0
+  measured 121 fps over 186 meshes and 51,387 faces with no player in the world.
+- **An edit costs 1.8–3.5 ms end to end** — relight, remesh, and GPU upload —
+  against the 0.40 ms `tools/world_build.mjs` reports for the relight alone. A
+  surface dig in daylight names **27 chunks**, more than the 12 the headless
+  worst case found, because that run's later digs were already in shadow. Still
+  a third of a 60 Hz frame at worst, but it is the number to watch if the region
+  ever grows.
+- **Cave mouths breaking the surface, lit** — from the air, the openings into
+  the cave system are visibly continuous with the daylight above them. That is
+  the exact case §4.1 recorded as broken (lit in one block, dark in the next)
+  and §4.2 fixed, and it is the one form of confirmation the numeric properties
+  cannot give.
+
+**The recorded trap "fps cannot be measured through an automation tab" is too
+strong and is corrected here.** A backgrounded tab does throttle to 6 fps, and a
+screenshot forces a render so sampling the HUD right after one reports a burst —
+both real. But activating the window first (`osascript -e 'tell application
+"Google Chrome" to activate'`) makes `document.hidden` false, and the reading is
+then stable and honest.
+
 ## 8. Entities
 
 Server-authoritative active objects with a registry mirroring §2: an entity
