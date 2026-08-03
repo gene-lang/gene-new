@@ -1837,6 +1837,78 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         onLoad.returnType = webType(wtkVoid)
         paramTypes = @[webType(wtkStr), onLoad]
         returnType = webType(wtkVoid)
+      # --- WebSocket --------------------------------------------------------
+      #
+      # The client half of the only persistent bidirectional transport a
+      # browser has. The server half is `$http/ws_accept` on the VM side
+      # (`src/gene/http_server.nim`), and the two were built together: a
+      # client that can only receive text talks to a server that can only send
+      # it, and neither gap is visible until something needs to move bytes.
+      #
+      # **A socket is an `EventTarget`**, which it genuinely is in the DOM, so
+      # this needs no new handle type — the emitted helpers cast, exactly as
+      # `dom/rect_*` casts to `Element`. Every entry is checked against
+      # lib.dom.d.ts's `WebSocket` by tools/check_host_bindings.
+      #
+      # **Text and binary arrive on separate callbacks**, rather than one
+      # `on_message` taking a union. That is not a preference: the profile does
+      # not narrow a union on a truthiness test (see `dom/element`), so a
+      # handler taking `Str | (Buffer U8)` could not tell which it had. Two
+      # callbacks is the shape the type system can actually express, and it
+      # also matches how a caller uses them — a protocol's control messages and
+      # its bulk payloads are handled in different places.
+      of "ws/connect":
+        # `binaryType` is set to "arraybuffer" by the helper, because the
+        # default is `Blob` and a Blob only yields its bytes through a promise.
+        # A protocol that reads a message synchronously in a handler cannot use
+        # that, and the failure is a silent one: `event.data` is simply not a
+        # buffer.
+        paramTypes = @[webType(wtkStr)]
+        returnType = webType(wtkDomTarget)
+      of "ws/on_open", "ws/on_close":
+        let onEvent = webType(wtkCallback)
+        onEvent.params = @[]
+        onEvent.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkDomTarget), onEvent]
+        returnType = webType(wtkVoid)
+      of "ws/on_text":
+        let onText = webType(wtkCallback)
+        onText.params = @[webType(wtkStr)]
+        onText.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkDomTarget), onText]
+        returnType = webType(wtkVoid)
+      of "ws/on_bytes":
+        # `(Buffer U8)`, which is the one buffer type an `ArrayBuffer` wraps
+        # without a copy or a reinterpretation. A caller wanting wider elements
+        # builds its own view; a caller wanting numbers reads them through the
+        # binary codecs, which is what `server/blockfmt.gene` already does on
+        # the other side.
+        let onBytes = webType(wtkCallback)
+        onBytes.params = @[WebType(kind: wtkBuffer, name: "U8")]
+        onBytes.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkDomTarget), onBytes]
+        returnType = webType(wtkVoid)
+      of "ws/send":
+        paramTypes = @[webType(wtkDomTarget), webType(wtkStr)]
+        returnType = webType(wtkVoid)
+      of "ws/send_bytes":
+        paramTypes = @[webType(wtkDomTarget),
+                       WebType(kind: wtkBuffer, name: "U8")]
+        returnType = webType(wtkVoid)
+      of "ws/close":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkVoid)
+      of "ws/open?":
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkBool)
+      of "ws/buffered":
+        # `bufferedAmount`: bytes handed to `send` that have not gone out yet.
+        # §10's mitigation for a reliable-ordered transport is "send position at
+        # a fixed low rate and keep block transfer on its own logical channel";
+        # this is how a sender knows the socket is falling behind rather than
+        # finding out from the latency.
+        paramTypes = @[webType(wtkDomTarget)]
+        returnType = webType(wtkF64)
       # --- canvas ---------------------------------------------------------
       # Enough of CanvasRenderingContext2D to draw a game: a context handle, a
       # fill and stroke colour, rectangles, and a blit. Every coordinate is
@@ -3783,6 +3855,23 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       "(localStorage.setItem(" & arguments[0] & ", " & arguments[1] & "), undefined)"
     of "image/load":
       "$gene_image_load(" & arguments[0] & ", " & arguments[1] & ")"
+    # --- WebSocket ---
+    of "ws/connect": "$gene_ws_connect(" & arguments[0] & ")"
+    of "ws/on_open":
+      "$gene_ws_on(" & arguments[0] & ", \"open\", " & arguments[1] & ")"
+    of "ws/on_close":
+      "$gene_ws_on(" & arguments[0] & ", \"close\", " & arguments[1] & ")"
+    of "ws/on_text":
+      "$gene_ws_on_text(" & arguments[0] & ", " & arguments[1] & ")"
+    of "ws/on_bytes":
+      "$gene_ws_on_bytes(" & arguments[0] & ", " & arguments[1] & ")"
+    of "ws/send":
+      "$gene_ws_send(" & arguments[0] & ", " & arguments[1] & ")"
+    of "ws/send_bytes":
+      "$gene_ws_send(" & arguments[0] & ", " & arguments[1] & ")"
+    of "ws/close": "$gene_ws_close(" & arguments[0] & ")"
+    of "ws/open?": "$gene_ws_open(" & arguments[0] & ")"
+    of "ws/buffered": "$gene_ws_buffered(" & arguments[0] & ")"
     # --- WebGL2 ---
     # Enum arguments were resolved to constant names during analysis and live
     # in `expr.keys`; they are read from the context object here, which is
@@ -5676,6 +5765,74 @@ proc emitModule(module: WebModule, typescript: bool,
       " { const image = new Image(); image.onload = () => onLoad(image); " &
       "image.onerror = () => { throw new Error(`image/load failed: ${src}`); }; " &
       "image.src = src; }")
+  # --- WebSocket ---
+  #
+  # A socket travels as an `EventTarget`, so each helper casts. The cast is the
+  # same one `$gene_dom_rect` makes and is sound for the same reason: the value
+  # came from `ws/connect`, which is the only thing in the profile that produces
+  # one.
+  let wsCast = if typescript: " as WebSocket" else: ""
+  if moduleUsesBuiltin(module, ["ws/connect"]):
+    let connParams = if typescript: "url: string" else: "url"
+    let targetReturn = if typescript: ": EventTarget" else: ""
+    # `binaryType` before anything else: the default is `Blob`, whose bytes are
+    # only reachable through a promise, so a handler that reads a message
+    # synchronously would find `event.data` is not a buffer — and would find it
+    # at runtime, with no error, on the first binary frame.
+    emitter.line("function $gene_ws_connect(" & connParams & ")" &
+      targetReturn & " { const socket = new WebSocket(url); " &
+      "socket.binaryType = \"arraybuffer\"; return socket; }")
+  if moduleUsesBuiltin(module, ["ws/on_open", "ws/on_close"]):
+    let onParams = if typescript: "socket: EventTarget, kind: string, handler: () => void"
+                   else: "socket, kind, handler"
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_ws_on(" & onParams & ")" & voidReturn &
+      " { socket.addEventListener(kind, () => handler()); }")
+  if moduleUsesBuiltin(module, ["ws/on_text"]):
+    let onParams = if typescript: "socket: EventTarget, handler: (text: string) => void"
+                   else: "socket, handler"
+    let voidReturn = if typescript: ": void" else: ""
+    # A socket carries both kinds on one `message` event, so each callback
+    # filters for its own and ignores the other. Two listeners on one event is
+    # what lets the Gene side have two separately-typed handlers.
+    emitter.line("function $gene_ws_on_text(" & onParams & ")" & voidReturn &
+      " { socket.addEventListener(\"message\", (event) => { " &
+      "const data = (event" & (if typescript: " as MessageEvent" else: "") &
+      ").data; if (typeof data === \"string\") handler(data); }); }")
+  if moduleUsesBuiltin(module, ["ws/on_bytes"]):
+    let onParams = if typescript: "socket: EventTarget, handler: (bytes: Uint8Array) => void"
+                   else: "socket, handler"
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_ws_on_bytes(" & onParams & ")" & voidReturn &
+      " { socket.addEventListener(\"message\", (event) => { " &
+      "const data = (event" & (if typescript: " as MessageEvent" else: "") &
+      ").data; if (data instanceof ArrayBuffer) handler(new Uint8Array(data)); }); }")
+  if moduleUsesBuiltin(module, ["ws/send", "ws/send_bytes"]):
+    let sendParams = if typescript: "socket: EventTarget, payload: string | Uint8Array"
+                     else: "socket, payload"
+    let voidReturn = if typescript: ": void" else: ""
+    # Sending on a socket that is not open throws `InvalidStateError`, and a
+    # connection that closed under a running game is ordinary rather than
+    # exceptional — so this drops instead. §10 makes every position message a
+    # full state precisely so a dropped one is merely stale.
+    emitter.line("function $gene_ws_send(" & sendParams & ")" & voidReturn &
+      " { const s = socket" & wsCast & "; " &
+      "if (s.readyState === 1) s.send(payload); }")
+  if moduleUsesBuiltin(module, ["ws/close"]):
+    let closeParams = if typescript: "socket: EventTarget" else: "socket"
+    let voidReturn = if typescript: ": void" else: ""
+    emitter.line("function $gene_ws_close(" & closeParams & ")" & voidReturn &
+      " { (socket" & wsCast & ").close(); }")
+  if moduleUsesBuiltin(module, ["ws/open?"]):
+    let openParams = if typescript: "socket: EventTarget" else: "socket"
+    let boolReturn = if typescript: ": boolean" else: ""
+    emitter.line("function $gene_ws_open(" & openParams & ")" & boolReturn &
+      " { return (socket" & wsCast & ").readyState === 1; }")
+  if moduleUsesBuiltin(module, ["ws/buffered"]):
+    let bufParams = if typescript: "socket: EventTarget" else: "socket"
+    let numReturn = if typescript: ": number" else: ""
+    emitter.line("function $gene_ws_buffered(" & bufParams & ")" & numReturn &
+      " { return (socket" & wsCast & ").bufferedAmount; }")
   if moduleUsesBuiltin(module, ["canvas/context"]):
     let elParam = if typescript: "element: EventTarget" else: "element"
     let ctxReturn = if typescript: ": CanvasRenderingContext2D" else: ""

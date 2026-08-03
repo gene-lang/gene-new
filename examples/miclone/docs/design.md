@@ -765,10 +765,77 @@ disqualified.
 `$math` has the scalars. `vec3`, `mat4`, AABB, and a ray-vs-voxel traversal are
 library code, all `F64` per §D4.
 
-**7. WebSocket *client*, or a real socket API. Blocks the native shell only.**
-The server side of RFC 6455 exists; nothing in Gene can open a connection. A
-native client needs either the client half or a general socket API. Not on the
-browser-first path — deliberately deferred so it does not gate M0–M8.
+**7. WebSocket *client*, or a real socket API. Blocked M6. Landed for the
+browser; still open for the native shell.**
+The server side of RFC 6455 exists; nothing on the **VM** can open a
+connection, and a native client still needs either the client half or a general
+socket API. That half remains deferred — it gates only the native shell (§D7.8).
+
+What M6 needed, and did not have, was the **browser** half plus binary frames on
+both ends. §10 says messages are Gene nodes "except block data, which uses a
+packed binary encoding because 16 KB of nodes should not become a node tree" —
+and neither end could carry a byte. Trap: *the namespace existed and the
+capability did not*, which is exactly what §11's `db/sqlite` did to M4.
+
+Three gaps, all now closed:
+
+- **`ws_send` was text-only.** `wsEncodeFrame(0x1, …)` with a `requireStr` in
+  front of it. It now takes a `Str` or `Bytes` and picks the opcode from the
+  value's kind — not from a flag, because a caller holding bytes never wants
+  them sent as text: RFC 6455 requires a text frame to be valid UTF-8, so that
+  is a protocol violation rather than merely wasteful.
+- **An inbound binary frame was dropped silently.** Opcode `0x2` fell through
+  the delivery `case` with no branch: no callback, no error, no close. The worst
+  of the three possible behaviours, and invisible from the peer's side. Text
+  now arrives as `Str` and binary as `Bytes`. The frame codec needed no change
+  at all — `wsEncodeFrame` always took an opcode and `wsParseClientFrame` always
+  reported one, so this was a widening of the Gene-facing surface, not of the
+  protocol.
+- **The web profile had no WebSocket binding whatsoever.** Ten now:
+  `ws/connect`, `on_open`, `on_text`, `on_bytes`, `on_close`, `send`,
+  `send_bytes`, `close`, `open?`, `buffered`. A socket travels as an
+  `EventTarget` — which it is — so no new handle type was needed; the emitted
+  helpers cast, as `dom/rect_*` already does. Six entries in
+  `tools/check_host_bindings.mjs` check them against `lib.dom.d.ts`.
+
+Two decisions inside that worth stating:
+
+- **`binaryType` is set to `"arraybuffer"` on connect.** The default is `Blob`,
+  whose bytes are reachable only through a promise, so a handler reading a
+  message synchronously finds `event.data` is not a buffer — at runtime, with no
+  error, on the first binary frame.
+- **Text and binary arrive on separate callbacks** rather than one `on_message`
+  taking a union. Not a preference: the profile does not narrow a union on a
+  truthiness test (see `dom/element`), so a handler typed `Str | (Buffer U8)`
+  could not tell which it had.
+
+**And a defect this hunt exposed, which was worth more than the feature.** A
+WebSocket callback runs as a fiber, and `dispatchWsHandler` returned a task
+nobody read — so an exception inside `on_open`, `on_message`, or `on_close`
+*vanished*. Not logged quietly: gone. A handler with a typo did nothing,
+reported nothing, and left the socket open and idle, which is indistinguishable
+from a client that sent no message. It cost three build cycles here before the
+cause was instrumented, and it would cost a mod author far more (§9). Handler
+tasks are now reaped each loop pass and a failure is logged with its message.
+They remain fire-and-forget — nothing waits on the result — but a failure is now
+*said*.
+
+Covered by three e2e tests in `tests/test_http_server.nim`, over raw sockets
+with hand-masked client frames: both opcodes in both directions, a 16 KB payload
+(past both frame-header size classes, where a length field gets truncated), a
+reversal that can only be computed from a real `Bytes`, and a deliberately
+broken handler whose error must appear.
+
+Two things noted and deliberately not fixed here:
+
+- **`(Buffer U8)` elements are `Int`**, so a byte literal is `255` and not
+  `255.0` — M2's bigint finding, surfacing at the I/O boundary. Harmless: a
+  message payload is not a hot loop, and it is why this is the one buffer in the
+  tree that is not float-typed.
+- **A `Void` callback lowers to `: undefined`**, and `tsc` rejects a body whose
+  value is `void` (`console.log(…)`). Pre-existing and profile-wide —
+  `dom/add_event_listener` and `frame/request` produce the identical error — so
+  it is the profile's `Void` lowering rather than anything the sockets do.
 
 **8. General N-argument FFI. Blocks the native shell.**
 The §D2 finding. Either libffi (a new runtime dependency, which `AGENTS.md`
@@ -1923,6 +1990,12 @@ inherits a transport it can share instead of needing its own.
 Messages are Gene nodes encoded with the existing serialization layer
 (`docs/serialization.md`) for everything except block data, which uses a packed
 binary encoding (§D7.3) because 16 KB of nodes should not become a node tree.
+
+*M6 note: this sentence needed transport that did not exist.* Neither end could
+carry a byte — `ws_send` was text-only and an inbound binary frame was dropped
+with no callback, no error and no close, and the web profile had no WebSocket
+binding at all. All three are closed; see §D7.7, which also records the silent
+handler-failure defect the work exposed.
 
 Message groups: handshake and auth; registry sync (§2's client half, sent
 once on join); block add/remove; node deltas; entity add/remove/update; player

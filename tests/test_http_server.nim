@@ -5,7 +5,7 @@
 ## client sockets. The concurrency test is the core contract: a handler parked
 ## in `sleep` must not stall other requests.
 
-import std/[monotimes, net, os, osproc, strutils, times, unittest]
+import std/[monotimes, net, os, osproc, streams, strutils, times, unittest]
 import gene/[repl, vm]
 
 let httpTestDir = getTempDir() / "gene_http_tests"
@@ -351,3 +351,175 @@ suite "net/http server e2e":
     check statusLine(overflow) == "HTTP/1.1 503 Service Unavailable"
     check bodyOf(overflow) == "busy"
     check bodyOf(readAllHttp(slow)) == "done"
+
+  # --- WebSocket frames -------------------------------------------------------
+  #
+  # `ws_send` takes a `Str` or `Bytes` and picks the opcode from which it got;
+  # an inbound text frame reaches `on_message` as a `Str` and a binary one as
+  # `Bytes`. Binary used to fall through the inbound `case` with no branch —
+  # delivered nowhere, with no error and no close — and `ws_send` could only
+  # ever emit text.
+  #
+  # The consumer is `examples/miclone` §10, which moves 16 KB of voxels per
+  # message and whose §D7.3 says "16 KB of nodes should not become a node tree".
+
+  proc wsHandshake(port: int, path = "/"): Socket =
+    ## Connect and complete the RFC 6455 upgrade, leaving a frame stream.
+    let s = httpConnect(port)
+    s.send("GET " & path & " HTTP/1.1\r\nHost: 127.0.0.1\r\n" &
+           "Upgrade: websocket\r\nConnection: Upgrade\r\n" &
+           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" &
+           "Sec-WebSocket-Version: 13\r\n\r\n")
+    var head = ""
+    while "\r\n\r\n" notin head:
+      var ch: char
+      if s.recv(addr ch, 1, 3000) != 1: break
+      head.add ch
+    check "101" in head.split("\r\n")[0]
+    s
+
+  proc wsClientFrame(opcode: byte, payload: string): string =
+    ## A masked client frame — RFC 6455 §5.1 requires the mask, and the server
+    ## rejects an unmasked one as a protocol error.
+    result = newStringOfCap(payload.len + 14)
+    result.add char(0x80'u8 or opcode)
+    let mask = [byte(0x12), byte(0x34), byte(0x56), byte(0x78)]
+    if payload.len < 126:
+      result.add char(0x80'u8 or byte(payload.len))
+    elif payload.len < 65536:
+      result.add char(0x80'u8 or 126'u8)
+      result.add char((payload.len shr 8) and 0xFF)
+      result.add char(payload.len and 0xFF)
+    else:
+      result.add char(0x80'u8 or 127'u8)
+      for shift in countdown(7, 0):
+        result.add char((uint64(payload.len) shr (uint(shift) * 8)) and 0xFF)
+    for b in mask:
+      result.add char(b)
+    for i, c in payload:
+      result.add char(byte(c) xor mask[i mod 4])
+
+  proc wsReadFrame(s: Socket, timeoutMs = 5000):
+      tuple[opcode: byte, payload: string] =
+    ## One unmasked server frame. Server frames are never masked.
+    var head = newString(2)
+    if s.recv(addr head[0], 2, timeoutMs) != 2:
+      return (0'u8, "")
+    result.opcode = byte(head[0]) and 0x0F
+    var length = int(byte(head[1]) and 0x7F)
+    if length == 126:
+      var ext = newString(2)
+      discard s.recv(addr ext[0], 2, timeoutMs)
+      length = (int(byte(ext[0])) shl 8) or int(byte(ext[1]))
+    elif length == 127:
+      var ext = newString(8)
+      discard s.recv(addr ext[0], 8, timeoutMs)
+      var wide: uint64 = 0
+      for i in 0 ..< 8:
+        wide = (wide shl 8) or uint64(byte(ext[i]))
+      length = int(wide)
+    result.payload = newString(length)
+    var got = 0
+    while got < length:
+      let n = s.recv(addr result.payload[got], length - got, timeoutMs)
+      if n <= 0: break
+      got += n
+
+  test "ws_send emits binary for Bytes and text for Str":
+    let p = startHttpServer("ws-kinds.gene", """
+(import $net/http [Server serve listen ws_accept ws_send])
+(serve (listen ^host "127.0.0.1" ^port 8188)
+  (fn [req]
+    (ws_accept req
+      ^on_open (fn [conn] (ws_send conn "text-hello"))
+      ^on_message (fn [conn payload] (ws_send conn payload)))))
+""")
+    defer: (p.terminate(); p.close())
+    let s = wsHandshake(8188)
+    defer: s.close()
+
+    # on_open sent a Str, so the frame is opcode 1.
+    let hello = wsReadFrame(s)
+    check hello.opcode == 1
+    check hello.payload == "text-hello"
+
+    # A text frame echoes back as text: the handler received a Str, and
+    # `ws_send` chose the opcode from the value it got.
+    s.send(wsClientFrame(1, "ping"))
+    let echoText = wsReadFrame(s)
+    check echoText.opcode == 1
+    check echoText.payload == "ping"
+
+    # A binary frame echoes back as binary. Before this landed the inbound
+    # frame reached no handler at all, so nothing came back and the test would
+    # hang rather than fail on the opcode.
+    let raw = "\xff\x00\xfe\x41\x80"    # not valid UTF-8, so text cannot carry it
+    s.send(wsClientFrame(2, raw))
+    let echoBin = wsReadFrame(s)
+    check echoBin.opcode == 2
+    check echoBin.payload == raw
+
+  test "a binary frame reaches on_message as Bytes":
+    # Echoing proves delivery but not the value's kind — a payload passed
+    # through untouched would look the same whatever it was. Reversing it can
+    # only be done to a real `Bytes`.
+    let p = startHttpServer("ws-bytes.gene", """
+(import $net/http [Server serve listen ws_accept ws_send])
+(serve (listen ^host "127.0.0.1" ^port 8187)
+  (fn [req]
+    (ws_accept req
+      ^on_message (fn [conn payload]
+        (var out [])
+        (var i (- ($binary/size payload) 1))
+        (while (>= i 0)
+          (out ~ push! ($binary/get payload i))
+          (set i (- i 1)))
+        (ws_send conn ($binary/from_list out))))))
+""")
+    defer: (p.terminate(); p.close())
+    let s = wsHandshake(8187)
+    defer: s.close()
+
+    s.send(wsClientFrame(2, "\x01\x02\x03\xfe\xff"))
+    let reversed = wsReadFrame(s)
+    check reversed.opcode == 2
+    check reversed.payload == "\xff\xfe\x03\x02\x01"
+
+    # 16 KB — the size §10 actually moves, and past both frame-header size
+    # classes (126 and 65535), which is where a length field gets truncated.
+    var big = newString(16384)
+    for i in 0 ..< big.len:
+      big[i] = char((i * 7) and 0xFF)
+    s.send(wsClientFrame(2, big))
+    let bigEcho = wsReadFrame(s, timeoutMs = 10000)
+    check bigEcho.opcode == 2
+    check bigEcho.payload.len == big.len
+    var intact = true
+    for i in 0 ..< big.len:
+      if bigEcho.payload[i] != big[big.len - 1 - i]:
+        intact = false
+        break
+    check intact
+
+  test "a failing ws handler is reported rather than swallowed":
+    # WebSocket callbacks run as fibers and nothing waits on the result, so an
+    # exception inside one used to vanish completely: no delivery, no error,
+    # no close — indistinguishable from a client that never sent anything.
+    let p = startHttpServer("ws-throw.gene", """
+(import $net/http [Server serve listen ws_accept ws_send])
+(serve (listen ^host "127.0.0.1" ^port 8186)
+  (fn [req]
+    (ws_accept req
+      ^on_message (fn [conn payload]
+        (undefined_function_in_handler payload)
+        (ws_send conn "never-reached")))))
+""")
+    defer: (p.terminate(); p.close())
+    let s = wsHandshake(8186)
+    s.send(wsClientFrame(1, "trigger"))
+    sleep(700)
+    s.close()
+    p.terminate()
+    let output = p.outputStream.readAll()   # streams.readAll
+    check "ws on_message error" in output
+    check "undefined_function_in_handler" in output

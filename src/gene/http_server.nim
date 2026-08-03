@@ -785,6 +785,24 @@ type
 # handshake, keeps the socket, and drains per-connection bounded outbound
 # queues (ws_send drops oldest frames and reports the drop count so the
 # caller can surface a gap on that client's own stream only).
+#
+# **Text and binary, both directions.** `ws_send` takes a `Str` or a `Bytes`
+# and picks the opcode from which it got; an inbound text frame reaches
+# `on_message` as a `Str` and a binary one as `Bytes`. The frame codec below was
+# always opcode-agnostic — `wsEncodeFrame` takes an opcode and
+# `wsParseClientFrame` reports one — so this is a widening of the Gene-facing
+# surface rather than of the protocol implementation.
+#
+# It was text-only until a caller needed otherwise, and the caller is
+# `examples/miclone`: its §10 sends a 16 KB block of voxels per message and its
+# §D7.3 is explicit that "16 KB of nodes should not become a node tree". Base64
+# through a text frame would cost a third more bytes and two copies per message
+# on the path that carries the most traffic in the system.
+#
+# One asymmetry worth knowing: a *browser* receives binary as an `ArrayBuffer`
+# and text as a `string`, so the two are already distinguishable there. Here the
+# distinction is the Gene value's kind, which is the same information carried
+# the same way.
 
 proc wsSha1Digest(data: string): array[20, byte] =
   ## Compact dependency-free SHA-1 for the handshake accept key only —
@@ -962,17 +980,29 @@ proc biHttpWsAccept(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   newNode(newSym("WsUpgrade"), props = props)
 
 proc biHttpWsSend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## (ws_send conn text) -> Int: oldest frames dropped to fit the bounded
-  ## queue (0 = clean enqueue), or -1 when the connection is closed. The
+  ## (ws_send conn text-or-bytes) -> Int: oldest frames dropped to fit the
+  ## bounded queue (0 = clean enqueue), or -1 when the connection is closed. The
   ## caller owns gap semantics on its own stream.
+  ##
+  ## A `Str` goes out as a text frame and `Bytes` as a binary one. The payload
+  ## kind picks the opcode rather than a flag, because a caller that has bytes
+  ## in hand never wants them sent as text — RFC 6455 requires a text frame to
+  ## be valid UTF-8, so passing a byte string through one is not merely
+  ## wasteful, it is a protocol violation the peer is entitled to close on.
   if args.len != 2:
-    raise newException(GeneError, "ws_send expects (conn, text)")
-  requireStr("ws_send text", args[1])
+    raise newException(GeneError, "ws_send expects (conn, text or bytes)")
+  let payload = args[1]
+  if payload.kind notin {vkString, vkBytes}:
+    raise newException(GeneError,
+      "ws_send payload must be Str or Bytes, got " & $payload.kind)
   let (rt, fd) = wsRuntimeForConnValue(args[0])
   if rt == nil or not rt.wsOpen.getOrDefault(fd, false):
     return newInt(-1)
   var queue = rt.wsOutbound.getOrDefault(fd, @[])
-  queue.add wsEncodeFrame(0x1, args[1].strVal)
+  if payload.kind == vkBytes:
+    queue.add wsEncodeFrame(0x2, payload.bytesVal)
+  else:
+    queue.add wsEncodeFrame(0x1, payload.strVal)
   var dropped = 0
   while queue.len > wsOutboundQueueFrames:
     queue.delete(0)
@@ -1140,6 +1170,38 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     var draining = false
     var drainDeadline: MonoTime
 
+    # WebSocket callbacks run as fibers, and `dispatchWsHandler` hands back a
+    # task nobody was reading — so an exception inside `on_open`, `on_message`,
+    # or `on_close` used to vanish completely. Not "logged somewhere quiet":
+    # gone. A handler with a typo in it did nothing, reported nothing, and left
+    # the socket open and idle, which is indistinguishable from a client that
+    # sent no message.
+    #
+    # These are still fire-and-forget — nothing waits on the result and a
+    # failure has no reply to turn into a 500 — but a failure is now *said*.
+    # The list is drained every loop pass, so it holds only callbacks still in
+    # flight.
+    var wsPending: seq[tuple[label: string, task: Value]] = @[]
+
+    proc wsWatch(label: string, task: Value) =
+      if task.kind == vkTask:
+        wsPending.add (label, task)
+
+    proc wsReapPending() =
+      if wsPending.len == 0:
+        return
+      var stillRunning: seq[tuple[label: string, task: Value]] = @[]
+      for entry in wsPending:
+        if not entry.task.taskDone:
+          stillRunning.add entry
+        elif entry.task.taskHasPanic:
+          HttpRuntimeLogger.emit(llError,
+            "ws " & entry.label & " panic: " & entry.task.taskPanicMsg)
+        elif entry.task.taskHasError:
+          HttpRuntimeLogger.emit(llError,
+            "ws " & entry.label & " error: " & entry.task.taskErrorMsg)
+      wsPending = stillRunning
+
     proc unregisterConn(conn: HttpConn) =
       try:
         selector.unregister(conn.fd)
@@ -1155,7 +1217,8 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         rt.wsCloseRequested.del(conn.fd)
         if conn.wsOnClose.kind != vkNil:
           try:
-            discard dispatchWsHandler(conn.wsOnClose, [conn.wsValue], scope)
+            wsWatch("on_close", dispatchWsHandler(conn.wsOnClose,
+                                               [conn.wsValue], scope))
           except GeneError as e:
             HttpRuntimeLogger.emit(llError, "ws on_close error: " & e.msg)
           except GenePanic as e:
@@ -1189,7 +1252,8 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
         return
       if conn.wsOnOpen.kind != vkNil:
         try:
-          discard dispatchWsHandler(conn.wsOnOpen, [conn.wsValue], scope)
+          wsWatch("on_open", dispatchWsHandler(conn.wsOnOpen,
+                                               [conn.wsValue], scope))
         except GeneError as e:
           HttpRuntimeLogger.emit(llError, "ws on_open error: " & e.msg)
         except GenePanic as e:
@@ -1516,14 +1580,23 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
           return
         conn.buf = conn.buf[frame.consumed .. ^1]
         case frame.opcode
-        of 0x1:
-          # Delivery-only surface: inbound text reaches the optional
+        of 0x1, 0x2:
+          # Delivery-only surface: an inbound data frame reaches the optional
           # on_message callback; mutations stay on the HTTP routes.
+          #
+          # The payload arrives as a `Str` for a text frame (0x1) and `Bytes`
+          # for a binary one (0x2), so a handler tells them apart the way it
+          # tells any two Gene values apart. Binary used to fall through this
+          # `case` with no branch at all — silently dropped, which is the worst
+          # of the three possible behaviours: a peer sending a binary frame got
+          # no delivery, no error, and no close.
           if conn.wsOnMessage.kind != vkNil:
+            let payload = if frame.opcode == 0x2: newBytes(frame.payload)
+                          else: newStr(frame.payload)
             try:
-              discard dispatchWsHandler(conn.wsOnMessage,
-                                        [conn.wsValue,
-                                         newStr(frame.payload)], scope)
+              wsWatch("on_message",
+                      dispatchWsHandler(conn.wsOnMessage,
+                                        [conn.wsValue, payload], scope))
             except GeneError as e:
               HttpRuntimeLogger.emit(llError, "ws on_message error: " & e.msg)
             except GenePanic as e:
@@ -1768,6 +1841,7 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
             of hcpDispatched:
               discard    # not watching; response path re-arms the fd
           pumpScheduler()
+          wsReapPending()
           drainWsOutbound()
           harvest()
     finally:

@@ -114,6 +114,17 @@ const contract = [
   ["storage/set", "Storage", "setItem", "call", 2],
   ["image/load (src)", "HTMLImageElement", "src", "assign"],
   ["image/load (onload)", "HTMLImageElement", "onload", "assign"],
+  // WebSocket — the client half of the transport whose server half is
+  // http/ws_accept on the VM side. `binaryType` is the entry that matters most
+  // here: its default is "blob", whose bytes are only reachable through a
+  // promise, so a handler reading a message synchronously gets no buffer and
+  // no error.
+  ["ws/connect (binaryType)", "WebSocket", "binaryType", "assign"],
+  ["ws/send", "WebSocket", "send", "call", 1],
+  ["ws/close", "WebSocket", "close", "call", 0],
+  ["ws/open?", "WebSocket", "readyState", "read"],
+  ["ws/buffered", "WebSocket", "bufferedAmount", "read"],
+  ["ws message payload", "MessageEvent", "data", "read"],
   // events — the existing surface, checked by the same rule
   ["dom/prevent_default", "Event", "preventDefault", "call", 0],
   ["dom/stop_propagation", "Event", "stopPropagation", "call", 0],
