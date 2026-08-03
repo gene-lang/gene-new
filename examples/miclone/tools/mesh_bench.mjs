@@ -6,8 +6,9 @@
 //   node tools/mesh_bench.mjs
 
 import { fill_padded } from "../dist/mapgen.mjs";
+import { light_region } from "../dist/light.mjs";
 import { count_faces, build_mesh } from "../dist/mesh.mjs";
-import { new_registry, id_of, opaque$q } from "../dist/registry.mjs";
+import { new_registry, id_of, opaque$q, registered_count } from "../dist/registry.mjs";
 import { setup_nodes, setup_biomes, setup_ores } from "../dist/content.mjs";
 
 // 18^3 — the padded neighbourhood core/mesh.gene reads. The web profile
@@ -28,17 +29,30 @@ const AIR = id_of(reg, "air");
 const WATER = id_of(reg, "miclone:water");
 
 const padded = new Float32Array(PAD_NODES);
+// M3: param1, the per-column sky boundary, and the flood queue, all reused
+// across chunks — core/light.gene takes the queue from its caller precisely so
+// a loader allocates once rather than per block (design.md §4).
+const lit = new Float32Array(PAD_NODES);
+const sky = new Float32Array(18 * 18);
+// + 4 is core/light.gene's `queue_overhead`: the ring's header cells.
+const queue = new Float32Array(PAD_NODES + 4);
+const REGISTERED = registered_count(reg);
+const FLOATS_PER_VERTEX = 7;
 
 function meshOne(cx, cy, cz) {
   const t0 = performance.now();
-  fill_padded(padded, cx * 16, cy * 16, cz * 16, biomes, ores, SEED, AIR, WATER);
+  fill_padded(padded, sky, cx * 16, cy * 16, cz * 16, biomes, ores, SEED, AIR, WATER);
   const tGen = performance.now();
+  lit.fill(0);
+  light_region(lit, padded, 18, reg, sky, queue, REGISTERED);
+  const tLight = performance.now();
   const faces = count_faces(reg, padded);
-  const verts = new Float32Array(faces * 4 * 6);
+  const verts = new Float32Array(faces * 4 * FLOATS_PER_VERTEX);
   const idx = new Uint32Array(faces * 6);
-  build_mesh(reg, padded, verts, idx, cx * 16, cy * 16, cz * 16);
+  build_mesh(reg, padded, lit, verts, idx, cx * 16, cy * 16, cz * 16);
   const tMesh = performance.now();
-  return { gen: tGen - t0, mesh: tMesh - tGen, faces, verts: verts.length / 6 };
+  return { gen: tGen - t0, light: tLight - tGen, mesh: tMesh - tLight, faces,
+           verts: verts.length / FLOATS_PER_VERTEX };
 }
 
 // Warm V8 before measuring: the first pass through a function is interpreted.
@@ -51,17 +65,18 @@ for (let i = 0; i < 8; i++) meshOne(i, 0, 0);
 // per-chunk average a loader pays, and the average over chunks that actually
 // produced geometry, which is the number the 8 ms budget is about.
 const SPAN_X = 8, SPAN_Y = 4, SPAN_Z = 8;
-let gen = 0, mesh = 0, faces = 0, verts = 0, worst = 0, empty = 0, total = 0;
-let busyGen = 0, busyMesh = 0, busy = 0;
+let gen = 0, light = 0, mesh = 0, faces = 0, verts = 0, worst = 0, empty = 0, total = 0;
+let busyGen = 0, busyLight = 0, busyMesh = 0, busy = 0;
 for (let cx = 0; cx < SPAN_X; cx++)
   for (let cy = 0; cy < SPAN_Y; cy++)
     for (let cz = 0; cz < SPAN_Z; cz++) {
       const r = meshOne(cx, cy, cz);
-      gen += r.gen; mesh += r.mesh; faces += r.faces; verts += r.verts;
-      worst = Math.max(worst, r.gen + r.mesh);
+      gen += r.gen; light += r.light; mesh += r.mesh;
+      faces += r.faces; verts += r.verts;
+      worst = Math.max(worst, r.gen + r.light + r.mesh);
       total++;
       if (r.faces === 0) empty++;
-      else { busy++; busyGen += r.gen; busyMesh += r.mesh; }
+      else { busy++; busyGen += r.gen; busyLight += r.light; busyMesh += r.mesh; }
     }
 
 const CHUNK_COUNT = total;
@@ -70,8 +85,9 @@ const perBusy = (t) => (t / Math.max(busy, 1)).toFixed(3);
 console.log(`\ndesign.md §D6.1 — meshing, ${CHUNK_COUNT} chunks of 16^3 ` +
   `(${SPAN_X}x${SPAN_Y}x${SPAN_Z})\n`);
 console.log(`  generate      ${per(gen)} ms/chunk      ${perBusy(busyGen)} ms/non-empty`);
+console.log(`  light         ${per(light)} ms/chunk      ${perBusy(busyLight)} ms/non-empty`);
 console.log(`  mesh          ${per(mesh)} ms/chunk      ${perBusy(busyMesh)} ms/non-empty`);
-console.log(`  total         ${per(gen + mesh)} ms/chunk      ${perBusy(busyGen + busyMesh)} ms/non-empty`);
+console.log(`  total         ${per(gen + light + mesh)} ms/chunk      ${perBusy(busyGen + busyLight + busyMesh)} ms/non-empty`);
 console.log(`  worst chunk   ${worst.toFixed(3)} ms`);
 console.log(`  faces         ${(faces / Math.max(busy, 1)).toFixed(0)} avg per non-empty chunk`);
 console.log(`  vertices      ${(verts / Math.max(busy, 1)).toFixed(0)} avg per non-empty chunk`);
@@ -92,7 +108,7 @@ console.log(`  non-empty     ${busy} of ${CHUNK_COUNT} (${empty} fully interior 
   for (let cy = 0; cy < SPAN_Y; cy++)
     for (let cx = 0; cx < SPAN_X; cx++)
       for (let cz = 0; cz < SPAN_Z; cz++) {
-        fill_padded(pad, cx * 16, cy * 16, cz * 16, biomes, ores, SEED, AIR, WATER);
+        fill_padded(pad, sky, cx * 16, cy * 16, cz * 16, biomes, ores, SEED, AIR, WATER);
         faces = count_faces(reg, pad);
         if (faces > 100) { ox = cx*16; oy = cy*16; oz = cz*16; break outer; }
       }
@@ -100,10 +116,13 @@ console.log(`  non-empty     ${busy} of ${CHUNK_COUNT} (${empty} fully interior 
     console.log("\nFAIL — winding: found no chunk with enough geometry to check");
     process.exit(1);
   }
-  fill_padded(pad, ox, oy, oz, biomes, ores, SEED, AIR, WATER);
-  const verts = new Float32Array(faces * 4 * 6);
+  fill_padded(pad, sky, ox, oy, oz, biomes, ores, SEED, AIR, WATER);
+  const padLit = new Float32Array(PAD_NODES);
+  light_region(padLit, pad, 18, reg, sky, new Float32Array(PAD_NODES + 4),
+               REGISTERED);
+  const verts = new Float32Array(faces * 4 * FLOATS_PER_VERTEX);
   const idx = new Uint32Array(faces * 6);
-  build_mesh(reg, pad, verts, idx, ox, oy, oz);
+  build_mesh(reg, pad, padLit, verts, idx, ox, oy, oz);
 
   // The invariant, checked per quad rather than by which directions happen to
   // occur: the normal implied by the winding must point from the solid node
@@ -111,7 +130,9 @@ console.log(`  non-empty     ${busy} of ${CHUNK_COUNT} (${empty} fully interior 
   // has a unit axis-aligned normal like any other, so only this catches it.
   // (A heightfield legitimately produces no downward faces, which is why
   // "all six directions appear" is the wrong test.)
-  const at = (v) => [verts[v * 6 + 0], verts[v * 6 + 1], verts[v * 6 + 2]];
+  const at = (v) => [verts[v * FLOATS_PER_VERTEX + 0],
+                     verts[v * FLOATS_PER_VERTEX + 1],
+                     verts[v * FLOATS_PER_VERTEX + 2]];
   // Asks the registry rather than testing against ids 0 and 5, which is the
   // same change M2 made in core/mesh.gene: ids are assigned at load, so a
   // hardcoded pair is only ever right for one content set.

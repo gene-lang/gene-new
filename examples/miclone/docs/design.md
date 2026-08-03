@@ -871,7 +871,7 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | **M0** | **The three probes (§D6)** | fly through a static voxel world at 60 fps, plus a decided determinism rule and a measured worldgen cost | backlog 1, 6 |
 | ~~M1~~ | **World model + registries — done** | 63 cross-backend checks; §1 and §2 | — |
 | ~~M2~~ | **Mapgen — done** | biomes, caves, and ore, drawn by the M0 renderer; §3 | backlog 5 |
-| M3 | Lighting + meshing in `core/` | the M0 renderer drawing a *generated* lit world | backlog 2 |
+| ~~M3~~ | **Lighting + meshing in `core/` — done** | the M0 renderer drawing a generated *lit* world; §4, §5 | backlog 2 |
 | M4 | Persistence | quit and come back to the same world | backlog 3, 4 |
 | M5 | Player: physics, dig, place, inventory | a playable singleplayer creative-ish loop | — |
 | M6 | Client/server split over WebSocket | the same game, client and server as separate processes | — |
@@ -1219,6 +1219,121 @@ Lighting is the first thing to get wrong in a way that is invisible in tests and
 obvious on screen, so it ships with a fixture set of known small worlds and
 their expected light values.
 
+### 4.1 M3 — what was built
+
+`core/light.gene`, and the model above is unchanged: two 4-bit channels in
+`param1`, day carrying sunlight *and* sources, night carrying sources only,
+mixed by the time of day in §6's shader rather than baked into the mesh — which
+is what makes a day/night cycle one uniform moving instead of a world remesh.
+
+**The channels are flooded in place, not in scratch buffers.** The obvious
+implementation floods two `dim³` buffers and packs them at the end; this reads
+and writes a nibble with three arithmetic operations on a value the message send
+already loaded. It is the difference between allocating 46 KB per block and
+allocating nothing, which at the spike's 576 chunks is the whole of §D6.3's rule
+applied to a stage that did not exist when the rule was written.
+
+**Sunlight is a boundary condition the caller owns.** `light_region` is handed a
+`dim × dim` `sky` buffer — the sunlight entering the top of each column — and
+knows nothing about terrain. `fill_region` fills it while generating, because it
+computes the surface height per column anyway. Deriving it inside the lighting
+pass instead cost **5.5 ms a block** re-sampling a height lattice generation had
+already sampled.
+
+*A `light_filled_region` that derived the sky itself, for "a block whose nodes
+came from somewhere else", was written and then deleted: the design has no such
+block. §11 stores both parameter arrays alongside the content, and §4 above is
+explicit that a client renders the light it was sent. Light travels baked, so
+the only thing that ever computes it is the thing that generated the nodes —
+which is the same sentence this section already used to rule out the divergence
+class, applied to an API instead of to a client.*
+
+#### Cost
+
+| | ms per 16³ block, VM | ms per chunk, V8 |
+|---|---:|---:|
+| stages 1–4, nodes | 33.2 | 0.128 |
+| **stage 6, light** | **24.8** | **0.018** |
+| meshing | — | 0.076 |
+
+Medians of three runs on an idle machine. The block a server stores is
+**58.1 ms** of nodes and light together, against §D6.3's 300 ms and against the
+76.9 ms one lane needs to stay ahead of a walking player (§3.3) — so lighting
+spends about a third of the margin M2 had, and the budget still holds. The
+client's figure is not the question: a chunk generates, lights, and meshes in
+**0.22 ms**, worst chunk 0.91 ms against §D6.1's 8 ms.
+
+**Getting there took one real optimisation, and the shape of it is the lesson.**
+The first version pushed every node the sunlight column walk lit — thousands of
+nodes per block whose six neighbours are all already at full sunlight, each
+costing a push, a pop, and six neighbour tests to discover it has nothing to
+give. A sunlit node can only brighten something if a neighbour is *darker*, and
+under open sky the only darker neighbours are sideways: above is lit by the same
+run, and below the run is the solid node that stopped it. Seeding only the
+columns whose horizontal neighbours are still dark — the vertical faces of every
+shadow, and nothing in the open — took a block from **38.9 ms to 15.1 ms**.
+
+*A second optimisation was tried and reverted.* Dropping the queue's count for
+the classic one-empty-slot ring is three message sends a pop instead of five,
+and it made **no measurable difference** (15.1 vs 15.5 ms, inside the noise).
+The queue is not what lighting costs; the six neighbour tests per popped node
+are. Recorded in the file so the next reader does not spend the same hour.
+
+#### Two measurement traps, both of which produced a number that looked real
+
+- **`light_region` was measured at 164 ms** against a block that the probe's own
+  `carve` and `place_all` timing loops had already run over sixteen times at
+  sixteen origins. What they leave is not terrain — it is mostly air, and
+  lighting mostly-air is a flood over the whole volume. A stage that reads a
+  buffer has to be timed against a buffer something plausible produced.
+- The light buffer is **reused across chunks in the client**, and the flood only
+  ever *raises* a value, so a stale bright node from the previous chunk would
+  never be corrected. A fresh block is zeroed by construction (§1); a reused one
+  is not, and the zeroing is the caller's job.
+
+#### What it does not do yet
+
+**Light does not propagate between blocks.** Each region's flood stops at its
+own edge. For a heightfield that is exact — the caller knows from the surface
+height whether a column's sky is open — and it is what the client needs to draw
+a lit world.
+
+Where it shows is **a cave that breaks the surface**: the block containing the
+breach is lit down its shaft, and the block below starts dark again. Upstream
+lights a whole 5×5×5 chunk at once for exactly this reason. The fix is top-down
+column lighting across loaded blocks, which is the server's job and wants §11's
+block store first. It is recorded rather than worked around, because the
+workaround would be to relight from scratch on the client and §4 is explicit
+that the client must never do that.
+
+#### The incremental path, and how it is tested
+
+§4's "should not be written even as a placeholder" is met: `relight_node` is the
+two-pass unspread/spread pair, plus a third case neither pass covers. Sunlight
+is a boundary condition rather than something a neighbour hands over, so a dug
+hole would be lit to 14 by the open air beside it where a full relight sends 15
+all the way down — `resunlight_column` restores it.
+
+`probes/light_spec.gene` checks the floods against hand-derived values in six
+small worlds, but it checks the incremental path against a *property*:
+**relighting after an edit produces exactly what lighting the edited world from
+scratch produces**, node for node, for a lamp placed, a lamp removed, a lit
+floor dug through, and stone placed in open air.
+
+That property found three bugs a value fixture would not have:
+
+- the node was zeroed *before* the unspread pass read it, so `here` was always 0
+  and the pass silently did nothing — the whole dimming half was dead code;
+- unspreading past a torch put the torch out, because a node that emits light
+  was treated as light derived from somewhere else;
+- placing a node in open air left a lit column under it and cast no shadow, because
+  full sunlight travels down *without* falling off, so the node below an
+  unspread full-sun node holds an equal value rather than a dimmer one and did
+  not look derived.
+
+Each was wrong only in a case a hand-written fixture would have had to think to
+include. The equivalence needed no such foresight.
+
 ## 5. Meshing
 
 Per block, for the six faces of each non-air node, emit a quad when the
@@ -1230,6 +1345,25 @@ Output is one vertex buffer per material (opaque, alpha-tested, transparent) as
 typed arrays, ready to hand to WebGL without a conversion pass. Position,
 normal, UV, and a per-vertex light value; **no per-vertex color** — light is a
 single byte and the shader interpolates day/night.
+
+*M3: built, at seven floats per vertex — position, UV, the packed light byte,
+and the face's shading factor. The normal is not sent, because the only thing
+§6's shader did with one is the directional shading, and that is one float
+rather than three.*
+
+*The light is the **neighbour's**, not the node's: a face shows how lit the air
+in front of it is, and the node behind the face is solid and therefore dark, so
+reading its own `param1` would draw every surface black. That neighbour is the
+node `face_visible?` already tested, so the value is free. Flat per face rather
+than smooth per vertex — smooth lighting averages the four nodes around each
+corner, which is four more reads per vertex and a visible-but-not-structural
+improvement, so the same logic that keeps greedy meshing out of M0 keeps it out
+here.*
+
+*The per-face shading factor stays, and is now a factor **on** §4's light rather
+than a substitute for it. Upstream shades faces the same way and for the same
+reason: with one light value per node and no normals in the shader, a cube lit
+uniformly on all six faces reads as a flat silhouette.*
 
 Transparent geometry sorts back-to-front per block; within a block it is not
 sorted, which is what Luanti does and is fine for glass and water.
@@ -1275,9 +1409,17 @@ and the worst chunk is 0.85 ms against §D6.1's 8 ms budget.
 
 WebGL2, one program for terrain:
 
-- vertex: model-view-projection, pass through UV and light
+- vertex: model-view-projection, pass through UV, light, and face shading
 - fragment: sample the atlas, multiply by interpolated day/night light, apply
   distance fog
+
+*M3: the two channels are unpacked in the fragment shader, not in the mesher.
+Mixing them by the time of day is a per-frame decision, so baking it into the
+vertex buffer would mean remeshing the world at every sunrise; the byte travels
+as-is and a `u_time_of_day` uniform does the mixing. A day/night cycle is
+therefore one number moving. There is also a floor of ambient light under the
+mix, because a 0 channel is pitch black and a voxel world with nothing visible
+in shadow is unreadable rather than moody.*
 
 One texture atlas, generated at build time from source tiles — the same
 approach as `examples/new_world/src/atlas.gene`, which generates and writes a
@@ -1539,6 +1681,12 @@ Four layers, and the second is the one that matters most here.
 1. **Unit fixtures** for pure core functions — lighting propagation, meshing
    output, physics steps, ray traversal, the codec. Table-driven, in the
    repository's existing style.
+
+   *M3: `probes/light_spec.gene`, 34 checks over six hand-derived worlds. Its
+   most useful assertions are not values but an equivalence — incremental
+   relight must equal a full relight, node for node — which found three bugs
+   that a fixture of expected numbers would have had to anticipate to catch
+   (§4.1).*
 2. **Cross-backend fixtures.** Every `core/` module runs the same inputs on the
    VM and through the web profile. This is the mechanism that keeps §D3 honest,
    and it is why the shared-fixture harness is a dependency of the project

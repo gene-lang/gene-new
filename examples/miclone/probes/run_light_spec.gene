@@ -1,0 +1,21 @@
+# The VM shell for the lighting spec.
+#
+#   gene run light_spec
+#
+# Pair with `node tools/light_spec.mjs` and diff: the two must agree exactly.
+# §4's light is not §D3.1's exact half — it is integer arithmetic, so there is
+# nothing for two runtimes to round differently — but the client predicts light
+# around its own edits (§7.1) with the same code the server runs, so a
+# difference here is still two machines disagreeing about one world.
+
+(mod run_light_spec)
+
+(import [report failures] from "./light_spec.gene")
+
+(fn main [args] : Nil
+  ($println (report))
+  (var bad (failures))
+  ($println "")
+  (if (== bad 0.0)
+    (then ($println "PASS — every check agrees"))
+    (else ($println $"FAIL — ${bad} check(s) failed"))))

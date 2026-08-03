@@ -33,9 +33,11 @@
 #            fill        run-length column writes, not per-node decisions
 #   stage 3  caves       carved, not sampled, `core/cave.gene`
 #   stage 4  ore         placed, not searched for, `core/ore.gene`
+#   stage 6  lighting    sunlight down the column, then a flood, `core/light.gene`
 #
-# Stages 5 (decorations) and 6 (lighting) are §3's and belong to M2's successor
-# and M3 respectively.
+# Stage 5, decorations, is not built. Stage 6 runs last because it reads the
+# finished node array — a cave carved after lighting would be lit as though it
+# were still rock.
 #
 # Everything here is §D3.1's *exact half* — see `core/exact.gene`. Coordinates,
 # noise, and content ids are all `F64`, because `Int` lowers to `bigint` in the
@@ -52,6 +54,7 @@
         from "./biome.gene")
 (import [OreRegistry place_all] from "./ore.gene")
 (import [carve] from "./cave.gene")
+(import [light_max] from "./light.gene")
 
 # --- block geometry ----------------------------------------------------------
 
@@ -167,7 +170,15 @@
 # 16, and 16 `F64` at the padded size, so the allocation is under a kilobyte
 # against a stage that costs milliseconds; making them caller-supplied would put
 # three scratch buffers in every signature to save nothing measurable.
-(fn fill_region [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+#
+# **`sky` is an output**, not scratch: `dim × dim` of the sunlight entering the
+# top of each column, which is the boundary condition §4's lighting needs. The
+# surface height it comes from is computed here anyway, once per column, so
+# handing it forward is free — and the alternative measured 5.5 ms a block,
+# because a separate lighting entry point has to re-sample the whole height
+# lattice to learn what generation already knew.
+(fn fill_region [out : (Buffer F32) sky : (Buffer F32) dim : F64
+                 ox : F64 oy : F64 oz : F64
                  biomes : BiomeRegistry ores : OreRegistry
                  seed : F64 air : F64 water : F64] : Nil
 
@@ -201,6 +212,11 @@
       (var wx (+ ox x))
       (var surface (surface_from_noise
                      (lattice_value height hd hx hz terrain_step wx wz)))
+      # §4's boundary: the terrain is a heightfield, so a column's sun is
+      # unobstructed down to its surface, and this region's top is open exactly
+      # when it sits above that surface.
+      (sky ~ set! (+ x (* z dim))
+            (if (> (+ oy (- dim 1.0)) surface) light_max 0.0))
       (var b (biome_at biomes
                        (* 100.0 (lattice_value heat bd bx bz biome_step wx wz))
                        (* 100.0
@@ -240,16 +256,32 @@
   (carve out dim ox oy oz seed air water)
   (place_all out dim ox oy oz ores seed))
 
+# --- stage 6: lighting -------------------------------------------------------
+#
+# §3 step 6 is `core/light.gene`, called by whoever owns the scratch it needs —
+# `light_region` takes a queue and a `sky` buffer, and the point of taking them
+# is that a loader allocates once rather than per block. So generation does not
+# call it; it *feeds* it, by filling `sky` above.
+#
+# There was, briefly, a `light_filled_region` here that derived the sky itself
+# for "a block whose nodes came from somewhere else". It is deleted, because the
+# design has no such block: §11 stores both parameter arrays alongside the
+# content, and §4 is explicit that a client renders the light it was sent and
+# never derives a received block's light from scratch. Light travels baked, so
+# the only thing that ever computes it is the thing that generated the nodes.
+
 # The server's shape: one 16³ block, §1's storage unit.
-(fn generate_block [out : (Buffer F32) ox : F64 oy : F64 oz : F64
+(fn generate_block [out : (Buffer F32) sky : (Buffer F32)
+                    ox : F64 oy : F64 oz : F64
                     biomes : BiomeRegistry ores : OreRegistry
                     seed : F64 air : F64 water : F64] : Nil
-  (fill_region out block_dim ox oy oz biomes ores seed air water))
+  (fill_region out sky block_dim ox oy oz biomes ores seed air water))
 
 # The client's shape: the 18³ neighbourhood `core/mesh.gene` reads, whose
 # `(0,0,0)` is one node outside the block on every axis.
-(fn fill_padded [out : (Buffer F32) ox : F64 oy : F64 oz : F64
+(fn fill_padded [out : (Buffer F32) sky : (Buffer F32)
+                 ox : F64 oy : F64 oz : F64
                  biomes : BiomeRegistry ores : OreRegistry
                  seed : F64 air : F64 water : F64] : Nil
-  (fill_region out pad_dim (- ox 1.0) (- oy 1.0) (- oz 1.0)
+  (fill_region out sky pad_dim (- ox 1.0) (- oy 1.0) (- oz 1.0)
                biomes ores seed air water))

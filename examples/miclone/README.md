@@ -3,8 +3,8 @@
 A voxel game engine with [Luanti](https://github.com/luanti-org/luanti)'s
 architecture, written in Gene, whose mod language is Gene.
 
-**Status: M0, M1, and M2 — a generated world you can fly through. There is no
-game yet.** Read
+**Status: M0 through M3 — a generated, lit world you can fly through. There is
+no game yet.** Read
 [`docs/design.md`](docs/design.md) first — Part I is the direction and the
 decisions, and §D2 is the constraint that shaped the rest.
 
@@ -52,10 +52,11 @@ that 3D noise is expensive — it is that a single message send is ~500 ns, so
 *unit* was therefore wrong.
 
 M2 acts on that: the generation unit is a 16³ block, and the probe now measures
-whole blocks rather than extrapolating. **31.8 ms/block**, against §D6.3's
-300 ms and against what a walking player needs — and against the node rate the
-old unit implied, which it still misses by 13.2x and which the probe reports
-anyway. See design.md §3.3.
+whole blocks rather than extrapolating. **33.2 ms/block** of nodes, plus
+**24.8 ms** for M3's lighting — **58.1 ms** for the block a server stores,
+against §D6.3's 300 ms and against the 76.9 ms one lane needs to stay ahead of a
+walking player. It still misses the node rate the old unit implied by 24x, and
+the probe reports that anyway. See design.md §3.3 and §4.1.
 
 ---
 
@@ -72,6 +73,7 @@ core/       portable Gene — compiles for the VM and the web profile
   cave.gene     Bézier-worm carving (§3 stage 3)
   ore.gene      the ore registry: scatter, sheet, blob (§3 stage 4)
   mapgen.gene   the staged pipeline (§3)
+  light.gene    sunlight and light sources, packed into param1 (§4)
   mesh.gene     face-culled meshing (§5)
   content.gene  the provisional node/biome/ore set — M7 replaces this with a mod
 client/     the browser shell: WebGL2 renderer, atlas, camera
@@ -91,7 +93,7 @@ module with a shell per backend rather than one module with a conditional.
 cd examples/miclone
 for m in core/exact core/noise core/field core/world core/registry \
          core/biome core/cave core/ore core/content core/mapgen \
-         core/mesh core/vec client/atlas client/render client/main; do
+         core/light core/mesh core/vec client/atlas client/render client/main; do
   gene build --target web $m.gene --out-dir dist
 done
 
@@ -101,9 +103,9 @@ python3 -m http.server 8000      # then open http://localhost:8000/
 
 M0 measured **121 fps** drawing 186 chunk meshes and 51,387 faces, with a worst
 chunk of 0.44 ms against an 8 ms meshing budget. M2 draws 231 meshes and 62,580
-faces — 22% more geometry through an unchanged render path — and meshes a chunk
-in **0.069 ms**, worst chunk 0.79 ms. Drag to look, WASD to move, space/shift
-for up and down.
+faces — 22% more geometry — and M3 lights every one of them: a chunk now
+generates, lights, and meshes in **0.22 ms** (0.128 + 0.018 + 0.076), worst
+chunk 0.91 ms. Drag to look, WASD to move, space/shift for up and down.
 
 The spike stands at world (-1440, 3168) rather than the origin, because §3 gives
 biomes a ~555-node scale and this view is 192 nodes across: wherever it stands it
@@ -123,4 +125,5 @@ Both must produce byte-identical output on the VM and through the web profile.
 ```sh
 gene run world_spec  | diff - <(node tools/world_spec.mjs)    # §1, §2
 gene run mapgen_spec | diff - <(node tools/mapgen_spec.mjs)   # §3, §5, §14
+gene run light_spec  | diff - <(node tools/light_spec.mjs)    # §4
 ```

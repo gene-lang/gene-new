@@ -1,0 +1,427 @@
+# Cross-backend spec for lighting — design.md §4 and §14 layers 1 and 2.
+#
+# §4: "Lighting is the first thing to get wrong in a way that is invisible in
+# tests and obvious on screen, so it ships with a fixture set of known small
+# worlds and their expected light values."
+#
+# So this builds small worlds whose right answer can be worked out by hand, and
+# checks the light in them node by node. The worlds are deliberately tiny — a
+# 5³ room, a 7³ box with a hole in the roof — because a fixture whose expected
+# value came out of the implementation is not a fixture, and 15 hand-derived
+# numbers catch more than 5,000 recorded ones.
+#
+# Runs on the VM and through the web profile and must produce byte-identical
+# output, as every `core/` module's spec does (§14 layer 2).
+
+(mod light_spec ^profile web)
+
+(import [Registry new_registry register register_uniform id_of
+         registered_count draw_normal draw_airlike draw_glasslike]
+        from "../core/registry.gene")
+(import [day_of night_of with_day with_night queue_overhead
+         region_index light_region relight_node light_max]
+        from "../core/light.gene")
+(import [light_day light_night pack_light] from "../core/world.gene")
+
+# --- reporting ---------------------------------------------------------------
+
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out ~ push! $"ok   ${label}"))
+    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label $"$($to_int got)" $"$($to_int want)"))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
+
+# --- nibble packing ----------------------------------------------------------
+#
+# `core/light.gene` open-codes these rather than calling `core/world.gene`'s
+# named versions, because they run per node per neighbour per channel and a
+# call is ~640 ns on the VM against nothing for the arithmetic. Two definitions
+# of one rule is a drift risk, so this is the test that says they agree.
+
+(fn packing_checks [out : (List Str)] : Nil
+  (check_f out "day_of(0)" (day_of 0.0) 0.0)
+  (check_f out "night_of(0)" (night_of 0.0) 0.0)
+  (check_f out "day_of(255)" (day_of 255.0) 15.0)
+  (check_f out "night_of(255)" (night_of 255.0) 15.0)
+  (check_f out "day_of(pack(12,3))" (day_of (pack_light 12.0 3.0)) 12.0)
+  (check_f out "night_of(pack(12,3))" (night_of (pack_light 12.0 3.0)) 3.0)
+
+  # Setting one channel must leave the other exactly as it was — the failure
+  # this catches is a torch quietly erasing the sunlight in its own node.
+  (check_f out "with_day keeps night" (night_of (with_day 255.0 4.0)) 15.0)
+  (check_f out "with_day sets day" (day_of (with_day 255.0 4.0)) 4.0)
+  (check_f out "with_night keeps day" (day_of (with_night 255.0 4.0)) 15.0)
+  (check_f out "with_night sets night" (night_of (with_night 255.0 4.0)) 4.0)
+
+  # And they agree with core/world.gene's named forms, on every packed byte.
+  (var bad 0.0)
+  (var p 0.0)
+  (while (< p 256.0)
+    (if_yes (|| (!= (day_of p) (light_day p)) (!= (night_of p) (light_night p)))
+      (set bad (+ bad 1.0)))
+    (set p (+ p 1.0)))
+  (check_f out "light.gene and world.gene agree on all 256 packed bytes"
+           bad 0.0))
+
+# --- fixture registry --------------------------------------------------------
+#
+# Four nodes, chosen so every branch in the propagation has a node that takes
+# it: air (transparent, dark), stone (opaque), glass (drawn but transparent, so
+# light passes through something solid), and a lamp emitting 14.
+
+(fn fixture_registry [] : Registry
+  (var r (new_registry))
+  (register_uniform r "t:stone" draw_normal true true false 0.0 0.0)
+  (register_uniform r "t:glass" draw_glasslike true false true 0.0 1.0)
+  (register_uniform r "t:lamp" draw_normal true true false 14.0 2.0)
+  r)
+
+# A region filled with one node, so a fixture states only what differs from it.
+(fn fill_all [buf : (Buffer F32) n : F64 v : F64] : Nil
+  (var i 0.0)
+  (while (< i n) (buf ~ set! i v) (set i (+ i 1.0))))
+
+(fn open_sky [sky : (Buffer F32) n : F64] : Nil
+  (fill_all sky n light_max))
+
+# --- world 1: open air -------------------------------------------------------
+#
+# 5³ of air under open sky. Every node is full daylight and no node has any
+# night light, because nothing in it emits. The simplest world there is, and
+# the one that fails first if the column walk is wrong.
+
+(fn open_air_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var air (id_of r "air"))
+  (var dim 5.0)
+  (var n (* dim (* dim dim)))
+  (var content ($buffer F32 n))
+  (var param1 ($buffer F32 n))
+  (var sky ($buffer F32 (* dim dim)))
+  (var q ($buffer F32 (+ n queue_overhead)))
+  (fill_all content n air)
+  (open_sky sky (* dim dim))
+  (light_region param1 content dim r sky q (registered_count r))
+
+  (var dark 0.0)
+  (var night 0.0)
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (!= (day_of (param1 ~ get i)) light_max) (set dark (+ dark 1.0)))
+    (if_yes (!= (night_of (param1 ~ get i)) 0.0) (set night (+ night 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "open air: every node is full daylight" dark 0.0)
+  (check_f out "open air: no node has night light" night 0.0))
+
+# --- world 2: a floor ---------------------------------------------------------
+#
+# 5³ with solid stone in the bottom two layers. Sunlight fills y 2..4 and stops
+# at the stone: y 1 is the top of the floor and gets nothing, because sunlight
+# does not enter a node that does not propagate.
+#
+# This is the check that catches a column walk that lights one node too far —
+# which on screen is a floor that glows.
+
+(fn floor_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var air (id_of r "air"))
+  (var stone (id_of r "t:stone"))
+  (var dim 5.0)
+  (var n (* dim (* dim dim)))
+  (var content ($buffer F32 n))
+  (var param1 ($buffer F32 n))
+  (var sky ($buffer F32 (* dim dim)))
+  (var q ($buffer F32 (+ n queue_overhead)))
+  (fill_all content n air)
+  (var z 0.0)
+  (while (< z dim)
+    (var x 0.0)
+    (while (< x dim)
+      (content ~ set! (region_index x 0.0 z dim) stone)
+      (content ~ set! (region_index x 1.0 z dim) stone)
+      (set x (+ x 1.0)))
+    (set z (+ z 1.0)))
+  (open_sky sky (* dim dim))
+  (light_region param1 content dim r sky q (registered_count r))
+
+  (check_f out "floor: air above is lit"
+           (day_of (param1 ~ get (region_index 2.0 2.0 2.0 dim))) light_max)
+  (check_f out "floor: top of the floor is dark"
+           (day_of (param1 ~ get (region_index 2.0 1.0 2.0 dim))) 0.0)
+  (check_f out "floor: inside the floor is dark"
+           (day_of (param1 ~ get (region_index 2.0 0.0 2.0 dim))) 0.0))
+
+# --- world 3: glass lets light through ---------------------------------------
+#
+# The same floor, with one glass node in it. Glass is solid and drawn but
+# propagates light, so the column through it stays lit all the way down — a
+# node being *drawn* and a node being *transparent to light* are different
+# questions, and this is the fixture that separates them.
+
+(fn glass_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var air (id_of r "air"))
+  (var stone (id_of r "t:stone"))
+  (var glass (id_of r "t:glass"))
+  (var dim 5.0)
+  (var n (* dim (* dim dim)))
+  (var content ($buffer F32 n))
+  (var param1 ($buffer F32 n))
+  (var sky ($buffer F32 (* dim dim)))
+  (var q ($buffer F32 (+ n queue_overhead)))
+  (fill_all content n air)
+  (var z 0.0)
+  (while (< z dim)
+    (var x 0.0)
+    (while (< x dim)
+      (content ~ set! (region_index x 2.0 z dim) stone)
+      (set x (+ x 1.0)))
+    (set z (+ z 1.0)))
+  # One pane in the middle of the slab.
+  (content ~ set! (region_index 2.0 2.0 2.0 dim) glass)
+  (open_sky sky (* dim dim))
+  (light_region param1 content dim r sky q (registered_count r))
+
+  (check_f out "glass: the pane itself is lit"
+           (day_of (param1 ~ get (region_index 2.0 2.0 2.0 dim))) light_max)
+  (check_f out "glass: sunlight continues below it"
+           (day_of (param1 ~ get (region_index 2.0 1.0 2.0 dim))) light_max)
+  (check_f out "glass: the stone slab itself is dark"
+           (day_of (param1 ~ get (region_index 0.0 2.0 0.0 dim))) 0.0)
+  # Under the far corner of the slab: four steps from the pane's column, so
+  # four dimmer. Light gets under a roof through one hole and falls off with
+  # distance, which is the whole reason the flood is a flood.
+  (check_f out "glass: light under the slab falls off with distance"
+           (day_of (param1 ~ get (region_index 0.0 1.0 0.0 dim)))
+           (- light_max 4.0))
+  # Directly under the pane is full sun; one node sideways is sun minus one.
+  (check_f out "glass: sideways falloff under the slab"
+           (day_of (param1 ~ get (region_index 1.0 1.0 2.0 dim)))
+           (- light_max 1.0)))
+
+# --- world 4: a sealed room with a lamp --------------------------------------
+#
+# 7³ of solid stone with a 5³ hollow inside and a lamp at its centre. No sky
+# reaches it, so day and night must be *equal* everywhere: a sealed room looks
+# the same at noon and midnight, and if the two channels disagree the room
+# changes brightness as the sun moves.
+#
+# The lamp emits 14 and light falls off by one per node, so the centre is 14,
+# a face neighbour 13, and the corner of the hollow — three steps away — is 11.
+
+(fn lamp_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var air (id_of r "air"))
+  (var stone (id_of r "t:stone"))
+  (var lamp (id_of r "t:lamp"))
+  (var dim 7.0)
+  (var n (* dim (* dim dim)))
+  (var content ($buffer F32 n))
+  (var param1 ($buffer F32 n))
+  (var sky ($buffer F32 (* dim dim)))
+  (var q ($buffer F32 (+ n queue_overhead)))
+  (fill_all content n stone)
+  # Hollow out 1..5 on every axis.
+  (var z 1.0)
+  (while (< z 6.0)
+    (var y 1.0)
+    (while (< y 6.0)
+      (var x 1.0)
+      (while (< x 6.0)
+        (content ~ set! (region_index x y z dim) air)
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0)))
+  (content ~ set! (region_index 3.0 3.0 3.0 dim) lamp)
+  # Sealed: no sky at all.
+  (fill_all sky (* dim dim) 0.0)
+  (light_region param1 content dim r sky q (registered_count r))
+
+  (check_f out "lamp: the lamp node emits 14"
+           (night_of (param1 ~ get (region_index 3.0 3.0 3.0 dim))) 14.0)
+  (check_f out "lamp: a face neighbour is 13"
+           (night_of (param1 ~ get (region_index 4.0 3.0 3.0 dim))) 13.0)
+  (check_f out "lamp: two steps is 12"
+           (night_of (param1 ~ get (region_index 5.0 3.0 3.0 dim))) 12.0)
+  # Six steps, not three: the flood spreads through faces, so the distance from
+  # (3,3,3) to (5,5,5) is 2 + 2 + 2 in the metric that matters.
+  (check_f out "lamp: the hollow's corner is six steps, so 8"
+           (night_of (param1 ~ get (region_index 5.0 5.0 5.0 dim))) 8.0)
+
+  # A sealed room must read the same at noon and midnight.
+  (var mismatched 0.0)
+  (var i 0.0)
+  (while (< i n)
+    (var p (param1 ~ get i))
+    (if_yes (!= (day_of p) (night_of p)) (set mismatched (+ mismatched 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "lamp: day equals night in a sealed room" mismatched 0.0))
+
+# --- world 5: incremental relight ---------------------------------------------
+#
+# §4 requires the update to be incremental, and the hard direction is dimming:
+# the light a removed lamp put into its neighbours has to be taken back, and
+# nothing in the buffer records where it came from.
+#
+# So the test is an equivalence rather than a value: **relight after an edit
+# must produce exactly what lighting the edited world from scratch produces.**
+# That is the property the two-pass unspread/spread algorithm exists to
+# preserve, and it is checked over every node.
+
+(fn relight_matches [r : Registry content : (Buffer F32) dim : F64
+                     ex : F64 ey : F64 ez : F64 new_id : F64
+                     sealed : Bool] : F64
+  (var n (* dim (* dim dim)))
+  (var sky ($buffer F32 (* dim dim)))
+  (if sealed
+    (then (fill_all sky (* dim dim) 0.0))
+    (else (open_sky sky (* dim dim))))
+  (var q ($buffer F32 (+ n queue_overhead)))
+  (var q2 ($buffer F32 (+ n queue_overhead)))
+
+  # Light the world as it is, edit it, then relight incrementally.
+  (var incremental ($buffer F32 n))
+  (light_region incremental content dim r sky q (registered_count r))
+  (content ~ set! (region_index ex ey ez dim) new_id)
+  (relight_node incremental content dim r ex ey ez sky q q2)
+
+  # Light the edited world from scratch.
+  (var scratch ($buffer F32 n))
+  (light_region scratch content dim r sky q (registered_count r))
+
+  (var differing 0.0)
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (!= (incremental ~ get i) (scratch ~ get i))
+      (set differing (+ differing 1.0)))
+    (set i (+ i 1.0)))
+  differing)
+
+(fn incremental_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var air (id_of r "air"))
+  (var stone (id_of r "t:stone"))
+  (var lamp (id_of r "t:lamp"))
+  (var dim 7.0)
+  (var n (* dim (* dim dim)))
+
+  # Placing a lamp in a sealed room: light appears where there was none.
+  (var w1 ($buffer F32 n))
+  (fill_all w1 n stone)
+  (hollow w1 dim air)
+  (check_f out "relight: placing a lamp matches a full relight"
+           (relight_matches r w1 dim 3.0 3.0 3.0 lamp true) 0.0)
+
+  # Removing that lamp again: this is the unspread pass, and the one that goes
+  # wrong quietly — a stale halo where the lamp used to be.
+  (var w2 ($buffer F32 n))
+  (fill_all w2 n stone)
+  (hollow w2 dim air)
+  (w2 ~ set! (region_index 3.0 3.0 3.0 dim) lamp)
+  (check_f out "relight: removing a lamp matches a full relight"
+           (relight_matches r w2 dim 3.0 3.0 3.0 air true) 0.0)
+
+  # Digging a hole in a lit floor: sunlight has to reach down through it.
+  (var w3 ($buffer F32 n))
+  (fill_all w3 n air)
+  (var z 0.0)
+  (while (< z dim)
+    (var x 0.0)
+    (while (< x dim)
+      (w3 ~ set! (region_index x 3.0 z dim) stone)
+      (set x (+ x 1.0)))
+    (set z (+ z 1.0)))
+  (check_f out "relight: digging a lit floor matches a full relight"
+           (relight_matches r w3 dim 3.0 3.0 3.0 air false) 0.0)
+
+  # Placing stone in open air: the shadow under it has to appear.
+  (var w4 ($buffer F32 n))
+  (fill_all w4 n air)
+  (check_f out "relight: placing stone in open air matches a full relight"
+           (relight_matches r w4 dim 3.0 5.0 3.0 stone false) 0.0))
+
+(fn hollow [content : (Buffer F32) dim : F64 air : F64] : Nil
+  (var z 1.0)
+  (while (< z (- dim 1.0))
+    (var y 1.0)
+    (while (< y (- dim 1.0))
+      (var x 1.0)
+      (while (< x (- dim 1.0))
+        (content ~ set! (region_index x y z dim) air)
+        (set x (+ x 1.0)))
+      (set y (+ y 1.0)))
+    (set z (+ z 1.0))))
+
+# --- world 6: the sky boundary is the caller's ---------------------------------
+#
+# `light_region` does not know where the sky is; the caller supplies it per
+# column (§4). A region with no sky is dark whatever is in it, and that is what
+# makes a block below the surface cost nothing to light.
+
+(fn sky_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var air (id_of r "air"))
+  (var dim 5.0)
+  (var n (* dim (* dim dim)))
+  (var content ($buffer F32 n))
+  (var param1 ($buffer F32 n))
+  (var sky ($buffer F32 (* dim dim)))
+  (var q ($buffer F32 (+ n queue_overhead)))
+  (fill_all content n air)
+  (fill_all sky (* dim dim) 0.0)
+  (light_region param1 content dim r sky q (registered_count r))
+  (var lit 0.0)
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (!= (param1 ~ get i) 0.0) (set lit (+ lit 1.0)))
+    (set i (+ i 1.0)))
+  (check_f out "no sky: nothing is lit" lit 0.0)
+
+  # One open column in an otherwise closed sky: a shaft of light that falls off
+  # sideways. This is the fixture that would catch sunlight spreading sideways
+  # at full strength, which on screen is a world with no shadows at all.
+  (var p2 ($buffer F32 n))
+  (fill_all sky (* dim dim) 0.0)
+  (sky ~ set! (+ 2.0 (* 2.0 dim)) light_max)
+  (light_region p2 content dim r sky q (registered_count r))
+  (check_f out "shaft: the lit column is full strength at the bottom"
+           (day_of (p2 ~ get (region_index 2.0 0.0 2.0 dim))) light_max)
+  (check_f out "shaft: one node sideways is one dimmer"
+           (day_of (p2 ~ get (region_index 1.0 0.0 2.0 dim)))
+           (- light_max 1.0))
+  (check_f out "shaft: two nodes sideways is two dimmer"
+           (day_of (p2 ~ get (region_index 0.0 0.0 2.0 dim)))
+           (- light_max 2.0)))
+
+# --- the report --------------------------------------------------------------
+
+(fn collect [out : (List Str)] : Nil
+  (packing_checks out)
+  (open_air_checks out)
+  (floor_checks out)
+  (glass_checks out)
+  (lamp_checks out)
+  (sky_checks out)
+  (incremental_checks out))
+
+(fn report [] : Str
+  (var out : (List Str) [])
+  (collect out)
+  ($str/join out "\n"))
+
+(fn failures [] : F64
+  (var out : (List Str) [])
+  (collect out)
+  (var bad 0.0)
+  (var i 0.0)
+  (var n (out ~ size))
+  (while (< i n)
+    (if_yes ($str/starts_with? out/%i "FAIL")
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)

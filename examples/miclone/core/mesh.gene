@@ -25,8 +25,12 @@
 (let pad_stride_y 18.0)
 (let pad_stride_z 324.0)           # pad_dim * pad_dim
 
-# Position, texture coordinate, and a per-vertex light multiplier.
-(let floats_per_vertex 6.0)
+# Position, texture coordinate, the packed light byte, and the face's shading
+# factor. §5 asks for "position, normal, UV, and a per-vertex light value; no
+# per-vertex color" — the normal is not sent because nothing downstream needs
+# it: the only thing §6's shader did with a normal is the directional shading,
+# and that is one float rather than three.
+(let floats_per_vertex 7.0)
 (let vertices_per_face 4.0)
 (let indices_per_face 6.0)
 
@@ -36,14 +40,16 @@
 (let atlas_cols 4.0)
 (let atlas_step 0.25)              # 1 / atlas_cols
 
-# Fixed directional shading, in place of §4's propagated light. The spike has no
-# light data and would be unreadable flat-lit: without some difference between
-# a top face and a side face, a voxel landscape reads as a silhouette. These are
-# the multipliers a real light value will scale once §4 exists.
-(let light_top 1.0)
-(let light_side_z 0.86)
-(let light_side_x 0.72)
-(let light_bottom 0.55)
+# Per-face shading, which is now a *factor on* §4's light rather than a
+# substitute for it. Upstream shades faces the same way and for the same reason:
+# with one light value per node and no normals in the shader, a cube lit
+# uniformly on all six faces reads as a flat silhouette, and the edges of the
+# world disappear. §4 supplies how much light reaches the face; this supplies
+# how much of it the face shows.
+(let shade_top 1.0)
+(let shade_side_z 0.86)
+(let shade_side_x 0.72)
+(let shade_bottom 0.55)
 
 # --- node classification -----------------------------------------------------
 #
@@ -75,6 +81,11 @@
 
 (fn node_at [padded : (Buffer F32) x : F64 y : F64 z : F64] : F64
   (padded ~ get (pad_index x y z)))
+
+# The packed `param1` of a node in the same padded neighbourhood (§4). Read at
+# the *neighbour* of a face, never at the face's own node — see `put_quad`.
+(fn light_at [lit : (Buffer F32) x : F64 y : F64 z : F64] : F64
+  (lit ~ get (pad_index x y z)))
 
 # A face exists when the neighbour it faces does not hide it.
 #
@@ -129,14 +140,15 @@
 # float offset, so callers never do the stride arithmetic themselves.
 (fn put_vertex [verts : (Buffer F32) at : F64
                 px : F64 py : F64 pz : F64
-                u : F64 v : F64 light : F64] : Nil
+                u : F64 v : F64 light : F64 shade : F64] : Nil
   (var o (* at floats_per_vertex))
   (verts ~ set! o px)
   (verts ~ set! (+ o 1.0) py)
   (verts ~ set! (+ o 2.0) pz)
   (verts ~ set! (+ o 3.0) u)
   (verts ~ set! (+ o 4.0) v)
-  (verts ~ set! (+ o 5.0) light))
+  (verts ~ set! (+ o 5.0) light)
+  (verts ~ set! (+ o 6.0) shade))
 
 # Two triangles over the four corners just written, in the order that makes the
 # quad front-facing from outside.
@@ -163,9 +175,17 @@
   (idx ~ set! (+ o 5.0) ($to_int (+ base 3.0))))
 
 # Emit one quad. The four corners arrive already in winding order; this only
-# adds the atlas offset and the shared light value.
+# adds the atlas offset and the shared light and shading values.
+#
+# **The light is the *neighbour's*, not the node's.** A face shows how lit the
+# air in front of it is, and the node behind the face is solid and therefore
+# dark — reading the node's own `param1` would draw every surface black. That
+# neighbour is the node `face_visible?` already tested, so the value is free.
+# Flat per-face rather than smooth per-vertex: smooth lighting averages the four
+# nodes around each corner, which is four more reads per vertex and a
+# visible-but-not-structural improvement, so §5's "not in M0" logic applies.
 (fn put_quad [verts : (Buffer F32) idx : (Buffer U32) face : F64 tile : F64
-              light : F64
+              light : F64 shade : F64
               ax : F64 ay : F64 az : F64  bx : F64 by : F64 bz : F64
               cx : F64 cy : F64 cz : F64  dx : F64 dy : F64 dz : F64] : Nil
   (var base (* face vertices_per_face))
@@ -175,16 +195,16 @@
   (var v0 (* ($math/floor (/ tile atlas_cols)) atlas_step))
   (var u1 (+ u0 atlas_step))
   (var v1 (+ v0 atlas_step))
-  (put_vertex verts base ax ay az u0 v1 light)
-  (put_vertex verts (+ base 1.0) bx by bz u1 v1 light)
-  (put_vertex verts (+ base 2.0) cx cy cz u1 v0 light)
-  (put_vertex verts (+ base 3.0) dx dy dz u0 v0 light)
+  (put_vertex verts base ax ay az u0 v1 light shade)
+  (put_vertex verts (+ base 1.0) bx by bz u1 v1 light shade)
+  (put_vertex verts (+ base 2.0) cx cy cz u1 v0 light shade)
+  (put_vertex verts (+ base 3.0) dx dy dz u0 v0 light shade)
   (put_face_indices idx face base))
 
 # Fill `verts` and `idx` from the padded neighbourhood, offset into world space
 # by the chunk's origin. Returns the face count, which is what the caller needs
 # for its draw call — index count is `faces * 6`.
-(fn build_mesh [reg : Registry padded : (Buffer F32)
+(fn build_mesh [reg : Registry padded : (Buffer F32) lit : (Buffer F32)
                 verts : (Buffer F32) idx : (Buffer U32)
                 ox : F64 oy : F64 oz : F64] : F64
   (var opaque_col reg/opaque)
@@ -209,27 +229,33 @@
           (var z1 (+ wz 1.0))
           (var side (side_col ~ get id))
           (if_yes (face_visible? opaque_col padded (+ x 1.0) y z)
-            (put_quad verts idx face side light_side_x
+            (put_quad verts idx face side
+                      (light_at lit (+ x 1.0) y z) shade_side_x
                       x1 wy z1  x1 wy wz  x1 y1 wz  x1 y1 z1)
             (set face (+ face 1.0)))
           (if_yes (face_visible? opaque_col padded (- x 1.0) y z)
-            (put_quad verts idx face side light_side_x
+            (put_quad verts idx face side
+                      (light_at lit (- x 1.0) y z) shade_side_x
                       wx wy wz  wx wy z1  wx y1 z1  wx y1 wz)
             (set face (+ face 1.0)))
           (if_yes (face_visible? opaque_col padded x (+ y 1.0) z)
-            (put_quad verts idx face (top_col ~ get id) light_top
+            (put_quad verts idx face (top_col ~ get id)
+                      (light_at lit x (+ y 1.0) z) shade_top
                       wx y1 z1  x1 y1 z1  x1 y1 wz  wx y1 wz)
             (set face (+ face 1.0)))
           (if_yes (face_visible? opaque_col padded x (- y 1.0) z)
-            (put_quad verts idx face (bottom_col ~ get id) light_bottom
+            (put_quad verts idx face (bottom_col ~ get id)
+                      (light_at lit x (- y 1.0) z) shade_bottom
                       wx wy wz  x1 wy wz  x1 wy z1  wx wy z1)
             (set face (+ face 1.0)))
           (if_yes (face_visible? opaque_col padded x y (+ z 1.0))
-            (put_quad verts idx face side light_side_z
+            (put_quad verts idx face side
+                      (light_at lit x y (+ z 1.0)) shade_side_z
                       wx wy z1  x1 wy z1  x1 y1 z1  wx y1 z1)
             (set face (+ face 1.0)))
           (if_yes (face_visible? opaque_col padded x y (- z 1.0))
-            (put_quad verts idx face side light_side_z
+            (put_quad verts idx face side
+                      (light_at lit x y (- z 1.0)) shade_side_z
                       x1 wy wz  wx wy wz  wx y1 wz  x1 y1 wz)
             (set face (+ face 1.0))))
         (set x (+ x 1.0)))

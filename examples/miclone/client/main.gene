@@ -13,7 +13,8 @@
 
 (import [fill_padded] from "../core/mapgen.gene")
 (import [count_faces build_mesh] from "../core/mesh.gene")
-(import [new_registry id_of] from "../core/registry.gene")
+(import [light_region queue_overhead] from "../core/light.gene")
+(import [new_registry id_of registered_count] from "../core/registry.gene")
 (import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
 (import [build_program init_state upload_atlas upload_chunk begin_frame
          set_view_projection draw_chunk]
@@ -23,7 +24,18 @@
 
 (let seed 1337.0)
 (let pad_nodes 5832.0)             # 18^3
+(let pad_dim 18.0)
 (let chunk_dim 16.0)
+
+# The light buffer is reused across chunks, so it carries the previous chunk's
+# values into the next one — and `light_region` only ever raises a value, so a
+# stale bright node would never be corrected. A fresh block is zeroed by
+# construction (§1); a reused one has to be zeroed by hand.
+(fn zero_light [b : (Buffer F32)] : Nil
+  (var i 0.0)
+  (while (< i pad_nodes)
+    (b ~ set! i 0.0)
+    (set i (+ i 1.0))))
 
 # §D6.1's stated view: 12 x 4 x 12 chunks, 576 in all, ~2.4M nodes.
 (let span_x 12.0)
@@ -51,6 +63,10 @@
 (let look_speed 0.0022)
 (let pitch_limit 1.5533)           # just under pi/2; see `forward_*`
 (let fog_far 260.0)
+
+# Noon. §4's two channels are mixed by this at render time, so a day/night cycle
+# is this one number moving rather than a remesh (see `client/render.gene`).
+(let time_of_day 1.0)
 
 (fn main [] : Nil
   (var stage ($dom/element "stage"))
@@ -85,6 +101,13 @@
   # garbage for no reason.
 
   (var padded ($buffer F32 pad_nodes))
+  # §4's three companions to the node array, all reused across chunks: the
+  # packed light, the per-column sky boundary generation fills in, and the flood
+  # queue `core/light.gene` takes from its caller so a loader allocates once.
+  (var lit ($buffer F32 pad_nodes))
+  (var sky ($buffer F32 (* pad_dim pad_dim)))
+  (var lq ($buffer F32 (+ pad_nodes queue_overhead)))
+  (var registered (registered_count reg))
   (var meshes : (List Gl/VertexArray) [])
   (var counts : (List F64) [])
   (var faces_total 0.0)
@@ -98,14 +121,16 @@
         (var ox (+ origin_x (* cx chunk_dim)))
         (var oy (* cy chunk_dim))
         (var oz (+ origin_z (* cz chunk_dim)))
-        (fill_padded padded ox oy oz biomes ores seed air water)
+        (fill_padded padded sky ox oy oz biomes ores seed air water)
+        (zero_light lit)
+        (light_region lit padded pad_dim reg sky lq registered)
         (var faces (count_faces reg padded))
         # A chunk with no visible faces is fully interior or fully air. Most of
         # a column is one or the other, so skipping them is most of the world.
         (if_yes (> faces 0.0)
-          (var verts ($buffer F32 (* faces 24.0)))
+          (var verts ($buffer F32 (* faces 28.0)))
           (var idx ($buffer U32 (* faces 6.0)))
-          (build_mesh reg padded verts idx ox oy oz)
+          (build_mesh reg padded lit verts idx ox oy oz)
           (meshes ~ push! (upload_chunk gl verts idx))
           (counts ~ push! (* faces 6.0))
           (set faces_total (+ faces_total faces)))
@@ -186,7 +211,7 @@
     (var h ($canvas/height stage))
     (begin_frame gl prog w h)
     (set_view_projection gl prog proj view vp w h
-                         eye_x eye_y eye_z dx dy dz fog_far)
+                         eye_x eye_y eye_z dx dy dz fog_far time_of_day)
 
     (var i 0.0)
     (while (< i (meshes ~ size))

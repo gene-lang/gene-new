@@ -12,9 +12,16 @@
 # --- shaders -----------------------------------------------------------------
 #
 # Vertex layout matches `core/mesh.gene`'s `put_vertex`: position, atlas
-# coordinate, light. The light is a single interpolated float rather than a
-# colour, because §4's model is one value per vertex and the shader is what
-# turns it into shading.
+# coordinate, the packed light byte, and the face's shading factor. Light is one
+# float rather than a colour because §4's model is one value per node and the
+# shader is what turns it into shading.
+#
+# **The two light channels are unpacked here, not in the mesher.** `param1` is
+# day in the high nibble and night in the low (§4), and mixing them by the time
+# of day is a per-frame decision — baking it into the vertex buffer would mean
+# remeshing the world at every sunrise. So the byte travels as-is and
+# `u_time_of_day` does the mixing per fragment, which is what makes a day/night
+# cycle free.
 
 (fn vertex_source [] : Str
   "#version 300 es
@@ -22,15 +29,18 @@ precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec2 a_uv;
 layout(location = 2) in float a_light;
+layout(location = 3) in float a_shade;
 uniform mat4 u_view_projection;
 out vec2 v_uv;
 out float v_light;
+out float v_shade;
 out float v_depth;
 void main() {
   vec4 clip = u_view_projection * vec4(a_position, 1.0);
   gl_Position = clip;
   v_uv = a_uv;
   v_light = a_light;
+  v_shade = a_shade;
   v_depth = clip.w;
 }")
 
@@ -39,14 +49,24 @@ void main() {
 precision highp float;
 in vec2 v_uv;
 in float v_light;
+in float v_shade;
 in float v_depth;
 uniform sampler2D u_atlas;
 uniform vec3 u_fog;
 uniform float u_fog_far;
+uniform float u_time_of_day;
 out vec4 frag_color;
 void main() {
   vec4 texel = texture(u_atlas, v_uv);
-  vec3 lit = texel.rgb * v_light;
+  // Unpack param1: day in the high nibble, night in the low (design.md §4).
+  float packed = floor(v_light + 0.5);
+  float day = floor(packed / 16.0) / 15.0;
+  float night = (packed - floor(packed / 16.0) * 16.0) / 15.0;
+  // A floor of ambient light, because a 0 channel is pitch black and a voxel
+  // world with nothing visible in shadow is unreadable rather than moody.
+  float level = mix(night, day, u_time_of_day);
+  float brightness = 0.10 + 0.90 * level;
+  vec3 lit = texel.rgb * brightness * v_shade;
   // Linear distance fog, so the loaded-region boundary fades instead of
   // ending in mid-air.
   float fog = clamp(v_depth / u_fog_far, 0.0, 1.0);
@@ -108,7 +128,7 @@ void main() {
 # drawing a chunk is one `bindVertexArray` and one `drawElements` rather than
 # five state calls per chunk per frame.
 
-(let stride 24.0)                  # 6 floats * 4 bytes
+(let stride 28.0)                  # 7 floats * 4 bytes
 
 (fn upload_chunk [gl : Gl verts : (Buffer F32) idx : (Buffer U32)]
     : Gl/VertexArray
@@ -124,6 +144,8 @@ void main() {
   ($gl/attrib_pointer gl 1.0 2.0 "f32" false stride 12.0)
   ($gl/enable_attrib gl 2.0)
   ($gl/attrib_pointer gl 2.0 1.0 "f32" false stride 20.0)
+  ($gl/enable_attrib gl 3.0)
+  ($gl/attrib_pointer gl 3.0 1.0 "f32" false stride 24.0)
 
   (var ebo ($gl/create_buffer gl))
   ($gl/bind_buffer gl "element_array" ebo)
@@ -138,13 +160,14 @@ void main() {
                          width : F64 height : F64
                          eye_x : F64 eye_y : F64 eye_z : F64
                          dir_x : F64 dir_y : F64 dir_z : F64
-                         fog_far : F64] : Nil
+                         fog_far : F64 time_of_day : F64] : Nil
   (mat4_perspective proj 1.15 (/ width height) 0.1 fog_far)
   (mat4_view view eye_x eye_y eye_z dir_x dir_y dir_z)
   (mat4_multiply vp proj view)
   ($gl/uniform_matrix4 gl ($gl/uniform_location gl prog "u_view_projection") vp)
   ($gl/uniform_3f gl ($gl/uniform_location gl prog "u_fog") 0.62 0.76 0.94)
-  ($gl/uniform_f gl ($gl/uniform_location gl prog "u_fog_far") fog_far))
+  ($gl/uniform_f gl ($gl/uniform_location gl prog "u_fog_far") fog_far)
+  ($gl/uniform_f gl ($gl/uniform_location gl prog "u_time_of_day") time_of_day))
 
 (fn begin_frame [gl : Gl prog : Gl/Program width : F64 height : F64] : Nil
   ($gl/viewport gl 0.0 0.0 width height)

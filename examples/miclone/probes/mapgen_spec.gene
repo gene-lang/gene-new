@@ -327,12 +327,14 @@
   (var water (id_of r "miclone:water"))
 
   (var blk ($buffer F32 block_nodes))
-  (generate_block blk 0.0 0.0 0.0 biomes ores seed air water)
+  (var sky ($buffer F32 (* block_dim block_dim)))
+  (var pad_sky ($buffer F32 (* pad_dim pad_dim)))
+  (generate_block blk sky 0.0 0.0 0.0 biomes ores seed air water)
 
   # The padded neighbourhood of the block at x = 16 starts at world x = 15, so
   # its x = 0 layer is the block above's x = 15 layer.
   (var pad ($buffer F32 pad_nodes))
-  (fill_padded pad 16.0 0.0 0.0 biomes ores seed air water)
+  (fill_padded pad pad_sky 16.0 0.0 0.0 biomes ores seed air water)
 
   (var bad 0.0)
   (var z 0.0)
@@ -353,7 +355,7 @@
   # And the block's own padded neighbourhood must agree with it everywhere, all
   # 4,096 nodes, which covers the interior as well as the seam.
   (var own ($buffer F32 pad_nodes))
-  (fill_padded own 0.0 0.0 0.0 biomes ores seed air water)
+  (fill_padded own pad_sky 0.0 0.0 0.0 biomes ores seed air water)
   (var bad2 0.0)
   (set z 0.0)
   (while (< z block_dim)
@@ -399,22 +401,23 @@
   (var air (id_of r "air"))
   (var water (id_of r "miclone:water"))
   (var blk ($buffer F32 block_nodes))
+  (var sky ($buffer F32 (* block_dim block_dim)))
 
   # Three blocks chosen to exercise different parts of the pipeline: one at the
   # origin spanning the surface, one deep enough to be all rock and cave, and
   # one far from the origin so the hash is not being asked only about small
   # coordinates.
-  (generate_block blk 0.0 0.0 0.0 biomes ores 1337.0 air water)
+  (generate_block blk sky 0.0 0.0 0.0 biomes ores 1337.0 air water)
   (check_bits out "golden 1337 (0,0,0)" (block_checksum blk block_nodes)
               2645630097.0)
-  (generate_block blk 0.0 -64.0 0.0 biomes ores 1337.0 air water)
+  (generate_block blk sky 0.0 -64.0 0.0 biomes ores 1337.0 air water)
   (check_bits out "golden 1337 (0,-64,0)" (block_checksum blk block_nodes)
               3728653385.0)
-  (generate_block blk 4096.0 16.0 -2048.0 biomes ores 1337.0 air water)
+  (generate_block blk sky 4096.0 16.0 -2048.0 biomes ores 1337.0 air water)
   (check_bits out "golden 1337 (4096,16,-2048)" (block_checksum blk block_nodes)
               32426351.0)
   # A different seed must produce a different world, or the seed is decorative.
-  (generate_block blk 0.0 0.0 0.0 biomes ores 20260802.0 air water)
+  (generate_block blk sky 0.0 0.0 0.0 biomes ores 20260802.0 air water)
   (check_bits out "golden 20260802 (0,0,0)" (block_checksum blk block_nodes)
               626489287.0))
 
