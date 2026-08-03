@@ -111,6 +111,7 @@ done
 
 node tools/mesh_bench.mjs        # headless: generation + meshing budget
 node tools/world_build.mjs       # headless: what opening a world costs
+node tools/client_smoke.mjs      # headless: the client's wiring, DOM stubbed
 python3 -m http.server 8000      # then open http://localhost:8000/
 ```
 
@@ -151,6 +152,15 @@ Two traps when re-measuring: a backgrounded tab throttles `requestAnimationFrame
 to nothing (the fps reads 1, and `document.hidden` is the thing to check), and
 `http.server` sends no `Cache-Control`, so a plain reload can silently re-run the
 previous build.
+
+Which is why `tools/client_smoke.mjs` exists. A browser is the obvious place to
+check that a keypress reaches the physics and a click reaches the edit, and the
+least reliable one available: throttled frames, black screenshots without a
+recording permission, and an automation extension that can simply disconnect.
+So it stubs the twenty host calls the client makes and drives the real `main()`
+with synthetic events. It found the spawn scan stopping at the first *drawn*
+node — water is drawn, this site is 23% sea, and the player was spawning
+afloat.
 
 ### Cross-backend specs
 

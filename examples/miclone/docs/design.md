@@ -1770,6 +1770,22 @@ placeholder, and it is the behaviour to revisit when entities exist.
 `tools/world_build.mjs` asks 2 and 3 again of §3's real terrain, and casts and
 digs five nodes through the client's own path with the DOM removed.
 
+And `tools/client_smoke.mjs` covers the part no module spec can see: that
+`client/main.gene` connects them. It stubs the twenty host calls the client
+makes and drives the real `main()` with synthetic events — a keypress reaching
+the physics step, a click reaching the raycast and the edit, a dug node arriving
+in the hotbar and a placed one leaving it, and a *drag* not digging, since
+looking and acting share a button.
+
+It exists because the browser kept being unavailable — a backgrounded tab
+throttles `requestAnimationFrame` to nothing, `screencapture` returns black
+without a recording permission, and the automation extension disconnected
+partway through M5 and did not come back. It earned its place immediately: the
+spawn scan walked down to the first *drawn* node, water is drawn, this site was
+chosen for its coastline and is 23% sea, and the player was spawning afloat
+about a quarter of the time. The scan now stops at the first node that blocks
+and steps east until the column is dry.
+
 ## 8. Entities
 
 Server-authoritative active objects with a registry mirroring §2: an entity
