@@ -48,7 +48,7 @@
 
 (import [Registry solid? drawtype_of draw_liquid] from "./registry.gene")
 (import [content_ignore abs_f64] from "./world.gene")
-(import [World node_at] from "./loaded.gene")
+(import [World node_at world_min_y] from "./loaded.gene")
 
 # --- the player's shape ------------------------------------------------------
 #
@@ -347,6 +347,94 @@
       (&& (> (+ z half_width) nz) (< (- z half_width) (+ nz 1.0)))))
 
 # --- placing a player --------------------------------------------------------
+
+# Where a player may stand in a column, searching **down** from `top`.
+#
+# Two mistakes are possible here and this project has made both, one of them
+# twice — which is why it lives in `core/` with one definition rather than being
+# copied into each shell:
+#
+# - **Stop at the first node that *blocks*, not the first that is drawn.** Water
+#   is drawn (§5 meshes its surface) and is not solid, so a scan keyed on
+#   `drawn?` stops on the sea and the player spawns afloat. §D6.1's site was
+#   chosen for having a coastline and is 23% water, so this is not a rare case;
+#   it is a quarter of the map. §7's M5 note records the first occurrence, and
+#   porting the pre-fix version into `server/main.gene` reintroduced it — where
+#   it surfaced as a dig that produced no delta, because §7 leaves liquids
+#   unpointable.
+# - **Search down from the ceiling, not up from the floor.** A column with a
+#   cave in it has a free position at the bottom of the cave, and spawning there
+#   is spawning underground in the dark.
+#
+# Returns the y where the box rests, or `bottom` if the column is solid all the
+# way — a caller that wants "somewhere the player actually fits" pairs this with
+# `standable?`.
+(fn surface_y [w : World reg : Registry x : F64 z : F64
+               top : F64 bottom : F64] : F64
+  (var y top)
+  (var scanning true)
+  (while (&& scanning (> y bottom))
+    (if (solid? reg (node_at w x (- y 1.0) z))
+      (then (set scanning false))
+      (else (set y (- y 1.0)))))
+  y)
+
+# May a player stand here? Not blocked **and not in liquid**, and the second
+# half is the whole point.
+#
+# "Not blocked" alone is not enough and that is the trap this function exists to
+# close: water does not block (§7 — you swim through it), so a box floating in
+# the sea passes `box_blocked?` perfectly. The first version of this hoisted
+# function checked only that, and `find_spawn` went straight back to putting the
+# player in the water — the third time this project has made a version of the
+# same mistake, and the first time a spec caught it instead of a debugging
+# session.
+(fn standable? [w : World reg : Registry x : F64 y : F64 z : F64] : Bool
+  (&& (! (box_blocked? w reg (+ x 0.5) y (+ z 0.5)))
+      (! (box_in_liquid? w reg (+ x 0.5) y (+ z 0.5)))))
+
+# A spawn on dry land: the surface of `(col_x, col_z)`, searching **outward in
+# both directions** until the column is one a player can stand on. Returns
+# through `into` as `(x, y, z)` with the player centred in the node — the `+
+# 0.5` a caller would otherwise have to remember, and which `node_at` must never
+# be given (a fractional node coordinate reads as `undefined` in the web
+# profile, §D7.12's sibling).
+#
+# **Both directions, not east.** A one-way walk was the first version and it
+# works only when the coast happens to face the right way: aimed at a sea whose
+# land lies west, it walks away from the shore until it leaves the world and
+# comes back standing in the shell. Which way a coastline faces is not something
+# a spawn routine should depend on.
+#
+# `limit` bounds the search in each direction. It is a bound rather than an
+# expectation: at this generator's coverage a dry column is a few nodes away.
+# If nothing is found the aimed column is returned anyway — a caller that would
+# rather fail than spawn a player in the sea should check `standable?` on the
+# result, because there is no correct answer to give for a world that is all
+# water.
+(fn find_spawn [w : World reg : Registry
+                col_x : F64 col_z : F64 top : F64 limit : F64
+                into : (Buffer F64)] : Nil
+  (var bottom (world_min_y w))
+  (var x col_x)
+  (var y (surface_y w reg x col_z top bottom))
+  (var found (standable? w reg x y col_z))
+  (var step_out 1.0)
+  (while (&& (! found) (<= step_out limit))
+    (set x (+ col_x step_out))
+    (set y (surface_y w reg x col_z top bottom))
+    (set found (standable? w reg x y col_z))
+    (if_not found
+      (set x (- col_x step_out))
+      (set y (surface_y w reg x col_z top bottom))
+      (set found (standable? w reg x y col_z)))
+    (set step_out (+ step_out 1.0)))
+  (if_not found
+    (set x col_x)
+    (set y (surface_y w reg x col_z top bottom)))
+  (into ~ set! 0.0 (+ x 0.5))
+  (into ~ set! 1.0 y)
+  (into ~ set! 2.0 (+ col_z 0.5)))
 
 # The lowest position at or above `y` where the box fits, or `y` itself if there
 # is none below the world's ceiling. Used to spawn without having to know the

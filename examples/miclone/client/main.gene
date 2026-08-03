@@ -40,7 +40,7 @@
 (import [paint] from "./atlas.gene")
 (import [forward_x forward_y forward_z] from "../core/vec.gene")
 (import [new_player step player_x player_y player_z player_eye_y
-         on_ground? in_liquid? box_overlaps_node?]
+         on_ground? in_liquid? box_overlaps_node? find_spawn]
         from "../core/physics.gene")
 (import [node_at] from "../core/loaded.gene")
 (import [solid? name_of] from "../core/registry.gene")
@@ -272,49 +272,18 @@
 
   # --- the player ------------------------------------------------------------
   #
-  # Spawned on dry land near the middle of the world.
-  #
-  # Two things this has to get right, and the first version got neither:
-  #
-  # - **Search down from the ceiling, not up from the floor.** A column with a
-  #   cave in it has a free position at the bottom of the cave, and spawning
-  #   there is spawning underground in the dark.
-  # - **Stop at the first thing that *blocks*, not the first thing that is
-  #   drawn.** Water is drawn. This site was chosen for having a coastline in it
-  #   and is 23% sea, so a scan that stops at the first drawn node spawns the
-  #   player floating in the water about a quarter of the time — which is what
-  #   `tools/client_smoke.mjs` reported the moment it existed, as "swimming".
-  #
-  # So: the highest solid node in the column, and if what is standing on it is
-  # water rather than air, step east and ask again. A dry column is a few nodes
-  # away at this coverage; 96 tries is far more than it takes and is a bound
-  # rather than an expectation.
-
-  # The column is a node coordinate and must be whole — `core/loaded.gene`
-  # indexes with it directly and a fraction reads as `undefined`. The player
-  # then stands in the middle of that node, which is the `+ 0.5`.
-  (var spawn_col_x (* (+ origin_bx (/ span_x 2.0)) block_dim))
-  (var spawn_col_z (* (+ origin_bz (/ span_z 2.0)) block_dim))
-  (var world_top (* (+ origin_by span_y) block_dim))
-  (var world_bottom (* origin_by block_dim))
-  (var spawn_y world_top)
-  (var dry false)
-  (var tries 0.0)
-  (while (&& (! dry) (< tries 96.0))
-    (set spawn_y world_top)
-    (var scanning true)
-    (while (&& scanning (> spawn_y world_bottom))
-      (if (solid? reg (node_at world spawn_col_x (- spawn_y 1.0) spawn_col_z))
-        (then (set scanning false))
-        (else (set spawn_y (- spawn_y 1.0)))))
-    (if (== (node_at world spawn_col_x spawn_y spawn_col_z) air)
-      (then (set dry true))
-      (else
-        (set spawn_col_x (+ spawn_col_x 1.0))
-        (set tries (+ tries 1.0)))))
-  (var spawn_x (+ spawn_col_x 0.5))
-  (var spawn_z (+ spawn_col_z 0.5))
-  (var player (new_player spawn_x spawn_y spawn_z))
+  # The scan lives in `core/physics.gene`. It has been written wrong three
+  # times across this project — twice by stopping at the first *drawn* node
+  # (water is drawn), once by treating "not blocked" as standable (water does
+  # not block) — so there is one definition and every shell calls it.
+  (var spawn_at ($buffer F64 3.0))
+  (find_spawn world reg
+              (* (+ origin_bx (/ span_x 2.0)) block_dim)
+              (* (+ origin_bz (/ span_z 2.0)) block_dim)
+              (* (+ origin_by span_y) block_dim)
+              96.0 spawn_at)
+  (var player (new_player (spawn_at ~ get 0.0) (spawn_at ~ get 1.0)
+                          (spawn_at ~ get 2.0)))
 
   (var yaw 0.6)
   (var pitch -0.25)

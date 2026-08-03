@@ -27,7 +27,7 @@
 (import [World new_world set_node node_at world_min_y] from "../core/loaded.gene")
 (import [new_player step player_x player_y player_z player_vy
          on_ground? in_liquid? set_player_position box_blocked? drop_to_free
-         player_eye_y]
+         player_eye_y surface_y standable? find_spawn]
         from "../core/physics.gene")
 
 # --- reporting ---------------------------------------------------------------
@@ -470,6 +470,77 @@
   (check_f out "and leaves a clear position alone"
            (cm (drop_to_free w r 16.0 20.0 16.0 64.0)) 2000.0))
 
+# --- spawning on dry land ----------------------------------------------------
+#
+# This scan has been written wrong twice — once in the client, once again when
+# it was ported to the server — both times by stopping at the first *drawn*
+# node rather than the first *solid* one. Water is drawn, §D6.1's site is 23%
+# sea, and the result is a player who begins the game treading water. It cost a
+# debugging session the second time, surfacing as a dig that produced no delta.
+#
+# So the fixture is a shoreline: land to the west, a sea to the east, and the
+# spawn column aimed squarely at the water.
+
+(fn shore_world [r : Registry] : World
+  (var w (new_world 0.0 0.0 0.0 2.0 2.0 2.0))
+  (var stone (id_of r "t:stone"))
+  (var water (id_of r "t:water"))
+  # Floor everywhere, land standing on it west of x = 16.
+  (fill_box w 0.0 0.0 0.0 (- side 1.0) floor_top (- side 1.0) stone)
+  # East of 16 the floor is two nodes lower and the hollow is full of water,
+  # which is exactly the shape that fooled the scan.
+  (fill_box w 16.0 (- ground 2.0) 0.0 (- side 1.0) floor_top (- side 1.0)
+            content_air)
+  (fill_box w 16.0 (- ground 2.0) 0.0 (- side 1.0) (- ground 1.0) (- side 1.0)
+            water)
+  w)
+
+(fn spawn_checks [out : (List Str)] : Nil
+  (var r (fixture_registry))
+  (var w (shore_world r))
+  (var at ($buffer F64 3.0))
+
+  # Sanity: the fixture really is water where we aim, or the check below is
+  # about nothing. This is the guard M5's fixtures kept needing.
+  # The sea floor is two below the land, so `surface_y` — which stops on solid
+  # — reports the floor under the water rather than the water's surface.
+  (check_f out "spawn fixture: the sea floor is below the land"
+           (surface_y w r 20.0 8.0 (* 2.0 side) 0.0) (- ground 2.0))
+  (check_f out "spawn fixture: and the land is where it should be"
+           (surface_y w r 4.0 8.0 (* 2.0 side) 0.0) ground)
+
+  # `surface_y` stops on solid, so over the sea it reports the sea *floor*,
+  # not the surface of the water.
+  # The check that matters: a box in the sea is *not blocked* — water is
+  # swum through, not walked into — so anything keyed only on blocking calls
+  # this standable and spawns the player afloat.
+  (check_b out "a column of water is not standable"
+           (standable? w r 20.0 (- ground 2.0) 8.0) false)
+  (check_b out "and one of land is"
+           (standable? w r 4.0 ground 8.0) true)
+
+  # The spawn aimed at the sea must walk east... no: west is land here, so it
+  # walks east and eventually leaves the water. Either way it must land
+  # somewhere standable, which is the property.
+  (find_spawn w r 4.0 8.0 (* 2.0 side) 96.0 at)
+  (check_b out "a spawn on land stays there"
+           (standable? w r ($math/floor (at ~ get 0.0)) (at ~ get 1.0)
+                       ($math/floor (at ~ get 2.0))) true)
+  (check_f out "and rests on the surface" (at ~ get 1.0) ground)
+  (check_b out "and is centred in its node"
+           (== (- (at ~ get 0.0) ($math/floor (at ~ get 0.0))) 0.5) true)
+
+  # And the case that has failed twice: aimed at the water.
+  (find_spawn w r 20.0 8.0 (* 2.0 side) 96.0 at)
+  (check_b out "a spawn aimed at the sea ends up somewhere standable"
+           (standable? w r ($math/floor (at ~ get 0.0)) (at ~ get 1.0)
+                       ($math/floor (at ~ get 2.0))) true)
+  (var p (new_player (at ~ get 0.0) (at ~ get 1.0) (at ~ get 2.0)))
+  (step p w r 0.0 0.0 false false false dt)
+  (check_b out "and is not swimming" (in_liquid? p) false)
+  (check_b out "and is not inside anything"
+           (box_blocked? w r (player_x p) (player_y p) (player_z p)) false))
+
 # --- the report --------------------------------------------------------------
 
 (fn collect [out : (List Str)] : Nil
@@ -481,6 +552,7 @@
   (water_checks out)
   (fly_checks out)
   (drop_checks out)
+  (spawn_checks out)
   (invariant_checks out))
 
 (fn report [] : Str
