@@ -3,11 +3,11 @@
 A voxel game engine with [Luanti](https://github.com/luanti-org/luanti)'s
 architecture, written in Gene, whose mod language is Gene.
 
-**Status: M0 through M5 — a generated, lit world you can walk around in, dig,
-carry, and build with. The client keeps it in memory as a single array (§1.1),
-lights all of it at once (§4.2), stands a player on it with gravity, jumping,
-swimming and a fly toggle (§7), and turns a click into a node in your hotbar
-(§7.1). M6 splits client from server.** Read
+**Status: M0 through M6 — a generated, lit world you can walk around in, dig,
+carry, and build with, running as two processes.** The server owns the world
+and answers a WebSocket; the browser client is handed it and plays it, sharing
+every rule through `core/` (§1.1, §4.2, §7, §7.1, §10). M7 is the mod API,
+which is the point of the project. Read
 [`docs/design.md`](docs/design.md) first — Part I is the direction and the
 decisions, and §D2 is the constraint that shaped the rest.
 
@@ -87,8 +87,10 @@ core/       portable Gene — compiles for the VM and the web profile
   inventory.gene  stacks, in a buffer of (item, count) pairs (§7.1)
   drops.gene    what digging a node yields — §2's server half, for now
   content.gene  the provisional node/biome/ore set — M7 replaces this with a mod
-server/     VM only: the on-disk block format and the SQLite world store (§11)
+server/     VM only: the on-disk block format, the SQLite world store (§11),
+            and main.gene — the M6 server that owns the world (§10)
 client/     the browser shell: WebGL2 renderer, atlas, camera
+              main.gene generates the world; net_main.gene is handed it (§10)
 probes/     the probes and cross-backend specs; `run_*.gene` are their VM shells
 tools/      the web-profile shells
 docs/       design.md
@@ -182,8 +184,18 @@ afloat.
 
 ```sh
 gene run server                  # generates the world, listens on 8790
-node tools/net_probe.mjs         # joins it, in another shell
+
+node tools/net_probe.mjs         # headless: joins it, in another shell
+
+gene build --target web client/net_main.gene --out-dir dist
+python3 -m http.server 8000      # then open http://localhost:8000/net.html
 ```
+
+The browser client renders a world it was **handed** rather than one it
+generated: `net.html` draws 229 chunks and 62,395 faces at 166 fps, and a click
+goes to the server, is applied there, and comes back as a node delta with the
+drop in the hotbar. Same physics, mesher, raycast and hotbar as the local
+client, because all of them are `core/` and neither side has its own copy.
 
 The probe is the only harness here that runs two processes: it joins over a
 real WebSocket and drives the whole §10 exchange with the same `core/` modules
