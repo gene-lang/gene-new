@@ -63,13 +63,14 @@
          clear_checks]
         from "../core/abm.gene")
 (import [GroupRegistry rating_of] from "../core/groups.gene")
+(import [CraftRegistry first_craftable apply_craft] from "../core/craft.gene")
 
 (import [new_inventory add take slot_item slot_count slot_empty?]
         from "../core/inventory.gene")
 (import [drop_item drop_count] from "../core/drops.gene")
 (import [ItemRegistry item_node placeable_item?] from "../core/item.gene")
 (import [new_cursor] from "../core/wire.gene")
-(import [message_kind msg_input msg_dig msg_place msg_request_blocks
+(import [message_kind msg_input msg_dig msg_place msg_request_blocks msg_craft
          hello_size encode_hello
          registry_size encode_registry
          tiles_size encode_tiles
@@ -524,6 +525,14 @@
           # handler threw once per message.
           (if_yes (>= ($binary/size payload) 1)
           (var kind (message_kind b))
+
+          # §9's crafting, and §7.1's authority: the client asks, the server
+          # decides what it can make and whether it fits.
+          (if_yes (== kind msg_craft)
+            (var recipe (first_craftable game/crafts inv))
+            (if_yes (>= recipe 0.0)
+              (if_yes (apply_craft game/crafts items inv recipe)
+                (send_inventory conn inv))))
 
           (if_yes (== kind msg_request_blocks)
             (var req (new_request))

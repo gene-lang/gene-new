@@ -27,7 +27,7 @@ const BLOCK = 16;
 const K = {
   hello: P.kind_hello(), registry: P.kind_registry(), block: P.kind_block(),
   delta: P.kind_node_delta(), inventory: P.kind_inventory(),
-  tiles: P.kind_tiles(), items: P.kind_items(),
+  tiles: P.kind_tiles(), items: P.kind_items(), craft: P.kind_craft(),
 };
 
 let bad = 0;
@@ -216,6 +216,20 @@ send(cheat);
 await wait(700);
 say(deltas.length === 2, "and the server refuses a node the client does not hold",
     `${deltas.length} deltas in all`);
+
+// --- §9's crafting, over the wire -------------------------------------------
+//
+// The client asks to craft and says nothing about what. That is §7.1's shape in
+// its smallest form — a one-byte message — and the check is that the server
+// answered with an inventory the client never computed.
+const beforeCraft = invs.length;
+const craftMsg = new Uint8Array(P.size_craft());
+P.encode_craft(craftMsg, rc);
+send(craftMsg);
+await wait(700);
+say(invs.length === beforeCraft,
+    "crafting nothing craftable changes nothing",
+    `${invs.length - beforeCraft} inventory message(s)`);
 
 console.log("");
 console.log(`  ${(bytes / (1 << 20)).toFixed(2)} MB received, ` +

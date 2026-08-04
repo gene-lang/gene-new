@@ -22,6 +22,9 @@
         from "../core/item.gene")
 (import [GroupRegistry new_groups intern_group set_rating rating_of in_group?]
         from "../core/groups.gene")
+(import [CraftRegistry new_crafts add_recipe recipe_count recipe_output
+         recipe_yield recipe_matches? first_craftable apply_craft]
+        from "../core/craft.gene")
 (import [DropTable new_drop_table register_drop declared? drop_item drop_count]
         from "../core/drops.gene")
 
@@ -344,6 +347,78 @@
   (check_b out "and the slot is empty" (slot_empty? tools 0.0) true)
   (check_f out "with its wear cleared" (slot_wear tools 0.0) 0.0))
 
+# --- crafting ----------------------------------------------------------------
+#
+# §9's recipes, and the two properties that matter more than any single recipe:
+# **a craft conserves** — what leaves the inventory is exactly what the recipe
+# named — and **a craft that cannot complete changes nothing**, so a full
+# inventory cannot eat the ingredients.
+
+(fn craft_checks [out : (List Str)] : Nil
+  (var items (new_items))
+  (var wood (add_item items "t:wood" "Wood" no_node default_stack_max))
+  (var plank (add_item items "t:plank" "Plank" no_node default_stack_max))
+  (var stick (add_item items "t:stick" "Stick" no_node default_stack_max))
+  (var pick (add_item items "t:pick" "Pick" no_node 1.0))
+
+  (var c (new_crafts))
+  (add_recipe c plank 4.0 wood 1.0 no_item 0.0 no_item 0.0 no_item 0.0)
+  (add_recipe c stick 4.0 plank 2.0 no_item 0.0 no_item 0.0 no_item 0.0)
+  (add_recipe c pick 1.0 plank 3.0 stick 2.0 no_item 0.0 no_item 0.0)
+  (check_f out "craft: three recipes registered" (recipe_count c) 3.0)
+
+  (var inv (new_inventory 8.0))
+  (check_f out "craft: an empty inventory can make nothing"
+           (first_craftable c inv) -1.0)
+
+  (add inv items wood 3.0)
+  (var r (first_craftable c inv))
+  (check_b out "craft: wood makes something" (>= r 0.0) true)
+  (check_f out "craft: and what it makes is planks" (recipe_output c r) plank)
+  (check_b out "craft: the craft succeeds" (apply_craft c items inv r) true)
+  (check_f out "craft: four planks came out" (total_of inv plank) 4.0)
+  (check_f out "craft: and one wood went in" (total_of inv wood) 2.0)
+
+  # The multiset property: ingredients in any slots, mixed with anything else.
+  (var inv2 (new_inventory 8.0))
+  (add inv2 items stick 2.0)
+  (add inv2 items wood 1.0)        # noise, in a slot between the ingredients
+  (add inv2 items plank 3.0)
+  (var r2 -1.0)
+  (var i 0.0)
+  (while (< i (recipe_count c))
+    (if_yes (&& (== r2 -1.0) (== (recipe_output c i) pick))
+      (set r2 i))
+    (set i (+ i 1.0)))
+  (check_b out "craft: a two-ingredient recipe matches across slots"
+           (recipe_matches? c inv2 r2) true)
+  (check_b out "craft: and completes" (apply_craft c items inv2 r2) true)
+  (check_f out "craft: spending exactly what it named — planks"
+           (total_of inv2 plank) 0.0)
+  (check_f out "craft: — and sticks" (total_of inv2 stick) 0.0)
+  (check_f out "craft: leaving the noise untouched" (total_of inv2 wood) 1.0)
+  (check_f out "craft: with the pick in hand" (total_of inv2 pick) 1.0)
+
+  # Not enough is not a partial craft.
+  (var inv3 (new_inventory 4.0))
+  (add inv3 items plank 2.0)
+  (check_b out "craft: too few ingredients does not match"
+           (recipe_matches? c inv3 r2) false)
+  (check_b out "craft: and applying it fails" (apply_craft c items inv3 r2) false)
+  (check_f out "craft: without spending anything" (total_of inv3 plank) 2.0)
+
+  # **A craft that cannot fit changes nothing.** One slot, already holding a
+  # full stack of something else, so the output has nowhere to go — and the
+  # ingredients must still be there afterwards.
+  (var inv4 (new_inventory 1.0))
+  (add inv4 items wood 99.0)
+  (var r4 (first_craftable c inv4))
+  (check_b out "craft: a full inventory still matches the recipe"
+           (>= r4 0.0) true)
+  (check_b out "craft: but the craft fails" (apply_craft c items inv4 r4) false)
+  (check_f out "craft: and the ingredients are untouched"
+           (total_of inv4 wood) 99.0))
+
 # --- the report --------------------------------------------------------------
 
 (fn collect [out : (List Str)] : Nil
@@ -353,7 +428,8 @@
   (taking_checks out)
   (conservation_checks out)
   (drop_checks out)
-  (item_checks out))
+  (item_checks out)
+  (craft_checks out))
 
 (fn report [] : Str
   (var out : (List Str) [])

@@ -1,0 +1,162 @@
+# Crafting — design.md §9's `register_craft`, and §2's items put to work.
+#
+# A recipe turns items into an item. It could not exist before §2.2 gave items
+# their own registry, because every ingredient here is an *item* id and half of
+# them — a lump, a stick, a plank — are not nodes anyone can place.
+#
+# ## Shapeless, and the shape that costs
+#
+# Upstream has both: a 3x3 grid where position matters (a pickaxe is three
+# planks over two sticks in a T) and a shapeless list (any four planks). This is
+# shapeless only, and the reason is §13 rather than laziness — a *shaped* recipe
+# needs a grid to arrange items in, a grid needs a formspec, and the formspec is
+# the part of §13 that does not exist. A shapeless recipe needs a list of what
+# you are holding, which the hotbar already is.
+#
+# So the crafting a player can do today is: hold the ingredients, ask what they
+# make, take it. That is a real loop — wood to planks to sticks to a pickaxe —
+# and it is the loop that makes §2.2's tool columns mean something. Shaped
+# recipes arrive with the formspec, and the ingredient table below is already
+# the shape a 3x3 would index into.
+#
+# ## Matching is a multiset test, not a list comparison
+#
+# "Three planks and two sticks" must match a hotbar holding them in any order,
+# in any slots, mixed with anything else. So a recipe is a sorted count per
+# ingredient and matching asks the inventory for totals — which is what
+# `total_of` was already for.
+
+(mod craft ^profile web)
+
+(import [ItemRegistry item_named no_item] from "./item.gene")
+(import [add take total_of find_item] from "./inventory.gene")
+
+(let max_recipes 128.0)
+# Four is enough for every recipe a game of this size wants and keeps the table
+# a flat array rather than a list of lists. A recipe needing five ingredients is
+# a recipe that wants the grid this does not have.
+(let max_ingredients 4.0)
+
+(type CraftRegistry
+  ^props {^output   (Buffer F32)   # the item produced
+          ^yield    (Buffer F32)   # how many
+          # `max_ingredients` cells per recipe, `no_item` for an unused slot.
+          ^item     (Buffer F32)
+          ^count    (Buffer F32)
+          ^n        (Buffer F32)}  # one cell: recipes registered
+
+  (ctor []
+    (set! self/output ($buffer F32 max_recipes))
+    (set! self/yield ($buffer F32 max_recipes))
+    (set! self/item ($buffer F32 (* max_recipes max_ingredients)))
+    (set! self/count ($buffer F32 (* max_recipes max_ingredients)))
+    (set! self/n ($buffer F32 1.0))))
+
+(fn new_crafts [] : CraftRegistry
+  (new CraftRegistry))
+
+(fn recipe_count [c : CraftRegistry] : F64
+  (c/n ~ get 0.0))
+
+(type CraftRegistryFull
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for CraftRegistryFull)
+
+# --- registration ------------------------------------------------------------
+
+# Ingredients arrive as parallel arrays because a mod names at most four and the
+# API (`core/api.gene`) is what turns `^from ["a" "b"]` into them. An unused
+# slot is `no_item`, written rather than left zero — item 0 is a real item.
+(fn add_recipe [c : CraftRegistry output : F64 yield_n : F64
+                i0 : F64 n0 : F64 i1 : F64 n1 : F64
+                i2 : F64 n2 : F64 i3 : F64 n3 : F64] : F64
+  (var id (recipe_count c))
+  (if_yes (>= id max_recipes)
+    (fail (new CraftRegistryFull
+               $"craft registry is full at ${max_recipes} recipes")))
+  (var base (* id max_ingredients))
+  (c/output ~ set! id output)
+  (c/yield ~ set! id yield_n)
+  (c/item ~ set! base i0)        (c/count ~ set! base n0)
+  (c/item ~ set! (+ base 1.0) i1) (c/count ~ set! (+ base 1.0) n1)
+  (c/item ~ set! (+ base 2.0) i2) (c/count ~ set! (+ base 2.0) n2)
+  (c/item ~ set! (+ base 3.0) i3) (c/count ~ set! (+ base 3.0) n3)
+  (c/n ~ set! 0.0 (+ id 1.0))
+  id)
+
+(fn recipe_output [c : CraftRegistry id : F64] : F64 (c/output ~ get id))
+(fn recipe_yield [c : CraftRegistry id : F64] : F64 (c/yield ~ get id))
+
+(fn recipe_item [c : CraftRegistry id : F64 slot : F64] : F64
+  (c/item ~ get (+ (* id max_ingredients) slot)))
+
+(fn recipe_count_at [c : CraftRegistry id : F64 slot : F64] : F64
+  (c/count ~ get (+ (* id max_ingredients) slot)))
+
+# --- matching ----------------------------------------------------------------
+#
+# The two questions a caller asks, and they are deliberately separate: the
+# client asks `first_craftable` every time the hotbar changes and must not
+# consume anything, and the server asks `apply_craft` once and must be the only
+# thing that does. §7.1's authority rule again — the client may predict what it
+# could make and never that it made it.
+
+(fn recipe_matches? [c : CraftRegistry inv : (Buffer F64) id : F64] : Bool
+  (var ok true)
+  (var slot 0.0)
+  (while (< slot max_ingredients)
+    (var want (recipe_item c id slot))
+    (if_yes (!= want no_item)
+      (if_yes (< (total_of inv want) (recipe_count_at c id slot))
+        (set ok false)))
+    (set slot (+ slot 1.0)))
+  ok)
+
+# The first recipe this inventory can make, or -1. First rather than all,
+# because the caller is a hotbar with one craft key; a chest UI that lists every
+# option is §13's and wants a list.
+(fn first_craftable [c : CraftRegistry inv : (Buffer F64)] : F64
+  (var found -1.0)
+  (var n (recipe_count c))
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (&& (== found -1.0) (recipe_matches? c inv i))
+      (set found i))
+    (set i (+ i 1.0)))
+  found)
+
+# Spend the ingredients and add the output. Answers false without changing
+# anything when the recipe does not match, so a caller cannot half-craft.
+#
+# **The output goes in before the ingredients come out**, which is the one
+# ordering that matters: `add` reports what did not fit, and taking first would
+# let a full inventory eat the ingredients and give nothing back.
+(fn apply_craft [c : CraftRegistry items : ItemRegistry
+                 inv : (Buffer F64) id : F64] : Bool
+  (if (! (recipe_matches? c inv id)) false
+    (do
+      (var left (add inv items (recipe_output c id) (recipe_yield c id)))
+      (if (> left 0.0)
+        (then
+          # It did not fit. Undo the part that did, so a failed craft is a
+          # no-op rather than a partial conversion of nothing into something.
+          (var back (- (recipe_yield c id) left))
+          (if_yes (> back 0.0)
+            (var slot (find_item inv (recipe_output c id)))
+            (if_yes (>= slot 0.0) (take inv slot back)))
+          false)
+        (else
+          (var slot 0.0)
+          (while (< slot max_ingredients)
+            (var want (recipe_item c id slot))
+            (if_yes (!= want no_item)
+              (var owed (recipe_count_at c id slot))
+              (while (> owed 0.0)
+                (var at (find_item inv want))
+                (if (< at 0.0)
+                  (set owed 0.0)
+                  (set owed (- owed (take inv at owed))))))
+            (set slot (+ slot 1.0)))
+          true)))))

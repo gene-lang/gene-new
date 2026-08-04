@@ -1562,6 +1562,41 @@ cross-quad geometry the mesher does not emit. All three are M8's, and the
 enumeration existing ahead of them is fine — an id is cheap — as long as nobody
 reads it as a promise.
 
+### 2.3 M8 — crafting, and the shape §13 costs
+
+§9's `register_craft`, built once §2.2's items existed — every ingredient is an
+*item* id and half of them (a plank, a stick, a lump) are not nodes anyone can
+place, so this could not have been written before.
+
+**Shapeless only, and the reason is §13 rather than laziness.** Upstream has
+both: a 3x3 grid where position matters, and a shapeless list. A shaped recipe
+needs a grid to arrange items in, a grid needs a formspec, and the formspec is
+the part of §13 that does not exist (§13.1). A shapeless recipe needs a list of
+what you are holding, which the hotbar already is — so what a player can do
+today is hold the ingredients and press a key. That is a real loop: chop a tree,
+make planks, make sticks, make a pickaxe that digs stone faster than a hand.
+The ingredient table is already the shape a 3x3 would index into.
+
+Matching is a multiset test rather than a list comparison — ingredients in any
+slots, in any order, mixed with anything else — which is what `total_of` was
+already for.
+
+**The ordering that matters is that the output goes in before the ingredients
+come out.** `add` reports what did not fit; taking first would let a full
+inventory eat the ingredients and hand back nothing. The spec asserts exactly
+that case, because it is the one a hand-run never reaches.
+
+On the wire it is `msg_craft`, one byte (protocol v4). §7.1 gives the client no
+say in *what* is crafted: a client that named a recipe would be a client the
+server had to validate, and validating it means running the match anyway — so
+the client asks and the server decides against the inventory it already holds.
+
+Two things this does not have. **There is no furnace**, because a furnace is a
+container and a container is §13's formspec; steel is crafted from the lump the
+ore drops, which is the honest shortcut until then. And **four ingredients is
+the ceiling**, which keeps the table a flat array — a recipe needing five is a
+recipe that wants the grid.
+
 ### 2.2 Items and groups — the half M1 declared and did not build
 
 Built after M7, and the milestone table's M1 row is only now true. `core/item.gene`

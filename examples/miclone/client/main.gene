@@ -53,6 +53,7 @@
 (import [new_inventory add take slot_item slot_count slot_empty?]
         from "../core/inventory.gene")
 (import [drop_item drop_count] from "../core/drops.gene")
+(import [CraftRegistry first_craftable apply_craft] from "../core/craft.gene")
 (import [ItemRegistry item_name item_node placeable_item? no_item]
         from "../core/item.gene")
 
@@ -150,6 +151,7 @@
   # this stops being something the client can reach (see `core/drops.gene`).
   (var drops game/drops)
   (var items game/items)
+  (var crafts game/crafts)
   (var air (id_of reg "air"))
   (var water (id_of reg "miclone:water"))
   (var registered (registered_count reg))

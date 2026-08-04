@@ -64,6 +64,7 @@
 (import [DropTable new_drop_table register_drop] from "./drops.gene")
 (import [AbmRegistry new_abms add_abm queue_node abm_fall] from "./abm.gene")
 (import [DecorRegistry new_decors add_decor] from "./decor.gene")
+(import [CraftRegistry new_crafts add_recipe] from "./craft.gene")
 (import [World node_at] from "./loaded.gene")
 (import [GroupRegistry new_groups intern_group group_named set_rating rating_of]
         from "./groups.gene")
@@ -85,6 +86,7 @@
           ^drops  DropTable
           ^abms   AbmRegistry
           ^decors DecorRegistry
+          ^crafts CraftRegistry
           ^biomes BiomeRegistry
           ^ores   OreRegistry}
 
@@ -96,6 +98,7 @@
     (set! self/drops (new_drop_table))
     (set! self/abms (new_abms))
     (set! self/decors (new_decors))
+    (set! self/crafts (new_crafts))
     (set! self/biomes (new BiomeRegistry))
     (set! self/ores (new OreRegistry))))
 
@@ -279,6 +282,44 @@
   (if_yes (== id content_unknown)
     (fail (new UnknownNode $"${name} is not a registered node")))
   id)
+
+# --- crafting ----------------------------------------------------------------
+#
+# §9's `register_craft`. Shapeless — `^from` is what it takes and order does not
+# matter — for `core/craft.gene`'s reason: a shaped recipe needs a grid to
+# arrange items in and a grid needs §13's formspec.
+#
+# `^from` is up to four `["item" count]` pairs, flattened here into the parallel
+# columns the registry stores, which is what keeps a mod writing a list.
+
+(fn nth_str [xs : (List Str) i : F64] : Str xs/%i)
+(fn nth_num [xs : (List F64) i : F64] : F64 xs/%i)
+
+(fn ingredient_id [game : Game names : (List Str) i : F64] : F64
+  (if (> names/~size i) (item_id game (nth_str names i)) no_item))
+
+(fn ingredient_n [counts : (List F64) i : F64] : F64
+  (if (> counts/~size i) (nth_num counts i) 0.0))
+
+(fn item_id [game : Game name : Str] : F64
+  (var id (item_named game/items name))
+  (if_yes (== id no_item)
+    (fail (new UnknownNode $"${name} is not a registered item")))
+  id)
+
+(fn register_craft [game : Game
+                    ^makes : Str
+                    ^from : (List Str)
+                    ^counts : (List F64)
+                    ^yield : F64?] : F64
+  (if_yes (> from/~size 4.0)
+    (fail (new UnknownNode
+               $"recipe for ${makes} names $($to_int from/~size) ingredients; four is the ceiling")))
+  (add_recipe game/crafts (item_id game makes) (?? yield 1.0)
+              (ingredient_id game from 0.0) (ingredient_n counts 0.0)
+              (ingredient_id game from 1.0) (ingredient_n counts 1.0)
+              (ingredient_id game from 2.0) (ingredient_n counts 2.0)
+              (ingredient_id game from 3.0) (ingredient_n counts 3.0)))
 
 # --- decorations -------------------------------------------------------------
 #

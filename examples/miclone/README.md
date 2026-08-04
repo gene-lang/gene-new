@@ -84,7 +84,7 @@ core/       portable Gene — compiles for the VM and the web profile
   mesh.gene     face-culled meshing (§5)
   loaded.gene   the client's loaded world: one array, one shell (§1.1)
   wire.gene     the byte codec both backends encode messages through (§10)
-  protocol.gene the ten messages, encoded as bytes (§10)
+  protocol.gene the eleven messages, encoded as bytes (§10)
   physics.gene  the player box against the voxel grid (§7)
   raycast.gene  Amanatides-Woo node selection (§7)
   edit.gene     one node changes, and what that invalidates (§7.1)
@@ -100,6 +100,7 @@ core/       portable Gene — compiles for the VM and the web profile
   abm.gene      §12's ABMs: a check queue for what just changed, and sampling
                 for what did not (M8)
   decor.gene    §3 stage 5: trees, placed by a pure function of the column (M8)
+  craft.gene    §9's recipes — shapeless, because a grid needs §13 (M8)
 mods/       the game, as mods (§9)
   default/    every node, tile, drop, biome and ore miclone has
 server/     VM only: the on-disk block format, the SQLite world store (§11),

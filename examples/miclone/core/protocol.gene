@@ -60,7 +60,11 @@
 # v3 adds `msg_items` and widens a slot to three fields (§2): an item id is no
 # longer a content id, so the client cannot name what it is holding or know
 # whether it places anything without the item table.
-(let protocol_version 3.0)
+#
+# v4 adds `msg_craft` (M8): the client says "make what I can make" and the
+# server decides what that is. One byte, because §7.1 gives the client no say —
+# a client that named a recipe would be a client the server had to check.
+(let protocol_version 4.0)
 
 # --- message kinds -----------------------------------------------------------
 #
@@ -81,6 +85,7 @@
 (let msg_dig 65.0)                 # client: dig the node at
 (let msg_place 66.0)               # client: place the held item at
 (let msg_request_blocks 67.0)      # client: send me blocks [from, from+count)
+(let msg_craft 68.0)               # client: craft the first recipe I can
 
 # `$to_float` because a `(Buffer U8)` read is `Int` on *both* backends, which is
 # the ordinary case the conversion is for. Contrast `core/wire.gene`'s
@@ -103,6 +108,7 @@
 (fn kind_inventory [] : F64 msg_inventory)
 (fn kind_tiles [] : F64 msg_tiles)
 (fn kind_items [] : F64 msg_items)
+(fn kind_craft [] : F64 msg_craft)
 (fn kind_input [] : F64 msg_input)
 (fn kind_dig [] : F64 msg_dig)
 (fn kind_place [] : F64 msg_place)
@@ -114,7 +120,18 @@
 (fn size_dig [] : F64 dig_size)
 (fn size_place [] : F64 place_size)
 (fn size_request_blocks [] : F64 request_blocks_size)
+(fn size_craft [] : F64 craft_size)
 (fn version [] : F64 protocol_version)
+
+# §7.1's authority in one byte: the client asks to craft and says nothing about
+# what. The server matches against the inventory it already holds, which is the
+# only copy that counts — a recipe id from the client would be a number to
+# validate, and validating it means running the match anyway.
+(let craft_size 1.0)
+
+(fn encode_craft [out : (Buffer U8) c : (Buffer F64)] : Nil
+  (reset c)
+  (write_u8 c out msg_craft))
 
 (fn message_kind [b : (Buffer U8)] : F64
   ($to_float (b ~ get 0.0)))

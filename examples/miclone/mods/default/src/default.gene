@@ -39,7 +39,7 @@
          register_tile register_node register_drop_rule
          register_group register_item register_tool_cap
          register_biome_def register_ore_def
-         register_abm register_decoration]
+         register_abm register_decoration register_craft]
         from "../../../core/api.gene")
 (import [abm_fall] from "../../../core/abm.gene")
 (import [tile_solid tile_ore tile_overlay] from "../../../core/tiles.gene")
@@ -215,6 +215,10 @@
 # built, so coal drops a lump.
 
 (fn setup_items [game : Game] : Nil
+  # The two items a tree becomes, and the reason §2's split had to exist: a
+  # plank and a stick are things you hold and neither is a node.
+  (register_item game "miclone:plank" ^description "Wooden Plank")
+  (register_item game "miclone:stick" ^description "Stick")
   (register_item game "miclone:coal_lump" ^description "Coal Lump")
   (register_item game "miclone:iron_lump" ^description "Iron Lump")
   # A pickaxe places nothing, which is what `^places` being absent means, and is
@@ -328,6 +332,29 @@
 # Trees go where grass does, which puts them in the three temperate biomes and
 # keeps them out of the desert and the snow without naming a biome at all.
 
+# --- crafting ----------------------------------------------------------------
+#
+# §9's `register_craft`, and the loop that makes §2.2's tool columns mean
+# something: chop a tree, make planks, make sticks, make a pickaxe that digs
+# stone faster than a hand does.
+#
+# Shapeless, so a recipe is what you hold rather than where you put it — see
+# `core/craft.gene`. The chain is upstream's and is the one every player of this
+# genre already knows, which is the point: nothing here needs explaining.
+
+(fn setup_crafting [game : Game] : Nil
+  (register_craft game ^makes "miclone:plank"
+                  ^from ["miclone:tree"] ^counts [1.0] ^yield 4.0)
+  (register_craft game ^makes "miclone:stick"
+                  ^from ["miclone:plank"] ^counts [2.0] ^yield 4.0)
+  (register_craft game ^makes "miclone:wood_pickaxe"
+                  ^from ["miclone:plank" "miclone:stick"] ^counts [3.0 2.0])
+  # Steel is not smelted — there is no furnace, because a furnace is a
+  # container and a container is §13's formspec. An iron lump is what the ore
+  # drops and what the pickaxe takes, which is the honest shortcut until then.
+  (register_craft game ^makes "miclone:steel_pickaxe"
+                  ^from ["miclone:iron_lump" "miclone:stick"] ^counts [3.0 2.0]))
+
 (fn setup_decorations [game : Game] : Nil
   (register_decoration game "miclone:tree"
                        ^on "miclone:grass"
@@ -404,4 +431,5 @@
   (setup_biomes game)
   (setup_ores game)
   (setup_decorations game)
+  (setup_crafting game)
   (setup_behaviour game))

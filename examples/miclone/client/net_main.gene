@@ -69,6 +69,7 @@
          decode_inventory
          size_request_blocks encode_request_blocks
          size_dig encode_dig size_place encode_place
+         size_craft encode_craft
          protocol_version]
         from "../core/protocol.gene")
 
@@ -392,7 +393,13 @@
     (if_yes (== k "6") (set picked 5.0))
     (if_yes (== k "7") (set picked 6.0))
     (if_yes (== k "8") (set picked 7.0))
-    (if_yes (>= picked 0.0) (set selected picked))))
+    (if_yes (>= picked 0.0) (set selected picked))
+    # §9's crafting, and §7.1's shape: the client asks and says nothing about
+    # what — the server holds the only inventory that counts.
+    (if_yes (== k "c")
+      (var msg ($buffer U8 (size_craft)))
+      (encode_craft msg wc)
+      ($ws/send_bytes sock msg))))
 
   ($dom/add_event_listener ($dom/window) "keyup" (fn [ev : Any] : Void
     (var k ($event/key ev))
