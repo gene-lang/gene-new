@@ -2208,6 +2208,20 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "canvas/set_size":
         paramTypes = @[webType(wtkDomTarget), webType(wtkF64), webType(wtkF64)]
         returnType = webType(wtkVoid)
+      of "audio/context":
+        # A `BaseAudioContext` is an `EventTarget`, so the handle needs no type
+        # of its own — the same reasoning `canvas/context` uses for its cast.
+        paramTypes = @[]
+        returnType = webType(wtkDomTarget)
+      of "audio/tone":
+        # context, frequency (Hz), duration (s), gain (0..1)
+        paramTypes = @[webType(wtkDomTarget), webType(wtkF64), webType(wtkF64),
+                       webType(wtkF64)]
+        returnType = webType(wtkVoid)
+      of "audio/noise":
+        # context, duration (s), gain (0..1)
+        paramTypes = @[webType(wtkDomTarget), webType(wtkF64), webType(wtkF64)]
+        returnType = webType(wtkVoid)
       of "canvas/width", "canvas/height":
         paramTypes = @[webType(wtkDomTarget)]
         returnType = webType(wtkF64)
@@ -4124,6 +4138,13 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       arguments[0] & ".drawElements(" & arguments[0] & "." & expr.keys[0] &
         ", " & arguments[2] & ", " & arguments[0] & "." & expr.keys[1] &
         ", " & arguments[4] & ")"
+    of "audio/context": "$gene_audio_context()"
+    of "audio/tone":
+      "$gene_audio_tone(" & arguments[0] & ", " & arguments[1] & ", " &
+        arguments[2] & ", " & arguments[3] & ")"
+    of "audio/noise":
+      "$gene_audio_noise(" & arguments[0] & ", " & arguments[1] & ", " &
+        arguments[2] & ")"
     of "canvas/context": "$gene_canvas_context(" & arguments[0] & ")"
     of "canvas/set_size":
       "$gene_canvas_set_size(" & arguments[0] & ", " & arguments[1] & ", " &
@@ -6003,6 +6024,53 @@ proc emitModule(module: WebModule, typescript: bool,
     let numReturn = if typescript: ": number" else: ""
     emitter.line("function $gene_ws_buffered(" & bufParams & ")" & numReturn &
       " { return (socket" & wsCast & ").bufferedAmount; }")
+  # --- audio ---
+  #
+  # Two primitives rather than a node graph. §D7.9 puts a full `AudioContext`
+  # binding set "at the same tier as WebGL2", which is dozens of entries; a game
+  # that needs a thud when you dig and a click when you place needs a tone and a
+  # noise burst, and both are three nodes built and torn down per sound. The
+  # graph API is what a mod authoring music will want, and it can be added
+  # without changing these.
+  if moduleUsesBuiltin(module, ["audio/context"]):
+    let ctxReturn = if typescript: ": EventTarget" else: ""
+    emitter.line("function $gene_audio_context()" & ctxReturn &
+      " { return new AudioContext(); }")
+  if moduleUsesBuiltin(module, ["audio/tone"]):
+    let toneParams = if typescript:
+        "target: EventTarget, freq: number, duration: number, gain: number"
+      else: "target, freq, duration, gain"
+    let voidReturn = if typescript: ": void" else: ""
+    # The gain ramps to silence rather than stopping abruptly: an oscillator cut
+    # mid-cycle is a click, which is audible and sounds like a bug.
+    emitter.line("function $gene_audio_tone(" & toneParams & ")" & voidReturn &
+      " { const ctx = target" & (if typescript: " as AudioContext" else: "") &
+      "; const t = ctx.currentTime; const osc = ctx.createOscillator(); " &
+      "const g = ctx.createGain(); osc.frequency.value = freq; " &
+      "g.gain.setValueAtTime(gain, t); " &
+      "g.gain.exponentialRampToValueAtTime(0.0001, t + duration); " &
+      "osc.connect(g); g.connect(ctx.destination); " &
+      "osc.start(t); osc.stop(t + duration); }")
+  if moduleUsesBuiltin(module, ["audio/noise"]):
+    let noiseParams = if typescript:
+        "target: EventTarget, duration: number, gain: number"
+      else: "target, duration, gain"
+    let voidReturn = if typescript: ": void" else: ""
+    # White noise through a decaying gain, which is what a dig sounds like. The
+    # buffer is built per call and is a few thousand samples; a cached one would
+    # be a global whose lifetime crosses the context's.
+    emitter.line("function $gene_audio_noise(" & noiseParams & ")" &
+      voidReturn & " { const ctx = target" &
+      (if typescript: " as AudioContext" else: "") &
+      "; const t = ctx.currentTime; " &
+      "const n = Math.max(1, Math.floor(ctx.sampleRate * duration)); " &
+      "const buf = ctx.createBuffer(1, n, ctx.sampleRate); " &
+      "const d = buf.getChannelData(0); " &
+      "for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1; " &
+      "const src = ctx.createBufferSource(); src.buffer = buf; " &
+      "const g = ctx.createGain(); g.gain.setValueAtTime(gain, t); " &
+      "g.gain.exponentialRampToValueAtTime(0.0001, t + duration); " &
+      "src.connect(g); g.connect(ctx.destination); src.start(t); }")
   if moduleUsesBuiltin(module, ["canvas/context"]):
     let elParam = if typescript: "element: EventTarget" else: "element"
     let ctxReturn = if typescript: ": CanvasRenderingContext2D" else: ""

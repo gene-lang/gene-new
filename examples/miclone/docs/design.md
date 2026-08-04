@@ -965,6 +965,25 @@ running game that justifies it.
 **9. Audio.** Browser `AudioContext` bindings, at the same tier as WebGL2.
 Deferred to M8.
 
+*M8: **landed, and much smaller than "the same tier as WebGL2".*** Two bindings
+rather than dozens: `$audio/tone` (frequency, duration, gain) and
+`$audio/noise` (duration, gain). Each builds three Web Audio nodes, ramps the
+gain to silence rather than cutting — an oscillator stopped mid-cycle is a click
+that sounds like a bug — and discards them.
+
+The estimate was wrong in a useful direction. A game needs a thud when you dig
+and a tone when you place, and those are two calls; the *graph* — filters,
+panning, scheduled music — is what a mod authoring a soundtrack needs, and it
+can be added later without changing these two. `client/sound.gene` is the whole
+of the game's audio and is 40 lines, procedural for exactly the reasons
+`client/atlas.gene` gives: no asset to fetch, no load event, no file whose
+source nobody has.
+
+One browser rule shapes the code: a context created before the user has
+interacted with the page is not an error, it is a context stuck in `suspended`
+that never plays. So the context is made on the first sound, which by
+construction is a click or a keypress.
+
 **10. The VM's call and message-send cost. Blocks nothing; raises every
 ceiling.** §D6.3 measured a `(buf ~ set! i v)` at **0.61 µs** and the repo's own
 `bench_core` puts a trivial call at ~480 ns — roughly 1,500 cycles, where a
@@ -3154,6 +3173,26 @@ a native shell will have to reimplement (a cost §D8's M9 owns).
 
 The HUD (hotbar, health, breath, crosshair) is DOM as well, except the
 crosshair.
+
+### 13.2 M8 — sound
+
+Not §13's subject, but the other half of "UI and sound" and the smaller half.
+`client/sound.gene`: a dig is a noise burst, a place is a tone, a craft is two
+notes a fifth apart. §D7.9 recorded the estimate as "dozens of bindings, at the
+same tier as WebGL2" and the estimate was wrong in a useful direction — two
+bindings cover a game, and the graph API is what a mod authoring music will
+want.
+
+**In the networked client the sound plays when the server confirms, not when
+the click happens.** §7.1 keeps drops and edits off the prediction path, and a
+thud on a dig the server refused is the audible version of the flickering
+hotbar that rule exists to prevent. The in-tab client plays on the edit, because
+in-process the edit and its confirmation are the same call.
+
+`tools/dom_stub.mjs` gained an audio stub, and it had to be a real `EventTarget`
+subclass rather than a plain object: a `BaseAudioContext` is one, the profile
+checks it at the boundary, and the generated guard rejects a stand-in before any
+audio call happens.
 
 ### 13.1 M5 — the HUD is built; the formspec is not
 

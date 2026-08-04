@@ -106,7 +106,7 @@ mods/       the game, as mods (§9)
   default/    every node, tile, drop, biome and ore miclone has
 server/     VM only: the on-disk block format, the SQLite world store (§11),
             and main.gene — the M6 server that owns the world (§10)
-client/     the browser shell: WebGL2 renderer, atlas, camera
+client/     the browser shell: WebGL2 renderer, atlas, sound, camera
               main.gene generates the world; net_main.gene is handed it (§10)
 probes/     the probes and cross-backend specs; `run_*.gene` are their VM shells
 tools/      the web-profile shells

@@ -44,6 +44,7 @@
          upload_chunk begin_frame set_view_projection draw_chunk]
         from "./render.gene")
 (import [paint] from "./atlas.gene")
+(import [new_sound play_dig play_place play_craft] from "./sound.gene")
 (import [TileRegistry new_tiles] from "../core/tiles.gene")
 (import [forward_x forward_y forward_z] from "../core/vec.gene")
 (import [new_player step player_x player_y player_z player_eye_y
@@ -116,6 +117,7 @@
   # like, so the recipes arrive in `msg_tiles` and the canvas is painted and
   # uploaded when they do — which is before any block message, because the
   # server sends tiles in the handshake.
+  (var sfx (new_sound))
   (var atlas_canvas ($dom/create_element "canvas"))
   ($canvas/set_size atlas_canvas 128.0 128.0)
 
@@ -321,6 +323,12 @@
 
     (if_yes (== kind msg_node_delta)
       (decode_node_delta b wc delta)
+      # **The sound plays when the server confirms, not when the click
+      # happens.** §7.1 keeps drops and edits off the prediction path, and a
+      # thud on a dig the server refused would be the audible version of the
+      # flickering hotbar that rule exists to prevent.
+      (if (== (delta ~ get delta_id) 0.0) (then (play_dig sfx))
+        (else (play_place sfx)))
       # The server is authoritative and has already relit around this node; the
       # client's optimistic apply either agreed — in which case this is a
       # no-op — or did not, and this wins (§7.1 step 4).

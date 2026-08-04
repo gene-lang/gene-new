@@ -1,0 +1,54 @@
+# Sound — design.md §8's "sound", and §D7.9's audio backlog item, at the size a
+# voxel game actually needs.
+#
+# **Procedural, like the atlas.** `client/atlas.gene` paints its textures rather
+# than shipping PNGs, for reasons that apply here word for word: no asset to
+# fetch, no load event, no file whose source nobody has. A dig is a noise burst
+# and a place is a short tone, and both are three Web Audio nodes built and
+# discarded per sound.
+#
+# §D7.9 puts a full `AudioContext` binding set "at the same tier as WebGL2",
+# which is dozens of entries. What landed is two: `$audio/tone` and
+# `$audio/noise`. A mod authoring music wants the graph; a game that needs a
+# thud when you dig does not, and the graph can be added later without changing
+# either of these.
+#
+# ## Why the context is created lazily
+#
+# A browser refuses to start an `AudioContext` before the user has interacted
+# with the page, and a refused context is not an error — it is a context stuck
+# in `suspended` that never plays anything. So the context is made on the first
+# sound, which by construction is a click or a keypress.
+
+(mod sound ^profile web)
+
+# Pitches, in the small-interval range that reads as a game rather than a
+# doorbell. A place is two quick notes a fifth apart; a dig is noise.
+(let place_hz 523.25)
+(let step_hz 784.0)
+
+(fn new_sound [] : (List EventTarget)
+  # A list rather than a nullable, because the profile has no nullable it can
+  # narrow (see `client/net_main.gene`'s header on the same problem): an empty
+  # list is "not yet", and a one-element list is the context.
+  [])
+
+(fn first_context [s : (List EventTarget)] : EventTarget
+  (var i 0.0)
+  s/%i)
+
+(fn ensure_context [s : (List EventTarget)] : EventTarget
+  (if_yes (== s/~size 0.0)
+    (s ~ push! ($audio/context)))
+  (first_context s))
+
+(fn play_dig [s : (List EventTarget)] : Nil
+  ($audio/noise (ensure_context s) 0.09 0.28))
+
+(fn play_place [s : (List EventTarget)] : Nil
+  ($audio/tone (ensure_context s) place_hz 0.06 0.16))
+
+(fn play_craft [s : (List EventTarget)] : Nil
+  (var ctx (ensure_context s))
+  ($audio/tone ctx place_hz 0.05 0.14)
+  ($audio/tone ctx step_hz 0.09 0.14))

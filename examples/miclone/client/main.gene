@@ -38,6 +38,7 @@
          upload_chunk begin_frame set_view_projection draw_chunk]
         from "./render.gene")
 (import [paint] from "./atlas.gene")
+(import [new_sound play_dig play_place play_craft] from "./sound.gene")
 (import [forward_x forward_y forward_z] from "../core/vec.gene")
 (import [new_player step player_x player_y player_z player_eye_y
          on_ground? in_liquid? box_overlaps_node? find_spawn]
@@ -133,6 +134,7 @@
   # §9's game, before anything reads a content id — which is everything below.
   (var game (load_mods))
 
+  (var sfx (new_sound))
   (var atlas_canvas ($dom/create_element "canvas"))
   ($canvas/set_size atlas_canvas 128.0 128.0)
   (paint ($canvas/context atlas_canvas) game/tiles)
@@ -389,6 +391,7 @@
         # dropped-item entities can do — those are M8's.
         (var yield_id (drop_item drops items dug))
         (var yield_n (drop_count drops items dug))
+        (play_dig sfx)
         (if_yes (> yield_n 0.0)
           (add inv items yield_id yield_n)
           (set hotbar_dirty true))))))
@@ -414,6 +417,7 @@
                       (&& (placeable? world reg nx ny nz)
                           (! (box_overlaps_node? player nx ny nz)))))
         (take inv selected 1.0)
+        (play_place sfx)
         (set hotbar_dirty true)
         (apply_edit nx ny nz (item_node items held_item))))))
 

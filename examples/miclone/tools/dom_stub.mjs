@@ -58,6 +58,41 @@ const gl = new Proxy({}, {
   },
 });
 
+// Web Audio, at the same fidelity as the WebGL stub above: every call is a
+// no-op that records nothing, so this says the client asked for a sound and
+// not that a sound was heard. `currentTime` and `sampleRate` are real numbers
+// because `audio/tone` and `audio/noise` do arithmetic on them — a stub
+// returning undefined would make the ramp `NaN` and throw where a browser
+// would play.
+const audioNode = () => new Proxy({
+  frequency: { value: 0 },
+  gain: {
+    setValueAtTime() {}, exponentialRampToValueAtTime() {},
+  },
+  buffer: null,
+}, {
+  get(target, name) {
+    if (name in target) return target[name];
+    return () => {};
+  },
+  set() { return true; },
+});
+
+// Extends the real `EventTarget`, because a `BaseAudioContext` is one and the
+// profile checks that at the boundary — a plain object is rejected by the
+// generated guard before any audio call happens.
+globalThis.AudioContext = class extends EventTarget {
+  get currentTime() { return 0; }
+  get sampleRate() { return 48000; }
+  get destination() { return audioNode(); }
+  createOscillator() { return audioNode(); }
+  createGain() { return audioNode(); }
+  createBufferSource() { return audioNode(); }
+  createBuffer(_channels, length) {
+    return { getChannelData: () => new Float32Array(length) };
+  }
+};
+
 export const stage = element("stage");
 export const hud = element("hud");
 export const hotbar = element("hotbar");
