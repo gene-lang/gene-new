@@ -1397,8 +1397,8 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | ~~M4~~ | **Persistence — done** | quit and come back to the same world; §11 | backlog 3 (landed), 4 (open, not blocking) |
 | ~~M5~~ | **Player: physics, dig, place, inventory — done** | a playable singleplayer creative-ish loop; §1.1, §4.2, §7, §7.1 | — |
 | ~~M6~~ | **Client/server split over WebSocket — done** | the same game, client and server as separate processes; §10, §10.1 | backlog 7 (browser half landed) |
-| ~~M7~~ | **The mod API — API done, loading not** | the game is `mods/default`, defined through §9's surface and drawn from recipes on the wire; §9.1 | — |
-| ~~M8~~ | **Entities, crafting, UI, sound — mostly** | §12's tick, trees, crafting, dropped items, sound, a formspec, and the mod callbacks the rest were written around (§8.2, §12.3); §8.2 names what entities still lack | backlog 9 (landed) |
+| ~~M7~~ | **The mod API — API done, sandbox done, loading blocked** | the game is `mods/default`; §D5's capability boundary is built and tested (§D5.2); the runtime loader is blocked on module identity (§9.3) | — |
+| ~~M8~~ | **Entities, crafting, UI, sound — done** | §12's tick, trees, crafting, dropped items, sound, a formspec, mod callbacks (§8.2, §12.3), leaf culling (§3.6), entities drawn (§8.3), §13's input and a chest (§13.4), and players as entities (§8.4) | backlog 9 (landed) |
 | M9 | Native shell | the same game outside a browser | backlog 7, 8 |
 
 M7 is the point of the project. Everything before it is the engine a mod API
@@ -1420,11 +1420,20 @@ features at once. **The absence in §D8's table was a claim nobody had tested**,
 and it is the second time this project has found one of those — §D5.1 was the
 first, and it is still open.
 
-What M8 does not have: entity **rendering** and §13's **input**, so no chest and
-no furnace; `on_punch` and `on_death`, which would be fields nothing could call
-until something can hit an entity. §8.2 and §13.3 say which and why. A player
-still cannot see another player, which is the clearest statement of what is
-left, and it is now a rendering problem rather than a callback one.
+**M8 is done.** Everything the list above named as missing arrived: entity
+rendering (§8.3, and §6's share of it was zero), §13's input with the chest that
+justified it (§13.4), leaf face culling (§3.6), and players as entities (§8.4) —
+which was §8.1's "clearest statement of what §8 still owes" and is now a probe
+that passes. What M8 still does not have is `on_punch` and `on_death`, and those
+stay unbuilt because nothing in this engine can hit an entity: they would be
+fields nothing could call.
+
+**So what is left before M9 is one thing, and it is not a game feature.** M7's
+runtime loader is blocked on module identity across a sandboxed load (§9.3) —
+not on the capability model, which is built and has eight tests (§D5.2). The
+distinction matters because the two are easy to conflate: §D5's advantage over
+Luanti is real and enforced; what is missing is the plumbing that lets a mod
+read off disk share the engine's types with the engine.
 
 M7 shipped in two halves and only one of them is done (§9.1). The **API** is
 built: the game is a mod, registration goes through a surface, definitions are

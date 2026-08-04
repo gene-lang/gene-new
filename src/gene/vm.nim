@@ -23798,8 +23798,11 @@ proc loadSandboxedModule*(app: Application, path: string,
   if app.sandboxRoot != nil:
     raise newException(GeneError,
       "a sandboxed module cannot load another sandboxed module")
+  # **Not `adoptEntryModule`.** A mod is not the program's entry, and adopting
+  # it repoints the package the app resolves against — which made the mod's
+  # `core/api.gene` a different module identity from the host's, so the mod's
+  # `Game` was not the host's `Game` and `register_all` could not be called.
   let absPath = app.entryModulePath(path)
-  app.adoptEntryModule(absPath)
   let root = app.sandboxedBuiltins(grants)
   app.sandboxRoot = root
   app.sandboxKey = grants.sorted().join(",")

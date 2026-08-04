@@ -3,16 +3,18 @@
 A voxel game engine with [Luanti](https://github.com/luanti-org/luanti)'s
 architecture, written in Gene, whose mod language is Gene.
 
-**Status: M0 through M8, mostly — a generated, lit world you can walk around in,
-dig, carry, craft with, and build with, running as two processes, defined by a
-mod, and changing on its own.**
+**Status: M0 through M8 — a generated, lit world you can walk around in, dig,
+carry, craft with, store things in, and build with; running as two processes,
+defined by a mod, changing on its own, and shared with other players who can see
+you.**
 The server owns the world and answers a WebSocket; the browser client is handed
 it and plays it, sharing every rule through `core/` (§1.1, §4.2, §7, §7.1, §10).
 The game itself is `mods/default`, registered through §9's API — and a client
-draws it from recipes on the wire without ever running mod code. What M7 has
-*not* built is the loading: the mod is compiled in rather than read off disk, so
-§D5's capability model is still a claim about a loader that does not exist
-(§9.1). Read
+draws it from recipes on the wire without ever running mod code. §D5's capability sandbox is **built and enforced** — a mod is handed exactly the
+namespaces its manifest declares, with eight tests (design.md §D5.2). What M7
+has not finished is the *loading*: the mod is still compiled in rather than read
+off disk, blocked on module identity across a sandboxed load rather than on
+capabilities (§9.3). Read
 [`docs/design.md`](docs/design.md) first — Part I is the direction and the
 decisions, and §D2 is the constraint that shaped the rest.
 
