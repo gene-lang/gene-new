@@ -39,7 +39,7 @@
          seen_x seen_y seen_z seen_item seen_item_total seen_live]
         from "../core/seen.gene")
 (import [Registry new_registry id_of registered_count name_of solid?
-         tile_top_of]
+         tile_top_of opens_form_of]
         from "../core/registry.gene")
 (import [World new_world store_block block_base node_at light_at
          world_dx world_dy world_dz world_stride_z world_nodes]
@@ -75,7 +75,7 @@
          decode_inventory
          size_request_blocks encode_request_blocks
          size_dig encode_dig size_place encode_place
-         size_craft encode_craft
+         size_craft encode_craft craft_any
          size_input encode_input msg_entity
          new_entity_msg decode_entity ent_id ent_x ent_y ent_z ent_item ent_count
          protocol_version]
@@ -463,16 +463,29 @@
       (var nx (before_x hit))
       (var ny (before_y hit))
       (var nz (before_z hit))
+      # The node the ray actually hit, which is not where a block would go.
+      # §13's chest is *pointed at* and the position above is the empty node
+      # beside it, so a right-click carries both and the server decides which
+      # one it meant (§10's `place_size`).
+      (var ax (hit_x hit))
+      (var ay (hit_y hit))
+      (var az (hit_z hit))
+      (var opens (!= (opens_form_of reg (node_at world ax ay az)) ""))
       # §7.1 step 1 gained a case with §2's items: a pickaxe passes every
       # position test and still places nothing, so the client answers that
       # alone rather than sending a place the server would refuse.
+      #
+      # **A node that opens a form is sent regardless of what is held.** Opening
+      # a chest with empty hands is the ordinary way to open a chest, and every
+      # test below is about placing a block.
       (var held_item (slot_item inv selected))
-      (if_yes (&& (! (slot_empty? inv selected))
-                  (&& (placeable_item? items held_item)
-                      (&& (placeable? world reg nx ny nz)
-                          (! (box_overlaps_node? player nx ny nz)))))
+      (if_yes (|| opens
+                  (&& (! (slot_empty? inv selected))
+                      (&& (placeable_item? items held_item)
+                          (&& (placeable? world reg nx ny nz)
+                              (! (box_overlaps_node? player nx ny nz))))))
         (var msg ($buffer U8 (size_place)))
-        (encode_place msg wc nx ny nz held_item)
+        (encode_place msg wc nx ny nz held_item ax ay az)
         ($ws/send_bytes sock msg)))))
 
   ($dom/add_event_listener ($dom/window) "keydown" (fn [ev : Any] : Void
@@ -498,7 +511,7 @@
     # what — the server holds the only inventory that counts.
     (if_yes (== k "c")
       (var msg ($buffer U8 (size_craft)))
-      (encode_craft msg wc)
+      (encode_craft msg wc (craft_any))
       ($ws/send_bytes sock msg))))
 
   ($dom/add_event_listener ($dom/window) "keyup" (fn [ev : Any] : Void

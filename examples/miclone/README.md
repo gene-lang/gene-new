@@ -106,7 +106,10 @@ core/       portable Gene — compiles for the VM and the web profile
                 on_step (M8)
   seen.gene     §8's client half: what a client has been told is on the
                 ground, which is what the renderer walks (M8)
-  formspec.gene §13's UI as data — validated at registration, not on screen (M8)
+  formspec.gene §13's UI as data — validated at registration, not on screen,
+                and buttons that send an action a mod names (M8)
+  container.gene §13's node inventories: a chest's contents, which are a node's
+                *state* and so neither half of §2's split (M8)
 mods/       the game, as mods (§9)
   default/    every node, tile, drop, biome and ore miclone has
 server/     VM only: the on-disk block format, the SQLite world store (§11),
@@ -333,6 +336,25 @@ for the ambient case — grass growing on open dirt. See design.md §12.2.
 support out from under a sand column, stops talking, and waits for node deltas
 to arrive on a silent socket. That is the whole difference between M6's reactive
 server and this one.
+
+### §13 — a form that sends a message, and a chest
+
+```sh
+gene run server &
+node tools/chest_probe.mjs        # crafts, places, opens, fills, empties one
+```
+
+§13.3 said a form was read-only and that input "wants the container that would
+justify it". Both exist now: `el_button` carries an **action** the engine hands
+back verbatim, three messages carry forms to the client and presses back
+(protocol v7), and `core/container.gene` gives a node position an inventory.
+A press is refused unless *this* player has *that* form open at *that* node and
+the form declares the action — §7.1's rule reaching UI.
+
+The probe plays it: chop a tree, craft planks, craft a chest, place it,
+right-click it, fill it, empty it. It also found the thing that was not on
+§13's list — **a craft could not be chosen**, so the chest recipe was
+unreachable behind sticks. See design.md §13.4.
 
 ### §8 — dropped items, drawn
 

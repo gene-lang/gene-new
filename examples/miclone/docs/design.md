@@ -3507,6 +3507,97 @@ field to type into — which covers the crafting panel M8 needs and does not cov
 a chest. Input needs a message per element kind and a server that can attribute
 one to a form it opened, and it wants the container that would justify it.
 
+### 13.4 The input, and the chest that justified it
+
+All four of those turned out to be exactly what it cost, and one thing more that
+was not on the list.
+
+**A button is `el_button` and carries an action** — a string the mod chooses,
+handed back verbatim and never interpreted by the engine. That is the whole
+contract, and it is what keeps the element vocabulary closed while leaving the
+*meaning* open: a mod adds a control by naming an action, not by teaching the
+client a new kind of element. A button with no action is refused at
+registration, which is §13's promise applied to a control that would do nothing.
+
+**Three messages, and they divide the way §13 already divided.** The layout
+travels once at join (`msg_forms`); the contents travel per open
+(`msg_open_form`, carrying the node, because one form serves every chest and the
+position is the only thing that says *which*); a press travels back
+(`msg_form_action`). The networked client had no form registry at all before
+this — a form was declared on the server and `client/main.gene` could draw it
+only because in-tab the mod and the client are one process, so a chest was a
+thing only singleplayer could have had.
+
+The client rebuilds the registry through `add_form`/`add_element` rather than by
+writing columns, so **a form that survives the wire is one that would have
+registered**. That is §13's claim reaching a step past where it was written: a
+mangled form is caught by the form's own rules rather than by the renderer
+drawing something strange.
+
+**The attribution is four checks and none of them trusts the message**: this
+player has something open, it is the named form at the named node, that form
+*declares* this action, and the slot is inside the container. §7.1's rule —
+the client reports, the server decides — reaching UI.
+
+**`core/container.gene` is a node's *state*, which is a third kind of thing.**
+§2 splits a node definition into a client half and a server half; a chest's
+contents are neither. Everything before it was a definition (the same for every
+node of a type) or a world column (one number per position). Upstream gives
+every node a string-keyed metadata table; this gives a position an inventory and
+nothing else, for the same reason the element vocabulary is closed. It is not
+persisted and not dropped when the node is dug, and both are stated in the
+module rather than discovered by a player.
+
+#### The thing that was not on the list: a craft could not be chosen
+
+`msg_craft` carried one byte on the reasoning that "a recipe id from the client
+would be a number to validate, and validating it means running the match
+anyway". True about the cost, wrong about the consequence. With four recipes
+`first_craftable` was fine; the chest made a fifth that **it could never
+reach**, because sticks matched first and spent the planks. A player could not
+make a chest at all.
+
+So a craft names its recipe, and `craft_any` keeps the old meaning for the
+crafting key. Validating a named recipe is strictly *less* work than searching
+for one, and the authority is unchanged. **This was found by a probe playing the
+game rather than by reading the code** — the recipe existed, the item existed,
+and nothing could produce it.
+
+#### Four bugs, and what each one teaches
+
+- **A sentinel that collided with real data.** "Nothing open" was -1 in the
+  x cell of the open position — and §D6.1's world sits at x = -1437, so every
+  chest in the game read as closed. A coordinate has no spare value in its own
+  range; the *name* does, and empty is now the closed state.
+- **A local shadowed an imported function.** `(var take …)` in the chest's
+  action handler shadowed `core/inventory.gene`'s `take`, so the call became
+  "call this number". It threw into the server's log rather than to the client,
+  which is why it presented as a chest that quietly refused.
+- **An import that was never added.** `opens_form_of` was used and not imported;
+  every right-click threw, was logged, and the loop carried on — so a broken
+  handler looked exactly like a refusal. Both of these are the same lesson: **the
+  server's "report and continue" turns a crash into a silence**, and the log is
+  the only place the difference shows.
+- **Registration order.** The chest recipe named an item registered later in
+  `register_all`. It failed at load with the item's name in the message, which is
+  §9's promise doing its job.
+
+And a fifth that was not a bug in the game: **`$println` on the server is
+block-buffered through a pipe**, so three rounds of instrumentation printed
+nothing at all while the structured log printed fine. `script -q` gives it a
+pty; the trap is recorded in §14 and cost more time here than any of the four.
+
+#### Still absent
+
+No text field — a form takes presses and not typing, which covers a chest and
+does not cover a sign. No mouse: the client sends a press when a button is
+*clicked in the DOM panel*, and the crafting panel's recipes are chosen by
+number rather than by button, because the crafting form is opened by the client
+(the E key) rather than by the server and so has no `open_at` to attribute a
+press to. That asymmetry — server-opened forms answer to the server,
+client-opened forms answer to the client — is a real seam and is the next thing
+§13 owes.
+
 ### 13.2 M8 — sound
 
 Not §13's subject, but the other half of "UI and sound" and the smaller half.

@@ -23,7 +23,7 @@ core/tiles core/groups core/item core/biome core/cave core/ore
 core/decor core/abm core/craft core/entity core/formspec
 core/api core/mods core/mapgen core/light core/mesh core/loaded
 core/physics core/raycast core/edit core/inventory core/drops
-core/vec core/wire core/protocol
+core/vec core/container core/wire core/protocol
 mods/default/src/default
 client/atlas client/render client/sound client/main client/net_main
 probes/divergence probes/world_spec probes/mapgen_spec probes/light_spec

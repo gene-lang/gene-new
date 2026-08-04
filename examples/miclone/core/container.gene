@@ -1,0 +1,153 @@
+# Node inventories — design.md §13's chest, and §2's other half of a node.
+#
+# A chest is a node that owns a stack of items. §2 splits a node definition into
+# a client half and a server half; this is neither — it is a node's *state*,
+# which is a third thing and the first of its kind in this engine. Everything
+# before it was either a definition (the same for every node of that type) or a
+# world column (`content`, `param1`, `param2`, one number per position).
+#
+# Upstream calls it node metadata and gives every node a string-keyed table.
+# This gives a position an inventory and nothing else, for §13's reason about
+# formspecs: a closed vocabulary is one where a client cannot be handed
+# something it does not know how to draw. A furnace's burn timer is the second
+# entry and the shape it wants is a second column, not a map.
+#
+# ## Keyed by position, stored densely
+#
+# There are 2.4M node positions and there will be a handful of chests, so this
+# is a list of (position, inventory) rows scanned linearly rather than a column
+# over the world. The scan is bounded by how many containers a player has
+# built, and every use of it is already doing something far more expensive —
+# opening a form, moving a stack.
+#
+# **A container is created on first use, not on placement.** The engine does not
+# watch what a mod places, and a chest that has never been opened has nothing in
+# it, so `container_at` making one on demand is both the simpler rule and the
+# one that survives a world loaded from disk before §11 knows about containers.
+#
+# ## What it does not do yet
+#
+# **Not persisted.** §11 stores blocks; a container lives beside them and is
+# lost when the server stops, which makes a chest a within-session thing. The
+# format wants a table keyed by position and that is §11's work, not §13's — it
+# is called out here rather than discovered by a player who quit.
+#
+# **Not removed when the node is.** Dig a chest and its contents stay in this
+# table, invisible, until something places a chest there again. Upstream drops
+# the contents on the floor, which needs §8's entities to be spawnable from a
+# dig hook — a mod callback on the *edit* path, which does not exist (§14).
+
+(mod container ^profile web)
+
+(import [new_inventory] from "./inventory.gene")
+
+(let max_containers 64.0)
+(let container_slots 8.0)
+
+(type ContainerStore
+  ^props {^x     (Buffer F64)
+          ^y     (Buffer F64)
+          ^z     (Buffer F64)
+          ^used  (Buffer F32)   # 1 when this row holds a container
+          ^slots (List (Buffer F64))
+          ^n     (Buffer F32)}  # one cell: rows in use
+
+  (ctor []
+    (set! self/x ($buffer F64 max_containers))
+    (set! self/y ($buffer F64 max_containers))
+    (set! self/z ($buffer F64 max_containers))
+    (set! self/used ($buffer F32 max_containers))
+    (set! self/slots [])
+    (set! self/n ($buffer F32 1.0))))
+
+(fn new_containers [] : ContainerStore
+  (new ContainerStore))
+
+(fn container_rows [c : ContainerStore] : F64 (c/n ~ get 0.0))
+
+(fn container_row [c : ContainerStore x : F64 y : F64 z : F64] : F64
+  (var found -1.0)
+  (var i 0.0)
+  (var n (container_rows c))
+  (while (< i n)
+    (if_yes (&& (== found -1.0)
+                (&& (== (c/used ~ get i) 1.0)
+                    (&& (== (c/x ~ get i) x)
+                        (&& (== (c/y ~ get i) y) (== (c/z ~ get i) z)))))
+      (set found i))
+    (set i (+ i 1.0)))
+  found)
+
+(fn container_slot_count [] : F64 container_slots)
+
+# The inventory at a position, made on first ask. Answers a row index rather
+# than the buffer itself so that a caller which just created one and a caller
+# which found one take the same path — and because the buffer is reached the
+# same way either way (`container_inventory`).
+#
+# Answers -1 only when the store is full, which is a built world hitting a
+# ceiling rather than an error condition: the caller declines to open a chest
+# and says so, which is better than a raise that takes the connection down.
+(fn container_at [c : ContainerStore x : F64 y : F64 z : F64] : F64
+  (var row (container_row c x y z))
+  (if (>= row 0.0) row
+    (do
+      (var n (container_rows c))
+      # A freed row first, so a world where chests are built and dug does not
+      # walk the high-water mark to the ceiling.
+      (var free -1.0)
+      (var i 0.0)
+      (while (< i n)
+        (if_yes (&& (== free -1.0) (!= (c/used ~ get i) 1.0))
+          (set free i))
+        (set i (+ i 1.0)))
+      (if (>= free 0.0)
+        (do
+          (c/x ~ set! free x)
+          (c/y ~ set! free y)
+          (c/z ~ set! free z)
+          (c/used ~ set! free 1.0)
+          # The row's buffer is **cleared, not replaced**. The web profile has
+          # no `set!` on a `(List T)` (the same constraint §8.2's definitions
+          # met), so `slots` only ever grows by `push!` and a row's index into
+          # it is permanent. That is the better invariant anyway: row `i` owns
+          # buffer `i` for the life of the store, and nothing can drift.
+          (clear_inventory (container_inventory c free))
+          free)
+        (if (>= n max_containers) -1.0
+          (do
+            (c/x ~ set! n x)
+            (c/y ~ set! n y)
+            (c/z ~ set! n z)
+            (c/used ~ set! n 1.0)
+            (c/slots ~ push! (new_inventory container_slots))
+            (c/n ~ set! 0.0 (+ n 1.0))
+            n))))))
+
+(fn clear_inventory [inv : (Buffer F64)] : Nil
+  (var i 0.0)
+  (var n inv/~len)
+  (while (< i n)
+    (inv ~ set! i 0.0)
+    (set i (+ i 1.0))))
+
+(fn container_inventory [c : ContainerStore row : F64] : (Buffer F64)
+  (var s c/slots)
+  (var i row)
+  s/%i)
+
+(fn container_used? [c : ContainerStore row : F64] : Bool
+  (== (c/used ~ get row) 1.0))
+
+(fn container_x [c : ContainerStore row : F64] : F64 (c/x ~ get row))
+(fn container_y [c : ContainerStore row : F64] : F64 (c/y ~ get row))
+(fn container_z [c : ContainerStore row : F64] : F64 (c/z ~ get row))
+
+(fn container_live [c : ContainerStore] : F64
+  (var live 0.0)
+  (var i 0.0)
+  (var n (container_rows c))
+  (while (< i n)
+    (if_yes (container_used? c i) (set live (+ live 1.0)))
+    (set i (+ i 1.0)))
+  live)

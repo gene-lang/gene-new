@@ -62,6 +62,18 @@
 
 (type Registry
   ^props {^names        (List Str)
+          # §13: the form right-clicking this node opens, or "" for a node that
+          # does not open one. A string rather than an id because forms are a
+          # separate registry with its own numbering, and a node that named a
+          # form *number* would be a mod hardcoding an id — which is the one
+          # thing §2 forbids.
+          #
+          # It goes on the wire with everything else here even though only the
+          # server reads it today. A column that exists on one side and not the
+          # other is §D3.1's divergence in miniature: the moment a client wants
+          # to say "open" instead of "place" in its HUD, it would find an empty
+          # string and no reason why.
+          ^opens_form  (List Str)
           ^drawtype     (Buffer F32)
           ^solid        (Buffer F32)    # blocks movement
           ^opaque       (Buffer F32)    # hides the face behind it
@@ -82,6 +94,7 @@
 
   (ctor []
     (set! self/names [])
+    (set! self/opens_form [])
     (set! self/drawtype ($buffer F32 max_content))
     (set! self/solid ($buffer F32 max_content))
     (set! self/opaque ($buffer F32 max_content))
@@ -129,12 +142,14 @@
               solid : Bool opaque : Bool propagates : Bool
               merges_same : Bool
               light_source : F64
-              tile_top : F64 tile_side : F64 tile_bottom : F64] : F64
+              tile_top : F64 tile_side : F64 tile_bottom : F64
+              opens_form : Str] : F64
   (var id (registered_count r))
   (if_yes (>= id max_content)
     (fail (new RegistryFull $"node registry is full at ${max_content} entries")))
   (var slot id)
   (r/names ~ push! name)
+  (r/opens_form ~ push! opens_form)
   (r/drawtype ~ set! slot drawtype)
   (r/solid ~ set! slot (bool_byte solid))
   (r/opaque ~ set! slot (bool_byte opaque))
@@ -152,7 +167,7 @@
                       solid : Bool opaque : Bool propagates : Bool
                       light_source : F64 tile : F64] : F64
   (register r name drawtype solid opaque propagates false light_source
-            tile tile tile))
+            tile tile tile ""))
 
 # The three reserved ids of §1, registered first so their numbering is a
 # consequence of the order rather than a claim made in two places. A registry
@@ -164,6 +179,18 @@
   (register_uniform r "unknown" draw_normal true true false 0.0 0.0)
   (register_uniform r "ignore" draw_airlike false true false 0.0 0.0)
   r)
+
+# The registry a **client** builds from the wire: empty, with not even §1's
+# reserved ids installed, because those are the first three entries the message
+# carries and installing them here would shift every id by three.
+#
+# It exists so that a harness does not have to know that. Every `.mjs` peer used
+# to write `reg = new_registry(); reg.names = []; reg.count[0] = 0`, reaching
+# into two internals — and adding a third column (§5's `merges_same`, §13's
+# `opens_form`) silently broke exactly the ones that had not been updated. A
+# named constructor is one place to change instead of four.
+(fn new_wire_registry [] : Registry
+  (new Registry))
 
 # --- lookup ------------------------------------------------------------------
 #
@@ -189,6 +216,11 @@
 
 (fn merges_same? [r : Registry id : F64] : Bool
   (== (r/merges_same ~ get id) 1.0))
+
+(fn opens_form_of [r : Registry id : F64] : Str
+  (var f r/opens_form)
+  (var i id)
+  f/%i)
 
 (fn light_source_of [r : Registry id : F64] : F64
   (r/light_source ~ get id))

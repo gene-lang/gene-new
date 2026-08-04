@@ -434,7 +434,12 @@
 (fn content_checks [out : (List Str)] : Nil
   (var game (load_mods))
   (var r game/nodes)
-  (check_f out "content set size" (registered_count r) 18.0)
+  # 19 since §13's chest. **The four golden checksums above are unchanged**,
+  # which is the whole evidence that a new node is a new *thing to build with*
+  # rather than a change to what the world generates — §14's rule, and the same
+  # shape M8.2's trees used from the other side (one checksum changed, three did
+  # not, so the change was decorations).
+  (check_f out "content set size" (registered_count r) 19.0)
   (check_f out "air is still 0" (id_of r "air") 0.0)
   # Ids are assigned at load, so this pins the order rather than the numbers.
   (check_f out "stone follows the reserved ids" (id_of r "miclone:stone") 3.0)

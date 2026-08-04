@@ -60,10 +60,10 @@ ws.onmessage = (e) => {
   else if (kind === K.registry) {
     // A *bare* registry: §2's three reserved ids are the first three the
     // message carries, so `new_registry` would install them twice and shift
-    // every id by three.
-    clientReg = R.new_registry();
-    clientReg.names = [];
-    clientReg.count[0] = 0;
+    // every id by three. `new_wire_registry` is that, named — this used to
+    // reach in and reset two fields by hand, which broke silently the first
+    // time the registry grew a third list column.
+    clientReg = R.new_wire_registry();
     regCount = P.decode_registry(b, c, clientReg);
   }
   else if (kind === K.tiles) {
@@ -208,7 +208,10 @@ if (clientReg && R.name_of(clientReg, nodeBefore) === "miclone:grass")
       clientItems && IT.item_name(clientItems, held[0]));
 
 const place = new Uint8Array(P.size_place());
-P.encode_place(place, rc, sx, digY, sz, held[0]);
+// A right-click carries both what was aimed at and where a block would go
+// (§10's `place_size`); this replaces the node it just dug, so the two are the
+// same position and the one below it is what the ray would have struck.
+P.encode_place(place, rc, sx, digY, sz, held[0], sx, digY - 1, sz);
 send(place);
 await wait(700);
 say(here().length === 2, "a place comes back as a second delta at that position",
@@ -228,7 +231,7 @@ const cheatY = digY + 2;
 const cheated = () =>
   deltas.filter((d) => d[0] === sx && d[1] === cheatY && d[2] === sz);
 const cheat = new Uint8Array(P.size_place());
-P.encode_place(cheat, rc, sx, cheatY, sz, 9);
+P.encode_place(cheat, rc, sx, cheatY, sz, 9, sx, cheatY - 1, sz);
 send(cheat);
 await wait(700);
 // Nothing at the position the lie named. Asserting on that position rather than
@@ -270,7 +273,7 @@ if (entities.length > beforeEnt) {
 // answered with an inventory the client never computed.
 const beforeCraft = invs.length;
 const craftMsg = new Uint8Array(P.size_craft());
-P.encode_craft(craftMsg, rc);
+P.encode_craft(craftMsg, rc, P.craft_any());
 send(craftMsg);
 await wait(700);
 say(invs.length === beforeCraft,

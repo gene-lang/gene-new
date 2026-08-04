@@ -42,6 +42,7 @@
          register_abm register_decoration register_craft
          register_form form_label form_box form_item
          node_is? set_node set_node_id
+         form_button
          register_entity entity_pos_x entity_pos_y entity_pos_z
          move_entity_to remove_entity]
         from "../../../core/api.gene")
@@ -117,7 +118,15 @@
   (register_tile game "miclone:leaves" ^kind tile_solid
                  ^red 62.0 ^green 118.0 ^blue 48.0 ^spread 40.0 ^seed 180.0)
   (register_tile game "miclone:lamp" ^kind tile_solid
-                 ^red 250.0 ^green 226.0 ^blue 150.0 ^spread 10.0 ^seed 150.0))
+                 ^red 250.0 ^green 226.0 ^blue 150.0 ^spread 10.0 ^seed 150.0)
+  # §13's chest. Planks with a darker band, so a chest reads as made of wood
+  # rather than as another kind of tree.
+  (register_tile game "miclone:chest_top" ^kind tile_solid
+                 ^red 156.0 ^green 118.0 ^blue 70.0 ^spread 20.0 ^seed 190.0)
+  (register_tile game "miclone:chest_side" ^kind tile_overlay
+                 ^red 104.0 ^green 76.0 ^blue 44.0 ^spread 14.0 ^seed 200.0
+                 ^base_red 156.0 ^base_green 118.0 ^base_blue 70.0
+                 ^base_spread 20.0 ^base_seed 190.0))
 
 # --- nodes -------------------------------------------------------------------
 #
@@ -372,13 +381,19 @@
   # container and a container is §13's formspec. An iron lump is what the ore
   # drops and what the pickaxe takes, which is the honest shortcut until then.
   (register_craft game ^makes "miclone:steel_pickaxe"
-                  ^from ["miclone:iron_lump" "miclone:stick"] ^counts [3.0 2.0]))
+                  ^from ["miclone:iron_lump" "miclone:stick"] ^counts [3.0 2.0])
+  # §13's chest, from planks. **A container nobody can obtain is not a
+  # feature**, and this is the recipe that makes the whole of §13's input
+  # reachable by playing rather than only by a probe: chop a tree, make planks,
+  # make a chest, right-click it.
+  (register_craft game ^makes "miclone:chest"
+                  ^from ["miclone:plank"] ^counts [4.0]))
 
 # --- the crafting panel ------------------------------------------------------
 #
 # §13's formspec, and the first UI in this game that a mod declares rather than
-# the client hardcoding. It is read-only — a layout, not a dialogue — which is
-# what the crafting key needs and is why no chest exists yet (§13.3).
+# the client hardcoding. This one stays read-only — a recipe list is a layout,
+# not a dialogue — and the chest below it is the one with buttons.
 #
 # What it does *not* say is what you can currently make: that is runtime state
 # and changes every time the hotbar does, while this is a layout and does not.
@@ -395,7 +410,54 @@
   (form_label game ^at [1.0 3.0] ^text "3 planks + 2 sticks -> pickaxe"
               ^width 10.0)
   (form_item game ^at [1.0 4.0] ^shows "miclone:wood_pickaxe")
-  (form_item game ^at [3.0 4.0] ^shows "miclone:steel_pickaxe"))
+  (form_item game ^at [3.0 4.0] ^shows "miclone:steel_pickaxe")
+  (form_label game ^at [1.0 5.0] ^text "4 planks -> chest" ^width 10.0))
+
+# --- the chest, and §13's input ------------------------------------------------
+#
+# §13.3 said a form here was read-only and that input "wants the container that
+# would justify it". This is the container.
+#
+# **One form, every chest.** A form is a layout and a chest's contents are
+# state, so the layout is registered once here and the *position* travels with
+# each open (§10's `msg_open_form`). That is what makes eight buttons enough for
+# any number of chests.
+#
+# Eight slots, and two buttons per slot: `take_N` moves that slot's stack into
+# the player's hotbar, `put_N` moves the player's selected stack into that slot.
+# The **action names are the mod's** and the engine never reads them — it hands
+# them back verbatim — which is what lets this add a control without teaching
+# the client a new element kind.
+#
+# The trailing index is parsed by the mod, in `chest_slot_of`, and that is the
+# right side of the line: to the engine `take_3` is an opaque string, and a mod
+# that wanted `slot-3-take` or `t3` would need no engine change to have it.
+
+(let chest_slots 8.0)
+
+(fn setup_chest [game : Game] : Nil
+  (register_node game "miclone:chest" ^description "Chest"
+                 ^opens_form "miclone:chest"
+                 ^tiles ["miclone:chest_top" "miclone:chest_side"
+                         "miclone:chest_top"])
+  (register_group game "miclone:chest" ^group "choppy" ^rating 2.0)
+
+  (register_form game "miclone:chest" ^title "Chest" ^cols 14.0 ^rows 9.0)
+  (form_box game ^at [0.0 0.0] ^size [14.0 9.0])
+  (form_label game ^at [1.0 0.0] ^text "click take to pick up, put to store"
+              ^width 12.0)
+  (var i 0.0)
+  (while (< i chest_slots)
+    (var row (+ 1.0 i))
+    # The item element is what the *contents* fill in at open time; the layout
+    # names no item, because which item is in slot 3 is not a property of the
+    # form (§13).
+    (form_item game ^at [1.0 row] ^shows "")
+    (form_button game ^at [6.0 row] ^text "take" ^action $"take_$($to_int i)"
+                 ^width 3.0)
+    (form_button game ^at [10.0 row] ^text "put" ^action $"put_$($to_int i)"
+                 ^width 3.0)
+    (set i (+ i 1.0))))
 
 (fn setup_decorations [game : Game] : Nil
   (register_decoration game "miclone:tree"
@@ -552,6 +614,9 @@
   (setup_biomes game)
   (setup_ores game)
   (setup_decorations game)
+  # Before crafting, because a recipe naming `miclone:chest` needs the item to
+  # exist — which is this function's whole reason for being ordered by hand.
+  (setup_chest game)
   (setup_crafting game)
   (setup_forms game)
   (setup_entities game)

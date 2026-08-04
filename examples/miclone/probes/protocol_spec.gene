@@ -37,9 +37,21 @@
         from "../core/item.gene")
 (import [load_mods] from "../core/mods.gene")
 (import [new_cursor cursor_at reset] from "../core/wire.gene")
+(import [FormRegistry new_forms form_count element_count form_name_of
+         form_title form_cols form_rows form_len form_named
+         element_kind element_x element_y element_w element_h
+         element_text element_action action_element el_button]
+        from "../core/formspec.gene")
+(import [new_inventory add slot_item slot_count] from "../core/inventory.gene")
 (import [protocol_version message_kind server_message? client_message?
          msg_hello msg_registry msg_block msg_node_delta msg_inventory
-         msg_input msg_dig msg_place msg_request_blocks
+         msg_forms msg_open_form msg_form_action
+         forms_size encode_forms decode_forms
+         size_open_form_for encode_open_form new_open_form decode_open_form
+         open_x open_y open_z
+         size_form_action_for encode_form_action new_form_action
+         decode_form_action action_of act_x act_y act_z act_slot
+         msg_input msg_dig msg_place msg_request_blocks msg_craft
          hello_size encode_hello new_hello decode_hello
          hello_version hello_seed hello_bx hello_by hello_bz
          hello_span_x hello_span_y hello_span_z
@@ -98,7 +110,9 @@
   # is exactly the sort of thing a hand-maintained constant list acquires.
   (var seen 0.0)
   (var kinds [msg_hello msg_registry msg_block msg_node_delta msg_inventory
-              msg_input msg_dig msg_place msg_request_blocks])
+              msg_tiles msg_items msg_entity msg_forms msg_open_form
+              msg_input msg_dig msg_place msg_request_blocks msg_craft
+              msg_form_action])
   (var i 0.0)
   (while (< i kinds/~size)
     (var j (+ i 1.0))
@@ -588,7 +602,7 @@
   # A dig is a place of air, which is what makes one decoder serve both.
   (check_f out "dig: carries no id, so reads as air" (e ~ get edit_id) 0.0)
 
-  (encode_place b c -1343.0 21.0 3264.0 12.0)
+  (encode_place b c -1343.0 21.0 3264.0 12.0 -1343.0 20.0 3264.0)
   (check_f out "place: the kind byte" (message_kind b) msg_place)
   (check_f out "place: the encoder wrote exactly place_size bytes"
            (cursor_at c) place_size)
@@ -701,6 +715,7 @@
   (kind_checks out)
   (hello_checks out)
   (registry_checks out)
+  (form_checks out)
   (tiles_checks out)
   (items_checks out)
   (entity_msg_checks out)
@@ -710,6 +725,122 @@
   (edit_checks out)
   (request_checks out)
   (inventory_checks out))
+
+# --- §13's forms on the wire ---------------------------------------------------
+#
+# Three messages arrived together and they divide the way §13 divides: the
+# *layout* travels once at join (`msg_forms`), the *contents* travel per open
+# (`msg_open_form`), and a press travels back (`msg_form_action`).
+#
+# The property that matters for the first is that the client rebuilds through
+# `add_form`/`add_element` — so a form that survives the wire is one that would
+# have registered, and the round trip is checked element for element.
+
+(fn form_checks [out : (List Str)] : Nil
+  (var server_game (load_mods))
+  (var sf server_game/forms)
+  (var n (form_count sf))
+  (check_b out "forms: the mod registered some" (> n 0.0) true)
+
+  (var c (new_cursor))
+  (var b ($buffer U8 (forms_size sf)))
+  (encode_forms b c sf)
+  (check_f out "forms: the kind byte" (message_kind b) msg_forms)
+  (check_f out "forms: the encoder wrote exactly forms_size bytes"
+           (cursor_at c) (forms_size sf))
+
+  (var cf (new_forms))
+  (var got (decode_forms b c cf))
+  (check_f out "forms: the form count round-trips" got n)
+  (check_f out "forms: and every element came with them"
+           (element_count cf) (element_count sf))
+
+  # Element for element, over every form. A form is a layout and the layout is
+  # the whole of what this message carries.
+  (var name_diff 0.0)
+  (var geom_diff 0.0)
+  (var text_diff 0.0)
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (|| (!= (form_name_of cf i) (form_name_of sf i))
+                (!= (form_title cf i) (form_title sf i)))
+      (set name_diff (+ name_diff 1.0)))
+    (if_yes (|| (!= (form_cols cf i) (form_cols sf i))
+                (|| (!= (form_rows cf i) (form_rows sf i))
+                    (!= (form_len cf i) (form_len sf i))))
+      (set geom_diff (+ geom_diff 1.0)))
+    (set i (+ i 1.0)))
+  (var e 0.0)
+  (var m (element_count sf))
+  (while (< e m)
+    (if_yes (|| (!= (element_kind cf e) (element_kind sf e))
+                (|| (!= (element_x cf e) (element_x sf e))
+                    (|| (!= (element_y cf e) (element_y sf e))
+                        (|| (!= (element_w cf e) (element_w sf e))
+                            (!= (element_h cf e) (element_h sf e))))))
+      (set geom_diff (+ geom_diff 1.0)))
+    (if_yes (|| (!= (element_text cf e) (element_text sf e))
+                (!= (element_action cf e) (element_action sf e)))
+      (set text_diff (+ text_diff 1.0)))
+    (set e (+ e 1.0)))
+  (check_f out "forms: every name and title survives" name_diff 0.0)
+  (check_f out "forms: every position and size survives" geom_diff 0.0)
+  (check_f out "forms: every text and action survives" text_diff 0.0)
+
+  # And the fixture is not empty on the column this milestone added. A diff
+  # counts *disagreements*, so an action the wire dropped entirely would read as
+  # agreement with both sides empty — the same vacuity `merges_same` had.
+  (var buttons 0.0)
+  (var e2 0.0)
+  (while (< e2 (element_count cf))
+    (if_yes (== (element_kind cf e2) el_button) (set buttons (+ buttons 1.0)))
+    (set e2 (+ e2 1.0)))
+  (check_b out "forms: and at least one of them is a button" (> buttons 0.0) true)
+
+  # --- opening one -----------------------------------------------------------
+  (var inv (new_inventory 8.0))
+  (add inv server_game/items 3.0 5.0)
+  (var ob ($buffer U8 (size_open_form_for "miclone:chest")))
+  (encode_open_form ob c "miclone:chest" -12.0 34.0 -56.0 inv 8.0)
+  (check_f out "open_form: the kind byte" (message_kind ob) msg_open_form)
+  (check_f out "open_form: exact size"
+           (cursor_at c) (size_open_form_for "miclone:chest"))
+  (var slot (new_open_form))
+  (var got_inv (new_inventory 8.0))
+  (var got_name (decode_open_form ob c slot got_inv))
+  (check out "open_form: the form name" got_name "miclone:chest")
+  # Negative coordinates on purpose: a u32 would carry -12 as 4,294,967,284 and
+  # the chest would open on a position no player can reach.
+  (check_f out "open_form: x survives, negative" (slot ~ get open_x) -12.0)
+  (check_f out "open_form: y survives" (slot ~ get open_y) 34.0)
+  (check_f out "open_form: z survives, negative" (slot ~ get open_z) -56.0)
+  (check_f out "open_form: the contents came with it"
+           (slot_item got_inv 0.0) 3.0)
+  (check_f out "open_form: and the count" (slot_count got_inv 0.0) 5.0)
+
+  # --- pressing a button -----------------------------------------------------
+  (var ab ($buffer U8 (size_form_action_for "miclone:chest" "take")))
+  (encode_form_action ab c -12.0 34.0 -56.0 6.0 "miclone:chest" "take")
+  (check_f out "form_action: the kind byte" (message_kind ab) msg_form_action)
+  (check_f out "form_action: exact size"
+           (cursor_at c) (size_form_action_for "miclone:chest" "take"))
+  (var act (new_form_action))
+  (var act_form (decode_form_action ab c act))
+  (var act_name (action_of ab c))
+  (check out "form_action: the form name" act_form "miclone:chest")
+  (check out "form_action: the action" act_name "take")
+  (check_f out "form_action: x survives, negative" (act ~ get act_x) -12.0)
+  (check_f out "form_action: the slot" (act ~ get act_slot) 6.0)
+
+  # The server's own guard, which is §7.1's rule reaching UI: an action the form
+  # never declared resolves to nothing, so a client naming one gets no effect
+  # rather than an effect nobody wrote.
+  (var chest (form_named sf "miclone:chest"))
+  (if_yes (>= chest 0.0)
+    (check_b out "form_action: a declared action resolves"
+              (>= (action_element sf chest "take_0") 0.0) true)
+    (check_f out "form_action: an undeclared one does not"
+              (action_element sf chest "drop_the_world") -1.0)))
 
 (fn report [] : Str
   (var out : (List Str) [])

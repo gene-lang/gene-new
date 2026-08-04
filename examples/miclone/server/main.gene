@@ -38,7 +38,8 @@
 
 (import $net/http [Server serve listen ws_accept ws_send ws_close])
 (import $os [get_env Env])
-(import [Registry registered_count id_of] from "../core/registry.gene")
+(import [Registry registered_count id_of opens_form_of]
+        from "../core/registry.gene")
 (import [Game] from "../core/api.gene")
 (import [TileRegistry] from "../core/tiles.gene")
 (import [load_mods] from "../core/mods.gene")
@@ -65,14 +66,21 @@
          clear_checks]
         from "../core/abm.gene")
 (import [GroupRegistry rating_of] from "../core/groups.gene")
-(import [CraftRegistry first_craftable apply_craft] from "../core/craft.gene")
+(import [ContainerStore new_containers container_at container_inventory
+         container_slot_count container_live]
+        from "../core/container.gene")
+(import [FormRegistry form_named action_element form_count]
+        from "../core/formspec.gene")
+(import [CraftRegistry first_craftable apply_craft recipe_count]
+        from "../core/craft.gene")
 (import [EntityRegistry entity_slots entity_alive? entity_id entity_item_of
          entity_count entity_x entity_y entity_z spawn_item despawn
          within_pickup? live_entities slot_of_id
          entity_def_step entity_def_of entity_def_activate entity_def_named]
         from "../core/entity.gene")
 
-(import [new_inventory add take slot_item slot_count slot_empty?]
+(import [new_inventory add add_at take slot_item slot_count slot_empty?
+         slots_of]
         from "../core/inventory.gene")
 (import [drop_item drop_count] from "../core/drops.gene")
 (import [ItemRegistry item_node placeable_item?] from "../core/item.gene")
@@ -86,7 +94,13 @@
          block_size encode_block
          node_delta_size encode_node_delta
          inventory_size encode_inventory
+         forms_size encode_forms
+         size_open_form_for encode_open_form
+         new_form_action decode_form_action action_of
+         act_x act_y act_z act_slot msg_form_action
+         decode_craft craft_any
          new_edit decode_edit edit_x edit_y edit_z edit_id
+         edit_at_x edit_at_y edit_at_z
          new_input decode_input in_x in_y in_z
          new_request decode_request_blocks req_from req_count]
         from "../core/protocol.gene")
@@ -246,6 +260,24 @@
   (var c (new_cursor))
   (var b ($buffer U8 (inventory_size ($to_float hotbar_slots))))
   (encode_inventory b c inv ($to_float hotbar_slots))
+  (ws_send conn b/~to_bytes))
+
+# §13's forms, once on join. The networked client had no form registry at all
+# until this — a form was declared by a mod on the server, and `client/main.gene`
+# could render it only because in-tab the mod and the client are one process.
+(fn send_forms [conn forms : FormRegistry] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 (forms_size forms)))
+  (encode_forms b c forms)
+  (ws_send conn b/~to_bytes))
+
+# §13's open. The form is a layout the client already has; what travels here is
+# *which* form, *which* node, and what is in it.
+(fn send_open_form [conn name : Str x : F64 y : F64 z : F64
+                    inv : (Buffer F64)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 (size_open_form_for name)))
+  (encode_open_form b c name x y z inv (container_slot_count))
   (ws_send conn b/~to_bytes))
 
 # Answer a client's request for blocks `[from, from + count)` in the linear
@@ -523,6 +555,71 @@
     (set i (+ i 1.0)))
   stepped)
 
+# What a chest's buttons mean. **The engine does not read an action string; this
+# does** — `take_3` is opaque to everything above, and a mod that wanted
+# `slot-3-take` would need no engine change to have it (§13).
+#
+# Answers whether anything moved, so the caller sends a refreshed inventory only
+# when there is something new to say.
+# **Matched by construction rather than parsed.** The action names are built the
+# same way the mod built them — `take_0`, `take_1`, … — and compared. Eight
+# string equalities per press is nothing beside the message that carried it, and
+# it avoids a parse: the stdlib has `split` and `starts_with?` and no
+# string-to-number, so parsing here would be hand-rolled digit arithmetic for a
+# value the loop already has.
+(fn chest_slot_of [action : Str prefix : Str] : F64
+  (var found -1.0)
+  (var i 0.0)
+  (while (< i (container_slot_count))
+    (if_yes (== action $"${prefix}$($to_int i)")
+      (set found i))
+    (set i (+ i 1.0)))
+  found)
+
+(fn chest_action [items : ItemRegistry inv : (Buffer F64) box : (Buffer F64)
+                  action : Str] : Bool
+  # **`take_slot`, not `take`** — `take` is `core/inventory.gene`'s function and
+  # a local of that name shadows it, so the call below became "call this number"
+  # and the whole handler threw. It threw into the log rather than the client,
+  # which is why it read as a chest that quietly refused rather than as a bug.
+  (var take_slot (chest_slot_of action "take_"))
+  (if_yes (>= take_slot 0.0)
+    (var item (slot_item box take_slot))
+    (var count (slot_count box take_slot))
+    (if (<= count 0.0) (return false)
+      (do
+        # `add` answers what did *not* fit, so what moved is the difference —
+        # and a chest slot that would overflow the hotbar keeps its remainder
+        # rather than the stack vanishing (§7.1's conservation rule).
+        (var left (add inv items item count))
+        (take box take_slot (- count left))
+        (return (< left count)))))
+  (var put_slot (chest_slot_of action "put_"))
+  (if_yes (>= put_slot 0.0)
+    # The player's *first* non-empty slot, which is what "put" means without a
+    # selected-slot field on the message. A selection is client state and §7.1
+    # keeps client state off the server; sending it would be a fourth thing to
+    # not trust.
+    (var from (first_filled inv))
+    (if (< from 0.0) (return false)
+      (do
+        (var item (slot_item inv from))
+        (var count (slot_count inv from))
+        (var left (add_at box items put_slot item count))
+        (take inv from (- count left))
+        (return (< left count)))))
+  false)
+
+(fn first_filled [inv : (Buffer F64)] : F64
+  (var found -1.0)
+  (var i 0.0)
+  (var n (slots_of inv))
+  (while (< i n)
+    (if_yes (&& (== found -1.0) (! (slot_empty? inv i)))
+      (set found i))
+    (set i (+ i 1.0)))
+  found)
+
 # --- serving -----------------------------------------------------------------
 
 (fn main [args] : Nil
@@ -612,6 +709,19 @@
       # what forced a second, enumerable list beside it: a change nobody asked
       # for has to reach everybody, and a closure cannot be iterated (§12.1).
       (var inv (new_inventory ($to_float hotbar_slots)))
+      # §13's "a server that can attribute a press to a form it opened". This
+      # is that, and it is per connection because a form is open for a *player*:
+      # two clients may have the same chest open and each press is the presser's.
+      # `open_form_at` is the node, and -1 in the first cell means nothing open —
+      # so a press that names a form this player never opened is refused, which
+      # is §7.1's rule reaching UI.
+      (var open_at ($buffer F64 3.0))
+      # **Nothing open is the empty *name*, not a sentinel coordinate.** The
+      # first version used -1 in `open_at`'s x cell, which reads as "closed" for
+      # every chest west of the origin — and §D6.1's world sits at x = -1437, so
+      # it read as closed for every chest that exists. A position has no value
+      # outside its own range to spare; a name does.
+      (var open_name ($cell ""))
       # This connection's name for itself, taken before the handshake so that
       # `^on_open` and `^on_close` close over the same one. It is what
       # `drop_connection` matches on — see the note beside `connections` for why
@@ -626,6 +736,7 @@
           (send_tiles conn game/tiles)
           (send_items conn game/items)
           (send_registry conn reg)
+          (send_forms conn game/forms)
           (send_inventory conn inv)
           (add_connection conn my_id)
           ($println "  client joined"))
@@ -651,10 +762,57 @@
           # §9's crafting, and §7.1's authority: the client asks, the server
           # decides what it can make and whether it fits.
           (if_yes (== kind msg_craft)
-            (var recipe (first_craftable game/crafts inv))
+            (var asked (decode_craft b c))
+            # `craft_any` keeps the old behaviour — the crafting key still means
+            # "make whatever I can" — and a named recipe is checked rather than
+            # searched. Either way `apply_craft` is what decides: a client that
+            # names a recipe it cannot afford gets no inventory message, which
+            # is the same answer it got for naming nothing it could afford.
+            (var recipe (if (== asked (craft_any))
+                          (first_craftable game/crafts inv)
+                          (if (< asked (recipe_count game/crafts)) asked -1.0)))
             (if_yes (>= recipe 0.0)
               (if_yes (apply_craft game/crafts items inv recipe)
                 (send_inventory conn inv))))
+
+          # §13's input, and the sentence §13.3 said it needed: "a server that
+          # can attribute a press to a form it opened".
+          #
+          # **Four things are checked and none of them is trusted from the
+          # message.** §7.1's rule is that a client reports and a server
+          # decides, and a button is a client saying "I pressed this" — which is
+          # exactly the shape of a client saying "I dug this".
+          #
+          #   1. This player has a form open at all.
+          #   2. It is the form the message names, at the node it names.
+          #   3. That form *declares* this action (`action_element`), so an
+          #      action nobody wrote resolves to nothing rather than to whatever
+          #      the mod's string parsing makes of it.
+          #   4. The slot is inside the container.
+          #
+          # What the action *means* is still the mod's: the engine hands the
+          # string to `chest_action` and reads none of it.
+          (if_yes (== kind msg_form_action)
+            (var act (new_form_action))
+            (var form_name (decode_form_action b c act))
+            (var action (action_of b c))
+            (var ax (act ~ get act_x))
+            (var ay (act ~ get act_y))
+            (var az (act ~ get act_z))
+            (var same_form (&& (!= (open_name ~ get) "")
+                               (== (open_name ~ get) form_name)))
+            (var open_here (&& (== (open_at ~ get 0.0) ax)
+                               (&& (== (open_at ~ get 1.0) ay)
+                                   (== (open_at ~ get 2.0) az))))
+            (var form_id (form_named game/forms form_name))
+            (if_yes (&& open_here (&& same_form (>= form_id 0.0)))
+              (if_yes (>= (action_element game/forms form_id action) 0.0)
+                (var row (container_at game/containers ax ay az))
+                (if_yes (>= row 0.0)
+                  (var box (container_inventory game/containers row))
+                  (if_yes (chest_action items inv box action)
+                    (send_inventory conn inv)
+                    (send_open_form conn form_name ax ay az box))))))
 
           (if_yes (== kind msg_request_blocks)
             (var req (new_request))
@@ -724,10 +882,35 @@
                   # pickaxe: an item with no node is refused here rather than
                   # trusted.
                   (var held (edit ~ get edit_id))
+                  # §13's chest, and the first time a right-click means
+                  # something other than "place". The node the ray hit travels
+                  # beside the placement position (§10's `place_size` says why),
+                  # so the server can ask what was *aimed at* rather than where
+                  # a block would go — for a chest those are different nodes and
+                  # only the pointed one identifies the container.
+                  #
+                  # **Opening wins over placing.** Right-clicking a chest with a
+                  # block in hand opens the chest, which is upstream's rule and
+                  # the one a player expects; placing against a chest means
+                  # aiming at something else.
+                  (var ax (edit ~ get edit_at_x))
+                  (var ay (edit ~ get edit_at_y))
+                  (var az (edit ~ get edit_at_z))
+                  (var aimed (node_at world ax ay az))
+                  (var opens (opens_form_of reg aimed))
+                  (if_yes (!= opens "")
+                    (var row (container_at game/containers ax ay az))
+                    (if_yes (>= row 0.0)
+                      (open_at ~ set! 0.0 ax)
+                      (open_at ~ set! 1.0 ay)
+                      (open_at ~ set! 2.0 az)
+                      (open_name ~ set opens)
+                      (send_open_form conn opens ax ay az
+                                      (container_inventory game/containers row))))
                   # The client says what it is holding and the server checks it
                   # actually holds it — a client that lies about its inventory
                   # is the one thing a client must not be believed about.
-                  (var slot (find_slot inv held))
+                  (var slot (if (!= opens "") -1.0 (find_slot inv held)))
                   (var as_node (if (placeable_item? items held)
                                  (item_node items held) -1.0))
                   (if_yes (&& (>= slot 0.0)

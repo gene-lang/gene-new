@@ -31,9 +31,15 @@
 (mod protocol ^profile web)
 
 (import [Registry registered_count name_of drawtype_of solid? opaque?
-         propagates_light? merges_same? light_source_of tile_top_of tile_side_of
+         propagates_light? merges_same? opens_form_of
+         light_source_of tile_top_of tile_side_of
          tile_bottom_of register max_content]
         from "./registry.gene")
+(import [FormRegistry form_count element_count form_name_of form_title
+         form_cols form_rows form_len add_form add_element
+         element_kind element_x element_y element_w element_h
+         element_text element_action]
+        from "./formspec.gene")
 (import [ItemRegistry item_count item_name item_description item_node
          item_stack_max add_item]
         from "./item.gene")
@@ -67,7 +73,7 @@
 # v4 adds `msg_craft` (M8): the client says "make what I can make" and the
 # server decides what that is. One byte, because §7.1 gives the client no say —
 # a client that named a recipe would be a client the server had to check.
-(let protocol_version 6.0)
+(let protocol_version 7.0)
 
 # --- message kinds -----------------------------------------------------------
 #
@@ -84,12 +90,15 @@
 (let msg_tiles 6.0)                # server: §9's atlas recipes, once on join
 (let msg_items 7.0)                # server: §2's item registry, once on join
 (let msg_entity 8.0)               # server: one entity added, moved, or gone
+(let msg_forms 9.0)                # server: §13's forms, once on join
+(let msg_open_form 10.0)           # server: open this form on this node
 
 (let msg_input 64.0)               # client: movement intent, every tick
 (let msg_dig 65.0)                 # client: dig the node at
 (let msg_place 66.0)               # client: place the held item at
 (let msg_request_blocks 67.0)      # client: send me blocks [from, from+count)
 (let msg_craft 68.0)               # client: craft the first recipe I can
+(let msg_form_action 69.0)         # client: I pressed this button on this form
 
 # `$to_float` because a `(Buffer U8)` read is `Int` on *both* backends, which is
 # the ordinary case the conversion is for. Contrast `core/wire.gene`'s
@@ -114,6 +123,9 @@
 (fn kind_items [] : F64 msg_items)
 (fn kind_craft [] : F64 msg_craft)
 (fn kind_entity [] : F64 msg_entity)
+(fn kind_forms [] : F64 msg_forms)
+(fn kind_open_form [] : F64 msg_open_form)
+(fn kind_form_action [] : F64 msg_form_action)
 (fn kind_input [] : F64 msg_input)
 (fn kind_dig [] : F64 msg_dig)
 (fn kind_place [] : F64 msg_place)
@@ -127,17 +139,35 @@
 (fn size_request_blocks [] : F64 request_blocks_size)
 (fn size_craft [] : F64 craft_size)
 (fn size_entity [] : F64 entity_size)
+(fn size_open_form [] : F64 open_form_size)
+(fn size_form_action [] : F64 form_action_size)
 (fn version [] : F64 protocol_version)
 
-# §7.1's authority in one byte: the client asks to craft and says nothing about
-# what. The server matches against the inventory it already holds, which is the
-# only copy that counts — a recipe id from the client would be a number to
-# validate, and validating it means running the match anyway.
-(let craft_size 1.0)
+# §7.1's authority, plus **which recipe**. This used to be one byte on the
+# grounds that "a recipe id from the client would be a number to validate, and
+# validating it means running the match anyway" — true about the cost and wrong
+# about the consequence, because it left the player unable to *choose*. With
+# four recipes it worked; §13's chest made a fifth that `first_craftable` could
+# never reach, because sticks always matched first and consumed the planks.
+#
+# So a craft names a recipe, and `255` means "the first one I can" — which is
+# what the crafting key sent before and still does. Validating a named recipe is
+# strictly *less* work than searching, and the authority is unchanged: the
+# server checks that recipe against the inventory it holds, and a client naming
+# one it cannot afford gets nothing.
+(let craft_size 2.0)
 
-(fn encode_craft [out : (Buffer U8) c : (Buffer F64)] : Nil
+(fn craft_any [] : F64 255.0)
+
+(fn encode_craft [out : (Buffer U8) c : (Buffer F64) recipe : F64] : Nil
   (reset c)
-  (write_u8 c out msg_craft))
+  (write_u8 c out msg_craft)
+  (write_u8 c out recipe))
+
+(fn decode_craft [b : (Buffer U8) c : (Buffer F64)] : F64
+  (reset c)
+  (read_u8 c b)
+  (read_u8 c b))
 
 # --- entities ----------------------------------------------------------------
 #
@@ -275,8 +305,9 @@
     # name, then nine one-byte columns: drawtype, four flags, emission, and
     # three tiles. `merges_same` is the ninth and it is on the wire because the
     # **client** meshes (§5) — a cull the server knows about and the client does
-    # not is a cull that does not happen.
-    (set total (+ total (+ (str_size (name_of reg i)) 9.0)))
+    # not is a cull that does not happen. Then §13's `opens_form`, a string.
+    (set total (+ total (+ (str_size (name_of reg i))
+                           (+ 9.0 (str_size (opens_form_of reg i))))))
     (set i (+ i 1.0)))
   total)
 
@@ -300,6 +331,7 @@
     (write_u8 c out (tile_top_of reg i))
     (write_u8 c out (tile_side_of reg i))
     (write_u8 c out (tile_bottom_of reg i))
+    (write_str c out (opens_form_of reg i))
     (set i (+ i 1.0))))
 
 # Fills a *fresh* registry rather than mutating one, and the caller must pass an
@@ -324,8 +356,9 @@
     (var top (read_u8 c b))
     (var side (read_u8 c b))
     (var bottom (read_u8 c b))
+    (var opens (read_str c b))
     (register reg name drawtype solid opaque propagates merges emits
-              top side bottom)
+              top side bottom opens)
     (set i (+ i 1.0)))
   n)
 
@@ -728,11 +761,20 @@
 # edit optimistically, so what comes back is a `node_delta` that either agrees
 # — and is retired silently — or does not, and wins.
 
-# A dig is 1 kind + 12 coords; a place adds a u16 id. Two constants rather than
-# one, because a caller sizes its buffer from these and the larger would waste
-# two bytes on every dig while the smaller would overrun on every place.
+# A dig is 1 kind + 12 coords; a place adds a u16 id **and the node the player
+# was pointing at**. Two constants rather than one, because a caller sizes its
+# buffer from these and the larger would waste bytes on every dig.
+#
+# **Why a place carries two positions.** A right-click means both "put this
+# here" and "use that", and only the client knows which node the ray hit — the
+# server holds no camera (§12.1). Sending only the placement position made
+# "use" unexpressible: §13's chest is *pointed at*, and the position that
+# reaches the server is the empty node beside it. So the message says what was
+# aimed at and where that would put a block, and the server decides which of the
+# two a right-click meant. That is also the right division under §7.1: the
+# client reports what it saw and the server decides what happened.
 (let dig_size 13.0)
-(let place_size 15.0)
+(let place_size 27.0)
 
 (fn encode_dig [out : (Buffer U8) c : (Buffer F64)
                 nx : F64 ny : F64 nz : F64] : Nil
@@ -743,19 +785,27 @@
   (write_i32 c out nz))
 
 (fn encode_place [out : (Buffer U8) c : (Buffer F64)
-                  nx : F64 ny : F64 nz : F64 id : F64] : Nil
+                  nx : F64 ny : F64 nz : F64 id : F64
+                  ax : F64 ay : F64 az : F64] : Nil
   (reset c)
   (write_u8 c out msg_place)
   (write_i32 c out nx)
   (write_i32 c out ny)
   (write_i32 c out nz)
-  (write_u16 c out id))
+  (write_u16 c out id)
+  (write_i32 c out ax)
+  (write_i32 c out ay)
+  (write_i32 c out az))
 
 (let edit_x 0.0)
 (let edit_y 1.0)
 (let edit_z 2.0)
 (let edit_id 3.0)
-(let edit_cells 4.0)
+# The node the ray hit, which is not where a block would go. See `place_size`.
+(let edit_at_x 4.0)
+(let edit_at_y 5.0)
+(let edit_at_z 6.0)
+(let edit_cells 7.0)
 
 (fn new_edit [] : (Buffer F64)
   ($buffer F64 edit_cells))
@@ -768,7 +818,11 @@
   (into ~ set! edit_x (read_i32 c b))
   (into ~ set! edit_y (read_i32 c b))
   (into ~ set! edit_z (read_i32 c b))
-  (into ~ set! edit_id (if (== kind msg_place) (read_u16 c b) 0.0)))
+  (into ~ set! edit_id (if (== kind msg_place) (read_u16 c b) 0.0))
+  (if_yes (== kind msg_place)
+    (into ~ set! edit_at_x (read_i32 c b))
+    (into ~ set! edit_at_y (read_i32 c b))
+    (into ~ set! edit_at_z (read_i32 c b))))
 
 # --- requesting blocks -------------------------------------------------------
 #
@@ -850,3 +904,222 @@
     (inv ~ set! (+ (* i 3.0) 2.0) (read_u16 c b))
     (set i (+ i 1.0)))
   slots)
+
+# --- forms -------------------------------------------------------------------
+#
+# §13's formspecs, on the wire. The networked client had none: forms were
+# registered by a mod on the server and `client/main.gene` could render them
+# only because in-tab the mod and the client are one process. A chest is the
+# thing that makes that gap matter — a form nobody can send is a form only
+# singleplayer has.
+#
+# **The layout travels once, at join; the contents travel per open.** That split
+# is §13's own ("a form is a layout, and what is in a slot changes without the
+# layout changing") and it is what keeps opening a chest one small message
+# rather than a re-send of its shape.
+
+(fn forms_size [f : FormRegistry] : F64
+  (var n (form_count f))
+  # kind + form count + element count.
+  (var total 5.0)
+  (var i 0.0)
+  (while (< i n)
+    # name, title, then three u8: cols, rows, and how many elements are this
+    # form's. `first` is not sent — the elements arrive in form order, so the
+    # receiver knows where each form's run starts by having read the ones
+    # before it, and a sent offset would be a second source of truth.
+    (set total (+ total (+ (str_size (form_name_of f i))
+                           (+ (str_size (form_title f i)) 3.0))))
+    (set i (+ i 1.0)))
+  (var e 0.0)
+  (var m (element_count f))
+  (while (< e m)
+    # kind + four u8 of geometry + text + action.
+    (set total (+ total (+ 5.0 (+ (str_size (element_text f e))
+                                  (str_size (element_action f e))))))
+    (set e (+ e 1.0)))
+  total)
+
+(fn encode_forms [out : (Buffer U8) c : (Buffer F64) f : FormRegistry] : Nil
+  (reset c)
+  (write_u8 c out msg_forms)
+  (var n (form_count f))
+  (write_u16 c out n)
+  (var i 0.0)
+  (while (< i n)
+    (write_str c out (form_name_of f i))
+    (write_str c out (form_title f i))
+    (write_u8 c out (form_cols f i))
+    (write_u8 c out (form_rows f i))
+    (write_u8 c out (form_len f i))
+    (set i (+ i 1.0)))
+  (write_u16 c out (element_count f))
+  (var e 0.0)
+  (var m (element_count f))
+  (while (< e m)
+    (write_u8 c out (element_kind f e))
+    (write_u8 c out (element_x f e))
+    (write_u8 c out (element_y f e))
+    (write_u8 c out (element_w f e))
+    (write_u8 c out (element_h f e))
+    (write_str c out (element_text f e))
+    (write_str c out (element_action f e))
+    (set e (+ e 1.0))))
+
+# Fills a *fresh* registry, like `decode_registry` and for the same reason: ids
+# are positional, so replaying over a populated one would append a second
+# vocabulary.
+#
+# **Rebuilt through `add_form`/`add_element` rather than by writing columns**, so
+# the client runs the same validation the server did — an element outside its
+# grid, or a button with no action, fails here exactly as it would have failed
+# at registration. That is §13's claim reaching one step further than it was
+# written for: a wire that mangled a form is caught by the form's own rules
+# rather than by the renderer drawing something strange.
+#
+# One pass. The headers are read into parallel storage first because a form
+# cannot be created until its elements are ready to follow it — `add_element`
+# requires the form most recently registered — and the elements are all in one
+# run after the headers.
+(fn decode_forms [b : (Buffer U8) c : (Buffer F64) f : FormRegistry] : F64
+  (reset c)
+  (read_u8 c b)
+  (var n (read_u16 c b))
+  (var names : (List Str) [])
+  (var titles : (List Str) [])
+  (var cols ($buffer F64 max_wire_forms))
+  (var rows ($buffer F64 max_wire_forms))
+  (var lens ($buffer F64 max_wire_forms))
+  (var i 0.0)
+  (while (< i n)
+    (names ~ push! (read_str c b))
+    (titles ~ push! (read_str c b))
+    (cols ~ set! i (read_u8 c b))
+    (rows ~ set! i (read_u8 c b))
+    (lens ~ set! i (read_u8 c b))
+    (set i (+ i 1.0)))
+  (read_u16 c b)
+  (var form 0.0)
+  (while (< form n)
+    (var k form)
+    (add_form f names/%k titles/%k (cols ~ get form) (rows ~ get form))
+    (var want (lens ~ get form))
+    (var e 0.0)
+    (while (< e want)
+      (var kind (read_u8 c b))
+      (var ex (read_u8 c b))
+      (var ey (read_u8 c b))
+      (var ew (read_u8 c b))
+      (var eh (read_u8 c b))
+      (var text (read_str c b))
+      (var action (read_str c b))
+      (add_element f form kind ex ey ew eh text action)
+      (set e (+ e 1.0)))
+    (set form (+ form 1.0)))
+  n)
+
+# --- opening a form ----------------------------------------------------------
+#
+# Server to client: show this form, about this node, with these contents. The
+# node position is what makes a chest a *particular* chest — the form is one
+# layout shared by every chest in the world, and the position is the only thing
+# that distinguishes the one being looked at.
+#
+# 1 kind + 12 position + 1 slots + 8*6 slot cells, then the name as a string.
+(let open_form_slots 8.0)
+(let open_form_size 62.0)
+
+(let open_x 0.0)
+(let open_y 1.0)
+(let open_z 2.0)
+
+(fn encode_open_form [out : (Buffer U8) c : (Buffer F64) name : Str
+                      x : F64 y : F64 z : F64
+                      inv : (Buffer F64) slots : F64] : Nil
+  (reset c)
+  (write_u8 c out msg_open_form)
+  (write_i32 c out x)
+  (write_i32 c out y)
+  (write_i32 c out z)
+  (write_u8 c out slots)
+  (var i 0.0)
+  (while (< i slots)
+    (write_u16 c out (inv ~ get (* i 3.0)))
+    (write_u16 c out (inv ~ get (+ (* i 3.0) 1.0)))
+    (write_u16 c out (inv ~ get (+ (* i 3.0) 2.0)))
+    (set i (+ i 1.0)))
+  (write_str c out name))
+
+(fn size_open_form_for [name : Str] : F64
+  (+ (- open_form_size 48.0) (+ (* open_form_slots 6.0) (str_size name))))
+
+(fn new_open_form [] : (Buffer F64) ($buffer F64 3.0))
+
+(fn decode_open_form [b : (Buffer U8) c : (Buffer F64) into : (Buffer F64)
+                      inv : (Buffer F64)] : Str
+  (reset c)
+  (read_u8 c b)
+  (into ~ set! open_x (read_i32 c b))
+  (into ~ set! open_y (read_i32 c b))
+  (into ~ set! open_z (read_i32 c b))
+  (var slots (read_u8 c b))
+  (var i 0.0)
+  (while (< i slots)
+    (inv ~ set! (* i 3.0) (read_u16 c b))
+    (inv ~ set! (+ (* i 3.0) 1.0) (read_u16 c b))
+    (inv ~ set! (+ (* i 3.0) 2.0) (read_u16 c b))
+    (set i (+ i 1.0)))
+  (read_str c b))
+
+# --- pressing a button -------------------------------------------------------
+#
+# Client to server: I pressed the control named `action` on the form open at
+# this node. **The action is a string and the slot is a number, and neither is
+# trusted** — §7.1's rule reaches UI here. The server checks that it opened this
+# form, for this player, at this node, and that the form actually declares that
+# action (`action_element`); anything else is a client saying something the
+# game never offered it.
+#
+# 1 kind + 12 position + 1 slot, then the form name and the action as strings.
+(let form_action_size 14.0)
+(let max_wire_forms 64.0)
+
+(let act_x 0.0)
+(let act_y 1.0)
+(let act_z 2.0)
+(let act_slot 3.0)
+
+(fn size_form_action_for [form : Str action : Str] : F64
+  (+ form_action_size (+ (str_size form) (str_size action))))
+
+(fn encode_form_action [out : (Buffer U8) c : (Buffer F64)
+                        x : F64 y : F64 z : F64 slot : F64
+                        form : Str action : Str] : Nil
+  (reset c)
+  (write_u8 c out msg_form_action)
+  (write_i32 c out x)
+  (write_i32 c out y)
+  (write_i32 c out z)
+  (write_u8 c out slot)
+  (write_str c out form)
+  (write_str c out action))
+
+(fn new_form_action [] : (Buffer F64) ($buffer F64 4.0))
+
+# Answers the form name and writes the rest into `into`; the action is read by
+# `action_of` from the same cursor, which is why the two are separate calls —
+# a decoder returning two strings would need a pair type this codec does not
+# have, and `core/wire.gene`'s cursor is already the thing that carries position
+# between reads.
+(fn decode_form_action [b : (Buffer U8) c : (Buffer F64)
+                        into : (Buffer F64)] : Str
+  (reset c)
+  (read_u8 c b)
+  (into ~ set! act_x (read_i32 c b))
+  (into ~ set! act_y (read_i32 c b))
+  (into ~ set! act_z (read_i32 c b))
+  (into ~ set! act_slot (read_u8 c b))
+  (read_str c b))
+
+(fn action_of [b : (Buffer U8) c : (Buffer F64)] : Str
+  (read_str c b))

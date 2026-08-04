@@ -22,13 +22,28 @@
 # and an element sits at (2,3), and the client multiplies by whatever a cell is
 # on its display. Pixels in a mod would be a mod deciding the player's font size.
 #
-# ## What this is not
+# ## Input, and what a button costs
 #
-# There is no *input* — no button that sends a message, no field a player types
-# into. A form here is read-only, which covers the crafting panel M8 needs and
-# does not cover a chest. Input needs a message per element kind and a server
-# that can attribute one to a form it opened, which is §13's second half and
-# wants the container that would justify it.
+# §13's second half. A form was read-only until the chest arrived — the panel
+# M8 needed was a recipe list nobody clicks — and the note that stood here said
+# input "needs a message per element kind and a server that can attribute one to
+# a form it opened, which wants the container that would justify it". All three
+# turned out true and the container is `mods/default`'s chest.
+#
+# A button is `el_button` and carries an **action**: a string the mod chooses,
+# sent back verbatim when the button is pressed. The engine never interprets it.
+# That is the whole of the contract, and it is what keeps the vocabulary closed
+# while leaving the *meaning* open — a mod adds a button by naming an action,
+# not by teaching the client a new element.
+#
+# Every element carries an action string, not just buttons, and the others are
+# empty. A parallel list is cheaper than a second table and keeps the one rule
+# this file has: element `i`'s everything is at index `i`.
+#
+# **A button with no action is refused at registration**, which is the same
+# promise as an element outside its grid: it is a form that would draw a control
+# doing nothing, and finding that out by clicking it is what a string DSL makes
+# you do.
 
 (mod formspec ^profile web)
 
@@ -40,6 +55,16 @@
 (let el_label 0.0)      # static text
 (let el_item 1.0)       # an item stack: icon plus count
 (let el_box 2.0)        # a filled rectangle, for grouping
+(let el_button 3.0)     # sends its action to the server when pressed
+
+# **The web profile exports functions, not `let` bindings**, so the kinds above
+# are invisible to a JavaScript caller. `core/protocol.gene` solved the same
+# problem the same way for message kinds and says why: a harness that restates
+# one is a second definition of the thing being checked.
+(fn kind_label [] : F64 el_label)
+(fn kind_item [] : F64 el_item)
+(fn kind_box [] : F64 el_box)
+(fn kind_button [] : F64 el_button)
 
 (type FormRegistry
   ^props {^names    (List Str)
@@ -55,6 +80,9 @@
           ^w        (Buffer F32)
           ^h        (Buffer F32)
           ^text     (List Str)
+          # What a button sends. Empty on every other kind — see the header for
+          # why it is a column rather than a second table.
+          ^action   (List Str)
           ^counts   (Buffer F32)}  # two cells: forms, elements
 
   (ctor []
@@ -70,6 +98,7 @@
     (set! self/w ($buffer F32 max_elements))
     (set! self/h ($buffer F32 max_elements))
     (set! self/text [])
+    (set! self/action [])
     (set! self/counts ($buffer F32 2.0))))
 
 (let count_forms 0.0)
@@ -111,9 +140,16 @@
 # and what a tool inspecting a mod's forms would want.
 (fn element_fits? [f : FormRegistry form : F64 kind : F64
                    x : F64 y : F64 w : F64 h : F64] : Bool
-  (&& (&& (>= kind el_label) (<= kind el_box))
+  (&& (&& (>= kind el_label) (<= kind el_button))
       (&& (&& (>= x 0.0) (<= (+ x w) (f/cols ~ get form)))
           (&& (>= y 0.0) (<= (+ y h) (f/rows ~ get form))))))
+
+# The other half of the same question, and it is separate because it is about
+# the element rather than the grid: a button that sends nothing is a control
+# that does nothing, and §13's promise is that a wrong form fails at
+# registration rather than on the screen.
+(fn element_wired? [kind : F64 action : Str] : Bool
+  (|| (!= kind el_button) (!= action "")))
 
 # **The validation §13 promised.** An element outside its form's grid is a
 # layout bug, and it is caught here — with the form's name and the numbers —
@@ -121,7 +157,7 @@
 # string DSL cannot have: there is nothing in `size[8,9]label[99,99;hi]` that
 # fails until someone looks at the screen.
 (fn add_element [f : FormRegistry form : F64 kind : F64
-                 x : F64 y : F64 w : F64 h : F64 text : Str] : F64
+                 x : F64 y : F64 w : F64 h : F64 text : Str action : Str] : F64
   (var n (element_count f))
   (if_yes (>= n max_elements)
     (fail (new FormError $"form registry is full at ${max_elements} elements")))
@@ -130,8 +166,11 @@
                "elements must be added to the form most recently registered")))
   (var names f/names)
   (var i form)
-  (if_yes (|| (> kind el_box) (< kind el_label))
+  (if_yes (|| (> kind el_button) (< kind el_label))
     (fail (new FormError $"unknown form element kind $($to_int kind)")))
+  (if_yes (! (element_wired? kind action))
+    (fail (new FormError
+               $"button \"${text}\" in form ${names/%i} names no action, so pressing it would send nothing")))
   (if_yes (|| (< x 0.0) (> (+ x w) (f/cols ~ get form)))
     (fail (new FormError
                $"element at column $($to_int x) width $($to_int w) leaves form ${names/%i}, which is $($to_int (f/cols ~ get form)) wide")))
@@ -144,6 +183,7 @@
   (f/w ~ set! n w)
   (f/h ~ set! n h)
   (f/text ~ push! text)
+  (f/action ~ push! action)
   (f/counts ~ set! count_elements (+ n 1.0))
   (f/len ~ set! form (+ (f/len ~ get form) 1.0))
   n)
@@ -159,6 +199,11 @@
     (if_yes (== names/%i name) (set found i) (set i n))
     (set i (+ i 1.0)))
   found)
+
+(fn form_name_of [f : FormRegistry id : F64] : Str
+  (var names f/names)
+  (var i id)
+  names/%i)
 
 (fn form_title [f : FormRegistry id : F64] : Str
   (var t f/title)
@@ -180,3 +225,24 @@
   (var t f/text)
   (var j i)
   t/%j)
+
+(fn element_action [f : FormRegistry i : F64] : Str
+  (var a f/action)
+  (var j i)
+  a/%j)
+
+# Which element of a form carries an action, by name. What a server does with a
+# `msg_form_action`: the client sends a string, and this is what turns it back
+# into "an element of this form, at this slot" — so an action the form does not
+# declare is one the server never acts on (§7.1's rule, applied to UI).
+(fn action_element [f : FormRegistry form : F64 action : Str] : F64
+  (var acts f/action)
+  (var found -1.0)
+  (var e (form_first f form))
+  (var last (+ e (form_len f form)))
+  (while (< e last)
+    (var j e)
+    (if_yes (&& (== found -1.0) (== acts/%j action))
+      (set found e))
+    (set e (+ e 1.0)))
+  found)

@@ -70,8 +70,9 @@
          move_entity despawn entity_alive? no_step no_activate]
         from "./entity.gene")
 (import [FormRegistry new_forms add_form add_element form_count
-         el_label el_item el_box]
+         el_label el_item el_box el_button]
         from "./formspec.gene")
+(import [ContainerStore new_containers] from "./container.gene")
 (import [World node_at] from "./loaded.gene")
 (import [GroupRegistry new_groups intern_group group_named set_rating rating_of]
         from "./groups.gene")
@@ -96,6 +97,12 @@
           ^crafts CraftRegistry
           ^entities EntityRegistry
           ^forms  FormRegistry
+          # §13's node inventories. Not a registry — the others hold what a mod
+          # *declared* and this holds what a player *did*, which is the first
+          # per-position state in the engine. It rides on `Game` anyway, because
+          # a chest is reached from the same place every other mod-facing thing
+          # is.
+          ^containers ContainerStore
           ^biomes BiomeRegistry
           ^ores   OreRegistry}
 
@@ -110,6 +117,7 @@
     (set! self/crafts (new_crafts))
     (set! self/entities (new_entities))
     (set! self/forms (new_forms))
+    (set! self/containers (new_containers))
     (set! self/biomes (new BiomeRegistry))
     (set! self/ores (new OreRegistry))))
 
@@ -190,6 +198,11 @@
                    # (which culls already) and wrong for a node whose faces a
                    # player can get between.
                    ^merges_same : Bool?
+                   # §13: right-clicking this node opens the named form instead
+                   # of placing against it. A mod names one of its own forms;
+                   # the engine hands the name back on `msg_open_form` and never
+                   # interprets it.
+                   ^opens_form : Str?
                    ^light_source : F64?
                    ^is_item : Bool?
                    ^stack_max : F64?] : F64
@@ -207,7 +220,7 @@
                     (?? propagates_light false)
                     (?? merges_same false)
                     (?? light_source 0.0)
-                    top side bottom))
+                    top side bottom (?? opens_form "")))
   # §2: "A node is automatically an item unless it says otherwise." The item
   # shares the node's name — which is what lets a drop rule, a craft recipe and
   # a hotbar all say `miclone:dirt` and mean the thing the player is holding,
@@ -324,19 +337,38 @@
                 ^text : Str
                 ^width : F64?] : F64
   (add_element game/forms (- (form_count game/forms) 1.0) el_label
-               (nth_num at 0.0) (nth_num at 1.0) (?? width 1.0) 1.0 text))
+               (nth_num at 0.0) (nth_num at 1.0) (?? width 1.0) 1.0 text ""))
 
 (fn form_box [game : Game ^at : (List F64) ^size : (List F64)] : F64
   (add_element game/forms (- (form_count game/forms) 1.0) el_box
                (nth_num at 0.0) (nth_num at 1.0)
-               (nth_num size 0.0) (nth_num size 1.0) ""))
+               (nth_num size 0.0) (nth_num size 1.0) "" ""))
 
 # An item slot. `^shows` names an item so the client can draw its icon; the
 # *count* is runtime state and is not here — a form is a layout, and what is in
 # a slot changes without the layout changing.
 (fn form_item [game : Game ^at : (List F64) ^shows : Str] : F64
   (add_element game/forms (- (form_count game/forms) 1.0) el_item
-               (nth_num at 0.0) (nth_num at 1.0) 1.0 1.0 shows))
+               (nth_num at 0.0) (nth_num at 1.0) 1.0 1.0 shows ""))
+
+# §13's input. `^action` is a string the mod chooses and the engine never reads:
+# it comes back verbatim in `msg_form_action` when a player presses the button,
+# and what it means is the mod's business. That is what keeps the element
+# vocabulary closed while leaving the behaviour open — a mod adds a control by
+# naming an action, not by teaching the client a new kind of element.
+#
+# It is required rather than optional, and registration refuses a button
+# without one: a control that sends nothing is a form's version of §9's
+# "a wrong definition fails at registration", and finding it out by clicking is
+# what a string DSL makes you do.
+(fn form_button [game : Game
+                 ^at : (List F64)
+                 ^text : Str
+                 ^action : Str
+                 ^width : F64?] : F64
+  (add_element game/forms (- (form_count game/forms) 1.0) el_button
+               (nth_num at 0.0) (nth_num at 1.0) (?? width 1.0) 1.0
+               text action))
 
 # --- crafting ----------------------------------------------------------------
 #

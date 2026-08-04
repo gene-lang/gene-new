@@ -501,8 +501,8 @@
   (check out "form: the title round-trips" (form_title f id) "Panel")
   (check_f out "form: as does the grid" (form_cols f id) 8.0)
 
-  (add_element f id el_label 1.0 1.0 4.0 1.0 "hello")
-  (add_element f id el_item 1.0 3.0 1.0 1.0 "t:stone")
+  (add_element f id el_label 1.0 1.0 4.0 1.0 "hello" "")
+  (add_element f id el_item 1.0 3.0 1.0 1.0 "t:stone" "")
   (check_f out "form: elements land in the form" (form_len f id) 2.0)
   (check_f out "form: which knows where they start" (form_first f id) 0.0)
   # Inspectable: every element is readable back, which is the adjective a

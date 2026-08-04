@@ -172,11 +172,11 @@
   # second thing that wants it after leaves, and a spec is where the shape
   # should be exercised before a mod needs it.
   (var stone (register r "default:stone" draw_normal true true false false 0.0
-                       0.0 0.0 0.0))
+                       0.0 0.0 0.0 ""))
   (var glass (register r "default:glass" draw_glasslike true false true true 0.0
-                       1.0 1.0 1.0))
+                       1.0 1.0 1.0 ""))
   (var lamp (register r "default:lamp" draw_normal true true false false 14.0
-                      2.0 3.0 4.0))
+                      2.0 3.0 4.0 "default:lamp"))
   (check_f out "first dynamic id" stone first_dynamic_content)
   (check_f out "second dynamic id" glass (+ first_dynamic_content 1.0))
 

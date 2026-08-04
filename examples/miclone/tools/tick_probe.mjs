@@ -46,7 +46,7 @@ ws.onmessage = (e) => {
   const kind = P.message_kind(b);
   if (kind === K.hello) P.decode_hello(b, c, hello);
   else if (kind === K.registry) {
-    reg = R.new_registry(); reg.names = []; reg.count[0] = 0;
+    reg = R.new_wire_registry();
     P.decode_registry(b, c, reg);
   } else if (kind === K.block) {
     P.decode_block(b, c, header, outC, outL);

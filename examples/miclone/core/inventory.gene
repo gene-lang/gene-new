@@ -132,6 +132,25 @@
 
   left)
 
+# Into **one named slot**, rather than wherever it fits. §13's chest needs this
+# and `add` cannot serve it: a container's slots are a place the player is
+# choosing, so "put this in slot 3" must mean slot 3 or nothing — spilling into
+# slot 4 because 3 was full would be the UI lying about what it did.
+#
+# Same answer shape as `add`: what did *not* fit. A slot holding a different
+# item takes nothing, which is the check that makes a chest's slots stable.
+(fn add_at [inv : (Buffer F64) items : ItemRegistry slot : F64
+            item : F64 count : F64] : F64
+  (var here (slot_item inv slot))
+  (var have (slot_count inv slot))
+  (if (&& (> have 0.0) (!= here item)) count
+    (do
+      (var room (- (item_stack_max items item) have))
+      (var moved ($math/min room count))
+      (if_yes (> moved 0.0)
+        (set_slot inv slot item (+ have moved)))
+      (- count moved))))
+
 # --- taking ------------------------------------------------------------------
 
 # Remove up to `count` from one slot and return how many were actually removed,
