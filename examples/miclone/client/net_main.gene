@@ -33,10 +33,15 @@
 
 (mod net_main ^profile web)
 
-(import [count_faces build_mesh] from "../core/mesh.gene")
-(import [Registry new_registry id_of registered_count name_of solid?]
+(import [count_faces build_mesh put_cube faces_per_cube item_cube_half]
+        from "../core/mesh.gene")
+(import [SeenEntities new_seen apply_entity seen_rows seen_alive?
+         seen_x seen_y seen_z seen_item seen_item_total seen_live]
+        from "../core/seen.gene")
+(import [Registry new_registry id_of registered_count name_of solid?
+         tile_top_of]
         from "../core/registry.gene")
-(import [World new_world store_block block_base node_at
+(import [World new_world store_block block_base node_at light_at
          world_dx world_dy world_dz world_stride_z world_nodes]
         from "../core/loaded.gene")
 (import [relight_node queue_overhead] from "../core/light.gene")
@@ -55,7 +60,7 @@
 (import [diggable? placeable?] from "../core/edit.gene")
 (import [new_inventory slot_item slot_count slot_empty?]
         from "../core/inventory.gene")
-(import [ItemRegistry new_items item_name placeable_item?]
+(import [ItemRegistry new_items item_name placeable_item? item_node]
         from "../core/item.gene")
 (import [new_cursor] from "../core/wire.gene")
 (import [message_kind msg_hello msg_registry msg_block msg_node_delta
@@ -72,7 +77,7 @@
          size_dig encode_dig size_place encode_place
          size_craft encode_craft
          size_input encode_input msg_entity
-         new_entity_msg decode_entity ent_id ent_item ent_count
+         new_entity_msg decode_entity ent_id ent_x ent_y ent_z ent_item ent_count
          protocol_version]
         from "../core/protocol.gene")
 
@@ -149,6 +154,11 @@
   (var ebos : (List Gl/Buffer) [])
   (var counts ($buffer F32 chunks))
   (var faces_total 0.0)
+  # One VAO for every entity on screen, not one each: they move every tick, so
+  # a buffer per item would be an upload per item per fall. See `ent_dirty`.
+  (var ent_vao (new_vertex_array gl))
+  (var ent_vbo (new_buffer gl))
+  (var ent_ebo (new_buffer gl))
 
   (var cz 0.0)
   (while (< cz span_z)
@@ -176,10 +186,17 @@
   (var header (new_block_header))
   (var delta (new_node_delta))
   (var ent (new_entity_msg))
-  # §8's entities, as the client sees them: a count per item id. There is no
-  # rendering for them yet (see the header), so what the client keeps is what
-  # the HUD can say — how much is on the ground nearby.
-  (var ground ($buffer F64 256.0))
+  # §8's entities, as the client sees them (`core/seen.gene`): id, position,
+  # item and count — everything `msg_entity` carries, which is everything it
+  # takes to draw one. This replaced a count per item id, which was enough for
+  # the HUD to say what was lying about and not enough to put it on screen.
+  (var seen (new_seen))
+  # Rebuilt when an entity message changes something, not per frame. §5 says
+  # nothing here that it does not say about a chunk: geometry that has not
+  # changed should not be re-uploaded, and the whole reason a chunk mesh is
+  # cached is that uploading is the expensive half.
+  (var ent_faces 0.0)
+  (var ent_dirty false)
   (var block_c ($buffer F32 block_nodes))
   (var block_l ($buffer F32 block_nodes))
 
@@ -210,6 +227,53 @@
       (build_mesh reg world/content world/light verts idx base wdx wsz
                   (* bx block_dim) (* by block_dim) (* bz block_dim))
       (upload_chunk gl vaos/%k vbos/%k ebos/%k verts idx))))
+
+  # §8's entities, as geometry. One cube per live item, all in one buffer.
+  #
+  # The tile is the item's *node's* top tile — §2 keeps items and nodes in
+  # separate spaces (§2.2) and `item_node` is the bridge, so a dropped cobble is
+  # drawn in the texture of the block it came from. An item with no node behind
+  # it (a stick, a pickaxe) has nothing to draw and is skipped rather than given
+  # a placeholder: a wrong picture is worse than no picture, and §6's atlas has
+  # no icon for a tool.
+  #
+  # The light is read at the node the item is standing in, so an item in a cave
+  # is as dark as the cave. `node_at` needs whole numbers (`core/loaded.gene`
+  # says why it does not floor for the caller), and an entity position is
+  # continuous by construction — that is what §8 says makes entities a separate
+  # system from nodes.
+  (var rebuild_entities : (Fn [] Void) (fn [] : Void void))
+  (set rebuild_entities (fn [] : Void
+    (var rows (seen_rows seen))
+    # Count first, for the same reason `count_faces` exists: the buffers are
+    # sized exactly rather than kept at a worst case.
+    (var n 0.0)
+    (var r 0.0)
+    (while (< r rows)
+      (if_yes (&& (seen_alive? seen r)
+                  (>= (item_node items (seen_item seen r)) 0.0))
+        (set n (+ n 1.0)))
+      (set r (+ r 1.0)))
+    (set ent_faces (* n (faces_per_cube)))
+    (if_yes (> n 0.0)
+      (var verts ($buffer F32 (* ent_faces (* 4.0 floats_per_vertex))))
+      (var idx ($buffer U32 (* ent_faces indices_per_face)))
+      (var face 0.0)
+      (var half (item_cube_half))
+      (var j 0.0)
+      (while (< j rows)
+        (if_yes (seen_alive? seen j)
+          (var node (item_node items (seen_item seen j)))
+          (if_yes (>= node 0.0)
+            (var ex (seen_x seen j))
+            (var ey (seen_y seen j))
+            (var ez (seen_z seen j))
+            (var light (light_at world ($math/floor ex)
+                                 ($math/floor ey) ($math/floor ez)))
+            (set face (put_cube verts idx face (tile_top_of reg node)
+                                light half ex ey ez))))
+        (set j (+ j 1.0)))
+      (upload_chunk gl ent_vao ent_vbo ent_ebo verts idx))))
 
   (var mesh_all : (Fn [] Void) (fn [] : Void void))
   (set mesh_all (fn [] : Void
@@ -347,12 +411,15 @@
 
     (if_yes (== kind msg_entity)
       (decode_entity b wc ent)
-      # A count of 0 is the removal (§10). Tracked by item rather than by id
-      # because the HUD shows totals; an id-keyed table is what a renderer will
-      # want and is §8's next step.
-      (var it (ent ~ get ent_item))
-      (var was (ground ~ get it))
-      (ground ~ set! it (+ was (ent ~ get ent_count))))
+      # Add, move and remove are one call, because they are one message: a count
+      # of 0 *is* the removal (§10). `apply_entity` answers whether anything
+      # actually changed, so a re-announcement of a position the client already
+      # has does not cost a rebuild.
+      (if_yes (apply_entity seen (ent ~ get ent_id)
+                            (ent ~ get ent_x) (ent ~ get ent_y)
+                            (ent ~ get ent_z) (ent ~ get ent_item)
+                            (ent ~ get ent_count))
+        (set ent_dirty true)))
 
     (if_yes (== kind msg_inventory)
       (decode_inventory b wc inv))))
@@ -520,6 +587,15 @@
         (set drawn (+ drawn 1.0)))
       (set i (+ i 1.0)))
 
+    # §8's entities, after the world. Same shader, same vertex format, same
+    # draw call — a scaled cube is exactly what the chunk pass already draws,
+    # which is why this needed no §6 work at all (§8.2).
+    (if_yes ent_dirty
+      (rebuild_entities)
+      (set ent_dirty false))
+    (if_yes (> ent_faces 0.0)
+      (draw_chunk gl ent_vao (* ent_faces indices_per_face)))
+
     (set frames (+ frames 1.0))
     (if_yes (> (- now fps_since) 1000.0)
       (var mode
@@ -528,7 +604,7 @@
             (if (in_liquid? player) "swimming"
               (if (on_ground? player) "walking" "falling")))))
       ($dom/set_text ($dom/element "hud")
-        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player))")
+        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · $($math/round (seen_live seen)) items · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player))")
       ($dom/set_text ($dom/element "hotbar") (hotbar_text items inv selected))
       (set frames 0.0)
       (set fps_since now))

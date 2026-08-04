@@ -307,3 +307,75 @@
       (set y (+ y 1.0)))
     (set z (+ z 1.0)))
   face)
+
+# --- entities ------------------------------------------------------------------
+#
+# §8's dropped items, drawn. §8.1 recorded this as blocked — "drawing an item
+# needs a billboard or a scaled cube, which is §6 work and a vertex format this
+# renderer does not have" — and half of that is wrong in a useful way. A
+# **billboard** would need a new format: it has to face the camera, so it needs
+# either the view vector in the shader or a per-frame rebuild that knows where
+# the player is looking. A **scaled cube** needs exactly the format that is
+# already here: position, atlas coordinate, light, shade. So it reuses
+# `put_quad`, the chunk shader, and the chunk draw path unchanged, and the only
+# thing this adds is where the corners go.
+#
+# A cube also happens to be the right *look*. Upstream draws a dropped item as
+# a flat sprite; a small cube of the node's own texture reads as "the block you
+# just dug, lying there", which is what it is.
+#
+# **Every entity in one buffer, rebuilt per frame.** A chunk mesh is uploaded
+# once and redrawn for as long as nothing in it changes; entities move every
+# tick, so caching per entity would be a VAO per item and an upload each time
+# one falls. There are at most a few dozen on screen — 24 vertices each — and
+# one buffer refilled per frame is cheaper than tracking which of them moved.
+
+(let entity_faces_per_cube 6.0)
+
+# Half-width of a dropped item, in nodes. A quarter of a block: small enough to
+# read as an item rather than a block someone placed badly, large enough to spot
+# in grass from a few nodes away.
+(let item_half 0.14)
+
+# One cube, centred on `(cx, cy, cz)`. `light` is the packed §4 byte at the node
+# the entity is standing in — an item in a cave should be as dark as the cave —
+# and the caller reads it, because this module has no world.
+#
+# Returns the face count written, so a caller filling one buffer with many
+# entities can advance its own cursor without knowing what a cube costs.
+(fn put_cube [verts : (Buffer F32) idx : (Buffer U32) first_face : F64
+              tile : F64 light : F64 half : F64
+              cx : F64 cy : F64 cz : F64] : F64
+  (var x0 (- cx half))
+  (var x1 (+ cx half))
+  (var y0 (- cy half))
+  (var y1 (+ cy half))
+  (var z0 (- cz half))
+  (var z1 (+ cz half))
+  (var f first_face)
+  # Same winding as `build_mesh`, which is what keeps back-face culling working
+  # for these without a second render state (§6). `tools/mesh_bench.mjs` checks
+  # the chunk case; an entity cube that disagreed would be invisible from
+  # outside and visible from inside, which is the one bug this ordering exists
+  # to prevent.
+  (put_quad verts idx f tile light shade_side_x
+            x1 y0 z1  x1 y0 z0  x1 y1 z0  x1 y1 z1)
+  (set f (+ f 1.0))
+  (put_quad verts idx f tile light shade_side_x
+            x0 y0 z0  x0 y0 z1  x0 y1 z1  x0 y1 z0)
+  (set f (+ f 1.0))
+  (put_quad verts idx f tile light shade_top
+            x0 y1 z1  x1 y1 z1  x1 y1 z0  x0 y1 z0)
+  (set f (+ f 1.0))
+  (put_quad verts idx f tile light shade_bottom
+            x0 y0 z0  x1 y0 z0  x1 y0 z1  x0 y0 z1)
+  (set f (+ f 1.0))
+  (put_quad verts idx f tile light shade_side_z
+            x0 y0 z1  x1 y0 z1  x1 y1 z1  x0 y1 z1)
+  (set f (+ f 1.0))
+  (put_quad verts idx f tile light shade_side_z
+            x1 y0 z0  x0 y0 z0  x0 y1 z0  x1 y1 z0)
+  (+ f 1.0))
+
+(fn item_cube_half [] : F64 item_half)
+(fn faces_per_cube [] : F64 entity_faces_per_cube)

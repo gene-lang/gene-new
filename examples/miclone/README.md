@@ -104,6 +104,8 @@ core/       portable Gene — compiles for the VM and the web profile
   craft.gene    §9's recipes — shapeless, because a grid needs §13 (M8)
   entity.gene   §8's dropped items, and the definitions that carry a mod's
                 on_step (M8)
+  seen.gene     §8's client half: what a client has been told is on the
+                ground, which is what the renderer walks (M8)
   formspec.gene §13's UI as data — validated at registration, not on screen (M8)
 mods/       the game, as mods (§9)
   default/    every node, tile, drop, biome and ore miclone has
@@ -331,6 +333,22 @@ for the ambient case — grass growing on open dirt. See design.md §12.2.
 support out from under a sand column, stops talking, and waits for node deltas
 to arrive on a silent socket. That is the whole difference between M6's reactive
 server and this one.
+
+### §8 — dropped items, drawn
+
+```sh
+gene run server &
+node tools/entity_probe.mjs        # the server half: it falls
+node tools/net_client_smoke.mjs    # the client half: it is drawn
+```
+
+§8.1 called this blocked on "a vertex format this renderer does not have". A
+*billboard* would need one; a **scaled cube** needs exactly what the chunk pass
+already uses, so `core/mesh.gene` gained `put_cube` and nothing in §6 changed at
+all. `core/seen.gene` is the client's table — what it has been told is on the
+ground, which is what a renderer walks. The smoke test counts **draw calls**: an
+entity message is one more `drawElements` of exactly 36 indices, and a count of
+0 takes it away again. See design.md §8.3.
 
 ### §5 — leaf face culling
 

@@ -41,7 +41,7 @@
 import { spawn } from "node:child_process";
 import net from "node:net";
 import { rm, stat } from "node:fs/promises";
-import { hud, hotbar, fire, tick, key, click, lookDown } from "./dom_stub.mjs";
+import { hud, hotbar, fire, tick, key, click, lookDown, glDraws } from "./dom_stub.mjs";
 
 const D = new URL("../dist/", import.meta.url).pathname;
 const MICLONE = new URL("../", import.meta.url).pathname;
@@ -51,6 +51,7 @@ const PORT = 8790;                 // `net_main.gene` dials this literally
 
 const { new_cursor } = await import(D + "wire.mjs");
 const P = await import(D + "protocol.mjs");
+const IT = await import(D + "item.mjs");
 
 // The wire format has one definition and it is `core/protocol.gene`; the web
 // profile exports functions rather than `let` bindings, which is why these are
@@ -76,6 +77,9 @@ const outCount = new Map();
 const sockets = [];
 let bytesIn = 0;
 let helloFrame = null;
+// The items message, kept so a check below can name an item the way a mod does
+// — by string — instead of hardcoding a number §2 says is the engine's.
+let itemsFrame = null;
 
 const RealWebSocket = globalThis.WebSocket;
 class CountingWebSocket extends RealWebSocket {
@@ -88,6 +92,7 @@ class CountingWebSocket extends RealWebSocket {
       bytesIn += b.length;
       inCount.set(b[0], (inCount.get(b[0]) ?? 0) + 1);
       if (b[0] === KIND.hello) helloFrame = b.slice();
+      if (b[0] === KIND.items) itemsFrame = b.slice();
     });
   }
   send(payload) {
@@ -188,8 +193,10 @@ const say = (ok, label, detail) => {
   if (!ok) bad++;
 };
 const hudNums = () => {
-  const m = hud.textContent.match(/(-?\d+) fps · (-?\d+) chunks · (-?\d+) faces/);
-  return m ? { fps: +m[1], chunks: +m[2], faces: +m[3] } : { fps: 0, chunks: 0, faces: 0 };
+  const m = hud.textContent.match(
+    /(-?\d+) fps · (-?\d+) chunks · (-?\d+) faces · (-?\d+) items/);
+  return m ? { fps: +m[1], chunks: +m[2], faces: +m[3], items: +m[4] }
+           : { fps: 0, chunks: 0, faces: 0, items: 0 };
 };
 const posOf = (s) =>
   (s.match(/at (-?\d+), (-?\d+), (-?\d+)/) ?? []).slice(1).map(Number);
@@ -369,6 +376,73 @@ try {
   tick(8);
   await sleep(200);
   say(sent("dig") === 1, "a drag turns the view without digging");
+
+  // §8's entities, drawn. Filling the hotbar is what makes a dig drop one, and
+  // eight *distinct* items is what fills eight slots — digging one spot eight
+  // times stacks into one. Buried nodes count: the ores are never exposed and
+  // are exactly the distinct items this needs.
+  //
+  // What is asserted is that the geometry appears, not merely that the message
+  // did: the HUD's item count comes from `core/seen.gene`, which is the same
+  // table the renderer walks, so a count the client can say is a cube the
+  // client can draw.
+  // §8's entities, drawn. **The message is injected rather than provoked**, and
+  // that is a deliberate scope line: `tools/entity_probe.mjs` already proves the
+  // server spawns, steps and broadcasts one against a real socket, and what is
+  // untested is the other end — decode, table, mesh, draw. Provoking a real
+  // drop here would need a full hotbar, which needs eight *distinct* items,
+  // which is a fixture about what terrain happens to be under the spawn.
+  //
+  // So this hands the client exactly the bytes the server would send and checks
+  // what it does with them. Everything from `onmessage` on is the real path.
+  tick(4);
+  const drawsBefore = glDraws().length;
+  const sock = sockets[0];
+  const at = posOf(hud.textContent);
+  const cur = new_cursor();
+  const shownItems = IT.new_items();
+  P.decode_items(itemsFrame, cur, shownItems);
+  const dirt = IT.item_named(shownItems, "miclone:dirt");
+  const em = new Uint8Array(P.size_entity());
+  P.encode_entity(em, cur, 4242, at[0] + 1.5, at[1] + 0.5, at[2] + 1.5, dirt, 3);
+  const asFrame = (u8) =>
+    new MessageEvent("message",
+      { data: u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) });
+  // Dispatched rather than assigned to `onmessage`: the client registers with
+  // `addEventListener`, so an assignment would be a handler nobody calls — and
+  // the check would read as a silent zero rather than as a wiring mistake.
+  sock.dispatchEvent(asFrame(em));
+  // 70 frames, not 6: the HUD redraws once a virtual second (§13.1) and the
+  // item count is read off it. The draw-call checks below are per frame and do
+  // not need this — which is why the removal check passed on the geometry and
+  // failed on the number the first time it ran.
+  tick(70);
+  await sleep(120);
+  const items = hudNums().items;
+  say(items === 1, "an entity message puts an item on the client's ground",
+      `${items} item(s)`);
+
+  // And it is geometry. The entity pass is one `drawElements` past the chunk
+  // passes and its index count is `faces * 6` — a cube is six faces, so 36.
+  // Counting draws rather than reading a number the client printed is the
+  // difference between "the client knows about an item" and "the client drew
+  // one", which is the half §8.1 called "no client rendering".
+  const draws = glDraws();
+  const last = draws[draws.length - 1];
+  say(draws.length === drawsBefore + 1 && last === 36,
+      "and it is geometry: one more draw call, one cube of it",
+      `${drawsBefore} -> ${draws.length} draws, last ${last} indices`);
+
+  // A count of 0 is the removal (§10), and the cube must go with it — a draw
+  // call left behind is an item that is gone from the game and still on screen.
+  const rm = new Uint8Array(P.size_entity());
+  P.encode_entity(rm, cur, 4242, at[0] + 1.5, at[1] + 0.5, at[2] + 1.5, dirt, 0);
+  sock.dispatchEvent(asFrame(rm));
+  tick(70);
+  await sleep(120);
+  say(hudNums().items === 0 && glDraws().length === drawsBefore,
+      "and a count of 0 takes both the item and its draw call away",
+      `${hudNums().items} item(s), ${glDraws().length} draws`);
 
   // Physics, against a world that came off a socket. The HUD reports a rounded
   // position and refreshes once a virtual second, so this holds "w" across

@@ -1,0 +1,146 @@
+# What a client knows about entities — design.md §8, client half.
+#
+# The server's `core/entity.gene` is authoritative: it owns slots, ids, and the
+# definitions that step them. This is the other end of `msg_entity` — a table
+# of what a client has been *told* is on the ground, keyed by the id the server
+# assigned, holding exactly the six fields the message carries.
+#
+# **It is a separate module from `core/entity.gene` and not a subset of it**,
+# for the reason §2 splits a node definition in two: the halves have different
+# audiences. A server entity has a definition, callbacks, and a slot that gets
+# reused; a client entity is a position and a picture, and it exists only
+# between the message that announced it and the message that removed it. Sharing
+# one type would put `on_step` in a browser, which is exactly what §D5 says must
+# not happen.
+#
+# Before this the networked client kept `ground`, a count per item id — enough
+# for the HUD to say how much was lying about and not enough to draw any of it,
+# which `client/net_main.gene` said in its own comment. This is that comment's
+# "an id-keyed table is what a renderer will want".
+#
+# ## Ids are sparse and the table is dense
+#
+# The server hands out ids from a counter that never resets (§8), so after an
+# hour of play the live ids are large and few. A table indexed by id would be a
+# buffer the size of the largest id ever issued; a linear scan over a dense
+# table is the other extreme and is the right one here, because the count is
+# bounded by what a server will send about one player's surroundings and every
+# use is a full sweep anyway — drawing them all, or rebuilding the mesh.
+
+(mod seen ^profile web)
+
+(let max_seen 256.0)
+
+(type SeenEntities
+  ^props {^id    (Buffer F64)   # 0 means the row is free; server ids are 1-based
+          ^x     (Buffer F64)
+          ^y     (Buffer F64)
+          ^z     (Buffer F64)
+          ^item  (Buffer F64)
+          ^count (Buffer F64)
+          ^n     (Buffer F64)}  # one cell: rows in use, high-water mark
+
+  (ctor []
+    (set! self/id ($buffer F64 max_seen))
+    (set! self/x ($buffer F64 max_seen))
+    (set! self/y ($buffer F64 max_seen))
+    (set! self/z ($buffer F64 max_seen))
+    (set! self/item ($buffer F64 max_seen))
+    (set! self/count ($buffer F64 max_seen))
+    (set! self/n ($buffer F64 1.0))))
+
+(fn new_seen [] : SeenEntities
+  (new SeenEntities))
+
+(fn seen_rows [s : SeenEntities] : F64 (s/n ~ get 0.0))
+(fn seen_alive? [s : SeenEntities row : F64] : Bool (> (s/id ~ get row) 0.0))
+(fn seen_id [s : SeenEntities row : F64] : F64 (s/id ~ get row))
+(fn seen_x [s : SeenEntities row : F64] : F64 (s/x ~ get row))
+(fn seen_y [s : SeenEntities row : F64] : F64 (s/y ~ get row))
+(fn seen_z [s : SeenEntities row : F64] : F64 (s/z ~ get row))
+(fn seen_item [s : SeenEntities row : F64] : F64 (s/item ~ get row))
+(fn seen_count [s : SeenEntities row : F64] : F64 (s/count ~ get row))
+
+(fn seen_live [s : SeenEntities] : F64
+  (var live 0.0)
+  (var i 0.0)
+  (var rows (seen_rows s))
+  (while (< i rows)
+    (if_yes (seen_alive? s i) (set live (+ live 1.0)))
+    (set i (+ i 1.0)))
+  live)
+
+(fn row_of [s : SeenEntities id : F64] : F64
+  (var found -1.0)
+  (var i 0.0)
+  (var rows (seen_rows s))
+  (while (< i rows)
+    (if_yes (&& (== found -1.0) (== (s/id ~ get i) id))
+      (set found i))
+    (set i (+ i 1.0)))
+  found)
+
+# One message, applied. **Add, move and remove are the same call**, because they
+# are the same message: §8 chose one `msg_entity` kind over three on the grounds
+# that a count of 0 *is* the removal, and this is where that choice is paid off
+# rather than unpacked into a dispatch.
+#
+# Answers whether anything changed, which is what lets a client skip rebuilding
+# a mesh for a message that told it what it already knew. A move always changes;
+# a re-announcement of an identical position does not.
+(fn apply_entity [s : SeenEntities id : F64 x : F64 y : F64 z : F64
+                  item : F64 count : F64] : Bool
+  (var row (row_of s id))
+  (if (<= count 0.0)
+    # The removal. A freed row is reused before the table grows, so a world
+    # where items are constantly dropped and picked up does not walk the
+    # high-water mark up to the ceiling.
+    (if (< row 0.0) false
+      (do (s/id ~ set! row 0.0)
+          (s/count ~ set! row 0.0)
+          true))
+    (do
+      (if_yes (< row 0.0)
+        (set row (free_row s))
+        # Full. Dropping the announcement is right and the alternative is worse:
+        # evicting a live entity would make one vanish from the screen while the
+        # server still has it, and the client would never hear about it again.
+        (if_yes (< row 0.0) (return false))
+        (s/id ~ set! row id))
+      (var moved (|| (!= (s/x ~ get row) x)
+                     (|| (!= (s/y ~ get row) y)
+                         (|| (!= (s/z ~ get row) z)
+                             (!= (s/count ~ get row) count)))))
+      (s/x ~ set! row x)
+      (s/y ~ set! row y)
+      (s/z ~ set! row z)
+      (s/item ~ set! row item)
+      (s/count ~ set! row count)
+      moved)))
+
+(fn free_row [s : SeenEntities] : F64
+  (var found -1.0)
+  (var rows (seen_rows s))
+  (var i 0.0)
+  (while (< i rows)
+    (if_yes (&& (== found -1.0) (! (seen_alive? s i)))
+      (set found i))
+    (set i (+ i 1.0)))
+  (if (>= found 0.0) found
+    (if (< rows max_seen)
+      (do (s/n ~ set! 0.0 (+ rows 1.0)) rows)
+      -1.0)))
+
+# How many of a given item are on the ground, which is what the HUD used to
+# read out of a per-item buffer. Kept because it is what a player wants to know
+# and it is now derived from the same table the renderer draws, so the two can
+# never disagree.
+(fn seen_item_total [s : SeenEntities item : F64] : F64
+  (var total 0.0)
+  (var i 0.0)
+  (var rows (seen_rows s))
+  (while (< i rows)
+    (if_yes (&& (seen_alive? s i) (== (s/item ~ get i) item))
+      (set total (+ total (s/count ~ get i))))
+    (set i (+ i 1.0)))
+  total)

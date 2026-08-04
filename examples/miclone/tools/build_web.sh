@@ -29,6 +29,7 @@ client/atlas client/render client/sound client/main client/net_main
 probes/divergence probes/world_spec probes/mapgen_spec probes/light_spec
 probes/loaded_spec probes/physics_spec probes/edit_spec probes/inventory_spec
 probes/wire_spec probes/protocol_spec probes/abm_spec
+core/seen
 "
 
 for m in $MODULES; do

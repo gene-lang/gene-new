@@ -2726,11 +2726,66 @@ the mechanism: it fills a hotbar so a dig drops an entity, digs the node holding
 that entity up, **stops talking**, and waits for the item to move on a silent
 socket. Measured: y 18.7 → 18.1, one unsolicited message, then still.
 
-Still absent, and each for a stated reason:
+#### 8.3 Client rendering, and a vertex format that was already there
 
-- **No client rendering.** The networked client tracks what is on the ground and
-  the HUD could say so; drawing an item needs a billboard or a scaled cube,
-  which is §6 work and a vertex format this renderer does not have.
+§8.1 said "drawing an item needs a billboard or a scaled cube, which is §6 work
+and a vertex format this renderer does not have". Half of that is right and the
+half that mattered is not. A **billboard** would need a new format — it has to
+face the camera, so it needs the view vector in the shader or a per-frame
+rebuild that knows where the player is looking. A **scaled cube** needs exactly
+the format that exists: position, atlas coordinate, light, shade. So it reuses
+`put_quad`, the chunk shader, and the chunk draw call unchanged, and **the whole
+of §6's share was zero** — `core/mesh.gene` gained `put_cube` and nothing else
+in the renderer changed.
+
+A cube is also the better *look*. Upstream draws a dropped item as a flat
+sprite; a quarter-size cube in the node's own texture reads as "the block you
+just dug, lying there", which is what it is.
+
+`core/seen.gene` is the client's half of §8 and is deliberately **not** a subset
+of `core/entity.gene`, for the reason §2 splits a node definition in two: a
+server entity has a definition, callbacks and a reusable slot; a client entity
+is a position and a picture that exists between the message announcing it and
+the message removing it. One shared type would put `on_step` in a browser, which
+is what §D5 says must not happen. It replaced a per-item counter that could say
+how much was on the ground and could not put any of it on screen.
+
+Three details worth keeping:
+
+- **Add, move and remove are one call**, because §10 made them one message: a
+  count of 0 *is* the removal. `apply_entity` answers whether anything actually
+  changed, so a re-announcement of a position the client already holds does not
+  cost a mesh rebuild.
+- **The tile is the item's node's tile.** §2.2 keeps items and nodes in separate
+  spaces and `item_node` is the bridge. An item with no node behind it — a
+  stick, a pickaxe — is skipped rather than given a placeholder: §6's atlas has
+  no icon for a tool, and a wrong picture is worse than no picture.
+- **One buffer for all of them, rebuilt on change.** A chunk mesh is uploaded
+  once and redrawn while nothing in it changes; entities move every tick, so a
+  buffer each would be an upload per item per fall.
+
+The check is in `tools/net_client_smoke.mjs` and it counts **draw calls**, which
+the DOM stub now records: an entity message produces one more `drawElements`
+than the chunk passes, of exactly 36 indices — six faces, one cube — and a count
+of 0 takes both the item and its draw call away. Counting draws rather than
+reading a number the client printed is the difference between "the client knows
+about an item" and "the client drew one".
+
+The message is *injected* there rather than provoked, and that is a scope line
+rather than a shortcut: `tools/entity_probe.mjs` already proves the server
+spawns, steps and broadcasts one over a real socket, so what was untested is the
+other end — decode, table, mesh, draw — and provoking a real drop needs a full
+hotbar, which needs eight distinct items, which is a fixture about whatever
+terrain happens to lie under the spawn.
+
+*Verified headlessly rather than visually.* The in-tab client was confirmed in a
+real browser at 120 fps during the same session; the networked client's cubes
+were not, because the automation tab would not stay foreground and Chrome pauses
+`requestAnimationFrame` outright in a background tab. The draw-call assertion is
+the stronger check either way — a screenshot cannot tell 36 indices from 0 — but
+the pixels are unseen and this says so.
+
+Still absent, and each for a stated reason:
 - **No static serialization.** §8 says an unloaded block serializes its
   entities into itself. This world never unloads a block (§1.1), so there is
   nowhere for that to happen yet.

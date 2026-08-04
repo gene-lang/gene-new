@@ -45,6 +45,13 @@ const ctx2d = new Proxy({}, { get: () => () => {} });
 // Every WebGL entry point the client can reach, as a no-op. The three
 // predicates must answer true or `build_program` logs an error and carries on
 // with a program that is not there.
+// `drawElements` is the one call that is not a no-op, because it is the only
+// place a harness can see that geometry exists rather than that a number was
+// computed. Each frame's index counts are recorded and `glDraws()` hands back
+// the last frame's — which is what lets a test assert "the entity pass drew
+// something" without the client exposing its buffers.
+let glFrame = [];
+let glLastFrame = [];
 const gl = new Proxy({}, {
   get(_, name) {
     if (name === "getShaderParameter" || name === "getProgramParameter")
@@ -56,9 +63,16 @@ const gl = new Proxy({}, {
     if (name === "getError") return () => 0;
     if (name === "drawingBufferWidth" || name === "drawingBufferHeight")
       return 1280;
+    // `clear` opens a frame (`begin_frame` calls it once, first).
+    if (name === "clear") return () => { glLastFrame = glFrame; glFrame = []; };
+    if (name === "drawElements")
+      return (_mode, count) => { glFrame.push(count); };
     return () => {};
   },
 });
+
+// The index counts of every `drawElements` in the last completed frame.
+export const glDraws = () => glLastFrame.slice();
 
 // Web Audio, at the same fidelity as the WebGL stub above: every call is a
 // no-op that records nothing, so this says the client asked for a sound and
