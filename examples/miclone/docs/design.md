@@ -3,21 +3,56 @@
 A voxel game engine with Luanti's architecture, written in Gene, whose mod
 language is Gene.
 
-**Status: proposal, revision 2. Nothing here is implemented.** This document
-exists to be reviewed and argued with before any code is written. Part I is the
-direction and the decisions — read it first, and read §D2 before believing any
-of the rest, because §D2 is the constraint that shaped everything else. Part II
-is the system design. Appendix A maps each part to the upstream source that
-should be read while implementing it.
+**Status: M0 through M7's API are built and running.** §D8's table says which
+milestone owns what and which are done.
 
-Revision 2 answers a review of revision 1. What changed: the same-source claim
-is narrowed to *same algorithm, not same bits*, and §D3.1 turns that into an
-explicit exact/corrected split; M0 grows from one probe to three (§D6), adding a
+## How to read this document
+
+It is two things at once, and keeping them apart is what makes it usable.
+
+**The design is what was decided in advance.** Part I (§D1–§D10) is the
+direction: what "clone Luanti" means here, the constraint that shaped
+everything, and the phases. Part II (§1–§14) is the system, part by part. Read
+§D2 before believing any of the rest, because §D2 is the constraint the rest
+answers to. Appendix A maps each part to the upstream source worth reading while
+implementing it.
+
+One numbering quirk: **§D7.*n* means item *n* of §D7's backlog list**, not a
+subsection — §D7.11 is "the AOT lowerable subset", the eleventh entry. Every
+other `§x.y` is a real subsection.
+
+**The results are recorded inline, under the section that predicted them** —
+including the ones that came out wrong. §D6.3 predicted worldgen throughput
+would be fine and it was off by 1,008x; that failure is under §D6.3, in its own
+words, with the number. A design paragraph and its result note may disagree, and
+where they do the result note is what happened. The convention is deliberate: a
+document that quietly edits its predictions to match its outcomes cannot be used
+to judge whether the reasoning was any good.
+
+So a section reads: the design, then *M-something: what was built*, then what it
+cost and what it did not do. If a section has no result note, nothing has been
+built for it yet and it says so.
+
+**Where to find each milestone's result:** M0's three probes are §D6.1–§D6.3;
+M1 is §1 and §2.1; M2 is §3.3–§3.5; M3 is §4.1 and §5; M4 is §11.1; M5 is §1.1,
+§4.2, §7.0 and §7.1; M6 is §10.1 and §12.1; M7's API is §9.1. §6.1 and §13.1
+cover the renderer and the HUD, which no single milestone owns. §D10.1 scores
+the five risks Part I named, and §D7 is a running list of what the *language*
+gained along the way — which is the other half of what this project is for.
+
+### What earlier revisions changed
+
+Revision 2 answered a review of revision 1: the same-source claim was narrowed
+to *same algorithm, not same bits*, and §D3.1 turned that into an explicit
+exact/corrected split; M0 grew from one probe to three (§D6), adding a
 cross-backend FP divergence probe and a server worldgen throughput probe;
-§D7.2's packed `Buffer` is re-justified against consumers that exist; §7.1 now
-states the latency policy for player edits under server authority; and §10's
-dismissal of WebTransport is corrected — the obstacle is Gene's HTTP/1.1 server,
-not browser support.
+§D7.2's packed `Buffer` was re-justified against consumers that exist; §7.1
+gained the latency policy for player edits under server authority; and §10's
+dismissal of WebTransport was corrected — the obstacle is Gene's HTTP/1.1
+server, not browser support.
+
+Everything after revision 2 is a result note rather than a revision. The design
+has been wrong in places and those places say so where they stand.
 
 Reference source: `examples/miclone/luanti/`, a shallow clone of
 <https://github.com/luanti-org/luanti> at the tip of `master`. It is not
@@ -761,9 +796,25 @@ Simplex noise needs care here: the usual formulations use a gradient table and
 `floor`, which are fine, but any variant reaching for a transcendental is
 disqualified.
 
-**6. Vector/matrix math (pure Gene). Blocks M0.**
+**6. Vector/matrix math (pure Gene). Blocks M0. Landed, and it stayed in the
+game rather than becoming a library.**
 `$math` has the scalars. `vec3`, `mat4`, AABB, and a ray-vs-voxel traversal are
 library code, all `F64` per §D4.
+
+*Landed as `core/vec.gene` and `core/raycast.gene`.* Between them: `mat4`
+identity, perspective, view and multiply; `vec3` length; a yaw/pitch forward
+vector; and the Amanatides–Woo voxel traversal §7 asks for. The AABB half is not
+a module — `core/physics.gene` resolves the player box against the grid per axis
+and never needs a general box type.
+
+**It has not been promoted to a Gene library, and that is deliberate rather than
+pending.** The matrices are written into a caller-supplied `(Buffer F32)` and
+are 4x4 column-major because that is what `uniformMatrix4fv` takes, and the
+traversal returns into a caller-supplied `(Buffer F64)` because §7.1 runs it
+inside a click handler and a returned record would allocate. Both shapes are
+right for this engine and wrong for a general library, which would want values
+and returns. Promoting it means designing that trade, and the second consumer
+that would pay for it does not exist yet.
 
 **7. WebSocket *client*, or a real socket API. Blocked M6. Landed for the
 browser; still open for the native shell.**
@@ -981,6 +1032,75 @@ length is a `bigint` in the profile — but it is a VM-surface change with
 existing callers, so it wants doing deliberately rather than inside a game
 milestone.
 
+**13. Named parameters in the web profile. Blocked M7. Landed.**
+
+`^name : T` was a VM-only parameter form: a module function declaring one failed
+to transpile. That is a small hole with a large consequence, because `^name` is
+where argument ergonomics belong for a *registration* API — `core/registry.gene`
+had said so in a comment since M1 — and §9's mod API is nothing but
+registrations. Ten positional parameters is a shape only its author can read,
+and a definition is read far more often than it is written.
+
+The hole ruled out a shape rather than a spelling, and both ways around it were
+worse. A positional mod API would have been no better than the `register` it
+wraps, which is most of §9's point. A VM-only one would have been consistent
+with §D5 — mods run on the server — but would have retired the in-tab client,
+since `client/main.gene` generates its world in the browser and needs the same
+content set a mod defines.
+
+*Landed.* The profile takes named parameters on **module functions**, with
+`^name local : T` and `^name : T?` as on the VM, and lowers them to ordinary
+positional JavaScript slots in declaration order — the profile knows every
+callee statically, so a call's props are placed into their slots during
+analysis. No options object and no allocation, which matters because this
+codebase's hot paths refuse one; and an exported function stays positionally
+callable from JavaScript, which is what the `.mjs` harnesses do. Four refusals
+fall out of the lowering and each is a source-located diagnostic: no named
+parameters on a `message`, `ctor`, extern or callback, since a `Callback` type
+has nowhere to put a name; no positional parameter after a named one; no
+function-with-named-parameters used as a value; and no defaults, since `: T?` is
+the spelling for optional.
+
+**It also closed a silent divergence, which is the part worth remembering.**
+Props on a call were being *dropped*: `(add 1.0 2.0 ^oops 9.0)` compiled and
+threw `^oops` away, while the VM raised `got unexpected named argument` for the
+same source. No fixture could see it because the profile emitted working code —
+which is the exact failure mode §D3.1's rule exists to prevent, found four
+milestones after the rule was written. Nine cases in
+`tests/transpile/fixtures.json` hold the contract now, four of them asserting
+that both backends refuse the same source. Language `docs/web-profile.md` and
+`docs/design.md` §7.11 state the surface.
+
+**14. Neither backend re-exports an imported binding the same way. Found by M7.
+Small, and open.**
+
+`core/api.gene` was written to be a mod's only import: it would import the tile
+kinds, drawtypes and ore shapes from the engine modules and a mod would import
+them from it. That compiles in the web profile and fails on the VM with
+`module/namespace has no export`.
+
+The profile allows it because a `let` constant is a literal, so importing one
+*copies the value* rather than referencing the other module — and a copied value
+is trivially re-exportable. The VM resolves an import against a module's own
+exports, and a binding that arrived by import is not one. **A *type* re-exports
+on neither**, which is a third behaviour again.
+
+This is §D7.12's shape exactly — one operation in the portable surface whose
+meaning depends on which side you are on — and it has the same tell: the code
+that hits it looks completely ordinary. The workaround is to import a constant
+from the module that defines it, which is what `mods/default` does in three
+extra lines, and which has the accidental virtue that every import names where a
+number is defined rather than where it was passed through.
+
+The fix wants a decision rather than a patch, because there are two defensible
+answers and they differ in kind. Making the **profile refuse** it matches the VM
+today and is the safe direction — it turns a silent acceptance into a
+diagnostic, which is what item 13 did for props on a call. Making the **VM
+re-export** is the more useful language and is how most module systems behave,
+but it is a semantics change with a visibility question attached (is every
+import re-exported, or only a declared set?). It should not be settled inside a
+game milestone.
+
 ## D8. Delivery phases
 
 Each milestone ends in something runnable. No milestone is "infrastructure
@@ -1068,6 +1188,73 @@ from M6 on.
 *Mitigation:* §D8's rule that every milestone runs, and a willingness to stop at
 M5 with a good singleplayer voxel game if M6+ stops paying for itself.
 
+### D10.1 How the five turned out
+
+Through M7's API. One of the five materialised, and it is the one that was named
+as the likely ceiling — which is a better record for the *naming* than for the
+mitigations.
+
+**The subset constraint held, and the way it held is the finding.** `core/` is
+23 modules compiling for both backends, and not one of them needed a
+conditional. But it did not hold by being avoided: it held because **Gene grew
+every time it did not fit**, and §D7 is the list — fourteen items, of which
+eight landed on the way through. Typed buffers, `$to_float` in the portable
+stdlib, loop bodies as scopes, integral Floats as indices, a WebSocket client,
+`a/~b` in the profile, named parameters: each was a place the subset was about
+to fail, and the fix went into the language rather than into a workaround. That
+is the project's stated purpose (§D1) doing its job, so the risk converted into
+the deliverable.
+
+The mitigation as written — a shared fixture per module from the day it lands —
+also worked, and it is what turned most near-misses into a compile error with a
+position rather than a divergence found by a screenshot. **Twice it did not**,
+and both escapes are the same shape: §D7.12's `Buffer/len` and §D7.14's
+re-export are operations whose *type* or *legality* differs by backend while the
+source looks ordinary, so a fixture that ran on both sides never exercised the
+difference. §D7.13 found a third — props on a call dropped silently in the
+profile — four milestones after the rule that forbids it. The lesson the
+fixtures did not teach on their own: **a cross-backend fixture proves the code
+you wrote agrees, not that the code you could have written would.**
+
+**Meshing was not too slow, but the first attempt was 5.6x too slow and the
+reason was not meshing.** 0.084 → 0.468 ms/chunk on M2's registry-driven
+rewrite, all of it the `Int`/`bigint` boundary (§D6.1's M2 update), and the fix
+was in the source rather than the compiler: float-typed columns and two
+registry lookups hoisted per chunk. It now runs at **0.071 ms/chunk**, 16%
+faster than the hardcoded five-node version it replaced, over fifteen node
+types. The mitigation — "it is exactly what M0 measures, before anything
+depends on the answer" — is the reason this was a bad afternoon rather than a
+rewrite of M3.
+
+**Determinism held exactly, and the exact/corrected split was never tested in
+anger.** §D6.2 found **zero differing bits** over 323 samples, and the mapgen
+checksums have agreed on both backends at every commit since. The stated failure
+mode — mapgen becomes server-only — was never needed. Worth being honest about
+what that does and does not prove: both backends run on one machine and one
+libm here, so this is evidence the *algorithm* is bit-stable, not that every
+future host will be. §D3.1's rule and the fixtures that enforce it stay.
+
+**Server throughput was the ceiling, and it is still the ceiling.** This is the
+risk that came true, twice, and worse than written. §D6.3 missed its budget by
+**1,008x** and the finding was not that noise is slow — it is that a single
+message send is ~500 ns, so the *unit* was wrong; §3.1 changed the generation
+unit from an 80³ chunk to a 16³ block in response. Then M6 met the same wall
+somewhere new: **17.9 ms to encode one block message on the VM against V8's
+0.032 ms, 558x**, which is what makes a world take ~12 s to transfer and is why
+§10.1 says the socket was never the bottleneck. The mitigation ladder was
+climbed as far as it goes without new engine work — packed `Buffer` landed,
+typed functions landed, the noise stack lowers through AOT — and **§D7.11's AOT
+path is the rung that is left**. The frame rate, meanwhile, has never been the
+problem: 166 fps is the display's refresh rate (§6.1).
+
+**Scope was survivable, and the escape hatch was not used.** M0 through M7's API
+are built and every milestone runs. The willingness to stop at M5 turned out to
+be the useful part of that mitigation rather than the stopping: M6 and M7 were
+each entered knowing they could be the last, which is why M6 shipped a reactive
+server rather than a speculative tick loop (§12.1) and M7 shipped an API rather
+than a loader (§9.1). What is left of M7 is the half that needs engine work, and
+naming it as unfinished is the same discipline.
+
 ---
 
 # Part II — The system
@@ -1122,6 +1309,27 @@ Irrlicht wanted larger numbers. One node is 1.0.
 **World limit.** ±31,000 nodes, as upstream. It is not arbitrary — it is what
 keeps a node coordinate in an `s16` and a block coordinate comfortably inside
 one.
+
+*M1: built as `core/world.gene`, with `probes/world_spec.gene` — 69 checks,
+shared between the backends. Block and sector addressing, the three reserved
+content ids, the ±31,000 limit, and the packed light byte are all there, and
+§1.1 is what M5 did to the client's side of it.*
+
+**One thing designed here did not survive contact: `NodePos`, `BlockPos` and
+`Vec3` are not distinct types.** They are `F64` triples passed as three
+arguments. The reason for wanting them distinct is real — mixing the three
+spaces is the classic bug in this genre — and the reason they are not is
+sharper: **the web profile's nominal types are reference objects**, so a
+`NodePos` per node visit would allocate three million times over a chunk, on
+precisely the path §D6.1 exists to protect.
+
+What replaced the distinction is naming discipline — a function takes `nx ny nz`
+or `bx by bz`, never bare `x y z` — plus conversion helpers so the shift never
+appears open-coded at a call site. That is weaker, and it cost one bug: the
+client's spawn scan sampled a *fractional* node coordinate, which reads as
+`undefined` rather than raising (§7.0). A type would have caught it at the
+boundary; a two-minute walking property caught it instead, which is §14 layer 1
+earning its place rather than a type system's absence being free.
 
 ### 1.1 M5 — a block is the unit of generation, not of client memory
 
@@ -1214,6 +1422,51 @@ wholesale: a node is `{^cracky 3 ^falling_node 1}` and tools declare which
 groups they dig and how fast. It is how mods interoperate without knowing about
 each other.
 
+### 2.1 M1, M7 — the registry, and the two halves of this section that do not exist
+
+*M1: `core/registry.gene`, the client half, as nine parallel arrays indexed by
+content id rather than a map or a list of records — every lookup here is on the
+meshing hot path, where `solid?` and `propagates_light?` run per neighbour per
+node, and an indexed read into a typed array is the cheapest thing both backends
+have. M7 added the appearance columns' source (§9.1) without changing the
+shape.*
+
+*The server half is `core/drops.gene`, split off exactly as this section asks,
+and M6 is where that split became real rather than notional: the browser client
+no longer imports it.*
+
+**Six drawtypes are declared and two are honoured.** `airlike` decides whether
+the mesher emits geometry at all, and `liquid` makes a node unpointable to the
+raycast and swimmable to the physics. `glasslike`, `allfaces` and `plantlike`
+are registered names that no code branches on, so a node declaring one draws as
+an ordinary cube — which is invisible today because nothing declares them.
+That is worth stating rather than leaving as a surprise for the first mod that
+tries: §5's transparent pass is what `glasslike` needs, `allfaces` needs the
+same pass plus a rule against culling between two of them, and `plantlike` needs
+cross-quad geometry the mesher does not emit. All three are M8's, and the
+enumeration existing ahead of them is fine — an id is cheap — as long as nobody
+reads it as a promise.
+
+**Items are not built.** §2 says items are a parallel registry with description,
+inventory image, stack max, and tool capabilities, and that a node is
+automatically an item unless it says otherwise. None of that exists. An item id
+*is* a content id, the hotbar hands it straight to the edit (§7.1), and
+`ItemStack`'s `^wear` and `^meta` have no representation. This is the single
+biggest gap in Part II relative to its design, and it is load-bearing for more
+than it looks: crafting needs items, tools need `^wear`, and §9's
+`register_craft` cannot exist without both. The day it lands,
+`core/inventory.gene` changes in one place — what an id means.
+
+**Groups are not built either**, and they are the cheaper of the two. Nothing in
+M0–M7 needs a cross-cutting property: every node is dug at the same speed
+because there are no tools, and nothing falls. Groups become necessary at the
+first tool and the first `falling_node`, which is the same moment items do.
+
+That both are missing is not drift. §D8 orders the engine before the API that
+exposes it, and neither items nor groups have a *consumer* yet — a registry
+column nothing reads is a schema to migrate rather than a feature, which is the
+same argument §11.1 makes for the tables it did not create.
+
 ## 3. Mapgen
 
 **Revised by M2 against §D6.3's measurement.** The first draft of this section
@@ -1251,8 +1504,8 @@ unsound, those are the checks that would say so.
 | 2 | biomes | nearest point in (heat, humidity), then run-length column fill | `core/biome.gene` |
 | 3 | caves | carved along hashed Bézier worms | `core/cave.gene` |
 | 4 | ore | placed from hashed world cells, scatter / sheet / blob | `core/ore.gene` |
-| 5 | decorations | *not built* — the next milestone's | |
-| 6 | lighting | *not built* — M3's, §4 | |
+| 5 | decorations | *not built* — trees, grass, flowers; M8's, and the first thing a mod should place | |
+| 6 | lighting | **built** — M3, and it runs over the whole world rather than per block (§4.1, §4.2) | `core/light.gene` |
 
 Every stage is a registry a mod can add to (§9), which is Luanti's design and
 the reason its games look nothing alike. `mods/default` populates them with a
@@ -1669,6 +1922,49 @@ front-to-back for opaque, back-to-front for transparent.
 The camera is a standard first-person fly camera in M0 and gains collision in
 M5.
 
+### 6.1 M0, M3, M7 — what was built, and the three claims above that are wrong
+
+`client/render.gene` is one WebGL2 program, and it is the smallest part of this
+project that does the most visible work: 229 chunk meshes and 62,395 faces at
+**166 fps in a real tab**, which is the display's refresh rate rather than the
+engine's ceiling — over 89 sampled frames the median interval was 6.00 ms and
+nothing exceeded 8 ms (§D6.1).
+
+Three claims above did not survive contact, and each is worth more than the
+correction.
+
+**The atlas is not generated at build time, and it is not from source tiles.**
+It is painted at *startup* into an offscreen canvas by `client/atlas.gene`, and
+since M7 the recipes come from a mod (§9.1) — reaching the browser client over
+the wire, since a mod runs on the server. Procedural rather than shipped,
+because `texImage2D` takes a canvas element directly, which removes a PNG
+encoder, an asset to fetch, and a load event; `examples/new_world` needed all
+three and writes its own encoder to get them. The build-time version becomes
+right when M9 has image files to build from, and §D8's `assets/` is where they
+land.
+
+**There is no mipmapping, so the padding question never arrived.** The atlas is
+sampled with `NEAREST` and no mip chain, which is the look this genre wants and
+also the reason chunk-edge bleeding is not a problem to solve. The paragraph
+above is a correct description of a decision nobody has had to make.
+
+**There is no frustum culling.** Every chunk mesh with a face in it is drawn
+every frame — all 229 of them, which is the number the HUD reports and the cost
+the 166 fps includes. The culling that *is* on is the two kinds §5 and the GPU
+give for nothing: a face is never emitted between two solid nodes, and
+`cull_face back` drops the far side of every quad that is. Frustum culling has
+not been built because it has never been the limit — at this extent the whole
+world is 62,395 faces, and §D6.3's finding that the ceiling is the *server*
+rather than the frame has held at every measurement since. It is cheap and
+obvious and worth doing at the first view distance that hurts; doing it now
+would be optimising the half that was never slow.
+
+What *is* built and was designed correctly: the day/night mix as a uniform (the
+M3 note above), the two-channel light byte travelling unpacked, distance fog,
+and per-face shading. Draw order is not built either, because there is one pass
+— §5's transparent pass is where back-to-front sorting arrives, and until water
+stops being drawn opaque (§9.1's one compromise) there is nothing to sort.
+
 ## 7. Physics and collision
 
 Axis-aligned boxes against the voxel grid, resolved per axis in order, which is
@@ -1947,6 +2243,27 @@ it is what makes an entity survive the block unloading under it.
 M8. The player is not an entity in M5; making it one is a refactor M8 should do
 deliberately.
 
+*Nothing here is built.* The one place M0–M7 touches §8 is the shape of the
+absence: §10's `msg_input` is decoded by the server and dropped, because the
+client runs the same physics against the same world (§7) and there is no second
+player to tell about the result. It is sent and decoded anyway, so that the
+message which proves a client can talk about its own motion exists before the
+entity that needs it does.
+
+Two consequences worth knowing before M8 starts, both already true:
+
+- **Two clients on one server dig the same world and cannot see each other.**
+  The world is shared and every edit reaches both; the player is not. What the
+  server keeps per connection is exactly one thing — an inventory — and it keeps
+  **no position and no physics state at all**, because the client runs the same
+  step against the same world (§7) and `msg_input` is decoded and thrown away.
+  So there is nothing to send even if there were somewhere to send it. §8 is
+  where a server first has to know where a player is.
+- **A dropped item that does not fit is lost** (§7.1). Dropped-item entities are
+  the first thing §8 buys, and until then "your inventory is full" silently eats
+  a dug node. That is the placeholder, and it is named in `core/inventory.gene`
+  rather than left to be found.
+
 ## 9. The mod API
 
 The point of the project (§D8).
@@ -1976,6 +2293,12 @@ imports, real modules. Not a directory of scripts sharing a global table.
     (if_yes (light_above_at_least pos 13)
       (set_node pos {^name "default:grass"}))))
 ```
+
+*That sketch is the design, and §9.1 is what was built — they differ in three
+visible ways and one invisible one. The registrations take a `Game` context, a
+mod's entry is `src/default.gene`, `^tiles` names registered tiles rather than
+image files, and `register_abm` does not exist because §12's tick loop does not.
+§9.1 has the real thing beside a table of what of this section landed.*
 
 Four things this gets that Luanti's Lua API does not:
 
@@ -2009,6 +2332,71 @@ in `mods/default/src/default.gene`, through `core/api.gene`, and the engine gets
 its game from `core/mods.gene`'s `load_mods` — one call, at seven call sites
 that each used to import the content module and run four `setup_*` functions in
 the right order.
+
+What a registration actually looks like:
+
+```gene
+(mod mod_default ^profile web)
+
+(import [Game register_tile register_node register_drop_rule
+         register_biome_def register_ore_def]
+        from "../../../core/api.gene")
+(import [tile_solid tile_overlay] from "../../../core/tiles.gene")
+(import [draw_liquid] from "../../../core/registry.gene")
+
+(fn setup_tiles [game : Game] : Nil
+  (register_tile game "miclone:grass_top" ^kind tile_solid
+                 ^red 96.0 ^green 152.0 ^blue 72.0 ^spread 26.0 ^seed 40.0)
+  (register_tile game "miclone:grass_side" ^kind tile_overlay
+                 ^red 96.0 ^green 152.0 ^blue 72.0 ^spread 26.0 ^seed 40.0
+                 ^base_red 134.0 ^base_green 102.0 ^base_blue 72.0
+                 ^base_spread 22.0 ^base_seed 10.0))
+
+(fn setup_nodes [game : Game] : Nil
+  (register_node game "miclone:grass"
+                 ^tiles ["miclone:grass_top" "miclone:grass_side"
+                         "miclone:dirt"])
+  (register_node game "miclone:water" ^tiles ["miclone:water"]
+                 ^drawtype draw_liquid
+                 ^solid false
+                 ^propagates_light true))
+
+(fn setup_drops [game : Game] : Nil
+  (register_drop_rule game "miclone:grass" ^item "miclone:dirt"))
+```
+
+Two differences from §9's sketch are worth naming rather than leaving to a
+diff. **The registrations take a `Game`**, because the web profile re-exports an
+imported constant but not an imported *type*, so an API that hid five registries
+behind five parameters would have made a mod import five type names it never
+mentions. It is the better shape anyway — §9's sketch reaches an implicit global
+and this is that global, made explicit. And **`^tiles` names registered tiles
+rather than image files**, because §6's atlas is generated rather than shipped;
+`^tiles ["default_stone.png"]` becomes true when M9 has files to name.
+
+**How much of §9's surface this is:** less than half, and the missing half is
+missing because the engine under it is.
+
+| §9 asked for | M7 |
+|---|---|
+| node registration | **built** — `register_node` |
+| tile/appearance registration | **built** — `register_tile`, which §9 did not ask for and a mod cannot do without |
+| drop rules | **built** — `register_drop_rule` |
+| biome and ore registration | **built** — `register_biome_def`, `register_ore_def` |
+| item registration | not built — §2's item registry does not exist; an item id *is* a node id (§7.1) |
+| craft registration | not built — needs items |
+| entity registration | not built — §8 is M8's |
+| ABM and LBM registration | not built — needs §12's tick loop, which does not exist either |
+| `get_node`/`set_node`, bulk accessor | not built — no mod runs at a time when a world exists to read |
+| inventory manipulation, player methods | not built — same |
+| chat commands, privileges, callbacks | not built — needs the loader and a player model |
+
+The pattern in that column is the honest finding: **every unbuilt entry is
+blocked by an engine part rather than by API design.** A mod API cannot register
+an ABM before there is a tick to run it on, and `set_node` from a mod means
+nothing until a mod runs during play rather than only at load. §D8's ordering
+holds — the engine before the API that exposes it — and what M7 exposes is
+exactly the engine that exists.
 
 **The test of the move is that the world did not change**: the four golden
 checksums hold, the world is the same 229 chunks and 62,395 faces, and the ten
@@ -2131,7 +2519,7 @@ Measured on §3's real terrain, 12 × 4 × 12 blocks:
 | a block message | **575 bytes mean**, 5,017 worst, 259 of 576 uniform |
 | the whole world | **0.32 MB** against 9.0 MB raw — **29x** |
 | the registry | 364 bytes for 16 node definitions |
-| the tiles (M7) | 300 bytes for 14 tile recipes |
+| the tiles (M7) | 406 bytes for 14 tile recipes |
 | codec | 32 µs to encode a block, 16 µs to decode |
 
 Run-length encoded on the finding §11 records — a voxel column is a handful of
@@ -2312,11 +2700,28 @@ moved. M5's torch is this node with a placement rule attached.
 
 #### Not built
 
-`players.sqlite` and `mods/` — M5 and M7 own them, and a table nothing writes is
-a schema to migrate rather than a feature. Writes are batched (a transaction, so
-a crash leaves the world as it was rather than partly saved) but not
-asynchronous; that wants the scheduler and a tick to hang a flush off, which is
-M6.
+`players.sqlite` and a per-world `mods/`, and both are still empty for the same
+reason: a table nothing writes is a schema to migrate rather than a feature.
+
+*M5 and M7 have since been built and neither claimed them, which is the useful
+correction.* **Player state is per-connection and dies with it** — each client
+gets a fresh inventory at the spawn the server chose, so quitting and rejoining
+resets what you were carrying while the world you dug persists exactly. That is
+a real gap rather than a design; it needs §8's player-as-entity refactor to have
+somewhere coherent to save *from*, so M8 owns it and `players.sqlite` waits for
+it. And **M7's mods are compiled in, not read off disk** (§9.1), so there is
+nothing per-world to store: a world does not yet record which mods made it, and
+it should, because §11's whole promise is that a stored block still means what
+it meant. The `name -> id` mapping already survives a mod being added or
+reordered; what it cannot survive is a mod *disappearing*, and recording the mod
+set is what turns that from silent corruption into a refusal to load.
+
+Writes are batched (a transaction, so a crash leaves the world as it was rather
+than partly saved) but still not asynchronous. That wanted "the scheduler and a
+tick to hang a flush off, which is M6" — M6 came and brought no tick (§12.1), so
+this waits on §12's loop rather than on a milestone number. It has not hurt:
+an edit persists one block inside a click and the measured end-to-end cost is
+1.8–3.5 ms.
 
 ## 12. Time, tick, and the server loop
 
@@ -2331,6 +2736,44 @@ from being O(loaded world) every tick.
 
 Client renders at display rate and interpolates; it does not tick the server
 model.
+
+### 12.1 M6 — the server is reactive, and has no loop at all
+
+**`server/main.gene` does not tick.** It accepts a connection, answers a
+handshake, and answers messages; between messages it does nothing, and there is
+no fixed-step loop anywhere in it.
+
+That is a decision rather than an omission, and the reason is that every item on
+the per-tick list above is a thing that does not exist yet. There are no
+entities (§8), no ABMs (§9 — `register_abm` is not in M7's API), no node timers,
+and no liquids that flow. Every message the server handles is a response to a
+client action, so a 20 Hz loop would run empty, and running one anyway would be
+a game server costume rather than a game server: it would consume a core, make
+every future measurement noisier, and let a reader believe scheduling had been
+thought about when it had not.
+
+**§12's loop arrives with the first thing that changes without being asked.**
+That is the trigger, and it is a sharper one than a milestone number: liquids
+flowing, a node timer firing, or an ABM spreading grass each independently
+require it, and none of them can be built without it. Whichever comes first
+brings the loop.
+
+Two things the reactive shape already got right and should survive the loop:
+
+- **The client asks and the server answers; the server does not push** (§10.1).
+  That is flow control rather than politeness, and it is the reason a 576-block
+  world arrives intact. A tick loop does not change it: block transfer stays
+  request-driven, and what the loop adds is the *unrequested* traffic — deltas
+  from ABMs, entity updates — which is exactly the traffic that needs a rate.
+- **Per-connection state is a closure, not a table keyed by connection.** The
+  one thing a connection owns — its inventory — lives in the `ws_accept`
+  callback's scope, which is what makes each client its own player without a
+  registry. A tick loop needs to *iterate* players, which a closure does not
+  offer, so this is the shape §12 will have to change. Worth changing at that
+  moment rather than pre-emptively: a table nothing enumerates is §11.1's
+  argument again. Note that the iteration §12 wants is over more than exists
+  today — there is no server-side position or physics state to step (§8), so the
+  loop and the player model arrive together or not at all.
 
 ## 13. UI
 
@@ -2358,6 +2801,40 @@ a native shell will have to reimplement (a cost §D8's M9 owns).
 
 The HUD (hotbar, health, breath, crosshair) is DOM as well, except the
 crosshair.
+
+### 13.1 M5 — the HUD is built; the formspec is not
+
+**The HUD exists and is DOM**, exactly as designed: four elements in
+`index.html` (`hud`, `hotbar`, `aim`, `help`) that the client writes text into
+once a second, plus a CSS crosshair. It is worth more than a status line
+because of what it turned out to be *for*.
+
+The HUD line is the project's most-used instrument. `60 fps · 229 chunks ·
+62395 faces · walking at -1335, 21, 3265` is the frame rate, the draw count, the
+geometry, the physics mode and the position in one string — and because it is
+one string, both headless smoke tests read it as their only window into a
+running client (§14 layer 4). Every check about walking, flying, swimming and
+where a player is standing is a regex over that line. It was written to be
+looked at and it is mostly parsed.
+
+Two things follow that a redesign should keep: **the numbers stay in one line
+with stable labels**, because two harnesses depend on that shape; and the
+*mode* word stays a single word from a closed set, since `walking|flying|
+swimming|falling` is how a test asserts that physics ran at all.
+
+**The formspec is not built, and nothing needs it yet.** M5's hotbar is eight
+slots rendered as text and selected with the number keys or the wheel — that is
+the whole of the inventory UI, and it is enough for a game whose only container
+is the player's own hands. §13's formspec becomes necessary at the first *second*
+container to move things into: a chest, a furnace, a crafting grid. All three
+are M8's, and all three need §2's item registry (§9.1) before they need a way to
+be drawn.
+
+So the design above stands unchallenged rather than confirmed: nothing has
+tested whether Gene nodes are a better formspec than a string DSL, because
+nothing has built one. The claim that they are composable, inspectable and
+validated at registration is a prediction, and §14's discipline says to mark it
+as one.
 
 ## 14. Testing and verification
 
@@ -2433,7 +2910,10 @@ Four layers, and the second is the one that matters most here.
    *Still missing from this layer: disconnect and reconnect within one run —
    §11's `probes/run_persistence.gene` covers restart, and the face count above
    covers a within-session round trip, but not a client rejoining — and the mod
-   veto, which needs §9 and is M7's.*
+   veto. The veto is further off than it looked when this was written: M7's API
+   shipped without callbacks (§9.1), so there is nothing for a mod to veto
+   *with*, and a callback that runs during play needs the loader and §12's tick
+   before it needs a test.*
 
    *Two traps it is downstream of. **The server's stdout is block-buffered when
    it is a pipe**, so a harness waiting for "listening on 8790" hangs while the

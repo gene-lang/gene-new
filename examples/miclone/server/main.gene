@@ -22,9 +22,13 @@
 # ## One world, many clients, no player state
 #
 # The world is shared and every client sees every edit. What is *not* shared is
-# the player: each connection carries its own physics state, inventory, and
-# position, and none of it is sent to the other clients — §8's entities are what
-# make a player visible to another player, and they are M8's.
+# the player — and the reason is stronger than "not sent yet": this server keeps
+# exactly one thing per connection, an inventory, and **no position and no
+# physics state at all**. The client runs the same step against the same world
+# (§7) and `msg_input` is decoded and dropped, so there is nothing to send even
+# if there were somewhere to send it. §8's entities are what make a player
+# visible to another player, and they are the first thing that requires a server
+# to know where anyone is standing.
 #
 # So two clients on this server dig the same world and cannot see each other.
 # That is the honest M6 scope: the split is real and the game through it is the
