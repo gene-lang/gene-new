@@ -73,7 +73,7 @@
 # v4 adds `msg_craft` (M8): the client says "make what I can make" and the
 # server decides what that is. One byte, because §7.1 gives the client no say —
 # a client that named a recipe would be a client the server had to check.
-(let protocol_version 7.0)
+(let protocol_version 8.0)
 
 # --- message kinds -----------------------------------------------------------
 #
@@ -176,7 +176,7 @@
 # second message kind and makes "gone" impossible to miss by dropping one.
 #
 # 1 kind + 4 id + 12 position + 2 item + 2 count.
-(let entity_size 21.0)
+(let entity_size 22.0)
 
 (let ent_id 0.0)
 (let ent_x 1.0)
@@ -184,12 +184,16 @@
 (let ent_z 3.0)
 (let ent_item 4.0)
 (let ent_count 5.0)
+# What the entity *is*, so the client can draw a player differently from a
+# dropped cobble without guessing from its item. §8 asks for a registry of
+# entity kinds; this is the one byte of it a client needs.
+(let ent_kind 6.0)
 
-(fn new_entity_msg [] : (Buffer F64) ($buffer F64 6.0))
+(fn new_entity_msg [] : (Buffer F64) ($buffer F64 7.0))
 
 (fn encode_entity [out : (Buffer U8) c : (Buffer F64)
                    id : F64 x : F64 y : F64 z : F64
-                   item : F64 count : F64] : Nil
+                   item : F64 count : F64 kind : F64] : Nil
   (reset c)
   (write_u8 c out msg_entity)
   (write_u32 c out id)
@@ -200,7 +204,8 @@
   (write_i32 c out ($math/round (* y 1000.0)))
   (write_i32 c out ($math/round (* z 1000.0)))
   (write_u16 c out item)
-  (write_u16 c out count))
+  (write_u16 c out count)
+  (write_u8 c out kind))
 
 (fn decode_entity [b : (Buffer U8) c : (Buffer F64)
                    into : (Buffer F64)] : Nil
@@ -211,7 +216,8 @@
   (into ~ set! ent_y (/ (read_i32 c b) 1000.0))
   (into ~ set! ent_z (/ (read_i32 c b) 1000.0))
   (into ~ set! ent_item (read_u16 c b))
-  (into ~ set! ent_count (read_u16 c b)))
+  (into ~ set! ent_count (read_u16 c b))
+  (into ~ set! ent_kind (read_u8 c b)))
 
 (fn message_kind [b : (Buffer U8)] : F64
   ($to_float (b ~ get 0.0)))

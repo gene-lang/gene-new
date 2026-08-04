@@ -404,7 +404,9 @@ try {
   P.decode_items(itemsFrame, cur, shownItems);
   const dirt = IT.item_named(shownItems, "miclone:dirt");
   const em = new Uint8Array(P.size_entity());
-  P.encode_entity(em, cur, 4242, at[0] + 1.5, at[1] + 0.5, at[2] + 1.5, dirt, 3);
+  const E = await import(D + "entity.mjs");
+  P.encode_entity(em, cur, 4242, at[0] + 1.5, at[1] + 0.5, at[2] + 1.5, dirt, 3,
+                  E.kind_item());
   const asFrame = (u8) =>
     new MessageEvent("message",
       { data: u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) });
@@ -436,7 +438,8 @@ try {
   // A count of 0 is the removal (§10), and the cube must go with it — a draw
   // call left behind is an item that is gone from the game and still on screen.
   const rm = new Uint8Array(P.size_entity());
-  P.encode_entity(rm, cur, 4242, at[0] + 1.5, at[1] + 0.5, at[2] + 1.5, dirt, 0);
+  P.encode_entity(rm, cur, 4242, at[0] + 1.5, at[1] + 0.5, at[2] + 1.5, dirt, 0,
+                  E.kind_item());
   sock.dispatchEvent(asFrame(rm));
   tick(70);
   await sleep(120);

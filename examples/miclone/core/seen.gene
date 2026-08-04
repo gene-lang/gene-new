@@ -3,7 +3,7 @@
 # The server's `core/entity.gene` is authoritative: it owns slots, ids, and the
 # definitions that step them. This is the other end of `msg_entity` — a table
 # of what a client has been *told* is on the ground, keyed by the id the server
-# assigned, holding exactly the six fields the message carries.
+# assigned, holding exactly the fields the message carries.
 #
 # **It is a separate module from `core/entity.gene` and not a subset of it**,
 # for the reason §2 splits a node definition in two: the halves have different
@@ -38,6 +38,8 @@
           ^z     (Buffer F64)
           ^item  (Buffer F64)
           ^count (Buffer F64)
+          # §8's entity kind: a dropped stack, or a player.
+          ^kind  (Buffer F64)
           ^n     (Buffer F64)}  # one cell: rows in use, high-water mark
 
   (ctor []
@@ -47,6 +49,7 @@
     (set! self/z ($buffer F64 max_seen))
     (set! self/item ($buffer F64 max_seen))
     (set! self/count ($buffer F64 max_seen))
+    (set! self/kind ($buffer F64 max_seen))
     (set! self/n ($buffer F64 1.0))))
 
 (fn new_seen [] : SeenEntities
@@ -60,6 +63,9 @@
 (fn seen_z [s : SeenEntities row : F64] : F64 (s/z ~ get row))
 (fn seen_item [s : SeenEntities row : F64] : F64 (s/item ~ get row))
 (fn seen_count [s : SeenEntities row : F64] : F64 (s/count ~ get row))
+# §8's entity kind, kept so the renderer can draw a player at player size and a
+# dropped stack at stack size without inferring it from the item.
+(fn seen_kind [s : SeenEntities row : F64] : F64 (s/kind ~ get row))
 
 (fn seen_live [s : SeenEntities] : F64
   (var live 0.0)
@@ -89,7 +95,7 @@
 # a mesh for a message that told it what it already knew. A move always changes;
 # a re-announcement of an identical position does not.
 (fn apply_entity [s : SeenEntities id : F64 x : F64 y : F64 z : F64
-                  item : F64 count : F64] : Bool
+                  item : F64 count : F64 kind : F64] : Bool
   (var row (row_of s id))
   (if (<= count 0.0)
     # The removal. A freed row is reused before the table grows, so a world
@@ -116,6 +122,7 @@
       (s/z ~ set! row z)
       (s/item ~ set! row item)
       (s/count ~ set! row count)
+      (s/kind ~ set! row kind)
       moved)))
 
 (fn free_row [s : SeenEntities] : F64

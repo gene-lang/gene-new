@@ -68,6 +68,17 @@
 # this repository gives dropped items their physics.
 (let item_def_name "item")
 (let entity_item 0.0)
+# §8: "The player is not an entity in M5; making it one is a refactor M8 should
+# do deliberately." This is that kind. A player entity is server-owned like any
+# other — a position, a visual, and a slot — and the thing it buys is the one
+# §8.1 named as the clearest statement of what §8 still owed: **a player can see
+# another player.**
+#
+# It is a kind rather than a separate system because everything a player needs
+# on the wire is what a dropped item needs: an id, a position, and something to
+# draw. What differs is size and that it is never picked up, and both of those
+# are one comparison against this number.
+(let entity_player 1.0)
 
 # What an entity's `on_step` is given: the world to read, the slot it is, and
 # how long the step was in seconds. Everything else it captures — `game` above
@@ -260,6 +271,39 @@
   (e/x ~ set! slot x)
   (e/y ~ set! slot y)
   (e/z ~ set! slot z))
+
+# A player, spawned into the same table as everything else. `item` carries what
+# to draw it as — `mods/default` registers a `miclone:player` node for exactly
+# this, so the client's existing item-cube path draws a player with no new
+# vertex format and no new message (§8.3).
+(fn spawn_player [e : EntityRegistry visual : F64
+                  x : F64 y : F64 z : F64] : F64
+  (var slot (free_slot e))
+  (if (< slot 0.0) -1.0
+    (do
+      (var id (e/n ~ get cell_next))
+      (e/n ~ set! cell_next (+ id 1.0))
+      (e/kind ~ set! slot entity_player)
+      (e/item ~ set! slot visual)
+      # A player is one of itself. The count is what a dropped stack uses and
+      # what a removal sets to 0, so a player carries 1 to stay on the same
+      # add/move/remove rule as everything else (§10).
+      (e/count ~ set! slot 1.0)
+      (e/x ~ set! slot x)
+      (e/y ~ set! slot y)
+      (e/z ~ set! slot z)
+      (e/def ~ set! slot (entity_def_named e item_def_name))
+      (e/id ~ set! slot id)
+      id)))
+
+# The web profile exports functions, not `let` bindings — the same reason
+# `core/protocol.gene` has `kind_*` and `core/formspec.gene` has element-kind
+# accessors. A `.mjs` peer needs to tell a player from a dropped stack.
+(fn kind_item [] : F64 entity_item)
+(fn kind_player [] : F64 entity_player)
+
+(fn entity_is_player? [e : EntityRegistry slot : F64] : Bool
+  (== (e/kind ~ get slot) entity_player))
 
 (fn despawn [e : EntityRegistry slot : F64] : Nil
   (e/id ~ set! slot 0.0)

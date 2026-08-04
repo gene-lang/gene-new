@@ -43,6 +43,7 @@
          element_text element_action action_element el_button]
         from "../core/formspec.gene")
 (import [new_inventory add slot_item slot_count] from "../core/inventory.gene")
+(import [entity_item entity_player] from "../core/entity.gene")
 (import [protocol_version message_kind server_message? client_message?
          msg_hello msg_registry msg_block msg_node_delta msg_inventory
          msg_forms msg_open_form msg_form_action
@@ -72,7 +73,7 @@
          decode_request_blocks req_from req_count
          inventory_size encode_inventory decode_inventory
          in_x in_y in_z
-         size_entity encode_entity decode_entity msg_entity
+         size_entity encode_entity decode_entity msg_entity ent_kind
          new_entity_msg ent_id ent_x ent_y ent_z ent_item ent_count]
         from "../core/protocol.gene")
 
@@ -691,7 +692,7 @@
   (var b ($buffer U8 (size_entity)))
   (var m (new_entity_msg))
 
-  (encode_entity b c 4242.0 -1335.5 21.25 3265.75 7.0 12.0)
+  (encode_entity b c 4242.0 -1335.5 21.25 3265.75 7.0 12.0 entity_item)
   (check_f out "entity: the kind byte" (message_kind b) msg_entity)
   (check_f out "entity: the encoder wrote exactly entity_size bytes"
            (cursor_at c) (size_entity))
@@ -704,10 +705,14 @@
   (check_f out "entity: and the count" (m ~ get ent_count) 12.0)
 
   # The removal, which is the case a dropped field would hide.
-  (encode_entity b c 4242.0 0.0 0.0 0.0 7.0 0.0)
+  (encode_entity b c 4242.0 0.0 0.0 0.0 7.0 0.0 entity_player)
   (decode_entity b c m)
   (check_f out "entity: a count of zero is how a despawn travels"
-           (m ~ get ent_count) 0.0))
+           (m ~ get ent_count) 0.0)
+  # §8's kinds on the wire. A client draws a player and a dropped cobble
+  # differently and must not have to guess which it has from the item.
+  (check_f out "entity: and the kind says a player is a player"
+           (m ~ get ent_kind) entity_player))
 
 # --- the report --------------------------------------------------------------
 

@@ -2900,6 +2900,56 @@ were not, because the automation tab would not stay foreground and Chrome pauses
 the stronger check either way — a screenshot cannot tell 36 indices from 0 — but
 the pixels are unseen and this says so.
 
+#### 8.4 The player is an entity, and two players can see each other
+
+§8 named this "a refactor M8 should do deliberately" and §8.1 called its absence
+"the clearest statement of what §8 still owes — a player is visible to another
+player only once players are entities with visuals, and neither exists". Both
+exist now, and the refactor was smaller than its billing because §8.2 and §8.3
+had already built everything under it.
+
+A player is an **entity kind**, not a system. `entity_player` sits beside
+`entity_item` in the same table, with the same id, the same position columns and
+the same `msg_entity` on the wire. What differs is three things and no more:
+
+- **It is drawn bigger** — 0.8 of a node against a dropped stack's 0.28, lifted
+  to standing height — which is one comparison in the client, against a `kind`
+  byte the message now carries. Guessing from the item instead would have been a
+  client inferring what a thing *is* from what it *looks like*.
+- **It is never picked up.** One clause on the pickup scan.
+- **Nobody is sent their own.** A cube at your own eye position is a cube in
+  front of your camera, so a player entity broadcasts to every connection except
+  its own — the first thing in this server that is not sent to everybody.
+
+**The avatar is a node the mod registered.** `mods/default` declares
+`miclone:player`, and the client's existing item → node → tile path (§8.3) draws
+it with no new vertex format, no new message and no engine notion of an avatar.
+It stays an *item* — the default — because that path starts at an item; nobody
+can obtain one, since it is not generated, dropped or in a recipe. A second
+lookup path in the renderer for one kind of entity would have been the larger
+oddity.
+
+**A join tells you about everyone already here.** That is not obvious and it is
+the check that would have been missed: without it a second player sees the first
+only once the first *moves*, so standing still is invisibility. The server sends
+the existing players to a joining client and broadcasts the new one to everyone
+else, and `on_close` sends the count-0 removal — because a disconnected player
+standing in the world forever is §8 failing in the other direction.
+
+**`msg_input`'s position now has a second use.** §8.1 recorded sending it as a
+trust decision made for pickup — "a client that lies about its position can
+reach an item it could have walked to anyway" — and predicted that "when players
+become entities the server will step them and this field becomes a correction
+rather than a source". It is still the source; what changed is that the same
+field now moves an avatar other players can see, so the lie is now visible to
+someone. The prediction's *shape* was right and its timing was early: stepping
+players server-side wants §7's physics on the server, which is M9's problem.
+
+`tools/players_probe.mjs` is the only check in the tree that needs two peers to
+mean anything: a second client joining is visible to the first, the first is
+visible to the second who arrived later, neither is sent their own, walking
+moves the avatar, and leaving takes it away.
+
 Still absent, and each for a stated reason:
 - **No static serialization.** §8 says an unloaded block serializes its
   entities into itself. This world never unloads a block (§1.1), so there is
@@ -2911,10 +2961,9 @@ Still absent, and each for a stated reason:
 *Before M8 this section had no result note at all, and what stood here was the
 shape of the absence: `msg_input` was decoded and thrown away, two clients on
 one server could dig the same world and not see each other, and a dropped item
-that did not fit was lost. The first and third are fixed above. The second is
-not, and it is now the clearest statement of what §8 still owes — a player is
-visible to another player only once players are entities with visuals, and
-neither exists.*
+that did not fit was lost. **All three are fixed above** — the second by §8.4,
+which was the one this note called the clearest statement of what §8 still
+owed.*
 
 ## 9. The mod API
 

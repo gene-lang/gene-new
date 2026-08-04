@@ -121,6 +121,11 @@
                  ^red 250.0 ^green 226.0 ^blue 150.0 ^spread 10.0 ^seed 150.0)
   # §13's chest. Planks with a darker band, so a chest reads as made of wood
   # rather than as another kind of tree.
+  # §8's players. A player is an entity and an entity is drawn from a node's
+  # tile (§8.3), so "what a player looks like" is a tile like anything else —
+  # which is the point: the engine gained no notion of an avatar.
+  (register_tile game "miclone:player" ^kind tile_solid
+                 ^red 216.0 ^green 132.0 ^blue 96.0 ^spread 14.0 ^seed 210.0)
   (register_tile game "miclone:chest_top" ^kind tile_solid
                  ^red 156.0 ^green 118.0 ^blue 70.0 ^spread 20.0 ^seed 190.0)
   (register_tile game "miclone:chest_side" ^kind tile_overlay
@@ -435,6 +440,22 @@
 
 (let chest_slots 8.0)
 
+# §8: "The player is still not an entity, which §8 names as a refactor M8 should
+# do deliberately." This is the mod's half of that refactor, and it is one node.
+#
+# It exists so a player entity has a *tile*, which is all the client needs to
+# draw one (§8.3). The engine learned nothing about avatars: a player is an
+# entity kind, and its picture is a node's picture.
+#
+# It stays an item — the default — because §8.3's draw path is item -> node ->
+# tile, and `^is_item false` would leave a player entity with nothing to look
+# up. Nobody can obtain one: it is not generated, not dropped by anything, and
+# not in a recipe. That is a smaller oddity than a second lookup path in the
+# renderer for one kind of entity.
+(fn setup_player [game : Game] : Nil
+  (register_node game "miclone:player" ^description "Player"
+                 ^tiles ["miclone:player"]))
+
 (fn setup_chest [game : Game] : Nil
   (register_node game "miclone:chest" ^description "Chest"
                  ^opens_form "miclone:chest"
@@ -616,6 +637,7 @@
   (setup_decorations game)
   # Before crafting, because a recipe naming `miclone:chest` needs the item to
   # exist — which is this function's whole reason for being ordered by hand.
+  (setup_player game)
   (setup_chest game)
   (setup_crafting game)
   (setup_forms game)

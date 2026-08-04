@@ -356,6 +356,21 @@ right-click it, fill it, empty it. It also found the thing that was not on
 §13's list — **a craft could not be chosen**, so the chest recipe was
 unreachable behind sticks. See design.md §13.4.
 
+### §8 — two players can see each other
+
+```sh
+gene run server &
+node tools/players_probe.mjs      # two peers; the only check that needs two
+```
+
+§8 called making the player an entity "a refactor M8 should do deliberately",
+and §8.1 called its absence the clearest statement of what §8 still owed. A
+player is now an entity *kind* beside a dropped stack — same table, same id,
+same message — differing in three things: it is drawn bigger, it is never picked
+up, and nobody is sent their own. The avatar is a node the mod registered, so
+the client's existing item → node → tile path draws it and the engine learned
+nothing about avatars. See design.md §8.4.
+
 ### §8 — dropped items, drawn
 
 ```sh

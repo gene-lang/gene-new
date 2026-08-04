@@ -34,11 +34,11 @@
 (import [World new_world] from "../core/loaded.gene")
 (import [SeenEntities new_seen apply_entity seen_rows seen_live seen_alive?
          seen_id seen_x seen_y seen_z seen_item seen_count row_of
-         seen_item_total]
+         seen_item_total seen_kind]
         from "../core/seen.gene")
 (import [EntityRegistry new_entities add_entity_def entity_def_count
          entity_def_named entity_def_of entity_def_step entity_def_activate
-         no_step no_activate
+         no_step no_activate entity_item entity_player
          spawn_item despawn slot_of_id entity_alive? move_entity
          entity_x entity_y entity_z]
         from "../core/entity.gene")
@@ -307,7 +307,8 @@
   (check_f out "and nothing live" (seen_live s) 0.0)
 
   # Add.
-  (check_b out "an announcement is a change" (apply_entity s 7.0 1.0 2.0 3.0 4.0 5.0) true)
+  (check_b out "an announcement is a change"
+            (apply_entity s 7.0 1.0 2.0 3.0 4.0 5.0 entity_item) true)
   (check_f out "one row" (seen_rows s) 1.0)
   (check_f out "one live" (seen_live s) 1.0)
   (check_f out "the id is found" (row_of s 7.0) 0.0)
@@ -318,22 +319,22 @@
   (check_f out "count" (seen_count s 0.0) 5.0)
 
   # Move — the same call, and it must land in the same row rather than adding.
-  (check_b out "a move is a change" (apply_entity s 7.0 9.0 2.0 3.0 4.0 5.0) true)
+  (check_b out "a move is a change" (apply_entity s 7.0 9.0 2.0 3.0 4.0 5.0 entity_item) true)
   (check_f out "and does not add a row" (seen_rows s) 1.0)
   (check_f out "and moved" (seen_x s 0.0) 9.0)
 
   # A repeat of what the client already knows is not a change, which is what
   # lets a renderer skip a rebuild.
   (check_b out "an identical repeat is not a change"
-            (apply_entity s 7.0 9.0 2.0 3.0 4.0 5.0) false)
+            (apply_entity s 7.0 9.0 2.0 3.0 4.0 5.0 entity_item) false)
 
   # A second entity, so the removal below has something to not disturb.
-  (apply_entity s 8.0 20.0 21.0 22.0 4.0 2.0)
+  (apply_entity s 8.0 20.0 21.0 22.0 4.0 2.0 entity_item)
   (check_f out "two live" (seen_live s) 2.0)
   (check_f out "totals sum over rows, not messages" (seen_item_total s 4.0) 7.0)
 
   # Remove — a count of 0 *is* the removal (§10).
-  (check_b out "a count of 0 removes" (apply_entity s 7.0 9.0 2.0 3.0 4.0 0.0) true)
+  (check_b out "a count of 0 removes" (apply_entity s 7.0 9.0 2.0 3.0 4.0 0.0 entity_item) true)
   (check_f out "one live again" (seen_live s) 1.0)
   (check_f out "and the id is gone" (row_of s 7.0) -1.0)
   (check_f out "but the other survived" (row_of s 8.0) 1.0)
@@ -341,13 +342,14 @@
 
   # The freed row is reused rather than the table growing, so a world of
   # constant dropping and picking up does not walk to the ceiling.
-  (apply_entity s 9.0 5.0 5.0 5.0 1.0 1.0)
+  (apply_entity s 9.0 5.0 5.0 5.0 1.0 1.0 entity_player)
+  (check_f out "and the kind is kept" (seen_kind s 0.0) entity_player)
   (check_f out "a freed row is reused" (seen_rows s) 2.0)
   (check_f out "by the new id" (row_of s 9.0) 0.0)
 
   # Removing something never announced is not a change and not an error.
   (check_b out "removing an unknown id does nothing"
-            (apply_entity s 999.0 0.0 0.0 0.0 0.0 0.0) false))
+            (apply_entity s 999.0 0.0 0.0 0.0 0.0 0.0 entity_item) false))
 
 (fn report [] : Str
   (var out : (List Str) [])

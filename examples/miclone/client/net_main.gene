@@ -36,8 +36,9 @@
 (import [count_faces build_mesh put_cube faces_per_cube item_cube_half]
         from "../core/mesh.gene")
 (import [SeenEntities new_seen apply_entity seen_rows seen_alive?
-         seen_x seen_y seen_z seen_item seen_item_total seen_live]
+         seen_x seen_y seen_z seen_item seen_item_total seen_live seen_kind]
         from "../core/seen.gene")
+(import [entity_player] from "../core/entity.gene")
 (import [Registry new_registry id_of registered_count name_of solid?
          tile_top_of opens_form_of]
         from "../core/registry.gene")
@@ -78,6 +79,7 @@
          size_craft encode_craft craft_any
          size_input encode_input msg_entity
          new_entity_msg decode_entity ent_id ent_x ent_y ent_z ent_item ent_count
+         ent_kind
          protocol_version]
         from "../core/protocol.gene")
 
@@ -270,8 +272,13 @@
             (var ez (seen_z seen j))
             (var light (light_at world ($math/floor ex)
                                  ($math/floor ey) ($math/floor ez)))
+            # §8's players are the same cube at a different size, and lifted to
+            # standing height. A dropped stack is a quarter of a node; a player
+            # is most of one, so the two are never confused at a glance.
+            (var is_player (== (seen_kind seen j) entity_player))
             (set face (put_cube verts idx face (tile_top_of reg node)
-                                light half ex ey ez))))
+                                light (if is_player 0.4 half)
+                                ex (if is_player (+ ey 0.4) ey) ez))))
         (set j (+ j 1.0)))
       (upload_chunk gl ent_vao ent_vbo ent_ebo verts idx))))
 
@@ -418,7 +425,7 @@
       (if_yes (apply_entity seen (ent ~ get ent_id)
                             (ent ~ get ent_x) (ent ~ get ent_y)
                             (ent ~ get ent_z) (ent ~ get ent_item)
-                            (ent ~ get ent_count))
+                            (ent ~ get ent_count) (ent ~ get ent_kind))
         (set ent_dirty true)))
 
     (if_yes (== kind msg_inventory)

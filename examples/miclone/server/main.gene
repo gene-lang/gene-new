@@ -76,6 +76,7 @@
 (import [EntityRegistry entity_slots entity_alive? entity_id entity_item_of
          entity_count entity_x entity_y entity_z spawn_item despawn
          within_pickup? live_entities slot_of_id
+         spawn_player entity_is_player? entity_kind entity_player move_entity
          entity_def_step entity_def_of entity_def_activate entity_def_named]
         from "../core/entity.gene")
 
@@ -83,7 +84,8 @@
          slots_of]
         from "../core/inventory.gene")
 (import [drop_item drop_count] from "../core/drops.gene")
-(import [ItemRegistry item_node placeable_item?] from "../core/item.gene")
+(import [ItemRegistry item_node placeable_item? item_of_node]
+        from "../core/item.gene")
 (import [new_cursor] from "../core/wire.gene")
 (import [message_kind msg_input msg_dig msg_place msg_request_blocks msg_craft
          hello_size encode_hello
@@ -351,7 +353,8 @@
   (encode_entity b c (entity_id e slot)
                  (entity_x e slot) (entity_y e slot) (entity_z e slot)
                  (entity_item_of e slot)
-                 (if gone 0.0 (entity_count e slot)))
+                 (if gone 0.0 (entity_count e slot))
+                 (entity_kind e slot))
   (ws_send conn b/~to_bytes))
 
 (fn broadcast_entity [e : EntityRegistry slot : F64 gone : Bool] : Nil
@@ -419,6 +422,32 @@
     (set i (+ i 1.0)))
   (set connections keep_conns)
   (set connection_ids keep_ids))
+
+# Everyone but one connection. §8's players need it and dropped items do not: a
+# player already knows where they are standing, and sending them their own
+# avatar would put a cube in front of their own camera.
+(fn broadcast_entity_except [e : EntityRegistry slot : F64 gone : Bool
+                             skip : F64] : Nil
+  (var c 0.0)
+  (var n connections/~size)
+  (while (< c n)
+    (if_yes (!= connection_ids/%c skip)
+      (var conn connections/%c)
+      (send_entity conn e slot gone))
+    (set c (+ c 1.0))))
+
+# Every player entity that already exists, sent to a client that just joined.
+# Without this a second player sees the first only once the first *moves* —
+# which looks like an empty world for as long as nobody walks.
+(fn send_existing_players [conn e : EntityRegistry skip : F64] : Nil
+  (var i 0.0)
+  (var slots (entity_slots e))
+  (while (< i slots)
+    (if_yes (&& (entity_alive? e i) (entity_is_player? e i))
+      (if_yes (!= (entity_id e i) skip)
+        (send_entity conn e i false)))
+    (set i (+ i 1.0))))
+
 
 # Seed the check queue around a position that just changed. The node above is
 # what matters for falling and is why this is not the six neighbours: a node
@@ -630,6 +659,12 @@
   (var items game/items)
   (var air (id_of reg "air"))
 
+  # What a player is drawn as. §8.3's path is item -> node -> tile, so this is
+  # the item for the mod's player node — and it is a lookup rather than a
+  # constant because §2's rule holds here too: a mod names content and the
+  # engine numbers it.
+  (var player_visual (item_of_node items (id_of reg "miclone:player")))
+
   (var root (get_env Env "GENE_MICLONE_WORLD" default_world_root))
   (var fresh (! (world_exists? root)))
   (var store (open_world root))
@@ -722,6 +757,11 @@
       # it read as closed for every chest that exists. A position has no value
       # outside its own range to spare; a name does.
       (var open_name ($cell ""))
+      # §8's refactor: this connection's player, as an entity in the same table
+      # as a dropped cobble. `-1` until the handshake spawns it — a *slot*, not
+      # an id, because every accessor here takes a slot and a player's slot is
+      # stable for as long as the connection is.
+      (var my_slot ($cell -1.0))
       # This connection's name for itself, taken before the handshake so that
       # `^on_open` and `^on_close` close over the same one. It is what
       # `drop_connection` matches on — see the note beside `connections` for why
@@ -739,9 +779,31 @@
           (send_forms conn game/forms)
           (send_inventory conn inv)
           (add_connection conn my_id)
+          # The player, as an entity. Spawned *after* `add_connection` so the
+          # broadcast below reaches the others and not a list this client is
+          # missing from — and the new client is told about everyone already
+          # here, because otherwise a second player sees the first only once the
+          # first happens to move.
+          (var pid (spawn_player game/entities player_visual
+                                 (spawn_at ~ get 0.0) (spawn_at ~ get 1.0)
+                                 (spawn_at ~ get 2.0)))
+          (if_yes (>= pid 0.0)
+            (var slot (slot_of_id game/entities pid))
+            (my_slot ~ set slot)
+            (send_existing_players conn game/entities pid)
+            (broadcast_entity_except game/entities slot false my_id))
           ($println "  client joined"))
 
         ^on_close (fn [conn]
+          # The avatar goes with the connection. A count of 0 is the removal
+          # (§10), and without it a disconnected player stands in the world
+          # forever — the thing §8 said entities were for, failing in the other
+          # direction.
+          (var slot (my_slot ~ get))
+          (if_yes (>= slot 0.0)
+            (broadcast_entity_except game/entities slot true my_id)
+            (despawn game/entities slot)
+            (my_slot ~ set -1.0))
           (drop_connection my_id)
           ($println "  client left"))
 
@@ -938,11 +1000,26 @@
                     (var px (input ~ get in_x))
                     (var py (input ~ get in_y))
                     (var pz (input ~ get in_z))
+                    # §8's player, moved. The position already travelled in this
+                    # message for §8's pickup (§8.1) — it is the same trust
+                    # decision and now it has a second use, which is what makes
+                    # a player visible to another player at all.
+                    (var mine (my_slot ~ get))
+                    (if_yes (>= mine 0.0)
+                      (var was_x (entity_x game/entities mine))
+                      (var was_z (entity_z game/entities mine))
+                      (move_entity game/entities mine px py pz)
+                      # Only when it actually moved. At one input a second a
+                      # still player would otherwise be a message a second per
+                      # player per player.
+                      (if_yes (|| (!= was_x px) (!= was_z pz))
+                        (broadcast_entity_except game/entities mine false my_id)))
                     (var slots (entity_slots game/entities))
                     (var i 0.0)
                     (while (< i slots)
-                      (if_yes (&& (entity_alive? game/entities i)
-                                  (within_pickup? game/entities i px py pz))
+                      (if_yes (&& (! (entity_is_player? game/entities i))
+                                  (&& (entity_alive? game/entities i)
+                                      (within_pickup? game/entities i px py pz)))
                         (var it (entity_item_of game/entities i))
                         (var n (entity_count game/entities i))
                         (var left (add inv items it n))
