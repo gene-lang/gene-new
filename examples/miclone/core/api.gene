@@ -66,6 +66,9 @@
 (import [DecorRegistry new_decors add_decor] from "./decor.gene")
 (import [CraftRegistry new_crafts add_recipe] from "./craft.gene")
 (import [EntityRegistry new_entities] from "./entity.gene")
+(import [FormRegistry new_forms add_form add_element form_count
+         el_label el_item el_box]
+        from "./formspec.gene")
 (import [World node_at] from "./loaded.gene")
 (import [GroupRegistry new_groups intern_group group_named set_rating rating_of]
         from "./groups.gene")
@@ -89,6 +92,7 @@
           ^decors DecorRegistry
           ^crafts CraftRegistry
           ^entities EntityRegistry
+          ^forms  FormRegistry
           ^biomes BiomeRegistry
           ^ores   OreRegistry}
 
@@ -102,6 +106,7 @@
     (set! self/decors (new_decors))
     (set! self/crafts (new_crafts))
     (set! self/entities (new_entities))
+    (set! self/forms (new_forms))
     (set! self/biomes (new BiomeRegistry))
     (set! self/ores (new OreRegistry))))
 
@@ -285,6 +290,41 @@
   (if_yes (== id content_unknown)
     (fail (new UnknownNode $"${name} is not a registered node")))
   id)
+
+# --- forms -------------------------------------------------------------------
+#
+# §13's UI, as data. `register_form` opens one and `add_*` fill it; elements go
+# to the form most recently registered, which keeps a mod writing a block
+# without the API needing a builder object.
+#
+# The grid is in character cells. A mod says its form is 8x6 and puts a label at
+# (1,1); the client multiplies by whatever a cell is on its display, because
+# pixels in a mod are a mod deciding the player's font size.
+
+(fn register_form [game : Game name : Str
+                   ^title : Str
+                   ^cols : F64
+                   ^rows : F64] : F64
+  (add_form game/forms name title cols rows))
+
+(fn form_label [game : Game
+                ^at : (List F64)
+                ^text : Str
+                ^width : F64?] : F64
+  (add_element game/forms (- (form_count game/forms) 1.0) el_label
+               (nth_num at 0.0) (nth_num at 1.0) (?? width 1.0) 1.0 text))
+
+(fn form_box [game : Game ^at : (List F64) ^size : (List F64)] : F64
+  (add_element game/forms (- (form_count game/forms) 1.0) el_box
+               (nth_num at 0.0) (nth_num at 1.0)
+               (nth_num size 0.0) (nth_num size 1.0) ""))
+
+# An item slot. `^shows` names an item so the client can draw its icon; the
+# *count* is runtime state and is not here — a form is a layout, and what is in
+# a slot changes without the layout changing.
+(fn form_item [game : Game ^at : (List F64) ^shows : Str] : F64
+  (add_element game/forms (- (form_count game/forms) 1.0) el_item
+               (nth_num at 0.0) (nth_num at 1.0) 1.0 1.0 shows))
 
 # --- crafting ----------------------------------------------------------------
 #

@@ -1242,13 +1242,22 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | ~~M5~~ | **Player: physics, dig, place, inventory — done** | a playable singleplayer creative-ish loop; §1.1, §4.2, §7, §7.1 | — |
 | ~~M6~~ | **Client/server split over WebSocket — done** | the same game, client and server as separate processes; §10, §10.1 | backlog 7 (browser half landed) |
 | ~~M7~~ | **The mod API — API done, loading not** | the game is `mods/default`, defined through §9's surface and drawn from recipes on the wire; §9.1 | — |
-| M8 | Entities, crafting, UI, sound | a small but complete game | backlog 9 |
+| ~~M8~~ | **Entities, crafting, UI, sound — mostly** | §12's tick, trees, crafting, dropped items, sound, and a formspec; §8.1 names what entities still lack | backlog 9 (landed) |
 | M9 | Native shell | the same game outside a browser | backlog 7, 8 |
 
 M7 is the point of the project. Everything before it is the engine a mod API
 needs in order to be worth having, and M8's "small but complete game" should be
 built entirely through M7's API — if it needs an engine change, the API is
 wrong.
+
+M8 shipped in six slices and is the first milestone that is *partly* done
+rather than done or not: §12's tick (§12.2), §3's decorations (§3.6), crafting
+(§2.3), dropped items (§8.1), sound (§13.2), and a formspec (§13.3). What it
+does not have is entity **callbacks** — blocked on §D7.17, the same gap that
+makes an ABM name an engine behaviour rather than supply one — entity physics,
+entity rendering, and §13's **input**, so no chest and no furnace. §8.1 and
+§13.3 say which and why. A player still cannot see another player, which is the
+clearest statement of what is left.
 
 M7 shipped in two halves and only one of them is done (§9.1). The **API** is
 built: the game is a mod, registration goes through a surface, definitions are
@@ -1889,7 +1898,18 @@ change rather than a debugging session about a tile drawn over another one.
 
 Leaves are also the first node in this game that is **drawn and not opaque**,
 which is the case §5's two-question face rule was written for and nothing had
-exercised.
+exercised — and exercising it cost more than expected. The world went from
+**62,395 faces to 208,608**, 3.3x, because every leaf-to-leaf face is now
+emitted: the rule says a face exists when its owner is drawn and its neighbour
+is not opaque, and a canopy is a hundred leaves all satisfying both halves
+against each other.
+
+That is the rule behaving correctly and the content asking for something
+expensive. It stays within budget — `tools/mesh_bench.mjs` reports a worst chunk
+of 1.02 ms against 8 ms — so it ships measured rather than fixed, and the fix
+when it is wanted is upstream's: a node may decline to draw a face against its
+own kind, which is one more registry column and turns a canopy back into a
+shell.
 
 A decoration is a trunk and a leaf ball. Upstream's are schematics — arbitrary
 node arrays with rotation and force-placement — and that is the right end state;
@@ -3173,6 +3193,41 @@ a native shell will have to reimplement (a cost §D8's M9 owns).
 
 The HUD (hotbar, health, breath, crosshair) is DOM as well, except the
 crosshair.
+
+### 13.3 M8 — the formspec, and the claim it was written to test
+
+§13 said a formspec of Gene data is "composable, inspectable, and validated at
+registration" against a string DSL that is none of those, and §13.1 recorded
+that as an untested prediction. `core/formspec.gene` is the smallest thing that
+tests it, and **the test is not that a panel appears** — it is that a wrong form
+fails at registration with the form's name and the numbers, which is the one
+adjective a string DSL cannot have. There is nothing in
+`size[8,6]label[99,99;x]` that fails until someone looks at the screen.
+
+The vocabulary is closed — label, item, box — and that is the point rather than
+a limitation. Upstream's grammar is open, a mod emits whatever text it likes and
+the client parses it, and that openness is where the escaping bugs live. Here an
+element the client cannot draw is one the registry refuses to hold.
+
+The validation exists twice: `add_element` raises, which is §13's promise, and
+`element_fits?` asks the same question without raising — which is what a spec
+can assert on both backends and what a tool inspecting a mod's forms would want.
+The predicate came from a measurement, not a design: the VM did not match
+`catch (Error ^message m)` against a custom error type that implements `Error`,
+and rather than debug that inside a game milestone the check became a question.
+**That is an open divergence and it is not recorded as a §D7 item because it was
+not narrowed down** — the raise happens and is correct on both backends; only
+the catch was not verified.
+
+`mods/default` declares a crafting panel and `client/main.gene` renders it: the
+client walks a form it has never seen the shape of, and the smoke test asserts
+the rendered text contains a word that appears nowhere in the client. That is
+the composability claim, checked.
+
+**No input.** A form here is read-only — no button that sends a message, no
+field to type into — which covers the crafting panel M8 needs and does not cover
+a chest. Input needs a message per element kind and a server that can attribute
+one to a form it opened, and it wants the container that would justify it.
 
 ### 13.2 M8 — sound
 

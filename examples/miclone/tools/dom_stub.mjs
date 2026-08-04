@@ -20,7 +20,9 @@
 // of `main` that is not a draw call.
 
 const listeners = new Map();       // "id:type" -> [fn]
-const texts = new Map();           // element id -> textContent
+// Exported so a harness can read an element the client writes but does not own
+// a handle to — the formspec panel is written by id and never read back.
+export const texts = new Map();    // element id -> textContent
 
 function element(id) {
   return {

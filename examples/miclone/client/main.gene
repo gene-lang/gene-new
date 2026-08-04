@@ -39,6 +39,10 @@
         from "./render.gene")
 (import [paint] from "./atlas.gene")
 (import [new_sound play_dig play_place play_craft] from "./sound.gene")
+(import [FormRegistry form_named form_title form_cols form_rows form_first
+         form_len element_kind element_x element_y element_w element_h
+         element_text el_label el_item el_box]
+        from "../core/formspec.gene")
 (import [forward_x forward_y forward_z] from "../core/vec.gene")
 (import [new_player step player_x player_y player_z player_eye_y
          on_ground? in_liquid? box_overlaps_node? find_spawn]
@@ -135,6 +139,10 @@
   (var game (load_mods))
 
   (var sfx (new_sound))
+  # §13's form, rendered as DOM over the canvas. Built once — a form is a
+  # layout and does not change — and shown or hidden with a key.
+  (var forms game/forms)
+  (var panel_open false)
   (var atlas_canvas ($dom/create_element "canvas"))
   ($canvas/set_size atlas_canvas 128.0 128.0)
   (paint ($canvas/context atlas_canvas) game/tiles)
@@ -471,7 +479,13 @@
     # Fly is a toggle rather than a held key, because it is a mode: §7's step
     # takes it as an input and changes what gravity means, and a mode you have
     # to hold down is one you cannot look around in.
-    (if_yes (== k "f") (set flying (! flying)))))
+    (if_yes (== k "f") (set flying (! flying)))
+    # §13's panel. One key, and the form it draws is the mod's (`setup_forms`)
+    # rather than anything this client knows the shape of.
+    (if_yes (== k "e")
+      (set panel_open (! panel_open))
+      ($dom/set_text ($dom/element "panel")
+        (if panel_open (render_form forms "miclone:crafting") "")))))
 
   ($dom/add_event_listener ($dom/window) "keyup" (fn [ev : Any] : Void
     (var k ($event/key ev))
@@ -584,3 +598,37 @@
 
   ($canvas/set_size stage ($dom/inner_width) ($dom/inner_height))
   ($frame/request frame))
+
+# A form as text, which is what a DOM overlay of a character grid amounts to at
+# this size. §13 says "rendered by the client as DOM overlaying the canvas"; a
+# grid of positioned divs is the same walk with more style attributes, and the
+# walk is the part that proves the form is data — this client has never seen
+# the mod that declared it.
+(fn render_form [f : FormRegistry name : Str] : Str
+  (var id (form_named f name))
+  (if (< id 0.0) ""
+    (do
+      (var cols (form_cols f id))
+      (var rows (form_rows f id))
+      (var out : (List Str) [])
+      (out ~ push! (form_title f id))
+      # One line per grid row, elements placed into it by column. Text rather
+      # than absolute positioning keeps this readable in a HUD that is already
+      # a `<div>` of text.
+      (var r 0.0)
+      (while (< r rows)
+        (var line "")
+        (var e (form_first f id))
+        (var last (+ e (form_len f id)))
+        (while (< e last)
+          (if_yes (&& (== (element_y f e) r) (!= (element_kind f e) el_box))
+            (var pad "")
+            (var c 0.0)
+            (while (< c (element_x f e))
+              (set pad $"${pad}  ")
+              (set c (+ c 1.0)))
+            (set line $"${line}${pad}$(element_text f e)"))
+          (set e (+ e 1.0)))
+        (if_yes (!= line "") (out ~ push! line))
+        (set r (+ r 1.0)))
+      ($str/join out "\n"))))

@@ -1,0 +1,182 @@
+# Formspec — design.md §13, as Gene data rather than a string DSL.
+#
+# §13's claim: Luanti builds UI by concatenating strings, "which is why escaping
+# bugs and layout bugs are common, and why it cannot be inspected or composed",
+# and ours should be Gene nodes — "composable, inspectable, and validated at
+# registration".
+#
+# That claim was a prediction until M8 and §13.1 said so. This is the smallest
+# thing that tests it, and the test is not that a panel appears: it is whether a
+# *wrong* form fails at registration with a position rather than at the first
+# click, which is the only one of the four adjectives a string DSL cannot have.
+#
+# ## The vocabulary is closed, and that is the point
+#
+# A formspec is a list of elements, each a kind and a few numbers and strings.
+# Upstream's grammar is open — a mod emits whatever text it likes and the client
+# parses it — and that openness is exactly where the escaping bugs live. Here the
+# kinds are an enumeration, so an element the client cannot draw is one the
+# registry refuses to hold.
+#
+# The layout is a grid in character cells, as upstream: a form says it is 8x6
+# and an element sits at (2,3), and the client multiplies by whatever a cell is
+# on its display. Pixels in a mod would be a mod deciding the player's font size.
+#
+# ## What this is not
+#
+# There is no *input* — no button that sends a message, no field a player types
+# into. A form here is read-only, which covers the crafting panel M8 needs and
+# does not cover a chest. Input needs a message per element kind and a server
+# that can attribute one to a form it opened, which is §13's second half and
+# wants the container that would justify it.
+
+(mod formspec ^profile web)
+
+(let max_forms 32.0)
+(let max_elements 256.0)
+
+# The element kinds a client knows how to draw. Numbered like every other
+# enumeration here, and closed for the reason above.
+(let el_label 0.0)      # static text
+(let el_item 1.0)       # an item stack: icon plus count
+(let el_box 2.0)        # a filled rectangle, for grouping
+
+(type FormRegistry
+  ^props {^names    (List Str)
+          ^title    (List Str)
+          ^cols     (Buffer F32)
+          ^rows     (Buffer F32)
+          ^first    (Buffer F32)   # index of this form's first element
+          ^len      (Buffer F32)
+          # The elements, packed across all forms.
+          ^kind     (Buffer F32)
+          ^x        (Buffer F32)
+          ^y        (Buffer F32)
+          ^w        (Buffer F32)
+          ^h        (Buffer F32)
+          ^text     (List Str)
+          ^counts   (Buffer F32)}  # two cells: forms, elements
+
+  (ctor []
+    (set! self/names [])
+    (set! self/title [])
+    (set! self/cols ($buffer F32 max_forms))
+    (set! self/rows ($buffer F32 max_forms))
+    (set! self/first ($buffer F32 max_forms))
+    (set! self/len ($buffer F32 max_forms))
+    (set! self/kind ($buffer F32 max_elements))
+    (set! self/x ($buffer F32 max_elements))
+    (set! self/y ($buffer F32 max_elements))
+    (set! self/w ($buffer F32 max_elements))
+    (set! self/h ($buffer F32 max_elements))
+    (set! self/text [])
+    (set! self/counts ($buffer F32 2.0))))
+
+(let count_forms 0.0)
+(let count_elements 1.0)
+
+(fn new_forms [] : FormRegistry (new FormRegistry))
+
+(fn form_count [f : FormRegistry] : F64 (f/counts ~ get count_forms))
+(fn element_count [f : FormRegistry] : F64 (f/counts ~ get count_elements))
+
+(type FormError
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for FormError)
+
+# --- registration ------------------------------------------------------------
+
+(fn add_form [f : FormRegistry name : Str title : Str
+              cols : F64 rows : F64] : F64
+  (var id (form_count f))
+  (if_yes (>= id max_forms)
+    (fail (new FormError $"form registry is full at ${max_forms} forms")))
+  (if_yes (|| (<= cols 0.0) (<= rows 0.0))
+    (fail (new FormError
+               $"form ${name} is $($to_int cols)x$($to_int rows); a form needs a positive size")))
+  (f/names ~ push! name)
+  (f/title ~ push! title)
+  (f/cols ~ set! id cols)
+  (f/rows ~ set! id rows)
+  (f/first ~ set! id (element_count f))
+  (f/len ~ set! id 0.0)
+  (f/counts ~ set! count_forms (+ id 1.0))
+  id)
+
+# The validation, as a question. `add_element` raises on a bad element — that is
+# §13's "fails at registration with a position" — and this is the same test
+# answerable without raising, which is what a spec can assert on both backends
+# and what a tool inspecting a mod's forms would want.
+(fn element_fits? [f : FormRegistry form : F64 kind : F64
+                   x : F64 y : F64 w : F64 h : F64] : Bool
+  (&& (&& (>= kind el_label) (<= kind el_box))
+      (&& (&& (>= x 0.0) (<= (+ x w) (f/cols ~ get form)))
+          (&& (>= y 0.0) (<= (+ y h) (f/rows ~ get form))))))
+
+# **The validation §13 promised.** An element outside its form's grid is a
+# layout bug, and it is caught here — with the form's name and the numbers —
+# rather than drawn off-screen or clipped silently. That is the adjective a
+# string DSL cannot have: there is nothing in `size[8,9]label[99,99;hi]` that
+# fails until someone looks at the screen.
+(fn add_element [f : FormRegistry form : F64 kind : F64
+                 x : F64 y : F64 w : F64 h : F64 text : Str] : F64
+  (var n (element_count f))
+  (if_yes (>= n max_elements)
+    (fail (new FormError $"form registry is full at ${max_elements} elements")))
+  (if_yes (!= form (- (form_count f) 1.0))
+    (fail (new FormError
+               "elements must be added to the form most recently registered")))
+  (var names f/names)
+  (var i form)
+  (if_yes (|| (> kind el_box) (< kind el_label))
+    (fail (new FormError $"unknown form element kind $($to_int kind)")))
+  (if_yes (|| (< x 0.0) (> (+ x w) (f/cols ~ get form)))
+    (fail (new FormError
+               $"element at column $($to_int x) width $($to_int w) leaves form ${names/%i}, which is $($to_int (f/cols ~ get form)) wide")))
+  (if_yes (|| (< y 0.0) (> (+ y h) (f/rows ~ get form)))
+    (fail (new FormError
+               $"element at row $($to_int y) height $($to_int h) leaves form ${names/%i}, which is $($to_int (f/rows ~ get form)) tall")))
+  (f/kind ~ set! n kind)
+  (f/x ~ set! n x)
+  (f/y ~ set! n y)
+  (f/w ~ set! n w)
+  (f/h ~ set! n h)
+  (f/text ~ push! text)
+  (f/counts ~ set! count_elements (+ n 1.0))
+  (f/len ~ set! form (+ (f/len ~ get form) 1.0))
+  n)
+
+# --- reading -----------------------------------------------------------------
+
+(fn form_named [f : FormRegistry name : Str] : F64
+  (var names f/names)
+  (var found -1.0)
+  (var i 0.0)
+  (var n (form_count f))
+  (while (< i n)
+    (if_yes (== names/%i name) (set found i) (set i n))
+    (set i (+ i 1.0)))
+  found)
+
+(fn form_title [f : FormRegistry id : F64] : Str
+  (var t f/title)
+  (var i id)
+  t/%i)
+
+(fn form_cols [f : FormRegistry id : F64] : F64 (f/cols ~ get id))
+(fn form_rows [f : FormRegistry id : F64] : F64 (f/rows ~ get id))
+(fn form_first [f : FormRegistry id : F64] : F64 (f/first ~ get id))
+(fn form_len [f : FormRegistry id : F64] : F64 (f/len ~ get id))
+
+(fn element_kind [f : FormRegistry i : F64] : F64 (f/kind ~ get i))
+(fn element_x [f : FormRegistry i : F64] : F64 (f/x ~ get i))
+(fn element_y [f : FormRegistry i : F64] : F64 (f/y ~ get i))
+(fn element_w [f : FormRegistry i : F64] : F64 (f/w ~ get i))
+(fn element_h [f : FormRegistry i : F64] : F64 (f/h ~ get i))
+
+(fn element_text [f : FormRegistry i : F64] : Str
+  (var t f/text)
+  (var j i)
+  t/%j)

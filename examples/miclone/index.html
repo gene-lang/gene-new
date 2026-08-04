@@ -24,6 +24,12 @@
   }
   #aim::before { left: 8px; top: 0; width: 2px; height: 18px; }
   #aim::after { top: 8px; left: 0; height: 2px; width: 18px; }
+  #panel {
+    position: fixed; left: 50%; top: 20%; transform: translateX(-50%);
+    white-space: pre; background: rgba(12,20,30,.86); color: #e8eef6;
+    padding: 14px 20px; border-radius: 6px; font: 13px ui-monospace, monospace;
+    pointer-events: none;
+  }
   #hotbar {
     position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
     font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -41,6 +47,7 @@
 <div id="hud">building world…</div>
 <div id="aim"></div>
 <div id="hotbar"></div>
+<div id="panel"></div>
 <div id="help">drag to look · W A S D to walk · space to jump · shift to sneak · F to fly<br>click to dig · right-click to place · 1-8 or the wheel to pick a slot</div>
 <script type="module">
   import { main } from "./dist/main.mjs";

@@ -13,7 +13,7 @@
 // networked client's equivalent is `tools/net_client_smoke.mjs`, which stubs
 // the same DOM and uses a real socket against a real server.
 
-import { hud, hotbar, fire, tick, key, click, lookDown } from "./dom_stub.mjs";
+import { hud, hotbar, texts, fire, tick, key, click, lookDown } from "./dom_stub.mjs";
 
 const { main } = await import("../dist/main.mjs");
 const t0 = Date.now();
@@ -87,6 +87,19 @@ fire("window", "mousemove", { movementX: 60, movementY: 0 });
 fire("window", "mouseup", { clientX: 480, clientY: 300, button: 0 });
 tick(4);
 say(hotbar.textContent === beforeDrag, "a drag turns the view without digging");
+
+// §13's formspec, rendered from a form the mod declared and this client has
+// never seen the shape of. The check is that the text came from the *mod* —
+// nothing in `client/main.gene` contains the word "planks".
+const panelBefore = texts.get("panel") ?? "";
+key("e"); key("e", true); tick(4);
+const panelAfter = texts.get("panel") ?? "";
+say(panelBefore === "" && panelAfter.includes("Crafting"),
+    "E opens the mod's crafting form", panelAfter.split("\n")[0] ?? "");
+say(panelAfter.includes("planks"),
+    "and its text is the mod's, not the client's");
+key("e"); key("e", true); tick(4);
+say((texts.get("panel") ?? "") === "", "and E closes it again");
 
 console.log("");
 console.log(`  world built and 280 frames ran in ${buildMs} ms of wall clock`);

@@ -3,8 +3,9 @@
 A voxel game engine with [Luanti](https://github.com/luanti-org/luanti)'s
 architecture, written in Gene, whose mod language is Gene.
 
-**Status: M0 through M7's API — a generated, lit world you can walk around in,
-dig, carry, and build with, running as two processes, and defined by a mod.**
+**Status: M0 through M8, mostly — a generated, lit world you can walk around in,
+dig, carry, craft with, and build with, running as two processes, defined by a
+mod, and changing on its own.**
 The server owns the world and answers a WebSocket; the browser client is handed
 it and plays it, sharing every rule through `core/` (§1.1, §4.2, §7, §7.1, §10).
 The game itself is `mods/default`, registered through §9's API — and a client
@@ -102,6 +103,7 @@ core/       portable Gene — compiles for the VM and the web profile
   decor.gene    §3 stage 5: trees, placed by a pure function of the column (M8)
   craft.gene    §9's recipes — shapeless, because a grid needs §13 (M8)
   entity.gene   §8's dropped items: what does not fit is no longer lost (M8)
+  formspec.gene §13's UI as data — validated at registration, not on screen (M8)
 mods/       the game, as mods (§9)
   default/    every node, tile, drop, biome and ore miclone has
 server/     VM only: the on-disk block format, the SQLite world store (§11),

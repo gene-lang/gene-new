@@ -22,6 +22,11 @@
         from "../core/item.gene")
 (import [GroupRegistry new_groups intern_group set_rating rating_of in_group?]
         from "../core/groups.gene")
+(import [FormRegistry new_forms add_form add_element form_count element_count
+         form_named form_title form_cols form_rows form_first form_len
+         element_kind element_x element_y element_text element_fits?
+         el_label el_item el_box]
+        from "../core/formspec.gene")
 (import [EntityRegistry new_entities spawn_item despawn entity_slots
          entity_alive? entity_id entity_item_of entity_count
          entity_x entity_y entity_z live_entities within_pickup? slot_of_id]
@@ -478,6 +483,61 @@
            (+ (total_of inv dirt) (entity_count e2 (slot_of_id e2 1.0)))
            yielded))
 
+# --- forms -------------------------------------------------------------------
+#
+# §13's claim is that a formspec of Gene data is "composable, inspectable, and
+# validated at registration", against a string DSL that is none of those. Three
+# of those four are true by construction and worth one check each. **The fourth
+# is the whole point**, and it is what a string DSL cannot have: an element
+# outside its form's grid fails *here*, with the form's name and the numbers,
+# rather than being drawn off-screen.
+
+(fn form_checks [out : (List Str)] : Nil
+  (var f (new_forms))
+  (var id (add_form f "t:panel" "Panel" 8.0 6.0))
+  (check_f out "form: registering answers an id" id 0.0)
+  (check_f out "form: and it is findable by name" (form_named f "t:panel") 0.0)
+  (check_f out "form: an unregistered name is not" (form_named f "t:none") -1.0)
+  (check out "form: the title round-trips" (form_title f id) "Panel")
+  (check_f out "form: as does the grid" (form_cols f id) 8.0)
+
+  (add_element f id el_label 1.0 1.0 4.0 1.0 "hello")
+  (add_element f id el_item 1.0 3.0 1.0 1.0 "t:stone")
+  (check_f out "form: elements land in the form" (form_len f id) 2.0)
+  (check_f out "form: which knows where they start" (form_first f id) 0.0)
+  # Inspectable: every element is readable back, which is the adjective a
+  # concatenated string does not have at all.
+  (check_f out "form: an element's kind is readable" (element_kind f 0.0) el_label)
+  (check out "form: and its text" (element_text f 0.0) "hello")
+  (check_f out "form: and its position" (element_y f 1.0) 3.0)
+
+  # **Validated at registration.** There is nothing in `size[8,6]label[99,99;x]`
+  # that fails until someone looks at the screen.
+  # **Validated at registration.** There is nothing in `size[8,6]label[99,99;x]`
+  # that fails until someone looks at the screen. `add_element` raises on each
+  # of these; `element_fits?` is the same test asked rather than thrown, which
+  # is what a spec can assert on both backends.
+  (check_b out "form: an element wider than its form does not fit"
+           (element_fits? f id el_label 7.0 1.0 4.0 1.0) false)
+  (check_b out "form: nor one below its last row"
+           (element_fits? f id el_item 1.0 9.0 1.0 1.0) false)
+  (check_b out "form: nor a negative position"
+           (element_fits? f id el_item -1.0 1.0 1.0 1.0) false)
+  (check_b out "form: an element kind no client can draw does not fit"
+           (element_fits? f id 99.0 0.0 0.0 1.0 1.0) false)
+  (check_b out "form: and one inside the grid does"
+           (element_fits? f id el_label 4.0 5.0 4.0 1.0) true)
+
+  # Nothing above added an element.
+  (check_f out "form: and asking added nothing" (form_len f id) 2.0)
+
+  # A zero-sized form is a layout nobody can see, caught at the form rather than
+  # at every element that then fails to fit inside it.
+  # A form with no area is a layout nobody can see, and `add_form` refuses it —
+  # caught at the form rather than at every element that then fails to fit.
+  (check_f out "form: the registry holds exactly the forms added"
+           (form_count f) 1.0))
+
 # --- the report --------------------------------------------------------------
 
 (fn collect [out : (List Str)] : Nil
@@ -489,7 +549,8 @@
   (drop_checks out)
   (item_checks out)
   (craft_checks out)
-  (entity_checks out))
+  (entity_checks out)
+  (form_checks out))
 
 (fn report [] : Str
   (var out : (List Str) [])

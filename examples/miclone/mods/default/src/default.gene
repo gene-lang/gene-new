@@ -39,7 +39,8 @@
          register_tile register_node register_drop_rule
          register_group register_item register_tool_cap
          register_biome_def register_ore_def
-         register_abm register_decoration register_craft]
+         register_abm register_decoration register_craft
+         register_form form_label form_box form_item]
         from "../../../core/api.gene")
 (import [abm_fall] from "../../../core/abm.gene")
 (import [tile_solid tile_ore tile_overlay] from "../../../core/tiles.gene")
@@ -355,6 +356,29 @@
   (register_craft game ^makes "miclone:steel_pickaxe"
                   ^from ["miclone:iron_lump" "miclone:stick"] ^counts [3.0 2.0]))
 
+# --- the crafting panel ------------------------------------------------------
+#
+# §13's formspec, and the first UI in this game that a mod declares rather than
+# the client hardcoding. It is read-only — a layout, not a dialogue — which is
+# what the crafting key needs and is why no chest exists yet (§13.3).
+#
+# What it does *not* say is what you can currently make: that is runtime state
+# and changes every time the hotbar does, while this is a layout and does not.
+
+(fn setup_forms [game : Game] : Nil
+  (register_form game "miclone:crafting" ^title "Crafting" ^cols 12.0 ^rows 6.0)
+  (form_box game ^at [0.0 0.0] ^size [12.0 6.0])
+  (form_label game ^at [1.0 0.0] ^text "press C to craft what you hold"
+              ^width 10.0)
+  (form_label game ^at [1.0 1.0] ^text "wood -> planks -> sticks" ^width 10.0)
+  (form_item game ^at [1.0 2.0] ^shows "miclone:tree")
+  (form_item game ^at [3.0 2.0] ^shows "miclone:plank")
+  (form_item game ^at [5.0 2.0] ^shows "miclone:stick")
+  (form_label game ^at [1.0 3.0] ^text "3 planks + 2 sticks -> pickaxe"
+              ^width 10.0)
+  (form_item game ^at [1.0 4.0] ^shows "miclone:wood_pickaxe")
+  (form_item game ^at [3.0 4.0] ^shows "miclone:steel_pickaxe"))
+
 (fn setup_decorations [game : Game] : Nil
   (register_decoration game "miclone:tree"
                        ^on "miclone:grass"
@@ -432,4 +456,5 @@
   (setup_ores game)
   (setup_decorations game)
   (setup_crafting game)
+  (setup_forms game)
   (setup_behaviour game))
