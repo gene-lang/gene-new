@@ -1,0 +1,166 @@
+# Groups — design.md §2's cross-cutting mechanism.
+#
+# §2: "a node is `{^cracky 3 ^falling_node 1}` and tools declare which groups
+# they dig and how fast. It is how mods interoperate without knowing about each
+# other." That last clause is the whole point. A mod that adds a pickaxe does
+# not enumerate every stone anyone has registered; it says it digs `cracky`, and
+# every mod that ever registers a stone-like node says `^groups {^cracky 3}`.
+# Neither has to know the other exists.
+#
+# ## A group name is interned, like every other name here
+#
+# §2's rule that ids are assigned at load and never hardcoded applies to groups
+# too: `cracky` is a string in a mod and a small integer everywhere else. The
+# name table is shared — a node saying `^cracky` and a tool saying it mean the
+# same id — which is what makes the interoperation above mechanical rather than
+# a convention.
+#
+# ## Ratings are a flat triple list, scanned linearly
+#
+# `(owner, group, rating)` triples rather than a dense `max_content x max_groups`
+# table. The dense form is one indexed read, and it is 4,096 x 64 cells to store
+# a few dozen facts.
+#
+# The linear scan is affordable because **nothing here is on a hot path**. A
+# group is read when a dig starts (once per click, to pick a dig time) and when
+# an ABM matches (§12, once per sampled position per interval). Contrast
+# `core/registry.gene`, whose columns are read per neighbour per node during
+# meshing and are therefore indexed arrays — the difference is the access rate,
+# not a preference.
+#
+# A rating of 0 means "not in this group". Upstream uses the same convention and
+# it is why `rating_of` can answer a single number rather than a presence flag
+# and a value.
+
+(mod groups ^profile web)
+
+(let max_group_names 64.0)
+(let max_group_entries 1024.0)
+
+(type GroupRegistry
+  ^props {^names   (List Str)
+          # The triples. `owner` is a node id for the table a `Game` hangs off
+          # its node registry; `core/item.gene` keeps its own table of the same
+          # shape for tool capabilities, and both index into `names`.
+          ^owner   (Buffer F32)
+          ^group   (Buffer F32)
+          ^rating  (Buffer F32)
+          ^counts  (Buffer F32)}   # two cells: names used, entries used
+
+  (ctor []
+    (set! self/names [])
+    (set! self/owner ($buffer F32 max_group_entries))
+    (set! self/group ($buffer F32 max_group_entries))
+    (set! self/rating ($buffer F32 max_group_entries))
+    (set! self/counts ($buffer F32 2.0))))
+
+(let count_names 0.0)
+(let count_entries 1.0)
+
+(fn new_groups [] : GroupRegistry
+  (new GroupRegistry))
+
+(fn group_name_count [g : GroupRegistry] : F64
+  (g/counts ~ get count_names))
+
+(fn group_entry_count [g : GroupRegistry] : F64
+  (g/counts ~ get count_entries))
+
+(fn group_name [g : GroupRegistry id : F64] : Str
+  (var names g/names)
+  (var i id)
+  names/%i)
+
+(type GroupRegistryFull
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for GroupRegistryFull)
+
+# --- names -------------------------------------------------------------------
+
+# The id for `name`, or -1. Linear for the reason above, and over at most 64
+# entries.
+(fn group_named [g : GroupRegistry name : Str] : F64
+  (var names g/names)
+  (var found -1.0)
+  (var i 0.0)
+  (var n (group_name_count g))
+  (while (< i n)
+    (if_yes (== names/%i name)
+      (set found i)
+      (set i n))
+    (set i (+ i 1.0)))
+  found)
+
+# The id for `name`, creating it if this is the first time anyone mentioned it.
+# **Interning rather than declaring is deliberate**: a group has no definition
+# to register, only a name two mods happen to agree on, and requiring a
+# `register_group` first would be a step whose only failure mode is forgetting
+# it.
+(fn intern_group [g : GroupRegistry name : Str] : F64
+  (var existing (group_named g name))
+  (if (>= existing 0.0) existing
+    (do
+      (var id (group_name_count g))
+      (if_yes (>= id max_group_names)
+        (fail (new GroupRegistryFull
+                   $"group registry is full at ${max_group_names} names")))
+      (g/names ~ push! name)
+      (g/counts ~ set! count_names (+ id 1.0))
+      id)))
+
+# --- ratings -----------------------------------------------------------------
+
+# Give `owner` a rating in `group`. A repeated (owner, group) overwrites rather
+# than appending, so a mod that registers the same node twice does not leave a
+# shadowed entry the scan would find first.
+(fn set_rating [g : GroupRegistry owner : F64 group : F64 rating : F64] : Nil
+  (var n (group_entry_count g))
+  (var at -1.0)
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (&& (== (g/owner ~ get i) owner) (== (g/group ~ get i) group))
+      (set at i)
+      (set i n))
+    (set i (+ i 1.0)))
+  (if_yes (< at 0.0)
+    (if_yes (>= n max_group_entries)
+      (fail (new GroupRegistryFull
+                 $"group registry is full at ${max_group_entries} entries")))
+    (set at n)
+    (g/counts ~ set! count_entries (+ n 1.0)))
+  (g/owner ~ set! at owner)
+  (g/group ~ set! at group)
+  (g/rating ~ set! at rating))
+
+# 0 when `owner` is not in `group` — see the header for why that is a value
+# rather than an absence.
+(fn rating_of [g : GroupRegistry owner : F64 group : F64] : F64
+  (var found 0.0)
+  (var n (group_entry_count g))
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (&& (== (g/owner ~ get i) owner) (== (g/group ~ get i) group))
+      (set found (g/rating ~ get i))
+      (set i n))
+    (set i (+ i 1.0)))
+  found)
+
+(fn in_group? [g : GroupRegistry owner : F64 group : F64] : Bool
+  (> (rating_of g owner group) 0.0))
+
+# By name, for a caller that has one and does not want to intern it — an unknown
+# name answers 0 rather than creating a group nobody registered.
+(fn rating_named [g : GroupRegistry owner : F64 name : Str] : F64
+  (var id (group_named g name))
+  (if (< id 0.0) 0.0 (rating_of g owner id)))
+
+# --- iteration ---------------------------------------------------------------
+#
+# The wire (§10) and the specs walk the triples in order, so the columns are
+# readable one entry at a time rather than only through a lookup.
+
+(fn entry_owner [g : GroupRegistry i : F64] : F64 (g/owner ~ get i))
+(fn entry_group [g : GroupRegistry i : F64] : F64 (g/group ~ get i))
+(fn entry_rating [g : GroupRegistry i : F64] : F64 (g/rating ~ get i))

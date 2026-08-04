@@ -59,11 +59,13 @@
 (import [new_inventory add take slot_item slot_count slot_empty?]
         from "../core/inventory.gene")
 (import [drop_item drop_count] from "../core/drops.gene")
+(import [ItemRegistry item_node placeable_item?] from "../core/item.gene")
 (import [new_cursor] from "../core/wire.gene")
 (import [message_kind msg_input msg_dig msg_place msg_request_blocks
          hello_size encode_hello
          registry_size encode_registry
          tiles_size encode_tiles
+         items_size encode_items
          block_size encode_block
          node_delta_size encode_node_delta
          inventory_size encode_inventory
@@ -196,6 +198,14 @@
   (encode_tiles b c t)
   (ws_send conn b/~to_bytes))
 
+# §2's item registry. Sent with the rest of the join, because an inventory
+# message is meaningless before it — an item id names nothing until this lands.
+(fn send_items [conn r : ItemRegistry] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 (items_size r)))
+  (encode_items b c r)
+  (ws_send conn b/~to_bytes))
+
 # Returns `ws_send`'s drop count — see `answer_blocks` for why anything reads it.
 (fn send_block [conn w : World bx : F64 by : F64 bz : F64] : F64
   (var c (new_cursor))
@@ -288,6 +298,7 @@
   (var game (load_mods))
   (var reg game/nodes)
   (var drops game/drops)
+  (var items game/items)
   (var air (id_of reg "air"))
 
   (var root (get_env Env "GENE_MICLONE_WORLD" default_world_root))
@@ -359,6 +370,7 @@
           # which is what keeps the 256-frame queue from overflowing.
           (send_hello conn world spawn_at)
           (send_tiles conn game/tiles)
+          (send_items conn game/items)
           (send_registry conn reg)
           (send_inventory conn inv)
           ($println "  client joined"))
@@ -397,9 +409,9 @@
                 (var was (node_at world nx ny nz))
                 (apply_node world reg nx ny nz air sky lq lq_seed bounds)
                 # The drop is the server's alone (§2, §7.1 step 3).
-                (var yield_n (drop_count drops was))
+                (var yield_n (drop_count drops items was))
                 (if_yes (> yield_n 0.0)
-                  (add inv (drop_item drops was) yield_n)
+                  (add inv items (drop_item drops items was) yield_n)
                   (send_inventory conn inv))
                 (send_node_delta conn nx ny nz air
                                  (world/light ~ get
@@ -421,16 +433,24 @@
                   (var nx (edit ~ get edit_x))
                   (var ny (edit ~ get edit_y))
                   (var nz (edit ~ get edit_z))
+                  # An *item* id now (§2). The server resolves it to a node,
+                  # which is also the check that a client cannot place a
+                  # pickaxe: an item with no node is refused here rather than
+                  # trusted.
                   (var held (edit ~ get edit_id))
                   # The client says what it is holding and the server checks it
                   # actually holds it — a client that lies about its inventory
                   # is the one thing a client must not be believed about.
                   (var slot (find_slot inv held))
-                  (if_yes (&& (>= slot 0.0) (placeable? world reg nx ny nz))
+                  (var as_node (if (placeable_item? items held)
+                                 (item_node items held) -1.0))
+                  (if_yes (&& (>= slot 0.0)
+                              (&& (>= as_node 0.0)
+                                  (placeable? world reg nx ny nz)))
                     (take inv slot 1.0)
-                    (apply_node world reg nx ny nz held sky lq lq_seed bounds)
+                    (apply_node world reg nx ny nz as_node sky lq lq_seed bounds)
                     (send_inventory conn inv)
-                    (send_node_delta conn nx ny nz held
+                    (send_node_delta conn nx ny nz as_node
                                      (world/light ~ get
                                        (block_index_of world nx ny nz)))
                     (persist_block store reg world

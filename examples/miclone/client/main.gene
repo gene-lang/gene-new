@@ -53,6 +53,8 @@
 (import [new_inventory add take slot_item slot_count slot_empty?]
         from "../core/inventory.gene")
 (import [drop_item drop_count] from "../core/drops.gene")
+(import [ItemRegistry item_name item_node placeable_item? no_item]
+        from "../core/item.gene")
 
 (let seed 1337.0)
 (let block_dim 16.0)
@@ -146,6 +148,7 @@
   # §2's server half. In-process singleplayer holds both halves; M6 is where
   # this stops being something the client can reach (see `core/drops.gene`).
   (var drops game/drops)
+  (var items game/items)
   (var air (id_of reg "air"))
   (var water (id_of reg "miclone:water"))
   (var registered (registered_count reg))
@@ -381,10 +384,10 @@
         # nothing to predict: the edit and its drop are the same call. What is
         # dropped and does not fit is lost, which is what a game with no
         # dropped-item entities can do — those are M8's.
-        (var yield_id (drop_item drops dug))
-        (var yield_n (drop_count drops dug))
+        (var yield_id (drop_item drops items dug))
+        (var yield_n (drop_count drops items dug))
         (if_yes (> yield_n 0.0)
-          (add inv yield_id yield_n)
+          (add inv items yield_id yield_n)
           (set hotbar_dirty true))))))
 
   (var place : (Callback [] Void) (fn [] : Void void))
@@ -399,13 +402,17 @@
       # The last two rejections §7.1 leaves to the client: an empty hand, and a
       # node placed where the player is standing — legal by every other test,
       # and it leaves them inside it.
+      # §2's split shows up here: a held *item* is not necessarily a node. A
+      # pickaxe passes every test above and still places nothing, so the
+      # placeable check is now about the item as well as the position.
+      (var held_item (slot_item inv selected))
       (if_yes (&& (! (slot_empty? inv selected))
-                  (&& (placeable? world reg nx ny nz)
-                      (! (box_overlaps_node? player nx ny nz))))
-        (var held (slot_item inv selected))
+                  (&& (placeable_item? items held_item)
+                      (&& (placeable? world reg nx ny nz)
+                          (! (box_overlaps_node? player nx ny nz)))))
         (take inv selected 1.0)
         (set hotbar_dirty true)
-        (apply_edit nx ny nz held)))))
+        (apply_edit nx ny nz (item_node items held_item))))))
 
   # The hotbar as text, rebuilt only when it changes: eight slots is a short
   # string, and building it every frame would be the only allocation in the
@@ -417,7 +424,7 @@
     (while (< i hotbar_slots)
       (var label
         (if (slot_empty? inv i) "—"
-          $"$(name_of reg (slot_item inv i)) x$($to_int (slot_count inv i))"))
+          $"$(item_name items (slot_item inv i)) x$($to_int (slot_count inv i))"))
       (var marked (if (== i selected) $"[${label}]" $" ${label} "))
       (parts ~ push! marked)
       (set i (+ i 1.0)))

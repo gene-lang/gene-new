@@ -54,13 +54,15 @@
 (import [diggable? placeable?] from "../core/edit.gene")
 (import [new_inventory slot_item slot_count slot_empty?]
         from "../core/inventory.gene")
+(import [ItemRegistry new_items item_name placeable_item?]
+        from "../core/item.gene")
 (import [new_cursor] from "../core/wire.gene")
 (import [message_kind msg_hello msg_registry msg_block msg_node_delta
-         msg_inventory msg_tiles
+         msg_inventory msg_tiles msg_items
          new_hello decode_hello hello_version hello_span_x hello_span_y
          hello_span_z hello_bx hello_by hello_bz
          hello_spawn_x hello_spawn_y hello_spawn_z
-         decode_registry decode_tiles
+         decode_registry decode_tiles decode_items
          new_block_header decode_block block_bx block_by block_bz
          new_node_delta decode_node_delta delta_x delta_y delta_z delta_id
          delta_param1
@@ -124,6 +126,9 @@
   # Bare, like the node registry beside it: §9's slots are positional and the
   # wire carries all of them.
   (var tiles (new_tiles))
+  # §2's item vocabulary, bare for the same reason: item ids are positional and
+  # the wire carries all of them. Before it lands the hotbar can name nothing.
+  (var items (new_items))
   (var world (new_world origin_bx origin_by origin_bz span_x span_y span_z))
   (var wdx (world_dx world))
   (var wdy (world_dy world))
@@ -286,6 +291,9 @@
       (paint ($canvas/context atlas_canvas) tiles)
       (upload_atlas gl atlas_canvas))
 
+    (if_yes (== kind msg_items)
+      (decode_items b wc items))
+
     (if_yes (== kind msg_registry)
       (decode_registry b wc reg)
       (set status "receiving world…")
@@ -354,11 +362,16 @@
       (var nx (before_x hit))
       (var ny (before_y hit))
       (var nz (before_z hit))
+      # §7.1 step 1 gained a case with §2's items: a pickaxe passes every
+      # position test and still places nothing, so the client answers that
+      # alone rather than sending a place the server would refuse.
+      (var held_item (slot_item inv selected))
       (if_yes (&& (! (slot_empty? inv selected))
-                  (&& (placeable? world reg nx ny nz)
-                      (! (box_overlaps_node? player nx ny nz))))
+                  (&& (placeable_item? items held_item)
+                      (&& (placeable? world reg nx ny nz)
+                          (! (box_overlaps_node? player nx ny nz)))))
         (var msg ($buffer U8 (size_place)))
-        (encode_place msg wc nx ny nz (slot_item inv selected))
+        (encode_place msg wc nx ny nz held_item)
         ($ws/send_bytes sock msg)))))
 
   ($dom/add_event_listener ($dom/window) "keydown" (fn [ev : Any] : Void
@@ -475,7 +488,7 @@
               (if (on_ground? player) "walking" "falling")))))
       ($dom/set_text ($dom/element "hud")
         $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player))")
-      ($dom/set_text ($dom/element "hotbar") (hotbar_text reg inv selected))
+      ($dom/set_text ($dom/element "hotbar") (hotbar_text items inv selected))
       (set frames 0.0)
       (set fps_since now))
     ($frame/request frame)))
@@ -534,13 +547,13 @@
           (* (array_z_of nz) (world_stride_z w))))
     id))
 
-(fn hotbar_text [reg : Registry inv : (Buffer F64) selected : F64] : Str
+(fn hotbar_text [items : ItemRegistry inv : (Buffer F64) selected : F64] : Str
   (var parts : (List Str) [])
   (var i 0.0)
   (while (< i hotbar_slots)
     (var label
       (if (slot_empty? inv i) "—"
-        $"$(name_of reg (slot_item inv i)) x$($to_int (slot_count inv i))"))
+        $"$(item_name items (slot_item inv i)) x$($to_int (slot_count inv i))"))
     (parts ~ push! (if (== i selected) $"[${label}]" $" ${label} "))
     (set i (+ i 1.0)))
   ($str/join parts " "))

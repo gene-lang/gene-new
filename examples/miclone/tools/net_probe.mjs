@@ -17,6 +17,7 @@ const { new_cursor } = await import(D + "wire.mjs");
 const P = await import(D + "protocol.mjs");
 const R = await import(D + "registry.mjs");
 const T = await import(D + "tiles.mjs");
+const IT = await import(D + "item.mjs");
 
 const PORT = 8790;
 const BLOCK = 16;
@@ -26,7 +27,7 @@ const BLOCK = 16;
 const K = {
   hello: P.kind_hello(), registry: P.kind_registry(), block: P.kind_block(),
   delta: P.kind_node_delta(), inventory: P.kind_inventory(),
-  tiles: P.kind_tiles(),
+  tiles: P.kind_tiles(), items: P.kind_items(),
 };
 
 let bad = 0;
@@ -44,6 +45,7 @@ const outC = new Float32Array(4096), outL = new Float32Array(4096);
 
 let clientReg = null, regCount = 0, bytes = 0;
 let clientTiles = null, tileCount = 0;
+let clientItems = null, itemCount = 0;
 const blocks = new Map();
 const deltas = [], invs = [];
 let waitBlocks = 0, blocksDone = null;
@@ -68,6 +70,10 @@ ws.onmessage = (e) => {
     clientTiles = T.new_tiles();
     tileCount = P.decode_tiles(b, c, clientTiles);
   }
+  else if (kind === K.items) {
+    clientItems = IT.new_items();
+    itemCount = P.decode_items(b, c, clientItems);
+  }
   else if (kind === K.block) {
     P.decode_block(b, c, header, outC, outL);
     blocks.set(`${header[0]},${header[1]},${header[2]}`,
@@ -79,7 +85,7 @@ ws.onmessage = (e) => {
     deltas.push([...delta]);
   }
   else if (kind === K.inventory) {
-    const inv = new Float64Array(16);
+    const inv = new Float64Array(24);
     P.decode_inventory(b, c, inv);
     invs.push([...inv]);
   }
@@ -121,6 +127,12 @@ say(tileCount > 8, "the mod's tiles arrived, so a client can paint its atlas",
 say(clientTiles && T.tile_name(clientTiles, 0) === "miclone:stone",
     "and the first is the one the mod registered first",
     clientTiles && T.tile_name(clientTiles, 0));
+// §2's item vocabulary. An item id stopped being a content id, so without this
+// a client cannot name what it holds or know whether it places anything.
+say(itemCount > 13, "the mod's items arrived", `${itemCount} items`);
+say(clientItems && !IT.placeable_item$q(clientItems,
+      IT.item_named(clientItems, "miclone:wood_pickaxe")),
+    "including one that places nothing, so the -1 node link survived");
 
 // --- the whole world, flow-controlled ---------------------------------------
 //
@@ -175,18 +187,25 @@ say(deltas[0] && deltas[0][3] === 0, "and the node is now air");
 say(invs.length === 2, "and the inventory is authoritative, not predicted");
 const held = invs[invs.length - 1];
 say(held && held[1] === 1, "with the drop in it", held && `x${held[1]}`);
-// §2's one drop-table exception, over the wire: grass yields dirt.
+// §2's one drop-table exception, over the wire: grass yields dirt. The id in
+// the hotbar is an *item* id now, so it is named through the item registry.
 if (clientReg && R.name_of(clientReg, nodeBefore) === "miclone:grass")
-  say(R.name_of(clientReg, held[0]) === "miclone:dirt",
+  say(clientItems && IT.item_name(clientItems, held[0]) === "miclone:dirt",
       "and grass dropped dirt, as the drop table says",
-      clientReg && R.name_of(clientReg, held[0]));
+      clientItems && IT.item_name(clientItems, held[0]));
 
 const place = new Uint8Array(P.size_place());
 P.encode_place(place, rc, sx, digY, sz, held[0]);
 send(place);
 await wait(700);
 say(deltas.length === 2, "a place comes back as a second delta");
-say(deltas[1] && deltas[1][3] === held[0], "restoring the node");
+// The delta carries a *node* id and the hotbar holds an *item* id — §2 split
+// them, and the server is what resolves one to the other. Comparing them
+// directly is what this check used to do, and it passed only while the two
+// spaces happened to be the same one.
+say(deltas[1] && deltas[1][3] === IT.item_node(clientItems, held[0]),
+    "restoring the node the held item places",
+    clientItems && IT.item_name(clientItems, held[0]));
 say(invs.length === 3 && invs[2][1] === 0, "and the stack is spent");
 
 // The authority. A client that lies about its inventory is the one thing a

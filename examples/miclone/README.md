@@ -84,12 +84,14 @@ core/       portable Gene — compiles for the VM and the web profile
   mesh.gene     face-culled meshing (§5)
   loaded.gene   the client's loaded world: one array, one shell (§1.1)
   wire.gene     the byte codec both backends encode messages through (§10)
-  protocol.gene the nine messages, encoded as bytes (§10)
+  protocol.gene the ten messages, encoded as bytes (§10)
   physics.gene  the player box against the voxel grid (§7)
   raycast.gene  Amanatides-Woo node selection (§7)
   edit.gene     one node changes, and what that invalidates (§7.1)
   inventory.gene  stacks, in a buffer of (item, count) pairs (§7.1)
   drops.gene    what digging a node yields — §2's server half, for now
+  item.gene     §2's item registry: an item id is not a content id (§2.2)
+  groups.gene   §2's cross-cutting groups, and what a tool digs
   tiles.gene    the atlas recipes a mod registers — §2's appearance side (M7)
   api.gene      §9's mod API: the surface a mod is written against, and the
                 only thing it registers through (M7)

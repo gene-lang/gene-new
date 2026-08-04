@@ -34,6 +34,9 @@
          propagates_light? light_source_of tile_top_of tile_side_of
          tile_bottom_of register max_content]
         from "./registry.gene")
+(import [ItemRegistry item_count item_name item_description item_node
+         item_stack_max add_item]
+        from "./item.gene")
 (import [TileRegistry tile_count tile_name tile_kind
          tile_r tile_g tile_b tile_spread tile_seed
          tile_base_r tile_base_g tile_base_b tile_base_spread tile_base_seed
@@ -53,7 +56,11 @@
 #
 # v2 adds `msg_tiles` (M7): a mod defines what its nodes look like, so the
 # appearance table has to reach a client that never saw the mod.
-(let protocol_version 2.0)
+#
+# v3 adds `msg_items` and widens a slot to three fields (§2): an item id is no
+# longer a content id, so the client cannot name what it is holding or know
+# whether it places anything without the item table.
+(let protocol_version 3.0)
 
 # --- message kinds -----------------------------------------------------------
 #
@@ -68,6 +75,7 @@
 (let msg_node_delta 4.0)           # server: one node changed
 (let msg_inventory 5.0)            # server: the whole hotbar
 (let msg_tiles 6.0)                # server: §9's atlas recipes, once on join
+(let msg_items 7.0)                # server: §2's item registry, once on join
 
 (let msg_input 64.0)               # client: movement intent, every tick
 (let msg_dig 65.0)                 # client: dig the node at
@@ -94,6 +102,7 @@
 (fn kind_node_delta [] : F64 msg_node_delta)
 (fn kind_inventory [] : F64 msg_inventory)
 (fn kind_tiles [] : F64 msg_tiles)
+(fn kind_items [] : F64 msg_items)
 (fn kind_input [] : F64 msg_input)
 (fn kind_dig [] : F64 msg_dig)
 (fn kind_place [] : F64 msg_place)
@@ -323,6 +332,61 @@
     (var density (read_u8 c b))
     (add_tile t name kind r g bl spread seed
               base_r base_g base_b base_spread base_seed density)
+    (set i (+ i 1.0)))
+  n)
+
+# --- items -------------------------------------------------------------------
+#
+# §2's item registry, and the message v3 added. An item id stopped being a
+# content id when items got their own space, so without this a client holding
+# item 14 has no way to know it is a coal lump, or that it places nothing.
+#
+# **Tool capabilities are not on the wire, and neither are groups.** They are
+# what decides how long a dig takes, and nothing on the client asks that yet —
+# a click digs immediately (§7.1). Sending a table nothing reads is the schema
+# §11.1 refuses to create. They join this message on the day the client predicts
+# a dig time, which is also the day the HUD can show that a node is too hard.
+
+(fn items_size [r : ItemRegistry] : F64
+  (var n (item_count r))
+  (var total 3.0)                  # kind + count
+  (var i 0.0)
+  (while (< i n)
+    # name, description, then the node it places and its stack max.
+    (set total (+ total (+ (str_size (item_name r i))
+                           (+ (str_size (item_description r i)) 6.0))))
+    (set i (+ i 1.0)))
+  total)
+
+(fn encode_items [out : (Buffer U8) c : (Buffer F64) r : ItemRegistry] : Nil
+  (reset c)
+  (write_u8 c out msg_items)
+  (var n (item_count r))
+  (write_u16 c out n)
+  (var i 0.0)
+  (while (< i n)
+    (write_str c out (item_name r i))
+    (write_str c out (item_description r i))
+    # Signed, because `no_node` is -1 and a u16 would carry it as 65,535 — the
+    # client would then try to place node 65,535 for every pickaxe. `i32` rather
+    # than `i16` because `core/wire.gene` has no 16-bit signed writer, and two
+    # spare bytes on a message sent once per join is not worth widening the
+    # codec and its spec for.
+    (write_i32 c out (item_node r i))
+    (write_u16 c out (item_stack_max r i))
+    (set i (+ i 1.0))))
+
+(fn decode_items [b : (Buffer U8) c : (Buffer F64) r : ItemRegistry] : F64
+  (reset c)
+  (read_u8 c b)
+  (var n (read_u16 c b))
+  (var i 0.0)
+  (while (< i n)
+    (var name (read_str c b))
+    (var description (read_str c b))
+    (var node (read_i32 c b))
+    (var stack_max (read_u16 c b))
+    (add_item r name description node stack_max)
     (set i (+ i 1.0)))
   n)
 
@@ -662,8 +726,12 @@
 # every change that touches it. Whole rather than as a delta for the same reason
 # `input` is: a late one is stale rather than wrong.
 
+# Six bytes a slot since §2: item, count, and wear, each u16. Wear is the third
+# because `ItemStack` has it and a tool that cannot wear out is not a tool; it
+# is `u16` because `core/inventory.gene`'s `wear_max` is 65,535, which is
+# upstream's range and is chosen so this field is exactly two bytes.
 (fn inventory_size [slots : F64] : F64
-  (+ 2.0 (* slots 4.0)))
+  (+ 2.0 (* slots 6.0)))
 
 (fn encode_inventory [out : (Buffer U8) c : (Buffer F64)
                       inv : (Buffer F64) slots : F64] : Nil
@@ -672,8 +740,9 @@
   (write_u8 c out slots)
   (var i 0.0)
   (while (< i slots)
-    (write_u16 c out (inv ~ get (* i 2.0)))
-    (write_u16 c out (inv ~ get (+ (* i 2.0) 1.0)))
+    (write_u16 c out (inv ~ get (* i 3.0)))
+    (write_u16 c out (inv ~ get (+ (* i 3.0) 1.0)))
+    (write_u16 c out (inv ~ get (+ (* i 3.0) 2.0)))
     (set i (+ i 1.0))))
 
 (fn decode_inventory [b : (Buffer U8) c : (Buffer F64)
@@ -683,7 +752,8 @@
   (var slots (read_u8 c b))
   (var i 0.0)
   (while (< i slots)
-    (inv ~ set! (* i 2.0) (read_u16 c b))
-    (inv ~ set! (+ (* i 2.0) 1.0) (read_u16 c b))
+    (inv ~ set! (* i 3.0) (read_u16 c b))
+    (inv ~ set! (+ (* i 3.0) 1.0) (read_u16 c b))
+    (inv ~ set! (+ (* i 3.0) 2.0) (read_u16 c b))
     (set i (+ i 1.0)))
   slots)

@@ -13,8 +13,15 @@
 (import [Registry new_registry register_uniform id_of draw_normal]
         from "../core/registry.gene")
 (import [new_inventory slots_of slot_item slot_count slot_empty? set_slot
-         add take total_of find_item empty? stack_max]
+         slot_wear set_slot_worn wear_slot wear_max
+         add take total_of find_item empty?]
         from "../core/inventory.gene")
+(import [ItemRegistry new_items add_item add_tool_cap item_name item_named
+         item_node item_stack_max item_of_node placeable_item? dig_time_ms
+         no_item no_node default_stack_max]
+        from "../core/item.gene")
+(import [GroupRegistry new_groups intern_group set_rating rating_of in_group?]
+        from "../core/groups.gene")
 (import [DropTable new_drop_table register_drop declared? drop_item drop_count]
         from "../core/drops.gene")
 
@@ -31,11 +38,27 @@
 (fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
   (check out label $"${got}" $"${want}"))
 
-# Two ids that are not 0, because 0 is `air` and an empty slot reads its item as
-# 0 — a spec that used it could not tell "empty" from "holding air".
+# Three item ids, and they are no longer content ids — §2 gave items their own
+# space (`core/item.gene`). They are still deliberately not 0, because an empty
+# slot reads its item as 0 and a spec using item 0 could not tell "empty" from
+# "holding the first item anyone registered".
 (let stone 3.0)
 (let dirt 4.0)
 (let sand 5.0)
+
+# The registry those ids index. Four filler items first, so `stone` lands at 3
+# and the ids above stay the ids the checks below name.
+(fn fixture_items [] : ItemRegistry
+  (var r (new_items))
+  (add_item r "t:pad0" "pad" no_node default_stack_max)
+  (add_item r "t:pad1" "pad" no_node default_stack_max)
+  (add_item r "t:pad2" "pad" no_node default_stack_max)
+  (add_item r "t:stone" "Stone" no_node default_stack_max)
+  (add_item r "t:dirt" "Dirt" no_node default_stack_max)
+  (add_item r "t:sand" "Sand" no_node default_stack_max)
+  r)
+
+(let stack_max 99.0)
 
 # --- the shape ---------------------------------------------------------------
 
@@ -51,33 +74,34 @@
 # --- stacking ----------------------------------------------------------------
 
 (fn stacking_checks [out : (List Str)] : Nil
+  (var items (fixture_items))
   (var inv (new_inventory 8.0))
 
-  (check_f out "adding one stone fits entirely" (add inv stone 1.0) 0.0)
+  (check_f out "adding one stone fits entirely" (add inv items stone 1.0) 0.0)
   (check_f out "and lands in the first slot" (slot_item inv 0.0) stone)
   (check_f out "with a count of one" (slot_count inv 0.0) 1.0)
 
   # Twenty more stone go into the same slot, not into twenty slots.
-  (add inv stone 20.0)
+  (add inv items stone 20.0)
   (check_f out "more of the same stacks" (slot_count inv 0.0) 21.0)
   (check_b out "and uses no second slot" (slot_empty? inv 1.0) true)
 
   # A different item cannot stack onto it.
-  (add inv dirt 5.0)
+  (add inv items dirt 5.0)
   (check_f out "a different item takes the next slot" (slot_item inv 1.0) dirt)
   (check_f out "with its own count" (slot_count inv 1.0) 5.0)
 
   # Past a full stack, the overflow starts a new one — and the partial stack is
   # filled first, which is what "150 stone is two slots" depends on.
   (var inv2 (new_inventory 8.0))
-  (add inv2 stone 150.0)
+  (add inv2 items stone 150.0)
   (check_f out "150 of one item fills a stack" (slot_count inv2 0.0) stack_max)
   (check_f out "and spills the rest into the next" (slot_count inv2 1.0)
            (- 150.0 stack_max))
   (check_f out "and no further" (slot_count inv2 2.0) 0.0)
 
   # Adding one more tops up the partial stack rather than opening a third.
-  (add inv2 stone 1.0)
+  (add inv2 items stone 1.0)
   (check_f out "a further add tops up the partial stack"
            (slot_count inv2 1.0) (+ 1.0 (- 150.0 stack_max)))
   (check_b out "rather than opening another" (slot_empty? inv2 2.0) true))
@@ -85,22 +109,24 @@
 # --- capacity ----------------------------------------------------------------
 
 (fn capacity_checks [out : (List Str)] : Nil
+  (var items (fixture_items))
   (var inv (new_inventory 2.0))
-  (var left (add inv stone (+ (* 2.0 stack_max) 52.0)))
+  (var left (add inv items stone (+ (* 2.0 stack_max) 52.0)))
   (check_f out "an add past capacity reports what did not fit" left 52.0)
   (check_f out "and the inventory holds exactly its capacity"
            (total_of inv stone) (* 2.0 stack_max))
-  (check_f out "a further add fits nothing" (add inv stone 10.0) 10.0)
+  (check_f out "a further add fits nothing" (add inv items stone 10.0) 10.0)
   (check_f out "and changes nothing" (total_of inv stone) (* 2.0 stack_max))
   # A full inventory has no room for a *different* item either, which is a
   # separate path: the second pass looks for empty slots and there are none.
-  (check_f out "and has no room for anything else" (add inv dirt 1.0) 1.0))
+  (check_f out "and has no room for anything else" (add inv items dirt 1.0) 1.0))
 
 # --- taking ------------------------------------------------------------------
 
 (fn taking_checks [out : (List Str)] : Nil
+  (var items (fixture_items))
   (var inv (new_inventory 4.0))
-  (add inv stone 10.0)
+  (add inv items stone 10.0)
 
   (check_f out "taking less than a slot holds takes it all" (take inv 0.0 4.0) 4.0)
   (check_f out "and leaves the rest" (slot_count inv 0.0) 6.0)
@@ -113,7 +139,7 @@
   # stack onto a slot with a count of zero — which reads as "stacked" and stores
   # nothing.
   (check_f out "an emptied slot forgets its item" (slot_item inv 0.0) 0.0)
-  (add inv dirt 3.0)
+  (add inv items dirt 3.0)
   (check_f out "so something else may use it" (slot_item inv 0.0) dirt)
   (check_f out "with its own count" (slot_count inv 0.0) 3.0))
 
@@ -125,6 +151,7 @@
 # the wrong leftover both loses items and lies about it.
 
 (fn conservation_checks [out : (List Str)] : Nil
+  (var items (fixture_items))
   (var inv (new_inventory 3.0))
   (var expect_stone 0.0)
   (var expect_dirt 0.0)
@@ -147,7 +174,7 @@
         (if_yes (== item dirt) (set expect_dirt (- expect_dirt moved)))
         (if_yes (== item sand) (set expect_sand (- expect_sand moved))))
       (else
-        (var left (add inv item amount))
+        (var left (add inv items item amount))
         (var moved (- amount left))
         (if_yes (== item stone) (set expect_stone (+ expect_stone moved)))
         (if_yes (== item dirt) (set expect_dirt (+ expect_dirt moved)))
@@ -175,28 +202,147 @@
   (register_uniform r "t:grass" draw_normal true true false 0.0 1.0)
   (register_uniform r "t:dirt" draw_normal true true false 0.0 2.0)
   (register_uniform r "t:leaves" draw_normal true true false 0.0 3.0)
-  (var t (new_drop_table))
+  (register_uniform r "t:bedrock" draw_normal true true false 0.0 4.0)
+
+  # §2's split: every node above becomes an item, and one item — a lump — is
+  # not a node at all. That is the case the whole change exists for.
+  (var items (new_items))
   (var s (id_of r "t:stone"))
   (var g (id_of r "t:grass"))
   (var d (id_of r "t:dirt"))
   (var l (id_of r "t:leaves"))
+  (var b (id_of r "t:bedrock"))
+  (var i_stone (add_item items "t:stone" "Stone" s default_stack_max))
+  (var i_grass (add_item items "t:grass" "Grass" g default_stack_max))
+  (var i_dirt (add_item items "t:dirt" "Dirt" d default_stack_max))
+  (var i_leaves (add_item items "t:leaves" "Leaves" l default_stack_max))
+  (var i_lump (add_item items "t:lump" "Lump" no_node default_stack_max))
+  # `t:bedrock` deliberately gets no item, which is `^is_item false`.
+
+  (var t (new_drop_table))
 
   # The default, which is the whole reason the table holds exceptions: a node
-  # nobody registered still drops itself rather than vanishing.
+  # nobody registered still drops itself rather than vanishing. "Itself" now
+  # means its *item*, which is the one sentence §2's split rewrote.
   (check_b out "an unregistered node is not declared" (declared? t s) false)
-  (check_f out "and drops itself" (drop_item t s) s)
-  (check_f out "one of it" (drop_count t s) 1.0)
+  (check_f out "and drops its own item" (drop_item t items s) i_stone)
+  (check_f out "one of it" (drop_count t items s) 1.0)
 
-  (register_drop t g d 1.0)
-  (check_f out "a registered node drops what it was told to" (drop_item t g) d)
-  (check_f out "in the declared amount" (drop_count t g) 1.0)
-  (check_f out "and the node it drops is unaffected" (drop_item t d) d)
+  (register_drop t g i_dirt 1.0)
+  (check_f out "a registered node drops what it was told to"
+           (drop_item t items g) i_dirt)
+  (check_f out "in the declared amount" (drop_count t items g) 1.0)
+  (check_f out "and the node it drops is unaffected"
+           (drop_item t items d) i_dirt)
+
+  # The case that could not be expressed before items existed.
+  (register_drop t s i_lump 2.0)
+  (check_f out "a node may drop an item that is not a node"
+           (drop_item t items s) i_lump)
+  (check_f out "two of it" (drop_count t items s) 2.0)
+  (check_b out "and that item places nothing"
+           (placeable_item? items i_lump) false)
+  (check_b out "while a node's own item does place"
+           (placeable_item? items i_stone) true)
+  (check_f out "and places the node it came from" (item_node items i_stone) s)
 
   # A declared drop of nothing is a real thing to want, and is why "declared" is
   # its own column rather than being inferred from a count of zero.
-  (register_drop t l l 0.0)
+  (register_drop t l i_leaves 0.0)
   (check_b out "a node may be declared to drop nothing" (declared? t l) true)
-  (check_f out "and then drops none of it" (drop_count t l) 0.0))
+  (check_f out "and then drops none of it" (drop_count t items l) 0.0)
+
+  # A node with no item at all yields nothing, whatever the table says. Without
+  # this a dig on `air` would put item -1 in the hotbar.
+  (check_f out "a node with no item has none" (item_of_node items b) no_item)
+  (check_f out "and drops nothing" (drop_count t items b) 0.0))
+
+# --- items, groups, and what a tool digs -------------------------------------
+#
+# §2's other half. The property worth asserting is not any one dig time but the
+# *ordering* the design claims: a tool beats a hand, a better tool beats a
+# worse one, a harder rating takes longer, and a `level` a tool cannot reach is
+# a refusal rather than a wait.
+
+(fn item_checks [out : (List Str)] : Nil
+  (var items (new_items))
+  (var g (new_groups))
+  (var cracky (intern_group g "cracky"))
+  (var crumbly (intern_group g "crumbly"))
+  (var level (intern_group g "level"))
+
+  # Nodes 10..13: soft stone, hard stone, dirt, and one locked above a hand.
+  (set_rating g 10.0 cracky 3.0)
+  (set_rating g 11.0 cracky 1.0)
+  (set_rating g 12.0 crumbly 3.0)
+  (set_rating g 13.0 cracky 3.0)
+  (set_rating g 13.0 level 2.0)
+
+  (check_f out "a group name interns once"
+           (intern_group g "cracky") cracky)
+  (check_f out "a rating comes back" (rating_of g 10.0 cracky) 3.0)
+  (check_f out "an absent group rates zero" (rating_of g 10.0 crumbly) 0.0)
+  (check_b out "which is not membership" (in_group? g 10.0 crumbly) false)
+  (check_b out "and a rated group is" (in_group? g 10.0 cracky) true)
+  # Re-rating overwrites rather than appending, or the scan would find a stale
+  # entry first.
+  (set_rating g 10.0 cracky 2.0)
+  (check_f out "re-rating replaces" (rating_of g 10.0 cracky) 2.0)
+  (set_rating g 10.0 cracky 3.0)
+
+  (var wood (add_item items "t:wood_pick" "Wooden Pick" no_node 1.0))
+  (var steel (add_item items "t:steel_pick" "Steel Pick" no_node 1.0))
+  (add_tool_cap items wood cracky 400.0 0.0)
+  (add_tool_cap items steel cracky 250.0 2.0)
+
+  (var hand_soft (dig_time_ms items g 10.0 no_item))
+  (var wood_soft (dig_time_ms items g 10.0 wood))
+  (var steel_soft (dig_time_ms items g 10.0 steel))
+  (check_b out "a tool beats a bare hand" (< wood_soft hand_soft) true)
+  (check_b out "and a better tool beats a worse one" (< steel_soft wood_soft) true)
+
+  # A harder rating is a longer dig, with the same tool.
+  (check_b out "a harder rating takes longer"
+           (> (dig_time_ms items g 11.0 steel) steel_soft) true)
+
+  # A tool with no capability for this node's groups still swings by hand.
+  (check_f out "a tool with no matching group digs at hand speed"
+           (dig_time_ms items g 12.0 wood) (dig_time_ms items g 12.0 no_item))
+
+  # `level` is permission, not speed — the distinction the first version of
+  # `dig_time_ms` got wrong by making every rating a gate, which would have made
+  # every node in the game undiggable by hand.
+  (check_f out "a node above a hand's level is undiggable"
+           (dig_time_ms items g 13.0 no_item) -1.0)
+  (check_f out "and above a tool's level too"
+           (dig_time_ms items g 13.0 wood) -1.0)
+  (check_b out "but a tool that reaches it digs"
+           (> (dig_time_ms items g 13.0 steel) 0.0) true)
+  # And the thing that must not have regressed: an ordinary node is diggable by
+  # hand, because nothing in a real content set declares `level`.
+  (check_b out "an ungrouped node is diggable by hand"
+           (> (dig_time_ms items g 99.0 no_item) 0.0) true)
+
+  # Per-item stack limits, which is why the registry holds a column rather than
+  # the inventory holding a constant.
+  # One slot, so the per-item limit is what rejects the second pick rather than
+  # the inventory running out of room — with the old global 99 this add would
+  # have fitted both.
+  (var tools (new_inventory 1.0))
+  (check_f out "a tool stacks to one" (item_stack_max items wood) 1.0)
+  (check_f out "so one slot takes one and reports the rest"
+           (add tools items wood 2.0) 1.0)
+  (check_f out "holding exactly one" (slot_count tools 0.0) 1.0)
+
+  # Wear, §2's third `ItemStack` field.
+  (check_f out "a fresh tool is unworn" (slot_wear tools 0.0) 0.0)
+  (check_b out "wearing it a little does not destroy it"
+           (wear_slot tools 0.0 100.0) false)
+  (check_f out "and the wear is remembered" (slot_wear tools 0.0) 100.0)
+  (check_b out "wearing it out destroys it"
+           (wear_slot tools 0.0 wear_max) true)
+  (check_b out "and the slot is empty" (slot_empty? tools 0.0) true)
+  (check_f out "with its wear cleared" (slot_wear tools 0.0) 0.0))
 
 # --- the report --------------------------------------------------------------
 
@@ -206,7 +352,8 @@
   (capacity_checks out)
   (taking_checks out)
   (conservation_checks out)
-  (drop_checks out))
+  (drop_checks out)
+  (item_checks out))
 
 (fn report [] : Str
   (var out : (List Str) [])

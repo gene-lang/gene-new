@@ -14,14 +14,18 @@
 # The slot count is the buffer's own length rather than a header cell, because
 # unlike §4's queue there is no other state to keep beside it.
 #
-# ## What is deliberately not here
+# ## An id here is an *item* id
 #
-# **Items are node ids.** §2 splits items from nodes and gives items their own
-# registry with tools, wear, and stack limits per item; that registry is M7's,
-# because it is a thing mods define. Until then everything a player can hold is
-# a node they dug, so an item id *is* a content id and `place` can hand it
-# straight to §7.1's edit. The day items get their own registry, this file
-# changes in one place: what an id means.
+# It used to be a content id, and this header used to promise that "the day
+# items get their own registry, this file changes in one place: what an id
+# means". That day came with §2's item registry (`core/item.gene`), and the
+# promise held — the change is this paragraph and the `stack_max` lookup below.
+# Everything else in this file was already about "an id and a count".
+#
+# A slot is three cells rather than two, because §2's `ItemStack` is
+# `{^name ^count ^wear ^meta}` and a tool that cannot wear out is not a tool.
+# **`^meta` is still not here**: it is a Map per stack, it has no representation
+# in a numeric buffer, and nothing before M8's containers reads one.
 #
 # **Nothing here is predicted.** §7.1 step 3: "Drops, wear, and stack changes
 # are never predicted — they are exactly what mod code varies, and a hotbar that
@@ -32,13 +36,15 @@
 
 (mod inventory ^profile web)
 
-# Upstream's default (`ItemStack`'s `stack_max`) is 99 and is per item, which is
-# a property of §2's item registry and therefore M7's. One number until then.
-(let stack_max 99.0)
+(import [ItemRegistry item_stack_max] from "./item.gene")
 
-(let cells_per_slot 2.0)
+# Per item now, out of §2's registry, which is what the registry is for. The
+# functions that need it take the registry; the ones that only move counts
+# around do not, which keeps `take` and `slot_count` free of it.
+(let cells_per_slot 3.0)
 (let cell_item 0.0)
 (let cell_count 1.0)
+(let cell_wear 2.0)
 
 (fn new_inventory [slots : F64] : (Buffer F64)
   ($buffer F64 (* slots cells_per_slot)))
@@ -55,17 +61,43 @@
 (fn slot_empty? [inv : (Buffer F64) slot : F64] : Bool
   (== (slot_count inv slot) 0.0))
 
+# 0 is a fresh tool and `wear_max` is a spent one. Upstream's range, because the
+# number is serialized (§10, §11) and a wider one buys nothing a player sees.
+(let wear_max 65535.0)
+
+(fn slot_wear [inv : (Buffer F64) slot : F64] : F64
+  (inv ~ get (+ (* slot cells_per_slot) cell_wear)))
+
 # Writing a count of zero clears the item as well, so an empty slot never keeps
 # a stale id that `add` could then stack onto.
-(fn set_slot [inv : (Buffer F64) slot : F64 item : F64 count : F64] : Nil
+(fn set_slot_worn [inv : (Buffer F64) slot : F64 item : F64 count : F64
+                   wear : F64] : Nil
   (var at (* slot cells_per_slot))
   (if (<= count 0.0)
     (then
       (inv ~ set! at 0.0)
-      (inv ~ set! (+ at cell_count) 0.0))
+      (inv ~ set! (+ at cell_count) 0.0)
+      (inv ~ set! (+ at cell_wear) 0.0))
     (else
       (inv ~ set! at item)
-      (inv ~ set! (+ at cell_count) count))))
+      (inv ~ set! (+ at cell_count) count)
+      (inv ~ set! (+ at cell_wear) wear))))
+
+(fn set_slot [inv : (Buffer F64) slot : F64 item : F64 count : F64] : Nil
+  (set_slot_worn inv slot item count 0.0))
+
+# Wear a tool by `amount`, and destroy it when it is spent — which is why this
+# is here rather than a `set_slot_worn` at the call site: "a tool that reaches
+# `wear_max` disappears" is a rule about stacks, not about digging.
+(fn wear_slot [inv : (Buffer F64) slot : F64 amount : F64] : Bool
+  (var worn (+ (slot_wear inv slot) amount))
+  (if (>= worn wear_max)
+    (then
+      (set_slot inv slot 0.0 0.0)
+      true)
+    (else
+      (set_slot_worn inv slot (slot_item inv slot) (slot_count inv slot) worn)
+      false)))
 
 # --- adding ------------------------------------------------------------------
 
@@ -74,7 +106,9 @@
 # Partial stacks first, then empty slots — which is what makes digging twenty
 # stone fill one slot rather than twenty, and is the order every game in this
 # genre uses.
-(fn add [inv : (Buffer F64) item : F64 count : F64] : F64
+(fn add [inv : (Buffer F64) items : ItemRegistry item : F64
+         count : F64] : F64
+  (var stack_max (item_stack_max items item))
   (var left count)
   (var n (slots_of inv))
 

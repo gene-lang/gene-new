@@ -32,6 +32,9 @@
          tile_base_r tile_base_g tile_base_b tile_base_spread tile_base_seed
          tile_density tile_ore tile_overlay]
         from "../core/tiles.gene")
+(import [ItemRegistry new_items item_count item_name item_description
+         item_node item_stack_max placeable_item? no_node]
+        from "../core/item.gene")
 (import [load_mods] from "../core/mods.gene")
 (import [new_cursor cursor_at reset] from "../core/wire.gene")
 (import [protocol_version message_kind server_message? client_message?
@@ -43,6 +46,7 @@
          hello_spawn_x hello_spawn_y hello_spawn_z
          registry_size encode_registry decode_registry
          tiles_size encode_tiles decode_tiles msg_tiles
+         items_size encode_items decode_items msg_items
          block_size encode_block decode_block new_block_header
          block_bx block_by block_bz count_runs
          node_delta_size encode_node_delta new_node_delta decode_node_delta
@@ -290,6 +294,84 @@
   (check_b out "tiles: and all three kinds are in it"
            (&& (> ores 0.0) (> overlays 0.0)) true))
 
+# --- items -------------------------------------------------------------------
+#
+# The message v3 added, against the real content set for `registry`'s reason:
+# §2's claim is that a client's item vocabulary is whatever the server sent, so
+# the thing to check is that the vocabulary a real server would send arrives
+# able to answer the two questions the client asks of it — what is this called,
+# and does it place anything.
+
+(fn items_checks [out : (List Str)] : Nil
+  (var game (load_mods))
+  (var server_items game/items)
+  (var n (item_count server_items))
+
+  (var c (new_cursor))
+  (var b ($buffer U8 (items_size server_items)))
+  (encode_items b c server_items)
+  (check_f out "items: the kind byte" (message_kind b) msg_items)
+  (check_f out "items: the encoder wrote exactly items_size bytes"
+           (cursor_at c) (items_size server_items))
+
+  (var client_items (new_items))
+  (var got (decode_items b c client_items))
+  (check_f out "items: the entry count round-trips" got n)
+  (check_f out "items: and the client has that many"
+           (item_count client_items) n)
+
+  (var name_diff 0.0)
+  (var desc_diff 0.0)
+  (var node_diff 0.0)
+  (var stack_diff 0.0)
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (!= (item_name client_items i) (item_name server_items i))
+      (set name_diff (+ name_diff 1.0)))
+    (if_yes (!= (item_description client_items i)
+                (item_description server_items i))
+      (set desc_diff (+ desc_diff 1.0)))
+    (if_yes (!= (item_node client_items i) (item_node server_items i))
+      (set node_diff (+ node_diff 1.0)))
+    (if_yes (!= (item_stack_max client_items i)
+                (item_stack_max server_items i))
+      (set stack_diff (+ stack_diff 1.0)))
+    (set i (+ i 1.0)))
+
+  (check_f out "items: every name survives" name_diff 0.0)
+  (check_f out "items: every description survives" desc_diff 0.0)
+  (check_f out "items: every node link survives" node_diff 0.0)
+  (check_f out "items: every stack limit survives" stack_diff 0.0)
+
+  # The fixture must not be vacuous, and here that means something stronger than
+  # a count: **the negative node link has to be exercised.** `no_node` is -1, a
+  # u16 would carry it as 65,535, and every check above would still pass while
+  # the client placed node 65,535 for every pickaxe.
+  (var placeable 0.0)
+  (var unplaceable 0.0)
+  (set i 0.0)
+  (while (< i n)
+    (if (placeable_item? client_items i)
+      (then (set placeable (+ placeable 1.0)))
+      (else (set unplaceable (+ unplaceable 1.0))))
+    (set i (+ i 1.0)))
+  (check_b out "items: the game has items that place a node"
+           (> placeable 0.0) true)
+  (check_b out "items: and items that place nothing, so -1 crossed the wire"
+           (> unplaceable 0.0) true)
+  # And a stack limit that is not the default, or the column would round-trip
+  # identically whatever the codec did with it. Scanned for rather than looked
+  # up by position: the first unplaceable item is a coal lump, which stacks to
+  # the default 99, and assuming otherwise is how this check first failed.
+  (var smallest 99.0)
+  (set i 0.0)
+  (while (< i n)
+    (var m (item_stack_max client_items i))
+    (if_yes (< m smallest) (set smallest m))
+    (set i (+ i 1.0)))
+  (check_b out "items: and a stack limit that is not the default"
+           (< smallest 99.0) true))
+
 # --- blocks ------------------------------------------------------------------
 #
 # Three block shapes with different run structure, because a run-length bug is
@@ -531,25 +613,29 @@
   (var slots 8.0)
   (var b ($buffer U8 (inventory_size slots)))
 
-  # (id, count) pairs, as `core/inventory.gene` stores them: two full stacks,
-  # a partial, and five empties.
-  (var inv ($buffer F64 (* slots 2.0)))
-  (inv ~ set! 0.0 3.0)  (inv ~ set! 1.0 99.0)
-  (inv ~ set! 2.0 4.0)  (inv ~ set! 3.0 99.0)
-  (inv ~ set! 4.0 7.0)  (inv ~ set! 5.0 12.0)
+  # (item, count, wear) triples, as `core/inventory.gene` stores them since §2:
+  # two full stacks, a partial, a worn tool, and four empties. The tool is what
+  # makes the third field non-zero — without it every wear byte would be 0 and
+  # a codec that dropped the field entirely would still pass.
+  (var inv ($buffer F64 (* slots 3.0)))
+  (inv ~ set! 0.0 3.0)  (inv ~ set! 1.0 99.0) (inv ~ set! 2.0 0.0)
+  (inv ~ set! 3.0 4.0)  (inv ~ set! 4.0 99.0) (inv ~ set! 5.0 0.0)
+  (inv ~ set! 6.0 7.0)  (inv ~ set! 7.0 12.0) (inv ~ set! 8.0 0.0)
+  (inv ~ set! 9.0 15.0) (inv ~ set! 10.0 1.0) (inv ~ set! 11.0 31207.0)
 
   (encode_inventory b c inv slots)
   (check_f out "inventory: the kind byte" (message_kind b) msg_inventory)
   (check_f out "inventory: the encoder wrote exactly inventory_size bytes"
            (cursor_at c) (inventory_size slots))
 
-  (var back ($buffer F64 (* slots 2.0)))
+  (var back ($buffer F64 (* slots 3.0)))
   (var got (decode_inventory b c back))
   (check_f out "inventory: the slot count round-trips" got slots)
+  (check_f out "inventory: and a tool's wear survives" (back ~ get 11.0) 31207.0)
 
   (var diff 0.0)
   (var i 0.0)
-  (while (< i (* slots 2.0))
+  (while (< i (* slots 3.0))
     (if_yes (!= (back ~ get i) (inv ~ get i)) (set diff (+ diff 1.0)))
     (set i (+ i 1.0)))
   (check_f out "inventory: every slot survives" diff 0.0)
@@ -563,6 +649,7 @@
   (hello_checks out)
   (registry_checks out)
   (tiles_checks out)
+  (items_checks out)
   (block_checks out)
   (delta_checks out)
   (input_checks out)

@@ -1101,6 +1101,26 @@ but it is a semantics change with a visibility question attached (is every
 import re-exported, or only a declared set?). It should not be settled inside a
 game milestone.
 
+**15. The web profile cannot iterate a `PropMap`. Found by §2's groups. Small,
+and open.**
+
+`(for [k v] in m ...)` over a `PropMap` is rejected: "web for cannot iterate
+PropMap". The profile has `get` and `size` on one, so a map can be *read* by a
+key already known and cannot be walked.
+
+It costs a spelling rather than a capability. §2 writes a node's groups as
+`^groups {^cracky 3 ^falling_node 1}`, which is upstream's shape and the one a
+registration site wants; a portable API cannot accept it, so `register_group`
+takes one group per call. That is not a bad API — each rating is independently
+diagnosable, and it matches `register_tile` and `register_drop_rule` — but it is
+a shape chosen by a compiler gap rather than by design, which is the thing worth
+recording.
+
+Neither backend is wrong here; the VM iterates a map and the profile does not
+yet. The fix is an iteration lowering for `PropMap`, and it is the same class of
+work as §D7.13's named parameters — a portable form that exists on one side and
+should exist on both.
+
 ## D8. Delivery phases
 
 Each milestone ends in something runnable. No milestone is "infrastructure
@@ -1109,7 +1129,7 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | | milestone | ends with | needs |
 |---|---|---|---|
 | **M0** | **The three probes (§D6)** | fly through a static voxel world at 60 fps, plus a decided determinism rule and a measured worldgen cost | backlog 1, 6 |
-| ~~M1~~ | **World model + registries — done** | 63 cross-backend checks; §1 and §2 | — |
+| ~~M1~~ | **World model + registries — done** | §1 and §2, the second completed after M7 (§2.2); 69 + 74 cross-backend checks | — |
 | ~~M2~~ | **Mapgen — done** | biomes, caves, and ore, drawn by the M0 renderer; §3 | backlog 5 |
 | ~~M3~~ | **Lighting + meshing in `core/` — done** | the M0 renderer drawing a generated *lit* world; §4, §5 | backlog 2 |
 | ~~M4~~ | **Persistence — done** | quit and come back to the same world; §11 | backlog 3 (landed), 4 (open, not blocking) |
@@ -1197,7 +1217,7 @@ mitigations.
 **The subset constraint held, and the way it held is the finding.** `core/` is
 23 modules compiling for both backends, and not one of them needed a
 conditional. But it did not hold by being avoided: it held because **Gene grew
-every time it did not fit**, and §D7 is the list — fourteen items, of which
+every time it did not fit**, and §D7 is the list — fifteen items, of which
 eight landed on the way through. Typed buffers, `$to_float` in the portable
 stdlib, loop bodies as scopes, integral Floats as indices, a WebSocket client,
 `a/~b` in the profile, named parameters: each was a place the subset was about
@@ -1447,25 +1467,84 @@ cross-quad geometry the mesher does not emit. All three are M8's, and the
 enumeration existing ahead of them is fine — an id is cheap — as long as nobody
 reads it as a promise.
 
-**Items are not built.** §2 says items are a parallel registry with description,
-inventory image, stack max, and tool capabilities, and that a node is
-automatically an item unless it says otherwise. None of that exists. An item id
-*is* a content id, the hotbar hands it straight to the edit (§7.1), and
-`ItemStack`'s `^wear` and `^meta` have no representation. This is the single
-biggest gap in Part II relative to its design, and it is load-bearing for more
-than it looks: crafting needs items, tools need `^wear`, and §9's
-`register_craft` cannot exist without both. The day it lands,
-`core/inventory.gene` changes in one place — what an id means.
+### 2.2 Items and groups — the half M1 declared and did not build
 
-**Groups are not built either**, and they are the cheaper of the two. Nothing in
-M0–M7 needs a cross-cutting property: every node is dug at the same speed
-because there are no tools, and nothing falls. Groups become necessary at the
-first tool and the first `falling_node`, which is the same moment items do.
+Built after M7, and the milestone table's M1 row is only now true. `core/item.gene`
+is the parallel registry §2 asks for and `core/groups.gene` is the cross-cutting
+mechanism; `probes/inventory_spec.gene` covers both on the two backends.
 
-That both are missing is not drift. §D8 orders the engine before the API that
-exposes it, and neither items nor groups have a *consumer* yet — a registry
-column nothing reads is a schema to migrate rather than a feature, which is the
-same argument §11.1 makes for the tables it did not create.
+**Items have their own id space, and that was the decision worth making
+deliberately.** The shortcut is to hang item columns off the node registry and
+keep one space. It fails on the first item that is not a node — a lump, a
+pickaxe — because a node id indexes the arrays the *mesher* reads, and a
+pickaxe has no drawtype, tiles or light behaviour. So the spaces are separate
+and bridged by two columns: `node_of` for what an item places, `item_of_node`
+for what a node yields. Both are single indexed reads, which is what keeps
+`place` and the drop table from paying for the split.
+
+`core/inventory.gene`'s header had promised that "the day items get their own
+registry, this file changes in one place: what an id means". The promise held —
+the change was that paragraph and a per-item `stack_max` lookup, because
+everything else in the file was already about an id and a count.
+
+**A slot is three cells now**: item, count, and `^wear`. A tool that cannot wear
+out is not a tool, and the field is `u16` because upstream's range is 65,535 and
+that makes it exactly two bytes on the wire. `^meta` is still absent — a Map per
+stack has no representation in a numeric buffer and nothing before M8's
+containers reads one.
+
+**Groups are a flat `(owner, group, rating)` triple list, scanned linearly**, and
+that is a considered choice rather than the lazy one: the dense
+`max_content x max_groups` alternative is one indexed read and 4,096 x 64 cells
+to store a few dozen facts. The scan is affordable because nothing here is on a
+hot path — a group is read when a dig starts and when an ABM matches, never per
+neighbour per node. A group name is *interned* on first use rather than
+declared, because a group has no definition, only a name two mods agree on.
+
+#### A rating is difficulty; `level` is permission
+
+The first `dig_time_ms` used a group's rating as a gate — a tool declared a
+level and refused anything rated above it — and a five-line test caught it
+before it shipped. It was wrong twice: it made a bare hand unable to dig stone
+or grass, regressing the entire existing game, and it collapsed two of
+upstream's mechanisms into one.
+
+They are separate here as they are upstream. **A rating is difficulty**:
+`cracky 3` is soft and `cracky 1` is hard — lower is harder, which reads
+backwards until you notice the numbers rank how many tool tiers can manage it —
+and it scales the time. **`level` is permission**, and it is an ordinary group:
+a node in `{^level 2}` needs a tool that reaches level 2 and nothing else can
+break it at all. Keeping permission in a group rather than a column is what
+makes it a mod's to use; nothing in the engine mentions obsidian.
+
+Nothing in `mods/default` declares `level`, so every node in the game stays
+diggable by hand exactly as before groups existed. That was the property the
+whole change had to preserve, and the spec asserts it directly.
+
+#### What the split immediately bought
+
+`core/api.gene` used to say ores drop themselves because "coal should drop a
+lump, and a lump is an item that is not a node, and §2's item registry is not
+built". It is built, so coal drops a lump — a thing no one can place, which the
+client refuses locally (§7.1 step 1) and the server refuses again by resolving
+the item to a node and finding none.
+
+#### `^groups {^cracky 3}` is not the spelling, and the reason is the profile
+
+§2 writes a node's groups as a map. A portable API cannot take one: **the web
+profile cannot iterate a `PropMap`**, so `register_group` is one call per fact —
+the shape `register_tile` and `register_drop_rule` already have, and one that
+makes each rating independently diagnosable. §D7.15 tracks the gap.
+
+#### Still not built
+
+The *inventory image* §2 names: an item that is a node draws as its node's tile,
+and an item that is not needs an image §6's 4x4 atlas has no room for. And
+**groups and tool capabilities do not cross the wire.** They decide how long a
+dig takes and nothing on the client asks yet — a click digs immediately. Sending
+a table nothing reads is the schema §11.1 refuses to create; they join
+`msg_items` on the day the client predicts a dig time, which is the same day the
+HUD can say a node is too hard.
 
 ## 3. Mapgen
 

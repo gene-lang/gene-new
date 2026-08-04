@@ -62,6 +62,11 @@
 (import [OreRegistry register_ore shape_scatter shape_sheet shape_blob]
         from "./ore.gene")
 (import [DropTable new_drop_table register_drop] from "./drops.gene")
+(import [GroupRegistry new_groups intern_group group_named set_rating rating_of]
+        from "./groups.gene")
+(import [ItemRegistry new_items add_item add_tool_cap item_named item_of_node
+         no_item no_node default_stack_max]
+        from "./item.gene")
 
 # --- the game a mod registers into --------------------------------------------
 #
@@ -72,6 +77,8 @@
 (type Game
   ^props {^nodes  Registry
           ^tiles  TileRegistry
+          ^items  ItemRegistry
+          ^groups GroupRegistry
           ^drops  DropTable
           ^biomes BiomeRegistry
           ^ores   OreRegistry}
@@ -79,6 +86,8 @@
   (ctor []
     (set! self/nodes (new_registry))
     (set! self/tiles (new_tiles))
+    (set! self/items (new_items))
+    (set! self/groups (new_groups))
     (set! self/drops (new_drop_table))
     (set! self/biomes (new BiomeRegistry))
     (set! self/ores (new OreRegistry))))
@@ -147,11 +156,14 @@
 
 (fn register_node [game : Game name : Str
                    ^tiles : (List Str)
+                   ^description : Str?
                    ^drawtype : F64?
                    ^solid : Bool?
                    ^opaque : Bool?
                    ^propagates_light : Bool?
-                   ^light_source : F64?] : F64
+                   ^light_source : F64?
+                   ^is_item : Bool?
+                   ^stack_max : F64?] : F64
   (var given tiles/~size)
   (if_yes (|| (< given 1.0) (> given 3.0))
     (fail (new UnknownTile
@@ -161,10 +173,72 @@
   (var bottom
     (if (> given 2.0) (resolve_tile game (nth_tile tiles 2.0) name)
       (if (> given 1.0) top side)))
-  (register game/nodes name (?? drawtype draw_normal)
-            (?? solid true) (?? opaque true) (?? propagates_light false)
-            (?? light_source 0.0)
-            top side bottom))
+  (var id (register game/nodes name (?? drawtype draw_normal)
+                    (?? solid true) (?? opaque true)
+                    (?? propagates_light false)
+                    (?? light_source 0.0)
+                    top side bottom))
+  # §2: "A node is automatically an item unless it says otherwise." The item
+  # shares the node's name — which is what lets a drop rule, a craft recipe and
+  # a hotbar all say `miclone:dirt` and mean the thing the player is holding,
+  # without anyone writing the mapping down.
+  (if_yes (?? is_item true)
+    (add_item game/items name (?? description name) id
+              (?? stack_max default_stack_max)))
+  id)
+
+# --- groups ------------------------------------------------------------------
+#
+# §2 spells a node's groups as a map — `^groups {^cracky 3 ^falling_node 1}` —
+# and that spelling is not available here: **the web profile cannot iterate a
+# `PropMap`**, so a portable API cannot take one and read it back. One call per
+# fact is the portable form, and it is the shape `register_tile` and
+# `register_drop_rule` already have. It also makes each rating independently
+# diagnosable: a group on a node nobody registered fails here, with a position,
+# rather than at the first dig. §D7.15 tracks the profile gap.
+#
+# A group name is interned on first use rather than declared, because a group
+# has no definition — only a name two mods happen to agree on (`core/groups.gene`).
+
+(fn register_group [game : Game node : Str
+                    ^group : Str
+                    ^rating : F64?] : Nil
+  (set_rating game/groups (node_id game node)
+              (intern_group game/groups group)
+              (?? rating 3.0)))
+
+# --- items -------------------------------------------------------------------
+#
+# For the items a node does not give you for free: a lump of coal, a pickaxe,
+# anything a player holds that is not a block. `^places` names the node this
+# item puts into the world, and omitting it is what makes an item unplaceable —
+# §7.1's place never reaches the server for a pickaxe.
+
+(fn register_item [game : Game name : Str
+                   ^description : Str?
+                   ^places : Str?
+                   ^stack_max : F64?] : F64
+  # `(== places nil)` does not compile — the profile requires both sides of `==`
+  # to be one type, and `places` is `Str?`. Coalescing to a sentinel first is the
+  # portable nil test, and `""` is safe because it is not a legal node name.
+  (var target (?? places ""))
+  (var node (if (== target "") no_node (node_id game target)))
+  (add_item game/items name (?? description name) node
+            (?? stack_max default_stack_max)))
+
+# What a tool digs and how fast. `^time_ms` is for a group rated 3, the softest
+# standard; harder ratings scale it (`core/item.gene`). `^level` is permission
+# rather than speed — the highest `level` group rating this tool may break at
+# all, and it defaults to 0, which is what a hand reaches.
+(fn register_tool_cap [game : Game item : Str
+                       ^group : Str
+                       ^time_ms : F64
+                       ^level : F64?] : Nil
+  (var id (item_named game/items item))
+  (if_yes (== id no_item)
+    (fail (new UnknownNode $"${item} is not a registered item")))
+  (add_tool_cap game/items id (intern_group game/groups group)
+                time_ms (?? level 0.0)))
 
 # --- drops -------------------------------------------------------------------
 #
@@ -176,7 +250,13 @@
 (fn register_drop_rule [game : Game node : Str
                         ^item : Str
                         ^count : F64?] : Nil
-  (register_drop game/drops (node_id game node) (node_id game item) (?? count 1.0)))
+  # `^item` names an *item* now rather than a node, which is the whole point of
+  # §2's split: a dug stone can yield a lump of coal, and a lump of coal is not
+  # a node anyone can place.
+  (var yielded (item_named game/items item))
+  (if_yes (== yielded no_item)
+    (fail (new UnknownNode $"drop rule for ${node} names ${item}, which is not a registered item")))
+  (register_drop game/drops (node_id game node) yielded (?? count 1.0)))
 
 # A mod names content and the engine numbers it, so a drop rule that names an
 # unregistered node is a mod bug with a position rather than a drop of `unknown`

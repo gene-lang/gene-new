@@ -40,6 +40,9 @@ import {
   new_inventory, add, take, slot_item, slot_count, slot_empty$q, total_of,
 } from "../dist/inventory.mjs";
 import { drop_item, drop_count } from "../dist/drops.mjs";
+// §2 gave items their own id space, so what a dig yields and what a hotbar
+// holds are item ids; `item_node` is how one becomes a node again.
+import { item_node, item_named, placeable_item$q } from "../dist/item.mjs";
 import { new_cursor, cursor_at } from "../dist/wire.mjs";
 import {
   block_size, encode_block, decode_block, new_block_header,
@@ -361,6 +364,7 @@ if (lightDiff !== 0) {
 // wiring is the only part a spec per module cannot see.
 
 const drops = game.drops;
+const items = game.items;
 const inv = new_inventory(8);
 let loopBad = 0;
 
@@ -382,10 +386,11 @@ for (let i = 0; i < 3; i++) {
   if (!diggable$q(world, reg, nx, ny, nz)) { loopBad++; continue; }
   const was = node_at(world, nx, ny, nz);
   apply_node(world, reg, nx, ny, nz, AIR_ID, sky, editQueue, editSeed, bounds);
-  const left = add(inv, drop_item(drops, was), drop_count(drops, was));
+  const left = add(inv, items, drop_item(drops, items, was),
+                   drop_count(drops, items, was));
   if (left !== 0) loopBad++;
   if (node_at(world, nx, ny, nz) !== AIR_ID) loopBad++;
-  dugIds.push([nx, ny, nz, drop_item(drops, was)]);
+  dugIds.push([nx, ny, nz, drop_item(drops, items, was)]);
 }
 // Summed over slots rather than over the dug ids: three stone dug is three
 // items in one slot, and totalling per id would report nine.
@@ -402,9 +407,11 @@ for (const [nx, ny, nz, id] of dugIds) {
     if (!slot_empty$q(inv, i) && slot_item(inv, i) === id) { slot = i; break; }
   if (slot < 0) { loopBad++; continue; }
   if (!placeable$q(world, reg, nx, ny, nz)) { loopBad++; continue; }
+  if (!placeable_item$q(items, id)) { loopBad++; continue; }
+  const asNode = item_node(items, id);
   if (take(inv, slot, 1) !== 1) { loopBad++; continue; }
-  apply_node(world, reg, nx, ny, nz, id, sky, editQueue, editSeed, bounds);
-  if (node_at(world, nx, ny, nz) !== id) loopBad++;
+  apply_node(world, reg, nx, ny, nz, asNode, sky, editQueue, editSeed, bounds);
+  if (node_at(world, nx, ny, nz) !== asNode) loopBad++;
   placed++;
 }
 
@@ -412,10 +419,14 @@ for (const [nx, ny, nz, id] of dugIds) {
 // comes back as dirt. If the fixture happened to dig grass, that shows up here
 // as a node that changed identity, which is correct and worth saying.
 const GRASS = id_of(reg, "miclone:grass");
-const DIRT = id_of(reg, "miclone:dirt");
-if (drop_item(drops, GRASS) !== DIRT) loopBad++;
-if (drop_item(drops, id_of(reg, "miclone:stone")) !==
-    id_of(reg, "miclone:stone")) loopBad++;
+if (drop_item(drops, items, GRASS) !== item_named(items, "miclone:dirt")) loopBad++;
+if (drop_item(drops, items, id_of(reg, "miclone:stone")) !==
+    item_named(items, "miclone:stone")) loopBad++;
+// And §2's new case: a dug ore yields a lump, which is an item no one can place.
+const COAL = id_of(reg, "miclone:coal_ore");
+const lump = drop_item(drops, items, COAL);
+if (lump !== item_named(items, "miclone:coal_lump")) loopBad++;
+if (placeable_item$q(items, lump)) loopBad++;
 
 console.log("");
 console.log(`  dig and place ${dugIds.length} dug and carried ` +

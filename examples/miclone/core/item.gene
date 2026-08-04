@@ -1,0 +1,325 @@
+# The item registry — design.md §2, the half M1 declared and did not build.
+#
+# §2: "Items are a parallel registry: name, description, inventory image, stack
+# max, tool capabilities. A node is automatically an item unless it says
+# otherwise."
+#
+# Until now an item id *was* a content id, and `core/inventory.gene` said so in
+# its header along with the promise that "the day items get their own registry,
+# this file changes in one place: what an id means". This is that day.
+#
+# ## Why a separate id space, when sharing one would have been less work
+#
+# The tempting shortcut is to keep one id space and hang item columns off the
+# node registry. It fails on the first item that is not a node — a lump of coal,
+# a pickaxe — because a node id is an index into arrays the *mesher* reads, and
+# a pickaxe has no drawtype, no tiles and no light behaviour. Giving it one
+# would put a value in every meshing column for something that is never in the
+# world.
+#
+# So items are numbered independently, and the two spaces are bridged by two
+# columns rather than by a convention:
+#
+# - `node_of` — the node an item places, or `no_node` for one that does not.
+# - `item_of` — the item a node yields, filled when a node auto-registers.
+#
+# Both are single indexed reads, which is what keeps `place` and the drop table
+# from paying for the split.
+#
+# ## A node is automatically an item
+#
+# `register_node` calls `auto_register_item` for every node, so a mod that
+# defines a node can hold it, drop it and place it without a second
+# registration. `^is_item false` opts out, for a node that should never be in a
+# hand — upstream's `air` and `ignore`, and any node a mod places only from
+# code. §1's three reserved ids take that path.
+#
+# ## What is here and what is M8's
+#
+# Stack max, description, and tool capabilities are here because §2 names them
+# and because M8's crafting and tools cannot be written without them. The
+# *inventory image* is not: an item that is a node draws as its node's tile
+# (§9.1's tile registry), and an item that is not needs an image the atlas has
+# no room for — §6 gains a row before that is answerable.
+#
+# `ItemStack`'s `^meta` is also not here. It is a Map per stack, it has no
+# representation in a numeric buffer, and nothing before M8's containers reads
+# one. `^wear` *is* built, in `core/inventory.gene`'s third cell, because a tool
+# that cannot wear out is not a tool.
+
+(mod item ^profile web)
+
+(import [GroupRegistry rating_of group_named group_entry_count
+         entry_owner entry_rating]
+        from "./groups.gene")
+
+(let max_items 4096.0)
+# `core/registry.gene`'s ceiling, because `node_item` is indexed by node id.
+(let max_content 4096.0)
+
+# The item an id names when there is none — the same shape as
+# `core/world.gene`'s reserved content ids, and negative so that it cannot be
+# mistaken for item 0.
+(let no_item -1.0)
+(let no_node -1.0)
+
+# Upstream's `ItemStack` default. Per item now rather than one number for
+# everything, which is the whole reason this registry exists.
+(let default_stack_max 99.0)
+
+(type ItemRegistry
+  ^props {^names       (List Str)
+          ^descriptions (List Str)
+          ^node        (Buffer F32)   # the node this places, or no_node
+          ^stack_max   (Buffer F32)
+          # Tool capabilities: (item, group, dig_time_ms) triples, referencing
+          # group ids from the shared `GroupRegistry`. Same shape and same
+          # reasoning as `core/groups.gene`'s ratings — read once per dig.
+          ^tool_item   (Buffer F32)
+          ^tool_group  (Buffer F32)
+          ^tool_time   (Buffer F32)   # milliseconds to dig one node of that group
+          ^tool_level  (Buffer F32)   # the highest rating this tool can dig
+          # The reverse bridge, indexed by *node* id. It lives here rather than
+          # as a column on `core/registry.gene` so that the node registry stays
+          # exactly the client half §2 describes: the item registry knows about
+          # nodes, and nodes know nothing about items.
+          ^node_item   (Buffer F32)
+          ^counts      (Buffer F32)}  # two cells: items used, tool entries used
+
+  (ctor []
+    (set! self/names [])
+    (set! self/descriptions [])
+    (set! self/node ($buffer F32 max_items))
+    (set! self/stack_max ($buffer F32 max_items))
+    (set! self/tool_item ($buffer F32 max_items))
+    (set! self/tool_group ($buffer F32 max_items))
+    (set! self/tool_time ($buffer F32 max_items))
+    (set! self/tool_level ($buffer F32 max_items))
+    (set! self/node_item ($buffer F32 max_content))
+    (set! self/counts ($buffer F32 2.0))
+    # `no_item`, not 0: an unfilled cell must not read as "item 0", which is a
+    # real item. Buffers zero-initialise, so this is written rather than assumed.
+    (var i 0.0)
+    (while (< i max_content)
+      (self/node_item ~ set! i no_item)
+      (set i (+ i 1.0)))))
+
+(let count_items 0.0)
+(let count_tools 1.0)
+
+(fn new_items [] : ItemRegistry
+  (new ItemRegistry))
+
+(fn item_count [r : ItemRegistry] : F64
+  (r/counts ~ get count_items))
+
+(fn tool_entry_count [r : ItemRegistry] : F64
+  (r/counts ~ get count_tools))
+
+(type ItemRegistryFull
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for ItemRegistryFull)
+
+# --- registration ------------------------------------------------------------
+
+# The low-level form every item goes through. `core/api.gene` is where a mod
+# meets this with names for the columns, exactly as `register` and
+# `register_node` divide.
+(fn add_item [r : ItemRegistry name : Str description : Str
+              node : F64 stack_max : F64] : F64
+  (var id (item_count r))
+  (if_yes (>= id max_items)
+    (fail (new ItemRegistryFull
+               $"item registry is full at ${max_items} entries")))
+  (r/names ~ push! name)
+  (r/descriptions ~ push! description)
+  (r/node ~ set! id node)
+  (r/stack_max ~ set! id stack_max)
+  (if_yes (>= node 0.0) (r/node_item ~ set! node id))
+  (r/counts ~ set! count_items (+ id 1.0))
+  id)
+
+# The item a node yields when dug or picked up, or `no_item` for a node nobody
+# can hold — §1's three reserved ids, and anything a mod opted out of.
+(fn item_of_node [r : ItemRegistry node : F64] : F64
+  (r/node_item ~ get node))
+
+(fn node_has_item? [r : ItemRegistry node : F64] : Bool
+  (>= (item_of_node r node) 0.0))
+
+# --- lookup ------------------------------------------------------------------
+
+(fn item_name [r : ItemRegistry id : F64] : Str
+  (var names r/names)
+  (var i id)
+  names/%i)
+
+(fn item_description [r : ItemRegistry id : F64] : Str
+  (var d r/descriptions)
+  (var i id)
+  d/%i)
+
+(fn item_node [r : ItemRegistry id : F64] : F64
+  (r/node ~ get id))
+
+# An item that can be placed is one that names a node. A pickaxe answers false
+# and §7.1's place never reaches the server with it.
+(fn placeable_item? [r : ItemRegistry id : F64] : Bool
+  (>= (item_node r id) 0.0))
+
+(fn item_stack_max [r : ItemRegistry id : F64] : F64
+  (r/stack_max ~ get id))
+
+# Linear, like every other name lookup here: it runs once per name at
+# registration and once per name on the wire, never per node.
+(fn item_named [r : ItemRegistry name : Str] : F64
+  (var names r/names)
+  (var found no_item)
+  (var i 0.0)
+  (var n (item_count r))
+  (while (< i n)
+    (if_yes (== names/%i name)
+      (set found i)
+      (set i n))
+    (set i (+ i 1.0)))
+  found)
+
+(fn item_registered? [r : ItemRegistry name : Str] : Bool
+  (!= (item_named r name) no_item))
+
+# --- tools -------------------------------------------------------------------
+
+# Declare that `item` digs `group` in `time_ms`, up to nodes rated `level`.
+#
+# Two numbers rather than upstream's `times` list indexed by rating, and the
+# simplification is deliberate: upstream gives a tool a different speed per
+# rating level, which is a curve nobody can tune without playing the game for
+# hours. One time and one ceiling expresses "this pick digs cracky-3 stone in
+# 0.9 s and cannot touch cracky-1 obsidian at all", which is the distinction
+# that changes play. The curve is a column to add when a mod wants it.
+(fn add_tool_cap [r : ItemRegistry item : F64 group : F64
+                  time_ms : F64 level : F64] : Nil
+  (var n (tool_entry_count r))
+  (if_yes (>= n max_items)
+    (fail (new ItemRegistryFull
+               $"item registry is full at ${max_items} tool capabilities")))
+  (r/tool_item ~ set! n item)
+  (r/tool_group ~ set! n group)
+  (r/tool_time ~ set! n time_ms)
+  (r/tool_level ~ set! n level)
+  (r/counts ~ set! count_tools (+ n 1.0)))
+
+(fn tool_entry_item [r : ItemRegistry i : F64] : F64 (r/tool_item ~ get i))
+(fn tool_entry_group [r : ItemRegistry i : F64] : F64 (r/tool_group ~ get i))
+(fn tool_entry_time [r : ItemRegistry i : F64] : F64 (r/tool_time ~ get i))
+(fn tool_entry_level [r : ItemRegistry i : F64] : F64 (r/tool_level ~ get i))
+
+(fn tool_digs? [r : ItemRegistry item : F64 group : F64] : Bool
+  (var found false)
+  (var n (tool_entry_count r))
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (&& (== (r/tool_item ~ get i) item)
+                (== (r/tool_group ~ get i) group))
+      (set found true)
+      (set i n))
+    (set i (+ i 1.0)))
+  found)
+
+# --- dig time ----------------------------------------------------------------
+#
+# §2's payoff, and the reason groups and tools are one section rather than two:
+# **how long a node takes to dig is a question about groups, asked of a tool
+# that never heard of the node.**
+#
+# ## A rating is difficulty, not permission — those are two mechanisms
+#
+# The first version of this function used a group's rating as a gate: a tool
+# declared a level and refused anything rated above it. That is wrong twice
+# over, and a five-line test caught it before it shipped. It made a bare hand
+# unable to dig stone or grass — regressing the whole existing game, since every
+# node M0-M7 registers would have been rated above a hand — and it collapsed two
+# of upstream's mechanisms into one.
+#
+# Upstream keeps them apart and so does this:
+#
+# - **A rating is difficulty.** `cracky 3` is soft, `cracky 1` is hard — lower
+#   is harder, which reads backwards until you notice the numbers are a
+#   *ranking* of how many tool tiers can manage it. It scales the time.
+# - **`level` is permission**, and it is an ordinary group. A node in
+#   `{^level 2}` needs a tool that declares it reaches level 2; nothing else can
+#   break it at all. A node that declares no `level` — which is every node in
+#   `mods/default` — is rated 0 and a bare hand qualifies.
+#
+# Keeping permission in a group rather than in a column is what makes it a mod's
+# to use: nothing here mentions obsidian, and a mod that wants an unbreakable
+# node writes `^groups {^level 9}`.
+
+# The group whose rating gates rather than scales. A name, because it is an
+# ordinary group and a mod declares it like any other.
+(let level_group_name "level")
+
+# What a bare hand manages: a fixed base time, and permission up to level 0 —
+# i.e. anything that has not deliberately locked itself.
+#
+# Upstream's hand is itself a tool definition. Here it is the fallback, because
+# "the player is always holding something" is a claim the inventory cannot make:
+# an empty hotbar slot is a real state (§7.1).
+(let hand_time_ms 900.0)
+(let hand_level 0.0)
+
+# Nothing the holder has can break it — a different answer from "slowly", and
+# the reason `level` is worth having as a separate mechanism.
+(let undiggable -1.0)
+
+# Harder ratings take proportionally longer. One multiply rather than upstream's
+# per-level times list: the list is a curve nobody can tune without playing for
+# hours, and `(4 - rating)` expresses the same ordering — rating 3 at 1x, 2 at
+# 2x, 1 at 3x. A real curve is a column to add when a mod asks for one.
+(fn rating_factor [rating : F64] : F64
+  (if (<= rating 0.0) 1.0 ($math/max 1.0 (- 4.0 rating))))
+
+(fn level_of [g : GroupRegistry node : F64] : F64
+  (var lg (group_named g level_group_name))
+  (if (< lg 0.0) 0.0 (rating_of g node lg)))
+
+# Milliseconds to dig `node` while holding `item` (`no_item` for a bare hand),
+# or `undiggable`.
+(fn dig_time_ms [items : ItemRegistry g : GroupRegistry
+                 node : F64 item : F64] : F64
+  (var needed (level_of g node))
+  (var best undiggable)
+
+  # The tool's own capabilities first: the fastest cap whose group the node is
+  # in, and whose level reaches the node's.
+  (if_yes (!= item no_item)
+    (var n (tool_entry_count items))
+    (var i 0.0)
+    (while (< i n)
+      (if_yes (== (tool_entry_item items i) item)
+        (var grp (tool_entry_group items i))
+        (var rating (rating_of g node grp))
+        (if_yes (&& (> rating 0.0) (>= (tool_entry_level items i) needed))
+          (var t (* (tool_entry_time items i) (rating_factor rating)))
+          (if_yes (|| (== best undiggable) (< t best)) (set best t))))
+      (set i (+ i 1.0))))
+
+  # No cap matched, so it is swung by hand — which still works unless the node
+  # locked itself above what a hand reaches.
+  (if_yes (== best undiggable)
+    (if_yes (<= needed hand_level)
+      # The hand has no group of its own, so the *hardest* rating the node
+      # carries is what slows it down. A node in no group at all digs at the
+      # base time, which is what keeps a placeholder content set playable.
+      (var hardest 0.0)
+      (var entries (group_entry_count g))
+      (var e 0.0)
+      (while (< e entries)
+        (if_yes (== (entry_owner g e) node)
+          (var r (entry_rating g e))
+          (if_yes (|| (== hardest 0.0) (< r hardest)) (set hardest r)))
+        (set e (+ e 1.0)))
+      (set best (* hand_time_ms (rating_factor hardest)))))
+  best)

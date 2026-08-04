@@ -37,6 +37,7 @@
 # one names where a number is defined rather than where it was passed through.
 (import [Game
          register_tile register_node register_drop_rule
+         register_group register_item register_tool_cap
          register_biome_def register_ore_def]
         from "../../../core/api.gene")
 (import [tile_solid tile_ore tile_overlay] from "../../../core/tiles.gene")
@@ -142,6 +143,69 @@
   (register_node game "miclone:lamp" ^tiles ["miclone:lamp"]
                  ^light_source 14.0))
 
+# --- groups ------------------------------------------------------------------
+#
+# §2's cross-cutting mechanism, and the first thing in this file that another
+# mod could rely on without either of us knowing about the other: a pickaxe
+# says it digs `cracky` and gets every stone anyone ever registers.
+#
+# Upstream's ratings, and the direction reads backwards until you notice it is a
+# ranking rather than a hardness: **lower is harder**. `cracky 3` is soft stone,
+# `cracky 1` would be obsidian. `core/item.gene` scales dig time by it.
+#
+# Nothing here declares `level`, which is the group that gates rather than
+# scales — so every node in this game stays diggable by a bare hand, exactly as
+# it was before groups existed. That is the property the whole change had to
+# preserve.
+
+(fn setup_groups [game : Game] : Nil
+  (register_group game "miclone:stone" ^group "cracky" ^rating 3.0)
+  (register_group game "miclone:sandstone" ^group "cracky" ^rating 3.0)
+  (register_group game "miclone:coal_ore" ^group "cracky" ^rating 3.0)
+  (register_group game "miclone:iron_ore" ^group "cracky" ^rating 2.0)
+  (register_group game "miclone:gold_ore" ^group "cracky" ^rating 2.0)
+  (register_group game "miclone:diamond_ore" ^group "cracky" ^rating 1.0)
+  (register_group game "miclone:dirt" ^group "crumbly" ^rating 3.0)
+  (register_group game "miclone:grass" ^group "crumbly" ^rating 3.0)
+  (register_group game "miclone:sand" ^group "crumbly" ^rating 3.0)
+  (register_group game "miclone:snow" ^group "crumbly" ^rating 3.0)
+  # Gravel and sand are the ones upstream makes fall. Nothing acts on
+  # `falling_node` yet — §12's tick is what runs it — and the group is declared
+  # now because it costs a line and because a mod that wants to act on it should
+  # find the vocabulary already agreed.
+  (register_group game "miclone:gravel" ^group "crumbly" ^rating 2.0)
+  (register_group game "miclone:gravel" ^group "falling_node" ^rating 1.0)
+  (register_group game "miclone:sand" ^group "falling_node" ^rating 1.0)
+  (register_group game "miclone:lamp" ^group "cracky" ^rating 3.0))
+
+# --- items and tools ---------------------------------------------------------
+#
+# Every node above is already an item, because `register_node` registers one
+# (§2: "a node is automatically an item unless it says otherwise"). What is left
+# is the items that are *not* nodes — which until now this game could not have.
+#
+# **The lump is what §9.1 called a placeholder becoming real.** `core/api.gene`
+# used to say ores drop themselves because "coal should drop a lump, and a lump
+# is an item that is not a node, and §2's item registry is not built". It is
+# built, so coal drops a lump.
+
+(fn setup_items [game : Game] : Nil
+  (register_item game "miclone:coal_lump" ^description "Coal Lump")
+  (register_item game "miclone:iron_lump" ^description "Iron Lump")
+  # A pickaxe places nothing, which is what `^places` being absent means, and is
+  # why right-clicking with one selects no node to put in the world.
+  (register_item game "miclone:wood_pickaxe" ^description "Wooden Pickaxe"
+                 ^stack_max 1.0)
+  (register_item game "miclone:steel_pickaxe" ^description "Steel Pickaxe"
+                 ^stack_max 1.0)
+  # A wooden pick beats a hand on stone and cannot touch anything a mod locks;
+  # steel is faster and reaches level 1. Neither mentions a node.
+  (register_tool_cap game "miclone:wood_pickaxe" ^group "cracky" ^time_ms 400.0)
+  (register_tool_cap game "miclone:steel_pickaxe" ^group "cracky"
+                     ^time_ms 250.0 ^level 1.0)
+  (register_tool_cap game "miclone:steel_pickaxe" ^group "crumbly"
+                     ^time_ms 300.0 ^level 1.0))
+
 # --- drops -------------------------------------------------------------------
 #
 # A table of exceptions, not of entries: a node drops itself unless a rule here
@@ -161,7 +225,11 @@
 # inventing a node nobody can place.
 
 (fn setup_drops [game : Game] : Nil
-  (register_drop_rule game "miclone:grass" ^item "miclone:dirt"))
+  (register_drop_rule game "miclone:grass" ^item "miclone:dirt")
+  # What §2's split bought: a dug node yielding something that is not that node
+  # and is not a node at all.
+  (register_drop_rule game "miclone:coal_ore" ^item "miclone:coal_lump")
+  (register_drop_rule game "miclone:iron_ore" ^item "miclone:iron_lump"))
 
 # --- biomes ------------------------------------------------------------------
 #
@@ -269,6 +337,8 @@
 (fn register_all [game : Game] : Nil
   (setup_tiles game)
   (setup_nodes game)
+  (setup_groups game)
+  (setup_items game)
   (setup_drops game)
   (setup_biomes game)
   (setup_ores game))

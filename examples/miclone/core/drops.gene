@@ -21,12 +21,19 @@
 # and the one hardest to notice, because the node does disappear, which is half
 # of what a dig looks like.
 #
-# So `drop_item` answers `id` for anything unregistered, and the table is only
-# for the interesting cases: grass drops dirt, and later stone drops cobble and
-# an ore drops a lump. That is also §2's shape for the M7 API — `^drops` is a
-# field a definition may omit.
+# So `drop_item` answers *the node's own item* for anything unregistered, and
+# the table is only for the interesting cases: grass drops dirt, and later stone
+# drops cobble and an ore drops a lump.
+#
+# **The default moved when §2's items arrived.** It used to be `id` — a node
+# dropping its own content id, back when an item id was a content id. It is now
+# `item_of_node`, which is the same sentence in the new vocabulary and is why
+# this function takes the item registry: "a node drops itself" has to be
+# resolved somewhere, and one place is better than every call site.
 
 (mod drops ^profile web)
+
+(import [ItemRegistry item_of_node no_item] from "./item.gene")
 
 (let max_content 4096.0)
 
@@ -58,8 +65,13 @@
 (fn declared? [t : DropTable id : F64] : Bool
   (== (t/declared ~ get id) 1.0))
 
-(fn drop_item [t : DropTable id : F64] : F64
-  (if (declared? t id) (t/item ~ get id) id))
+(fn drop_item [t : DropTable items : ItemRegistry id : F64] : F64
+  (if (declared? t id) (t/item ~ get id) (item_of_node items id)))
 
-(fn drop_count [t : DropTable id : F64] : F64
-  (if (declared? t id) (t/count ~ get id) 1.0))
+# A node with no item of its own — §1's reserved ids, or one a mod opted out of
+# with `^is_item false` — yields nothing, whatever the count says. Without this
+# a dig on such a node would add `no_item` to the hotbar and the hotbar would
+# hold a stack of -1.
+(fn drop_count [t : DropTable items : ItemRegistry id : F64] : F64
+  (if (== (drop_item t items id) no_item) 0.0
+    (if (declared? t id) (t/count ~ get id) 1.0)))
