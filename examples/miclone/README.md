@@ -175,20 +175,24 @@ Which is why `tools/client_smoke.mjs` exists. A browser is the obvious place to
 check that a keypress reaches the physics and a click reaches the edit, and the
 least reliable one available: throttled frames, black screenshots without a
 recording permission, and an automation extension that can simply disconnect.
-So it stubs the twenty host calls the client makes and drives the real `main()`
-with synthetic events. It found the spawn scan stopping at the first *drawn*
-node — water is drawn, this site is 23% sea, and the player was spawning
-afloat.
+So `tools/dom_stub.mjs` stubs the twenty host calls the client makes and the
+smoke test drives the real `main()` with synthetic events. It found the spawn
+scan stopping at the first *drawn* node — water is drawn, this site is 23% sea,
+and the player was spawning afloat. The same stub carries the networked client
+in `tools/net_client_smoke.mjs` below, which is the point of it being a module:
+the DOM is what neither client has, and the transport is not.
 
 ### §D8 M6 — client and server as separate processes
 
 ```sh
+gene build --target web client/net_main.gene --out-dir dist
+
+node tools/net_client_smoke.mjs  # headless: boots a server, plays it, ~40 s
+
 gene run server                  # opens or generates the world, listens on 8790
                                  # GENE_MICLONE_WORLD=/tmp/w for a throwaway one
-
 node tools/net_probe.mjs         # headless: joins it, in another shell
 
-gene build --target web client/net_main.gene --out-dir dist
 python3 -m http.server 8000      # then open http://localhost:8000/net.html
 ```
 
@@ -198,11 +202,31 @@ goes to the server, is applied there, and comes back as a node delta with the
 drop in the hotbar. Same physics, mesher, raycast and hotbar as the local
 client, because all of them are `core/` and neither side has its own copy.
 
-The probe is the only harness here that runs two processes: it joins over a
-real WebSocket and drives the whole §10 exchange with the same `core/` modules
-the browser client uses — handshake, registry, flow-controlled block transfer,
-and §7.1's authoritative dig and place, including the server refusing a node
-the client does not hold.
+Two harnesses run two processes, and they are not the same test. **The probe is
+a peer**: it speaks §10 itself, out of `core/`, and proves the server answers
+correctly — handshake, registry, flow-controlled block transfer, and §7.1's
+authoritative dig and place, including the server refusing a node the client
+does not hold. **The smoke test is a client**: it boots `gene run server`
+itself and runs the 535 lines of `client/net_main.gene` that the probe
+replaces, over the platform's own `WebSocket`. Only the DOM is stubbed, by the
+same `tools/dom_stub.mjs` the local client's smoke test uses; the socket is
+real, and the `WebSocket` the client gets is a subclass that tallies frames by
+kind so a failure can say *which* message never arrived.
+
+It asserts that the handshake moves the player to the spawn the server chose,
+that a click before the world arrives never reaches the wire, that 576 blocks
+arrive in nine windows of 64 and mesh to 229 chunks and 62,395 faces, that a
+dug node's drop reaches the hotbar **because the server sent an inventory**
+rather than because the client predicted one, that the delta remeshes the chunk
+around it (62,395 → 62,399 faces) and the place puts it back, and that placing
+from an empty slot never becomes a message at all.
+
+It keeps its world at `/tmp/miclone_smoke_world` between runs — 64 s to
+generate, 28 s to load — and discards it if the run failed, because a world
+with a hole in it is how the next run inherits a fixture nobody wrote.
+`MICLONE_SMOKE_FRESH=1` forces a new one. **Wait on the port, not the log**: the
+server's stdout is block-buffered when it is a pipe, so "listening on 8790" can
+sit unflushed for the whole run.
 
 **The client asks for terrain; the server does not push it.** That is flow
 control and it is not optional: the WebSocket outbound queue holds 256 frames

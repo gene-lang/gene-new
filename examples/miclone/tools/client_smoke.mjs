@@ -1,114 +1,19 @@
-// The client's wiring, without a browser.
+// The local client's wiring, without a browser.
 //
 //   gene build --target web client/main.gene --out-dir dist    (and friends)
 //   node tools/client_smoke.mjs
 //
-// Every other harness here tests a module. This tests the part no module test
-// can see: that `client/main.gene` connects them — that a keydown reaches the
-// physics step, that a click reaches the raycast and the edit, that a dug node
-// arrives in the hotbar and a placed one leaves it.
+// Every other single-process harness here tests a module. This tests the part
+// no module test can see: that `client/main.gene` connects them — that a
+// keydown reaches the physics step, that a click reaches the raycast and the
+// edit, that a dug node arrives in the hotbar and a placed one leaves it.
 //
-// It exists because that part kept being the untested part. A browser is the
-// obvious place to check it and is the least reliable one available here: a
-// backgrounded tab throttles `requestAnimationFrame` to nothing, `screencapture`
-// of a visible window returns black without a screen-recording permission, and
-// the automation extension can simply be disconnected — which is what happened
-// during M5. So the DOM the client actually uses is stubbed instead. It is
-// about eighty lines, because the client uses about twenty host calls.
-//
-// **This is not a rendering test.** Every WebGL call is a no-op that records
-// nothing, so it says the client asked for the right things in the right order
-// only insofar as asking wrongly would throw. What it does check is every line
-// of `main` that is not a draw call.
+// It exists because that part kept being the untested part. The DOM it needs is
+// `tools/dom_stub.mjs`, which explains why a stub rather than a tab; the
+// networked client's equivalent is `tools/net_client_smoke.mjs`, which stubs
+// the same DOM and uses a real socket against a real server.
 
-// --- the stub ---------------------------------------------------------------
-
-const listeners = new Map();       // "id:type" -> [fn]
-const texts = new Map();           // element id -> textContent
-
-function element(id) {
-  return {
-    __id: id,
-    get textContent() { return texts.get(id) ?? ""; },
-    set textContent(v) { texts.set(id, v); },
-    width: 1280, height: 720,
-    addEventListener(type, fn) {
-      const key = `${id}:${type}`;
-      if (!listeners.has(key)) listeners.set(key, []);
-      listeners.get(key).push(fn);
-    },
-    // The client draws its atlas into an offscreen 2D canvas.
-    getContext(kind) { return kind === "2d" ? ctx2d : gl; },
-  };
-}
-
-const ctx2d = new Proxy({}, { get: () => () => {} });
-
-// Every WebGL entry point the client can reach, as a no-op. The three
-// predicates must answer true or `build_program` logs an error and carries on
-// with a program that is not there.
-const gl = new Proxy({}, {
-  get(_, name) {
-    if (name === "getShaderParameter" || name === "getProgramParameter")
-      return () => true;
-    if (name === "getShaderInfoLog" || name === "getProgramInfoLog")
-      return () => "";
-    if (name === "getUniformLocation") return () => ({});
-    if (name.startsWith("create")) return () => ({});
-    if (name === "getError") return () => 0;
-    if (name === "drawingBufferWidth" || name === "drawingBufferHeight")
-      return 1280;
-    return () => {};
-  },
-});
-
-const stage = element("stage");
-const hud = element("hud");
-const hotbar = element("hotbar");
-const byId = { stage, hud, hotbar, aim: element("aim"), help: element("help") };
-
-let now = 0;
-let pendingFrame = null;
-
-globalThis.document = {
-  getElementById: (id) => byId[id] ?? element(id),
-  createElement: () => element("offscreen"),
-};
-globalThis.window = {
-  innerWidth: 1280, innerHeight: 720,
-  addEventListener: (type, fn) => element("window").addEventListener(type, fn),
-  requestAnimationFrame: (cb) => { pendingFrame = cb; return 1; },
-};
-// The generated module reaches these unqualified.
-globalThis.requestAnimationFrame = window.requestAnimationFrame;
-// The frame clock is `now`, handed to the rAF callback so `dt` and the fps
-// window are under this file's control. `performance.now()` stays real, so the
-// build timings the client logs are the client's and not the stub's.
-
-// `window` is a fresh object per `element()` call above, so route its listeners
-// through one shared identity.
-const win = element("window");
-globalThis.window.addEventListener = win.addEventListener;
-
-function fire(target, type, ev = {}) {
-  for (const fn of listeners.get(`${target}:${type}`) ?? [])
-    fn({ preventDefault() {}, stopPropagation() {}, ...ev });
-}
-function tick(frames = 1, ms = 16.7) {
-  for (let i = 0; i < frames; i++) {
-    now += ms;
-    const cb = pendingFrame;
-    pendingFrame = null;
-    if (cb) cb(now);
-  }
-}
-const key = (k, up = false) => fire("window", up ? "keyup" : "keydown", { key: k });
-const click = (button = 0) => {
-  fire("stage", "mousedown", { clientX: 400, clientY: 300, button });
-  fire("window", "mouseup", { clientX: 400, clientY: 300, button });
-};
-
-// --- run it ------------------------------------------------------------------
+import { hud, hotbar, fire, tick, key, click, lookDown } from "./dom_stub.mjs";
 
 const { main } = await import("../dist/main.mjs");
 const t0 = Date.now();
@@ -142,29 +47,27 @@ say(hud.textContent.includes("flying"), "F toggles fly mode");
 key("f"); key("f", true); tick(70);
 say(!hud.textContent.includes("flying"), "and toggles it back");
 
-// The hotbar starts empty and a dig fills it. Look down first, so the ray has
-// the ground in front of it rather than the horizon: a mousemove with the
-// button held is how the client turns the view.
-say(hotbar.textContent.includes("—"), "the hotbar starts empty",
+// The *selected* slot, which is the bracketed one. Reading the whole hotbar for
+// an "—" would find one in slots 2-8 no matter what slot 1 holds.
+const heldLabel = () => (hotbar.textContent.match(/\[([^\]]*)\]/) ?? ["", ""])[1];
+const heldCount = () => Number((heldLabel().match(/x(\d+)/) ?? [0, 0])[1]);
+
+// The hotbar starts empty and a dig fills it.
+say(heldLabel() === "—", "the hotbar starts empty",
     hotbar.textContent.slice(0, 48));
-fire("stage", "mousedown", { clientX: 400, clientY: 300, button: 0 });
-fire("window", "mousemove", { movementX: 0, movementY: 400 });
-fire("window", "mouseup", { clientX: 400, clientY: 700, button: 0 });
+lookDown();
 tick(4);
 click(0);
 tick(4);
-const afterDig = hotbar.textContent;
-say(/x\d+/.test(afterDig), "a click digs and the drop arrives in the hotbar",
-    afterDig.slice(0, 56));
+say(heldCount() === 1, "a click digs and the drop arrives in the hotbar",
+    heldLabel());
 
 // Placing spends it again.
-const held = Number((afterDig.match(/x(\d+)/) ?? [0, 0])[1]);
+const held = heldCount();
 click(2);
 tick(4);
-const afterPlace = Number((hotbar.textContent.match(/x(\d+)/) ?? [0, 0])[1]);
-say(afterPlace === held - 1 || (held === 1 && hotbar.textContent.includes("—")),
-    "a right-click places it and spends the stack",
-    `${held} -> ${afterPlace || 0}`);
+say(heldCount() === held - 1, "a right-click places it and spends the stack",
+    `${held} -> ${heldCount()} · ${heldLabel()}`);
 
 // Slot selection, by key and by wheel. The selected slot is the bracketed one.
 const selectedIndex = () =>

@@ -2315,6 +2315,44 @@ Four layers, and the second is the one that matters most here.
    authority: a mod vetoing an edit the client already applied optimistically,
    and the rollback that follows.
 
+   *M6: built, as two harnesses that are not the same test. `tools/net_probe.mjs`
+   is a **peer** — it speaks the protocol itself, out of `core/`, and proves the
+   server answers correctly, including refusing a node the client does not hold.
+   `tools/net_client_smoke.mjs` is a **client** — it boots `gene run server` as
+   its own process and runs the 535 lines of `client/net_main.gene` that the
+   probe replaces, over the platform's own `WebSocket`. Neither subsumes the
+   other: the probe owns "the server is right", the smoke test owns "the client
+   uses it right", and `net_main.gene` had no automated test at all until the
+   second one existed.*
+
+   *What the client harness stubs is the DOM and nothing else — the transport is
+   a real socket to a real process, and the client reaches it through the same
+   `$gene_ws_connect` a tab would. It swaps in a `WebSocket` **subclass** that
+   tallies frames by kind while delegating everything to the real one, which is
+   what lets a failure say which message never arrived rather than "the world did
+   not turn up". Twelve checks: the handshake moves the player to the
+   server-chosen spawn; a click before the world arrives never reaches the wire;
+   576 blocks arrive in nine windows of 64 and mesh to 229 chunks and 62,395
+   faces; a dig goes out and the drop comes back **because the server sent an
+   inventory**, not because the client predicted one; the delta remeshes the
+   chunk around it (62,395 → 62,399 faces) and the place puts it back
+   (→ 62,395); placing from an empty slot never becomes a message; a drag turns
+   the view without digging.*
+
+   *Still missing from this layer: disconnect and reconnect within one run —
+   §11's `probes/run_persistence.gene` covers restart, and the face count above
+   covers a within-session round trip, but not a client rejoining — and the mod
+   veto, which needs §9 and is M7's.*
+
+   *Two traps it is downstream of. **The server's stdout is block-buffered when
+   it is a pipe**, so a harness waiting for "listening on 8790" hangs while the
+   server is happily serving; the readiness signal is the port. And a world costs
+   64 s to generate and 28 s to load, so the harness keeps its world between runs
+   at `/tmp/miclone_smoke_world` — safe because the one edit it makes is a dig
+   followed by a place of the same node — and **discards it if the run failed**,
+   since a world with a hole in it is how the next run inherits a fixture nobody
+   wrote.*
+
 Performance is a standing gate, per `AGENTS.md`: meshing time per chunk,
 mapgen time per chunk, frame time at a fixed view distance, and server tick
 time at a fixed player count. **Mapgen time per chunk and server tick time are
