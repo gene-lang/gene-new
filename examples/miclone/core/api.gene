@@ -182,6 +182,14 @@
                    ^solid : Bool?
                    ^opaque : Bool?
                    ^propagates_light : Bool?
+                   # "Do not draw a face against another node of my own kind."
+                   # For anything see-through that grows in clumps — leaves,
+                   # and later glass in a pane — where the internal faces of the
+                   # clump are most of what gets meshed and none of it is
+                   # visible. Off by default: it is wrong for anything opaque
+                   # (which culls already) and wrong for a node whose faces a
+                   # player can get between.
+                   ^merges_same : Bool?
                    ^light_source : F64?
                    ^is_item : Bool?
                    ^stack_max : F64?] : F64
@@ -197,6 +205,7 @@
   (var id (register game/nodes name (?? drawtype draw_normal)
                     (?? solid true) (?? opaque true)
                     (?? propagates_light false)
+                    (?? merges_same false)
                     (?? light_source 0.0)
                     top side bottom))
   # §2: "A node is automatically an item unless it says otherwise." The item

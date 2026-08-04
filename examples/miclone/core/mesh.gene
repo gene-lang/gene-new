@@ -98,17 +98,38 @@
 (fn chunk_base [ax : F64 ay : F64 az : F64 sy : F64 sz : F64] : F64
   (+ ax (+ (* ay sy) (* az sz))))
 
-# A face exists when the neighbour it faces does not hide it.
+# A face exists when the neighbour it faces does not hide it, and there are two
+# ways to be hidden.
 #
-# Both traversals below hoist the two columns they need out of the registry
-# once per chunk and index them directly, rather than calling `opaque?` and
-# `drawn?` per neighbour. The registry is still the source of truth — these are
-# its columns, not a copy — but the lookup happens 28,672 times per chunk, and
-# at that count the cross-module call and the property load off `reg` cost more
-# than the array read they wrap.
-(fn face_visible? [opaque_col : (Buffer F32) content : (Buffer F32)
-                   i : F64] : Bool
-  (!= (opaque_col ~ get (content ~ get i)) 1.0))
+# The first is opacity, which is a property of the neighbour alone. The second
+# is **sameness**, which is the only question in this file that needs both sides
+# of a face: a node whose `merges_same` column is set does not draw against
+# another node of its own kind. That is what makes a canopy affordable — leaves
+# are see-through, so they are not opaque, so before this every internal face of
+# every tree was meshed. M8's trees took the world from 62,395 faces to 208,608
+# and the overwhelming majority of the difference was leaves facing leaves.
+#
+# It is per-**id**, not per-drawtype, and that matters: two different mods'
+# leaves are different ids and their faces against each other are still drawn,
+# which is right, because they do not look alike. Upstream reaches the same
+# place from the other direction — `leaves_style = opaque` makes leaves solid,
+# which culls the internal faces *and* wrongly hides whatever is behind them.
+#
+# Both traversals below hoist the columns they need out of the registry once per
+# chunk and index them directly, rather than calling `opaque?` and `drawn?` per
+# neighbour. The registry is still the source of truth — these are its columns,
+# not a copy — but the lookup happens 28,672 times per chunk, and at that count
+# the cross-module call and the property load off `reg` cost more than the array
+# read they wrap.
+#
+# `mine` is the id of the node that owns the face, passed rather than re-read:
+# the caller already has it, and the alternative is a second indexed load per
+# neighbour on the hottest loop in the renderer.
+(fn face_visible? [opaque_col : (Buffer F32) merges_col : (Buffer F32)
+                   content : (Buffer F32) i : F64 mine : F64] : Bool
+  (var theirs (content ~ get i))
+  (if (== (opaque_col ~ get theirs) 1.0) false
+    (! (&& (== theirs mine) (== (merges_col ~ get mine) 1.0)))))
 
 # --- pass one: count ---------------------------------------------------------
 #
@@ -120,6 +141,7 @@
 (fn count_faces [reg : Registry content : (Buffer F32)
                  base : F64 sy : F64 sz : F64] : F64
   (var opaque_col reg/opaque)
+  (var merges_col reg/merges_same)
   (var drawtype_col reg/drawtype)
   (var faces 0.0)
   (var z 0.0)
@@ -130,18 +152,19 @@
       (var x 0.0)
       (while (< x chunk_dim)
         (var i (+ row x))
-        (if_yes (!= (drawtype_col ~ get (content ~ get i)) draw_airlike)
-          (if_yes (face_visible? opaque_col content (+ i 1.0))
+        (var id (content ~ get i))
+        (if_yes (!= (drawtype_col ~ get id) draw_airlike)
+          (if_yes (face_visible? opaque_col merges_col content (+ i 1.0) id)
             (set faces (+ faces 1.0)))
-          (if_yes (face_visible? opaque_col content (- i 1.0))
+          (if_yes (face_visible? opaque_col merges_col content (- i 1.0) id)
             (set faces (+ faces 1.0)))
-          (if_yes (face_visible? opaque_col content (+ i sy))
+          (if_yes (face_visible? opaque_col merges_col content (+ i sy) id)
             (set faces (+ faces 1.0)))
-          (if_yes (face_visible? opaque_col content (- i sy))
+          (if_yes (face_visible? opaque_col merges_col content (- i sy) id)
             (set faces (+ faces 1.0)))
-          (if_yes (face_visible? opaque_col content (+ i sz))
+          (if_yes (face_visible? opaque_col merges_col content (+ i sz) id)
             (set faces (+ faces 1.0)))
-          (if_yes (face_visible? opaque_col content (- i sz))
+          (if_yes (face_visible? opaque_col merges_col content (- i sz) id)
             (set faces (+ faces 1.0))))
         (set x (+ x 1.0)))
       (set y (+ y 1.0)))
@@ -227,6 +250,7 @@
                 base : F64 sy : F64 sz : F64
                 ox : F64 oy : F64 oz : F64] : F64
   (var opaque_col reg/opaque)
+  (var merges_col reg/merges_same)
   (var drawtype_col reg/drawtype)
   (var top_col reg/tile_top)
   (var side_col reg/tile_side)
@@ -249,32 +273,32 @@
           (var y1 (+ wy 1.0))
           (var z1 (+ wz 1.0))
           (var side (side_col ~ get id))
-          (if_yes (face_visible? opaque_col content (+ i 1.0))
+          (if_yes (face_visible? opaque_col merges_col content (+ i 1.0) id)
             (put_quad verts idx face side
                       (lit ~ get (+ i 1.0)) shade_side_x
                       x1 wy z1  x1 wy wz  x1 y1 wz  x1 y1 z1)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? opaque_col content (- i 1.0))
+          (if_yes (face_visible? opaque_col merges_col content (- i 1.0) id)
             (put_quad verts idx face side
                       (lit ~ get (- i 1.0)) shade_side_x
                       wx wy wz  wx wy z1  wx y1 z1  wx y1 wz)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? opaque_col content (+ i sy))
+          (if_yes (face_visible? opaque_col merges_col content (+ i sy) id)
             (put_quad verts idx face (top_col ~ get id)
                       (lit ~ get (+ i sy)) shade_top
                       wx y1 z1  x1 y1 z1  x1 y1 wz  wx y1 wz)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? opaque_col content (- i sy))
+          (if_yes (face_visible? opaque_col merges_col content (- i sy) id)
             (put_quad verts idx face (bottom_col ~ get id)
                       (lit ~ get (- i sy)) shade_bottom
                       wx wy wz  x1 wy wz  x1 wy z1  wx wy z1)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? opaque_col content (+ i sz))
+          (if_yes (face_visible? opaque_col merges_col content (+ i sz) id)
             (put_quad verts idx face side
                       (lit ~ get (+ i sz)) shade_side_z
                       wx wy z1  x1 wy z1  x1 y1 z1  wx y1 z1)
             (set face (+ face 1.0)))
-          (if_yes (face_visible? opaque_col content (- i sz))
+          (if_yes (face_visible? opaque_col merges_col content (- i sz) id)
             (put_quad verts idx face side
                       (lit ~ get (- i sz)) shade_side_z
                       x1 wy wz  wx wy wz  wx y1 wz  x1 y1 wz)

@@ -332,6 +332,19 @@ support out from under a sand column, stops talking, and waits for node deltas
 to arrive on a silent socket. That is the whole difference between M6's reactive
 server and this one.
 
+### §5 — leaf face culling
+
+```sh
+node tools/mesh_bench.mjs
+node tools/world_build.mjs       # faces, world-wide
+```
+
+`^merges_same` on `register_node`: a node declines to draw a face against
+another node of its own kind. **208,608 faces to 117,528**, 43.7% of the
+world's geometry, and nothing looks different because none of those faces was
+visible — a canopy is a hundred leaves all facing each other. It is on the wire
+(protocol v6) because the client is what meshes. See design.md §3.6.
+
 ### §8, §9 — the callbacks, and a blocker that was not one
 
 ```sh

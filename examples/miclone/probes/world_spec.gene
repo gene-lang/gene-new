@@ -166,13 +166,16 @@
 
   # Ids are assigned at load, never hardcoded: the first mod node lands
   # immediately after the reserved block, whatever it is called.
-  # Ten arguments: the physical half, then the three atlas tiles §5 reads per
-  # face. Grass is why a node carries three rather than one.
-  (var stone (register r "default:stone" draw_normal true true false 0.0
+  # Eleven arguments: the physical half, then the three atlas tiles §5 reads per
+  # face. Grass is why a node carries three rather than one. The fourth flag is
+  # §5's `merges_same` — glass takes it here because glass in a pane is the
+  # second thing that wants it after leaves, and a spec is where the shape
+  # should be exercised before a mod needs it.
+  (var stone (register r "default:stone" draw_normal true true false false 0.0
                        0.0 0.0 0.0))
-  (var glass (register r "default:glass" draw_glasslike true false true 0.0
+  (var glass (register r "default:glass" draw_glasslike true false true true 0.0
                        1.0 1.0 1.0))
-  (var lamp (register r "default:lamp" draw_normal true true false 14.0
+  (var lamp (register r "default:lamp" draw_normal true true false false 14.0
                       2.0 3.0 4.0))
   (check_f out "first dynamic id" stone first_dynamic_content)
   (check_f out "second dynamic id" glass (+ first_dynamic_content 1.0))

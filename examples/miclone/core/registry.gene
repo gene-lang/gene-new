@@ -66,6 +66,12 @@
           ^solid        (Buffer F32)    # blocks movement
           ^opaque       (Buffer F32)    # hides the face behind it
           ^propagates   (Buffer F32)    # light passes through
+          # Does not draw a face against another node of its own kind. §5's
+          # cheapest cull and the only one that needs both sides of a face:
+          # a see-through node is not opaque, so every internal face of a
+          # cluster of them is drawn, and a tree's canopy is almost entirely
+          # internal faces. See `core/mesh.gene` for the number.
+          ^merges_same  (Buffer F32)
           ^light_source (Buffer F32)    # light emitted, 0..15
           ^tile_top     (Buffer F32)    # atlas index, +Y face
           ^tile_side    (Buffer F32)    # atlas index, the four side faces
@@ -80,6 +86,7 @@
     (set! self/solid ($buffer F32 max_content))
     (set! self/opaque ($buffer F32 max_content))
     (set! self/propagates ($buffer F32 max_content))
+    (set! self/merges_same ($buffer F32 max_content))
     (set! self/light_source ($buffer F32 max_content))
     (set! self/tile_top ($buffer F32 max_content))
     (set! self/tile_side ($buffer F32 max_content))
@@ -120,6 +127,7 @@
 # argument ergonomics belong.
 (fn register [r : Registry name : Str drawtype : F64
               solid : Bool opaque : Bool propagates : Bool
+              merges_same : Bool
               light_source : F64
               tile_top : F64 tile_side : F64 tile_bottom : F64] : F64
   (var id (registered_count r))
@@ -131,6 +139,7 @@
   (r/solid ~ set! slot (bool_byte solid))
   (r/opaque ~ set! slot (bool_byte opaque))
   (r/propagates ~ set! slot (bool_byte propagates))
+  (r/merges_same ~ set! slot (bool_byte merges_same))
   (r/light_source ~ set! slot light_source)
   (r/tile_top ~ set! slot tile_top)
   (r/tile_side ~ set! slot tile_side)
@@ -142,7 +151,7 @@
 (fn register_uniform [r : Registry name : Str drawtype : F64
                       solid : Bool opaque : Bool propagates : Bool
                       light_source : F64 tile : F64] : F64
-  (register r name drawtype solid opaque propagates light_source
+  (register r name drawtype solid opaque propagates false light_source
             tile tile tile))
 
 # The three reserved ids of §1, registered first so their numbering is a
@@ -177,6 +186,9 @@
 
 (fn propagates_light? [r : Registry id : F64] : Bool
   (== (r/propagates ~ get id) 1.0))
+
+(fn merges_same? [r : Registry id : F64] : Bool
+  (== (r/merges_same ~ get id) 1.0))
 
 (fn light_source_of [r : Registry id : F64] : F64
   (r/light_source ~ get id))

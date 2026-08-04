@@ -23,7 +23,7 @@
 (mod protocol_spec ^profile web)
 
 (import [Registry new_registry registered_count name_of drawtype_of solid?
-         opaque? propagates_light? light_source_of tile_top_of tile_side_of
+         opaque? propagates_light? merges_same? light_source_of tile_top_of tile_side_of
          tile_bottom_of register_uniform draw_normal draw_glasslike draw_liquid]
         from "../core/registry.gene")
 (import [Game] from "../core/api.gene")
@@ -183,8 +183,10 @@
       (set draw_diff (+ draw_diff 1.0)))
     (if_yes (|| (!= (solid? client_reg i) (solid? server_reg i))
                 (|| (!= (opaque? client_reg i) (opaque? server_reg i))
-                    (!= (propagates_light? client_reg i)
-                        (propagates_light? server_reg i))))
+                    (|| (!= (propagates_light? client_reg i)
+                            (propagates_light? server_reg i))
+                        (!= (merges_same? client_reg i)
+                            (merges_same? server_reg i)))))
       (set flag_diff (+ flag_diff 1.0)))
     (if_yes (!= (light_source_of client_reg i) (light_source_of server_reg i))
       (set light_diff (+ light_diff 1.0)))
@@ -194,6 +196,17 @@
                         (tile_bottom_of server_reg i))))
       (set tile_diff (+ tile_diff 1.0)))
     (set i (+ i 1.0)))
+
+  # And the fixture is not empty on the column that matters. `flag_diff` counts
+  # *disagreements*, so a `merges_same` the wire dropped entirely would still
+  # read zero — both sides false. This asserts the game actually has one.
+  (var merging 0.0)
+  (var m 0.0)
+  (while (< m n)
+    (if_yes (merges_same? client_reg m) (set merging (+ merging 1.0)))
+    (set m (+ m 1.0)))
+  (check_f out "registry: and at least one node merges with its own kind"
+           (if (> merging 0.0) 1.0 0.0) 1.0)
 
   (check_f out "registry: every name survives" name_diff 0.0)
   (check_f out "registry: every drawtype survives" draw_diff 0.0)

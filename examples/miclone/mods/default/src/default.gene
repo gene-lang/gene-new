@@ -166,9 +166,16 @@
   # Leaves let light through and are the first node in this game that is drawn
   # and does *not* hide what is behind it — which is exactly the case §5's face
   # rule was written for and nothing had exercised.
+  #
+  # And `^merges_same`, which is what makes a canopy affordable. Not being
+  # opaque means every face of every leaf is drawn, and a leaf's neighbours are
+  # almost all leaves: M8 shipped 208,608 faces against M7's 62,395 and the
+  # trees were nearly all of the difference. A face between two leaves shows
+  # nothing, so it is not drawn. §5 has the number.
   (register_node game "miclone:leaves" ^description "Leaves"
                  ^tiles ["miclone:leaves"]
                  ^opaque false
+                 ^merges_same true
                  ^propagates_light true)
   (register_node game "miclone:lamp" ^tiles ["miclone:lamp"]
                  ^light_source 14.0))

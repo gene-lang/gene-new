@@ -30,6 +30,12 @@
     padding: 14px 20px; border-radius: 6px; font: 13px ui-monospace, monospace;
     pointer-events: none;
   }
+  /* A closed panel is empty text, and padding plus a background is a 40x28
+     dark box in the middle of the screen whether or not there is anything in
+     it. That box shipped in M8.6 and nobody saw it, because the formspec was
+     only ever exercised by `tools/client_smoke.mjs`, which reads the element's
+     text and has no opinion about its pixels. */
+  #panel:empty { display: none; }
   #hotbar {
     position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
     font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;

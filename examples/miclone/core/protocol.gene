@@ -31,7 +31,7 @@
 (mod protocol ^profile web)
 
 (import [Registry registered_count name_of drawtype_of solid? opaque?
-         propagates_light? light_source_of tile_top_of tile_side_of
+         propagates_light? merges_same? light_source_of tile_top_of tile_side_of
          tile_bottom_of register max_content]
         from "./registry.gene")
 (import [ItemRegistry item_count item_name item_description item_node
@@ -67,7 +67,7 @@
 # v4 adds `msg_craft` (M8): the client says "make what I can make" and the
 # server decides what that is. One byte, because §7.1 gives the client no say —
 # a client that named a recipe would be a client the server had to check.
-(let protocol_version 5.0)
+(let protocol_version 6.0)
 
 # --- message kinds -----------------------------------------------------------
 #
@@ -272,9 +272,11 @@
   (var total 3.0)                  # kind + count
   (var i 0.0)
   (while (< i n)
-    # name, then eight one-byte columns: drawtype, three flags, emission, and
-    # three tiles.
-    (set total (+ total (+ (str_size (name_of reg i)) 8.0)))
+    # name, then nine one-byte columns: drawtype, four flags, emission, and
+    # three tiles. `merges_same` is the ninth and it is on the wire because the
+    # **client** meshes (§5) — a cull the server knows about and the client does
+    # not is a cull that does not happen.
+    (set total (+ total (+ (str_size (name_of reg i)) 9.0)))
     (set i (+ i 1.0)))
   total)
 
@@ -293,6 +295,7 @@
     (write_u8 c out (bool_byte (solid? reg i)))
     (write_u8 c out (bool_byte (opaque? reg i)))
     (write_u8 c out (bool_byte (propagates_light? reg i)))
+    (write_u8 c out (bool_byte (merges_same? reg i)))
     (write_u8 c out (light_source_of reg i))
     (write_u8 c out (tile_top_of reg i))
     (write_u8 c out (tile_side_of reg i))
@@ -316,11 +319,13 @@
     (var solid (== (read_u8 c b) 1.0))
     (var opaque (== (read_u8 c b) 1.0))
     (var propagates (== (read_u8 c b) 1.0))
+    (var merges (== (read_u8 c b) 1.0))
     (var emits (read_u8 c b))
     (var top (read_u8 c b))
     (var side (read_u8 c b))
     (var bottom (read_u8 c b))
-    (register reg name drawtype solid opaque propagates emits top side bottom)
+    (register reg name drawtype solid opaque propagates merges emits
+              top side bottom)
     (set i (+ i 1.0)))
   n)
 

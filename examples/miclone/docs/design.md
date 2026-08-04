@@ -1987,11 +1987,42 @@ is not opaque, and a canopy is a hundred leaves all satisfying both halves
 against each other.
 
 That is the rule behaving correctly and the content asking for something
-expensive. It stays within budget — `tools/mesh_bench.mjs` reports a worst chunk
-of 1.02 ms against 8 ms — so it ships measured rather than fixed, and the fix
-when it is wanted is upstream's: a node may decline to draw a face against its
-own kind, which is one more registry column and turns a canopy back into a
-shell.
+expensive. It stayed within budget — `tools/mesh_bench.mjs` reported a worst
+chunk of 1.02 ms against 8 ms — so it shipped measured rather than fixed, and
+the fix was named: a node may decline to draw a face against its own kind, one
+more registry column, turning a canopy back into a shell.
+
+#### The column, built, and what it was worth
+
+`^merges_same` on `register_node`, one column beside `opaque`. **208,608 faces
+back to 117,528** — 91,080 gone, 43.7% of the world's geometry, and nothing
+looks different because none of those faces was ever visible. Worst chunk
+0.874 ms against 8 ms; a whole-world mesh is 41.2 ms.
+
+It does *not* return the world to 62,395, and it should not: that was the count
+before there were trees, and a tree whose canopy costs nothing is a tree that
+is not there. What is gone is the interior of every canopy; what remains is its
+shell, plus trunks.
+
+Three things about the shape are worth keeping:
+
+- **It is the only question in the mesher that needs both sides of a face.**
+  Opacity is a property of the neighbour alone, which is why `face_visible?` had
+  only ever taken the neighbour. It takes the owner's id now, passed rather than
+  re-read, because the caller already has it and this is the hottest loop in the
+  renderer.
+- **It is per-id, not per-drawtype.** Two mods' leaves are different ids and
+  still draw against each other, which is right — they do not look alike.
+- **It goes on the wire** (protocol v6), because the *client* meshes. A cull the
+  server knows about and the client does not is a cull that does not happen. The
+  registry message gained a ninth byte per entry, and `probes/protocol_spec.gene`
+  asserts both that the flag survives the round trip and that the game has at
+  least one node using it — a diff of two registries that both lost the column
+  reads as agreement.
+
+Upstream reaches the same place from the other direction and pays for it:
+`leaves_style = opaque` makes leaves solid, which culls the internal faces *and*
+wrongly hides whatever is behind them.
 
 A decoration is a trunk and a leaf ball. Upstream's are schematics — arbitrary
 node arrays with rotation and force-placement — and that is the right end state;
