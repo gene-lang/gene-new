@@ -21,14 +21,46 @@ annotated functions lower to frozen exported objects, including nested
 namespaces. Namespace reflection and executable namespace initializers remain
 outside this static module image.
 
-Top-level exported functions annotate every positional parameter and return.
-Their public JS functions validate both directions around an internal
-implementation. Namespace functions receive the same checks at their exported
-object edge. Names are mangled injectively: `$` → `$$`, `?` → `$q`, `!` →
+Top-level exported functions annotate every parameter and return. Their public
+JS functions validate both directions around an internal implementation.
+Namespace functions receive the same checks at their exported object edge.
+Names are mangled injectively: `$` → `$$`, `?` → `$q`, `!` →
 `$b`, `-` → `$h`, other bytes → `$xHH`, with prefixes for leading digits and
 reserved JS words. `eval` and `arguments` take the reserved-word prefix too:
 they are not keywords, but ES modules are always strict and strict mode forbids
 binding either name.
+
+**Module functions take named parameters**, spelled `^name : T` as on the VM,
+with `^name local : T` to bind under a different name and `^name : T?` to make
+one optional (omitting it binds nil). They lower to ordinary positional
+JavaScript slots in declaration order: the profile always knows the callee
+statically, so a call's props are placed into their slots at analysis time.
+That keeps the lowering allocation-free — an options object per call is a cost
+the hot paths refuse — and it means a JS caller sees the declared order and can
+call the same export positionally.
+
+Four things follow from the lowering, and each is a diagnostic rather than a
+surprise:
+
+- Named parameters are for **module functions**. A `message`, a `ctor`, a
+  `js/fn` extern, and an inline callback take positional parameters, since a
+  `Callback` type has nowhere to put a name.
+- A positional parameter may not follow a named one. The VM admits either
+  order; here a positional argument's slot is its position among the positional
+  parameters, and interleaving would make that ordering something a reader
+  reconstructs rather than reads.
+- A function declaring a named parameter **cannot be used as a value**: through
+  a `Callback` it would be invoked positionally, which is the call the VM
+  refuses with `expects 0..0 argument(s)`.
+- Defaults are not admitted, on named or positional parameters. `: T?` is the
+  spelling for optional.
+
+**Every call now accounts for every prop.** Props on a call used to be dropped
+silently — `(add 1.0 2.0 ^oops 9.0)` compiled and threw `^oops` away, while the
+VM raised `got unexpected named argument` for the same source. That was a
+divergence no fixture could see, because the profile produced working code.
+Nine cases in `tests/transpile/fixtures.json` hold the contract, four of them
+asserting that both backends refuse the same source.
 
 Every declaration form admits a closed property set — `mod ^profile`,
 `type ^is`/`^props`/`^body`, `js/fn ^from`/`^import`, `^errors` on callables —

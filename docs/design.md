@@ -2414,6 +2414,29 @@ fail — or worse, on the read path, silently yield `void`, which is a legal
 value rather than an error. A *non*-integral Float still names no element:
 `xs/%1.5` is a bug in any backend, and truncating it is how that bug survives.
 
+### 7.11 Named parameters reach the web profile
+
+`^name : T` was a VM-only parameter form. A module function declaring one
+failed to transpile, which put every named-argument API on one backend — and
+`^name` is where argument ergonomics belong for a registration-style API, so
+that ruled the shape out rather than the spelling.
+
+The profile now takes them on **module functions**, with `^name local : T` and
+`^name : T?` as on the VM, and lowers them to positional JavaScript slots in
+declaration order: the profile knows every callee statically, so a call's props
+are placed into their slots at analysis time. No options object, no allocation,
+and an exported function stays positionally callable from JavaScript.
+`docs/web-profile.md` states the four consequences — no named parameters on a
+`message`, `ctor`, extern, or callback; no positional parameter after a named
+one; no function-with-named-parameters used as a value; no defaults, since
+`: T?` is the spelling for optional.
+
+**And a call now accounts for every prop.** Props on a call were dropped
+silently — `(add 1.0 2.0 ^oops 9.0)` compiled and discarded `^oops`, while the
+VM raised `got unexpected named argument` for the same source. That is the
+divergence class §7.10's two rules exist to close, and it was invisible to
+every fixture because the profile emitted working code.
+
 ---
 
 ## 8. Pattern matching and destructuring

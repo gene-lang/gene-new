@@ -1886,6 +1886,132 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "named_params.reorder",
+      "source": "(fn mix [base : Int ^a : Int ^b : Int] : Int (+ base (+ (* a 10) (* b 100)))) (mix 1 ^b 2 ^a 3)",
+      "web_source": "(mod named_params_reorder ^profile web) (fn mix [base : Int ^a : Int ^b : Int] : Int (+ base (+ (* a 10) (* b 100)))) (fn run [] : Int (mix 1 ^b 2 ^a 3))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "231"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named_params.optional_omitted",
+      "source": "(fn pick [^a : Int ^b : Int?] : Int (+ a (?? b 0))) (pick ^a 3)",
+      "web_source": "(mod named_params_optional_omitted ^profile web) (fn pick [^a : Int ^b : Int?] : Int (+ a (?? b 0))) (fn run [] : Int (pick ^a 3))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "3"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named_params.optional_supplied",
+      "source": "(fn pick [^a : Int ^b : Int?] : Int (+ a (?? b 0))) (pick ^b 5 ^a 3)",
+      "web_source": "(mod named_params_optional_supplied ^profile web) (fn pick [^a : Int ^b : Int?] : Int (+ a (?? b 0))) (fn run [] : Int (pick ^b 5 ^a 3))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "8"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named_params.imported",
+      "source": "(fn mix [base : Int ^a : Int ^b : Int] : Int (+ base (+ (* a 10) (* b 100)))) (mix 1 ^b 2 ^a 3)",
+      "web_source": "(mod named_params_imported ^profile web) (import [mix] from \"./fixture_named_dep.gene\") (fn run [] : Int (mix 1 ^b 2 ^a 3))",
+      "web_files": {
+        "fixture_named_dep.gene": "(mod fixture_named_dep ^profile web)\n(fn mix [base : Int ^a : Int ^b : Int] : Int (+ base (+ (* a 10) (* b 100))))\n"
+      },
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "231"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named_params.local_rename",
+      "source": "(fn tile [^slot n : Int] : Int (* n 2)) (tile ^slot 7)",
+      "web_source": "(mod named_params_local_rename ^profile web) (fn tile [^slot n : Int] : Int (* n 2)) (fn run [] : Int (tile ^slot 7))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "14"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named_params.unexpected",
+      "source": "(fn mix [base : Int ^a : Int ^b : Int] : Int (+ base (+ (* a 10) (* b 100)))) (mix 1 ^a 3 ^b 2 ^zz 9)",
+      "web_source": "(mod named_params_unexpected ^profile web) (fn mix [base : Int ^a : Int ^b : Int] : Int (+ base (+ (* a 10) (* b 100)))) (fn run [] : Int (mix 1 ^a 3 ^b 2 ^zz 9))",
+      "expected_error": "got unexpected named argument: zz",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "both backends refuse a named argument that names no parameter",
+        "diagnostic": "got unexpected named argument: zz"
+      }
+    },
+    {
+      "id": "named_params.stray_prop_on_positional",
+      "source": "(fn add [a : Int b : Int] : Int (+ a b)) (add 1 2 ^oops 3)",
+      "web_source": "(mod named_params_stray_prop ^profile web) (fn add [a : Int b : Int] : Int (+ a b)) (fn run [] : Int (add 1 2 ^oops 3))",
+      "expected_error": "got unexpected named argument: oops",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "a prop on a call to a positional function was silently dropped by the web profile while the VM refused it",
+        "diagnostic": "got unexpected named argument: oops"
+      }
+    },
+    {
+      "id": "named_params.missing_required",
+      "source": "(fn mix [base : Int ^a : Int ^b : Int] : Int (+ base (+ (* a 10) (* b 100)))) (mix 1 ^a 3)",
+      "web_source": "(mod named_params_missing ^profile web) (fn mix [base : Int ^a : Int ^b : Int] : Int (+ base (+ (* a 10) (* b 100)))) (fn run [] : Int (mix 1 ^a 3))",
+      "expected_error": "missing named argument: b",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "both backends refuse a call that omits a required named parameter",
+        "diagnostic": "missing named argument: b"
+      }
+    },
+    {
+      "id": "named_params.not_a_value",
+      "source": "(fn f [^a : Int] : Int a) (fn apply2 [cb] (cb 5)) (apply2 f)",
+      "web_source": "(mod named_params_not_a_value ^profile web) (fn f [^a : Int] : Int a) (fn apply2 [cb : (Callback [Int] Int)] : Int (cb 5)) (fn run [] : Int (apply2 f))",
+      "expected_error": "expects 0..0 argument(s), got 1",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "a Callback type is positional, so a named-parameter function reached through one would be called the way the VM refuses",
+        "diagnostic": "cannot be used as a value"
+      }
     }
   ]
 }

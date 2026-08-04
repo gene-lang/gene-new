@@ -87,10 +87,13 @@ type
     params*: seq[WebParam]     # wekLambda: the inline callback's parameters
 
   WebParam* = object
-    sourceName*: string
+    sourceName*: string      ## the name the body binds
     emittedName*: string
     typ*: WebType
     loc*: SourceLoc
+    named*: bool             ## declared `^name`; supplied by a prop at the call
+    optional*: bool          ## `^name : T?` — omitting it binds nil
+    argName*: string         ## the call-site prop key; `^name local : T` differs
 
   WebFunction* = ref object
     sourceName*: string
@@ -251,6 +254,11 @@ type
 
   WebFunctionSig = object
     params: seq[WebType]
+    ## Empty unless the callee declares a named parameter. It is the parameter
+    ## list in declaration order, and `analyzeKnownCall` needs it to map a
+    ## call's props onto slots; a callee with no named parameter needs nothing
+    ## beyond `params` and does not pay for the copy.
+    namedParams: seq[WebParam]
     returnType: WebType
     callName: string
     valueName: string
@@ -829,28 +837,80 @@ proc isJsImportName(name: string): bool =
       return false
   true
 
+proc typeAllowsNil(typ: WebType): bool =
+  if typ.kind == wtkNil: return true
+  if typ.kind == wtkUnion:
+    for member in typ.members:
+      if typeAllowsNil(member): return true
+
 proc parseParams(analysis: WebAnalysis, value: Value,
-                 fnLoc: SourceLoc): seq[WebParam] =
+                 fnLoc: SourceLoc, allowNamed = false): seq[WebParam] =
+  ## Positional parameters, and — where `allowNamed` — the `^name : T` form.
+  ##
+  ## The reader keeps a vector flat, so `^name` arrives as the symbol `^`
+  ## followed by the name, which is the same shape `Compiler.paramSpecs` reads
+  ## on the VM. Both spellings of the marker are accepted there and both are
+  ## accepted here, so a declaration does not mean different things by backend.
+  ##
+  ## A named parameter is still an ordinary JavaScript positional slot: the
+  ## declaration order is the emitted order and `analyzeKnownCall` reorders the
+  ## call's props into it. That keeps the lowering allocation-free — an options
+  ## object per call is exactly the cost this codebase's hot paths refuse — and
+  ## it is sound because the profile always knows the callee statically.
   if value.kind != vkList:
     raise webError(fnLoc, "web function requires a parameter vector")
+  let loc = analysis.locFor(value, fnLoc)
+  let items = value.listItems
   var i = 0
-  while i < value.listItems.len:
-    if value.listItems[i].isSym(","):
+  var sawNamed = false
+  while i < items.len:
+    if items[i].isSym(","):
       inc i
       continue
-    let name = value.listItems[i]
+    var named = false
+    if items[i].isSym("^") or items[i].isSym("^^"):
+      if not allowNamed:
+        raise webError(loc, "named parameters are available on web module " &
+          "functions only; this declaration takes positional parameters")
+      named = true
+      sawNamed = true
+      inc i
+      if i >= items.len or items[i].kind != vkSymbol:
+        raise webError(loc, "named web parameter requires a name")
+    let name = items[i]
     if name.kind != vkSymbol:
-      raise webError(analysis.locFor(value, fnLoc),
-        "web parameters must be simple named bindings")
-    if i + 2 >= value.listItems.len or
-        not value.listItems[i + 1].isSym(":"):
-      raise webError(analysis.locFor(value, fnLoc),
+      raise webError(loc, "web parameters must be simple named bindings")
+    if not named and sawNamed:
+      # The VM admits either order; the profile does not, because a positional
+      # argument's slot is its position among the positional parameters and
+      # allowing them to interleave makes that ordering something a reader has
+      # to reconstruct rather than read.
+      raise webError(loc, "web positional parameter '" & name.symVal &
+        "' cannot follow a named parameter")
+    var local = name.symVal
+    var j = i + 1
+    if named and j < items.len and items[j].kind == vkSymbol and
+        not items[j].isSym(":") and not items[j].isSym(",") and
+        not items[j].isSym("^") and not items[j].isSym("^^"):
+      # `^name local : T` — the wire name and the binding differ, as on the VM.
+      local = items[j].symVal
+      inc j
+    if j + 1 >= items.len or not items[j].isSym(":"):
+      raise webError(loc,
         "exported web parameter '" & name.symVal & "' requires an annotation")
-    let typ = parseWebType(value.listItems[i + 2], analysis.locFor(value, fnLoc))
-    result.add WebParam(sourceName: name.symVal,
-                        emittedName: mangleWebName(name.symVal), typ: typ,
-                        loc: analysis.locFor(value, fnLoc))
-    inc i, 3
+    if items[j + 1].isSym("="):
+      raise webError(loc, "web parameter '" & name.symVal &
+        "' cannot have a default; annotate it `: T?` to make it optional")
+    let typ = parseWebType(items[j + 1], loc)
+    if named and j + 2 < items.len and items[j + 2].isSym("="):
+      raise webError(loc, "web parameter '" & name.symVal &
+        "' cannot have a default; annotate it `: T?` to make it optional")
+    result.add WebParam(sourceName: local,
+                        emittedName: mangleWebName(local), typ: typ,
+                        loc: loc, named: named,
+                        optional: named and typeAllowsNil(typ),
+                        argName: name.symVal)
+    i = j + 2
 
 proc containsForm(value: Value, name: string): bool =
   if value.kind != vkNode: return false
@@ -874,7 +934,8 @@ proc parseFunctionHeader(analysis: WebAnalysis, form: Value): WebFunction =
       "' requires a return annotation")
   result = WebFunction(sourceName: form.body[0].symVal,
                        emittedName: mangleWebName(form.body[0].symVal),
-                       params: parseParams(analysis, form.body[1], loc),
+                       params: parseParams(analysis, form.body[1], loc,
+                                           allowNamed = true),
                        returnType: parseWebType(form.body[3], loc), loc: loc)
   # `async` is not a syntactic property of one body — see `resolveAsync`.
   result.generator = containsForm(form, "yield")
@@ -963,12 +1024,6 @@ proc parseWebExtern(analysis: WebAnalysis, form: Value,
   result.params = parseParams(analysis, form.body[1], loc)
   result.returnType = parseWebType(form.body[3], loc)
   result.loc = loc
-
-proc typeAllowsNil(typ: WebType): bool =
-  if typ.kind == wtkNil: return true
-  if typ.kind == wtkUnion:
-    for member in typ.members:
-      if typeAllowsNil(member): return true
 
 proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
                       loc: SourceLoc): WebTypeDecl =
@@ -1445,9 +1500,25 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
                       expected: WebType, sourceName: string,
                       signature: WebFunctionSig,
                       loc: SourceLoc): WebExpr =
-  if value.body.len != signature.params.len:
+  let positionalCount =
+    if signature.namedParams.len == 0: signature.params.len
+    else:
+      var n = 0
+      for param in signature.namedParams:
+        if not param.named: inc n
+      n
+  if value.body.len != positionalCount:
     raise webError(loc, "web call '" & sourceName & "' expects " &
-      $signature.params.len & " argument(s)")
+      $positionalCount & " positional argument(s)")
+  # **Props on a call used to be dropped silently.** `(add 1.0 2.0 ^oops 9.0)`
+  # compiled and threw `^oops` away, while the same source on the VM raised
+  # "got unexpected named argument" — a divergence of exactly the class §D3.1
+  # exists to prevent, and one that no fixture could see because the profile
+  # produced working code. Every call now accounts for every prop.
+  if signature.namedParams.len == 0:
+    for key, _ in value.props:
+      raise webError(loc, "web call '" & sourceName &
+        "' got unexpected named argument: " & key)
   result = WebExpr(kind: wekCall, typ: signature.returnType, loc: loc,
     text: signature.callName, external: signature.external,
     paramTypes: signature.params, immutable: signature.generator,
@@ -1459,12 +1530,51 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
     analysis.callSites.add WebCallSite(expr: result, callee: sourceName,
                                        caller: analysis.currentFunction)
   if result.typ.kind == wtkAny and expected != nil: result.typ = expected
-  for i, argument in value.body:
-    let analyzed = analysis.analyzeExpr(argument, bindings,
-                                         signature.params[i])
-    requireType(analysis, loc, analyzed.typ, signature.params[i],
-                "argument " & $(i + 1) & " of " & sourceName)
-    result.children.add analyzed
+  if signature.namedParams.len == 0:
+    for i, argument in value.body:
+      let analyzed = analysis.analyzeExpr(argument, bindings,
+                                           signature.params[i])
+      requireType(analysis, loc, analyzed.typ, signature.params[i],
+                  "argument " & $(i + 1) & " of " & sourceName)
+      result.children.add analyzed
+    return
+  # Named parameters. The emitted call is positional in declaration order, so
+  # the props are placed into their slots here and an omitted optional one
+  # becomes an explicit `nil` rather than a missing argument — a JavaScript
+  # hole would arrive as `undefined`, which is a *different value* from nil in
+  # this profile and would slip past a `T?` annotation.
+  var supplied = initHashSet[string]()
+  for key, _ in value.props:
+    supplied.incl key
+  var positional = 0
+  for index, param in signature.namedParams:
+    if not param.named:
+      let analyzed = analysis.analyzeExpr(value.body[positional], bindings,
+                                          param.typ)
+      requireType(analysis, loc, analyzed.typ, param.typ,
+                  "argument " & $(positional + 1) & " of " & sourceName)
+      result.children.add analyzed
+      inc positional
+      continue
+    if value.props.hasKey(param.argName):
+      supplied.excl param.argName
+      let analyzed = analysis.analyzeExpr(value.props[param.argName], bindings,
+                                          param.typ)
+      requireType(analysis, loc, analyzed.typ, param.typ,
+                  "named argument ^" & param.argName & " of " & sourceName)
+      result.children.add analyzed
+    elif param.optional:
+      result.children.add WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
+    else:
+      # Phrased to share a substring with the VM's "function 'f' missing named
+      # argument: b", so one fixture can assert both backends refuse the same
+      # source for the same stated reason.
+      raise webError(loc, "web call '" & sourceName &
+        "' missing named argument: " & param.argName &
+        " (annotate it `: " & typeName(param.typ) & "?` to make it optional)")
+  for key in supplied:
+    raise webError(loc, "web call '" & sourceName &
+      "' got unexpected named argument: " & key)
 
 proc analyzeCall(analysis: WebAnalysis, value: Value,
                  bindings: var Table[string, WebBinding], expected: WebType): WebExpr =
@@ -2978,6 +3088,15 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
                        text: mangleWebName(value.symVal))
     elif analysis.signatures.hasKey(value.symVal):
       let signature = analysis.signatures[value.symVal]
+      # A `Callback` type is positional and has nowhere to put a name, so a
+      # function taken as a value would be invoked positionally through it —
+      # which is precisely the call the VM refuses ("expects 0..0 argument(s),
+      # got 1"). Reaching the callee by name is the only way to supply a named
+      # argument, so a reference that leaves the name behind is rejected here.
+      if signature.namedParams.len > 0:
+        raise webError(loc, "web function '" & value.symVal &
+          "' declares named parameters and cannot be used as a value; " &
+          "a Callback type is positional")
       # A callback type carries no asyncness, so a caller invoking it through
       # the binding would drop the `await` and hand a Promise to a typed
       # boundary. Whether this callee is async is only known after propagation,
@@ -3269,9 +3388,14 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       raise webError(loc, "duplicate web declaration: " & fn.sourceName &
         " is already a module constant")
     var paramTypes: seq[WebType]
-    for param in fn.params: paramTypes.add param.typ
+    var anyNamed = false
+    for param in fn.params:
+      paramTypes.add param.typ
+      if param.named: anyNamed = true
     analysis.signatures[fn.sourceName] = WebFunctionSig(
-      params: paramTypes, returnType: fn.returnType,
+      params: paramTypes,
+      namedParams: (if anyNamed: fn.params else: @[]),
+      returnType: fn.returnType,
       callName: "$gene_impl_" & fn.emittedName,
       valueName: fn.emittedName, generator: fn.generator, async: fn.async)
     headers.add (form, fn)
@@ -6537,6 +6661,13 @@ proc checkWebEntry(module: WebModule, identity: string):
     raise webError(found.loc,
       "web module entry `main` must take `EventTarget`, got " &
       typeName(found.params[0].typ))
+  if found.params[0].named:
+    # The host calls the entry, and a host has no props to pass. A named
+    # parameter here would compile — the lowering is positional — and mean
+    # nothing, which is worse than being refused.
+    raise webError(found.loc,
+      "web module entry `main` takes its mount positionally, not as `^" &
+      found.params[0].argName & "`")
   if found.returnType.kind != wtkVoid:
     raise webError(found.loc,
       "web module entry `main` must return Void, got " &
@@ -6712,9 +6843,19 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
         if imported.hasKey(selection.localName):
           raise webError(spec.loc, "duplicate web import: " & selection.localName)
         var paramTypes: seq[WebType]
-        for param in found.params: paramTypes.add param.typ
+        var anyNamed = false
+        for param in found.params:
+          paramTypes.add param.typ
+          if param.named: anyNamed = true
+        # The named parameters travel with the import. Without this an imported
+        # `^`-taking function looks positional at every call site outside its
+        # own module, which is every call site that matters for an API — and
+        # the call would fail on arity rather than on anything a reader could
+        # act on.
         imported[selection.localName] = WebFunctionSig(
-          params: paramTypes, returnType: found.returnType,
+          params: paramTypes,
+          namedParams: (if anyNamed: found.params else: @[]),
+          returnType: found.returnType,
           callName: mangleWebName(selection.localName),
           valueName: mangleWebName(selection.localName),
           generator: false, async: found.async)
