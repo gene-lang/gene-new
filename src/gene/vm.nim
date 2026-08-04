@@ -342,6 +342,15 @@ type
     implEpoch: uint64
     implScopeIndex: Table[tuple[receiver, message: uint64], seq[Scope]]
     baseScopes: seq[Scope] # enumerable module/program bases for reload checks
+    # design §D5: sandboxed module loading. `sandboxRoots` caches one restricted
+    # builtins root per grant set (keyed by the sorted grant list) so that two
+    # mods with the same manifest share a root rather than each building one.
+    # `sandboxDepth`/`sandboxRoot` say whether a load *currently in progress* is
+    # on behalf of a sandboxed module — a mod's own imports must inherit its
+    # restriction, or the sandbox is one file deep.
+    sandboxRoots: Table[string, Scope]
+    sandboxRoot: Scope
+    sandboxKey: string
     currentModuleDir: string
     # --- packages (docs/proposals/package.md) --------------------------------
     #
@@ -5700,6 +5709,11 @@ proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioQueueFull:
     asyncIoQueueFullTask("net/tcp_write_text_async")
 
+# design §D5's loader, forward-declared: `buildBuiltins` binds it and the body
+# needs `loadSandboxedModule`, which is defined with the rest of the module
+# machinery thousands of lines below.
+proc biRuntimeLoadSandboxed(args: openArray[Value]): Value {.nimcall.}
+
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "runtime/gc_stats expects no arguments")
@@ -6396,6 +6410,14 @@ proc buildBuiltins(app: Application): Scope =
   let runtimeScope = newScope(result)
   runtimeScope.define("gc_stats",
                       newNativeFn("runtime/gc_stats", biRuntimeGcStats))
+  # design §D5's loader. It lives under `runtime`, which is itself in
+  # `sandboxableNamespaces` and is not granted by default — so a sandboxed
+  # module cannot reach the thing that would load another one, and the refusal
+  # is a missing namespace rather than a check it might be possible to argue
+  # with.
+  runtimeScope.define("load_sandboxed",
+                      newNativeFn("runtime/load_sandboxed",
+                                  biRuntimeLoadSandboxed))
   result.define("runtime", newNamespace("runtime", runtimeScope))
   let fsScope = newScope(result)
   fsScope.define("ReadDir", newCapability("fs/ReadDir"))
@@ -6807,6 +6829,59 @@ proc builtinsScope*(app: Application): Scope =
 proc builtinsScope*(): Scope =
   currentApplication().builtinsScope()
 
+const sandboxableNamespaces* = [
+  # The namespaces that reach outside the process. Everything else in the
+  # standard library — `math`, `str`, `json`, `bit` — is computation over values
+  # a mod already has, and withholding it would make a sandbox that cannot do
+  # arithmetic rather than one that cannot do harm.
+  #
+  # `ffi` is on the list and is the one that must never be grantable by
+  # accident: it is the escape hatch from every other entry.
+  "fs", "net", "os", "ffi", "db", "store", "terminal", "curses", "repl",
+  "device", "runtime", "serde", "aot", "web", "http",
+]
+
+proc sandboxedBuiltins*(app: Application, grants: seq[string]): Scope =
+  ## The builtins root a **sandboxed** module sees — design §D5, and the one
+  ## shape §D5.1 left standing after the two cheap ones were measured out.
+  ##
+  ## §D5 claimed since revision 1 that "a mod that never receives
+  ## `$fs/WriteDir` cannot write a file no matter what it evaluates". §D5.1
+  ## measured that false: `$fs` is `gene/fs` (the reader desugars `$` to
+  ## `gene/`), `gene` resolves out of the shared builtins root, and no `import`
+  ## line is needed to reach it. Withholding a capability *argument* stops an
+  ## accident and not an adversary.
+  ##
+  ## What makes this work is one instruction. `$fs/write_text` compiles to
+  ## `opLoadName name=gene` followed by a selector — a **runtime scope lookup**,
+  ## not a baked-in reference — so a module root whose parent binds a different
+  ## `gene` gets a different standard library. And `gene` is in
+  ## `reservedStdlibRoots`, so a mod cannot rebind it to get the real one back.
+  ##
+  ## A denied namespace is **absent rather than empty**. §D5.1 wrote "shadowed
+  ## by an empty one"; absent gives the better diagnostic — `$fs` fails naming
+  ## `fs`, where an empty namespace would fail naming `write_text` and read as a
+  ## missing function rather than a withheld authority.
+  let key = grants.sorted().join(",")
+  if app.sandboxRoots.hasKey(key):
+    return app.sandboxRoots[key]
+  let full = app.builtinsScope()
+  # The lexical root is copied whole: after `staysBare` pruning it holds
+  # operators, core forms and type names, none of which reach outside the
+  # process. What is *not* copied is `gene`, which is rebound below.
+  let root = newScope(nil, application = app)
+  for name, value in full.vars:
+    if name != "gene":
+      root.define(name, value)
+  let restricted = newScope(root)
+  for name, value in app.stdlib.vars:
+    if name in sandboxableNamespaces and name notin grants:
+      continue
+    restricted.define(name, value)
+  root.define("gene", newNamespace("gene", restricted))
+  app.sandboxRoots[key] = root
+  root
+
 proc trackBaseScope(app: Application, scope: Scope) =
   ## Make `scope` enumerable for module reload. Reload walks `baseScopes` only to
   ## re-validate scoped/imported impls and rebuild the scope index, so the list
@@ -6827,7 +6902,14 @@ proc newGlobalScope*(app: Application): Scope =
   ## built-ins with stable marker protocol/type identity. Enumerability for
   ## reload is granted lazily (see `trackBaseScope`), never here — a plain
   ## `run`/eval scope must be reclaimable once dropped.
-  result = newScope(app.builtinsScope(), application = app)
+  ## While a sandboxed load is in progress every module root created — the mod's
+  ## own and every module it imports — parents to the restricted root instead.
+  ## Without that the sandbox is one file deep: a mod that cannot name `$fs`
+  ## imports a file that can, and asks it to.
+  let parent =
+    if app.sandboxRoot != nil: app.sandboxRoot
+    else: app.builtinsScope()
+  result = newScope(parent, application = app)
   result.moduleRoot = true
   result.moduleStatic = true
 
@@ -23400,7 +23482,23 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   ## Initialize/cache the runtime phase of a compiled module. Compile-time
   ## macro discovery has a separate artifact cache and cycle set above and does
   ## not create scopes, grant capabilities, or execute top-level forms.
-  let identity = app.moduleIdentityFor(absPath)
+  # The cache key carries the sandbox (design §D5). Without it the cache is a
+  # hole through the sandbox in both directions: a module the engine already
+  # loaded with full authority would be handed to a mod that must not have it,
+  # and a module first loaded *under* a sandbox would come back stripped for
+  # trusted code. One module compiled twice is the price of the two meaning
+  # different things.
+  #
+  # **Keyed off `sandboxRoot`, not off the key's emptiness.** A mod granted
+  # nothing has an empty grant list and therefore an empty key, which read as
+  # "not sandboxed" — so the strictest sandbox there is was the one whose
+  # modules leaked into the trusted cache. A test caught it; the shape is the
+  # same one that made a chest west of the origin read as closed.
+  let identity =
+    if app.sandboxRoot != nil:
+      "sandbox:" & app.sandboxKey & "\x1f" & app.moduleIdentityFor(absPath)
+    else:
+      app.moduleIdentityFor(absPath)
   if app.moduleCache.hasKey(identity):
     return app.moduleCache[identity]
   if identity in app.moduleLoading:
@@ -23657,6 +23755,67 @@ proc loadFileModule*(app: Application, path: string): Value =
   let absPath = app.entryModulePath(path)
   app.adoptEntryModule(absPath)
   loadModuleValue(app, absPath)
+
+proc loadSandboxedModule*(app: Application, path: string,
+                          grants: seq[string]): Value =
+  ## Load a module with only the standard-library namespaces in `grants` — the
+  ## capability boundary design §D5 promised and §D5.1 found missing.
+  ##
+  ## The restriction covers the module *and everything it imports*, which is the
+  ## half that makes it a boundary rather than a speed bump: `app.sandboxRoot` is
+  ## set for the duration, `newGlobalScope` parents every root created underneath
+  ## it to the restricted builtins, and the module cache is keyed by the grant
+  ## set so nothing crosses.
+  ##
+  ## Nesting is refused rather than silently widened. A sandboxed module that
+  ## loaded another sandbox would be choosing its own grants, and "the grants a
+  ## mod asked for" is exactly what the manifest is supposed to decide.
+  if app.sandboxRoot != nil:
+    raise newException(GeneError,
+      "a sandboxed module cannot load another sandboxed module")
+  let absPath = app.entryModulePath(path)
+  app.adoptEntryModule(absPath)
+  let root = app.sandboxedBuiltins(grants)
+  app.sandboxRoot = root
+  app.sandboxKey = grants.sorted().join(",")
+  try:
+    result = loadModuleValue(app, absPath)
+  finally:
+    app.sandboxRoot = nil
+    app.sandboxKey = ""
+
+proc biRuntimeLoadSandboxed(args: openArray[Value]): Value {.nimcall.} =
+  ## `($runtime/load_sandboxed path grants)` — design §D5, and the surface M7's
+  ## loader is built on.
+  ##
+  ## `grants` is the manifest's list of standard-library namespaces the module
+  ## may reach, by name: `["fs"]`, `["net" "db"]`, `[]` for a module that gets
+  ## computation and nothing else. Anything not listed is **absent** from the
+  ## module's `gene` root, so naming it fails where it is written rather than
+  ## when it is called.
+  if args.len != 2:
+    raise newException(GeneError,
+      "runtime/load_sandboxed expects a path and a list of grants")
+  if args[0].kind != vkString:
+    raise newException(GeneError, "runtime/load_sandboxed path must be a Str")
+  if args[1].kind != vkList:
+    raise newException(GeneError,
+      "runtime/load_sandboxed grants must be a list of namespace names")
+  var grants: seq[string]
+  for item in args[1].listItems:
+    if item.kind != vkString:
+      raise newException(GeneError,
+        "runtime/load_sandboxed grant must be a Str, got " & $item.kind)
+    # An unknown grant is refused rather than ignored. A manifest asking for
+    # "filesystem" instead of "fs" would otherwise load with *less* authority
+    # than it declared and fail somewhere unrelated — and a typo that silently
+    # tightens a sandbox is still a typo nobody sees.
+    if item.strVal notin sandboxableNamespaces:
+      raise newException(GeneError,
+        "unknown capability namespace in grants: " & item.strVal &
+        " (expected one of " & sandboxableNamespaces.join(", ") & ")")
+    grants.add item.strVal
+  currentApplication().loadSandboxedModule(args[0].strVal, grants)
 
 proc loadCompiledFileModule*(app: Application, path: string,
                              chunk: Chunk): Value =

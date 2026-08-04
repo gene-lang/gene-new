@@ -834,3 +834,121 @@ suite "modules — impl activation across module paths":
       discard runProgram("(import [Show2 U] from \"./conflict_shared\") " &
         "(import_impl Show2 for U from \"./impl_one\") " &
         "(import_impl Show2 for U from \"./impl_two\") nil")
+
+suite "modules — the capability sandbox (design §D5)":
+  ## §D5 claimed since revision 1 that "a mod that never receives
+  ## `$fs/WriteDir` cannot write a file no matter what it evaluates". §D5.1
+  ## measured that false — `$fs` is `gene/fs`, `gene` resolves out of the shared
+  ## builtins root, and no `import` line is needed — and left exactly one shape
+  ## standing: a module root parented to a *restricted* builtins scope.
+  ##
+  ## These are that shape's properties. The first is the escape §D5.1 published.
+  setup:
+    removeDir(modDir)
+    createDir(modDir)
+    removeFile(getTempDir() / "gene_sandbox_escape")
+
+  test "a denied namespace cannot be reached, with no import line":
+    ## §D5.1's exact program, verbatim.
+    writeModule("evil.gene",
+      "($fs/write_text $fs/WriteDir \"" &
+      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") &
+      "\" \"escaped\")")
+    expect GeneError:
+      discard runProgram(
+        "($runtime/load_sandboxed \"" &
+        (modDir / "evil.gene").replace("\\", "/") & "\" [])")
+    check not fileExists(getTempDir() / "gene_sandbox_escape")
+
+  test "a granted namespace still works":
+    writeModule("good.gene",
+      "($fs/write_text $fs/WriteDir \"" &
+      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") &
+      "\" \"allowed\") (fn ok [] : Int 1)")
+    discard runProgram(
+      "($runtime/load_sandboxed \"" &
+      (modDir / "good.gene").replace("\\", "/") & "\" [\"fs\"])")
+    check fileExists(getTempDir() / "gene_sandbox_escape")
+
+  test "the restriction reaches a module the sandboxed one imports":
+    ## The half that makes it a boundary rather than a speed bump: a mod that
+    ## cannot name `$fs` must not be able to import a friend that can.
+    writeModule("helper.gene",
+      "(fn sneak [] : Str ($fs/write_text $fs/WriteDir \"" &
+      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") &
+      "\" \"via import\") \"wrote\")")
+    writeModule("viaimport.gene",
+      "(import [sneak] from \"./helper\") (sneak)")
+    expect GeneError:
+      discard runProgram(
+        "($runtime/load_sandboxed \"" &
+        (modDir / "viaimport.gene").replace("\\", "/") & "\" [])")
+    check not fileExists(getTempDir() / "gene_sandbox_escape")
+
+  test "calling into a sandboxed module later is still restricted":
+    ## The restriction is on the module's scope, not on the load, so a function
+    ## exported *out* of a sandbox carries it — which is what makes a mod API
+    ## safe to call back into on a tick.
+    writeModule("quiet_helper.gene",
+      "(fn sneak [p : Str] : Str ($fs/write_text $fs/WriteDir p \"w\") \"wrote\")")
+    writeModule("quiet.gene",
+      "(import [sneak] from \"./quiet_helper\") " &
+      "(fn try_it [p : Str] : Str (sneak p))")
+    expect GeneError:
+      discard runProgram(
+        "(var m ($runtime/load_sandboxed \"" &
+        (modDir / "quiet.gene").replace("\\", "/") & "\" [])) " &
+        "(m/try_it \"" &
+        (getTempDir() / "gene_sandbox_escape").replace("\\", "/") & "\")")
+    check not fileExists(getTempDir() / "gene_sandbox_escape")
+
+  test "trusted code keeps full authority over a file a sandbox also loaded":
+    ## The module cache is keyed by the grant set. Without that it is a hole in
+    ## both directions — a module the engine already loaded with full authority
+    ## handed to a mod that must not have it, and a module first loaded under a
+    ## sandbox coming back stripped for trusted code. This is the second
+    ## direction, which is the one that would look like a mysterious bug rather
+    ## than a breach.
+    writeModule("shared_helper.gene",
+      "(fn sneak [p : Str] : Str ($fs/write_text $fs/WriteDir p \"w\") \"wrote\")")
+    writeModule("sandboxed_user.gene",
+      "(import [sneak] from \"./shared_helper\") (fn noop [] : Int 1)")
+    check runProgram(
+      "($runtime/load_sandboxed \"" &
+      (modDir / "sandboxed_user.gene").replace("\\", "/") & "\" []) " &
+      "(import [sneak] from \"./shared_helper\") " &
+      "(sneak \"" &
+      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") & "\")"
+      ).print() == "\"wrote\""
+    check fileExists(getTempDir() / "gene_sandbox_escape")
+
+  test "a sandbox cannot load another sandbox":
+    ## Nesting would let a mod choose its own grants, and the grants a mod gets
+    ## are the manifest's to decide.
+    writeModule("inner.gene", "(fn ok [] : Int 1)")
+    writeModule("nester.gene",
+      "($runtime/load_sandboxed \"" &
+      (modDir / "inner.gene").replace("\\", "/") & "\" [\"fs\"])")
+    expect GeneError:
+      discard runProgram(
+        "($runtime/load_sandboxed \"" &
+        (modDir / "nester.gene").replace("\\", "/") & "\" [\"runtime\"])")
+
+  test "an unknown grant is refused rather than ignored":
+    ## A manifest asking for "filesystem" instead of "fs" would otherwise load
+    ## with less authority than it declared and fail somewhere unrelated.
+    writeModule("plain.gene", "(fn ok [] : Int 1)")
+    expect GeneError:
+      discard runProgram(
+        "($runtime/load_sandboxed \"" &
+        (modDir / "plain.gene").replace("\\", "/") & "\" [\"filesystem\"])")
+
+  test "computation is not withheld — a sandbox can still do arithmetic":
+    ## The list is what reaches outside the process. A sandbox that could not
+    ## use `math` or `str` would be one that cannot work rather than one that
+    ## cannot harm.
+    writeModule("compute.gene",
+      "(fn f [] : Int ($math/abs -3))")
+    discard runProgram(
+      "($runtime/load_sandboxed \"" &
+      (modDir / "compute.gene").replace("\\", "/") & "\" [])")

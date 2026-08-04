@@ -374,6 +374,74 @@ loader that withholds capability arguments does nothing, because the mod can
 name them; a loader that audits `import` lines does nothing, because the mod
 need not write one.
 
+### D5.2 The restricted root, built — and the one instruction that made it possible
+
+§D5.1 named one surviving shape and called it "unbuilt and unverified against
+the VM's scope internals". It is built, and the verification came first because
+the whole design turns on a single question: **is `gene` resolved at runtime or
+baked in at compile time?**
+
+```
+$fs/write_text  ->  0: opLoadName name=gene
+                    1: opPushConst const=0     # (select fs write_text)
+                    2: opApplySelectorTop
+```
+
+`opLoadName` is a **scope-chain lookup**. So a module root whose parent binds a
+different `gene` gets a different standard library, and every `$x` in that
+module goes through it. Two pre-existing properties make it a boundary rather
+than a suggestion: `gene` is in the compiler's `reservedStdlibRoots`, so a mod
+cannot rebind it to fetch the real one back; and `$` is *only* sugar for
+`gene/`, so there is no second spelling to close.
+
+`($runtime/load_sandboxed path grants)` is the surface. `grants` is a list of
+standard-library namespace names — `["fs"]`, `[]` for a module that gets
+computation and nothing else — and a denied namespace is **absent** from that
+module's `gene` rather than empty. §D5.1 wrote "shadowed by an empty one";
+absent gives the better failure, naming `fs` rather than `write_text`.
+
+**Five properties, each with a test in `tests/test_modules.nim`:**
+
+| | |
+|---|---|
+| §D5.1's published escape, verbatim, with no `import` line | refused; no file written |
+| a granted namespace | works, unchanged |
+| a module the sandboxed one **imports** | also restricted — the sandbox is not one file deep |
+| a function called back **into** a sandbox later | still restricted, because the restriction is on the scope rather than on the load |
+| trusted code loading a file a sandbox also loaded | keeps full authority |
+
+That last one is the module cache, and it is the subtle half. The cache is keyed
+by the grant set, because without that it is a hole in both directions: a module
+the engine already loaded with full authority handed to a mod that must not have
+it, and a module first loaded *under* a sandbox coming back stripped for trusted
+code. One module compiled twice is the price of the two meaning different
+things.
+
+**The bug that test found is worth recording, because it is the same bug §13.4
+records one layer up.** The first version keyed the cache off whether the grant
+string was empty — and a mod granted *nothing* has an empty grant list, so **the
+strictest sandbox available was the one whose modules leaked into the trusted
+cache**. A sentinel that collides with a legitimate value, twice in one day, in
+two unrelated subsystems. The rule both times: derive the state from something
+that has no valid empty case (`sandboxRoot != nil`, a form's name), never from
+the emptiness of data that may legitimately be empty.
+
+Two more refusals, each because the alternative is worse than an error:
+
+- **A sandbox cannot load another sandbox.** Nesting would let a mod choose its
+  own grants, and the grants a mod gets are the manifest's to decide.
+- **An unknown grant is refused rather than ignored.** A manifest asking for
+  `"filesystem"` instead of `"fs"` would otherwise load with *less* authority
+  than it declared and fail somewhere unrelated — a typo that silently tightens
+  a sandbox is still a typo nobody sees.
+
+**What this does not do.** It does not restrict what a *host* passes in: a
+sandboxed mod handed a `Game` can call anything reachable through it, which is
+why `core/api.gene` is the surface §D5 cares about and why an ABM action gets
+`queue_node` rather than the lighting scratch (§12.3). It does not sandbox the
+web profile, which has no runtime module loading at all. And it is a namespace
+boundary, not a resource one — a granted `fs` is all of `fs`, not a directory.
+
 Two consequences worth stating plainly:
 
 - **M7's loader is a security feature, and it is the whole of §D5's advantage
