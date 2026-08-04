@@ -99,6 +99,7 @@ core/       portable Gene — compiles for the VM and the web profile
                 model will be true or not
   abm.gene      §12's ABMs: a check queue for what just changed, and sampling
                 for what did not (M8)
+  decor.gene    §3 stage 5: trees, placed by a pure function of the column (M8)
 mods/       the game, as mods (§9)
   default/    every node, tile, drop, biome and ore miclone has
 server/     VM only: the on-disk block format, the SQLite world store (§11),

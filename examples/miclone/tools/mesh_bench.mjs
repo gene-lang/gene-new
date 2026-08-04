@@ -31,6 +31,7 @@ const game = load_mods();
 const reg = game.nodes;
 const biomes = game.biomes;
 const ores = game.ores;
+const decors = game.decors;
 const AIR = id_of(reg, "air");
 const WATER = id_of(reg, "miclone:water");
 
@@ -47,7 +48,7 @@ const FLOATS_PER_VERTEX = 7;
 
 function meshOne(cx, cy, cz) {
   const t0 = performance.now();
-  fill_padded(padded, sky, cx * 16, cy * 16, cz * 16, biomes, ores, SEED, AIR, WATER);
+  fill_padded(padded, sky, cx * 16, cy * 16, cz * 16, biomes, ores, decors, SEED, AIR, WATER);
   const tGen = performance.now();
   lit.fill(0);
   light_region(lit, padded, 18, 18, 18, reg, sky, queue, REGISTERED);
@@ -115,7 +116,7 @@ console.log(`  non-empty     ${busy} of ${CHUNK_COUNT} (${empty} fully interior 
   for (let cy = 0; cy < SPAN_Y; cy++)
     for (let cx = 0; cx < SPAN_X; cx++)
       for (let cz = 0; cz < SPAN_Z; cz++) {
-        fill_padded(pad, sky, cx * 16, cy * 16, cz * 16, biomes, ores, SEED, AIR, WATER);
+        fill_padded(pad, sky, cx * 16, cy * 16, cz * 16, biomes, ores, decors, SEED, AIR, WATER);
         faces = count_faces(reg, pad, PAD_BASE, PAD_SY, PAD_SZ);
         if (faces > 100) { ox = cx*16; oy = cy*16; oz = cz*16; break outer; }
       }
@@ -123,7 +124,7 @@ console.log(`  non-empty     ${busy} of ${CHUNK_COUNT} (${empty} fully interior 
     console.log("\nFAIL — winding: found no chunk with enough geometry to check");
     process.exit(1);
   }
-  fill_padded(pad, sky, ox, oy, oz, biomes, ores, SEED, AIR, WATER);
+  fill_padded(pad, sky, ox, oy, oz, biomes, ores, decors, SEED, AIR, WATER);
   const padLit = new Float32Array(PAD_NODES);
   light_region(padLit, pad, 18, 18, 18, reg, sky,
                new Float32Array(PAD_NODES + 4), REGISTERED);

@@ -1678,7 +1678,7 @@ unsound, those are the checks that would say so.
 | 2 | biomes | nearest point in (heat, humidity), then run-length column fill | `core/biome.gene` |
 | 3 | caves | carved along hashed Bézier worms | `core/cave.gene` |
 | 4 | ore | placed from hashed world cells, scatter / sheet / blob | `core/ore.gene` |
-| 5 | decorations | *not built* — trees, grass, flowers; M8's, and the first thing a mod should place | |
+| 5 | decorations | **built** — M8, trees; placement is a pure function of the column (§3.6) | `core/decor.gene` |
 | 6 | lighting | **built** — M3, and it runs over the whole world rather than per block (§4.1, §4.2) | `core/light.gene` |
 
 Every stage is a registry a mod can add to (§9), which is Luanti's design and
@@ -1788,6 +1788,60 @@ which requires the captured graph to pass the `Send` check
 (`docs/spec/concurrency.md`) — worldgen input is a seed, a position, and frozen
 registries, so it is a natural fit, but the registries must be genuinely frozen
 and that is a design constraint on §2, not an implementation detail.
+
+### 3.6 M8 — stage 5, and why a tree may not be generated into a neighbour
+
+The one stage of §3's pipeline that was never built. It arrives with M8 partly
+because a world without trees looks unfinished and mostly because wood is the
+material that makes crafting worth having.
+
+**Placement is a pure function of the column.** A tree is up to six nodes tall
+with leaves overhanging two each way, so it does not fit in the block it is
+rooted in, and both obvious approaches are ruled out by §3.5: generating into a
+neighbour needs blocks that do not exist yet, and a post-pass over the loaded
+world makes generation depend on load order.
+
+So nothing is ever generated *into* anything. `decor_here?` and `decor_height`
+answer from the world coordinate and the seed alone, and a region being filled
+walks every column that could reach it — its own, plus a two-node skirt —
+writing whichever of that tree's nodes land inside. Two adjacent blocks agree
+about the tree between them because they compute the same function, not because
+they talked. That is stage 4's trick for straddling ore clusters, reused.
+
+Three consequences, each measured rather than assumed:
+
+- **The height lattice is sized for the skirt, not the region.** Stage 5 asks
+  for surface heights outside the region, and a lattice sampled only over the
+  region reads past its own end there — which is exactly the crash it produced.
+  One extra lattice cell each way is cheaper than stage 5 sampling its own
+  noise and two stages then disagreeing about where the ground is.
+- **The chance test must come before the surface lookup**, and the ordering is
+  worth 98% of the stage: `decor_here?` is one hash, the surface is a lattice
+  read plus an interpolation, and about one column in fifty has a tree.
+  Computing the height for every column and discarding it cost 5 ms a block and
+  took §D6.3's reading C from passing to 1.0002x over its budget. Reordered, the
+  block is 75.0 ms against a 76.9 ms budget and C passes again.
+- **One golden checksum changed, and only one.** Of §14's four blocks, only
+  `(4096,16,-2048)` spans a grass surface; it gained 19 trunk and 147 leaf
+  nodes. The other three are byte-identical, which is the evidence that the
+  change is decorations rather than a generator drifting.
+
+**§6's atlas gained a row**, as §6 predicted it would "before a seventeenth tile
+does" — the tree's three tiles are the seventeenth through nineteenth. 8x8
+rather than 4x5 because the mesher divides by the column count and §D3.1 puts
+the mesher in the exact half, so a power of two keeps every tile boundary on an
+exact binary fraction. The ceiling that predicted this is why it was a one-line
+change rather than a debugging session about a tile drawn over another one.
+
+Leaves are also the first node in this game that is **drawn and not opaque**,
+which is the case §5's two-question face rule was written for and nothing had
+exercised.
+
+A decoration is a trunk and a leaf ball. Upstream's are schematics — arbitrary
+node arrays with rotation and force-placement — and that is the right end state;
+it is also a file format, a placement grammar, and a mod-facing way to author
+one. §D8's rule applies: when a mod wants a schematic, the schematic is what the
+API grew wrong.
 
 ## 4. Lighting
 

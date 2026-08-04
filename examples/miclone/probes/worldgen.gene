@@ -40,6 +40,7 @@
 (import [Game] from "../core/api.gene")
 (import [load_mods] from "../core/mods.gene")
 (import [BiomeRegistry biome_at biome_name biome_count] from "../core/biome.gene")
+(import [DecorRegistry] from "../core/decor.gene")
 (import [OreRegistry] from "../core/ore.gene")
 (import [block_dim block_nodes pad_dim pad_nodes sea_level
          surface_height heat_at humidity_at fill_region]
@@ -121,23 +122,25 @@
 
 (fn generate_blocks [out : (Buffer F32) sky : (Buffer F32) reps : F64 oy : F64
                      biomes : BiomeRegistry ores : OreRegistry
+                     decors : DecorRegistry
                      seed : F64 air : F64 water : F64] : F64
   (var acc 0.0)
   (var i 0.0)
   (while (< i reps)
-    (fill_region out sky block_dim (* i block_dim) oy 0.0 biomes ores seed air water)
+    (fill_region out sky block_dim (* i block_dim) oy 0.0 biomes ores decors seed air water)
     (set acc (+ acc (out ~ get 0.0)))
     (set i (+ i 1.0)))
   acc)
 
 (fn generate_padded [out : (Buffer F32) sky : (Buffer F32) reps : F64 oy : F64
                      biomes : BiomeRegistry ores : OreRegistry
+                     decors : DecorRegistry
                      seed : F64 air : F64 water : F64] : F64
   (var acc 0.0)
   (var i 0.0)
   (while (< i reps)
     (fill_region out sky pad_dim (- (* i block_dim) 1.0) oy -1.0
-                 biomes ores seed air water)
+                 biomes ores decors seed air water)
     (set acc (+ acc (out ~ get 0.0)))
     (set i (+ i 1.0)))
   acc)
@@ -162,6 +165,7 @@
 # low column swamps the caves and the figure reads ~1.4% at any worm count.
 (fn cave_fraction [out : (Buffer F32) sky : (Buffer F32)
                    biomes : BiomeRegistry ores : OreRegistry
+                   decors : DecorRegistry
                    seed : F64 air : F64 water : F64 span : F64] : F64
   (var holes 0.0)
   (var nodes 0.0)
@@ -170,7 +174,7 @@
     (var bx 0.0)
     (while (< bx span)
       (fill_region out sky block_dim (* bx block_dim) -64.0 (* bz block_dim)
-                   biomes ores seed air water)
+                   biomes ores decors seed air water)
       (var i 0.0)
       (while (< i block_nodes)
         (if_yes (== (out ~ get i) air) (set holes (+ holes 1.0)))
@@ -221,6 +225,7 @@
 # and a biome node that never appears are both visible.
 (fn node_share [out : (Buffer F32) sky : (Buffer F32) r : Registry
                 ores : OreRegistry biomes : BiomeRegistry
+                decors : DecorRegistry
                 seed : F64 air : F64 water : F64 span : F64 y0 : F64] : Str
   (var tally ($buffer U32 64.0))
   (var nodes 0.0)
@@ -231,7 +236,7 @@
       (var bx 0.0)
       (while (< bx span)
         (fill_region out sky block_dim (* bx block_dim) (+ y0 (* by block_dim))
-                     (* bz block_dim) biomes ores seed air water)
+                     (* bz block_dim) biomes ores decors seed air water)
         (var i 0.0)
         (while (< i block_nodes)
           (var id (out ~ get i))

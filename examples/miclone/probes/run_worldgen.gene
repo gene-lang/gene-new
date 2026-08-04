@@ -55,6 +55,7 @@
   (var r game/nodes)
   (var biomes game/biomes)
   (var ores game/ores)
+  (var decors game/decors)
   (var air (id_of r "air"))
   (var water (id_of r "miclone:water"))
 
@@ -70,14 +71,14 @@
   (var pad_sky (allocate_sky pad_dim))
 
   # Warm, so the first block's lazy work is not charged to the measurement.
-  (generate_blocks blk sky 1.0 16.0 biomes ores seed air water)
+  (generate_blocks blk sky 1.0 16.0 biomes ores decors seed air water)
 
   (var t ($os/monotonic_ms))
-  (generate_blocks blk sky reps 16.0 biomes ores seed air water)
+  (generate_blocks blk sky reps 16.0 biomes ores decors seed air water)
   (var block_ms (per_block (ms_since t)))
 
   (set t ($os/monotonic_ms))
-  (generate_padded pad pad_sky reps 16.0 biomes ores seed air water)
+  (generate_padded pad pad_sky reps 16.0 biomes ores decors seed air water)
   (var pad_ms (per_block (ms_since t)))
 
   # Stage attribution. `carve` and `place_all` run against an already-filled
@@ -100,7 +101,7 @@
   # Stage 6, §4's lighting. The buffer is regenerated first: `carve` and
   # `place_all` above ran 16 times at 16 origins over the same block, so what
   # they left is not terrain, and lighting it measured 5x the real cost.
-  (generate_blocks blk sky 1.0 16.0 biomes ores seed air water)
+  (generate_blocks blk sky 1.0 16.0 biomes ores decors seed air water)
   (var param1 (allocate_light block_nodes))
   (var lq (allocate_queue block_nodes))
   (set t ($os/monotonic_ms))
@@ -124,9 +125,9 @@
   # 6x6 blocks rather than 3x3: one worm carves ~1,400 nodes, so at nine blocks
   # a single tunnel moves the figure by four points and the number reported is
   # mostly which worms happened to pass through.
-  ($println $"    cave, below y -64   $(pct (cave_fraction blk sky biomes ores seed air water 6.0)) % of deep rock")
+  ($println $"    cave, below y -64   $(pct (cave_fraction blk sky biomes ores decors seed air water 6.0)) % of deep rock")
   ($println $"    biomes              $(biome_share biomes seed 48.0 47.0)")
-  ($println $"    nodes, y 0..47      $(node_share blk sky r ores biomes seed air water 3.0 0.0)")
+  ($println $"    nodes, y 0..47      $(node_share blk sky r ores biomes decors seed air water 3.0 0.0)")
   ($println "")
 
   # --- the three readings ---------------------------------------------------

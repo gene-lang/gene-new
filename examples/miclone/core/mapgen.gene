@@ -52,6 +52,7 @@
 (import [BiomeRegistry biome_at cover_depth top_depth top_node filler_node
          stone_node underwater_node]
         from "./biome.gene")
+(import [DecorRegistry decor_count decor_here? decor_height decor_trunk decor_leaf decor_leaf_at? decor_margin] from "./decor.gene")
 (import [OreRegistry place_all] from "./ore.gene")
 (import [carve] from "./cave.gene")
 (import [light_max] from "./light.gene")
@@ -180,12 +181,21 @@
 (fn fill_region [out : (Buffer F32) sky : (Buffer F32) dim : F64
                  ox : F64 oy : F64 oz : F64
                  biomes : BiomeRegistry ores : OreRegistry
+                 decors : DecorRegistry
                  seed : F64 air : F64 water : F64] : Nil
 
   # --- stage 1: the 2D fields, on world-anchored lattices ---------------------
-  (var hx (lattice_origin ox terrain_step))
-  (var hz (lattice_origin oz terrain_step))
-  (var hd (lattice_dim ox dim terrain_step))
+  # **Sized for the decoration skirt, not the region.** Stage 5 asks for the
+  # surface height of columns up to `decor_margin` outside this region — that
+  # is how a tree rooted in the next block writes its leaves into this one —
+  # and a lattice sampled only over the region reads past its own end there.
+  # One extra lattice cell each way is cheaper than the alternative, which is
+  # stage 5 sampling its own noise and two stages disagreeing about where the
+  # ground is.
+  (var hx (lattice_origin (- ox decor_margin) terrain_step))
+  (var hz (lattice_origin (- oz decor_margin) terrain_step))
+  (var hd (lattice_dim (- ox decor_margin) (+ dim (* 2.0 decor_margin))
+                       terrain_step))
   (var height ($buffer F64 (* hd hd)))
   (sample_lattice height hd hx hz terrain_step terrain_scale seed
                   terrain_octaves)
@@ -248,13 +258,109 @@
       (set x (+ x 1.0)))
     (set z (+ z 1.0)))
 
+  # --- stage 5 is below, and needs the height lattice these stages leave alone.
+
   # --- stage 3: caves, then stage 4: ore -------------------------------------
   #
   # Ore after caves, as upstream: once a tunnel is air it is no longer the node
   # any ore may replace, so no ore is left floating in the open and there is no
   # cleanup pass.
   (carve out dim ox oy oz seed air water)
-  (place_all out dim ox oy oz ores seed))
+  (place_all out dim ox oy oz ores seed)
+
+  # --- stage 5: decorations --------------------------------------------------
+  #
+  # After the ore, because a tree grows on the surface the previous stages
+  # settled and must not be eaten by a cave that had not been carved yet.
+  #
+  # **Every column that could reach this region is walked, not every column in
+  # it.** A tree is taller than it is wide but its leaves overhang, so a trunk
+  # rooted `decor_margin` outside the region still writes leaves inside it —
+  # and the block that owns that trunk writes exactly the same nodes, because
+  # both are evaluating one pure function of the world coordinate. Nothing is
+  # generated into a neighbour and nothing depends on order (§3.5).
+  (decorate out dim ox oy oz height hd hx hz decors biomes seed air))
+
+# The nodes of one decoration, clipped to a region. Split out because
+# `fill_region` is already the longest function here and this is the only part
+# of it that reasons about a *neighbouring* column rather than its own.
+(fn decorate [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+              height : (Buffer F64) hd : F64 hx : F64 hz : F64
+              decors : DecorRegistry biomes : BiomeRegistry
+              seed : F64 air : F64] : Nil
+  (var n (decor_count decors))
+  (if_yes (> n 0.0)
+    (var plane (* dim dim))
+    (var lo (- 0.0 decor_margin))
+    (var hi (+ dim decor_margin))
+
+    (var z lo)
+    (while (< z hi)
+      (var wz (+ oz z))
+      (var x lo)
+      (while (< x hi)
+        (var wx (+ ox x))
+        (var d 0.0)
+        (while (< d n)
+          # **The chance test comes before the surface lookup**, and the order
+          # is worth 98% of this stage: `decor_here?` is one hash, while the
+          # surface is a lattice read plus an interpolation, and only about one
+          # column in fifty has a tree on it. Computing the ground height for
+          # every column in the skirt and then discarding it was measurable —
+          # it took §D6.3's reading C from passing to marginally over.
+          (if_yes (&& (decor_here? decors d wx wz seed)
+                      true)
+            (var surface (surface_from_noise
+                           (lattice_value height hd hx hz terrain_step wx wz)))
+            (var h (decor_height decors d wx wz seed))
+            # Nothing grows in the sea, and the surface node is not read back
+            # out of `out` — this column may be outside the region and
+            # therefore unwritten — so stage 2's own rule is applied again.
+            (if_yes (> surface sea_level)
+            (var trunk (decor_trunk decors d))
+            (var leaf (decor_leaf decors d))
+            (var base (+ surface 1.0))
+            (var top (+ base (- h 1.0)))
+
+            # The trunk, clipped to this region by `put_node`.
+            (var t 0.0)
+            (while (< t h)
+              (put_node out dim ox oy oz plane wx (+ base t) wz trunk)
+              (set t (+ t 1.0)))
+
+            # The canopy, from one below the trunk top to one above it.
+            (var ly -1.0)
+            (while (<= ly 1.0)
+              (var dz -2.0)
+              (while (<= dz 2.0)
+                (var dx -2.0)
+                (while (<= dx 2.0)
+                  (if_yes (&& (decor_leaf_at? dx ly dz)
+                              # The trunk wins wherever they overlap.
+                              (! (&& (== dx 0.0) (&& (== dz 0.0) (<= ly 0.0)))))
+                    (put_node out dim ox oy oz plane
+                              (+ wx dx) (+ top ly) (+ wz dz) leaf))
+                  (set dx (+ dx 1.0)))
+                (set dz (+ dz 1.0)))
+              (set ly (+ ly 1.0)))))
+          (set d (+ d 1.0)))
+        (set x (+ x 1.0)))
+      (set z (+ z 1.0)))))
+
+# Write one node if it is inside the region, and only over air. Decorations run
+# last, so anything else already there — terrain, an ore vein, another tree's
+# trunk — is something a leaf must not eat.
+(fn put_node [out : (Buffer F32) dim : F64 ox : F64 oy : F64 oz : F64
+              plane : F64 wx : F64 wy : F64 wz : F64 node : F64] : Nil
+  (var lx (- wx ox))
+  (var ly (- wy oy))
+  (var lz (- wz oz))
+  (if_yes (&& (&& (>= lx 0.0) (< lx dim))
+              (&& (&& (>= ly 0.0) (< ly dim))
+                  (&& (>= lz 0.0) (< lz dim))))
+    (var at (+ lx (+ (* ly dim) (* lz plane))))
+    (if_yes (== (out ~ get at) 0.0)
+      (out ~ set! at node))))
 
 # --- stage 6: lighting -------------------------------------------------------
 #
@@ -274,14 +380,17 @@
 (fn generate_block [out : (Buffer F32) sky : (Buffer F32)
                     ox : F64 oy : F64 oz : F64
                     biomes : BiomeRegistry ores : OreRegistry
+                    decors : DecorRegistry
                     seed : F64 air : F64 water : F64] : Nil
-  (fill_region out sky block_dim ox oy oz biomes ores seed air water))
+  (fill_region out sky block_dim ox oy oz biomes ores decors
+               seed air water))
 
 # The client's shape: the 18³ neighbourhood `core/mesh.gene` reads, whose
 # `(0,0,0)` is one node outside the block on every axis.
 (fn fill_padded [out : (Buffer F32) sky : (Buffer F32)
                  ox : F64 oy : F64 oz : F64
                  biomes : BiomeRegistry ores : OreRegistry
+                 decors : DecorRegistry
                  seed : F64 air : F64 water : F64] : Nil
   (fill_region out sky pad_dim (- ox 1.0) (- oy 1.0) (- oz 1.0)
-               biomes ores seed air water))
+               biomes ores decors seed air water))

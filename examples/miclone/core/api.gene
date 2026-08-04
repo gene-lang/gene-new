@@ -63,6 +63,7 @@
         from "./ore.gene")
 (import [DropTable new_drop_table register_drop] from "./drops.gene")
 (import [AbmRegistry new_abms add_abm queue_node abm_fall] from "./abm.gene")
+(import [DecorRegistry new_decors add_decor] from "./decor.gene")
 (import [World node_at] from "./loaded.gene")
 (import [GroupRegistry new_groups intern_group group_named set_rating rating_of]
         from "./groups.gene")
@@ -83,6 +84,7 @@
           ^groups GroupRegistry
           ^drops  DropTable
           ^abms   AbmRegistry
+          ^decors DecorRegistry
           ^biomes BiomeRegistry
           ^ores   OreRegistry}
 
@@ -93,6 +95,7 @@
     (set! self/groups (new_groups))
     (set! self/drops (new_drop_table))
     (set! self/abms (new_abms))
+    (set! self/decors (new_decors))
     (set! self/biomes (new BiomeRegistry))
     (set! self/ores (new OreRegistry))))
 
@@ -276,6 +279,28 @@
   (if_yes (== id content_unknown)
     (fail (new UnknownNode $"${name} is not a registered node")))
   id)
+
+# --- decorations -------------------------------------------------------------
+#
+# §3 stage 5. `^on` is the surface node a decoration roots on, which is how a
+# forest stays out of the desert without naming a biome: a mod that wants
+# cactuses says `^on "miclone:sand"`.
+#
+# `^chance` is per column, so a value near 0.02 is a scattering and 0.2 is a
+# thicket. Trunk height is picked per tree between `^min_height` and
+# `^max_height`, or every tree in the world is the same tree.
+
+(fn register_decoration [game : Game name : Str
+                         ^on : Str
+                         ^trunk : Str
+                         ^leaf : Str
+                         ^chance : F64
+                         ^min_height : F64?
+                         ^max_height : F64?] : F64
+  (var lo (?? min_height 4.0))
+  (add_decor game/decors name (node_id game on)
+             (node_id game trunk) (node_id game leaf)
+             lo (?? max_height (+ lo 2.0)) chance))
 
 # --- ABMs --------------------------------------------------------------------
 #

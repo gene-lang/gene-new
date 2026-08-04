@@ -50,8 +50,11 @@
 # The atlas is a 4x4 grid of tiles, so a tile index maps to a corner by
 # `(tile mod 4, tile / 4)` scaled by the tile size. Keeping the grid square and
 # power-of-two means the shader needs no atlas metadata beyond this constant.
-(let atlas_cols 4.0)
-(let atlas_step 0.25)              # 1 / atlas_cols
+# 8x8 since M8's trees took the seventeenth slot (§6, `core/tiles.gene`). A
+# power of two keeps `atlas_step` an exact binary fraction, which matters
+# because §D3.1 puts the mesher in the exact half.
+(let atlas_cols 8.0)
+(let atlas_step 0.125)             # 1 / atlas_cols
 
 # Per-face shading, which is now a *factor on* §4's light rather than a
 # substitute for it. Upstream shades faces the same way and for the same reason:

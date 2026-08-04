@@ -121,6 +121,7 @@
   (var reg game/nodes)
   (var biomes game/biomes)
   (var ores game/ores)
+  (var decors game/decors)
   (var air (id_of reg "air"))
   (var water (id_of reg "miclone:water"))
   (var w (new_world ($to_float origin_bx) ($to_float origin_by)
@@ -156,7 +157,7 @@
           (else
             (generate_block block block_sky
                             (* bx 16.0) (* by 16.0) (* bz 16.0)
-                            biomes ores seed air water)
+                            biomes ores decors seed air water)
             (store_block w bx by bz block)
             (set generated (+ generated 1))))
         (set cx (+ cx 1)))

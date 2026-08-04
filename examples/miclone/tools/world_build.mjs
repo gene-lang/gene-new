@@ -67,6 +67,7 @@ const game = load_mods();
 const reg = game.nodes;
 const biomes = game.biomes;
 const ores = game.ores;
+const decors = game.decors;
 const AIR = id_of(reg, "air");
 const WATER = id_of(reg, "miclone:water");
 const IGNORE = id_of(reg, "ignore");
@@ -85,7 +86,7 @@ for (let cz = 0; cz < SPAN_Z; cz++)
     for (let cx = 0; cx < SPAN_X; cx++) {
       const bx = ORIGIN_BX + cx, by = ORIGIN_BY + cy, bz = ORIGIN_BZ + cz;
       generate_block(block, blockSky, bx * BLOCK, by * BLOCK, bz * BLOCK,
-                     biomes, ores, SEED, AIR, WATER);
+                     biomes, ores, decors, SEED, AIR, WATER);
       store_block(world, bx, by, bz, block);
     }
 const tGen = performance.now();
@@ -301,7 +302,7 @@ for (let cz = 0; cz < SPAN_Z; cz++)
     for (let cx = 0; cx < SPAN_X; cx++) {
       const bx = ORIGIN_BX + cx, by = ORIGIN_BY + cy, bz = ORIGIN_BZ + cz;
       generate_block(block, blockSky, bx * BLOCK, by * BLOCK, bz * BLOCK,
-                     biomes, ores, SEED, AIR, WATER);
+                     biomes, ores, decors, SEED, AIR, WATER);
       store_block(check, bx, by, bz, block);
     }
 for (const [ex, ey, ez, id] of edits) set_node(check, ex, ey, ez, id);

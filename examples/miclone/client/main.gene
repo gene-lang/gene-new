@@ -133,7 +133,7 @@
   (var game (load_mods))
 
   (var atlas_canvas ($dom/create_element "canvas"))
-  ($canvas/set_size atlas_canvas 64.0 64.0)
+  ($canvas/set_size atlas_canvas 128.0 128.0)
   (paint ($canvas/context atlas_canvas) game/tiles)
   (upload_atlas gl atlas_canvas)
 
@@ -145,6 +145,7 @@
   (var reg game/nodes)
   (var biomes game/biomes)
   (var ores game/ores)
+  (var decors game/decors)
   # §2's server half. In-process singleplayer holds both halves; M6 is where
   # this stops being something the client can reach (see `core/drops.gene`).
   (var drops game/drops)
@@ -182,7 +183,7 @@
         (var bz (+ origin_bz cz))
         (generate_block block block_sky
                         (* bx block_dim) (* by block_dim) (* bz block_dim)
-                        biomes ores seed air water)
+                        biomes ores decors seed air water)
         (store_block world bx by bz block)
         (set cx (+ cx 1.0)))
       (set cy (+ cy 1.0)))

@@ -39,7 +39,7 @@
          register_tile register_node register_drop_rule
          register_group register_item register_tool_cap
          register_biome_def register_ore_def
-         register_abm]
+         register_abm register_decoration]
         from "../../../core/api.gene")
 (import [abm_fall] from "../../../core/abm.gene")
 (import [tile_solid tile_ore tile_overlay] from "../../../core/tiles.gene")
@@ -101,6 +101,12 @@
                  ^base_spread 30.0 ^base_seed 20.0)
   # Bright and near-flat, because a light source that reads as dark stone is
   # confusing in exactly the situation it exists for.
+  (register_tile game "miclone:tree_top" ^kind tile_solid
+                 ^red 122.0 ^green 92.0 ^blue 56.0 ^spread 16.0 ^seed 160.0)
+  (register_tile game "miclone:tree_side" ^kind tile_solid
+                 ^red 104.0 ^green 76.0 ^blue 44.0 ^spread 34.0 ^seed 170.0)
+  (register_tile game "miclone:leaves" ^kind tile_solid
+                 ^red 62.0 ^green 118.0 ^blue 48.0 ^spread 40.0 ^seed 180.0)
   (register_tile game "miclone:lamp" ^kind tile_solid
                  ^red 250.0 ^green 226.0 ^blue 150.0 ^spread 10.0 ^seed 150.0))
 
@@ -142,6 +148,19 @@
   # is registered because §4's night channel is otherwise dead weight in the
   # real content set: with no emitter anywhere, `light_region` skips the source
   # flood entirely and nothing exercises it outside the spec.
+  # §3 stage 5's two nodes. The trunk shows its rings on the cut faces and its
+  # bark on the sides, which is the one place in this content set where a
+  # three-tile node earns the third tile.
+  (register_node game "miclone:tree" ^description "Tree"
+                 ^tiles ["miclone:tree_top" "miclone:tree_side"
+                         "miclone:tree_top"])
+  # Leaves let light through and are the first node in this game that is drawn
+  # and does *not* hide what is behind it — which is exactly the case §5's face
+  # rule was written for and nothing had exercised.
+  (register_node game "miclone:leaves" ^description "Leaves"
+                 ^tiles ["miclone:leaves"]
+                 ^opaque false
+                 ^propagates_light true)
   (register_node game "miclone:lamp" ^tiles ["miclone:lamp"]
                  ^light_source 14.0))
 
@@ -178,7 +197,11 @@
   (register_group game "miclone:gravel" ^group "crumbly" ^rating 2.0)
   (register_group game "miclone:gravel" ^group "falling_node" ^rating 1.0)
   (register_group game "miclone:sand" ^group "falling_node" ^rating 1.0)
-  (register_group game "miclone:lamp" ^group "cracky" ^rating 3.0))
+  (register_group game "miclone:lamp" ^group "cracky" ^rating 3.0)
+  # Wood is its own group, as upstream: an axe digs `choppy` and gets every
+  # mod's tree without either mod knowing the other.
+  (register_group game "miclone:tree" ^group "choppy" ^rating 2.0)
+  (register_group game "miclone:leaves" ^group "snappy" ^rating 3.0))
 
 # --- items and tools ---------------------------------------------------------
 #
@@ -299,6 +322,21 @@
 # scatter cluster places — which a blob and a sheet do not have, and so do not
 # state.
 
+# --- decorations -------------------------------------------------------------
+#
+# §3 stage 5, and the first thing in this world that stands *above* the surface.
+# Trees go where grass does, which puts them in the three temperate biomes and
+# keeps them out of the desert and the snow without naming a biome at all.
+
+(fn setup_decorations [game : Game] : Nil
+  (register_decoration game "miclone:tree"
+                       ^on "miclone:grass"
+                       ^trunk "miclone:tree"
+                       ^leaf "miclone:leaves"
+                       ^chance 0.02
+                       ^min_height 4.0
+                       ^max_height 6.0))
+
 (fn setup_ores [game : Game] : Nil
   (register_ore_def game "miclone:coal_ore"
                     ^node "miclone:coal_ore" ^wherein "miclone:stone"
@@ -365,4 +403,5 @@
   (setup_drops game)
   (setup_biomes game)
   (setup_ores game)
+  (setup_decorations game)
   (setup_behaviour game))

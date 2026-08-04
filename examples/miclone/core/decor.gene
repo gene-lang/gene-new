@@ -1,0 +1,148 @@
+# Decorations — design.md §3 stage 5, the one stage of the pipeline that was
+# never built.
+#
+# A decoration is something placed *on* the surface after the terrain, the
+# caves and the ore are settled: a tree, a shrub, a cactus. §3's table has
+# listed stage 5 as "not built — trees, grass, flowers; M8's" since M2, and M8
+# is where it lands — partly because a world without trees looks unfinished,
+# and mostly because wood is the material that makes crafting worth having.
+#
+# ## Placement is a pure function of the column, and that is what makes it work
+#
+# A tree is seven nodes tall and its leaves overhang two nodes each way, so it
+# does not fit in the block it starts in. The obvious approaches both fail:
+# generating into a neighbour needs blocks that do not exist yet, and a
+# post-pass over the loaded world would make generation depend on load order,
+# which §3.5 forbids outright.
+#
+# So nothing is ever *generated into* anything. `tree_at` answers "is there a
+# tree rooted at this column, and how tall" from the world coordinate and the
+# seed alone — no state, no neighbours, no order. A region being filled walks
+# every column that could reach it (its own, plus a `decor_margin` skirt) and
+# writes whichever of that tree's nodes happen to land inside. Two adjacent
+# blocks agree about the tree between them because they are computing the same
+# function, not because they talked.
+#
+# That is the same trick §3 stage 4 uses for ore clusters that straddle a
+# border, and it is the reason both can be generated in any order, in parallel,
+# on either backend.
+#
+# ## What a decoration is allowed to be, for now
+#
+# A trunk and a leaf ball. Upstream's decorations are schematics — arbitrary
+# node arrays with rotation and force-placement — and that is the right end
+# state; it is also a file format, a placement grammar, and a mod-facing way to
+# author one. This is the shape that gets trees into the world in one module,
+# and §D8's rule applies: when a mod wants a schematic, the schematic is what
+# the API grew wrong.
+
+(mod decor ^profile web)
+
+(import [hash_unit2 hash_unit3] from "./exact.gene")
+
+(let max_decors 16.0)
+
+# How far a decoration may reach from its own column. Every region fill scans
+# this many columns beyond its own footprint, so it is a cost paid on every
+# block and is deliberately small: a 2-node skirt on an 18³ padded region is
+# 484 columns against 324, and a 3-node one would be 576.
+(let decor_margin 2.0)
+
+(type DecorRegistry
+  ^props {^names      (List Str)
+          ^surface    (Buffer F32)   # the node it must be rooted on
+          ^trunk      (Buffer F32)
+          ^leaf       (Buffer F32)
+          ^min_height (Buffer F32)
+          ^max_height (Buffer F32)
+          ^chance     (Buffer F32)   # 0..1 per column
+          ^count      (Buffer F32)}
+
+  (ctor []
+    (set! self/names [])
+    (set! self/surface ($buffer F32 max_decors))
+    (set! self/trunk ($buffer F32 max_decors))
+    (set! self/leaf ($buffer F32 max_decors))
+    (set! self/min_height ($buffer F32 max_decors))
+    (set! self/max_height ($buffer F32 max_decors))
+    (set! self/chance ($buffer F32 max_decors))
+    (set! self/count ($buffer F32 1.0))))
+
+(fn new_decors [] : DecorRegistry
+  (new DecorRegistry))
+
+(fn decor_count [d : DecorRegistry] : F64
+  (d/count ~ get 0.0))
+
+(type DecorRegistryFull
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for DecorRegistryFull)
+
+(fn add_decor [d : DecorRegistry name : Str surface : F64
+               trunk : F64 leaf : F64
+               min_height : F64 max_height : F64 chance : F64] : F64
+  (var id (decor_count d))
+  (if_yes (>= id max_decors)
+    (fail (new DecorRegistryFull
+               $"decoration registry is full at ${max_decors} entries")))
+  (d/names ~ push! name)
+  (d/surface ~ set! id surface)
+  (d/trunk ~ set! id trunk)
+  (d/leaf ~ set! id leaf)
+  (d/min_height ~ set! id min_height)
+  (d/max_height ~ set! id max_height)
+  (d/chance ~ set! id chance)
+  (d/count ~ set! 0.0 (+ id 1.0))
+  id)
+
+(fn decor_name [d : DecorRegistry id : F64] : Str
+  (var n d/names)
+  (var i id)
+  n/%i)
+
+(fn decor_surface [d : DecorRegistry id : F64] : F64 (d/surface ~ get id))
+(fn decor_trunk [d : DecorRegistry id : F64] : F64 (d/trunk ~ get id))
+(fn decor_leaf [d : DecorRegistry id : F64] : F64 (d/leaf ~ get id))
+(fn decor_chance [d : DecorRegistry id : F64] : F64 (d/chance ~ get id))
+
+# --- placement ---------------------------------------------------------------
+#
+# The two questions a region asks about a column, both answered from the world
+# coordinate and the seed. `core/exact.gene`'s hashes are the ones §3 already
+# uses for caves and ore, so a decoration is deterministic by exactly the
+# discipline §D3.1 requires of the exact half.
+
+# Hashed on a salt distinct from the cave and ore salts, so a tree does not
+# correlate with a vein.
+(let decor_salt 7717.0)
+
+(fn decor_here? [d : DecorRegistry id : F64 wx : F64 wz : F64
+                 seed : F64] : Bool
+  (< (hash_unit2 (+ wx decor_salt) (+ wz seed) (+ id 1.0))
+     (decor_chance d id)))
+
+# Trunk height for the tree at this column, in `[min_height, max_height]`. A
+# second hash rather than a reuse of the first, or every tree that existed would
+# be the tallest one.
+(fn decor_height [d : DecorRegistry id : F64 wx : F64 wz : F64
+                  seed : F64] : F64
+  (var lo (d/min_height ~ get id))
+  (var hi (d/max_height ~ get id))
+  (var t (hash_unit3 wx wz (+ id 31.0) (+ seed decor_salt)))
+  (+ lo ($math/floor (* t (+ (- hi lo) 1.0)))))
+
+# Whether a leaf sits at this offset from the trunk top. A ball with the corners
+# cut: the eight extreme corners of the 5x3x5 shell are dropped, which is what
+# makes it read as a canopy rather than a cube.
+#
+# `ty` is the offset above the *top* of the trunk, running -1 .. 1: leaves start
+# one node below the trunk top so the trunk never pokes out bare.
+(fn decor_leaf_at? [dx : F64 ty : F64 dz : F64] : Bool
+  (var ax (if (< dx 0.0) (- 0.0 dx) dx))
+  (var az (if (< dz 0.0) (- 0.0 dz) dz))
+  (if (> ty 0.0)
+    # The cap is a plus rather than a square, so the top is rounded.
+    (<= (+ ax az) 1.0)
+    (if (&& (== ax 2.0) (== az 2.0)) false true)))

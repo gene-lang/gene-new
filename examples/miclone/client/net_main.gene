@@ -114,7 +114,7 @@
   # uploaded when they do — which is before any block message, because the
   # server sends tiles in the handshake.
   (var atlas_canvas ($dom/create_element "canvas"))
-  ($canvas/set_size atlas_canvas 64.0 64.0)
+  ($canvas/set_size atlas_canvas 128.0 128.0)
 
   # --- state the network fills ------------------------------------------------
   #

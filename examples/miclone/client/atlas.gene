@@ -7,7 +7,7 @@
 # and writes its own encoder to get them.
 #
 # **M7 turned the tile list into a registry.** The layout is still
-# `core/mesh.gene`'s 4x4 grid, but the slot numbers and the colours are no
+# `core/mesh.gene`'s grid, but the slot numbers and the colours are no
 # longer written here: `paint` walks `core/tiles.gene`'s registry and runs the
 # generator each entry names. That is what makes a mod able to add a node that
 # *looks* like something — before it, a mod could register a node and could only
@@ -29,11 +29,11 @@
         from "../core/tiles.gene")
 
 (let tile_px 16.0)
-(let atlas_px 64.0)
-(let atlas_cols 4.0)
+(let atlas_px 128.0)
+(let atlas_cols 8.0)
 
 # Tile index to grid position, the inverse of what `core/mesh.gene` does to
-# reach the atlas: index `t` lives at column `t mod 4`, row `t / 4`.
+# reach the atlas: index `t` lives at column `t mod 8`, row `t / 8`.
 (fn tile_col [t : F64] : F64
   (- t (* ($math/floor (/ t atlas_cols)) atlas_cols)))
 
@@ -128,8 +128,8 @@
 # The atlas, in the registry's slot order — which is the order the mod
 # registered its tiles in, and the order `core/registry.gene`'s tile columns
 # already point into. An unregistered slot is simply not painted: §6's atlas
-# gains a row before a seventeenth tile does, and until then a 4x4 grid with
-# three empty cells is what a fourteen-tile game looks like.
+# gained a row when the seventeenth tile arrived (M8's trees), and an 8x8 grid
+# with unpainted cells is what a seventeen-tile game looks like.
 (fn paint [ctx : Canvas2D t : TileRegistry] : Nil
   (var n (tile_count t))
   (var i 0.0)

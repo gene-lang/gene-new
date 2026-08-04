@@ -42,10 +42,15 @@
 (let tile_ore 1.0)       # a base tile with 2x2 speckles of a second colour
 (let tile_overlay 2.0)   # a base tile with a ragged band of a second colour
 
-# The atlas is `client/atlas.gene`'s 4x4 grid. §6 gains a row before a
-# seventeenth tile does, and until then this is the ceiling — raised here rather
-# than discovered as a tile drawn over another one.
-(let max_tiles 16.0)
+# The atlas is `client/atlas.gene`'s grid. §6 said it "gains a row before a
+# seventeenth tile does" and M8's trees are the seventeenth — so it did, and the
+# ceiling that predicted it is the reason this was a one-line change rather than
+# a debugging session about a tile drawn over another one.
+#
+# 8x8 rather than 4x5: the mesher's UV arithmetic divides by the column count,
+# and a power of two keeps every tile boundary on an exact binary fraction —
+# which matters because §D3.1 puts the mesher in the exact half.
+(let max_tiles 64.0)
 
 (type TileRegistry
   ^props {^names       (List Str)
@@ -107,7 +112,7 @@
   (var slot (tile_count t))
   (if_yes (>= slot max_tiles)
     (fail (new TileRegistryFull
-               $"tile registry is full at ${max_tiles} entries; the atlas is 4x4")))
+               $"tile registry is full at ${max_tiles} entries; the atlas is 8x8")))
   (t/names ~ push! name)
   (t/kind ~ set! slot kind)
   (t/r ~ set! slot r)
