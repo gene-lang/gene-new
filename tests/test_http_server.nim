@@ -501,6 +501,36 @@ suite "net/http server e2e":
         break
     check intact
 
+  test "on_tick fires on a period and survives a throwing tick":
+    # §12's server tick. The serve loop already sleeps only as long as nothing
+    # needs it, so a tick is one more deadline to clamp against rather than a
+    # thread — and a throwing tick must not take every connected client down
+    # with it, since the next one may well succeed.
+    let p = startHttpServer("tick.gene", """
+(import $net/http [serve listen stop text])
+(var n ($cell 0))
+(var srv (listen ^host "127.0.0.1" ^port 8187))
+(serve srv
+  ^tick_ms 60
+  ^on_tick (fn []
+    (n ~ set (+ (n ~ get) 1))
+    (if_yes (== (n ~ get) 2) (boom_in_tick))
+    (if_yes (>= (n ~ get) 6)
+      ($println $"ticks=$(n ~ get)")
+      (stop srv)))
+  (fn [req] (text "ok")))
+($println "stopped")
+""")
+    defer: (p.terminate(); p.close())
+    sleep(1200)
+    p.terminate()
+    let output = p.outputStream.readAll()
+    # It kept ticking past the one that raised, and drained cleanly afterwards.
+    check "ticks=6" in output
+    check "stopped" in output
+    check "on_tick raised" in output
+    check "boom_in_tick" in output
+
   test "a failing ws handler is reported rather than swallowed":
     # WebSocket callbacks run as fibers and nothing waits on the result, so an
     # exception inside one used to vanish completely: no delivery, no error,

@@ -38,8 +38,10 @@
 (import [Game
          register_tile register_node register_drop_rule
          register_group register_item register_tool_cap
-         register_biome_def register_ore_def]
+         register_biome_def register_ore_def
+         register_abm]
         from "../../../core/api.gene")
+(import [abm_fall] from "../../../core/abm.gene")
 (import [tile_solid tile_ore tile_overlay] from "../../../core/tiles.gene")
 (import [draw_liquid] from "../../../core/registry.gene")
 (import [shape_scatter shape_sheet shape_blob] from "../../../core/ore.gene")
@@ -323,6 +325,27 @@
                     ^shape shape_sheet ^y_min 0.0 ^y_max 28.0
                     ^chance 0.05 ^size 2.0))
 
+# --- behaviour ---------------------------------------------------------------
+#
+# §12's ABMs, and the first thing this game does without being asked. It is also
+# the first mod code that *runs during play* rather than at load — everything
+# above this point is registration.
+#
+# Sand and gravel fall. The group was declared with the others above and
+# nothing acted on it until the tick existed; now something does, and note what
+# this declaration does not say: it never names sand or gravel, only the group,
+# so a mod adding its own falling node gets the behaviour by joining the group.
+#
+# `^kind` names an engine behaviour rather than supplying one, for the reason
+# `core/abm.gene` gives — a `Callback` carrying nominal types compiles for the
+# web profile and is rejected by the VM, which is the backend that would run it.
+
+(fn setup_behaviour [game : Game] : Nil
+  (register_abm game ^label "falling nodes"
+                ^group "falling_node"
+                ^kind abm_fall
+                ^interval_ms 150.0))
+
 # --- the mod's entry ----------------------------------------------------------
 #
 # One function, called once, in the order the registrations depend on: tiles
@@ -341,4 +364,5 @@
   (setup_items game)
   (setup_drops game)
   (setup_biomes game)
-  (setup_ores game))
+  (setup_ores game)
+  (setup_behaviour game))

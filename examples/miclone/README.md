@@ -97,6 +97,8 @@ core/       portable Gene — compiles for the VM and the web profile
                 only thing it registers through (M7)
   mods.gene     §9's load step — one list, and the file where §D5's capability
                 model will be true or not
+  abm.gene      §12's ABMs: a check queue for what just changed, and sampling
+                for what did not (M8)
 mods/       the game, as mods (§9)
   default/    every node, tile, drop, biome and ore miclone has
 server/     VM only: the on-disk block format, the SQLite world store (§11),
@@ -298,6 +300,30 @@ than a game one, and it makes it more clearly worth doing — runtime loading
 without it would be strictly worse than what exists now, since `mods/default` is
 compiled in and audited by being in this repository. See design.md §D5.1 and
 §9.1.
+
+### §D8 M8 — the server tick, and a world that changes on its own
+
+```sh
+gene run server &
+node tools/tick_probe.mjs        # digs under sand, then stops talking
+```
+
+§12.1 said the loop would arrive with "the first thing that changes without
+being asked". That is falling sand. `serve` gained `^on_tick`/`^tick_ms` — the
+event loop already slept only as long as nothing needed it, so a tick is one
+more deadline rather than a thread.
+
+**Sampling cannot do falling, and a probe measured why.** §12 specifies ABMs as
+sampled; sampling 900 positions a pass out of 2.4M nodes takes about six minutes
+to reach one *particular* node, so a column whose support was just dug stands
+there. There are two mechanisms now: a **check queue** seeded by whatever just
+changed (a neighbour update, which cascades a node per tick), and **sampling**
+for the ambient case nothing uses yet. See design.md §12.2.
+
+`tick_probe.mjs` asserts the property rather than the mechanism: it digs the
+support out from under a sand column, stops talking, and waits for node deltas
+to arrive on a silent socket. That is the whole difference between M6's reactive
+server and this one.
 
 ### Cross-backend specs
 

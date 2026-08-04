@@ -62,6 +62,8 @@
 (import [OreRegistry register_ore shape_scatter shape_sheet shape_blob]
         from "./ore.gene")
 (import [DropTable new_drop_table register_drop] from "./drops.gene")
+(import [AbmRegistry new_abms add_abm queue_node abm_fall] from "./abm.gene")
+(import [World node_at] from "./loaded.gene")
 (import [GroupRegistry new_groups intern_group group_named set_rating rating_of]
         from "./groups.gene")
 (import [ItemRegistry new_items add_item add_tool_cap item_named item_of_node
@@ -80,6 +82,7 @@
           ^items  ItemRegistry
           ^groups GroupRegistry
           ^drops  DropTable
+          ^abms   AbmRegistry
           ^biomes BiomeRegistry
           ^ores   OreRegistry}
 
@@ -89,6 +92,7 @@
     (set! self/items (new_items))
     (set! self/groups (new_groups))
     (set! self/drops (new_drop_table))
+    (set! self/abms (new_abms))
     (set! self/biomes (new BiomeRegistry))
     (set! self/ores (new OreRegistry))))
 
@@ -272,6 +276,51 @@
   (if_yes (== id content_unknown)
     (fail (new UnknownNode $"${name} is not a registered node")))
   id)
+
+# --- ABMs --------------------------------------------------------------------
+#
+# §12's "this node should change on its own", and the first thing in the engine
+# that runs without a player asking — which is why §12.1 said the server tick
+# would arrive with it.
+#
+# `^interval_ms` is how often this ABM gets a pass and `^chance` is 1-in-N per
+# sampled position; together they are how fast the behaviour reads. `^group` is
+# what it applies to, which is §2's whole point — an ABM says `falling_node` and
+# gets every node any mod ever put in that group.
+
+(fn register_abm [game : Game
+                  ^label : Str
+                  ^group : Str
+                  ^kind : F64?
+                  ^interval_ms : F64?
+                  ^chance : F64?] : F64
+  (add_abm game/abms label (?? kind abm_fall)
+           (intern_group game/groups group)
+           (?? interval_ms 200.0) (?? chance 1.0)))
+
+# What an ABM action calls. It *queues* the change rather than performing it —
+# see `core/abm.gene` for why, and note the shape it buys: a mod's reach into
+# the world is "name a position and a node", which is a sentence §D5's
+# capability model can eventually police. Writing directly would mean holding
+# the lighting scratch and the bounds tracker, which is engine working state.
+(fn set_node [game : Game x : F64 y : F64 z : F64 node : Str] : Bool
+  (queue_node game/abms x y z (node_id game node)))
+
+# The same, for a node an action already has in hand. Moving a node — which is
+# what falling is — reads an id and writes it back one position down, and making
+# that round-trip through a name would be a lookup in each direction to express
+# "this, but there".
+(fn set_node_id [game : Game x : F64 y : F64 z : F64 node : F64] : Bool
+  (queue_node game/abms x y z node))
+
+# And what it reads. `node_at` is the loaded world's own accessor; this is the
+# mod-facing name for it, so a mod never imports `core/loaded.gene`.
+(fn get_node [game : Game world : World x : F64 y : F64 z : F64] : F64
+  (node_at world x y z))
+
+(fn node_is? [game : Game world : World x : F64 y : F64 z : F64
+              name : Str] : Bool
+  (== (node_at world x y z) (node_id game name)))
 
 # --- biomes ------------------------------------------------------------------
 #

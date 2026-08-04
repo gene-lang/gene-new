@@ -1041,6 +1041,11 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   var handler = if args.len == 2: args[1] else: NIL
   var routes: Value = NIL
   var onError: Value = NIL
+  # A periodic callback on the serve loop. The loop already sleeps in the kernel
+  # only as long as nothing needs it (`selectTimeoutMs`), so a tick is one more
+  # deadline to clamp against rather than a thread or a timer subsystem.
+  var onTick: Value = NIL
+  var tickMs = 0
   var dispatchConfig: Value = NIL
   var overloadResponse: Value = NIL
   var supervisionPolicy: Value = NIL
@@ -1053,7 +1058,8 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
                      "max_body_bytes", "request_timeout_ms",
                      "drain_timeout_ms", "handler", "routes", "on_error",
                      "dispatch", "overload_response", "supervision",
-                     "access_log", "error_log", "redact_headers"]:
+                     "access_log", "error_log", "redact_headers",
+                     "on_tick", "tick_ms"]:
         raise newException(GeneError,
           "http/serve got unexpected named argument: " & name)
     template namedInt(name: string, target: var int) =
@@ -1076,12 +1082,20 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     namedVal("handler", handler)
     namedVal("routes", routes)
     namedVal("on_error", onError)
+    namedVal("on_tick", onTick)
+    namedInt("tick_ms", tickMs)
     namedVal("dispatch", dispatchConfig)
     namedVal("overload_response", overloadResponse)
     namedVal("supervision", supervisionPolicy)
     namedVal("access_log", accessLog)
     namedVal("error_log", errorLog)
     namedVal("redact_headers", redactHeaders)
+  # A tick with no period would spin the loop; a period with no tick is a
+  # silently ignored argument. Both are mistakes worth a diagnostic.
+  if onTick.kind != vkNil and tickMs <= 0:
+    raiseHttpError("http/serve ^on_tick requires a positive ^tick_ms", scope)
+  if onTick.kind == vkNil and tickMs > 0:
+    raiseHttpError("http/serve ^tick_ms has no effect without ^on_tick", scope)
   var poolConfig: Value = NIL
   if dispatchConfig.kind != vkNil:
     if dispatchConfig.kind == vkNode and
@@ -1169,6 +1183,11 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
     var served = 0
     var draining = false
     var drainDeadline: MonoTime
+    # `on_tick` fires on a fixed period. `tickMs` of 0 with a handler present is
+    # a mistake worth naming rather than a busy loop, so it is rejected at
+    # `serve` rather than spun on here.
+    let ticking = onTick.kind != vkNil
+    var nextTick = if ticking: timerDeadline(tickMs) else: MonoTime()
 
     # WebSocket callbacks run as fibers, and `dispatchWsHandler` hands back a
     # task nobody was reading — so an exception inside `on_open`, `on_message`,
@@ -1689,6 +1708,8 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
       let nextTimer = nextTimerDeadline()
       if nextTimer.has:
         clampTo(nextTimer.deadline)
+      if ticking:
+        clampTo(nextTick)
       if draining:
         clampTo(drainDeadline)
       for conn in conns.values:
@@ -1814,6 +1835,18 @@ proc biHttpServe(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
           if draining and (conns.len == 0 or getMonoTime() > drainDeadline):
             break
           let events = selector.select(selectTimeoutMs())
+          # Before the events, so a busy socket cannot starve the tick — and
+          # once per period rather than once per missed period, because a
+          # server that fell behind should not then run the world at double
+          # speed to catch up.
+          if ticking and getMonoTime() >= nextTick:
+            nextTick = timerDeadline(tickMs)
+            try:
+              discard applyCall(onTick, [], NamedArgs(), scope)
+            except CatchableError as e:
+              # A throwing tick must not kill the server: it would take every
+              # connected client with it, and the next tick may well succeed.
+              stderr.writeLine("http/serve on_tick raised: " & e.msg)
           for ev in events:
             if ev.fd == listenerFd:
               if Event.Read in ev.events:

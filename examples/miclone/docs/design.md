@@ -1188,6 +1188,26 @@ yet. The fix is an iteration lowering for `PropMap`, and it is the same class of
 work as §D7.13's named parameters — a portable form that exists on one side and
 should exist on both.
 
+**16. A tick hook on the HTTP serve loop. Blocked M8. Landed.**
+§12's server tick needs to run alongside a blocking `serve`. The loop already
+polled with a computed timeout, so this is `^on_tick` plus `^tick_ms`: the tick
+deadline joins the ones the timeout is already clamped against, the callback
+fires before events so a busy socket cannot starve it, and once per period
+rather than once per missed period — a server that fell behind should not run
+the world at double speed to catch up. A throwing tick is reported and the loop
+continues. `^on_tick` without a positive `^tick_ms` is refused rather than spun
+on, and `^tick_ms` without `^on_tick` is refused rather than ignored.
+
+**17. The VM rejects a nominal type inside a `Callback` annotation. Found by
+M8's ABMs. Small, and open.**
+`(Callback [Game World F64 F64 F64] Nil)` compiles for the web profile and fails
+on the VM with "unsupported type annotation" — the opposite direction from
+§D7.13 and §D7.15, where the profile was the narrower one. It matters because
+the VM is the backend that would *run* a mod's callback, so the annotation is
+unusable exactly where it is needed. §9's `^action (fn [pos node] …)` waits on
+it; until then an ABM names one of a fixed set of engine behaviours, which is a
+vocabulary rather than an API.
+
 ## D8. Delivery phases
 
 Each milestone ends in something runnable. No milestone is "infrastructure
@@ -1284,8 +1304,8 @@ mitigations.
 **The subset constraint held, and the way it held is the finding.** `core/` is
 23 modules compiling for both backends, and not one of them needed a
 conditional. But it did not hold by being avoided: it held because **Gene grew
-every time it did not fit**, and §D7 is the list — fifteen items, of which
-eight landed on the way through. Typed buffers, `$to_float` in the portable
+every time it did not fit**, and §D7 is the list — seventeen items, of which
+nine landed on the way through. Typed buffers, `$to_float` in the portable
 stdlib, loop bodies as scopes, integral Floats as indices, a WebSocket client,
 `a/~b` in the profile, named parameters: each was a place the subset was about
 to fail, and the fix went into the language rather than into a workaround. That
@@ -2899,6 +2919,53 @@ from being O(loaded world) every tick.
 
 Client renders at display rate and interpolates; it does not tick the server
 model.
+
+### 12.2 M8 — the loop arrived, and two mechanisms had to exist rather than one
+
+§12.1 said "§12's loop arrives with the first thing that changes without being
+asked". That is M8's falling sand, and the loop arrived with it.
+
+It runs on `serve`'s `^on_tick`, which Gene's HTTP server gained for this
+(§D7.16): the event loop already slept only as long as nothing needed it, so a
+tick is one more deadline to clamp against rather than a thread. A throwing tick
+is reported and the loop continues — it would otherwise take every connected
+client down with it, and the next tick may well succeed.
+
+**The design mistake worth recording is that sampling cannot do falling.** §12
+specifies ABMs as sampled, and the first implementation sampled only. It did not
+work, and a probe measured why: 900 positions a pass out of 2.4M nodes is about
+six minutes to visit one *particular* node, so a column whose support was just
+dug stands there. The tick ran and nothing fell.
+
+So there are two mechanisms, which is what §12's own "run node timers, run due
+ABMs" was already saying:
+
+- **A check queue**, targeted. An edit seeds the position above it, the tick
+  drains the queue, and a node that falls seeds its own — which is what makes a
+  column cascade a node per tick instead of settling one node per minute. This
+  is a *neighbour update*, and it is how upstream does falling too.
+- **Sampling**, ambient, for the behaviour it was designed for: grass spreading
+  onto a block nobody touched. Nothing registered uses it yet.
+
+"Run it on random positions" and "run it where something just happened" look
+like the same feature and are not.
+
+**An ABM names an engine behaviour rather than supplying one**, which is not
+where §9 wants to end up — it writes `^action (fn [pos node] …)`. The reason is
+a compiler gap rather than a decision: the VM rejects a nominal type inside a
+`Callback` annotation, so `(Callback [Game World F64 F64 F64] Nil)` compiles for
+the web profile and fails on the VM, which is the backend that would run it
+(§D7.17). What a mod still controls is real — which group falls, how often — and
+a mod adding its own falling node gets the behaviour by joining the group.
+
+`tools/tick_probe.mjs` is the check, and it asserts the property rather than the
+mechanism: it digs the support out from under a sand column, **stops talking**,
+and waits for node deltas to arrive on a silent socket. That is the whole
+difference between M6's reactive server and this one.
+
+§12.1's other prediction also came true: per-connection state was a closure, a
+closure cannot be iterated, and a change nobody asked for has to reach
+everybody — so the server now keeps an enumerable list of connections beside it.
 
 ### 12.1 M6 — the server is reactive, and has no loop at all
 
