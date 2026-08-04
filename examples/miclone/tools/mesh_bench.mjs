@@ -8,8 +8,8 @@
 import { fill_padded } from "../dist/mapgen.mjs";
 import { light_region } from "../dist/light.mjs";
 import { chunk_base, count_faces, build_mesh } from "../dist/mesh.mjs";
-import { new_registry, id_of, opaque$q, registered_count } from "../dist/registry.mjs";
-import { setup_nodes, setup_biomes, setup_ores } from "../dist/content.mjs";
+import { id_of, opaque$q, registered_count } from "../dist/registry.mjs";
+import { load_mods } from "../dist/mods.mjs";
 
 // 18^3 — the padded neighbourhood core/mesh.gene reads. The web profile
 // exports functions, not `let` constants, so the geometry is restated here.
@@ -23,13 +23,14 @@ const PAD_BASE = chunk_base(1, 1, 1, PAD_SY, PAD_SZ);
 const SEED = 1337;
 
 // M2: the generator and the mesher both read the registries rather than
-// hardcoded ids, so the harness builds the same content set the client does.
-// Content ids are `F64` and the node buffer is a Float32Array — see
-// core/world.gene for why the obvious Uint16Array is 9x slower to read.
-const reg = new_registry();
-setup_nodes(reg);
-const biomes = setup_biomes(reg);
-const ores = setup_ores(reg);
+// hardcoded ids, so the harness loads the same game the client does — which
+// since M7 means the same mod (§9). Content ids are `F64` and the node buffer
+// is a Float32Array — see core/world.gene for why the obvious Uint16Array is
+// 9x slower to read.
+const game = load_mods();
+const reg = game.nodes;
+const biomes = game.biomes;
+const ores = game.ores;
 const AIR = id_of(reg, "air");
 const WATER = id_of(reg, "miclone:water");
 

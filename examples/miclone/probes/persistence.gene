@@ -32,7 +32,8 @@
 
 (import [Registry new_registry id_of name_of registered_count]
         from "../core/registry.gene")
-(import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
+(import [Game] from "../core/api.gene")
+(import [load_mods] from "../core/mods.gene")
 (import [block_dim block_nodes generate_block] from "../core/mapgen.gene")
 (import [light_region relight_node queue_overhead day_of night_of]
         from "../core/light.gene")
@@ -94,17 +95,13 @@
       (set dy (+ dy 1.0)))
     (set dz (+ dz 1.0))))
 
-(fn build_registry [] : Registry
-  (var r (new_registry))
-  (setup_nodes r)
-  r)
-
 # --- create -------------------------------------------------------------------
 
 (fn create_world [root : Str] : Str
-  (var r (build_registry))
-  (var biomes (setup_biomes r))
-  (var ores (setup_ores r))
+  (var game (load_mods))
+  (var r game/nodes)
+  (var biomes game/biomes)
+  (var ores game/ores)
   (var air (id_of r "air"))
   (var water (id_of r "miclone:water"))
   (var stone (id_of r "miclone:stone"))
@@ -169,9 +166,10 @@
     (out ~ push! $"FAIL no world at ${root} — run `gene run persistence create` first")
     (return out))
 
-  (var r (build_registry))
-  (var biomes (setup_biomes r))
-  (var ores (setup_ores r))
+  (var game (load_mods))
+  (var r game/nodes)
+  (var biomes game/biomes)
+  (var ores game/ores)
   (var air (id_of r "air"))
   (var water (id_of r "miclone:water"))
   (var lamp (id_of r "miclone:lamp"))

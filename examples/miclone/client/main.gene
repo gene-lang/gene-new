@@ -28,9 +28,9 @@
 (import [generate_block] from "../core/mapgen.gene")
 (import [count_faces build_mesh] from "../core/mesh.gene")
 (import [light_region queue_overhead] from "../core/light.gene")
-(import [new_registry id_of registered_count] from "../core/registry.gene")
-(import [setup_nodes setup_biomes setup_ores setup_drops]
-        from "../core/content.gene")
+(import [id_of registered_count] from "../core/registry.gene")
+(import [Game] from "../core/api.gene")
+(import [load_mods] from "../core/mods.gene")
 (import [World new_world store_block block_base open_sky
          world_dx world_dy world_dz world_stride_z world_nodes]
         from "../core/loaded.gene")
@@ -127,24 +127,25 @@
 
   # The atlas is drawn into an offscreen canvas and handed straight to WebGL,
   # so there is no image to fetch and no load event to wait for.
+  # §9's game, before anything reads a content id — which is everything below.
+  (var game (load_mods))
+
   (var atlas_canvas ($dom/create_element "canvas"))
   ($canvas/set_size atlas_canvas 64.0 64.0)
-  (paint ($canvas/context atlas_canvas))
+  (paint ($canvas/context atlas_canvas) game/tiles)
   (upload_atlas gl atlas_canvas)
 
   # --- content ---------------------------------------------------------------
   #
   # M2: the generator and the mesher both read these rather than hardcoded ids
-  # (§2, §3). The same three calls run on the server, which is what keeps the
-  # two sides generating one world (§D3) — and in M7 they become a mod's
-  # registrations instead of a built-in call.
-  (var reg (new_registry))
-  (setup_nodes reg)
-  (var biomes (setup_biomes reg))
-  (var ores (setup_ores reg))
+  # (§2, §3). The server loads the same mods and gets the same ids, which is
+  # what keeps the two sides generating one world (§D3).
+  (var reg game/nodes)
+  (var biomes game/biomes)
+  (var ores game/ores)
   # §2's server half. In-process singleplayer holds both halves; M6 is where
   # this stops being something the client can reach (see `core/drops.gene`).
-  (var drops (setup_drops reg))
+  (var drops game/drops)
   (var air (id_of reg "air"))
   (var water (id_of reg "miclone:water"))
   (var registered (registered_count reg))

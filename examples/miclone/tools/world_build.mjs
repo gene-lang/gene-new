@@ -19,8 +19,10 @@
 import { generate_block } from "../dist/mapgen.mjs";
 import { light_region } from "../dist/light.mjs";
 import { count_faces, build_mesh } from "../dist/mesh.mjs";
-import { new_registry, id_of, registered_count } from "../dist/registry.mjs";
-import { setup_nodes, setup_biomes, setup_ores } from "../dist/content.mjs";
+import { id_of, registered_count } from "../dist/registry.mjs";
+// §9's game, exactly as the engine gets it: one call, and the registries come
+// off the `Game` it returns. This harness never names a content id either.
+import { load_mods } from "../dist/mods.mjs";
 import {
   new_world, store_block, block_base, open_sky, node_at, light_at, set_node,
   world_dx, world_dy, world_dz, world_stride_z, world_nodes,
@@ -43,7 +45,6 @@ import {
   block_size, encode_block, decode_block, new_block_header,
   registry_size, encode_registry,
 } from "../dist/protocol.mjs";
-import { setup_drops } from "../dist/content.mjs";
 import {
   new_bounds, apply_node, diggable$q, placeable$q,
   bounds_min_x, bounds_min_y, bounds_min_z,
@@ -59,10 +60,10 @@ const SPAN_X = 12, SPAN_Y = 4, SPAN_Z = 12;
 const QUEUE_OVERHEAD = 4;
 const FLOATS_PER_VERTEX = 7;
 
-const reg = new_registry();
-setup_nodes(reg);
-const biomes = setup_biomes(reg);
-const ores = setup_ores(reg);
+const game = load_mods();
+const reg = game.nodes;
+const biomes = game.biomes;
+const ores = game.ores;
 const AIR = id_of(reg, "air");
 const WATER = id_of(reg, "miclone:water");
 const IGNORE = id_of(reg, "ignore");
@@ -359,7 +360,7 @@ if (lightDiff !== 0) {
 // left to a screenshot: the client wires these four modules together and the
 // wiring is the only part a spec per module cannot see.
 
-const drops = setup_drops(reg);
+const drops = game.drops;
 const inv = new_inventory(8);
 let loopBad = 0;
 

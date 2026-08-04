@@ -1,0 +1,159 @@
+# The tile registry — design.md §2's client half, appearance side.
+#
+# Before M7 the atlas was a list of constants in `core/content.gene` and a
+# matching list of `paint_*` calls in `client/atlas.gene`, and the *number* was
+# the contract between them. That is workable while the engine owns the content
+# set and impossible once a mod does: a mod that can register a node but not its
+# look is a mod that can only rearrange nodes the engine already drew.
+#
+# So a tile is registered, like a node and a biome and an ore, and the slot is
+# assigned rather than chosen. `core/registry.gene`'s `tile_top`/`tile_side`/
+# `tile_bottom` columns hold the assigned slot, `core/mesh.gene` reads them, and
+# nothing outside a mod ever writes a tile number.
+#
+# ## The recipe is data; the painting is the client's
+#
+# A tile here is a *recipe*: a kind and a handful of small numbers. The three
+# kinds are the procedural generators `client/atlas.gene` knows how to run, and
+# they are the engine's rather than a mod's — a mod picks one and parameterises
+# it. Real image assets are §6's and M9's; §D8's `assets/` is where they land.
+#
+# That split is what lets §9's promise hold: the recipe travels to a client over
+# §10's wire (`msg_tiles`), so a client draws mod content **without executing
+# mod code** (§D5). A mod that shipped a painter would be code the client has to
+# run, which is the thing the capability model exists to avoid.
+#
+# ## Every column is a byte
+#
+# Colours are 0..255, `spread` and `seed` are small, and `density` is a
+# percentage rather than a fraction — 62, not 0.62. That is not only for the
+# wire: quantising at *registration* means the in-process client and the one
+# reading the wire paint from the same numbers, and an ore's speckles do not
+# differ by backend. See `core/world.gene` for why the columns are `F32`.
+
+(mod tiles ^profile web)
+
+# --- kinds -------------------------------------------------------------------
+#
+# Numbered rather than named, because they index the same arrays as everything
+# else here — `core/registry.gene`'s drawtypes are numbered for the same reason.
+
+(let tile_solid 0.0)     # flat colour with per-texel noise
+(let tile_ore 1.0)       # a base tile with 2x2 speckles of a second colour
+(let tile_overlay 2.0)   # a base tile with a ragged band of a second colour
+
+# The atlas is `client/atlas.gene`'s 4x4 grid. §6 gains a row before a
+# seventeenth tile does, and until then this is the ceiling — raised here rather
+# than discovered as a tile drawn over another one.
+(let max_tiles 16.0)
+
+(type TileRegistry
+  ^props {^names       (List Str)
+          ^kind        (Buffer F32)
+          # The primary colour: the surface for `solid`, the speckle for `ore`,
+          # the band for `overlay`.
+          ^r           (Buffer F32)
+          ^g           (Buffer F32)
+          ^b           (Buffer F32)
+          ^spread      (Buffer F32)   # per-texel variation, 0..255
+          ^seed        (Buffer F32)   # which noise field, so two tiles differ
+          # The secondary colour, used by `ore` and `overlay` as the base the
+          # primary sits on. `solid` ignores it.
+          ^base_r      (Buffer F32)
+          ^base_g      (Buffer F32)
+          ^base_b      (Buffer F32)
+          ^base_spread (Buffer F32)
+          ^base_seed   (Buffer F32)
+          ^density     (Buffer F32)   # `ore`: percent of texels left un-speckled
+          ^count       (Buffer F32)}  # one cell, as core/registry.gene
+
+  (ctor []
+    (set! self/names [])
+    (set! self/kind ($buffer F32 max_tiles))
+    (set! self/r ($buffer F32 max_tiles))
+    (set! self/g ($buffer F32 max_tiles))
+    (set! self/b ($buffer F32 max_tiles))
+    (set! self/spread ($buffer F32 max_tiles))
+    (set! self/seed ($buffer F32 max_tiles))
+    (set! self/base_r ($buffer F32 max_tiles))
+    (set! self/base_g ($buffer F32 max_tiles))
+    (set! self/base_b ($buffer F32 max_tiles))
+    (set! self/base_spread ($buffer F32 max_tiles))
+    (set! self/base_seed ($buffer F32 max_tiles))
+    (set! self/density ($buffer F32 max_tiles))
+    (set! self/count ($buffer F32 1.0))))
+
+(fn new_tiles [] : TileRegistry
+  (new TileRegistry))
+
+(fn tile_count [t : TileRegistry] : F64
+  (t/count ~ get 0.0))
+
+(type TileRegistryFull
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for TileRegistryFull)
+
+# The low-level registration every column goes through. `core/api.gene` is where
+# a mod meets this, with names for the columns and defaults for the ones a kind
+# does not use — the same division `core/registry.gene` draws between `register`
+# and §9's `register_node`.
+(fn add_tile [t : TileRegistry name : Str kind : F64
+               r : F64 g : F64 b : F64 spread : F64 seed : F64
+               base_r : F64 base_g : F64 base_b : F64
+               base_spread : F64 base_seed : F64
+               density : F64] : F64
+  (var slot (tile_count t))
+  (if_yes (>= slot max_tiles)
+    (fail (new TileRegistryFull
+               $"tile registry is full at ${max_tiles} entries; the atlas is 4x4")))
+  (t/names ~ push! name)
+  (t/kind ~ set! slot kind)
+  (t/r ~ set! slot r)
+  (t/g ~ set! slot g)
+  (t/b ~ set! slot b)
+  (t/spread ~ set! slot spread)
+  (t/seed ~ set! slot seed)
+  (t/base_r ~ set! slot base_r)
+  (t/base_g ~ set! slot base_g)
+  (t/base_b ~ set! slot base_b)
+  (t/base_spread ~ set! slot base_spread)
+  (t/base_seed ~ set! slot base_seed)
+  (t/density ~ set! slot density)
+  (t/count ~ set! 0.0 (+ slot 1.0))
+  slot)
+
+# --- lookup ------------------------------------------------------------------
+
+# Linear, for `core/registry.gene`'s reason: this runs once per tile name at
+# registration, never per texel and never per face.
+(fn tile_id [t : TileRegistry name : Str] : F64
+  (var names t/names)
+  (var found -1.0)
+  (var i 0.0)
+  (var n (tile_count t))
+  (while (< i n)
+    (if_yes (== names/%i name)
+      (set found i)
+      (set i n))
+    (set i (+ i 1.0)))
+  found)
+
+(fn tile_name [t : TileRegistry id : F64] : Str
+  (var names t/names)
+  (var i id)
+  names/%i)
+
+(fn tile_kind [t : TileRegistry id : F64] : F64 (t/kind ~ get id))
+(fn tile_r [t : TileRegistry id : F64] : F64 (t/r ~ get id))
+(fn tile_g [t : TileRegistry id : F64] : F64 (t/g ~ get id))
+(fn tile_b [t : TileRegistry id : F64] : F64 (t/b ~ get id))
+(fn tile_spread [t : TileRegistry id : F64] : F64 (t/spread ~ get id))
+(fn tile_seed [t : TileRegistry id : F64] : F64 (t/seed ~ get id))
+(fn tile_base_r [t : TileRegistry id : F64] : F64 (t/base_r ~ get id))
+(fn tile_base_g [t : TileRegistry id : F64] : F64 (t/base_g ~ get id))
+(fn tile_base_b [t : TileRegistry id : F64] : F64 (t/base_b ~ get id))
+(fn tile_base_spread [t : TileRegistry id : F64] : F64 (t/base_spread ~ get id))
+(fn tile_base_seed [t : TileRegistry id : F64] : F64 (t/base_seed ~ get id))
+(fn tile_density [t : TileRegistry id : F64] : F64 (t/density ~ get id))

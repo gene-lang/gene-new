@@ -3,11 +3,15 @@
 A voxel game engine with [Luanti](https://github.com/luanti-org/luanti)'s
 architecture, written in Gene, whose mod language is Gene.
 
-**Status: M0 through M6 — a generated, lit world you can walk around in, dig,
-carry, and build with, running as two processes.** The server owns the world
-and answers a WebSocket; the browser client is handed it and plays it, sharing
-every rule through `core/` (§1.1, §4.2, §7, §7.1, §10). M7 is the mod API,
-which is the point of the project. Read
+**Status: M0 through M7's API — a generated, lit world you can walk around in,
+dig, carry, and build with, running as two processes, and defined by a mod.**
+The server owns the world and answers a WebSocket; the browser client is handed
+it and plays it, sharing every rule through `core/` (§1.1, §4.2, §7, §7.1, §10).
+The game itself is `mods/default`, registered through §9's API — and a client
+draws it from recipes on the wire without ever running mod code. What M7 has
+*not* built is the loading: the mod is compiled in rather than read off disk, so
+§D5's capability model is still a claim about a loader that does not exist
+(§9.1). Read
 [`docs/design.md`](docs/design.md) first — Part I is the direction and the
 decisions, and §D2 is the constraint that shaped the rest.
 
@@ -80,13 +84,19 @@ core/       portable Gene — compiles for the VM and the web profile
   mesh.gene     face-culled meshing (§5)
   loaded.gene   the client's loaded world: one array, one shell (§1.1)
   wire.gene     the byte codec both backends encode messages through (§10)
-  protocol.gene the eight messages, encoded as bytes (§10)
+  protocol.gene the nine messages, encoded as bytes (§10)
   physics.gene  the player box against the voxel grid (§7)
   raycast.gene  Amanatides-Woo node selection (§7)
   edit.gene     one node changes, and what that invalidates (§7.1)
   inventory.gene  stacks, in a buffer of (item, count) pairs (§7.1)
   drops.gene    what digging a node yields — §2's server half, for now
-  content.gene  the provisional node/biome/ore set — M7 replaces this with a mod
+  tiles.gene    the atlas recipes a mod registers — §2's appearance side (M7)
+  api.gene      §9's mod API: the surface a mod is written against, and the
+                only thing it registers through (M7)
+  mods.gene     §9's load step — one list, and the file where §D5's capability
+                model will be true or not
+mods/       the game, as mods (§9)
+  default/    every node, tile, drop, biome and ore miclone has
 server/     VM only: the on-disk block format, the SQLite world store (§11),
             and main.gene — the M6 server that owns the world (§10)
 client/     the browser shell: WebGL2 renderer, atlas, camera
@@ -106,10 +116,10 @@ module with a shell per backend rather than one module with a conditional.
 ```sh
 cd examples/miclone
 for m in core/exact core/noise core/field core/world core/registry \
-         core/biome core/cave core/ore core/content core/mapgen \
-         core/light core/mesh core/loaded core/physics core/raycast \
-         core/edit core/inventory core/drops core/wire core/protocol \
-         core/vec \
+         core/tiles core/biome core/cave core/ore core/api core/mods \
+         core/mapgen core/light core/mesh core/loaded core/physics \
+         core/raycast core/edit core/inventory core/drops core/wire \
+         core/protocol core/vec mods/default/src/default \
          client/atlas client/render client/main; do
   gene build --target web $m.gene --out-dir dist
 done
@@ -237,6 +247,47 @@ per connection and `ws_send` drops the oldest when it overflows. Pushing all
 against V8's 0.032 ms, which is §D6.3's ~500 ns message send met again — a
 block encode is ~16,000 buffer reads. That, not the socket, is why a world
 takes ~12 s to transfer. See design.md §10.1.
+
+### §D8 M7 — the mod API
+
+The game is no longer in the engine. `core/content.gene` is gone and every
+node, tile, drop, biome and ore is declared in `mods/default/src/default.gene`,
+through `core/api.gene`:
+
+```gene
+(register_node game "miclone:grass"
+               ^tiles ["miclone:grass_top" "miclone:grass_side" "miclone:dirt"])
+(register_node game "miclone:water" ^tiles ["miclone:water"]
+               ^drawtype draw_liquid
+               ^solid false
+               ^propagates_light true)
+```
+
+Almost every node says nothing about being a solid opaque cube, because that is
+what a node is unless it declares otherwise — which leaves the two that *are*
+different visibly different on the page. That shape cost a compiler change:
+`^name : T` was a VM-only parameter form and `core/api.gene` compiles for both
+backends, so the web profile learned named parameters
+(`docs/web-profile.md`).
+
+**A mod defines what its nodes look like, and a client draws them without
+running the mod.** The atlas used to be a list of constants with a matching list
+of `paint_*` calls; it is now `core/tiles.gene`'s registry, and the recipes
+travel to the browser in `msg_tiles` (protocol v2). A tile is a kind and eleven
+small numbers, so what crossed the wire is data — which is what makes §D5's "a
+client renders without executing mod code" a property rather than a promise.
+
+**The test of the move is that the world did not change.** Same four golden
+checksums, same 229 chunks and 62,395 faces, the ten cross-backend specs diff
+clean, and both clients play the same game. §14 layer 3 exists for terrain
+changes and earned its keep on a change that was not one.
+
+**What M7 has not built is the loading.** `mods/default` is imported like any
+other module and its `register_all` is called, so nothing is sandboxed and
+§D5's capability model is still a claim about a loader that does not exist.
+Runtime module loading lives inside the VM and is not reachable from Gene;
+`core/mods.gene` is the file where that promise will be true or not, and it
+says so. See design.md §9.1.
 
 ### Cross-backend specs
 

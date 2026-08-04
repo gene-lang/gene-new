@@ -44,6 +44,7 @@
          upload_chunk begin_frame set_view_projection draw_chunk]
         from "./render.gene")
 (import [paint] from "./atlas.gene")
+(import [TileRegistry new_tiles] from "../core/tiles.gene")
 (import [forward_x forward_y forward_z] from "../core/vec.gene")
 (import [new_player step player_x player_y player_z player_eye_y
          on_ground? in_liquid? set_player_position box_overlaps_node?]
@@ -55,11 +56,11 @@
         from "../core/inventory.gene")
 (import [new_cursor] from "../core/wire.gene")
 (import [message_kind msg_hello msg_registry msg_block msg_node_delta
-         msg_inventory
+         msg_inventory msg_tiles
          new_hello decode_hello hello_version hello_span_x hello_span_y
          hello_span_z hello_bx hello_by hello_bz
          hello_spawn_x hello_spawn_y hello_spawn_z
-         decode_registry
+         decode_registry decode_tiles
          new_block_header decode_block block_bx block_by block_bz
          new_node_delta decode_node_delta delta_x delta_y delta_z delta_id
          delta_param1
@@ -106,10 +107,12 @@
   (var prog (build_program gl))
   (init_state gl)
 
+  # The atlas is *not* painted here. §9 makes a mod define what its nodes look
+  # like, so the recipes arrive in `msg_tiles` and the canvas is painted and
+  # uploaded when they do — which is before any block message, because the
+  # server sends tiles in the handshake.
   (var atlas_canvas ($dom/create_element "canvas"))
   ($canvas/set_size atlas_canvas 64.0 64.0)
-  (paint ($canvas/context atlas_canvas))
-  (upload_atlas gl atlas_canvas)
 
   # --- state the network fills ------------------------------------------------
   #
@@ -118,6 +121,9 @@
   # shift every id by three. Nothing here may assume an id means anything until
   # the registry message lands.
   (var reg (new Registry))
+  # Bare, like the node registry beside it: §9's slots are positional and the
+  # wire carries all of them.
+  (var tiles (new_tiles))
   (var world (new_world origin_bx origin_by origin_bz span_x span_y span_z))
   (var wdx (world_dx world))
   (var wdy (world_dy world))
@@ -274,6 +280,11 @@
                                    (hello ~ get hello_spawn_y)
                                    (hello ~ get hello_spawn_z))
               (set joined true))))))
+
+    (if_yes (== kind msg_tiles)
+      (decode_tiles b wc tiles)
+      (paint ($canvas/context atlas_canvas) tiles)
+      (upload_atlas gl atlas_canvas))
 
     (if_yes (== kind msg_registry)
       (decode_registry b wc reg)

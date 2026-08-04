@@ -1,0 +1,228 @@
+# The mod API — design.md §9, and §D8's M7.
+#
+# **This is the surface a mod is written against, and nothing else is.** A mod
+# imports this module and no other: it never reaches `core/registry.gene`,
+# `core/biome.gene`, `core/ore.gene`, `core/tiles.gene` or `core/drops.gene`
+# directly, and the test of whether the API is right is §D8's — if M8's game
+# needs an engine change, the API is wrong, not the game.
+#
+# ## Why this is named arguments and the layer below is not
+#
+# `core/registry.gene`'s `register` takes ten positional parameters and says in
+# its own comment that "§9's mod-facing `register_node` is where the named-
+# argument ergonomics belong". This is that. A registration is a *definition*,
+# it is read far more often than written, and ten positions is a shape only its
+# author can read.
+#
+# It cost a compiler change to have it: `^name : T` was a VM-only parameter form
+# and this module compiles for both backends, so the web profile learned named
+# parameters (see `docs/web-profile.md`). That was the right way round. The
+# alternative was a positional API — no better than the layer it wraps — or a
+# VM-only one, which would have retired the in-tab client.
+#
+# ## Optional means `: T?`
+#
+# An omitted named argument binds nil, and every default in this file is applied
+# here rather than at the call site. That is what makes a definition read as the
+# things it *says*: `(register_node game "miclone:stone" ^tiles ["…"])` is
+# a solid opaque node because that is what a node is unless it says otherwise.
+#
+# ## Ids are the engine's
+#
+# Every register returns the id it assigned and a mod may keep it, but §2's rule
+# holds: a mod names content and the engine numbers it. Nothing in a mod may
+# compare an id to a literal.
+
+(mod api ^profile web)
+
+# **Registration is what this module stands in front of, not the vocabulary.**
+# A mod imports `register_*` and `Game` from here, and imports the tile kinds,
+# drawtypes and ore shapes from the modules that define them. That is not the
+# shape I wanted — one import per mod was — and it is the shape both backends
+# agree on: neither re-exports an imported binding the same way. The VM refuses
+# it (`module/namespace has no export`) and the web profile silently copies the
+# literal, so a re-exporting API would compile in a browser and fail on the
+# server. Naming where a number is defined is the honest fallback.
+#
+# The five registries *are* reached through one `Game`, and that is the better
+# shape regardless of what forced it: §9's sketch writes
+# `(register_node "default:stone" …)` with no registry in sight, and upstream
+# reaches the same registries through an implicit global. `Game` is that, made
+# explicit — and one context parameter is also what keeps a mod from having to
+# import five type names it never mentions.
+(import [Registry new_registry register id_of
+         draw_normal draw_airlike draw_glasslike draw_allfaces draw_plantlike
+         draw_liquid]
+        from "./registry.gene")
+(import [content_unknown world_limit] from "./world.gene")
+(import [TileRegistry new_tiles add_tile tile_id
+         tile_solid tile_ore tile_overlay]
+        from "./tiles.gene")
+(import [BiomeRegistry register_biome] from "./biome.gene")
+(import [OreRegistry register_ore shape_scatter shape_sheet shape_blob]
+        from "./ore.gene")
+(import [DropTable new_drop_table register_drop] from "./drops.gene")
+
+# --- the game a mod registers into --------------------------------------------
+#
+# The node registry arrives with §1's three reserved ids already installed, so
+# a mod's first node is id 3 and `air` means what §1 says it means whether or
+# not a mod remembered to declare it.
+
+(type Game
+  ^props {^nodes  Registry
+          ^tiles  TileRegistry
+          ^drops  DropTable
+          ^biomes BiomeRegistry
+          ^ores   OreRegistry}
+
+  (ctor []
+    (set! self/nodes (new_registry))
+    (set! self/tiles (new_tiles))
+    (set! self/drops (new_drop_table))
+    (set! self/biomes (new BiomeRegistry))
+    (set! self/ores (new OreRegistry))))
+
+(fn new_game [] : Game
+  (new Game))
+
+# --- errors ------------------------------------------------------------------
+
+(type UnknownTile
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for UnknownTile)
+
+(fn resolve_tile [game : Game name : Str for_node : Str] : F64
+  (var id (tile_id game/tiles name))
+  (if_yes (< id 0.0)
+    # Named rather than defaulted to tile 0: a node that silently draws as stone
+    # is the failure a placeholder content set is least likely to notice, and
+    # §9's third promise is that a wrong definition fails at registration with a
+    # position rather than at the first dig.
+    (fail (new UnknownTile
+               $"node ${for_node} names tile ${name}, which is not registered")))
+  id)
+
+# --- tiles -------------------------------------------------------------------
+#
+# Registered before the nodes that name them, because a node's `^tiles` is
+# resolved at registration.
+#
+# The defaults are the ones a flat tile wants; `ore` and `overlay` need their
+# second colour, and a kind that does not use a column simply leaves it at zero.
+# `^density` is a percentage (62, not 0.62) — see `core/tiles.gene` for why the
+# columns are whole numbers.
+
+(fn register_tile [game : Game name : Str
+                   ^kind : F64
+                   ^red : F64 ^green : F64 ^blue : F64
+                   ^spread : F64?
+                   ^seed : F64?
+                   ^base_red : F64? ^base_green : F64? ^base_blue : F64?
+                   ^base_spread : F64? ^base_seed : F64?
+                   ^density : F64?] : F64
+  (add_tile game/tiles name kind red green blue
+            (?? spread 20.0) (?? seed 0.0)
+            (?? base_red 0.0) (?? base_green 0.0) (?? base_blue 0.0)
+            (?? base_spread 20.0) (?? base_seed 0.0)
+            (?? density 50.0)))
+
+# --- nodes -------------------------------------------------------------------
+#
+# §2's client half. `^tiles` is one, two, or three tile names: one is every
+# face, two is top-and-bottom then sides, three is top, sides, bottom — the
+# order `core/registry.gene`'s columns are in and the order upstream's
+# `tiles = {top, bottom, side}` is not, because the mesher reads top/side/bottom
+# and matching it removes a permutation nobody can see.
+#
+# Everything else is what a node is unless it says otherwise: drawn as a cube,
+# blocking, hiding what is behind it, dark, and stopping light.
+
+# `xs/%i` needs a lexical index, so the three positions come through one
+# accessor rather than three float literals in selector position.
+(fn nth_tile [names : (List Str) i : F64] : Str
+  names/%i)
+
+(fn register_node [game : Game name : Str
+                   ^tiles : (List Str)
+                   ^drawtype : F64?
+                   ^solid : Bool?
+                   ^opaque : Bool?
+                   ^propagates_light : Bool?
+                   ^light_source : F64?] : F64
+  (var given tiles/~size)
+  (if_yes (|| (< given 1.0) (> given 3.0))
+    (fail (new UnknownTile
+               $"node ${name} names $($to_int given) tiles; it takes one, two, or three")))
+  (var top (resolve_tile game (nth_tile tiles 0.0) name))
+  (var side (if (> given 1.0) (resolve_tile game (nth_tile tiles 1.0) name) top))
+  (var bottom
+    (if (> given 2.0) (resolve_tile game (nth_tile tiles 2.0) name)
+      (if (> given 1.0) top side)))
+  (register game/nodes name (?? drawtype draw_normal)
+            (?? solid true) (?? opaque true) (?? propagates_light false)
+            (?? light_source 0.0)
+            top side bottom))
+
+# --- drops -------------------------------------------------------------------
+#
+# §2's server half, and a table of exceptions rather than of entries: a node
+# drops itself unless something here says otherwise. `^count 0` is a node that
+# drops nothing, which is a real thing to want (upstream's leaves), and is why
+# it is a declaration rather than an inference from a missing entry.
+
+(fn register_drop_rule [game : Game node : Str
+                        ^item : Str
+                        ^count : F64?] : Nil
+  (register_drop game/drops (node_id game node) (node_id game item) (?? count 1.0)))
+
+# A mod names content and the engine numbers it, so a drop rule that names an
+# unregistered node is a mod bug with a position rather than a drop of `unknown`
+# discovered at the first dig.
+(type UnknownNode
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for UnknownNode)
+
+(fn node_id [game : Game name : Str] : F64
+  (var id (id_of game/nodes name))
+  (if_yes (== id content_unknown)
+    (fail (new UnknownNode $"${name} is not a registered node")))
+  id)
+
+# --- biomes ------------------------------------------------------------------
+#
+# §3's nearest-point rule over (heat, humidity). `^y_min`/`^y_max` default to
+# §1's world limit rather than to a large number, so a biome that means
+# "everywhere" says so in the same units a bounded one would.
+
+(fn register_biome_def [game : Game name : Str
+                        ^heat : F64 ^humidity : F64
+                        ^top : Str ^depth_top : F64
+                        ^filler : Str ^depth_filler : F64
+                        ^stone : Str ^underwater : Str
+                        ^y_min : F64? ^y_max : F64?] : F64
+  (register_biome game/biomes name heat humidity
+                  (?? y_min (- 0.0 world_limit)) (?? y_max world_limit)
+                  (node_id game top) depth_top
+                  (node_id game filler) depth_filler
+                  (node_id game stone) (node_id game underwater)))
+
+# --- ores --------------------------------------------------------------------
+#
+# §3's three distributions. `^chance` is per cell of 16³ and `^wherein` is the
+# only node an ore may replace, which is what keeps a vein from eating the dirt
+# above it.
+
+(fn register_ore_def [game : Game name : Str
+                      ^node : Str ^wherein : Str
+                      ^shape : F64
+                      ^y_min : F64 ^y_max : F64
+                      ^chance : F64
+                      ^size : F64
+                      ^amount : F64?] : F64
+  (register_ore game/ores name (node_id game node) (node_id game wherein) shape
+                y_min y_max chance size (?? amount 0.0)))

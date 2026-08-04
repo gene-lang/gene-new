@@ -31,7 +31,8 @@
 (import [new_registry id_of registered_count name_of drawn? opaque?
          tile_top_of tile_side_of tile_bottom_of]
         from "../core/registry.gene")
-(import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
+(import [Game] from "../core/api.gene")
+(import [load_mods] from "../core/mods.gene")
 (import [block_dim block_nodes pad_dim pad_nodes
          terrain_scale terrain_octaves sea_level
          surface_height surface_from_noise terrain_noise heat_at humidity_at
@@ -318,10 +319,10 @@
 # block next to it, whose margin covers that block's outermost layer.
 
 (fn seam_checks [out : (List Str)] : Nil
-  (var r (new_registry))
-  (setup_nodes r)
-  (var biomes (setup_biomes r))
-  (var ores (setup_ores r))
+  (var game (load_mods))
+  (var r game/nodes)
+  (var biomes game/biomes)
+  (var ores game/ores)
   (var seed 1337.0)
   (var air (id_of r "air"))
   (var water (id_of r "miclone:water"))
@@ -394,10 +395,10 @@
   h)
 
 (fn golden_checks [out : (List Str)] : Nil
-  (var r (new_registry))
-  (setup_nodes r)
-  (var biomes (setup_biomes r))
-  (var ores (setup_ores r))
+  (var game (load_mods))
+  (var r game/nodes)
+  (var biomes game/biomes)
+  (var ores game/ores)
   (var air (id_of r "air"))
   (var water (id_of r "miclone:water"))
   (var blk ($buffer F32 block_nodes))
@@ -424,8 +425,8 @@
 # --- §2: the content set registers what §3 and §5 expect ---------------------
 
 (fn content_checks [out : (List Str)] : Nil
-  (var r (new_registry))
-  (setup_nodes r)
+  (var game (load_mods))
+  (var r game/nodes)
   (check_f out "content set size" (registered_count r) 16.0)
   (check_f out "air is still 0" (id_of r "air") 0.0)
   # Ids are assigned at load, so this pins the order rather than the numbers.
@@ -449,8 +450,8 @@
 
   # Every registered biome and ore must name nodes that exist, or the
   # generator writes an id nothing can draw.
-  (var b (setup_biomes r))
-  (var o (setup_ores r))
+  (var b game/biomes)
+  (var o game/ores)
   (check_f out "biome count" (biome_count b) 6.0)
   (check_f out "ore count" (ore_count o) 6.0)
   (var n (registered_count r))

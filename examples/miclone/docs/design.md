@@ -995,7 +995,7 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | ~~M4~~ | **Persistence — done** | quit and come back to the same world; §11 | backlog 3 (landed), 4 (open, not blocking) |
 | ~~M5~~ | **Player: physics, dig, place, inventory — done** | a playable singleplayer creative-ish loop; §1.1, §4.2, §7, §7.1 | — |
 | ~~M6~~ | **Client/server split over WebSocket — done** | the same game, client and server as separate processes; §10, §10.1 | backlog 7 (browser half landed) |
-| M7 | The mod API | a `default`-equivalent game defined as a Gene mod, not built in | — |
+| ~~M7~~ | **The mod API — API done, loading not** | the game is `mods/default`, defined through §9's surface and drawn from recipes on the wire; §9.1 | — |
 | M8 | Entities, crafting, UI, sound | a small but complete game | backlog 9 |
 | M9 | Native shell | the same game outside a browser | backlog 7, 8 |
 
@@ -1003,6 +1003,15 @@ M7 is the point of the project. Everything before it is the engine a mod API
 needs in order to be worth having, and M8's "small but complete game" should be
 built entirely through M7's API — if it needs an engine change, the API is
 wrong.
+
+M7 shipped in two halves and only one of them is done (§9.1). The **API** is
+built: the game is a mod, registration goes through a surface, definitions are
+data, and a client draws mod content from recipes on the wire without running
+mod code. The **loading** is not: the mod is compiled in rather than read off
+disk, so §D5's capability model — the thing that makes this mod API better than
+Luanti's rather than merely different — is still a claim about a loader that
+does not exist. Runtime module loading lives inside the VM and is not reachable
+from Gene; exposing it, with capabilities attached, is what closes M7.
 
 ## D9. Non-goals
 
@@ -1246,9 +1255,10 @@ unsound, those are the checks that would say so.
 | 6 | lighting | *not built* — M3's, §4 | |
 
 Every stage is a registry a mod can add to (§9), which is Luanti's design and
-the reason its games look nothing alike. `core/content.gene` populates them with
-a provisional node set, six biomes, and six ores; M7 replaces that file with a
-mod and nothing else should have to move.
+the reason its games look nothing alike. `mods/default` populates them with a
+node set, six biomes, and six ores — and M7's claim, that replacing the content
+module with a mod moved nothing else, held: the four golden checksums are
+unchanged (§9.1).
 
 **Every stage obeys one rule, and it is §D6.3 restated: cost scales with output,
 not with volume.** That rule is what rewrote stage 3. A per-node `fbm3` threshold
@@ -1835,11 +1845,12 @@ an eight-slot hotbar in the client. Three things about them are decisions
 rather than code:
 
 - **Items are node ids.** §2 gives items their own registry with tools, wear,
-  and per-item stack limits; that registry is M7's, because it is a thing mods
-  define. Until then everything a player can hold is a node they dug, so an item
-  id *is* a content id and the hotbar hands it straight to the edit. The day
-  items get a registry, `core/inventory.gene` changes in one place: what an id
-  means.
+  and per-item stack limits; that registry is a thing mods define, so it belongs
+  behind §9's API and M7 did not build it — the game a mod defines today has
+  nodes and nothing else to hold. Until then everything a player can hold is a
+  node they dug, so an item id *is* a content id and the hotbar hands it
+  straight to the edit. The day items get a registry, `core/inventory.gene`
+  changes in one place: what an id means.
 - **A node drops itself unless the table says otherwise.** §2 puts drops on the
   server side, and the table holds *exceptions*. A default of "nothing" would
   mean a node whose drop nobody registered vanishes when dug, silently — which
@@ -1991,6 +2002,70 @@ replaces outright), and mod channels.
 happens at load; the registries freeze before the world starts, so §3's worker
 lanes can capture them.
 
+### 9.1 M7 — the API, built; the loading, not yet
+
+`core/content.gene` is gone. Every node, tile, drop, biome and ore is declared
+in `mods/default/src/default.gene`, through `core/api.gene`, and the engine gets
+its game from `core/mods.gene`'s `load_mods` — one call, at seven call sites
+that each used to import the content module and run four `setup_*` functions in
+the right order.
+
+**The test of the move is that the world did not change**: the four golden
+checksums hold, the world is the same 229 chunks and 62,395 faces, and the ten
+cross-backend specs diff clean. §14 layer 3 exists for terrain changes and it
+earned its keep on a change that was not one.
+
+Four things §9 asked for, and what each turned out to cost:
+
+1. **Definitions read as what they say.** `register_node` takes named arguments
+   and applies every default itself, so `(register_node game "miclone:stone"
+   ^tiles ["miclone:stone"])` is a solid opaque cube because that is what a node
+   is unless it says otherwise — and the two nodes that *are* different, water
+   and the lamp, are the two that say anything. That cost a compiler change:
+   `^name : T` was a VM-only parameter form and this API compiles for both
+   backends, so the web profile learned named parameters (language design.md
+   §7.11). Going the other way — a positional API, or a VM-only one — would have
+   made the mod-facing surface no better than the `register` it wraps, or retired
+   the in-tab client.
+2. **A mod defines what its nodes look like.** The atlas was a list of constants
+   and a matching list of `paint_*` calls, with the *number* as the contract
+   between them; it is now `core/tiles.gene`'s registry, and `client/atlas.gene`
+   walks it. A mod that can register a node but not its appearance can only
+   rearrange nodes the engine already drew.
+3. **And a client draws them without running the mod.** The recipes travel in
+   `msg_tiles` (§10, protocol v2), so `client/net_main.gene` paints an atlas for
+   a game it never imported. That is §D5's promise made concrete rather than
+   asserted: the only thing that crossed the wire is data. A tile is a *kind* and
+   eleven small numbers, and the three kinds are the engine's procedural
+   generators — a mod that shipped a painter would be code a client has to
+   execute.
+4. **Ids stay the engine's.** Nothing in the mod compares an id to a literal;
+   registration returns one and the API resolves names to ids at registration,
+   so a `^drops` naming an unregistered node fails there with a position rather
+   than dropping `unknown` at the first dig.
+
+**What is not built is the loading, and that is the half §D5's security claim
+lives in.** `mods/default` is imported like any other module and its
+`register_all` is called; nothing is sandboxed, because a compiled-in module is
+not sandboxed by anything. Runtime module loading exists inside the VM
+(`loadFileModule`) and is not reachable from Gene, so exposing it is engine work
+with a capability model attached. `core/mods.gene` is the file where "a mod that
+never receives `$fs/WriteDir` cannot write a file" will be true or not, and it
+says so. Doing the loader first would have been a loader with nothing worth
+loading.
+
+Two smaller findings, both recorded where they bite:
+
+- **Neither backend re-exports an imported binding the same way.** The VM
+  refuses it (`module/namespace has no export`) and the web profile silently
+  copies the literal. So `core/api.gene` cannot stand in front of the tile
+  kinds, drawtypes and ore shapes, and a mod imports those from the modules
+  that define them. The API stands in front of *registration*, which is the
+  part that matters; three import lines is the portable spelling.
+- **A mod's entry is named for the mod**, `src/default.gene` rather than §9's
+  `src/main.gene`. The web profile emits one flat output directory keyed by
+  basename, so a second `main.gene` collides with the client's.
+
 ## 10. Protocol and networking
 
 **WebSocket**, because it is the only persistent bidirectional transport Gene
@@ -2056,6 +2131,7 @@ Measured on §3's real terrain, 12 × 4 × 12 blocks:
 | a block message | **575 bytes mean**, 5,017 worst, 259 of 576 uniform |
 | the whole world | **0.32 MB** against 9.0 MB raw — **29x** |
 | the registry | 364 bytes for 16 node definitions |
+| the tiles (M7) | 300 bytes for 14 tile recipes |
 | codec | 32 µs to encode a block, 16 µs to decode |
 
 Run-length encoded on the finding §11 records — a voxel column is a handful of
@@ -2107,9 +2183,18 @@ Three decisions the spec caught rather than the design:
   so encode-then-decode loses up to a thousandth *and cannot be made not to*. A
   turn fraction has no offset to round and resolves 0.0055°.
 
+**Protocol v2 adds `msg_tiles`** (§9.1). A mod defines both a node and what it
+looks like, and `registry` carries only the atlas *slot* a node's face points
+at — so without it a client that never saw the mod holds tile indices into an
+atlas nobody told it how to paint. It is sent in the handshake, before the
+registry that indexes into it, and it carries a recipe rather than an image:
+twelve bytes and a name per tile, which `client/atlas.gene` runs. Keeping it
+data rather than code is what makes §D5's "a client renders without executing
+mod code" a property of the wire instead of a promise.
+
 Message groups: handshake and auth; registry sync (§2's client half, sent
-once on join); block add/remove; node deltas; entity add/remove/update; player
-input; inventory; chat; HUD.
+once on join); tile sync (§9's atlas recipes, likewise); block add/remove; node
+deltas; entity add/remove/update; player input; inventory; chat; HUD.
 
 **Singleplayer runs a server in-process** and connects to it over an in-memory
 channel that presents the same interface as the socket. Upstream's decision, and
@@ -2221,7 +2306,7 @@ nodes, the lamp back at 14, and its neighbour at 13 — the last being the check
 that a *neighbourhood* of light survived rather than one value the lamp would
 re-derive from its own definition on load.
 
-`miclone:lamp` is registered in `core/content.gene` for this: it is the first
+`miclone:lamp` is registered by `mods/default` for this: it is the first
 node that emits, nothing in §3 places one, so no terrain and no golden checksum
 moved. M5's torch is this node with a placement rule attached.
 
@@ -2309,6 +2394,12 @@ Four layers, and the second is the one that matters most here.
    so that the seed is demonstrably not decorative. The checksum is a 32-bit
    rolling hash in `core/exact.gene`'s discipline, so it is order-sensitive and
    both backends compute it identically by the standard rather than by luck.*
+
+   *M7 is what this layer is for and the reason is worth stating: the change
+   that moved every registration out of the engine and into a mod (§9.1) is
+   exactly the kind that could alter terrain by accident — one node registered
+   in a different order renumbers every id after it. The checksums held
+   unchanged, which is the whole claim the milestone makes.*
 4. **A headless server + scripted client** for the protocol: join, load blocks,
    dig, place, disconnect, reconnect, and find the world unchanged. It also
    covers §7.1's reconciliation, including the case that only shows up under
@@ -2392,17 +2483,22 @@ examples/miclone/
   core/                   portable Gene — VM and web profile
     world.gene            §1
     registry.gene         §2
+    tiles.gene            §2, appearance side (M7)
+    api.gene              §9, the surface a mod is written against
+    mods.gene             §9's load step — portable while mods are compiled in
     mapgen/               §3
     light.gene            §4
     mesh.gene             §5
     physics.gene          §7
     protocol.gene         §10
   server/                 VM only
-    main.gene  storage.gene  env.gene  mods.gene
+    main.gene  storage.gene  blockfmt.gene
   client/                 web profile
-    main.gene  render.gene  input.gene  hud.gene
+    main.gene  net_main.gene  render.gene  atlas.gene
   mods/
     default/              the game, built through §9's API
+      package.gene        §9: a mod is a Gene package
+      src/default.gene    named for the mod; `main.gene` collides in dist/
   assets/                 source tiles; the atlas is generated
   tests/
     fixtures/  golden/

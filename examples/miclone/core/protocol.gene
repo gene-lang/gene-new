@@ -34,6 +34,11 @@
          propagates_light? light_source_of tile_top_of tile_side_of
          tile_bottom_of register max_content]
         from "./registry.gene")
+(import [TileRegistry tile_count tile_name tile_kind
+         tile_r tile_g tile_b tile_spread tile_seed
+         tile_base_r tile_base_g tile_base_b tile_base_spread tile_base_seed
+         tile_density add_tile]
+        from "./tiles.gene")
 (import [new_cursor cursor_at reset remaining exhausted? byte_len
          read_u8 read_u16 read_u32 read_i32
          write_u8 write_u16 write_u32 write_i32
@@ -45,7 +50,10 @@
 # Bumped whenever a message's layout changes. §14: a client and a server that
 # disagree must say so at the handshake rather than at the first misparse, and
 # a byte compared before anything else is read is the cheapest way to do it.
-(let protocol_version 1.0)
+#
+# v2 adds `msg_tiles` (M7): a mod defines what its nodes look like, so the
+# appearance table has to reach a client that never saw the mod.
+(let protocol_version 2.0)
 
 # --- message kinds -----------------------------------------------------------
 #
@@ -59,6 +67,7 @@
 (let msg_block 3.0)                # server: one block's nodes and light
 (let msg_node_delta 4.0)           # server: one node changed
 (let msg_inventory 5.0)            # server: the whole hotbar
+(let msg_tiles 6.0)                # server: §9's atlas recipes, once on join
 
 (let msg_input 64.0)               # client: movement intent, every tick
 (let msg_dig 65.0)                 # client: dig the node at
@@ -84,6 +93,7 @@
 (fn kind_block [] : F64 msg_block)
 (fn kind_node_delta [] : F64 msg_node_delta)
 (fn kind_inventory [] : F64 msg_inventory)
+(fn kind_tiles [] : F64 msg_tiles)
 (fn kind_input [] : F64 msg_input)
 (fn kind_dig [] : F64 msg_dig)
 (fn kind_place [] : F64 msg_place)
@@ -235,6 +245,84 @@
     (var side (read_u8 c b))
     (var bottom (read_u8 c b))
     (register reg name drawtype solid opaque propagates emits top side bottom)
+    (set i (+ i 1.0)))
+  n)
+
+# --- tiles -------------------------------------------------------------------
+#
+# §9's appearance table, and the message M7 added. A mod defines both a node and
+# what it looks like, and `registry` carries only the *slot* a node's face
+# points at — so without this a client that never saw the mod has a tile index
+# into an atlas nobody told it how to paint.
+#
+# It carries a *recipe* rather than an image: a kind and eleven small numbers,
+# which `client/atlas.gene` runs. That is what keeps §D5's promise concrete — a
+# client draws mod content without executing mod code, because the only thing
+# that crossed the wire is data. Real image assets are §6's and M9's, and they
+# will make this message carry bytes instead of numbers rather than carry code.
+#
+# Every column is one byte because `core/tiles.gene` already quantised them at
+# registration, for exactly this reason and for one more: the in-tab client and
+# the one reading this message then paint from the same numbers.
+
+(fn tiles_size [t : TileRegistry] : F64
+  (var n (tile_count t))
+  (var total 3.0)                  # kind + count
+  (var i 0.0)
+  (while (< i n)
+    # name, then twelve one-byte columns: the kind, the primary colour with its
+    # spread and seed, the secondary colour with its own, and the density.
+    (set total (+ total (+ (str_size (tile_name t i)) 12.0)))
+    (set i (+ i 1.0)))
+  total)
+
+(fn encode_tiles [out : (Buffer U8) c : (Buffer F64) t : TileRegistry] : Nil
+  (reset c)
+  (write_u8 c out msg_tiles)
+  (var n (tile_count t))
+  (write_u16 c out n)
+  (var i 0.0)
+  (while (< i n)
+    (write_str c out (tile_name t i))
+    (write_u8 c out (tile_kind t i))
+    (write_u8 c out (tile_r t i))
+    (write_u8 c out (tile_g t i))
+    (write_u8 c out (tile_b t i))
+    (write_u8 c out (tile_spread t i))
+    (write_u8 c out (tile_seed t i))
+    (write_u8 c out (tile_base_r t i))
+    (write_u8 c out (tile_base_g t i))
+    (write_u8 c out (tile_base_b t i))
+    (write_u8 c out (tile_base_spread t i))
+    (write_u8 c out (tile_base_seed t i))
+    (write_u8 c out (tile_density t i))
+    (set i (+ i 1.0))))
+
+# Fills a *fresh* registry, for `decode_registry`'s reason: slots are positional
+# and replaying this over a populated one would append a second atlas and shift
+# every node's tile by the first atlas's size. Unlike the node registry there
+# are no reserved entries to skip — `new_tiles` is already empty.
+(fn decode_tiles [b : (Buffer U8) c : (Buffer F64) t : TileRegistry] : F64
+  (reset c)
+  (read_u8 c b)
+  (var n (read_u16 c b))
+  (var i 0.0)
+  (while (< i n)
+    (var name (read_str c b))
+    (var kind (read_u8 c b))
+    (var r (read_u8 c b))
+    (var g (read_u8 c b))
+    (var bl (read_u8 c b))
+    (var spread (read_u8 c b))
+    (var seed (read_u8 c b))
+    (var base_r (read_u8 c b))
+    (var base_g (read_u8 c b))
+    (var base_b (read_u8 c b))
+    (var base_spread (read_u8 c b))
+    (var base_seed (read_u8 c b))
+    (var density (read_u8 c b))
+    (add_tile t name kind r g bl spread seed
+              base_r base_g base_b base_spread base_seed density)
     (set i (+ i 1.0)))
   n)
 

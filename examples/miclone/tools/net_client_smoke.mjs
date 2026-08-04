@@ -59,6 +59,7 @@ const P = await import(D + "protocol.mjs");
 const KIND = {
   hello: P.kind_hello(), registry: P.kind_registry(), block: P.kind_block(),
   delta: P.kind_node_delta(), inventory: P.kind_inventory(),
+  tiles: P.kind_tiles(),
   dig: P.kind_dig(), place: P.kind_place(), request: P.kind_request_blocks(),
 };
 
@@ -99,7 +100,7 @@ globalThis.WebSocket = CountingWebSocket;
 const got = (name) => inCount.get(KIND[name]) ?? 0;
 const sent = (name) => outCount.get(KIND[name]) ?? 0;
 const traffic = () =>
-  ["hello", "registry", "block", "delta", "inventory"]
+  ["hello", "tiles", "registry", "block", "delta", "inventory"]
     .map((n) => `${got(n)} ${n}`).join(", ") + " in; " +
   ["request", "dig", "place"]
     .map((n) => `${sent(n)} ${n}`).join(", ") + " out";
@@ -210,7 +211,7 @@ try {
   tick(4);
 
   // The handshake, before anything asks for terrain.
-  await pumpUntil(() => got("hello") > 0 && got("registry") > 0,
+  await pumpUntil(() => got("hello") > 0 && got("registry") > 0 && got("tiles") > 0,
     { timeoutMs: 15000, label: "the handshake" });
   say(sockets.length === 1 && sockets[0].readyState === 1,
       "the client opened one real socket and it is open",
@@ -218,6 +219,11 @@ try {
   say(got("hello") === 1 && got("registry") === 1 && got("inventory") === 1,
       "and the server answered with hello, registry and an inventory",
       traffic());
+  // §9's promise, from the client's side: this process never imported the mod,
+  // and it has an atlas because the mod's tile recipes arrived as data.
+  say(got("tiles") === 1,
+      "and the mod's tiles, which is the only way this client can paint",
+      `${got("tiles")} tiles message(s)`);
 
   // What the server said the spawn is — decoded here with the same `core/`
   // modules both peers use, so this is not a second reading of the format. The

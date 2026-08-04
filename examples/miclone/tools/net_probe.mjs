@@ -16,6 +16,7 @@ const D = new URL("../dist/", import.meta.url).pathname;
 const { new_cursor } = await import(D + "wire.mjs");
 const P = await import(D + "protocol.mjs");
 const R = await import(D + "registry.mjs");
+const T = await import(D + "tiles.mjs");
 
 const PORT = 8790;
 const BLOCK = 16;
@@ -25,6 +26,7 @@ const BLOCK = 16;
 const K = {
   hello: P.kind_hello(), registry: P.kind_registry(), block: P.kind_block(),
   delta: P.kind_node_delta(), inventory: P.kind_inventory(),
+  tiles: P.kind_tiles(),
 };
 
 let bad = 0;
@@ -41,6 +43,7 @@ const header = P.new_block_header();
 const outC = new Float32Array(4096), outL = new Float32Array(4096);
 
 let clientReg = null, regCount = 0, bytes = 0;
+let clientTiles = null, tileCount = 0;
 const blocks = new Map();
 const deltas = [], invs = [];
 let waitBlocks = 0, blocksDone = null;
@@ -58,6 +61,12 @@ ws.onmessage = (e) => {
     clientReg.names = [];
     clientReg.count[0] = 0;
     regCount = P.decode_registry(b, c, clientReg);
+  }
+  else if (kind === K.tiles) {
+    // M7's appearance table. Fresh, for `decode_registry`'s reason: slots are
+    // positional and `new_tiles` is already empty.
+    clientTiles = T.new_tiles();
+    tileCount = P.decode_tiles(b, c, clientTiles);
   }
   else if (kind === K.block) {
     P.decode_block(b, c, header, outC, outL);
@@ -105,6 +114,13 @@ say(clientReg && R.name_of(clientReg, 3) === "miclone:stone",
     "and the content set follows them",
     clientReg && R.name_of(clientReg, 3));
 say(invs.length === 1, "and an inventory came with the handshake");
+// §9: a client draws what a mod defined without ever running the mod. The only
+// thing that crossed the wire to make that true is this table.
+say(tileCount > 8, "the mod's tiles arrived, so a client can paint its atlas",
+    `${tileCount} tiles`);
+say(clientTiles && T.tile_name(clientTiles, 0) === "miclone:stone",
+    "and the first is the one the mod registered first",
+    clientTiles && T.tile_name(clientTiles, 0));
 
 // --- the whole world, flow-controlled ---------------------------------------
 //

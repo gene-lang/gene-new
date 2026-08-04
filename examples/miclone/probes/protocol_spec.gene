@@ -26,7 +26,13 @@
          opaque? propagates_light? light_source_of tile_top_of tile_side_of
          tile_bottom_of register_uniform draw_normal draw_glasslike draw_liquid]
         from "../core/registry.gene")
-(import [setup_nodes] from "../core/content.gene")
+(import [Game] from "../core/api.gene")
+(import [TileRegistry new_tiles tile_count tile_name tile_kind
+         tile_r tile_g tile_b tile_spread tile_seed
+         tile_base_r tile_base_g tile_base_b tile_base_spread tile_base_seed
+         tile_density tile_ore tile_overlay]
+        from "../core/tiles.gene")
+(import [load_mods] from "../core/mods.gene")
 (import [new_cursor cursor_at reset] from "../core/wire.gene")
 (import [protocol_version message_kind server_message? client_message?
          msg_hello msg_registry msg_block msg_node_delta msg_inventory
@@ -36,6 +42,7 @@
          hello_span_x hello_span_y hello_span_z
          hello_spawn_x hello_spawn_y hello_spawn_z
          registry_size encode_registry decode_registry
+         tiles_size encode_tiles decode_tiles msg_tiles
          block_size encode_block decode_block new_block_header
          block_bx block_by block_bz count_runs
          node_delta_size encode_node_delta new_node_delta decode_node_delta
@@ -133,8 +140,8 @@
 # check is that the vocabulary a real server would send arrives intact.
 
 (fn registry_checks [out : (List Str)] : Nil
-  (var server_reg (new_registry))
-  (setup_nodes server_reg)
+  (var server_game (load_mods))
+  (var server_reg server_game/nodes)
   (var n (registered_count server_reg))
 
   (var c (new_cursor))
@@ -199,6 +206,89 @@
     (set i (+ i 1.0)))
   (check_b out "registry: and something in it emits light"
            (> emitters 0.0) true))
+
+# --- tiles -------------------------------------------------------------------
+#
+# The message M7 added, and against the real content set for `registry`'s
+# reason: §9's claim is that a client draws what a mod defined *without running
+# the mod*, so the thing to check is that the recipes a real server would send
+# arrive intact enough to paint from.
+
+(fn tiles_checks [out : (List Str)] : Nil
+  (var game (load_mods))
+  (var server_tiles game/tiles)
+  (var n (tile_count server_tiles))
+
+  (var c (new_cursor))
+  (var b ($buffer U8 (tiles_size server_tiles)))
+  (encode_tiles b c server_tiles)
+  (check_f out "tiles: the kind byte" (message_kind b) msg_tiles)
+  (check_f out "tiles: the encoder wrote exactly tiles_size bytes"
+           (cursor_at c) (tiles_size server_tiles))
+
+  (var client_tiles (new_tiles))
+  (var got (decode_tiles b c client_tiles))
+  (check_f out "tiles: the entry count round-trips" got n)
+  (check_f out "tiles: and the client has that many"
+           (tile_count client_tiles) n)
+
+  # Column for column. The property is the one the atlas needs: after the wire,
+  # `client/atlas.gene` painting from the client's registry produces the same
+  # texels as painting from the server's.
+  (var name_diff 0.0)
+  (var kind_diff 0.0)
+  (var colour_diff 0.0)
+  (var noise_diff 0.0)
+  (var base_diff 0.0)
+  (var i 0.0)
+  (while (< i n)
+    (if_yes (!= (tile_name client_tiles i) (tile_name server_tiles i))
+      (set name_diff (+ name_diff 1.0)))
+    (if_yes (!= (tile_kind client_tiles i) (tile_kind server_tiles i))
+      (set kind_diff (+ kind_diff 1.0)))
+    (if_yes (|| (!= (tile_r client_tiles i) (tile_r server_tiles i))
+                (|| (!= (tile_g client_tiles i) (tile_g server_tiles i))
+                    (!= (tile_b client_tiles i) (tile_b server_tiles i))))
+      (set colour_diff (+ colour_diff 1.0)))
+    (if_yes (|| (!= (tile_spread client_tiles i) (tile_spread server_tiles i))
+                (|| (!= (tile_seed client_tiles i) (tile_seed server_tiles i))
+                    (!= (tile_density client_tiles i)
+                        (tile_density server_tiles i))))
+      (set noise_diff (+ noise_diff 1.0)))
+    (if_yes (|| (!= (tile_base_r client_tiles i) (tile_base_r server_tiles i))
+                (|| (!= (tile_base_g client_tiles i)
+                        (tile_base_g server_tiles i))
+                    (|| (!= (tile_base_b client_tiles i)
+                            (tile_base_b server_tiles i))
+                        (|| (!= (tile_base_spread client_tiles i)
+                                (tile_base_spread server_tiles i))
+                            (!= (tile_base_seed client_tiles i)
+                                (tile_base_seed server_tiles i))))))
+      (set base_diff (+ base_diff 1.0)))
+    (set i (+ i 1.0)))
+
+  (check_f out "tiles: every name survives" name_diff 0.0)
+  (check_f out "tiles: every kind survives" kind_diff 0.0)
+  (check_f out "tiles: every colour survives" colour_diff 0.0)
+  (check_f out "tiles: every noise parameter survives" noise_diff 0.0)
+  (check_f out "tiles: every secondary colour survives" base_diff 0.0)
+
+  # And that the fixture is not vacuous. One `solid` tile would exercise five of
+  # the twelve columns and leave the other seven untested, so the check is that
+  # the game registers all three kinds — which is also §3's claim that the three
+  # generators are exercised by content rather than only by a spec.
+  (check_b out "tiles: the game registers more than a handful"
+           (> n 8.0) true)
+  (var ores 0.0)
+  (var overlays 0.0)
+  (set i 0.0)
+  (while (< i n)
+    (if_yes (== (tile_kind server_tiles i) tile_ore) (set ores (+ ores 1.0)))
+    (if_yes (== (tile_kind server_tiles i) tile_overlay)
+      (set overlays (+ overlays 1.0)))
+    (set i (+ i 1.0)))
+  (check_b out "tiles: and all three kinds are in it"
+           (&& (> ores 0.0) (> overlays 0.0)) true))
 
 # --- blocks ------------------------------------------------------------------
 #
@@ -472,6 +562,7 @@
   (kind_checks out)
   (hello_checks out)
   (registry_checks out)
+  (tiles_checks out)
   (block_checks out)
   (delta_checks out)
   (input_checks out)

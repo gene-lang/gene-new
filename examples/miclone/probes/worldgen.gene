@@ -37,7 +37,8 @@
 
 (import [Registry new_registry id_of name_of registered_count]
         from "../core/registry.gene")
-(import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
+(import [Game] from "../core/api.gene")
+(import [load_mods] from "../core/mods.gene")
 (import [BiomeRegistry biome_at biome_name biome_count] from "../core/biome.gene")
 (import [OreRegistry] from "../core/ore.gene")
 (import [block_dim block_nodes pad_dim pad_nodes sea_level

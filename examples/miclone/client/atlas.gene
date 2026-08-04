@@ -6,21 +6,27 @@
 # fetch, and a load event from the spike — `examples/new_world` needed all three
 # and writes its own encoder to get them.
 #
-# The layout is `core/mesh.gene`'s 4x4 grid, and **tile order is the ABI** —
-# but the ABI now has one owner. The slot numbers are `core/content.gene`'s
-# constants, imported rather than restated, because M2 moved tiles into the node
-# registry (§2): the mesher reads a node's tile out of a registry column that
-# `setup_nodes` filled from those same constants. Before, this file and
-# `core/mesh.gene` each carried half of a positional agreement that nothing
-# checked.
+# **M7 turned the tile list into a registry.** The layout is still
+# `core/mesh.gene`'s 4x4 grid, but the slot numbers and the colours are no
+# longer written here: `paint` walks `core/tiles.gene`'s registry and runs the
+# generator each entry names. That is what makes a mod able to add a node that
+# *looks* like something — before it, a mod could register a node and could only
+# give it a tile the engine had already drawn.
+#
+# The three generators stay here, and stay the engine's. A mod picks one and
+# parameterises it; a mod that shipped a painter would be code a client has to
+# execute, which is the thing §D5's capability model exists to avoid. Real image
+# assets are §6's and M9's.
 
 (mod atlas ^profile web)
 
 (import [hash_unit2] from "../core/exact.gene")
-(import [tile_stone tile_dirt tile_grass_top tile_grass_side tile_sand
-         tile_water tile_gravel tile_snow tile_sandstone
-         tile_coal tile_iron tile_gold tile_diamond tile_lamp]
-        from "../core/content.gene")
+(import [TileRegistry tile_count tile_kind
+         tile_r tile_g tile_b tile_spread tile_seed
+         tile_base_r tile_base_g tile_base_b tile_base_spread tile_base_seed
+         tile_density
+         tile_solid tile_ore tile_overlay]
+        from "../core/tiles.gene")
 
 (let tile_px 16.0)
 (let atlas_px 64.0)
@@ -62,9 +68,13 @@
       (set x (+ x 1.0)))
     (set y (+ y 1.0))))
 
-# Grass seen from the side: dirt with a band of grass over the top few texels,
-# with a ragged boundary so the two do not meet in a straight line.
-(fn paint_grass_side [ctx : Canvas2D t : F64] : Nil
+# A base colour with a ragged band of a second colour across the top few texels,
+# so the two do not meet in a straight line. Grass seen from the side is the
+# reason it exists and `miclone:grass_side` is the only tile that asks for it.
+(fn paint_overlay [ctx : Canvas2D t : F64
+                   r : F64 g : F64 b : F64 spread : F64 seed : F64
+                   base_r : F64 base_g : F64 base_b : F64
+                   base_spread : F64 base_seed : F64] : Nil
   (var ox (* (tile_col t) tile_px))
   (var oy (* (tile_row t) tile_px))
   (var y 0.0)
@@ -74,25 +84,31 @@
       (var edge (+ 3.0 ($math/floor (* (hash_unit2 x 0.0 91.0) 2.5))))
       (if (< y edge)
         (then (paint_texel ctx (+ ox x) (+ oy y)
-                           (shade 96.0 x y 40.0 26.0)
-                           (shade 152.0 x y 41.0 26.0)
-                           (shade 72.0 x y 42.0 26.0)))
+                           (shade r x y seed spread)
+                           (shade g x y (+ seed 1.0) spread)
+                           (shade b x y (+ seed 2.0) spread)))
         (else (paint_texel ctx (+ ox x) (+ oy y)
-                           (shade 134.0 x y 10.0 22.0)
-                           (shade 102.0 x y 11.0 22.0)
-                           (shade 72.0 x y 12.0 22.0))))
+                           (shade base_r x y base_seed base_spread)
+                           (shade base_g x y (+ base_seed 1.0) base_spread)
+                           (shade base_b x y (+ base_seed 2.0) base_spread))))
       (set x (+ x 1.0)))
     (set y (+ y 1.0))))
 
-# An ore: the stone tile with speckles of the ore's colour through it.
+# An ore: a base tile with speckles of the ore's colour through it.
 #
 # The speckle test is hashed on the texel coordinate *halved and floored*, so a
 # hit covers a 2x2 patch rather than a single texel. Per-texel specks read as
 # noise at any distance; 2x2 blobs read as ore, which is the whole point of
 # drawing them.
+#
+# `density` is a percentage rather than a fraction — see `core/tiles.gene` for
+# why every column is a whole number.
 (fn paint_ore [ctx : Canvas2D t : F64
-               r : F64 g : F64 b : F64 seed : F64 density : F64] : Nil
-  (paint_tile ctx t 128.0 128.0 132.0 30.0 20.0)
+               r : F64 g : F64 b : F64 seed : F64 density : F64
+               base_r : F64 base_g : F64 base_b : F64
+               base_spread : F64 base_seed : F64] : Nil
+  (paint_tile ctx t base_r base_g base_b base_spread base_seed)
+  (var threshold (/ density 100.0))
   (var ox (* (tile_col t) tile_px))
   (var oy (* (tile_row t) tile_px))
   (var y 0.0)
@@ -101,7 +117,7 @@
     (while (< x tile_px)
       (var bx ($math/floor (/ x 2.0)))
       (var by ($math/floor (/ y 2.0)))
-      (if_yes (> (hash_unit2 bx by seed) density)
+      (if_yes (> (hash_unit2 bx by seed) threshold)
         (paint_texel ctx (+ ox x) (+ oy y)
                      (shade r x y (+ seed 3.0) 24.0)
                      (shade g x y (+ seed 4.0) 24.0)
@@ -109,24 +125,28 @@
       (set x (+ x 1.0)))
     (set y (+ y 1.0))))
 
-# The atlas, in `core/content.gene`'s slot order. Thirteen of sixteen slots are
-# used; §6's atlas gains a row before a fourteenth node type does.
-(fn paint [ctx : Canvas2D] : Nil
-  (paint_tile ctx tile_stone 128.0 128.0 132.0 30.0 20.0)
-  (paint_tile ctx tile_dirt 134.0 102.0 72.0 22.0 10.0)
-  (paint_tile ctx tile_grass_top 96.0 152.0 72.0 26.0 40.0)
-  (paint_grass_side ctx tile_grass_side)
-  (paint_tile ctx tile_sand 214.0 200.0 152.0 18.0 60.0)
-  # Water is drawn by the opaque pass in M2 (see core/content.gene), so it wants
-  # a flat surface colour rather than something to see through.
-  (paint_tile ctx tile_water 46.0 98.0 168.0 16.0 70.0)
-  (paint_tile ctx tile_gravel 140.0 136.0 132.0 46.0 80.0)
-  (paint_tile ctx tile_snow 236.0 240.0 248.0 12.0 90.0)
-  (paint_tile ctx tile_sandstone 204.0 180.0 124.0 20.0 100.0)
-  (paint_ore ctx tile_coal 38.0 38.0 42.0 110.0 0.62)
-  (paint_ore ctx tile_iron 192.0 148.0 116.0 120.0 0.66)
-  (paint_ore ctx tile_gold 232.0 196.0 78.0 130.0 0.70)
-  (paint_ore ctx tile_diamond 128.0 224.0 232.0 140.0 0.72)
-  # Bright and near-flat, because a light source that reads as dark stone is
-  # confusing in exactly the situation it exists for.
-  (paint_tile ctx tile_lamp 250.0 226.0 150.0 10.0 150.0))
+# The atlas, in the registry's slot order — which is the order the mod
+# registered its tiles in, and the order `core/registry.gene`'s tile columns
+# already point into. An unregistered slot is simply not painted: §6's atlas
+# gains a row before a seventeenth tile does, and until then a 4x4 grid with
+# three empty cells is what a fourteen-tile game looks like.
+(fn paint [ctx : Canvas2D t : TileRegistry] : Nil
+  (var n (tile_count t))
+  (var i 0.0)
+  (while (< i n)
+    (var kind (tile_kind t i))
+    (if (== kind tile_ore)
+      (then (paint_ore ctx i (tile_r t i) (tile_g t i) (tile_b t i)
+                       (tile_seed t i) (tile_density t i)
+                       (tile_base_r t i) (tile_base_g t i) (tile_base_b t i)
+                       (tile_base_spread t i) (tile_base_seed t i)))
+      (else
+        (if (== kind tile_overlay)
+          (then (paint_overlay ctx i (tile_r t i) (tile_g t i) (tile_b t i)
+                               (tile_spread t i) (tile_seed t i)
+                               (tile_base_r t i) (tile_base_g t i)
+                               (tile_base_b t i)
+                               (tile_base_spread t i) (tile_base_seed t i)))
+          (else (paint_tile ctx i (tile_r t i) (tile_g t i) (tile_b t i)
+                            (tile_spread t i) (tile_seed t i))))))
+    (set i (+ i 1.0))))

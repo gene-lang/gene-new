@@ -1,0 +1,22 @@
+{
+  # design.md §9: "A mod is a Gene package — `package.gene`, a `mods/<name>/`
+  # directory, real imports, real modules. Not a directory of scripts sharing a
+  # global table."
+  #
+  # This is that manifest. It is not yet what *loads* the mod — M7 compiles
+  # `mods/default` in, see `core/mods.gene` — so today it declares the identity
+  # a runtime loader will resolve against rather than one anything resolves
+  # through. Writing it now keeps the two halves of §9 from drifting: the
+  # loader's job is to read this, and a mod that had no manifest until the
+  # loader existed would have let the API be designed without one.
+  #
+  # §9's `depends`/`optional_depends` are not here because this mod depends on
+  # nothing and the format has no key for them yet. They arrive with the second
+  # mod, which is what makes load order a thing to get right rather than a
+  # sort over one element.
+  ^format 1
+  ^name "miclone/default"
+  ^description "The default game — every node, tile, drop, biome and ore miclone has"
+  ^version "0.1.0"
+  ^library {^entry "src/default.gene"}
+}

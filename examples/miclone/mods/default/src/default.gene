@@ -1,0 +1,274 @@
+# `default` — the game, as a mod. design.md §9 and §D8's M7.
+#
+# Every node, tile, drop, biome and ore miclone has is declared here, through
+# `core/api.gene` and nothing else. Until M7 this file was `core/content.gene`
+# and its own header said "this is the game, and it should not be here". It is
+# no longer there.
+#
+# **Nothing in this file knows a content id.** Registration returns one and the
+# engine assigns it; everything below names content by string, and §2's rule —
+# ids are assigned at load, never hardcoded — is a property of the API rather
+# than a discipline the author has to keep.
+#
+# **Names keep the `miclone:` prefix rather than moving to `default:`.** §9's
+# sketch writes `default:stone`, and renaming every node would rewrite the four
+# golden checksums in `probes/mapgen_spec.gene` and every stored world on disk
+# for no gain — the point of M7 is where the definitions live, not what they are
+# called. A rename is a mod's to make and §11's `name -> id` mapping is what
+# makes it survivable; doing it in the same commit as the move would leave "the
+# world changed" and "the game moved" indistinguishable.
+#
+# The test of the move is exactly that: **the world is byte-identical**. Same
+# checksums, same 229 chunks, same 62,395 faces.
+
+# The entry is named for the mod rather than `main.gene`, which is what §9's
+# sketch writes. The web profile emits one flat output directory keyed by
+# basename, so a second `main.gene` anywhere in the graph collides with the
+# client's — and "every mod's entry is named after the mod" is a convention
+# worth having regardless of what forced it.
+(mod mod_default ^profile web)
+
+# Registration goes through the API and nothing else. The *vocabulary* — the
+# tile kinds, the drawtypes, the ore shapes — comes from the modules that define
+# it, because neither backend re-exports an imported binding the same way: the
+# VM refuses it outright and the web profile silently copies the literal, so an
+# API that stood in front of these numbers would compile in a browser and fail
+# on the server. Three extra import lines is the portable spelling, and each
+# one names where a number is defined rather than where it was passed through.
+(import [Game
+         register_tile register_node register_drop_rule
+         register_biome_def register_ore_def]
+        from "../../../core/api.gene")
+(import [tile_solid tile_ore tile_overlay] from "../../../core/tiles.gene")
+(import [draw_liquid] from "../../../core/registry.gene")
+(import [shape_scatter shape_sheet shape_blob] from "../../../core/ore.gene")
+
+# --- tiles -------------------------------------------------------------------
+#
+# Registered first, because a node's `^tiles` is resolved when the node is.
+# Slots are assigned in this order; nothing outside the engine sees the number.
+#
+# The colours and noise seeds are the ones the M0 spike arrived at. `^spread` is
+# how far a texel may wander from the base colour and `^seed` picks which noise
+# field, so two tiles of the same colour do not share a texture.
+
+(fn setup_tiles [game : Game] : Nil
+  (register_tile game "miclone:stone" ^kind tile_solid
+                 ^red 128.0 ^green 128.0 ^blue 132.0 ^spread 30.0 ^seed 20.0)
+  (register_tile game "miclone:dirt" ^kind tile_solid
+                 ^red 134.0 ^green 102.0 ^blue 72.0 ^spread 22.0 ^seed 10.0)
+  (register_tile game "miclone:grass_top" ^kind tile_solid
+                 ^red 96.0 ^green 152.0 ^blue 72.0 ^spread 26.0 ^seed 40.0)
+  # Grass seen from the side: dirt with a band of grass over the top few texels,
+  # with a ragged boundary so the two do not meet in a straight line.
+  (register_tile game "miclone:grass_side" ^kind tile_overlay
+                 ^red 96.0 ^green 152.0 ^blue 72.0 ^spread 26.0 ^seed 40.0
+                 ^base_red 134.0 ^base_green 102.0 ^base_blue 72.0
+                 ^base_spread 22.0 ^base_seed 10.0)
+  (register_tile game "miclone:sand" ^kind tile_solid
+                 ^red 214.0 ^green 200.0 ^blue 152.0 ^spread 18.0 ^seed 60.0)
+  # Water is drawn by the opaque pass (see the node below), so it wants a flat
+  # surface colour rather than something to see through.
+  (register_tile game "miclone:water" ^kind tile_solid
+                 ^red 46.0 ^green 98.0 ^blue 168.0 ^spread 16.0 ^seed 70.0)
+  (register_tile game "miclone:gravel" ^kind tile_solid
+                 ^red 140.0 ^green 136.0 ^blue 132.0 ^spread 46.0 ^seed 80.0)
+  (register_tile game "miclone:snow" ^kind tile_solid
+                 ^red 236.0 ^green 240.0 ^blue 248.0 ^spread 12.0 ^seed 90.0)
+  (register_tile game "miclone:sandstone" ^kind tile_solid
+                 ^red 204.0 ^green 180.0 ^blue 124.0 ^spread 20.0 ^seed 100.0)
+  # An ore is the stone tile with speckles of the ore's colour through it.
+  # `^density` is the percentage of texels left as stone, so a *higher* number
+  # is a rarer-looking vein.
+  (register_tile game "miclone:coal_ore" ^kind tile_ore
+                 ^red 38.0 ^green 38.0 ^blue 42.0 ^seed 110.0 ^density 62.0
+                 ^base_red 128.0 ^base_green 128.0 ^base_blue 132.0
+                 ^base_spread 30.0 ^base_seed 20.0)
+  (register_tile game "miclone:iron_ore" ^kind tile_ore
+                 ^red 192.0 ^green 148.0 ^blue 116.0 ^seed 120.0 ^density 66.0
+                 ^base_red 128.0 ^base_green 128.0 ^base_blue 132.0
+                 ^base_spread 30.0 ^base_seed 20.0)
+  (register_tile game "miclone:gold_ore" ^kind tile_ore
+                 ^red 232.0 ^green 196.0 ^blue 78.0 ^seed 130.0 ^density 70.0
+                 ^base_red 128.0 ^base_green 128.0 ^base_blue 132.0
+                 ^base_spread 30.0 ^base_seed 20.0)
+  (register_tile game "miclone:diamond_ore" ^kind tile_ore
+                 ^red 128.0 ^green 224.0 ^blue 232.0 ^seed 140.0 ^density 72.0
+                 ^base_red 128.0 ^base_green 128.0 ^base_blue 132.0
+                 ^base_spread 30.0 ^base_seed 20.0)
+  # Bright and near-flat, because a light source that reads as dark stone is
+  # confusing in exactly the situation it exists for.
+  (register_tile game "miclone:lamp" ^kind tile_solid
+                 ^red 250.0 ^green 226.0 ^blue 150.0 ^spread 10.0 ^seed 150.0))
+
+# --- nodes -------------------------------------------------------------------
+#
+# Registered after §1's three reserved ids, which `new_registry` installs.
+#
+# Almost every one of these is a solid opaque cube, and says nothing at all
+# about that: the API's defaults are what a node is unless it declares
+# otherwise, which leaves the two nodes that *are* different — water and the
+# lamp — visibly different on the page.
+#
+# **Water is registered opaque, and that is a compromise rather than a claim
+# about water.** `^opaque` means "hides the face behind it", and marking water
+# opaque puts the sea surface in the opaque draw pass — visible, and with no
+# faces wasted on the sea floor. §5's transparent pass, sorted back to front, is
+# what water actually wants. This one line is the whole of the compromise.
+
+(fn setup_nodes [game : Game] : Nil
+  (register_node game "miclone:stone" ^tiles ["miclone:stone"])
+  (register_node game "miclone:dirt" ^tiles ["miclone:dirt"])
+  (register_node game "miclone:grass"
+                 ^tiles ["miclone:grass_top" "miclone:grass_side"
+                         "miclone:dirt"])
+  (register_node game "miclone:sand" ^tiles ["miclone:sand"])
+  (register_node game "miclone:water" ^tiles ["miclone:water"]
+                 ^drawtype draw_liquid
+                 ^solid false
+                 ^propagates_light true)
+  (register_node game "miclone:gravel" ^tiles ["miclone:gravel"])
+  (register_node game "miclone:snow" ^tiles ["miclone:snow"])
+  (register_node game "miclone:sandstone" ^tiles ["miclone:sandstone"])
+  (register_node game "miclone:coal_ore" ^tiles ["miclone:coal_ore"])
+  (register_node game "miclone:iron_ore" ^tiles ["miclone:iron_ore"])
+  (register_node game "miclone:gold_ore" ^tiles ["miclone:gold_ore"])
+  (register_node game "miclone:diamond_ore" ^tiles ["miclone:diamond_ore"])
+  # The first node that emits. Nothing in §3 places one — mapgen has no
+  # decoration stage yet — so it changes no terrain and no golden checksum. It
+  # is registered because §4's night channel is otherwise dead weight in the
+  # real content set: with no emitter anywhere, `light_region` skips the source
+  # flood entirely and nothing exercises it outside the spec.
+  (register_node game "miclone:lamp" ^tiles ["miclone:lamp"]
+                 ^light_source 14.0))
+
+# --- drops -------------------------------------------------------------------
+#
+# A table of exceptions, not of entries: a node drops itself unless a rule here
+# says otherwise. There is one exception in this game and one absence, and both
+# are why the table exists at all.
+#
+# - **grass drops dirt.** The oldest rule in the genre, and the one thing a
+#   self-drop gets wrong: a player who digs a meadow and rebuilds it with grass
+#   has made a lawn out of nothing.
+# - **water drops nothing**, which nothing here has to say, because §7's raycast
+#   leaves liquids unpointable and a node that cannot be dug has no drop.
+#
+# Ores drop themselves, and that is a placeholder rather than a decision: coal
+# should drop a lump and stone should drop cobble, both of which are *items*
+# that are not nodes, and §2's item registry is still ahead. Registering an ore
+# to drop itself is the honest version of "not yet" — the alternative is
+# inventing a node nobody can place.
+
+(fn setup_drops [game : Game] : Nil
+  (register_drop_rule game "miclone:grass" ^item "miclone:dirt"))
+
+# --- biomes ------------------------------------------------------------------
+#
+# Six points over (heat, humidity), which §3's nearest-point rule turns into six
+# regions.
+#
+# **The points are placed in the range the fields actually produce, and that had
+# to be measured.** `fbm2` normalises to [0, 1), but value noise is a mean of
+# lattice hashes, so its realised distribution is a bell around the middle
+# rather than a uniform spread: heat comes out over 11..80 and humidity over
+# 17..85, both centred near 48. The first version of this content set used the
+# nominal range and put desert at (94, 6) — outside everything the field ever
+# generates, so **desert was unreachable and covered 0% of the world**, silently.
+# A biome nobody can visit is not a bug that surfaces on its own.
+#
+# So the six sit on a circle of radius 13 about (48, 48), spread by angle, which
+# splits the dense middle of the distribution between them instead of leaving
+# five of them on its edge. Heat runs left to right and humidity bottom to top,
+# so the assignment is the obvious one: hot-and-dry is desert, cold-and-wet is
+# taiga. The measured shares are in design.md §3.
+#
+# None of them declares an altitude band. Altitude biomes are a real part of
+# upstream's model, and a world whose terrain spans y 9..44 has no altitude to
+# band — so the API's default, §1's whole world height, is the honest answer.
+
+(fn setup_biomes [game : Game] : Nil
+  (register_biome_def game "miclone:tundra" ^heat 35.0 ^humidity 48.0
+                      ^top "miclone:snow" ^depth_top 1.0
+                      ^filler "miclone:dirt" ^depth_filler 3.0
+                      ^stone "miclone:stone" ^underwater "miclone:gravel")
+  (register_biome_def game "miclone:taiga" ^heat 41.5 ^humidity 59.3
+                      ^top "miclone:snow" ^depth_top 1.0
+                      ^filler "miclone:dirt" ^depth_filler 3.0
+                      ^stone "miclone:stone" ^underwater "miclone:gravel")
+  (register_biome_def game "miclone:rainforest" ^heat 54.5 ^humidity 59.3
+                      ^top "miclone:grass" ^depth_top 1.0
+                      ^filler "miclone:dirt" ^depth_filler 4.0
+                      ^stone "miclone:stone" ^underwater "miclone:sand")
+  (register_biome_def game "miclone:savanna" ^heat 61.0 ^humidity 48.0
+                      ^top "miclone:grass" ^depth_top 1.0
+                      ^filler "miclone:dirt" ^depth_filler 2.0
+                      ^stone "miclone:stone" ^underwater "miclone:sand")
+  (register_biome_def game "miclone:desert" ^heat 54.5 ^humidity 36.7
+                      ^top "miclone:sand" ^depth_top 2.0
+                      ^filler "miclone:sand" ^depth_filler 3.0
+                      ^stone "miclone:sandstone" ^underwater "miclone:sand")
+  (register_biome_def game "miclone:grassland" ^heat 41.5 ^humidity 36.7
+                      ^top "miclone:grass" ^depth_top 1.0
+                      ^filler "miclone:dirt" ^depth_filler 4.0
+                      ^stone "miclone:stone" ^underwater "miclone:sand"))
+
+# --- ores --------------------------------------------------------------------
+#
+# Four scatter ores on the usual deeper-is-rarer ladder, one blob, and one
+# sheet — so all three of §3's distributions are exercised by content rather
+# than only by the spec.
+#
+# The altitude bands are set against this generator's measured terrain, which
+# spans y 9 to 44 with a sea at 20: coal reaches almost to the surface and
+# diamond stays in the bottom six nodes, so a player walking a cliff face or a
+# cave wall sees the ladder without digging for it.
+#
+# `^chance` is per 16³ cell, `^size` is the cube side for a scatter, the radius
+# for a blob and the thickness for a sheet, and `^amount` is how many nodes a
+# scatter cluster places — which a blob and a sheet do not have, and so do not
+# state.
+
+(fn setup_ores [game : Game] : Nil
+  (register_ore_def game "miclone:coal_ore"
+                    ^node "miclone:coal_ore" ^wherein "miclone:stone"
+                    ^shape shape_scatter ^y_min 0.0 ^y_max 44.0
+                    ^chance 0.85 ^size 3.0 ^amount 12.0)
+  (register_ore_def game "miclone:iron_ore"
+                    ^node "miclone:iron_ore" ^wherein "miclone:stone"
+                    ^shape shape_scatter ^y_min 0.0 ^y_max 30.0
+                    ^chance 0.55 ^size 3.0 ^amount 8.0)
+  (register_ore_def game "miclone:gold_ore"
+                    ^node "miclone:gold_ore" ^wherein "miclone:stone"
+                    ^shape shape_scatter ^y_min 0.0 ^y_max 12.0
+                    ^chance 0.25 ^size 2.0 ^amount 5.0)
+  (register_ore_def game "miclone:diamond_ore"
+                    ^node "miclone:diamond_ore" ^wherein "miclone:stone"
+                    ^shape shape_scatter ^y_min 0.0 ^y_max 6.0
+                    ^chance 0.12 ^size 2.0 ^amount 4.0)
+  (register_ore_def game "miclone:gravel"
+                    ^node "miclone:gravel" ^wherein "miclone:stone"
+                    ^shape shape_blob ^y_min 0.0 ^y_max 40.0
+                    ^chance 0.10 ^size 2.6)
+  (register_ore_def game "miclone:sandstone"
+                    ^node "miclone:sandstone" ^wherein "miclone:stone"
+                    ^shape shape_sheet ^y_min 0.0 ^y_max 28.0
+                    ^chance 0.05 ^size 2.0))
+
+# --- the mod's entry ----------------------------------------------------------
+#
+# One function, called once, in the order the registrations depend on: tiles
+# before the nodes that name them, nodes before the drops, biomes and ores that
+# name *them*. `server/mods.gene` is what calls it.
+#
+# Ordering being a property of this function rather than of the loader is
+# deliberate. §9's mod load order follows `depends`, and that orders *mods*; a
+# mod's own registrations are its own business, and a loader that had to
+# interleave them would be a loader that understands the game.
+
+(fn register_all [game : Game] : Nil
+  (setup_tiles game)
+  (setup_nodes game)
+  (setup_drops game)
+  (setup_biomes game)
+  (setup_ores game))

@@ -34,9 +34,10 @@
 
 (import $net/http [Server serve listen ws_accept ws_send ws_close])
 (import $os [get_env Env])
-(import [Registry new_registry registered_count id_of] from "../core/registry.gene")
-(import [setup_nodes setup_biomes setup_ores setup_drops]
-        from "../core/content.gene")
+(import [Registry registered_count id_of] from "../core/registry.gene")
+(import [Game] from "../core/api.gene")
+(import [TileRegistry] from "../core/tiles.gene")
+(import [load_mods] from "../core/mods.gene")
 (import [generate_block] from "../core/mapgen.gene")
 (import [World new_world store_block store_light extract_block block_base
          open_sky node_at
@@ -58,6 +59,7 @@
 (import [message_kind msg_input msg_dig msg_place msg_request_blocks
          hello_size encode_hello
          registry_size encode_registry
+         tiles_size encode_tiles
          block_size encode_block
          node_delta_size encode_node_delta
          inventory_size encode_inventory
@@ -101,9 +103,10 @@
 # block carries its own light and re-flooding it produces the same values, so
 # this costs one pass and removes a class of bug — a world half-lit from disk
 # and half-lit from a flood, with a seam where they meet.
-(fn build_world [reg : Registry store : WorldStore fresh : Bool] : World
-  (var biomes (setup_biomes reg))
-  (var ores (setup_ores reg))
+(fn build_world [game : Game store : WorldStore fresh : Bool] : World
+  (var reg game/nodes)
+  (var biomes game/biomes)
+  (var ores game/ores)
   (var air (id_of reg "air"))
   (var water (id_of reg "miclone:water"))
   (var w (new_world ($to_float origin_bx) ($to_float origin_by)
@@ -178,6 +181,15 @@
   (var c (new_cursor))
   (var b ($buffer U8 (registry_size reg)))
   (encode_registry b c reg)
+  (ws_send conn b/~to_bytes))
+
+# §9's appearance table. Sent before the registry, because a node's tile columns
+# are slots into this and a client that read them first would hold indices into
+# an atlas it has not been told how to paint.
+(fn send_tiles [conn t : TileRegistry] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 (tiles_size t)))
+  (encode_tiles b c t)
   (ws_send conn b/~to_bytes))
 
 # Returns `ws_send`'s drop count — see `answer_blocks` for why anything reads it.
@@ -268,9 +280,10 @@
 # --- serving -----------------------------------------------------------------
 
 (fn main [args] : Nil
-  (var reg (new_registry))
-  (setup_nodes reg)
-  (var drops (setup_drops reg))
+  # §9's game. Every id below is one a mod caused to exist.
+  (var game (load_mods))
+  (var reg game/nodes)
+  (var drops game/drops)
   (var air (id_of reg "air"))
 
   (var root (get_env Env "GENE_MICLONE_WORLD" default_world_root))
@@ -283,7 +296,7 @@
     (else ($println $"miclone server: opening ${root}")))
 
   (var t0 ($os/monotonic_ms))
-  (var world (build_world reg store fresh))
+  (var world (build_world game store fresh))
   (var spawn_at ($buffer F64 3.0))
     # The scan lives in `core/physics.gene` — it has been got wrong twice, and
   # one definition is the fix. The server owns the *result*: it goes out in
@@ -341,6 +354,7 @@
           # Handshake only. The terrain follows when the client asks for it,
           # which is what keeps the 256-frame queue from overflowing.
           (send_hello conn world spawn_at)
+          (send_tiles conn game/tiles)
           (send_registry conn reg)
           (send_inventory conn inv)
           ($println "  client joined"))

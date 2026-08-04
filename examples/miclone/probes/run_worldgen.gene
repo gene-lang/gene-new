@@ -8,7 +8,8 @@
 (mod run_worldgen)
 
 (import [new_registry id_of registered_count] from "../core/registry.gene")
-(import [setup_nodes setup_biomes setup_ores] from "../core/content.gene")
+(import [Game] from "../core/api.gene")
+(import [load_mods] from "../core/mods.gene")
 (import [block_dim block_nodes pad_dim pad_nodes] from "../core/mapgen.gene")
 (import [carve] from "../core/cave.gene")
 (import [place_all] from "../core/ore.gene")
@@ -50,10 +51,10 @@
   ok)
 
 (fn main [args] : Nil
-  (var r (new_registry))
-  (setup_nodes r)
-  (var biomes (setup_biomes r))
-  (var ores (setup_ores r))
+  (var game (load_mods))
+  (var r game/nodes)
+  (var biomes game/biomes)
+  (var ores game/ores)
   (var air (id_of r "air"))
   (var water (id_of r "miclone:water"))
 
