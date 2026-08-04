@@ -238,7 +238,7 @@
   # already owns. Used once per chunk to build the world and again per chunk
   # per edit, which is the reason it is a binding rather than the body of the
   # loop below.
-  (var mesh_chunk : (Callback [F64 F64 F64] Void) (fn [a : F64 b : F64 c : F64] : Void void))
+  (var mesh_chunk : (Fn [F64 F64 F64] Void) (fn [a : F64 b : F64 c : F64] : Void void))
   (set mesh_chunk (fn [cx : F64 cy : F64 cz : F64] : Void
     (var slot (+ cx (+ (* cy span_x) (* cz (* span_x span_y)))))
     (var k slot)
@@ -338,7 +338,7 @@
   # have changed — see §7.1, and note that it is much larger than the node: a
   # dig in daylight sends light fifteen nodes in every direction and down the
   # shaft it opened.
-  (var remesh_region : (Callback [] Void) (fn [] : Void void))
+  (var remesh_region : (Fn [] Void) (fn [] : Void void))
   (set remesh_region (fn [] : Void
     (var lo_x ($math/max 0.0 ($math/floor (/ (- (bounds_min_x bounds)
                                                 (* origin_bx block_dim))
@@ -376,7 +376,7 @@
         (set ry (+ ry 1.0)))
       (set rz (+ rz 1.0)))))
 
-  (var apply_edit : (Callback [F64 F64 F64 F64] Void)
+  (var apply_edit : (Fn [F64 F64 F64 F64] Void)
        (fn [a : F64 b : F64 c : F64 d : F64] : Void void))
   (set apply_edit (fn [nx : F64 ny : F64 nz : F64 id : F64] : Void
     (var t0 ($time/now))
@@ -384,7 +384,7 @@
     (remesh_region)
     (set edit_ms (- ($time/now) t0))))
 
-  (var dig : (Callback [] Void) (fn [] : Void void))
+  (var dig : (Fn [] Void) (fn [] : Void void))
   (set dig (fn [] : Void
     (cast world reg hit (player_x player) (player_eye_y player) (player_z player)
           (forward_x yaw pitch) (forward_y yaw pitch) (forward_z yaw pitch)
@@ -404,7 +404,7 @@
           (add inv items yield_id yield_n)
           (set hotbar_dirty true))))))
 
-  (var place : (Callback [] Void) (fn [] : Void void))
+  (var place : (Fn [] Void) (fn [] : Void void))
   (set place (fn [] : Void
     (cast world reg hit (player_x player) (player_eye_y player) (player_z player)
           (forward_x yaw pitch) (forward_y yaw pitch) (forward_z yaw pitch)
@@ -432,7 +432,7 @@
   # The hotbar as text, rebuilt only when it changes: eight slots is a short
   # string, and building it every frame would be the only allocation in the
   # frame loop.
-  (var draw_hotbar : (Callback [] Void) (fn [] : Void void))
+  (var draw_hotbar : (Fn [] Void) (fn [] : Void void))
   (set draw_hotbar (fn [] : Void
     (var parts : (List Str) [])
     (var i 0.0)
@@ -530,7 +530,7 @@
   # Declared before it is defined so the body can schedule itself. A nested
   # `fn` declaration is not a form the profile has; a `var` holding a closure
   # is, and the placeholder is what lets the real one refer to the binding.
-  (var frame : (Callback [F64] Void) (fn [now : F64] : Void void))
+  (var frame : (Fn [F64] Void) (fn [now : F64] : Void void))
   (set frame (fn [now : F64] : Void
     (var dt (if (> last_ms 0.0) ($math/min max_dt (/ (- now last_ms) 1000.0)) 0.0))
     (set last_ms now)

@@ -7756,10 +7756,10 @@ suite "cli — gene parse/fmt/compile":
     let path = writeCliProgram("web_interop.gene",
       "(mod web_interop ^profile web)\n" &
       "(js/fn host_upper ^from \"./web_host.mjs\" ^import \"upper\" " &
-      "  [value : Str callback : (Callback [Str] Str)] : Str)\n" &
+      "  [value : Str callback : (Fn [Str] Str)] : Str)\n" &
       "(fn decorate [value : Str] : Str ($ \"<\" value))\n" &
       "(fn run [value : Str] : Str (host_upper value decorate))\n" &
-      "(fn run_with [value : Str callback : (Callback [Str] Str)] : Str " &
+      "(fn run_with [value : Str callback : (Fn [Str] Str)] : Str " &
       "  (host_upper value callback))\n")
     let ran = runGene(["build", "--target", "web", "--out-dir", cliDir, path])
     checkpoint ran.output

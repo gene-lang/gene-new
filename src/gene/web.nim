@@ -601,7 +601,9 @@ proc typeName(typ: WebType): string =
   of wtkCallback:
     var params: seq[string]
     for item in typ.params: params.add typeName(item)
-    "(Callback [" & params.join(" ") & "] " & typeName(typ.returnType) & ")"
+    # `Fn`, because that is the spelling a reader can write back into the
+    # source. A diagnostic naming a type the profile refuses would be a puzzle.
+    "(Fn [" & params.join(" ") & "] " & typeName(typ.returnType) & ")"
 
 proc mangleWebName*(name: string): string
 
@@ -784,8 +786,19 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
       raise webError(loc, "Buffer element type must be one of " &
         bufferElementTypes.join(", ") & ", got " & value.body[0].print())
     return WebType(kind: wtkBuffer, name: value.body[0].symVal)
-  if value.kind == vkNode and (value.head.isSym("Callback") or
-      value.head.isSym("Fn")) and
+  if value.kind == vkNode and value.head.isSym("Callback"):
+    # `Callback` was a profile-only synonym for `Fn` and it is refused here so
+    # that one spelling means one thing on both backends. The VM never had it:
+    # it accepts the annotation at the declaration and raises "unsupported type
+    # annotation" when a function is passed through one, which is the latest
+    # possible moment. A synonym the profile accepts and the VM explodes on is
+    # exactly the divergence §D3.1 exists to prevent, so it goes rather than
+    # spreads. This refusal must stay ahead of the nominal-type fallthrough
+    # below, which would otherwise read `(Callback [A] R)` as a nominal type
+    # named "Callback" and emit working code for it.
+    raise webError(loc, "function types are spelled (Fn [A ...] R); " &
+      "`Callback` is not a type on the VM, so it is not portable")
+  if value.kind == vkNode and value.head.isSym("Fn") and
       value.body.len == 2 and value.body[0].kind == vkList:
     result = webType(wtkCallback)
     for paramType in value.body[0].listItems:

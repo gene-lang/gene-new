@@ -44,13 +44,13 @@ surprise:
 
 - Named parameters are for **module functions**. A `message`, a `ctor`, a
   `js/fn` extern, and an inline callback take positional parameters, since a
-  `Callback` type has nowhere to put a name.
+  `(Fn [A ...] R)` type has nowhere to put a name.
 - A positional parameter may not follow a named one. The VM admits either
   order; here a positional argument's slot is its position among the positional
   parameters, and interleaving would make that ordering something a reader
   reconstructs rather than reads.
 - A function declaring a named parameter **cannot be used as a value**: through
-  a `Callback` it would be invoked positionally, which is the call the VM
+  an `(Fn [A ...] R)` it would be invoked positionally, which is the call the VM
   refuses with `expects 0..0 argument(s)`.
 - Defaults are not admitted, on named or positional parameters. `: T?` is the
   spelling for optional.
@@ -122,6 +122,17 @@ Protocols use unique symbols. User-type impls install symbol methods;
 builtin prototypes. Qualified sends, protocol message values, `Self`
 parameters, and protocol `super` (a statically selected parent-chain call) are
 implemented. Scoped/overlay impl visibility is not.
+
+A function type is spelled **`(Fn [A ...] R)`**, which is the VM's spelling, and
+it is the only one. The profile used to accept `(Callback [A ...] R)` as a
+synonym and no longer does: the VM has no `Callback`, and rather than saying so
+at the declaration it took the annotation and raised `unsupported type
+annotation` at the first call that passed a function through one. A spelling
+that compiles on one backend and fails late on the other is the divergence class
+this profile exists to close, so `Callback` is now a source-located refusal
+naming `Fn`. It has to be an explicit refusal because the nominal-type
+fallthrough would otherwise read `(Callback [A] R)` as a nominal type *named*
+`Callback` and emit working code for it.
 
 `fail` accepts only values whose declared type implements `Error`. Typed catch
 patterns and `ensure` lower to `catch`/`finally`. `^errors` rows are validated

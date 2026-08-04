@@ -1562,7 +1562,7 @@
     {
       "id": "rejected.async_callback_value",
       "source": "1",
-      "web_source": "(mod rejected_async_callback ^profile web) (fn inner [] : Int (scope (await (spawn 42)))) (fn apply [f : (Callback [] Int)] : Int (f)) (fn run [] : Int (apply inner))",
+      "web_source": "(mod rejected_async_callback ^profile web) (fn inner [] : Int (scope (await (spawn 42)))) (fn apply [f : (Fn [] Int)] : Int (f)) (fn run [] : Int (apply inner))",
       "expected_value": {
         "kind": "int",
         "value": "1"
@@ -2004,13 +2004,29 @@
     {
       "id": "named_params.not_a_value",
       "source": "(fn f [^a : Int] : Int a) (fn apply2 [cb] (cb 5)) (apply2 f)",
-      "web_source": "(mod named_params_not_a_value ^profile web) (fn f [^a : Int] : Int a) (fn apply2 [cb : (Callback [Int] Int)] : Int (cb 5)) (fn run [] : Int (apply2 f))",
+      "web_source": "(mod named_params_not_a_value ^profile web) (fn f [^a : Int] : Int a) (fn apply2 [cb : (Fn [Int] Int)] : Int (cb 5)) (fn run [] : Int (apply2 f))",
       "expected_error": "expects 0..0 argument(s), got 1",
       "expected_stdout": "",
       "profile": {
         "status": "rejected",
-        "reason": "a Callback type is positional, so a named-parameter function reached through one would be called the way the VM refuses",
+        "reason": "an (Fn ...) type is positional, so a named-parameter function reached through one would be called the way the VM refuses",
         "diagnostic": "cannot be used as a value"
+      }
+    },
+    {
+      "id": "fn_type.callback_spelling_refused",
+      "source": "(fn apply3 [f : (Fn [Int] Int)] : Int (f 20)) (apply3 (fn [n : Int] : Int (+ n 1)))",
+      "web_source": "(mod fn_type_callback_spelling_refused ^profile web) (fn apply3 [f : (Callback [Int] Int)] : Int (f 20)) (fn run [] : Int (apply3 (fn [n : Int] : Int (+ n 1))))",
+      "expected_value": {
+        "kind": "int",
+        "value": "21"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "`Callback` was a profile-only synonym for `Fn`; the VM takes the annotation at the declaration and raises when a function is passed through one, so the synonym is refused rather than kept",
+        "diagnostic": "function types are spelled (Fn [A ...] R)"
       }
     }
   ]

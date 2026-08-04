@@ -3,7 +3,7 @@
 (js/fn host_apply
   ^from "./host.mjs"
   ^import "apply_value"
-  [value : Str callback : (Callback [Str] Str)] : Str)
+  [value : Str callback : (Fn [Str] Str)] : Str)
 
 (fn decorate [value : Str] : Str
   ($ "<" value))

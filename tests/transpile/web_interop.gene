@@ -3,7 +3,7 @@
 (js/fn host_upper
   ^from "./web_host.mjs"
   ^import "upper"
-  [value : Str callback : (Callback [Str] Str)] : Str)
+  [value : Str callback : (Fn [Str] Str)] : Str)
 
 (fn decorate [value : Str] : Str
   ($ "<" value))
@@ -11,5 +11,5 @@
 (fn run [value : Str] : Str
   (host_upper value decorate))
 
-(fn run_with [value : Str callback : (Callback [Str] Str)] : Str
+(fn run_with [value : Str callback : (Fn [Str] Str)] : Str
   (host_upper value callback))

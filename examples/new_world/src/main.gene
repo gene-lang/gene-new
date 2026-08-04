@@ -217,7 +217,7 @@
   # Declared before it is defined so the body can schedule the next frame.
   # The closure captures the binding, not the value, so the reassignment below
   # is what the callback sees.
-  (var draw_frame : (Callback [F64] Void) (fn [now : F64] : Void void))
+  (var draw_frame : (Fn [F64] Void) (fn [now : F64] : Void void))
   (set draw_frame (fn [now : F64] : Void
     (var vw ($canvas/width stage))
     (var vh ($canvas/height stage))
