@@ -1,0 +1,106 @@
+# Loading a mod off disk — design.md §9's other half, and §D8's M7.
+#
+# `core/mods.gene` is the compiled-in list: `mods/default` is imported like any
+# other module and its `register_all` is called. That is portable — the in-tab
+# client needs the same game the server has — and it is not *loading*, because
+# nothing about it happens at runtime.
+#
+# This is the runtime loader, and it is server-only for two reasons that are the
+# same reason: runtime module loading is a VM capability the web profile does
+# not have, and §D5's sandbox is built on the VM's scope chain. A browser has
+# neither, so a mod runs on the server (§D5) and a client is handed data.
+#
+# ## What makes this different from `import`
+#
+# An `import` names a module at compile time and gets the full standard library.
+# This names a **path at runtime** and gets exactly the namespaces the mod's
+# manifest declared — §D5's promise, enforced as of §D5.2 rather than described.
+#
+# The order matters and is the whole point: the grants are read from the
+# manifest *before* the mod's code runs, so a mod cannot widen its own sandbox
+# by executing something. That is what "a mod is handed exactly the authorities
+# its manifest declares" means, and it is why the manifest is data.
+#
+# ## What this does not do yet
+#
+# **One mod, named explicitly.** §9's `depends`/`optional_depends` ordering
+# arrives with the second mod and the manifest key that declares it; a
+# topological sort over one node is a sort nobody can check. `load_mod_at` takes
+# a path so a second caller is a second line rather than a second loader.
+#
+# **No discovery.** Nothing scans `mods/` for directories. Scanning is `$fs`
+# work in the *host*, which is fine — the host is trusted — and it is a
+# different decision (which mods, in which order, from where) that wants the
+# `depends` key to be worth making.
+
+(mod mods_runtime)
+
+(import $fs [read_text ReadDir])
+(import $os [get_env Env])
+(import [Game new_game] from "../core/api.gene")
+
+# The manifest keys this reads. A mod's `package.gene` is Gene data, so this is
+# a read and a lookup rather than a parser.
+(let manifest_name "package.gene")
+
+(type ModLoadError
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for ModLoadError)
+
+# The grants a manifest declares, as a list of namespace names.
+#
+# **Absent means none.** A manifest with no `^grants` key gets an empty list
+# rather than everything, which is the only defensible default: the failure mode
+# of "forgot to declare" should be a mod that cannot reach the filesystem, not
+# one that can.
+(fn manifest_grants [manifest : Any] : (List Str)
+  (var declared manifest/grants)
+  (if (|| (== declared nil) ($void? declared)) [] declared))
+
+(fn manifest_entry [manifest : Any] : Str
+  (var lib manifest/library)
+  (if (|| (== lib nil) ($void? lib))
+    (fail (new ModLoadError "mod manifest has no ^library ^entry"))
+    lib/entry))
+
+# Read a mod's manifest, take its grants, and load its entry **sandboxed**.
+#
+# The two halves of §9 meet here: `register_all` is the API surface (M7's first
+# half) and `$runtime/load_sandboxed` is the loading (M7's second). A mod that
+# was compiled in and a mod that was read off disk register through exactly the
+# same call — which is the test that the API did not quietly depend on being
+# compiled in.
+(fn load_mod_at [game : Game dir : Str] : Str
+  (var manifest_path $"${dir}/${manifest_name}")
+  (var text (read_text ReadDir manifest_path))
+  # A manifest is Gene data, so reading it is `read_all` and a prop lookup —
+  # there is no parser here and there should not be one. `read_all` answers a
+  # stream of top-level forms and a manifest is exactly one.
+  (var manifest (($parse/read_all text) ~ next))
+  (var grants (manifest_grants manifest))
+  (var entry (manifest_entry manifest))
+  (var name manifest/name)
+  (var mod_value ($runtime/load_sandboxed $"${dir}/${entry}" grants))
+  # The mod's own entry point, called with the `Game` it registers into. What a
+  # mod can reach *through* `game` is `core/api.gene`'s surface and nothing
+  # else, which is the boundary §D5 cares about — the sandbox stops a mod
+  # naming `$fs`, and the API shape stops it holding the lighting scratch.
+  (mod_value/register_all game)
+  name)
+
+# The runtime equivalent of `core/mods.gene`'s `load_mods`. Same answer, loaded
+# rather than linked.
+#
+# `GENE_MICLONE_MODS` names the directory holding mod directories, so a throwaway
+# mod set is an environment variable rather than an edit — which is what makes
+# the sandbox testable against a mod that misbehaves on purpose.
+(let default_mods_dir "mods")
+(let default_mod "default")
+
+(fn load_mods_from_disk [] : Game
+  (var game (new_game))
+  (var root (get_env Env "GENE_MICLONE_MODS" default_mods_dir))
+  (load_mod_at game $"${root}/${default_mod}")
+  game)

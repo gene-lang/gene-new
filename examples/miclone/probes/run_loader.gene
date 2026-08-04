@@ -1,0 +1,108 @@
+# design.md §9's loading half and §D5.2's sandbox, together — M7's last piece,
+# and **this probe does not pass yet**. It is checked in as the statement of
+# what is left, with the failure it produces, rather than deleted so that the
+# gap has to be rediscovered.
+#
+# It is deliberately *not* registered in `package.gene`, so `nimble`-driven runs
+# stay green and nobody inherits a red test they did not write. To run it:
+#
+#   gene run probes/run_loader.gene
+#
+# **What fails and what it means.** `mods_runtime.gene` loads `mods/default`
+# through `$runtime/load_sandboxed`, the mod registers, and the call
+# `(mod_value/register_all game)` is refused with
+#
+#   parameter 'game' expected Game, got (type Game)
+#
+# — two *different* `Game` types. The mod's copy of `core/api.gene` is not the
+# host's, because a module loaded on the sandboxed side does not find the host's
+# in the module cache: an instrumented run shows the sandbox looking for
+# `…::api` and missing, so the trusted chain caches it under a key this lookup
+# does not reproduce. §D5.2's directory rule (a mod's own files are restricted,
+# everything outside is the host's) is in place and is *not* the problem — the
+# lookup for `api` correctly takes the trusted path and still misses.
+#
+# So the remaining work is module *identity*, not capabilities: the sandbox
+# itself is built and enforced, with eight cases in `tests/test_modules.nim`.
+# `probes/badmod/` is the mod written to be refused and is what a working loader
+# should reject.
+#
+# The claim under test is the one §D5 has made since revision 1 and §D5.1 found
+# false: a mod is handed exactly the authorities its manifest declares. It is
+# checked two ways, because either alone would be weak.
+#
+#   1. **The same game.** `mods/default` loaded off disk through the sandbox
+#      registers the identical content set that `core/mods.gene` gets by having
+#      it compiled in. If the API had quietly depended on being linked, this is
+#      where that would show.
+#   2. **The sandbox is on.** The mod's manifest asks for no grants, and a
+#      module loaded under that manifest cannot reach `$fs` — asserted against a
+#      throwaway mod written for the purpose, because asserting it against
+#      `mods/default` would only prove that a well-behaved mod behaves well.
+
+(mod run_loader)
+
+(import $fs [write_text WriteDir])
+(import [load_mods_from_disk load_mod_at] from "../server/mods_runtime.gene")
+(import [load_mods] from "../core/mods.gene")
+(import [new_game] from "../core/api.gene")
+(import [registered_count name_of id_of] from "../core/registry.gene")
+(import [item_count] from "../core/item.gene")
+(import [form_count] from "../core/formspec.gene")
+
+(var failures 0)
+
+(fn check [label : Str ok : Bool detail : Str] : Nil
+  (if ok
+    (then ($println $"  ok   ${label}   ${detail}"))
+    (else
+      (set failures (+ failures 1))
+      ($println $"  FAIL ${label}   ${detail}"))))
+
+(fn main [args] : Nil
+  ($println "")
+  ($println "design.md §9 — the mod, loaded off disk and sandboxed")
+  ($println "")
+
+  (var linked (load_mods))
+  (var loaded (load_mods_from_disk))
+
+  (check "the same node count"
+         (== (registered_count linked/nodes) (registered_count loaded/nodes))
+         $"$($to_int (registered_count loaded/nodes)) nodes")
+  (check "the same item count"
+         (== (item_count linked/items) (item_count loaded/items))
+         $"$($to_int (item_count loaded/items)) items")
+  (check "the same form count"
+         (== (form_count linked/forms) (form_count loaded/forms))
+         $"$($to_int (form_count loaded/forms)) forms")
+
+  # Name for name and id for id, which is the property §2 actually cares about:
+  # a world stored by one and read by the other must mean the same thing.
+  (var diff 0)
+  (var i 0.0)
+  (var n (registered_count linked/nodes))
+  (while (< i n)
+    (if_yes (!= (name_of linked/nodes i) (name_of loaded/nodes i))
+      (set diff (+ diff 1)))
+    (set i (+ i 1.0)))
+  (check "every node has the same id in both" (== diff 0)
+         $"$($to_int n) checked, ${diff} differ")
+
+  # And the sandbox is on. A mod that names `$fs` under an empty grant list must
+  # fail — the manifest is what decides, and `mods/default` declares `^grants []`.
+  (var root ($os/get_env $os/Env "GENE_MICLONE_MODS" "mods"))
+  (var probe_dir $"${root}/../probes/badmod")
+  (var reached false)
+  (try
+    (load_mod_at (new_game) probe_dir)
+    (set reached true)
+  catch _
+    (set reached false))
+  (check "a mod naming $fs with no grants is refused" (! reached)
+         "the sandbox is on, not merely declared")
+
+  ($println "")
+  (if (== failures 0)
+    (then ($println "PASS — the loaded mod is the linked mod, and the manifest is enforced"))
+    (else ($println $"FAIL — ${failures} check(s) failed"))))

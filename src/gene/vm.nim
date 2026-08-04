@@ -351,6 +351,10 @@ type
     sandboxRoots: Table[string, Scope]
     sandboxRoot: Scope
     sandboxKey: string
+    sandboxDir: string
+    # True only while the root for a module *inside* the sandbox directory is
+    # being created; `newGlobalScope` has no path of its own to test.
+    sandboxRestricting: bool
     currentModuleDir: string
     # --- packages (docs/proposals/package.md) --------------------------------
     #
@@ -6907,7 +6911,7 @@ proc newGlobalScope*(app: Application): Scope =
   ## Without that the sandbox is one file deep: a mod that cannot name `$fs`
   ## imports a file that can, and asks it to.
   let parent =
-    if app.sandboxRoot != nil: app.sandboxRoot
+    if app.sandboxRoot != nil and app.sandboxRestricting: app.sandboxRoot
     else: app.builtinsScope()
   result = newScope(parent, application = app)
   result.moduleRoot = true
@@ -23494,8 +23498,26 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   # "not sandboxed" — so the strictest sandbox there is was the one whose
   # modules leaked into the trusted cache. A test caught it; the shape is the
   # same one that made a chest west of the origin read as closed.
+  # **The sandbox covers the mod's own directory, and stops there** (design
+  # §D5.2). A mod's files have not been loaded before and compile under the
+  # restriction; the engine modules it registers against are the host's, already
+  # loaded, and are shared.
+  #
+  # Sharing them is not a concession — it is required. A recompiled
+  # `core/api.gene` brings its own type identities, so the mod's `Game` stops
+  # being the host's `Game` and `register_all` cannot be called at all. Deciding
+  # by path rather than by "is it cached yet" makes that deterministic instead
+  # of dependent on what the host happened to touch first.
+  #
+  # What it leaves is statable: **a mod that imports outside its own directory
+  # gets a host module with host authority.** So a host must not put code a mod
+  # can reach where a mod can reach it — `mods/<name>/` is the boundary, and a
+  # second mod's files are outside the first mod's sandbox on purpose.
+  let inSandbox =
+    app.sandboxRoot != nil and app.sandboxDir.len > 0 and
+    absPath.isRelativeTo(app.sandboxDir)
   let identity =
-    if app.sandboxRoot != nil:
+    if inSandbox:
       "sandbox:" & app.sandboxKey & "\x1f" & app.moduleIdentityFor(absPath)
     else:
       app.moduleIdentityFor(absPath)
@@ -23508,7 +23530,10 @@ proc loadModuleValue(app: Application, absPath: string): Value =
       not app.moduleCompileArtifacts.hasKey(identity):
     raisePackageError(pecModuleNotFound, "module not found: " & absPath)
   app.moduleLoading.incl identity
+  let savedRestricting = app.sandboxRestricting
+  app.sandboxRestricting = inSandbox
   let modScope = newGlobalScope(app)
+  app.sandboxRestricting = savedRestricting
   modScope.implStageRoot = true
   let savedDir = app.currentModuleDir
   let savedPkg = app.currentPackage
@@ -23778,11 +23803,16 @@ proc loadSandboxedModule*(app: Application, path: string,
   let root = app.sandboxedBuiltins(grants)
   app.sandboxRoot = root
   app.sandboxKey = grants.sorted().join(",")
+  # The mod's directory is the boundary. `absPath` is the entry, so its package
+  # directory — `mods/<name>/` for a mod laid out as §9 asks — is what a module
+  # must be under to be restricted.
+  app.sandboxDir = app.moduleSourceDir(absPath).parentDir()
   try:
     result = loadModuleValue(app, absPath)
   finally:
     app.sandboxRoot = nil
     app.sandboxKey = ""
+    app.sandboxDir = ""
 
 proc biRuntimeLoadSandboxed(args: openArray[Value]): Value {.nimcall.} =
   ## `($runtime/load_sandboxed path grants)` — design §D5, and the surface M7's

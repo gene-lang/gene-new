@@ -1,0 +1,11 @@
+# A mod that misbehaves on purpose — design.md §D5.2's sandbox, from the other
+# side. It declares no grants and its code names `$fs` anyway, so loading it must
+# fail. `probes/run_loader.gene` is the only thing that loads it.
+{
+  ^format 1
+  ^name "miclone/badmod"
+  ^description "Names $fs with no grants, so that the sandbox has something to refuse"
+  ^version "0.1.0"
+  ^library {^entry "src/badmod.gene"}
+  ^grants []
+}

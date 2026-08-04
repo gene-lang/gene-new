@@ -19,4 +19,15 @@
   ^description "The default game — every node, tile, drop, biome and ore miclone has"
   ^version "0.1.0"
   ^library {^entry "src/default.gene"}
+
+  # design.md §D5.2: the standard-library namespaces this mod may reach. It
+  # asks for **nothing**, which is the honest answer — every line in
+  # `src/default.gene` is registration and arithmetic, and a mod that registers
+  # content has no business opening a socket.
+  #
+  # This is the manifest half of §D5's promise, and as of §D5.2 it is enforced
+  # rather than declared: `server/mods_runtime.gene` passes it to
+  # `$runtime/load_sandboxed`, and a mod naming `$fs` with an empty grant list
+  # fails at load rather than at the first write.
+  ^grants []
 }

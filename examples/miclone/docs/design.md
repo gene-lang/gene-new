@@ -435,6 +435,53 @@ Two more refusals, each because the alternative is worse than an error:
   than it declared and fail somewhere unrelated — a typo that silently tightens
   a sandbox is still a typo nobody sees.
 
+#### The boundary is the mod's directory
+
+A mod's own files compile under the restriction; everything outside its
+directory is the host's engine and is shared. That is not a concession — it is
+required. A recompiled `core/api.gene` brings its own type identities, so the
+mod's `Game` stops being the host's `Game` and `register_all` cannot be called
+at all. Deciding by *path* rather than by "is it cached yet" makes it
+deterministic instead of dependent on what the host happened to touch first.
+
+What that leaves is statable rather than vague: **a mod importing outside its
+own directory gets a host module with host authority**, so a host must not put
+reachable code where a mod can reach it. `mods/<name>/` is the boundary, and a
+second mod's files are outside the first mod's sandbox on purpose.
+
+### 9.3 The runtime loader — started, and blocked on module identity
+
+`server/mods_runtime.gene` reads a mod's `package.gene`, takes its `^grants`,
+and loads its entry through `$runtime/load_sandboxed`. `mods/default` declares
+`^grants []` — every line in it is registration and arithmetic, and a mod that
+registers content has no business opening a socket. `probes/badmod/` is a mod
+written to be refused: it names `$fs` with no grants, which is §D5.1's published
+escape, and a working loader must reject it.
+
+**It does not work yet, and the reason is not capabilities.** The mod loads, the
+sandbox holds, and then:
+
+```
+parameter 'game' expected Game, got (type Game)
+```
+
+Two different `Game` types. The mod's copy of `core/api.gene` is not the host's,
+because the module loaded on the sandboxed side does not find the host's in the
+cache — an instrumented run shows the lookup asking for `…::api` and missing,
+so the trusted chain caches it under a key this path does not reproduce. The
+directory rule above is in place and is *not* the cause: `api` correctly takes
+the trusted branch and still misses.
+
+So what is left of M7 is **module identity across a runtime load**, not the
+capability model. That is the honest split and it is worth stating precisely,
+because the two are easy to conflate: §D5's advantage over Luanti — "this mod
+cannot touch your filesystem, enforced rather than promised" — is built and has
+eight tests. What is missing is the plumbing that lets a mod loaded at runtime
+share the engine's types with the engine.
+
+`probes/run_loader.gene` is checked in with that failure and is deliberately not
+registered in `package.gene`, so nobody inherits a red test they did not write.
+
 **What this does not do.** It does not restrict what a *host* passes in: a
 sandboxed mod handed a `Game` can call anything reachable through it, which is
 why `core/api.gene` is the surface §D5 cares about and why an ABM action gets

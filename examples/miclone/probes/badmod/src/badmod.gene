@@ -1,0 +1,5 @@
+(mod badmod)
+# §D5.1's published escape, verbatim: no import line, straight off the builtins
+# root. Under a manifest that grants nothing this must not resolve.
+($fs/write_text $fs/WriteDir "/tmp/miclone_sandbox_escape" "escaped")
+(fn register_all [game] : Nil nil)
