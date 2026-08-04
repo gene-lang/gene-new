@@ -22,6 +22,10 @@
         from "../core/item.gene")
 (import [GroupRegistry new_groups intern_group set_rating rating_of in_group?]
         from "../core/groups.gene")
+(import [EntityRegistry new_entities spawn_item despawn entity_slots
+         entity_alive? entity_id entity_item_of entity_count
+         entity_x entity_y entity_z live_entities within_pickup? slot_of_id]
+        from "../core/entity.gene")
 (import [CraftRegistry new_crafts add_recipe recipe_count recipe_output
          recipe_yield recipe_matches? first_craftable apply_craft]
         from "../core/craft.gene")
@@ -419,6 +423,61 @@
   (check_f out "craft: and the ingredients are untouched"
            (total_of inv4 wood) 99.0))
 
+# --- entities ----------------------------------------------------------------
+#
+# §8's dropped items, and the rule they exist for: §7.1 said since M5 that "what
+# is dropped and does not fit is lost". The property is that a dig conserves —
+# what a node yields is either in the inventory or on the ground, never gone.
+
+(fn entity_checks [out : (List Str)] : Nil
+  (var items (fixture_items))
+  (var e (new_entities))
+  (check_f out "entity: a fresh registry is empty" (live_entities e) 0.0)
+
+  (var id (spawn_item e stone 5.0 10.5 20.5 30.5))
+  (check_b out "entity: spawning answers an id" (> id 0.0) true)
+  (check_f out "entity: and there is one alive" (live_entities e) 1.0)
+  (var slot (slot_of_id e id))
+  (check_b out "entity: which is findable by id" (>= slot 0.0) true)
+  (check_f out "entity: holding what it was given" (entity_item_of e slot) stone)
+  (check_f out "entity: and how many" (entity_count e slot) 5.0)
+  (check_f out "entity: at the position it was dropped" (entity_x e slot) 10.5)
+
+  # Ids are 1-based so that a freed slot cannot read as entity 0.
+  (var id2 (spawn_item e dirt 1.0 0.0 0.0 0.0))
+  (check_b out "entity: a second id differs from the first" (!= id2 id) true)
+  (despawn e slot)
+  (check_f out "entity: despawning leaves one" (live_entities e) 1.0)
+  (check_b out "entity: and the slot is dead" (entity_alive? e slot) false)
+  # The freed slot is reused rather than the table growing.
+  (var before (entity_slots e))
+  (spawn_item e sand 2.0 1.0 1.0 1.0)
+  (check_f out "entity: a freed slot is reused" (entity_slots e) before)
+
+  # Pickup radius, which is a distance test and must be symmetric — the columns
+  # are `F64` for exactly this (`core/entity.gene`).
+  (var near (slot_of_id e id2))
+  (check_b out "entity: an item at your feet is in reach"
+           (within_pickup? e near 0.0 0.0 0.0) true)
+  (check_b out "entity: one across the room is not"
+           (within_pickup? e near 9.0 0.0 0.0) false)
+
+  # **The conservation property.** A full inventory plus a dig: what does not
+  # fit becomes an entity, and the total is unchanged. This is the case §7.1
+  # named and could not fix before §8.
+  (var inv (new_inventory 1.0))
+  (add inv items stone 99.0)
+  (var e2 (new_entities))
+  (var yielded 5.0)
+  (var left (add inv items dirt yielded))
+  (check_f out "entity: a full inventory takes none of it" left yielded)
+  (if_yes (> left 0.0)
+    (spawn_item e2 dirt left 4.0 5.0 6.0))
+  (check_f out "entity: so all of it is on the ground" (live_entities e2) 1.0)
+  (check_f out "entity: with nothing lost"
+           (+ (total_of inv dirt) (entity_count e2 (slot_of_id e2 1.0)))
+           yielded))
+
 # --- the report --------------------------------------------------------------
 
 (fn collect [out : (List Str)] : Nil
@@ -429,7 +488,8 @@
   (conservation_checks out)
   (drop_checks out)
   (item_checks out)
-  (craft_checks out))
+  (craft_checks out)
+  (entity_checks out))
 
 (fn report [] : Str
   (var out : (List Str) [])

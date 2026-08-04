@@ -58,7 +58,10 @@
          edit_x edit_y edit_z edit_id
          request_blocks_size encode_request_blocks new_request
          decode_request_blocks req_from req_count
-         inventory_size encode_inventory decode_inventory]
+         inventory_size encode_inventory decode_inventory
+         in_x in_y in_z
+         size_entity encode_entity decode_entity msg_entity
+         new_entity_msg ent_id ent_x ent_y ent_z ent_item ent_count]
         from "../core/protocol.gene")
 
 # --- reporting ---------------------------------------------------------------
@@ -494,7 +497,11 @@
   # A diagonal wish, which is where the thousandths encoding has to hold: the
   # components are 0.707…, and a rounding that lost them would make diagonal
   # movement a different speed from straight movement.
-  (encode_input b c 0.7071 -0.7071 true false true 1.5708)
+  # The position §8's pickup needs. Negative and fractional, because the world
+  # this game generates sits at negative coordinates and a pickup radius that
+  # only worked in the positive octant would pass every hand-run.
+  (encode_input b c 0.7071 -0.7071 true false true 1.5708
+                -1335.25 21.5 3265.125)
   (check_f out "input: the kind byte" (message_kind b) msg_input)
   (check_f out "input: the encoder wrote exactly input_size bytes"
            (cursor_at c) input_size)
@@ -507,6 +514,10 @@
   # thousandth of a radian survives with room to spare.
   (check_f out "input: yaw, to the thousandth"
            ($math/round (* (in ~ get in_yaw) 1000.0)) 1571.0)
+  (check_f out "input: a negative position, to the thousandth"
+           ($math/round (* (in ~ get in_x) 1000.0)) -1335250.0)
+  (check_f out "input: and a fractional height" (in ~ get in_y) 21.5)
+  (check_f out "input: and a large positive z" (in ~ get in_z) 3265.125)
 
   # The flags share a byte, so the check that matters is that each is readable
   # independently of the others rather than that the byte has a value.
@@ -526,7 +537,7 @@
     (var want_sneak (>= (- ($math/floor (/ i 2.0))
                            (* 2.0 ($math/floor (/ i 4.0)))) 1.0))
     (var want_fly (>= ($math/floor (/ i 4.0)) 1.0))
-    (encode_input b c 0.0 0.0 want_jump want_sneak want_fly 0.0)
+    (encode_input b c 0.0 0.0 want_jump want_sneak want_fly 0.0 0.0 0.0 0.0)
     (decode_input b c in)
     (var flags (in ~ get in_flags))
     (if_yes (|| (!= (input_flag? flags input_jump) want_jump)
@@ -537,11 +548,11 @@
   (check_f out "input: all eight flag combinations survive" wrong 0.0)
 
   # Yaw at both ends of its range, since it is encoded with an offset.
-  (encode_input b c 0.0 0.0 false false false -3.14159)
+  (encode_input b c 0.0 0.0 false false false -3.14159 0.0 0.0 0.0)
   (decode_input b c in)
   (check_f out "input: yaw at -pi"
            ($math/round (* (in ~ get in_yaw) 100.0)) -314.0)
-  (encode_input b c 0.0 0.0 false false false 3.14159)
+  (encode_input b c 0.0 0.0 false false false 3.14159 0.0 0.0 0.0)
   (decode_input b c in)
   (check_f out "input: yaw at +pi"
            ($math/round (* (in ~ get in_yaw) 100.0)) 314.0))
@@ -642,6 +653,35 @@
   (check_f out "inventory: a full stack is intact" (back ~ get 1.0) 99.0)
   (check_f out "inventory: and an empty slot stays empty" (back ~ get 15.0) 0.0))
 
+# --- entities ----------------------------------------------------------------
+#
+# §8's one message for add, move and remove. The case worth asserting is the
+# removal: a count of 0 *is* "gone", so a codec that dropped the count would
+# turn every despawn into a silent stack of nothing.
+
+(fn entity_msg_checks [out : (List Str)] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 (size_entity)))
+  (var m (new_entity_msg))
+
+  (encode_entity b c 4242.0 -1335.5 21.25 3265.75 7.0 12.0)
+  (check_f out "entity: the kind byte" (message_kind b) msg_entity)
+  (check_f out "entity: the encoder wrote exactly entity_size bytes"
+           (cursor_at c) (size_entity))
+  (decode_entity b c m)
+  (check_f out "entity: the id round-trips" (m ~ get ent_id) 4242.0)
+  (check_f out "entity: a negative x survives" (m ~ get ent_x) -1335.5)
+  (check_f out "entity: a fractional y" (m ~ get ent_y) 21.25)
+  (check_f out "entity: and z" (m ~ get ent_z) 3265.75)
+  (check_f out "entity: the item" (m ~ get ent_item) 7.0)
+  (check_f out "entity: and the count" (m ~ get ent_count) 12.0)
+
+  # The removal, which is the case a dropped field would hide.
+  (encode_entity b c 4242.0 0.0 0.0 0.0 7.0 0.0)
+  (decode_entity b c m)
+  (check_f out "entity: a count of zero is how a despawn travels"
+           (m ~ get ent_count) 0.0))
+
 # --- the report --------------------------------------------------------------
 
 (fn collect [out : (List Str)] : Nil
@@ -650,6 +690,7 @@
   (registry_checks out)
   (tiles_checks out)
   (items_checks out)
+  (entity_msg_checks out)
   (block_checks out)
   (delta_checks out)
   (input_checks out)

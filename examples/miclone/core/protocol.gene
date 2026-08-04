@@ -61,10 +61,13 @@
 # longer a content id, so the client cannot name what it is holding or know
 # whether it places anything without the item table.
 #
+# v5 adds `msg_entity` (M8's §8): an item on the ground is not a node and has
+# nowhere in the block format to live, so it needs its own message.
+#
 # v4 adds `msg_craft` (M8): the client says "make what I can make" and the
 # server decides what that is. One byte, because §7.1 gives the client no say —
 # a client that named a recipe would be a client the server had to check.
-(let protocol_version 4.0)
+(let protocol_version 5.0)
 
 # --- message kinds -----------------------------------------------------------
 #
@@ -80,6 +83,7 @@
 (let msg_inventory 5.0)            # server: the whole hotbar
 (let msg_tiles 6.0)                # server: §9's atlas recipes, once on join
 (let msg_items 7.0)                # server: §2's item registry, once on join
+(let msg_entity 8.0)               # server: one entity added, moved, or gone
 
 (let msg_input 64.0)               # client: movement intent, every tick
 (let msg_dig 65.0)                 # client: dig the node at
@@ -109,6 +113,7 @@
 (fn kind_tiles [] : F64 msg_tiles)
 (fn kind_items [] : F64 msg_items)
 (fn kind_craft [] : F64 msg_craft)
+(fn kind_entity [] : F64 msg_entity)
 (fn kind_input [] : F64 msg_input)
 (fn kind_dig [] : F64 msg_dig)
 (fn kind_place [] : F64 msg_place)
@@ -121,6 +126,7 @@
 (fn size_place [] : F64 place_size)
 (fn size_request_blocks [] : F64 request_blocks_size)
 (fn size_craft [] : F64 craft_size)
+(fn size_entity [] : F64 entity_size)
 (fn version [] : F64 protocol_version)
 
 # §7.1's authority in one byte: the client asks to craft and says nothing about
@@ -132,6 +138,50 @@
 (fn encode_craft [out : (Buffer U8) c : (Buffer F64)] : Nil
   (reset c)
   (write_u8 c out msg_craft))
+
+# --- entities ----------------------------------------------------------------
+#
+# §8's add/remove/update in one message, because at this size they are the same
+# three fields plus a count — and a `count` of 0 *is* the removal, which saves a
+# second message kind and makes "gone" impossible to miss by dropping one.
+#
+# 1 kind + 4 id + 12 position + 2 item + 2 count.
+(let entity_size 21.0)
+
+(let ent_id 0.0)
+(let ent_x 1.0)
+(let ent_y 2.0)
+(let ent_z 3.0)
+(let ent_item 4.0)
+(let ent_count 5.0)
+
+(fn new_entity_msg [] : (Buffer F64) ($buffer F64 6.0))
+
+(fn encode_entity [out : (Buffer U8) c : (Buffer F64)
+                   id : F64 x : F64 y : F64 z : F64
+                   item : F64 count : F64] : Nil
+  (reset c)
+  (write_u8 c out msg_entity)
+  (write_u32 c out id)
+  # Thousandths of a node, as `hello`'s spawn: a position is continuous (§1) and
+  # the wire has no F64 writer, and a millimetre is far below anything a player
+  # can see.
+  (write_i32 c out ($math/round (* x 1000.0)))
+  (write_i32 c out ($math/round (* y 1000.0)))
+  (write_i32 c out ($math/round (* z 1000.0)))
+  (write_u16 c out item)
+  (write_u16 c out count))
+
+(fn decode_entity [b : (Buffer U8) c : (Buffer F64)
+                   into : (Buffer F64)] : Nil
+  (reset c)
+  (read_u8 c b)
+  (into ~ set! ent_id (read_u32 c b))
+  (into ~ set! ent_x (/ (read_i32 c b) 1000.0))
+  (into ~ set! ent_y (/ (read_i32 c b) 1000.0))
+  (into ~ set! ent_z (/ (read_i32 c b) 1000.0))
+  (into ~ set! ent_item (read_u16 c b))
+  (into ~ set! ent_count (read_u16 c b)))
 
 (fn message_kind [b : (Buffer U8)] : F64
   ($to_float (b ~ get 0.0)))
@@ -594,7 +644,17 @@
 # The wish direction travels in thousandths, like the spawn: it is a unit vector
 # and a millimetre of direction error is far below what a physics step resolves.
 
-(let input_size 12.0)
+# 12 was intent alone; the twelve bytes after it are the position §8 needs.
+#
+# **The position is here rather than derived, and that is a deliberate trust
+# decision.** This server holds no player position of its own (§12.1) — the
+# client runs the same physics against the same world — so a pickup has to be
+# told where the player is standing. A client that lies about it can reach an
+# item it could have walked to anyway, which is a different and much smaller
+# thing than a client that lies about its inventory (§7.1). When §8's players
+# become entities the server will step them itself and this field becomes a
+# correction rather than a source.
+(let input_size 24.0)
 
 (let pi 3.141592653589793)
 (let two_pi 6.283185307179586)
@@ -606,7 +666,8 @@
 (fn encode_input [out : (Buffer U8) c : (Buffer F64)
                   wish_x : F64 wish_z : F64
                   jump : Bool sneak : Bool fly : Bool
-                  yaw : F64] : Nil
+                  yaw : F64
+                  px : F64 py : F64 pz : F64] : Nil
   (reset c)
   (write_u8 c out msg_input)
   (write_i32 c out ($math/round (* wish_x 1000.0)))
@@ -622,13 +683,20 @@
   # pi — which is not a whole number of thousandths, so encode-then-decode
   # loses up to a thousandth *and cannot be made not to*. A fraction of a turn
   # has no offset to round and resolves 2pi/65535 = 0.0055 degrees.
-  (write_u16 c out ($math/round (* (/ (+ yaw pi) two_pi) 65535.0))))
+  (write_u16 c out ($math/round (* (/ (+ yaw pi) two_pi) 65535.0)))
+  # Thousandths of a node, as every other continuous position on this wire.
+  (write_i32 c out ($math/round (* px 1000.0)))
+  (write_i32 c out ($math/round (* py 1000.0)))
+  (write_i32 c out ($math/round (* pz 1000.0))))
 
 (let in_wish_x 0.0)
 (let in_wish_z 1.0)
 (let in_flags 2.0)
 (let in_yaw 3.0)
-(let in_cells 4.0)
+(let in_x 4.0)
+(let in_y 5.0)
+(let in_z 6.0)
+(let in_cells 7.0)
 
 (fn new_input [] : (Buffer F64)
   ($buffer F64 in_cells))
@@ -639,7 +707,10 @@
   (into ~ set! in_wish_x (/ (read_i32 c b) 1000.0))
   (into ~ set! in_wish_z (/ (read_i32 c b) 1000.0))
   (into ~ set! in_flags (read_u8 c b))
-  (into ~ set! in_yaw (- (* (/ (read_u16 c b) 65535.0) two_pi) pi)))
+  (into ~ set! in_yaw (- (* (/ (read_u16 c b) 65535.0) two_pi) pi))
+  (into ~ set! in_x (/ (read_i32 c b) 1000.0))
+  (into ~ set! in_y (/ (read_i32 c b) 1000.0))
+  (into ~ set! in_z (/ (read_i32 c b) 1000.0)))
 
 (fn input_flag? [flags : F64 flag : F64] : Bool
   (var above (* 2.0 flag))

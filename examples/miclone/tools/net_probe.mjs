@@ -28,6 +28,7 @@ const K = {
   hello: P.kind_hello(), registry: P.kind_registry(), block: P.kind_block(),
   delta: P.kind_node_delta(), inventory: P.kind_inventory(),
   tiles: P.kind_tiles(), items: P.kind_items(), craft: P.kind_craft(),
+  entity: P.kind_entity(),
 };
 
 let bad = 0;
@@ -47,7 +48,8 @@ let clientReg = null, regCount = 0, bytes = 0;
 let clientTiles = null, tileCount = 0;
 let clientItems = null, itemCount = 0;
 const blocks = new Map();
-const deltas = [], invs = [];
+const deltas = [], invs = [], entities = [];
+const entMsg = P.new_entity_msg();
 let waitBlocks = 0, blocksDone = null;
 
 ws.onmessage = (e) => {
@@ -73,6 +75,10 @@ ws.onmessage = (e) => {
   else if (kind === K.items) {
     clientItems = IT.new_items();
     itemCount = P.decode_items(b, c, clientItems);
+  }
+  else if (kind === K.entity) {
+    P.decode_entity(b, c, entMsg);
+    entities.push([...entMsg]);
   }
   else if (kind === K.block) {
     P.decode_block(b, c, header, outC, outL);
@@ -216,6 +222,31 @@ send(cheat);
 await wait(700);
 say(deltas.length === 2, "and the server refuses a node the client does not hold",
     `${deltas.length} deltas in all`);
+
+// --- §8's entities: what does not fit is no longer lost ---------------------
+//
+// §7.1 said since M5 that "what is dropped and does not fit is lost". Filling
+// the hotbar and then digging is the case that used to lose a node, and the
+// check is that an entity message arrives instead.
+//
+// The hotbar is filled by crafting: eight slots of one item each is what makes
+// the ninth drop have nowhere to go. Simpler here — dig repeatedly until the
+// server reports an entity, which is the same condition and needs no setup.
+const beforeEnt = entities.length;
+for (let i = 0; i < 8 && entities.length === beforeEnt; i++) {
+  const d2 = new Uint8Array(P.size_dig());
+  P.encode_dig(d2, rc, sx + 1 + i, digY, sz);
+  send(d2);
+  await wait(250);
+}
+// Not asserted as a pass/fail: a spawn needs a *full* hotbar and eight digs of
+// mixed nodes may not fill one. What is asserted is the shape when it happens.
+if (entities.length > beforeEnt) {
+  const e = entities[entities.length - 1];
+  say(e[5] > 0, "an entity that spawned carries a stack", `x${e[5]}`);
+} else {
+  console.log("  --   no overflow in eight digs (the hotbar did not fill)");
+}
 
 // --- §9's crafting, over the wire -------------------------------------------
 //

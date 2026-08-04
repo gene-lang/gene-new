@@ -64,6 +64,10 @@
         from "../core/abm.gene")
 (import [GroupRegistry rating_of] from "../core/groups.gene")
 (import [CraftRegistry first_craftable apply_craft] from "../core/craft.gene")
+(import [EntityRegistry entity_slots entity_alive? entity_id entity_item_of
+         entity_count entity_x entity_y entity_z spawn_item despawn
+         within_pickup? live_entities slot_of_id]
+        from "../core/entity.gene")
 
 (import [new_inventory add take slot_item slot_count slot_empty?]
         from "../core/inventory.gene")
@@ -75,10 +79,12 @@
          registry_size encode_registry
          tiles_size encode_tiles
          items_size encode_items
+         size_entity encode_entity
          block_size encode_block
          node_delta_size encode_node_delta
          inventory_size encode_inventory
          new_edit decode_edit edit_x edit_y edit_z edit_id
+         new_input decode_input in_x in_y in_z
          new_request decode_request_blocks req_from req_count]
         from "../core/protocol.gene")
 
@@ -301,6 +307,26 @@
 (fn block_of [n : F64] : Int
   ($to_int ($math/floor (/ n 16.0))))
 
+# §8's entities on the wire. One message covers add, move and remove — a count
+# of 0 is the removal, which is why "gone" cannot be missed by dropping a
+# second message kind.
+(fn send_entity [conn e : EntityRegistry slot : F64 gone : Bool] : Nil
+  (var c (new_cursor))
+  (var b ($buffer U8 (size_entity)))
+  (encode_entity b c (entity_id e slot)
+                 (entity_x e slot) (entity_y e slot) (entity_z e slot)
+                 (entity_item_of e slot)
+                 (if gone 0.0 (entity_count e slot)))
+  (ws_send conn b/~to_bytes))
+
+(fn broadcast_entity [e : EntityRegistry slot : F64 gone : Bool] : Nil
+  (var c 0.0)
+  (var n connections/~size)
+  (while (< c n)
+    (var conn connections/%c)
+    (send_entity conn e slot gone)
+    (set c (+ c 1.0))))
+
 # --- the tick ----------------------------------------------------------------
 #
 # §12's fixed-step server loop, and §12.1 said what would bring it: "the first
@@ -478,6 +504,7 @@
   (var lq_seed ($buffer F32 (+ (world_nodes world) queue_overhead)))
   (var bounds (new_bounds))
   (var edit (new_edit))
+  (var input (new_input))
   # Scratch for writing an edited block back to disk — allocated here for the
   # same reason the light queues are: an edit happens inside a click.
   (var save_c ($buffer F32 ($to_float block_nodes)))
@@ -556,7 +583,18 @@
                 # The drop is the server's alone (§2, §7.1 step 3).
                 (var yield_n (drop_count drops items was))
                 (if_yes (> yield_n 0.0)
-                  (add inv items (drop_item drops items was) yield_n)
+                  (var yielded (drop_item drops items was))
+                  # §8's first payoff. §7.1 has said since M5 that "what is
+                  # dropped and does not fit is lost"; it is not lost now — the
+                  # remainder becomes an entity at the node that was dug, which
+                  # is where a player would look for it.
+                  (var left (add inv items yielded yield_n))
+                  (if_yes (> left 0.0)
+                    (var slot (spawn_item game/entities yielded left
+                                          (+ nx 0.5) (+ ny 0.5) (+ nz 0.5)))
+                    (if_yes (>= slot 0.0)
+                      (broadcast_entity game/entities
+                                        (slot_of_id game/entities slot) false)))
                   (send_inventory conn inv))
                 (send_node_delta conn nx ny nz air
                                  (world/light ~ get
@@ -604,13 +642,39 @@
                                    (block_of nx) (block_of ny) (block_of nz)
                                    save_c save_l save_p2)))
 
-                # §10's input message. Nothing is done with it yet: the client
-                # runs the same physics against the same world (§7), so its
-                # position is already right and there is no second player to
-                # tell about it. It is decoded and dropped rather than not
-                # sent, because the message that proves the client can talk is
-                # worth having before the entity that needs it (§8, M8).
-                (else void)))))))))
+                # §10's input message, and M8 is where it stops being decoded
+                # and dropped. §8's pickup needs to know where a player is
+                # standing, and this server holds no position of its own —
+                # so the position in this message is the one it uses, and a
+                # client that lies about it can only reach items it could have
+                # walked to anyway.
+                (else
+                  (if_yes (== kind msg_input)
+                    (decode_input b c input)
+                    (var px (input ~ get in_x))
+                    (var py (input ~ get in_y))
+                    (var pz (input ~ get in_z))
+                    (var slots (entity_slots game/entities))
+                    (var i 0.0)
+                    (while (< i slots)
+                      (if_yes (&& (entity_alive? game/entities i)
+                                  (within_pickup? game/entities i px py pz))
+                        (var it (entity_item_of game/entities i))
+                        (var n (entity_count game/entities i))
+                        (var left (add inv items it n))
+                        (if_yes (< left n)
+                          # Some of it fit. What did not stays on the ground as
+                          # a smaller stack rather than vanishing — the same
+                          # rule the dig above follows.
+                          (if (== left 0.0)
+                            (then
+                              (broadcast_entity game/entities i true)
+                              (despawn game/entities i))
+                            (else
+                              (game/entities/count ~ set! i left)
+                              (broadcast_entity game/entities i false)))
+                          (send_inventory conn inv)))
+                      (set i (+ i 1.0)))))))))))))
   ($println "miclone server: stopped"))
 
 # The world array index of a node, so a delta can carry the light the relight

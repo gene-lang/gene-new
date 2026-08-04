@@ -1,0 +1,158 @@
+# Entities — design.md §8, and the first thing in this world that is not a node.
+#
+# §8 asks for "server-authoritative active objects with a registry mirroring §2:
+# a visual, a collision box, and callbacks". This builds the half that pays for
+# itself immediately and names the half it does not.
+#
+# ## What it is: dropped items
+#
+# §7.1 has said since M5 that "what is dropped and does not fit is lost", and
+# `core/inventory.gene` names dropped-item entities as the fix. That is the
+# first thing §8 buys and it is the one that closes a hole a player can see —
+# dig with a full hotbar today and the node is gone.
+#
+# So an entity here is a stack of items at a position. It has no callbacks, no
+# `on_step`, and no per-entity code, and that is not a stub: §D5 says mod code
+# runs on the server behind a capability boundary, and §D7.17 records that the
+# annotation a mod-supplied callback needs does not compile on the VM. An entity
+# type that could not carry a mod's `on_step` is the honest version of §8 until
+# it can.
+#
+# ## Positions are F64 and everything else is an id
+#
+# §1's `Vec3` — continuous position, unlike a node. That is the whole reason
+# entities are a separate system rather than a node property: a node is at an
+# integer coordinate by construction and an item on the ground is at 0.5 above
+# it, between two others.
+#
+# The columns are `F64` rather than `F32` for once, because a position is
+# compared against a player's own `F64` position (§7) and rounding one side of
+# that comparison would make a pickup radius asymmetric.
+
+(mod entity ^profile web)
+
+(let max_entities 256.0)
+
+# What an entity is. One kind so far, and the column exists so that adding the
+# second — §8's mobs — is a value rather than a parallel system.
+(let entity_item 0.0)
+
+(type EntityRegistry
+  ^props {^kind   (Buffer F32)
+          ^item   (Buffer F32)   # for `entity_item`: what it is a stack of
+          ^count  (Buffer F32)
+          ^x      (Buffer F64)
+          ^y      (Buffer F64)
+          ^z      (Buffer F64)
+          # Zero means the slot is free. Ids are 1-based for exactly this, so a
+          # freed slot cannot be mistaken for entity 0.
+          ^id     (Buffer F32)
+          ^n      (Buffer F32)}  # two cells: slots used, next id
+
+  (ctor []
+    (set! self/kind ($buffer F32 max_entities))
+    (set! self/item ($buffer F32 max_entities))
+    (set! self/count ($buffer F32 max_entities))
+    (set! self/x ($buffer F64 max_entities))
+    (set! self/y ($buffer F64 max_entities))
+    (set! self/z ($buffer F64 max_entities))
+    (set! self/id ($buffer F32 max_entities))
+    (set! self/n ($buffer F32 2.0))))
+
+(let cell_used 0.0)
+(let cell_next 1.0)
+
+(fn new_entities [] : EntityRegistry
+  (var e (new EntityRegistry))
+  (e/n ~ set! cell_next 1.0)
+  e)
+
+# The high-water mark of occupied slots, which is what a caller iterates. Slots
+# below it may be free — `entity_alive?` is the test — and compacting instead
+# would renumber live entities, which the wire cannot afford.
+(fn entity_slots [e : EntityRegistry] : F64
+  (e/n ~ get cell_used))
+
+(fn entity_alive? [e : EntityRegistry slot : F64] : Bool
+  (> (e/id ~ get slot) 0.0))
+
+(fn entity_id [e : EntityRegistry slot : F64] : F64 (e/id ~ get slot))
+(fn entity_kind [e : EntityRegistry slot : F64] : F64 (e/kind ~ get slot))
+(fn entity_item_of [e : EntityRegistry slot : F64] : F64 (e/item ~ get slot))
+(fn entity_count [e : EntityRegistry slot : F64] : F64 (e/count ~ get slot))
+(fn entity_x [e : EntityRegistry slot : F64] : F64 (e/x ~ get slot))
+(fn entity_y [e : EntityRegistry slot : F64] : F64 (e/y ~ get slot))
+(fn entity_z [e : EntityRegistry slot : F64] : F64 (e/z ~ get slot))
+
+(fn live_entities [e : EntityRegistry] : F64
+  (var n 0.0)
+  (var i 0.0)
+  (var slots (entity_slots e))
+  (while (< i slots)
+    (if_yes (entity_alive? e i) (set n (+ n 1.0)))
+    (set i (+ i 1.0)))
+  n)
+
+# --- spawning ----------------------------------------------------------------
+
+# A free slot, reusing a dead one before growing. Answers -1 when the table is
+# full, which a caller must handle: silently dropping a spawn would put this
+# system back where §7.1 was before it existed.
+(fn free_slot [e : EntityRegistry] : F64
+  (var found -1.0)
+  (var slots (entity_slots e))
+  (var i 0.0)
+  (while (< i slots)
+    (if_yes (&& (== found -1.0) (! (entity_alive? e i)))
+      (set found i))
+    (set i (+ i 1.0)))
+  (if (>= found 0.0) found
+    (if (< slots max_entities)
+      (do (e/n ~ set! cell_used (+ slots 1.0)) slots)
+      -1.0)))
+
+(fn spawn_item [e : EntityRegistry item : F64 count : F64
+                x : F64 y : F64 z : F64] : F64
+  (var slot (free_slot e))
+  (if (< slot 0.0) -1.0
+    (do
+      (var id (e/n ~ get cell_next))
+      (e/n ~ set! cell_next (+ id 1.0))
+      (e/kind ~ set! slot entity_item)
+      (e/item ~ set! slot item)
+      (e/count ~ set! slot count)
+      (e/x ~ set! slot x)
+      (e/y ~ set! slot y)
+      (e/z ~ set! slot z)
+      (e/id ~ set! slot id)
+      id)))
+
+(fn despawn [e : EntityRegistry slot : F64] : Nil
+  (e/id ~ set! slot 0.0)
+  (e/count ~ set! slot 0.0))
+
+(fn slot_of_id [e : EntityRegistry id : F64] : F64
+  (var found -1.0)
+  (var slots (entity_slots e))
+  (var i 0.0)
+  (while (< i slots)
+    (if_yes (&& (== found -1.0) (== (e/id ~ get i) id))
+      (set found i))
+    (set i (+ i 1.0)))
+  found)
+
+# --- pickup ------------------------------------------------------------------
+#
+# §8's whole reason for existing here. The radius is generous — an item you can
+# see at your feet should be one you have — and it is squared at the comparison
+# so nothing takes a square root per entity per tick.
+
+(let pickup_radius 1.6)
+
+(fn within_pickup? [e : EntityRegistry slot : F64
+                    px : F64 py : F64 pz : F64] : Bool
+  (var dx (- (entity_x e slot) px))
+  (var dy (- (entity_y e slot) py))
+  (var dz (- (entity_z e slot) pz))
+  (<= (+ (* dx dx) (+ (* dy dy) (* dz dz)))
+      (* pickup_radius pickup_radius)))

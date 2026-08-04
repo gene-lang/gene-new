@@ -65,6 +65,7 @@
 (import [AbmRegistry new_abms add_abm queue_node abm_fall] from "./abm.gene")
 (import [DecorRegistry new_decors add_decor] from "./decor.gene")
 (import [CraftRegistry new_crafts add_recipe] from "./craft.gene")
+(import [EntityRegistry new_entities] from "./entity.gene")
 (import [World node_at] from "./loaded.gene")
 (import [GroupRegistry new_groups intern_group group_named set_rating rating_of]
         from "./groups.gene")
@@ -87,6 +88,7 @@
           ^abms   AbmRegistry
           ^decors DecorRegistry
           ^crafts CraftRegistry
+          ^entities EntityRegistry
           ^biomes BiomeRegistry
           ^ores   OreRegistry}
 
@@ -99,6 +101,7 @@
     (set! self/abms (new_abms))
     (set! self/decors (new_decors))
     (set! self/crafts (new_crafts))
+    (set! self/entities (new_entities))
     (set! self/biomes (new BiomeRegistry))
     (set! self/ores (new OreRegistry))))
 

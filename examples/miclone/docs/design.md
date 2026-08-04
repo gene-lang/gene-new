@@ -2506,26 +2506,60 @@ it is what makes an entity survive the block unloading under it.
 M8. The player is not an entity in M5; making it one is a refactor M8 should do
 deliberately.
 
-*Nothing here is built.* The one place M0–M7 touches §8 is the shape of the
-absence: §10's `msg_input` is decoded by the server and dropped, because the
-client runs the same physics against the same world (§7) and there is no second
-player to tell about the result. It is sent and decoded anyway, so that the
-message which proves a client can talk about its own motion exists before the
-entity that needs it does.
+### 8.1 M8 — dropped items, and the half that is deliberately absent
 
-Two consequences worth knowing before M8 starts, both already true:
+Built: an entity is a stack of items at a continuous position, spawned when a
+dig yields more than fits, picked up when a player walks over it, and carried on
+the wire by `msg_entity` (protocol v5) — one message for add, move and remove,
+because a count of 0 *is* the removal and a second message kind is one more
+thing to drop.
 
-- **Two clients on one server dig the same world and cannot see each other.**
-  The world is shared and every edit reaches both; the player is not. What the
-  server keeps per connection is exactly one thing — an inventory — and it keeps
-  **no position and no physics state at all**, because the client runs the same
-  step against the same world (§7) and `msg_input` is decoded and thrown away.
-  So there is nothing to send even if there were somewhere to send it. §8 is
-  where a server first has to know where a player is.
-- **A dropped item that does not fit is lost** (§7.1). Dropped-item entities are
-  the first thing §8 buys, and until then "your inventory is full" silently eats
-  a dug node. That is the placeholder, and it is named in `core/inventory.gene`
-  rather than left to be found.
+**It closes a hole a player could see.** §7.1 has said since M5 that "what is
+dropped and does not fit is lost", and `core/inventory.gene` named dropped-item
+entities as the fix. Dig with a full hotbar before M8 and the node was gone. The
+spec asserts the property rather than the mechanism: what a node yields is
+either in the inventory or on the ground, and the two sum to what it yielded.
+
+**`msg_input` stopped being decoded and dropped**, which is the first real use
+it has had. §8's pickup needs to know where a player is standing and this server
+holds no position of its own (§12.1), so the position travels in the input
+message. That is a trust decision and it is a small one: a client that lies
+about its position can reach an item it could have walked to anyway, which is a
+different thing from lying about its inventory (§7.1). When players become
+entities the server will step them and this field becomes a correction rather
+than a source.
+
+**What is absent is every callback.** §8 asks for `on_activate`, `on_step`,
+`on_punch` and `on_death`, and an entity here has none — no per-entity code at
+all. That is not a stub with a plan to fill it in: §D7.17 records that the
+annotation a mod-supplied callback needs does not compile on the VM, which is
+the backend that would run it. An entity type that cannot carry a mod's
+`on_step` is the honest version of §8 until that is fixed, and the same gap is
+why §12's ABMs name an engine behaviour rather than supplying one (§12.2).
+
+Also absent, and each for a stated reason rather than an oversight:
+
+- **No entity physics.** A dropped item stays where it was dropped, including
+  in the air if the node under it is later dug. Falling wants the same
+  neighbour-update machinery §12.2 built for nodes, applied to a continuous
+  position, and that is a second mechanism rather than a reuse.
+- **No client rendering.** The networked client tracks what is on the ground and
+  the HUD could say so; drawing an item needs a billboard or a scaled cube,
+  which is §6 work and a vertex format this renderer does not have.
+- **No static serialization.** §8 says an unloaded block serializes its
+  entities into itself. This world never unloads a block (§1.1), so there is
+  nowhere for that to happen yet.
+- **The player is still not an entity**, which §8 names as a refactor M8 should
+  do deliberately. It was not done, because the thing that makes it worth doing
+  is a second player seeing the first, and that needs the entity *visuals* above.
+
+*Before M8 this section had no result note at all, and what stood here was the
+shape of the absence: `msg_input` was decoded and thrown away, two clients on
+one server could dig the same world and not see each other, and a dropped item
+that did not fit was lost. The first and third are fixed above. The second is
+not, and it is now the clearest statement of what §8 still owes — a player is
+visible to another player only once players are entities with visuals, and
+neither exists.*
 
 ## 9. The mod API
 

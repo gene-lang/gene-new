@@ -70,6 +70,8 @@
          size_request_blocks encode_request_blocks
          size_dig encode_dig size_place encode_place
          size_craft encode_craft
+         size_input encode_input msg_entity
+         new_entity_msg decode_entity ent_id ent_item ent_count
          protocol_version]
         from "../core/protocol.gene")
 
@@ -171,6 +173,11 @@
   (var hello (new_hello))
   (var header (new_block_header))
   (var delta (new_node_delta))
+  (var ent (new_entity_msg))
+  # §8's entities, as the client sees them: a count per item id. There is no
+  # rendering for them yet (see the header), so what the client keeps is what
+  # the HUD can say — how much is on the ground nearby.
+  (var ground ($buffer F64 256.0))
   (var block_c ($buffer F32 block_nodes))
   (var block_l ($buffer F32 block_nodes))
 
@@ -321,6 +328,15 @@
       (remesh_around (delta ~ get delta_x) (delta ~ get delta_y)
                      (delta ~ get delta_z)))
 
+    (if_yes (== kind msg_entity)
+      (decode_entity b wc ent)
+      # A count of 0 is the removal (§10). Tracked by item rather than by id
+      # because the HUD shows totals; an id-keyed table is what a renderer will
+      # want and is §8's next step.
+      (var it (ent ~ get ent_item))
+      (var was (ground ~ get it))
+      (ground ~ set! it (+ was (ent ~ get ent_count))))
+
     (if_yes (== kind msg_inventory)
       (decode_inventory b wc inv))))
 
@@ -440,6 +456,7 @@
   (var last_ms 0.0)
   (var frames 0.0)
   (var fps_since 0.0)
+  (var input_sent 0.0)
 
   (var frame : (Callback [F64] Void) (fn [now : F64] : Void void))
   (set frame (fn [now : F64] : Void
@@ -498,6 +515,16 @@
       ($dom/set_text ($dom/element "hotbar") (hotbar_text items inv selected))
       (set frames 0.0)
       (set fps_since now))
+    # §10's input, once a second rather than per frame: it carries the position
+    # §8's pickup needs, and a player cannot walk out of a 1.6-node pickup
+    # radius in less than that at 4 nodes a second. Per frame would be 166
+    # messages a second to say the same thing.
+    (if_yes (&& joined (> (- now input_sent) 1000.0))
+      (set input_sent now)
+      (var msg ($buffer U8 (size_input)))
+      (encode_input msg wc wish_x wish_z jump sneak flying yaw
+                    (player_x player) (player_y player) (player_z player))
+      ($ws/send_bytes sock msg))
     ($frame/request frame)))
 
   ($canvas/set_size stage ($dom/inner_width) ($dom/inner_height))
