@@ -102,6 +102,7 @@
   (var r game/nodes)
   (var biomes game/biomes)
   (var ores game/ores)
+  (var decors game/decors)
   (var air (id_of r "air"))
   (var water (id_of r "miclone:water"))
   (var stone (id_of r "miclone:stone"))
@@ -127,7 +128,7 @@
     (while (< bz span)
       (generate_block content sky ($to_float (* bx d))
                       ($to_float (* slab_y d)) ($to_float (* bz d))
-                      biomes ores seed air water)
+                      biomes ores decors seed air water)
       (zero p1)
       (light_region p1 content block_dim block_dim block_dim r sky q
                     (registered_count r))
@@ -170,6 +171,7 @@
   (var r game/nodes)
   (var biomes game/biomes)
   (var ores game/ores)
+  (var decors game/decors)
   (var air (id_of r "air"))
   (var water (id_of r "miclone:water"))
   (var lamp (id_of r "miclone:lamp"))
@@ -204,7 +206,7 @@
         (then
           (generate_block fresh_c sky ($to_float (* bx d))
                           ($to_float (* slab_y d)) ($to_float (* bz d))
-                          biomes ores seed air water)
+                          biomes ores decors seed air water)
           (zero fresh_p1)
           (light_region fresh_p1 fresh_c block_dim block_dim block_dim r sky q
                         (registered_count r))

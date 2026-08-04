@@ -1,0 +1,315 @@
+# Cross-backend spec for ABMs — design.md §12, §9's `^action`, §14 layer 2.
+#
+# Two things are pinned here and they arrived together.
+#
+# **§9's action.** `register_abm` takes a mod's own function now rather than
+# naming one of a fixed set of engine behaviours. The mechanism under that is a
+# `(List (Fn …))` on a type, a closure stored into it, and a call back out of
+# it — three things that had never been asked of either backend before, so they
+# are asserted here rather than assumed from the game working.
+#
+# **The sample walk.** The walk this replaced drove all three axes from one
+# counter, which traces a one-dimensional curve: it could reach 192 positions
+# out of 7,077,888 and no more, ever. Nothing caught it for a whole milestone
+# because the sampled branch ended in a `void` — there was no observable at the
+# end of the arithmetic. The checks below are that observable, and the one that
+# matters is `no repeat in a full cycle`: it is what makes the walk a
+# permutation rather than a curve, and it is false for every version of this
+# code before the fix.
+#
+# Reports rather than throws, like every other spec here — a diff names *which*
+# assertion moved, an exception names only the first.
+
+(mod abm_spec ^profile web)
+
+(import [AbmRegistry new_abms add_abm abm_count abm_label abm_trigger
+         abm_action abm_group abm_interval abm_chance
+         abm_on_change abm_sampled
+         queue_node queued_count queued_x queued_y queued_z queued_id
+         clear_queue
+         queue_check check_count check_x_at check_y_at check_z_at clear_checks
+         gcd walk_stride sample_index sample_x sample_y sample_z
+         chance_passes?]
+        from "../core/abm.gene")
+(import [World new_world] from "../core/loaded.gene")
+(import [EntityRegistry new_entities add_entity_def entity_def_count
+         entity_def_named entity_def_of entity_def_step entity_def_activate
+         no_step no_activate
+         spawn_item despawn slot_of_id entity_alive? move_entity
+         entity_x entity_y entity_z]
+        from "../core/entity.gene")
+
+(fn check [out : (List Str) label : Str got : Str want : Str] : Nil
+  (if (== got want)
+    (then (out ~ push! $"ok   ${label}"))
+    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+
+(fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
+  (check out label $"${got}" $"${want}"))
+
+(fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
+  (check out label $"${got}" $"${want}"))
+
+# --- §9's action --------------------------------------------------------------
+#
+# The registry holds a mod's function and hands it back. The action here writes
+# through `queue_node`, which is the only reach an action has into the world
+# (see `core/abm.gene` for why it queues rather than writes), so asserting the
+# queue contents asserts that the stored closure ran and ran with the arguments
+# the engine promised.
+
+(fn action_checks [out : (List Str)] : Nil
+  (var a (new_abms))
+  (var w (new_world 0.0 0.0 0.0 1.0 1.0 1.0))
+
+  # An action that captures nothing, to separate "a function can be stored" from
+  # "a closure can be stored".
+  (var plain (add_abm a "plain" abm_on_change 3.0 100.0 1.0
+                      (fn [world : World x : F64 y : F64 z : F64
+                           node : F64] : Nil
+                        (queue_node a x y z (+ node 1.0))
+                        nil)))
+  # And one that closes over a local the engine never sees. This is the shape a
+  # mod uses to reach `game`, which `core/abm.gene` cannot name without closing
+  # an import cycle — so if capture did not work, the whole API shape would not.
+  (var captured 700.0)
+  (var closing (add_abm a "closing" abm_sampled 5.0 250.0 2.0
+                        (fn [world : World x : F64 y : F64 z : F64
+                             node : F64] : Nil
+                          (queue_node a x y z (+ node captured))
+                          nil)))
+
+  (check_f out "two abms registered" (abm_count a) 2.0)
+  (check_f out "first abm id" plain 0.0)
+  (check_f out "second abm id" closing 1.0)
+
+  # The columns beside the action must stay on the same id as the action.
+  (check out "label of 0" (abm_label a 0.0) "plain")
+  (check out "label of 1" (abm_label a 1.0) "closing")
+  (check_f out "trigger of 0" (abm_trigger a 0.0) abm_on_change)
+  (check_f out "trigger of 1" (abm_trigger a 1.0) abm_sampled)
+  (check_f out "group of 0" (abm_group a 0.0) 3.0)
+  (check_f out "group of 1" (abm_group a 1.0) 5.0)
+  (check_f out "interval of 1" (abm_interval a 1.0) 250.0)
+  (check_f out "chance of 1" (abm_chance a 1.0) 2.0)
+
+  # Call the plain one back out of the registry, the way the server does.
+  (var f0 (abm_action a 0.0))
+  (f0 w 11.0 12.0 13.0 40.0)
+  (check_f out "plain action queued one edit" (queued_count a) 1.0)
+  (check_f out "plain action got its x" (queued_x a 0.0) 11.0)
+  (check_f out "plain action got its y" (queued_y a 0.0) 12.0)
+  (check_f out "plain action got its z" (queued_z a 0.0) 13.0)
+  (check_f out "plain action saw the node" (queued_id a 0.0) 41.0)
+
+  # And the closure. 40 + 700 is the whole point: 700 is not on the wire, not in
+  # the registry, and not a parameter — it is only in the function.
+  (var f1 (abm_action a 1.0))
+  (f1 w 1.0 2.0 3.0 40.0)
+  (check_f out "closure action queued a second edit" (queued_count a) 2.0)
+  (check_f out "closure reached its captured local" (queued_id a 1.0) 740.0)
+
+  (clear_queue a)
+  (check_f out "queue clears" (queued_count a) 0.0))
+
+# --- the check queue ----------------------------------------------------------
+
+(fn check_queue_checks [out : (List Str)] : Nil
+  (var a (new_abms))
+  (check_f out "check queue starts empty" (check_count a) 0.0)
+  (check_b out "queue_check takes it" (queue_check a 4.0 5.0 6.0) true)
+  (check_f out "check queue holds one" (check_count a) 1.0)
+  (check_f out "check x" (check_x_at a 0.0) 4.0)
+  (check_f out "check y" (check_y_at a 0.0) 5.0)
+  (check_f out "check z" (check_z_at a 0.0) 6.0)
+  (clear_checks a)
+  (check_f out "check queue clears" (check_count a) 0.0))
+
+# --- the walk -----------------------------------------------------------------
+#
+# A 16x8x16 world — 2,048 nodes — small enough that a full cycle can be walked
+# inside a spec and every position accounted for. The properties asserted are
+# the ones the previous walk did not have, and the failing-before/passing-after
+# line is `no repeat in a full cycle`.
+
+(let wx 16.0)
+(let wy 8.0)
+(let wz 16.0)
+
+(fn walk_checks [out : (List Str)] : Nil
+  (check_f out "gcd(12, 18)" (gcd 12.0 18.0) 6.0)
+  (check_f out "gcd(35, 64)" (gcd 35.0 64.0) 1.0)
+  (check_f out "gcd(n, 0)" (gcd 9.0 0.0) 9.0)
+
+  (var total (* wx (* wy wz)))
+  (check_f out "world nodes" total 2048.0)
+
+  (var stride (walk_stride total))
+  (check_f out "stride is coprime with the node count" (gcd stride total) 1.0)
+  # Near total*phi, which is what keeps consecutive samples far apart rather
+  # than adjacent — a stride of 1 would also be coprime and would be useless.
+  (check_f out "stride" stride 1265.0)
+
+  # Every index in a full cycle, exactly once. `seen` is a count per position;
+  # any entry other than 1 is either a repeat or a position never reached, and
+  # both are the failure the old walk had.
+  (var seen ($buffer F32 total))
+  (var i 0.0)
+  (while (< i total)
+    (var idx (sample_index i total stride))
+    (seen ~ set! idx (+ (seen ~ get idx) 1.0))
+    (set i (+ i 1.0)))
+
+  (var repeats 0.0)
+  (var missed 0.0)
+  (var j 0.0)
+  (while (< j total)
+    (var c (seen ~ get j))
+    (if_yes (> c 1.0) (set repeats (+ repeats 1.0)))
+    (if_yes (== c 0.0) (set missed (+ missed 1.0)))
+    (set j (+ j 1.0)))
+  (check_f out "no repeat in a full cycle" repeats 0.0)
+  (check_f out "no position missed in a full cycle" missed 0.0)
+
+  # The cycle closes and starts again, rather than wandering off the end.
+  (check_f out "the cycle wraps" (sample_index total total stride)
+            (sample_index 0.0 total stride))
+
+  # Decomposition stays inside the world on every axis.
+  (var bad_x 0.0)
+  (var bad_y 0.0)
+  (var bad_z 0.0)
+  (var k 0.0)
+  (while (< k total)
+    (var idx (sample_index k total stride))
+    (var px (sample_x idx wx))
+    (var py (sample_y idx wx wy))
+    (var pz (sample_z idx wx wy))
+    (if_yes (|| (< px 0.0) (>= px wx)) (set bad_x (+ bad_x 1.0)))
+    (if_yes (|| (< py 0.0) (>= py wy)) (set bad_y (+ bad_y 1.0)))
+    (if_yes (|| (< pz 0.0) (>= pz wz)) (set bad_z (+ bad_z 1.0)))
+    (set k (+ k 1.0)))
+  (check_f out "every x in range" bad_x 0.0)
+  (check_f out "every y in range" bad_y 0.0)
+  (check_f out "every z in range" bad_z 0.0)
+
+  # Consecutive samples are far apart in the flat index. The old walk's whole
+  # failure was that consecutive samples were *related*; this is the property
+  # that replaced "the multipliers are coprime" as the thing actually checked.
+  (var min_gap total)
+  (var m 1.0)
+  (while (< m total)
+    (var d (- (sample_index m total stride)
+              (sample_index (- m 1.0) total stride)))
+    (var ad (if (< d 0.0) (- 0.0 d) d))
+    (if_yes (< ad min_gap) (set min_gap ad))
+    (set m (+ m 1.0)))
+  (check_f out "consecutive samples never adjacent" min_gap 783.0)
+
+  # `chance` thins the walk without changing which positions exist.
+  (check_b out "chance 1 always fires" (chance_passes? 7.0 1.0) true)
+  (check_b out "chance 4 fires on 8" (chance_passes? 8.0 4.0) true)
+  (check_b out "chance 4 skips 9" (chance_passes? 9.0 4.0) false))
+
+# --- §8's entity definitions ---------------------------------------------------
+#
+# The same mechanism as an ABM action, on the other registry that grew one: a
+# definition holds the mod's `on_step`, the engine hands it back by slot, and
+# what it does is the mod's business. The reserved `item` definition and the
+# last-registration-wins rule are the two behaviours a mod depends on and
+# neither is obvious from the call site, so both are pinned here.
+
+(fn entity_checks [out : (List Str)] : Nil
+  (var e (new_entities))
+  (var w (new_world 0.0 0.0 0.0 1.0 1.0 1.0))
+
+  # §1 reserves `air`; §8 reserves `item`, and for the same reason — the engine
+  # spawns a dropped item before any mod has run.
+  (check_f out "the reserved item definition exists" (entity_def_count e) 1.0)
+  (check_f out "and is found by name" (entity_def_named e "item") 0.0)
+  (check_f out "an unregistered name is -1" (entity_def_named e "mob") -1.0)
+
+  # A spawn takes the reserved definition.
+  (var id (spawn_item e 7.0 3.0 10.0 20.0 30.0))
+  (var slot (slot_of_id e id))
+  (check_f out "a spawn takes a slot" slot 0.0)
+  (check_f out "and the reserved definition" (entity_def_of e slot) 0.0)
+  (check_b out "and is alive" (entity_alive? e slot) true)
+
+  # The reserved step does nothing, which is what M8 shipped.
+  (var f0 (entity_def_step e (entity_def_of e slot)))
+  (f0 w slot 0.1)
+  (check_f out "the reserved step leaves y alone" (entity_y e slot) 20.0)
+
+  # A mod furnishes it. Registering the reserved name appends, and lookup finds
+  # the newer one — so a mod does not need a mutation path into a callback list.
+  (var falls (add_entity_def e "item"
+                (fn [world : World s : F64 dt : F64] : Nil
+                  (move_entity e s (entity_x e s)
+                               (- (entity_y e s) (* 6.0 dt))
+                               (entity_z e s))
+                  nil)
+                no_activate))
+  (check_f out "re-registering appends rather than replaces" falls 1.0)
+  (check_f out "definition count grew" (entity_def_count e) 2.0)
+  (check_f out "and the name now finds the newer one"
+            (entity_def_named e "item") 1.0)
+  (check_f out "the entity already spawned kept its definition"
+            (entity_def_of e slot) 0.0)
+
+  # A spawn made *after* the registration gets the mod's definition, and its
+  # step moves it — which is the whole of §8's `on_step`.
+  (var id2 (spawn_item e 7.0 1.0 1.0 50.0 1.0))
+  (var slot2 (slot_of_id e id2))
+  (check_f out "a later spawn takes the mod's definition"
+            (entity_def_of e slot2) 1.0)
+  (var f1 (entity_def_step e (entity_def_of e slot2)))
+  (f1 w slot2 0.5)
+  (check_f out "and the mod's step moved it" (entity_y e slot2) 47.0)
+  (check_f out "on the axis it meant to" (entity_x e slot2) 1.0)
+
+  # A definition may end its own entity, which is what the server watches for
+  # between steps.
+  (var ends (add_entity_def e "spark"
+              (fn [world : World s : F64 dt : F64] : Nil
+                (despawn e s)
+                nil)
+              no_activate))
+  (var f2 (entity_def_step e ends))
+  (f2 w slot2 0.1)
+  (check_b out "a step can despawn its own entity"
+            (entity_alive? e slot2) false)
+
+  # `on_activate` is the other callback with an engine under it.
+  (var marked ($buffer F64 1.0))
+  (add_entity_def e "beacon"
+    no_step
+    (fn [world : World s : F64] : Nil
+      (marked ~ set! 0.0 (+ 100.0 s))
+      nil))
+  (var born (entity_def_activate e (entity_def_named e "beacon")))
+  (born w 4.0)
+  (check_f out "on_activate runs and is given its slot" (marked ~ get 0.0) 104.0))
+
+(fn report [] : Str
+  (var out : (List Str) [])
+  (action_checks out)
+  (check_queue_checks out)
+  (walk_checks out)
+  (entity_checks out)
+  ($str/join out "\n"))
+
+(fn failures [] : F64
+  (var out : (List Str) [])
+  (action_checks out)
+  (check_queue_checks out)
+  (walk_checks out)
+  (entity_checks out)
+  (var bad 0.0)
+  (var i 0.0)
+  (var n out/~size)
+  (while (< i n)
+    (if_yes ($str/starts_with? out/%i "FAIL")
+      (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)

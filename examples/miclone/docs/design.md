@@ -1142,8 +1142,8 @@ analysis. No options object and no allocation, which matters because this
 codebase's hot paths refuse one; and an exported function stays positionally
 callable from JavaScript, which is what the `.mjs` harnesses do. Four refusals
 fall out of the lowering and each is a source-located diagnostic: no named
-parameters on a `message`, `ctor`, extern or callback, since a `Callback` type
-has nowhere to put a name; no positional parameter after a named one; no
+parameters on a `message`, `ctor`, extern or callback, since an `(Fn [A ...] R)`
+type has nowhere to put a name; no positional parameter after a named one; no
 function-with-named-parameters used as a value; and no defaults, since `: T?` is
 the spelling for optional.
 
@@ -1217,15 +1217,56 @@ the world at double speed to catch up. A throwing tick is reported and the loop
 continues. `^on_tick` without a positive `^tick_ms` is refused rather than spun
 on, and `^tick_ms` without `^on_tick` is refused rather than ignored.
 
-**17. The VM rejects a nominal type inside a `Callback` annotation. Found by
-M8's ABMs. Small, and open.**
-`(Callback [Game World F64 F64 F64] Nil)` compiles for the web profile and fails
-on the VM with "unsupported type annotation" — the opposite direction from
-§D7.13 and §D7.15, where the profile was the narrower one. It matters because
-the VM is the backend that would *run* a mod's callback, so the annotation is
-unusable exactly where it is needed. §9's `^action (fn [pos node] …)` waits on
-it; until then an ABM names one of a fixed set of engine behaviours, which is a
-vocabulary rather than an API.
+**17. `Callback` was a profile-only synonym for `Fn`, and the gap it was
+credited with did not exist. Found by M8's ABMs. Diagnosed wrongly, then
+measured. Closed.**
+
+*What this entry said until it was measured:* "The VM rejects a nominal type
+inside a `Callback` annotation. `(Callback [Game World F64 F64 F64] Nil)`
+compiles for the web profile and fails on the VM with `unsupported type
+annotation`." It was recorded as the reason §9's `^action (fn [pos node] …)`
+could not be built and the reason §8's entities had no `on_step`, and on that
+basis two features were shipped as vocabularies instead of APIs.
+
+**Both halves of the diagnosis were wrong**, and four measurements say so:
+
+| source | VM | profile |
+|---|---|---|
+| `(Callback [F64] F64)` — no nominal type at all | **raises** | works |
+| `(Callback [Box] F64)` | **raises** | works |
+| `(Fn [Box] F64)` | works | works |
+| `(Fn [Game World F64 F64 F64] Nil)` — §9's exact shape | works | works |
+
+It is not about nominal types: the VM rejects **every** `Callback`, including
+one carrying nothing but `F64`. And it does not reject it at the declaration —
+the annotation is accepted there and raises at the first call that passes a
+function *through* it, which is the latest moment available and the reason the
+original diagnosis went to the wrong place. A function type has been in the VM
+all along under the name **`Fn`** (`vm.nim`, the `"Fn"` arm of `matchesTypeExpr`)
+with variance, generics, named parameters and error rows; `web.nim` accepted
+`Callback` *and* `Fn` as spellings of one thing. So the portable spelling
+existed, was already implemented on both sides, and the annotation had simply
+been written with the profile-only one.
+
+**The fix is that the profile drops `Callback`.** One spelling means one thing
+on both backends, which is §D3.1's rule applied to the type surface. It has to
+be an explicit refusal rather than a deletion: `parseWebType`'s last case reads
+any `(Head …)` as a nominal type, so removing the arm would have made
+`(Callback [A] R)` compile as a nominal type *named* `Callback` and emit working
+code. `tests/transpile/fixtures.json` holds the refusal, and the profile's own
+`typeName` now prints `Fn` so a diagnostic never names a spelling the reader
+cannot write.
+
+**What it unblocked, immediately:** §9's `^action` on `register_abm` (§12.2) and
+§8's `on_step` and `on_activate` on entity definitions (§8.1) — the two features
+this entry was cited as blocking, both built in the same commit as the
+measurement, neither needing a VM change.
+
+**The lesson is the one §D5.1 already taught and this project keeps relearning:
+a recorded blocker is a claim, and a claim that has never been measured is not
+evidence.** This one cost a milestone of API surface. It was a *narrower* claim
+than the truth ("a nominal type inside `Callback`") which made it sound
+investigated, and the fix was a one-word change in the source it blocked.
 
 ## D8. Delivery phases
 
@@ -1242,7 +1283,7 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | ~~M5~~ | **Player: physics, dig, place, inventory — done** | a playable singleplayer creative-ish loop; §1.1, §4.2, §7, §7.1 | — |
 | ~~M6~~ | **Client/server split over WebSocket — done** | the same game, client and server as separate processes; §10, §10.1 | backlog 7 (browser half landed) |
 | ~~M7~~ | **The mod API — API done, loading not** | the game is `mods/default`, defined through §9's surface and drawn from recipes on the wire; §9.1 | — |
-| ~~M8~~ | **Entities, crafting, UI, sound — mostly** | §12's tick, trees, crafting, dropped items, sound, and a formspec; §8.1 names what entities still lack | backlog 9 (landed) |
+| ~~M8~~ | **Entities, crafting, UI, sound — mostly** | §12's tick, trees, crafting, dropped items, sound, a formspec, and the mod callbacks the rest were written around (§8.2, §12.3); §8.2 names what entities still lack | backlog 9 (landed) |
 | M9 | Native shell | the same game outside a browser | backlog 7, 8 |
 
 M7 is the point of the project. Everything before it is the engine a mod API
@@ -1250,14 +1291,25 @@ needs in order to be worth having, and M8's "small but complete game" should be
 built entirely through M7's API — if it needs an engine change, the API is
 wrong.
 
-M8 shipped in six slices and is the first milestone that is *partly* done
+M8 shipped in seven slices and is the first milestone that is *partly* done
 rather than done or not: §12's tick (§12.2), §3's decorations (§3.6), crafting
-(§2.3), dropped items (§8.1), sound (§13.2), and a formspec (§13.3). What it
-does not have is entity **callbacks** — blocked on §D7.17, the same gap that
-makes an ABM name an engine behaviour rather than supply one — entity physics,
-entity rendering, and §13's **input**, so no chest and no furnace. §8.1 and
-§13.3 say which and why. A player still cannot see another player, which is the
-clearest statement of what is left.
+(§2.3), dropped items (§8.1), sound (§13.2), a formspec (§13.3), and — last —
+the **callbacks** the first six were written around (§8.2, §12.3).
+
+That last slice is the one worth reading the history of. The first six shipped
+with entity callbacks and mod-supplied ABM actions recorded as *blocked*, by
+§D7.17, in four places. They were not blocked: the annotation had been written
+with a spelling only the web profile knew, and the VM has had the capability all
+along under another name. Measuring it took twenty minutes and unblocked both
+features at once. **The absence in §D8's table was a claim nobody had tested**,
+and it is the second time this project has found one of those — §D5.1 was the
+first, and it is still open.
+
+What M8 does not have: entity **rendering** and §13's **input**, so no chest and
+no furnace; `on_punch` and `on_death`, which would be fields nothing could call
+until something can hit an entity. §8.2 and §13.3 say which and why. A player
+still cannot see another player, which is the clearest statement of what is
+left, and it is now a rendering problem rather than a callback one.
 
 M7 shipped in two halves and only one of them is done (§9.1). The **API** is
 built: the game is a mod, registration goes through a surface, definitions are
@@ -1361,13 +1413,30 @@ types. The mitigation — "it is exactly what M0 measures, before anything
 depends on the answer" — is the reason this was a bad afternoon rather than a
 rewrite of M3.
 
-**A sixth risk went unnamed, and it is the one that bit.** §D5 asserted a
-security property as a thing to use rather than a thing to build, and §D5.1
+**A sixth risk went unnamed, and it is the one that bit — twice.** §D5 asserted
+a security property as a thing to use rather than a thing to build, and §D5.1
 found it false four milestones later. The five risks above were all about
-whether the engine would *work*; none was about whether a claim in Part I was
-*true*. The mitigation that would have caught it is the one this project already
-applies to everything else — measure it before depending on it — and §D5 was
-never measured because nothing had to depend on it until M7.
+whether the engine would *work*; none was about whether a claim in this document
+was *true*. The mitigation that would have caught it is the one this project
+already applies to everything else — measure it before depending on it — and §D5
+was never measured because nothing had to depend on it until M7.
+
+Then it happened again, in the opposite direction and inside a milestone rather
+than across four. §D7.17 recorded a **compiler gap that did not exist**: the VM
+was said to reject a nominal type inside a `Callback` annotation, and on that
+basis §9's `^action` and §8's entity callbacks were both shipped as fixed
+vocabularies with paragraphs explaining that the compiler left no choice. The
+annotation had been written with a spelling only the web profile knew; the VM
+has had function types all along under the name `Fn`. Twenty minutes of
+measurement unblocked two features.
+
+**The two failures are the same failure and the pair is what makes it a
+pattern.** §D5.1 was an unmeasured claim that something *worked*; §D7.17 was an
+unmeasured claim that something *did not*. Both were narrow enough to sound
+investigated — "a mod that never receives `$fs/WriteDir`", "a nominal type
+inside `Callback`" — and a specific-sounding claim is exactly the kind nobody
+re-checks. The rule this project keeps having to relearn: **a blocker written
+down is a hypothesis, and the cheapest moment to test it is when you write it.**
 
 **Determinism held exactly, and the exact/corrected split was never tested in
 anger.** §D6.2 found **zero differing bits** over 323 samples, and the mapgen
@@ -1884,6 +1953,19 @@ Three consequences, each measured rather than assumed:
   Computing the height for every column and discarding it cost 5 ms a block and
   took §D6.3's reading C from passing to 1.0002x over its budget. Reordered, the
   block is 75.0 ms against a 76.9 ms budget and C passes again.
+
+  *Re-measured at the end of M8, and "passes again" is too strong: **C sits on
+  its threshold rather than under it.** Ten runs of `gene run worldgen` on one
+  machine spread 74.9–78.8 ms against the 76.92 ms budget, failing more often
+  than not — 4 of 4 on a build with none of M8's final commits, 4 of 6 with them,
+  which is what rules out a regression and leaves a reading that was always
+  marginal. The 75.0 ms above was one sample of a distribution straddling the
+  line, recorded as if it were the value. Two things follow: the decoration
+  reorder did buy back its 5 ms and that part stands, and **C is no longer a
+  check that passing or failing tells you anything about** — a threshold inside
+  the run-to-run spread reports noise. It wants either a budget with margin or a
+  median over runs, and until it has one, a single red C is not evidence of a
+  regression. §D7.11's AOT path is still what would make the question moot.*
 - **One golden checksum changed, and only one.** Of §14's four blocks, only
   `(4096,16,-2048)` spans a grass surface; it gained 19 trunk and 147 leaf
   nodes. The other three are byte-identical, which is the evidence that the
@@ -2568,20 +2650,53 @@ different thing from lying about its inventory (§7.1). When players become
 entities the server will step them and this field becomes a correction rather
 than a source.
 
-**What is absent is every callback.** §8 asks for `on_activate`, `on_step`,
-`on_punch` and `on_death`, and an entity here has none — no per-entity code at
-all. That is not a stub with a plan to fill it in: §D7.17 records that the
-annotation a mod-supplied callback needs does not compile on the VM, which is
-the backend that would run it. An entity type that cannot carry a mod's
-`on_step` is the honest version of §8 until that is fixed, and the same gap is
-why §12's ABMs name an engine behaviour rather than supplying one (§12.2).
+**What was absent was every callback**, and that paragraph is worth keeping
+because of how it was wrong. It read: "§8 asks for `on_activate`, `on_step`,
+`on_punch` and `on_death`, and an entity here has none. That is not a stub with
+a plan to fill it in: §D7.17 records that the annotation a mod-supplied callback
+needs does not compile on the VM." §D7.17 recorded no such thing once it was
+measured — the annotation had been written with a profile-only synonym for a
+type the VM has always had. See §D7.17 for the four measurements.
 
-Also absent, and each for a stated reason rather than an oversight:
+#### 8.2 The callbacks, and the two of four that have an engine under them
 
-- **No entity physics.** A dropped item stays where it was dropped, including
-  in the air if the node under it is later dug. Falling wants the same
-  neighbour-update machinery §12.2 built for nodes, applied to a continuous
-  position, and that is a second mechanism rather than a reuse.
+**`on_step` and `on_activate` are built.** An entity is an instance of a
+**definition** — §8's "registry mirroring §2" — and a definition carries the
+mod's functions. The server steps every live entity once a tick, notices whether
+the step moved or ended it, and broadcasts; the mod supplies what happens.
+
+`"item"` is a reserved definition name, the way §1 reserves `air`: the engine
+spawns a dropped item from §7.1's overflow path before any mod has run, so one
+exists from construction with callbacks that do nothing. Registering that name
+appends a definition that shadows it — lookup finds the newest — which is how a
+mod furnishes a reserved kind without the engine needing a mutation path into a
+callback list. The web profile has no `set!` on a `(List (Fn …))`, and the
+design that constraint forced is the better one: it is also what §9's loader
+will want when mods are ordered by `depends` and the later one should win.
+
+**`on_punch` and `on_death` are not built, and would be fields nothing could
+call.** Nothing in this engine can hit an entity: §7's raycast selects nodes,
+there is no damage, and there is no health column. That is a different kind of
+absence from the one above and it is not a compiler gap.
+
+**§8.1's own first named absence is now filled — from the mod.** It said "a
+dropped item stays where it was dropped, including in the air if the node under
+it is later dug", and guessed the fix would want "the same neighbour-update
+machinery §12.2 built for nodes, applied to a continuous position … a second
+mechanism rather than a reuse". It needed neither. `mods/default` registers an
+`on_step` of eleven lines that reads the node under the item and moves it down,
+and **the engine gained no notion of gravity to allow it**. That is §D8's test
+for whether the API is right — *if M8's game needs an engine change, the API is
+wrong* — and it is the first time the test has been run against a behaviour
+rather than a registration.
+
+`tools/entity_probe.mjs` is the check and it asserts the property rather than
+the mechanism: it fills a hotbar so a dig drops an entity, digs the node holding
+that entity up, **stops talking**, and waits for the item to move on a silent
+socket. Measured: y 18.7 → 18.1, one unsolicited message, then still.
+
+Still absent, and each for a stated reason:
+
 - **No client rendering.** The networked client tracks what is on the ground and
   the HUD could say so; drawing an item needs a billboard or a scaled cube,
   which is §6 work and a vertex format this renderer does not have.
@@ -2733,6 +2848,41 @@ an ABM before there is a tick to run it on, and `set_node` from a mod means
 nothing until a mod runs during play rather than only at load. §D8's ordering
 holds — the engine before the API that exposes it — and what M7 exposes is
 exactly the engine that exists.
+
+**That table is M7's and every row of it moved by the end of M8.** Items,
+crafting, entities and ABMs are registered; the tick exists; `get_node` and
+`set_node` are what an ABM action calls, and a mod *does* run during play. The
+row that is worth returning to is the last-but-two — "`get_node`/`set_node`,
+bulk accessor: no mod runs at a time when a world exists to read". That stopped
+being true the moment the tick could call a mod's function, which is what §12.3
+and §8.2 are about, and the correction it needed was not to the API.
+
+#### 9.2 M8 — the callback surface, and the entry that was blocking it
+
+Two registrations take a mod's own function now, and neither needed an engine
+change to allow it:
+
+| §9 asked for | after M8 |
+|---|---|
+| `register_abm ^action` | **built** (§12.3) — `(Fn [World F64 F64 F64 F64] Nil)`, and the trigger is what stays the engine's |
+| entity `on_step`, `on_activate` | **built** (§8.2) — a definition registry mirroring §2, as §8 asked |
+| entity `on_punch`, `on_death` | not built — nothing in this engine can hit an entity, so they would be fields nothing calls |
+| chat commands, privileges | not built — needs a player model |
+| runtime mod loading | not built — and §D5.1 is why it is bigger than it looks |
+
+**Both built rows were recorded as blocked, by §D7.17, and were not.** That
+entry claimed the VM could not compile the annotation a mod callback needs; the
+measurement is in §D7.17 and the short version is that the annotation had been
+spelled with a synonym only the profile knew. The cost of not measuring it was a
+milestone in which two features shipped as fixed vocabularies — `^kind
+abm_fall`, and an entity with no per-entity code at all — each with a paragraph
+explaining that the compiler left no choice.
+
+What that buys, concretely: **`mods/default` fills §8.1's first named absence in
+eleven lines of mod code.** A dropped item falls because the mod says how, not
+because the engine learned gravity. §D8's test for this API is "if M8's game
+needs an engine change, the API is wrong", and this is the first behaviour — as
+opposed to registration — the test has been run against.
 
 **The test of the move is that the world did not change**: the four golden
 checksums hold, the world is the same 229 chunks and 62,395 faces, and the ten
@@ -3107,18 +3257,60 @@ ABMs" was already saying:
   column cascade a node per tick instead of settling one node per minute. This
   is a *neighbour update*, and it is how upstream does falling too.
 - **Sampling**, ambient, for the behaviour it was designed for: grass spreading
-  onto a block nobody touched. Nothing registered uses it yet.
+  onto a block nobody touched.
 
 "Run it on random positions" and "run it where something just happened" look
 like the same feature and are not.
 
-**An ABM names an engine behaviour rather than supplying one**, which is not
-where §9 wants to end up — it writes `^action (fn [pos node] …)`. The reason is
-a compiler gap rather than a decision: the VM rejects a nominal type inside a
-`Callback` annotation, so `(Callback [Game World F64 F64 F64] Nil)` compiles for
-the web profile and fails on the VM, which is the backend that would run it
-(§D7.17). What a mod still controls is real — which group falls, how often — and
-a mod adding its own falling node gets the behaviour by joining the group.
+### 12.3 The action is the mod's, and the sampled half had never run
+
+Two changes, and the second was found by the first.
+
+**`register_abm` takes `^action (fn [world x y z node] …)`**, which is §9's
+shape. It took `^kind abm_fall` until §D7.17 was measured rather than believed —
+that entry claimed the annotation a mod callback needs could not compile on the
+VM, and what it actually could not compile was a profile-only *synonym*. Nothing
+was blocking it. `mods/default` now supplies both behaviours as functions, and
+what an ABM declares to the engine is only *when* it is looked at:
+`abm_on_change` drains the check queue, `abm_sampled` walks the ambient sample.
+Neither declaration names a node — both name a group, so a mod adding its own
+falling node still gets the behaviour by joining `falling_node`.
+
+**Then the first sampled ABM did not fire, and the walk was why.** The sample
+walk took three strides against one counter — `x = 97t mod nx`, `y = 43t mod ny`,
+`z = 61t mod nz` — and its comment said the multipliers were "coprime with the
+world extent so the walk does not close into a short cycle". The cycle in `t` is
+long; the **image** is not. Three coordinates driven by one counter trace a
+one-dimensional curve through a three-dimensional space, and it closes after
+`max(nx, ny, nz)` steps. Measured on this engine's own shapes: **192 distinct
+positions out of 7,077,888**, and 384 out of 56,623,104. Ambient sampling could
+not reach 99.997% of the world, at any rate, ever.
+
+It survived a whole milestone because **the sampled branch ended in a literal
+`void`** — the arithmetic ran, the group was tested, and there was nothing at
+the end of it that could come out wrong. §12.2 above says "nothing registered
+uses it yet" and treats that as a scheduling fact; it was the reason the bug was
+invisible. Giving the branch a mod's `^action` is what turned it into an
+observable, and the first thing the observable did was not happen.
+
+What replaced it strides the **flat** index by a step near `total × φ`, walked
+down until coprime with the node count — which makes the walk a permutation:
+every node is visited exactly once per cycle and none is unreachable.
+Consecutive samples stay far apart as a consequence rather than a hope (no two
+within 113 nodes on any shape this engine builds, no repeat in 500,000
+consecutive samples). `probes/abm_spec.gene` asserts the permutation directly on
+a 2,048-node world, which is the check that is false for every version of this
+code before the fix. The bound worth knowing is stated in `core/abm.gene`: the
+products stay exact while `total² < 2^53`, a world of 94M nodes, and past that
+the walk silently stops being a permutation.
+
+Measured after the fix, at five passes a second against 200 open-dirt nodes in a
+2.4M-node world: **27 conversions in 60 s against 22.9 predicted**. Before it,
+zero in 60 s at the same rate.
+
+**The shipped rate is one pass a second, 900 positions** — a full sweep of the
+world every 44 minutes. That is what ambient should mean, and it is now a
+statable guarantee rather than a hope, because the walk reaches everything.
 
 `tools/tick_probe.mjs` is the check, and it asserts the property rather than the
 mechanism: it digs the support out from under a sand column, **stops talking**,
@@ -3357,10 +3549,32 @@ Four layers, and the second is the one that matters most here.
    *Still missing from this layer: disconnect and reconnect within one run —
    §11's `probes/run_persistence.gene` covers restart, and the face count above
    covers a within-session round trip, but not a client rejoining — and the mod
-   veto. The veto is further off than it looked when this was written: M7's API
-   shipped without callbacks (§9.1), so there is nothing for a mod to veto
-   *with*, and a callback that runs during play needs the loader and §12's tick
-   before it needs a test.*
+   veto. The veto is closer than the paragraph that used to stand here said: it
+   claimed "there is nothing for a mod to veto *with*", which was true only
+   while §D7.17 was believed. A mod's function runs during play now (§8.2,
+   §12.3); what a veto still needs is a callback on the **edit** path rather
+   than on the tick.*
+
+5. **Silence, for anything the server does on its own.** §12's tick and §8's
+   `on_step` are checked by a harness that drives one action and then **stops
+   talking** — `tools/tick_probe.mjs` for nodes, `tools/entity_probe.mjs` for
+   entities. What is asserted is that a message arrived on a socket that sent
+   nothing, which is a property no request/response harness can express.
+
+   *M8, and the two things this layer taught are both about windows. A wait
+   that is too long swallows the evidence: `tick_probe` first waited 600 ms for
+   a dig's own answer, the whole cascade landed inside it, and a working tick
+   read as a broken one. `entity_probe` hit the same wall from the other side —
+   50 ms is now the post-dig wait, under one tick, so the fall cannot happen
+   while the client is still notionally talking.*
+
+   *And **a probe that assumes it is the only source of change** breaks the
+   moment the engine gains an ambient behaviour. Three harnesses counted deltas
+   as running totals, which was a correct reading of "what I caused" only while
+   nothing else could cause anything; §12.3's grass ABM made all three fail at
+   once. They count at a position, or from a mark, now. The engine was right in
+   every case and the fixtures were wrong — which is this codebase's most
+   frequent failure by a wide margin.*
 
    *Two traps it is downstream of. **The server's stdout is block-buffered when
    it is a pipe**, so a harness waiting for "listening on 8790" hangs while the

@@ -27,6 +27,10 @@
     (application "protocol_spec" ^entry "probes/run_protocol_spec.gene")
     # design.md §2 and §7.1 — stacks, and what a dug node yields.
     (application "inventory_spec" ^entry "probes/run_inventory_spec.gene")
+    # design.md §12 and §9's `^action` — a mod's own function in the registry,
+    # and the sample walk that has to be a permutation for the ambient trigger
+    # to reach anything at all.
+    (application "abm_spec" ^entry "probes/run_abm_spec.gene")
     # design.md §10.1 — what the protocol costs on the VM, which is where the
     # server encodes it.
     (application "wire_bench" ^entry "probes/wire_bench.gene")

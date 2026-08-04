@@ -11,12 +11,31 @@
 # first thing §8 buys and it is the one that closes a hole a player can see —
 # dig with a full hotbar today and the node is gone.
 #
-# So an entity here is a stack of items at a position. It has no callbacks, no
-# `on_step`, and no per-entity code, and that is not a stub: §D5 says mod code
-# runs on the server behind a capability boundary, and §D7.17 records that the
-# annotation a mod-supplied callback needs does not compile on the VM. An entity
-# type that could not carry a mod's `on_step` is the honest version of §8 until
-# it can.
+# So an entity here is a stack of items at a position, and — as of §9's actions
+# — an instance of a **definition** that carries a mod's `on_step`.
+#
+# ## The definition registry, and which of §8's four callbacks exist
+#
+# §8 asks for `on_activate`, `on_step`, `on_punch` and `on_death`. Two of those
+# have an engine under them and two do not, and the split is not about effort:
+#
+# - **`on_step` is built.** The server ticks (§12), every live entity is stepped
+#   once a tick, and what runs is the definition's own function. It is what
+#   fills §8.1's first named absence — "a dropped item stays where it was
+#   dropped, including in the air if the node under it is later dug" — and it
+#   fills it *from the mod*, which is the whole argument for having an API.
+# - **`on_activate` is built**, and it is one line beside `on_step`: it runs
+#   when a slot is filled, which is a moment the engine already has.
+# - **`on_punch` and `on_death` are not**, because nothing in this engine can
+#   hit an entity. There is no ray that selects one (§7's raycast finds nodes),
+#   no damage, and no health column. Adding the callbacks would be adding two
+#   fields nothing could ever call, which is a worse kind of absence than a
+#   stated one.
+#
+# This was blocked until this commit for a reason that turned out not to exist:
+# §D7.17 recorded "the VM rejects a nominal type inside a `Callback`
+# annotation". The VM rejects **every** `Callback`, primitives included, and
+# always had the capability under the name `Fn`. See §D7.17 for the measurement.
 #
 # ## Positions are F64 and everything else is an id
 #
@@ -31,11 +50,32 @@
 
 (mod entity ^profile web)
 
-(let max_entities 256.0)
+# The world an `on_step` reads, imported for the same reason `core/abm.gene`
+# imports it and nothing else: a callback's signature has to name it, and
+# naming `Game` instead would close an import cycle through `core/api.gene`.
+# What the mod needs beyond the world, it captures.
+(import [World] from "./loaded.gene")
 
-# What an entity is. One kind so far, and the column exists so that adding the
-# second — §8's mobs — is a value rather than a parallel system.
+(let max_entities 256.0)
+(let max_entity_defs 32.0)
+
+# §1 reserves three content ids so that `air` means what §1 says whether or not
+# a mod declared it; §8's definitions reserve one for the same reason. The
+# engine spawns a dropped item from `core/inventory.gene`'s overflow path
+# without asking a mod first, so there has to be a definition to spawn it as
+# before any mod has run. `register_entity` under this name replaces its
+# callbacks rather than adding a second definition — which is how the mod in
+# this repository gives dropped items their physics.
+(let item_def_name "item")
 (let entity_item 0.0)
+
+# What an entity's `on_step` is given: the world to read, the slot it is, and
+# how long the step was in seconds. Everything else it captures — `game` above
+# all, which is what `move_entity` and `remove_entity` need.
+#
+# The slot rather than the id, because a slot is what every accessor here takes
+# and resolving an id costs a scan. A slot is stable for as long as the entity
+# is alive, which is exactly the window a step runs in.
 
 (type EntityRegistry
   ^props {^kind   (Buffer F32)
@@ -44,10 +84,16 @@
           ^x      (Buffer F64)
           ^y      (Buffer F64)
           ^z      (Buffer F64)
+          ^def    (Buffer F32)   # which definition this slot is an instance of
           # Zero means the slot is free. Ids are 1-based for exactly this, so a
           # freed slot cannot be mistaken for entity 0.
           ^id     (Buffer F32)
-          ^n      (Buffer F32)}  # two cells: slots used, next id
+          ^n      (Buffer F32)   # two cells: slots used, next id
+          # §8's definition registry — the mod's half.
+          ^def_names    (List Str)
+          ^def_step     (List (Fn [World F64 F64] Nil))
+          ^def_activate (List (Fn [World F64] Nil))
+          ^def_n        (Buffer F32)}
 
   (ctor []
     (set! self/kind ($buffer F32 max_entities))
@@ -56,16 +102,95 @@
     (set! self/x ($buffer F64 max_entities))
     (set! self/y ($buffer F64 max_entities))
     (set! self/z ($buffer F64 max_entities))
+    (set! self/def ($buffer F32 max_entities))
     (set! self/id ($buffer F32 max_entities))
-    (set! self/n ($buffer F32 2.0))))
+    (set! self/n ($buffer F32 2.0))
+    (set! self/def_names [])
+    (set! self/def_step [])
+    (set! self/def_activate [])
+    (set! self/def_n ($buffer F32 1.0))))
 
 (let cell_used 0.0)
 (let cell_next 1.0)
 
+# The no-op a reserved definition carries until a mod replaces it. An entity
+# whose definition does nothing is exactly what M8 shipped, so this is also the
+# behaviour the engine falls back to rather than a special case in the tick.
+(fn no_step [world : World slot : F64 dt : F64] : Nil nil)
+(fn no_activate [world : World slot : F64] : Nil nil)
+
 (fn new_entities [] : EntityRegistry
   (var e (new EntityRegistry))
   (e/n ~ set! cell_next 1.0)
+  (add_entity_def e item_def_name no_step no_activate)
   e)
+
+# --- definitions --------------------------------------------------------------
+
+(type EntityDefsFull
+  ^props {^message Str}
+  (ctor [message : Str] (set! self/message message)))
+
+(impl Error for EntityDefsFull)
+
+(fn entity_def_count [e : EntityRegistry] : F64 (e/def_n ~ get 0.0))
+
+# **The last registration of a name wins**, which is why this scans backwards.
+# A definition is appended rather than overwritten, so registering `item` gives
+# the reserved one a successor instead of editing it in place — and lookup by
+# name finds the successor. Two things fall out and both are wanted: a mod can
+# furnish a reserved definition without the engine having a mutation path for
+# callbacks, and when §9's loader orders mods by `depends`, the later mod is the
+# one whose definition answers.
+#
+# An entity already spawned keeps the index it was spawned with, because `^def`
+# is a column on the slot. That is also right: a re-registration should describe
+# the next item that drops, not silently re-animate the ones already lying on
+# the ground.
+#
+# It scans backwards rather than overwriting because the web profile has no
+# `set!` on a `(List (Fn …))` — a real constraint, and the design it forced is
+# better than the one it refused.
+(fn entity_def_named [e : EntityRegistry name : Str] : F64
+  (var names e/def_names)
+  (var found -1.0)
+  (var i (entity_def_count e))
+  (while (> i 0.0)
+    (set i (- i 1.0))
+    (var j i)
+    (if_yes (&& (== found -1.0) (== names/%j name))
+      (set found i)))
+  found)
+
+(fn add_entity_def [e : EntityRegistry name : Str
+                    on_step : (Fn [World F64 F64] Nil)
+                    on_activate : (Fn [World F64] Nil)] : F64
+  (var id (entity_def_count e))
+  (if_yes (>= id max_entity_defs)
+    (fail (new EntityDefsFull
+               $"entity definitions are full at ${max_entity_defs}")))
+  (e/def_names ~ push! name)
+  (e/def_step ~ push! on_step)
+  (e/def_activate ~ push! on_activate)
+  (e/def_n ~ set! 0.0 (+ id 1.0))
+  id)
+
+(fn entity_def_name_of [e : EntityRegistry def : F64] : Str
+  (var names e/def_names)
+  (var i def)
+  names/%i)
+
+(fn entity_def_step [e : EntityRegistry def : F64] : (Fn [World F64 F64] Nil)
+  (var steps e/def_step)
+  (var i def)
+  steps/%i)
+
+(fn entity_def_activate [e : EntityRegistry def : F64] : (Fn [World F64] Nil)
+  (var acts e/def_activate)
+  (var i def)
+  acts/%i)
+
+(fn entity_def_of [e : EntityRegistry slot : F64] : F64 (e/def ~ get slot))
 
 # The high-water mark of occupied slots, which is what a caller iterates. Slots
 # below it may be free — `entity_alive?` is the test — and compacting instead
@@ -124,8 +249,17 @@
       (e/x ~ set! slot x)
       (e/y ~ set! slot y)
       (e/z ~ set! slot z)
+      (e/def ~ set! slot (entity_def_named e item_def_name))
       (e/id ~ set! slot id)
       id)))
+
+# What an `on_step` moves. A continuous position, unclamped: an item that walks
+# off the world is a mod's bug and hiding it inside the setter would make it an
+# engine mystery instead.
+(fn move_entity [e : EntityRegistry slot : F64 x : F64 y : F64 z : F64] : Nil
+  (e/x ~ set! slot x)
+  (e/y ~ set! slot y)
+  (e/z ~ set! slot z))
 
 (fn despawn [e : EntityRegistry slot : F64] : Nil
   (e/id ~ set! slot 0.0)

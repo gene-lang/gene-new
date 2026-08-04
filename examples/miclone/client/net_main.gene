@@ -191,7 +191,7 @@
 
   # --- meshing ----------------------------------------------------------------
 
-  (var mesh_chunk : (Callback [F64 F64 F64] Void)
+  (var mesh_chunk : (Fn [F64 F64 F64] Void)
        (fn [a : F64 b : F64 c : F64] : Void void))
   (set mesh_chunk (fn [cx : F64 cy : F64 cz : F64] : Void
     (var slot (+ cx (+ (* cy span_x) (* cz (* span_x span_y)))))
@@ -211,7 +211,7 @@
                   (* bx block_dim) (* by block_dim) (* bz block_dim))
       (upload_chunk gl vaos/%k vbos/%k ebos/%k verts idx))))
 
-  (var mesh_all : (Callback [] Void) (fn [] : Void void))
+  (var mesh_all : (Fn [] Void) (fn [] : Void void))
   (set mesh_all (fn [] : Void
     (var mz 0.0)
     (while (< mz span_z)
@@ -227,7 +227,7 @@
   # Remesh the chunk holding a node and its six neighbours' chunks, which is
   # what a delta needs: the server already relit, and a node on a chunk edge
   # changes the faces of the chunk beside it.
-  (var remesh_around : (Callback [F64 F64 F64] Void)
+  (var remesh_around : (Fn [F64 F64 F64] Void)
        (fn [a : F64 b : F64 c : F64] : Void void))
   (set remesh_around (fn [nx : F64 ny : F64 nz : F64] : Void
     (var lo_x ($math/max 0.0 (- ($math/floor (/ (- nx (* origin_bx block_dim))
@@ -260,7 +260,7 @@
 
   (var sock ($ws/connect "ws://127.0.0.1:8790/"))
 
-  (var request_more : (Callback [] Void) (fn [] : Void void))
+  (var request_more : (Fn [] Void) (fn [] : Void void))
   (set request_more (fn [] : Void
     (var left (- chunks requested))
     (if_yes (> left 0.0)
@@ -333,8 +333,17 @@
       # client's optimistic apply either agreed — in which case this is a
       # no-op — or did not, and this wins (§7.1 step 4).
       (apply_delta world reg delta sky lq lq_seed)
-      (remesh_around (delta ~ get delta_x) (delta ~ get delta_y)
-                     (delta ~ get delta_z)))
+      # **The remesh waits for the world; the apply does not.** A delta can
+      # arrive before the blocks have finished landing — §12's ambient ABM
+      # changes nodes nobody touched, so it is not tied to anything this client
+      # did — and remeshing then builds chunks out of a world that is still
+      # half here. The data is applied either way, so `mesh_all` below picks the
+      # change up when it runs; what is skipped is a partial mesh that would be
+      # thrown away, plus the HUD reporting a chunk count for a world that has
+      # not arrived.
+      (if_yes meshed
+        (remesh_around (delta ~ get delta_x) (delta ~ get delta_y)
+                       (delta ~ get delta_z))))
 
     (if_yes (== kind msg_entity)
       (decode_entity b wc ent)
@@ -363,7 +372,7 @@
   (var selected 0.0)
   (var hit (new_hit))
 
-  (var send_dig : (Callback [] Void) (fn [] : Void void))
+  (var send_dig : (Fn [] Void) (fn [] : Void void))
   (set send_dig (fn [] : Void
     (cast world reg hit (player_x player) (player_eye_y player)
           (player_z player)
@@ -377,7 +386,7 @@
         (encode_dig msg wc (hit_x hit) (hit_y hit) (hit_z hit))
         ($ws/send_bytes sock msg)))))
 
-  (var send_place : (Callback [] Void) (fn [] : Void void))
+  (var send_place : (Fn [] Void) (fn [] : Void void))
   (set send_place (fn [] : Void
     (cast world reg hit (player_x player) (player_eye_y player)
           (player_z player)
@@ -466,7 +475,7 @@
   (var fps_since 0.0)
   (var input_sent 0.0)
 
-  (var frame : (Callback [F64] Void) (fn [now : F64] : Void void))
+  (var frame : (Fn [F64] Void) (fn [now : F64] : Void void))
   (set frame (fn [now : F64] : Void
     (var dt (if (> last_ms 0.0) ($math/min max_dt (/ (- now last_ms) 1000.0)) 0.0))
     (set last_ms now)

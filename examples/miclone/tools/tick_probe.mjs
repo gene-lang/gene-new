@@ -130,15 +130,27 @@ say(unsolicited > 0,
     "the server sent node deltas while the client said nothing",
     `${unsolicited} unsolicited delta(s)`);
 
-// The sand is where it fell to, not where it was.
+// Two ABMs run on this server and they are triggered differently, so what
+// arrives during the silence is sorted by *where* rather than counted. The
+// column is the targeted one (§12's check queue); anything else is the ambient
+// walk, which has the whole world to choose from and is not aimed at us.
+//
+// This check used to be "all of them in the column", and it was right until the
+// sampled trigger had a mod action to run. It was the probe that was wrong, not
+// the server — the ambient ABM firing somewhere else during the window is the
+// engine doing exactly what §12 asks.
 const moved = deltas.slice(quiet);
-const becameAir = moved.filter((d) => d[3] === 0).length;
-const becameSand = moved.filter((d) => d[3] === SAND).length;
+const inColumn = moved.filter((d) => d[0] === target[0] && d[2] === target[2]);
+const elsewhere = moved.filter((d) => d[0] !== target[0] || d[2] !== target[2]);
+const becameAir = inColumn.filter((d) => d[3] === 0).length;
+const becameSand = inColumn.filter((d) => d[3] === SAND).length;
+say(inColumn.length > 0, "the column that lost its support is one of them",
+    `${inColumn.length} in column, ${elsewhere.length} elsewhere`);
 say(becameSand > 0 && becameAir > 0,
     "and they are a node moving: some became sand, some became air",
     `${becameSand} sand, ${becameAir} air`);
-say(moved.every((d) => d[0] === target[0] && d[2] === target[2]),
-    "all of them in the column that lost its support");
+say(inColumn.every((d) => d[1] >= target[1] && d[1] <= target[1] + 8),
+    "and each is within the span the column could have moved through");
 
 console.log("");
 console.log(bad === 0

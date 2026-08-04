@@ -55,10 +55,12 @@
 (import [light_region queue_overhead] from "../core/light.gene")
 (import [new_bounds apply_node diggable? placeable?] from "../core/edit.gene")
 (import [find_spawn] from "../core/physics.gene")
-(import [AbmRegistry abm_count abm_kind abm_group abm_interval abm_chance abm_due
+(import [AbmRegistry abm_count abm_trigger abm_action abm_group abm_interval
+         abm_chance abm_due
          set_abm_due queued_count queued_x queued_y queued_z queued_id
-         clear_queue sample_x sample_y sample_z chance_passes?
-         queue_node abm_fall
+         clear_queue sample_index sample_x sample_y sample_z walk_stride
+         chance_passes?
+         queue_node abm_on_change abm_sampled
          queue_check check_count check_x_at check_y_at check_z_at
          clear_checks]
         from "../core/abm.gene")
@@ -66,7 +68,8 @@
 (import [CraftRegistry first_craftable apply_craft] from "../core/craft.gene")
 (import [EntityRegistry entity_slots entity_alive? entity_id entity_item_of
          entity_count entity_x entity_y entity_z spawn_item despawn
-         within_pickup? live_entities slot_of_id]
+         within_pickup? live_entities slot_of_id
+         entity_def_step entity_def_of entity_def_activate entity_def_named]
         from "../core/entity.gene")
 
 (import [new_inventory add take slot_item slot_count slot_empty?]
@@ -346,10 +349,44 @@
 (let tick_ms 100)
 (let samples_per_pass 900)
 
-# Every connection, so a change nobody asked for can reach everybody. §12.1
-# named this as the one shape the tick would have to change: per-connection
+# Every *live* connection, so a change nobody asked for can reach everybody.
+# §12.1 named this as the one shape the tick would have to change: per-connection
 # state was a closure, and a closure cannot be iterated.
+#
+# **The list has to shrink, and until now it only grew.** M8.1 pushed on
+# `^on_open` and had no `^on_close` at all, which looked harmless — a dead entry
+# should just be a send that goes nowhere. It is not harmless, because the HTTP
+# server **recycles connection handles**: a stale entry comes back aliasing the
+# next client's live socket, so a server that has served N clients sends every
+# world change N times to whoever is connected. Measured on a fresh server:
+# first client 2 conversions/2 deltas, second client 3 conversions/6 deltas,
+# identical timestamps within each group. It went a milestone unseen because a
+# broadcast only ever happened during a falling cascade, moments after the dig
+# that caused it, in the same session that dug — one connection, one copy.
+#
+# The identity is a number this file assigns rather than the handle itself:
+# handles are opaque and recycled, which is the very property that caused the
+# bug, so comparing them is the one thing that cannot be the fix.
 (var connections : (List Any) [])
+(var connection_ids : (List F64) [])
+(var next_connection_id ($cell 0.0))
+
+(fn add_connection [conn id : F64] : Nil
+  (connections ~ push! conn)
+  (connection_ids ~ push! id))
+
+(fn drop_connection [id : F64] : Nil
+  (var keep_conns : (List Any) [])
+  (var keep_ids : (List F64) [])
+  (var i 0.0)
+  (var n connection_ids/~size)
+  (while (< i n)
+    (if_yes (!= connection_ids/%i id)
+      (keep_conns ~ push! connections/%i)
+      (keep_ids ~ push! connection_ids/%i))
+    (set i (+ i 1.0)))
+  (set connections keep_conns)
+  (set connection_ids keep_ids))
 
 # Seed the check queue around a position that just changed. The node above is
 # what matters for falling and is why this is not the six neighbours: a node
@@ -363,7 +400,6 @@
               bounds : (Buffer F64)] : F64
   (var abms game/abms)
   (var groups game/groups)
-  (var air (id_of game/nodes "air"))
   (var n (abm_count abms))
   (var applied 0.0)
 
@@ -372,6 +408,10 @@
   # Drained every tick, and a node that moves seeds the position above it, so a
   # column falls one node per tick from the bottom up rather than settling one
   # node per minute (see `core/abm.gene` for the measurement that forced this).
+  #
+  # What fires here is the mod's `^action`. The engine's share is the match —
+  # this position, this group — and everything past that is the mod's, which is
+  # §9's shape and what `^kind` stood in for until §D7.17 was measured.
   (var checks (check_count abms))
   (var i 0.0)
   (while (< i checks)
@@ -381,37 +421,44 @@
     (var here (node_at world cx cy cz))
     (var a 0.0)
     (while (< a n)
-      (if_yes (&& (== (abm_kind abms a) abm_fall)
+      (if_yes (&& (== (abm_trigger abms a) abm_on_change)
                   (> (rating_of groups here (abm_group abms a)) 0.0))
-        (if_yes (== (node_at world cx (- cy 1.0) cz) air)
-          (queue_node abms cx (- cy 1.0) cz here)
-          (queue_node abms cx cy cz air)))
+        (var act (abm_action abms a))
+        (act world cx cy cz here))
       (set a (+ a 1.0)))
     (set i (+ i 1.0)))
   (clear_checks abms)
 
   # --- sampling: where nothing did -------------------------------------------
   #
-  # §12's ambient half. Nothing registered uses it yet — falling is targeted —
-  # and it runs because the second ABM will be a grass spread, which is exactly
-  # what sampling is for.
-  (var dx (world_dx world))
-  (var dy (world_dy world))
-  (var dz (world_dz world))
+  # §12's ambient half, and it runs a mod's action now rather than stopping at
+  # the match. Until the actions landed this loop ended in a literal `void` —
+  # the arithmetic ran, the group was tested, and nothing could happen at the
+  # end of it, so the path had never once fired. `mods/default` registers a
+  # grass ABM here, which is what makes this tested rather than merely present.
+  # `- 2.0` on each axis drops the one-node shell `core/loaded.gene` keeps
+  # outside the world; what is left is the node extent the walk permutes.
+  (var nx (- (world_dx world) 2.0))
+  (var ny (- (world_dy world) 2.0))
+  (var nz (- (world_dz world) 2.0))
+  (var total (* nx (* ny nz)))
+  (var stride (walk_stride total))
   (var a2 0.0)
   (while (< a2 n)
-    (if_yes (&& (!= (abm_kind abms a2) abm_fall) (>= now (abm_due abms a2)))
+    (if_yes (&& (== (abm_trigger abms a2) abm_sampled) (>= now (abm_due abms a2)))
       (set_abm_due abms a2 (+ now (abm_interval abms a2)))
+      (var act2 (abm_action abms a2))
       (var s 0.0)
       (while (< s ($to_float samples_per_pass))
         (var t (+ step s))
         (if_yes (chance_passes? t (abm_chance abms a2))
-          (var px (+ (world_min_x world) (sample_x t (- dx 2.0))))
-          (var py (+ (world_min_y world) (sample_y t (- dy 2.0))))
-          (var pz (+ (world_min_z world) (sample_z t (- dz 2.0))))
-          (if_yes (> (rating_of groups (node_at world px py pz)
-                                (abm_group abms a2)) 0.0)
-            void))
+          (var idx (sample_index t total stride))
+          (var px (+ (world_min_x world) (sample_x idx nx)))
+          (var py (+ (world_min_y world) (sample_y idx nx ny)))
+          (var pz (+ (world_min_z world) (sample_z idx nx ny)))
+          (var at (node_at world px py pz))
+          (if_yes (> (rating_of groups at (abm_group abms a2)) 0.0)
+            (act2 world px py pz at)))
         (set s (+ s 1.0))))
     (set a2 (+ a2 1.0)))
 
@@ -442,6 +489,39 @@
     (set j (+ j 1.0)))
   (clear_queue abms)
   applied)
+
+# §8's `on_step`, once a tick per live entity, and the mod's function is what
+# runs. The engine's share is three things the mod cannot do for itself: find
+# the live slots, notice that a step moved or ended one, and tell the clients.
+#
+# **The position is read before and compared after** rather than the step being
+# asked to report what it did. A callback that has to remember to announce its
+# own changes is a callback that will forget, and the comparison costs three
+# `F64` reads against a step that already touched the world.
+#
+# A step that despawns its own entity gets one last `gone` broadcast, because
+# the client is tracking it and nothing else would ever say otherwise.
+(fn step_entities [game : Game world : World dt : F64] : F64
+  (var e game/entities)
+  (var slots (entity_slots e))
+  (var stepped 0.0)
+  (var i 0.0)
+  (while (< i slots)
+    (if_yes (entity_alive? e i)
+      (var bx (entity_x e i))
+      (var by (entity_y e i))
+      (var bz (entity_z e i))
+      (var f (entity_def_step e (entity_def_of e i)))
+      (f world i dt)
+      (if (! (entity_alive? e i))
+        (then (broadcast_entity e i true))
+        (else
+          (if_yes (|| (!= (entity_x e i) bx)
+                      (|| (!= (entity_y e i) by) (!= (entity_z e i) bz)))
+            (broadcast_entity e i false)
+            (set stepped (+ stepped 1.0))))))
+    (set i (+ i 1.0)))
+  stepped)
 
 # --- serving -----------------------------------------------------------------
 
@@ -520,13 +600,24 @@
     ^on_tick (fn []
       (step ~ set (+ (step ~ get) ($to_float samples_per_pass)))
       (run_abms game world ($to_float ($os/monotonic_ms)) (step ~ get)
-                sky lq lq_seed bounds))
+                sky lq lq_seed bounds)
+      # §8's entities, after the nodes. The order matters and it is one line of
+      # reasoning: an ABM may have dug the node an item was resting on, and an
+      # item that falls in the same tick looks like gravity rather than like a
+      # frame of delay.
+      (step_entities game world (/ ($to_float tick_ms) 1000.0)))
     (fn [req]
       # Per-connection state. A closure over these is what makes each client
       # its own player without a table keyed by connection — and §12's tick is
       # what forced a second, enumerable list beside it: a change nobody asked
       # for has to reach everybody, and a closure cannot be iterated (§12.1).
       (var inv (new_inventory ($to_float hotbar_slots)))
+      # This connection's name for itself, taken before the handshake so that
+      # `^on_open` and `^on_close` close over the same one. It is what
+      # `drop_connection` matches on — see the note beside `connections` for why
+      # it cannot be the handle.
+      (var my_id (next_connection_id ~ get))
+      (next_connection_id ~ set (+ my_id 1.0))
       (ws_accept req
         ^on_open (fn [conn]
           # Handshake only. The terrain follows when the client asks for it,
@@ -536,8 +627,12 @@
           (send_items conn game/items)
           (send_registry conn reg)
           (send_inventory conn inv)
-          (connections ~ push! conn)
+          (add_connection conn my_id)
           ($println "  client joined"))
+
+        ^on_close (fn [conn]
+          (drop_connection my_id)
+          ($println "  client left"))
 
         ^on_message (fn [conn payload]
           # `payload` is `Bytes` for a binary frame (the previous commit's
@@ -590,11 +685,17 @@
                   # is where a player would look for it.
                   (var left (add inv items yielded yield_n))
                   (if_yes (> left 0.0)
-                    (var slot (spawn_item game/entities yielded left
-                                          (+ nx 0.5) (+ ny 0.5) (+ nz 0.5)))
-                    (if_yes (>= slot 0.0)
-                      (broadcast_entity game/entities
-                                        (slot_of_id game/entities slot) false)))
+                    (var spawned (spawn_item game/entities yielded left
+                                             (+ nx 0.5) (+ ny 0.5) (+ nz 0.5)))
+                    (if_yes (>= spawned 0.0)
+                      (var slot (slot_of_id game/entities spawned))
+                      # §8's `on_activate`, before anyone is told the entity
+                      # exists — so a definition that repositions its own spawn
+                      # does it once rather than as a visible correction.
+                      (var born (entity_def_activate game/entities
+                                  (entity_def_of game/entities slot)))
+                      (born world slot)
+                      (broadcast_entity game/entities slot false)))
                   (send_inventory conn inv))
                 (send_node_delta conn nx ny nz air
                                  (world/light ~ get

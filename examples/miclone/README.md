@@ -99,10 +99,11 @@ core/       portable Gene — compiles for the VM and the web profile
   mods.gene     §9's load step — one list, and the file where §D5's capability
                 model will be true or not
   abm.gene      §12's ABMs: a check queue for what just changed, and sampling
-                for what did not (M8)
+                for what did not, both running the mod's own action (M8)
   decor.gene    §3 stage 5: trees, placed by a pure function of the column (M8)
   craft.gene    §9's recipes — shapeless, because a grid needs §13 (M8)
-  entity.gene   §8's dropped items: what does not fit is no longer lost (M8)
+  entity.gene   §8's dropped items, and the definitions that carry a mod's
+                on_step (M8)
   formspec.gene §13's UI as data — validated at registration, not on screen (M8)
 mods/       the game, as mods (§9)
   default/    every node, tile, drop, biome and ore miclone has
@@ -124,20 +125,21 @@ module with a shell per backend rather than one module with a conditional.
 
 ```sh
 cd examples/miclone
-for m in core/exact core/noise core/field core/world core/registry \
-         core/tiles core/biome core/cave core/ore core/api core/mods \
-         core/mapgen core/light core/mesh core/loaded core/physics \
-         core/raycast core/edit core/inventory core/drops core/wire \
-         core/protocol core/vec mods/default/src/default \
-         client/atlas client/render client/main; do
-  gene build --target web $m.gene --out-dir dist
-done
+tools/build_web.sh               # every portable module, into dist/
+tools/build_web.sh --clean       # after adding or removing a core/ module
 
 node tools/mesh_bench.mjs        # headless: generation + meshing budget
 node tools/world_build.mjs       # headless: what opening a world costs
 node tools/client_smoke.mjs      # headless: the client's wiring, DOM stubbed
 python3 -m http.server 8000      # then open http://localhost:8000/
 ```
+
+The module list lives in the script rather than here, because it was wrong here
+twice: the profile emits one flat output directory keyed by basename, so the
+list is the whole graph rather than a set of entry points, and every new `core/`
+module has to join it. `--clean` matters for the other half of that — a deleted
+module leaves its `dist/*.mjs` behind, and a harness importing it keeps passing
+off the stale artifact.
 
 M0 measured **121 fps** drawing 186 chunk meshes and 51,387 faces, with a worst
 chunk of 0.44 ms against an 8 ms meshing budget. M2 draws 231 meshes and 62,580
@@ -321,14 +323,44 @@ more deadline rather than a thread.
 **Sampling cannot do falling, and a probe measured why.** §12 specifies ABMs as
 sampled; sampling 900 positions a pass out of 2.4M nodes takes about six minutes
 to reach one *particular* node, so a column whose support was just dug stands
-there. There are two mechanisms now: a **check queue** seeded by whatever just
+there. There are two mechanisms: a **check queue** seeded by whatever just
 changed (a neighbour update, which cascades a node per tick), and **sampling**
-for the ambient case nothing uses yet. See design.md §12.2.
+for the ambient case — grass growing on open dirt. See design.md §12.2.
 
 `tick_probe.mjs` asserts the property rather than the mechanism: it digs the
 support out from under a sand column, stops talking, and waits for node deltas
 to arrive on a silent socket. That is the whole difference between M6's reactive
 server and this one.
+
+### §8, §9 — the callbacks, and a blocker that was not one
+
+```sh
+gene run abm_spec | diff - <(node tools/abm_spec.mjs)   # 65 checks, both backends
+
+gene run server &
+node tools/entity_probe.mjs      # hangs an item in mid-air, then stops talking
+```
+
+An ABM takes `^action (fn [world x y z node] …)` and an entity definition takes
+`^on_step` — mod code, run by the server tick. Both were recorded as blocked by
+a compiler gap (§D7.17) and the gap did not exist: the annotation had been
+spelled `Callback`, which only the web profile knew, and the VM has had function
+types all along under the name `Fn`. The profile no longer accepts `Callback`,
+so one spelling means one thing on both backends.
+
+What that buys is the test §D8 sets for this API — *if the game needs an engine
+change, the API is wrong*. §8.1 listed "a dropped item stays where it was
+dropped, including in the air if the node under it is dug" as an engine
+absence; `mods/default` fills it in eleven lines of `on_step`, and the engine
+gained no notion of gravity.
+
+**The ambient trigger had never run, and giving it a mod's action is what
+showed it.** The sample walk drove all three axes from one counter, which traces
+a one-dimensional curve — it could reach **192 positions out of 7,077,888**, and
+the branch ended in a `void`, so nothing could ever look wrong. It strides the
+flat index by a step coprime with the node count now, which makes it a
+permutation: every node visited once per cycle, none unreachable, a full sweep
+every 44 minutes. `abm_spec` asserts that directly. See design.md §12.3.
 
 ### Cross-backend specs
 
@@ -344,6 +376,7 @@ gene run edit_spec   | diff - <(node tools/edit_spec.mjs)     # §7, §7.1
 gene run inventory_spec | diff - <(node tools/inventory_spec.mjs)  # §2, §7.1
 gene run wire_spec   | diff - <(node tools/wire_spec.mjs)     # §10
 gene run protocol_spec | diff - <(node tools/protocol_spec.mjs)    # §10
+gene run abm_spec    | diff - <(node tools/abm_spec.mjs)      # §8, §9, §12
 ```
 
 ### §11 — persistence

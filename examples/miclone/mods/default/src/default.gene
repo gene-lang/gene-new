@@ -40,9 +40,17 @@
          register_group register_item register_tool_cap
          register_biome_def register_ore_def
          register_abm register_decoration register_craft
-         register_form form_label form_box form_item]
+         register_form form_label form_box form_item
+         node_is? set_node set_node_id
+         register_entity entity_pos_x entity_pos_y entity_pos_z
+         move_entity_to remove_entity]
         from "../../../core/api.gene")
-(import [abm_fall] from "../../../core/abm.gene")
+(import [abm_on_change abm_sampled] from "../../../core/abm.gene")
+# The one type an ABM action is handed, and it comes from the module that
+# declares it for the reason the three imports below exist: a type re-exports on
+# neither backend (§D7.14), so `core/api.gene` cannot stand in front of `World`
+# any more than it can stand in front of `tile_solid`.
+(import [World] from "../../../core/loaded.gene")
 (import [tile_solid tile_ore tile_overlay] from "../../../core/tiles.gene")
 (import [draw_liquid] from "../../../core/registry.gene")
 (import [shape_scatter shape_sheet shape_blob] from "../../../core/ore.gene")
@@ -191,13 +199,16 @@
   (register_group game "miclone:grass" ^group "crumbly" ^rating 3.0)
   (register_group game "miclone:sand" ^group "crumbly" ^rating 3.0)
   (register_group game "miclone:snow" ^group "crumbly" ^rating 3.0)
-  # Gravel and sand are the ones upstream makes fall. Nothing acts on
-  # `falling_node` yet — §12's tick is what runs it — and the group is declared
-  # now because it costs a line and because a mod that wants to act on it should
-  # find the vocabulary already agreed.
+  # Gravel and sand are the ones upstream makes fall. §12's tick runs the ABM
+  # that acts on this, and the ABM names the group rather than either node.
   (register_group game "miclone:gravel" ^group "crumbly" ^rating 2.0)
   (register_group game "miclone:gravel" ^group "falling_node" ^rating 1.0)
   (register_group game "miclone:sand" ^group "falling_node" ^rating 1.0)
+  # What grass will grow on. Dirt alone, deliberately: grass is already grass,
+  # and a group holding both would make the ambient ABM match a node it has
+  # nothing to do to — cheap, but it would be a pass spent to no purpose every
+  # time the walk landed on a lawn.
+  (register_group game "miclone:dirt" ^group "soil" ^rating 1.0)
   (register_group game "miclone:lamp" ^group "cracky" ^rating 3.0)
   # Wood is its own group, as upstream: an axe digs `choppy` and gets every
   # mod's tree without either mod knowing the other.
@@ -420,20 +431,99 @@
 # the first mod code that *runs during play* rather than at load — everything
 # above this point is registration.
 #
-# Sand and gravel fall. The group was declared with the others above and
-# nothing acted on it until the tick existed; now something does, and note what
-# this declaration does not say: it never names sand or gravel, only the group,
-# so a mod adding its own falling node gets the behaviour by joining the group.
+# **These are functions, and the engine has never seen their bodies.** That is
+# §9's `^action (fn [pos node] …)` and it is the whole of what a mod API is for:
+# until this commit `register_abm` took `^kind abm_fall`, which named one of a
+# fixed set of engine behaviours, and a mod wanting a third behaviour had to
+# change the engine to get one. The gap that was blamed for it did not exist —
+# see §D7.17, which now records a measurement instead of a guess.
 #
-# `^kind` names an engine behaviour rather than supplying one, for the reason
-# `core/abm.gene` gives — a `Callback` carrying nominal types compiles for the
-# web profile and is rejected by the VM, which is the backend that would run it.
+# Neither action names a node id. Both name nodes by string and positions by
+# number, which is §2's rule holding at the one place it would be easiest to
+# break: an action runs at play time, when the ids are all assigned and sitting
+# right there.
+#
+# Note what neither declaration says: **the group, never the node**. Sand and
+# gravel fall because they joined `falling_node` above, and a mod adding its own
+# falling node gets the behaviour by joining it too, without touching this file.
 
 (fn setup_behaviour [game : Game] : Nil
+  # Targeted (§12's check queue). An edit seeds the position above it, so this
+  # runs on a node whose support may have just gone — and because a node that
+  # moves seeds its own neighbour, a column cascades one node per tick.
   (register_abm game ^label "falling nodes"
                 ^group "falling_node"
-                ^kind abm_fall
-                ^interval_ms 150.0))
+                ^trigger abm_on_change
+                ^interval_ms 150.0
+                ^action (fn [world : World x : F64 y : F64 z : F64
+                             node : F64] : Nil
+                          (if_yes (node_is? game world x (- y 1.0) z "air")
+                            (set_node_id game x (- y 1.0) z node)
+                            (set_node game x y z "air"))
+                          nil))
+
+  # Ambient (§12's sampling), and the first thing ever to use it — the sampled
+  # path existed from M8 and ended in a no-op, so it had never fired.
+  #
+  # Dirt with sky directly above grows grass. Sampling is right for it for the
+  # reason falling could not use sampling: nothing *happens* to open dirt, so
+  # there is no edit to seed a check from, and a behaviour nobody triggers is
+  # exactly what the ambient walk is for. It is also the visible half of a
+  # loop the game already had — dig grass, get dirt, and the hole heals.
+  #
+  # One pass a second, 900 positions, and the walk is a permutation — so every
+  # node in the world is looked at once every 44 minutes and none is skipped.
+  # That last clause is new: the walk this replaced could reach 192 positions
+  # out of 2,359,296, and this ABM is what proved it, by not firing. Measured
+  # after the fix, at five passes a second against 200 open-dirt nodes: 27
+  # conversions in 60 s against 22.9 predicted.
+  (register_abm game ^label "grass grows on open dirt"
+                ^group "soil"
+                ^trigger abm_sampled
+                ^interval_ms 1000.0
+                ^action (fn [world : World x : F64 y : F64 z : F64
+                             node : F64] : Nil
+                          (if_yes (node_is? game world x (+ y 1.0) z "air")
+                            (set_node game x y z "miclone:grass"))
+                          nil)))
+
+# --- entities ----------------------------------------------------------------
+#
+# §8's `on_step`, and the thing to notice is which side of the line it is on.
+#
+# §8.1 listed "no entity physics — a dropped item stays where it was dropped,
+# including in the air if the node under it is later dug" as the engine's first
+# named absence. It is filled here, in the mod, in eleven lines, and the engine
+# gained no knowledge of gravity to allow it. That is the test §D8 sets for
+# whether the API is right — *if M8's game needs an engine change, the API is
+# wrong* — and this is the first time the test has been run against a behaviour
+# rather than a registration.
+#
+# `"item"` is the reserved definition the engine spawns dropped items as (§8),
+# so registering that name furnishes it rather than adding a second kind.
+#
+# The fall is a constant rate rather than an acceleration. An item drops about
+# one node in a sixth of a second and lands on the first solid node under it;
+# integrating a velocity would need a per-entity column the registry does not
+# have, for a difference nobody watching a dropped cobble can see.
+
+(let item_fall_per_second 6.0)
+
+(fn setup_entities [game : Game] : Nil
+  (register_entity game "item"
+    ^on_step (fn [world : World slot : F64 dt : F64] : Nil
+               (var x (entity_pos_x game slot))
+               (var y (entity_pos_y game slot))
+               (var z (entity_pos_z game slot))
+               # The node the item's underside would enter. Floored because a
+               # continuous position addresses a node only after flooring
+               # (`core/loaded.gene` says why it does not floor for you).
+               (var next_y (- y (* item_fall_per_second dt)))
+               (if_yes (node_is? game world ($math/floor x)
+                                 ($math/floor (- next_y 0.5)) ($math/floor z)
+                                 "air")
+                 (move_entity_to game slot x next_y z))
+               nil)))
 
 # --- the mod's entry ----------------------------------------------------------
 #
@@ -457,4 +547,5 @@
   (setup_decorations game)
   (setup_crafting game)
   (setup_forms game)
+  (setup_entities game)
   (setup_behaviour game))

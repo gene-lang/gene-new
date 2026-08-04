@@ -62,10 +62,13 @@
 (import [OreRegistry register_ore shape_scatter shape_sheet shape_blob]
         from "./ore.gene")
 (import [DropTable new_drop_table register_drop] from "./drops.gene")
-(import [AbmRegistry new_abms add_abm queue_node abm_fall] from "./abm.gene")
+(import [AbmRegistry new_abms add_abm queue_node abm_on_change abm_sampled]
+        from "./abm.gene")
 (import [DecorRegistry new_decors add_decor] from "./decor.gene")
 (import [CraftRegistry new_crafts add_recipe] from "./craft.gene")
-(import [EntityRegistry new_entities] from "./entity.gene")
+(import [EntityRegistry new_entities add_entity_def entity_x entity_y entity_z
+         move_entity despawn entity_alive? no_step no_activate]
+        from "./entity.gene")
 (import [FormRegistry new_forms add_form add_element form_count
          el_label el_item el_box]
         from "./formspec.gene")
@@ -396,16 +399,33 @@
 # sampled position; together they are how fast the behaviour reads. `^group` is
 # what it applies to, which is §2's whole point — an ABM says `falling_node` and
 # gets every node any mod ever put in that group.
+#
+# **`^action` is the mod's own code**, which is §9's shape and what this call
+# stopped short of until the `Callback` spelling was measured rather than
+# believed (§D7.17). It is required rather than optional: an ABM with no action
+# is an interval that costs a pass and does nothing, which is a mistake worth a
+# missing-argument error instead of silence.
+#
+# The action is handed the world and the position that matched, and it captures
+# whatever else it needs — `game` above all. That is why it does not take one:
+# `Game` is declared in this module and `core/abm.gene`, which holds the
+# signature, is imported *by* this module.
+#
+# `^trigger` is which of §12's two mechanisms looks at it, and the default is
+# `abm_on_change` because that is the one a mod reaching for an ABM usually
+# means. The distinction is not cosmetic — see `core/abm.gene` for the six
+# minutes of measurement that made it two mechanisms rather than one.
 
 (fn register_abm [game : Game
                   ^label : Str
                   ^group : Str
-                  ^kind : F64?
+                  ^action : (Fn [World F64 F64 F64 F64] Nil)
+                  ^trigger : F64?
                   ^interval_ms : F64?
                   ^chance : F64?] : F64
-  (add_abm game/abms label (?? kind abm_fall)
+  (add_abm game/abms label (?? trigger abm_on_change)
            (intern_group game/groups group)
-           (?? interval_ms 200.0) (?? chance 1.0)))
+           (?? interval_ms 200.0) (?? chance 1.0) action))
 
 # What an ABM action calls. It *queues* the change rather than performing it —
 # see `core/abm.gene` for why, and note the shape it buys: a mod's reach into
@@ -430,6 +450,52 @@
 (fn node_is? [game : Game world : World x : F64 y : F64 z : F64
               name : Str] : Bool
   (== (node_at world x y z) (node_id game name)))
+
+# --- entities ----------------------------------------------------------------
+#
+# §8's definitions, which are to entities what `register_node` is to nodes: the
+# mod names a kind and supplies its behaviour, and the engine assigns the
+# number. Two of §8's four callbacks are here and `core/entity.gene` says which
+# two and why the other two would be fields nothing could call.
+#
+# **`"item"` is a reserved name**, the way §1 reserves `air`. The engine spawns
+# a dropped item from §7.1's overflow path before any mod has run, so a
+# definition for it exists from construction with callbacks that do nothing;
+# registering that name replaces them. That is how `mods/default` gives dropped
+# items the physics §8.1 listed as missing — without an engine change, which is
+# the test §D8 sets for whether this API is right.
+#
+# `^on_step` runs once a server tick per live entity and is handed the world,
+# the slot, and the step in seconds. `^on_activate` runs once, when the slot is
+# filled. Both default to doing nothing, so a definition may supply either.
+
+# `(? T)` rather than `T?` on these two: the postfix marker attaches to a
+# symbol, and a parenthesized type needs the prefix form or the `?` reads as a
+# positional parameter of its own.
+(fn register_entity [game : Game name : Str
+                     ^on_step : (? (Fn [World F64 F64] Nil))
+                     ^on_activate : (? (Fn [World F64] Nil))] : F64
+  (add_entity_def game/entities name
+                  (?? on_step no_step) (?? on_activate no_activate)))
+
+# What an `on_step` reads and writes. A slot, not an id — see `core/entity.gene`
+# for why the callback is given the one the accessors take.
+(fn entity_pos_x [game : Game slot : F64] : F64 (entity_x game/entities slot))
+(fn entity_pos_y [game : Game slot : F64] : F64 (entity_y game/entities slot))
+(fn entity_pos_z [game : Game slot : F64] : F64 (entity_z game/entities slot))
+
+(fn entity_here? [game : Game slot : F64] : Bool
+  (entity_alive? game/entities slot))
+
+(fn move_entity_to [game : Game slot : F64 x : F64 y : F64 z : F64] : Nil
+  (move_entity game/entities slot x y z))
+
+# A step may end its own entity. The server notices between steps and tells the
+# clients, which is the same route a pickup takes — an `on_step` that removed
+# and broadcast itself would be holding the connection list, and that is engine
+# state for the reason `core/abm.gene` gives about the lighting scratch.
+(fn remove_entity [game : Game slot : F64] : Nil
+  (despawn game/entities slot))
 
 # --- biomes ------------------------------------------------------------------
 #

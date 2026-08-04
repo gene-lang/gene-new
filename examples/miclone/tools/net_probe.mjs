@@ -182,14 +182,21 @@ say(nodeBefore !== 0 && R.solid$q(clientReg, nodeBefore),
     "the node under the spawn is solid ground",
     clientReg && R.name_of(clientReg, nodeBefore));
 
+// Deltas *at the position this probe is editing*, which is not the same thing
+// as every delta on the socket. §12's ambient ABM changes nodes nobody touched,
+// anywhere in the world, at any moment — so counting the whole stream makes
+// this probe fail for the engine doing its job. It counted the whole stream
+// until the sampled trigger had a mod action to run, which is when the
+// assumption stopped being true rather than when it stopped being safe.
+const here = () => deltas.filter((d) => d[0] === sx && d[1] === digY && d[2] === sz);
+
 const dig = new Uint8Array(P.size_dig());
 P.encode_dig(dig, rc, sx, digY, sz);
 send(dig);
 await wait(700);
-say(deltas.length === 1, "a dig comes back as one node delta", `${deltas.length}`);
-say(deltas[0] && deltas[0][0] === sx && deltas[0][1] === digY && deltas[0][2] === sz,
-    "at the position asked for");
-say(deltas[0] && deltas[0][3] === 0, "and the node is now air");
+say(here().length === 1, "a dig comes back as one node delta at that position",
+    `${here().length} here, ${deltas.length} in all`);
+say(here()[0] && here()[0][3] === 0, "and the node is now air");
 say(invs.length === 2, "and the inventory is authoritative, not predicted");
 const held = invs[invs.length - 1];
 say(held && held[1] === 1, "with the drop in it", held && `x${held[1]}`);
@@ -204,24 +211,32 @@ const place = new Uint8Array(P.size_place());
 P.encode_place(place, rc, sx, digY, sz, held[0]);
 send(place);
 await wait(700);
-say(deltas.length === 2, "a place comes back as a second delta");
+say(here().length === 2, "a place comes back as a second delta at that position",
+    `${here().length} here, ${deltas.length} in all`);
 // The delta carries a *node* id and the hotbar holds an *item* id — §2 split
 // them, and the server is what resolves one to the other. Comparing them
 // directly is what this check used to do, and it passed only while the two
 // spaces happened to be the same one.
-say(deltas[1] && deltas[1][3] === IT.item_node(clientItems, held[0]),
+say(here()[1] && here()[1][3] === IT.item_node(clientItems, held[0]),
     "restoring the node the held item places",
     clientItems && IT.item_name(clientItems, held[0]));
 say(invs.length === 3 && invs[2][1] === 0, "and the stack is spent");
 
 // The authority. A client that lies about its inventory is the one thing a
 // server must not believe.
+const cheatY = digY + 2;
+const cheated = () =>
+  deltas.filter((d) => d[0] === sx && d[1] === cheatY && d[2] === sz);
 const cheat = new Uint8Array(P.size_place());
-P.encode_place(cheat, rc, sx, digY + 2, sz, 9);
+P.encode_place(cheat, rc, sx, cheatY, sz, 9);
 send(cheat);
 await wait(700);
-say(deltas.length === 2, "and the server refuses a node the client does not hold",
-    `${deltas.length} deltas in all`);
+// Nothing at the position the lie named. Asserting on that position rather than
+// on a total is what keeps this check about the server's authority instead of
+// about whether the world happened to stay still for 700 ms.
+say(cheated().length === 0,
+    "and the server refuses a node the client does not hold",
+    `${cheated().length} at the refused position, ${deltas.length} in all`);
 
 // --- §8's entities: what does not fit is no longer lost ---------------------
 //

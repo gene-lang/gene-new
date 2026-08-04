@@ -262,7 +262,16 @@ try {
   // outbound queue holds 256 frames and `ws_send` drops the *oldest* (§10.1).
   const chunks = 12 * 4 * 12;
   let announced = 0;
-  const transferMs = await pumpUntil(() => hudNums().chunks > 0, {
+  // Both halves, which is what the label has always said and what the predicate
+  // did not check. `chunks > 0` was a proxy for "the transfer finished and the
+  // mesh ran", and it held only while nothing *else* could cause a mesh. §12's
+  // ambient ABM can: a node delta for a block still in flight remeshes the
+  // chunk around it, the HUD reports a chunk, and this returned with ~500 of
+  // 576 blocks in hand. The delta itself is harmless — the server serializes a
+  // block on request, so the block that arrives afterwards already contains the
+  // change — but it is an observable, and the predicate was reading it.
+  const transferMs = await pumpUntil(
+    () => got("block") === chunks && hudNums().chunks > 0, {
     timeoutMs: 180000,
     label: `all ${chunks} blocks and the mesh`,
     onProgress: () => {
@@ -302,11 +311,18 @@ try {
   // for a reason that has nothing to do with the network.
   lookDown();
   tick(2);
+  // Deltas counted from *here*, not from the socket opening. §12's ambient ABM
+  // changes nodes nobody touched, at any moment, anywhere in the world — so a
+  // running total is a count of "what this client did" only while nothing else
+  // in the engine can change anything. That stopped being true when the sampled
+  // trigger got a mod action to run.
+  const deltasBefore = got("delta");
   click(0);
-  await pumpUntil(() => got("delta") > 0 && got("inventory") > 1,
+  await pumpUntil(() => got("delta") > deltasBefore && got("inventory") > 1,
     { timeoutMs: 20000, label: "the server's answer to a dig" });
   say(sent("dig") === 1, "a click digs, and the dig goes to the server");
-  say(got("delta") === 1, "which answers with one node delta");
+  say(got("delta") >= deltasBefore + 1, "which answers with a node delta",
+      `${got("delta") - deltasBefore} since the click`);
   // The HUD and the hotbar are redrawn once a virtual second, and that clock is
   // this file's — so 70 frames is a *deterministic* refresh. Only the socket is
   // asynchronous, and `pumpUntil` above is what waited on it.
@@ -324,12 +340,14 @@ try {
 
   // Placing spends it, and the count that changes is the server's.
   const held = heldCount();
+  const deltasBeforePlace = got("delta");
   click(2);
-  await pumpUntil(() => got("delta") > 1 && got("inventory") > 2,
+  await pumpUntil(() => got("delta") > deltasBeforePlace && got("inventory") > 2,
     { timeoutMs: 20000, label: "the server's answer to a place" });
   tick(70);
-  say(sent("place") === 1 && got("delta") === 2,
-      "a right-click places it and comes back as a second delta");
+  say(sent("place") === 1 && got("delta") >= deltasBeforePlace + 1,
+      "a right-click places it and comes back as a second delta",
+      `${got("delta") - deltasBeforePlace} since the click`);
   say(heldCount() === held - 1, "and the stack is spent",
       `${held} -> ${heldCount()} · ${heldLabel()}`);
   say(hudNums().faces === facesBefore,
