@@ -333,10 +333,23 @@ pass a capability. Any module may simply ask for one:
 ($fs/write_text $fs/WriteDir "/tmp/anything" "written")
 ```
 
-That runs, and it writes the file. Capability *values* are real — `fs/write_text`
-does require a `$fs/WriteDir` and refuses without one, so the check at the call
-is genuine — but the value is not scarce. It is importable from an ambient
-namespace by anyone, so requiring it stops an accident and not an adversary.
+That runs, and it writes the file. **And the `import` line is not even
+load-bearing** — the same two calls work with it deleted, because `$fs` resolves
+straight from the builtins root:
+
+```gene
+($fs/write_text $fs/WriteDir "/tmp/anything" "written")   # no import, still writes
+```
+
+Capability *values* are real — `fs/write_text` does require a `$fs/WriteDir` and
+refuses without one, so the check at the call is genuine — but the value is not
+scarce. It is ambient, so requiring it stops an accident and not an adversary.
+
+That second measurement matters because it rules out the cheap fix. A loader
+could scan a mod's source for forbidden `import` forms and refuse to load it;
+that would be a static check needing no VM change, and it would be worth
+nothing, because a mod that never writes `import` reaches the filesystem
+anyway.
 
 The mistake was reading `gene run --grant` as a sandbox. It is not one: it
 evaluates expressions and passes them to `main` as named arguments, which is a
@@ -348,13 +361,18 @@ root is `newGlobalScope(app)`, whose parent is `app.builtinsScope()` — the one
 shared root holding both the language builtins and the capability namespaces. A
 mod loaded into that scope has the filesystem whatever it is handed.
 
-The shape that follows: **a sandboxed module gets a module root parented to a
-restricted builtins scope**, in which each denied capability namespace is
-shadowed by an empty one, so `(import $fs …)` fails at load with "no export"
-rather than succeeding quietly. A manifest's grants become the namespaces *not*
-shadowed. That is a small change in concept and it is unbuilt and unverified —
-it is stated here as the next thing to try, not as a design that has been tested
-against the VM's scope internals.
+The shape that follows is now the *only* one: **a sandboxed module gets a module
+root parented to a restricted builtins scope**, in which each denied capability
+namespace is shadowed by an empty one, so a mod naming `$fs` at all fails at
+load rather than succeeding quietly. A manifest's grants become the namespaces
+*not* shadowed. It is small in concept, and it is unbuilt and unverified against
+the VM's scope internals — stated here as the thing to build, not as a design
+that has been tested.
+
+The reason it is the only shape: the two alternatives are both measured out. A
+loader that withholds capability arguments does nothing, because the mod can
+name them; a loader that audits `import` lines does nothing, because the mod
+need not write one.
 
 Two consequences worth stating plainly:
 
