@@ -319,6 +319,55 @@ it evaluates. `gene run --grant` already works this way for applications.
 than promised is a better mod API than Luanti's**, and it is a reason to do
 this project in Gene specifically. §9 designs it.
 
+### D5.1 The sentence above is not true yet, and the reason is not the loader
+
+Measured while starting M7's loader, and it corrects a claim this section has
+stated as fact since revision 1.
+
+**"A mod that never receives `$fs/WriteDir` cannot write a file no matter what
+it evaluates" is false today**, and no loader can make it true by declining to
+pass a capability. Any module may simply ask for one:
+
+```gene
+(import $fs [write_text WriteDir])
+($fs/write_text $fs/WriteDir "/tmp/anything" "written")
+```
+
+That runs, and it writes the file. Capability *values* are real — `fs/write_text`
+does require a `$fs/WriteDir` and refuses without one, so the check at the call
+is genuine — but the value is not scarce. It is importable from an ambient
+namespace by anyone, so requiring it stops an accident and not an adversary.
+
+The mistake was reading `gene run --grant` as a sandbox. It is not one: it
+evaluates expressions and passes them to `main` as named arguments, which is a
+convenience for an application's *own* entry point and does nothing about what
+that application imports.
+
+**So the sandbox is at the import boundary, not the argument list.** Every module
+root is `newGlobalScope(app)`, whose parent is `app.builtinsScope()` — the one
+shared root holding both the language builtins and the capability namespaces. A
+mod loaded into that scope has the filesystem whatever it is handed.
+
+The shape that follows: **a sandboxed module gets a module root parented to a
+restricted builtins scope**, in which each denied capability namespace is
+shadowed by an empty one, so `(import $fs …)` fails at load with "no export"
+rather than succeeding quietly. A manifest's grants become the namespaces *not*
+shadowed. That is a small change in concept and it is unbuilt and unverified —
+it is stated here as the next thing to try, not as a design that has been tested
+against the VM's scope internals.
+
+Two consequences worth stating plainly:
+
+- **M7's loader is a security feature, and it is the whole of §D5's advantage
+  over Luanti.** Runtime module loading on its own is the easy half; without the
+  restricted root it would give miclone Lua's trust model with Gene's syntax,
+  which is strictly worse than what exists now — today `mods/default` is
+  compiled in and audited by being in this repository.
+- **§D5's advantage is a claim about a language feature that does not exist**,
+  rather than about one that does. It is still the right bet — capability values
+  are real, the boundary is one scope, and nothing about the design is wrong.
+  But it is a thing to build, and this document said it was a thing to use.
+
 ## D6. Milestone 0 — the probes, and what they are allowed to kill
 
 Before any game design, answer the questions that invalidate everything
@@ -1245,6 +1294,14 @@ faster than the hardcoded five-node version it replaced, over fifteen node
 types. The mitigation — "it is exactly what M0 measures, before anything
 depends on the answer" — is the reason this was a bad afternoon rather than a
 rewrite of M3.
+
+**A sixth risk went unnamed, and it is the one that bit.** §D5 asserted a
+security property as a thing to use rather than a thing to build, and §D5.1
+found it false four milestones later. The five risks above were all about
+whether the engine would *work*; none was about whether a claim in Part I was
+*true*. The mitigation that would have caught it is the one this project already
+applies to everything else — measure it before depending on it — and §D5 was
+never measured because nothing had to depend on it until M7.
 
 **Determinism held exactly, and the exact/corrected split was never tested in
 anger.** §D6.2 found **zero differing bits** over 323 samples, and the mapgen
@@ -2512,7 +2569,8 @@ Four things §9 asked for, and what each turned out to cost:
    than dropping `unknown` at the first dig.
 
 **What is not built is the loading, and that is the half §D5's security claim
-lives in.** `mods/default` is imported like any other module and its
+lives in — a claim §D5.1 has since found to be false in a way the loader alone
+cannot fix.** `mods/default` is imported like any other module and its
 `register_all` is called; nothing is sandboxed, because a compiled-in module is
 not sandboxed by anything. Runtime module loading exists inside the VM
 (`loadFileModule`) and is not reachable from Gene, so exposing it is engine work
@@ -2520,6 +2578,14 @@ with a capability model attached. `core/mods.gene` is the file where "a mod that
 never receives `$fs/WriteDir` cannot write a file" will be true or not, and it
 says so. Doing the loader first would have been a loader with nothing worth
 loading.
+
+*Since written: §D5.1 measured that sentence and it does not hold — any module
+can import `$fs` and obtain the capability for itself, so the sandbox has to be
+at the import boundary rather than the argument list. That makes M7's remaining
+half larger than "expose `loadFileModule`" and makes it a VM change rather than
+a game one. It also makes it more clearly worth doing: runtime loading without
+the restricted root would be strictly worse than what exists now, since
+`mods/default` is compiled in and audited by being in this repository.*
 
 Two smaller findings, both recorded where they bite:
 

@@ -284,12 +284,20 @@ checksums, same 229 chunks and 62,395 faces, the ten cross-backend specs diff
 clean, and both clients play the same game. §14 layer 3 exists for terrain
 changes and earned its keep on a change that was not one.
 
-**What M7 has not built is the loading.** `mods/default` is imported like any
-other module and its `register_all` is called, so nothing is sandboxed and
-§D5's capability model is still a claim about a loader that does not exist.
-Runtime module loading lives inside the VM and is not reachable from Gene;
-`core/mods.gene` is the file where that promise will be true or not, and it
-says so. See design.md §9.1.
+**What M7 has not built is the loading**, and starting it turned up something
+worse than a gap. §D5 claims "a mod that never receives `$fs/WriteDir` cannot
+write a file no matter what it evaluates". That is false today: any module can
+`(import $fs [write_text WriteDir])` and write the file. Capability values are
+real — the call does check for one — but they are not scarce, because the
+namespace holding them is ambient.
+
+So the sandbox belongs at the *import* boundary rather than the argument list: a
+mod's module root needs a restricted builtins scope in which a denied namespace
+is shadowed by an empty one. That makes M7's remaining half a VM change rather
+than a game one, and it makes it more clearly worth doing — runtime loading
+without it would be strictly worse than what exists now, since `mods/default` is
+compiled in and audited by being in this repository. See design.md §D5.1 and
+§9.1.
 
 ### Cross-backend specs
 
