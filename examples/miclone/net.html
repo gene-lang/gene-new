@@ -19,12 +19,57 @@
          box-shadow: 0 0 0 1px rgba(255,255,255,.6); }
   #aim::before { left: 8px; top: 0; width: 2px; height: 18px; }
   #aim::after { top: 8px; left: 0; height: 2px; width: 18px; }
+
+  /* §13's formspec. A form is a grid the mod declared, so the page supplies a
+     grid and nothing about any particular form: the cell size is the only
+     number here, and `c*`/`r*` are the coordinates the client toggles. */
+  #form {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    display: none; color: #0d2338; background: rgba(255,255,255,.93);
+    border-radius: 8px; box-shadow: 0 6px 28px rgba(0,0,0,.28);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 14px;
+  }
+  #form.open { display: block; }
+  /* The panel is the size of the grid the mod declared. Its children are
+     absolutely positioned, so they contribute nothing to its box and it has to
+     be told — `w*`/`h*` are cols and rows, toggled like every other class. */
+  #form.w6{width:364px} #form.w8{width:476px} #form.w10{width:588px}
+  #form.w12{width:700px} #form.w14{width:812px} #form.w16{width:924px}
+  #form.h4{height:162px} #form.h5{height:188px} #form.h6{height:214px}
+  #form.h7{height:240px} #form.h8{height:266px} #form.h9{height:292px}
+  #form.h10{height:318px} #form.h11{height:344px} #form.h12{height:370px}
+  #form .fe { position: absolute; height: 22px; line-height: 22px;
+              white-space: nowrap; }
+  #form .fe.off { display: none; }
+  #form .fe.btn {
+    background: #0d2338; color: #fff; border-radius: 4px; cursor: pointer;
+    text-align: center; padding: 0 8px; height: 20px; line-height: 20px;
+    user-select: none;
+  }
+  #form .fe.btn:hover { background: #23557f; }
+  #form .fe.slot { background: rgba(13,35,56,.09); border-radius: 4px;
+                   padding: 0 6px; }
+  #form-title { font-weight: 700; margin: 0 0 8px; }
+  #form-hint { position: absolute; right: 14px; top: 14px; opacity: .55; }
+  /* 16 columns and 12 rows is past the largest form the mod registers (14x9). */
+  #form .c0{left:14px} #form .c1{left:70px} #form .c2{left:126px}
+  #form .c3{left:182px} #form .c4{left:238px} #form .c5{left:294px}
+  #form .c6{left:350px} #form .c7{left:406px} #form .c8{left:462px}
+  #form .c9{left:518px} #form .c10{left:574px} #form .c11{left:630px}
+  #form .c12{left:686px} #form .c13{left:742px} #form .c14{left:798px}
+  #form .c15{left:854px}
+  #form .r0{top:44px} #form .r1{top:70px} #form .r2{top:96px}
+  #form .r3{top:122px} #form .r4{top:148px} #form .r5{top:174px}
+  #form .r6{top:200px} #form .r7{top:226px} #form .r8{top:252px}
+  #form .r9{top:278px} #form .r10{top:304px} #form .r11{top:330px}
 </style>
 <canvas id="stage"></canvas>
 <div id="hud">connecting…</div>
 <div id="aim"></div>
 <div id="hotbar"></div>
-<div id="help">drag to look · W A S D to walk · space to jump · shift to sneak · F to fly<br>click to dig · right-click to place · 1-8 or the wheel to pick a slot</div>
+<div id="form"><div id="form-title"></div><div id="form-hint">E or Esc to close</div></div>
+<div id="help">drag to look · W A S D to walk · space to jump · shift to sneak · F to fly<br>click to dig · right-click to place · 1-8 or the wheel to pick a slot · E to craft</div>
 <script type="module">
   import { main } from "./dist/net_main.mjs";
   main();

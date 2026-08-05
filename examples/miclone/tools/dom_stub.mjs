@@ -24,12 +24,50 @@ const listeners = new Map();       // "id:type" -> [fn]
 // a handle to — the formspec panel is written by id and never read back.
 export const texts = new Map();    // element id -> textContent
 
+// §13's panel is built rather than written: the client creates one div per form
+// element and moves it by toggling `cN`/`rN` classes, because the profile has no
+// way to remove a node or set a style. So a stub element carries a class set, a
+// child list, and a rectangle derived from those classes.
+//
+// **The geometry below repeats `net.html`'s CSS**, and that is the honest cost
+// of hit-testing without a browser: the numbers are the cell size and origin the
+// stylesheet uses, and a change to one wants a change to the other. What this
+// still checks is the part the client owns — which element a click lands on, and
+// what it then sends.
+const CELL_W = 56, CELL_H = 26, GRID_X = 14, GRID_Y = 44;
+export const created = [];         // every element the client built, in order
+
 function element(id) {
+  const classes = new Set();
+  const children = [];
   return {
     __id: id,
+    __classes: classes,
+    __children: children,
     get textContent() { return texts.get(id) ?? ""; },
     set textContent(v) { texts.set(id, v); },
     width: 1280, height: 720,
+    classList: {
+      toggle(name, on) { if (on) classes.add(name); else classes.delete(name); },
+      contains: (name) => classes.has(name),
+    },
+    appendChild(child) { children.push(child); return child; },
+    // Absolute, from the cell classes — the same reading the browser makes of
+    // `#form .c6.r3`. An element with no cell has no box, which is what an
+    // unplaced element should report.
+    getBoundingClientRect() {
+      let col = -1, row = -1;
+      for (const c of classes) {
+        if (/^c\d+$/.test(c)) col = +c.slice(1);
+        if (/^r\d+$/.test(c)) row = +c.slice(1);
+      }
+      if (col < 0 || row < 0 || classes.has("off"))
+        return { left: 0, top: 0, width: 0, height: 0 };
+      return {
+        left: GRID_X + col * CELL_W, top: GRID_Y + row * CELL_H,
+        width: CELL_W - 8, height: 22,
+      };
+    },
     addEventListener(type, fn) {
       const key = `${id}:${type}`;
       if (!listeners.has(key)) listeners.set(key, []);
@@ -112,14 +150,29 @@ globalThis.AudioContext = class extends EventTarget {
 export const stage = element("stage");
 export const hud = element("hud");
 export const hotbar = element("hotbar");
-const byId = { stage, hud, hotbar, aim: element("aim"), help: element("help") };
+// §13's panel and its title. Both are looked up by id and kept, because the
+// client attaches a listener to the panel and toggles classes on it — a fresh
+// object per lookup would drop both.
+export const form = element("form");
+export const formTitle = element("form-title");
+const byId = {
+  stage, hud, hotbar, form, "form-title": formTitle,
+  aim: element("aim"), help: element("help"),
+};
 
 let now = 0;
 let pendingFrame = null;
 
 globalThis.document = {
   getElementById: (id) => byId[id] ?? element(id),
-  createElement: () => element("offscreen"),
+  // A distinct id per element, because `textContent` is keyed by it: one shared
+  // "offscreen" id would make every pooled panel element read back the last
+  // one's text, and the panel is forty-eight of them.
+  createElement: () => {
+    const el = element(`made:${created.length}`);
+    created.push(el);
+    return el;
+  },
 };
 globalThis.window = {
   innerWidth: 1280, innerHeight: 720,

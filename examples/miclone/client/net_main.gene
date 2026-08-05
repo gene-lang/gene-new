@@ -80,11 +80,33 @@
          size_input encode_input msg_entity
          new_entity_msg decode_entity ent_id ent_x ent_y ent_z ent_item ent_count
          ent_kind
+         msg_forms decode_forms
+         msg_open_form new_open_form decode_open_form open_x open_y open_z
+         size_form_action_for encode_form_action
          protocol_version]
         from "../core/protocol.gene")
 
+# §13's forms. The layout arrives once at join and the contents arrive per open,
+# which is the split §13 already made: a form is a declaration and a chest's
+# contents are state.
+(import [FormRegistry new_forms form_named form_title form_cols form_rows
+         form_first form_len element_kind element_x element_y element_w
+         element_text element_action kind_label kind_item kind_box kind_button]
+        from "../core/formspec.gene")
+
 (let block_dim 16.0)
 (let block_nodes 4096.0)
+
+# §13's forms, from the client's side. `form_slots` matches `open_form_slots` in
+# `core/protocol.gene` — the container size a single open carries. The element
+# pool is fixed because the page has no way to remove a node: the client toggles
+# classes on elements it made once, which is also why the grid coordinates are
+# CSS classes rather than inline positions.
+(let form_slots 8.0)
+(let max_form_elements 48.0)
+# The panel a key opens rather than a node. It is the one form with no place in
+# the world, so it is the one the client opens for itself.
+(let crafting_form "miclone:crafting")
 
 # What this client can render. The server states the same numbers in `hello`
 # and a disagreement stops the join — see the header.
@@ -193,6 +215,21 @@
   # takes to draw one. This replaced a count per item id, which was enough for
   # the HUD to say what was lying about and not enough to put it on screen.
   (var seen (new_seen))
+  # §13's forms, as the client sees them. `forms` is the layout registry the
+  # server sends at join; `open_form` is which one is on screen and `open_at` is
+  # the node it belongs to, because one form serves every chest and the position
+  # is the only thing that says *which*. `open_inv` is that container's contents,
+  # which arrive with each open rather than living in the layout.
+  #
+  # An empty `open_form` is "nothing open" — a name, not a coordinate. §13.4's
+  # first bug was a position sentinel (`-1` in the x cell) against a world that
+  # sits at x = -1437, and the rule it left is the one used here.
+  (var forms (new_forms))
+  (var open_msg (new_open_form))
+  (var open_form "")
+  (var open_at ($buffer F64 3.0))
+  (var open_inv ($buffer F64 (* form_slots 3.0)))
+  (var form_dirty false)
   # Rebuilt when an entity message changes something, not per frame. §5 says
   # nothing here that it does not say about a chunk: geometry that has not
   # changed should not be re-uploaded, and the whole reason a chunk mesh is
@@ -429,7 +466,155 @@
         (set ent_dirty true)))
 
     (if_yes (== kind msg_inventory)
-      (decode_inventory b wc inv))))
+      (decode_inventory b wc inv))
+
+    # §13's layouts, once, at join. The client rebuilds the registry through the
+    # registry's own `add_form`/`add_element`, so a form that survives the wire
+    # is one that would have registered — a mangled form is refused by the
+    # form's rules rather than drawn as something strange.
+    (if_yes (== kind msg_forms)
+      (decode_forms b wc forms))
+
+    # And the contents, per open. The server decides when a form opens; this is
+    # the client being told, which is why a chest cannot be opened by a client
+    # that merely wants one to be.
+    (if_yes (== kind msg_open_form)
+      (set open_form (decode_open_form b wc open_msg open_inv))
+      (open_at ~ set! 0.0 (open_msg ~ get open_x))
+      (open_at ~ set! 1.0 (open_msg ~ get open_y))
+      (open_at ~ set! 2.0 (open_msg ~ get open_z))
+      (set form_dirty true))))
+
+  # --- §13's forms, drawn ------------------------------------------------------
+  #
+  # The page cannot remove a node, so the pool is made once and every open
+  # toggles classes on it: `off` hides, `cN`/`rN` place. That is why the previous
+  # cell is remembered per pool slot — a toggle needs to know what to turn off.
+  #
+  # **The client draws what it was sent and nothing it knows.** A label's text, a
+  # button's caption and a button's action are all the mod's strings; this file
+  # contains no name of any form, control or recipe. The one exception is the key
+  # that opens the crafting panel, and it is an exception because that panel is
+  # the only form with no node to right-click.
+
+  (var form_root ($dom/element "form"))
+  (var form_title_el ($dom/element "form-title"))
+  (var form_els : (List Any) [])
+  (var pool_elem ($buffer F64 max_form_elements))
+  (var pool_col ($buffer F64 max_form_elements))
+  (var pool_row ($buffer F64 max_form_elements))
+  (var fi 0.0)
+  (while (< fi max_form_elements)
+    (pool_elem ~ set! fi -1.0)
+    (pool_col ~ set! fi -1.0)
+    (pool_row ~ set! fi -1.0)
+    (var el ($dom/create_element "div"))
+    ($dom/set_class el "fe" true)
+    ($dom/set_class el "off" true)
+    ($dom/append form_root el)
+    (form_els ~ push! el)
+    (set fi (+ fi 1.0)))
+
+  # The panel's own size, remembered for the same reason a cell is: a class that
+  # is on has to be named to be turned off.
+  (var form_w -1.0)
+  (var form_h -1.0)
+
+  (var draw_form : (Fn [] Void) (fn [] : Void
+    (var id (if (== open_form "") -1.0 (form_named forms open_form)))
+    ($dom/set_class form_root "open" (>= id 0.0))
+    (var used 0.0)
+    (if_yes (>= id 0.0)
+      ($dom/set_text form_title_el (form_title forms id))
+      (if_yes (>= form_w 0.0)
+        ($dom/set_class form_root $"w$($to_int form_w)" false))
+      (if_yes (>= form_h 0.0)
+        ($dom/set_class form_root $"h$($to_int form_h)" false))
+      (set form_w (form_cols forms id))
+      (set form_h (form_rows forms id))
+      ($dom/set_class form_root $"w$($to_int form_w)" true)
+      ($dom/set_class form_root $"h$($to_int form_h)" true)
+      (var e (form_first forms id))
+      (var last (+ e (form_len forms id)))
+      (var slot 0.0)
+      (while (< e last)
+        # A box is the panel's own background, which the page already draws.
+        (if_yes (&& (!= (element_kind forms e) (kind_box))
+                    (< used max_form_elements))
+          (var el form_els/%used)
+          (var kind (element_kind forms e))
+          (var is_item (== kind (kind_item)))
+          (var is_button (== kind (kind_button)))
+          # An item element with a name shows that name — the crafting panel
+          # naming what a recipe makes. An item element with none is a container
+          # slot, and its contents came with the open (§13's split).
+          (var text (element_text forms e))
+          (if_yes is_item
+            (if_yes (== text "")
+              (var held (open_inv ~ get (* slot 3.0)))
+              (var n (open_inv ~ get (+ (* slot 3.0) 1.0)))
+              (set text (if (> n 0.0)
+                          $"$(item_name items held) x$($to_int n)"
+                          "—"))
+              (set slot (+ slot 1.0))))
+          ($dom/set_text el text)
+          ($dom/set_class el "btn" is_button)
+          ($dom/set_class el "slot" is_item)
+          ($dom/set_class el "off" false)
+          # Move it: turn the old cell off before the new one on.
+          (var was_c (pool_col ~ get used))
+          (var was_r (pool_row ~ get used))
+          (if_yes (>= was_c 0.0)
+            ($dom/set_class el $"c$($to_int was_c)" false))
+          (if_yes (>= was_r 0.0)
+            ($dom/set_class el $"r$($to_int was_r)" false))
+          (var col (element_x forms e))
+          (var row (element_y forms e))
+          ($dom/set_class el $"c$($to_int col)" true)
+          ($dom/set_class el $"r$($to_int row)" true)
+          (pool_col ~ set! used col)
+          (pool_row ~ set! used row)
+          (pool_elem ~ set! used e)
+          (set used (+ used 1.0)))
+        (set e (+ e 1.0))))
+    # Everything the open form did not need goes away, and stops being clickable
+    # with it — a control left behind is a control that still answers.
+    (var k used)
+    (while (< k max_form_elements)
+      ($dom/set_class form_els/%k "off" true)
+      (pool_elem ~ set! k -1.0)
+      (set k (+ k 1.0)))))
+
+  # A press. There is no `target` on an event in this profile, so the pool is
+  # hit-tested by rectangle — which is also the only reading that agrees with
+  # what the player actually sees.
+  ($dom/add_event_listener form_root "click" (fn [ev : Any] : Void
+    (var cx ($event/client_x ev))
+    (var cy ($event/client_y ev))
+    (var id (if (== open_form "") -1.0 (form_named forms open_form)))
+    (if_yes (>= id 0.0)
+      (var k 0.0)
+      (while (< k max_form_elements)
+        (var e (pool_elem ~ get k))
+        (if_yes (&& (>= e 0.0) (== (element_kind forms e) (kind_button)))
+          (var el form_els/%k)
+          (var l ($dom/rect_left el))
+          (var t ($dom/rect_top el))
+          (var w ($dom/rect_width el))
+          (var h ($dom/rect_height el))
+          (if_yes (&& (&& (>= cx l) (< cx (+ l w)))
+                      (&& (>= cy t) (< cy (+ t h))))
+            # §7.1 reaching UI: the client reports which control was pressed and
+            # the server decides what it meant. The action is the mod's string,
+            # handed back verbatim.
+            (var action (element_action forms e))
+            (var msg ($buffer U8 (size_form_action_for open_form action)))
+            (encode_form_action msg wc
+                                (open_at ~ get 0.0) (open_at ~ get 1.0)
+                                (open_at ~ get 2.0) 0.0 open_form action)
+            ($ws/send_bytes sock msg)
+            (set k max_form_elements)))
+        (set k (+ k 1.0))))))
 
   # --- camera and input -------------------------------------------------------
 
@@ -516,10 +701,27 @@
     (if_yes (>= picked 0.0) (set selected picked))
     # §9's crafting, and §7.1's shape: the client asks and says nothing about
     # what — the server holds the only inventory that counts.
+    #
+    # This still means "make whatever I can", and §13.4 recorded what that costs:
+    # sticks match before the chest and spend the planks, so `c` alone can never
+    # reach a chest. `e` opens the panel where a recipe can be *chosen*, which is
+    # the half of §13.4's fix that reached the protocol and not the player.
     (if_yes (== k "c")
       (var msg ($buffer U8 (size_craft)))
       (encode_craft msg wc (craft_any))
-      ($ws/send_bytes sock msg))))
+      ($ws/send_bytes sock msg))
+    # The crafting panel is the one form with no node, so it is the one the
+    # client opens for itself. A chest is opened by the server, because a chest
+    # is somewhere and the server is what says you are standing there.
+    (if_yes (== k "e")
+      (set open_form (if (== open_form crafting_form) "" crafting_form))
+      (open_at ~ set! 0.0 0.0)
+      (open_at ~ set! 1.0 0.0)
+      (open_at ~ set! 2.0 0.0)
+      (set form_dirty true))
+    (if_yes (== k "Escape")
+      (set open_form "")
+      (set form_dirty true))))
 
   ($dom/add_event_listener ($dom/window) "keyup" (fn [ev : Any] : Void
     (var k ($event/key ev))
@@ -613,6 +815,13 @@
     (if_yes ent_dirty
       (rebuild_entities)
       (set ent_dirty false))
+    # §13's panel, on the same rule as the entity mesh: rebuilt when something
+    # said it changed, not once a frame. A form is DOM rather than geometry, so
+    # redrawing it every frame would be 166 layouts a second for a panel that
+    # changes when a chest does.
+    (if_yes form_dirty
+      (draw_form)
+      (set form_dirty false))
     (if_yes (> ent_faces 0.0)
       (draw_chunk gl ent_vao (* ent_faces indices_per_face)))
 

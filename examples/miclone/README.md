@@ -308,6 +308,13 @@ changes and earned its keep on a change that was not one.
 gene run loader          # the mod, read off disk and sandboxed
 ```
 
+**§13's forms reach the networked client.** Chop a tree, press **E** for the
+crafting panel, click *make* down the chain — plank, chest — place it and
+right-click it. That loop did not exist before: `client/net_main.gene` imported
+none of §13's three form messages, so a chest opened on the server and drew
+nothing, and `craft_any` reached sticks before the chest and spent the planks on
+them. See design.md §13.4.
+
 `server/mods_runtime.gene` reads a mod's `package.gene`, takes its `^grants`, and
 loads its entry through `$runtime/load_sandboxed` — and the order is the point:
 the grants are read *before* the mod's code runs, so a mod cannot widen its own

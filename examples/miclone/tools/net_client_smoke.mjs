@@ -41,7 +41,8 @@
 import { spawn } from "node:child_process";
 import net from "node:net";
 import { rm, stat } from "node:fs/promises";
-import { hud, hotbar, fire, tick, key, click, lookDown, glDraws } from "./dom_stub.mjs";
+import { hud, hotbar, fire, tick, key, click, lookDown, glDraws,
+         created, form, formTitle } from "./dom_stub.mjs";
 
 const D = new URL("../dist/", import.meta.url).pathname;
 const MICLONE = new URL("../", import.meta.url).pathname;
@@ -62,6 +63,8 @@ const KIND = {
   delta: P.kind_node_delta(), inventory: P.kind_inventory(),
   tiles: P.kind_tiles(), items: P.kind_items(),
   dig: P.kind_dig(), place: P.kind_place(), request: P.kind_request_blocks(),
+  forms: P.kind_forms(), open_form: P.kind_open_form(),
+  form_action: P.kind_form_action(),
 };
 
 // --- a socket that counts ----------------------------------------------------
@@ -451,6 +454,61 @@ try {
   say(hudNums().entities === 0 && glDraws().length === drawsBefore,
       "and a count of 0 takes both the item and its draw call away",
       `${hudNums().entities} entit(y|ies), ${glDraws().length} draws`);
+
+  // §13's forms, in the client rather than in a peer.
+  //
+  // `chest_probe.mjs` speaks the protocol itself and proved the *server* right;
+  // nothing proved the client used it, and it did not — `net_main.gene` imported
+  // none of the three form messages and dropped both of them on the floor, so
+  // the panel a mod declares existed only in the singleplayer client and the
+  // chest recipe was unreachable at the keyboard (§13.4's fix reached the
+  // protocol and stopped there).
+  //
+  // The panel is opened by a key, drawn from the layout the server sent at join,
+  // and pressed by a click that has to *land on the button* — hit-testing is the
+  // client's own arithmetic, so it is the part worth exercising.
+  key("e");
+  tick(3);
+  const panel = () => created.filter((el) => !el.classList.contains("off"));
+  say(form.classList.contains("open") && panel().length > 0,
+      "E opens the panel the mod declared, built from the wire",
+      `${panel().length} element(s)`);
+  say(formTitle.textContent === "Crafting",
+      "with the title the mod gave it", `"${formTitle.textContent}"`);
+
+  // A button, found the way a player finds one: by what it says and where it is.
+  const makeButtons = panel().filter((el) => el.classList.contains("btn"));
+  say(makeButtons.length >= 5,
+      "every recipe has a control, so a craft can be chosen at all",
+      `${makeButtons.length} button(s)`);
+
+  // A press. This harness owns "the client uses the protocol right", so what it
+  // checks is that a click which lands on a button sends the action that button
+  // declares — and that a click which lands nowhere sends nothing. Whether the
+  // craft then happens is the server's, and `chest_probe.mjs` owns that.
+  const press = (el) => {
+    const r = el.getBoundingClientRect();
+    fire("form", "click", { clientX: r.left + r.width / 2,
+                            clientY: r.top + r.height / 2 });
+  };
+  const actionsBefore = sent("form_action");
+  press(makeButtons[0]);
+  tick(2);
+  say(sent("form_action") === actionsBefore + 1,
+      "a click on a control sends exactly one form action",
+      `${actionsBefore} -> ${sent("form_action")}`);
+
+  // The empty half of the panel. A hit test that answered "yes" everywhere
+  // would pass every check above and make the whole grid one button.
+  fire("form", "click", { clientX: 5000, clientY: 5000 });
+  tick(2);
+  say(sent("form_action") === actionsBefore + 1,
+      "and a click on no control sends nothing",
+      `still ${sent("form_action")}`);
+
+  key("Escape");
+  tick(3);
+  say(!form.classList.contains("open"), "Esc closes it", "");
 
   // Physics, against a world that came off a socket. The HUD reports a rounded
   // position and refreshes once a virtual second, so this holds "w" across

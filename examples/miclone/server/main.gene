@@ -66,12 +66,12 @@
          clear_checks]
         from "../core/abm.gene")
 (import [GroupRegistry rating_of] from "../core/groups.gene")
-(import [ContainerStore new_containers container_at container_inventory
-         container_slot_count container_live]
+(import [ContainerStore new_containers container_at container_row
+         container_inventory container_slot_count container_live]
         from "../core/container.gene")
 (import [FormRegistry form_named action_element form_count]
         from "../core/formspec.gene")
-(import [CraftRegistry first_craftable apply_craft recipe_count]
+(import [CraftRegistry first_craftable apply_craft recipe_count recipe_output]
         from "../core/craft.gene")
 (import [EntityRegistry entity_slots entity_alive? entity_id entity_item_of
          entity_count entity_x entity_y entity_z spawn_item despawn
@@ -84,7 +84,7 @@
          slots_of]
         from "../core/inventory.gene")
 (import [drop_item drop_count] from "../core/drops.gene")
-(import [ItemRegistry item_node placeable_item? item_of_node]
+(import [ItemRegistry item_node placeable_item? item_of_node item_name]
         from "../core/item.gene")
 (import [new_cursor] from "../core/wire.gene")
 (import [message_kind msg_input msg_dig msg_place msg_request_blocks msg_craft
@@ -640,6 +640,25 @@
     (set i (+ i 1.0)))
   found)
 
+# What a crafting button means. **The engine does not read an action string;
+# this does** — the same line `chest_action` sits on, for the same reason.
+#
+# `make_<item name>` is resolved by *building* the expected string for every
+# recipe and comparing, exactly as `chest_slot_of` does. That avoids a parse the
+# stdlib cannot do cleanly — an item name may itself contain `_`, so splitting
+# on it turns `make_miclone:wood_pickaxe` into three pieces — and it means a
+# recipe is found by what it *makes* rather than by an index the client sent.
+(fn recipe_making [crafts : CraftRegistry items : ItemRegistry
+                   action : Str] : F64
+  (var found -1.0)
+  (var i 0.0)
+  (var n (recipe_count crafts))
+  (while (< i n)
+    (if_yes (== action $"make_$(item_name items (recipe_output crafts i))")
+      (set found i))
+    (set i (+ i 1.0)))
+  found)
+
 (fn chest_action [items : ItemRegistry inv : (Buffer F64) box : (Buffer F64)
                   action : Str] : Bool
   # **`take_slot`, not `take`** — `take` is `core/inventory.gene`'s function and
@@ -919,14 +938,41 @@
                                (&& (== (open_at ~ get 1.0) ay)
                                    (== (open_at ~ get 2.0) az))))
             (var form_id (form_named game/forms form_name))
-            (if_yes (&& open_here (&& same_form (>= form_id 0.0)))
-              (if_yes (>= (action_element game/forms form_id action) 0.0)
-                (var row (container_at game/containers ax ay az))
-                (if_yes (>= row 0.0)
-                  (var box (container_inventory game/containers row))
-                  (if_yes (chest_action items inv box action)
-                    (send_inventory conn inv)
-                    (send_open_form conn form_name ax ay az box))))))
+            # **A form that declares this action.** That check is shared; what
+            # differs below is whether the form is somewhere.
+            (if_yes (&& (>= form_id 0.0)
+                        (>= (action_element game/forms form_id action) 0.0))
+              # **`container_row`, not `container_at`.** `container_at` is an
+              # *ensure* — it allocates a row when there is none — so asking it
+              # "is this a container?" both answers yes always and mints a chest
+              # at whatever coordinate was asked about. The crafting panel sends
+              # (0,0,0), so this branch silently created a container at the
+              # origin and then refused the craft. A question and a command
+              # spelled the same way.
+              (var row (container_row game/containers ax ay az))
+              (if (>= row 0.0)
+                (then
+                  # A container is a *place*, so all four of §13's checks apply:
+                  # this player has something open, it is this form, at this
+                  # node, and the form declares the action.
+                  (if_yes (&& open_here same_form)
+                    (var box (container_inventory game/containers row))
+                    (if_yes (chest_action items inv box action)
+                      (send_inventory conn inv)
+                      (send_open_form conn form_name ax ay az box))))
+                (else
+                  # A form with no container is a *panel*, and a panel is not
+                  # anywhere — the crafting list is opened by a key, not by
+                  # standing at a node, so "you have this open at this place" is
+                  # not a question that has an answer. What is left is the whole
+                  # of the authority that matters: the form declares the action,
+                  # and `apply_craft` refuses a recipe the inventory cannot pay
+                  # for. That is exactly what `msg_craft` already enforced, so
+                  # nothing is trusted here that was not trusted before.
+                  (var recipe (recipe_making game/crafts items action))
+                  (if_yes (>= recipe 0.0)
+                    (if_yes (apply_craft game/crafts items inv recipe)
+                      (send_inventory conn inv)))))))
 
           (if_yes (== kind msg_request_blocks)
             (var req (new_request))

@@ -208,6 +208,38 @@ craft(PLANK_RECIPE);
 await wait(400);
 say(held(PLANK) >= 4, "wood crafts into planks", `x${held(PLANK)}`);
 
+// The same craft, chosen from §13's panel instead of by index.
+//
+// `msg_craft` above proves a *named* recipe works, and that is the half of
+// §13.4's fix that landed: it reached the protocol and this probe and stopped
+// there. A player has neither — the crafting key sends `craft_any` and gets
+// sticks forever — so the panel's rows are controls now, and this is the path
+// a keyboard can actually reach. A panel is not at a node, so the server takes
+// it at (0,0,0) with no container: what still authorises it is that the form
+// declares the action and that `apply_craft` can afford it.
+// One more trunk block first, so this check pays for its own craft instead of
+// spending the planks the chest below needs. **Downwards**: the search above
+// scans y from the top, so `trunk` is the highest trunk node and everything
+// above it is leaves — digging up yields foliage and no wood at all.
+for (let i = 1; i < 5 && held(TREE_ITEM) < 1; i++) {
+  dig(trunk[0], trunk[1] - i, trunk[2]);
+  await wait(250);
+}
+const planksBefore = held(PLANK);
+const woodForIt = held(TREE_ITEM);
+press(0, 0, 0, 0, "miclone:crafting", "make_miclone:plank");
+await wait(400);
+say(held(PLANK) > planksBefore,
+    "and the panel's own control crafts it, which is what a player can press",
+    `wood x${woodForIt}, planks x${planksBefore} -> x${held(PLANK)}`);
+
+// A control the form never declared, refused the way a chest's would be.
+const planksNow = held(PLANK);
+press(0, 0, 0, 0, "miclone:crafting", "make_miclone:not_a_thing");
+await wait(400);
+say(held(PLANK) === planksNow,
+    "and an action the form does not declare does nothing", `x${held(PLANK)}`);
+
 // The check that made this byte necessary: "make whatever I can" reaches sticks
 // and never the chest, because sticks match first and spend the planks.
 craft(CHEST_RECIPE);

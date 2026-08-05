@@ -397,26 +397,47 @@
 # --- the crafting panel ------------------------------------------------------
 #
 # §13's formspec, and the first UI in this game that a mod declares rather than
-# the client hardcoding. This one stays read-only — a recipe list is a layout,
-# not a dialogue — and the chest below it is the one with buttons.
+# the client hardcoding.
 #
-# What it does *not* say is what you can currently make: that is runtime state
-# and changes every time the hotbar does, while this is a layout and does not.
+# **It was read-only, and that made the chest unobtainable.** The note here used
+# to read "a recipe list is a layout, not a dialogue" — which was a fine
+# sentence and the wrong shape, because `craft_any` matches sticks before the
+# chest and spends the planks on them (§13.4). §13.4 fixed that by letting a
+# craft *name* its recipe, and the naming reached the protocol and the probe and
+# stopped there: at the keyboard there was still no way to choose. So the rows
+# are buttons now, and this is a dialogue.
+#
+# The action is `make_<item name>` and it is the **mod's** string: the server
+# resolves it to a recipe by asking which one makes that item, exactly as the
+# chest's `take_3` is parsed by the mod rather than read by the engine.
+#
+# What it still does *not* say is what you can currently make: that is runtime
+# state and changes every time the hotbar does, while this is a layout.
 
 (fn setup_forms [game : Game] : Nil
   (register_form game "miclone:crafting" ^title "Crafting" ^cols 12.0 ^rows 6.0)
   (form_box game ^at [0.0 0.0] ^size [12.0 6.0])
-  (form_label game ^at [1.0 0.0] ^text "press C to craft what you hold"
-              ^width 10.0)
-  (form_label game ^at [1.0 1.0] ^text "wood -> planks -> sticks" ^width 10.0)
-  (form_item game ^at [1.0 2.0] ^shows "miclone:tree")
-  (form_item game ^at [3.0 2.0] ^shows "miclone:plank")
-  (form_item game ^at [5.0 2.0] ^shows "miclone:stick")
-  (form_label game ^at [1.0 3.0] ^text "3 planks + 2 sticks -> pickaxe"
-              ^width 10.0)
-  (form_item game ^at [1.0 4.0] ^shows "miclone:wood_pickaxe")
-  (form_item game ^at [3.0 4.0] ^shows "miclone:steel_pickaxe")
-  (form_label game ^at [1.0 5.0] ^text "4 planks -> chest" ^width 10.0))
+  (form_label game ^at [0.0 0.0] ^text "click make to craft" ^width 6.0)
+  (form_item game ^at [0.0 1.0] ^shows "miclone:plank")
+  (form_label game ^at [5.0 1.0] ^text "1 wood" ^width 3.0)
+  (form_button game ^at [9.0 1.0] ^text "make" ^action "make_miclone:plank"
+               ^width 2.0)
+  (form_item game ^at [0.0 2.0] ^shows "miclone:stick")
+  (form_label game ^at [5.0 2.0] ^text "2 planks" ^width 3.0)
+  (form_button game ^at [9.0 2.0] ^text "make" ^action "make_miclone:stick"
+               ^width 2.0)
+  (form_item game ^at [0.0 3.0] ^shows "miclone:wood_pickaxe")
+  (form_label game ^at [5.0 3.0] ^text "3 plank 2 stick" ^width 4.0)
+  (form_button game ^at [9.0 3.0] ^text "make"
+               ^action "make_miclone:wood_pickaxe" ^width 2.0)
+  (form_item game ^at [0.0 4.0] ^shows "miclone:steel_pickaxe")
+  (form_label game ^at [5.0 4.0] ^text "3 iron 2 stick" ^width 4.0)
+  (form_button game ^at [9.0 4.0] ^text "make"
+               ^action "make_miclone:steel_pickaxe" ^width 2.0)
+  (form_item game ^at [0.0 5.0] ^shows "miclone:chest")
+  (form_label game ^at [5.0 5.0] ^text "4 planks" ^width 3.0)
+  (form_button game ^at [9.0 5.0] ^text "make" ^action "make_miclone:chest"
+               ^width 2.0))
 
 # --- the chest, and §13's input ------------------------------------------------
 #

@@ -3854,6 +3854,49 @@ for one, and the authority is unchanged. **This was found by a probe playing the
 game rather than by reading the code** — the recipe existed, the item existed,
 and nothing could produce it.
 
+##### …and naming it reached the protocol and stopped there
+
+The fix above was real and it was half a fix, which took **playing the game in a
+browser** to see. `msg_craft` grew its byte, `chest_probe` used it, and the
+*client* never did: `c` still sent `craft_any`, so at a keyboard the chest was
+exactly as unreachable as before. A player could still not make one.
+
+Worse, and unrecorded: **`client/net_main.gene` imported none of §13's three
+messages.** The paragraph above says "The networked client had no form registry
+at all before this", which reads as something that was then fixed. The
+*protocol* and the *server* were; the client was not. It received `msg_forms` at
+join and `msg_open_form` on every chest open and dropped both on the floor — so
+right-clicking a chest opened it on the server and drew nothing, and §13's whole
+UI existed only in `client/main.gene`, where the mod and the client are one
+process. The client the README tells you to play had no forms at all.
+
+Both are built now. The client keeps a registry from the wire, draws the open
+form from a pooled set of elements, hit-tests a click against them and sends
+`msg_form_action`; `e` opens the crafting panel, which is the one form with no
+node to right-click. The panel's rows are **controls** rather than a list, so
+the recipe naming that stopped at the protocol now reaches a finger: the button
+carries `make_<item>`, the server resolves it by asking which recipe makes that
+item, and `apply_craft` is what refuses one you cannot afford. The engine still
+reads no action string.
+
+**A form with no container is a panel, not a place.** Three of §13's four checks
+are about *where* you are standing, and a crafting panel is nowhere, so what
+authorises it is that the form declares the action and that the inventory can
+pay — which is exactly what `msg_craft` already enforced. Nothing is trusted
+that was not trusted before.
+
+###### `container_at` is an ensure, and it was asked a question
+
+Deciding "is this form at a container?" with `container_at` looked obvious and
+was wrong twice over: it **allocates a row when there is none**, so it answers
+yes for every coordinate *and* minted a chest at the origin every time the
+crafting panel was pressed. The craft was then refused by the chest branch, which
+is why it looked like the new path did not work rather than like a container
+appearing at (0,0,0). `container_row` is the question; `container_at` is the
+command. A pair of functions where the query is spelled like the mutation is a
+trap, and this is the second one this session — `broadcast_entity` was the
+first, where the unconditional spelling was the one that read as the default.
+
 #### Four bugs, and what each one teaches
 
 - **A sentinel that collided with real data.** "Nothing open" was -1 in the
