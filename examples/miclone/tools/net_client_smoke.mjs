@@ -193,10 +193,15 @@ const say = (ok, label, detail) => {
   if (!ok) bad++;
 };
 const hudNums = () => {
+  // "entities", not "items" — a player is one too (§8.4), and the HUD says so.
+  // This silently returned zeroes when the label changed, and a zero here reads
+  // as "the world has not meshed yet", so the smoke waited out its whole
+  // three-minute budget on a client that had finished. A parser that answers 0
+  // for "I could not parse" is a parser that cannot fail loudly.
   const m = hud.textContent.match(
-    /(-?\d+) fps · (-?\d+) chunks · (-?\d+) faces · (-?\d+) items/);
-  return m ? { fps: +m[1], chunks: +m[2], faces: +m[3], items: +m[4] }
-           : { fps: 0, chunks: 0, faces: 0, items: 0 };
+    /(-?\d+) fps · (-?\d+) chunks · (-?\d+) faces · (-?\d+) entities/);
+  if (!m) throw new Error(`unparseable HUD: ${JSON.stringify(hud.textContent)}`);
+  return { fps: +m[1], chunks: +m[2], faces: +m[3], entities: +m[4] };
 };
 const posOf = (s) =>
   (s.match(/at (-?\d+), (-?\d+), (-?\d+)/) ?? []).slice(1).map(Number);
@@ -420,9 +425,9 @@ try {
   // failed on the number the first time it ran.
   tick(70);
   await sleep(120);
-  const items = hudNums().items;
+  const items = hudNums().entities;
   say(items === 1, "an entity message puts an item on the client's ground",
-      `${items} item(s)`);
+      `${items} entit(y|ies)`);
 
   // And it is geometry. The entity pass is one `drawElements` past the chunk
   // passes and its index count is `faces * 6` — a cube is six faces, so 36.
@@ -443,9 +448,9 @@ try {
   sock.dispatchEvent(asFrame(rm));
   tick(70);
   await sleep(120);
-  say(hudNums().items === 0 && glDraws().length === drawsBefore,
+  say(hudNums().entities === 0 && glDraws().length === drawsBefore,
       "and a count of 0 takes both the item and its draw call away",
-      `${hudNums().items} item(s), ${glDraws().length} draws`);
+      `${hudNums().entities} entit(y|ies), ${glDraws().length} draws`);
 
   // Physics, against a world that came off a socket. The HUD reports a rounded
   // position and refreshes once a virtual second, so this holds "w" across

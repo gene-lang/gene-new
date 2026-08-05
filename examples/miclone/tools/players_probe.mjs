@@ -124,6 +124,24 @@ await wait(800);
 say(a.players().length === 0, "and when the second leaves, the avatar goes",
     `${a.players().length} other player(s)`);
 
+// You are never sent your own avatar — **including when the server is what
+// moved you.**
+//
+// Every check above moves a player by *its own input*, and that path always
+// skipped the sender. The tick did not: `broadcast_entity` went to every
+// connection, so gravity — a flight, or a fall down a dug shaft — mailed you
+// your own avatar, and the client drew a cube locked to its own camera forever.
+// It survived a milestone because it is invisible unless you look straight down
+// and no headless probe renders anything.
+//
+// So: put A in the air and let the server pull it back down. A is alone, so any
+// player entity it hears about at all is its own.
+a.moveTo(spawn[0], spawn[1] + 25, spawn[2]);
+await wait(2500);
+say(a.players().length === 0,
+    "and the server moving you does not send you your own avatar",
+    `${a.players().length} player entit(y|ies) while alone`);
+
 console.log("");
 console.log(bad === 0
   ? "PASS — two players on one server can see each other, which §8.1 called what §8 still owed"

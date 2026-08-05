@@ -3015,6 +3015,39 @@ the same `msg_entity` on the wire. What differs is three things and no more:
   front of your camera, so a player entity broadcasts to every connection except
   its own — the first thing in this server that is not sent to everybody.
 
+##### "Nobody is sent their own" was true of one path out of two
+
+Found by **playing the game in a browser**, which is the only thing that could
+have found it: the input path had the rule and the **tick** did not.
+`step_entities` broadcast through `broadcast_entity`, which went to every
+connection, so whenever the *server* moved you rather than you moving yourself —
+gravity, after a flight or a fall down a dug shaft — you were mailed your own
+avatar. The client then drew a 0.8-node cube locked to its own camera, forever,
+because it *was* the camera.
+
+Three things kept it hidden for a milestone, and each is worth naming:
+
+- **It is invisible unless you look straight down.** The cube sits at your feet,
+  and the camera is at eye height.
+- **No headless probe renders**, and the count it inflates was labelled "items",
+  so a player showing up in it read as plausible.
+- **`players_probe` could not see it, because the world was flat.** Every check
+  in it moved a player by its own input, and nobody ever fell. Digging a shaft at
+  spawn made the *existing* assertions fail too — the fixture, not the probe, was
+  what passed. [[fixture-describes-the-wrong-world]] in its most expensive form:
+  a fixture that is too *pristine* hides a bug as well as a wrong one does.
+
+The fix is to skip by **slot** rather than by connection id, which lets one
+function serve both kinds of entity: a dropped stack has no owner, so nothing is
+skipped for it, and a player has exactly one. The probe now puts a player in the
+air and lets the server pull it back down, which is the shape the old checks
+could not express.
+
+The same reading turned up a second, smaller wrong: the input path gated its
+broadcast on `x` and `z` only, so a player rising or jumping did not move as far
+as anyone else was told, and their altitude reached other clients only as a side
+effect of the tick's gravity broadcasts. Rising is moving.
+
 **The avatar is a node the mod registered.** `mods/default` declares
 `miclone:player`, and the client's existing item → node → tile path (§8.3) draws
 it with no new vertex format, no new message and no engine notion of an avatar.

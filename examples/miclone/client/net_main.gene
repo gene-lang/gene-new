@@ -624,7 +624,10 @@
             (if (in_liquid? player) "swimming"
               (if (on_ground? player) "walking" "falling")))))
       ($dom/set_text ($dom/element "hud")
-        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · $($math/round (seen_live seen)) items · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player))")
+        # "entities", not "items": since §8.4 a player is an entity in the same
+        # table as a dropped stack, so this counts both and the old label was a
+        # lie whenever anyone else was online.
+        $"$($math/round frames) fps · $($math/round drawn) chunks · $($math/round faces_total) faces · $($math/round (seen_live seen)) entities · ${mode} at $($math/round (player_x player)), $($math/round (player_y player)), $($math/round (player_z player))")
       ($dom/set_text ($dom/element "hotbar") (hotbar_text items inv selected))
       (set frames 0.0)
       (set fps_since now))

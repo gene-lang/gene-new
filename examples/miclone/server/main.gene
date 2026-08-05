@@ -357,12 +357,27 @@
                  (entity_kind e slot))
   (ws_send conn b/~to_bytes))
 
+# Everyone except the player this entity **is**.
+#
+# A dropped stack has no owner, so `connection_slots` holds its slot nowhere and
+# nothing is skipped — which is what the old unconditional version got right and
+# is why it looked correct. A *player* entity has exactly one owner, and sending
+# it back is the thing the note above `broadcast_entity_except` forbids: "a
+# player already knows where they are standing, and sending them their own
+# avatar would put a cube in front of their own camera."
+#
+# The input path had that rule and the **tick** did not, so the bug needed the
+# server to move you rather than you moving yourself — gravity, after a flight
+# or a fall down a shaft. Then the avatar arrived, and it followed the camera
+# forever because it was the camera. Skipping by *slot* rather than by
+# connection id is what lets one function serve both kinds of entity.
 (fn broadcast_entity [e : EntityRegistry slot : F64 gone : Bool] : Nil
   (var c 0.0)
   (var n connections/~size)
   (while (< c n)
-    (var conn connections/%c)
-    (send_entity conn e slot gone)
+    (if_yes (!= connection_slots/%c slot)
+      (var conn connections/%c)
+      (send_entity conn e slot gone))
     (set c (+ c 1.0))))
 
 # --- the tick ----------------------------------------------------------------
@@ -404,24 +419,44 @@
 # bug, so comparing them is the one thing that cannot be the fix.
 (var connections : (List Any) [])
 (var connection_ids : (List F64) [])
+# The player entity slot each connection *is*, parallel to the two lists above
+# and `-1` until the handshake spawns it. Without it `broadcast_entity` cannot
+# tell "this entity moved" from "you moved", and a client that the tick moved —
+# anyone who fell — was sent its own avatar and drew a cube on its own camera.
+(var connection_slots : (List F64) [])
 (var next_connection_id ($cell 0.0))
 
 (fn add_connection [conn id : F64] : Nil
   (connections ~ push! conn)
-  (connection_ids ~ push! id))
+  (connection_ids ~ push! id)
+  (connection_slots ~ push! -1.0))
+
+# Record which player entity a connection owns. Rebuilds rather than assigns in
+# place, for the same reason `drop_connection` does.
+(fn own_slot [id : F64 slot : F64] : Nil
+  (var keep : (List F64) [])
+  (var i 0.0)
+  (var n connection_ids/~size)
+  (while (< i n)
+    (keep ~ push! (if (== connection_ids/%i id) slot connection_slots/%i))
+    (set i (+ i 1.0)))
+  (set connection_slots keep))
 
 (fn drop_connection [id : F64] : Nil
   (var keep_conns : (List Any) [])
   (var keep_ids : (List F64) [])
+  (var keep_slots : (List F64) [])
   (var i 0.0)
   (var n connection_ids/~size)
   (while (< i n)
     (if_yes (!= connection_ids/%i id)
       (keep_conns ~ push! connections/%i)
-      (keep_ids ~ push! connection_ids/%i))
+      (keep_ids ~ push! connection_ids/%i)
+      (keep_slots ~ push! connection_slots/%i))
     (set i (+ i 1.0)))
   (set connections keep_conns)
-  (set connection_ids keep_ids))
+  (set connection_ids keep_ids)
+  (set connection_slots keep_slots))
 
 # Everyone but one connection. §8's players need it and dropped items do not: a
 # player already knows where they are standing, and sending them their own
@@ -804,6 +839,9 @@
           (if_yes (>= pid 0.0)
             (var slot (slot_of_id game/entities pid))
             (my_slot ~ set slot)
+            # Before any broadcast: from here on the tick may move this player,
+            # and `broadcast_entity` needs to know whose avatar it is.
+            (own_slot my_id slot)
             (send_existing_players conn game/entities pid)
             (broadcast_entity_except game/entities slot false my_id))
           ($println "  client joined"))
@@ -1021,12 +1059,20 @@
                     (var mine (my_slot ~ get))
                     (if_yes (>= mine 0.0)
                       (var was_x (entity_x game/entities mine))
+                      (var was_y (entity_y game/entities mine))
                       (var was_z (entity_z game/entities mine))
                       (move_entity game/entities mine px py pz)
                       # Only when it actually moved. At one input a second a
                       # still player would otherwise be a message a second per
                       # player per player.
-                      (if_yes (|| (!= was_x px) (!= was_z pz))
+                      #
+                      # **All three axes.** This compared x and z only, so a
+                      # player flying or jumping straight up did not move as far
+                      # as anyone else was told; their altitude reached other
+                      # clients only as a side effect of the tick's gravity
+                      # broadcasts. Rising is moving.
+                      (if_yes (|| (!= was_x px)
+                                  (|| (!= was_y py) (!= was_z pz)))
                         (broadcast_entity_except game/entities mine false my_id)))
                     (var slots (entity_slots game/entities))
                     (var i 0.0)
