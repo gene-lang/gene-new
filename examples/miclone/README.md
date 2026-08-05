@@ -10,11 +10,13 @@ you.**
 The server owns the world and answers a WebSocket; the browser client is handed
 it and plays it, sharing every rule through `core/` (§1.1, §4.2, §7, §7.1, §10).
 The game itself is `mods/default`, registered through §9's API — and a client
-draws it from recipes on the wire without ever running mod code. §D5's capability sandbox is **built and enforced** — a mod is handed exactly the
-namespaces its manifest declares, with eight tests (design.md §D5.2). What M7
-has not finished is the *loading*: the mod is still compiled in rather than read
-off disk, blocked on module identity across a sandboxed load rather than on
-capabilities (§9.3). Read
+draws it from recipes on the wire without ever running mod code. §D5's capability
+sandbox is **built and enforced**, with eleven tests (design.md §D5.2), and the
+server **reads its game off disk through it**: `mods/default` gets exactly the
+namespaces its manifest declares, which is none, and a mod written to reach
+`$fs` anyway is refused (§9.3, `probes/run_loader.gene`). The in-tab client keeps
+the compiled-in path, because the web profile has no runtime module loading at
+all. Read
 [`docs/design.md`](docs/design.md) first — Part I is the direction and the
 decisions, and §D2 is the constraint that shaped the rest.
 
@@ -266,7 +268,7 @@ against V8's 0.032 ms, which is §D6.3's ~500 ns message send met again — a
 block encode is ~16,000 buffer reads. That, not the socket, is why a world
 takes ~12 s to transfer. See design.md §10.1.
 
-### §D8 M7 — the mod API
+### §D8 M7 — the mod API, and the sandboxed loader that reads it off disk
 
 The game is no longer in the engine. `core/content.gene` is gone and every
 node, tile, drop, biome and ore is declared in `mods/default/src/default.gene`,
@@ -300,20 +302,30 @@ checksums, same 229 chunks and 62,395 faces, the ten cross-backend specs diff
 clean, and both clients play the same game. §14 layer 3 exists for terrain
 changes and earned its keep on a change that was not one.
 
-**What M7 has not built is the loading**, and starting it turned up something
-worse than a gap. §D5 claims "a mod that never receives `$fs/WriteDir` cannot
-write a file no matter what it evaluates". That is false today: any module can
-`(import $fs [write_text WriteDir])` and write the file. Capability values are
-real — the call does check for one — but they are not scarce, because the
-namespace holding them is ambient.
+**The other half is the loading, and it is what §D5 exists for.**
 
-So the sandbox belongs at the *import* boundary rather than the argument list: a
-mod's module root needs a restricted builtins scope in which a denied namespace
-is shadowed by an empty one. That makes M7's remaining half a VM change rather
-than a game one, and it makes it more clearly worth doing — runtime loading
-without it would be strictly worse than what exists now, since `mods/default` is
-compiled in and audited by being in this repository. See design.md §D5.1 and
-§9.1.
+```sh
+gene run loader          # the mod, read off disk and sandboxed
+```
+
+`server/mods_runtime.gene` reads a mod's `package.gene`, takes its `^grants`, and
+loads its entry through `$runtime/load_sandboxed` — and the order is the point:
+the grants are read *before* the mod's code runs, so a mod cannot widen its own
+sandbox by evaluating something. `mods/default` asks for nothing, gets nothing,
+and registers the identical game the compiled-in path does. `probes/badmod` names
+`$fs` anyway and is refused. The server loads this way; the in-tab client cannot,
+because the web profile has no runtime module loading.
+
+**It took three attempts and two of the three failures were paragraphs, not
+code.** §D5 claimed a mod without `$fs/WriteDir` could not write a file; §D5.1
+measured that false, because `$fs` is ambient and needs no `import`. §D5.2 built
+the restricted root that fixes it and claimed the sandbox covered "the mod's
+directory" — but derived that directory from the manifest's own `^entry`, so a
+mod could put a file outside its own sandbox and write to disk under
+`^grants []`. And the loader's first failure was recorded as a module-identity
+problem when the identity strings were byte-identical; it was loading into a
+second `Application`. See design.md §D5.1, §D5.2 and §9.3 — each records the
+measurement next to the claim it falsified.
 
 ### §D8 M8 — the server tick, and a world that changes on its own
 

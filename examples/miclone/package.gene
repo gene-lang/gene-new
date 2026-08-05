@@ -38,5 +38,6 @@
     (application "server" ^entry "server/main.gene")
     # design.md §D8's M4 deliverable, run twice: `create` then `verify`.
     (application "persistence" ^entry "probes/run_persistence.gene")
+    (application "loader" ^entry "probes/run_loader.gene")
   ]
 }

@@ -3,8 +3,8 @@
 A voxel game engine with Luanti's architecture, written in Gene, whose mod
 language is Gene.
 
-**Status: M0 through M7's API are built and running.** §D8's table says which
-milestone owns what and which are done.
+**Status: M0 through M8 are built and running.** §D8's table says which
+milestone owns what and which are done; M9 is the only one left.
 
 ## How to read this document
 
@@ -394,13 +394,25 @@ than a suggestion: `gene` is in the compiler's `reservedStdlibRoots`, so a mod
 cannot rebind it to fetch the real one back; and `$` is *only* sugar for
 `gene/`, so there is no second spelling to close.
 
-`($runtime/load_sandboxed path grants)` is the surface. `grants` is a list of
-standard-library namespace names — `["fs"]`, `[]` for a module that gets
+`($runtime/load_sandboxed dir entry grants)` is the surface. `grants` is a list
+of standard-library namespace names — `["fs"]`, `[]` for a module that gets
 computation and nothing else — and a denied namespace is **absent** from that
 module's `gene` rather than empty. §D5.1 wrote "shadowed by an empty one";
-absent gives the better failure, naming `fs` rather than `write_text`.
+absent is the shape that was built.
 
-**Five properties, each with a test in `tests/test_modules.nim`:**
+The recorded claim that absent "gives the better failure, naming `fs` rather
+than `write_text`" is **false as written**, measured: the refusal reads
+
+```
+value is not callable: vkVoid
+```
+
+which names neither. Absent is still the right shape — a missing namespace
+cannot be called, an empty one might grow a member — but the diagnostic is worse
+than either version of this paragraph claimed, and it does not say *withheld
+authority*. Unfixed; it is a diagnostic, not a hole.
+
+**Seven properties, each with a test in `tests/test_modules.nim`:**
 
 | | |
 |---|---|
@@ -409,6 +421,8 @@ absent gives the better failure, naming `fs` rather than `write_text`.
 | a module the sandboxed one **imports** | also restricted — the sandbox is not one file deep |
 | a function called back **into** a sandbox later | still restricted, because the restriction is on the scope rather than on the load |
 | trusted code loading a file a sandbox also loaded | keeps full authority |
+| a mod's own sibling file, with the entry two directories down | inside the sandbox — see the escape below |
+| an entry pointing out of its own directory | refused |
 
 That last one is the module cache, and it is the subtle half. The cache is keyed
 by the grant set, because without that it is a hole in both directions: a module
@@ -449,7 +463,38 @@ own directory gets a host module with host authority**, so a host must not put
 reachable code where a mod can reach it. `mods/<name>/` is the boundary, and a
 second mod's files are outside the first mod's sandbox on purpose.
 
-### 9.3 The runtime loader — started, and blocked on module identity
+##### The escape in that sentence — §D5.1, one revision later, through a different door
+
+The rule above is right and the first implementation of it was not. "The mod's
+directory" was **reconstructed from the entry**, as
+`moduleSourceDir(entry).parentDir()`. A manifest picks its own `^entry`, so a mod
+that puts its entry two directories down moves the boundary underneath its own
+files:
+
+```
+mods/evil/package.gene         ^grants []   ^library {^entry "src/a/main.gene"}
+mods/evil/src/a/main.gene      (import [go] from "../../free") (go)
+mods/evil/free.gene            ($fs/write_text $fs/WriteDir "/tmp/escaped" "escaped")
+```
+
+The boundary computes to `mods/evil/src`. `free.gene` is the mod's own file and
+is **outside** it, so it loaded with full host authority and wrote the file under
+`^grants []`. Measured, not supposed — the file was on disk.
+
+That is §D5.1's escape again, and the same lesson: a boundary that the code
+inside it can move is not a boundary. The fix is not a better derivation, it is
+to stop deriving. **`dir` is now a parameter**, supplied by the trusted host that
+chose which directory to load; `entry` is what the manifest names and is resolved
+*inside* `dir`, and an entry that climbs out is refused. The host knows the
+answer; the loaded code does not get a vote.
+
+Note what generalizes, because three findings now share it (§13.4's chest,
+§D5.2's cache key, this): **derive a boundary or a state from something that has
+no valid empty case and no input the subject controls.** The chest's "nothing
+open" was a legal x coordinate; the cache key's "not sandboxed" was a legal empty
+grant list; the sandbox root was a legal manifest field.
+
+### 9.3 The runtime loader — and the Application that was not the caller's
 
 `server/mods_runtime.gene` reads a mod's `package.gene`, takes its `^grants`,
 and loads its entry through `$runtime/load_sandboxed`. `mods/default` declares
@@ -458,29 +503,59 @@ registers content has no business opening a socket. `probes/badmod/` is a mod
 written to be refused: it names `$fs` with no grants, which is §D5.1's published
 escape, and a working loader must reject it.
 
-**It does not work yet, and the reason is not capabilities.** The mod loads, the
-sandbox holds, and then:
+`probes/run_loader.gene` checks the claim two ways, because either alone is weak:
+the mod loaded off disk registers the **identical content set** that
+`core/mods.gene` gets by having it compiled in (20 nodes, 23 items, 2 forms, and
+every node at the same id), and `probes/badmod` is refused. Both hold.
+
+**`server/main.gene` loads its game this way**, not through `core/mods.gene`. A
+boundary nothing loads through protects nothing, and the equivalence above is
+what makes the switch safe to make rather than a leap — the six network probes
+pass unchanged against a server whose game came off disk. The in-tab client keeps
+the compiled-in path and must: the web profile has no runtime module loading,
+which is the reason §9.3 puts mods on the server and hands a client data. The new
+failure mode is stated rather than left to be discovered — the server needs
+`mods/` under its package root at startup and stops if it is missing.
+
+**It did not work at first, and the recorded reason was wrong.** The symptom was
 
 ```
 parameter 'game' expected Game, got (type Game)
 ```
 
-Two different `Game` types. The mod's copy of `core/api.gene` is not the host's,
-because the module loaded on the sandboxed side does not find the host's in the
-cache — an instrumented run shows the lookup asking for `…::api` and missing,
-so the trusted chain caches it under a key this path does not reproduce. The
-directory rule above is in place and is *not* the cause: `api` correctly takes
-the trusted branch and still misses.
+— two different `Game` types, the mod's copy of `core/api.gene` not being the
+host's. That much was right. The diagnosis on top of it was "module identity: the
+trusted chain caches `api` under a key the sandboxed path does not reproduce",
+and it was **false**. Instrumenting both sides printed identical identity
+strings:
 
-So what is left of M7 is **module identity across a runtime load**, not the
-capability model. That is the honest split and it is worth stating precisely,
-because the two are easy to conflate: §D5's advantage over Luanti — "this mod
-cannot touch your filesystem, enforced rather than promised" — is built and has
-eight tests. What is missing is the plumbing that lets a mod loaded at runtime
-share the engine's types with the engine.
+```
+app=…39920  cacheN=21  hit=true   id=workspace:gene/miclone@0.1.0#sha256:b5c6…::api
+app=…42080  cacheN=0   hit=false  id=workspace:gene/miclone@0.1.0#sha256:b5c6…::api
+```
 
-`probes/run_loader.gene` is checked in with that failure and is deliberately not
-registered in `package.gene`, so nobody inherits a red test they did not write.
+Byte-identical key, and a miss — because it was a **different Application**. An
+Application owns the module cache, `gene run` builds its own and never touches
+the process-global default, and `$runtime/load_sandboxed` reached for that global
+through `currentApplication()`, which found nil and helpfully minted a second,
+empty one. Every module the mod imported was loaded again into it. The fix is one
+line of intent: the builtin takes the app from its **call site**
+(`newNativeCallFn`, `call.dispatchScope`), and refuses rather than defaulting
+when there is no call site to take it from.
+
+Two things are worth keeping from that:
+
+- **`cacheN` was the whole diagnosis.** The key was printed first and looked
+  fine, which is what kept the wrong explanation alive; printing the cache's
+  *size* next to it ended the question immediately. Print the container, not just
+  the lookup.
+- **The eight sandbox tests could not have caught it**, because the test harness
+  calls `initModuleContext` and then `newGlobalScope()` — making the program's app
+  *be* the process-global default, so a builtin reaching for the global gets the
+  right object by coincidence. `tests/test_modules.nim` now has
+  `runProgramInOwnApp`, which runs the way `gene run` does, and a case that fails
+  with `expected Reg, got (type Reg)` without the fix. A harness that makes two
+  distinct things the same object hides every bug that confuses them.
 
 **What this does not do.** It does not restrict what a *host* passes in: a
 sandboxed mod handed a `Game` can call anything reachable through it, which is
@@ -496,10 +571,12 @@ Two consequences worth stating plainly:
   restricted root it would give miclone Lua's trust model with Gene's syntax,
   which is strictly worse than what exists now — today `mods/default` is
   compiled in and audited by being in this repository.
-- **§D5's advantage is a claim about a language feature that does not exist**,
-  rather than about one that does. It is still the right bet — capability values
-  are real, the boundary is one scope, and nothing about the design is wrong.
-  But it is a thing to build, and this document said it was a thing to use.
+- **§D5's advantage was a claim about a language feature that did not exist**,
+  rather than about one that does. It exists now, with eleven tests and a mod
+  loaded off disk that registers the same game as the one compiled in. That took
+  two rounds: §D5.1 measured the original claim false, and §D5.2's own boundary
+  measured false one revision later. Both times the paragraph describing the
+  boundary was written before anything tried to walk through it.
 
 ## D6. Milestone 0 — the probes, and what they are allowed to kill
 
@@ -1397,7 +1474,7 @@ only" — that is how a project like this quietly becomes a year of plumbing.
 | ~~M4~~ | **Persistence — done** | quit and come back to the same world; §11 | backlog 3 (landed), 4 (open, not blocking) |
 | ~~M5~~ | **Player: physics, dig, place, inventory — done** | a playable singleplayer creative-ish loop; §1.1, §4.2, §7, §7.1 | — |
 | ~~M6~~ | **Client/server split over WebSocket — done** | the same game, client and server as separate processes; §10, §10.1 | backlog 7 (browser half landed) |
-| ~~M7~~ | **The mod API — API done, sandbox done, loading blocked** | the game is `mods/default`; §D5's capability boundary is built and tested (§D5.2); the runtime loader is blocked on module identity (§9.3) | — |
+| ~~M7~~ | **The mod API + the sandboxed runtime loader — done** | the game is `mods/default`, read off disk through §D5's capability boundary and registering the same 20 nodes / 23 items / 2 forms as the compiled-in path (§9.1, §9.3, §D5.2); `probes/badmod` refused; 11 sandbox tests | — |
 | ~~M8~~ | **Entities, crafting, UI, sound — done** | §12's tick, trees, crafting, dropped items, sound, a formspec, mod callbacks (§8.2, §12.3), leaf culling (§3.6), entities drawn (§8.3), §13's input and a chest (§13.4), and players as entities (§8.4) | backlog 9 (landed) |
 | M9 | Native shell | the same game outside a browser | backlog 7, 8 |
 
@@ -1418,7 +1495,8 @@ with a spelling only the web profile knew, and the VM has had the capability all
 along under another name. Measuring it took twenty minutes and unblocked both
 features at once. **The absence in §D8's table was a claim nobody had tested**,
 and it is the second time this project has found one of those — §D5.1 was the
-first, and it is still open.
+first, and it is now closed, along with the second false boundary §D5.2 shipped
+in the same commit that built the first fix.
 
 **M8 is done.** Everything the list above named as missing arrived: entity
 rendering (§8.3, and §6's share of it was zero), §13's input with the chest that
@@ -1428,21 +1506,28 @@ that passes. What M8 still does not have is `on_punch` and `on_death`, and those
 stay unbuilt because nothing in this engine can hit an entity: they would be
 fields nothing could call.
 
-**So what is left before M9 is one thing, and it is not a game feature.** M7's
-runtime loader is blocked on module identity across a sandboxed load (§9.3) —
-not on the capability model, which is built and has eight tests (§D5.2). The
-distinction matters because the two are easy to conflate: §D5's advantage over
-Luanti is real and enforced; what is missing is the plumbing that lets a mod
-read off disk share the engine's types with the engine.
+**M7 is closed, and nothing but M9 is left.** Both halves are built (§9.1,
+§9.3): the **API** — the game is a mod, registration goes through a surface,
+definitions are data, and a client draws mod content from recipes on the wire
+without running mod code — and the **loading**, `mods/default` read off disk
+through `$runtime/load_sandboxed` and registering a game byte-identical to the
+compiled-in one.
 
-M7 shipped in two halves and only one of them is done (§9.1). The **API** is
-built: the game is a mod, registration goes through a surface, definitions are
-data, and a client draws mod content from recipes on the wire without running
-mod code. The **loading** is not: the mod is compiled in rather than read off
-disk, so §D5's capability model — the thing that makes this mod API better than
-Luanti's rather than merely different — is still a claim about a loader that
-does not exist. Runtime module loading lives inside the VM and is not reachable
-from Gene; exposing it, with capabilities attached, is what closes M7.
+Two things closed it, and neither was the thing recorded as blocking:
+
+- The loader's failure was recorded as *module identity*. It was the
+  **Application**: the builtin took its app from a process global that `gene run`
+  leaves nil, so the mod loaded into a second, empty one. The identity strings
+  were byte-identical the whole time (§9.3).
+- §D5.2's own boundary — "the sandbox covers the mod's directory" — was derived
+  from the manifest's `^entry` and could therefore be moved by the mod. Under
+  `^grants []` a mod wrote a file outside the sandbox. That is §D5.1's escape,
+  one revision later, and it is now a host-supplied parameter (§D5.2).
+
+Both were found by measuring a recorded claim rather than believing it, which is
+now this project's third and fourth instance of that — after §D5.1 and §D7.17.
+**The pattern is specific enough to act on: a claim about a boundary, written in
+the same commit that built the boundary, has never survived being tested.**
 
 ## D9. Non-goals
 
@@ -3035,7 +3120,7 @@ replaces outright), and mod channels.
 happens at load; the registries freeze before the world starts, so §3's worker
 lanes can capture them.
 
-### 9.1 M7 — the API, built; the loading, not yet
+### 9.1 M7 — the API (the loading is §9.3)
 
 `core/content.gene` is gone. Every node, tile, drop, biome and ore is declared
 in `mods/default/src/default.gene`, through `core/api.gene`, and the engine gets

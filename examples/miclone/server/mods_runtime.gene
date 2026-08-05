@@ -82,7 +82,12 @@
   (var grants (manifest_grants manifest))
   (var entry (manifest_entry manifest))
   (var name manifest/name)
-  (var mod_value ($runtime/load_sandboxed $"${dir}/${entry}" grants))
+  # The directory and the entry stay separate arguments. `dir` is the sandbox
+  # boundary and the host chose it; `entry` came out of the mod's own manifest and
+  # is resolved inside `dir`. Joining them here would hand the boundary to the
+  # manifest, which is how §D5.2's escape worked — an entry two directories deep
+  # put the mod's sibling files outside its own sandbox.
+  (var mod_value ($runtime/load_sandboxed dir entry grants))
   # The mod's own entry point, called with the `Game` it registers into. What a
   # mod can reach *through* `game` is `core/api.gene`'s surface and nothing
   # else, which is the boundary §D5 cares about — the sandbox stops a mod

@@ -5716,7 +5716,8 @@ proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
 # design §D5's loader, forward-declared: `buildBuiltins` binds it and the body
 # needs `loadSandboxedModule`, which is defined with the rest of the module
 # machinery thousands of lines below.
-proc biRuntimeLoadSandboxed(args: openArray[Value]): Value {.nimcall.}
+proc biRuntimeLoadSandboxed(args: openArray[Value],
+                            call: ptr NativeCall): Value {.nimcall.}
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -6419,9 +6420,16 @@ proc buildBuiltins(app: Application): Scope =
   # module cannot reach the thing that would load another one, and the refusal
   # is a missing namespace rather than a check it might be possible to argue
   # with.
+  # `newNativeCallFn`, not `newNativeFn`, for one reason: this builtin needs the
+  # Application of the code that called it. An Application is per-run (`gene run`
+  # builds its own and never touches the process-global default), so a builtin
+  # that reached for the global would load the mod into a *second* Application
+  # with an empty module cache — which is exactly the bug that made a mod's
+  # `Game` a different type from the host's.
   runtimeScope.define("load_sandboxed",
-                      newNativeFn("runtime/load_sandboxed",
-                                  biRuntimeLoadSandboxed))
+                      newNativeCallFn("runtime/load_sandboxed",
+                                      biRuntimeLoadSandboxed,
+                                      acceptsNamed = false))
   result.define("runtime", newNamespace("runtime", runtimeScope))
   let fsScope = newScope(result)
   fsScope.define("ReadDir", newCapability("fs/ReadDir"))
@@ -23498,10 +23506,12 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   # "not sandboxed" — so the strictest sandbox there is was the one whose
   # modules leaked into the trusted cache. A test caught it; the shape is the
   # same one that made a chest west of the origin read as closed.
-  # **The sandbox covers the mod's own directory, and stops there** (design
+  # **The sandbox covers the directory the host named, and stops there** (design
   # §D5.2). A mod's files have not been loaded before and compile under the
   # restriction; the engine modules it registers against are the host's, already
-  # loaded, and are shared.
+  # loaded, and are shared. `app.sandboxDir` is `load_sandboxed`'s `dir`
+  # argument, never anything derived from the entry — see there for the escape
+  # that taught the difference.
   #
   # Sharing them is not a concession — it is required. A recompiled
   # `core/api.gene` brings its own type identities, so the mod's `Game` stops
@@ -23781,9 +23791,9 @@ proc loadFileModule*(app: Application, path: string): Value =
   app.adoptEntryModule(absPath)
   loadModuleValue(app, absPath)
 
-proc loadSandboxedModule*(app: Application, path: string,
+proc loadSandboxedModule*(app: Application, dir, entry: string,
                           grants: seq[string]): Value =
-  ## Load a module with only the standard-library namespaces in `grants` — the
+  ## Load `dir/entry` with only the standard-library namespaces in `grants` — the
   ## capability boundary design §D5 promised and §D5.1 found missing.
   ##
   ## The restriction covers the module *and everything it imports*, which is the
@@ -23792,24 +23802,53 @@ proc loadSandboxedModule*(app: Application, path: string,
   ## it to the restricted builtins, and the module cache is keyed by the grant
   ## set so nothing crosses.
   ##
+  ## **`dir` is the boundary and it is a parameter, not an inference.** It used
+  ## to be reconstructed from the entry — `moduleSourceDir(entry).parentDir()` —
+  ## and that measured false (§D5.2): a manifest chooses its own `^entry`, so an
+  ## entry two directories deep left the mod's own sibling files *outside* the
+  ## sandbox with full host authority, and §D5.1's escape worked again under
+  ## `^grants []`. The trusted host knows which directory it is loading; the code
+  ## being loaded must not get a vote. Same rule as the chest that read as closed
+  ## and the sandbox key derived from an empty grant string: derive the boundary
+  ## from something that has no valid empty case.
+  ##
   ## Nesting is refused rather than silently widened. A sandboxed module that
   ## loaded another sandbox would be choosing its own grants, and "the grants a
   ## mod asked for" is exactly what the manifest is supposed to decide.
   if app.sandboxRoot != nil:
     raise newException(GeneError,
       "a sandboxed module cannot load another sandboxed module")
+  # A relative `dir` is **package-root-relative, not cwd-relative**. `"mods"`
+  # names the application's mods directory wherever it is run from, and a
+  # registered application runs out of an authenticated content-addressed
+  # snapshot whose root is not the working directory at all — cwd-relative made
+  # `gene run loader` and `gene run probes/run_loader.gene` mean different things
+  # and the first one a boundary error. Same rule as `resolveApplicationModulePath`.
+  let sandboxDir =
+    if dir.isAbsolute: normalizedDir(dir)
+    else: normalizedDir(app.appPackage.root / dir)
+  if not dirExists(sandboxDir):
+    raisePackageError(pecModuleNotFound,
+      "sandbox directory not found: " & dir)
+  if not app.isWithinPackageRoot(sandboxDir):
+    raisePackageError(pecBoundary,
+      "sandbox directory escapes package root: " & dir,
+      ["package: " & app.appPackage.describe, "root: " & app.appPackage.root])
   # **Not `adoptEntryModule`.** A mod is not the program's entry, and adopting
   # it repoints the package the app resolves against — which made the mod's
   # `core/api.gene` a different module identity from the host's, so the mod's
   # `Game` was not the host's `Game` and `register_all` could not be called.
-  let absPath = app.entryModulePath(path)
+  let absPath = app.entryModulePath(sandboxDir / entry)
+  # An entry that points out of its own directory would be a boundary with the
+  # subject on the wrong side of it: the mod's own code would load unrestricted.
+  if not absPath.isRelativeTo(sandboxDir):
+    raisePackageError(pecBoundary,
+      "sandboxed entry escapes its own directory: " & entry,
+      ["directory: " & sandboxDir])
   let root = app.sandboxedBuiltins(grants)
   app.sandboxRoot = root
   app.sandboxKey = grants.sorted().join(",")
-  # The mod's directory is the boundary. `absPath` is the entry, so its package
-  # directory — `mods/<name>/` for a mod laid out as §9 asks — is what a module
-  # must be under to be restricted.
-  app.sandboxDir = app.moduleSourceDir(absPath).parentDir()
+  app.sandboxDir = sandboxDir
   try:
     result = loadModuleValue(app, absPath)
   finally:
@@ -23817,25 +23856,42 @@ proc loadSandboxedModule*(app: Application, path: string,
     app.sandboxKey = ""
     app.sandboxDir = ""
 
-proc biRuntimeLoadSandboxed(args: openArray[Value]): Value {.nimcall.} =
-  ## `($runtime/load_sandboxed path grants)` — design §D5, and the surface M7's
-  ## loader is built on.
+proc biRuntimeLoadSandboxed(args: openArray[Value],
+                            call: ptr NativeCall): Value {.nimcall.} =
+  ## `($runtime/load_sandboxed dir entry grants)` — design §D5, and the surface
+  ## M7's loader is built on.
+  ##
+  ## **The directory is separate from the entry on purpose.** `dir` is the
+  ## sandbox boundary and comes from the trusted host; `entry` is what the mod's
+  ## manifest names and is resolved *inside* `dir`. One path for both let the
+  ## manifest move the boundary, which is how §D5.2's escape worked.
+  ##
+  ## The module loads into **the caller's Application**, taken from the call
+  ## site. Nothing else will do: an Application owns the module cache, and the
+  ## host's modules must be found there or the mod recompiles `core/api.gene`
+  ## and its `Game` stops being the host's `Game`. Reaching for the
+  ## process-global default instead is what made that happen — `gene run`
+  ## builds its own Application and leaves the global nil, so the fallback
+  ## minted a second, empty one.
   ##
   ## `grants` is the manifest's list of standard-library namespaces the module
   ## may reach, by name: `["fs"]`, `["net" "db"]`, `[]` for a module that gets
   ## computation and nothing else. Anything not listed is **absent** from the
   ## module's `gene` root, so naming it fails where it is written rather than
   ## when it is called.
-  if args.len != 2:
+  if args.len != 3:
     raise newException(GeneError,
-      "runtime/load_sandboxed expects a path and a list of grants")
+      "runtime/load_sandboxed expects a directory, an entry, and a list of grants")
   if args[0].kind != vkString:
-    raise newException(GeneError, "runtime/load_sandboxed path must be a Str")
-  if args[1].kind != vkList:
+    raise newException(GeneError,
+      "runtime/load_sandboxed directory must be a Str")
+  if args[1].kind != vkString:
+    raise newException(GeneError, "runtime/load_sandboxed entry must be a Str")
+  if args[2].kind != vkList:
     raise newException(GeneError,
       "runtime/load_sandboxed grants must be a list of namespace names")
   var grants: seq[string]
-  for item in args[1].listItems:
+  for item in args[2].listItems:
     if item.kind != vkString:
       raise newException(GeneError,
         "runtime/load_sandboxed grant must be a Str, got " & $item.kind)
@@ -23848,7 +23904,15 @@ proc biRuntimeLoadSandboxed(args: openArray[Value]): Value {.nimcall.} =
         "unknown capability namespace in grants: " & item.strVal &
         " (expected one of " & sandboxableNamespaces.join(", ") & ")")
     grants.add item.strVal
-  currentApplication().loadSandboxedModule(args[0].strVal, grants)
+  # Refused rather than defaulted. A caller with no Application cannot be handed
+  # a fresh one: the mod would load against an empty module cache and register
+  # into types nothing else holds, which fails later and somewhere else.
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if scope == nil or scope.application == nil:
+    raise newException(GeneError,
+      "runtime/load_sandboxed cannot resolve the calling application")
+  Application(scope.application).loadSandboxedModule(args[0].strVal,
+                                                     args[1].strVal, grants)
 
 proc loadCompiledFileModule*(app: Application, path: string,
                              chunk: Chunk): Value =

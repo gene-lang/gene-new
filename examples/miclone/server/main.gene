@@ -42,7 +42,7 @@
         from "../core/registry.gene")
 (import [Game] from "../core/api.gene")
 (import [TileRegistry] from "../core/tiles.gene")
-(import [load_mods] from "../core/mods.gene")
+(import [load_mods_from_disk] from "./mods_runtime.gene")
 (import [generate_block] from "../core/mapgen.gene")
 (import [World new_world store_block store_light extract_block block_base
          open_sky node_at
@@ -653,7 +653,21 @@
 
 (fn main [args] : Nil
   # §9's game. Every id below is one a mod caused to exist.
-  (var game (load_mods))
+  #
+  # **Read off disk and sandboxed**, not compiled in — `load_mods_from_disk`
+  # rather than `core/mods.gene`'s `load_mods`. The two produce the identical
+  # game and `probes/run_loader.gene` is what checks that, node for node and id
+  # for id. The difference is the one §D5 exists for: this way `mods/default`
+  # gets exactly the authorities its manifest declares, and today that is none.
+  # A boundary nothing loads through protects nothing.
+  #
+  # The in-tab client keeps `load_mods`, and must: the web profile has no runtime
+  # module loading, which is the whole reason §9.3 puts mods on the server and
+  # hands a client data.
+  #
+  # One new failure mode, stated rather than discovered: the server now needs
+  # `mods/` present under its package root at startup and stops if it is missing.
+  (var game (load_mods_from_disk))
   (var reg game/nodes)
   (var drops game/drops)
   (var items game/items)

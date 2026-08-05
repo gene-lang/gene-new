@@ -4818,6 +4818,51 @@ libcurl binding as `net/http_client`. Design decisions:
 - This is a script-running feature, not the package story: packages and
   registries (`docs/proposals/distribution.md`) remain the dependency answer.
 
+### 15.10 Sandboxed module loading
+
+```gene
+($runtime/load_sandboxed dir entry grants)   # -> the module's namespace value
+```
+
+Load `dir/entry` at runtime with **only** the standard-library namespaces named
+in `grants` — `["fs"]`, `["net" "db"]`, or `[]` for a module that gets
+computation and nothing else. The grantable set is the one that reaches outside
+the process (`fs`, `net`, `os`, `ffi`, `db`, `store`, `terminal`, `curses`,
+`repl`, `device`, `runtime`, `serde`, `aot`, `web`, `http`); `math`, `str`,
+`json` and the rest are computation over values the module already has and are
+never withheld. An unknown grant name is an error, not a silently tighter
+sandbox.
+
+What makes it a boundary rather than a convention is that `$fs` is sugar for
+`gene/fs` and `gene` is resolved by a **scope-chain lookup**, so a module root
+parented to a restricted builtins scope has a different standard library — and
+`gene` is in the compiler's reserved roots, so a module cannot rebind it to fetch
+the real one back. A denied namespace is *absent*, so naming it fails.
+
+Five properties are load-bearing:
+
+- **The restriction covers everything the module imports**, not just the named
+  file. Otherwise a module that cannot name `$fs` imports one that can.
+- **It follows the value, not the load.** A function exported out of a sandbox is
+  still restricted when called later, which is what makes a plugin API safe to
+  call back into.
+- **`dir` is the boundary and the host supplies it.** `entry` is resolved inside
+  it and an entry that climbs out is refused. Deriving the boundary from the
+  entry lets the loaded code move it. A relative `dir` is package-root-relative,
+  not cwd-relative, so it means the same thing however the program was started.
+- **The module cache is keyed by the grant set.** Without that it is a hole in
+  both directions: a module already loaded with full authority handed to a
+  sandbox, or a module first loaded under a sandbox coming back stripped for
+  trusted code. Modules *outside* `dir` are the host's and are shared — required,
+  not a concession, because a recompiled module brings its own type identities
+  and its types would stop being the host's.
+- **A sandbox cannot load another sandbox.** Nesting would let the loaded code
+  choose its own grants.
+
+It is a namespace boundary, not a resource one: a granted `fs` is all of `fs`,
+not a directory. The web profile has no runtime module loading and therefore no
+sandbox.
+
 ## 16. Foreign function interface
 
 FFI is a core architectural constraint, even if some convenience features are implemented after the first interpreter. It affects `Callable`, typed boundaries, memory ownership, garbage collection, modules, threading, and binary layout.

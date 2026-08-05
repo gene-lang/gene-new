@@ -1,35 +1,23 @@
-# design.md §9's loading half and §D5.2's sandbox, together — M7's last piece,
-# and **this probe does not pass yet**. It is checked in as the statement of
-# what is left, with the failure it produces, rather than deleted so that the
-# gap has to be rediscovered.
+# design.md §9's loading half and §D5.2's sandbox, together — M7's last piece.
 #
-# It is deliberately *not* registered in `package.gene`, so `nimble`-driven runs
-# stay green and nobody inherits a red test they did not write. To run it:
+#   gene run loader
 #
-#   gene run probes/run_loader.gene
+# The claim under test is the one §D5 has made since revision 1, §D5.1 found
+# false, and §D5.2 built: a mod is handed exactly the authorities its manifest
+# declares. It is checked two ways, because either alone would be weak.
 #
-# **What fails and what it means.** `mods_runtime.gene` loads `mods/default`
-# through `$runtime/load_sandboxed`, the mod registers, and the call
-# `(mod_value/register_all game)` is refused with
+# **What it cost to get here** is worth two lines, because the recorded reason
+# was wrong both times. The first failure was
 #
 #   parameter 'game' expected Game, got (type Game)
 #
-# — two *different* `Game` types. The mod's copy of `core/api.gene` is not the
-# host's, because a module loaded on the sandboxed side does not find the host's
-# in the module cache: an instrumented run shows the sandbox looking for
-# `…::api` and missing, so the trusted chain caches it under a key this lookup
-# does not reproduce. §D5.2's directory rule (a mod's own files are restricted,
-# everything outside is the host's) is in place and is *not* the problem — the
-# lookup for `api` correctly takes the trusted path and still misses.
-#
-# So the remaining work is module *identity*, not capabilities: the sandbox
-# itself is built and enforced, with eight cases in `tests/test_modules.nim`.
-# `probes/badmod/` is the mod written to be refused and is what a working loader
-# should reject.
-#
-# The claim under test is the one §D5 has made since revision 1 and §D5.1 found
-# false: a mod is handed exactly the authorities its manifest declares. It is
-# checked two ways, because either alone would be weak.
+# and was recorded as *module identity* — the sandboxed side missing the host's
+# `core/api.gene` in the module cache. The identity strings were byte-identical;
+# it was a different **Application**, minted by a builtin reaching for a process
+# global that `gene run` leaves nil (§9.3). Then §D5.2's own boundary turned out
+# to be derivable from the mod's manifest, so a mod with `^grants []` could put a
+# file outside its own sandbox and write to disk (§D5.2). Neither was visible
+# from reading the code that claimed otherwise.
 #
 #   1. **The same game.** `mods/default` loaded off disk through the sandbox
 #      registers the identical content set that `core/mods.gene` gets by having
