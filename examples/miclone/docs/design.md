@@ -3101,7 +3101,7 @@ field now moves an avatar other players can see, so the lie is now visible to
 someone. The prediction's *shape* was right and its timing was early: stepping
 players server-side wants §7's physics on the server, which is M9's problem.
 
-`tools/players_probe.mjs` is the only check in the tree that needs two peers to
+`probes/web_players_probe.gene` is the only check in the tree that needs two peers to
 mean anything: a second client joining is visible to the first, the first is
 visible to the second who arrived later, neither is sent their own, walking
 moves the avatar, and leaving takes it away.

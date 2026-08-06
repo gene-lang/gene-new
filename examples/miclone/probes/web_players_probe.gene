@@ -1,0 +1,198 @@
+# design.md §8 — a player can see another player, as Gene rather than JavaScript.
+#
+#   gene build --target web probes/web_players_probe.gene --out-dir dist
+#   node tools/web_spec.mjs web_players_probe        # a server must be listening
+#
+# This was `tools/players_probe.mjs`. Two things made the rewrite worth doing and
+# neither is "one language is nicer":
+#
+# - **It imports `core/protocol.gene` by source**, so the codec under test is
+#   shared as *source* rather than as a built artifact. The `.mjs` reached into
+#   `dist/`, which is the same bytes but one indirection further from the thing
+#   §14 layer 2 is about.
+# - **It reads linearly.** `(await ($time/sleep ms))` is what made that possible;
+#   the profile had no way to wait at all before, and a callback chain for ten
+#   sequential assertions would have been worse than the JavaScript.
+#
+# What it still is: a **peer**, not a client. It speaks the protocol itself and
+# runs none of `client/net_main.gene`, which is what makes it able to say the
+# server is right (§10). `tools/net_client_smoke.mjs` owns the other half and
+# stays JavaScript, because it boots a process and stubs a DOM.
+
+(mod web_players_probe ^profile web)
+
+(import [new_cursor] from "../core/wire.gene")
+(import [message_kind msg_hello msg_registry msg_items msg_entity
+         new_hello decode_hello hello_spawn_x hello_spawn_y hello_spawn_z
+         decode_registry decode_items
+         new_entity_msg decode_entity ent_id ent_x ent_y ent_z ent_item
+         ent_count ent_kind
+         size_input encode_input]
+        from "../core/protocol.gene")
+(import [Registry new_wire_registry name_of] from "../core/registry.gene")
+(import [ItemRegistry new_items item_node] from "../core/item.gene")
+(import [entity_player] from "../core/entity.gene")
+(import [SeenEntities new_seen apply_entity seen_rows seen_alive? seen_x
+         seen_item seen_kind seen_live] from "../core/seen.gene")
+
+(let port_url "ws://127.0.0.1:8790/")
+
+(fn main [] : Void
+  (var bad 0.0)
+  (var say (fn [ok : Bool label : Str detail : Str] : Void
+    (var mark (if ok "ok  " "FAIL"))
+    ($console/log $"  ${mark} ${label}   ${detail}")
+    (if_yes (! ok) (set bad (+ bad 1.0)))))
+
+  ($console/log "")
+  ($console/log "design.md §8 — a player can see another player")
+  ($console/log "")
+
+  # --- one peer ---------------------------------------------------------------
+  #
+  # `seen` is `core/seen.gene`, the same table the real client keeps, so "what A
+  # was told" is answered by the module whose job that is rather than by a Map
+  # this file invents.
+  (var a_seen (new_seen))
+  (var a_reg (new_wire_registry))
+  (var a_items (new_items))
+  (var a_ready false)
+  (var a_spawn ($buffer F64 3.0))
+  (var a_sock ($ws/connect port_url))
+  (var ac (new_cursor))
+  (var a_hello (new_hello))
+  (var a_ent (new_entity_msg))
+  ($ws/on_bytes a_sock (fn [b : (Buffer U8)] : Void
+    (var kind (message_kind b))
+    (if_yes (== kind msg_hello)
+      (decode_hello b ac a_hello)
+      (a_spawn ~ set! 0.0 (a_hello ~ get hello_spawn_x))
+      (a_spawn ~ set! 1.0 (a_hello ~ get hello_spawn_y))
+      (a_spawn ~ set! 2.0 (a_hello ~ get hello_spawn_z)))
+    (if_yes (== kind msg_registry) (decode_registry b ac a_reg))
+    (if_yes (== kind msg_items)
+      (decode_items b ac a_items)
+      (set a_ready true))
+    (if_yes (== kind msg_entity)
+      (decode_entity b ac a_ent)
+      (apply_entity a_seen (a_ent ~ get ent_id) (a_ent ~ get ent_x)
+                    (a_ent ~ get ent_y) (a_ent ~ get ent_z)
+                    (a_ent ~ get ent_item) (a_ent ~ get ent_count)
+                    (a_ent ~ get ent_kind)))))
+  (await ($time/sleep 1200.0))
+  (say a_ready "the first client joined" "hello, registry and items")
+
+  # The position travels in `msg_input` (§8.1's trust decision), which is what
+  # the server moves the avatar from.
+  (var a_move (fn [x : F64 y : F64 z : F64] : Void
+    (var m ($buffer U8 (size_input)))
+    (encode_input m ac 0.0 0.0 false false false 0.0 x y z)
+    ($ws/send_bytes a_sock m)))
+
+  # How many *other players* A has been told about. A player is an entity kind
+  # beside a dropped stack (§8.4), so this is a filter and not a second table.
+  (var others (fn [] : F64
+    (var n 0.0)
+    (var i 0.0)
+    (var rows (seen_rows a_seen))
+    (while (< i rows)
+      (if_yes (&& (seen_alive? a_seen i)
+                  (== (seen_kind a_seen i) entity_player))
+        (set n (+ n 1.0)))
+      (set i (+ i 1.0)))
+    n))
+
+  (say (== (others) 0.0) "and sees no other player, because there is none"
+       $"$($to_int (others))")
+
+  # --- the second peer --------------------------------------------------------
+  #
+  # What A must learn about is B *existing*, not B moving — a world that only
+  # shows you someone once they walk is a world where standing still is
+  # invisibility.
+  (var b_seen (new_seen))
+  (var b_sock ($ws/connect port_url))
+  (var bc (new_cursor))
+  (var b_ent (new_entity_msg))
+  ($ws/on_bytes b_sock (fn [b : (Buffer U8)] : Void
+    (if_yes (== (message_kind b) msg_entity)
+      (decode_entity b bc b_ent)
+      (apply_entity b_seen (b_ent ~ get ent_id) (b_ent ~ get ent_x)
+                    (b_ent ~ get ent_y) (b_ent ~ get ent_z)
+                    (b_ent ~ get ent_item) (b_ent ~ get ent_count)
+                    (b_ent ~ get ent_kind)))))
+  (var b_move (fn [x : F64 y : F64 z : F64] : Void
+    (var m ($buffer U8 (size_input)))
+    (encode_input m bc 0.0 0.0 false false false 0.0 x y z)
+    ($ws/send_bytes b_sock m)))
+  (await ($time/sleep 1200.0))
+
+  (say (== (others) 1.0) "a second client joining is visible to the first"
+       $"$($to_int (others)) other player(s)")
+  (say (> (seen_live b_seen) 0.0)
+       "and the first is visible to the second, who arrived later"
+       $"$($to_int (seen_live b_seen)) entit(y|ies)")
+  (say (== (others) 1.0) "and neither is sent their own" "1 each, not 2")
+
+  # It is drawn like anything else (§8.3): item -> node -> tile. A player has a
+  # visual for the same reason a dropped cobble does.
+  (var avatar_name "")
+  (var i 0.0)
+  (var rows (seen_rows a_seen))
+  (while (< i rows)
+    (if_yes (&& (seen_alive? a_seen i)
+                (== (seen_kind a_seen i) entity_player))
+      (var node (item_node a_items (seen_item a_seen i)))
+      (if_yes (>= node 0.0) (set avatar_name (name_of a_reg node))))
+    (set i (+ i 1.0)))
+  (say (== avatar_name "miclone:player")
+       "the avatar is a node the mod registered, not an engine concept"
+       avatar_name)
+
+  # Movement. B walks; A must see the avatar move without asking.
+  (var before_x 0.0)
+  (set i 0.0)
+  (while (< i rows)
+    (if_yes (&& (seen_alive? a_seen i)
+                (== (seen_kind a_seen i) entity_player))
+      (set before_x (seen_x a_seen i)))
+    (set i (+ i 1.0)))
+  (b_move (+ (a_spawn ~ get 0.0) 6.0) (a_spawn ~ get 1.0)
+          (+ (a_spawn ~ get 2.0) 4.0))
+  (await ($time/sleep 900.0))
+  (var after_x 0.0)
+  (set i 0.0)
+  (while (< i rows)
+    (if_yes (&& (seen_alive? a_seen i)
+                (== (seen_kind a_seen i) entity_player))
+      (set after_x (seen_x a_seen i)))
+    (set i (+ i 1.0)))
+  (say (!= after_x before_x)
+       "when the second walks, the first sees the avatar move"
+       $"$($math/round before_x) -> $($math/round after_x)")
+  (say (< ($math/abs (- after_x (+ (a_spawn ~ get 0.0) 6.0))) 0.01)
+       "to where they actually are" $"x $($math/round after_x)")
+
+  # And leaving removes it. A disconnected player standing in the world forever
+  # is §8 failing in the other direction.
+  ($ws/close b_sock)
+  (await ($time/sleep 1000.0))
+  (say (== (others) 0.0) "and when the second leaves, the avatar goes"
+       $"$($to_int (others)) other player(s)")
+
+  # You are never sent your own avatar — **including when the server is what
+  # moved you.** Every check above moves a player by its own input, and that path
+  # always skipped the sender; the tick did not, so gravity mailed you your own
+  # avatar and the client drew a cube locked to its own camera. A is alone here,
+  # so any player entity it hears about at all is its own.
+  (a_move (a_spawn ~ get 0.0) (+ (a_spawn ~ get 1.0) 25.0) (a_spawn ~ get 2.0))
+  (await ($time/sleep 2600.0))
+  (say (== (others) 0.0)
+       "and the server moving you does not send you your own avatar"
+       $"$($to_int (others)) player entit(y|ies) while alone")
+
+  ($console/log "")
+  (if (== bad 0.0)
+    (then ($console/log "PASS — two players on one server can see each other, which §8.1 called what §8 still owed"))
+    (else ($console/log $"FAIL — $($to_int bad) check(s) failed")))
+  ($ws/close a_sock))

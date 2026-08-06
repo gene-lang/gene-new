@@ -1957,6 +1957,34 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "time/now":
         paramTypes = @[]
         returnType = webType(wtkF64)
+      of "time/after":
+        # `($time/after ms (fn [] : Void …))` — `setTimeout`, and the profile had
+        # no way to wait at all: `frame/request` is the next paint, which is not a
+        # duration, and `time/now` only reads the clock. A browser has this and a
+        # program that has to let something settle needs it.
+        #
+        # Continuation-passing for the same reason `http/get` is, and the note
+        # there is the argument: the callers that matter are event handlers, and
+        # the listener ABI is `Callback [Any] Void` while `spawn` wants an
+        # enclosing scope. A `Task`-returning sleep would read better inside an
+        # `await` and cannot be started from a handler, which is where waiting is
+        # usually wanted.
+        let onDue = webType(wtkCallback)
+        onDue.params = @[]
+        onDue.returnType = webType(wtkVoid)
+        paramTypes = @[webType(wtkF64), onDue]
+        returnType = webType(wtkVoid)
+      of "time/sleep":
+        # `(await ($time/sleep 200.0))` — the same wait as a `Task`, for the code
+        # that *can* await: anything not on the listener ABI. A handler cannot
+        # (see `http/get`), which is why `time/after` exists beside this rather
+        # than instead of it.
+        #
+        # A bare `Task` is not registered in a `scope`, so nothing cancels it. That
+        # is the honest shape for a sleep — `spawn` is what puts work under a
+        # scope's cancellation, and this is not work.
+        paramTypes = @[webType(wtkF64)]
+        returnType = webType(wtkTask, webType(wtkNil))
       of "storage/get":
         paramTypes = @[webType(wtkStr)]
         returnType = unionType(webType(wtkStr), webType(wtkNil))
@@ -4029,6 +4057,13 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "event/movement_y": "$gene_event_num(" & arguments[0] & ", \"movementY\")"
     of "frame/request": "(requestAnimationFrame(" & arguments[0] & "), undefined)"
     of "time/now": "performance.now()"
+    # Argument order flips: Gene reads "after this long, do this", `setTimeout`
+    # takes the callback first.
+    of "time/after":
+      "(setTimeout(" & arguments[1] & ", " & arguments[0] & "), undefined)"
+    of "time/sleep":
+      "new GeneTask(new Promise((resolve) => setTimeout(resolve, " &
+        arguments[0] & ")))"
     of "storage/get": "localStorage.getItem(" & arguments[0] & ")"
     of "storage/set":
       "(localStorage.setItem(" & arguments[0] & ", " & arguments[1] & "), undefined)"

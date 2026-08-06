@@ -386,7 +386,7 @@ unreachable behind sticks. See design.md §13.4.
 
 ```sh
 gene run server &
-node tools/players_probe.mjs      # two peers; the only check that needs two
+node tools/web_spec.mjs web_players_probe      # two peers; the only check that needs two
 ```
 
 §8 called making the player an entity "a refactor M8 should do deliberately",
