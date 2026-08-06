@@ -43,6 +43,23 @@
 # a read and a lookup rather than a parser.
 (let manifest_name "package.gene")
 
+# §9's API surface, as the module paths a mod may import from outside its own
+# directory. Package-root-relative, like every other path this loader hands the
+# VM. **The host writes this and a mod cannot add to it** — that is the whole
+# point, because the previous rule let the mod pick any path in the package and
+# get a host module with host authority.
+(let mod_api : (List Str)
+  ["core/api.gene"
+   # A type re-exports on neither backend (§D7.14), so these four carry the
+   # vocabulary `core/api.gene` cannot pass through: `World` for an ABM action,
+   # the tile kinds, the drawtypes, and the ore shapes.
+   "core/loaded.gene"
+   "core/tiles.gene"
+   "core/registry.gene"
+   "core/ore.gene"
+   # §12's ABM helpers a mod names to register one.
+   "core/abm.gene"])
+
 (type ModLoadError
   ^props {^message Str}
   (ctor [message : Str] (set! self/message message)))
@@ -87,7 +104,20 @@
   # is resolved inside `dir`. Joining them here would hand the boundary to the
   # manifest, which is how §D5.2's escape worked — an entry two directories deep
   # put the mod's sibling files outside its own sandbox.
-  (var mod_value ($runtime/load_sandboxed dir entry grants))
+  #
+  # `mod_api` is the fourth argument and it is the **whole** of what a mod may
+  # reach outside its own directory. It is not a convenience list: everything
+  # else in this package is refused, including `server/storage.gene` — which a
+  # mod granted nothing used to import for `open_world`/`write_meta` and write a
+  # file of its choosing anywhere — and including this very file, whose
+  # `load_mod_at` a mod used to call to re-enter the sandbox under a manifest it
+  # shipped itself with `^grants ["fs"]`.
+  #
+  # So this list is §9's API surface, stated once. It is longer than
+  # `core/api.gene` alone because neither backend re-exports an imported *type*
+  # (§D7.14), so a mod must import `World`, the tile kinds, the drawtypes and the
+  # ore shapes from the modules that declare them.
+  (var mod_value ($runtime/load_sandboxed dir entry grants mod_api))
   # The mod's own entry point, called with the `Game` it registers into. What a
   # mod can reach *through* `game` is `core/api.gene`'s surface and nothing
   # else, which is the boundary §D5 cares about — the sandbox stops a mod

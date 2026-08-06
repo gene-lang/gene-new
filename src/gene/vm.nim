@@ -352,9 +352,18 @@ type
     sandboxRoot: Scope
     sandboxKey: string
     sandboxDir: string
-    # True only while the root for a module *inside* the sandbox directory is
-    # being created; `newGlobalScope` has no path of its own to test.
+    # True while a *restricted* module is being created **and executed**.
+    # `newGlobalScope` reads it because it has no path of its own to test, and
+    # the import boundary reads it to tell "the mod is importing this" from "a
+    # module the host shared is importing this" — a host module's own imports are
+    # the host's business, and refusing them would make sharing impossible.
     sandboxRestricting: bool
+    # The modules **outside** `sandboxDir` a sandboxed load may reach, as
+    # absolute paths. The host names this set; the mod cannot add to it. Without
+    # it "the sandbox covers everything the module imports" was false in the one
+    # direction that mattered: a mod picked any path in the package root and got
+    # a host module with host authority (see `loadSandboxedModule`).
+    sandboxShared: HashSet[string]
     currentModuleDir: string
     # --- packages (docs/proposals/package.md) --------------------------------
     #
@@ -6881,9 +6890,16 @@ proc sandboxedBuiltins*(app: Application, grants: seq[string]): Scope =
   # The lexical root is copied whole: after `staysBare` pruning it holds
   # operators, core forms and type names, none of which reach outside the
   # process. What is *not* copied is `gene`, which is rebound below.
+  # `genex` is withheld along with `gene`, and unlike `gene` it is not rebound.
+  # The grant filter below runs over `app.stdlib` — the members of `gene` — so a
+  # second stdlib root copied whole would never meet it: the first incubating API
+  # that reached outside the process would land inside every sandbox silently.
+  # It is empty today, which is exactly when this is cheap to close. An
+  # experimental root is withheld until its members are classified, and `genex`
+  # is in `reservedStdlibRoots`, so a mod cannot bind the name back.
   let root = newScope(nil, application = app)
   for name, value in full.vars:
-    if name != "gene":
+    if name != "gene" and name != "genex":
       root.define(name, value)
   let restricted = newScope(root)
   for name, value in app.stdlib.vars:
@@ -23519,13 +23535,37 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   # by path rather than by "is it cached yet" makes that deterministic instead
   # of dependent on what the host happened to touch first.
   #
-  # What it leaves is statable: **a mod that imports outside its own directory
-  # gets a host module with host authority.** So a host must not put code a mod
-  # can reach where a mod can reach it — `mods/<name>/` is the boundary, and a
-  # second mod's files are outside the first mod's sandbox on purpose.
+  # **Which modules may be shared is the host's to say, not the mod's.** This
+  # used to leave it at "a mod that imports outside its own directory gets a host
+  # module with host authority", with the obligation on the host not to put
+  # reachable code where a mod can reach it. That obligation cannot be met: the
+  # *mod* writes the import path, so "where a mod can reach" is the whole package
+  # root. Measured, with a mod granted nothing: importing the host's own
+  # `server/storage.gene` created a directory and wrote a file with chosen
+  # content, and importing the host's own loader let the mod re-enter the sandbox
+  # under a manifest it shipped itself, with `^grants ["fs"]`.
+  #
+  # So an out-of-dir import must be on `sandboxShared`, which `load_sandboxed`
+  # takes as an argument. Anything else is refused where it is written.
+  #
+  # The check applies only while a **restricted** module is executing. A module
+  # the host shared is host code, and its own imports are the host's business —
+  # `core/api.gene` reaches half of `core/`, and refusing that would make sharing
+  # impossible, which is the thing type identity requires.
   let inSandbox =
     app.sandboxRoot != nil and app.sandboxDir.len > 0 and
     absPath.isRelativeTo(app.sandboxDir)
+  if app.sandboxRoot != nil and app.sandboxRestricting and not inSandbox and
+      absPath notin app.sandboxShared:
+    var sharedList: seq[string]
+    for p in app.sandboxShared:
+      sharedList.add p
+    sharedList.sort()
+    raisePackageError(pecBoundary,
+      "a sandboxed module may not import outside its own directory: " & absPath,
+      ["directory: " & app.sandboxDir,
+       "shared: " & (if sharedList.len == 0: "(none)"
+                     else: sharedList.join(", "))])
   let identity =
     if inSandbox:
       "sandbox:" & app.sandboxKey & "\x1f" & app.moduleIdentityFor(absPath)
@@ -23540,10 +23580,13 @@ proc loadModuleValue(app: Application, absPath: string): Value =
       not app.moduleCompileArtifacts.hasKey(identity):
     raisePackageError(pecModuleNotFound, "module not found: " & absPath)
   app.moduleLoading.incl identity
+  # **Held across the run, not just the scope.** A module's imports happen while
+  # its top level executes, so a flag that was true only for `newGlobalScope`
+  # could not tell the boundary above who was importing. Each nested load sets
+  # and restores its own, so a shared module's subtree correctly reads false.
   let savedRestricting = app.sandboxRestricting
   app.sandboxRestricting = inSandbox
   let modScope = newGlobalScope(app)
-  app.sandboxRestricting = savedRestricting
   modScope.implStageRoot = true
   let savedDir = app.currentModuleDir
   let savedPkg = app.currentPackage
@@ -23556,6 +23599,7 @@ proc loadModuleValue(app: Application, absPath: string): Value =
     discard run(artifact.chunk, modScope)
     activateStagedImpls(modScope)
   finally:
+    app.sandboxRestricting = savedRestricting
     app.currentModuleDir = savedDir
     app.currentPackage = savedPkg
     app.moduleLoading.excl identity
@@ -23792,7 +23836,7 @@ proc loadFileModule*(app: Application, path: string): Value =
   loadModuleValue(app, absPath)
 
 proc loadSandboxedModule*(app: Application, dir, entry: string,
-                          grants: seq[string]): Value =
+                          grants: seq[string], shared: seq[string]): Value =
   ## Load `dir/entry` with only the standard-library namespaces in `grants` — the
   ## capability boundary design §D5 promised and §D5.1 found missing.
   ##
@@ -23801,6 +23845,19 @@ proc loadSandboxedModule*(app: Application, dir, entry: string,
   ## set for the duration, `newGlobalScope` parents every root created underneath
   ## it to the restricted builtins, and the module cache is keyed by the grant
   ## set so nothing crosses.
+  ##
+  ## **`shared` is the only way out of `dir`, and the host writes it.** It is the
+  ## module surface a mod is written against — for miclone, `core/api.gene` and
+  ## the four modules whose vocabulary the API cannot re-export. Those load as the
+  ## host's own instances, unrestricted and shared, which is what type identity
+  ## requires: a recompiled `core/api.gene` brings its own `Game` and
+  ## `register_all` could not be called at all.
+  ##
+  ## Everything else outside `dir` is refused. The previous rule — out-of-dir is
+  ## shared, and the host must not leave reachable code where a mod can reach it —
+  ## was unenforceable, because the mod writes the import path. Under it a mod
+  ## granted nothing wrote files through `server/storage.gene` and re-entered the
+  ## sandbox through the host's own loader with grants it authored.
   ##
   ## **`dir` is the boundary and it is a parameter, not an inference.** It used
   ## to be reconstructed from the entry — `moduleSourceDir(entry).parentDir()` —
@@ -23814,7 +23871,9 @@ proc loadSandboxedModule*(app: Application, dir, entry: string,
   ##
   ## Nesting is refused rather than silently widened. A sandboxed module that
   ## loaded another sandbox would be choosing its own grants, and "the grants a
-  ## mod asked for" is exactly what the manifest is supposed to decide.
+  ## mod asked for" is exactly what the manifest is supposed to decide. The guard
+  ## against a load *in progress* is here; the guard against a sandboxed module
+  ## calling in *later* is at the builtin, because that one needs a call site.
   if app.sandboxRoot != nil:
     raise newException(GeneError,
       "a sandboxed module cannot load another sandboxed module")
@@ -23845,16 +23904,33 @@ proc loadSandboxedModule*(app: Application, dir, entry: string,
     raisePackageError(pecBoundary,
       "sandboxed entry escapes its own directory: " & entry,
       ["directory: " & sandboxDir])
+  # Resolved the same way `dir` is, so a host names a shared module the way it
+  # names everything else. A path that does not exist is an error here rather
+  # than a refusal later: an allowlist with a typo in it is an allowlist with a
+  # hole, and the hole would show as the mod failing to import something the host
+  # believes it shared.
+  var sharedSet: HashSet[string]
+  for item in shared:
+    let p =
+      if item.isAbsolute: normalizedPath(absolutePath(item))
+      else: normalizedPath(app.appPackage.root / item)
+    let withExt = if splitFile(p).ext.len == 0: p & ".gene" else: p
+    if not fileExists(withExt):
+      raisePackageError(pecModuleNotFound,
+        "shared module not found: " & item)
+    sharedSet.incl withExt
   let root = app.sandboxedBuiltins(grants)
   app.sandboxRoot = root
   app.sandboxKey = grants.sorted().join(",")
   app.sandboxDir = sandboxDir
+  app.sandboxShared = sharedSet
   try:
     result = loadModuleValue(app, absPath)
   finally:
     app.sandboxRoot = nil
     app.sandboxKey = ""
     app.sandboxDir = ""
+    app.sandboxShared.clear()
 
 proc biRuntimeLoadSandboxed(args: openArray[Value],
                             call: ptr NativeCall): Value {.nimcall.} =
@@ -23879,9 +23955,12 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
   ## computation and nothing else. Anything not listed is **absent** from the
   ## module's `gene` root, so naming it fails where it is written rather than
   ## when it is called.
-  if args.len != 3:
+  ## `shared` is the fourth argument and the only way out of `dir`: the module
+  ## paths a mod may import from outside its own directory. The host writes it.
+  if args.len != 4:
     raise newException(GeneError,
-      "runtime/load_sandboxed expects a directory, an entry, and a list of grants")
+      "runtime/load_sandboxed expects a directory, an entry, a list of " &
+      "grants, and a list of shared modules")
   if args[0].kind != vkString:
     raise newException(GeneError,
       "runtime/load_sandboxed directory must be a Str")
@@ -23890,6 +23969,15 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
   if args[2].kind != vkList:
     raise newException(GeneError,
       "runtime/load_sandboxed grants must be a list of namespace names")
+  if args[3].kind != vkList:
+    raise newException(GeneError,
+      "runtime/load_sandboxed shared must be a list of module paths")
+  var shared: seq[string]
+  for item in args[3].listItems:
+    if item.kind != vkString:
+      raise newException(GeneError,
+        "runtime/load_sandboxed shared module must be a Str, got " & $item.kind)
+    shared.add item.strVal
   var grants: seq[string]
   for item in args[2].listItems:
     if item.kind != vkString:
@@ -23911,8 +23999,21 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
   if scope == nil or scope.application == nil:
     raise newException(GeneError,
       "runtime/load_sandboxed cannot resolve the calling application")
-  Application(scope.application).loadSandboxedModule(args[0].strVal,
-                                                     args[1].strVal, grants)
+  let app = Application(scope.application)
+  # **The nesting guard, at call time.** `loadSandboxedModule`'s own check reads
+  # `sandboxRoot != nil`, which is true only while a load is *in progress* — so a
+  # function a mod exported, called later on a tick, sailed straight past it and
+  # could re-enter with grants of its own choosing. The call site is the only
+  # thing that knows who is asking, so ask it: a scope chain that reaches a
+  # sandbox root is a sandboxed caller, whenever it calls.
+  var walk = scope
+  while walk != nil:
+    for _, sandboxRoot in app.sandboxRoots:
+      if walk == sandboxRoot:
+        raise newException(GeneError,
+          "a sandboxed module cannot load another sandboxed module")
+    walk = walk.parent
+  app.loadSandboxedModule(args[0].strVal, args[1].strVal, grants, shared)
 
 proc loadCompiledFileModule*(app: Application, path: string,
                              chunk: Chunk): Value =

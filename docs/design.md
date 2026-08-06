@@ -4821,7 +4821,7 @@ libcurl binding as `net/http_client`. Design decisions:
 ### 15.10 Sandboxed module loading
 
 ```gene
-($runtime/load_sandboxed dir entry grants)   # -> the module's namespace value
+($runtime/load_sandboxed dir entry grants shared)   # -> the module's namespace
 ```
 
 Load `dir/entry` at runtime with **only** the standard-library namespaces named
@@ -4842,7 +4842,19 @@ the real one back. A denied namespace is *absent*, so naming it fails.
 Five properties are load-bearing:
 
 - **The restriction covers everything the module imports**, not just the named
-  file. Otherwise a module that cannot name `$fs` imports one that can.
+  file. Otherwise a module that cannot name `$fs` imports one that can. An import
+  that resolves outside `dir` must be named in `shared`; anything else is refused
+  where it is written.
+
+  This bullet and the cache bullet below used to contradict each other, and the
+  code implemented the wrong one. Out-of-dir modules loaded **unrestricted**, with
+  the obligation left on the host "not to put reachable code where a mod can
+  reach it" — which cannot be met, because the *mod* writes the import path, so
+  the reachable set is the whole package root. Measured, with a mod granted
+  nothing: it imported a host module that opens a database by path, and wrote a
+  file of its choosing; and it imported the host's own loader and re-entered the
+  sandbox under a manifest it shipped itself asking for `fs`. `shared` is the
+  repair — the host names the shared set, and it is a list you can read.
 - **It follows the value, not the load.** A function exported out of a sandbox is
   still restricted when called later, which is what makes a plugin API safe to
   call back into.
@@ -4857,7 +4869,20 @@ Five properties are load-bearing:
   not a concession, because a recompiled module brings its own type identities
   and its types would stop being the host's.
 - **A sandbox cannot load another sandbox.** Nesting would let the loaded code
-  choose its own grants.
+  choose its own grants. The check is at the **call site**, not on "is a load in
+  progress" — that was true only during the load, so a function the module
+  exported and something called later walked past it.
+
+  One residue, stated because it is the host's to hold and it is checkable: a
+  *host* function that loads sandboxes cannot be attributed to the mod behind it,
+  because the call's scope chain is the host's. So **do not put a module that
+  loads sandboxes in `shared`.** That is one line to check against the allowlist,
+  where the old obligation was a claim about every file in the package.
+
+`genex` is withheld from a sandbox and not rebound. The grant filter runs over
+the members of `gene`, so a second stdlib root would never meet it; `genex` is
+empty today, which is when that is cheap to close. An incubating root is
+withheld until its members are classified.
 
 It is a namespace boundary, not a resource one: a granted `fs` is all of `fs`,
 not a directory. The web profile has no runtime module loading and therefore no

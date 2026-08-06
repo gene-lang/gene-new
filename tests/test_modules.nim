@@ -23,12 +23,14 @@ proc runProgramInOwnApp(src: string): Value =
   initModuleContext(getTempDir())
   run(compileSource(src), newGlobalScope(newApplication(modDir)))
 
-proc loadSandboxed(dir, entry, grants: string): string =
+proc loadSandboxed(dir, entry, grants: string, shared = "[]"): string =
   ## A `$runtime/load_sandboxed` call, as source. The directory and the entry are
   ## separate arguments: `dir` is the sandbox boundary and the host supplies it,
-  ## `entry` is what a manifest names and resolves inside it (§D5.2).
+  ## `entry` is what a manifest names and resolves inside it (§D5.2). `shared` is
+  ## the only way out of `dir`, and it defaults to nothing — a sandbox that shares
+  ## nothing is the one every case below should have to opt out of.
   "($runtime/load_sandboxed \"" & dir.replace("\\", "/") & "\" \"" & entry &
-    "\" " & grants & ")"
+    "\" " & grants & " " & shared & ")"
 
 proc checkCCompiles(source, label: string) =
   let path = modDir / (label & ".c")
@@ -972,7 +974,8 @@ suite "modules — the capability sandbox (design §D5)":
       "(fn take_it [r : Reg] : Int r/n)")
     check runProgramInOwnApp(
       "(import [Reg] from \"./host_type\") " &
-      "(var m " & loadSandboxed(modRoot, "src/shared_mod.gene", "[]") & ") " &
+      "(var m " & loadSandboxed(modRoot, "src/shared_mod.gene", "[]",
+                                "[\"" & (modDir / "host_type.gene").replace("\\", "/") & "\"]") & ") " &
       "(m/take_it (new Reg 7))").print() == "7"
 
   test "a mod's own sibling file is inside the sandbox, however deep the entry":
@@ -1002,6 +1005,80 @@ suite "modules — the capability sandbox (design §D5)":
     # case above would still be green if `../../free` simply stopped resolving.
     discard runProgram(loadSandboxed(modRoot, "src/a/deep_mod.gene", "[\"fs\"]"))
     check fileExists(getTempDir() / "gene_sandbox_escape")
+
+  test "an out-of-dir import the host did not share is refused":
+    ## §D5.2 said "the restriction covers everything the module imports" and did
+    ## not do that: a module outside `dir` loaded with **full host authority**, and
+    ## the mod writes the import path, so the reachable set was the whole package
+    ## root. Measured against the real layout: a mod granted nothing imported the
+    ## host's `server/storage.gene`, called `open_world`/`write_meta`, and wrote a
+    ## file of its choosing. The host cannot meet "do not leave reachable code
+    ## where a mod can reach it" — so the host names the shared set instead.
+    writeModule("host_authority.gene",
+      "(fn touch [p : Str] : Str ($fs/write_text $fs/WriteDir p \"host\") \"w\")")
+    let modRoot = modDir / "mods" / "reacher"
+    createDir(modRoot / "src")
+    writeFile(modRoot / "src" / "reacher.gene",
+      "(import [touch] from \"../../../host_authority\") " &
+      "(fn go [p : Str] : Str (touch p))")
+    expect GeneError:
+      discard runProgram(loadSandboxed(modRoot, "src/reacher.gene", "[]"))
+    check not fileExists(getTempDir() / "gene_sandbox_escape")
+    # The control, so this is a refusal about *authority* and not a broken path:
+    # named as shared, the identical import loads and works.
+    check runProgram(
+      "(var m " & loadSandboxed(modRoot, "src/reacher.gene", "[]",
+        "[\"" & (modDir / "host_authority.gene").replace("\\", "/") & "\"]") &
+      ") (m/go \"" &
+      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") & "\")"
+      ).print() == "\"w\""
+    check fileExists(getTempDir() / "gene_sandbox_escape")
+
+  test "a granted `runtime` cannot re-enter the sandbox after its load finished":
+    ## The nesting guard read `sandboxRoot != nil`, which is true only *during* a
+    ## load. A mod granted `runtime` could therefore export a function, be called
+    ## later on a tick, and pick its own grants — the guard had already been
+    ## unset. It is at the call site now, so it answers for *who is asking* rather
+    ## than for what moment it is.
+    let modRoot = modDir / "mods" / "climber2"
+    createDir(modRoot / "src")
+    createDir(modRoot / "inner")
+    writeFile(modRoot / "inner" / "inner.gene",
+      "($fs/write_text $fs/WriteDir \"" &
+      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") &
+      "\" \"grants I chose myself\")")
+    writeFile(modRoot / "src" / "climber2.gene",
+      "(fn escalate [] : Any ($runtime/load_sandboxed \"" &
+      modRoot.replace("\\", "/") & "/inner\" \"inner.gene\" [\"fs\"] []))")
+    expect GeneError:
+      discard runProgram(
+        "(var m " & loadSandboxed(modRoot, "src/climber2.gene",
+                                  "[\"runtime\"]") & ") (m/escalate)")
+    check not fileExists(getTempDir() / "gene_sandbox_escape")
+
+  test "and the host's own loader is not reachable to launder that call":
+    ## The other half, and the one the allowlist owns. A mod cannot be stopped
+    ## from calling a *host* function that loads sandboxes — that call's scope
+    ## chain is the host's, so no call-site test can see the mod behind it. What
+    ## stops it is that the host module is not importable unless the host shared
+    ## it. This is the shape the escape took against the real layout: the mod
+    ## imported `server/mods_runtime.gene` and called `load_mod_at` on a directory
+    ## whose manifest it shipped with `^grants ["fs"]`.
+    ##
+    ## **So the residual obligation is one line and it is checkable: do not share
+    ## a module that loads sandboxes.** That is enforceable by reading the
+    ## allowlist, unlike "do not leave reachable code where a mod can reach it",
+    ## which was a claim about the whole package root.
+    writeModule("host_loader.gene",
+      "(fn load_it [d : Str e : Str] : Any " &
+      "  ($runtime/load_sandboxed d e [\"fs\"] []))")
+    let modRoot = modDir / "mods" / "climber3"
+    createDir(modRoot / "src")
+    writeFile(modRoot / "src" / "climber3.gene",
+      "(import [load_it] from \"../../../host_loader\") " &
+      "(fn go [] : Any (load_it \"x\" \"y.gene\"))")
+    expect GeneError:
+      discard runProgram(loadSandboxed(modRoot, "src/climber3.gene", "[]"))
 
   test "an entry that points out of its own directory is refused":
     ## The other half of the same rule. If the entry could escape `dir`, the mod's

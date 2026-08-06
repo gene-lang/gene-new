@@ -494,6 +494,35 @@ no valid empty case and no input the subject controls.** The chest's "nothing
 open" was a legal x coordinate; the cache key's "not sandboxed" was a legal empty
 grant list; the sandbox root was a legal manifest field.
 
+##### And a third time, in the sentence directly below this one
+
+"A mod importing outside its own directory gets a host module with host
+authority, so a host must not put reachable code where a mod can reach it" was
+written as a statable consequence. It is an **unenforceable** one, and a code
+review caught it: the *mod* writes the import path, so "where a mod can reach" is
+the whole package root. Reproduced against this repository, with a mod declaring
+`^grants []`:
+
+- it imported `server/storage.gene`, called `open_world` on a path of its
+  choosing and `write_meta` with content of its choosing, and the files appeared;
+- it imported `server/mods_runtime.gene` — this loader — and called `load_mod_at`
+  on a sub-directory whose `package.gene` **the mod itself shipped**, declaring
+  `^grants ["fs"]`. It did not borrow grants; it authored them. The nesting guard
+  read "is a load in progress", and `register_all` runs after the load returns.
+
+So `load_sandboxed` takes a fourth argument: the modules outside `dir` a mod may
+import, named by the host. `mods_runtime.gene` sets it to §9's API surface — six
+modules, six because a *type* re-exports on neither backend (§D7.14) — and
+everything else in this package, including that file itself, is refused where the
+import is written. The nesting guard moved to the call site.
+
+Same lesson a third time, and now with a shape worth stating: **an obligation the
+subject can restate at will is not a boundary, it is a hope.** The fix in every
+one of these three has been to move the decision to something the subject does
+not write — a name instead of a coordinate, `sandboxRoot` instead of an empty
+string, an argument instead of an inference, and now a list instead of a rule
+about where files may live.
+
 ### 9.3 The runtime loader — and the Application that was not the caller's
 
 `server/mods_runtime.gene` reads a mod's `package.gene`, takes its `^grants`,
