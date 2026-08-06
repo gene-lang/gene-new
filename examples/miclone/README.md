@@ -44,9 +44,9 @@ cd examples/miclone
 gene run divergence                                 # the VM
 
 gene build --target web probes/divergence.gene --out-dir dist
-node tools/divergence.mjs                           # the web profile, via V8
+node tools/web_spec.mjs web_divergence                           # the web profile, via V8
 
-gene run divergence | diff - <(node tools/divergence.mjs)   # no output
+gene run divergence | diff - <(node tools/web_spec.mjs web_divergence)   # no output
 ```
 
 323 samples agree exactly, which is what makes §D3.1's *exact half* an
@@ -120,8 +120,13 @@ server/     VM only: the on-disk block format, the SQLite world store (§11),
             and main.gene — the M6 server that owns the world (§10)
 client/     the browser shell: WebGL2 renderer, atlas, sound, camera
               main.gene generates the world; net_main.gene is handed it (§10)
-probes/     the probes and cross-backend specs; `run_*.gene` are their VM shells
-tools/      the web-profile shells
+probes/     the probes and cross-backend specs; `run_*.gene` are their VM
+            shells and `web_*.gene` the web-profile ones — the same shell twice,
+            differing only in `$println` vs `$console/log`
+tools/      the harnesses that cannot be Gene: a DOM stub, and the smokes that
+            boot a server and poll a port. `web_spec.mjs` is the one line the
+            profile requires — a web module exports an entry and the host calls
+            it
 docs/       design.md
 ```
 
@@ -424,7 +429,7 @@ visible — a canopy is a hundred leaves all facing each other. It is on the wir
 ### §8, §9 — the callbacks, and a blocker that was not one
 
 ```sh
-gene run abm_spec | diff - <(node tools/abm_spec.mjs)   # 65 checks, both backends
+gene run abm_spec | diff - <(node tools/web_spec.mjs web_abm_spec)   # 65 checks, both backends
 
 gene run server &
 node tools/entity_probe.mjs      # hangs an item in mid-air, then stops talking
@@ -456,16 +461,16 @@ every 44 minutes. `abm_spec` asserts that directly. See design.md §12.3.
 Both must produce byte-identical output on the VM and through the web profile.
 
 ```sh
-gene run world_spec  | diff - <(node tools/world_spec.mjs)    # §1, §2
-gene run mapgen_spec | diff - <(node tools/mapgen_spec.mjs)   # §3, §5, §14
-gene run light_spec  | diff - <(node tools/light_spec.mjs)    # §4
-gene run loaded_spec | diff - <(node tools/loaded_spec.mjs)   # §1.1, §4.2
-gene run physics_spec | diff - <(node tools/physics_spec.mjs) # §7
-gene run edit_spec   | diff - <(node tools/edit_spec.mjs)     # §7, §7.1
-gene run inventory_spec | diff - <(node tools/inventory_spec.mjs)  # §2, §7.1
-gene run wire_spec   | diff - <(node tools/wire_spec.mjs)     # §10
-gene run protocol_spec | diff - <(node tools/protocol_spec.mjs)    # §10
-gene run abm_spec    | diff - <(node tools/abm_spec.mjs)      # §8, §9, §12
+gene run world_spec  | diff - <(node tools/web_spec.mjs web_world_spec)    # §1, §2
+gene run mapgen_spec | diff - <(node tools/web_spec.mjs web_mapgen_spec)   # §3, §5, §14
+gene run light_spec  | diff - <(node tools/web_spec.mjs web_light_spec)    # §4
+gene run loaded_spec | diff - <(node tools/web_spec.mjs web_loaded_spec)   # §1.1, §4.2
+gene run physics_spec | diff - <(node tools/web_spec.mjs web_physics_spec) # §7
+gene run edit_spec   | diff - <(node tools/web_spec.mjs web_edit_spec)     # §7, §7.1
+gene run inventory_spec | diff - <(node tools/web_spec.mjs web_inventory_spec)  # §2, §7.1
+gene run wire_spec   | diff - <(node tools/web_spec.mjs web_wire_spec)     # §10
+gene run protocol_spec | diff - <(node tools/web_spec.mjs web_protocol_spec)    # §10
+gene run abm_spec    | diff - <(node tools/web_spec.mjs web_abm_spec)      # §8, §9, §12
 ```
 
 ### §11 — persistence

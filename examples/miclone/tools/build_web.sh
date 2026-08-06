@@ -30,6 +30,10 @@ probes/divergence probes/world_spec probes/mapgen_spec probes/light_spec
 probes/loaded_spec probes/physics_spec probes/edit_spec probes/inventory_spec
 probes/wire_spec probes/protocol_spec probes/abm_spec
 core/seen
+probes/web_world_spec probes/web_mapgen_spec probes/web_light_spec
+probes/web_loaded_spec probes/web_physics_spec probes/web_edit_spec
+probes/web_inventory_spec probes/web_wire_spec probes/web_protocol_spec
+probes/web_divergence probes/web_abm_spec
 "
 
 for m in $MODULES; do

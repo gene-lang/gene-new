@@ -815,13 +815,13 @@ reasoning:
 #### Result — **PASS, zero differing bits**
 
 Built as `probes/divergence.gene` (portable) with `probes/run_divergence.gene`
-and `tools/divergence.mjs` as the two shells. 323 samples, covering `wrap32`,
+and `probes/web_divergence.gene` as the two shells. 323 samples, covering `wrap32`,
 `mix32`, `smoothstep`, `lerp`, the 32-bit hash and its unit form, 2D and 3D
 lattice noise, `fbm2`/`fbm3`/`ridged2` at terrain frequencies, and three
 4,096-sample column checksums.
 
 ```
-gene run divergence | diff - <(node tools/divergence.mjs)   # no output
+gene run divergence | diff - <(node tools/web_spec.mjs web_divergence)   # no output
 ```
 
 Every sample agrees **bit for bit** between the Nim VM and V8 — including the

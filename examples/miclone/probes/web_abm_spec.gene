@@ -1,0 +1,28 @@
+# The web-profile shell for the abm cross-backend spec.
+#
+#   gene build --target web probes/web_abm_spec.gene --out-dir dist
+#   node tools/web_spec.mjs web_abm_spec
+#
+# Counterpart to `probes/run_abm_spec.gene`, and a line-for-line one: the only
+# difference is `$console/log` where the VM has `$println`, because printing is
+# the one thing `core/` cannot share (design.md §14). Both shells add nothing to
+# the report, so a difference between the two outputs is a difference between the
+# runtimes — which is the whole point of the pair.
+#
+# This replaced a hand-written `tools/abm_spec.mjs`: the same shell in the language
+# under test, which is one language fewer for a file whose job is to add nothing
+# to what it prints. The work is in `main` because the web profile has no
+# top-level statements — a module exports an entry and the host calls it, the way
+# `net.html` calls the client's.
+
+(mod web_abm_spec ^profile web)
+
+(import [report failures] from "./abm_spec.gene")
+
+(fn main [] : Void
+  ($console/log (report))
+  ($console/log "")
+  (var bad (failures))
+  (if (== bad 0.0)
+    (then ($console/log "PASS — every check agrees"))
+    (else ($console/log $"FAIL — ${bad} check(s) failed"))))
