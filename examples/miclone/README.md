@@ -343,7 +343,7 @@ measurement next to the claim it falsified.
 
 ```sh
 gene run server &
-node tools/tick_probe.mjs        # digs under sand, then stops talking
+node tools/web_spec.mjs web_tick_probe        # digs under sand, then stops talking
 ```
 
 §12.1 said the loop would arrive with "the first thing that changes without

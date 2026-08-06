@@ -1,0 +1,214 @@
+# design.md §12's tick, and the first thing in this engine that changes without
+# being asked.
+#
+#   gene run server &
+#   node tools/web_spec.mjs web_tick_probe
+#
+# Every other network harness drives a request and checks the answer. This one
+# checks that the server does something **nobody asked it to**: it digs the node
+# under a column of sand and then stops talking, and what it waits for is an
+# unsolicited node delta arriving on a socket that sent nothing.
+#
+# That is the whole difference between M6's reactive server and §12's ticking
+# one, and it is why the check is "a message arrived during silence" rather than
+# "a message had the right contents".
+#
+# This was `tools/tick_probe.mjs`. Two things changed in the move and both are
+# improvements: the world is a `core/loaded.gene` `World` rather than a Map of
+# block copies, so `node_at` is the engine's own accessor and not a coordinate
+# formula restated in the harness; and the codec comes from `core/protocol.gene`
+# by source.
+
+(mod web_tick_probe ^profile web)
+
+(import [new_cursor] from "../core/wire.gene")
+(import [message_kind msg_hello msg_registry msg_block msg_node_delta
+         new_hello decode_hello hello_bx hello_by hello_bz
+         hello_span_x hello_span_y hello_span_z
+         decode_registry
+         new_block_header decode_block block_bx block_by block_bz
+         new_node_delta decode_node_delta delta_x delta_y delta_z delta_id
+         size_request_blocks encode_request_blocks
+         size_dig encode_dig]
+        from "../core/protocol.gene")
+(import [Registry new_wire_registry id_of] from "../core/registry.gene")
+(import [World new_world store_block node_at] from "../core/loaded.gene")
+
+(let block_dim 16.0)
+(let block_nodes 4096.0)
+(let max_deltas 4096.0)
+
+(fn main [] : Void
+  (var bad 0.0)
+  (var say (fn [ok : Bool label : Str detail : Str] : Void
+    (var mark (if ok "ok  " "FAIL"))
+    ($console/log $"  ${mark} ${label}   ${detail}")
+    (if_yes (! ok) (set bad (+ bad 1.0)))))
+
+  (var c (new_cursor))
+  (var rc (new_cursor))
+  (var hello (new_hello))
+  (var header (new_block_header))
+  (var delta (new_node_delta))
+  (var block_c ($buffer F32 block_nodes))
+  (var block_l ($buffer F32 block_nodes))
+  (var reg (new_wire_registry))
+  # A delta is four numbers, so the log is one flat buffer and a count. The
+  # profile has no `set!` on a `(List T)`, and a buffer is the shape the rest of
+  # this engine already logs into.
+  (var dlog ($buffer F64 (* max_deltas 4.0)))
+  (var dn 0.0)
+  (var blocks_in 0.0)
+  (var world : World (new_world 0.0 0.0 0.0 1.0 1.0 1.0))
+  (var have_hello false)
+
+  (var sock ($ws/connect "ws://127.0.0.1:8790/"))
+  ($ws/on_bytes sock (fn [b : (Buffer U8)] : Void
+    (var kind (message_kind b))
+    (if_yes (== kind msg_hello)
+      (decode_hello b c hello)
+      # The extent is the server's to state (§10), so the world is built from
+      # `hello` rather than from constants this file would have to keep in step.
+      (set world (new_world (hello ~ get hello_bx) (hello ~ get hello_by)
+                            (hello ~ get hello_bz) (hello ~ get hello_span_x)
+                            (hello ~ get hello_span_y) (hello ~ get hello_span_z)))
+      (set have_hello true))
+    (if_yes (== kind msg_registry) (decode_registry b c reg))
+    (if_yes (== kind msg_block)
+      (decode_block b c header block_c block_l)
+      (store_block world (header ~ get block_bx) (header ~ get block_by)
+                   (header ~ get block_bz) block_c)
+      (set blocks_in (+ blocks_in 1.0)))
+    (if_yes (== kind msg_node_delta)
+      (decode_node_delta b c delta)
+      (if_yes (< dn max_deltas)
+        (dlog ~ set! (* dn 4.0) (delta ~ get delta_x))
+        (dlog ~ set! (+ (* dn 4.0) 1.0) (delta ~ get delta_y))
+        (dlog ~ set! (+ (* dn 4.0) 2.0) (delta ~ get delta_z))
+        (dlog ~ set! (+ (* dn 4.0) 3.0) (delta ~ get delta_id))
+        (set dn (+ dn 1.0))))))
+
+  (await ($time/sleep 900.0))
+  ($console/log "")
+  ($console/log "design.md §12 — the server tick, and a world that changes on its own")
+  ($console/log "")
+  (say have_hello "the server answered the handshake" "hello and registry")
+
+  # The whole world, in windows of 64 — the queue drops the oldest frame past
+  # 256, which is why this asks rather than being pushed (§10.1).
+  (var total (* (hello ~ get hello_span_x)
+                (* (hello ~ get hello_span_y) (hello ~ get hello_span_z))))
+  (var from 0.0)
+  (while (< from total)
+    (var count (if (< (- total from) 64.0) (- total from) 64.0))
+    (var m ($buffer U8 (size_request_blocks)))
+    (encode_request_blocks m rc from count)
+    ($ws/send_bytes sock m)
+    # Wait for the window to *arrive*, not for a guessed interval: a fixed sleep
+    # got 230 of 576 blocks on a loaded machine and read as a broken server.
+    (var want (+ from count))
+    (var spins 0.0)
+    (while (&& (< blocks_in want) (< spins 200.0))
+      (await ($time/sleep 50.0))
+      (set spins (+ spins 1.0)))
+    (set from (+ from count)))
+  (say (== blocks_in total) "the world arrived" $"$($to_int blocks_in) blocks")
+
+  # Find sand with sand above it and something solid below, so digging the
+  # support leaves a column with nothing holding it up. Searched rather than
+  # assumed: the terrain is generated and a hardcoded coordinate is a fixture
+  # that rots.
+  (var sand (id_of reg "miclone:sand"))
+  (var ox (* (hello ~ get hello_bx) block_dim))
+  (var oy (* (hello ~ get hello_by) block_dim))
+  (var oz (* (hello ~ get hello_bz) block_dim))
+  # **A flag, not a coordinate sentinel.** `-1` is a legal x here — this world
+  # sits at x = -1437 — and §13.4's chest read as closed for exactly this reason.
+  # Fourth time in this project; the rule is in the design doc and I still wrote
+  # it, which is the argument for the rule being in the *type* one day.
+  (var found false)
+  (var tx 0.0)
+  (var ty 0.0)
+  (var tz 0.0)
+  (var x (+ ox 1.0))
+  (var lim_x (+ ox (- (* (hello ~ get hello_span_x) block_dim) 1.0)))
+  (var lim_y (+ oy (- (* (hello ~ get hello_span_y) block_dim) 1.0)))
+  (var lim_z (+ oz (- (* (hello ~ get hello_span_z) block_dim) 1.0)))
+  (while (&& (< x lim_x) (! found))
+    (var z (+ oz 1.0))
+    (while (&& (< z lim_z) (! found))
+      (var y (+ oy 2.0))
+      (while (&& (< y lim_y) (! found))
+        (if_yes (&& (== (node_at world x y z) sand)
+                    (&& (== (node_at world x (+ y 1.0) z) sand)
+                        (!= (node_at world x (- y 1.0) z) 0.0)))
+          (set found true)
+          (set tx x)
+          (set ty (- y 1.0))
+          (set tz z))
+        (set y (+ y 1.0)))
+      (set z (+ z 1.0)))
+    (set x (+ x 1.0)))
+  (say found "found a sand column with something under it"
+       $"sand at $($math/round tx), $($math/round (+ ty 1.0)), $($math/round tz)")
+
+  (if_yes found
+    # Dig the support out. That is the last thing this socket says.
+    (var before dn)
+    (var dig ($buffer U8 (size_dig)))
+    (encode_dig dig rc tx ty tz)
+    ($ws/send_bytes sock dig)
+    # Only long enough for the dig's own answer. The tick is 100 ms and a column
+    # falls a node per tick, so waiting longer here would let the whole cascade
+    # land inside the "asked for it" window and leave nothing to observe during
+    # the silence below — which is exactly how this probe first read a working
+    # tick as a broken one.
+    (await ($time/sleep 140.0))
+    (say (>= dn (+ before 1.0)) "digging under it answers"
+         $"$($to_int (- dn before)) delta(s)")
+
+    # And now silence. Anything arriving from here is the server acting on its
+    # own, which is the property §12 exists for and M6 could not have.
+    (var quiet dn)
+    (await ($time/sleep 2600.0))
+    (say (> dn quiet) "the server sent node deltas while the client said nothing"
+         $"$($to_int (- dn quiet)) unsolicited delta(s)")
+
+    # Two ABMs run here and they trigger differently, so what arrives during the
+    # silence is sorted by *where* rather than counted. The column is the targeted
+    # one (§12's check queue); anything else is the ambient walk, which has the
+    # whole world to choose from and is not aimed at us. This check used to be
+    # "all of them in the column" and was right until the sampled trigger had a
+    # mod action to run — the probe was wrong, not the server.
+    (var in_col 0.0)
+    (var away 0.0)
+    (var became_air 0.0)
+    (var became_sand 0.0)
+    (var span_ok true)
+    (var i quiet)
+    (while (< i dn)
+      (var dx (dlog ~ get (* i 4.0)))
+      (var dy (dlog ~ get (+ (* i 4.0) 1.0)))
+      (var dz (dlog ~ get (+ (* i 4.0) 2.0)))
+      (var did (dlog ~ get (+ (* i 4.0) 3.0)))
+      (if (&& (== dx tx) (== dz tz))
+        (then
+          (set in_col (+ in_col 1.0))
+          (if_yes (== did 0.0) (set became_air (+ became_air 1.0)))
+          (if_yes (== did sand) (set became_sand (+ became_sand 1.0)))
+          (if_yes (|| (< dy ty) (> dy (+ ty 8.0))) (set span_ok false)))
+        (else (set away (+ away 1.0))))
+      (set i (+ i 1.0)))
+    (say (> in_col 0.0) "the column that lost its support is one of them"
+         $"$($to_int in_col) in column, $($to_int away) elsewhere")
+    (say (&& (> became_sand 0.0) (> became_air 0.0))
+         "and they are a node moving: some became sand, some became air"
+         $"$($to_int became_sand) sand, $($to_int became_air) air")
+    (say span_ok
+         "and each is within the span the column could have moved through" ""))
+
+  ($console/log "")
+  (if (== bad 0.0)
+    (then ($console/log "PASS — the world changed without being asked, which is what §12's tick is for"))
+    (else ($console/log $"FAIL — $($to_int bad) check(s) failed")))
+  ($ws/close sock))

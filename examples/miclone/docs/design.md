@@ -3718,7 +3718,7 @@ zero in 60 s at the same rate.
 world every 44 minutes. That is what ambient should mean, and it is now a
 statable guarantee rather than a hope, because the walk reaches everything.
 
-`tools/tick_probe.mjs` is the check, and it asserts the property rather than the
+`probes/web_tick_probe.gene` is the check, and it asserts the property rather than the
 mechanism: it digs the support out from under a sand column, **stops talking**,
 and waits for node deltas to arrive on a silent socket. That is the whole
 difference between M6's reactive server and this one.
@@ -4097,7 +4097,7 @@ Four layers, and the second is the one that matters most here.
 
 5. **Silence, for anything the server does on its own.** §12's tick and §8's
    `on_step` are checked by a harness that drives one action and then **stops
-   talking** — `tools/tick_probe.mjs` for nodes, `tools/entity_probe.mjs` for
+   talking** — `probes/web_tick_probe.gene` for nodes, `tools/entity_probe.mjs` for
    entities. What is asserted is that a message arrived on a socket that sent
    nothing, which is a property no request/response harness can express.
 

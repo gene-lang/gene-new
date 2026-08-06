@@ -33,7 +33,7 @@ core/seen
 probes/web_world_spec probes/web_mapgen_spec probes/web_light_spec
 probes/web_loaded_spec probes/web_physics_spec probes/web_edit_spec
 probes/web_inventory_spec probes/web_wire_spec probes/web_protocol_spec
-probes/web_divergence probes/web_abm_spec probes/web_players_probe
+probes/web_divergence probes/web_abm_spec probes/web_players_probe probes/web_tick_probe
 "
 
 for m in $MODULES; do
