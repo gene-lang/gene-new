@@ -16,7 +16,7 @@
 // the DOM, for the reasons `tools/dom_stub.mjs` gives, and that is the same
 // stub the local client's smoke test uses.
 //
-// ## How this differs from `net_probe.mjs`
+// ## How this differs from `probes/web_net_probe.gene`
 //
 // The probe is a *peer*: it speaks the protocol itself, from `core/`, and
 // proves the server answers correctly. This is a *client*: it runs the 535
@@ -247,8 +247,8 @@ try {
   // What the server said the spawn is — decoded here with the same `core/`
   // modules both peers use, so this is not a second reading of the format. The
   // field offsets are positional because `protocol.gene` names them with `let`
-  // and the web profile exports functions only; `net_probe.mjs` reads them the
-  // same way. 0 version, 1 seed, 2-4 origin block, 5-7 extent, 8-10 spawn.
+  // and the web profile exports functions only. The Gene peers read the `let`s
+  // directly; this file is the reason those accessors still exist. 0 version, 1 seed, 2-4 origin block, 5-7 extent, 8-10 spawn.
   const hello = P.new_hello();
   P.decode_hello(helloFrame, new_cursor(), hello);
   const spawn = [hello[8], hello[9], hello[10]].map(Math.round);
@@ -311,8 +311,8 @@ try {
 
   // §7.1's authority, from the client's side, and it runs *before* the player
   // walks anywhere: the ground beside the server-chosen spawn is the one piece
-  // of this world whose shape another harness already states — `net_probe.mjs`
-  // digs there and calls it "solid ground". Aiming from somewhere the player
+  // of this world whose shape another harness already states —
+  // `web_net_probe` digs there and calls it "solid ground". Aiming from somewhere the player
   // wandered to would make a red result mean "the terrain there was sea".
   //
   // The hotbar is empty until an *inventory message* fills it: this client
@@ -395,7 +395,7 @@ try {
   // table the renderer walks, so a count the client can say is a cube the
   // client can draw.
   // §8's entities, drawn. **The message is injected rather than provoked**, and
-  // that is a deliberate scope line: `tools/entity_probe.mjs` already proves the
+  // that is a deliberate scope line: `web_entity_probe` already proves the
   // server spawns, steps and broadcasts one against a real socket, and what is
   // untested is the other end — decode, table, mesh, draw. Provoking a real
   // drop here would need a full hotbar, which needs eight *distinct* items,
@@ -457,7 +457,7 @@ try {
 
   // §13's forms, in the client rather than in a peer.
   //
-  // `chest_probe.mjs` speaks the protocol itself and proved the *server* right;
+  // `web_chest_probe` speaks the protocol itself and proved the *server* right;
   // nothing proved the client used it, and it did not — `net_main.gene` imported
   // none of the three form messages and dropped both of them on the floor, so
   // the panel a mod declares existed only in the singleplayer client and the
@@ -485,7 +485,7 @@ try {
   // A press. This harness owns "the client uses the protocol right", so what it
   // checks is that a click which lands on a button sends the action that button
   // declares — and that a click which lands nowhere sends nothing. Whether the
-  // craft then happens is the server's, and `chest_probe.mjs` owns that.
+  // craft then happens is the server's, and `web_chest_probe` owns that.
   const press = (el) => {
     const r = el.getBoundingClientRect();
     fire("form", "click", { clientX: r.left + r.width / 2,

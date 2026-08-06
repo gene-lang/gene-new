@@ -1,0 +1,369 @@
+# design.md §D8's M6: a client and a server as separate processes.
+#
+#   gene run server &                 (or: gene run server, in another shell)
+#   node tools/web_spec.mjs web_net_probe
+#
+# Joins the running Gene server over a real WebSocket and drives the whole
+# §10 exchange with the same `core/` modules the browser client uses: the
+# handshake, the registry, flow-controlled block transfer, and §7.1's
+# authoritative dig and place.
+#
+# Every other harness here runs one process. This is the only one that proves
+# the *split* — that a world generated in one process arrives intact in
+# another, and that the second one cannot lie to the first.
+#
+# This was `tools/net_probe.mjs`, and the move retires the one comment that
+# file opened with: "the web profile exports functions, not `let` constants, so
+# protocol.gene exposes the numbers a non-Gene peer needs as accessors". A Gene
+# peer reads the `let`s. The `kind_*`/`size_*` accessor wall in
+# `core/protocol.gene` exists for JavaScript callers, and after this conversion
+# the only ones left are `tools/net_client_smoke.mjs` and `dom_stub.mjs` —
+# which stay JavaScript on purpose (§14: a harness compiled by the compiler
+# under test can hide a miscompile in the subject).
+
+(mod web_net_probe ^profile web)
+
+(import [new_cursor byte_len] from "../core/wire.gene")
+(import [message_kind protocol_version
+         msg_hello msg_registry msg_block msg_node_delta msg_inventory
+         msg_tiles msg_items msg_entity
+         new_hello decode_hello hello_version hello_bx hello_by hello_bz
+         hello_span_x hello_span_y hello_span_z
+         hello_spawn_x hello_spawn_y hello_spawn_z
+         decode_registry decode_tiles decode_items
+         new_block_header decode_block block_bx block_by block_bz
+         new_node_delta decode_node_delta delta_x delta_y delta_z delta_id
+         new_entity_msg decode_entity ent_count
+         decode_inventory
+         size_request_blocks encode_request_blocks
+         size_dig encode_dig size_place encode_place
+         size_craft encode_craft craft_any]
+        from "../core/protocol.gene")
+(import [Registry new_wire_registry name_of solid?] from "../core/registry.gene")
+(import [TileRegistry new_tiles tile_name] from "../core/tiles.gene")
+(import [ItemRegistry new_items item_name item_named item_node placeable_item?]
+        from "../core/item.gene")
+(import [World new_world store_block node_at set_node] from "../core/loaded.gene")
+
+(let block_nodes 4096.0)
+(let max_deltas 4096.0)
+(let inv_cells 24.0)
+(let window 64.0)
+
+(fn main [] : Void
+  (var bad 0.0)
+  (var say (fn [ok : Bool label : Str detail : Str] : Void
+    (var mark (if ok "ok  " "FAIL"))
+    ($console/log $"  ${mark} ${label}   ${detail}")
+    (if_yes (! ok) (set bad (+ bad 1.0)))))
+
+  (var c (new_cursor))
+  (var rc (new_cursor))
+  (var hello (new_hello))
+  (var header (new_block_header))
+  (var delta (new_node_delta))
+  (var ent (new_entity_msg))
+  (var block_c ($buffer F32 block_nodes))
+  (var block_l ($buffer F32 block_nodes))
+  # A *bare* registry: §2's three reserved ids are the first three the message
+  # carries, so `new_registry` would install them twice and shift every id by
+  # three. `new_wire_registry` is that, named. `new_tiles` and `new_items` are
+  # already empty and are fresh for the same reason — slots are positional.
+  (var reg (new_wire_registry))
+  (var tiles (new_tiles))
+  (var items (new_items))
+  (var reg_count 0.0)
+  (var tile_count 0.0)
+  (var item_count 0.0)
+  (var bytes 0.0)
+  (var inv ($buffer F64 inv_cells))
+  (var inv_n 0.0)
+  # A delta is four numbers, so the log is one flat buffer and a count — the
+  # profile has no `set!` on a `(List T)`.
+  (var dlog ($buffer F64 (* max_deltas 4.0)))
+  (var dn 0.0)
+  (var ent_n 0.0)
+  (var last_ent_count 0.0)
+  (var blocks_in 0.0)
+  # The world is not empty, and not uniform: a transfer that dropped payloads
+  # would still produce the right *count* of blocks. Counted per message rather
+  # than by walking the world afterwards, because the `World` array carries a
+  # shell of `ignore` around the world proper and that is not terrain.
+  (var solid_nodes 0.0)
+  (var lit_nodes 0.0)
+  (var world : World (new_world 0.0 0.0 0.0 1.0 1.0 1.0))
+  (var have_hello false)
+
+  (var sock ($ws/connect "ws://127.0.0.1:8790/"))
+  ($ws/on_bytes sock (fn [b : (Buffer U8)] : Void
+    (set bytes (+ bytes (byte_len b)))
+    (var kind (message_kind b))
+    (if_yes (== kind msg_hello)
+      (decode_hello b c hello)
+      (set world (new_world (hello ~ get hello_bx) (hello ~ get hello_by)
+                            (hello ~ get hello_bz) (hello ~ get hello_span_x)
+                            (hello ~ get hello_span_y) (hello ~ get hello_span_z)))
+      (set have_hello true))
+    (if_yes (== kind msg_registry) (set reg_count (decode_registry b c reg)))
+    # M7's appearance table, and §2's item vocabulary.
+    (if_yes (== kind msg_tiles) (set tile_count (decode_tiles b c tiles)))
+    (if_yes (== kind msg_items) (set item_count (decode_items b c items)))
+    (if_yes (== kind msg_entity)
+      (decode_entity b c ent)
+      (set last_ent_count (ent ~ get ent_count))
+      (set ent_n (+ ent_n 1.0)))
+    (if_yes (== kind msg_block)
+      (decode_block b c header block_c block_l)
+      (store_block world (header ~ get block_bx) (header ~ get block_by)
+                   (header ~ get block_bz) block_c)
+      (var i 0.0)
+      (while (< i block_nodes)
+        (if_yes (!= (block_c ~ get i) 0.0) (set solid_nodes (+ solid_nodes 1.0)))
+        (if_yes (!= (block_l ~ get i) 0.0) (set lit_nodes (+ lit_nodes 1.0)))
+        (set i (+ i 1.0)))
+      (set blocks_in (+ blocks_in 1.0)))
+    (if_yes (== kind msg_inventory)
+      (decode_inventory b c inv)
+      (set inv_n (+ inv_n 1.0)))
+    (if_yes (== kind msg_node_delta)
+      (decode_node_delta b c delta)
+      # Applied as well as logged: §7.1's reconciliation is what a client does
+      # with these, and the spawn node read below is 15 s old by the time the
+      # transfer ends. §12's ambient ABM edits nodes nobody touched, so a
+      # snapshot that is never reconciled is a world it has stopped tracking.
+      (set_node world (delta ~ get delta_x) (delta ~ get delta_y)
+                (delta ~ get delta_z) (delta ~ get delta_id))
+      (if_yes (< dn max_deltas)
+        (dlog ~ set! (* dn 4.0) (delta ~ get delta_x))
+        (dlog ~ set! (+ (* dn 4.0) 1.0) (delta ~ get delta_y))
+        (dlog ~ set! (+ (* dn 4.0) 2.0) (delta ~ get delta_z))
+        (dlog ~ set! (+ (* dn 4.0) 3.0) (delta ~ get delta_id))
+        (set dn (+ dn 1.0))))))
+
+  (await ($time/sleep 400.0))
+  ($console/log "")
+  ($console/log "design.md §D8 M6 — a client and a server as separate processes")
+  ($console/log "")
+
+  (say have_hello "the socket opened and the server spoke first" "hello")
+  (say (== (hello ~ get hello_version) protocol_version)
+       "the handshake names a protocol version"
+       $"v$($to_int (hello ~ get hello_version))")
+  (var span_x (hello ~ get hello_span_x))
+  (var span_y (hello ~ get hello_span_y))
+  (var span_z (hello ~ get hello_span_z))
+  (say (&& (> span_x 0.0) (&& (> span_y 0.0) (> span_z 0.0)))
+       "and the world's extent"
+       $"$($to_int span_x)x$($to_int span_y)x$($to_int span_z) blocks")
+  (say (> reg_count 3.0) "the registry arrived with more than the reserved ids"
+       $"$($to_int reg_count) nodes")
+  (var air_name (name_of reg 0.0))
+  (say (== air_name "air") "and id 0 is air, as §1 reserves it" air_name)
+  (var first_dynamic (name_of reg 3.0))
+  (say (== first_dynamic "miclone:stone") "and the content set follows them"
+       first_dynamic)
+  (say (== inv_n 1.0) "and an inventory came with the handshake"
+       $"$($to_int inv_n) message(s)")
+  # §9: a client draws what a mod defined without ever running the mod. The only
+  # thing that crossed the wire to make that true is this table.
+  (say (> tile_count 8.0) "the mod's tiles arrived, so a client can paint its atlas"
+       $"$($to_int tile_count) tiles")
+  (var first_tile (tile_name tiles 0.0))
+  (say (== first_tile "miclone:stone")
+       "and the first is the one the mod registered first" first_tile)
+  # §2's item vocabulary. An item id stopped being a content id, so without this
+  # a client cannot name what it holds or know whether it places anything.
+  (say (> item_count 13.0) "the mod's items arrived" $"$($to_int item_count) items")
+  (var pickaxe (item_named items "miclone:wood_pickaxe"))
+  (say (! (placeable_item? items pickaxe))
+       "including one that places nothing, so the -1 node link survived"
+       $"item $($to_int pickaxe)")
+
+  # --- the whole world, flow-controlled ---------------------------------------
+  #
+  # A request cannot outrun its own answers, which is what keeps the server's
+  # 256-frame outbound queue from overflowing. Pushing all 576 blocks from
+  # `on_open` delivered 422 of them and reported success.
+  (var total (* span_x (* span_y span_z)))
+  (var t0 ($time/now))
+  (var from 0.0)
+  (while (< from total)
+    (var count (if (< (- total from) window) (- total from) window))
+    (var m ($buffer U8 (size_request_blocks)))
+    (encode_request_blocks m rc from count)
+    ($ws/send_bytes sock m)
+    # Wait for the window to *arrive*, not for a guessed interval: a fixed sleep
+    # got 230 of 576 blocks on a loaded machine and read as a broken server.
+    (var want (+ from count))
+    (var spins 0.0)
+    (while (&& (< blocks_in want) (< spins 200.0))
+      (await ($time/sleep 50.0))
+      (set spins (+ spins 1.0)))
+    (set from (+ from count)))
+  (var transfer_ms (- ($time/now) t0))
+  (say (== blocks_in total) "every block arrived"
+       $"$($to_int blocks_in) of $($to_int total)")
+  (say (> solid_nodes 100000.0) "with terrain in it"
+       $"$($to_int solid_nodes) non-air nodes")
+  (say (> lit_nodes 100000.0) "and light on it"
+       $"$($to_int lit_nodes) lit nodes")
+
+  # --- §7.1 over the socket ----------------------------------------------------
+  #
+  # Deltas *at the position this probe is editing*, which is not the same thing
+  # as every delta on the socket. §12's ambient ABM changes nodes nobody touched,
+  # anywhere in the world, at any moment — so counting the whole stream makes
+  # this probe fail for the engine doing its job. It counted the whole stream
+  # until the sampled trigger had a mod action to run, which is when the
+  # assumption stopped being true rather than when it stopped being safe.
+  (var deltas_at (fn [dx : F64 dy : F64 dz : F64] : F64
+    (var n 0.0)
+    (var i 0.0)
+    (while (< i dn)
+      (if_yes (&& (== (dlog ~ get (* i 4.0)) dx)
+                  (&& (== (dlog ~ get (+ (* i 4.0) 1.0)) dy)
+                      (== (dlog ~ get (+ (* i 4.0) 2.0)) dz)))
+        (set n (+ n 1.0)))
+      (set i (+ i 1.0)))
+    n))
+  # The id the `nth` delta at a position carried, and — separately — whether
+  # there was one. **A flag, not a sentinel id**: 0 is `air`, which is exactly
+  # what a dig writes, so "no delta" and "the dig landed" cannot share a value.
+  (var nth_delta_id (fn [dx : F64 dy : F64 dz : F64 nth : F64
+                         out : (Buffer F64)] : Bool
+    (var found false)
+    (var seen 0.0)
+    (var i 0.0)
+    (while (< i dn)
+      (if_yes (&& (== (dlog ~ get (* i 4.0)) dx)
+                  (&& (== (dlog ~ get (+ (* i 4.0) 1.0)) dy)
+                      (== (dlog ~ get (+ (* i 4.0) 2.0)) dz)))
+        (if_yes (== seen nth)
+          (set found true)
+          (out ~ set! 0.0 (dlog ~ get (+ (* i 4.0) 3.0))))
+        (set seen (+ seen 1.0)))
+      (set i (+ i 1.0)))
+    found))
+  (var got ($buffer F64 1.0))
+
+  (var sx ($math/floor (hello ~ get hello_spawn_x)))
+  (var sy ($math/round (hello ~ get hello_spawn_y)))
+  (var sz ($math/floor (hello ~ get hello_spawn_z)))
+  (var dig_y (- sy 1.0))
+  (var node_before (node_at world sx dig_y sz))
+  (var before_name (name_of reg node_before))
+  (say (&& (!= node_before 0.0) (solid? reg node_before))
+       "the node under the spawn is solid ground" before_name)
+
+  (var dig ($buffer U8 (size_dig)))
+  (encode_dig dig rc sx dig_y sz)
+  ($ws/send_bytes sock dig)
+  (await ($time/sleep 700.0))
+  (say (== (deltas_at sx dig_y sz) 1.0)
+       "a dig comes back as one node delta at that position"
+       $"$($to_int (deltas_at sx dig_y sz)) here, $($to_int dn) in all")
+  (var saw_dig (nth_delta_id sx dig_y sz 0.0 got))
+  (say (&& saw_dig (== (got ~ get 0.0) 0.0)) "and the node is now air" "")
+  (say (== inv_n 2.0) "and the inventory is authoritative, not predicted"
+       $"$($to_int inv_n) message(s)")
+  # Captured now, because the hotbar is overwritten by the next message and the
+  # place below has to name the item this dig actually yielded.
+  (var held_item (inv ~ get 0.0))
+  (var held_count (inv ~ get 1.0))
+  (say (== held_count 1.0) "with the drop in it" $"x$($to_int held_count)")
+  # §2's one drop-table exception, over the wire: grass yields dirt. The id in
+  # the hotbar is an *item* id now, so it is named through the item registry.
+  (if_yes (== before_name "miclone:grass")
+    (var dropped (item_name items held_item))
+    (say (== dropped "miclone:dirt") "and grass dropped dirt, as the drop table says"
+         dropped))
+
+  # A right-click carries both what was aimed at and where a block would go
+  # (§10's `place_size`); this replaces the node it just dug, so the two are the
+  # same position and the one below it is what the ray would have struck.
+  (var place ($buffer U8 (size_place)))
+  (encode_place place rc sx dig_y sz held_item sx (- dig_y 1.0) sz)
+  ($ws/send_bytes sock place)
+  (await ($time/sleep 700.0))
+  (say (== (deltas_at sx dig_y sz) 2.0)
+       "a place comes back as a second delta at that position"
+       $"$($to_int (deltas_at sx dig_y sz)) here, $($to_int dn) in all")
+  # The delta carries a *node* id and the hotbar holds an *item* id — §2 split
+  # them, and the server is what resolves one to the other. Comparing them
+  # directly is what this check used to do, and it passed only while the two
+  # spaces happened to be the same one.
+  (var saw_place (nth_delta_id sx dig_y sz 1.0 got))
+  (var placed_name (item_name items held_item))
+  (say (&& saw_place (== (got ~ get 0.0) (item_node items held_item)))
+       "restoring the node the held item places" placed_name)
+  (say (&& (== inv_n 3.0) (== (inv ~ get 1.0) 0.0)) "and the stack is spent"
+       $"$($to_int inv_n) message(s), x$($to_int (inv ~ get 1.0))")
+
+  # The authority. A client that lies about its inventory is the one thing a
+  # server must not believe.
+  (var cheat_y (+ dig_y 2.0))
+  (var cheat ($buffer U8 (size_place)))
+  (encode_place cheat rc sx cheat_y sz 9.0 sx (- cheat_y 1.0) sz)
+  ($ws/send_bytes sock cheat)
+  (await ($time/sleep 700.0))
+  # Nothing at the position the lie named. Asserting on that position rather than
+  # on a total is what keeps this check about the server's authority instead of
+  # about whether the world happened to stay still for 700 ms.
+  (say (== (deltas_at sx cheat_y sz) 0.0)
+       "and the server refuses a node the client does not hold"
+       $"$($to_int (deltas_at sx cheat_y sz)) at the refused position, $($to_int dn) in all")
+
+  # --- §8's entities: what does not fit is no longer lost ---------------------
+  #
+  # §7.1 said since M5 that "what is dropped and does not fit is lost". Filling
+  # the hotbar and then digging is the case that used to lose a node, and the
+  # check is that an entity message arrives instead.
+  #
+  # The hotbar is filled by crafting: eight slots of one item each is what makes
+  # the ninth drop have nowhere to go. Simpler here — dig repeatedly until the
+  # server reports an entity, which is the same condition and needs no setup.
+  (var before_ent ent_n)
+  (var i 0.0)
+  (while (&& (< i 8.0) (== ent_n before_ent))
+    (var d2 ($buffer U8 (size_dig)))
+    (encode_dig d2 rc (+ sx (+ 1.0 i)) dig_y sz)
+    ($ws/send_bytes sock d2)
+    (await ($time/sleep 250.0))
+    (set i (+ i 1.0)))
+  # Not asserted as a pass/fail: a spawn needs a *full* hotbar and eight digs of
+  # mixed nodes may not fill one. What is asserted is the shape when it happens.
+  (if (> ent_n before_ent)
+    (then (say (> last_ent_count 0.0) "an entity that spawned carries a stack"
+               $"x$($to_int last_ent_count)"))
+    (else ($console/log "  --   no overflow in eight digs (the hotbar did not fill)")))
+
+  # --- §9's crafting, over the wire -------------------------------------------
+  #
+  # The client asks to craft and says nothing about what. That is §7.1's shape in
+  # its smallest form — a one-byte recipe — and the check is that the server
+  # answered with an inventory the client never computed.
+  (var before_craft inv_n)
+  (var craft_msg ($buffer U8 (size_craft)))
+  (encode_craft craft_msg rc (craft_any))
+  ($ws/send_bytes sock craft_msg)
+  (await ($time/sleep 700.0))
+  (say (== inv_n before_craft) "crafting nothing craftable changes nothing"
+       $"$($to_int (- inv_n before_craft)) inventory message(s)")
+
+  ($console/log "")
+  (var mb (/ bytes 1048576.0))
+  (var mb_shown (/ ($math/round (* mb 100.0)) 100.0))
+  (var ms_shown ($to_int ($math/round transfer_ms)))
+  # **KB/s, where the `.mjs` said MB/s.** A whole world is 0.4 MB and takes 15 s,
+  # so the rate it printed was `0.0 MB/s` on every run that ever worked — a
+  # number that says the transfer did not happen. The unit is the fix, not the
+  # precision: this transfer is paced by the server's per-block encode, and the
+  # figure worth reading is the one that changes when that does.
+  (var kbs (/ (/ bytes 1024.0) (/ transfer_ms 1000.0)))
+  (var rate_shown (/ ($math/round (* kbs 10.0)) 10.0))
+  ($console/log $"  ${mb_shown} MB received, $($to_int total) blocks in ${ms_shown} ms (${rate_shown} KB/s)")
+  ($console/log "")
+  (if (== bad 0.0)
+    (then ($console/log "PASS — the split is real: one process generated this world and another is playing it"))
+    (else ($console/log $"FAIL — $($to_int bad) check(s) failed")))
+  ($ws/close sock))

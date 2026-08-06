@@ -1,0 +1,469 @@
+# design.md §13's input, and the container that justifies it.
+#
+#   gene run server &
+#   node tools/web_spec.mjs web_chest_probe
+#
+# §13.3 said a form here was read-only: "no button that sends a message, no
+# field to type into … Input needs a message per element kind and a server that
+# can attribute one to a form it opened, and it wants the container that would
+# justify it." This is the check that all four of those exist.
+#
+# It speaks the protocol itself, as a peer, like `web_net_probe.gene` — what is
+# under test is the *server's* authority over a button press, and a client would
+# only get in the way of asking whether a lie is refused.
+#
+# ## Why this still imports `core/mods.gene`
+#
+# This was `tools/chest_probe.mjs`, which reached into `dist/mods.mjs` to answer
+# "which recipe makes a chest". The Gene version imports `core/mods.gene`, and
+# the question raised at the conversion was whether that is acceptable or
+# whether the server should answer it over the wire. It is acceptable, for three
+# reasons and none of them is convenience:
+#
+# - **It is the same dependency the `.mjs` had.** The web profile emits one ES
+#   module per Gene module, so this compiles to `import { load_mods } from
+#   "./mods.mjs"` — the edge `await import(D + "mods.mjs")` already was. Nothing
+#   is linked in that was not linked in before.
+# - **The alternative is wire surface with no player behind it.** A message
+#   answering "which recipe makes X" would exist for a harness. §7.1 gives a
+#   real client no use for it: a player who wants a *named* recipe presses the
+#   crafting panel's button, which is `msg_form_action` and is the other half of
+#   what this probe tests.
+# - **The coupling it creates fails red.** The probe's compiled-in `load_mods`
+#   must assign the same recipe ids as the server's `load_mods_from_disk`. If it
+#   ever stopped doing so, `craft(CHEST_RECIPE)` would name a recipe the
+#   inventory cannot afford, or a different one — and `held(CHEST) >= 1` is
+#   false either way. The index is pinned by assertions that already exist
+#   rather than by a comment saying it should hold, and the plank craft is
+#   asserted through *both* spellings, by index and by name, to the same item.
+
+(mod web_chest_probe ^profile web)
+
+(import [new_cursor] from "../core/wire.gene")
+(import [message_kind
+         msg_hello msg_registry msg_block msg_node_delta msg_inventory
+         msg_items msg_forms msg_open_form
+         new_hello decode_hello hello_bx hello_by hello_bz
+         hello_span_x hello_span_y hello_span_z
+         decode_registry decode_items decode_forms
+         new_block_header decode_block block_bx block_by block_bz
+         new_node_delta decode_node_delta delta_x delta_y delta_z delta_id
+         decode_inventory
+         new_open_form decode_open_form open_x open_y open_z
+         size_request_blocks encode_request_blocks
+         size_dig encode_dig size_place encode_place
+         size_craft encode_craft
+         size_form_action_for encode_form_action]
+        from "../core/protocol.gene")
+(import [Registry new_wire_registry id_of opens_form_of]
+        from "../core/registry.gene")
+(import [ItemRegistry new_items item_named item_node] from "../core/item.gene")
+(import [FormRegistry new_forms form_count element_count form_named
+         form_first form_len element_kind el_button]
+        from "../core/formspec.gene")
+(import [CraftRegistry recipe_count recipe_output] from "../core/craft.gene")
+# `Game` by name from where it is defined, not through `core/mods.gene`: a type
+# re-exports on neither backend (§D7.14), so `load_mods`'s return type is opaque
+# here without this line and `game/crafts` is "web type Game has no field".
+(import [Game] from "../core/api.gene")
+(import [load_mods] from "../core/mods.gene")
+(import [World new_world store_block node_at set_node] from "../core/loaded.gene")
+
+(let block_dim 16.0)
+(let block_nodes 4096.0)
+(let hotbar_slots 8.0)
+(let inv_cells 24.0)
+# §13's chest is eight slots of (item, count, wear), like the hotbar.
+(let box_cells 24.0)
+
+(fn main [] : Void
+  (var bad 0.0)
+  (var say (fn [ok : Bool label : Str detail : Str] : Void
+    (var mark (if ok "ok  " "FAIL"))
+    ($console/log $"  ${mark} ${label}   ${detail}")
+    (if_yes (! ok) (set bad (+ bad 1.0)))))
+
+  (var c (new_cursor))
+  (var rc (new_cursor))
+  (var hello (new_hello))
+  (var header (new_block_header))
+  (var delta (new_node_delta))
+  (var block_c ($buffer F32 block_nodes))
+  (var block_l ($buffer F32 block_nodes))
+  (var reg (new_wire_registry))
+  (var items (new_items))
+  (var forms (new_forms))
+  (var have_forms false)
+  (var inv ($buffer F64 inv_cells))
+  (var inv_n 0.0)
+  # Only the latest open message is ever read, because the hotbar and the box
+  # are both authoritative and arrive whole (§7.1) — there is nothing to
+  # accumulate, only a count to notice that one arrived.
+  (var open_slot (new_open_form))
+  (var open_box ($buffer F64 box_cells))
+  (var open_name "")
+  (var opens 0.0)
+  (var blocks_in 0.0)
+  (var world : World (new_world 0.0 0.0 0.0 1.0 1.0 1.0))
+  (var have_hello false)
+
+  (var sock ($ws/connect "ws://127.0.0.1:8790/"))
+  ($ws/on_bytes sock (fn [b : (Buffer U8)] : Void
+    (var kind (message_kind b))
+    (if_yes (== kind msg_hello)
+      (decode_hello b c hello)
+      (set world (new_world (hello ~ get hello_bx) (hello ~ get hello_by)
+                            (hello ~ get hello_bz) (hello ~ get hello_span_x)
+                            (hello ~ get hello_span_y) (hello ~ get hello_span_z)))
+      (set have_hello true))
+    (if_yes (== kind msg_registry) (decode_registry b c reg))
+    (if_yes (== kind msg_items) (decode_items b c items))
+    (if_yes (== kind msg_forms)
+      (decode_forms b c forms)
+      (set have_forms true))
+    (if_yes (== kind msg_block)
+      (decode_block b c header block_c block_l)
+      (store_block world (header ~ get block_bx) (header ~ get block_by)
+                   (header ~ get block_bz) block_c)
+      (set blocks_in (+ blocks_in 1.0)))
+    # §7.1's reconciliation, **applied** rather than decoded and dropped as the
+    # `.mjs` did.
+    #
+    # Not a bug fix — the `.mjs` passes, and so did this before the line was
+    # added. It closes a gap that is real but had not yet bitten: this probe
+    # picks "open ground" out of its world and then spends twenty more seconds
+    # chopping and crafting before it places anything, and §12's ambient ABM
+    # edits nodes nobody touched for all of it. The blocks it is reasoning about
+    # are already 15 s old when the transfer ends.
+    #
+    # A client keeps its world current from these deltas; a peer that decodes
+    # them and drops them is asserting about a world it has stopped tracking.
+    (if_yes (== kind msg_node_delta)
+      (decode_node_delta b c delta)
+      (set_node world (delta ~ get delta_x) (delta ~ get delta_y)
+                (delta ~ get delta_z) (delta ~ get delta_id)))
+    (if_yes (== kind msg_inventory)
+      (decode_inventory b c inv)
+      (set inv_n (+ inv_n 1.0)))
+    (if_yes (== kind msg_open_form)
+      (set open_name (decode_open_form b c open_slot open_box))
+      (set opens (+ opens 1.0)))))
+
+  (await ($time/sleep 500.0))
+  ($console/log "")
+  ($console/log "design.md §13 — a form that sends a message, and a chest to send it about")
+  ($console/log "")
+
+  (say have_forms "the forms arrived at join, which they never used to"
+       $"$($to_int (form_count forms)) form(s), $($to_int (element_count forms)) elements")
+  (var chest_form (form_named forms "miclone:chest"))
+  (say (>= chest_form 0.0) "including the chest's"
+       $"form $($to_int chest_form)")
+
+  # The layout is what travels at join, and the client rebuilt it through the
+  # same `add_form`/`add_element` the server registered it with — so a form that
+  # arrives is one that would have registered.
+  (var buttons 0.0)
+  (if_yes (>= chest_form 0.0)
+    (var e (form_first forms chest_form))
+    (var last (+ e (form_len forms chest_form)))
+    (while (< e last)
+      (if_yes (== (element_kind forms e) el_button) (set buttons (+ buttons 1.0)))
+      (set e (+ e 1.0))))
+  (say (> buttons 0.0) "and it has buttons, which no form had before"
+       $"$($to_int buttons)")
+
+  # The world, so a chest can be placed somewhere real.
+  (var total (* (hello ~ get hello_span_x)
+                (* (hello ~ get hello_span_y) (hello ~ get hello_span_z))))
+  (var from 0.0)
+  (while (< from total)
+    (var count (if (< (- total from) 64.0) (- total from) 64.0))
+    (var m ($buffer U8 (size_request_blocks)))
+    (encode_request_blocks m rc from count)
+    ($ws/send_bytes sock m)
+    # Wait for the window to *arrive*, not for a guessed interval.
+    (var want (+ from count))
+    (var spins 0.0)
+    (while (&& (< blocks_in want) (< spins 200.0))
+      (await ($time/sleep 50.0))
+      (set spins (+ spins 1.0)))
+    (set from (+ from count)))
+  (say (== blocks_in total) "the world arrived" $"$($to_int blocks_in) blocks")
+
+  (var ox (* (hello ~ get hello_bx) block_dim))
+  (var oy (* (hello ~ get hello_by) block_dim))
+  (var oz (* (hello ~ get hello_bz) block_dim))
+  (var lim_x (+ ox (- (* (hello ~ get hello_span_x) block_dim) 1.0)))
+  (var lim_z (+ oz (- (* (hello ~ get hello_span_z) block_dim) 1.0)))
+  (var top_y (+ oy (- (* (hello ~ get hello_span_y) block_dim) 2.0)))
+
+  (var dig (fn [x : F64 y : F64 z : F64] : Void
+    (var m ($buffer U8 (size_dig)))
+    (encode_dig m rc x y z)
+    ($ws/send_bytes sock m)))
+  # A right-click carries both what was aimed at and where a block would go.
+  (var right_click (fn [px : F64 py : F64 pz : F64 item : F64
+                        ax : F64 ay : F64 az : F64] : Void
+    (var m ($buffer U8 (size_place)))
+    (encode_place m rc px py pz item ax ay az)
+    ($ws/send_bytes sock m)))
+  (var press (fn [x : F64 y : F64 z : F64 slot : F64
+                  form : Str action : Str] : Void
+    (var m ($buffer U8 (size_form_action_for form action)))
+    (encode_form_action m rc x y z slot form action)
+    ($ws/send_bytes sock m)))
+  (var craft (fn [recipe : F64] : Void
+    (var m ($buffer U8 (size_craft)))
+    (encode_craft m rc recipe)
+    ($ws/send_bytes sock m)))
+  (var held (fn [item : F64] : F64
+    (var n 0.0)
+    (var i 0.0)
+    (while (< i hotbar_slots)
+      (if_yes (&& (== (inv ~ get (* i 3.0)) item)
+                  (> (inv ~ get (+ (* i 3.0) 1.0)) 0.0))
+        (set n (+ n (inv ~ get (+ (* i 3.0) 1.0)))))
+      (set i (+ i 1.0)))
+    n))
+
+  (var chest (item_named items "miclone:chest"))
+  (var chest_node (item_node items chest))
+  (say (&& (>= chest 0.0) (>= chest_node 0.0))
+       "the chest is an item that places a node"
+       $"item $($to_int chest), node $($to_int chest_node)")
+  (var declared (opens_form_of reg chest_node))
+  (say (== declared "miclone:chest") "and the node declares the form it opens"
+       declared)
+
+  # §7.1's authority, on a button, before anything is open. Every press must be
+  # refused — this is the check that the server attributes a press to a form *it*
+  # opened rather than to one the client claims.
+  (var inv_before inv_n)
+  (press 0.0 0.0 0.0 0.0 "miclone:chest" "take_0")
+  (await ($time/sleep 400.0))
+  (say (== inv_n inv_before) "a press on a form nobody opened changes nothing"
+       $"$($to_int (- inv_n inv_before)) inventory message(s)")
+
+  # --- get a chest by playing --------------------------------------------------
+  #
+  # **The chest is crafted, not conjured.** A container nobody can obtain is not
+  # a feature, so the recipe exists and this probe walks it: chop a tree, planks,
+  # chest. That also makes every step below a test of something else that already
+  # shipped — drops, stacking, and §9's crafting.
+  #
+  # A `found` flag rather than a coordinate sentinel: this world sits at
+  # x = -1437, so -1 is a legal x and every place this project has spelled "not
+  # found" as a coordinate has cost a bug (§13.4's chest, `tick_probe`'s sand).
+  (var tree (id_of reg "miclone:tree"))
+  (var has_trunk false)
+  (var tx 0.0)
+  (var ty 0.0)
+  (var tz 0.0)
+  (var x (+ ox 1.0))
+  (while (&& (< x lim_x) (! has_trunk))
+    (var z (+ oz 1.0))
+    (while (&& (< z lim_z) (! has_trunk))
+      (var y top_y)
+      (while (&& (> y (+ oy 1.0)) (! has_trunk))
+        (if_yes (== (node_at world x y z) tree)
+          (set has_trunk true)
+          (set tx x)
+          (set ty y)
+          (set tz z))
+        (set y (- y 1.0)))
+      (set z (+ z 1.0)))
+    (set x (+ x 1.0)))
+  (say has_trunk "found a tree to chop"
+       $"$($math/round tx), $($math/round ty), $($math/round tz)")
+
+  (var tree_item (item_named items "miclone:tree"))
+  (var plank (item_named items "miclone:plank"))
+
+  # One trunk yields one wood; a chest wants four planks and one wood makes four.
+  (var i 0.0)
+  (while (&& (< i 3.0) (< (held tree_item) 1.0))
+    (dig tx (+ ty i) tz)
+    (await ($time/sleep 250.0))
+    (set i (+ i 1.0)))
+  (say (>= (held tree_item) 1.0) "chopping it yields wood"
+       $"x$($to_int (held tree_item))")
+
+  # A craft names its recipe. `craft_any` is the crafting key's "make whatever I
+  # can", and it is what makes the chest unreachable by itself: sticks match
+  # before the chest does and eat the planks. Naming the recipe is §9's answer
+  # and it is the reason `msg_craft` grew a byte.
+  (var mod_game (load_mods))
+  (var mod_crafts mod_game/crafts)
+  (var mod_items mod_game/items)
+  (var recipe_of (fn [name : Str] : F64
+    (var want (item_named mod_items name))
+    (var found -1.0)
+    (var j 0.0)
+    (var n (recipe_count mod_crafts))
+    (while (< j n)
+      (if_yes (&& (== found -1.0) (== (recipe_output mod_crafts j) want))
+        (set found j))
+      (set j (+ j 1.0)))
+    found))
+  (var plank_recipe (recipe_of "miclone:plank"))
+  (var chest_recipe (recipe_of "miclone:chest"))
+  (say (&& (>= plank_recipe 0.0) (>= chest_recipe 0.0))
+       "the recipes are findable by name"
+       $"plank $($to_int plank_recipe), chest $($to_int chest_recipe)")
+
+  (craft plank_recipe)
+  (await ($time/sleep 400.0))
+  (say (>= (held plank) 4.0) "wood crafts into planks"
+       $"x$($to_int (held plank))")
+
+  # The same craft, chosen from §13's panel instead of by index.
+  #
+  # `msg_craft` above proves a *named* recipe works, and that is the half of
+  # §13.4's fix that landed: it reached the protocol and this probe and stopped
+  # there. A player has neither — the crafting key sends `craft_any` and gets
+  # sticks forever — so the panel's rows are controls now, and this is the path
+  # a keyboard can actually reach. A panel is not at a node, so the server takes
+  # it at (0,0,0) with no container: what still authorises it is that the form
+  # declares the action and that `apply_craft` can afford it.
+  # One more trunk block first, so this check pays for its own craft instead of
+  # spending the planks the chest below needs. **Downwards**: the search above
+  # scans y from the top, so `trunk` is the highest trunk node and everything
+  # above it is leaves — digging up yields foliage and no wood at all.
+  (set i 1.0)
+  (while (&& (< i 5.0) (< (held tree_item) 1.0))
+    (dig tx (- ty i) tz)
+    (await ($time/sleep 250.0))
+    (set i (+ i 1.0)))
+  (var planks_before (held plank))
+  (var wood_for_it (held tree_item))
+  (press 0.0 0.0 0.0 0.0 "miclone:crafting" "make_miclone:plank")
+  (await ($time/sleep 400.0))
+  (say (> (held plank) planks_before)
+       "and the panel's own control crafts it, which is what a player can press"
+       $"wood x$($to_int wood_for_it), planks x$($to_int planks_before) -> x$($to_int (held plank))")
+
+  # A control the form never declared, refused the way a chest's would be.
+  (var planks_now (held plank))
+  (press 0.0 0.0 0.0 0.0 "miclone:crafting" "make_miclone:not_a_thing")
+  (await ($time/sleep 400.0))
+  (say (== (held plank) planks_now)
+       "and an action the form does not declare does nothing"
+       $"x$($to_int (held plank))")
+
+  # The check that made this byte necessary: "make whatever I can" reaches sticks
+  # and never the chest, because sticks match first and spend the planks.
+  (craft chest_recipe)
+  (await ($time/sleep 400.0))
+  (say (>= (held chest) 1.0)
+       "and the planks into a chest, because the craft named it"
+       $"x$($to_int (held chest))")
+
+  # --- place it, open it, use it ------------------------------------------------
+  (var has_spot false)
+  (var px 0.0)
+  (var py 0.0)
+  (var pz 0.0)
+  (set x (+ ox 3.0))
+  (while (&& (< x (- lim_x 2.0)) (! has_spot))
+    (var z (+ oz 3.0))
+    (while (&& (< z (- lim_z 2.0)) (! has_spot))
+      (var y (- top_y 1.0))
+      (while (&& (> y (+ oy 2.0)) (! has_spot))
+        (if_yes (&& (!= (node_at world x y z) 0.0)
+                    (&& (== (node_at world x (+ y 1.0) z) 0.0)
+                        (== (node_at world x (+ y 2.0) z) 0.0)))
+          (set has_spot true)
+          (set px x)
+          (set py (+ y 1.0))
+          (set pz z))
+        (set y (- y 1.0)))
+      (set z (+ z 1.0)))
+    (set x (+ x 2.0)))
+  (say has_spot "found open ground to build on"
+       $"$($math/round px), $($math/round py), $($math/round pz)")
+
+  # Aimed at the ground, placing into the air above it.
+  (right_click px py pz chest px (- py 1.0) pz)
+  (await ($time/sleep 500.0))
+  (say (== (held chest) 0.0) "placing the chest spends it"
+       $"x$($to_int (held chest))")
+
+  # And now the thing §13.3 said did not exist: a right-click that *opens*
+  # rather than places. Aimed at the chest itself.
+  (var opens_before opens)
+  (right_click px (+ py 1.0) pz chest px py pz)
+  (await ($time/sleep 500.0))
+  (say (> opens opens_before) "right-clicking it opens a form"
+       $"$($to_int (- opens opens_before)) open message(s)")
+  (say (== open_name "miclone:chest") "and it is the chest's form" open_name)
+  (say (&& (== (open_slot ~ get open_x) px)
+           (&& (== (open_slot ~ get open_y) py)
+               (== (open_slot ~ get open_z) pz)))
+       "about the chest that was clicked, not the form in general"
+       $"$($math/round (open_slot ~ get open_x)), $($math/round (open_slot ~ get open_y)), $($math/round (open_slot ~ get open_z))")
+  (var box_empty true)
+  (set i 0.0)
+  (while (< i box_cells)
+    (if_yes (!= (open_box ~ get i) 0.0) (set box_empty false))
+    (set i (+ i 1.0)))
+  (say box_empty "and it is empty, as a new chest is" "")
+
+  # Put a stack in. The chest recipe spent every plank, so dig something first —
+  # which is the ordinary way a player comes to have anything to store.
+  (set i 0.0)
+  (while (&& (< i 4.0) (== (held plank) 0.0))
+    (dig (+ px (+ 2.0 i)) (- py 1.0) pz)
+    (await ($time/sleep 250.0))
+    (set i (+ i 1.0)))
+  # The first non-empty hotbar slot. `-1` is `core/item.gene`'s `no_item` and is
+  # not a coordinate: item ids are dense from 0, so it collides with nothing.
+  (var stash -1.0)
+  (set i 0.0)
+  (while (< i hotbar_slots)
+    (if_yes (&& (== stash -1.0) (> (inv ~ get (+ (* i 3.0) 1.0)) 0.0))
+      (set stash (inv ~ get (* i 3.0))))
+    (set i (+ i 1.0)))
+  (var stash_before (held stash))
+  (say (> stash_before 0.0) "the player has something to store"
+       $"item $($to_int stash) x$($to_int stash_before)")
+
+  (var opens2 opens)
+  (press px py pz 0.0 "miclone:chest" "put_0")
+  (await ($time/sleep 500.0))
+  (say (< (held stash) stash_before) "pressing put moves it into the chest"
+       $"x$($to_int stash_before) -> x$($to_int (held stash))")
+  (say (&& (> opens opens2)
+           (&& (== (open_box ~ get 0.0) stash) (> (open_box ~ get 1.0) 0.0)))
+       "and the chest says so, unprompted"
+       $"slot 0 = item $($to_int (open_box ~ get 0.0)) x$($to_int (open_box ~ get 1.0))")
+
+  # Take it back out. Conservation, which is §7.1's rule and the one property
+  # worth asserting about a container: what went in comes out.
+  (press px py pz 0.0 "miclone:chest" "take_0")
+  (await ($time/sleep 500.0))
+  (say (== (held stash) stash_before) "pressing take brings all of it back"
+       $"x$($to_int (held stash)) of x$($to_int stash_before)")
+  (say (== (open_box ~ get 1.0) 0.0) "and the chest slot is empty again"
+       $"x$($to_int (open_box ~ get 1.0))")
+
+  # §7.1 once more, now that a form *is* open: an action the form never declared
+  # must do nothing, because the server resolves it against the form rather than
+  # against the string.
+  (var inv_now inv_n)
+  (press px py pz 0.0 "miclone:chest" "empty_the_world")
+  (await ($time/sleep 400.0))
+  (say (== inv_n inv_now) "an action the form never declared does nothing"
+       $"$($to_int (- inv_n inv_now)) inventory message(s)")
+
+  # And a press about a different node, while this one is open.
+  (press (+ px 5.0) py pz 0.0 "miclone:chest" "take_0")
+  (await ($time/sleep 400.0))
+  (say (== inv_n inv_now) "and a press about a chest that is not the open one"
+       $"$($to_int (- inv_n inv_now)) inventory message(s)")
+
+  ($console/log "")
+  (if (== bad 0.0)
+    (then ($console/log "PASS — a chest crafted, placed, opened, filled and emptied, and every lie about it refused"))
+    (else ($console/log $"FAIL — $($to_int bad) check(s) failed")))
+  ($ws/close sock))

@@ -226,9 +226,24 @@ node tools/net_client_smoke.mjs  # headless: boots a server, plays it, ~40 s
 
 gene run server                  # opens or generates the world, listens on 8790
                                  # GENE_MICLONE_WORLD=/tmp/w for a throwaway one
-node tools/net_probe.mjs         # headless: joins it, in another shell
+node tools/web_spec.mjs web_net_probe   # headless: joins it, in another shell
 
 python3 -m http.server 8000      # then open http://localhost:8000/net.html
+```
+
+**Every network probe wants a fresh world, and "fresh" means the previous
+server is dead — not that the port answers.** A probe digs, crafts and places;
+run a second one against the same world and it plays in the wreckage of the
+first, which reads as failing checks in the probe rather than as a dirty
+fixture. Waiting for `nc -z 127.0.0.1 8790` does not establish this: it succeeds
+*instantly* against a server that outlived its runner, and a genuinely fresh one
+takes about 75 s to generate. Check that nothing holds the port first, then
+start:
+
+```sh
+lsof -tnP -iTCP:8790 -sTCP:LISTEN | xargs -r kill   # and wait for it to go
+rm -rf /tmp/miclone_play_world
+( cd examples/miclone && GENE_MICLONE_WORLD=/tmp/miclone_play_world gene run server & )
 ```
 
 The browser client renders a world it was **handed** rather than one it
@@ -358,7 +373,7 @@ there. There are two mechanisms: a **check queue** seeded by whatever just
 changed (a neighbour update, which cascades a node per tick), and **sampling**
 for the ambient case — grass growing on open dirt. See design.md §12.2.
 
-`tick_probe.mjs` asserts the property rather than the mechanism: it digs the
+`web_tick_probe` asserts the property rather than the mechanism: it digs the
 support out from under a sand column, stops talking, and waits for node deltas
 to arrive on a silent socket. That is the whole difference between M6's reactive
 server and this one.
@@ -367,7 +382,7 @@ server and this one.
 
 ```sh
 gene run server &
-node tools/chest_probe.mjs        # crafts, places, opens, fills, empties one
+node tools/web_spec.mjs web_chest_probe   # crafts, places, opens, fills, empties one
 ```
 
 §13.3 said a form was read-only and that input "wants the container that would
@@ -401,7 +416,7 @@ nothing about avatars. See design.md §8.4.
 
 ```sh
 gene run server &
-node tools/entity_probe.mjs        # the server half: it falls
+node tools/web_spec.mjs web_entity_probe   # the server half: it falls
 node tools/net_client_smoke.mjs    # the client half: it is drawn
 ```
 
@@ -432,7 +447,7 @@ visible — a canopy is a hundred leaves all facing each other. It is on the wir
 gene run abm_spec | diff - <(node tools/web_spec.mjs web_abm_spec)   # 65 checks, both backends
 
 gene run server &
-node tools/entity_probe.mjs      # hangs an item in mid-air, then stops talking
+node tools/web_spec.mjs web_entity_probe   # hangs an item in mid-air, then stops talking
 ```
 
 An ABM takes `^action (fn [world x y z node] …)` and an entity definition takes

@@ -2959,7 +2959,7 @@ for whether the API is right — *if M8's game needs an engine change, the API i
 wrong* — and it is the first time the test has been run against a behaviour
 rather than a registration.
 
-`tools/entity_probe.mjs` is the check and it asserts the property rather than
+`probes/web_entity_probe.gene` is the check and it asserts the property rather than
 the mechanism: it fills a hotbar so a dig drops an entity, digs the node holding
 that entity up, **stops talking**, and waits for the item to move on a silent
 socket. Measured: y 18.7 → 18.1, one unsolicited message, then still.
@@ -3010,7 +3010,7 @@ reading a number the client printed is the difference between "the client knows
 about an item" and "the client drew one".
 
 The message is *injected* there rather than provoked, and that is a scope line
-rather than a shortcut: `tools/entity_probe.mjs` already proves the server
+rather than a shortcut: `probes/web_entity_probe.gene` already proves the server
 spawns, steps and broadcasts one over a real socket, so what was untested is the
 other end — decode, table, mesh, draw — and provoking a real drop needs a full
 hotbar, which needs eight distinct items, which is a fixture about whatever
@@ -3886,7 +3886,7 @@ and nothing could produce it.
 ##### …and naming it reached the protocol and stopped there
 
 The fix above was real and it was half a fix, which took **playing the game in a
-browser** to see. `msg_craft` grew its byte, `chest_probe` used it, and the
+browser** to see. `msg_craft` grew its byte, `web_chest_probe` used it, and the
 *client* never did: `c` still sent `craft_any`, so at a keyboard the chest was
 exactly as unreachable as before. A player could still not make one.
 
@@ -4062,9 +4062,10 @@ Four layers, and the second is the one that matters most here.
    authority: a mod vetoing an edit the client already applied optimistically,
    and the rollback that follows.
 
-   *M6: built, as two harnesses that are not the same test. `tools/net_probe.mjs`
-   is a **peer** — it speaks the protocol itself, out of `core/`, and proves the
-   server answers correctly, including refusing a node the client does not hold.
+   *M6: built, as two harnesses that are not the same test.
+   `probes/web_net_probe.gene` is a **peer** — it speaks the protocol itself,
+   out of `core/`, and proves the server answers correctly, including refusing
+   a node the client does not hold.
    `tools/net_client_smoke.mjs` is a **client** — it boots `gene run server` as
    its own process and runs the 535 lines of `client/net_main.gene` that the
    probe replaces, over the platform's own `WebSocket`. Neither subsumes the
@@ -4097,14 +4098,15 @@ Four layers, and the second is the one that matters most here.
 
 5. **Silence, for anything the server does on its own.** §12's tick and §8's
    `on_step` are checked by a harness that drives one action and then **stops
-   talking** — `probes/web_tick_probe.gene` for nodes, `tools/entity_probe.mjs` for
-   entities. What is asserted is that a message arrived on a socket that sent
+   talking** — `probes/web_tick_probe.gene` for nodes, `probes/web_entity_probe.gene`
+   for entities. What is asserted is that a message arrived on a socket that sent
    nothing, which is a property no request/response harness can express.
 
    *M8, and the two things this layer taught are both about windows. A wait
    that is too long swallows the evidence: `tick_probe` first waited 600 ms for
    a dig's own answer, the whole cascade landed inside it, and a working tick
-   read as a broken one. `entity_probe` hit the same wall from the other side —
+   read as a broken one. `web_entity_probe` hit the same wall from the other
+   side —
    50 ms is now the post-dig wait, under one tick, so the fall cannot happen
    while the client is still notionally talking.*
 

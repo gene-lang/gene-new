@@ -1,0 +1,323 @@
+# design.md §8's `on_step` — a dropped item that falls, and the mod is what
+# makes it fall.
+#
+#   gene run server &
+#   node tools/web_spec.mjs web_entity_probe
+#
+# §8.1 listed "no entity physics — a dropped item stays where it was dropped,
+# including in the air if the node under it is later dug" as the engine's first
+# named absence. `mods/default` fills it with an `on_step`, and the engine
+# gained no notion of gravity. This probe is the check, and what it asserts is
+# the shape of that claim: an item is left hanging by digging the node under
+# it, the socket then goes **silent**, and what arrives is the server stepping
+# a mod's function on its own tick.
+#
+# The hotbar has to be full before a dig drops anything, so most of this file
+# is fixture: eight distinct items, found by digging whatever the terrain
+# offers rather than by naming nodes a generated world may not have here.
+#
+# This was `tools/entity_probe.mjs`. Three things changed in the move:
+#
+# - **The world is a `core/loaded.gene` `World`**, so `node_at` is the engine's
+#   own accessor rather than the `(nx & 15) + 16*(ny & 15) + 256*(nz & 15)`
+#   formula the harness restated — the third copy of §1's addressing in a tree
+#   that has one module for it.
+# - **The codec arrives by source**, not out of `dist/`.
+# - **The hotbar is read at the right stride.** The `.mjs` counted filled slots
+#   at `i*2 + 1`; a slot has been three cells wide since §2 widened it with
+#   `wear`, so that read walked across slot boundaries and answered nonsense.
+#   It only ever reached a *detail* string, never a pass/fail, which is why it
+#   survived — an assertion would have caught it the day §2 landed.
+
+(mod web_entity_probe ^profile web)
+
+(import [new_cursor] from "../core/wire.gene")
+(import [message_kind msg_hello msg_registry msg_block msg_entity msg_inventory
+         msg_node_delta
+         new_hello decode_hello hello_bx hello_by hello_bz
+         hello_span_x hello_span_y hello_span_z
+         decode_registry
+         new_block_header decode_block block_bx block_by block_bz
+         new_node_delta decode_node_delta delta_x delta_y delta_z delta_id
+         new_entity_msg decode_entity ent_id ent_x ent_y ent_z ent_count
+         decode_inventory
+         size_request_blocks encode_request_blocks
+         size_dig encode_dig]
+        from "../core/protocol.gene")
+(import [Registry new_wire_registry name_of] from "../core/registry.gene")
+(import [World new_world store_block node_at set_node] from "../core/loaded.gene")
+
+(let block_dim 16.0)
+(let block_nodes 4096.0)
+(let max_ents 4096.0)
+# Bounded by the number of distinct content ids, which is the registry's size.
+(let max_candidates 64.0)
+(let max_content 4096.0)
+# Eight slots of (item, count, wear) — §2's third cell is `wear`, and it is the
+# reason a slot is not two cells wide.
+(let hotbar_slots 8.0)
+(let inv_cells 24.0)
+
+(fn main [] : Void
+  (var bad 0.0)
+  (var say (fn [ok : Bool label : Str detail : Str] : Void
+    (var mark (if ok "ok  " "FAIL"))
+    ($console/log $"  ${mark} ${label}   ${detail}")
+    (if_yes (! ok) (set bad (+ bad 1.0)))))
+
+  (var c (new_cursor))
+  (var rc (new_cursor))
+  (var hello (new_hello))
+  (var header (new_block_header))
+  (var delta (new_node_delta))
+  (var ent (new_entity_msg))
+  (var block_c ($buffer F32 block_nodes))
+  (var block_l ($buffer F32 block_nodes))
+  (var reg (new_wire_registry))
+  # The hotbar is authoritative and arrives whole (§7.1), so the latest message
+  # *is* the inventory — there is nothing to accumulate.
+  (var inv ($buffer F64 inv_cells))
+  (var inv_n 0.0)
+  # An entity message is five numbers worth keeping, so the log is one flat
+  # buffer and a count: the profile has no `set!` on a `(List T)`.
+  (var elog ($buffer F64 (* max_ents 5.0)))
+  (var en 0.0)
+  (var blocks_in 0.0)
+  (var world : World (new_world 0.0 0.0 0.0 1.0 1.0 1.0))
+  (var have_hello false)
+
+  (var sock ($ws/connect "ws://127.0.0.1:8790/"))
+  ($ws/on_bytes sock (fn [b : (Buffer U8)] : Void
+    (var kind (message_kind b))
+    (if_yes (== kind msg_hello)
+      (decode_hello b c hello)
+      # The extent is the server's to state (§10), so the world is built from
+      # `hello` rather than from constants this file would have to keep in step.
+      (set world (new_world (hello ~ get hello_bx) (hello ~ get hello_by)
+                            (hello ~ get hello_bz) (hello ~ get hello_span_x)
+                            (hello ~ get hello_span_y) (hello ~ get hello_span_z)))
+      (set have_hello true))
+    (if_yes (== kind msg_registry) (decode_registry b c reg))
+    (if_yes (== kind msg_block)
+      (decode_block b c header block_c block_l)
+      (store_block world (header ~ get block_bx) (header ~ get block_by)
+                   (header ~ get block_bz) block_c)
+      (set blocks_in (+ blocks_in 1.0)))
+    # §7.1's reconciliation. The `.mjs` did not decode these at all, so the
+    # candidate columns below were scanned out of a snapshot up to 15 s old —
+    # §12's ambient ABM edits nodes nobody touched, and a dig aimed at one of
+    # them yields whatever is there now rather than what was scanned.
+    (if_yes (== kind msg_node_delta)
+      (decode_node_delta b c delta)
+      (set_node world (delta ~ get delta_x) (delta ~ get delta_y)
+                (delta ~ get delta_z) (delta ~ get delta_id)))
+    (if_yes (== kind msg_inventory)
+      (decode_inventory b c inv)
+      (set inv_n (+ inv_n 1.0)))
+    (if_yes (== kind msg_entity)
+      (decode_entity b c ent)
+      (if_yes (< en max_ents)
+        (elog ~ set! (* en 5.0) (ent ~ get ent_id))
+        (elog ~ set! (+ (* en 5.0) 1.0) (ent ~ get ent_x))
+        (elog ~ set! (+ (* en 5.0) 2.0) (ent ~ get ent_y))
+        (elog ~ set! (+ (* en 5.0) 3.0) (ent ~ get ent_z))
+        (elog ~ set! (+ (* en 5.0) 4.0) (ent ~ get ent_count))
+        (set en (+ en 1.0))))))
+
+  (await ($time/sleep 400.0))
+  ($console/log "")
+  ($console/log "design.md §8 — a dropped item falls, and a mod is what makes it")
+  ($console/log "")
+  (say have_hello "the server answered the handshake" "hello and registry")
+
+  # How many messages about `id` there are from `from` onward, and — separately —
+  # what the last one said. **A `found` boolean, not a coordinate sentinel**: a y
+  # of 0 is a legal position here and this project has now paid four times for a
+  # sentinel that collided with real data (§13.4's chest, the sandbox cache key,
+  # §D5.2's boundary, `tick_probe`'s sand column).
+  (var msgs_about (fn [id : F64 from : F64] : F64
+    (var n 0.0)
+    (var i from)
+    (while (< i en)
+      (if_yes (== (elog ~ get (* i 5.0)) id) (set n (+ n 1.0)))
+      (set i (+ i 1.0)))
+    n))
+  (var last_about (fn [id : F64 from : F64 out : (Buffer F64)] : Bool
+    (var found false)
+    (var i from)
+    (while (< i en)
+      (if_yes (== (elog ~ get (* i 5.0)) id)
+        (set found true)
+        (out ~ set! 0.0 (elog ~ get (+ (* i 5.0) 1.0)))
+        (out ~ set! 1.0 (elog ~ get (+ (* i 5.0) 2.0)))
+        (out ~ set! 2.0 (elog ~ get (+ (* i 5.0) 3.0)))
+        (out ~ set! 3.0 (elog ~ get (+ (* i 5.0) 4.0))))
+      (set i (+ i 1.0)))
+    found))
+  (var last ($buffer F64 4.0))
+
+  # The whole world, in windows of 64 — the queue drops the oldest frame past
+  # 256, which is why this asks rather than being pushed (§10.1).
+  (var total (* (hello ~ get hello_span_x)
+                (* (hello ~ get hello_span_y) (hello ~ get hello_span_z))))
+  (var from 0.0)
+  (while (< from total)
+    (var count (if (< (- total from) 64.0) (- total from) 64.0))
+    (var m ($buffer U8 (size_request_blocks)))
+    (encode_request_blocks m rc from count)
+    ($ws/send_bytes sock m)
+    # Wait for the window to *arrive*, not for a guessed interval: a fixed sleep
+    # got 230 of 576 blocks on a loaded machine and read as a broken server.
+    (var want (+ from count))
+    (var spins 0.0)
+    (while (&& (< blocks_in want) (< spins 200.0))
+      (await ($time/sleep 50.0))
+      (set spins (+ spins 1.0)))
+    (set from (+ from count)))
+  (say (== blocks_in total) "the world arrived" $"$($to_int blocks_in) blocks")
+
+  # Fill the hotbar. Eight slots, and a slot is claimed per distinct *item* —
+  # so digging one spot eight times stacks into one slot and never overflows.
+  # Distinct node kinds are not enough either: the drop table maps several nodes
+  # onto one item (grass yields dirt, §2's one exception), so this collects every
+  # kind the world has at every depth and digs them until a drop has nowhere to
+  # go. Terrain-driven rather than named, because the world is generated and a
+  # hardcoded node list is a fixture that rots.
+  #
+  # Buried nodes count. The ores are never exposed and they are exactly the
+  # distinct items this needs, and a dig does not require line of sight — §7.1's
+  # authority check is about what the client *holds*, not where it is standing.
+  (var ox (* (hello ~ get hello_bx) block_dim))
+  (var oy (* (hello ~ get hello_by) block_dim))
+  (var oz (* (hello ~ get hello_bz) block_dim))
+  (var lim_x (+ ox (- (* (hello ~ get hello_span_x) block_dim) 1.0)))
+  (var top_y (+ oy (- (* (hello ~ get hello_span_y) block_dim) 2.0)))
+  (var lim_z (+ oz (- (* (hello ~ get hello_span_z) block_dim) 1.0)))
+  (var seen_kind ($buffer F64 max_content))
+  (var kinds 0.0)
+  (var cand ($buffer F64 (* max_candidates 4.0)))
+  (var cn 0.0)
+  (var x (+ ox 1.0))
+  (while (&& (< x lim_x) (< kinds 20.0))
+    (var z (+ oz 1.0))
+    (while (&& (< z lim_z) (< kinds 20.0))
+      (var y top_y)
+      (while (> y (+ oy 1.0))
+        (var n (node_at world x y z))
+        (if_yes (&& (> n 0.0) (&& (< cn max_candidates)
+                                  (== (seen_kind ~ get n) 0.0)))
+          (seen_kind ~ set! n 1.0)
+          (set kinds (+ kinds 1.0))
+          (cand ~ set! (* cn 4.0) x)
+          (cand ~ set! (+ (* cn 4.0) 1.0) y)
+          (cand ~ set! (+ (* cn 4.0) 2.0) z)
+          (cand ~ set! (+ (* cn 4.0) 3.0) n)
+          (set cn (+ cn 1.0)))
+        (set y (- y 1.0)))
+      (set z (+ z 2.0)))
+    (set x (+ x 2.0)))
+
+  (var kind_names "")
+  (var ki 0.0)
+  (while (< ki cn)
+    (var nm (name_of reg (cand ~ get (+ (* ki 4.0) 3.0))))
+    (set kind_names (if (== ki 0.0) nm $"${kind_names}, ${nm}"))
+    (set ki (+ ki 1.0)))
+  (say (>= cn 3.0) "found distinct node kinds to dig"
+       $"$($to_int cn): ${kind_names}")
+
+  (var filled (fn [] : F64
+    (var n 0.0)
+    (var i 0.0)
+    (while (< i hotbar_slots)
+      (if_yes (> (inv ~ get (+ (* i 3.0) 1.0)) 0.0) (set n (+ n 1.0)))
+      (set i (+ i 1.0)))
+    n))
+
+  (var before_ent en)
+  (var di 0.0)
+  (while (&& (< di cn) (== en before_ent))
+    (var dm ($buffer U8 (size_dig)))
+    (encode_dig dm rc (cand ~ get (* di 4.0)) (cand ~ get (+ (* di 4.0) 1.0))
+                (cand ~ get (+ (* di 4.0) 2.0)))
+    ($ws/send_bytes sock dm)
+    (await ($time/sleep 200.0))
+    (set di (+ di 1.0)))
+  (say (> en before_ent) "the hotbar filled and a dig dropped an entity"
+       $"$($to_int (filled))/8 slots, $($to_int (- en before_ent)) entity message(s)")
+
+  # Both arms do real work, which is what `then`/`else` is for: without a
+  # dropped entity there is nothing below to assert about, and saying so is not
+  # the same answer as a failed check.
+  (if (== en before_ent)
+    (then
+      ($console/log "")
+      ($console/log "FAIL — no fixture: the hotbar never filled, so nothing was dropped")
+      ($ws/close sock))
+    (else
+      # Where it landed. The spawn is the centre of the node that was dug, so the
+      # node beneath it is what the item is resting on.
+      (var spawn (- en 1.0))
+      (var eid (elog ~ get (* spawn 5.0)))
+      (var ex (elog ~ get (+ (* spawn 5.0) 1.0)))
+      (var ey (elog ~ get (+ (* spawn 5.0) 2.0)))
+      (var ez (elog ~ get (+ (* spawn 5.0) 3.0)))
+      (say (> (elog ~ get (+ (* spawn 5.0) 4.0)) 0.0) "and it carries a stack"
+           $"x$($to_int (elog ~ get (+ (* spawn 5.0) 4.0)))")
+
+      (var rest_y ey)
+      (await ($time/sleep 600.0))
+      (var seen_rest (last_about eid 0.0 last))
+      (say (&& seen_rest (== (last ~ get 1.0) rest_y))
+           "and it rests, because the node under it is solid"
+           $"y ${rest_y}")
+
+      # Now take away what it is standing on. An item rests at the centre of the
+      # node it was dropped in — `n + 0.5` — so the node holding it up is the one
+      # *below* that, and digging `floor(ey)` would dig the air it is sitting in.
+      # Getting this wrong is how the first run of this probe read a working
+      # `on_step` as a broken one: nothing was removed, so nothing fell, and the
+      # check was right about what it saw.
+      (var under_y (- ($math/floor ey) 1.0))
+      (var dm2 ($buffer U8 (size_dig)))
+      (encode_dig dm2 rc ($math/floor ex) under_y ($math/floor ez))
+      ($ws/send_bytes sock dm2)
+      # Shorter than one 100 ms tick, so the fall cannot land inside the window
+      # the client was still talking in. `web_tick_probe` records the same trap
+      # from the other side — it waited 600 ms there and read a working tick as a
+      # broken one.
+      (await ($time/sleep 50.0))
+
+      # And go quiet. Everything from here is the server's own tick.
+      (var quiet en)
+      (await ($time/sleep 2000.0))
+      (var moves (msgs_about eid quiet))
+      (say (> moves 0.0) "the server moved it while the client said nothing"
+           $"$($to_int moves) unsolicited entity message(s)")
+      (var fell (last_about eid quiet last))
+      (var lowest (if fell (last ~ get 1.0) rest_y))
+      (say (< lowest rest_y) "and it fell"
+           $"y ${rest_y} -> ${lowest}")
+
+      # It stops, rather than falling through the world. Two seconds at 6 nodes a
+      # second would leave it 12 nodes down if nothing caught it.
+      (await ($time/sleep 1500.0))
+      (var seen_settled (last_about eid 0.0 last))
+      (var settled (last ~ get 1.0))
+      (say (&& seen_settled (> settled oy))
+           "and it stopped inside the world rather than falling through"
+           $"y ${settled}, world floor ${oy}")
+
+      # And it comes to rest rather than drifting for as long as the server runs.
+      # Compared against the previous sample rather than against the world, because
+      # this probe's copy of the blocks predates every dig above.
+      (await ($time/sleep 1200.0))
+      (var seen_later (last_about eid 0.0 last))
+      (say (&& seen_later (== (last ~ get 1.0) settled)) "and it came to rest"
+           $"y ${settled}, unchanged over 1.2 s")
+
+      ($console/log "")
+      (if (== bad 0.0)
+        (then ($console/log "PASS — §8's on_step runs on the server tick, and the physics is the mod's"))
+        (else ($console/log $"FAIL — $($to_int bad) check(s) failed")))
+      ($ws/close sock))))
