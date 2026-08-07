@@ -551,13 +551,19 @@ an experimental library has not earned. Packages exist, with manifests and a
 lockfile, and that also gives versioned artifacts (§13.5) almost for free.
 
 ```text
-vsa            core protocol, spaces, bind/bundle/permute/similarity
-vsa/codec      atoms, node encoder, normalization, scalar encoders, decoder
-vsa/memory     cleanup memory, associative memory, approximate index
-vsa/backends   map, later hrr/fhrr
+src/space.gene        core protocol, guards
+src/backends/map.gene bipolar MAP; later hrr/fhrr beside it
+src/codec/            atoms, node encoder, normalization, scalar encoders
+src/memory/           cleanup memory, associative memory, approximate index
+tests/                the cross-backend spec and its two shells
 ```
 
-Reserve the `gene/vsa` slot for if and when it earns it.
+Shipped at `examples/vsa` as `gene/vsa`, with `src/space.gene` as the library
+entry — the protocol rather than a backend, so an importer depends on the
+algebra and never on which family implements it. `src/codec/` and `src/memory/`
+are the G4–G6 directories and do not exist yet.
+
+Reserve the `gene/vsa` *import* slot for if and when it earns it.
 
 ---
 
@@ -567,9 +573,28 @@ Each gate produces a number that the next stage depends on. Gates G1–G3 come
 before any integration work, because they decide parameters that later code
 would otherwise hard-code.
 
-- **G1 — algebra.** `atom`, `bind`, `unbind`, `bundle_into`, `permute`,
-  `similarity` on one MAP backend. *Done in prototype form; needs packaging,
-  the scratch-pool convention, and cross-backend fixtures.*
+- **G1 — algebra. ✅ Shipped as `examples/vsa`.** `atom`, `bind`, `unbind`,
+  `bundle_into`, `permute`, `similarity`, `normalize` on one MAP backend,
+  behind `VsaSpace`, with the shape and alias guards of §3.1.1 and §3.3.1. The
+  spec runs from one source on both runtimes and their reports are **byte
+  identical**; `tools/check.sh` is that diff.
+  Two things this gate produced that were not in the plan:
+  - **The codebook needed measuring, not asserting.** Taking an atom's sign
+    from bit 0 of a multiplicative hash makes it a *linear* function of the
+    component index, and every atom came out as the same vector up to sign —
+    worst |sim| between distinct atoms **0.95** where ~0.03 was expected at
+    dimension 1024. Nothing about the API showed it; only the number did. The
+    fix is a data-dependent multiplier plus a mixed high bit, and the
+    orthogonality table now lives in the package README.
+  - **Four backend differences had to be worked around** rather than one:
+    `~ len` is `Int` on the VM and `F64` on the web (miclone §D7.12, and this
+    is the second `(+ 0.0 …)` wrapper in the repo); `$println` is not portable;
+    a whole-number F64 interpolates as `1.0` against `1`, which is why the
+    report carries no floats; and module-level `var` is rejected by the
+    profile. Only the first was already recorded.
+  Deferred from this gate: the **scratch pool** (§3.3) — callers still allocate
+  their own temporaries, which is correct but leaves the pooling convention
+  unwritten until something actually loops.
 - **G2 — cleanup.** Recover an atom after binding and bundling, with noise.
   Produces: the accuracy-vs-load curve for a fixed codebook.
 - **G3 — capacity.** Fill in §9's table, and measure recovery at nesting depth

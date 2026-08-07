@@ -1,0 +1,103 @@
+# The VSA algebra as a protocol, plus the two guards every implementation owes
+# its callers — docs/proposals/vsa.md §3.1.1, §3.3.1, §4.2.
+#
+# Nothing here computes. The protocol exists so the language does not commit to
+# one VSA family (§4.1): MAP is the first backend, HRR/FHRR is meant to be a
+# second implementation of exactly this surface, and neither should be visible
+# to a caller that only binds and compares.
+#
+# Two shapes are load-bearing and are not the conventional ones:
+#
+#   * **every operation writes into a caller-owned `out` and returns `Nil`**
+#     (§3.3). A dimension-8192 vector is 64 KB; returning one per operation
+#     would allocate 64 MB to bundle a thousand observations, and neither
+#     backend has a cheap intermediate.
+#   * **`out` may alias an input for the elementwise operations** — `bind`,
+#     `unbind`, `bundle_into`, `normalize` — and may *not* for `permute`, which
+#     is a cyclic shift and would read what it has already written (§3.3.1).
+
+(mod space ^profile web)
+
+# A buffer whose length is not the space's dimension. `(Buffer F64)` carries no
+# length (§3.1.1), so this is the only thing standing between a caller and a
+# silently meaningless answer: a short buffer reads `void` past its end on both
+# backends, and cosine over that is a number.
+(type ShapeError ^props {^message Str})
+(impl Error for ShapeError)
+
+# `permute` handed one buffer as both source and destination.
+(type AliasError ^props {^message Str})
+(impl Error for AliasError)
+
+(protocol VsaSpace
+  # Components per vector. Fixed for the life of the space.
+  (message dimension [] : F64)
+
+  # The stable vector for a concept name. Deterministic across processes and
+  # bit-identical across backends (§5) — never derived from an interned id,
+  # which is per-process encounter order.
+  (message atom [key : Str out : (Buffer F64)] : Nil)
+
+  # Associate. Makes the result dissimilar to both operands.
+  (message bind [a : (Buffer F64) b : (Buffer F64) out : (Buffer F64)] : Nil)
+
+  # Recover a filler from a composite. For MAP this *is* `bind` (§4.1); it
+  # stays a separate message because HRR needs correlation and a caller should
+  # not have to know which family it is talking to.
+  (message unbind [composite : (Buffer F64) role : (Buffer F64)
+                   out : (Buffer F64)] : Nil)
+
+  # Superpose `v` into `acc`. Takes one vector rather than a list so that
+  # bundling a stream costs no list and no intermediate.
+  (message bundle_into [v : (Buffer F64) acc : (Buffer F64)] : Nil)
+
+  # Positional/structural transformation. `shift` is whole-number.
+  (message permute [v : (Buffer F64) shift : F64 out : (Buffer F64)] : Nil)
+
+  # Normalized overlap. The one operation that returns a value, because it
+  # returns a scalar.
+  (message similarity [a : (Buffer F64) b : (Buffer F64)] : F64)
+
+  # Project back into the space's valid range. Separate `out` like everything
+  # else, so a bundling accumulator is not destructively clamped (§3.3.1).
+  (message normalize [v : (Buffer F64) out : (Buffer F64)] : Nil))
+
+# Approximate decode: a noisy vector in, ranked known concepts out (§8). Kept
+# apart from the algebra because the implementation — linear scan, ANN index,
+# learned — is independent of how binding works.
+(protocol CleanupMemory
+  (message remember [key : Str v : (Buffer F64)] : Nil)
+  (message size [] : F64)
+  # Best match above `floor`, or "" when nothing clears it. Returning the key
+  # rather than the vector keeps the exact value in the Gene store (§6.2).
+  (message nearest [v : (Buffer F64) floor : F64] : Str)
+  (message score [v : (Buffer F64) key : Str] : F64))
+
+(fn buffer_len [b : (Buffer F64)] : F64
+  # `~ len` answers `Int` on the VM and `F64` in the web profile — the one
+  # operation whose *type* differs between the backends, recorded as
+  # `examples/miclone`'s design.md §D7.12. `$to_float` cannot bridge it: the VM
+  # needs it and the web profile rejects a no-op conversion. `(+ 0.0 …)` is the
+  # spelling that works on both, promoting on the VM and doing nothing to a
+  # JavaScript number.
+  #
+  # The real fix is for `Buffer/len` to answer one type; `core/wire.gene`'s
+  # `byte_len` is the same wrapper for the same reason, and this is the second
+  # copy of it. A third would be an argument for fixing the primitive.
+  (+ 0.0 (b ~ len)))
+
+(fn check_len [b : (Buffer F64) dim : F64 who : Str] : Nil
+  # §3.1.1's guard. One comparison against 8192 multiplies — unmeasurable, and
+  # the difference between a usable library and one that answers nonsense.
+  (var n (buffer_len b))
+  (if (!= n dim)
+    (fail (ShapeError ^message
+      $"vsa/${who}: buffer has ${n} components, space has ${dim}"))))
+
+(fn check_distinct [a : (Buffer F64) b : (Buffer F64) who : Str] : Nil
+  # Only `permute` needs this: it reads position `i - shift` while writing `i`,
+  # so a shared buffer feeds its own output back in. The elementwise
+  # operations read and write the same index and are safe to alias.
+  (if (same? a b)
+    (fail (AliasError ^message
+      $"vsa/${who}: out must be a different buffer than its input"))))

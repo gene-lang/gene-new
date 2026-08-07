@@ -1,0 +1,204 @@
+# Cross-backend spec for the MAP algebra — docs/proposals/vsa.md §11 gate G1.
+#
+# Runs unchanged on the VM and in the web profile, and the two outputs are
+# diffed. That is the point: the whole proposal rests on a codebook and an
+# algebra that mean the same thing on both sides, and §3.1.2 records what
+# happened the last time an indexing primitive quietly did not.
+#
+# The assertions that carry weight are algebraic identities rather than
+# specific numbers, because a backend that is wrong in a consistent way is
+# still self-consistent:
+#
+#   * **binding is self-inverse** — the property MAP was chosen for (§4.1);
+#   * **binding is dissimilar to its operands** — otherwise `bind` is not
+#     making a new symbol, it is averaging;
+#   * **bundling keeps its members retrievable** — otherwise superposition
+#     carries no information;
+#   * **atoms are near-orthogonal** — the assumption everything else rests on,
+#     and the one that degrades quietly as dimension falls.
+#
+# One exact value is asserted on purpose: `hash_name` against a literal. It is
+# the only check here that can catch the two backends agreeing with each other
+# and disagreeing with yesterday.
+
+(mod algebra ^profile web)
+
+(import [VsaSpace] from "../src/space.gene")
+(import [MapSpace new_space hash_name] from "../src/backends/map.gene")
+
+(const dim 1024.0)
+
+# Similarity between unrelated atoms is ~1/sqrt(dim) in expectation. At
+# dim=1024 that is ~0.031, so 0.15 is a wide margin that still fails loudly if
+# the codebook collapses.
+(const orthogonal_margin 0.15)
+
+(fn abs_f [x : F64] : F64 (if (< x 0.0) (- 0.0 x) x))
+
+# Each check prints its own line and returns the failures it contributed, so
+# the running total is an ordinary local sum. The web profile has no
+# module-level mutable state — the divergence `const` was introduced for — so
+# there is nowhere else for a counter to live.
+(fn ok [lines : (List Str) label : Str pass : Bool] : F64
+  (lines ~ push! (if pass $"ok   ${label}" $"FAIL ${label}"))
+  (if pass 0.0 1.0))
+
+# The measured value is deliberately *not* in the label. A whole-number F64
+# interpolates as `1.0` on the VM and `1` in the web profile — the two reports
+# are diffed, so a float in the output would fail the diff on every passing
+# check. Non-whole values agree, which makes this exactly the kind of
+# difference that hides until it is load-bearing.
+(fn close [lines : (List Str) label : Str actual : F64 expected : F64
+           tol : F64] : F64
+  (ok lines label (< (abs_f (- actual expected)) tol)))
+
+(fn buf [] : (Buffer F64) ($buffer F64 dim))
+
+(fn report [] : Str
+  (var lines : (List Str) [])
+  (var f 0.0)
+  (var s (new_space dim 42.0))
+
+  # --- the codebook (§5) -----------------------------------------------------
+
+  # Bit-identical name hashing. A literal, so this fails if either backend
+  # drifts — including both drifting together.
+  (set f (+ f (ok lines "hash_name is stable across backends and versions"
+                  (== (hash_name "car") 1532061092.0))))
+
+  (var car (buf))
+  (var red (buf))
+  (var truck (buf))
+  (s ~ VsaSpace:atom "car" car)
+  (s ~ VsaSpace:atom "red" red)
+  (s ~ VsaSpace:atom "truck" truck)
+
+  (set f (+ f (close lines "an atom is identical to itself"
+                     (s ~ VsaSpace:similarity car car) 1.0 0.000001)))
+
+  # §5: symbol identity and semantic similarity are different things. `car` and
+  # `truck` get unrelated vectors, deliberately.
+  (set f (+ f (ok lines "unrelated atoms are near-orthogonal"
+                  (< (abs_f (s ~ VsaSpace:similarity car truck))
+                     orthogonal_margin))))
+
+  (var car_again (buf))
+  (s ~ VsaSpace:atom "car" car_again)
+  (set f (+ f (close lines "the same name gives the same atom"
+                     (s ~ VsaSpace:similarity car car_again) 1.0 0.000001)))
+
+  # A different seed is a different concept universe over the same geometry.
+  (var other (new_space dim 7.0))
+  (var car_other (buf))
+  (other ~ VsaSpace:atom "car" car_other)
+  (set f (+ f (ok lines "a different seed gives an unrelated codebook"
+                  (< (abs_f (s ~ VsaSpace:similarity car car_other))
+                     orthogonal_margin))))
+
+  # --- binding (§4.1) --------------------------------------------------------
+
+  (var bound (buf))
+  (s ~ VsaSpace:bind car red bound)
+
+  (set f (+ f (ok lines "a binding is unlike its left operand"
+                  (< (abs_f (s ~ VsaSpace:similarity bound car))
+                     orthogonal_margin))))
+  (set f (+ f (ok lines "a binding is unlike its right operand"
+                  (< (abs_f (s ~ VsaSpace:similarity bound red))
+                     orthogonal_margin))))
+
+  # The property MAP exists for: unbinding is binding.
+  (var recovered (buf))
+  (s ~ VsaSpace:unbind bound red recovered)
+  (set f (+ f (close lines "unbind recovers the filler exactly"
+                     (s ~ VsaSpace:similarity recovered car) 1.0 0.000001)))
+
+  # §3.3.1: `out` may alias an input for an elementwise operation.
+  (var aliased (buf))
+  (s ~ VsaSpace:atom "car" aliased)
+  (s ~ VsaSpace:bind aliased red aliased)
+  (set f (+ f (close lines "bind may write into one of its own inputs"
+                     (s ~ VsaSpace:similarity aliased bound) 1.0 0.000001)))
+
+  # --- bundling --------------------------------------------------------------
+
+  (var acc (buf))
+  (s ~ VsaSpace:bundle_into car acc)
+  (s ~ VsaSpace:bundle_into red acc)
+  (s ~ VsaSpace:bundle_into truck acc)
+
+  (set f (+ f (ok lines "a bundle keeps its first member retrievable"
+                  (> (s ~ VsaSpace:similarity acc car) 0.4))))
+  (set f (+ f (ok lines "a bundle keeps its last member retrievable"
+                  (> (s ~ VsaSpace:similarity acc truck) 0.4))))
+
+  (var stranger (buf))
+  (s ~ VsaSpace:atom "banana" stranger)
+  (set f (+ f (ok lines "a bundle stays unlike a non-member"
+                  (< (abs_f (s ~ VsaSpace:similarity acc stranger))
+                     orthogonal_margin))))
+
+  # Normalizing into a separate buffer leaves the accumulator summable, which
+  # is the whole reason `normalize` takes an `out` (§3.3.1).
+  (var snapshot (buf))
+  (s ~ VsaSpace:normalize acc snapshot)
+  (s ~ VsaSpace:bundle_into stranger acc)
+  (set f (+ f (ok lines "normalize does not clamp the accumulator it read"
+                  (> (s ~ VsaSpace:similarity acc stranger) 0.25))))
+  (set f (+ f (ok lines "a normalized bundle is still like its members"
+                  (> (s ~ VsaSpace:similarity snapshot car) 0.3))))
+
+  # --- permutation -----------------------------------------------------------
+
+  (var shifted (buf))
+  (s ~ VsaSpace:permute car 1.0 shifted)
+  (set f (+ f (ok lines "a permuted vector is unlike the original"
+                  (< (abs_f (s ~ VsaSpace:similarity shifted car))
+                     orthogonal_margin))))
+
+  (var restored (buf))
+  (s ~ VsaSpace:permute shifted -1.0 restored)
+  (set f (+ f (close lines "permuting back is the identity"
+                     (s ~ VsaSpace:similarity restored car) 1.0 0.000001)))
+
+  # A full rotation is the identity, which is what makes the shift fold in
+  # `permute` a rotation rather than a truncation.
+  (var whole (buf))
+  (s ~ VsaSpace:permute car dim whole)
+  (set f (+ f (close lines "a full-dimension rotation changes nothing"
+                     (s ~ VsaSpace:similarity whole car) 1.0 0.000001)))
+
+  # --- role/filler, the reason any of this is worth doing --------------------
+
+  # (color red) and (shape round) superposed into one record, then queried by
+  # role. This is §6.3's encoding in miniature.
+  (var color (buf))
+  (var shape (buf))
+  (var round (buf))
+  (s ~ VsaSpace:atom "color" color)
+  (s ~ VsaSpace:atom "shape" shape)
+  (s ~ VsaSpace:atom "round" round)
+
+  (var pair_a (buf))
+  (var pair_b (buf))
+  (s ~ VsaSpace:bind color red pair_a)
+  (s ~ VsaSpace:bind shape round pair_b)
+
+  (var record (buf))
+  (s ~ VsaSpace:bundle_into pair_a record)
+  (s ~ VsaSpace:bundle_into pair_b record)
+
+  (var answer (buf))
+  (s ~ VsaSpace:unbind record color answer)
+  (set f (+ f (ok lines "querying a record by role returns that role's filler"
+                  (> (s ~ VsaSpace:similarity answer red) 0.4))))
+  (set f (+ f (ok lines "and not the other role's filler"
+                  (< (s ~ VsaSpace:similarity answer round) 0.4))))
+
+  (lines ~ push! "")
+  # No count for the same reason: the failing checks are already named above,
+  # one line each, so a number here would add nothing and cost the diff.
+  (lines ~ push! (if (== f 0.0)
+                   "PASS — every check agrees"
+                   "FAIL — see the FAIL lines above"))
+  ($str/join lines "\n"))

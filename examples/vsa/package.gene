@@ -1,0 +1,25 @@
+{
+  ^format 1
+  ^name "gene/vsa"
+  ^description "Vector Symbolic Architectures as a derived cognitive representation for Gene"
+  ^version "0.1.0"
+
+  # `docs/proposals/vsa.md` §10: a package, not the `gene/` stdlib root, which is
+  # reserved. The proposal is explicitly experimental (§13.4, §13.6) and has not
+  # earned a stdlib slot; landing here keeps the `gene/vsa` import path free for
+  # if and when it does.
+  #
+  # The entry is the protocol rather than a backend. A caller depends on the
+  # algebra (§4.2), and `src/backends/map.gene` is the first implementation of
+  # it — HRR/FHRR is meant to arrive as a second one behind the same surface
+  # without any importer changing.
+  ^library {^entry "src/space.gene"}
+
+  ^applications [
+    # §11 gate G1 — the MAP algebra, asserted as identities rather than as
+    # numbers, and run on both backends so the two outputs can be diffed. §3.1.2
+    # records what happened the last time an indexing primitive silently meant
+    # two different things, which is why this is the first thing that exists.
+    (application "algebra" ^entry "tests/run_algebra.gene")
+  ]
+}
