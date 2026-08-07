@@ -3649,6 +3649,33 @@ suite "spec — sequence indexing by integral Float (§7.4)":
     check_runtime_error("(var l [10 20 30]) (var i 1.5) (set! l/%i 9)",
                         "whole-number index")
 
+  test "a negative index counts from the end":
+    # design §1/§2 spell `users/-1/name` as an index segment, and the VM applies
+    # it to every indexed container through `readIndex`/`updateIndex`. The web
+    # profile emitted a bare `a[i]`, where JS reads `undefined` and *writes* an
+    # expando the array never sees — the same silent per-backend split the suite
+    # above exists for, and the harder one, because both sides returned a
+    # plausible number. Agreement is carried by `tests/transpile/fixtures.json`
+    # (`index.*`); these pin the VM half.
+    check_eval("(var l [10 20 30]) l/-1", "30")
+    check_eval("(var l [10 20 30]) (var i -2.0) l/%i", "20")
+    check_eval("(var l [10 20 30]) (set! l/-1 99) l", "[10 20 99]")
+    check_eval("(var b ($buffer F64 3.0)) (b ~ set! -1.0 7.0) (b ~ get 2.0)",
+               "7.0")
+    check_eval("(var b ($buffer F64 3.0)) (b ~ set! 2.0 7.0) (b ~ get -1.0)",
+               "7.0")
+
+  test "an out-of-range write raises where an out-of-range read is void":
+    # `readIndex` yields `void` and `updateIndex` raises; the asymmetry is
+    # deliberate and the web profile now matches it rather than growing the
+    # array or dropping the store on the floor.
+    check_eval("(var l [10 20 30]) l/9", "void")
+    check_runtime_error("(var l [10 20]) (set! l/9 5)", "index out of range")
+    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ set! 9.0 1.0)",
+                        "Buffer/set! index out of range")
+    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ set! -9.0 1.0)",
+                        "Buffer/set! index out of range")
+
 suite "spec — loop body scoping from design (§9)":
   test "a var in a loop body is one declaration run many times":
     # `for` always worked; `while`, `loop`, and `repeat` share one scope on the

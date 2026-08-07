@@ -100,6 +100,23 @@ never denotes arithmetic. A zero divisor raises the VM's own catchable
 does not yield `Infinity` and `Int` division does not surface a JS `RangeError`.
 Because it really is the VM's value, `catch (Error ^message m)` matches it.
 
+**Indexing follows the VM's rule, not JavaScript's.** A negative index counts
+from the end (design §1/§2, `users/-1/name`) and an out-of-range *write* raises;
+an out-of-range *read* yields `void`. This holds for list path segments, dynamic
+`%` segments, path `set!`, and `Buffer`'s `get`/`set!` alike, and it mirrors
+`readIndex`/`updateIndex` in `vm.nim` including the error text. JS agrees with
+none of it — `a[-1]` reads `undefined` and writes an expando the array never
+sees, and a store past the end is silently dropped on a typed array — so reads
+lower through a `$gene_at` helper and writes through `$gene_index`, which is
+what keeps `xs/-1` and `(b ~ set! -1 v)` from meaning two different things by
+backend. `tests/transpile/fixtures.json` carries the agreement as `index.*`.
+
+This is not free: it costs roughly 22% on a buffer-indexing hot loop
+(`examples/miclone`'s meshing benchmark, 0.249 → 0.305 ms/chunk). A list segment
+whose index is a non-negative literal still emits a bare `a[i]`, since neither
+half of the rule can apply to it; `Buffer` access always goes through the
+helpers, because its index is a runtime value at every call site that matters.
+
 Supported control/data forms include mutable and immutable locals, `set` and
 path `set!`, compact and clause `if`, guards, short-circuit operators, all core
 loops and exits, destructuring and `match` (including list rest patterns),

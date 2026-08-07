@@ -3747,6 +3747,14 @@ proc isJsIdent(name: string): bool =
   true
 
 proc isNumericKey(key: string): bool =
+  ## Index segments, including the from-the-end form (design §1/§2 `users/-1`).
+  ## A leading `-` counts: a negative segment is still a body/element index and
+  ## never a property name, so the nominal-property branch must skip it too.
+  if key.len == 0: return false
+  let digits = if key[0] == '-': key[1 .. ^1] else: key
+  digits.len > 0 and digits.allCharsInSet({'0'..'9'})
+
+proc isNonNegativeNumericKey(key: string): bool =
   key.len > 0 and key.allCharsInSet({'0'..'9'})
 
 proc directRead(emitter: WebEmitter, expr: WebExpr, base: string,
@@ -3774,17 +3782,25 @@ proc directRead(emitter: WebEmitter, expr: WebExpr, base: string,
         not isNumericKey(key):
       return (if isJsIdent(key): base & "." & key
               else: base & "[" & jsString(key) & "]")
-    if baseType.kind == wtkList and isNumericKey(key):
+    if baseType.kind == wtkList and isNonNegativeNumericKey(key):
       return base & "[" & key & "]"
+    # A from-the-end segment stays on the fast path; only the index arithmetic
+    # differs, and `$gene_at` inlines to the same monomorphic access.
+    if baseType.kind == wtkList and isNumericKey(key):
+      return "$gene_at(" & base & ", " & key & ")"
     return ""
   # Dynamic `%` index into a list. A plain array carries no `$gene_body` and no
   # `$gene_node`, so only the bigint coercion is live — and only for `Int`.
   if baseType.kind != wtkList: return ""
   let indexType = expr.children[1].typ
   if indexType == nil or segments.len != 1: return ""
+  # `$gene_at` rather than `[...]`: the index is dynamic, so it may be negative
+  # at runtime, and a bare read would silently miss the from-the-end slot the VM
+  # returns. It inlines to the same monomorphic access this fast path exists for
+  # (measured at parity with `[]` on both a plain Array and a Float64Array).
   case indexType.kind
-  of wtkF64: return base & "[" & segments[0] & "]"
-  of wtkInt: return base & "[Number(" & segments[0] & ")]"
+  of wtkF64: return "$gene_at(" & base & ", " & segments[0] & ")"
+  of wtkInt: return "$gene_at(" & base & ", Number(" & segments[0] & "))"
   else: return ""
 
 proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
@@ -4527,7 +4543,10 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       case expr.text
       of "len": return target & ".length"
       of "get":
-        let read = target & "[" & arguments[0] & "]"
+        # `$gene_at`, not `target[i]`: a negative index counts from the end on
+        # the VM (`readIndex`) and reads `undefined` in JS. Out of range yields
+        # `undefined` from both, which is the same `VOID` the VM returns.
+        let read = "$gene_at(" & target & ", " & arguments[0] & ")"
         # An integer buffer's elements are `Int`, which is `bigint` here, so the
         # read is converted on the way out. The float buffers are already F64
         # and convert nothing.
@@ -4536,8 +4555,16 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       of "set!":
         let written = if bufferElementIsFloat(element): arguments[1]
                       else: "Number(" & arguments[1] & ")"
-        return "(" & target & "[" & arguments[0] & "] = " & written &
-          ", undefined)"
+        # A plain identifier is re-emitted for `.length` rather than hoisted:
+        # it is free and side-effect-free, and it keeps the assignment shape
+        # (measured +26% against a bare store, where routing the whole write
+        # through `$gene_put` costs +137%). Anything else goes through the
+        # helper, which evaluates the receiver once.
+        if isJsIdent(target):
+          return "(" & target & "[$gene_index(\"Buffer/set!\", " & target &
+            ".length, " & arguments[0] & ")] = " & written & ", undefined)"
+        return "($gene_put(" & target & ", " & arguments[0] & ", " & written &
+          ", \"Buffer/set!\"), undefined)"
       else: discard
     if expr.keys.len == 2 and expr.keys[1] == "$builtin":
       return expr.keys[0] & "(" & receiver &
@@ -5555,9 +5582,20 @@ proc emitModule(module: WebModule, typescript: bool,
   var needsMap = false
   let needsIntDivisor = moduleUsesDivision(module, wtkInt)
   let needsF64Divisor = moduleUsesDivision(module, wtkF64)
+  # A negative index counts from the end (design §1/§2, `users/-1/name`), and
+  # the VM applies that to every indexed container through `readIndex` and
+  # `updateIndex`. JS has no such rule and fails *silently* in both directions:
+  # `a[-1]` reads `undefined`, and `a[-1] = v` writes an expando property the
+  # array never sees. Emitting a bare `a[i]` therefore made the same source mean
+  # two different things per backend, with no error on either side.
+  let needsIndex =
+    moduleUsesExprKind(module, {wekPath, wekSelector, wekSetPath}) or
+    moduleUsesTypeKind(module, wtkBuffer) or
+    moduleExprUsesTypeKind(module, wtkBuffer)
   needsNode = moduleUsesTypeKind(module, wtkNode) or
     moduleUsesExprKind(module, {wekNode}) or
-    needsIntDivisor or needsF64Divisor # the divisor guards raise a Gene node
+    needsIntDivisor or needsF64Divisor or # the divisor guards raise a Gene node
+    needsIndex                            # and so does the index-range guard
   needsRange = moduleUsesTypeKind(module, wtkRange) or
     moduleUsesExprKind(module, {wekRange})
   needsPath = moduleUsesExprKind(module, {wekPath, wekSelector, wekSetPath})
@@ -5690,6 +5728,35 @@ proc emitModule(module: WebModule, typescript: bool,
       emitter.line("function $gene_f64_divisor(divisor" & f64Type & ")" &
         f64Type & " { if (divisor === 0) " & divisionByZero &
         " return divisor; }")
+    emitter.line()
+  if needsIndex:
+    # The two halves of the VM's index rule, kept separate because they differ
+    # exactly as `readIndex` and `updateIndex` do: a read past either end is
+    # `VOID`, a write past either end raises.
+    #
+    # `.at()` is the native-looking answer for the read and is not usable: it
+    # measured ~40x slower than `[]` on a `Float64Array` (0.55 -> 22 ns per
+    # element), and typed-array loops are the one place this profile cannot
+    # afford that. An inlined compare costs nothing measurable.
+    let anyType = if typescript: ": any" else: ""
+    let numType = if typescript: ": number" else: ""
+    let strType = if typescript: ": string" else: ""
+    emitter.line("function $gene_at(seq" & anyType & ", index" & numType &
+      ")" & anyType &
+      " { return index < 0 ? seq[seq.length + index] : seq[index]; }")
+    emitter.line("function $gene_index(name" & strType & ", length" & numType &
+      ", index" & numType & ")" & numType &
+      " { const at = index < 0 ? length + index : index;" &
+      " if (at < 0 || at >= length) throw new GeneNode(Symbol.for(\"Error\")," &
+      " { message: name + \" index out of range: \" + index }, [], true);" &
+      " return at; }")
+    # The receiver-is-not-a-simple-name fallback: `$gene_index` needs the length,
+    # and re-emitting a non-trivial receiver to read `.length` would evaluate it
+    # twice. Callers with a plain identifier inline the assignment instead,
+    # which keeps the `a[i] = v` shape the typed-array path depends on.
+    emitter.line("function $gene_put(seq" & anyType & ", index" & numType &
+      ", value" & anyType & ", name" & strType & ")" & anyType &
+      " { seq[$gene_index(name, seq.length, index)] = value; }")
     emitter.line()
   if needsRange:
     emitter.line("export class GeneRange {")
@@ -6266,7 +6333,14 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("if (value == null) return undefined;")
     emitter.line("if (typeof key === \"bigint\") key = Number(key);")
     emitter.line("if (value?.$gene_map === true) return value.get(key);")
-    emitter.line("if (Array.isArray(value?.$gene_body) && typeof key === \"number\") return value.$gene_body[key];")
+    # A static path segment is emitted as a string, so `xs/-1` arrives here as
+    # `"-1"`. JS coerces `"2"` to an index by itself but not `"-1"`, which is
+    # how the from-the-end form went silently missing. Coerce only for indexed
+    # containers: a Gene `Map` may legitimately be keyed by the *string*, and
+    # the `$gene_map` arm above has already claimed those.
+    emitter.line("if (typeof key === \"string\" && key.charCodeAt(0) === 45 && (Array.isArray(value?.$gene_body) || Array.isArray(value) || ArrayBuffer.isView(value))) { const at = Number(key); if (Number.isInteger(at)) key = at; }")
+    emitter.line("if (Array.isArray(value?.$gene_body) && typeof key === \"number\") return $gene_at(value.$gene_body, key);")
+    emitter.line("if (typeof key === \"number\" && (Array.isArray(value) || ArrayBuffer.isView(value))) return $gene_at(value, key);")
     emitter.line("if ($gene_is_node(value) && typeof key === \"string\" && Object.prototype.hasOwnProperty.call(value.props, key)) return value.props[key];")
     emitter.line("if (typeof key === \"string\" && !(key in Object(value))) { const camel = key.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase()); if (camel in Object(value)) key = camel; }")
     emitter.line("return value[key];")
@@ -6279,6 +6353,16 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("if (Object.isFrozen(value)) throw new TypeError(\"cannot mutate a frozen value\");")
     emitter.line("if (typeof key === \"bigint\") key = Number(key);")
     emitter.line("if (value?.$gene_map === true) throw new TypeError(\"cannot mutate an immutable Map\");")
+    # A negative index is resolved against the length *before* anything else
+    # reads it, so the node-body and array arms below index the same slot the VM
+    # would (`updateIndex`), and an out-of-range write raises instead of
+    # creating an expando property.
+    # Any integer-looking segment, not just the negative form: a write past the
+    # end raises in the VM (`updateIndex`) where JS would grow the array or
+    # attach an expando, so the coercion has to reach the bounds check for
+    # `xs/9` as much as for `xs/-1`.
+    emitter.line("if (typeof key === \"string\" && (Array.isArray(value?.$gene_body) || Array.isArray(value) || ArrayBuffer.isView(value))) { const code = key.charCodeAt(0); if (code === 45 || (code >= 48 && code <= 57)) { const at = Number(key); if (Number.isInteger(at)) key = at; } }")
+    emitter.line("if (typeof key === \"number\" && (Array.isArray(value?.$gene_body) || Array.isArray(value) || ArrayBuffer.isView(value))) key = $gene_index(\"set!\", (Array.isArray(value?.$gene_body) ? value.$gene_body : value).length, key);")
     emitter.line("if (Array.isArray(value?.$gene_body) && typeof key === \"number\") { const length = value.$gene_body.length; const previous = value.$gene_body[key]; value.$gene_body[key] = next === undefined ? null : next; if (!value.$gene_in_progress) { try { value.$gene_validate(); } catch (error) { value.$gene_body.length = length; if (key < length) value.$gene_body[key] = previous; throw error; } } return next; }")
     emitter.line("if (Array.isArray(value) && next === undefined) next = null;")
     emitter.line("if ($gene_is_node(value) && typeof key === \"string\") { if (next === undefined) delete value.props[key]; else value.props[key] = next; return next; }")
