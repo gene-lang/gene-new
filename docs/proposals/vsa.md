@@ -1,7 +1,9 @@
 # Vector Symbolic Architectures as a derived cognitive representation
 
-**Status: design proposal. Not implemented as a library; the algebra is
-prototyped and runs on both backends.**
+**Status: implemented as `examples/vsa` (package `gene/vsa`). Gates G1–G5 and
+G7 are shipped, G4 is partly answered, G6 is blocked on a protocol that does
+not exist in this repo. See §11 for what each gate actually produced, including
+where the measurements contradicted the design.**
 
 Gene's node — `head + props + body + meta` — is an unusually general symbolic
 representation, and it is exact. Exactness is what makes it good for programs,
@@ -43,8 +45,9 @@ Re-verified while writing this document, at `dim = 8`:
 | web profile storage | `Float64Array`, zero `BigInt` |
 | emitted inner loop | `out[i] = a[i] * b[i]` |
 
-The parts that are not written: a learning rule, the cleanup memory, the codec,
-and the experiment harness. §11 sequences them.
+That prototype has since been superseded by `examples/vsa`, which is what §11's
+gates were run against. A learning rule is still unwritten — nothing here
+learns.
 
 ---
 
@@ -661,18 +664,39 @@ would otherwise hard-code.
   parallel protocol, which is a real design decision rather than a parameter),
   and **scalar-encoder locality** (§6.5), which cannot be measured until an
   encoder exists.
-- **G4 — properties.** Compare the relational codec (§6.1) against a direct
-  property codec on retrieval accuracy and encode throughput. *Criterion: the
-  direct codec replaces the reference only if it is ≥2× faster to encode at
-  equal top-1 accuracy. Otherwise it stays an optional backend.*
-- **G5 — associative index.** Thousands of Gene nodes, retrieved from partial
-  and noisy queries, through the §6.2 reference codec. This is the first
-  stage with standalone user value.
-- **G6 — Memory adapter.** A VSA-backed implementation of the Gene Intelligence
-  `Memory` protocol.
-- **G7 — programs.** Encode small Gene functions; test similarity retrieval,
-  structural recovery, and analogical matching. The most speculative stage, and
-  last for that reason.
+- **G4 — properties. ✅ Both codecs exist and are accuracy-equivalent.**
+  `encode_node` is the direct form (bind the key's role straight to the value);
+  `encode_node_relational` materializes `(prop k v)` as §11.1's reference
+  semantics do. Both recover 3 of 3 fields, and they produce genuinely
+  different vectors rather than the same encoding spelled twice. The **≥2×
+  throughput** half of the criterion is not decided: the direct form does two
+  atoms and one bind per prop against the relational form's three and two, so
+  it is cheaper by construction, but "cheaper" is not "2× measured" and this
+  gate asked for a number. The reference codec therefore stays the reference.
+- **G5 — associative index. ✅ Shipped, at three records rather than
+  thousands.** A 2-of-3 partial query finds its record, so does 1-of-3, and a
+  query mixing fields from two records **declines** at a high floor rather than
+  returning the least-bad match — the assertion that separates an index from a
+  guess. The index is `LinearMemory` keyed by record id, exactly as §8 predicts.
+  Scale is the honest gap: §9 says usable capacity is ~D/16 *per bundle*, which
+  bounds a summary's field count and not the number of records, but "thousands"
+  has not been run and the linear scan is O(n) per query.
+- **G6 — Memory adapter. ⛔ Blocked: there is no protocol to implement.** No
+  `Memory` protocol exists anywhere in this repo — not in `src/`, not in
+  `examples/`, not in `docs/`. The Gene Intelligence work this gate refers to
+  lives outside the tree. `CleanupMemory` plus the summary codec already *is*
+  an associative memory with the right shape, so the adapter is a thin shim
+  once a protocol exists to shim to; writing one against a guessed interface
+  would be inventing the contract, not implementing it.
+- **G7 — programs. ✅ Partially, and the useful half works.** Gene is
+  homoiconic, so a function *is* a node and needed no separate encoder — that
+  claim is now tested rather than assumed. Structural similarity survives
+  encoding: `(fn add [a b] (+ a b))` and `(fn sub [a b] (- a b))` sit closer to
+  each other than either does to `(fn greet [n] (str "hi" n))`, which is what
+  makes "find me code like this" possible at all. **Structural recovery and
+  analogical matching are not done** — recovery needs the decoder §7
+  deliberately does not build, and analogy needs a second encoded corpus to be
+  analogous *to*.
 
 Cross-backend fixtures from G1 onward: the same source, the same vectors, VM and
 web profile, in the style of `examples/miclone`'s spec diffs. Atom generation is

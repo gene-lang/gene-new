@@ -32,6 +32,12 @@
     # Gene store afterwards.
     (application "codec" ^entry "tests/run_codec.gene")
 
+    # §6.1, §6.3, §6.4 and gates G4, G7 — encoding an actual Gene node.
+    # **VM-only**: a node's props cannot be enumerated in the web profile and
+    # `match` type patterns are miscompiled there, so this suite has no web
+    # shell. See src/codec/node.gene.
+    (application "node" ^entry "tests/run_node.gene")
+
     # §11 gate G3 — the capacity sweep that fills in §9's table. A measurement
     # rather than an assertion, and slow (~2 min): run it when the codebook or
     # the algebra changes, not on every check.

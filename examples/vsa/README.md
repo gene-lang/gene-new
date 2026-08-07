@@ -8,9 +8,9 @@ The one commitment everything else follows from:
 > The Gene node is canonical. The VSA representation is derived, and never
 > authoritative.
 
-Gates **G1–G3** of the proposal's §11: the MAP algebra, a deterministic
-codebook, cleanup memory, and the capacity sweep that fills in §9's table.
-Nothing here encodes a Gene node yet (G4/G5), and nothing learns (G6/G7).
+Gates **G1–G5 and G7** of the proposal's §11 are shipped; **G4** is half
+answered and **G6 is blocked** — no Gene Intelligence `Memory` protocol exists
+in this repo to implement against. Nothing here learns.
 
 ## Layout
 
@@ -19,8 +19,13 @@ package.gene          the manifest; entry is the protocol, not a backend
 src/space.gene        the VsaSpace / CleanupMemory protocols, and the guards
 src/backends/map.gene MAP over bipolar ±1, the first implementation
 src/memory/linear.gene    linear-scan CleanupMemory
+src/codec/summary.gene    §6.2 reference-plus-summary — portable
+src/codec/scalar.gene     §6.5 thermometer code for continuous values
+src/codec/node.gene       §6.1/§6.3 node walking — **VM-only**
 tests/algebra.gene    G1 — the algebra, as identities
 tests/cleanup.gene    G2 — recovery through binding and bundling
+tests/codec.gene      §6.2/§6.5/§7 and G5 — codec and index
+tests/node.gene       §6.1/§6.3/§6.4 and G4/G7 — VM-only, no web shell
 tests/{run,web}_*.gene    the two shells: $println / $console/log
 bench/capacity.gene   G3 — §9's table. A measurement, not an assertion.
 tools/check.sh        the gate: both suites, both backends, diffed
@@ -74,6 +79,8 @@ already known:
 | `push!` returns `Void` on the web, so a `: Nil` body ending in one fails its own return check | Only on that backend. An explicit `nil` tail keeps the two agreeing. |
 | the web profile emits one flat output dir keyed by basename | `src/memory/cleanup.gene` and `tests/cleanup.gene` collide. Basenames are unique package-wide. |
 | a two-hop path types as `Any` | `self/keys/%i` loses the element type; binding the list to a local first keeps it, and keeps the read monomorphic. |
+| **a node's props cannot be enumerated** | `Map` has `get`/`size` and no `keys`/`values`/`entries`/`pairs`; `for` refuses the `Any` a projection types as. §6.1 normalization is therefore VM-only. |
+| **`match` type patterns are miscompiled** | `(when (s : Str) …)` emits a *node literal* pattern — head `s`, body `[: Str]` — so it matches a 2-element node and otherwise falls silently to `else`. VM says `"str"`, web says `"other"`, no diagnostic either side. This is why the node walk is VM-only. |
 
 ## What is measured, not asserted
 

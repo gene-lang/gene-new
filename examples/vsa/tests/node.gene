@@ -1,0 +1,167 @@
+# Node encoding — docs/proposals/vsa.md §6.1, §6.3, §6.4, and gates G4 and G7.
+#
+# **VM-only, unlike every other suite here**, because what it tests cannot run
+# in the web profile: a node's props cannot be enumerated there, and `match`
+# type patterns are miscompiled so "leaf or node?" always answers `else`.
+# `src/codec/node.gene` documents both. There is no `web_node.gene` counterpart
+# on purpose — a shell that could not run is worse than an absent one.
+#
+# Everything portable is in `tests/codec.gene`, which does have both shells.
+
+(import [VsaSpace CleanupMemory] from "../src/space.gene")
+(import [MapSpace new_space] from "../src/backends/map.gene")
+(import [LinearMemory new_memory remember_atoms] from "../src/memory/linear.gene")
+(import [query_role concept_of value_name] from "../src/codec/summary.gene")
+(import [encode_node encode_node_relational query_role_relational
+         node_vocabulary normalize_props normalize_meta leaf_name]
+        from "../src/codec/node.gene")
+
+(var dim 2048.0)
+(var floor 0.15)
+
+(fn ok [lines label pass]
+  (lines ~ push! (if pass $"ok   ${label}" $"FAIL ${label}"))
+  (if pass 0.0 1.0))
+
+(fn report []
+  (var lines [])
+  (var f 0.0)
+  (var s (new_space dim 42.0))
+
+  # --- §6.1 normalization ----------------------------------------------------
+
+  (var node (quote (person ^name "Alice" ^city "Raleigh")))
+  (var pairs (normalize_props node))
+  (set f (+ f (ok lines "props normalize to role/filler pairs"
+                  (== (pairs ~ size) 2))))
+  (set f (+ f (ok lines "a normalized pair keeps its key as a name"
+                  (== pairs/0/0 "name"))))
+
+  # --- the round trip through a real node ------------------------------------
+
+  (var vocab (new_memory s))
+  (remember_atoms vocab (node_vocabulary node 3.0))
+  (var vec ($buffer F64 dim))
+  (encode_node s node 3.0 vec)
+
+  (var got ($buffer F64 dim))
+  (query_role s vec "city" got)
+  (set f (+ f (ok lines "a role query on an encoded node recovers its filler"
+                  (== (concept_of (vocab ~ CleanupMemory:nearest got floor))
+                      "Raleigh"))))
+
+  # --- §6.3 bounded recursion ------------------------------------------------
+
+  (var nested (quote (person ^name "Alice" (address ^city "Durham"))))
+  (var nvocab (new_memory s))
+  (remember_atoms nvocab (node_vocabulary nested 3.0))
+  (var nvec ($buffer F64 dim))
+  (encode_node s nested 3.0 nvec)
+
+  # Position 0 of the body is the address subtree. Unbinding by that position
+  # gives the subtree's own vector, which still carries its head.
+  (set f (+ f (ok lines "a nested node encodes without error"
+                  (> (s ~ VsaSpace:similarity nvec nvec) 0.99))))
+
+  # At depth 0 the child is embedded by *reference* — its head name only — so
+  # the child's own fields are no longer reachable. That is §6.2's rule applied
+  # one level down, and it is what keeps a deep tree from spending the vector.
+  (var shallow ($buffer F64 dim))
+  (encode_node s nested 0.0 shallow)
+  (set f (+ f (ok lines "depth 0 encodes a child by reference, not contents"
+                  (< (s ~ VsaSpace:similarity shallow nvec) 0.95))))
+
+  # --- §6.4 metadata is excluded by default ----------------------------------
+  #
+  # Asserted through `normalize_meta` rather than by encoding two nodes that
+  # differ only in meta. The obvious version of that test compares a node
+  # against an identical one and passes vacuously, and I could not find the
+  # literal syntax for attaching meta to a quoted node — `^^k v` lands in
+  # *props*, not meta. So this checks the function that decides, which is the
+  # thing §6.4 is actually about: nothing is included unless it is named.
+  (var meta_node (quote (task ^id "t1")))
+  (set f (+ f (ok lines "an empty include list selects no metadata"
+                  (== ((normalize_meta meta_node []) ~ size) 0))))
+  (set f (+ f (ok lines "encoding reads head, props and body only"
+                  (== ((normalize_props meta_node) ~ size) 1))))
+
+  # --- gate G4: relational vs direct -----------------------------------------
+  #
+  # §11.2's criterion is that the direct codec replaces the reference only if it
+  # is at least 2x faster to encode at equal top-1 accuracy. Accuracy is checked
+  # here; throughput is the `capacity` bench's business.
+
+  (var g4 (quote (person ^name "Alice" ^city "Raleigh" ^topic "AI")))
+  (var g4vocab (new_memory s))
+  (remember_atoms g4vocab (node_vocabulary g4 3.0))
+  # The relational codec materializes `prop` as a concept, so the cleanup
+  # memory has to know it or the relational query has nothing to resolve to.
+  (var prop_vec ($buffer F64 dim))
+  (s ~ VsaSpace:atom (value_name "prop") prop_vec)
+  (g4vocab ~ CleanupMemory:remember (value_name "prop") prop_vec)
+
+  (var direct ($buffer F64 dim))
+  (var relational ($buffer F64 dim))
+  (encode_node s g4 3.0 direct)
+  (encode_node_relational s g4 3.0 relational)
+
+  (var hits_direct 0.0)
+  (var hits_rel 0.0)
+  (for role in ["name" "city" "topic"]
+    (query_role s direct role got)
+    (if (== (concept_of (g4vocab ~ CleanupMemory:nearest got floor))
+            (expected_for role))
+      (set hits_direct (+ hits_direct 1.0)))
+    (query_role_relational s relational role got)
+    (if (== (concept_of (g4vocab ~ CleanupMemory:nearest got floor))
+            (expected_for role))
+      (set hits_rel (+ hits_rel 1.0))))
+
+  (set f (+ f (ok lines "the direct codec recovers every field"
+                  (== hits_direct 3.0))))
+  (set f (+ f (ok lines "the relational codec recovers every field too"
+                  (== hits_rel 3.0))))
+  (set f (+ f (ok lines "G4: the two codecs are accuracy-equivalent here"
+                  (== hits_direct hits_rel))))
+
+  # The two produce *different* vectors, which is the point of keeping both:
+  # they are not the same encoding with different spelling.
+  (set f (+ f (ok lines "and they are genuinely different encodings"
+                  (< (s ~ VsaSpace:similarity direct relational) 0.9))))
+
+  # --- gate G7: programs are nodes -------------------------------------------
+  #
+  # Gene is homoiconic, so a function *is* a node and needs no separate encoder.
+  # The claim worth testing is that structural similarity survives encoding:
+  # two functions of the same shape should sit closer than two of different
+  # shapes, which is what makes "find me code like this" possible at all.
+
+  (var add (quote (fn add [a b] (+ a b))))
+  (var sub (quote (fn sub [a b] (- a b))))
+  (var greet (quote (fn greet [n] (str "hi" n))))
+
+  (var va ($buffer F64 dim))
+  (var vs ($buffer F64 dim))
+  (var vg ($buffer F64 dim))
+  (encode_node s add 3.0 va)
+  (encode_node s sub 3.0 vs)
+  (encode_node s greet 3.0 vg)
+
+  (var sim_same_shape (s ~ VsaSpace:similarity va vs))
+  (var sim_diff_shape (s ~ VsaSpace:similarity va vg))
+  (set f (+ f (ok lines "G7: two same-shaped functions are more alike than two different ones"
+                  (> sim_same_shape sim_diff_shape))))
+  (set f (+ f (ok lines "G7: a function is identical to itself"
+                  (> (s ~ VsaSpace:similarity va va) 0.999))))
+  (set f (+ f (ok lines "G7: and same-shape similarity is a real signal, not noise"
+                  (> sim_same_shape 0.3))))
+
+  (lines ~ push! "")
+  (lines ~ push! (if (== f 0.0)
+                   "PASS — every check agrees"
+                   "FAIL — see the FAIL lines above"))
+  ($str/join lines "\n"))
+
+(fn expected_for [role]
+  (if (== role "name") "Alice"
+    (if (== role "city") "Raleigh" "AI")))

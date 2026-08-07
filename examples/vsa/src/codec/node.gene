@@ -1,0 +1,193 @@
+# Encoding an actual Gene node — docs/proposals/vsa.md §6.1, §6.3, §6.4.
+#
+# **This module is VM-only, and that is a finding rather than a preference.**
+# Two things it needs do not exist in the web profile:
+#
+#   * **A node's props cannot be enumerated.** `Map` there has `get` and `size`
+#     and no `keys`/`values`/`entries`/`pairs`, and `for` refuses to iterate the
+#     `Any` that `node/props` types as. So §6.1's normalization — props into
+#     relational form — cannot be written portably.
+#   * **`match` type patterns are miscompiled.** `(when (s : Str) …)` is emitted
+#     as a *node literal* pattern (head `s`, body `[: Str]`), so it matches a
+#     2-element node and otherwise falls silently through to `else`. Walking a
+#     tree means asking "leaf or node?", and on that backend the answer is
+#     always "else".
+#
+# Which is why `summary.gene` — the *default* codec of §6.2 — takes names rather
+# than nodes and is portable. This module is the ingest side: it turns a node
+# into the names that codec wants, and it runs where the data lives.
+
+(import [VsaSpace] from "../space.gene")
+(import [MapSpace new_space] from "../backends/map.gene")
+(import [role_name position_name head_name value_name]
+        from "./summary.gene")
+
+# §6.1: `(person ^name "Alice")` is normalized to the relational
+# `(person (prop name "Alice"))` before encoding. The lowered form preserves
+# that the relation *was* a property, which is what makes it reversible; a codec
+# that emitted `(name "Alice")` could not tell a prop from a child.
+#
+# Returns a list of `[role filler]` pairs, which is exactly what
+# `summary.gene`'s `encode_pairs` consumes.
+(fn normalize_props [node]
+  (var out [])
+  (for entry in node/props
+    (out ~ push! [$"${entry/0}" entry/1]))
+  out)
+
+# §6.4: source and debug metadata is excluded. It does not participate in
+# semantic equality and would spend capacity on nothing.
+#
+# The rule is "exclude source/debug meta", not "exclude meta" — in this repo
+# `meta` also carries annotations that *are* semantic, `@route` being the one
+# that drives route discovery. So the include list is explicit and empty by
+# default rather than the whole map being dropped.
+(fn normalize_meta [node include]
+  (var out [])
+  (if (> (include ~ size) 0)
+    (for entry in node/meta
+      (var key $"${entry/0}")
+      (if (include ~ contains key)
+        (out ~ push! [key entry/1]))))
+  out)
+
+# A leaf becomes a name. A number becomes a name too, which destroys locality —
+# that is what `scalar.gene` is for, and a caller who has continuous quantities
+# should encode those fields itself rather than let this flatten them.
+(fn leaf_name [v]
+  (match v
+    (when (s : Str) $"${s}")
+    (when (y : Sym) $"${y}")
+    (when (b : Bool) (if b "true" "false"))
+    (else $"${v}")))
+
+(fn is_node [v] (match v (when (n : Node) true) (else false)))
+
+# §6.3: recursive, and **bounded**. Below the depth limit a child is embedded by
+# reference — its own summary is not expanded — which is §6.2's rule applied one
+# level down rather than a separate mechanism.
+#
+# The default depth is 3, measured by gate G3: payload similarity is 71/58/50/44%
+# at depths 1..4, and the decay is independent of dimension, so this is a
+# structural limit rather than one a bigger space fixes.
+(fn encode_node [space node depth out]
+  (var dim (space ~ VsaSpace:dimension))
+  (var scratch ($buffer F64 dim))
+  (var role ($buffer F64 dim))
+  (var filler ($buffer F64 dim))
+  (var pair ($buffer F64 dim))
+
+  # head
+  (space ~ VsaSpace:atom (head_name) role)
+  (space ~ VsaSpace:atom (value_name (leaf_name node/head)) filler)
+  (space ~ VsaSpace:bind role filler pair)
+  (space ~ VsaSpace:bundle_into pair out)
+
+  # props, lowered to relations
+  (for entry in (normalize_props node)
+    (space ~ VsaSpace:atom (role_name entry/0) role)
+    (encode_value space entry/1 (- depth 1.0) filler scratch)
+    (space ~ VsaSpace:bind role filler pair)
+    (space ~ VsaSpace:bundle_into pair out))
+
+  # body, by position
+  (var i 0.0)
+  (for item in node/body
+    (space ~ VsaSpace:atom (position_name i) role)
+    (encode_value space item (- depth 1.0) filler scratch)
+    (space ~ VsaSpace:bind role filler pair)
+    (space ~ VsaSpace:bundle_into pair out)
+    (set i (+ i 1.0)))
+  nil)
+
+(fn encode_value [space v depth out scratch]
+  (var dim (space ~ VsaSpace:dimension))
+  (var i 0.0)
+  (while (< i dim)
+    (out ~ set! i 0.0)
+    (set i (+ i 1.0)))
+  (if (&& (is_node v) (> depth 0.0))
+    (encode_node space v depth out)
+    # A leaf, or a node past the depth limit. Past the limit the node is
+    # represented by the *name of its head* — a reference, not its contents —
+    # which is what keeps a deep tree from spending the whole vector.
+    (space ~ VsaSpace:atom (value_name (leaf_name (if (is_node v) v/head v)))
+            out))
+  nil)
+
+# --- gate G4: the relational codec, for comparison ---------------------------
+#
+# §11.1's *reference* semantics: a prop is lowered to a `(prop k v)` relation
+# and encoded like any other child, so `prop`, the key, and the value are all
+# ordinary concepts that reasoning can quantify over. `encode_node` above is the
+# optimized **direct** form, which binds the key's role straight to the value
+# and never materializes `prop` at all.
+#
+# §11.2's criterion: the direct codec replaces the reference only if it is at
+# least 2x faster to encode at equal top-1 accuracy. Both are here so that is
+# measurable rather than asserted.
+(fn encode_node_relational [space node depth out]
+  (var dim (space ~ VsaSpace:dimension))
+  (var scratch ($buffer F64 dim))
+  (var role ($buffer F64 dim))
+  (var filler ($buffer F64 dim))
+  (var pair ($buffer F64 dim))
+  (var kv ($buffer F64 dim))
+
+  (space ~ VsaSpace:atom (head_name) role)
+  (space ~ VsaSpace:atom (value_name (leaf_name node/head)) filler)
+  (space ~ VsaSpace:bind role filler pair)
+  (space ~ VsaSpace:bundle_into pair out)
+
+  # Each prop becomes `(prop k v)`: bind PROP to the key, bind that to the
+  # value. Three atoms and two binds where the direct form uses two and one.
+  (var prop_marker ($buffer F64 dim))
+  (space ~ VsaSpace:atom (value_name "prop") prop_marker)
+  (for entry in (normalize_props node)
+    (space ~ VsaSpace:atom (role_name entry/0) role)
+    (space ~ VsaSpace:bind prop_marker role kv)
+    (encode_value space entry/1 (- depth 1.0) filler scratch)
+    (space ~ VsaSpace:bind kv filler pair)
+    (space ~ VsaSpace:bundle_into pair out))
+
+  (var i 0.0)
+  (for item in node/body
+    (space ~ VsaSpace:atom (position_name i) role)
+    (encode_value space item (- depth 1.0) filler scratch)
+    (space ~ VsaSpace:bind role filler pair)
+    (space ~ VsaSpace:bundle_into pair out)
+    (set i (+ i 1.0)))
+  nil)
+
+# The relational form's query: rebuild `bind(PROP, role)` and unbind by it.
+(fn query_role_relational [space record role out]
+  (var dim (space ~ VsaSpace:dimension))
+  (var prop_marker ($buffer F64 dim))
+  (var role_v ($buffer F64 dim))
+  (var kv ($buffer F64 dim))
+  (space ~ VsaSpace:atom (value_name "prop") prop_marker)
+  (space ~ VsaSpace:atom (role_name role) role_v)
+  (space ~ VsaSpace:bind prop_marker role_v kv)
+  (space ~ VsaSpace:unbind record kv out)
+  nil)
+
+# The vocabulary a cleanup memory needs to answer queries against a node's
+# encoding: every leaf name and head that appears in it, under `vsa/val/`.
+(fn node_vocabulary [node depth]
+  (var out [])
+  (collect_names node depth out)
+  out)
+
+(fn collect_names [node depth out]
+  (out ~ push! (value_name (leaf_name node/head)))
+  (for entry in (normalize_props node)
+    (collect_value entry/1 depth out))
+  (for item in node/body
+    (collect_value item depth out))
+  nil)
+
+(fn collect_value [v depth out]
+  (if (&& (is_node v) (> depth 0.0))
+    (collect_names v (- depth 1.0) out)
+    (out ~ push! (value_name (leaf_name (if (is_node v) v/head v)))))
+  nil)

@@ -1,16 +1,16 @@
 {
   ^lock_format 1
-  ^root_manifest_digest "sha256:184329e9b54def2ac059168a1ad76d291e4862b353e98770f01978f15ebb4896"
+  ^root_manifest_digest "sha256:7c2d7cc92042a2e2ffdf9f08e26bb24ff80a9a422a66e41fe5728cde22f590b7"
   ^workspace_digest "sha256:fc2162cc3f53253d71cefe2b0b1aff86e38baedf5c3e230b17d47d035a38ca06"
   ^registry_snapshots [
   ]
-  ^roots [ "workspace:gene/vsa@0.1.0#sha256:54f3304bfba4fc6c4c4245e6a2fd64597fbf825c0c7ec7b9c9236b12e2d7f22f"]
+  ^roots [ "workspace:gene/vsa@0.1.0#sha256:cef622ef1655a34e24213395195866b7a36562aa655a24833c318ba2a70ff709"]
   ^packages [
     (locked_package
-      ^id "workspace:gene/vsa@0.1.0#sha256:54f3304bfba4fc6c4c4245e6a2fd64597fbf825c0c7ec7b9c9236b12e2d7f22f"
+      ^id "workspace:gene/vsa@0.1.0#sha256:cef622ef1655a34e24213395195866b7a36562aa655a24833c318ba2a70ff709"
       ^name "gene/vsa"
       ^version "0.1.0"
-      ^manifest_digest "sha256:184329e9b54def2ac059168a1ad76d291e4862b353e98770f01978f15ebb4896"
+      ^manifest_digest "sha256:7c2d7cc92042a2e2ffdf9f08e26bb24ff80a9a422a66e41fe5728cde22f590b7"
       ^source (workspace ^path ".")
       ^features []
       ^dependencies {
