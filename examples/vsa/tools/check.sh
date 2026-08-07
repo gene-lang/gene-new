@@ -16,7 +16,7 @@ web=$(mktemp)
 trap 'rm -f "$vm" "$web"' EXIT
 
 status=0
-for suite in algebra cleanup; do
+for suite in algebra cleanup codec; do
   gene build --target web "tests/web_${suite}.gene" --out-dir dist >/dev/null
   gene run "$suite" > "$vm"
   node -e "import('./dist/web_${suite}.mjs').then(m => m.main())" > "$web"

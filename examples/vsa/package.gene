@@ -27,6 +27,11 @@
     # guessing, so what is checked is that it declines.
     (application "cleanup" ^entry "tests/run_cleanup.gene")
 
+    # §6.2, §7 and gate G5 — the summary codec and the associative index,
+    # which §8 notes are one structure: keys in, exact values fetched from the
+    # Gene store afterwards.
+    (application "codec" ^entry "tests/run_codec.gene")
+
     # §11 gate G3 — the capacity sweep that fills in §9's table. A measurement
     # rather than an assertion, and slow (~2 min): run it when the codebook or
     # the algebra changes, not on every check.

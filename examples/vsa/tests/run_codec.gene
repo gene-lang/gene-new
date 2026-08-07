@@ -1,0 +1,3 @@
+# VM shell for the codec + index spec (gates §6.2, §7, G5).
+(import [report] from "./codec.gene")
+($println (report))
