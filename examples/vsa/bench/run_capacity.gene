@@ -1,0 +1,4 @@
+# VM shell for the capacity sweep (gate G3). Slow by design — it is a
+# measurement, not part of tools/check.sh.
+(import [report] from "./capacity.gene")
+($println (report))

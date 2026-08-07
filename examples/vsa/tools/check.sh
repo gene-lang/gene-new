@@ -11,19 +11,21 @@
 set -e
 cd "$(dirname "$0")/.."
 
-gene build --target web tests/web_algebra.gene --out-dir dist >/dev/null
-
 vm=$(mktemp)
 web=$(mktemp)
 trap 'rm -f "$vm" "$web"' EXIT
 
-gene run algebra > "$vm"
-node -e "import('./dist/web_algebra.mjs').then(m => m.main())" > "$web"
-
-if diff "$vm" "$web"; then
-  printf 'cross-backend: identical\n'
-  tail -1 "$vm"
-else
-  printf 'cross-backend: DIVERGED\n'
-  exit 1
-fi
+status=0
+for suite in algebra cleanup; do
+  gene build --target web "tests/web_${suite}.gene" --out-dir dist >/dev/null
+  gene run "$suite" > "$vm"
+  node -e "import('./dist/web_${suite}.mjs').then(m => m.main())" > "$web"
+  if diff "$vm" "$web" >/dev/null; then
+    printf '%-10s cross-backend identical — %s\n' "$suite" "$(tail -1 "$vm")"
+  else
+    printf '%-10s DIVERGED\n' "$suite"
+    diff "$vm" "$web"
+    status=1
+  fi
+done
+exit $status

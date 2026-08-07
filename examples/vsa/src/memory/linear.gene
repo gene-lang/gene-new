@@ -1,0 +1,116 @@
+# Cleanup memory — docs/proposals/vsa.md §8, gate G2.
+#
+# Unbinding yields a *noisy* vector: `unbind(bind(a, b), b)` is exactly `a` only
+# when nothing else was superposed on it, and in any real record something was.
+# Cleanup is what maps that noise back to a known concept, so it is not an
+# optimization — it is how decoding works at all.
+#
+# It is a separate protocol from the algebra because the implementation is
+# independent of how binding works. This one is a linear scan, which is O(n) per
+# query and completely adequate up to the thousands of entries gate G5 asks for;
+# an ANN index is the same protocol with a different body.
+#
+# **`nearest` answers a key, not a vector** (§6.2). That is the whole
+# reference-plus-summary idea: the vector is a lossy address, and the exact
+# value stays in the Gene store under that key. A cleanup memory and an
+# associative index are therefore the same structure.
+
+(mod linear ^profile web)
+
+(import [VsaSpace CleanupMemory check_len buffer_len] from "../space.gene")
+(import [MapSpace] from "../backends/map.gene")
+
+# `keys` and `vecs` are parallel: entry `i` is `keys/%i` addressed by `vecs/%i`.
+# Two lists rather than a list of pairs because neither backend has a cheap
+# pair, which is the same reason the algebra writes into caller buffers.
+(type LinearMemory ^props {^space MapSpace
+                           ^dim F64
+                           ^keys (List Str)
+                           ^vecs (List (Buffer F64))})
+
+(fn new_memory [space : MapSpace] : LinearMemory
+  (LinearMemory ^space space
+                ^dim (space ~ VsaSpace:dimension)
+                ^keys []
+                ^vecs []))
+
+(impl CleanupMemory for LinearMemory
+
+  # The vector is **copied**. A caller's buffer is a scratch space by this
+  # library's own convention (§3.3) — it will be written again on the next
+  # operation — so storing the reference would quietly alias every later result
+  # into the codebook.
+  (message remember [key : Str v : (Buffer F64)] : Nil
+    (check_len v self/dim "remember")
+    (var kept ($buffer F64 self/dim))
+    (var i 0.0)
+    (while (< i self/dim)
+      (kept ~ set! i (v ~ get i))
+      (set i (+ i 1.0)))
+    (self/keys ~ push! key)
+    (self/vecs ~ push! kept)
+    # `push!` is the last thing this does, and in the web profile it lowers to
+    # `(arr.push(x), undefined)` — `Void`, not `Nil`. The declared `: Nil` then
+    # fails at the boundary check on that backend and nowhere else. An explicit
+    # tail keeps the two agreeing.
+    nil)
+
+  (message size [] : F64 (+ 0.0 (self/keys ~ size)))
+
+  # Best match above `floor`, or "" when nothing clears it.
+  #
+  # Returning "" rather than the argmax is deliberate: a cleanup that always
+  # answers is indistinguishable from one that is guessing, and the caller
+  # cannot tell a recovered symbol from noise that happened to lean one way.
+  # The floor is where "I do not know" becomes expressible.
+  (message nearest [v : (Buffer F64) floor : F64] : Str
+    (check_len v self/dim "nearest")
+    # The lists are bound to locals because a *two-hop* path — `self/vecs/%i` —
+    # types as `Any` in the web profile: its analysis proves one segment and
+    # falls back beyond that. One hop from a local keeps the element type, and
+    # keeps the read on the monomorphic fast path.
+    (var ks self/keys)
+    (var vs self/vecs)
+    (var space self/space)
+    (var n (+ 0.0 (ks ~ size)))
+    (var best "")
+    (var best_score floor)
+    (var i 0.0)
+    (while (< i n)
+      (var s (space ~ VsaSpace:similarity v vs/%i))
+      (if (> s best_score)
+        (do (set best_score s)
+            (set best ks/%i)))
+      (set i (+ i 1.0)))
+    best)
+
+  # The score for one named entry, so a caller can ask "how well does this match
+  # what I expected?" without scanning. "" is not a key, and an absent key
+  # scores 0.0 rather than raising: a miss is an ordinary answer here.
+  (message score [v : (Buffer F64) key : Str] : F64
+    (check_len v self/dim "score")
+    (var ks self/keys)
+    (var vs self/vecs)
+    (var space self/space)
+    (var n (+ 0.0 (ks ~ size)))
+    (var found 0.0)
+    (var i 0.0)
+    (while (< i n)
+      (if (== ks/%i key)
+        (set found (space ~ VsaSpace:similarity v vs/%i)))
+      (set i (+ i 1.0)))
+    found))
+
+# Remember every name in one call, which is what building a codebook looks like
+# and what every test below needs first.
+(fn remember_atoms [m : LinearMemory names : (List Str)] : Nil
+  (var space m/space)
+  (var dim (space ~ VsaSpace:dimension))
+  (var scratch ($buffer F64 dim))
+  (var n (+ 0.0 (names ~ size)))
+  (var i 0.0)
+  (while (< i n)
+    (var name names/%i)
+    (space ~ VsaSpace:atom name scratch)
+    (m ~ CleanupMemory:remember name scratch)
+    (set i (+ i 1.0))))

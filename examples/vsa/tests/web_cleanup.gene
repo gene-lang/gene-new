@@ -1,0 +1,4 @@
+# Web-profile shell for the cleanup spec.
+(mod web_cleanup ^profile web)
+(import [report] from "./cleanup.gene")
+(fn main [] : Void ($console/log (report)))

@@ -1,0 +1,140 @@
+# Cross-backend spec for cleanup memory — docs/proposals/vsa.md §8, gate G2.
+#
+# G1 asserted that the algebra holds. This asserts the thing that makes the
+# algebra *usable*: that a vector which has been bound, superposed with others,
+# and unbound again still resolves to the symbol it started as.
+#
+# The interesting assertions are the negative ones. A cleanup memory that always
+# returns its best guess is indistinguishable from one that is guessing, so what
+# has to be checked is that it **declines** — on a vector that was never stored,
+# and on a record too crowded to carry the answer.
+
+(mod cleanup_spec ^profile web)
+
+(import [VsaSpace CleanupMemory] from "../src/space.gene")
+(import [MapSpace new_space] from "../src/backends/map.gene")
+(import [LinearMemory new_memory remember_atoms] from "../src/memory/linear.gene")
+
+(const dim 1024.0)
+
+# Above the ~3-sigma noise floor for unrelated atoms at this dimension (§9), so
+# clearing it means "recovered" rather than "leaned that way".
+(const floor 0.2)
+
+(fn abs_f [x : F64] : F64 (if (< x 0.0) (- 0.0 x) x))
+
+(fn ok [lines : (List Str) label : Str pass : Bool] : F64
+  (lines ~ push! (if pass $"ok   ${label}" $"FAIL ${label}"))
+  (if pass 0.0 1.0))
+
+(fn report [] : Str
+  (var lines : (List Str) [])
+  (var f 0.0)
+  (var s (new_space dim 42.0))
+  (var m (new_memory s))
+
+  (var vocab : (List Str)
+    ["car" "truck" "red" "blue" "green" "color" "shape" "round" "square"
+     "banana" "apple" "zebra" "alpha" "beta" "gamma" "delta"])
+  (remember_atoms m vocab)
+
+  (set f (+ f (ok lines "the codebook holds every name it was given"
+                  (== (m ~ CleanupMemory:size) 16.0))))
+
+  # --- the base case ---------------------------------------------------------
+
+  (var car ($buffer F64 dim))
+  (s ~ VsaSpace:atom "car" car)
+  (set f (+ f (ok lines "an exact atom cleans up to itself"
+                  (== (m ~ CleanupMemory:nearest car floor) "car"))))
+
+  # --- through a binding -----------------------------------------------------
+
+  (var color ($buffer F64 dim))
+  (var red ($buffer F64 dim))
+  (s ~ VsaSpace:atom "color" color)
+  (s ~ VsaSpace:atom "red" red)
+
+  (var pair ($buffer F64 dim))
+  (s ~ VsaSpace:bind color red pair)
+
+  # A binding is not any of its operands, so it must clean up to nothing.
+  (set f (+ f (ok lines "a binding resolves to no stored atom"
+                  (== (m ~ CleanupMemory:nearest pair floor) ""))))
+
+  (var got ($buffer F64 dim))
+  (s ~ VsaSpace:unbind pair color got)
+  (set f (+ f (ok lines "unbinding a clean pair recovers the filler"
+                  (== (m ~ CleanupMemory:nearest got floor) "red"))))
+
+  # --- through a bundle, which is where the noise comes from -----------------
+
+  # (color red) (shape round) superposed, then queried by role. Unbinding a
+  # bundle leaves the other pair behind as noise, which is exactly the case
+  # cleanup exists for.
+  (var shape ($buffer F64 dim))
+  (var round ($buffer F64 dim))
+  (s ~ VsaSpace:atom "shape" shape)
+  (s ~ VsaSpace:atom "round" round)
+
+  (var pair_b ($buffer F64 dim))
+  (s ~ VsaSpace:bind shape round pair_b)
+
+  (var record ($buffer F64 dim))
+  (s ~ VsaSpace:bundle_into pair record)
+  (s ~ VsaSpace:bundle_into pair_b record)
+
+  (var answer ($buffer F64 dim))
+  (s ~ VsaSpace:unbind record color answer)
+  (set f (+ f (ok lines "a role query through a 2-pair record recovers its filler"
+                  (== (m ~ CleanupMemory:nearest answer floor) "red"))))
+
+  (s ~ VsaSpace:unbind record shape answer)
+  (set f (+ f (ok lines "and the other role recovers the other filler"
+                  (== (m ~ CleanupMemory:nearest answer floor) "round"))))
+
+  # --- declining -------------------------------------------------------------
+
+  (var unknown ($buffer F64 dim))
+  (s ~ VsaSpace:atom "pomegranate" unknown)
+  (set f (+ f (ok lines "an atom that was never stored resolves to nothing"
+                  (== (m ~ CleanupMemory:nearest unknown floor) ""))))
+
+  # A record crowded past its capacity should stop answering rather than start
+  # answering wrongly. Eight superposed pairs at dim 1024 is well past what a
+  # single unbind can carry.
+  (var crowded ($buffer F64 dim))
+  (var role ($buffer F64 dim))
+  (var filler ($buffer F64 dim))
+  (var one_pair ($buffer F64 dim))
+  (var names : (List Str)
+    ["car" "truck" "blue" "green" "square" "banana" "apple" "zebra"])
+  (var i 0.0)
+  (while (< i 8.0)
+    (s ~ VsaSpace:atom names/%i role)
+    (s ~ VsaSpace:atom "gamma" filler)
+    (s ~ VsaSpace:bind role filler one_pair)
+    (s ~ VsaSpace:bundle_into one_pair crowded)
+    (set i (+ i 1.0)))
+
+  # Every pair shares the filler `gamma`, so an honest unbind by any role still
+  # finds it — this checks the memory is not simply refusing everything.
+  (s ~ VsaSpace:atom "car" role)
+  (s ~ VsaSpace:unbind crowded role answer)
+  (set f (+ f (ok lines "a shared filler survives eight superposed pairs"
+                  (== (m ~ CleanupMemory:nearest answer floor) "gamma"))))
+
+  # --- score -----------------------------------------------------------------
+
+  (set f (+ f (ok lines "score answers for a stored key"
+                  (> (m ~ CleanupMemory:score car "car") 0.99))))
+  (set f (+ f (ok lines "score is near zero for an unrelated stored key"
+                  (< (abs_f (m ~ CleanupMemory:score car "banana")) floor))))
+  (set f (+ f (ok lines "score is zero for a key that was never stored"
+                  (== (m ~ CleanupMemory:score car "pomegranate") 0.0))))
+
+  (lines ~ push! "")
+  (lines ~ push! (if (== f 0.0)
+                   "PASS — every check agrees"
+                   "FAIL — see the FAIL lines above"))
+  ($str/join lines "\n"))

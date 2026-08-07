@@ -8,9 +8,9 @@ The one commitment everything else follows from:
 > The Gene node is canonical. The VSA representation is derived, and never
 > authoritative.
 
-This is gate **G1** of the proposal's §11 — the MAP algebra, a deterministic
-codebook, and the cross-backend fixture that keeps both honest. Nothing here
-encodes a Gene node yet (that is G4/G5), and nothing learns (G6/G7).
+Gates **G1–G3** of the proposal's §11: the MAP algebra, a deterministic
+codebook, cleanup memory, and the capacity sweep that fills in §9's table.
+Nothing here encodes a Gene node yet (G4/G5), and nothing learns (G6/G7).
 
 ## Layout
 
@@ -18,26 +18,23 @@ encodes a Gene node yet (that is G4/G5), and nothing learns (G6/G7).
 package.gene          the manifest; entry is the protocol, not a backend
 src/space.gene        the VsaSpace / CleanupMemory protocols, and the guards
 src/backends/map.gene MAP over bipolar ±1, the first implementation
-tests/algebra.gene    the cross-backend spec — builds a report, prints nothing
-tests/run_algebra.gene    VM shell:  $println
-tests/web_algebra.gene    web shell: $console/log
+src/memory/linear.gene    linear-scan CleanupMemory
+tests/algebra.gene    G1 — the algebra, as identities
+tests/cleanup.gene    G2 — recovery through binding and bundling
+tests/{run,web}_*.gene    the two shells: $println / $console/log
+bench/capacity.gene   G3 — §9's table. A measurement, not an assertion.
+tools/check.sh        the gate: both suites, both backends, diffed
 ```
 
 ## Running it
 
 ```sh
-gene run algebra                                     # the VM
-
-gene build --target web tests/web_algebra.gene --out-dir dist
-node -e "import('./dist/web_algebra.mjs').then(m => m.main())"
+tools/check.sh        # both suites on both backends, diffed — the actual gate
+gene run algebra      # one suite on the VM
+gene run capacity     # the §9 sweep (~2 min; not part of check.sh)
 ```
 
-**The two outputs must be byte-identical.** That is the actual test:
-
-```sh
-diff <(gene run algebra) \
-     <(node -e "import('./dist/web_algebra.mjs').then(m => m.main())")
-```
+**The two outputs must be byte-identical.** That is the test.
 
 The shared module returns a report string and neither prints, so any difference
 between the two runs is a difference between the runtimes rather than between
@@ -63,9 +60,9 @@ concept's *name*, never an interned symbol id (which is per-process encounter
 order), and the hash uses only operations IEEE-754 requires to be correctly
 rounded, following `examples/miclone/core/exact.gene`.
 
-## Four backend differences this package had to work around
+## Seven backend differences this package had to work around
 
-Recorded because each one cost a debugging cycle here, and the first two are
+Recorded because each one cost a debugging cycle here, and only the first was
 already known:
 
 | | |
@@ -74,6 +71,9 @@ already known:
 | `$println` is not in the portable web stdlib | Hence the two shells. |
 | whole-number F64 interpolates as `1.0` / `1` | Non-whole values agree, so this hides until a report is diffed. The spec is float-free for exactly this reason. |
 | module-level `var` is rejected by the web profile | The divergence `const` exists for. The spec threads its counters through `report` instead. |
+| `push!` returns `Void` on the web, so a `: Nil` body ending in one fails its own return check | Only on that backend. An explicit `nil` tail keeps the two agreeing. |
+| the web profile emits one flat output dir keyed by basename | `src/memory/cleanup.gene` and `tests/cleanup.gene` collide. Basenames are unique package-wide. |
+| a two-hop path types as `Any` | `self/keys/%i` loses the element type; binding the list to a local first keeps it, and keeps the read monomorphic. |
 
 ## What is measured, not asserted
 

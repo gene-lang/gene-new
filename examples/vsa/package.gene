@@ -21,5 +21,15 @@
     # records what happened the last time an indexing primitive silently meant
     # two different things, which is why this is the first thing that exists.
     (application "algebra" ^entry "tests/run_algebra.gene")
+
+    # §11 gate G2 — cleanup memory. The assertions that matter are the negative
+    # ones: a memory that always answers is indistinguishable from one that is
+    # guessing, so what is checked is that it declines.
+    (application "cleanup" ^entry "tests/run_cleanup.gene")
+
+    # §11 gate G3 — the capacity sweep that fills in §9's table. A measurement
+    # rather than an assertion, and slow (~2 min): run it when the codebook or
+    # the algebra changes, not on every check.
+    (application "capacity" ^entry "bench/run_capacity.gene")
   ]
 }

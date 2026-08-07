@@ -409,11 +409,12 @@ E(prop name "Alice")
 Positions may be explicit role atoms or generated as `permute(POS, i)`. Expose
 logical positions in the API; let the backend choose.
 
-**Recursion is bounded by default.** Every nesting level multiplies unbinding
-noise, so a codec takes a depth limit and, below it, falls back to §6.2 —
-embedding a reference rather than the substructure. The default should be small
-(2 is a reasonable starting guess) and is set by measurement, not taste; gate G3
-in §11 produces the number.
+**Recursion is bounded by default.** Every nesting level costs signal, so a
+codec takes a depth limit and, below it, falls back to §6.2 — embedding a
+reference rather than the substructure. **The default is 3**, measured by gate
+G3: payload similarity is 71 / 58 / 50 / 44% at depths 1–4, and the decay is
+*independent of dimension* (§9), so this is a structural limit rather than one a
+bigger space fixes.
 
 Deep navigation by repeated unbinding is not pointer traversal and must not be
 presented as such. For deep symbolic access, use the Gene tree.
@@ -501,12 +502,57 @@ codebook, what top-1 accuracy is acceptable.
 **Gate G3 (§11) fills in this table, and its numbers set the default dimension
 and the default codec depth. Neither should be stated as settled before then.**
 
-| items bundled | D = 4096 | D = 8192 | D = 16384 |
+**Measured** by `examples/vsa/bench/capacity.gene` (gate G3), identical on both
+backends. The number is *precision*: the fraction of a bundle's members that
+outrank every non-member in a 256-atom codebook, 3 trials.
+
+| items bundled | D = 256 | D = 1024 | D = 4096 |
 |---|---|---|---|
-| 8 | | | |
-| 32 | | | |
-| 128 | | | |
-| 512 | | | |
+| 4 | 100% | 100% | 100% |
+| 8 | 96% | 100% | 100% |
+| 16 | 81% | 100% | 100% |
+| 32 | 26% | 100% | 100% |
+| 64 | 8% | 86% | 100% |
+| 128 | 13% | 39% | 99% |
+
+**The usable capacity is about D/16.** 256 holds 8–16, 1024 holds 64, 4096 holds
+well past 128. Below that line precision is ~100% and above it the collapse is
+fast rather than gradual — d=256 goes 81% → 26% between 16 and 32 items — which
+is the shape that makes an unmeasured dimension dangerous. (The 8% → 13% wobble
+at d=256 is noise: past capacity the ordering is arbitrary, so the number stops
+meaning anything.)
+
+Margin — how far the mean member sits above the mean non-member, at D=1024 —
+decays as expected and is the earlier warning, since it degrades smoothly where
+precision falls off a cliff:
+
+| items | 4 | 8 | 16 | 32 | 64 | 128 |
+|---|---|---|---|---|---|---|
+| margin | 46% | 33% | 23% | 15% | 10% | 6% |
+
+### Nesting depth does not improve with dimension
+
+Recovered payload similarity after binding `d` levels deep and unbinding back
+out, with a sibling superposed at each level (a node with one child loses
+nothing, so that case would measure nothing):
+
+| depth | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|
+| D = 1024 | 71% | 58% | 50% | 44% |
+| D = 4096 | 70% | 57% | 49% | 44% |
+
+**The two rows are the same, and that is the result.** Interference from a
+sibling is a fixed ratio of the signal at each level, so it does not thin out as
+the space grows: raising the dimension buys bundle capacity and buys nothing at
+all for depth. A design that hits a depth limit cannot spend its way out.
+
+The good news is that the limit is softer than §6.3 assumed. At depth 4 the
+payload still returns at 44%, an order of magnitude above the ~3% noise floor at
+D=1024, so cleanup can still name it. **The default codec depth is 3**, which
+holds 50% with margin to spare; §6.3's guess of 2 was conservative rather than
+wrong, and depth is a recall-quality knob rather than a cliff.
+
+### Footprint
 
 **Accuracy is not the only axis, and at G5 it stops being the binding one.** A
 vector's footprint is fixed and known, so the memory cost can be tabulated now:
@@ -597,16 +643,24 @@ would otherwise hard-code.
   unwritten until something actually loops.
 - **G2 — cleanup.** Recover an atom after binding and bundling, with noise.
   Produces: the accuracy-vs-load curve for a fixed codebook.
-- **G3 — capacity.** Fill in §9's table, and measure recovery at nesting depth
-  1, 2, 3, 4. **Produces the default dimension and the default codec depth.**
-  Everything downstream depends on these two numbers. Reports footprint
-  alongside accuracy (§9), and runs the same sweep for the `F32` space, since
-  that decision is only answerable with both numbers in hand.
-  Also covers **scalar-encoder locality** (§6.5): for a chosen encoder,
-  `similarity(encode(x), encode(y))` must fall monotonically with `|x - y|`
-  over the intended range. Locality is the entire justification for using a
-  thermometer or residue encoding instead of atoms, and it is otherwise the one
-  capacity-adjacent knob in this proposal with no number attached to it.
+- **G3 — capacity. ✅ Shipped as `bench/capacity.gene`.** §9's table is filled
+  in, byte-identical on both backends, and it produced two numbers and one
+  finding:
+  - **usable capacity is ~D/16**, and the collapse past it is fast rather than
+    gradual (81% → 26% between 16 and 32 items at D=256);
+  - **the default codec depth is 3**, not the 2 §6.3 guessed;
+  - **nesting depth does not improve with dimension.** The D=1024 and D=4096
+    rows are the same to within a point. Interference from a sibling is a fixed
+    ratio of the signal, so a depth limit cannot be bought out with a bigger
+    space — which is the opposite of how bundle capacity behaves, and the more
+    useful half of what this gate produced.
+
+  Two parts are **not** done and are honestly outstanding: the `F32` sweep
+  (§3.2's second space does not exist — the protocol is typed to `(Buffer F64)`,
+  and a second element type needs either generics over the buffer element or a
+  parallel protocol, which is a real design decision rather than a parameter),
+  and **scalar-encoder locality** (§6.5), which cannot be measured until an
+  encoder exists.
 - **G4 — properties.** Compare the relational codec (§6.1) against a direct
   property codec on retrieval accuracy and encode throughput. *Criterion: the
   direct codec replaces the reference only if it is ≥2× faster to encode at

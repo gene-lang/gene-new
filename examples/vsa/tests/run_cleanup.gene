@@ -1,0 +1,3 @@
+# VM shell for the cleanup spec — counterpart to tests/web_cleanup.gene.
+(import [report] from "./cleanup.gene")
+($println (report))
