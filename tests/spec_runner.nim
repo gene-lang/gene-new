@@ -5400,6 +5400,38 @@ suite "spec — binding forms from design §12.1":
     check_compile_error("(var i 0) (while (< i 1) (const K 1) (set i 1))",
                         "cannot appear inside a loop")
 
+  test "a const use is folded to its value, and a shadow still wins":
+    # design §12.1: a const resolves before runtime, so a use of one is the
+    # value rather than a load of it. What must survive folding is shadowing —
+    # `parentSlot` answers the nearest enclosing binding, so anything closer
+    # than the module must win.
+    check_eval("(const K 5) (fn f [] K) (f)", "5")
+    check_eval("(const K 5) (fn f [] (fn g [] K)) ((f))", "5")
+    check_eval("(const K 5) (fn f [K] K) (f 9)", "9")
+    check_eval("(const K 5) (fn f [] (var K 9) K) (f)", "9")
+    # The one a naive fold gets wrong: an intervening closure local.
+    check_eval("(const K 5) (fn outer [] (var K 9) (fn inner [] K)) ((outer))",
+               "9")
+    check_eval("(const K 5) K", "5")
+
+  test "folding a namespace const does not leak across namespaces":
+    # §12.1 admits a const at namespace level too, and the fold table is keyed
+    # by name alone — so the case that would expose a table shared between
+    # compilers is two namespaces declaring the same const name.
+    check_eval("(ns a (const K 1) (fn f [] K)) (ns b (const K 2) (fn f [] K)) " &
+               "[(a/f) (b/f)]", "[1 2]")
+    # A namespace const shadows a module one inside, and not outside.
+    check_eval("(const K 5) (ns n (const K 7) (fn f [] K)) [(n/f) K]", "[7 5]")
+    check_eval("(const K 5) (ns n (fn f [] K)) (n/f)", "5")
+    check_eval("(ns n (const K 5) (fn f [] (var K 9) K)) (n/f)", "9")
+
+  test "a folded const aggregate is still frozen":
+    # Folding shares one Value across every use site, which is only safe
+    # because the aggregate was frozen at definition.
+    check_eval("(const XS [1 2 3]) (fn f [] XS) (f)", "#[1 2 3]")
+    check_eval_error("(const XS [1 2 3]) (fn f [] XS) ((f) ~ push! 4)",
+                     "cannot mutate immutable List")
+
   test "a const aggregate is frozen, where a let aggregate is not":
     # The one place const differs from let in what the *value* does rather than
     # in what the binding does. It rides on the flag `#[…]` already sets.

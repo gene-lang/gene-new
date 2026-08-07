@@ -103,6 +103,11 @@ type
     # resolved, so shadowing loses the optimization instead of substituting the
     # wrong number.
     aotConstants: Table[string, Value]
+    # design §12.1's `const` values, for use-site folding. Separate from
+    # `aotConstants`, which also holds scalar `let`s and is poisoned on
+    # conflict: only a `const` is guaranteed to resolve before runtime, so
+    # only a `const` may be substituted at a use site.
+    constValues: Table[string, Value]
     # Every name this compiler has bound, slots or not. `localSlots` is empty
     # when a body compiles without slots, so it cannot answer "is this name a
     # binding?"; this set can. It is never pruned on scope exit, which biases
@@ -561,7 +566,21 @@ proc emitLoadBinding(c: var Compiler, name: string) =
       discard c.emit(opLoadLocal, slot, name = name)
   else:
     let outer = c.parentSlot(name)
-    if outer.slot >= 0:
+    # A `const` resolves before runtime (design §12.1), so a use of one is the
+    # value rather than a load of it. **Only when the name resolves at the
+    # outermost scope**: `parentSlot` answers the *nearest* enclosing binding,
+    # so anything closer than the module is a shadow and must win —
+    #     (const K 5) (fn outer [] (var K 9) (fn inner [] K))
+    # must see 9. Folding on `constValues.hasKey` alone would see 5.
+    #
+    # Safe for aggregates only because a `const` aggregate is frozen at
+    # definition: every use site pushes the same Value, and nothing can mutate
+    # it through one of them.
+    if outer.slot >= 0 and outer.depth == c.parentSlots.len and
+        c.constValues.hasKey(name):
+      discard c.emit(opPushConst, c.chunk.addConst(c.constValues[name]),
+                     name = name)
+    elif outer.slot >= 0:
       discard c.emit(opLoadOuterLocal, outer.slot, depth = outer.depth, name = name)
     else:
       let imported = c.importedCandidates(name)
@@ -702,6 +721,7 @@ proc childCompiler(c: Compiler): Compiler =
            allowYield: c.allowYield, inFunction: c.inFunction,
            inGenerator: c.inGenerator,
            ffiLibraryNames: c.ffiLibraryNames,
+           constValues: c.constValues,
            macros: c.macros, hasMacros: c.hasMacros,
            macroExpansionDepth: c.macroExpansionDepth,
            allowAmbientImports: c.allowAmbientImports,
@@ -4091,6 +4111,9 @@ proc compileConst(c: var Compiler, node: Value) =
   c.emitDefineBinding(name)
   # A `set` on this name is a compile error, by the same table `let` uses.
   c.letNames.incl name
+  # Recorded for use-site folding (see emitLoadBinding). The frozen value, so
+  # every folded use shares one immutable object.
+  c.constValues[name] = value
   # Every const is an AOT constant, where a `let` qualifies only as a bare
   # `Int`/`Float` (see compileVar). The read sites all filter by kind, so a
   # non-scalar here costs nothing; what it buys is that a kernel naming a
