@@ -118,15 +118,17 @@ strictly better. It does not exist, and proposing it is a value-layer change
 this document deliberately does not make. If it ever arrives, this check becomes
 redundant and should be deleted.
 
-### 3.1.2 The divergence is not VSA's, and the guard does not fix it
+### 3.1.2 What specifying this found, and where it was fixed
 
-The table above was found while specifying this library, but nothing in it is
-about VSA. It was **a `Buffer` and path indexing divergence between the VM and
-the web profile, affecting every Gene program that indexes anything** —
-`examples/miclone` packs its ABM, formspec, and mesh state into `(Buffer F32)`
-and was subject to all of it.
+Writing §3.1.1 turned up a bug, and it was not VSA's. It was **a `Buffer` and
+path indexing divergence between the VM and the web profile, affecting every
+Gene program that indexes anything** — `examples/miclone` packs its ABM,
+formspec, and mesh state into `(Buffer F32)` and was subject to all of it.
 
-What the profile did, from source the VM accepted:
+Recorded here because it is the clearest example of why this proposal keeps
+insisting on cross-backend fixtures: the divergence sat in the primitive under
+every loop in the design, and nothing in the existing suite noticed. What the
+profile did, from source the VM accepted:
 
 | identical source | VM | web, before |
 |---|---|---|
@@ -606,9 +608,12 @@ behavior:
 - the **`permute` self-alias raise** (§3.3.1) — pass one buffer as both input
   and `out` and assert it is refused rather than silently corrupting.
 
-The measured table in §3.1.1 is what the first exists to keep from coming back.
-Without these, the two backends disagree silently and the disagreement is
-invisible to every other test in the suite.
+Neither guard is about backend disagreement — §3.1.2's divergence is closed, and
+`index.*` in `tests/transpile/fixtures.json` keeps it closed. These two catch
+the failures that look identical on *both* backends: a mis-sized buffer reads
+`void` past its end and a self-aliased `permute` corrupts silently, and in each
+case the result is a number that means nothing. Nothing else in the suite would
+notice.
 
 Runtime work (SIMD, GPU, packed storage, zero-copy FFI) comes only when a
 library prototype demonstrates the need. Any such work is host-only and **must
