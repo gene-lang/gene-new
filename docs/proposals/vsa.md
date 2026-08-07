@@ -668,11 +668,17 @@ would otherwise hard-code.
   `encode_node` is the direct form (bind the key's role straight to the value);
   `encode_node_relational` materializes `(prop k v)` as §11.1's reference
   semantics do. Both recover 3 of 3 fields, and they produce genuinely
-  different vectors rather than the same encoding spelled twice. The **≥2×
-  throughput** half of the criterion is not decided: the direct form does two
-  atoms and one bind per prop against the relational form's three and two, so
-  it is cheaper by construction, but "cheaper" is not "2× measured" and this
-  gate asked for a number. The reference codec therefore stays the reference.
+  different vectors rather than the same encoding spelled twice.
+
+  **Measured, and the criterion is not met.** 400 encodes of a 3-prop node at
+  D=512, startup subtracted: direct **56.0 ms/encode**, relational
+  **63.4 ms/encode** — a ratio of **1.13×**, nowhere near the 2× §11.2 requires.
+  The direct form does two atoms and one bind per prop against the relational
+  form's three and two, so it *is* cheaper, but the saving is swamped by atom
+  generation, which both pay identically. **The relational codec stays the
+  reference and the direct form stays an optional backend**, which is the
+  answer the criterion was written to produce — it just took a number rather
+  than the architectural argument that would have picked the other way.
 - **G5 — associative index. ✅ Shipped, at three records rather than
   thousands.** A 2-of-3 partial query finds its record, so does 1-of-3, and a
   query mixing fields from two records **declines** at a high floor rather than
