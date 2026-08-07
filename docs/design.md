@@ -3500,21 +3500,22 @@ Selectors remain read-only paths; Gene does not overload selector access with hi
 
 ### 12.1 Binding forms and mutation
 
-Gene has three binding forms. They differ only in whether the binding may be
-rebound, never in what the value can do:
+Gene has three binding forms. `let` and `var` differ only in whether the binding
+may be rebound, never in what the value can do; `const` additionally freezes an
+aggregate value, which is the one exception and is spelled out below:
 
 ```gene
 (let x 1)     # fixed binding, fixed value — the default idiom
 (var y 1)     # fixed binding, rebindable value
-(const K 1)   # fixed compile-time constant (reserved; see below)
+(const K 1)   # fixed compile-time constant, module level (see below)
 (set y 2)     # rebinds a `var`; `(set x ...)` on a `let`/`const` is a compile error
 ```
 
-| Form    | Binding | Value       | `set` allowed |
-| ------- | ------- | ----------- | ------------- |
-| `let`   | fixed   | fixed       | no            |
-| `var`   | fixed   | rebindable  | yes           |
-| `const` | fixed   | fixed, compile-time | no    |
+| Form    | Binding | Value       | `set` allowed | Scope |
+| ------- | ------- | ----------- | ------------- | ----- |
+| `let`   | fixed   | fixed       | no            | any |
+| `var`   | fixed   | rebindable  | yes           | any |
+| `const` | fixed   | fixed, resolved before runtime, frozen | no | module / namespace |
 
 `set` changes a lexical binding. It does not mutate the value previously stored
 in that binding. Its form is exactly `(set name value)`, where `name` is a bare
@@ -3576,11 +3577,37 @@ path to one compiles to a guarded slot load, never a folded value. The
 `let`/`var` distinction is therefore part of a module's compile interface and a
 binding *category* for reload compatibility (§15.6).
 
-**`const` is reserved, not yet implemented.** It denotes a value that must
-resolve before runtime — the only form permitted to be *embedded* into a compile
-artifact — and requires the compile-time-evaluation subset deferred in §11.2.
-Until that lands, `const` is rejected with a "not yet implemented" diagnostic;
-`let` covers every current need.
+**`const` denotes a value that resolves before runtime**, and it is a
+**module- and namespace-level declaration** — not a function body, and not a loop
+body. A body binding is created per call or per iteration, which is not a value
+that resolves before runtime; `let` covers those, and its value in a body is
+fixed anyway.
+
+Its initializer must *already be* a constant rather than produce one: a scalar,
+or a `List`/`Map` whose every element is itself constant. A name in value
+position is a binding read, not a literal, so `(const K other)` is rejected even
+when `other` is itself a `const`. That closed subset is why `const` needs none of
+the compile-time evaluation deferred in §11.2 — the value is in hand while
+compiling, and nothing runs.
+
+**A `const` aggregate is frozen, and this is the one place `const` differs from
+`let` in what the *value* does rather than what the binding does.**
+`(let xs [1 2 3])` hands out a mutable list; `(const xs [1 2 3])` is `#[1 2 3]`
+and a mutation through it raises. The alternative would mean a module constant is
+frozen when compiled for the web profile and mutable on the VM, from identical
+source.
+
+That backend agreement is what `const` is for. A top-level `let` is a runtime
+slot on the VM and a literal-only compile-time constant in the web profile, which
+is one word meaning two things depending on which side reads it; `const` means
+the one thing on both. Top-level `let` keeps working, so no existing module
+breaks.
+
+Two extensions are deliberately not built: an initializer folded from arithmetic
+over other constants, and an imported `const` counting as a constant in the
+importer. The second is the one with a real question behind it — folding a value
+across a module boundary has to say what invalidates a dependent when that value
+changes.
 
 ### 12.2 `Cell`
 

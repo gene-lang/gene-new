@@ -276,9 +276,7 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["set!"], "(var m {^a 1}) (set! m/a 2)")
     fixture(["new"],
       "(type FixtureNew ^props {} (ctor [] nil)) (new FixtureNew)")
-    expect GeneError:
-      discard compileSource("(const K 1)")
-    covered.add "const"
+    fixture(["const"], "(const K 1)")
     fixture(["if_yes"], "(if_yes true 1 2)")
     fixture(["if_not"], "(if_not false 1 2)")
     fixture(["&&", "||", "??", "!"],
@@ -5373,6 +5371,44 @@ suite "spec — binding forms from design §12.1":
     check_compile_error("(let x 10) (set x 20)",
                         "cannot set 'x'")
 
+  test "const binds a value that resolves before runtime":
+    check_eval("(const K 5) (const S \"hi\") [K S]", "[5 \"hi\"]")
+    check_eval("(const K : Int 7) K", "7")
+
+  test "set on a const binding is a compile error":
+    check_compile_error("(const K 5) (set K 6)", "cannot set 'K'")
+
+  test "a const initializer must already be a constant":
+    # The subset is what lets `const` mean one thing on both backends without
+    # any of §11.2's deferred compile-time evaluation: the value is in hand at
+    # compile time rather than produced by running something.
+    check_compile_error("(const K (+ 1 2))", "requires a constant value")
+    # A bare symbol is a binding read, not a literal — including one naming
+    # another const, which is what tier 1 would have to admit deliberately.
+    check_compile_error("(let y 1) (const K y)", "requires a constant value")
+    check_compile_error("(const A 1) (const K A)", "requires a constant value")
+    check_compile_error("(const K ($cell 0))", "requires a constant value")
+    check_compile_error("(const K)", "requires a value")
+    check_compile_error("(const [a b] [1 2])", "requires a plain name")
+
+  test "const is a module-level declaration":
+    # A body-level binding is created per call and a loop body's per iteration;
+    # neither is a value that resolves before runtime. `let` covers those, and
+    # its value in a body is fixed anyway.
+    check_compile_error("(fn f [] (const K 1)) (f)",
+                        "cannot appear inside a function")
+    check_compile_error("(var i 0) (while (< i 1) (const K 1) (set i 1))",
+                        "cannot appear inside a loop")
+
+  test "a const aggregate is frozen, where a let aggregate is not":
+    # The one place const differs from let in what the *value* does rather than
+    # in what the binding does. It rides on the flag `#[…]` already sets.
+    check_eval("(const XS [1 2 3]) XS", "#[1 2 3]")
+    check_eval("(const M {^a 1 ^b [2 3]}) M", "#{^a 1 ^b #[2 3]}")
+    check_eval("(let xs [1 2 3]) (xs ~ push! 4) xs", "[1 2 3 4]")
+    check_eval_error("(const XS [1 2 3]) (XS ~ push! 4)",
+                     "cannot mutate immutable List")
+
   test "set rejects extra arguments instead of silently discarding them":
     check_compile_error("(var x 1) (set x 2 3)",
                         "set requires exactly a name and a value")
@@ -5456,8 +5492,9 @@ suite "spec — binding forms from design §12.1":
     check_compile_error("(let [a b] [1 2]) (set a 9)",
                         "cannot set 'a'")
 
-  test "const is reserved but not yet implemented":
-    check_compile_error("(const K 10)", "const is reserved")
+  test "a const is a fixed binding like a named declaration":
+    check_eval("(const K 10) K", "10")
+    check_compile_error("(const K 10) (set K 20)", "cannot set 'K'")
 
   test "an inner var shadows an outer let without freezing it":
     check_eval("(let x 1) " &

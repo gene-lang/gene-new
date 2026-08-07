@@ -3397,28 +3397,37 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
   var headers: seq[tuple[form: Value, fn: WebFunction]]
   let moduleResult = result
   proc registerConstant(form: Value, loc: SourceLoc): WebConstant =
-    ## `(let name value)` / `(let name : T value)` where `value` is a literal.
-    ## Only literals qualify: the profile has no module-initialization phase
-    ## (docs/proposals/transpile.md §2), and a computed initializer would need
-    ## the ordering and cycle contract that phase was excluded to avoid. A
-    ## literal has no such hazard, so it lowers to a plain JS `const`.
+    ## `(const name value)` / `(const name : T value)` where `value` is a
+    ## literal, and the same shapes spelled `let`. Only literals qualify: the
+    ## profile has no module-initialization phase (docs/proposals/transpile.md
+    ## §2), and a computed initializer would need the ordering and cycle
+    ## contract that phase was excluded to avoid. A literal has no such hazard,
+    ## so it lowers to a plain JS `const`.
+    ##
+    ## **`const` is what this branch has always meant** (design §12.1). A
+    ## top-level `let` here is a compile-time constant while the same source on
+    ## the VM is a runtime slot, which is one word meaning two things depending
+    ## on which backend reads it. `const` means the one thing on both. `let`
+    ## still compiles, so no existing module breaks.
+    let keyword = form.head.symVal
     var body = form.body
     if body.len notin {2, 4} or body[0].kind != vkSymbol:
-      raise webError(loc, "web let expects a name and a literal value")
+      raise webError(loc,
+        "web " & keyword & " expects a name and a literal value")
     let name = body[0].symVal
     var declared: WebType = nil
     var valueIndex = 1
     if body.len == 4:
       if not body[1].isSym(":"):
-        raise webError(loc, "web let type annotation requires ':'")
+        raise webError(loc, "web " & keyword & " type annotation requires ':'")
       declared = parseWebType(body[2], loc)
       valueIndex = 3
     var empty = initTable[string, WebBinding]()
     let value = analysis.analyzeExpr(body[valueIndex], empty, declared)
     if not value.isLiteralConstant:
-      raise webError(loc, "top-level 'let' requires a literal value: " &
-        "the web profile has no module-initialization phase, so a computed " &
-        "constant would need an evaluation order it does not define")
+      raise webError(loc, "top-level '" & keyword & "' requires a literal " &
+        "value: the web profile has no module-initialization phase, so a " &
+        "computed constant would need an evaluation order it does not define")
     if analysis.signatures.hasKey(name) or
         analysis.constants.hasKey(name):
       raise webError(loc, "duplicate web declaration: " & name)
@@ -3540,14 +3549,14 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       registerNamespace(form, @[], loc)
       continue
     else: discard
-    if form.head.symVal == "let":
+    if form.head.symVal in ["const", "let"]:
       result.constants.add registerConstant(form, loc)
       continue
     if form.head.symVal != "fn":
       let hint =
         if form.head.symVal == "var":
           ": module-level state has no initialization order here; " &
-          "use (let name <literal>) for a constant"
+          "use (const name <literal>) for a constant"
         else: ""
       raise webError(loc, "top-level '" & form.head.symVal &
         "' is outside the web profile" & hint)

@@ -3979,6 +3979,134 @@ proc compileVar(c: var Compiler, node: Value, immutable = false) =
     if patternBindsSelf(body[0]):
       c.selfAvailable = true
 
+proc isConstantValue(value: Value): bool =
+  ## design §12.1's constant subset: a value the compiler holds outright — a
+  ## scalar, or an aggregate whose elements are themselves constant. Anything
+  ## that can call, read a binding, or observe state is excluded, which is what
+  ## makes the value resolvable before runtime.
+  ##
+  ## **A bare symbol is a binding read, not a literal**, so it is rejected here.
+  ## That is the one place this is narrower than the web profile's
+  ## `isLiteralConstant` (web.nim), which sees an already-analyzed tree where a
+  ## symbol *value* and a name reference are different nodes. Narrower in this
+  ## direction is the safe one: everything the VM accepts, the profile accepts.
+  case value.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString:
+    true
+  of vkList:
+    for item in value.listItems:
+      if not isConstantValue(item):
+        return false
+    true
+  of vkMap:
+    for _, item in value.mapEntries:
+      if not isConstantValue(item):
+        return false
+    true
+  else:
+    false
+
+proc frozenConstantValue(value: Value): Value =
+  ## A tier-0 constant rebuilt with its aggregates marked immutable. Scalars are
+  ## already immutable and come back as they are.
+  ##
+  ## **This is the one place a `const` differs from a `let` in what the value
+  ## does, rather than in what the binding does** (design §12.1): `(let xs
+  ## [1 2 3])` hands out a mutable list and anything holding it may push to it;
+  ## `(const xs [1 2 3])` does not. It rides on the same flag `#[1 2 3]` already
+  ## sets — `newList`/`newMap` take it, and `compileListValue` and the `vkMap`
+  ## arm of `compileExpr` already pass it through to `opMakeList`/`opMakeMap` —
+  ## so nothing here is a new representation.
+  ##
+  ## Total on what reaches it: `isConstantValue` admits only scalars and
+  ## aggregates of them, which is disjoint from everything `vm.nim`'s
+  ## `freezeValue` refuses, so there is no unfreezable constant to diagnose.
+  case value.kind
+  of vkList:
+    var items = newSeq[Value](value.listItems.len)
+    for i, item in value.listItems:
+      items[i] = frozenConstantValue(item)
+    newList(items, immutable = true)
+  of vkMap:
+    var entries = initPropTable()
+    for key, val in value.mapEntries:
+      entries[key] = frozenConstantValue(val)
+    newMap(entries, immutable = true)
+  else:
+    value
+
+proc compileConst(c: var Compiler, node: Value) =
+  ## `(const NAME value)` / `(const NAME : T value)` — design §12.1's third
+  ## binding form. A fixed binding whose value resolves before runtime.
+  ##
+  ## The initializer is checked against `isConstantValue` rather than evaluated,
+  ## so this needs none of §11.2's deferred compile-time evaluation: the value is
+  ## already in hand at compile time. What the check buys is that the two
+  ## backends mean one thing by the word — a top-level `let` is a runtime slot
+  ## here and a literal-only JS `const` in the web profile, and `const` is the
+  ## spelling that does not depend on which side you are on.
+  # Module and namespace level only. A module-level const has one value for the
+  # life of the program, which is what makes a single flat constant table
+  # correct and what will let a use site fold; a binding created per call or per
+  # iteration does not, and folding that needs a scope-aware table — two
+  # mechanisms wearing one word. `let` already covers the body case, where its
+  # value is fixed anyway; `const` covers the case `let` cannot state portably.
+  if c.inFunction:
+    raise newException(GeneError,
+      "const is a module-level declaration and cannot appear inside a " &
+      "function (design §12.1); use let, whose value in a body is fixed too")
+  if c.loopDepth > 0:
+    raise newException(GeneError,
+      "const is a module-level declaration and cannot appear inside a loop " &
+      "body, which runs it once per iteration (design §12.1); use let")
+  let body = node.body
+  if body.len == 0:
+    raise newException(GeneError, "const requires a name and a constant value")
+  if body[0].kind != vkSymbol:
+    raise newException(GeneError,
+      "const requires a plain name: a destructuring pattern takes its value " &
+      "apart at runtime, which is the thing a const has already finished " &
+      "doing (design §12.1); use let")
+  let name = body[0].symVal
+  let typed = body.len >= 2 and body[1].isSymbol(":")
+  if typed and body.len < 3:
+    raise newException(GeneError, "const type annotation requires a type")
+  let valueIndex = if typed: 3 else: 1
+  if body.len <= valueIndex:
+    # `(var x)` may stand alone and be assigned later; a const has no later.
+    raise newException(GeneError,
+      "const '" & name & "' requires a value: a const has no later assignment " &
+      "that could give it one (design §12.1)")
+  let declared = body[valueIndex]
+  if not isConstantValue(declared):
+    raise newException(GeneError,
+      "const '" & name & "' requires a constant value — a scalar, or an " &
+      "aggregate of constants. This initializer has to run to produce one, " &
+      "and a const resolves before runtime (design §12.1); use let")
+  let value = frozenConstantValue(declared)
+  compileExpr(c, value)
+  if typed:
+    discard c.emit(opCheckType, c.chunk.addConst(body[2]),
+                   name = "const '" & name & "'")
+  c.emitDefineBinding(name)
+  # A `set` on this name is a compile error, by the same table `let` uses.
+  c.letNames.incl name
+  # Every const is an AOT constant, where a `let` qualifies only as a bare
+  # `Int`/`Float` (see compileVar). The read sites all filter by kind, so a
+  # non-scalar here costs nothing; what it buys is that a kernel naming a
+  # constant lowers without the name having to be a bare numeric literal.
+  #
+  # The poison rule is kept rather than assumed away: if a `let` elsewhere binds
+  # the same name to something else, an ambiguous constant should cost the
+  # optimization rather than produce a wrong substitution.
+  if c.aotConstants.hasKey(name) and not equal(c.aotConstants[name], value):
+    c.aotConstants[name] = NIL
+  else:
+    c.aotConstants[name] = value
+  if typed:
+    c.recordLocalType(name, body[2])
+    c.emitDeclareType(name, body[2])
+
 proc setTargetIsPath(v: Value): bool =
   v.kind == vkNode and (v.head.isSymbol("path") or v.head.isSymbol("select"))
 
@@ -7782,8 +7910,8 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       compileVar(c, node, immutable = true)
       return
     of "const":
-      raise newException(GeneError,
-        "const is reserved but not yet implemented (design §12.1); use let")
+      compileConst(c, node)
+      return
     of "set":
       compileSet(c, node)
       return
