@@ -4019,6 +4019,11 @@ proc isConstantValue(value: Value): bool =
         return false
     true
   of vkMap:
+    # Values only, and that is complete rather than partial: a Map key is not a
+    # Value. `PropEntry` holds an interned `keyId: int32` and the reader refuses
+    # any entry not written `^name`, so there is no key that could be an
+    # aggregate, need validating here, or need freezing in
+    # `frozenConstantValue`.
     for _, item in value.mapEntries:
       if not isConstantValue(item):
         return false
@@ -4079,6 +4084,21 @@ proc compileConst(c: var Compiler, node: Value) =
     raise newException(GeneError,
       "const is a module-level declaration and cannot appear inside a loop " &
       "body, which runs it once per iteration (design §12.1); use let")
+  # `inFunction`/`loopDepth` are not sufficient: a `const` nested in a *branch*
+  # at module level clears both, and use-site folding then reads a value the
+  # binding may never receive —
+  #     (if true (const K 2) (const K 1)) (fn f [] K)   ; f folded 1, K is 2
+  # which is one name meaning two things in one program, the exact failure this
+  # form exists to remove. `staticTopLevelImpls` is the established "declared
+  # unconditionally at top level" marker, and it already treats `do` as
+  # transparent grouping, so `(do (const K 1))` stays legal because it really is
+  # unconditional. The web profile refuses a top-level `if` outright, so this
+  # keeps the VM the narrower of the two — the safe direction.
+  if node.bits notin c.staticTopLevelImpls:
+    raise newException(GeneError,
+      "const must be declared unconditionally at module or namespace level " &
+      "(design §12.1): a const nested in a branch has a value that use sites " &
+      "resolve before runtime but the binding might never receive; use let")
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "const requires a name and a constant value")
@@ -4115,9 +4135,13 @@ proc compileConst(c: var Compiler, node: Value) =
   # every folded use shares one immutable object.
   c.constValues[name] = value
   # Every const is an AOT constant, where a `let` qualifies only as a bare
-  # `Int`/`Float` (see compileVar). The read sites all filter by kind, so a
-  # non-scalar here costs nothing; what it buys is that a kernel naming a
-  # constant lowers without the name having to be a bare numeric literal.
+  # `Int`/`Float` (see compileVar). A non-scalar here costs nothing: two read
+  # sites take only `{vkInt, vkFloat}` and the third recurses into the value,
+  # where an aggregate matches no lowering case and declines. Declining is the
+  # whole safety property — an unlowerable constant loses the optimization
+  # rather than emitting wrong C — so it has a test rather than only this note.
+  # What it buys is that a kernel naming a constant lowers without the name
+  # having to be a bare numeric literal.
   #
   # The poison rule is kept rather than assumed away: if a `let` elsewhere binds
   # the same name to something else, an ambiguous constant should cost the

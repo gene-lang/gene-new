@@ -3583,6 +3583,18 @@ body. A body binding is created per call or per iteration, which is not a value
 that resolves before runtime; `let` covers those, and its value in a body is
 fixed anyway.
 
+**It must also be declared *unconditionally*,** which is stronger than "outside a
+function and a loop": a `const` nested in a branch is a compile error.
+
+```gene
+(if debug (const LEVEL 2) (const LEVEL 1))   # error: not unconditional
+(do (const LEVEL 1))                         # fine — `do` groups, it does not branch
+```
+
+A use of a `const` resolves to its value rather than to a load of the binding,
+so a conditionally-declared one would let a use site and the binding disagree
+within one program. `do` is transparent grouping and stays legal.
+
 Its initializer must *already be* a constant rather than produce one: a scalar,
 or a `List`/`Map` whose every element is itself constant. A name in value
 position is a binding read, not a literal, so `(const K other)` is rejected even

@@ -5414,6 +5414,38 @@ suite "spec — binding forms from design §12.1":
                "9")
     check_eval("(const K 5) K", "5")
 
+  test "a const must be declared unconditionally, so a fold cannot outrank it":
+    # The failure this rules out: a const nested in a branch clears both
+    # `inFunction` and `loopDepth`, so the position check used to admit it,
+    # and folding then read a value the binding never received —
+    #     (if true (const K 2) (const K 1)) (fn f [] K)
+    # evaluated `(f)` to 1 while `K` was 2. One name, two values, one program.
+    check_eval_error("(if true (const K 2) (const K 1)) (fn f [] K) [(f) K]",
+                     "declared unconditionally")
+    check_eval_error("(if true (const K 1)) K", "declared unconditionally")
+    check_eval_error("(match 1 (when 1 (const K 1)) (else nil)) K",
+                     "declared unconditionally")
+    # `do` is transparent grouping, not a branch: a const under it really is
+    # unconditional, so it stays legal and stays foldable.
+    check_eval("(do (const K 5)) (fn f [] K) [(f) K]", "[5 5]")
+    # The position restriction is a compile-time error, where a duplicate is
+    # still caught at module init by opDefineName.
+    check_eval_error("(fn f [] (const K 1))", "cannot appear inside a function")
+    check_eval_error("(const K 1) (const K 2)", "duplicate binding: K")
+    check_eval_error("(const K 1) (let K 2)", "duplicate binding: K")
+
+  test "an aggregate const does not poison typed_native lowering":
+    # compileConst puts *every* const in `aotConstants`, where a `let` qualifies
+    # only as a bare Int/Float. That is safe because the read sites take only
+    # scalars — asserted in a comment until this test, and the thing it buys is
+    # the first check: a kernel names a constant instead of a bare literal.
+    let chunk = compileSource("(const SCALE 3) (const TABLE [1 2 3]) " &
+                              "(fn k [x : I64] : I64 (* x SCALE))")
+    check chunk.functions[0].aotExpr.kind != vkNil
+    check "return (x * 3);" in chunk.emitExperimentalC()
+    check_eval("(const SCALE 3) (const TABLE [1 2 3]) " &
+               "(fn k [x : I64] : I64 (* x SCALE)) (k 5)", "15")
+
   test "folding a namespace const does not leak across namespaces":
     # §12.1 admits a const at namespace level too, and the fold table is keyed
     # by name alone — so the case that would expose a table shared between
