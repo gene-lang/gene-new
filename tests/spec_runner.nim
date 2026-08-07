@@ -276,9 +276,7 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["set!"], "(var m {^a 1}) (set! m/a 2)")
     fixture(["new"],
       "(type FixtureNew ^props {} (ctor [] nil)) (new FixtureNew)")
-    expect GeneError:
-      discard compileSource("(const K 1)")
-    covered.add "const"
+    fixture(["const"], "(const K 1)")
     fixture(["if_yes"], "(if_yes true 1 2)")
     fixture(["if_not"], "(if_not false 1 2)")
     fixture(["&&", "||", "??", "!"],
@@ -5373,6 +5371,108 @@ suite "spec — binding forms from design §12.1":
     check_compile_error("(let x 10) (set x 20)",
                         "cannot set 'x'")
 
+  test "const binds a value that resolves before runtime":
+    check_eval("(const K 5) (const S \"hi\") [K S]", "[5 \"hi\"]")
+    check_eval("(const K : Int 7) K", "7")
+
+  test "set on a const binding is a compile error":
+    check_compile_error("(const K 5) (set K 6)", "cannot set 'K'")
+
+  test "a const initializer must already be a constant":
+    # The subset is what lets `const` mean one thing on both backends without
+    # any of §11.2's deferred compile-time evaluation: the value is in hand at
+    # compile time rather than produced by running something.
+    check_compile_error("(const K (+ 1 2))", "requires a constant value")
+    # A bare symbol is a binding read, not a literal — including one naming
+    # another const, which is what tier 1 would have to admit deliberately.
+    check_compile_error("(let y 1) (const K y)", "requires a constant value")
+    check_compile_error("(const A 1) (const K A)", "requires a constant value")
+    check_compile_error("(const K ($cell 0))", "requires a constant value")
+    check_compile_error("(const K)", "requires a value")
+    check_compile_error("(const [a b] [1 2])", "requires a plain name")
+
+  test "const is a module-level declaration":
+    # A body-level binding is created per call and a loop body's per iteration;
+    # neither is a value that resolves before runtime. `let` covers those, and
+    # its value in a body is fixed anyway.
+    check_compile_error("(fn f [] (const K 1)) (f)",
+                        "cannot appear inside a function")
+    check_compile_error("(var i 0) (while (< i 1) (const K 1) (set i 1))",
+                        "cannot appear inside a loop")
+
+  test "a const use is folded to its value, and a shadow still wins":
+    # design §12.1: a const resolves before runtime, so a use of one is the
+    # value rather than a load of it. What must survive folding is shadowing —
+    # `parentSlot` answers the nearest enclosing binding, so anything closer
+    # than the module must win.
+    check_eval("(const K 5) (fn f [] K) (f)", "5")
+    check_eval("(const K 5) (fn f [] (fn g [] K)) ((f))", "5")
+    check_eval("(const K 5) (fn f [K] K) (f 9)", "9")
+    check_eval("(const K 5) (fn f [] (var K 9) K) (f)", "9")
+    # The one a naive fold gets wrong: an intervening closure local.
+    check_eval("(const K 5) (fn outer [] (var K 9) (fn inner [] K)) ((outer))",
+               "9")
+    check_eval("(const K 5) K", "5")
+
+  test "a const must be declared unconditionally, so a fold cannot outrank it":
+    # The failure this rules out: a const nested in a branch clears both
+    # `inFunction` and `loopDepth`, so the position check used to admit it,
+    # and folding then read a value the binding never received —
+    #     (if true (const K 2) (const K 1)) (fn f [] K)
+    # evaluated `(f)` to 1 while `K` was 2. One name, two values, one program.
+    check_eval_error("(if true (const K 2) (const K 1)) (fn f [] K) [(f) K]",
+                     "declared unconditionally")
+    check_eval_error("(if true (const K 1)) K", "declared unconditionally")
+    check_eval_error("(match 1 (when 1 (const K 1)) (else nil)) K",
+                     "declared unconditionally")
+    # `do` is transparent grouping, not a branch: a const under it really is
+    # unconditional, so it stays legal and stays foldable.
+    check_eval("(do (const K 5)) (fn f [] K) [(f) K]", "[5 5]")
+    # The position restriction is a compile-time error, where a duplicate is
+    # still caught at module init by opDefineName.
+    check_eval_error("(fn f [] (const K 1))", "cannot appear inside a function")
+    check_eval_error("(const K 1) (const K 2)", "duplicate binding: K")
+    check_eval_error("(const K 1) (let K 2)", "duplicate binding: K")
+
+  test "an aggregate const does not poison typed_native lowering":
+    # compileConst puts *every* const in `aotConstants`, where a `let` qualifies
+    # only as a bare Int/Float. That is safe because the read sites take only
+    # scalars — asserted in a comment until this test, and the thing it buys is
+    # the first check: a kernel names a constant instead of a bare literal.
+    let chunk = compileSource("(const SCALE 3) (const TABLE [1 2 3]) " &
+                              "(fn k [x : I64] : I64 (* x SCALE))")
+    check chunk.functions[0].aotExpr.kind != vkNil
+    check "return (x * 3);" in chunk.emitExperimentalC()
+    check_eval("(const SCALE 3) (const TABLE [1 2 3]) " &
+               "(fn k [x : I64] : I64 (* x SCALE)) (k 5)", "15")
+
+  test "folding a namespace const does not leak across namespaces":
+    # §12.1 admits a const at namespace level too, and the fold table is keyed
+    # by name alone — so the case that would expose a table shared between
+    # compilers is two namespaces declaring the same const name.
+    check_eval("(ns a (const K 1) (fn f [] K)) (ns b (const K 2) (fn f [] K)) " &
+               "[(a/f) (b/f)]", "[1 2]")
+    # A namespace const shadows a module one inside, and not outside.
+    check_eval("(const K 5) (ns n (const K 7) (fn f [] K)) [(n/f) K]", "[7 5]")
+    check_eval("(const K 5) (ns n (fn f [] K)) (n/f)", "5")
+    check_eval("(ns n (const K 5) (fn f [] (var K 9) K)) (n/f)", "9")
+
+  test "a folded const aggregate is still frozen":
+    # Folding shares one Value across every use site, which is only safe
+    # because the aggregate was frozen at definition.
+    check_eval("(const XS [1 2 3]) (fn f [] XS) (f)", "#[1 2 3]")
+    check_eval_error("(const XS [1 2 3]) (fn f [] XS) ((f) ~ push! 4)",
+                     "cannot mutate immutable List")
+
+  test "a const aggregate is frozen, where a let aggregate is not":
+    # The one place const differs from let in what the *value* does rather than
+    # in what the binding does. It rides on the flag `#[…]` already sets.
+    check_eval("(const XS [1 2 3]) XS", "#[1 2 3]")
+    check_eval("(const M {^a 1 ^b [2 3]}) M", "#{^a 1 ^b #[2 3]}")
+    check_eval("(let xs [1 2 3]) (xs ~ push! 4) xs", "[1 2 3 4]")
+    check_eval_error("(const XS [1 2 3]) (XS ~ push! 4)",
+                     "cannot mutate immutable List")
+
   test "set rejects extra arguments instead of silently discarding them":
     check_compile_error("(var x 1) (set x 2 3)",
                         "set requires exactly a name and a value")
@@ -5456,8 +5556,9 @@ suite "spec — binding forms from design §12.1":
     check_compile_error("(let [a b] [1 2]) (set a 9)",
                         "cannot set 'a'")
 
-  test "const is reserved but not yet implemented":
-    check_compile_error("(const K 10)", "const is reserved")
+  test "a const is a fixed binding like a named declaration":
+    check_eval("(const K 10) K", "10")
+    check_compile_error("(const K 10) (set K 20)", "cannot set 'K'")
 
   test "an inner var shadows an outer let without freezing it":
     check_eval("(let x 1) " &

@@ -2028,6 +2028,64 @@
         "reason": "`Callback` was a profile-only synonym for `Fn`; the VM takes the annotation at the declaration and raises when a function is passed through one, so the synonym is refused rather than kept",
         "diagnostic": "function types are spelled (Fn [A ...] R)"
       }
+    },
+    {
+      "id": "const.scalar",
+      "source": "(const K 7) K",
+      "web_source": "(mod const_scalar ^profile web) (const K 7) (fn run [] : Int K)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "const.typed",
+      "source": "(const K : Int 7) K",
+      "web_source": "(mod const_typed ^profile web) (const K : Int 7) (fn run [] : Int K)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "const.computed_initializer_rejected",
+      "source": "(const K (+ 1 2)) K",
+      "web_source": "(mod const_computed ^profile web) (const K (+ 1 2)) (fn run [] : Int K)",
+      "web_export": "run",
+      "expected_value": null,
+      "expected_error": "requires a",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "a const resolves before runtime, so an initializer that has to run is not one; the web profile has no module-initialization phase to run it in either",
+        "diagnostic": "requires a"
+      }
+    },
+    {
+      "id": "const.binding_read_rejected",
+      "source": "(const A 1) (const K A) K",
+      "web_source": "(mod const_binding ^profile web) (const A 1) (const K A) (fn run [] : Int K)",
+      "web_export": "run",
+      "expected_value": null,
+      "expected_error": "requires a",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "a name in value position is a binding read on both backends, not a literal; admitting one is tier 1 and is a deliberate choice, not a side effect",
+        "diagnostic": "requires a"
+      }
     }
   ]
 }
