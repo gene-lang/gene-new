@@ -1,0 +1,213 @@
+# "Find me code like this" — docs/proposals/vsa.md §6.1, §8, gate G7.
+#
+# **An application built on the package, not part of it.** Everything under
+# `src/` other than this directory is the foundation: the algebra, the
+# codebook, cleanup memory, the codecs. This module only composes them, and it
+# is the composition that is the point — G7 claims Gene's homoiconicity means a
+# function *is* a node and needs no separate encoder, and the way to test that
+# claim is to encode real source and ask for it back.
+#
+#     .gene file -> read_all -> node -> encode_node -> LinearMemory
+#                                                          |
+#                     a query node --> encode_node --> rank_matches
+#
+# Why this problem rather than a record lookup: **approximation is the correct
+# answer here, not a compromise.** "Find code like this" has no exact result, so
+# a lossy vector address is the right representation. A record lookup by field
+# has an exact result, and a `Map` gets it faster — a demo of that would invite
+# a comparison this loses.
+#
+# What is stored is a *name*, and the source is fetched afterwards from the
+# ordinary Gene store — §6.2's reference-plus-summary, which is the discipline
+# the whole proposal is built around. The vector is an address, never the
+# record.
+#
+# **VM-only**, like `src/codec/node.gene` and for its reasons: a node's props
+# cannot be enumerated in the web profile and `match` type patterns are
+# miscompiled there. There is no web shell on purpose.
+
+(import gene/parse [read_all])
+(import [VsaSpace CleanupMemory] from "../space.gene")
+(import [MapSpace new_space] from "../backends/map.gene")
+(import [Codebook new_codebook] from "../codebook.gene")
+(import [LinearMemory new_memory rank_matches] from "../memory/linear.gene")
+(import [encode_node] from "../codec/node.gene")
+
+# §9 measured usable bundle capacity at about D/16, and a function body carries
+# far more than a 3-prop record — head, params, and every nested form up to the
+# depth limit. 1024 is the smallest dimension that separated the families in
+# testing; 512 collapsed the arithmetic helpers together.
+(const default_dim 1024.0)
+
+# §6.3's depth limit, measured by G3: below this a child is embedded by
+# reference rather than expanded. For code this is what keeps a long function
+# body from spending the whole vector on its first statement.
+(const default_depth 3.0)
+
+# `names`, `files` and the memory's own keys are parallel: entry `i` is the
+# function named `names/%i`, defined in `files/%i`. The memory answers with a
+# *label* rather than an index because that is `CleanupMemory`'s contract, so
+# the label has to carry enough to find the source again — hence `file:name`.
+(type CodeIndex ^props {^space MapSpace
+                        ^book Codebook
+                        ^memory LinearMemory
+                        ^dim F64
+                        ^labels (List Str)
+                        ^names (List Str)
+                        ^files (List Str)})
+
+(fn new_code_index [dim : F64] : CodeIndex
+  (var space (new_space dim 42.0))
+  (CodeIndex ^space space
+             ^book (new_codebook space)
+             ^memory (new_memory space)
+             ^dim dim
+             ^labels []
+             ^names []
+             ^files []))
+
+(fn label_for [file : Str name : Str] : Str $"${file}:${name}")
+
+# Add one already-parsed form. Returns 1.0 when it was indexed and 0.0 when it
+# was not a definition — the caller sums these to report a count.
+#
+# `fn`, `fn!`, `macro` and `ctor` all define something callable and all put the
+# name in body position 0. Anything else — imports, type declarations, top-level
+# expressions — is skipped rather than encoded, because a corpus of those would
+# dilute the codebook with vocabulary no query will ever use.
+(fn index_form [idx : CodeIndex file : Str form] : F64
+  (if (is_definition form) (index_definition idx file form) 0.0))
+
+(fn index_definition [idx : CodeIndex file : Str form] : F64
+  (var body (form ~ body))
+  (var name $"${body/0}")
+  (var vec ($buffer F64 idx/dim))
+  (encode_node idx/book form default_depth vec)
+  (var label (label_for file name))
+  (var mem idx/memory)
+  (mem ~ CleanupMemory:remember label vec)
+  (idx/labels ~ push! label)
+  (idx/names ~ push! name)
+  (idx/files ~ push! file)
+  1.0)
+
+(fn is_definition [form] : Bool
+  (if (is_node_form form) (defines_callable form) false))
+
+(fn defines_callable [form] : Bool
+  (var head $"$(form ~ head)")
+  (var body (form ~ body))
+  (if (== (body ~ size) 0) false
+    (|| (== head "fn")
+        (|| (== head "fn!")
+            (|| (== head "macro") (== head "ctor"))))))
+
+# A top-level form may be a symbol, a string, or a node. Only a node has a
+# head, and asking a non-node for one raises rather than answering nil — which
+# is the check `match` type patterns would express if they worked in both
+# profiles (see `src/codec/node.gene`).
+(fn is_node_form [form] : Bool
+  (match form (when (n : Node) true) (else false)))
+
+# Index every definition in a source text. Separated from the file reading so
+# the search is testable against a literal corpus with no filesystem authority
+# — `tests/search.gene` uses exactly this.
+(fn index_source [idx : CodeIndex file : Str text : Str] : F64
+  (var found 0.0)
+  (for form in (read_all text)
+    (set found (+ found (index_form idx file form))))
+  found)
+
+(fn indexed_count [idx : CodeIndex] : F64 (+ 0.0 (idx/labels ~ size)))
+
+# --- calibration --------------------------------------------------------------
+#
+# **Two unrelated functions are not near-orthogonal, and a floor picked from
+# cleanup's numbers is meaningless here.** Atoms are near-orthogonal by
+# construction (§5) — that is what makes 0.15 a sane decline threshold in
+# `tests/codec.gene`. Two *functions* are not: both are `fn` nodes, both bind a
+# head role, both fill positional roles, and most contain a `var` and a `while`.
+# That shared structural vocabulary is real signal about shape, and it puts a
+# floor under every pairwise score.
+#
+# Measured over this package's own source at D=1024, unrelated pairs sit around
+# 17%, not around 0, with a spread of about 9 points.
+#
+# **The floor is an explicit constant, and deriving it was tried first.**
+# Mean-plus-two-standard-deviations of the pairwise distribution is the obvious
+# candidate and the one the README applies to the codebook; here it produces
+# 34.8% on the 50-definition corpus, which is right, and 56.3% on a
+# 9-definition one, which is above every true match. The statistic assumes most
+# pairs are unrelated. In a small corpus with a few tight families most pairs
+# are *same-family*, so the mean tracks the matches it is supposed to be a
+# baseline for and the threshold chases it upward.
+#
+# Per-query z-scores fail differently: the z of a maximum grows with corpus
+# size, so the same threshold gets stricter as the index grows.
+#
+# So this is measured, not derived, and it is the one tuned number here.
+# 0.35 separates cleanly on both corpora — every true family admitted, and the
+# unrelated query's best row (24.2% small, 28.8% large) rejected. `calibrate`
+# still exists because the corpus statistics are worth *reporting* next to a
+# result; it just does not get to set the threshold.
+(const default_floor 0.35)
+
+(type Calibration ^props {^mean F64 ^sd F64})
+
+# Pairs are capped because this is O(n^2) similarity and the shape of the
+# distribution is settled long before the corpus is exhausted.
+(const calibration_cap 40.0)
+
+(fn calibrate [idx : CodeIndex] : Calibration
+  (var space idx/space)
+  (var mem idx/memory)
+  (var vs mem/vecs)
+  (var n (+ 0.0 (vs ~ size)))
+  (var limit (if (< n calibration_cap) n calibration_cap))
+  (var total 0.0)
+  (var count 0.0)
+  (var i 0.0)
+  (while (< i limit)
+    (var j (+ i 1.0))
+    (while (< j limit)
+      (set total (+ total (space ~ VsaSpace:similarity vs/%i vs/%j)))
+      (set count (+ count 1.0))
+      (set j (+ j 1.0)))
+    (set i (+ i 1.0)))
+  (if (< count 1.0) (Calibration ^mean 0.0 ^sd 0.0)
+    (do
+      (var mean (/ total count))
+      (var sq 0.0)
+      (set i 0.0)
+      (while (< i limit)
+        (var j (+ i 1.0))
+        (while (< j limit)
+          (var d (- (space ~ VsaSpace:similarity vs/%i vs/%j) mean))
+          (set sq (+ sq (* d d)))
+          (set j (+ j 1.0)))
+        (set i (+ i 1.0)))
+      (Calibration ^mean mean ^sd ($math/sqrt (/ sq count))))))
+
+# --- querying ----------------------------------------------------------------
+
+# Rank the corpus against a query *node* — a function written the way the one
+# you are looking for would be written. It never has to exist in the corpus;
+# that is the whole point of asking by shape.
+#
+# `floor` is inherited from cleanup's discipline (§8): below it the answer is
+# "nothing here is like that" rather than the least-bad row. A search that
+# always answers is indistinguishable from one that is guessing.
+(fn search [idx : CodeIndex query limit : F64 floor : F64
+            out_labels : (List Str) out_scores : (List F64)] : Nil
+  (var qv ($buffer F64 idx/dim))
+  (encode_node idx/book query default_depth qv)
+  (rank_matches idx/memory qv floor limit out_labels out_scores)
+  nil)
+
+# The single best match, or "" — the `nearest` shape, for callers that want one
+# answer rather than a ranking.
+(fn search_one [idx : CodeIndex query floor : F64] : Str
+  (var labels : (List Str) [])
+  (var scores : (List F64) [])
+  (search idx query 1.0 floor labels scores)
+  (if (== (labels ~ size) 0) "" labels/0))

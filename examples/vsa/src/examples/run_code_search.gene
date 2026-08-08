@@ -1,0 +1,141 @@
+# The code-search application — `gene run code_search`.
+#
+# Indexes this package's own foundation and then asks for functions **that are
+# not in it**, by shape. The corpus is the package's `src/` because it is the
+# one corpus guaranteed to be present, and because searching a VSA library with
+# itself is the shortest path from "structural similarity survives encoding"
+# (gate G7, asserted over three quoted literals) to a standing demonstration
+# over real source.
+#
+# VM-only: see `code_search.gene`. `$fs/read_text` needs a `ReadDir` capability,
+# which is the ordinary way this repo grants filesystem authority.
+#
+# Corpus paths are package-relative, so this runs from the package directory
+# the same way every other entry here does: `gene run code_search`, alongside
+# `gene run algebra`.
+
+(import $fs [read_text ReadDir])
+(import [CodeIndex new_code_index index_source indexed_count search
+         Calibration calibrate default_floor]
+        from "./code_search.gene")
+
+(const dim 1024.0)
+
+(const corpus [
+  "src/space.gene"
+  "src/codebook.gene"
+  "src/backends/map.gene"
+  "src/memory/linear.gene"
+  "src/codec/summary.gene"
+  "src/codec/scalar.gene"
+  "src/codec/node.gene"
+])
+
+# Rendered digit by digit. Interpolating an F64 writes `51.0`, not `51`, so a
+# percentage assembled from two interpolated floats reads `51.0.7.0%` — which
+# is what the first version of this printed. `bench/capacity.gene` carries the
+# same helper for the same reason.
+(fn digit_str [d : F64] : Str
+  (if (< d 1.0) "0"
+    (if (< d 2.0) "1"
+      (if (< d 3.0) "2"
+        (if (< d 4.0) "3"
+          (if (< d 5.0) "4"
+            (if (< d 6.0) "5"
+              (if (< d 7.0) "6"
+                (if (< d 8.0) "7"
+                  (if (< d 9.0) "8" "9"))))))))))
+
+(fn whole_str [n : F64] : Str
+  (var digits : (List Str) [])
+  (var q ($math/floor n))
+  (if (< q 1.0) (digits ~ push! "0"))
+  (while (> q 0.0)
+    (digits ~ push! (digit_str (- q (* ($math/floor (/ q 10.0)) 10.0))))
+    (set q ($math/floor (/ q 10.0))))
+  (var out "")
+  (var k (- (+ 0.0 (digits ~ size)) 1.0))
+  (while (> k -1.0)
+    (var ch digits/%k)
+    (set out $"${out}${ch}")
+    (set k (- k 1.0)))
+  out)
+
+# One decimal place of a percentage: 0.517 -> "51.7%".
+(fn pct1 [x : F64] : Str
+  (var scaled ($math/floor (+ (* x 1000.0) 0.5)))
+  (var whole ($math/floor (/ scaled 10.0)))
+  (var frac (- scaled (* whole 10.0)))
+  $"$(whole_str whole).$(digit_str frac)%")
+
+(fn pad [s : Str width : F64] : Str
+  (var out s)
+  (var w (+ 0.0 ($str/byte_size s)))
+  (while (< w width)
+    (set out $"${out} ")
+    (set w (+ w 1.0)))
+  out)
+
+(fn show [idx floor : F64 label query]
+  ($println "")
+  ($println $"? ${label}")
+  (var labels : (List Str) [])
+  (var scores : (List F64) [])
+  (search idx query 5.0 floor labels scores)
+  (if (== (labels ~ size) 0)
+    ($println "    (nothing in the corpus is like that)")
+    (do (var i 0.0)
+        (var n (+ 0.0 (labels ~ size)))
+        (while (< i n)
+          (var l labels/%i)
+          (var sc scores/%i)
+          ($println $"    $(pad l 46.0) $(pct1 sc)")
+          (set i (+ i 1.0))))))
+
+(var idx (new_code_index dim))
+
+(var t0 ($os/monotonic_ms))
+(for path in corpus
+  (index_source idx path (read_text ReadDir path)))
+(var elapsed (- ($os/monotonic_ms) t0))
+
+($println $"indexed $(whole_str (indexed_count idx)) definitions from $(whole_str (+ 0.0 (corpus ~ size))) files in $(whole_str (+ 0.0 elapsed)) ms")
+(var cal (calibrate idx))
+($println $"dimension $(whole_str dim), depth 3")
+($println $"pairwise similarity across this corpus: mean $(pct1 cal/mean), sd $(pct1 cal/sd)")
+($println $"declining below $(pct1 default_floor) — measured, not derived; see code_search.gene")
+
+# Every query below is a function that does **not** appear in the corpus. Each
+# is written the way someone looking for that kind of code would write it.
+
+(show idx default_floor "a one-argument Str -> Str name builder"
+  (quote (fn tag_name [tag : Str] : Str $"x/tag/${tag}")))
+
+(show idx default_floor "modular arithmetic on an F64"
+  (quote (fn clamp32 [y : F64] : F64 (- y (* ($math/floor (/ y k)) k)))))
+
+(show idx default_floor "a loop accumulating over two buffers"
+  (quote (fn total [p : (Buffer F64) q : (Buffer F64)] : F64
+           (var n 0.0) (var acc 0.0)
+           (while (< n 10.0)
+             (set acc (+ acc (* (p ~ get n) (q ~ get n))))
+             (set n (+ n 1.0)))
+           acc)))
+
+(show idx default_floor "building a list in a while loop"
+  (quote (fn gather [xs : (List Str)] : (List Str)
+           (var out : (List Str) [])
+           (var i 0.0)
+           (while (< i 3.0) (out ~ push! xs/%i) (set i (+ i 1.0)))
+           out)))
+
+(show idx default_floor "a guard that raises on a bad argument"
+  (quote (fn require_positive [x : F64 who : Str] : Nil
+           (if (< x 0.0) (fail (ShapeError ^message $"${who}: negative"))))))
+
+# The decline. Nothing in a VSA library resembles this, and the honest answer
+# is to say so rather than return the least-bad row.
+(show idx default_floor "an HTTP route handler (nothing like this is indexed)"
+  (quote (fn handle_request [req : Request] : Response
+           (var body ($json/stringify req/params))
+           (Response ^status 200 ^body body))))

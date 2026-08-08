@@ -16,6 +16,7 @@ in this repo to implement against. Nothing here learns.
 
 ```
 package.gene          the manifest; entry is the protocol, not a backend
+FOUNDATION — everything the library is
 src/space.gene        the VsaSpace / CleanupMemory protocols, and the guards
 src/backends/map.gene MAP over bipolar ±1, the first implementation
 src/codebook.gene     §5.1 interned atoms — the cache the codecs read through
@@ -23,10 +24,16 @@ src/memory/linear.gene    linear-scan CleanupMemory
 src/codec/summary.gene    §6.2 reference-plus-summary — portable
 src/codec/scalar.gene     §6.5 thermometer code for continuous values
 src/codec/node.gene       §6.1/§6.3 node walking — **VM-only**
+
+EXAMPLE APPLICATIONS — things built on it
+src/examples/code_search.gene      "find me code like this" — **VM-only**
+src/examples/run_code_search.gene  its entry point; reads real .gene files
+
 tests/algebra.gene    G1 — the algebra, as identities
 tests/cleanup.gene    G2 — recovery through binding and bundling
 tests/codec.gene      §6.2/§6.5/§7 and G5 — codec and index
 tests/node.gene       §6.1/§6.3/§6.4 and G4/G7 — VM-only, no web shell
+tests/search.gene     the code-search spec, VM-only, literal corpus
 tests/{run,web}_*.gene    the two shells: $println / $console/log
 bench/capacity.gene   G3 — §9's table. A measurement, not an assertion.
 tools/check.sh        the gate: both suites, both backends, diffed
@@ -37,7 +44,8 @@ tools/check.sh        the gate: both suites, both backends, diffed
 ```sh
 tools/check.sh        # both suites on both backends, diffed — the actual gate
 gene run algebra      # one suite on the VM
-gene run capacity     # the §9 sweep (~2 min; not part of check.sh)
+gene run code_search  # the example application, over this package's own source
+gene run capacity     # the §9 sweep (~35 s; not part of check.sh)
 ```
 
 **The two outputs must be byte-identical.** That is the test.
@@ -45,6 +53,64 @@ gene run capacity     # the §9 sweep (~2 min; not part of check.sh)
 The shared module returns a report string and neither prints, so any difference
 between the two runs is a difference between the runtimes rather than between
 two harnesses.
+
+## The example application
+
+`gene run code_search` indexes this package's own foundation and then asks for
+functions **that are not in it**, by shape:
+
+```
+indexed 50 definitions from 7 files in 5236 ms
+pairwise similarity across this corpus: mean 16.8%, sd 9.0%
+
+? a one-argument Str -> Str name builder
+    src/codec/summary.gene:role_name               51.7%
+    src/codec/summary.gene:position_name           50.4%
+    src/codec/summary.gene:value_name              47.4%
+    src/codec/scalar.gene:lo_name                  45.7%
+    src/codec/scalar.gene:hi_name                  44.2%
+
+? modular arithmetic on an F64
+    src/backends/map.gene:wrap32                   60.2%
+    src/backends/map.gene:fold                     42.9%
+
+? an HTTP route handler (nothing like this is indexed)
+    (nothing in the corpus is like that)
+```
+
+Every query is a function that does not appear in the corpus. This is what
+makes it a test of G7 rather than a restatement of it: the existing suite
+compares three quoted literals against each other, which shows their encodings
+differ but not that an *unseen* query lands anywhere in particular.
+
+It is here because approximation is the right answer to "find code like this",
+not a compromise. A record lookup by field has an exact answer and a `Map` beats
+this at it — a demo of that would invite a comparison this loses. And it needs
+no code encoder: Gene is homoiconic, so `src/codec/node.gene` already handles a
+function because a function is a node.
+
+Two things it found, neither of which was visible from the specs:
+
+**A prop shadows the anatomy projection of the same name.** For
+`(Response ^status 200 ^body "hi")`, `node/body` answers `"hi"` and
+`(node ~ body)` answers `[]`. Both are defensible readings of a path, but only
+the message always means anatomy. The node walker used selectors and would
+silently mis-encode any node carrying a `head`, `body`, `props` or `meta` prop
+— and crash outright when the shadowing value was not iterable, which is how it
+surfaced. `src/codec/node.gene` now reads anatomy as a message throughout.
+
+**The decline threshold cannot be carried over from cleanup.** Atoms are
+near-orthogonal by construction, which is what makes 0.15 sensible in
+`tests/codec.gene`. Two *functions* are not: both are `fn` nodes, both bind a
+head role, most contain a `var` and a `while`. Unrelated pairs here sit around
+17%, so the first version answered five confident rows about an HTTP handler it
+had never seen. Deriving the floor from the corpus was tried and does not
+generalize — `mean + 2sd` gives the right 34.8% at 50 definitions and a useless
+56.3% at 9, because in a small corpus with tight families most pairs are
+same-family and the mean chases the matches it is supposed to be a baseline
+for. The floor is therefore an explicit measured constant, and
+`tests/search.gene` asserts the failure of the derived version so the reasoning
+cannot quietly stop being true.
 
 ## What the design forces, and why
 
@@ -56,12 +122,15 @@ dimension-8192 vector is 64 KB; a returning `bind(a, b) -> c` would allocate
 elementwise operations and may not for `permute`, which reads an index it has
 not written yet.
 
-That is a *memory* argument and it does not extend to time. At D=512 a fresh
-`($buffer F64 512)` costs 4.5 us and clearing one in a Gene loop costs 267 us,
-because the allocator returns zeroed memory and the loop does not. So reuse
-pays only when the next writer overwrites every component; `encode_value` in
-`src/codec/node.gene` accumulates instead, and is the one function here that
-returns a buffer rather than filling a caller's.
+That is a *memory* argument and it does not extend to time. At D=512, three
+ways to get a zeroed buffer: a `set!` loop costs 160 us, a fresh allocation
+2.5 us, and `fill!` 0.5 us. Against an interpreted loop, allocation wins by
+60x; against `fill!`, reuse wins by 5x. Neither answer is the lesson — the
+lesson is that an interpreted per-element loop is not the cost of the operation
+it spells, and the fix is a bulk primitive rather than a different allocation
+strategy. `encode_value` in `src/codec/node.gene` is the one function here that
+returns a buffer instead of filling a caller's, and it keeps that shape so a
+leaf can return the interned atom and touch no buffer at all.
 
 **Atoms are interned, and the codecs borrow them** (§5.1). An atom is a pure
 function of its name, and generating it was 95% of every encode — the same
@@ -97,6 +166,7 @@ already known:
 | **the mutable `List` surface is disjoint** | The VM has `set!`/`assoc`/`first`/`last`/`contains?` and no `pop!` or `clear!`; the web profile has `pop!` and `clear!` and no `set!`. **Portably a list can only be pushed to and sized.** `src/codebook.gene`'s slot table is append-only for this reason — neither a slot rewrite nor a remove-and-replace exists on both. |
 | a prop cannot be reassigned on the web | `(set self/field v)` is "web set expects a bare binding and value". Combined with the row above, a growable field has to be the last element of a push-only list. |
 | a selector index must be a variable there | `xs/%0` is "unresolved web binding: 0"; `(var i 0.0)` then `xs/%i` is fine. Every existing loop indexed by a variable, so this stayed hidden until a table wanted slot zero. |
+| **a prop shadows the anatomy projection of the same name** | `node/body` on `(r ^body "hi")` answers `"hi"`; `(node ~ body)` answers the body list. Not a backend split — it bites on both — but the same class of silent divergence, and it is why `src/codec/node.gene` reads anatomy as a message. |
 | **a node's props cannot be enumerated** | `Map` has `get`/`size` and no `keys`/`values`/`entries`/`pairs`; `for` refuses the `Any` a projection types as. §6.1 normalization is therefore VM-only. Note `Map` is also missing `put!`, so it cannot back a memo either. |
 | **`match` type patterns are miscompiled** | `(when (s : Str) …)` emits a *node literal* pattern — head `s`, body `[: Str]` — so it matches a 2-element node and otherwise falls silently to `else`. VM says `"str"`, web says `"other"`, no diagnostic either side. This is why the node walk is VM-only. |
 

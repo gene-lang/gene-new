@@ -5,7 +5,7 @@
 #
 #   * **A node's props cannot be enumerated.** `Map` there has `get` and `size`
 #     and no `keys`/`values`/`entries`/`pairs`, and `for` refuses to iterate the
-#     `Any` that `node/props` types as. So §6.1's normalization — props into
+#     `Any` that `(node ~ props)` types as. So §6.1's normalization — props into
 #     relational form — cannot be written portably.
 #   * **`match` type patterns are miscompiled.** `(when (s : Str) …)` is emitted
 #     as a *node literal* pattern (head `s`, body `[: Str]`), so it matches a
@@ -16,6 +16,16 @@
 # Which is why `summary.gene` — the *default* codec of §6.2 — takes names rather
 # than nodes and is portable. This module is the ingest side: it turns a node
 # into the names that codec wants, and it runs where the data lives.
+#
+# **Anatomy is read as a message — `(node ~ body)` — never as the selector
+# `node/body`.** A prop shadows the projection of the same name: for
+# `(Response ^status 200 ^body "hi")`, `node/body` answers `"hi"` and
+# `(node ~ body)` answers `[]`. Both are defensible readings of a *path*, and
+# the message is the one that always means anatomy. A generic walker that used
+# the selector would silently mis-encode any node carrying a `head`, `body`,
+# `props` or `meta` prop, and would crash outright when the shadowing value is
+# not iterable. Found by `src/examples/code_search.gene` the first time it was
+# pointed at source that happened to build an HTTP response.
 
 (import [VsaSpace] from "../space.gene")
 (import [MapSpace new_space] from "../backends/map.gene")
@@ -32,7 +42,7 @@
 # `summary.gene`'s `encode_pairs` consumes.
 (fn normalize_props [node]
   (var out [])
-  (for entry in node/props
+  (for entry in (node ~ props)
     (out ~ push! [$"${entry/0}" entry/1]))
   out)
 
@@ -46,7 +56,7 @@
 (fn normalize_meta [node include]
   (var out [])
   (if (> (include ~ size) 0)
-    (for entry in node/meta
+    (for entry in (node ~ meta)
       (var key $"${entry/0}")
       (if (include ~ contains key)
         (out ~ push! [key entry/1]))))
@@ -81,7 +91,7 @@
 
   # head
   (var head_role (atom_ref book (head_name)))
-  (var head_v (atom_ref book (value_name (leaf_name node/head))))
+  (var head_v (atom_ref book (value_name (leaf_name (node ~ head)))))
   (space ~ VsaSpace:bind head_role head_v pair)
   (space ~ VsaSpace:bundle_into pair out)
 
@@ -94,7 +104,7 @@
 
   # body, by position
   (var i 0.0)
-  (for item in node/body
+  (for item in (node ~ body)
     (var role (atom_ref book (position_name i)))
     (var filler (encode_value book item (- depth 1.0)))
     (space ~ VsaSpace:bind role filler pair)
@@ -129,7 +139,7 @@
     # A leaf, or a node past the depth limit. Past the limit the node is
     # represented by the *name of its head* — a reference, not its contents —
     # which is what keeps a deep tree from spending the whole vector.
-    (atom_ref book (value_name (leaf_name (if (is_node v) v/head v))))))
+    (atom_ref book (value_name (leaf_name (if (is_node v) (v ~ head) v))))))
 
 # --- gate G4: the relational codec, for comparison ---------------------------
 #
@@ -149,7 +159,7 @@
   (var kv ($buffer F64 dim))
 
   (var head_role (atom_ref book (head_name)))
-  (var head_v (atom_ref book (value_name (leaf_name node/head))))
+  (var head_v (atom_ref book (value_name (leaf_name (node ~ head)))))
   (space ~ VsaSpace:bind head_role head_v pair)
   (space ~ VsaSpace:bundle_into pair out)
 
@@ -164,7 +174,7 @@
     (space ~ VsaSpace:bundle_into pair out))
 
   (var i 0.0)
-  (for item in node/body
+  (for item in (node ~ body)
     (var role (atom_ref book (position_name i)))
     (var filler (encode_value book item (- depth 1.0)))
     (space ~ VsaSpace:bind role filler pair)
@@ -191,15 +201,15 @@
   out)
 
 (fn collect_names [node depth out]
-  (out ~ push! (value_name (leaf_name node/head)))
+  (out ~ push! (value_name (leaf_name (node ~ head))))
   (for entry in (normalize_props node)
     (collect_value entry/1 depth out))
-  (for item in node/body
+  (for item in (node ~ body)
     (collect_value item depth out))
   nil)
 
 (fn collect_value [v depth out]
   (if (&& (is_node v) (> depth 0.0))
     (collect_names v (- depth 1.0) out)
-    (out ~ push! (value_name (leaf_name (if (is_node v) v/head v)))))
+    (out ~ push! (value_name (leaf_name (if (is_node v) (v ~ head) v)))))
   nil)

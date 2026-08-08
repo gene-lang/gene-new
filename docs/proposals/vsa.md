@@ -779,6 +779,34 @@ would otherwise hard-code.
   deliberately does not build, and analogy needs a second encoded corpus to be
   analogous *to*.
 
+  **"Find me code like this" is now the package's example application**, in
+  `examples/vsa/src/examples/`, which is where the foundation/application split
+  lives: everything else under `src/` is the library, and that directory is
+  things built on it. It indexes the package's own 50 definitions and answers
+  queries written as functions *that are not in the corpus* — a novel
+  `Str -> Str` name builder retrieves the five name builders, a novel modular
+  helper retrieves `wrap32` and `fold`, and an HTTP handler retrieves nothing.
+  The last one matters most: the first version answered it with five confident
+  rows, because the decline threshold had been carried over from cleanup.
+
+  That is the gate's real finding. **Atoms are near-orthogonal by construction;
+  functions are not.** Two functions share a head role, positional roles, and
+  usually a `var` and a `while`, so unrelated pairs sit near 17% rather than
+  near 0 and any threshold reasoned from §5's geometry is wrong by a wide
+  margin. Deriving one from the corpus does not rescue it: `mean + 2sd` is
+  correct at 50 definitions and useless at 9, because a small corpus with tight
+  families is mostly same-family pairs and the mean chases the matches it is
+  supposed to be a baseline for. The threshold is an explicit measured constant,
+  and `tests/search.gene` asserts the derived version's failure so the reasoning
+  cannot rot silently.
+
+  It also found a language-level trap worth recording outside this package: **a
+  prop shadows the anatomy projection of the same name.** `node/body` on
+  `(r ^status 200 ^body "hi")` answers `"hi"`, while `(node ~ body)` answers the
+  body list. A generic node walker must read anatomy as a message; the selector
+  form silently mis-encodes any node carrying a `head`, `body`, `props` or
+  `meta` prop, and crashes when the shadowing value is not iterable.
+
 Cross-backend fixtures from G1 onward: the same source, the same vectors, VM and
 web profile, in the style of `examples/miclone`'s spec diffs. Atom generation is
 the part most likely to drift (§5) and the cheapest to pin.

@@ -38,6 +38,19 @@
     # shell. See src/codec/node.gene.
     (application "node" ^entry "tests/run_node.gene")
 
+    # §6.1, §8 and gate G7 — the example application, and the only entry here
+    # that is not a spec or a bench. Everything under `src/` except
+    # `src/examples/` is the foundation; this is something built on it, kept in
+    # the package so the claim "a function is a node" is demonstrated against
+    # real source rather than three quoted literals. **VM-only**, for
+    # `src/codec/node.gene`'s reasons.
+    (application "code_search" ^entry "src/examples/run_code_search.gene")
+
+    # §8 and gate G7 — the code-search spec. Asserts properties rather than
+    # scores, against a literal corpus, so it stays deterministic while
+    # `code_search` reads whatever is on disk. **VM-only**, like `node`.
+    (application "search" ^entry "tests/run_search.gene")
+
     # §11 gate G3 — the capacity sweep that fills in §9's table. A measurement
     # rather than an assertion, and slow (~2 min): run it when the codebook or
     # the algebra changes, not on every check.

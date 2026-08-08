@@ -29,16 +29,18 @@ for suite in algebra cleanup codec; do
   fi
 done
 
-# VM-only, so it is run rather than diffed: the web profile cannot enumerate a
-# node's props, and its `match` type patterns are miscompiled (see
+# VM-only, so these are run rather than diffed: the web profile cannot
+# enumerate a node's props, and its `match` type patterns are miscompiled (see
 # src/codec/node.gene). A shell that could not run would be worse than none.
-gene run node > "$vm"
-if grep -q '^PASS' "$vm"; then
-  printf '%-10s VM only          — %s\n' node "$(tail -1 "$vm")"
-else
-  printf '%-10s FAILED\n' node
-  cat "$vm"
-  status=1
-fi
+for suite in node search; do
+  gene run "$suite" > "$vm"
+  if grep -q '^PASS' "$vm"; then
+    printf '%-10s VM only          — %s\n' "$suite" "$(tail -1 "$vm")"
+  else
+    printf '%-10s FAILED\n' "$suite"
+    cat "$vm"
+    status=1
+  fi
+done
 
 exit $status
