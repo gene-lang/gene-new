@@ -19,6 +19,7 @@
 
 (import [VsaSpace check_len] from "../space.gene")
 (import [MapSpace] from "../backends/map.gene")
+(import [Codebook atom_ref] from "../codebook.gene")
 
 # Role vectors for structure. Named with a `vsa/` prefix so a user concept
 # called "head" or "pos0" cannot collide with the encoding's own vocabulary —
@@ -37,18 +38,21 @@
 # Capacity is the caller's problem and §9 gives the number: usable capacity is
 # about dim/16 pairs, and past it precision collapses fast rather than degrading
 # gracefully. A summary is supposed to be small.
-(fn encode_pairs [space : MapSpace roles : (List Str) fillers : (List Str)
+# The role and filler vectors are **borrowed** from the codebook rather than
+# generated into scratch buffers — `atom_ref`'s contract, and the reason this
+# loop allocates one buffer instead of three. `pair` is the only thing written,
+# and it is this call's own.
+(fn encode_pairs [book : Codebook roles : (List Str) fillers : (List Str)
                   out : (Buffer F64)] : Nil
-  (var dim (space ~ VsaSpace:dimension))
+  (var space book/space)
+  (var dim book/dim)
   (check_len out dim "encode_pairs")
   (var n (+ 0.0 (roles ~ size)))
-  (var role_v ($buffer F64 dim))
-  (var filler_v ($buffer F64 dim))
   (var pair ($buffer F64 dim))
   (var i 0.0)
   (while (< i n)
-    (space ~ VsaSpace:atom (role_name roles/%i) role_v)
-    (space ~ VsaSpace:atom (value_name fillers/%i) filler_v)
+    (var role_v (atom_ref book (role_name roles/%i)))
+    (var filler_v (atom_ref book (value_name fillers/%i)))
     (space ~ VsaSpace:bind role_v filler_v pair)
     (space ~ VsaSpace:bundle_into pair out)
     (set i (+ i 1.0)))
@@ -57,14 +61,13 @@
 # Add a head, so two summaries with the same fields but different types do not
 # collide. `(person ^city "Raleigh")` and `(office ^city "Raleigh")` should not
 # be the same vector.
-(fn encode_head [space : MapSpace head : Str out : (Buffer F64)] : Nil
-  (var dim (space ~ VsaSpace:dimension))
+(fn encode_head [book : Codebook head : Str out : (Buffer F64)] : Nil
+  (var space book/space)
+  (var dim book/dim)
   (check_len out dim "encode_head")
-  (var h ($buffer F64 dim))
-  (var hv ($buffer F64 dim))
   (var bound ($buffer F64 dim))
-  (space ~ VsaSpace:atom (head_name) h)
-  (space ~ VsaSpace:atom (value_name head) hv)
+  (var h (atom_ref book (head_name)))
+  (var hv (atom_ref book (value_name head)))
   (space ~ VsaSpace:bind h hv bound)
   (space ~ VsaSpace:bundle_into bound out)
   nil)
@@ -72,18 +75,17 @@
 # Ordered items, bound to positional roles (§6.3's explicit-position form). The
 # API exposes logical positions; a backend is free to implement them by
 # permutation instead.
-(fn encode_sequence [space : MapSpace items : (List Str)
+(fn encode_sequence [book : Codebook items : (List Str)
                      out : (Buffer F64)] : Nil
-  (var dim (space ~ VsaSpace:dimension))
+  (var space book/space)
+  (var dim book/dim)
   (check_len out dim "encode_sequence")
   (var n (+ 0.0 (items ~ size)))
-  (var pos ($buffer F64 dim))
-  (var item ($buffer F64 dim))
   (var bound ($buffer F64 dim))
   (var i 0.0)
   (while (< i n)
-    (space ~ VsaSpace:atom (position_name i) pos)
-    (space ~ VsaSpace:atom (value_name items/%i) item)
+    (var pos (atom_ref book (position_name i)))
+    (var item (atom_ref book (value_name items/%i)))
     (space ~ VsaSpace:bind pos item bound)
     (space ~ VsaSpace:bundle_into bound out)
     (set i (+ i 1.0)))
@@ -96,23 +98,23 @@
 # There is no "decode the whole thing" here on purpose — unrestricted
 # reconstruction is what §7 says not to build.
 
-(fn query_role [space : MapSpace record : (Buffer F64) role : Str
+(fn query_role [book : Codebook record : (Buffer F64) role : Str
                 out : (Buffer F64)] : Nil
-  (var dim (space ~ VsaSpace:dimension))
+  (var space book/space)
+  (var dim book/dim)
   (check_len record dim "query_role")
   (check_len out dim "query_role")
-  (var role_v ($buffer F64 dim))
-  (space ~ VsaSpace:atom (role_name role) role_v)
+  (var role_v (atom_ref book (role_name role)))
   (space ~ VsaSpace:unbind record role_v out)
   nil)
 
-(fn query_position [space : MapSpace record : (Buffer F64) i : F64
+(fn query_position [book : Codebook record : (Buffer F64) i : F64
                     out : (Buffer F64)] : Nil
-  (var dim (space ~ VsaSpace:dimension))
+  (var space book/space)
+  (var dim book/dim)
   (check_len record dim "query_position")
   (check_len out dim "query_position")
-  (var pos ($buffer F64 dim))
-  (space ~ VsaSpace:atom (position_name i) pos)
+  (var pos (atom_ref book (position_name i)))
   (space ~ VsaSpace:unbind record pos out)
   nil)
 

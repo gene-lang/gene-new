@@ -210,6 +210,17 @@ part of the library is written against. One word, one mechanism.
 Callers that need a temporary pass a scratch buffer. A space should offer a
 small pool rather than making every caller invent one.
 
+**The memory argument is the whole argument, and it does not extend to time.**
+Measured at D=512: allocating a fresh `($buffer F64 512)` costs **4.5 us**, and
+clearing an existing one in a Gene loop costs **267 us** — the allocator returns
+zeroed memory and the loop does not, so reuse is *59x slower* than allocation
+whenever the reused buffer has to be cleared first. Recycling a buffer is worth
+it only when the next writer overwrites every component; when the next step
+accumulates into it, take the fresh one. `examples/vsa`'s `encode_value` is the
+case in point and is the one place in that package which returns a buffer
+instead of filling a caller's — it allocates exactly one either way, and the
+version that cleared was paying 267 us to avoid 4.5 us.
+
 ### 3.3.1 Output aliasing
 
 Every operation takes an `out` buffer, including the ones that look like they
@@ -313,8 +324,8 @@ does mean **no protocol send belongs inside a per-component loop.**
 
 ## 5. Atoms
 
-Every atomic Gene value that participates needs a stable vector. Generate it
-from a hash rather than storing a codebook entry per symbol.
+Every atomic Gene value that participates needs a stable vector, derived from a
+hash rather than assigned from a counter.
 
 Two requirements, and the second is the one usually missed.
 
@@ -350,6 +361,38 @@ Verified identical on the VM and in emitted JS.
 `truck` get unrelated vectors. Do not make lexically or semantically related
 symbols similar by construction; that is a learned property (§13.3), and baking
 it into atom generation makes the codebook untestable.
+
+### 5.1 Generating is the definition; interning is the implementation
+
+This section first read "generate it from a hash *rather than* storing a
+codebook entry per symbol", and that either/or was wrong. Determinism is what
+the hash buys — an atom is a pure function of its name, so any two processes
+agree without shipping a table. But a pure function of a name is exactly the
+kind of function whose results should be kept, and the first implementation
+kept none of them.
+
+Measured on `examples/vsa` at D=512, fetching eight distinct names:
+
+| | per atom |
+|---|---|
+| generated on every use | 6.20 ms |
+| interned, copied into a caller's buffer | 0.40 ms — **15.5x** |
+| interned, borrowed | 0.008 ms — **763x** |
+
+Atom generation was **95% of `encode_node`** — eight atoms at 6.20 ms against a
+52.3 ms encode — and the same eight names were regenerated on every one of
+G4's 400 encodes. So the codebook is a cache in front of the generator, never a
+replacement for it: `verify_intact` regenerates every entry and compares, which
+is the assertion that keeps the stored table honest against §5's definition.
+
+The third row is the one that shapes the API. Once generation is gone the copy
+is 98% of what remains, so the codebook offers **`atom_ref`**, which hands back
+its own storage for callers that only read — every codec here binds an atom
+without writing it — alongside the copying `atom_into` for callers that own an
+output buffer. Borrowing is a real hazard of the same family as §3.3.1's
+self-aliased `permute`: a caller that writes through a borrowed atom corrupts
+every later encode and nothing raises. That is what `verify_intact` is for, and
+both spec suites run it after a full round trip.
 
 ---
 
@@ -641,9 +684,11 @@ would otherwise hard-code.
     a whole-number F64 interpolates as `1.0` against `1`, which is why the
     report carries no floats; and module-level `var` is rejected by the
     profile. Only the first was already recorded.
-  Deferred from this gate: the **scratch pool** (§3.3) — callers still allocate
-  their own temporaries, which is correct but leaves the pooling convention
-  unwritten until something actually loops.
+  Deferred from this gate: the **scratch pool** (§3.3). Something has since
+  looped, and the answer it produced was not a pool — §3.3's measurement shows
+  a fresh buffer is 59× cheaper than clearing a recycled one, so the pool is
+  worth having only for buffers whose next writer overwrites every component.
+  What the loop actually wanted was the atom cache of §5.1.
 - **G2 — cleanup.** Recover an atom after binding and bundling, with noise.
   Produces: the accuracy-vs-load curve for a fixed codebook.
 - **G3 — capacity. ✅ Shipped as `bench/capacity.gene`.** §9's table is filled
@@ -671,14 +716,22 @@ would otherwise hard-code.
   different vectors rather than the same encoding spelled twice.
 
   **Measured, and the criterion is not met.** 400 encodes of a 3-prop node at
-  D=512, startup subtracted: direct **56.0 ms/encode**, relational
-  **63.4 ms/encode** — a ratio of **1.13×**, nowhere near the 2× §11.2 requires.
+  D=512, startup subtracted: direct **4.85 ms/encode**, relational
+  **6.59 ms/encode** — a ratio of **1.36×**, short of the 2× §11.2 requires.
   The direct form does two atoms and one bind per prop against the relational
-  form's three and two, so it *is* cheaper, but the saving is swamped by atom
-  generation, which both pay identically. **The relational codec stays the
-  reference and the direct form stays an optional backend**, which is the
-  answer the criterion was written to produce — it just took a number rather
-  than the architectural argument that would have picked the other way.
+  form's three and two, so it *is* cheaper, but not by the margin that would
+  justify making the optimized form normative. **The relational codec stays the
+  reference and the direct form stays an optional backend.**
+
+  The first run of this gate measured **56.0 / 63.4 ms and a ratio of 1.13×**,
+  and that number was close to meaningless: 95% of both figures was atom
+  generation, which the two codecs pay identically, so the measurement was
+  mostly of a cost neither codec was responsible for. §5.1's interning removed
+  it — encodes got **11.5× faster** and the ratio moved to 1.36×, which is now
+  a comparison of the codecs rather than of the generator. The verdict is
+  unchanged, but only the second number was ever evidence for it. A ratio taken
+  over a workload dominated by a shared cost is a measurement of the shared
+  cost, and it will sit near 1.0 whatever the two things being compared do.
 - **G5 — associative index. ✅ Shipped, at three records rather than
   thousands.** A 2-of-3 partial query finds its record, so does 1-of-3, and a
   query mixing fields from two records **declines** at a high floor rather than

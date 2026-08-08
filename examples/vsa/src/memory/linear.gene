@@ -19,6 +19,7 @@
 
 (import [VsaSpace CleanupMemory check_len buffer_len] from "../space.gene")
 (import [MapSpace] from "../backends/map.gene")
+(import [Codebook atom_ref] from "../codebook.gene")
 
 # `keys` and `vecs` are parallel: entry `i` is `keys/%i` addressed by `vecs/%i`.
 # Two lists rather than a list of pairs because neither backend has a cheap
@@ -101,16 +102,16 @@
       (set i (+ i 1.0)))
     found))
 
-# Remember every name in one call, which is what building a codebook looks like
-# and what every test below needs first.
-(fn remember_atoms [m : LinearMemory names : (List Str)] : Nil
-  (var space m/space)
-  (var dim (space ~ VsaSpace:dimension))
-  (var scratch ($buffer F64 dim))
+# Remember every name in one call, which is what building a cleanup vocabulary
+# looks like and what every test below needs first.
+#
+# The atoms come from the codebook, so a name already interned by an encode is
+# not generated a second time here — and `remember` copies what it is handed, so
+# handing it a borrowed buffer is safe.
+(fn remember_atoms [book : Codebook m : LinearMemory names : (List Str)] : Nil
   (var n (+ 0.0 (names ~ size)))
   (var i 0.0)
   (while (< i n)
     (var name names/%i)
-    (space ~ VsaSpace:atom name scratch)
-    (m ~ CleanupMemory:remember name scratch)
+    (m ~ CleanupMemory:remember name (atom_ref book name))
     (set i (+ i 1.0))))

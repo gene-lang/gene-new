@@ -11,6 +11,8 @@
 
 (import [VsaSpace CleanupMemory] from "../src/space.gene")
 (import [MapSpace new_space] from "../src/backends/map.gene")
+(import [Codebook new_codebook verify_intact codebook_size]
+        from "../src/codebook.gene")
 (import [LinearMemory new_memory remember_atoms] from "../src/memory/linear.gene")
 (import [encode_pairs encode_head encode_sequence query_role query_position
          filler_names concept_of value_name]
@@ -30,16 +32,17 @@
 (fn abs_f [x : F64] : F64 (if (< x 0.0) (- 0.0 x) x))
 
 # One record: head + its role/filler pairs, as a summary vector.
-(fn encode_record [space : MapSpace head : Str roles : (List Str)
+(fn encode_record [book : Codebook head : Str roles : (List Str)
                    fillers : (List Str) out : (Buffer F64)] : Nil
-  (encode_head space head out)
-  (encode_pairs space roles fillers out)
+  (encode_head book head out)
+  (encode_pairs book roles fillers out)
   nil)
 
 (fn report [] : Str
   (var lines : (List Str) [])
   (var f 0.0)
   (var s (new_space dim 42.0))
+  (var book (new_codebook s))
 
   # The cleanup memory holds the *filler* vocabulary, which is stored under
   # `vsa/val/` names rather than bare concept names.
@@ -47,46 +50,46 @@
     ["Alice" "Bob" "Carol" "Raleigh" "Durham" "Boston" "AI" "music" "chess"
      "person" "office" "conference"])
   (var vocab (new_memory s))
-  (remember_atoms vocab (filler_names concepts))
+  (remember_atoms book vocab (filler_names concepts))
 
   # --- the round trip --------------------------------------------------------
 
   (var rec (buf))
-  (encode_record s "person" ["name" "city" "topic"] ["Alice" "Raleigh" "AI"] rec)
+  (encode_record book "person" ["name" "city" "topic"] ["Alice" "Raleigh" "AI"] rec)
 
   (var got (buf))
-  (query_role s rec "city" got)
+  (query_role book rec "city" got)
   (set f (+ f (ok lines "a role query returns that role's filler"
                   (== (concept_of (vocab ~ CleanupMemory:nearest got floor))
                       "Raleigh"))))
 
-  (query_role s rec "topic" got)
+  (query_role book rec "topic" got)
   (set f (+ f (ok lines "and another role returns its own"
                   (== (concept_of (vocab ~ CleanupMemory:nearest got floor))
                       "AI"))))
 
-  (query_role s rec "salary" got)
+  (query_role book rec "salary" got)
   (set f (+ f (ok lines "a role the record does not carry returns nothing"
                   (== (vocab ~ CleanupMemory:nearest got floor) ""))))
 
   # --- the head disambiguates ------------------------------------------------
 
   (var office (buf))
-  (encode_record s "office" ["city"] ["Raleigh"] office)
+  (encode_record book "office" ["city"] ["Raleigh"] office)
   (var person (buf))
-  (encode_record s "person" ["city"] ["Raleigh"] person)
+  (encode_record book "person" ["city"] ["Raleigh"] person)
   (set f (+ f (ok lines "two heads over the same field are different vectors"
                   (< (s ~ VsaSpace:similarity office person) 0.7))))
 
   # --- ordered items ---------------------------------------------------------
 
   (var seq (buf))
-  (encode_sequence s ["Alice" "Bob" "Carol"] seq)
-  (query_position s seq 1.0 got)
+  (encode_sequence book ["Alice" "Bob" "Carol"] seq)
+  (query_position book seq 1.0 got)
   (set f (+ f (ok lines "a positional query returns that position's item"
                   (== (concept_of (vocab ~ CleanupMemory:nearest got floor))
                       "Bob"))))
-  (query_position s seq 0.0 got)
+  (query_position book seq 0.0 got)
   (set f (+ f (ok lines "and position 0 is not position 1"
                   (== (concept_of (vocab ~ CleanupMemory:nearest got floor))
                       "Alice"))))
@@ -102,26 +105,26 @@
 
   (var index (new_memory s))
   (var e1 (buf))
-  (encode_record s "person" ["name" "city" "topic"] ["Alice" "Raleigh" "AI"] e1)
+  (encode_record book "person" ["name" "city" "topic"] ["Alice" "Raleigh" "AI"] e1)
   (index ~ CleanupMemory:remember "person_1" e1)
 
   (var e2 (buf))
-  (encode_record s "person" ["name" "city" "topic"] ["Bob" "Durham" "music"] e2)
+  (encode_record book "person" ["name" "city" "topic"] ["Bob" "Durham" "music"] e2)
   (index ~ CleanupMemory:remember "person_2" e2)
 
   (var e3 (buf))
-  (encode_record s "person" ["name" "city" "topic"] ["Carol" "Boston" "chess"] e3)
+  (encode_record book "person" ["name" "city" "topic"] ["Carol" "Boston" "chess"] e3)
   (index ~ CleanupMemory:remember "person_3" e3)
 
   # Two of three fields, no name.
   (var q (buf))
-  (encode_record s "person" ["city" "topic"] ["Raleigh" "AI"] q)
+  (encode_record book "person" ["city" "topic"] ["Raleigh" "AI"] q)
   (set f (+ f (ok lines "a 2-of-3 partial query finds its record"
                   (== (index ~ CleanupMemory:nearest q floor) "person_1"))))
 
   # One field of three.
   (var q1 (buf))
-  (encode_record s "person" ["city"] ["Durham"] q1)
+  (encode_record book "person" ["city"] ["Durham"] q1)
   (set f (+ f (ok lines "a 1-of-3 partial query still finds its record"
                   (== (index ~ CleanupMemory:nearest q1 floor) "person_2"))))
 
@@ -129,7 +132,7 @@
   # return the least-bad match. This is the assertion that separates an index
   # from a random guess.
   (var q2 (buf))
-  (encode_record s "person" ["city" "topic"] ["Boston" "music"] q2)
+  (encode_record book "person" ["city" "topic"] ["Boston" "music"] q2)
   (var answer (index ~ CleanupMemory:nearest q2 0.6))
   (set f (+ f (ok lines "a query mixing two records does not confidently pick one"
                   (== answer ""))))
@@ -143,15 +146,15 @@
   (var enc (new_encoder "temp" 0.0 100.0))
   (var at50 (buf))
   (var other (buf))
-  (encode_number s enc 50.0 at50)
+  (encode_number book enc 50.0 at50)
 
-  (encode_number s enc 50.0 other)
+  (encode_number book enc 50.0 other)
   (set f (+ f (ok lines "a scalar encodes identically to itself"
                   (> (s ~ VsaSpace:similarity at50 other) 0.999))))
 
-  (encode_number s enc 55.0 other)
+  (encode_number book enc 55.0 other)
   (var near (s ~ VsaSpace:similarity at50 other))
-  (encode_number s enc 90.0 other)
+  (encode_number book enc 90.0 other)
   (var far (s ~ VsaSpace:similarity at50 other))
   (set f (+ f (ok lines "a near value scores above a far one"
                   (> near far))))
@@ -167,7 +170,7 @@
   (var monotone true)
   (var step 0.0)
   (while (< step 6.0)
-    (encode_number s enc (+ 50.0 (* step 10.0)) other)
+    (encode_number book enc (+ 50.0 (* step 10.0)) other)
     (var sim (s ~ VsaSpace:similarity at50 other))
     (if (> sim prev) (set monotone false))
     (set prev sim)
@@ -175,18 +178,30 @@
   (set f (+ f (ok lines "similarity falls monotonically with distance"
                   monotone)))
 
-  (encode_number s enc 37.0 other)
+  (encode_number book enc 37.0 other)
   (set f (+ f (ok lines "decode recovers the value it encoded"
-                  (< (abs_f (- (decode_number s enc other 100.0) 37.0)) 1.0))))
+                  (< (abs_f (- (decode_number book enc other 100.0) 37.0)) 1.0))))
 
   # Clamping, not raising: a measurement off the end of its range is a real
   # thing and the honest encoding is "at the end".
   (var over (buf))
   (var atmax (buf))
-  (encode_number s enc 500.0 over)
-  (encode_number s enc 100.0 atmax)
+  (encode_number book enc 500.0 over)
+  (encode_number book enc 100.0 atmax)
   (set f (+ f (ok lines "a value past the range clamps to the end"
                   (> (s ~ VsaSpace:similarity over atmax) 0.999))))
+
+  # --- §5: the codebook is interned, and interning has one hazard ------------
+  #
+  # `atom_ref` hands out the codebook's own storage, so a codec that wrote
+  # through a borrowed atom would corrupt every later encode — plausible
+  # similarities against a wrong vector, and every assertion above would keep
+  # passing. Everything in this suite has now run against `book`; each stored
+  # atom must still equal what the space generates for its name.
+  (set f (+ f (ok lines "the codebook survives a full round trip unwritten"
+                  (== (verify_intact book) 0.0))))
+  (set f (+ f (ok lines "and it interned enough to be wrong about"
+                  (> (codebook_size book) 10.0))))
 
   (lines ~ push! "")
   (lines ~ push! (if (== f 0.0)

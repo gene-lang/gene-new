@@ -18,6 +18,7 @@ in this repo to implement against. Nothing here learns.
 package.gene          the manifest; entry is the protocol, not a backend
 src/space.gene        the VsaSpace / CleanupMemory protocols, and the guards
 src/backends/map.gene MAP over bipolar ±1, the first implementation
+src/codebook.gene     §5.1 interned atoms — the cache the codecs read through
 src/memory/linear.gene    linear-scan CleanupMemory
 src/codec/summary.gene    §6.2 reference-plus-summary — portable
 src/codec/scalar.gene     §6.5 thermometer code for continuous values
@@ -55,6 +56,20 @@ dimension-8192 vector is 64 KB; a returning `bind(a, b) -> c` would allocate
 elementwise operations and may not for `permute`, which reads an index it has
 not written yet.
 
+That is a *memory* argument and it does not extend to time. At D=512 a fresh
+`($buffer F64 512)` costs 4.5 us and clearing one in a Gene loop costs 267 us,
+because the allocator returns zeroed memory and the loop does not. So reuse
+pays only when the next writer overwrites every component; `encode_value` in
+`src/codec/node.gene` accumulates instead, and is the one function here that
+returns a buffer rather than filling a caller's.
+
+**Atoms are interned, and the codecs borrow them** (§5.1). An atom is a pure
+function of its name, and generating it was 95% of every encode — the same
+eight names regenerated 400 times in the G4 sweep. `atom_ref` hands back the
+codebook's own buffer for the callers that only read it, which is all of them;
+`atom_into` copies for callers that own an output. Borrowing is the hazard
+`verify_intact` exists for, and both spec suites assert it after a round trip.
+
 **Vectors are `(Buffer F64)`, not packed bits** (§3.2). `Int` lowers to `bigint`
 in the web profile — roughly an order of magnitude slower — and these are the
 hot vectors of the whole design. Integer arithmetic happens *inside* F64, exact
@@ -65,7 +80,7 @@ concept's *name*, never an interned symbol id (which is per-process encounter
 order), and the hash uses only operations IEEE-754 requires to be correctly
 rounded, following `examples/miclone/core/exact.gene`.
 
-## Seven backend differences this package had to work around
+## Backend differences this package had to work around
 
 Recorded because each one cost a debugging cycle here, and only the first was
 already known:
@@ -79,7 +94,10 @@ already known:
 | `push!` returns `Void` on the web, so a `: Nil` body ending in one fails its own return check | Only on that backend. An explicit `nil` tail keeps the two agreeing. |
 | the web profile emits one flat output dir keyed by basename | `src/memory/cleanup.gene` and `tests/cleanup.gene` collide. Basenames are unique package-wide. |
 | a two-hop path types as `Any` | `self/keys/%i` loses the element type; binding the list to a local first keeps it, and keeps the read monomorphic. |
-| **a node's props cannot be enumerated** | `Map` has `get`/`size` and no `keys`/`values`/`entries`/`pairs`; `for` refuses the `Any` a projection types as. §6.1 normalization is therefore VM-only. |
+| **the mutable `List` surface is disjoint** | The VM has `set!`/`assoc`/`first`/`last`/`contains?` and no `pop!` or `clear!`; the web profile has `pop!` and `clear!` and no `set!`. **Portably a list can only be pushed to and sized.** `src/codebook.gene`'s slot table is append-only for this reason — neither a slot rewrite nor a remove-and-replace exists on both. |
+| a prop cannot be reassigned on the web | `(set self/field v)` is "web set expects a bare binding and value". Combined with the row above, a growable field has to be the last element of a push-only list. |
+| a selector index must be a variable there | `xs/%0` is "unresolved web binding: 0"; `(var i 0.0)` then `xs/%i` is fine. Every existing loop indexed by a variable, so this stayed hidden until a table wanted slot zero. |
+| **a node's props cannot be enumerated** | `Map` has `get`/`size` and no `keys`/`values`/`entries`/`pairs`; `for` refuses the `Any` a projection types as. §6.1 normalization is therefore VM-only. Note `Map` is also missing `put!`, so it cannot back a memo either. |
 | **`match` type patterns are miscompiled** | `(when (s : Str) …)` emits a *node literal* pattern — head `s`, body `[: Str]` — so it matches a 2-element node and otherwise falls silently to `else`. VM says `"str"`, web says `"other"`, no diagnostic either side. This is why the node walk is VM-only. |
 
 ## What is measured, not asserted
@@ -105,3 +123,29 @@ The mean tracks 1/√d, which is what near-orthogonal random ±1 vectors do.
 `tests/algebra.gene` asserts the property at dimension 1024 with a wide margin;
 this table is the thing that would catch a slow degradation, and filling in
 §9's capacity table (gate G3) is where it becomes a standing measurement.
+
+## What it costs
+
+Per operation at D=1024, and the reason `src/codebook.gene` exists:
+
+| op | ms | | op | ms |
+|---|---|---|---|---|
+| `atom`, generated | 11.70 | | `bundle_into` | 0.89 |
+| `permute` | 1.52 | | `similarity` | 0.78 |
+| `bind` | 0.91 | | `normalize` | 0.77 |
+
+`atom` was 13× everything else and 95% of an encode. Interning it (§5.1) moved
+the G4 encode from **56.0 to 4.85 ms**, `gene run codec` from **7.9 to 1.8 s**,
+and — after `bench/capacity.gene` stopped rebuilding its 256-atom codebook once
+per load row instead of once per dimension — the §9 sweep from **130 to 45 s**.
+Every reported number is byte-identical before and after; interning changes
+what is computed twice, not what is computed.
+
+Two things measured as *not* worth changing. Protocol dispatch costs 3%: a
+hand-inlined `bind` with no `VsaSpace` send and no `check_len` runs 0.88 ms
+against the real one's 0.91, so §4.2's indirection and §3.1.1's guard are both
+free. What is left is the element access itself — net of loop overhead, about
+440 ns per `Buffer/set!` and 300 ns per `get`, against 160 ns for a whole
+function call. A `sample` profile puts that in ORC refcount traffic and
+`kind()`'s thread-local tag read rather than in the array access, so the
+remaining headroom here is in the VM, not in this package.

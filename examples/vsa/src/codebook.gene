@@ -1,0 +1,188 @@
+# The interned codebook — docs/proposals/vsa.md §5.
+#
+# §5 says atoms are *deterministic*: the vector for a concept is a pure function
+# of its name and the space's seed. A pure function of a name is a function whose
+# results can be kept, and until this module existed they were not — every
+# `encode_node` regenerated every atom it touched, and the G4 sweep generated the
+# same eight atoms four hundred times each.
+#
+# Measured at D=512, 1600 fetches of 8 distinct names:
+#
+#   | generated every time (what the package did) | 6.20 ms per atom |
+#   | interned, copied into a caller's buffer     | 0.40 ms — 15.5x  |
+#   | interned, borrowed                          | 0.008 ms — 763x  |
+#
+# So the copy is 98% of the cost of a cached atom, not the lookup, which is why
+# `atom_ref` exists alongside `atom_into` and why the codecs use it.
+#
+# **`atom_ref` hands back the codebook's own storage.** Read it; never write it.
+# This is the same hazard `permute`'s self-alias raise (§3.3.1) exists for, one
+# level up: a caller that writes through a borrowed atom corrupts the codebook
+# for every later encode and nothing raises. `verify_intact` is the assertion
+# that catches it, and `tests/codec.gene` runs it after a full round trip.
+#
+# --- why the table is shaped like this ---------------------------------------
+#
+# A name-keyed memo wants a hash map, and the web profile has none that can be
+# written: `Map` there has `get` and `size` and no `put!`. What both backends do
+# have is `Buffer/set!`, so the index is open-addressed over a `(Buffer F64)` of
+# slots holding `index + 1` into two parallel lists, with 0 for empty.
+#
+# Growing it is the awkward part, and the constraint is sharper than it looks.
+# `(set self/table bigger)` is rejected by the web profile ("web set expects a
+# bare binding and value"), so the table has to live in a list — and **the
+# portable `List` surface is `push!` and `size`, nothing else.** The VM has
+# `set!`/`assoc`/`first`/`last`/`contains?` and no `pop!` or `clear!`; the web
+# profile has `pop!` and `clear!` and no `set!`. Neither a slot rewrite nor a
+# remove-then-replace is available on both.
+#
+# So the table list is **append-only and the live table is its last element**.
+# Growth pushes a bigger one; the superseded tables stay reachable and are
+# ignored. That wastes about one table's worth of slots in total (64 + 128 + …
+# + cap sums to under 2*cap), which is 8 bytes per slot against 8 KB per stored
+# vector at D=1024 — a rounding error next to what it indexes.
+
+(mod codebook ^profile web)
+
+(import [VsaSpace check_len] from "./space.gene")
+(import [MapSpace hash_name] from "./backends/map.gene")
+
+# Power of two, so the bucket fold is a floor-divide rather than a modulus.
+(const initial_capacity 64.0)
+(const empty_slot 0.0)
+
+(type Codebook ^props {^space MapSpace
+                       ^dim F64
+                       ^names (List Str)
+                       ^vecs (List (Buffer F64))
+                       ^table (List (Buffer F64))})
+
+(fn new_codebook [space : MapSpace] : Codebook
+  (var t : (List (Buffer F64)) [])
+  (t ~ push! ($buffer F64 initial_capacity))
+  (Codebook ^space space
+            ^dim (space ~ VsaSpace:dimension)
+            ^names []
+            ^vecs []
+            ^table t))
+
+# The slot where `name` lives, or the empty slot it would be inserted into.
+#
+# Linear probing, and it terminates because the table is grown at half load so
+# an empty slot always exists. `cap` is a power of two and `h` is below 2^32, so
+# the fold is exact in F64 — the same discipline `map.gene` follows, and for the
+# same reason: two backends have to agree on which slot a name lands in.
+(fn slot_for [table : (Buffer F64) cap : F64 names : (List Str)
+              h : F64 name : Str] : F64
+  (var b (- h (* ($math/floor (/ h cap)) cap)))
+  (var s (table ~ get b))
+  (var scanning (> s empty_slot))
+  (while scanning
+    (var idx (- s 1.0))
+    (if (== names/%idx name)
+      (set scanning false)
+      (do (set b (+ b 1.0))
+          (if (>= b cap) (set b 0.0))
+          (set s (table ~ get b))
+          (set scanning (> s empty_slot)))))
+  b)
+
+# The live table: the last one pushed. See the header — the list is append-only
+# because neither backend can remove from a list the other way.
+(fn current_table [book : Codebook] : (Buffer F64)
+  (var tables book/table)
+  (var last (- (+ 0.0 (tables ~ size)) 1.0))
+  tables/%last)
+
+# Double the table and re-probe every name into it. The stored vectors are not
+# touched — only the index is rebuilt — so a buffer borrowed through `atom_ref`
+# stays valid across a rehash.
+(fn rehash [book : Codebook] : Nil
+  (var names book/names)
+  (var tables book/table)
+  (var old (current_table book))
+  (var cap (* (+ 0.0 (old ~ len)) 2.0))
+  (var fresh ($buffer F64 cap))
+  (var n (+ 0.0 (names ~ size)))
+  (var i 0.0)
+  (while (< i n)
+    (var name names/%i)
+    (var b (slot_for fresh cap names (hash_name name) name))
+    (fresh ~ set! b (+ i 1.0))
+    (set i (+ i 1.0)))
+  (tables ~ push! fresh)
+  nil)
+
+# The index of `name`'s atom, generating and interning it on first sight.
+(fn intern [book : Codebook name : Str] : F64
+  (var names book/names)
+  (var table (current_table book))
+  (var cap (+ 0.0 (table ~ len)))
+  (var b (slot_for table cap names (hash_name name) name))
+  (var s (table ~ get b))
+  (if (> s empty_slot)
+    (- s 1.0)
+    (do (var space book/space)
+        (var fresh ($buffer F64 book/dim))
+        (space ~ VsaSpace:atom name fresh)
+        (var vecs book/vecs)
+        (names ~ push! name)
+        (vecs ~ push! fresh)
+        (var n (+ 0.0 (names ~ size)))
+        (table ~ set! b n)
+        # Grow at half load: linear probing degrades sharply past that, and the
+        # whole point of this table is that a lookup stays cheap next to the
+        # 0.008 ms borrow it guards.
+        (if (>= (* n 2.0) cap) (rehash book))
+        (- n 1.0))))
+
+# **Borrow.** The result is the codebook's own buffer — read-only by contract.
+# This is the fast path and the one the codecs use: no copy, no allocation.
+(fn atom_ref [book : Codebook name : Str] : (Buffer F64)
+  (var i (intern book name))
+  (var vecs book/vecs)
+  vecs/%i)
+
+# **Copy**, for a caller that owns `out` and is going to write to it. The §3.3
+# shape, memoized — 15.5x rather than 763x, because a D-element copy is most of
+# what is left once generation is gone.
+(fn atom_into [book : Codebook name : Str out : (Buffer F64)] : Nil
+  (check_len out book/dim "codebook/atom_into")
+  (var i (intern book name))
+  (var vecs book/vecs)
+  (var src vecs/%i)
+  (var dim book/dim)
+  (var j 0.0)
+  (while (< j dim)
+    (out ~ set! j (src ~ get j))
+    (set j (+ j 1.0)))
+  nil)
+
+(fn codebook_size [book : Codebook] : F64 (+ 0.0 (book/names ~ size)))
+
+# Regenerate every interned atom and count the ones that no longer match what is
+# stored. Zero is the only acceptable answer.
+#
+# This is the guard for `atom_ref`'s one hazard. It is not a debug aid — a
+# corrupted codebook produces plausible similarities against a wrong vector, and
+# every other assertion in this package would keep passing.
+(fn verify_intact [book : Codebook] : F64
+  (var space book/space)
+  (var names book/names)
+  (var vecs book/vecs)
+  (var dim book/dim)
+  (var expect ($buffer F64 dim))
+  (var n (+ 0.0 (names ~ size)))
+  (var bad 0.0)
+  (var i 0.0)
+  (while (< i n)
+    (space ~ VsaSpace:atom names/%i expect)
+    (var stored vecs/%i)
+    (var j 0.0)
+    (var differs false)
+    (while (< j dim)
+      (if (!= (stored ~ get j) (expect ~ get j)) (set differs true))
+      (set j (+ j 1.0)))
+    (if differs (set bad (+ bad 1.0)))
+    (set i (+ i 1.0)))
+  bad)

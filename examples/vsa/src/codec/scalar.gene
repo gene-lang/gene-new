@@ -25,6 +25,7 @@
 
 (import [VsaSpace check_len] from "../space.gene")
 (import [MapSpace] from "../backends/map.gene")
+(import [Codebook atom_ref] from "../codebook.gene")
 
 (type ScalarEncoder ^props {^name Str ^lo F64 ^hi F64})
 
@@ -43,14 +44,18 @@
     (do (var p (/ (- x e/lo) span))
         (if (< p 0.0) 0.0 (if (> p 1.0) 1.0 p)))))
 
-(fn encode_number [space : MapSpace e : ScalarEncoder x : F64
+# The two anchors are borrowed, which matters more here than anywhere else in
+# the package: `decode_number` calls this once per probe step, so a 100-step
+# decode used to generate 202 atoms for two distinct names.
+#
+# `out` is the caller's and is never one of the anchors — this reads from both
+# and writes only to `out`.
+(fn encode_number [book : Codebook e : ScalarEncoder x : F64
                    out : (Buffer F64)] : Nil
-  (var dim (space ~ VsaSpace:dimension))
+  (var dim book/dim)
   (check_len out dim "encode_number")
-  (var lo ($buffer F64 dim))
-  (var hi ($buffer F64 dim))
-  (space ~ VsaSpace:atom (lo_name e) lo)
-  (space ~ VsaSpace:atom (hi_name e) hi)
+  (var lo (atom_ref book (lo_name e)))
+  (var hi (atom_ref book (hi_name e)))
   # The threshold is where the vector switches from `lo` to `hi`. Rounding is
   # deliberate and shared: both backends compute the same integer here because
   # `floor` is exact, which is what keeps two runtimes encoding 21.5 degrees
@@ -70,9 +75,10 @@
 # approximate and returns candidates), and it is why a caller who needs the
 # exact number should keep it in the Gene store and use the vector as an
 # address (§6.2).
-(fn decode_number [space : MapSpace e : ScalarEncoder v : (Buffer F64)
+(fn decode_number [book : Codebook e : ScalarEncoder v : (Buffer F64)
                    steps : F64] : F64
-  (var dim (space ~ VsaSpace:dimension))
+  (var space book/space)
+  (var dim book/dim)
   (check_len v dim "decode_number")
   (var probe ($buffer F64 dim))
   (var best e/lo)
@@ -80,7 +86,7 @@
   (var i 0.0)
   (while (<= i steps)
     (var x (+ e/lo (* (- e/hi e/lo) (/ i steps))))
-    (encode_number space e x probe)
+    (encode_number book e x probe)
     (var s (space ~ VsaSpace:similarity v probe))
     (if (> s best_score)
       (do (set best_score s)

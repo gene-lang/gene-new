@@ -13,6 +13,7 @@
 
 (import [VsaSpace CleanupMemory] from "../src/space.gene")
 (import [MapSpace new_space] from "../src/backends/map.gene")
+(import [Codebook new_codebook] from "../src/codebook.gene")
 (import [LinearMemory new_memory remember_atoms] from "../src/memory/linear.gene")
 
 (const dim 1024.0)
@@ -31,12 +32,13 @@
   (var lines : (List Str) [])
   (var f 0.0)
   (var s (new_space dim 42.0))
+  (var book (new_codebook s))
   (var m (new_memory s))
 
   (var vocab : (List Str)
     ["car" "truck" "red" "blue" "green" "color" "shape" "round" "square"
      "banana" "apple" "zebra" "alpha" "beta" "gamma" "delta"])
-  (remember_atoms m vocab)
+  (remember_atoms book m vocab)
 
   (set f (+ f (ok lines "the codebook holds every name it was given"
                   (== (m ~ CleanupMemory:size) 16.0))))

@@ -218,24 +218,48 @@
   (lines ~ push! "  items | d=256  d=1024 d=4096")
   (lines ~ push! "  ------+---------------------")
 
-  (var li 0.0)
-  (while (< li (+ 0.0 (loads ~ size)))
-    (var m loads/%li)
-    (var cells "")
-    (var di 0.0)
-    (while (< di (+ 0.0 (dims ~ size)))
-      (var dim dims/%di)
-      (var sp (new_space dim 42.0))
-      (var book (codebook sp dim codebook_size))
+  # Computed **column by column**, so each dimension's 256-atom codebook is
+  # built once rather than once per load row. The table is printed row by row,
+  # so the cells are collected into a flat list indexed `di * loads + li` and
+  # read back transposed — a flat `(List Str)` because a list of lists is more
+  # type than this needs, and because `push!` is the only list mutation both
+  # backends have.
+  #
+  # This is the same regeneration bug `src/codebook.gene` exists for: the inner
+  # codebook depends on the dimension alone, and rebuilding it per row cost 18
+  # sweeps of 256 atoms where 3 were needed.
+  (var nloads (+ 0.0 (loads ~ size)))
+  (var ndims (+ 0.0 (dims ~ size)))
+  (var cells : (List Str) [])
+  (var di 0.0)
+  (while (< di ndims)
+    (var dim dims/%di)
+    (var sp (new_space dim 42.0))
+    (var book (codebook sp dim codebook_size))
+    (var li 0.0)
+    (while (< li nloads)
+      (var m loads/%li)
       (var total 0.0)
       (var t 0.0)
       (while (< t 3.0)
         (set total (+ total (bundle_recall sp book dim m (* t 11.0))))
         (set t (+ t 1.0)))
-      (set cells $"${cells}  $(pct (/ total 3.0)) ")
-      (set di (+ di 1.0)))
-    (lines ~ push! $"  $(pad_num m 5.0) |${cells}")
-    (set li (+ li 1.0)))
+      (cells ~ push! (pct (/ total 3.0)))
+      (set li (+ li 1.0)))
+    (set di (+ di 1.0)))
+
+  (var row 0.0)
+  (while (< row nloads)
+    (var m loads/%row)
+    (var text "")
+    (var col 0.0)
+    (while (< col ndims)
+      (var idx (+ (* col nloads) row))
+      (var cell cells/%idx)
+      (set text $"${text}  ${cell} ")
+      (set col (+ col 1.0)))
+    (lines ~ push! $"  $(pad_num m 5.0) |${text}")
+    (set row (+ row 1.0)))
 
   (lines ~ push! "")
   (lines ~ push! "member-vs-stranger margin, bundle of m at d=1024")

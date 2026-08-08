@@ -19,6 +19,7 @@
 
 (import [VsaSpace] from "../space.gene")
 (import [MapSpace new_space] from "../backends/map.gene")
+(import [Codebook atom_ref] from "../codebook.gene")
 (import [role_name position_name head_name value_name]
         from "./summary.gene")
 
@@ -70,50 +71,64 @@
 # The default depth is 3, measured by gate G3: payload similarity is 71/58/50/44%
 # at depths 1..4, and the decay is independent of dimension, so this is a
 # structural limit rather than one a bigger space fixes.
-(fn encode_node [space node depth out]
-  (var dim (space ~ VsaSpace:dimension))
-  (var scratch ($buffer F64 dim))
-  (var role ($buffer F64 dim))
-  (var filler ($buffer F64 dim))
+(fn encode_node [book node depth out]
+  (var space book/space)
+  (var dim book/dim)
+  # `pair` is the only buffer this call owns and the only one it writes. Roles
+  # and leaf fillers are borrowed from the codebook, and a nested child's vector
+  # is allocated by `encode_value` rather than cleared here.
   (var pair ($buffer F64 dim))
 
   # head
-  (space ~ VsaSpace:atom (head_name) role)
-  (space ~ VsaSpace:atom (value_name (leaf_name node/head)) filler)
-  (space ~ VsaSpace:bind role filler pair)
+  (var head_role (atom_ref book (head_name)))
+  (var head_v (atom_ref book (value_name (leaf_name node/head))))
+  (space ~ VsaSpace:bind head_role head_v pair)
   (space ~ VsaSpace:bundle_into pair out)
 
   # props, lowered to relations
   (for entry in (normalize_props node)
-    (space ~ VsaSpace:atom (role_name entry/0) role)
-    (encode_value space entry/1 (- depth 1.0) filler scratch)
+    (var role (atom_ref book (role_name entry/0)))
+    (var filler (encode_value book entry/1 (- depth 1.0)))
     (space ~ VsaSpace:bind role filler pair)
     (space ~ VsaSpace:bundle_into pair out))
 
   # body, by position
   (var i 0.0)
   (for item in node/body
-    (space ~ VsaSpace:atom (position_name i) role)
-    (encode_value space item (- depth 1.0) filler scratch)
+    (var role (atom_ref book (position_name i)))
+    (var filler (encode_value book item (- depth 1.0)))
     (space ~ VsaSpace:bind role filler pair)
     (space ~ VsaSpace:bundle_into pair out)
     (set i (+ i 1.0)))
   nil)
 
-(fn encode_value [space v depth out scratch]
-  (var dim (space ~ VsaSpace:dimension))
-  (var i 0.0)
-  (while (< i dim)
-    (out ~ set! i 0.0)
-    (set i (+ i 1.0)))
+# The encoded value, **returned rather than written into a caller's buffer**.
+#
+# This is the one place the package departs from §3.3, and it is departed from
+# for a measured reason. The previous shape took an `out` and cleared it on
+# entry, because a nested node bundles into it. Clearing a D=512 buffer in a
+# Gene loop costs 267 us; allocating a fresh one costs 4.5 us, because the
+# allocator hands back zeroed memory and the loop does not — so the clear was
+# 59x the thing it replaced. And in the *leaf* case, which is most props, the
+# clear was pure waste: the atom overwrote every component anyway.
+#
+# §3.3's argument is about memory — a returning `bind` would allocate 64 MB to
+# bundle a thousand observations — and it still holds for the algebra. Here the
+# nested case allocates exactly one buffer either way, and the leaf case now
+# allocates none at all.
+#
+# **The result may be borrowed.** For a leaf it is the codebook's own atom, so
+# callers read it and never write it; `encode_node` only ever passes it as an
+# input to `bind`.
+(fn encode_value [book v depth]
   (if (&& (is_node v) (> depth 0.0))
-    (encode_node space v depth out)
+    (do (var out ($buffer F64 book/dim))
+        (encode_node book v depth out)
+        out)
     # A leaf, or a node past the depth limit. Past the limit the node is
     # represented by the *name of its head* — a reference, not its contents —
     # which is what keeps a deep tree from spending the whole vector.
-    (space ~ VsaSpace:atom (value_name (leaf_name (if (is_node v) v/head v)))
-            out))
-  nil)
+    (atom_ref book (value_name (leaf_name (if (is_node v) v/head v))))))
 
 # --- gate G4: the relational codec, for comparison ---------------------------
 #
@@ -126,47 +141,43 @@
 # §11.2's criterion: the direct codec replaces the reference only if it is at
 # least 2x faster to encode at equal top-1 accuracy. Both are here so that is
 # measurable rather than asserted.
-(fn encode_node_relational [space node depth out]
-  (var dim (space ~ VsaSpace:dimension))
-  (var scratch ($buffer F64 dim))
-  (var role ($buffer F64 dim))
-  (var filler ($buffer F64 dim))
+(fn encode_node_relational [book node depth out]
+  (var space book/space)
+  (var dim book/dim)
   (var pair ($buffer F64 dim))
   (var kv ($buffer F64 dim))
 
-  (space ~ VsaSpace:atom (head_name) role)
-  (space ~ VsaSpace:atom (value_name (leaf_name node/head)) filler)
-  (space ~ VsaSpace:bind role filler pair)
+  (var head_role (atom_ref book (head_name)))
+  (var head_v (atom_ref book (value_name (leaf_name node/head))))
+  (space ~ VsaSpace:bind head_role head_v pair)
   (space ~ VsaSpace:bundle_into pair out)
 
   # Each prop becomes `(prop k v)`: bind PROP to the key, bind that to the
   # value. Three atoms and two binds where the direct form uses two and one.
-  (var prop_marker ($buffer F64 dim))
-  (space ~ VsaSpace:atom (value_name "prop") prop_marker)
+  (var prop_marker (atom_ref book (value_name "prop")))
   (for entry in (normalize_props node)
-    (space ~ VsaSpace:atom (role_name entry/0) role)
+    (var role (atom_ref book (role_name entry/0)))
     (space ~ VsaSpace:bind prop_marker role kv)
-    (encode_value space entry/1 (- depth 1.0) filler scratch)
+    (var filler (encode_value book entry/1 (- depth 1.0)))
     (space ~ VsaSpace:bind kv filler pair)
     (space ~ VsaSpace:bundle_into pair out))
 
   (var i 0.0)
   (for item in node/body
-    (space ~ VsaSpace:atom (position_name i) role)
-    (encode_value space item (- depth 1.0) filler scratch)
+    (var role (atom_ref book (position_name i)))
+    (var filler (encode_value book item (- depth 1.0)))
     (space ~ VsaSpace:bind role filler pair)
     (space ~ VsaSpace:bundle_into pair out)
     (set i (+ i 1.0)))
   nil)
 
 # The relational form's query: rebuild `bind(PROP, role)` and unbind by it.
-(fn query_role_relational [space record role out]
-  (var dim (space ~ VsaSpace:dimension))
-  (var prop_marker ($buffer F64 dim))
-  (var role_v ($buffer F64 dim))
+(fn query_role_relational [book record role out]
+  (var space book/space)
+  (var dim book/dim)
   (var kv ($buffer F64 dim))
-  (space ~ VsaSpace:atom (value_name "prop") prop_marker)
-  (space ~ VsaSpace:atom (role_name role) role_v)
+  (var prop_marker (atom_ref book (value_name "prop")))
+  (var role_v (atom_ref book (role_name role)))
   (space ~ VsaSpace:bind prop_marker role_v kv)
   (space ~ VsaSpace:unbind record kv out)
   nil)

@@ -10,6 +10,7 @@
 
 (import [VsaSpace CleanupMemory] from "../src/space.gene")
 (import [MapSpace new_space] from "../src/backends/map.gene")
+(import [Codebook new_codebook verify_intact] from "../src/codebook.gene")
 (import [LinearMemory new_memory remember_atoms] from "../src/memory/linear.gene")
 (import [query_role concept_of value_name] from "../src/codec/summary.gene")
 (import [encode_node encode_node_relational query_role_relational
@@ -27,6 +28,7 @@
   (var lines [])
   (var f 0.0)
   (var s (new_space dim 42.0))
+  (var book (new_codebook s))
 
   # --- §6.1 normalization ----------------------------------------------------
 
@@ -40,12 +42,12 @@
   # --- the round trip through a real node ------------------------------------
 
   (var vocab (new_memory s))
-  (remember_atoms vocab (node_vocabulary node 3.0))
+  (remember_atoms book vocab (node_vocabulary node 3.0))
   (var vec ($buffer F64 dim))
-  (encode_node s node 3.0 vec)
+  (encode_node book node 3.0 vec)
 
   (var got ($buffer F64 dim))
-  (query_role s vec "city" got)
+  (query_role book vec "city" got)
   (set f (+ f (ok lines "a role query on an encoded node recovers its filler"
                   (== (concept_of (vocab ~ CleanupMemory:nearest got floor))
                       "Raleigh"))))
@@ -54,9 +56,9 @@
 
   (var nested (quote (person ^name "Alice" (address ^city "Durham"))))
   (var nvocab (new_memory s))
-  (remember_atoms nvocab (node_vocabulary nested 3.0))
+  (remember_atoms book nvocab (node_vocabulary nested 3.0))
   (var nvec ($buffer F64 dim))
-  (encode_node s nested 3.0 nvec)
+  (encode_node book nested 3.0 nvec)
 
   # Position 0 of the body is the address subtree. Unbinding by that position
   # gives the subtree's own vector, which still carries its head.
@@ -67,7 +69,7 @@
   # the child's own fields are no longer reachable. That is §6.2's rule applied
   # one level down, and it is what keeps a deep tree from spending the vector.
   (var shallow ($buffer F64 dim))
-  (encode_node s nested 0.0 shallow)
+  (encode_node book nested 0.0 shallow)
   (set f (+ f (ok lines "depth 0 encodes a child by reference, not contents"
                   (< (s ~ VsaSpace:similarity shallow nvec) 0.95))))
 
@@ -93,7 +95,7 @@
 
   (var g4 (quote (person ^name "Alice" ^city "Raleigh" ^topic "AI")))
   (var g4vocab (new_memory s))
-  (remember_atoms g4vocab (node_vocabulary g4 3.0))
+  (remember_atoms book g4vocab (node_vocabulary g4 3.0))
   # The relational codec materializes `prop` as a concept, so the cleanup
   # memory has to know it or the relational query has nothing to resolve to.
   (var prop_vec ($buffer F64 dim))
@@ -102,17 +104,17 @@
 
   (var direct ($buffer F64 dim))
   (var relational ($buffer F64 dim))
-  (encode_node s g4 3.0 direct)
-  (encode_node_relational s g4 3.0 relational)
+  (encode_node book g4 3.0 direct)
+  (encode_node_relational book g4 3.0 relational)
 
   (var hits_direct 0.0)
   (var hits_rel 0.0)
   (for role in ["name" "city" "topic"]
-    (query_role s direct role got)
+    (query_role book direct role got)
     (if (== (concept_of (g4vocab ~ CleanupMemory:nearest got floor))
             (expected_for role))
       (set hits_direct (+ hits_direct 1.0)))
-    (query_role_relational s relational role got)
+    (query_role_relational book relational role got)
     (if (== (concept_of (g4vocab ~ CleanupMemory:nearest got floor))
             (expected_for role))
       (set hits_rel (+ hits_rel 1.0))))
@@ -143,9 +145,9 @@
   (var va ($buffer F64 dim))
   (var vs ($buffer F64 dim))
   (var vg ($buffer F64 dim))
-  (encode_node s add 3.0 va)
-  (encode_node s sub 3.0 vs)
-  (encode_node s greet 3.0 vg)
+  (encode_node book add 3.0 va)
+  (encode_node book sub 3.0 vs)
+  (encode_node book greet 3.0 vg)
 
   (var sim_same_shape (s ~ VsaSpace:similarity va vs))
   (var sim_diff_shape (s ~ VsaSpace:similarity va vg))
@@ -155,6 +157,13 @@
                   (> (s ~ VsaSpace:similarity va va) 0.999))))
   (set f (+ f (ok lines "G7: and same-shape similarity is a real signal, not noise"
                   (> sim_same_shape 0.3))))
+
+  # The node codecs borrow every role and every leaf filler from the codebook
+  # and write only into buffers they own. If that ever stops being true this is
+  # the assertion that says so — see `tests/codec.gene` for the same check on
+  # the portable half.
+  (set f (+ f (ok lines "the codebook survives every encode above unwritten"
+                  (== (verify_intact book) 0.0))))
 
   (lines ~ push! "")
   (lines ~ push! (if (== f 0.0)
