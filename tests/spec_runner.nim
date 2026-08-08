@@ -3676,6 +3676,55 @@ suite "spec — sequence indexing by integral Float (§7.4)":
     check_runtime_error("(var b ($buffer F64 3.0)) (b ~ set! -9.0 1.0)",
                         "Buffer/set! index out of range")
 
+suite "spec — bulk buffer moves":
+  # `fill!` and `copy_from!` are not conveniences over a `set!` loop; they do
+  # less work. The loop re-checks the element type and re-decodes the index once
+  # per element and pays an interpreter dispatch for each, where these check
+  # once and then move elements — measured at D=512, 348x for the fill and 150x
+  # for the copy. Both are emitted as `TypedArray.fill` / `.set` in the web
+  # profile, so the same source is bulk on both backends.
+  test "fill! writes a whole buffer, or a half-open range of one":
+    check_eval("(var b ($buffer F64 4.0)) (b ~ fill! 7.0) (b ~ to_list)",
+               "[7.0 7.0 7.0 7.0]")
+    check_eval("(var b ($buffer F64 4.0)) (b ~ fill! 7.0 1.0 3.0) (b ~ to_list)",
+               "[0.0 7.0 7.0 0.0]")
+    check_eval("(var b ($buffer F64 4.0)) (b ~ fill! 7.0 2.0 2.0) (b ~ to_list)",
+               "[0.0 0.0 0.0 0.0]")
+  test "fill! checks the element once, against the buffer's type":
+    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ fill! \"x\")",
+                        "Buffer/fill! item")
+  test "copy_from! copies a whole buffer only into an equal-length one":
+    check_eval("(var a ($buffer F64 3.0)) (a ~ fill! 5.0) " &
+               "(var b ($buffer F64 3.0)) (b ~ copy_from! a) (b ~ to_list)",
+               "[5.0 5.0 5.0]")
+    check_runtime_error("(var a ($buffer F64 2.0)) (var b ($buffer F64 3.0)) " &
+                        "(b ~ copy_from! a)",
+                        "equal lengths")
+  test "copy_from! takes a source range and a destination offset":
+    check_eval("(var a ($buffer F64 4.0)) (a ~ fill! 1.0 0.0 2.0) " &
+               "(a ~ fill! 2.0 2.0 4.0) " &
+               "(var b ($buffer F64 4.0)) (b ~ copy_from! a 2.0 4.0 1.0) " &
+               "(b ~ to_list)",
+               "[0.0 2.0 2.0 0.0]")
+    check_runtime_error("(var a ($buffer F64 4.0)) (var b ($buffer F64 4.0)) " &
+                        "(b ~ copy_from! a 0.0 4.0 2.0)",
+                        "do not fit")
+  test "copy_from! onto itself moves rather than smears":
+    # A forward loop would read slots it had already written and repeat the
+    # first two elements down the buffer. The VM picks the copy direction and
+    # the web profile inherits the same guarantee from `TypedArray.set`, which
+    # is specified to clone when source and destination share a buffer.
+    check_eval("(var a ($buffer F64 6.0)) " &
+               "(var i 0.0) (while (< i 6.0) (a ~ set! i (+ i 1.0)) " &
+               "  (set i (+ i 1.0))) " &
+               "(a ~ copy_from! a 0.0 4.0 2.0) (a ~ to_list)",
+               "[1.0 2.0 1.0 2.0 3.0 4.0]")
+  test "a range endpoint past the end is an error, not a clamp":
+    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ fill! 1.0 0.0 9.0)",
+                        "range endpoint is out of range")
+    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ fill! 1.0 2.0 1.0)",
+                        "before start")
+
 suite "spec — loop body scoping from design (§9)":
   test "a var in a loop body is one declaration run many times":
     # `for` always worked; `while`, `loop`, and `repeat` share one scope on the

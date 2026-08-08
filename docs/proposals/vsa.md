@@ -211,15 +211,29 @@ Callers that need a temporary pass a scratch buffer. A space should offer a
 small pool rather than making every caller invent one.
 
 **The memory argument is the whole argument, and it does not extend to time.**
-Measured at D=512: allocating a fresh `($buffer F64 512)` costs **4.5 us**, and
-clearing an existing one in a Gene loop costs **267 us** — the allocator returns
-zeroed memory and the loop does not, so reuse is *59x slower* than allocation
-whenever the reused buffer has to be cleared first. Recycling a buffer is worth
-it only when the next writer overwrites every component; when the next step
-accumulates into it, take the fresh one. `examples/vsa`'s `encode_value` is the
-case in point and is the one place in that package which returns a buffer
-instead of filling a caller's — it allocates exactly one either way, and the
-version that cleared was paying 267 us to avoid 4.5 us.
+Reuse only pays if clearing the reused buffer is cheap, and whether it is
+depends on the primitive available — which is why this paragraph has held two
+opposite conclusions and the second one is the durable one.
+
+Measured at D=512, three ways to obtain a zeroed buffer:
+
+| clear it with a `set!` loop | 160 us |
+| allocate a fresh one | 2.5 us |
+| clear it with `Buffer/fill!` | **0.5 us** |
+
+Against an interpreted clearing loop, allocation wins by 60x — the allocator
+returns zeroed memory and the loop does not. That was the state of things
+before `fill!` existed, and it made "just allocate" the right advice. With
+`fill!` the comparison inverts: clearing is 5x cheaper than allocating, and
+reuse is right again. The lesson is not either answer but that *an interpreted
+per-element loop is not the cost of the operation it spells* — it is the cost
+of interpreting, and the fix is usually a bulk primitive rather than a
+different allocation strategy.
+
+`examples/vsa`'s `encode_value` is the one place in that package that returns a
+buffer instead of filling a caller's, and after this it keeps that shape for a
+different reason than it acquired it: not to dodge a clear, but so a leaf can
+return the codebook's interned atom and touch no buffer at all.
 
 ### 3.3.1 Output aliasing
 
@@ -393,6 +407,12 @@ output buffer. Borrowing is a real hazard of the same family as §3.3.1's
 self-aliased `permute`: a caller that writes through a borrowed atom corrupts
 every later encode and nothing raises. That is what `verify_intact` is for, and
 both spec suites run it after a full round trip.
+
+The 0.40 ms middle row was a per-element copy loop and is now a
+`Buffer/copy_from!`, which cut it by roughly 150x. The gap between copying and
+borrowing is therefore much narrower than the table's ratios suggest, and
+`atom_into` is no longer something to route around — but a borrow is still
+free, so the codecs keep using it.
 
 ---
 
@@ -716,8 +736,8 @@ would otherwise hard-code.
   different vectors rather than the same encoding spelled twice.
 
   **Measured, and the criterion is not met.** 400 encodes of a 3-prop node at
-  D=512, startup subtracted: direct **4.85 ms/encode**, relational
-  **6.59 ms/encode** — a ratio of **1.36×**, short of the 2× §11.2 requires.
+  D=512, startup subtracted: direct **3.41 ms/encode**, relational
+  **4.45 ms/encode** — a ratio of **1.31×**, short of the 2× §11.2 requires.
   The direct form does two atoms and one bind per prop against the relational
   form's three and two, so it *is* cheaper, but not by the margin that would
   justify making the optimized form normative. **The relational codec stays the
@@ -727,11 +747,13 @@ would otherwise hard-code.
   and that number was close to meaningless: 95% of both figures was atom
   generation, which the two codecs pay identically, so the measurement was
   mostly of a cost neither codec was responsible for. §5.1's interning removed
-  it — encodes got **11.5× faster** and the ratio moved to 1.36×, which is now
-  a comparison of the codecs rather than of the generator. The verdict is
-  unchanged, but only the second number was ever evidence for it. A ratio taken
-  over a workload dominated by a shared cost is a measurement of the shared
-  cost, and it will sit near 1.0 whatever the two things being compared do.
+  it — the ratio moved to 1.36× — and later VM work on tag decoding and bulk
+  buffer moves took the encode itself from 56.0 to **3.41 ms, 16.4× the
+  original**, settling the ratio at 1.31×. Only the last of those three numbers
+  is a comparison of the codecs; the first was a comparison of the generator
+  with itself. A ratio taken over a workload dominated by a shared cost is a
+  measurement of the shared cost, and it will sit near 1.0 whatever the two
+  things being compared do.
 - **G5 — associative index. ✅ Shipped, at three records rather than
   thousands.** A 2-of-3 partial query finds its record, so does 1-of-3, and a
   query mixing fields from two records **declines** at a high floor rather than

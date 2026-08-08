@@ -104,18 +104,19 @@
 
 # The encoded value, **returned rather than written into a caller's buffer**.
 #
-# This is the one place the package departs from §3.3, and it is departed from
-# for a measured reason. The previous shape took an `out` and cleared it on
-# entry, because a nested node bundles into it. Clearing a D=512 buffer in a
-# Gene loop costs 267 us; allocating a fresh one costs 4.5 us, because the
-# allocator hands back zeroed memory and the loop does not — so the clear was
-# 59x the thing it replaced. And in the *leaf* case, which is most props, the
-# clear was pure waste: the atom overwrote every component anyway.
+# This is the one place the package departs from §3.3, and the reason is the
+# leaf case rather than the nested one. The previous shape took an `out` and
+# cleared it on entry because a nested node bundles into it — but most props
+# are leaves, and for a leaf the clear was pure waste: the atom overwrote every
+# component anyway. Returning lets a leaf hand back the codebook's own atom and
+# touch no buffer at all.
 #
-# §3.3's argument is about memory — a returning `bind` would allocate 64 MB to
-# bundle a thousand observations — and it still holds for the algebra. Here the
-# nested case allocates exactly one buffer either way, and the leaf case now
-# allocates none at all.
+# The nested branch still allocates, and that is now the *more* expensive of
+# the two ways to get a zeroed buffer: since `Buffer/fill!` landed, clearing
+# 512 elements costs 0.5 us against 2.5 us to allocate. It stays an allocation
+# because recursion needs a distinct buffer per level anyway, so a scratch
+# would have to be allocated per level to be safe. Two microseconds, on the
+# rare path, to keep the recursion obviously correct.
 #
 # **The result may be borrowed.** For a leaf it is the codebook's own atom, so
 # callers read it and never write it; `encode_node` only ever passes it as an

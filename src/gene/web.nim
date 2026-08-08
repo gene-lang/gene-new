@@ -1722,7 +1722,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, params: params, returnType: returnType, loc: loc)
     if methodDecl == nil and receiver.typ.kind == wtkBuffer and
-        messageName in ["get", "set!", "len"]:
+        messageName in ["get", "set!", "len", "fill!", "copy_from!"]:
       # Index and length are F64, matching `List/size` just above and the VM's
       # widened `Buffer/get`/`set!`. An Int index would be a `bigint` here, so
       # every element access in a mesh-building loop would allocate one — the
@@ -1736,13 +1736,31 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       let element =
         if bufferElementIsFloat(receiver.typ.name): webType(wtkF64)
         else: webType(wtkInt)
+      # `fill!` and `copy_from!` are the two arity-varying messages here: the
+      # bare form addresses the whole buffer and the long form takes a
+      # half-open range. Rather than declare two methods, the parameter list is
+      # built from the arity actually written, and the arity check below then
+      # rejects anything that is neither.
+      let argc = value.body.len - 2
+      template bound(n: string): WebParam =
+        WebParam(sourceName: n, emittedName: n, typ: webType(wtkF64), loc: loc)
       let params = case messageName
-        of "get": @[WebParam(sourceName: "index", emittedName: "index",
-                             typ: webType(wtkF64), loc: loc)]
-        of "set!": @[WebParam(sourceName: "index", emittedName: "index",
-                              typ: webType(wtkF64), loc: loc),
+        of "get": @[bound("index")]
+        of "set!": @[bound("index"),
                      WebParam(sourceName: "item", emittedName: "item",
                               typ: element, loc: loc)]
+        of "fill!":
+          let item = WebParam(sourceName: "item", emittedName: "item",
+                              typ: element, loc: loc)
+          if argc == 3: @[item, bound("start"), bound("end")]
+          else: @[item]
+        of "copy_from!":
+          let src = WebParam(sourceName: "source", emittedName: "source",
+                             typ: receiver.typ, loc: loc)
+          if argc == 4:
+            @[src, bound("source_start"), bound("source_end"),
+              bound("dest_start")]
+          else: @[src]
         else: newSeq[WebParam]()
       let returnType = case messageName
         of "get": element
@@ -4565,6 +4583,24 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
             ".length, " & arguments[0] & ")] = " & written & ", undefined)"
         return "($gene_put(" & target & ", " & arguments[0] & ", " & written &
           ", \"Buffer/set!\"), undefined)"
+      of "fill!":
+        # `TypedArray.prototype.fill(value, start, end)` is the same half-open
+        # range this message declares, so the bulk write is the runtime's own.
+        let written = if bufferElementIsFloat(element): arguments[0]
+                      else: "Number(" & arguments[0] & ")"
+        if arguments.len == 3:
+          return "(" & target & ".fill(" & written & ", " & arguments[1] &
+            ", " & arguments[2] & "), undefined)"
+        return "(" & target & ".fill(" & written & "), undefined)"
+      of "copy_from!":
+        # `set` with a `subarray` view, which the spec requires to behave as a
+        # move when the two share a buffer — the same overlap guarantee
+        # `copyBufferItems` gives on the VM.
+        if arguments.len == 4:
+          return "(" & target & ".set(" & arguments[0] & ".subarray(" &
+            arguments[1] & ", " & arguments[2] & "), " & arguments[3] &
+            "), undefined)"
+        return "(" & target & ".set(" & arguments[0] & "), undefined)"
       else: discard
     if expr.keys.len == 2 and expr.keys[1] == "$builtin":
       return expr.keys[0] & "(" & receiver &

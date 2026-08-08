@@ -373,6 +373,23 @@ proc main() =
     let v = run(bufferChunk, bufferScope)
     checksum = checksum + int(v.floatVal)
 
+  # The write side, which is the more expensive half and was unmeasured.
+  # `examples/vsa` is built almost entirely out of this loop: every algebra
+  # operation is `dim` reads and `dim` writes, so a regression in `Buffer/set!`
+  # is a regression in that whole package.
+  let bufferWriteScope = newGlobalScope()
+  discard run(compileSource(
+    "(var wbuf ($buffer F64 4096.0)) " &
+    "(var fill (fn [] " &
+    "  (var i 0.0) " &
+    "  (while (< i 4096.0) " &
+    "    (do (wbuf ~ set! i 1.0) (set i (+ i 1.0)))) " &
+    "  i))"), bufferWriteScope)
+  let bufferWriteChunk = compileSource("(fill)")
+  bench("vm.buffer_fill_4096.compiled_chunk", 200, i):
+    let v = run(bufferWriteChunk, bufferWriteScope)
+    checksum = checksum + int(v.floatVal)
+
   let globalFourScope = newGlobalScope()
   globalFourScope.define("sum4",
     run(compileSource("(fn [a b c d] (+ (+ a b) (+ c d)))"), globalFourScope))

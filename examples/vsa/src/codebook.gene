@@ -144,18 +144,19 @@
   vecs/%i)
 
 # **Copy**, for a caller that owns `out` and is going to write to it. The §3.3
-# shape, memoized — 15.5x rather than 763x, because a D-element copy is most of
-# what is left once generation is gone.
+# shape, memoized.
+#
+# `copy_from!` rather than a `set!` loop: the loop was the other 98% of a cached
+# atom, and the bulk move is ~150x it because the element type is checked once
+# for the buffer instead of once per component. That closes most of the gap
+# between this and `atom_ref` — the borrow is still free, but copying is no
+# longer the reason to avoid it.
 (fn atom_into [book : Codebook name : Str out : (Buffer F64)] : Nil
   (check_len out book/dim "codebook/atom_into")
   (var i (intern book name))
   (var vecs book/vecs)
   (var src vecs/%i)
-  (var dim book/dim)
-  (var j 0.0)
-  (while (< j dim)
-    (out ~ set! j (src ~ get j))
-    (set j (+ j 1.0)))
+  (out ~ copy_from! src)
   nil)
 
 (fn codebook_size [book : Codebook] : F64 (+ 0.0 (book/names ~ size)))

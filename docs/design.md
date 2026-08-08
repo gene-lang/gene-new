@@ -3490,6 +3490,36 @@ Mutable containers use explicit mutating operations, conventionally named with `
 inserted value. It stores `nil` when given `void`. Use it for owned local
 accumulators; repeated copy-and-append growth is quadratic.
 
+A `Buffer` additionally has two **bulk** mutations, and they are not sugar over
+a `set!` loop — they do strictly less work:
+
+```gene
+(b ~ fill! 0.0)
+(b ~ fill! 0.0 start end)
+(dst ~ copy_from! src)
+(dst ~ copy_from! src source_start source_end dest_start)
+```
+
+The bare forms address the whole buffer; the long forms take a half-open
+`[start, end)` range, and `copy_from!`'s last argument is the offset written to
+in the destination.
+
+Writing `n` elements one `set!` at a time re-validates the element type `n`
+times, re-decodes the index `n` times, and pays one interpreter dispatch per
+element. `fill!` checks its value **once** — the element boundary is a property
+of the value, not of the slot — and `copy_from!` skips the check entirely when
+the two buffers share an element type, because every element of the source
+already satisfied that identical boundary on the way in. Measured at 512
+elements: 348x for the fill, 150x for the copy. The web profile emits
+`TypedArray.fill` and `TypedArray.set`, so the same source is bulk on both
+backends.
+
+Range endpoints are half-open, so `end - start` is the count. An endpoint past
+the end of the buffer, or an `end` before its `start`, raises — a wrong bound
+is a mistake rather than a request to clamp. `copy_from!` onto the same buffer
+**moves** rather than smears: overlapping ranges copy in the safe direction, so
+shifting a buffer along itself is well defined.
+
 For a typed instance, `set_prop!` accepts only declared properties and checks
 the declared field type before changing the value. Removing a required field
 with `void` is an error; `void` still removes an optional or untyped property.

@@ -132,13 +132,10 @@
   (var cur ($buffer F64 dim))
   (var tmp ($buffer F64 dim))
   (space ~ VsaSpace:atom "payload" payload)
-  (var i 0.0)
-  (while (< i dim)
-    (cur ~ set! i (payload ~ get i))
-    (set i (+ i 1.0)))
+  (cur ~ copy_from! payload)
   # Down: at each level bind by that level's role, then superpose a sibling
   # subtree — a node with one child and nothing else would never lose anything.
-  (set i 0.0)
+  (var i 0.0)
   (while (< i depth)
     (space ~ VsaSpace:atom $"role${i}" role)
     (space ~ VsaSpace:bind cur role tmp)
@@ -153,10 +150,7 @@
   (while (> d -1.0)
     (space ~ VsaSpace:atom $"role${d}" role)
     (space ~ VsaSpace:unbind cur role tmp)
-    (var j 0.0)
-    (while (< j dim)
-      (cur ~ set! j (tmp ~ get j))
-      (set j (+ j 1.0)))
+    (cur ~ copy_from! tmp)
     (set d (- d 1.0)))
   (space ~ VsaSpace:similarity cur payload))
 

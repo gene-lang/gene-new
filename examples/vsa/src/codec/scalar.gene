@@ -61,10 +61,11 @@
   # `floor` is exact, which is what keeps two runtimes encoding 21.5 degrees
   # identically.
   (var cut ($math/floor (+ (* (position e x) dim) 0.5)))
-  (var i 0.0)
-  (while (< i dim)
-    (out ~ set! i (if (< i cut) (lo ~ get i) (hi ~ get i)))
-    (set i (+ i 1.0)))
+  # A thermometer code is literally two ranges, so it is two bulk copies rather
+  # than a per-component choice: `lo` below the threshold, `hi` from it up.
+  # `decode_number` calls this once per probe step, which is where it pays.
+  (out ~ copy_from! lo 0.0 cut 0.0)
+  (out ~ copy_from! hi cut dim cut)
   nil)
 
 # The inverse, by search. There is no closed form — the encoding is a threshold,

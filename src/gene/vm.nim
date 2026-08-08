@@ -1330,7 +1330,12 @@ proc typeExprLabel(expr: Value): string
 # Built-in functions
 # ---------------------------------------------------------------------------
 
-proc isNumber(v: Value): bool = v.kind == vkInt or v.kind == vkFloat
+proc isNumber(v: Value): bool {.inline, raises: [].} =
+  # One `kind` call, not two. This sits in `tryFastNativeKind2`, so the old
+  # spelling decoded the tag twice per operand on every arithmetic instruction
+  # the interpreter executes.
+  let k = v.kind
+  k == vkInt or k == vkFloat
 proc toFloat(v: Value): float64 = (if v.kind == vkInt: v.intToFloat else: v.floatVal)
 proc isBareIntType(expr: Value): bool {.inline.} =
   expr.kind == vkSymbol and expr.symVal == "Int"
@@ -5111,6 +5116,96 @@ proc biBufferSetBang(args: openArray[Value],
   setCheckedBufferItem(args[0], int(requireBufferIndex("Buffer/set!", args[1])),
                        args[2], scope)
 
+# --- bulk element moves ------------------------------------------------------
+#
+# `fill!` and `copy_from!` exist because the loop they replace is not merely
+# slower — it is doing different work. Writing `n` elements one `Buffer/set!`
+# at a time re-validates the element type `n` times, re-decodes the index `n`
+# times, and pays a full interpreter dispatch per element; the bulk forms check
+# once and then move elements. `examples/vsa` is built almost entirely out of
+# these two shapes: clearing an accumulator, and copying an interned atom.
+#
+# Both take an optional range so a caller can address part of a buffer without
+# a second buffer to slice into. Endpoints are half-open `[start, end)`, which
+# is what `end - start` being the count requires, and out of range raises
+# rather than clamping — a wrong bound is a mistake, not a request.
+
+proc bufferBound(where: string, value: Value, limit: int): int =
+  let raw = requireBufferIndex(where, value)
+  if raw < 0 or raw > int64(limit):
+    raise newException(GeneError,
+      where & " range endpoint is out of range: " & $raw &
+      " (buffer has " & $limit & " elements)")
+  int(raw)
+
+proc biBufferFillBang(args: openArray[Value],
+                      call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2 and args.len != 4:
+    raise newException(GeneError,
+      "Buffer/fill! expects 2 or 4 arguments, got " & $args.len)
+  requireBuffer("Buffer/fill!", args[0])
+  rejectCallerEnvEscape("Buffer/fill!", args[1])
+  let scope = if call == nil: nil else: call.dispatchScope
+  # Checked once for the whole range — see `fillBufferItems`.
+  let item = escapeWeakFunctions(
+    checkedBufferItem(args[0], args[1], "Buffer/fill! item", scope))
+  let n = args[0].bufferLen
+  var first = 0
+  var last = n
+  if args.len == 4:
+    first = bufferBound("Buffer/fill!", args[2], n)
+    last = bufferBound("Buffer/fill!", args[3], n)
+    if last < first:
+      raise newException(GeneError,
+        "Buffer/fill!: end (" & $last & ") is before start (" & $first & ")")
+  fillBufferItems(args[0], first, last, item)
+  NIL
+
+proc biBufferCopyFromBang(args: openArray[Value],
+                          call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2 and args.len != 5:
+    raise newException(GeneError,
+      "Buffer/copy_from! expects 2 or 5 arguments, got " & $args.len)
+  requireBuffer("Buffer/copy_from!", args[0])
+  requireBuffer("Buffer/copy_from!", args[1])
+  let dstLen = args[0].bufferLen
+  let srcLen = args[1].bufferLen
+  var srcStart = 0
+  var srcEnd = srcLen
+  var dstStart = 0
+  if args.len == 5:
+    srcStart = bufferBound("Buffer/copy_from!", args[2], srcLen)
+    srcEnd = bufferBound("Buffer/copy_from!", args[3], srcLen)
+    dstStart = bufferBound("Buffer/copy_from!", args[4], dstLen)
+    if srcEnd < srcStart:
+      raise newException(GeneError,
+        "Buffer/copy_from!: end (" & $srcEnd & ") is before start (" &
+        $srcStart & ")")
+  elif srcLen != dstLen:
+    raise newException(GeneError,
+      "Buffer/copy_from!: whole-buffer copy needs equal lengths, but the " &
+      "destination has " & $dstLen & " and the source has " & $srcLen &
+      " — pass an explicit range to copy part of it")
+  if dstStart + (srcEnd - srcStart) > dstLen:
+    raise newException(GeneError,
+      "Buffer/copy_from!: " & $(srcEnd - srcStart) & " elements do not fit " &
+      "at offset " & $dstStart & " of a " & $dstLen & "-element buffer")
+  # When the two element types are the same value, every element of `src` has
+  # already satisfied `dst`'s boundary — it satisfied the identical one on the
+  # way into `src`. That is what lets the common case skip per-element
+  # validation entirely. Differing types fall back to checking each element,
+  # which is correct rather than fast.
+  let dstType = args[0].bufferElemType
+  let srcType = args[1].bufferElemType
+  if dstType.isAnyTypeValue or dstType.bits == srcType.bits:
+    copyBufferItems(args[0], dstStart, args[1], srcStart, srcEnd)
+  else:
+    let scope = if call == nil: nil else: call.dispatchScope
+    for k in 0 ..< srcEnd - srcStart:
+      let item = getCheckedBufferItem(args[1], srcStart + k)
+      discard setCheckedBufferItem(args[0], dstStart + k, item, scope)
+  NIL
+
 proc biBufferToList(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Buffer/to_list", args)
   requireBuffer("Buffer/to_list", args[0])
@@ -6369,6 +6464,10 @@ proc buildBuiltins(app: Application): Scope =
     "get": newNativeFn("Buffer/get", biBufferGet),
     "set!": newNativeCallFn("Buffer/set!", biBufferSetBang,
                             acceptsNamed = false),
+    "fill!": newNativeCallFn("Buffer/fill!", biBufferFillBang,
+                             acceptsNamed = false),
+    "copy_from!": newNativeCallFn("Buffer/copy_from!", biBufferCopyFromBang,
+                                  acceptsNamed = false),
     "to_list": newNativeFn("Buffer/to_list", biBufferToList),
     "to_bytes": newNativeFn("Buffer/to_bytes", biBufferToBytes),
     "elem_type": newNativeFn("Buffer/elem_type", biBufferElemType)})

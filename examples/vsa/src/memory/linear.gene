@@ -44,10 +44,7 @@
   (message remember [key : Str v : (Buffer F64)] : Nil
     (check_len v self/dim "remember")
     (var kept ($buffer F64 self/dim))
-    (var i 0.0)
-    (while (< i self/dim)
-      (kept ~ set! i (v ~ get i))
-      (set i (+ i 1.0)))
+    (kept ~ copy_from! v)
     (self/keys ~ push! key)
     (self/vecs ~ push! kept)
     # `push!` is the last thing this does, and in the web profile it lowers to

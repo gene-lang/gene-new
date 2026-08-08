@@ -130,22 +130,27 @@ Per operation at D=1024, and the reason `src/codebook.gene` exists:
 
 | op | ms | | op | ms |
 |---|---|---|---|---|
-| `atom`, generated | 11.70 | | `bundle_into` | 0.89 |
-| `permute` | 1.52 | | `similarity` | 0.78 |
-| `bind` | 0.91 | | `normalize` | 0.77 |
+| `atom`, generated | 8.92 | | `bundle_into` | 0.59 |
+| `permute` | 1.07 | | `similarity` | 0.53 |
+| `bind` | 0.60 | | `normalize` | 0.53 |
 
-`atom` was 13× everything else and 95% of an encode. Interning it (§5.1) moved
-the G4 encode from **56.0 to 4.85 ms**, `gene run codec` from **7.9 to 1.8 s**,
-and — after `bench/capacity.gene` stopped rebuilding its 256-atom codebook once
-per load row instead of once per dimension — the §9 sweep from **130 to 45 s**.
-Every reported number is byte-identical before and after; interning changes
-what is computed twice, not what is computed.
+`atom` is 15× everything else and was 95% of an encode. Interning it (§5.1)
+moved the G4 encode from **56.0 to 4.85 ms**; later VM work took it to
+**3.41 ms — 16.4× the original**. Across the same span `gene run codec` went
+**7.9 → 1.2 s** and the §9 sweep **130 → 33 s**, the latter also because
+`bench/capacity.gene` stopped rebuilding its 256-atom codebook once per load
+row instead of once per dimension. Every reported number is byte-identical
+throughout; none of this changes what is computed, only how often.
 
-Two things measured as *not* worth changing. Protocol dispatch costs 3%: a
-hand-inlined `bind` with no `VsaSpace` send and no `check_len` runs 0.88 ms
-against the real one's 0.91, so §4.2's indirection and §3.1.1's guard are both
-free. What is left is the element access itself — net of loop overhead, about
-440 ns per `Buffer/set!` and 300 ns per `get`, against 160 ns for a whole
-function call. A `sample` profile puts that in ORC refcount traffic and
-`kind()`'s thread-local tag read rather than in the array access, so the
-remaining headroom here is in the VM, not in this package.
+Two things measured as *not* worth changing. Protocol dispatch costs 5%: a
+hand-inlined `bind` with no `VsaSpace` send and no `check_len` runs 0.57 ms
+against the real one's 0.60, so §4.2's indirection and §3.1.1's guard are both
+free. What is left is element access — net of loop overhead, about 273 ns per
+`Buffer/set!` and 177 ns per `get`, against 106 ns for a whole function call.
+Those were 441/298/160 ns before the VM work; the remaining headroom is still
+in the VM rather than in this package, but it is now interpreter dispatch
+rather than the refcount and tag-decode traffic that used to dominate it.
+
+Where a whole buffer is being written, none of the above applies — use
+`fill!` and `copy_from!`, which are 348× and 150× the equivalent loop because
+they check the element type once instead of once per component.

@@ -1152,7 +1152,28 @@ proc mkImm(tag: uint64, payload = 0'u64): Value {.inline.} =
 proc boxPtr(tag: uint64, p: pointer): Value {.inline.} =
   Value(bits: (tag shl TAG_SHIFT) or (cast[uint64](p) and PAYLOAD_MASK))
 
-proc objData(v: Value): GeneObjectData {.inline.} =
+template objData(v: Value): GeneObjectData =
+  ## **A view, not a handle — and a `template` so that it stays one.**
+  ##
+  ## As a `proc` returning `GeneObjectData` this compiled to an owning `ref`:
+  ## the cast was assigned to `result`, so ORC emitted a `=dup` on the way out
+  ## and a matching `=destroy` — plus a `rememberCycle` root registration,
+  ## since these types are potentially cyclic — at every call site. `kind` is
+  ## the hottest read in the VM and goes through here, so every tag inspection
+  ## in the interpreter was paying a refcount round trip to look at one enum
+  ## field. A profile of a buffer-scan loop put ~20% of samples in that traffic.
+  ##
+  ## The retain was never buying anything. `v` is the owner: a boxed Value holds
+  ## the reference for as long as it is live, which is the invariant the whole
+  ## NaN-boxed layer already depends on. A template substitutes the cast at the
+  ## use site, so `objData(v).objKind` is the field read it always should have
+  ## been.
+  ##
+  ## The rule this creates for callers: **never outlive the `Value`.** Bind the
+  ## result only when the owning Value is plainly live across the binding, and
+  ## prefer `{.cursor.}` when you do — the hazard is the one already recorded
+  ## for cursor save/restore, where a view survives a reassignment of the field
+  ## that owned it.
   cast[GeneObjectData](cast[pointer](v.bits and PAYLOAD_MASK))
 
 proc boxObject(data: GeneObjectData): Value =
@@ -2141,7 +2162,7 @@ let
 proc isHeapBacked*(v: Value): bool {.inline.} =
   v.isManaged
 
-proc kind*(v: Value): ValueKind {.inline.} =
+proc kind*(v: Value): ValueKind {.inline, raises: [].} =
   if v.bits == 0: return vkNil
   let tag = v.bits shr TAG_SHIFT
   if tag < VOID_TAG: return vkFloat   # direct float (incl. +/-Inf, canonical NaN)
@@ -2175,7 +2196,14 @@ proc kind*(v: Value): ValueKind {.inline.} =
     of okSet: vkSet
     of okHashMap: vkHashMap
     of okEnv:
-      if EnvData(objData(v)).borrowed: vkCallerEnv else: vkEnv
+      # `cast`, not `EnvData(...)`. The checked downcast emits an
+      # `isObjDisplayCheck` that can `raiseObjectConversionError`, and one
+      # possible raise anywhere in this proc compiles *every* `kind` call — the
+      # hottest read in the VM — with the goto-exception preamble: a
+      # thread-local `nimErrorFlag()` load on entry plus a branch after each
+      # inner call. The `of okEnv` arm has already established the dynamic
+      # type, so the check can only ever succeed.
+      if cast[EnvData](objData(v)).borrowed: vkCallerEnv else: vkEnv
     of okCell: vkCell
     of okAtomicCell: vkAtomicCell
     of okStream: vkStream
@@ -3755,19 +3783,41 @@ proc cSliceMutable*(v: Value): bool =
 proc cSliceIsNull*(v: Value): bool =
   cSliceData(v).address == nil
 
-proc bufferData(v: Value): BufferData =
+# Buffer access is split into a *check* and a *view*, deliberately, and the
+# split is what makes it free.
+#
+# As one `bufferData(v)` proc this cost a `=dup`/`=destroy` pair per access —
+# ORC traffic on the innermost loop in the language, since every element read
+# and write goes through it. Folding the guard and the cast into a `template`
+# does not fix it either: a template whose body is a `block` yields a block
+# *expression*, which Nim assigns to a temporary, and the assignment is the
+# copy. Only a bare expression substitutes cleanly.
+#
+# So: `checkBuffer` is a statement, `bufferView` is an expression, and
+# `bufferView(v).items` compiles to the field read it reads as.
+
+template checkBuffer(v: Value) =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okBuffer:
     raise newException(FieldDefect, "value is not a Buffer")
-  BufferData(objData(v))
+
+template bufferView(v: Value): BufferData =
+  ## Only valid after `checkBuffer`. `cast` rather than `BufferData(...)`
+  ## because that conversion re-proves the tag with an `isObjDisplayCheck` and
+  ## carries a `raiseObjectConversionError` path the guard has already ruled
+  ## out. Non-owning, on the same terms as `objData`: `v` is the owner.
+  cast[BufferData](objData(v))
 
 proc bufferElemType*(v: Value): Value =
-  bufferData(v).elemType
+  checkBuffer(v)
+  bufferView(v).elemType
 
 proc bufferElemScope*(v: Value): Scope =
-  bufferData(v).elemScope
+  checkBuffer(v)
+  bufferView(v).elemScope
 
 proc bufferLen*(v: Value): int =
-  bufferData(v).items.len
+  checkBuffer(v)
+  bufferView(v).items.len
 
 proc bufferItems*(v: Value): lent seq[Value] =
   ## `lent`, and it is load-bearing rather than tidiness. Returning the seq by
@@ -3778,19 +3828,57 @@ proc bufferItems*(v: Value): lent seq[Value] =
   ##
   ## Callers that need their own copy still say so (`copyItems`), which is the
   ## right place for that decision to be visible.
-  bufferData(v).items
+  checkBuffer(v)
+  bufferView(v).items
 
 proc bufferItem*(v: Value, index: int): Value =
-  let data = bufferData(v)
+  checkBuffer(v)
+  let data {.cursor.} = bufferView(v)
   if index < 0 or index >= data.items.len:
     raise newException(FieldDefect, "buffer index out of range")
   data.items[index]
 
 proc setBufferItem*(v: Value, index: int, item: Value) =
-  let data = bufferData(v)
+  checkBuffer(v)
+  let data {.cursor.} = bufferView(v)
   if index < 0 or index >= data.items.len:
     raise newException(FieldDefect, "buffer index out of range")
   data.items[index] = escapeWeakFunctions(item)
+
+proc fillBufferItems*(v: Value, first, last: int, item: Value) =
+  ## Write one already-validated value across `[first, last)`.
+  ##
+  ## The element boundary is a property of the value, not of the slot, so the
+  ## caller checks `item` once and this writes it `last - first` times. That is
+  ## the entire reason a bulk fill can beat the equivalent loop by more than the
+  ## interpreter overhead it saves.
+  checkBuffer(v)
+  let data {.cursor.} = bufferView(v)
+  for i in first ..< last:
+    data.items[i] = item
+
+proc copyBufferItems*(dst: Value, dstStart: int,
+                      src: Value, srcStart, srcEnd: int) =
+  ## Copy `src[srcStart ..< srcEnd]` to `dst[dstStart ..< ]`.
+  ##
+  ## **Overlap-safe**, on `memmove` terms rather than `memcpy` terms: when the
+  ## two are the same buffer and the ranges overlap, a naive forward loop would
+  ## read slots it had already written. Shifting a buffer along itself is a
+  ## reasonable thing to ask for, so the direction is chosen instead of the
+  ## aliasing being refused.
+  checkBuffer(dst)
+  checkBuffer(src)
+  let d {.cursor.} = bufferView(dst)
+  let s {.cursor.} = bufferView(src)
+  let n = srcEnd - srcStart
+  if n <= 0:
+    return
+  if cast[pointer](d) == cast[pointer](s) and dstStart > srcStart:
+    for k in countdown(n - 1, 0):
+      d.items[dstStart + k] = s.items[srcStart + k]
+  else:
+    for k in 0 ..< n:
+      d.items[dstStart + k] = s.items[srcStart + k]
 
 proc deviceBufferData(v: Value): DeviceBufferData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okDeviceBuffer:
@@ -4085,7 +4173,7 @@ proc protocolUniversal*(v: Value): bool =
 proc protocolMessageName*(v: Value): lent string =
   # `lent` cannot borrow out of a case *expression*, so branch with returns.
   if v.tagOf == OBJECT_TAG:
-    let d = objData(v)
+    let d {.cursor.} = objData(v)   # a view; `v` owns it for this scope
     if d.objKind == okProtocolMessage:
       return ProtocolMessageData(d).name
     if d.objKind == okBoundMessage:
@@ -4726,7 +4814,8 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
     newNode(weakenedHead, props = props, body = body, meta = meta,
             immutable = v.nodeImmutable, constructing = v.nodeConstructing)
   of vkBuffer:
-    let data = bufferData(v)
+    checkBuffer(v)
+    let data {.cursor.} = bufferView(v)
     var changed = false
     var items = newSeq[Value](data.items.len)
     for i, item in data.items:
@@ -5071,7 +5160,8 @@ proc escapeWeakFunctions*(v: Value): Value =
   of vkCSlice:
     v
   of vkBuffer:
-    let data = bufferData(v)
+    checkBuffer(v)
+    let data {.cursor.} = bufferView(v)
     var changed = false
     var items = newSeq[Value](data.items.len)
     for i, item in data.items:
