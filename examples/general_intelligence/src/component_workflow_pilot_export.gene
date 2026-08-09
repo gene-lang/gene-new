@@ -1,0 +1,84 @@
+# Trusted exporter for the excluded version-3 difficulty pilot. Component
+# identifiers, their three demonstrations, the query input, and the attempt
+# budget are public. Expected output, canonical component programs, chain
+# values, semantic signatures, and admissible-candidate counts stay on the
+# Python verifier side and never reach the model.
+
+(mod component_workflow_pilot_export)
+
+(import $json [stringify])
+(import gene/parse [parse_int])
+(import [program_steps] from "./latent_workflow_subject.gene")
+(import [generate_component_workflow_subject
+         verify_component_workflow_subject]
+        from "./component_workflow_subject.gene")
+
+(fn operation_name [step : Node] : Str
+  (match step
+    (when (tail) "tail")
+    (when (init) "init")
+    (when (reverse) "reverse")
+    (when (rotate_left) "rotate_left")
+    (when (rotate_right) "rotate_right")
+    (when (map_add_one) "map_add_one")
+    (when (map_sub_one) "map_sub_one")
+    (when (map_double) "map_double")
+    (when (map_negate) "map_negate")
+    (when (keep_even) "keep_even")
+    (when (keep_odd) "keep_odd")
+    (when (duplicate_each) "duplicate_each")
+    (else ($panic "unknown component workflow pilot operation"))))
+
+(fn operation_names [program : Node] : (List Str)
+  (var names : (List Str) [])
+  (for step in (program_steps program)
+    (names ~ push! (operation_name step)))
+  names)
+
+(fn export_component [component : Node] : Map
+  (var demonstrations : List [])
+  (for example in component/examples
+    (demonstrations ~ push!
+      {^input example/input ^output example/output}))
+  {^workflow_id component/workflow_id
+   ^demonstrations demonstrations})
+
+(fn main [args] : Nil
+  (var argv ($body args))
+  (if_not (== (argv ~ size) 4)
+    ($panic
+      "usage: component_workflow_pilot_export <catalog-seed> <order-seed> <count> <composition-arity>"))
+  (var catalog_seed (parse_int argv/0))
+  (var order_seed (parse_int argv/1))
+  (var count (parse_int argv/2))
+  (var composition_arity (parse_int argv/3))
+  (if (|| (<= count 0) (> count 60))
+    ($panic "component workflow pilot count must be in 1..60"))
+  (var subject
+    (generate_component_workflow_subject
+      catalog_seed order_seed 30 5 60 composition_arity 2))
+  (var evidence (verify_component_workflow_subject subject))
+  (if_not evidence/valid
+    ($panic $"component workflow pilot subject invalid: ${evidence}"))
+  (repeat index in count
+    (var task subject/heldout_compositions/%index)
+    (var components : List [])
+    (for component in task/public/components
+      (components ~ push! (export_component component)))
+    (var component_operations : List [])
+    (for program in task/verifier/component_programs
+      (component_operations ~ push! (operation_names program)))
+    ($println
+      (stringify
+        {^schema 3
+         ^id task/public/id
+         ^instruction task/public/instruction
+         ^input task/public/input
+         ^attempts_per_component task/public/attempts_per_component
+         ^components components
+         ^expected task/verifier/expected
+         ^component_operations component_operations
+         ^chain_values task/verifier/chain_values
+         ^semantic_signatures task/verifier/required_semantic_signatures
+         ^admissible_candidate_counts
+           task/verifier/admissible_candidate_counts}))))

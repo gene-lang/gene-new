@@ -257,6 +257,30 @@ suite "cli — gene run":
     check "tasks=2 arity=2 public_hidden_fields=0 exact_crosscheck=true" in
       checked.output
 
+  test "component-workflow subject reproduces exactly and stays public-only":
+    var ran = runGene([
+      "run",
+      "examples/general_intelligence/tests/component_workflow_subject_smoke.gene"
+    ])
+    check ran.exitCode == 0
+    check "families=30 training=150 probes=105 heldout=60" in ran.output
+    check "admissible_candidates=80 min=1 max=6" in ran.output
+    check "catalog_valid=true operation_coverage=true order_valid=true" in
+      ran.output
+    check "replay_valid=true replay_cases=720 training_valid=true " &
+      "probes_valid=true compositions_valid=true" in ran.output
+    check "sound_components=180 composition_arity=3 attempts_per_component=2" in
+      ran.output
+    check "soundness_rejections=0 final_random_state=1495452811" in ran.output
+
+    let checked = execCmdEx(
+      "python3 tools/pilot_component_workflow_agent.py --self-test")
+    check checked.exitCode == 0
+    check "tasks=3 arity=3 round_ceiling=12 public_hidden_fields=0" in
+      checked.output
+    check "noncanonical_advances=7 budget_checks=6" in checked.output
+    check "soundness_verified=true exact_crosscheck=true" in checked.output
+
   test "main receives only explicitly granted named capabilities":
     let grantedMain = writeCliProgram("granted_main.gene",
       "(fn main [args, ^config : Capability] " &

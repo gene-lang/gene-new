@@ -218,6 +218,49 @@ The arity-three pilot on excluded seeds `910101`/`910102` and its one allowed
 arity-two revision on `910103`/`910104` both scored 0/20. Every task used the
 full 1,024 generated-token allowance and returned no tool call. The exact
 generator remains useful negative evidence, but this whole-task inference
-interaction is not treatment-ready. A later version may check candidate
-programs only against the public demonstrations so the model can solve one
-component per tool round; hidden replay cases must remain inaccessible.
+interaction is not treatment-ready.
+
+`src/component_workflow_subject.gene` is the version-3 subject built from that
+negative result. It reuses the version-2 catalog, family order, replay suites,
+training variants, and retention probes unchanged, and changes only the held-out
+compositions and their public projection. The agent now advances one ordered
+component at a time through a checker that reads nothing but that component's
+three already-public demonstrations:
+
+```text
+apply_workflow_candidate(workflow_id, operations: [string, string, string])
+submit_result()
+```
+
+On acceptance the host applies the model's own three operations, so every
+checker response is a deterministic function of public data and the model's own
+arguments. What makes that faithful rather than merely public is a generator
+rule: a composition draw is rejected unless every program of length zero through
+three that reproduces a component's public demonstrations also agrees with the
+family's canonical program on the exact chain value that component receives. The
+rule is enforced during generation, rechecked by
+`verify_component_workflow_subject`, and independently recomputed in Python
+before any model call. On the excluded pilot seeds it rejects nothing, so it
+constrains the export without reshaping the distribution.
+
+Run the excluded deterministic smoke and the model-harness self-test with:
+
+```bash
+bin/gene run examples/general_intelligence/tests/component_workflow_subject_smoke.gene
+python3 tools/pilot_component_workflow_agent.py --self-test
+```
+
+The self-test proves that a behavior-equivalent non-canonical candidate still
+advances a component, that an inconsistent candidate returns only a generic
+status and consumes exactly one attempt, that malformed or out-of-order requests
+consume none, that the public projection and every tool response carry no
+verifier-owned field, that the hidden expected output is read exactly once and
+only by the terminal submission, that the model-facing surface offers no
+promotion path, and that the Gene and Python projections agree exactly on every
+demonstration, chain value, and admissible-candidate count.
+
+The pilot's frozen configuration, liveness gate, and single declared revisions
+are in
+[`protocols/04_lifelong_skill_agent.md`](../../docs/proposals/general_intelligence/protocols/04_lifelong_skill_agent.md).
+No version-3 evaluation schedule exists, and none may be selected before the
+subject qualifies and its protocol is independently reviewed.

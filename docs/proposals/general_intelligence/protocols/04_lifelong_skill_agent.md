@@ -6,9 +6,10 @@ preregistered difficulty gate after its one allowed revision and is retained as
 negative evidence only. A version-2 demonstration-defined subject then failed
 at the opposite boundary: the model exhausted its generation budget without
 calling a tool on either preregistered arity. Both versions are retained as
-negative evidence. A replacement interaction has not been specified, reviewed,
-or frozen, so the treatment comparison remains not implementation-ready. See
-[`README.md`](README.md).
+negative evidence. Version 3 below specifies a component-wise interaction and
+its frozen budgets; it has not been independently reviewed, qualified, or
+frozen for treatment, so the treatment comparison remains not
+implementation-ready. See [`README.md`](README.md).
 
 ## Rejected exact-list subject pilot
 
@@ -224,6 +225,265 @@ time. Such an operation must not query hidden replay cases, reveal a canonical
 program, or carry promotion authority. It is a new interaction design, not a
 post hoc revision of version 2, and requires new excluded pilot seeds and a new
 unopened evaluation schedule after qualification and review.
+
+## Version-3 component-wise workflow subject
+
+Status: candidate design. It is specified and budgeted here so that a difficulty
+pilot can be preregistered, but it is not treatment-ready, not independently
+reviewed, and has no evaluation schedule.
+
+Version 3 keeps the version-2 latent-workflow distribution — a workflow is
+identified only by three public input/output demonstrations, never by its
+primitive expansion — and changes the interaction. The agent no longer has to
+infer an entire multi-component workflow before its first action. It identifies
+and commits to one component at a time.
+
+Its generator is a new versioned layer over the retained version-2 building
+blocks in
+[`latent_workflow_subject.gene`](../../../../examples/general_intelligence/src/latent_workflow_subject.gene).
+The version-2 catalog, family order, replay suites, training variants, and
+retention probes are reused unchanged. The held-out compositions are redrawn
+under one additional rejection rule, defined below, and a new public projection
+exposes ordered components rather than a whole-task goal string. Version 2's
+source, exporter, harness, and immutable reports remain byte-identical negative
+evidence. The version-3 files are
+[`component_workflow_subject.gene`](../../../../examples/general_intelligence/src/component_workflow_subject.gene),
+[`component_workflow_pilot_export.gene`](../../../../examples/general_intelligence/src/component_workflow_pilot_export.gene),
+and
+[`tools/pilot_component_workflow_agent.py`](../../../../tools/pilot_component_workflow_agent.py).
+
+### Public checker contract
+
+Two typed tools are model-facing during the difficulty pilot:
+
+```text
+apply_workflow_candidate(workflow_id: string, operations: [string, string, string])
+submit_result()
+```
+
+`apply_workflow_candidate` targets exactly one position: the first component
+that has not yet been accepted. A request is *well formed* when its arguments
+match the declared schema, `workflow_id` equals that component's public
+identifier, and `operations` is exactly three tokens drawn from the declared
+12-primitive catalog. A well-formed request consumes one candidate attempt; any
+other request returns a single generic `invalid_request` status, consumes no
+attempt, and changes no state.
+
+A well-formed candidate is checked against **only** that component's three
+already-public demonstrations, by executing the candidate on each demonstration
+input and comparing with the demonstration output.
+
+| Outcome | Response | Effect |
+|---|---|---|
+| Candidate reproduces all three public demonstrations | `accepted`, component index, components remaining, and the new current value | The host applies the **model's own candidate** to the current query value and advances exactly one component |
+| Candidate misses at least one public demonstration | `inconsistent` and attempts remaining | No state change; per-example results are never returned |
+| Attempt budget for the current component is spent | `attempts_exhausted` | The episode ends and is recorded as failed |
+
+`submit_result` takes no arguments, compares the current query value with the
+verifier-owned expected output, and is **terminal**: the first submission ends
+the episode whether it is accepted or rejected. There is no primitive
+`apply_operation` tool in version 3. The only way to move the query value is a
+candidate that reproduces the public demonstrations, so a task cannot be solved
+by transforming the value without identifying each component's behavior.
+
+### The public checker is a pure function of public data
+
+The response of `apply_workflow_candidate` is computed from the public task
+projection and the model's own arguments alone. It reads no verifier-owned
+field. Three properties make that exact:
+
+1. acceptance depends only on the three public demonstrations;
+2. on acceptance the host applies the candidate the model supplied, not the
+   family's hidden canonical program; and
+3. the current value returned is therefore a deterministic function of the
+   public query input and the model's own accepted candidates.
+
+The model could compute every checker response itself. The tool buys interaction
+structure and generation tokens, not information. Consequently the two attempts
+per component cannot be an oracle over hidden data: there is no hidden data on
+that path to query. The counting bound is also comfortable — two attempts
+against `12^3 = 1728` three-operation programs — but the information argument is
+the one that holds regardless of budget.
+
+Hidden data is consulted at exactly one place in an episode: the terminal
+`submit_result` comparison, which yields one bit, once.
+
+### Generator-enforced public-checker soundness
+
+Applying the model's own candidate is only sound if a demonstration-consistent
+candidate cannot diverge from the family's behavior on the value it is applied
+to. Version 3 makes that a checked property of the subject rather than an
+assumption.
+
+Because a version-2 teachable family is uniquely identified by each
+demonstration pack among all 557 finite-bank behaviors, every program of length
+zero through three that reproduces a pack has that family's finite-bank
+signature. Two programs can share a finite-bank signature and still differ on
+some other list, so the generator additionally requires, for every held-out task
+and every ordered component:
+
+> every program of length zero through three that reproduces all three of the
+> component's public demonstrations must produce the same output as the family's
+> canonical program when applied to the exact current value the canonical chain
+> reaches at that position.
+
+Composition draws that violate this rule are rejected and redrawn. With the rule
+enforced, an accepted candidate always leaves the current value equal to the
+canonical intermediate value, so `accepted` is both public-only and
+canonical-faithful, and the exported task is solvable exactly when the model
+identifies each component's behavior.
+
+The rule is enforced in the Gene generator, revalidated by
+`verify_component_workflow_subject`, and independently recomputed by the Python
+harness before any model call. Neither the admissible-candidate sets nor the
+chain values are ever public.
+
+On the initial excluded pilot seeds `920101` / `920102` the rule rejects nothing:
+all 60 compositions and all 180 components satisfy it on the first draw. It is
+therefore a proof obligation the distribution already meets, not a filter that
+reshapes it. The same run records 80 admissible candidates across the 30
+families, between one and six per family, so 20 families admit a spelling other
+than the generator's canonical program. Demonstration-consistent behavior, not
+canonical syntax, is what advances a component, and the self-test exercises that
+path explicitly.
+
+### Authority boundary
+
+| Field | Public | Verifier-owned |
+|---|---|---|
+| Task identifier, instruction, attempts per component | yes | — |
+| Ordered component identifiers and their three demonstrations | yes | — |
+| Query input | yes | — |
+| Current value after an accepted candidate | yes, derived from public data | — |
+| Expected final output | — | yes |
+| Canonical component programs and composed target | — | yes |
+| Semantic signatures | — | yes |
+| Per-component chain values | — | yes |
+| Admissible-candidate sets used by the soundness rule | — | yes |
+| Replay suites and their case-level results | — | yes |
+
+The public checker has no promotion authority and no path to one. Promotion
+remains an authenticated request to the isolated verifier service against a
+family's complete hidden replay suite, and `accepted` from the public checker is
+not evidence for it. This matters concretely: a candidate can reproduce a pack,
+be accepted, advance the task, and still fail hidden replay, because pack
+consistency constrains behavior on the finite bank rather than on every list.
+Only replay decides whether a proposed durable skill receives the family's
+authenticated semantic identity.
+
+### Frozen difficulty-pilot configuration
+
+These values are fixed before the first version-3 model call and are not
+adjustable after seeing a trace.
+
+| Item | Value |
+|---|---|
+| Composition arity | 3 |
+| Candidate attempts per component | 2 |
+| Round ceiling | `3 * composition_arity + 3` (12 at arity 3) |
+| Silent-round cap per episode | 3 |
+| Tasks per run | 20 held-out compositions |
+| Decoding | temperature `0`, model seed `20260809`, context `32768`, generation `1024` tokens per round |
+| Frontier band | closed success interval `0.25..0.75` |
+| Initial excluded seeds | `920101` / `920102` |
+| Liveness-repair excluded seeds | `920105` / `920106` |
+| Difficulty-revision excluded seeds | `920103` / `920104` |
+
+All six seeds are permanently excluded from treatment whether or not they are
+used. Every task starts a fresh conversation; the pilot agent has no cross-task
+state and no skill tool.
+
+A *silent round* is a model response that returns no tool call. Version 2 ended
+the episode on the first such round, so all 40 of its episodes got exactly one
+1,024-token response and no second chance. Version 3 instead appends a fixed
+deterministic reminder and continues, up to three silent rounds per episode,
+after which the episode ends as failed. Silent rounds are recorded per task.
+
+### Liveness gate, then difficulty gate
+
+Liveness is evaluated first and separately, because a run that produces no tool
+calls measures the generation budget rather than the subject.
+
+- **Liveness gate.** At least 18 of 20 episodes must emit at least one
+  schema-conformant tool call. A run below that is recorded as an
+  interaction-liveness failure and is **not** a difficulty result, exactly as
+  version 1's adapter failure was not.
+- **Declared liveness repair.** At most one is permitted: raise generation from
+  1,024 to 2,048 tokens per round, change nothing else, and rerun on the new
+  excluded pair `920105` / `920106`. Reusing the failed pair is not allowed. If
+  liveness fails again, reject version 3 and record that this interaction is
+  beyond the qualified model's per-round generation envelope.
+- **Difficulty gate.** Only a liveness-passing run is scored against the
+  `0.25..0.75` frontier band.
+- **Declared difficulty revision.** At most one, on the new excluded pair
+  `920103` / `920104`, at whatever generation budget passed liveness: arity two
+  if the result is below `0.25`, arity four if it is above `0.75`, with the
+  round ceiling recomputed by the same formula. If the revised result is still
+  outside the band, reject version 3.
+
+Adapter or schema failures remain non-difficulty results, their reports remain
+immutable, and any repair must preserve public task semantics. The model-facing
+candidate stays a flat string array with an enumerated item type, the shape the
+pinned model accepted; reopening adapter qualification requires a separate
+recorded justification.
+
+### Required self-tests before any model call
+
+The deterministic self-test must prove all of the following without contacting a
+model:
+
+1. a behavior-equivalent three-operation array that is not the family's
+   canonical spelling still advances one component;
+2. an inconsistent array returns only the generic status, consumes exactly one
+   attempt, and advances nothing;
+3. attempt, round, and silent-round budgets are exact, and a third attempt on
+   one component is refused;
+4. every checker request and response is reconstructible from the public
+   projection and the model's arguments alone, with no verifier-owned field
+   present;
+5. the hidden expected output is read only by the terminal submission;
+6. no tool, status, or field offers promotion, and the model-facing tool set is
+   exactly the two declared tools;
+7. the Gene projection and the Python harness agree exactly on every
+   demonstration, chain value, admissible-candidate set, and expected output;
+   and
+8. the soundness rule holds for every exported component.
+
+### Pre-execution critique
+
+*Do two public-only attempts make the checker a brute-force oracle?* No. The
+checker reads no hidden field, so repeated queries cannot extract hidden
+information at any budget; the attempt cap exists to keep candidate proposal a
+measure of inference rather than enumeration, and two attempts cover about one
+part in nine hundred of the three-operation space.
+
+*Do returned current values leak anything non-public?* No, given the two rules
+above: the host applies the model's own candidate, and the soundness rule
+guarantees that value equals the canonical intermediate value. Self-test 4
+enforces this by reconstruction rather than by inspection.
+
+*Is the round formula sufficient without inviting another no-call failure?* The
+formula covers `2 * arity` attempts, one submission, and the three-silent-round
+allowance with slack, so budget exhaustion cannot masquerade as refusal to act.
+It does not by itself prove the model will act: that is what the liveness gate
+measures, with a declared one-step repair, so a second no-call outcome becomes
+recorded evidence about the generation envelope instead of an unplanned
+redesign.
+
+*What does a verified skill buy if the public checker is free?* Not correctness
+on these tasks — the soundness rule makes an accepted candidate canonical on the
+chain value. It buys budget and retention: an authenticated skill advances a
+component without consuming candidate attempts or inference tokens, and it is
+the only artifact whose behavior has been checked against the complete hidden
+replay suite. Treatment adds `invoke_skill(skill_id)` for the skill-bearing arms
+under matched total budgets; all arms see the identical public checker, so the
+checker is part of the environment rather than an advantage of one arm.
+
+*Does removing `apply_operation` change what is measured?* Yes, deliberately.
+Version 2 accepted any primitive trace that produced the exact answer. Version 3
+requires per-component identification, which is the reusable-skill problem this
+experiment exists to test. It also raises difficulty, which the frontier band
+and its single declared revision are there to measure.
 
 ## Candidate model-qualification gate
 

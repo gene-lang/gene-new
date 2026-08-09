@@ -235,11 +235,19 @@ by each of six disjoint example packs, selects 30 with complete primitive
 coverage, and exactly revalidates the full curriculum. That second subject also
 failed its disjoint gate, this time at the floor: both the initial three-workflow
 pilot and the allowed two-workflow revision scored 0/20 because every episode
-used its full generation allowance before returning any tool call. The next
-design must interleave inference and action through bounded checks against
-public demonstrations without turning hidden replay into an oracle. It remains
-a new experimental version requiring new excluded seeds, independent review,
-and a new unopened evaluation schedule before treatment.
+used its full generation allowance before returning any tool call. A version-3
+subject now interleaves inference and action: the agent commits to one ordered
+component at a time through a checker that reads only that component's public
+demonstrations, and a generator rule guarantees that no demonstration-consistent
+candidate can diverge from the family's behavior on the value it is applied to.
+The whole model-facing loop is therefore a deterministic function of public data
+except for one terminal hidden comparison, and hidden replay stays reachable
+only through the authenticated promotion service. Its difficulty pilot is
+preregistered with a liveness gate evaluated before the frontier band, so a
+second generation-budget failure would be recorded as interaction evidence
+rather than difficulty evidence. Version 3 has not been run, reviewed, or
+frozen; it still requires independent review and a new unopened evaluation
+schedule before treatment.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment

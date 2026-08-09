@@ -1,0 +1,30 @@
+# Permanently excluded version-3 subject-generation smoke for experiment 4.
+# It regenerates and independently revalidates the full component-wise subject,
+# including the public-checker soundness rule for every exported component.
+
+(mod component_workflow_subject_smoke)
+
+(import [generate_component_workflow_subject
+         verify_component_workflow_subject]
+        from "../src/component_workflow_subject.gene")
+
+(var subject
+  (generate_component_workflow_subject 920101 920102 30 5 60 3 2))
+(var evidence (verify_component_workflow_subject subject))
+(if_not evidence/valid
+  ($panic $"component workflow subject invalid: ${evidence}"))
+
+($println
+  $"component workflow subject smoke: families=${evidence/family_count} training=${evidence/training_task_count} probes=${evidence/retention_probe_count} heldout=${evidence/heldout_composition_count}")
+($println
+  $"candidate_programs=${evidence/candidate_program_count} distinct_behaviors=${evidence/distinct_behavior_count} teachable_behaviors=${evidence/teachable_behavior_count}")
+($println
+  $"admissible_candidates=${evidence/admissible_candidate_total} min=${evidence/minimum_admissible_candidates} max=${evidence/maximum_admissible_candidates}")
+($println
+  $"catalog_valid=${evidence/catalog_valid} operation_coverage=${evidence/operation_coverage_valid} order_valid=${evidence/order_valid}")
+($println
+  $"replay_valid=${evidence/replay_valid} replay_cases=${evidence/replay_case_count} training_valid=${evidence/training_valid} probes_valid=${evidence/probes_valid} compositions_valid=${evidence/compositions_valid}")
+($println
+  $"sound_components=${evidence/sound_component_count} composition_arity=${subject/composition_arity} attempts_per_component=${subject/attempts_per_component}")
+($println
+  $"catalog_attempts=${subject/generation/catalog_attempts} composition_attempts=${subject/generation/composition_attempts} soundness_rejections=${subject/generation/soundness_rejections} final_random_state=${subject/generation/final_random_state}")
