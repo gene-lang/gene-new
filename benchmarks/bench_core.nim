@@ -373,10 +373,10 @@ proc main() =
     let v = run(bufferChunk, bufferScope)
     checksum = checksum + int(v.floatVal)
 
-  # The write side, which is the more expensive half and was unmeasured.
-  # `examples/vsa` is built almost entirely out of this loop: every algebra
-  # operation is `dim` reads and `dim` writes, so a regression in `Buffer/set!`
-  # is a regression in that whole package.
+  # The write side, which is the more expensive half and was unmeasured until
+  # this was added. Any elementwise numeric pass — meshing, a vector op, an
+  # image filter — is `n` reads and `n` writes, so a regression in
+  # `Buffer/set!` is a regression in every one of them at once.
   let bufferWriteScope = newGlobalScope()
   discard run(compileSource(
     "(var wbuf ($buffer F64 4096.0)) " &

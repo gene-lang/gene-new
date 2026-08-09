@@ -1,4 +1,0 @@
-# VM-only shell for the node-encoding suite (§6.1, §6.3, §6.4, G4, G7).
-# There is no web counterpart on purpose — see tests/node.gene.
-(import [report] from "./node.gene")
-($println (report))

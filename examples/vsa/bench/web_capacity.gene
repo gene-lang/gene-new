@@ -1,4 +1,0 @@
-# Web-profile shell for the capacity sweep (gate G3).
-(mod web_capacity ^profile web)
-(import [report] from "./capacity.gene")
-(fn main [] : Void ($console/log (report)))

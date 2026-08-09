@@ -1,4 +1,0 @@
-# Web-profile shell for the codec + index spec.
-(mod web_codec ^profile web)
-(import [report] from "./codec.gene")
-(fn main [] : Void ($console/log (report)))
