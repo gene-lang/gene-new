@@ -25,6 +25,7 @@ bin/gene run examples/general_intelligence/tests/library_induction_smoke.gene
 bin/gene run examples/general_intelligence/tests/library_induction_corpus_smoke.gene
 bin/gene run examples/general_intelligence/tests/library_induction_corpus_pilot.gene
 bin/gene run examples/general_intelligence/tests/library_induction_control_pilot.gene
+bin/gene run examples/general_intelligence/tests/library_induction_evaluation_pilot.gene
 ```
 
 The corpus smoke proves deterministic reproduction and independent structural
@@ -35,7 +36,10 @@ motifs, and an independent expansion check proves that every compressed program
 still denotes its original primitive sequence. The control pilot learns from a
 disjoint donor seed and accepts only an exact search-shape match with no shared
 primitive body. These commands write or open no evaluation data, and all pilot
-seeds are permanently excluded from treatment.
+seeds are permanently excluded from treatment. The evaluation pilot keeps four
+public cases on the search side and 24 cases on the hidden-verifier side. It
+records and rejects public-only false positives while comparing complete
+depth-three primitive-only, induced, and matched-unrelated enumeration.
 
 The first implemented slice is experiment 2's exact-belief repair lab. Its
 module interface is intentionally narrow:

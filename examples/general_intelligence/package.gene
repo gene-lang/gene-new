@@ -13,6 +13,7 @@
     (application "library_induction_corpus_smoke" ^entry "tests/library_induction_corpus_smoke.gene")
     (application "library_induction_corpus_pilot" ^entry "tests/library_induction_corpus_pilot.gene")
     (application "library_induction_control_pilot" ^entry "tests/library_induction_control_pilot.gene")
+    (application "library_induction_evaluation_pilot" ^entry "tests/library_induction_evaluation_pilot.gene")
     (application "verified_skill_records_smoke" ^entry "tests/verified_skill_records_smoke.gene")
     (application "skill_verifier_pilot" ^entry "src/skill_verifier_pilot.gene")
   ]

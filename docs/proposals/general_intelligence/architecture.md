@@ -68,10 +68,15 @@ structure, not merely because the library is larger.
 
 **Mechanism.** In a bounded Gene DSL, enumerate or propose candidate programs,
 accept them only through exact execution, extract recurring subtrees into named
-functions, and use those functions in later search. Compare the induced library
-with a fixed library, a proposer without learning, and an unrelated learned
-library matched on size and search shape. Renamed task surfaces test whether
-apparent reuse is only name memorization.
+functions, and use those functions in later search. The primary comparison uses
+complete-depth exact enumeration with primitives only, the induced library, and
+an unrelated learned library matched on size and search shape. Renamed task
+surfaces are an integrity check on label invariance.
+
+The current primary protocol deliberately chooses complete-depth exact
+enumeration rather than a learned proposer, isolating abstraction content from
+model-token priors and sampling variance. A learned proposer is a possible
+secondary experiment, not part of the primary pass decision.
 
 **Falsifier.** Reject this form of induction if the learned library does not
 improve held-out composition over the matched unrelated library, if gains vanish
@@ -179,8 +184,11 @@ targets matched by the 1,885 shorter programs on the finite structural bank.
 Four capped positive-MDL rounds recover all four pilot motifs with exact
 expansion checks. A disjoint donor pilot also matches token count, body lengths,
 description cost, search positions, and enumerator branching exactly while
-rejecting shared abstraction content. Its evaluation seeds and learned-proposer
-prior-mass matching still need to be frozen before treatment work.
+rejecting shared abstraction content. A public-search/hidden-verifier pilot at
+complete depth three solves 44 of 50 tasks with induced content versus 12 with
+the matched unrelated library; this is excluded pilot evidence, not a treatment
+claim. Its evaluation seeds and protocol still need independent review and
+freeze before treatment work.
 Experiment 4's local-model gate passed on 2026-08-09: the selected
 `gpt-oss:20b` artifact accepted all 20 exact mock-tool tasks under the recorded
 resource envelope. The immutable qualification report is

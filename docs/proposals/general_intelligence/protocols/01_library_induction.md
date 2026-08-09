@@ -2,9 +2,9 @@
 
 Status: bounded DSL, exact interpreter, deterministic corpus generator,
 structural ambiguity screen, capped iterative abstraction algorithm, and
-mechanism pilots specified and passing on 2026-08-09. The evaluation seed
-schedule and model-proposer prior-mass matching procedure remain unfrozen, so
-the treatment evaluation is not implementation-ready. See
+mechanism and exact-enumerator evaluation pilots specified and passing on
+2026-08-09. The evaluation seed schedule and independent protocol review remain
+unfrozen, so the treatment evaluation is not implementation-ready. See
 [`README.md`](README.md).
 
 Implementation:
@@ -17,6 +17,8 @@ and
 [`library_induction_corpus_pilot.gene`](../../../../examples/general_intelligence/tests/library_induction_corpus_pilot.gene).
 Unrelated-control pilot:
 [`library_induction_control_pilot.gene`](../../../../examples/general_intelligence/tests/library_induction_control_pilot.gene).
+Public-search/hidden-verifier pilot:
+[`library_induction_evaluation_pilot.gene`](../../../../examples/general_intelligence/tests/library_induction_evaluation_pilot.gene).
 
 ## Hypothesis and claim boundary
 
@@ -76,12 +78,22 @@ case. During evaluation, public examples may guide search but the verifier owns
 additional hidden cases; only the hidden-verifier outcome counts as a solution.
 
 The reference enumerator uses iterative deepening by token count. Within one
-depth, it enumerates the Cartesian product in declared token order. Library
-tokens come first, followed by primitives in the table order. The fixed and
-unrelated-library controls receive the same number of first-position library
-tokens, so this prior position is not unique to induced content. The first exact
-solution wins. Candidate execution is counted before its cases run, and the
-declared maximum is a hard counter rather than a wall-clock inference.
+depth, it enumerates the Cartesian product in declared token order. It computes
+each program directly from its ordinal instead of allocating the full Cartesian
+product. Library tokens come first, followed by primitives in the table order.
+The induced and unrelated-library controls receive the same four first-position
+library tokens. The candidate ceiling is 4,369, exactly
+`1 + 16 + 16^2 + 16^3`, so both matched libraries exhaust every program through
+depth three instead of receiving a rank-dependent prefix. The primitive-only
+contextual arm has only `1 + 12 + 12^2 + 12^3 = 1,885` candidates and exhausts
+that complete space under the same ceiling.
+
+Candidate execution is counted before its public cases run. A public-case match
+causes one verifier call against all 24 hidden cases. Hidden failure increments
+the verifier-rejection count and search continues; hidden data never enters the
+enumerator. The first hidden-verified solution wins. A candidate that violates
+the expansion or output bound is an invalid candidate, not a process-aborting
+error.
 
 Candidate programs are interpreted by `run_program`; they are not compiled or
 evaluated as source. `EvalBudget` therefore does not mediate this DSL. An outer
@@ -135,12 +147,14 @@ two-primitive abstraction occurs in all four solutions; its definition costs
 three units and the four compressed programs cost eight, for an induced corpus
 cost of 11 and gain of one.
 
-The transfer task additionally duplicates the incremented result. At token
-depth three and a 500-candidate ceiling, primitive-only search cannot express
-the required four primitive steps and exhausts the budget. With the induced
-token first, exact search finds a verified abstraction-using solution after 274
+The transfer task additionally duplicates the incremented result. Complete
+primitive-only search through token depth three cannot express the required
+four primitive steps and exhausts all 1,885 programs. With the induced token
+first, exact search finds a verified abstraction-using solution after 274
 candidates. The smoke also proves that a corpus without a qualifying repeated
-pattern is rejected and that a nine-step program violates the expansion bound.
+pattern is rejected, a nine-step program violates the expansion bound, and an
+otherwise valid candidate whose output grows beyond 64 items is rejected
+without aborting search.
 
 This is deliberately constructed mechanism evidence. Its programs, tasks, and
 abstraction are permanently excluded from training, model selection, donor
@@ -222,7 +236,7 @@ first and past library-token positions, search depth, untruncated candidate
 space, enforced candidate ceiling, and input/output arity. With four two-step
 abstractions, both libraries have four items, body lengths `[2 2 2 2]`, 12
 definition units, 16 total tokens, candidate space 4,369 through depth three,
-and the 500-candidate execution ceiling.
+and the 4,369-candidate execution ceiling.
 
 `build_unrelated_library_control` accepts at most eight predeclared donor seeds
 and never examines model-selection or held-out tasks. In seed order, it rejects
@@ -235,15 +249,42 @@ positions exact rather than tolerance-based.
 
 The disjoint pilot targeted seed `900101`. Donor seed `900201` was rejected for
 one overlapping body; seed `900202` was accepted on the second attempt with an
-exact shape match and no shared body. The pilot completed in 32.49 seconds with
-18,219,008 bytes maximum resident set size. Both donor seeds and every artifact
-generated from them are permanently excluded from evaluation. The candidate
-three-seed matching ceiling is 60 seconds and 64 MiB; a frozen experiment must
-either retain that list size or justify and re-pilot a different ceiling.
+exact shape match and no shared body. Under the complete-depth search
+configuration, the pilot completed in 35.62 seconds with 18,677,760 bytes
+maximum resident set size. Both donor seeds and every artifact generated from
+them are permanently excluded from evaluation. The candidate three-seed
+matching ceiling is 60 seconds and 64 MiB; a frozen experiment must either
+retain that list size or justify and re-pilot a different ceiling.
 
-This exact match covers the implemented enumerator. A future learned proposer
-can assign different probability to equal-shaped tokens, so its empirical
-prior-mass tolerance and repair rule remain a separate freeze requirement.
+## Exact-enumerator evaluation pilot
+
+`search_corpus_task` exposes only a task's four public cases to search. Every
+public match crosses the internal verifier boundary; only a match on all 24
+hidden cases is accepted. `evaluate_exact_enumerator` runs the primitive-only,
+induced-library, and matched-unrelated-library arms on the same held-out tasks
+and records candidate executions, verifier calls and rejections, exhausted
+tasks, exact programs, and abstraction-using solutions.
+
+Pilot corpus seed `900301` and donor seed `900401` are permanently excluded from
+model selection and evaluation. At the earlier partial 500-candidate ceiling,
+the primitive-only, induced, and unrelated arms solved 0, 6, and 0 of 50 tasks;
+the 12-point induced advantage was confounded by admitting only 227 of 4,096
+depth-three library programs. That result is retained as failed design evidence.
+
+The structurally derived 4,369 ceiling then exhausted depth three. The three
+arms solved 0, 44, and 12 tasks respectively, for a 64-point pilot advantage of
+induced over unrelated content. All 44 induced solutions and all 12 unrelated
+solutions used their respective libraries. The primitive-only, induced, and
+unrelated arms made 226, 420, and 884 hidden-verifier rejections respectively,
+demonstrating that public matches were not treated as success. Total candidate
+executions were 94,250, 98,408, and 185,634. Generation, matching, induction,
+and evaluation completed in 56.53 seconds with 19,349,504 bytes maximum
+resident set size. The candidate per-corpus setup-and-evaluation ceiling is 75
+seconds and 64 MiB.
+
+These are pilot outcomes, not a treatment result, and they do not contribute to
+the pass rule or interval. The ceiling changed for a structural reason—the
+cardinality of the declared search space—not to optimize the observed effect.
 
 ## Experimental subject still to freeze
 
@@ -255,27 +296,27 @@ Before evaluation, specify and independently review:
   input distribution, and 16-case finite ambiguity screen;
 - independent review of the candidate four-item, 20-description-unit greedy
   induction cap;
-- a tolerance and repair procedure for matching empirical token prior mass
-  under the selected learned proposer; the exact enumerator shape is already
-  matched mechanically;
-- fixed candidate ceilings, process timeouts, memory ceilings, and disjoint
-  pilot/model-selection/evaluation seeds.
+- independent review of the complete-depth candidate ceiling, process timeout,
+  and memory ceiling; and
+- the disjoint evaluation seed manifest and its freeze attestation.
 
 Nothing generated while selecting these rules may enter an evaluation corpus.
 
 ## Candidate arms
 
-Compare at equal candidate-execution, model-token, and wall-time ceilings:
+The primary reproducible comparison uses the exact enumerator at equal
+candidate and wall-time ceilings:
 
-1. fixed base library;
-2. proposer with the fixed library;
-3. proposer plus induced abstractions; and
-4. proposer plus abstractions learned on a disjoint donor distribution and
-   matched to arm 3 on library and search-shape properties.
+1. primitive-only enumeration as a contextual reach baseline;
+2. enumeration with the induced library; and
+3. enumeration with abstractions learned on a disjoint donor distribution and
+   matched exactly to arm 2 on library and search-shape properties.
 
-Arm 4 is the candidate primary control. Arms 1 and 2 are contextual baselines,
-not alternatives selected after model-selection results are observed. Every arm
-uses the same exact verifier and receives the same task observations.
+Arm 3 is the primary control. Every arm uses the same hidden verifier and
+receives the same public observations. Model-token use is zero. A learned
+proposer may be studied later as a separately frozen secondary experiment, but
+its token prior and stochastic sampling cannot affect this experiment's pass
+decision.
 
 ## Candidate evaluation design
 
@@ -286,16 +327,16 @@ eight corpus seeds as uncertainty units and report a two-sided seed-stratified
 surface task and primitive label; the interpreter mapping is renamed with it,
 so only names change.
 
-Candidate executions, model tokens, wall time, total description length,
-abstraction reuse, wrong-abstraction selection, and verifier rejection are
-secondary diagnostics.
+Candidate executions, wall time, total description length, abstraction reuse,
+wrong-abstraction selection, and verifier rejection are secondary diagnostics.
+Model-token use is identically zero.
 
 Candidate pass rule:
 
 - at least a 15-percentage-point held-out solve-rate advantage;
 - a confidence interval for that advantage excluding zero;
-- the same positive direction and at least a 10-point advantage on renamed
-  surfaces; and
+- byte-identical outcomes after a bijective rename of surface labels and the
+  interpreter mapping; and
 - at least three abstractions each occurring in five or more independently
   verified held-out solutions.
 
@@ -306,10 +347,10 @@ invalidate claimed solutions.
 
 ## Candidate pilots, freeze, and cost
 
-The design implies roughly 7,200 in-domain task-arm runs plus 800 donor runs,
-with proposer calls likely dominating. After the remaining subject rules are
-fixed, use disjoint seeds for a compute pilot that records candidate executions,
-tokens, verifier calls, wall time, and peak resident memory. Pilot tasks and
+The design implies 1,200 primary held-out task-arm runs across eight corpora and
+another 1,200 for the renamed integrity repeat, plus 800 donor-learning tasks.
+There are no model calls. The frozen run records candidate executions, verifier
+calls and rejections, wall time, and peak resident memory. Pilot tasks and
 libraries never enter an experimental arm.
 
 After independent review, hash the protocol, interpreter, generators, hidden
@@ -317,5 +358,5 @@ verifier, corpus files, model artifact, and exact arm configuration in a dated
 freeze manifest before opening any evaluation result. A content change starts a
 new experiment version.
 
-Planning estimate: 4–8 person-weeks after the subject is frozen, with roughly
+Planning estimate: 1–3 person-weeks after the subject is frozen, with roughly
 `2x` uncertainty.

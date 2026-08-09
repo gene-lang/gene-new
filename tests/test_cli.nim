@@ -167,7 +167,9 @@ suite "cli — gene run":
     check "unrelated_shape_matches=true unrelated_content_disjoint=true" in
       ran.output
     check "mismatched_shape_rejected=true" in ran.output
-    check "no_gain_rejected=true bounds_rejected=true" in ran.output
+    check "no_gain_rejected=true bounds_rejected=true candidate_bounds_rejected=true" in
+      ran.output
+    check "hidden_verifier_rejected_public_false_positive=true" in ran.output
     check "base_solved=false induced_solved=true induced_candidates=274" in
       ran.output
 

@@ -39,7 +39,7 @@
       ^max_library_items 4
       ^max_library_definition_mdl 20
       ^search_token_depth 3
-      ^candidate_budget 500
+      ^candidate_budget 4369
       ^training [
         (solved_task
           ^id add_after_tail_reverse
@@ -213,24 +213,42 @@
     (if (> ($math/abs item) 1000000) (return false)))
   true)
 
-(fn run_program [subject : Node, program : Node, library : (List Node),
-                 input : (List Int)] : (List Int)
+(fn try_run_program [subject : Node, program : Node,
+                     library : (List Node),
+                     input : (List Int)] : Node
   (if_not (input_valid? subject input)
-    ($panic "program input violates the subject bounds"))
+    (return
+      `(program_execution
+         ^valid false ^output []
+         ^error "program input violates the subject bounds")))
   (var expansion (expand_program subject program library))
-  (if_not expansion/valid ($panic expansion/error))
+  (if_not expansion/valid
+    (return
+      `(program_execution
+         ^valid false ^output [] ^error %expansion/error)))
   (var result (copy_items input))
   (for step in expansion/steps
     (set result (apply_primitive step result))
     (if (> (result ~ size) subject/max_output_items)
-      ($panic "program output exceeds the subject bound")))
-  result)
+      (return
+        `(program_execution
+           ^valid false ^output []
+           ^error "program output exceeds the subject bound"))))
+  `(program_execution ^valid true ^output %result ^error nil))
+
+(fn run_program [subject : Node, program : Node, library : (List Node),
+                 input : (List Int)] : (List Int)
+  (var execution (try_run_program subject program library input))
+  (if_not execution/valid ($panic execution/error))
+  execution/output)
 
 (fn verifies_task? [subject : Node, program : Node, library : (List Node),
                     task : Node] : Bool
   (for test_case in task/cases
-    (if_not (== (run_program subject program library test_case/input)
-                test_case/expected)
+    (var execution
+      (try_run_program subject program library test_case/input))
+    (if_not (&& execution/valid
+                (== execution/output test_case/expected))
       (return false)))
   true)
 
@@ -1133,31 +1151,181 @@
   (for primitive in subject/primitive_tokens (result ~ push! primitive))
   result)
 
+(fn integer_power [base : Int, exponent : Int] : Int
+  (var result 1)
+  (repeat _ in exponent (set result (* result base)))
+  result)
+
+(fn program_at_index [tokens : (List Node), length : Int,
+                      ordinal : Int] : Node
+  (var token_count (tokens ~ size))
+  (var limit (integer_power token_count length))
+  (if (|| (< ordinal 0) (>= ordinal limit))
+    ($panic "program ordinal is outside its token-depth range"))
+  (var remaining ordinal)
+  (var steps : (List Node) [])
+  (var position 0)
+  (while (< position length)
+    (var divisor
+      (integer_power token_count (- length (+ position 1))))
+    (var token_index (/ remaining divisor))
+    (set remaining (// remaining divisor))
+    (steps ~ push! tokens/%token_index)
+    (set position (+ position 1)))
+  `(program %steps...))
+
 (fn search_task [subject : Node, task : Node,
                  library : (List Node)] : Node
   (var tokens (search_tokens subject library))
   (var candidate_executions 0)
   (var token_depth 0)
   (while (<= token_depth subject/search_token_depth)
-    (for candidate in (programs_of_length tokens token_depth)
+    (var candidates_at_depth
+      (integer_power (tokens ~ size) token_depth))
+    (var ordinal 0)
+    (while (< ordinal candidates_at_depth)
       (if (>= candidate_executions subject/candidate_budget)
         (return
           `(search_result
              ^solved false ^program nil
              ^candidate_executions %candidate_executions
              ^budget_exhausted true)))
+      (var candidate (program_at_index tokens token_depth ordinal))
       (set candidate_executions (+ candidate_executions 1))
       (if (verifies_task? subject candidate library task)
         (return
           `(search_result
              ^solved true ^program %candidate
              ^candidate_executions %candidate_executions
-             ^budget_exhausted false))))
+             ^budget_exhausted false)))
+      (set ordinal (+ ordinal 1)))
     (set token_depth (+ token_depth 1)))
   `(search_result
      ^solved false ^program nil
      ^candidate_executions %candidate_executions
      ^budget_exhausted false))
+
+(fn search_corpus_task [subject : Node, corpus_task : Node,
+                        library : (List Node)] : Node
+  (var tokens (search_tokens subject library))
+  (var candidate_executions 0)
+  (var verifier_calls 0)
+  (var verifier_rejections 0)
+  (var token_depth 0)
+  (var hidden_task
+    `(task ^id %corpus_task/id
+           ^cases %corpus_task/verifier/hidden_cases))
+  (while (<= token_depth subject/search_token_depth)
+    (var candidates_at_depth
+      (integer_power (tokens ~ size) token_depth))
+    (var ordinal 0)
+    (while (< ordinal candidates_at_depth)
+      (if (>= candidate_executions subject/candidate_budget)
+        (return
+          `(verified_search_result
+             ^solved false ^program nil
+             ^candidate_executions %candidate_executions
+             ^verifier_calls %verifier_calls
+             ^verifier_rejections %verifier_rejections
+             ^budget_exhausted true)))
+      (var candidate (program_at_index tokens token_depth ordinal))
+      (set candidate_executions (+ candidate_executions 1))
+      (if_yes (verifies_task? subject candidate library corpus_task/public)
+        (set verifier_calls (+ verifier_calls 1))
+        (if (verifies_task? subject candidate library hidden_task)
+          (return
+            `(verified_search_result
+               ^solved true ^program %candidate
+               ^candidate_executions %candidate_executions
+               ^verifier_calls %verifier_calls
+               ^verifier_rejections %verifier_rejections
+               ^budget_exhausted false))
+          (set verifier_rejections (+ verifier_rejections 1))))
+      (set ordinal (+ ordinal 1)))
+    (set token_depth (+ token_depth 1)))
+  `(verified_search_result
+     ^solved false ^program nil
+     ^candidate_executions %candidate_executions
+     ^verifier_calls %verifier_calls
+     ^verifier_rejections %verifier_rejections
+     ^budget_exhausted false))
+
+(fn program_uses_library? [program : Node] : Bool
+  (for token in ($body program)
+    (match token
+      (when (use ^name _) (return true))
+      (else nil)))
+  false)
+
+(fn evaluate_library_arm [subject : Node, tasks : (List Node), arm,
+                          library : (List Node)] : Node
+  (var solved 0)
+  (var candidate_executions 0)
+  (var verifier_calls 0)
+  (var verifier_rejections 0)
+  (var budget_exhausted_tasks 0)
+  (var library_solutions 0)
+  (var task_results : (List Node) [])
+  (for task in tasks
+    (var result (search_corpus_task subject task library))
+    (set candidate_executions
+      (+ candidate_executions result/candidate_executions))
+    (set verifier_calls (+ verifier_calls result/verifier_calls))
+    (set verifier_rejections
+      (+ verifier_rejections result/verifier_rejections))
+    (if_yes result/budget_exhausted
+      (set budget_exhausted_tasks (+ budget_exhausted_tasks 1)))
+    (if_yes result/solved
+      (set solved (+ solved 1))
+      (if_yes (program_uses_library? result/program)
+        (set library_solutions (+ library_solutions 1))))
+    (task_results ~ push!
+      `(task_search_result
+         ^task_id %task/id
+         ^solved %result/solved
+         ^program %result/program
+         ^candidate_executions %result/candidate_executions
+         ^verifier_calls %result/verifier_calls
+         ^verifier_rejections %result/verifier_rejections
+         ^budget_exhausted %result/budget_exhausted)))
+  (var task_count (tasks ~ size))
+  (var solve_rate
+    (if (== task_count 0)
+      0.0
+      (/ ($to_float solved) ($to_float task_count))))
+  `(library_arm_result
+     ^arm %arm
+     ^task_count %task_count
+     ^solved %solved
+     ^solve_rate %solve_rate
+     ^candidate_executions %candidate_executions
+     ^verifier_calls %verifier_calls
+     ^verifier_rejections %verifier_rejections
+     ^budget_exhausted_tasks %budget_exhausted_tasks
+     ^library_solutions %library_solutions
+     ^library_shape %(library_search_shape subject library)
+     ^task_results %task_results))
+
+(fn evaluate_exact_enumerator [subject : Node, corpus : Node,
+                               induced_library : (List Node),
+                               unrelated_library : (List Node)] : Node
+  (var base
+    (evaluate_library_arm
+      subject corpus/heldout (quote base) []))
+  (var induced
+    (evaluate_library_arm
+      subject corpus/heldout (quote induced) induced_library))
+  (var unrelated
+    (evaluate_library_arm
+      subject corpus/heldout (quote unrelated) unrelated_library))
+  `(exact_enumerator_evaluation
+     ^corpus_seed %corpus/seed
+     ^candidate_budget %subject/candidate_budget
+     ^search_token_depth %subject/search_token_depth
+     ^base %base
+     ^induced %induced
+     ^unrelated %unrelated
+     ^induced_advantage %(- induced/solve_rate unrelated/solve_rate)))
 
 (fn program_uses? [program : Node, name] : Bool
   (for token in ($body program)
@@ -1207,6 +1375,7 @@
        (quote (program (rotate_right) (map_add_one)))
        (quote (program (map_sub_one) (map_double)))]))
   (var base_search (search_task subject subject/transfer_task []))
+  (var base_shape (library_search_shape subject []))
   (var induced_search
     (search_task subject subject/transfer_task induction/library))
   (var overlong
@@ -1216,6 +1385,31 @@
         (tail) (tail) (tail) (tail))))
   (var overlong_expansion (expand_program subject overlong []))
   (var bounds_rejected (! overlong_expansion/valid))
+  (var overflowing_candidate
+    (quote
+      (program
+        (duplicate_each) (duplicate_each) (duplicate_each)
+        (duplicate_each) (duplicate_each))))
+  (var overflowing_execution
+    (try_run_program subject overflowing_candidate [] [1 2 3 4]))
+  (var candidate_bounds_rejected (! overflowing_execution/valid))
+  (var verifier_boundary_task
+    (quote
+      (corpus_task
+        ^id verifier_boundary
+        ^public (task ^id verifier_boundary
+                      ^cases [(case ^input [] ^expected [])])
+        ^verifier
+          (verifier_task
+            ^hidden_cases [(case ^input [1 2] ^expected [2])]))))
+  (var verifier_boundary_search
+    (search_corpus_task subject verifier_boundary_task []))
+  (var hidden_verifier_rejects_public_false_positive
+    (&& verifier_boundary_search/solved
+        (&& (== verifier_boundary_search/program (quote (program (tail))))
+            (&& (== verifier_boundary_search/candidate_executions 2)
+                (&& (== verifier_boundary_search/verifier_calls 2)
+                    (== verifier_boundary_search/verifier_rejections 1))))))
   (var expected_pattern
     [(quote (tail)) (quote (reverse))])
   (var valid
@@ -1238,8 +1432,12 @@
       mismatched_shape_rejected
       (! no_gain_induction/accepted)
       bounds_rejected
+      candidate_bounds_rejected
+      hidden_verifier_rejects_public_false_positive
       (! base_search/solved)
-      (== base_search/candidate_executions subject/candidate_budget)
+      (== base_search/candidate_executions
+          base_shape/candidate_space)
+      (! base_search/budget_exhausted)
       induced_search/solved
       (program_uses? induced_search/program subject/abstraction_name)
       (verifies_task? subject induced_search/program induction/library
@@ -1250,6 +1448,9 @@
      ^training_valid %training_valid
      ^no_gain_rejected %(! no_gain_induction/accepted)
      ^bounds_rejected %bounds_rejected
+     ^candidate_bounds_rejected %candidate_bounds_rejected
+     ^hidden_verifier_rejects_public_false_positive
+       %hidden_verifier_rejects_public_false_positive
      ^induction %induction
      ^iterative_induction %iterative
      ^iterative_evidence %iterative_evidence
