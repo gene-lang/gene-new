@@ -8,7 +8,10 @@ screened corpus generator, full-size corpus and control pilots, and a complete
 candidate review/freeze/evaluate toolchain whose treatment gate still awaits an
 independent attestation; experiment 4 has a qualified local model plus a bounded
 verifier pilot, while its first exact-list task subject is rejected after
-failing the preregistered frontier gate.
+failing the preregistered frontier gate. Its demonstration-defined replacement
+also failed after the qualified model exhausted its generation budget without a
+tool call at both preregistered arities. A third interaction design has not been
+qualified or independently reviewed.
 Those readiness artifacts do not pre-register any treatment comparison.
 Candidate thresholds and sample sizes migrated here preserve design work
 without making the architecture note an experimental manual.

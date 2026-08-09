@@ -195,3 +195,29 @@ after the only allowed arity change. This subject and its eight never-generated
 evaluation pairs are permanently retired. The source, exporter, harness, three
 immutable run reports, and smoke remain checked in as reproducible negative
 evidence; they are not a treatment-ready task distribution.
+
+`src/latent_workflow_subject.gene` is the retained, rejected version-2 subject.
+Public prompts show three input/output demonstrations per workflow instead of
+the primitive sequence. The exact generator enumerates 1,885 programs of length
+zero through three, reduces them to 557 structural behaviors, and retains 426
+depth-three behaviors that are uniquely identified by every one of six disjoint
+demonstration packs. It selects 30 families with complete 12-primitive coverage
+and builds the same full-size training, replay, probe, and composition records.
+
+Run the excluded deterministic smoke and the model-harness cross-check with:
+
+```bash
+bin/gene run examples/general_intelligence/tests/latent_workflow_subject_smoke.gene
+python3 tools/pilot_latent_workflow_agent.py --self-test
+```
+
+The first five demonstration packs are used by training variants; the sixth is
+held out for probes and compositions. Exact expected outputs, canonical
+programs, semantic signatures, and replay cases stay in the verifier projection.
+The arity-three pilot on excluded seeds `910101`/`910102` and its one allowed
+arity-two revision on `910103`/`910104` both scored 0/20. Every task used the
+full 1,024 generated-token allowance and returned no tool call. The exact
+generator remains useful negative evidence, but this whole-task inference
+interaction is not treatment-ready. A later version may check candidate
+programs only against the public demonstrations so the model can solve one
+component per tool round; hidden replay cases must remain inaccessible.

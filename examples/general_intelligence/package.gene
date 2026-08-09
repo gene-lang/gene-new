@@ -18,5 +18,6 @@
     (application "skill_verifier_pilot" ^entry "src/skill_verifier_pilot.gene")
     (application "skill_verifier_service_kernel" ^entry "src/skill_verifier_service_kernel.gene")
     (application "lifelong_task_subject_smoke" ^entry "tests/lifelong_task_subject_smoke.gene")
+    (application "latent_workflow_subject_smoke" ^entry "tests/latent_workflow_subject_smoke.gene")
   ]
 }

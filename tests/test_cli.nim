@@ -250,6 +250,13 @@ suite "cli — gene run":
     check "replay_valid=true replay_cases=720 training_valid=true " &
       "probes_valid=true compositions_valid=true" in ran.output
 
+  test "rejected latent-workflow subject crosschecks public projections":
+    let checked = execCmdEx(
+      "python3 tools/pilot_latent_workflow_agent.py --self-test")
+    check checked.exitCode == 0
+    check "tasks=2 arity=2 public_hidden_fields=0 exact_crosscheck=true" in
+      checked.output
+
   test "main receives only explicitly granted named capabilities":
     let grantedMain = writeCliProgram("granted_main.gene",
       "(fn main [args, ^config : Capability] " &

@@ -227,9 +227,19 @@ and 16/20 after the one allowed revision to six-family, 18-operation workflows,
 above the predeclared 75% frontier ceiling. Because public prompts revealed the
 exact primitive tokens, added arity mainly tested trace copying rather than
 learning or retrieving reusable skills. Subject version 1 and its still-unopened
-eight evaluation pairs are retired. Experiment 4 now requires a newly reviewed
-subject whose latent transformations are inferred from demonstrations or
-outcomes, new excluded pilot seeds, and a new unopened evaluation schedule.
+eight evaluation pairs are retired. The candidate replacement now represents
+each workflow by public input/output demonstrations while keeping its primitive
+expansion, expected query output, semantic signature, and replay cases on the
+verifier side. Its generator finds 426 behaviors that are uniquely identified
+by each of six disjoint example packs, selects 30 with complete primitive
+coverage, and exactly revalidates the full curriculum. That second subject also
+failed its disjoint gate, this time at the floor: both the initial three-workflow
+pilot and the allowed two-workflow revision scored 0/20 because every episode
+used its full generation allowance before returning any tool call. The next
+design must interleave inference and action through bounded checks against
+public demonstrations without turning hidden replay into an oracle. It remains
+a new experimental version requiring new excluded seeds, independent review,
+and a new unopened evaluation schedule before treatment.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment

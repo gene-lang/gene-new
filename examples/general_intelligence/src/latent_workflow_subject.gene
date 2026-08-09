@@ -1,0 +1,692 @@
+# Version-2 experiment-4 subject. Public examples identify latent list
+# transformations without exposing their primitive expansion. Exact programs,
+# semantic signatures, replay cases, and expected query outputs remain in the
+# verifier projection.
+
+(mod latent_workflow_subject
+  @doc "deterministic demonstration-defined lifelong workflows")
+
+(import $str [join])
+(import [default_induction_subject run_program try_run_program
+         structural_screen_inputs program_signature programs_of_length
+         corpus_draw generate_input]
+        from "./library_induction.gene")
+
+(fn latent_interpreter_subject [composition_arity : Int] : Node
+  (var subject (default_induction_subject))
+  (subject ~ set_prop! `max_expanded_steps (* composition_arity 3))
+  (subject ~ set_prop! `max_input_items 64)
+  (subject ~ set_prop! `max_output_items 512)
+  subject)
+
+# Packs zero through four are used by the five training presentations. Pack
+# five is held out for probes and compositions. No input occurs in two packs.
+(fn public_teaching_inputs [] : List
+  [[
+     [3 -4 -2 0 0 -2 1]
+     [5 -5 2 1 3]
+     [2 5 2 3 4 5 0]]
+   [
+     [5 -3 -3 -2 3 4 -1]
+     [-3 4 4 -4 5 0]
+     [-4 -5 4 4 -1 -3]]
+   [
+     [0 3 -1 0 -1 0]
+     [-1 2 2 1 -3 -4 5]
+     [4 2 0 5 -4 -2 4]]
+   [
+     [3 -5 -5 2 0 -1]
+     [4 -5 2 5 -4 -2]
+     [-4 0 4 -1 -3]]
+   [
+     [3 0 0 -2 3 -2 -4]
+     [2 5 -2 -3]
+     [-5 1 5 3 3 -1 -2]]
+   [
+     [1 -3 0 2 0]
+     [2 3 -1 -3]
+     [2 -4 2 3]]])
+
+(fn program_steps [program : Node] : (List Node)
+  (match program
+    (when (program steps...) steps)
+    (else ($panic "latent workflow program must be a program node"))))
+
+(fn compose_programs [programs : (List Node)] : Node
+  (var steps : (List Node) [])
+  (for program in programs
+    (for step in (program_steps program)
+      (steps ~ push! step)))
+  `(program %steps...))
+
+(fn program_contains? [program : Node, primitive : Node] : Bool
+  ((program_steps program) ~ contains? primitive))
+
+(fn teaching_signature [subject : Node, program : Node,
+                        inputs : List] : Str
+  (var signature "")
+  (for input in inputs
+    (set signature
+      $"${signature}|${(run_program subject program [] input)}"))
+  signature)
+
+(fn behavior_catalog [subject : Node] : Node
+  (var seen : Map {})
+  (var behaviors : (List Node) [])
+  (var candidate_count 0)
+  (var depth 0)
+  (while (<= depth 3)
+    (for program in (programs_of_length subject/primitive_tokens depth)
+      (set candidate_count (+ candidate_count 1))
+      (var signature
+        (program_signature subject program (structural_screen_inputs)))
+      (if_yes (== (seen ~ get signature) void)
+        (seen ~ put! signature true)
+        (behaviors ~ push!
+          `(workflow_behavior
+             ^signature %signature
+             ^minimum_depth %depth
+             ^canonical_program %program))))
+    (set depth (+ depth 1)))
+  `(behavior_catalog
+     ^candidate_count %candidate_count
+     ^behaviors %behaviors))
+
+(fn teachable_behavior_catalog [subject : Node, catalog : Node] : Node
+  (var packs (public_teaching_inputs))
+  (var projection_counts : (List Map) [])
+  (for inputs in packs
+    (var counts : Map {})
+    (for behavior in catalog/behaviors
+      (var projection
+        (teaching_signature subject behavior/canonical_program inputs))
+      (var previous (counts ~ get projection))
+      (if (== previous void)
+        (counts ~ put! projection 1)
+        (counts ~ put! projection (+ previous 1))))
+    (projection_counts ~ push! counts))
+
+  (var teachable : (List Node) [])
+  (for behavior in catalog/behaviors
+    (if_yes (== behavior/minimum_depth 3)
+      (var valid true)
+      (var teaching_signatures : (List Str) [])
+      (var pack_index 0)
+      (for inputs in packs
+        (var projection
+          (teaching_signature subject behavior/canonical_program inputs))
+        (teaching_signatures ~ push! projection)
+        (if_not (== (projection_counts/%pack_index ~ get projection) 1)
+          (set valid false))
+        (set pack_index (+ pack_index 1)))
+      (if_yes valid
+        (teachable ~ push!
+          `(teachable_behavior
+             ^signature %behavior/signature
+             ^canonical_program %behavior/canonical_program
+             ^teaching_signatures %teaching_signatures)))))
+  `(teachable_behavior_catalog
+     ^candidate_program_count %catalog/candidate_count
+     ^distinct_behavior_count %(catalog/behaviors ~ size)
+     ^teachable_behaviors %teachable))
+
+(fn teaching_pack [subject : Node, program : Node,
+                    pack_index : Int] : Node
+  (var packs (public_teaching_inputs))
+  (var inputs packs/%pack_index)
+  (var cases : (List Node) [])
+  (for input in inputs
+    (cases ~ push!
+      `(demonstration
+         ^input %input
+         ^output %(run_program subject program [] input))))
+  `(workflow_examples ^pack_index %pack_index ^cases %cases))
+
+(fn all_teaching_packs [subject : Node, program : Node] : List
+  (var result : List [])
+  (repeat pack_index in 6
+    (result ~ push! (teaching_pack subject program pack_index)))
+  result)
+
+(fn append_family [subject : Node, families : (List Node),
+                   behavior : Node] : Nil
+  (var index (families ~ size))
+  (var family_id $"latent_workflow_${index}")
+  (families ~ push!
+    `(latent_workflow_family
+       ^index %index
+       ^id %family_id
+       ^semantic_signature %behavior/signature
+       ^canonical_program %behavior/canonical_program
+       ^teaching_signatures %behavior/teaching_signatures
+       ^teaching_packs %(all_teaching_packs
+                          subject behavior/canonical_program))))
+
+(fn primitive_covered? [families : (List Node), primitive : Node] : Bool
+  (for family in families
+    (if (program_contains? family/canonical_program primitive)
+      (return true)))
+  false)
+
+(fn generate_family_catalog [subject : Node, initial_state : Int,
+                             count : Int] : Node
+  (if (|| (<= count 0) (> count 30))
+    ($panic "latent workflow family count must be in 1..30"))
+  (var complete (behavior_catalog subject))
+  (var candidates (teachable_behavior_catalog subject complete))
+  (var pool candidates/teachable_behaviors)
+  (if (< (pool ~ size) count)
+    ($panic "not enough uniquely teachable latent behaviors"))
+  (var state initial_state)
+  (var families : (List Node) [])
+  (var used : Map {})
+  (var attempts 0)
+
+  # Force complete primitive coverage before filling the remaining positions.
+  (for primitive in subject/primitive_tokens
+    (if_not (primitive_covered? families primitive)
+      (var found false)
+      (while (! found)
+        (if (>= attempts 100000)
+          ($panic "latent workflow coverage generation exhausted its bound"))
+        (set attempts (+ attempts 1))
+        (var draw (corpus_draw state (pool ~ size)))
+        (set state draw/state)
+        (var pool_index draw/value)
+        (var behavior pool/%pool_index)
+        (if_yes (&&
+                  (== (used ~ get behavior/signature) void)
+                  (program_contains?
+                    behavior/canonical_program primitive))
+          (used ~ put! behavior/signature true)
+          (append_family subject families behavior)
+          (set found true)))))
+
+  (while (< (families ~ size) count)
+    (if (>= attempts 100000)
+      ($panic "latent workflow family generation exhausted its bound"))
+    (set attempts (+ attempts 1))
+    (var draw (corpus_draw state (pool ~ size)))
+    (set state draw/state)
+    (var pool_index draw/value)
+    (var behavior pool/%pool_index)
+    (if_yes (== (used ~ get behavior/signature) void)
+      (used ~ put! behavior/signature true)
+      (append_family subject families behavior)))
+  `(family_catalog_generation
+     ^state %state
+     ^families %families
+     ^attempts %attempts
+     ^candidate_program_count %candidates/candidate_program_count
+     ^distinct_behavior_count %candidates/distinct_behavior_count
+     ^teachable_behavior_count %(pool ~ size)))
+
+(fn generate_family_order [initial_state : Int, count : Int] : Node
+  (var state initial_state)
+  (var order : (List Int) [])
+  (var selected : Map {})
+  (while (< (order ~ size) count)
+    (var draw (corpus_draw state count))
+    (set state draw/state)
+    (var key $"${draw/value}")
+    (if_yes (== (selected ~ get key) void)
+      (selected ~ put! key true)
+      (order ~ push! draw/value)))
+  `(family_order_generation ^state %state ^order %order))
+
+(fn draw_effective_case [subject : Node, program : Node,
+                         initial_state : Int] : Node
+  (var state initial_state)
+  (var attempts 0)
+  (while (< attempts 1000)
+    (set attempts (+ attempts 1))
+    (var draw (generate_input state))
+    (set state draw/state)
+    (var output (run_program subject program [] draw/input))
+    (if (&& (!= output draw/input) (! (output ~ empty?)))
+      (return
+        `(case_draw
+           ^state %state ^input %draw/input ^expected %output
+           ^attempts %attempts))))
+  ($panic "could not draw an effective latent workflow case"))
+
+(fn task_record [id : Str, kind, input : (List Int),
+                 expected : (List Int), components : List,
+                 target_program : Node, signatures : List] : Node
+  `(latent_workflow_task
+     ^public
+       (task
+         ^id %id ^kind %kind
+         ^goal "Infer each workflow from its demonstrations and apply the workflows in order to the query input."
+         ^components %components
+         ^input %input
+         ^tool_contract "apply_operation_or_verified_skill_then_submit")
+     ^verifier
+       (task_verifier
+         ^expected %expected
+         ^canonical_target_program %target_program
+         ^required_semantic_signatures %signatures
+         ^maximum_primitive_steps %((program_steps target_program) ~ size))))
+
+(fn public_component [family : Node, pack_index : Int,
+                      position : Int] : Node
+  `(workflow_component
+     ^position %position
+     ^workflow_id %family/id
+     ^examples %family/teaching_packs/%pack_index/cases))
+
+(fn generate_training_tasks [subject : Node, families : (List Node),
+                             order : (List Int), initial_state : Int,
+                             variants_per_family : Int] : Node
+  (var state initial_state)
+  (var tasks : (List Node) [])
+  (var order_position 0)
+  (while (< order_position (order ~ size))
+    (var family_index order/%order_position)
+    (var family families/%family_index)
+    (repeat variant in variants_per_family
+      (var draw
+        (draw_effective_case subject family/canonical_program state))
+      (set state draw/state)
+      (tasks ~ push!
+        (task_record
+          $"train_${order_position}_${variant}" (quote training)
+          draw/input draw/expected
+          [(public_component family variant 0)]
+          family/canonical_program [family/semantic_signature])))
+    (set order_position (+ order_position 1)))
+  `(task_generation ^state %state ^tasks %tasks))
+
+(fn generate_replay_suites [subject : Node, families : (List Node),
+                            initial_state : Int] : Node
+  (var state initial_state)
+  (var suites : (List Node) [])
+  (for family in families
+    (var cases : (List Node) [])
+    (var case_index 0)
+    (for input in (structural_screen_inputs)
+      (cases ~ push!
+        `(skill_case
+           ^id $"${family/id}_structural_${case_index}"
+           ^input %input
+           ^expected %(run_program
+                        subject family/canonical_program [] input)))
+      (set case_index (+ case_index 1)))
+    (repeat random_index in 8
+      (var draw (generate_input state))
+      (set state draw/state)
+      (cases ~ push!
+        `(skill_case
+           ^id $"${family/id}_random_${random_index}"
+           ^input %draw/input
+           ^expected %(run_program
+                        subject family/canonical_program [] draw/input))))
+    (suites ~ push!
+      `(skill_replay_suite
+         ^family_id %family/id
+         ^semantic_signature %family/semantic_signature
+         ^cases %cases)))
+  `(replay_suite_generation ^state %state ^suites %suites))
+
+(fn generate_retention_probes [subject : Node, families : (List Node),
+                               order : (List Int), initial_state : Int] : Node
+  (var state initial_state)
+  (var tasks : (List Node) [])
+  (var checkpoint 5)
+  (while (<= checkpoint (order ~ size))
+    (repeat introduced_position in checkpoint
+      (var family_index order/%introduced_position)
+      (var family families/%family_index)
+      (var draw
+        (draw_effective_case subject family/canonical_program state))
+      (set state draw/state)
+      (tasks ~ push!
+        (task_record
+          $"probe_${checkpoint}_${introduced_position}"
+          (quote retention_probe) draw/input draw/expected
+          [(public_component family 5 0)]
+          family/canonical_program [family/semantic_signature])))
+    (set checkpoint (+ checkpoint 5)))
+  `(task_generation ^state %state ^tasks %tasks))
+
+(fn generate_composition_input [initial_state : Int] : Node
+  (var length_draw (corpus_draw initial_state 7))
+  (var state length_draw/state)
+  (var input : (List Int) [])
+  (repeat _ in (+ length_draw/value 8)
+    (var value_draw (corpus_draw state 11))
+    (set state value_draw/state)
+    (input ~ push! (- value_draw/value 5)))
+  `(input_draw ^state %state ^input %input))
+
+(fn draw_composition_case [subject : Node, programs : (List Node),
+                           initial_state : Int] : Node
+  (var state initial_state)
+  (var attempts 0)
+  (while (< attempts 1000)
+    (set attempts (+ attempts 1))
+    (var draw (generate_composition_input state))
+    (set state draw/state)
+    (var current draw/input)
+    (var valid true)
+    (for program in programs
+      (var execution (try_run_program subject program [] current))
+      (if_not execution/valid
+        (set valid false)
+        (break))
+      (if (== execution/output current) (set valid false))
+      (set current execution/output))
+    (if (&& valid (!= current draw/input) (! (current ~ empty?)))
+      (return
+        `(case_draw
+           ^valid true ^state %state ^input %draw/input
+           ^expected %current ^attempts %attempts))))
+  `(case_draw ^valid false ^state %state ^attempts %attempts))
+
+(fn generate_composition_tasks [subject : Node, families : (List Node),
+                                initial_state : Int, count : Int,
+                                composition_arity : Int] : Node
+  (var state initial_state)
+  (var tasks : (List Node) [])
+  (var used_tuples : Map {})
+  (var attempts 0)
+  (while (< (tasks ~ size) count)
+    (if (>= attempts 100000)
+      ($panic "latent workflow composition generation exhausted its bound"))
+    (set attempts (+ attempts 1))
+    (var selected : Map {})
+    (var programs : (List Node) [])
+    (var signatures : List [])
+    (var components : List [])
+    (var tuple_parts : (List Str) [])
+    (while (< (programs ~ size) composition_arity)
+      (var family_draw (corpus_draw state (families ~ size)))
+      (set state family_draw/state)
+      (var key $"${family_draw/value}")
+      (if_yes (== (selected ~ get key) void)
+        (selected ~ put! key true)
+        (var family_index family_draw/value)
+        (var family families/%family_index)
+        (var position (programs ~ size))
+        (programs ~ push! family/canonical_program)
+        (signatures ~ push! family/semantic_signature)
+        (components ~ push! (public_component family 5 position))
+        (tuple_parts ~ push! key)))
+    (var tuple_key (join tuple_parts "_"))
+    (if_yes (== (used_tuples ~ get tuple_key) void)
+      (var draw (draw_composition_case subject programs state))
+      (set state draw/state)
+      (if_yes draw/valid
+        (used_tuples ~ put! tuple_key true)
+        (var task_index (tasks ~ size))
+        (tasks ~ push!
+          (task_record
+            $"latent_composition_${task_index}"
+            (quote heldout_composition) draw/input draw/expected
+            components (compose_programs programs) signatures)))))
+  `(task_generation
+     ^state %state ^tasks %tasks ^attempts %attempts))
+
+(fn generate_latent_workflow_subject [catalog_seed : Int, order_seed : Int,
+                                      family_count : Int,
+                                      variants_per_family : Int,
+                                      heldout_count : Int,
+                                      composition_arity : Int] : Node
+  (if (|| (<= catalog_seed 0) (>= catalog_seed 2147483647))
+    ($panic "latent workflow catalog seed must be in 1..2147483646"))
+  (if (|| (<= order_seed 0) (>= order_seed 2147483647))
+    ($panic "latent workflow order seed must be in 1..2147483646"))
+  (if (|| (!= family_count 30) (!= variants_per_family 5))
+    ($panic "primary latent subject requires 30 families and five variants"))
+  (if (!= heldout_count 60)
+    ($panic "primary latent subject requires 60 heldout compositions"))
+  (if (|| (< composition_arity 2) (> composition_arity 4))
+    ($panic "latent workflow composition arity must be in 2..4"))
+  (var subject (latent_interpreter_subject composition_arity))
+  (var catalog (generate_family_catalog subject catalog_seed family_count))
+  (var order (generate_family_order order_seed family_count))
+  (var replay
+    (generate_replay_suites subject catalog/families order/state))
+  (var training
+    (generate_training_tasks
+      subject catalog/families order/order replay/state variants_per_family))
+  (var probes
+    (generate_retention_probes
+      subject catalog/families order/order training/state))
+  (var compositions
+    (generate_composition_tasks
+      subject catalog/families probes/state heldout_count composition_arity))
+  `(latent_workflow_subject
+     ^version 2
+     ^generator "park_miller_48271_mod_2147483647"
+     ^catalog_seed %catalog_seed
+     ^order_seed %order_seed
+     ^family_count %family_count
+     ^variants_per_family %variants_per_family
+     ^replay_cases_per_family 24
+     ^retention_block_size 5
+     ^heldout_composition_count %heldout_count
+     ^composition_arity %composition_arity
+     ^candidate_program_count %catalog/candidate_program_count
+     ^distinct_behavior_count %catalog/distinct_behavior_count
+     ^teachable_behavior_count %catalog/teachable_behavior_count
+     ^catalog %catalog/families
+     ^family_order %order/order
+     ^replay_suites %replay/suites
+     ^training %training/tasks
+     ^retention_probes %probes/tasks
+     ^heldout_compositions %compositions/tasks
+     ^generation
+       (generation_stats
+         ^catalog_attempts %catalog/attempts
+         ^composition_attempts %compositions/attempts
+         ^final_random_state %compositions/state)))
+
+(fn family_by_id [families : (List Node), family_id : Str] : Node?
+  (for family in families
+    (if (== family/id family_id) (return family)))
+  nil)
+
+(fn verify_task [subject : Node, families : (List Node), task : Node,
+                 expected_kind, expected_pack_index : Int,
+                 expected_component_count : Int] : Bool
+  (if_not (&&
+            (== task/public/kind expected_kind)
+            (== (task/public/components ~ size) expected_component_count)
+            (== (task/verifier/required_semantic_signatures ~ size)
+                expected_component_count)
+            (== task/verifier/maximum_primitive_steps
+                (* expected_component_count 3))
+            (==
+              (run_program
+                subject task/verifier/canonical_target_program []
+                task/public/input)
+              task/verifier/expected))
+    (return false))
+  (var programs : (List Node) [])
+  (var component_index 0)
+  (for component in task/public/components
+    (var family (family_by_id families component/workflow_id))
+    (if (== family nil) (return false))
+    (if_not (&&
+              (== component/position component_index)
+              (== component/examples
+                  family/teaching_packs/%expected_pack_index/cases)
+              (== task/verifier/required_semantic_signatures/%component_index
+                  family/semantic_signature))
+      (return false))
+    (programs ~ push! family/canonical_program)
+    (set component_index (+ component_index 1)))
+  (== task/verifier/canonical_target_program (compose_programs programs)))
+
+(fn verify_latent_workflow_subject [candidate : Node] : Node
+  (var subject (latent_interpreter_subject candidate/composition_arity))
+  (var complete (behavior_catalog subject))
+  (var teachable (teachable_behavior_catalog subject complete))
+  (var teachable_by_signature : Map {})
+  (for behavior in teachable/teachable_behaviors
+    (teachable_by_signature ~ put! behavior/signature behavior))
+
+  (var catalog_valid (== (candidate/catalog ~ size) candidate/family_count))
+  (var operation_coverage_valid true)
+  (var family_ids : Map {})
+  (var family_signatures : Map {})
+  (var family_index 0)
+  (for family in candidate/catalog
+    (var behavior (teachable_by_signature ~ get family/semantic_signature))
+    (if_not (&&
+              (!= behavior void)
+              (== family/index family_index)
+              (== family/id $"latent_workflow_${family_index}")
+              (== family/canonical_program behavior/canonical_program)
+              (== family/teaching_signatures behavior/teaching_signatures)
+              (== family/teaching_packs
+                  (all_teaching_packs subject family/canonical_program))
+              (== (family_ids ~ get family/id) void)
+              (== (family_signatures ~ get family/semantic_signature) void))
+      (set catalog_valid false))
+    (family_ids ~ put! family/id true)
+    (family_signatures ~ put! family/semantic_signature true)
+    (set family_index (+ family_index 1)))
+  (for primitive in subject/primitive_tokens
+    (if_not (primitive_covered? candidate/catalog primitive)
+      (set operation_coverage_valid false)))
+
+  (var order_valid (== (candidate/family_order ~ size) candidate/family_count))
+  (var order_seen : Map {})
+  (for index in candidate/family_order
+    (var key $"${index}")
+    (if_not (&&
+              (>= index 0) (< index candidate/family_count)
+              (== (order_seen ~ get key) void))
+      (set order_valid false))
+    (order_seen ~ put! key true))
+
+  (var replay_valid
+    (== (candidate/replay_suites ~ size) candidate/family_count))
+  (var replay_case_count 0)
+  (var replay_ids : Map {})
+  (for suite in candidate/replay_suites
+    (var family (family_by_id candidate/catalog suite/family_id))
+    (if_not (&&
+              (!= family nil)
+              (== suite/semantic_signature family/semantic_signature)
+              (== (suite/cases ~ size) candidate/replay_cases_per_family)
+              (== (replay_ids ~ get suite/family_id) void))
+      (set replay_valid false))
+    (replay_ids ~ put! suite/family_id true)
+    (for test_case in suite/cases
+      (set replay_case_count (+ replay_case_count 1))
+      (if (== family nil)
+        (then (set replay_valid false))
+        (else
+          (if_not (== test_case/expected
+                      (run_program
+                        subject family/canonical_program [] test_case/input))
+            (set replay_valid false))))))
+
+  (var training_valid
+    (== (candidate/training ~ size)
+        (* candidate/family_count candidate/variants_per_family)))
+  (var training_ids : Map {})
+  (var training_index 0)
+  (for task in candidate/training
+    (var variant (// training_index candidate/variants_per_family))
+    (if_not (verify_task
+              subject candidate/catalog task (quote training)
+              variant 1)
+      (set training_valid false))
+    (if (!= (training_ids ~ get task/public/id) void)
+      (set training_valid false))
+    (training_ids ~ put! task/public/id true)
+    (set training_index (+ training_index 1)))
+
+  (var expected_probe_count 0)
+  (var checkpoint candidate/retention_block_size)
+  (while (<= checkpoint candidate/family_count)
+    (set expected_probe_count (+ expected_probe_count checkpoint))
+    (set checkpoint (+ checkpoint candidate/retention_block_size)))
+  (var probes_valid
+    (== (candidate/retention_probes ~ size) expected_probe_count))
+  (var probe_ids : Map {})
+  (for task in candidate/retention_probes
+    (if_not (verify_task
+              subject candidate/catalog task (quote retention_probe) 5 1)
+      (set probes_valid false))
+    (if (!= (probe_ids ~ get task/public/id) void)
+      (set probes_valid false))
+    (probe_ids ~ put! task/public/id true))
+
+  (var compositions_valid
+    (== (candidate/heldout_compositions ~ size)
+        candidate/heldout_composition_count))
+  (var composition_ids : Map {})
+  (var composition_tuples : Map {})
+  (for task in candidate/heldout_compositions
+    (if_not (verify_task
+              subject candidate/catalog task (quote heldout_composition)
+              5 candidate/composition_arity)
+      (set compositions_valid false))
+    (var tuple_parts : (List Str) [])
+    (var current task/public/input)
+    (var every_component_effective true)
+    (for component in task/public/components
+      (var family (family_by_id candidate/catalog component/workflow_id))
+      (if (== family nil)
+        (then (set every_component_effective false))
+        (else
+          (var next
+            (run_program subject family/canonical_program [] current))
+          (if (== next current) (set every_component_effective false))
+          (set current next)
+          (tuple_parts ~ push! family/id))))
+    (if_not (&& every_component_effective
+              (== current task/verifier/expected)
+              (!= current task/public/input)
+              (! (current ~ empty?)))
+      (set compositions_valid false))
+    (var tuple_key (join tuple_parts "|"))
+    (if (!= (composition_tuples ~ get tuple_key) void)
+      (set compositions_valid false))
+    (composition_tuples ~ put! tuple_key true)
+    (if (!= (composition_ids ~ get task/public/id) void)
+      (set compositions_valid false))
+    (composition_ids ~ put! task/public/id true))
+
+  (var counts_valid
+    (&&
+      (== candidate/version 2)
+      (== candidate/family_count 30)
+      (== candidate/variants_per_family 5)
+      (== candidate/replay_cases_per_family 24)
+      (== candidate/retention_block_size 5)
+      (== candidate/heldout_composition_count 60)
+      (>= candidate/composition_arity 2)
+      (<= candidate/composition_arity 4)
+      (== candidate/candidate_program_count 1885)
+      (== candidate/distinct_behavior_count (complete/behaviors ~ size))
+      (== candidate/teachable_behavior_count
+          (teachable/teachable_behaviors ~ size))
+      (== replay_case_count 720)
+      (== expected_probe_count 105)))
+  (var valid
+    (&& counts_valid catalog_valid operation_coverage_valid order_valid
+        replay_valid training_valid probes_valid compositions_valid))
+  `(latent_workflow_subject_verification
+     ^valid %valid
+     ^family_count %(candidate/catalog ~ size)
+     ^candidate_program_count %candidate/candidate_program_count
+     ^distinct_behavior_count %candidate/distinct_behavior_count
+     ^teachable_behavior_count %candidate/teachable_behavior_count
+     ^catalog_valid %catalog_valid
+     ^operation_coverage_valid %operation_coverage_valid
+     ^order_valid %order_valid
+     ^replay_valid %replay_valid
+     ^replay_case_count %replay_case_count
+     ^training_valid %training_valid
+     ^training_task_count %(candidate/training ~ size)
+     ^probes_valid %probes_valid
+     ^retention_probe_count %(candidate/retention_probes ~ size)
+     ^compositions_valid %compositions_valid
+     ^heldout_composition_count %(candidate/heldout_compositions ~ size)
+     ^counts_valid %counts_valid))

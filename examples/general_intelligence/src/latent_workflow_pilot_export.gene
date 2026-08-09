@@ -1,0 +1,72 @@
+# Trusted exporter for the excluded version-2 difficulty pilot. Demonstrations
+# and query inputs are public. Expected query outputs, canonical programs, and
+# semantic signatures remain on the Python verifier side.
+
+(mod latent_workflow_pilot_export)
+
+(import $json [stringify])
+(import gene/parse [parse_int])
+(import [generate_latent_workflow_subject verify_latent_workflow_subject
+         program_steps]
+        from "./latent_workflow_subject.gene")
+
+(fn operation_name [step : Node] : Str
+  (match step
+    (when (tail) "tail")
+    (when (init) "init")
+    (when (reverse) "reverse")
+    (when (rotate_left) "rotate_left")
+    (when (rotate_right) "rotate_right")
+    (when (map_add_one) "map_add_one")
+    (when (map_sub_one) "map_sub_one")
+    (when (map_double) "map_double")
+    (when (map_negate) "map_negate")
+    (when (keep_even) "keep_even")
+    (when (keep_odd) "keep_odd")
+    (when (duplicate_each) "duplicate_each")
+    (else ($panic "unknown latent workflow pilot operation"))))
+
+(fn export_component [component : Node] : Map
+  (var demonstrations : List [])
+  (for example in component/examples
+    (demonstrations ~ push!
+      {^input example/input ^output example/output}))
+  {^workflow_id component/workflow_id
+   ^demonstrations demonstrations})
+
+(fn main [args] : Nil
+  (var argv ($body args))
+  (if_not (== (argv ~ size) 4)
+    ($panic
+      "usage: latent_workflow_pilot_export <catalog-seed> <order-seed> <count> <composition-arity>"))
+  (var catalog_seed (parse_int argv/0))
+  (var order_seed (parse_int argv/1))
+  (var count (parse_int argv/2))
+  (var composition_arity (parse_int argv/3))
+  (if (|| (<= count 0) (> count 60))
+    ($panic "latent workflow pilot count must be in 1..60"))
+  (var subject
+    (generate_latent_workflow_subject
+      catalog_seed order_seed 30 5 60 composition_arity))
+  (var evidence (verify_latent_workflow_subject subject))
+  (if_not evidence/valid
+    ($panic $"latent workflow pilot subject invalid: ${evidence}"))
+  (repeat index in count
+    (var task subject/heldout_compositions/%index)
+    (var components : List [])
+    (for component in task/public/components
+      (components ~ push! (export_component component)))
+    (var operations : (List Str) [])
+    (for step in (program_steps task/verifier/canonical_target_program)
+      (operations ~ push! (operation_name step)))
+    ($println
+      (stringify
+        {^schema 2
+         ^id task/public/id
+         ^goal task/public/goal
+         ^input task/public/input
+         ^components components
+         ^expected task/verifier/expected
+         ^canonical_operations operations
+         ^semantic_signatures task/verifier/required_semantic_signatures
+         ^maximum_primitive_steps task/verifier/maximum_primitive_steps}))))

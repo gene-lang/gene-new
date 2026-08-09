@@ -3,8 +3,11 @@
 Status: the local-model qualification gate and an excluded verifier-service
 boundary pilot passed on 2026-08-09. The first lifelong-task subject failed its
 preregistered difficulty gate after its one allowed revision and is retained as
-negative evidence only. A replacement subject has not been specified, reviewed,
-or frozen, so the treatment comparison is not implementation-ready. See
+negative evidence only. A version-2 demonstration-defined subject then failed
+at the opposite boundary: the model exhausted its generation budget without
+calling a tool on either preregistered arity. Both versions are retained as
+negative evidence. A replacement interaction has not been specified, reviewed,
+or frozen, so the treatment comparison remains not implementation-ready. See
 [`README.md`](README.md).
 
 ## Rejected exact-list subject pilot
@@ -125,6 +128,102 @@ latent transformation inferable from public demonstrations or outcomes without
 listing its primitive expansion, preserve an exact hidden verifier, and run a
 new disjoint difficulty pilot under a newly reviewed protocol. No result from
 these pilots may tune the replacement's treatment comparison.
+
+## Rejected version-2 latent-workflow subject
+
+The second subject is retained in
+[`latent_workflow_subject.gene`](../../../../examples/general_intelligence/src/latent_workflow_subject.gene).
+It is permanently excluded and must not be used unchanged for treatment.
+It keeps the closed 12-operation integer-list interpreter but changes the
+learning problem. Public tasks never list a target primitive expansion. Each
+workflow is instead identified by three input/output demonstrations, and the
+agent must infer and execute the latent transformation on a query input.
+
+The finite hypothesis space contains all 1,885 programs of length zero through
+three. Their behavior on the 16-input structural bank collapses to 557 distinct
+signatures. A family must have minimum finite-bank depth three and must be
+uniquely identifiable as a behavior, rather than as one surface program, from
+each public demonstration pack. This distinction is necessary because
+commuting or cancelling primitives can give multiple programs the same behavior;
+demonstrations cannot identify an arbitrary canonical spelling.
+
+Six fixed packs contain three examples each and share no inputs. Packs zero
+through four appear one apiece in a family's five training variants. Pack five
+is absent from training and is used for retention probes and held-out
+compositions. Exactly 426 depth-three behaviors are uniquely identified by all
+six packs. For each catalog seed, deterministic selection chooses 30 distinct
+behaviors from that pool and first guarantees that their canonical programs
+collectively cover all 12 primitives. The five training variants have fresh,
+effective query inputs. Replay suites retain 16 structural and eight seeded
+private cases per family, and probes retain the same every-five-family schedule
+as version 1.
+
+The public task projection contains only a task identifier, ordered workflow
+components, their public demonstrations, a query input, and a primitive-step
+budget. Expected query output, canonical programs, structural signatures, and
+replay cases remain verifier data. The agent receives only:
+
+- `apply_operation(operation)`, which applies one declared primitive to the
+  verifier-owned current query value; and
+- `submit_result()`, which checks that current value against the hidden expected
+  output.
+
+A primitive trace may use any closed-language program within the budget that
+produces the exact answer. It is not required to equal the generator's canonical
+program because public demonstrations identify behavior rather than syntax.
+The verifier rejects direct answer text, unknown operations, and primitive calls
+beyond three per component. A later candidate skill is promoted only when its
+program matches the family's complete hidden replay suite. Its authenticated
+semantic signature, not its surface program order, supplies the compatibility
+label. Held-out success never requires invoking a skill; contribution remains a
+separate matched intervention as specified below.
+
+Sixty held-out tasks use distinct ordered tuples and pack five to demonstrate
+each component. Rejection sampling requires every component to change its
+intermediate value and requires the nonempty final output to differ from the
+query input. All arms can therefore solve a held-out task using primitive calls
+alone, while a verified skill provides a reusable executable representation of
+a transformation that was not disclosed as primitive tokens.
+
+The candidate complete-loop pilot is fixed before model exposure. Its first 20
+tasks use excluded seeds `910101`/`910102`, compose three workflows (nine
+primitive steps), and permit 11 model rounds: nine applications, submission,
+and one recovery round. Temperature is zero, model seed is `20260809`, context
+is 32,768 tokens, and generation is capped at 1,024 tokens per round. The plain
+agent starts a fresh conversation per task and has no cross-task state.
+
+The admissible frontier remains the closed success interval `0.25..0.75`. One
+and only one composition-arity revision is permitted on new excluded seeds
+`910103`/`910104`: use arity two if the initial result is below `0.25`, or arity
+four if it is above `0.75`, with the round ceiling fixed by
+`3 * composition_arity + 2`. If the revised result remains outside the interval,
+reject version 2. Adapter/schema failures are not difficulty results, but their
+reports are immutable and any repair must preserve the public task semantics.
+The model harness and Gene exporter must agree exactly on every demonstration
+and hidden query output before a model call.
+
+The initial arity-three run accepted 0 of 20 tasks. Every episode consumed the
+full 1,024-token generation allowance and ended after its first response with no
+tool call. It generated 20,480 tokens in 419.17 seconds, including 9.37 seconds
+of deterministic export. The immutable report is
+[`gpt-oss-20b-latent-workflow-difficulty-pilot-2026-08-09.json`](../qualifications/gpt-oss-20b-latent-workflow-difficulty-pilot-2026-08-09.json).
+
+The single allowed revision used arity two and new excluded seeds exactly as
+specified. It also accepted 0 of 20; again, every episode consumed 1,024 tokens
+and returned no tool call. It generated 20,480 tokens in 424.63 seconds,
+including 8.69 seconds of deterministic export. Its immutable report is
+[`gpt-oss-20b-latent-workflow-difficulty-pilot-v2-2026-08-09.json`](../qualifications/gpt-oss-20b-latent-workflow-difficulty-pilot-v2-2026-08-09.json).
+
+Version 2 therefore fails its declared frontier gate. There were no attempted
+tool calls, so this is not evidence about schema conformance or exact verifier
+acceptance; it is evidence that whole-task latent inference before the first
+action is below the qualified model's capability under the fixed generation
+budget. A third version may expose a bounded candidate-checking operation over
+the already-public demonstrations so inference can proceed one component at a
+time. Such an operation must not query hidden replay cases, reveal a canonical
+program, or carry promotion authority. It is a new interaction design, not a
+post hoc revision of version 2, and requires new excluded pilot seeds and a new
+unopened evaluation schedule after qualification and review.
 
 ## Candidate model-qualification gate
 
