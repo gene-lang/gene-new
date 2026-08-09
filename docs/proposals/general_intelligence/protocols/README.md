@@ -3,11 +3,13 @@
 These files hold implementation and evaluation details for the experiments
 motivated by [`../architecture.md`](../architecture.md). None of the treatment
 comparisons is frozen or ready to run. Experiment 2 has an executable mechanism
-and compute pilot; experiment 1 has a bounded exact interpreter and one-round
-induction smoke; experiment 4 has a qualified local model plus a bounded
-verifier pilot. Those readiness artifacts do not pre-register any treatment
-comparison. Candidate thresholds and sample sizes migrated here preserve
-design work without making the architecture note an experimental manual.
+and compute pilot; experiment 1 has a bounded exact interpreter, deterministic
+screened corpus generator, full-size corpus pilot, and capped iterative
+induction and unrelated-control pilots; experiment 4 has a qualified local
+model plus a bounded verifier pilot.
+Those readiness artifacts do not pre-register any treatment comparison.
+Candidate thresholds and sample sizes migrated here preserve design work
+without making the architecture note an experimental manual.
 
 Before an experiment begins, its protocol must specify the complete subject,
 generator or environment, algorithm, controls, evaluator, resource limits,

@@ -1,15 +1,22 @@
 # Candidate protocol: Gene library induction
 
-Status: bounded DSL, exact interpreter, one-round abstraction algorithm, and
-toy mechanism smoke specified and passing on 2026-08-09. The experimental
-corpus, iterative stopping rule, and donor-library matching procedure remain
-unfrozen, so the treatment evaluation is not implementation-ready. See
+Status: bounded DSL, exact interpreter, deterministic corpus generator,
+structural ambiguity screen, capped iterative abstraction algorithm, and
+mechanism pilots specified and passing on 2026-08-09. The evaluation seed
+schedule and model-proposer prior-mass matching procedure remain unfrozen, so
+the treatment evaluation is not implementation-ready. See
 [`README.md`](README.md).
 
 Implementation:
 [`examples/general_intelligence/src/library_induction.gene`](../../../../examples/general_intelligence/src/library_induction.gene).
 Mechanism smoke:
 [`examples/general_intelligence/tests/library_induction_smoke.gene`](../../../../examples/general_intelligence/tests/library_induction_smoke.gene).
+Corpus smoke and full-size pilot:
+[`library_induction_corpus_smoke.gene`](../../../../examples/general_intelligence/tests/library_induction_corpus_smoke.gene)
+and
+[`library_induction_corpus_pilot.gene`](../../../../examples/general_intelligence/tests/library_induction_corpus_pilot.gene).
+Unrelated-control pilot:
+[`library_induction_control_pilot.gene`](../../../../examples/general_intelligence/tests/library_induction_control_pilot.gene).
 
 ## Hypothesis and claim boundary
 
@@ -103,10 +110,22 @@ Accepted occurrences are replaced left-to-right without overlap. Correctness
 and MDL are separate gates: compression cannot make an unverified solution
 valid, and a correct repeated fragment is not retained without positive gain.
 
-The full experiment still must freeze whether induction repeats this round to a
-fixed point or stops after a fixed library size. It must also freeze naming,
-duplicate-body handling across rounds, and the total library-description cap.
-The toy smoke deliberately proves only one round and cannot select those rules.
+`induce_library_iterative` repeats that selection against the currently
+compressed corpus. Candidate bodies are always enumerated from the original
+primitive-only solutions, while marginal occurrences are counted only where
+the primitive sequence remains uncompressed. Consequently definitions remain
+flat and cannot capture across an existing abstraction token. Already selected
+bodies are skipped. Each accepted round must have strictly positive marginal
+gain and strictly lower total corpus MDL.
+
+Names are the exact strings `induced_0` through `induced_3` in acceptance
+order. Induction stops at the first round with no positive marginal candidate
+or after four definitions. The four definitions may cost at most 20 MDL units
+in total. `verify_iterative_induction` expands every compressed program through
+the resulting library and checks exact equality with its original primitive
+program, monotone MDL improvement, unique bodies, and both caps. The toy smoke
+reaches the no-positive-gain stop after one definition; the full corpus pilot
+reaches the four-item cap.
 
 ## Mechanism smoke
 
@@ -132,22 +151,113 @@ seconds with 12,943,360 bytes maximum resident set size. These are observations,
 not experimental ceilings; the candidate mechanism-smoke ceilings are one
 second and 64 MiB.
 
+## Candidate deterministic corpus generator
+
+`generate_corpus` uses the Park-Miller recurrence
+`state = (48271 * state) mod 2147483647`; valid seeds are the integers 1 through
+2,147,483,646. A corpus has exactly 100 library-learning tasks, 25
+model-selection tasks, and 50 held-out tasks. Every target is a four-primitive
+program. Four out of each five task positions contain one of four seeded,
+two-primitive latent motifs; motif identity and its position zero through two
+rotate arithmetically, while the remaining primitive positions are sampled.
+Every fifth task is an independently sampled background composition. Exact
+target semantics must be unique across all three partitions.
+
+A two-primitive motif is eligible only if it is itself structurally depth two
+and has at least 24 distinct depth-four semantic extensions at each of the
+three possible motif positions. The capacity check enumerates all 144 ordered
+pairs of filler primitives per position and applies the same shorter-program
+screen. This excludes absorbing motifs that are minimal in isolation but make
+one required target slot impossible to generate.
+
+The generator rejects a target unless it differs from every program of depth
+zero through three on this fixed 16-input structural bank:
+
+```text
+[] [0] [1] [-1]
+[0 1] [1 0] [-1 2] [2 -1]
+[0 1 2] [2 1 0] [-2 0 2] [1 -1 1]
+[2 2 -1] [-3 1 0] [1 2 -3 0] [0 -1 2 -3]
+```
+
+The screen enumerates exactly `1 + 12 + 12^2 + 12^3 = 1,885` shorter
+programs. Each accepted task exposes four seeded public cases. Its
+verifier-owned record contains all 16 structural cases plus eight additional
+seeded cases, for exactly 24 hidden cases. Seeded case inputs contain one to
+four integers sampled uniformly from `-5..5`. Including the complete screen
+bank means no shorter program can pass the hidden cases; this is a finite
+structural guarantee, not a claim of semantic equivalence over every input
+allowed by the interpreter.
+
+Target programs and hidden cases reside under the verifier record and must not
+cross the future arm-facing interface. Library-learning programs become arm
+inputs only after independent exact verification marks them solved.
+`verify_generated_corpus` reconstructs the shorter-program index and checks
+partition counts, exact public and hidden case counts, target execution,
+minimum depth, semantic uniqueness, motif placement, and all three declared
+motif extension capacities.
+
+Pilot seed `900101` produced all 175 tasks, of which 140 were motif-bearing.
+Generation rejected 244 shorter-equivalent candidates and 73 semantic
+duplicates. One-round induction recovered the latent motif
+`(map_double) (map_negate)` with support and occurrence count 21 and MDL gain
+18. Iterative induction recovered all four latent motifs, used 12 definition
+units, and reduced corpus MDL from 400 to 331 for a gain of 69. The successive
+round gains were 18, 17, 17, and 17, after which the four-item cap stopped
+induction. This pilot corpus and its seed are permanently excluded from model
+selection and evaluation.
+
+On the 2026-08-09 development machine, generation, independent validation, and
+four-round induction completed in 12.31 seconds with 17,694,720 bytes maximum
+resident set size. These are observations, not treatment ceilings. The
+candidate full-corpus generation-and-induction ceiling is 20 seconds and 64
+MiB; final ceilings still require an independently reviewed compute pilot on
+the frozen implementation.
+
+## Candidate unrelated-library matcher
+
+`library_search_shape` records library item count, the abstraction-body length
+at every search position, total definition MDL, total token count, the exact
+first and past library-token positions, search depth, untruncated candidate
+space, enforced candidate ceiling, and input/output arity. With four two-step
+abstractions, both libraries have four items, body lengths `[2 2 2 2]`, 12
+definition units, 16 total tokens, candidate space 4,369 through depth three,
+and the 500-candidate execution ceiling.
+
+`build_unrelated_library_control` accepts at most eight predeclared donor seeds
+and never examines model-selection or held-out tasks. In seed order, it rejects
+the target seed, generates and independently validates 100 donor-learning
+tasks, performs the same capped induction, and accepts the first library whose
+search shape matches exactly and whose primitive bodies are all disjoint from
+the target library. It records every rejected seed and reason. Equal shape
+makes branching, uniform enumerator mass, type arity, and library-token search
+positions exact rather than tolerance-based.
+
+The disjoint pilot targeted seed `900101`. Donor seed `900201` was rejected for
+one overlapping body; seed `900202` was accepted on the second attempt with an
+exact shape match and no shared body. The pilot completed in 32.49 seconds with
+18,219,008 bytes maximum resident set size. Both donor seeds and every artifact
+generated from them are permanently excluded from evaluation. The candidate
+three-seed matching ceiling is 60 seconds and 64 MiB; a frozen experiment must
+either retain that list size or justify and re-pilot a different ceiling.
+
+This exact match covers the implemented enumerator. A future learned proposer
+can assign different probability to equal-shaped tokens, so its empirical
+prior-mass tolerance and repair rule remain a separate freeze requirement.
+
 ## Experimental subject still to freeze
 
 Before evaluation, specify and independently review:
 
-- deterministic generators for eight independently seeded corpora of list
-  transformations, including invalid/trivial-task rejection;
-- 100 library-learning tasks, 25 model-selection tasks, and 50 held-out novel
-  compositions per corpus;
-- the primitive-depth and input-shape distributions, with held-out tasks deep
-  enough to require composition but within the eight-step interpreter bound;
-- exact public/hidden case counts and a structural ambiguity screen that
-  rejects tasks solved by an unintended shorter program;
-- the iterative induction stopping rule and library-description cap;
-- a tolerance and repair procedure for matching the unrelated-library control
-  on token count, arity, description length, search position, empirical prior
-  mass, and measured branching; and
+- the eight evaluation seeds, disjoint donor seeds, and disjoint
+  model-selection seed domain, selected without opening any generated result;
+- independent review of the candidate motif mixture, four-step target depth,
+  input distribution, and 16-case finite ambiguity screen;
+- independent review of the candidate four-item, 20-description-unit greedy
+  induction cap;
+- a tolerance and repair procedure for matching empirical token prior mass
+  under the selected learned proposer; the exact enumerator shape is already
+  matched mechanically;
 - fixed candidate ceilings, process timeouts, memory ceilings, and disjoint
   pilot/model-selection/evaluation seeds.
 

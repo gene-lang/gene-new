@@ -10,6 +10,9 @@
     (application "active_inference_export" ^entry "src/active_inference_export.gene")
     (application "active_inference_frozen_batch" ^entry "src/active_inference_frozen_batch.gene")
     (application "library_induction_smoke" ^entry "tests/library_induction_smoke.gene")
+    (application "library_induction_corpus_smoke" ^entry "tests/library_induction_corpus_smoke.gene")
+    (application "library_induction_corpus_pilot" ^entry "tests/library_induction_corpus_pilot.gene")
+    (application "library_induction_control_pilot" ^entry "tests/library_induction_control_pilot.gene")
     (application "verified_skill_records_smoke" ^entry "tests/verified_skill_records_smoke.gene")
     (application "skill_verifier_pilot" ^entry "src/skill_verifier_pilot.gene")
   ]

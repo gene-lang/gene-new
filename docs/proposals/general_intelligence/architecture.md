@@ -173,8 +173,14 @@ protocol still needs independent review and a content-hash freeze before
 evaluation. Experiment 1 now has a closed 12-primitive interpreter and a
 positive-MDL one-round induction smoke: the induced abstraction solves a
 constructed transfer task that the primitive-only search cannot reach at the
-same candidate ceiling. Its generated corpus, iterative stopping rule, and
-matched donor-library procedure still need to be frozen before treatment work.
+same candidate ceiling. Its deterministic generator now also produces and
+independently revalidates a full 100/25/50 pilot corpus while rejecting all
+targets matched by the 1,885 shorter programs on the finite structural bank.
+Four capped positive-MDL rounds recover all four pilot motifs with exact
+expansion checks. A disjoint donor pilot also matches token count, body lengths,
+description cost, search positions, and enumerator branching exactly while
+rejecting shared abstraction content. Its evaluation seeds and learned-proposer
+prior-mass matching still need to be frozen before treatment work.
 Experiment 4's local-model gate passed on 2026-08-09: the selected
 `gpt-oss:20b` artifact accepted all 20 exact mock-tool tasks under the recorded
 resource envelope. The immutable qualification report is
@@ -189,8 +195,9 @@ string-array schema; two more structured adapter shapes are retained as failed
 evidence. The next verifier step is a verifier-owned service or isolated process
 whose tests and promotion channel are outside agent capabilities; no
 mechanism-pilot task or skill may contribute to the later experiment.
-Experiment 1 additionally needs its DSL, search, abstraction, and scoring
-design frozen before implementation.
+Experiment 1 additionally needs independent review and freeze of its candidate
+generator, capped library rule, search budgets, controls, and scoring before
+treatment evaluation.
 
 **Default research order — fastest trustworthy signal:**
 

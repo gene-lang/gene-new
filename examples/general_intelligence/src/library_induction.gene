@@ -4,6 +4,7 @@
 #   default_induction_subject  exact pilot tasks, DSL, and resource bounds
 #   run_program                execute a validated declarative program
 #   induce_library             extract one positive-MDL repeated subprogram
+#   generate_corpus            build deterministic screened task partitions
 #   verify_induction           return end-to-end mechanism evidence
 #
 # Candidate programs are data, never eval input. The implementation expands a
@@ -34,6 +35,9 @@
       ^max_abstraction_steps 4
       ^minimum_occurrences 4
       ^abstraction_name induced_0
+      ^abstraction_name_prefix "induced_"
+      ^max_library_items 4
+      ^max_library_definition_mdl 20
       ^search_token_depth 3
       ^candidate_budget 500
       ^training [
@@ -368,6 +372,164 @@
      ^mdl_gain %(- baseline_mdl induced_mdl)
      ^compressed_programs %compressed_programs))
 
+(fn library_definition_mdl [library : (List Node)] : Int
+  (var total 0)
+  (for abstraction in library
+    (set total (+ total abstraction/definition_mdl)))
+  total)
+
+(fn library_has_body? [library : (List Node), pattern : (List Node)] : Bool
+  (for abstraction in library
+    (if (== ($body abstraction/body) pattern) (return true)))
+  false)
+
+(fn best_marginal_abstraction [subject : Node,
+                               original_programs : (List Node),
+                               compressed_programs : (List Node),
+                               library : (List Node)] : Node
+  (var best_pattern : List [])
+  (var best_support 0)
+  (var best_occurrences 0)
+  (var best_gain 0)
+  (for program in original_programs
+    (var steps ($body program))
+    (var start 0)
+    (while (< start (steps ~ size))
+      (var length 2)
+      (while (&& (<= length subject/max_abstraction_steps)
+                 (<= (+ start length) (steps ~ size)))
+        (var pattern (take_pattern steps start length))
+        (if_not (library_has_body? library pattern)
+          (var support (pattern_support original_programs pattern))
+          (var occurrences
+            (pattern_occurrences compressed_programs pattern))
+          (var definition_mdl (+ length 1))
+          (var gain
+            (- (* occurrences (- length 1)) definition_mdl))
+          (var fits_definition_cap
+            (<= (+ (library_definition_mdl library) definition_mdl)
+                subject/max_library_definition_mdl))
+          (if_yes (&& fits_definition_cap
+                      (&& (>= support subject/minimum_occurrences)
+                          (> gain best_gain)))
+            (set best_pattern pattern)
+            (set best_support support)
+            (set best_occurrences occurrences)
+            (set best_gain gain)))
+        (set length (+ length 1)))
+      (set start (+ start 1))))
+  `(marginal_abstraction
+     ^accepted %(> best_gain 0)
+     ^pattern %best_pattern
+     ^support %best_support
+     ^occurrences %best_occurrences
+     ^mdl_gain %best_gain))
+
+(fn induce_library_iterative [subject : Node,
+                              programs : (List Node)] : Node
+  (var baseline_mdl (programs_mdl programs))
+  (var compressed_programs programs)
+  (var library : (List Node) [])
+  (var rounds : (List Node) [])
+  (var stop_reason (quote no_positive_gain))
+  (while (< (library ~ size) subject/max_library_items)
+    (var candidate
+      (best_marginal_abstraction
+        subject programs compressed_programs library))
+    (if_not candidate/accepted
+      (set stop_reason (quote no_positive_gain))
+      (break))
+    (var library_index (library ~ size))
+    (var name $"${subject/abstraction_name_prefix}${library_index}")
+    (var body `(program %candidate/pattern...))
+    (var abstraction
+      `(abstraction
+         ^name %name
+         ^body %body
+         ^support %candidate/support
+         ^occurrences %candidate/occurrences
+         ^definition_mdl %(+ (candidate/pattern ~ size) 1)))
+    (library ~ push! abstraction)
+    (var next_programs : (List Node) [])
+    (for program in compressed_programs
+      (next_programs ~ push!
+        (compress_program program candidate/pattern name)))
+    (set compressed_programs next_programs)
+    (var current_mdl
+      (+ (programs_mdl compressed_programs)
+         (library_definition_mdl library)))
+    (rounds ~ push!
+      `(induction_round
+         ^index %library_index
+         ^name %name
+         ^pattern %candidate/pattern
+         ^support %candidate/support
+         ^occurrences %candidate/occurrences
+         ^mdl_gain %candidate/mdl_gain
+         ^corpus_mdl %current_mdl)))
+  (if (>= (library ~ size) subject/max_library_items)
+    (set stop_reason (quote library_item_cap)))
+  (var induced_mdl
+    (+ (programs_mdl compressed_programs)
+       (library_definition_mdl library)))
+  `(iterative_induction_result
+     ^accepted %(> (library ~ size) 0)
+     ^library %library
+     ^rounds %rounds
+     ^stop_reason %stop_reason
+     ^baseline_mdl %baseline_mdl
+     ^induced_mdl %induced_mdl
+     ^mdl_gain %(- baseline_mdl induced_mdl)
+     ^definition_mdl %(library_definition_mdl library)
+     ^compressed_programs %compressed_programs))
+
+(fn verify_iterative_induction [subject : Node,
+                                programs : (List Node),
+                                induction : Node] : Node
+  (var expansions_valid true)
+  (var mdl_monotone true)
+  (var previous_mdl induction/baseline_mdl)
+  (var bodies : (List (List Node)) [])
+  (var unique_bodies true)
+  (var index 0)
+  (while (< index (programs ~ size))
+    (var expanded
+      (expand_program subject induction/compressed_programs/%index
+                      induction/library))
+    (if_not (&& expanded/valid
+                (== expanded/steps ($body programs/%index)))
+      (set expansions_valid false))
+    (set index (+ index 1)))
+  (for round in induction/rounds
+    (if_not (&& (> round/mdl_gain 0) (< round/corpus_mdl previous_mdl))
+      (set mdl_monotone false))
+    (set previous_mdl round/corpus_mdl))
+  (for abstraction in induction/library
+    (var body ($body abstraction/body))
+    (for seen in bodies
+      (if (== seen body) (set unique_bodies false)))
+    (bodies ~ push! body))
+  (var bounds_valid
+    (&&
+      (<= (induction/library ~ size) subject/max_library_items)
+      (<= induction/definition_mdl subject/max_library_definition_mdl)
+      (== induction/induced_mdl
+          (+ (programs_mdl induction/compressed_programs)
+             (library_definition_mdl induction/library)))
+      (== induction/mdl_gain
+          (- induction/baseline_mdl induction/induced_mdl))))
+  (var valid
+    (&& expansions_valid
+        (&& mdl_monotone (&& unique_bodies bounds_valid))))
+  `(iterative_induction_verification
+     ^valid %valid
+     ^expansions_valid %expansions_valid
+     ^mdl_monotone %mdl_monotone
+     ^unique_bodies %unique_bodies
+     ^bounds_valid %bounds_valid
+     ^library_items %(induction/library ~ size)
+     ^definition_mdl %induction/definition_mdl))
+
 (fn append_token [program : Node, token : Node] : Node
   (var steps ($body program))
   (var result : (List Node) [])
@@ -382,6 +544,585 @@
     (for token in tokens
       (result ~ push! (append_token prefix token))))
   result)
+
+# These inputs are part of the structural validity gate, not evaluation data.
+# A depth-four target is accepted only when no depth-zero-through-three program
+# agrees with it on this complete bank. The same bank is included in every
+# verifier-owned hidden case set, making the shorter-program rejection exact
+# for the finite screen rather than a claim about a few sampled examples.
+(fn structural_screen_inputs [] : (List (List Int))
+  [[] [0] [1] [-1]
+   [0 1] [1 0] [-1 2] [2 -1]
+   [0 1 2] [2 1 0] [-2 0 2] [1 -1 1]
+   [2 2 -1] [-3 1 0] [1 2 -3 0] [0 -1 2 -3]])
+
+(fn program_signature [subject : Node, program : Node,
+                       inputs : (List (List Int))] : Str
+  (var signature "")
+  (for input in inputs
+    (set signature
+      $"${signature}|${(run_program subject program [] input)}"))
+  signature)
+
+(fn shorter_signature_index [subject : Node, maximum_depth : Int] : Node
+  (var inputs (structural_screen_inputs))
+  (var signatures : Map {})
+  (var candidates 0)
+  (var depth 0)
+  (while (<= depth maximum_depth)
+    (for program in (programs_of_length subject/primitive_tokens depth)
+      (var signature (program_signature subject program inputs))
+      (set candidates (+ candidates 1))
+      (if (== (signatures ~ get signature) void)
+        (signatures ~ put! signature depth)))
+    (set depth (+ depth 1)))
+  `(signature_index
+     ^maximum_depth %maximum_depth
+     ^screen_inputs %inputs
+     ^signatures %signatures
+     ^candidate_count %candidates))
+
+(fn next_corpus_random_state [state : Int] : Int
+  (// (* 48271 state) 2147483647))
+
+(fn corpus_draw [state : Int, upper_bound : Int] : Node
+  (if (<= upper_bound 0) ($panic "corpus draw bound must be positive"))
+  (var next_state (next_corpus_random_state state))
+  `(corpus_draw
+     ^state %next_state
+     ^value %(// next_state upper_bound)))
+
+(fn random_primitive [subject : Node, state : Int] : Node
+  (var draw (corpus_draw state (subject/primitive_tokens ~ size)))
+  (var token_index draw/value)
+  `(primitive_draw
+     ^state %draw/state
+     ^token %subject/primitive_tokens/%token_index))
+
+(fn program_with_motif [motif : Node, filler_steps : (List Node),
+                        motif_position : Int] : Node
+  (var motif_steps ($body motif/body))
+  (var steps : (List Node) [])
+  (var position 0)
+  (var filler_index 0)
+  (while (< position 4)
+    (if (== position motif_position)
+      (then
+        (steps ~ push! motif_steps/0)
+        (steps ~ push! motif_steps/1)
+        (set position (+ position 2)))
+      (else
+        (steps ~ push! filler_steps/%filler_index)
+        (set filler_index (+ filler_index 1))
+        (set position (+ position 1)))))
+  `(program %steps...))
+
+(fn motif_extension_capacities [subject : Node, motif : Node,
+                                signature_index : Node] : (List Int)
+  (var capacities : (List Int) [])
+  (var motif_position 0)
+  (while (< motif_position 3)
+    (var signatures : Map {})
+    (var capacity 0)
+    (for first in subject/primitive_tokens
+      (for second in subject/primitive_tokens
+        (var program
+          (program_with_motif motif [first second] motif_position))
+        (var signature
+          (program_signature subject program signature_index/screen_inputs))
+        (if_yes (&& (== (signature_index/signatures ~ get signature) void)
+                    (== (signatures ~ get signature) void))
+          (signatures ~ put! signature true)
+          (set capacity (+ capacity 1)))))
+    (capacities ~ push! capacity)
+    (set motif_position (+ motif_position 1)))
+  capacities)
+
+(fn capacities_sufficient? [capacities : (List Int)] : Bool
+  (if (!= (capacities ~ size) 3) (return false))
+  (for capacity in capacities
+    (if (< capacity 24) (return false)))
+  true)
+
+(fn generate_motifs [subject : Node, signature_index : Node,
+                     initial_state : Int] : Node
+  (var state initial_state)
+  (var motifs : (List Node) [])
+  (var used : Map {})
+  (var rejected 0)
+  (var attempts 0)
+  (while (< (motifs ~ size) 4)
+    (if (>= attempts 10000)
+      ($panic "could not generate four distinct minimal motifs"))
+    (set attempts (+ attempts 1))
+    (var first (random_primitive subject state))
+    (set state first/state)
+    (var second (random_primitive subject state))
+    (set state second/state)
+    (var body `(program %first/token %second/token))
+    (var signature (program_signature subject body
+                                      signature_index/screen_inputs))
+    (var minimum_depth (signature_index/signatures ~ get signature))
+    (var capacities : (List Int) [])
+    (var eligible
+      (&& (== minimum_depth 2) (== (used ~ get signature) void)))
+    (if_yes eligible
+      (set capacities
+        (motif_extension_capacities
+          subject `(motif ^body %body) signature_index)))
+    (if (&& eligible (capacities_sufficient? capacities))
+      (then
+        (var motif_index (motifs ~ size))
+        (motifs ~ push!
+          `(motif
+             ^index %motif_index
+             ^name $"motif_${motif_index}"
+             ^body %body
+             ^structural_min_depth 2
+             ^extension_capacities %capacities))
+        (used ~ put! signature true))
+      (else (set rejected (+ rejected 1)))))
+  `(motif_generation
+     ^state %state
+     ^motifs %motifs
+     ^attempts %attempts
+     ^rejected %rejected))
+
+(fn random_program [subject : Node, state : Int, length : Int] : Node
+  (var next_state state)
+  (var steps : (List Node) [])
+  (repeat _ in length
+    (var draw (random_primitive subject next_state))
+    (set next_state draw/state)
+    (steps ~ push! draw/token))
+  `(program_draw
+     ^state %next_state
+     ^program (program %steps...)))
+
+(fn motif_program [subject : Node, motif : Node, state : Int,
+                   motif_position : Int] : Node
+  (var fillers (random_program subject state 2))
+  (var fill_steps ($body fillers/program))
+  `(program_draw
+     ^state %fillers/state
+     ^program %(program_with_motif motif fill_steps motif_position)))
+
+(fn generate_input [state : Int] : Node
+  (var length_draw (corpus_draw state 4))
+  (var next_state length_draw/state)
+  (var input : (List Int) [])
+  (repeat _ in (+ length_draw/value 1)
+    (var value_draw (corpus_draw next_state 11))
+    (set next_state value_draw/state)
+    (input ~ push! (- value_draw/value 5)))
+  `(input_draw ^state %next_state ^input %input))
+
+(fn generated_cases [subject : Node, program : Node, state : Int,
+                     count : Int] : Node
+  (var next_state state)
+  (var cases : (List Node) [])
+  (repeat _ in count
+    (var input_draw (generate_input next_state))
+    (set next_state input_draw/state)
+    (cases ~ push!
+      `(case
+         ^input %input_draw/input
+         ^expected %(run_program subject program [] input_draw/input))))
+  `(case_generation ^state %next_state ^cases %cases))
+
+(fn structural_cases [subject : Node, program : Node] : (List Node)
+  (var cases : (List Node) [])
+  (for input in (structural_screen_inputs)
+    (cases ~ push!
+      `(case
+         ^input %input
+         ^expected %(run_program subject program [] input))))
+  cases)
+
+(fn generated_target [subject : Node, motifs : (List Node), state : Int,
+                      task_index : Int] : Node
+  # Four out of every five accepted tasks contain one latent motif. Position
+  # and motif identity rotate arithmetically; only filler primitives use the
+  # seeded generator. The fifth task is a background composition.
+  (var motif_bearing (!= (// task_index 5) 4))
+  (if motif_bearing
+    (then
+      (var motif_index (// task_index (motifs ~ size)))
+      (var motif_position (// (/ task_index (motifs ~ size)) 3))
+      (var draw
+        (motif_program subject motifs/%motif_index state motif_position))
+      `(target_draw
+         ^state %draw/state
+         ^program %draw/program
+         ^motif_bearing true
+         ^motif_index %motif_index
+         ^motif_position %motif_position))
+    (else
+      (var draw (random_program subject state 4))
+      `(target_draw
+         ^state %draw/state
+         ^program %draw/program
+         ^motif_bearing false
+         ^motif_index nil
+         ^motif_position nil))))
+
+(fn generate_partition [subject : Node, split, count : Int,
+                        task_offset : Int, motifs : (List Node),
+                        signature_index : Node, used_signatures : Map,
+                        initial_state : Int] : Node
+  (var state initial_state)
+  (var tasks : (List Node) [])
+  (var shorter_rejections 0)
+  (var duplicate_rejections 0)
+  (var attempts 0)
+  (while (< (tasks ~ size) count)
+    (if (>= attempts 100000)
+      ($panic "corpus partition generation exhausted its attempt bound"))
+    (set attempts (+ attempts 1))
+    (var task_index (+ task_offset (tasks ~ size)))
+    (var target (generated_target subject motifs state task_index))
+    (set state target/state)
+    (var signature
+      (program_signature subject target/program
+                         signature_index/screen_inputs))
+    (var shorter_depth (signature_index/signatures ~ get signature))
+    (if (!= shorter_depth void)
+      (then (set shorter_rejections (+ shorter_rejections 1)))
+      (elif (!= (used_signatures ~ get signature) void)
+        (set duplicate_rejections (+ duplicate_rejections 1)))
+      (else
+        (used_signatures ~ put! signature true)
+        (var public_generation
+          (generated_cases subject target/program state 4))
+        (set state public_generation/state)
+        (var private_generation
+          (generated_cases subject target/program state 8))
+        (set state private_generation/state)
+        (var hidden_cases (structural_cases subject target/program))
+        (for test_case in private_generation/cases
+          (hidden_cases ~ push! test_case))
+        (var local_index (tasks ~ size))
+        (var task_id $"${split}_${local_index}")
+        (tasks ~ push!
+          `(corpus_task
+             ^id %task_id
+             ^split %split
+             ^motif_bearing %target/motif_bearing
+             ^motif_index %target/motif_index
+             ^motif_position %target/motif_position
+             ^public (task ^id %task_id ^cases %public_generation/cases)
+             ^verifier
+               (verifier_task
+                 ^target_program %target/program
+                 ^target_depth 4
+                 ^structural_min_depth 4
+                 ^hidden_cases %hidden_cases))))))
+  `(partition_generation
+     ^state %state
+     ^tasks %tasks
+     ^attempts %attempts
+     ^shorter_rejections %shorter_rejections
+     ^duplicate_rejections %duplicate_rejections))
+
+(fn generate_corpus [subject : Node, seed : Int, learning_count : Int,
+                     model_selection_count : Int,
+                     heldout_count : Int] : Node
+  (if (|| (<= seed 0) (>= seed 2147483647))
+    ($panic "corpus seed must be in 1..2147483646"))
+  (var total_count (+ learning_count model_selection_count heldout_count))
+  (if (|| (< learning_count 0)
+          (|| (< model_selection_count 0) (< heldout_count 0)))
+    ($panic "corpus partition counts must be non-negative"))
+  (if (> total_count 175)
+    ($panic "corpus generation is bounded to 175 tasks"))
+
+  (var signature_index (shorter_signature_index subject 3))
+  (var motif_generation
+    (generate_motifs subject signature_index seed))
+  (var used_signatures : Map {})
+  (var learning
+    (generate_partition
+      subject (quote learning) learning_count 0 motif_generation/motifs
+      signature_index used_signatures motif_generation/state))
+  (var model_selection
+    (generate_partition
+      subject (quote model_selection) model_selection_count learning_count
+      motif_generation/motifs signature_index used_signatures learning/state))
+  (var heldout
+    (generate_partition
+      subject (quote heldout) heldout_count
+      (+ learning_count model_selection_count) motif_generation/motifs
+      signature_index used_signatures model_selection/state))
+  `(library_induction_corpus
+     ^version 1
+     ^seed %seed
+     ^generator "park_miller_48271_mod_2147483647"
+     ^target_depth 4
+     ^public_case_count 4
+     ^hidden_case_count 24
+     ^motif_task_numerator 4
+     ^motif_task_denominator 5
+     ^learning_count %learning_count
+     ^model_selection_count %model_selection_count
+     ^heldout_count %heldout_count
+     ^motifs %motif_generation/motifs
+     ^structural_screen
+       (structural_screen
+         ^candidate_depth_max %signature_index/maximum_depth
+         ^candidate_count %signature_index/candidate_count
+         ^input_count %(signature_index/screen_inputs ~ size))
+     ^learning %learning/tasks
+     ^model_selection %model_selection/tasks
+     ^heldout %heldout/tasks
+     ^generation
+       (generation_stats
+         ^motif_attempts %motif_generation/attempts
+         ^motif_rejections %motif_generation/rejected
+         ^learning_attempts %learning/attempts
+         ^model_selection_attempts %model_selection/attempts
+         ^heldout_attempts %heldout/attempts
+         ^shorter_rejections
+           %(+ learning/shorter_rejections
+               (+ model_selection/shorter_rejections
+                  heldout/shorter_rejections))
+         ^duplicate_rejections
+           %(+ learning/duplicate_rejections
+               (+ model_selection/duplicate_rejections
+                  heldout/duplicate_rejections))
+         ^final_random_state %heldout/state)))
+
+(fn hidden_screen_valid? [task : Node,
+                          screen_inputs : (List (List Int))] : Bool
+  (if (!= (task/verifier/hidden_cases ~ size) 24) (return false))
+  (var index 0)
+  (while (< index (screen_inputs ~ size))
+    (if_not (== task/verifier/hidden_cases/%index/input
+                screen_inputs/%index)
+      (return false))
+    (set index (+ index 1)))
+  true)
+
+(fn motif_placement_valid? [corpus : Node, task : Node] : Bool
+  (if_not task/motif_bearing
+    (return
+      (&& (== task/motif_index nil) (== task/motif_position nil))))
+  (if (|| (< task/motif_index 0)
+          (>= task/motif_index (corpus/motifs ~ size)))
+    (return false))
+  (if (|| (< task/motif_position 0) (> task/motif_position 2))
+    (return false))
+  (var steps ($body task/verifier/target_program))
+  (var motif_index task/motif_index)
+  (var motif_position task/motif_position)
+  (var next_position (+ motif_position 1))
+  (var motif_steps ($body corpus/motifs/%motif_index/body))
+  (&& (== steps/%motif_position motif_steps/0)
+      (== steps/%next_position motif_steps/1)))
+
+(fn verify_generated_corpus [subject : Node, corpus : Node] : Node
+  (var signature_index (shorter_signature_index subject 3))
+  (var screen_inputs signature_index/screen_inputs)
+  (var signatures : Map {})
+  (var task_count 0)
+  (var motif_task_count 0)
+  (var public_cases_valid true)
+  (var hidden_cases_valid true)
+  (var targets_valid true)
+  (var shorter_programs_rejected true)
+  (var unique_targets true)
+  (var motif_placements_valid true)
+  (var motif_capacities_valid true)
+  (for motif in corpus/motifs
+    (var capacities
+      (motif_extension_capacities subject motif signature_index))
+    (if_not (&& (== capacities motif/extension_capacities)
+                (capacities_sufficient? capacities))
+      (set motif_capacities_valid false)))
+  (for partition in [corpus/learning corpus/model_selection corpus/heldout]
+    (for task in partition
+      (set task_count (+ task_count 1))
+      (if_yes task/motif_bearing
+        (set motif_task_count (+ motif_task_count 1)))
+      (if (!= (task/public/cases ~ size) corpus/public_case_count)
+        (set public_cases_valid false))
+      (if_not (hidden_screen_valid? task screen_inputs)
+        (set hidden_cases_valid false))
+      (var target task/verifier/target_program)
+      (if_not (&&
+                (== (($body target) ~ size) corpus/target_depth)
+                (== task/verifier/target_depth corpus/target_depth)
+                (== task/verifier/structural_min_depth corpus/target_depth)
+                (verifies_task? subject target [] task/public)
+                (verifies_task?
+                  subject target []
+                  `(task ^cases %task/verifier/hidden_cases)))
+        (set targets_valid false))
+      (var signature (program_signature subject target screen_inputs))
+      (if (!= (signature_index/signatures ~ get signature) void)
+        (set shorter_programs_rejected false))
+      (if (!= (signatures ~ get signature) void)
+        (set unique_targets false)
+        (signatures ~ put! signature true))
+      (if_not (motif_placement_valid? corpus task)
+        (set motif_placements_valid false))))
+  (var counts_valid
+    (&&
+      (== (corpus/learning ~ size) corpus/learning_count)
+      (== (corpus/model_selection ~ size) corpus/model_selection_count)
+      (== (corpus/heldout ~ size) corpus/heldout_count)
+      (== task_count
+          (+ corpus/learning_count
+             (+ corpus/model_selection_count corpus/heldout_count)))))
+  (var valid
+    (&&
+      (== corpus/version 1)
+      (== (corpus/motifs ~ size) 4)
+      (== corpus/public_case_count 4)
+      (== corpus/hidden_case_count 24)
+      (== corpus/structural_screen/candidate_depth_max 3)
+      (== corpus/structural_screen/candidate_count 1885)
+      (== corpus/structural_screen/input_count 16)
+      counts_valid
+      public_cases_valid
+      hidden_cases_valid
+      targets_valid
+      shorter_programs_rejected
+      unique_targets
+      motif_placements_valid
+      motif_capacities_valid))
+  `(corpus_verification
+     ^valid %valid
+     ^task_count %task_count
+     ^motif_task_count %motif_task_count
+     ^counts_valid %counts_valid
+     ^public_cases_valid %public_cases_valid
+     ^hidden_cases_valid %hidden_cases_valid
+     ^targets_valid %targets_valid
+     ^shorter_programs_rejected %shorter_programs_rejected
+     ^unique_targets %unique_targets
+     ^motif_placements_valid %motif_placements_valid
+     ^motif_capacities_valid %motif_capacities_valid))
+
+(fn library_search_shape [subject : Node,
+                          library : (List Node)] : Node
+  (var body_lengths : (List Int) [])
+  (for abstraction in library
+    (body_lengths ~ push! (($body abstraction/body) ~ size)))
+  (var branching (+ (subject/primitive_tokens ~ size) (library ~ size)))
+  (var candidate_space 0)
+  (var depth 0)
+  (var at_depth 1)
+  (while (<= depth subject/search_token_depth)
+    (if (> depth 0) (set at_depth (* at_depth branching)))
+    (set candidate_space (+ candidate_space at_depth))
+    (set depth (+ depth 1)))
+  `(library_search_shape
+     ^item_count %(library ~ size)
+     ^body_lengths %body_lengths
+     ^definition_mdl %(library_definition_mdl library)
+     ^token_count %branching
+     ^library_token_first_position 0
+     ^library_token_past_position %(library ~ size)
+     ^search_token_depth %subject/search_token_depth
+     ^candidate_space %candidate_space
+     ^candidate_ceiling %subject/candidate_budget
+     ^input_type "list_int"
+     ^output_type "list_int"))
+
+(fn library_shapes_match? [left : Node, right : Node] : Bool
+  (&&
+    (== left/item_count right/item_count)
+    (== left/body_lengths right/body_lengths)
+    (== left/definition_mdl right/definition_mdl)
+    (== left/token_count right/token_count)
+    (== left/library_token_first_position
+        right/library_token_first_position)
+    (== left/library_token_past_position right/library_token_past_position)
+    (== left/search_token_depth right/search_token_depth)
+    (== left/candidate_space right/candidate_space)
+    (== left/candidate_ceiling right/candidate_ceiling)
+    (== left/input_type right/input_type)
+    (== left/output_type right/output_type)))
+
+(fn libraries_content_disjoint? [left : (List Node),
+                                  right : (List Node)] : Bool
+  (for left_abstraction in left
+    (for right_abstraction in right
+      (if (== ($body left_abstraction/body)
+              ($body right_abstraction/body))
+        (return false))))
+  true)
+
+(fn corpus_solution_programs [corpus : Node] : (List Node)
+  (var programs : (List Node) [])
+  (for task in corpus/learning
+    (programs ~ push! task/verifier/target_program))
+  programs)
+
+(fn build_unrelated_library_control [subject : Node,
+                                     target_seed : Int,
+                                     target_library : (List Node),
+                                     donor_seeds : (List Int)] : Node
+  (if (> (donor_seeds ~ size) 8)
+    ($panic "unrelated-library matching accepts at most eight donor seeds"))
+  (var target_shape (library_search_shape subject target_library))
+  (var attempts 0)
+  (var rejections : (List Node) [])
+  (for donor_seed in donor_seeds
+    (set attempts (+ attempts 1))
+    (if (== donor_seed target_seed)
+      (then
+        (rejections ~ push!
+          `(donor_rejection
+             ^seed %donor_seed ^reason same_seed_as_target)))
+      (else
+        (var corpus (generate_corpus subject donor_seed 100 0 0))
+        (var corpus_evidence (verify_generated_corpus subject corpus))
+        (var programs (corpus_solution_programs corpus))
+        (var induction (induce_library_iterative subject programs))
+        (var induction_evidence
+          (verify_iterative_induction subject programs induction))
+        (var donor_shape
+          (library_search_shape subject induction/library))
+        (var shape_match
+          (library_shapes_match? target_shape donor_shape))
+        (var content_disjoint
+          (libraries_content_disjoint?
+            target_library induction/library))
+        (if (&& corpus_evidence/valid
+                (&& induction_evidence/valid
+                    (&& shape_match content_disjoint)))
+          (return
+            `(unrelated_library_control
+               ^accepted true
+               ^seed %donor_seed
+               ^attempts %attempts
+               ^library %induction/library
+               ^target_shape %target_shape
+               ^donor_shape %donor_shape
+               ^content_disjoint %content_disjoint
+               ^corpus_generation %corpus/generation
+               ^rejections %rejections)))
+        (var reason
+          (if (! corpus_evidence/valid)
+            (then (quote invalid_corpus))
+            (elif (! induction_evidence/valid)
+              (quote invalid_induction))
+            (elif (! shape_match)
+              (quote search_shape_mismatch))
+            (else (quote content_overlap))))
+        (rejections ~ push!
+          `(donor_rejection ^seed %donor_seed ^reason %reason)))))
+  `(unrelated_library_control
+     ^accepted false
+     ^seed nil
+     ^attempts %attempts
+     ^library []
+     ^target_shape %target_shape
+     ^donor_shape nil
+     ^content_disjoint false
+     ^corpus_generation nil
+     ^rejections %rejections))
 
 (fn search_tokens [subject : Node, library : (List Node)] : (List Node)
   (var result : (List Node) [])
@@ -434,6 +1175,31 @@
     (if_not (verifies_task? subject solved/program [] solved)
       (set training_valid false)))
   (var induction (induce_library subject programs))
+  (var iterative (induce_library_iterative subject programs))
+  (var iterative_evidence
+    (verify_iterative_induction subject programs iterative))
+  (var unrelated_library
+    [(quote
+       (abstraction
+         ^name "unrelated_0"
+         ^body (program (init) (reverse))
+         ^support 4 ^occurrences 4 ^definition_mdl 3))])
+  (var mismatched_library
+    [(quote
+       (abstraction
+         ^name "unrelated_0"
+         ^body (program (init) (reverse) (map_double))
+         ^support 4 ^occurrences 4 ^definition_mdl 4))])
+  (var unrelated_shape_matches
+    (library_shapes_match?
+      (library_search_shape subject iterative/library)
+      (library_search_shape subject unrelated_library)))
+  (var unrelated_content_disjoint
+    (libraries_content_disjoint? iterative/library unrelated_library))
+  (var mismatched_shape_rejected
+    (! (library_shapes_match?
+         (library_search_shape subject iterative/library)
+         (library_search_shape subject mismatched_library))))
   (var no_gain_induction
     (induce_library subject
       [(quote (program (tail) (init)))
@@ -463,6 +1229,13 @@
       (== induction/baseline_mdl 12)
       (== induction/induced_mdl 11)
       (== induction/mdl_gain 1)
+      iterative_evidence/valid
+      (== (iterative/library ~ size) 1)
+      (== iterative/mdl_gain 1)
+      (== iterative/stop_reason (quote no_positive_gain))
+      unrelated_shape_matches
+      unrelated_content_disjoint
+      mismatched_shape_rejected
       (! no_gain_induction/accepted)
       bounds_rejected
       (! base_search/solved)
@@ -478,5 +1251,10 @@
      ^no_gain_rejected %(! no_gain_induction/accepted)
      ^bounds_rejected %bounds_rejected
      ^induction %induction
+     ^iterative_induction %iterative
+     ^iterative_evidence %iterative_evidence
+     ^unrelated_shape_matches %unrelated_shape_matches
+     ^unrelated_content_disjoint %unrelated_content_disjoint
+     ^mismatched_shape_rejected %mismatched_shape_rejected
      ^base_search %base_search
      ^induced_search %induced_search))

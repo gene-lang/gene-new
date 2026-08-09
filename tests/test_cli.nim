@@ -155,7 +155,7 @@ suite "cli — gene run":
     check "mutation rejected: true" in freezeTool.output
 
   test "general-intelligence library induction extracts only useful reuse":
-    let ran = runGene([
+    var ran = runGene([
       "run",
       "examples/general_intelligence/tests/library_induction_smoke.gene"
     ])
@@ -163,6 +163,10 @@ suite "cli — gene run":
     check "primitives=12 training_valid=true" in ran.output
     check "pattern=[(tail) (reverse)] support=4 occurrences=4 mdl=12->11" in
       ran.output
+    check "iterative_items=1 iterative_stop=no_positive_gain" in ran.output
+    check "unrelated_shape_matches=true unrelated_content_disjoint=true" in
+      ran.output
+    check "mismatched_shape_rejected=true" in ran.output
     check "no_gain_rejected=true bounds_rejected=true" in ran.output
     check "base_solved=false induced_solved=true induced_candidates=274" in
       ran.output

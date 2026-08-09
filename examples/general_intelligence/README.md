@@ -11,11 +11,31 @@ iterative-deepening search under a candidate counter. Its constructed smoke
 shows a reusable abstraction extending search reach at an equal ceiling; it is
 mechanism evidence, not a treatment result.
 
+The same module now owns a deterministic candidate corpus generator. It creates
+100 library-learning, 25 model-selection, and 50 held-out four-step tasks per
+seed, embeds four reusable latent motifs, and rejects every target that one of
+the 1,885 programs of depth zero through three can match on the fixed 16-input
+structural bank. The verifier record includes that whole bank plus eight seeded
+hidden cases. Target programs and hidden cases remain verifier-owned data.
+
 Run it with:
 
 ```bash
 bin/gene run examples/general_intelligence/tests/library_induction_smoke.gene
+bin/gene run examples/general_intelligence/tests/library_induction_corpus_smoke.gene
+bin/gene run examples/general_intelligence/tests/library_induction_corpus_pilot.gene
+bin/gene run examples/general_intelligence/tests/library_induction_control_pilot.gene
 ```
+
+The corpus smoke proves deterministic reproduction and independent structural
+validation on pilot seeds. The full-size pilot uses permanently excluded seed
+`900101`; it generates all 175 tasks and confirms that one-round induction
+recovers a latent motif. Four capped positive-MDL rounds recover all four latent
+motifs, and an independent expansion check proves that every compressed program
+still denotes its original primitive sequence. The control pilot learns from a
+disjoint donor seed and accepts only an exact search-shape match with no shared
+primitive body. These commands write or open no evaluation data, and all pilot
+seeds are permanently excluded from treatment.
 
 The first implemented slice is experiment 2's exact-belief repair lab. Its
 module interface is intentionally narrow:
