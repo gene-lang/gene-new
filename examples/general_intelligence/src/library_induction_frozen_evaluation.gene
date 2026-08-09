@@ -1,0 +1,91 @@
+# Trusted evaluator entry point for one hash-verified frozen experiment-1
+# setup. The caller grants read-only access to a manifest-selected artifact.
+# This process never regenerates the target or donor random streams.
+
+(import $fs [read_text])
+(import $json [stringify])
+(import $serde [read_data write_data])
+(import [corpus_solution_programs default_induction_subject
+         evaluate_exact_enumerator induce_library_iterative
+         libraries_content_disjoint? library_search_shape
+         library_shapes_match? verify_generated_corpus
+         verify_iterative_induction]
+        from "./library_induction.gene")
+
+(fn includes_int? [items : (List Int), expected : Int] : Bool
+  (for item in items
+    (if (== item expected) (return true)))
+  false)
+
+(fn usage_summary [usage : (List Node)] : (List Map)
+  (var result : (List Map) [])
+  (for item in usage
+    (result ~ push!
+      {^name item/name ^solutions item/solutions}))
+  result)
+
+(fn main [args, ^setups : Capability] : Nil
+  (var argv ($body args))
+  (if_not (== (argv ~ size) 1)
+    ($panic "usage: library_induction_frozen_evaluation <setup-file>"))
+  (var setup (read_data (read_text setups argv/0)))
+  (var subject (default_induction_subject))
+  (var corpus setup/corpus)
+  (var corpus_evidence (verify_generated_corpus subject corpus))
+  (var programs (corpus_solution_programs corpus))
+  (var recomputed_induction
+    (induce_library_iterative subject programs))
+  (var recomputed_induction_evidence
+    (verify_iterative_induction subject programs recomputed_induction))
+  (var control setup/control)
+  (var target_shape
+    (library_search_shape subject recomputed_induction/library))
+  (var donor_shape (library_search_shape subject control/library))
+  (var valid
+    (&&
+      (== setup/version 1)
+      (== setup/target_seed corpus/seed)
+      (includes_int? setup/donor_seed_candidates setup/accepted_donor_seed)
+      (== setup/accepted_donor_seed control/seed)
+      corpus_evidence/valid
+      (== setup/corpus_verification corpus_evidence)
+      recomputed_induction_evidence/valid
+      (== setup/induction recomputed_induction)
+      (== setup/induction_verification recomputed_induction_evidence)
+      control/accepted
+      (== control/target_shape target_shape)
+      (== control/donor_shape donor_shape)
+      (library_shapes_match? target_shape donor_shape)
+      (libraries_content_disjoint?
+        recomputed_induction/library control/library)))
+  (if_not valid
+    ($panic "frozen library-induction setup failed structural validation"))
+  (var evaluation
+    (evaluate_exact_enumerator
+      subject corpus recomputed_induction/library control/library))
+  ($println
+    (write_data
+      `(library_induction_frozen_result
+         ^version 1
+         ^target_seed %setup/target_seed
+         ^accepted_donor_seed %setup/accepted_donor_seed
+         ^induction %recomputed_induction
+         ^evaluation %evaluation)))
+  # The second line is a deliberately redundant machine-readable projection.
+  # The canonical Gene result remains the authoritative detailed record.
+  ($println
+    (stringify
+      {^schema 1
+       ^experiment "library_induction_v1"
+       ^target_seed setup/target_seed
+       ^accepted_donor_seed setup/accepted_donor_seed
+       ^heldout_tasks evaluation/induced/task_count
+       ^base_solved evaluation/base/solved
+       ^induced_solved evaluation/induced/solved
+       ^unrelated_solved evaluation/unrelated/solved
+       ^induced_candidate_executions evaluation/induced/candidate_executions
+       ^unrelated_candidate_executions evaluation/unrelated/candidate_executions
+       ^induced_verifier_rejections evaluation/induced/verifier_rejections
+       ^unrelated_verifier_rejections evaluation/unrelated/verifier_rejections
+       ^induced_abstraction_usage
+         (usage_summary evaluation/induced/abstraction_usage)})))

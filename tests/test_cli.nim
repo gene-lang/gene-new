@@ -173,6 +173,11 @@ suite "cli — gene run":
     check "base_solved=false induced_solved=true induced_candidates=274" in
       ran.output
 
+    let analysisTool = execCmdEx(
+      "python3 tools/run_library_induction_evaluation.py self-test")
+    check analysisTool.exitCode == 0
+    check "pass and reuse-failure paths verified" in analysisTool.output
+
   test "verified-skill pilot promotes only the verifier-test passing artifact":
     var ran = runGene([
       "run",

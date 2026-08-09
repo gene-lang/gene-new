@@ -70,18 +70,20 @@ structure, not merely because the library is larger.
 accept them only through exact execution, extract recurring subtrees into named
 functions, and use those functions in later search. The primary comparison uses
 complete-depth exact enumeration with primitives only, the induced library, and
-an unrelated learned library matched on size and search shape. Renamed task
-surfaces are an integrity check on label invariance.
+an unrelated learned library matched on size and search shape. The enumerator
+uses token ordinals and exact interpreter semantics rather than surface names,
+so label invariance is structural in this primary design.
 
 The current primary protocol deliberately chooses complete-depth exact
 enumeration rather than a learned proposer, isolating abstraction content from
 model-token priors and sampling variance. A learned proposer is a possible
-secondary experiment, not part of the primary pass decision.
+secondary experiment, not part of the primary pass decision; that secondary
+experiment must include a bijective surface-label renaming control.
 
 **Falsifier.** Reject this form of induction if the learned library does not
-improve held-out composition over the matched unrelated library, if gains vanish
-under renaming, if exact tests invalidate solutions, or if abstraction growth
-adds description without reusable behavior.
+improve held-out composition over the matched unrelated library, if exact tests
+invalidate solutions, or if abstraction growth adds description without
+reusable behavior.
 
 Protocol: [`protocols/01_library_induction.md`](protocols/01_library_induction.md)
 
@@ -187,8 +189,11 @@ description cost, search positions, and enumerator branching exactly while
 rejecting shared abstraction content. A public-search/hidden-verifier pilot at
 complete depth three solves 44 of 50 tasks with induced content versus 12 with
 the matched unrelated library; this is excluded pilot evidence, not a treatment
-claim. Its evaluation seeds and protocol still need independent review and
-freeze before treatment work.
+claim. Its arithmetically selected eight-corpus schedule and candidate
+review/freeze/evaluate toolchain now reproduce that excluded pilot, enforce
+resource ceilings, and reject frozen-artifact mutation. Independent review and
+attestation are still required before those unopened evaluation seeds may be
+generated or any treatment work may begin.
 Experiment 4's local-model gate passed on 2026-08-09: the selected
 `gpt-oss:20b` artifact accepted all 20 exact mock-tool tasks under the recorded
 resource envelope. The immutable qualification report is
@@ -203,9 +208,10 @@ string-array schema; two more structured adapter shapes are retained as failed
 evidence. The next verifier step is a verifier-owned service or isolated process
 whose tests and promotion channel are outside agent capabilities; no
 mechanism-pilot task or skill may contribute to the later experiment.
-Experiment 1 additionally needs independent review and freeze of its candidate
-generator, capped library rule, search budgets, controls, and scoring before
-treatment evaluation.
+Experiment 1 additionally needs an external independent reviewer to attest the
+candidate digest before its tooling will freeze the generator, capped library
+rule, search budgets, controls, scoring, and unopened schedule for treatment
+evaluation.
 
 **Default research order — fastest trustworthy signal:**
 

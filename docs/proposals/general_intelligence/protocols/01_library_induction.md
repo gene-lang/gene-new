@@ -3,8 +3,11 @@
 Status: bounded DSL, exact interpreter, deterministic corpus generator,
 structural ambiguity screen, capped iterative abstraction algorithm, and
 mechanism and exact-enumerator evaluation pilots specified and passing on
-2026-08-09. The evaluation seed schedule and independent protocol review remain
-unfrozen, so the treatment evaluation is not implementation-ready. See
+2026-08-09. The eight-corpus seed schedule, canonical setup exporter, frozen
+consumer, resource-metered runner, analysis, and mutation-rejecting freeze
+workflow are now candidate-complete and pass their excluded-pilot self-tests.
+Independent protocol review and its content-hash attestation remain external
+and incomplete, so the treatment evaluation is not authorized. See
 [`README.md`](README.md).
 
 Implementation:
@@ -19,6 +22,10 @@ Unrelated-control pilot:
 [`library_induction_control_pilot.gene`](../../../../examples/general_intelligence/tests/library_induction_control_pilot.gene).
 Public-search/hidden-verifier pilot:
 [`library_induction_evaluation_pilot.gene`](../../../../examples/general_intelligence/tests/library_induction_evaluation_pilot.gene).
+Review/freeze tool:
+[`tools/prepare_library_induction_freeze.py`](../../../../tools/prepare_library_induction_freeze.py).
+Post-freeze runner and preregistered analysis:
+[`tools/run_library_induction_evaluation.py`](../../../../tools/run_library_induction_evaluation.py).
 
 ## Hypothesis and claim boundary
 
@@ -286,21 +293,39 @@ These are pilot outcomes, not a treatment result, and they do not contribute to
 the pass rule or interval. The ceiling changed for a structural reason—the
 cardinality of the declared search space—not to optimize the observed effect.
 
-## Experimental subject still to freeze
+## Candidate seed schedule and remaining review gate
 
-Before evaluation, specify and independently review:
+The schedule below was chosen arithmetically without generating any of its
+corpora. Every seed is disjoint from the mechanism and compute pilots. A target
+has exactly three donor attempts in the displayed order; inability to obtain an
+exact shape/content match aborts the freeze rather than substituting a seed.
 
-- the eight evaluation seeds, disjoint donor seeds, and disjoint
-  model-selection seed domain, selected without opening any generated result;
-- independent review of the candidate motif mixture, four-step target depth,
-  input distribution, and 16-case finite ambiguity screen;
-- independent review of the candidate four-item, 20-description-unit greedy
-  induction cap;
-- independent review of the complete-depth candidate ceiling, process timeout,
-  and memory ceiling; and
-- the disjoint evaluation seed manifest and its freeze attestation.
+| Corpus | Target seed | Donor seeds, in order |
+|---:|---:|---|
+| 0 | 31000019 | 41000021, 41000118, 41000214 |
+| 1 | 31010026 | 41010030, 41010127, 41010223 |
+| 2 | 31020033 | 41020039, 41020136, 41020232 |
+| 3 | 31030040 | 41030048, 41030145, 41030241 |
+| 4 | 31040047 | 41040057, 41040154, 41040250 |
+| 5 | 31050054 | 41050066, 41050163, 41050259 |
+| 6 | 31060061 | 41060075, 41060172, 41060268 |
+| 7 | 31070068 | 41070084, 41070181, 41070277 |
+
+Before evaluation, an independent reviewer must approve:
+
+- this unopened eight-target and 24-donor schedule, including the rule that a
+  failed three-donor match aborts candidate version 1;
+- the candidate motif mixture, four-step target depth, input distribution, and
+  16-case finite ambiguity screen;
+- the candidate four-item, 20-description-unit greedy induction cap;
+- the complete-depth candidate ceiling, process timeout, and memory ceiling;
+  and
+- the exact Student interval and per-corpus reuse gate below.
 
 Nothing generated while selecting these rules may enter an evaluation corpus.
+The reviewer attests the candidate digest, independence, unopened evaluation
+output, and result-free seed selection. A changed byte invalidates that
+attestation.
 
 ## Candidate arms
 
@@ -323,9 +348,14 @@ decision.
 The candidate primary metric is paired held-out solve-rate improvement of the
 induced library over the matched unrelated library at equal budgets. Use the
 eight corpus seeds as uncertainty units and report a two-sided seed-stratified
-95% interval. Repeat the same comparison after a bijective renaming of every
-surface task and primitive label; the interpreter mapping is renamed with it,
-so only names change.
+95% Student interval over the eight paired seed-level solve-rate differences
+(`df = 7`, two-sided critical value `2.364624251`). The exact enumerator
+consumes the declared token list by ordinal and dispatches primitive semantics
+by closed node pattern; task identifiers and abstraction names do not affect
+candidate order, execution, or scoring. This makes a surface-label renaming
+repeat redundant for the primary experiment. A future learned-proposer
+secondary experiment must preregister the bijective renaming control because
+its token prior can observe those labels.
 
 Candidate executions, wall time, total description length, abstraction reuse,
 wrong-abstraction selection, and verifier rejection are secondary diagnostics.
@@ -335,28 +365,45 @@ Candidate pass rule:
 
 - at least a 15-percentage-point held-out solve-rate advantage;
 - a confidence interval for that advantage excluding zero;
-- byte-identical outcomes after a bijective rename of surface labels and the
-  interpreter mapping; and
-- at least three abstractions each occurring in five or more independently
-  verified held-out solutions.
+- in every corpus, at least three of its four induced abstractions each occur
+  in five or more independently verified held-out solutions.
 
 Reject this form of library induction if it has no held-out advantage over the
-matched unrelated library, gains vanish under renaming, library growth
-increases total description length, reuse does not occur, or exact hidden tests
-invalidate claimed solutions.
+matched unrelated library, library growth increases total description length,
+reuse does not occur, or exact hidden tests invalidate claimed solutions.
 
 ## Candidate pilots, freeze, and cost
 
-The design implies 1,200 primary held-out task-arm runs across eight corpora and
-another 1,200 for the renamed integrity repeat, plus 800 donor-learning tasks.
-There are no model calls. The frozen run records candidate executions, verifier
-calls and rejections, wall time, and peak resident memory. Pilot tasks and
-libraries never enter an experimental arm.
+The design implies 1,200 primary held-out task-arm runs across eight corpora,
+plus at least 800 donor-learning tasks (and more only when an earlier
+predeclared donor fails the exact matching rule). There are no model calls. The
+frozen run records candidate executions, verifier calls and rejections, wall
+time, and peak resident memory. Pilot tasks and libraries never enter an
+experimental arm.
 
 After independent review, hash the protocol, interpreter, generators, hidden
-verifier, corpus files, model artifact, and exact arm configuration in a dated
-freeze manifest before opening any evaluation result. A content change starts a
-new experiment version.
+verifier, setup exporter, frozen consumer, runner, runtime binary, seed
+schedule, and exact arm configuration in a dated freeze manifest before opening
+any evaluation result. `prepare_library_induction_freeze.py packet` writes the
+review candidate outside the worktree. `freeze` refuses a dirty revision, an
+in-tree attestation or output, an invalid attestation, a setup over 60 seconds
+or 64 MiB, an unmatched donor, and any setup payload containing an arm result.
+It records hashes and observed resources for all eight canonical setup files
+while executing zero held-out searches. `verify` rechecks current source, the
+attestation, manifest, schedule, setup shapes, sizes, and hashes.
+
+Only after that freeze may `run_library_induction_evaluation.py run` evaluate
+the eight manifest-selected files. It enforces 75 seconds and 64 MiB per
+corpus, retains the complete canonical task results and a JSON projection,
+hashes them in a result manifest, and computes the fixed paired analysis. Its
+output directory must also be outside the worktree and previously absent. A
+content change starts a new experiment version.
+
+The freeze self-test uses excluded target seed `900301` and donor candidates
+`900401..900403`. It reproduces the 44-versus-12 pilot result through the frozen
+consumer and proves that a one-byte setup mutation is rejected. It does not
+generate or open any seed in the table above. The analysis self-test uses only
+synthetic counts.
 
 Planning estimate: 1–3 person-weeks after the subject is frozen, with roughly
 `2x` uncertainty.

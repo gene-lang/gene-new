@@ -1257,6 +1257,29 @@
       (else nil)))
   false)
 
+(fn program_uses_name? [program : Node, name] : Bool
+  (for token in ($body program)
+    (match token
+      (when (use ^name used_name)
+        (if (== used_name name) (return true)))
+      (else nil)))
+  false)
+
+(fn library_solution_usage [library : (List Node),
+                            task_results : (List Node)] : (List Node)
+  (var usage : (List Node) [])
+  (for abstraction in library
+    (var solutions 0)
+    (for result in task_results
+      (if_yes (&& result/solved
+                   (program_uses_name? result/program abstraction/name))
+        (set solutions (+ solutions 1))))
+    (usage ~ push!
+      `(abstraction_usage
+         ^name %abstraction/name
+         ^solutions %solutions)))
+  usage)
+
 (fn evaluate_library_arm [subject : Node, tasks : (List Node), arm,
                           library : (List Node)] : Node
   (var solved 0)
@@ -1303,6 +1326,7 @@
      ^verifier_rejections %verifier_rejections
      ^budget_exhausted_tasks %budget_exhausted_tasks
      ^library_solutions %library_solutions
+     ^abstraction_usage %(library_solution_usage library task_results)
      ^library_shape %(library_search_shape subject library)
      ^task_results %task_results))
 

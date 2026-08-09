@@ -1,0 +1,51 @@
+# Canonical setup exporter for experiment 1. It generates and validates one
+# target corpus, learns its library, and selects the first predeclared matched
+# donor library. It never searches a held-out task or executes an evaluation
+# arm. The freeze tool is the only intended caller.
+
+(import $serde [write_data])
+(import gene/parse [parse_int])
+(import [build_unrelated_library_control corpus_solution_programs
+         default_induction_subject generate_corpus induce_library_iterative
+         verify_generated_corpus verify_iterative_induction]
+        from "./library_induction.gene")
+
+(fn main [args] : Nil
+  (var argv ($body args))
+  (if (|| (< (argv ~ size) 2) (> (argv ~ size) 9))
+    ($panic
+      "usage: library_induction_export <target_seed> <donor_seed> [donor_seed ...]"))
+  (var target_seed (parse_int argv/0))
+  (var donor_seeds : (List Int) [])
+  (var index 1)
+  (while (< index (argv ~ size))
+    (donor_seeds ~ push! (parse_int argv/%index))
+    (set index (+ index 1)))
+
+  (var subject (default_induction_subject))
+  (var corpus (generate_corpus subject target_seed 100 25 50))
+  (var corpus_evidence (verify_generated_corpus subject corpus))
+  (var programs (corpus_solution_programs corpus))
+  (var induction (induce_library_iterative subject programs))
+  (var induction_evidence
+    (verify_iterative_induction subject programs induction))
+  (var control
+    (build_unrelated_library_control
+      subject target_seed induction/library donor_seeds))
+  (if_not (&& corpus_evidence/valid
+              (&& induction_evidence/valid control/accepted))
+    ($panic
+      $"library-induction setup invalid: corpus=${corpus_evidence} induction=${induction_evidence} control=${control}"))
+
+  ($println
+    (write_data
+      `(library_induction_setup
+         ^version 1
+         ^target_seed %target_seed
+         ^donor_seed_candidates %donor_seeds
+         ^accepted_donor_seed %control/seed
+         ^corpus %corpus
+         ^corpus_verification %corpus_evidence
+         ^induction %induction
+         ^induction_verification %induction_evidence
+         ^control %control))))

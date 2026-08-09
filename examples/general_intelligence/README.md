@@ -41,6 +41,24 @@ public cases on the search side and 24 cases on the hidden-verifier side. It
 records and rejects public-only false positives while comparing complete
 depth-three primitive-only, induced, and matched-unrelated enumeration.
 
+`tools/prepare_library_induction_freeze.py` turns experiment 1's remaining
+independent-review gate into an exact workflow. `packet` hashes the protocol,
+implementation, runtime, arithmetically selected eight-target seed schedule,
+resource ceilings, and analysis. `freeze` accepts only an external attestation
+for that digest, then writes canonical target-corpus/induced-library/matched-
+donor setup artifacts outside the worktree without executing any held-out
+search. `verify` detects source, manifest, attestation, schedule, and setup
+mutation. Its self-test uses only the permanently excluded evaluation-pilot
+seeds and reproduces the known 44-versus-12 result through
+`src/library_induction_frozen_evaluation.gene`.
+
+After a legitimate freeze, `tools/run_library_induction_evaluation.py run` is
+the only intended treatment runner. It verifies the freeze, evaluates each
+setup once through the read-capability-limited frozen consumer, records wall
+time and peak RSS, hashes every detailed result, and applies the preregistered
+paired eight-seed Student interval and per-corpus abstraction-reuse gate. Its
+`self-test` uses synthetic counts and opens no corpus.
+
 The first implemented slice is experiment 2's exact-belief repair lab. Its
 module interface is intentionally narrow:
 
