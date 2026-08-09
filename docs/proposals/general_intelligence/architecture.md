@@ -205,9 +205,21 @@ receipts, but deliberately does not claim hidden-test secrecy or authenticated
 transport. The qualified local model also completes the proposal-to-verifier
 path in one tool round after the model-facing program was reduced to a flat
 string-array schema; two more structured adapter shapes are retained as failed
-evidence. The next verifier step is a verifier-owned service or isolated process
-whose tests and promotion channel are outside agent capabilities; no
-mechanism-pilot task or skill may contribute to the later experiment.
+evidence. A second excluded pilot now supplies the missing service-shaped
+boundary: a private Unix-socket service owns an external test suite, HMAC key,
+and append-only journal; an exact Gene kernel receives only a named read
+capability for the suite; and the submitter receives only status plus opaque
+candidate and receipt digests. The trusted consumer authenticates promotions
+from the journal rather than accepting model-supplied evidence. The boundary
+self-test rejects stale requests, candidate mutation, receipt forgery, suite
+mutation, and verifier authorities placed in the agent worktree while recording
+kernel wall time and peak RSS under fixed ceilings. The fixed qualified-model
+adapter also passed through this channel in one round; its trusted-consumer
+record authenticated one promotion while the model saw zero test details. This
+is capability-flow evidence, not same-user secrecy: the treatment service still
+requires a distinct OS or container identity, frozen hidden suites, and a
+query-budget policy. No mechanism-pilot task or skill may contribute to the
+later experiment.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment

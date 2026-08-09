@@ -1,0 +1,58 @@
+{
+  "date_utc": "2026-08-09T19:36:02Z",
+  "decoding": {
+    "max_rounds": 6,
+    "num_ctx": 32768,
+    "num_predict": 1024,
+    "seed": 20260809,
+    "temperature": 0
+  },
+  "final_receipt_digest": "a829289108a5d5193287a637fe98822799d27a2197f24bcfccc898d8378f44fe",
+  "harness_sha256": "bdae02d34d23d8cfd8a99fa10fdd81cf157d1876a0acbf0c43f4cc6b4efad5a0",
+  "model": {
+    "capabilities": [
+      "completion",
+      "tools",
+      "thinking"
+    ],
+    "manifest_digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "name": "gpt-oss:20b"
+  },
+  "schema": "gene.verified_skill_service_agent_pilot.v1",
+  "service_sha256": "912ff72e2c6232aa9cefa8843645fef50e472a7c99b8cb06cf8a7d36926e5fec",
+  "submissions": [
+    {
+      "accepted": true,
+      "candidate_digest": "cca4b082a5066ac38e76d353fa0f57663a918cfb21e5b63be7918931a5e6acb1",
+      "candidate_source": "(skill_candidate ^id \"normalize_words\" ^name \"normalize_words\" ^version 1 ^preconditions [\"Input is a string.\"] ^effects [\"The output string is the input string trimmed of surrounding whitespace, converted to lowercase, and all spaces replaced with underscores.\"] ^provenance [\"mechanism_pilot\"] (pipeline (trim) (lowercase) (replace ^from \" \" ^to \"_\")))",
+      "candidate_source_sha256": "ea11fe4da505624add5239a09446dabe67d6076f6b8b7835c0090a16e7b7820e",
+      "receipt_digest": "a829289108a5d5193287a637fe98822799d27a2197f24bcfccc898d8378f44fe",
+      "safe_response_sha256": "40e4c39a16c0fbaf893b110b59a5fa6d7f0a27e518b2b3e18c8a8ecfc6b23af3",
+      "schema_conformant": true,
+      "status": "promoted",
+      "verifier_wall_seconds": 0.047500249929726124
+    }
+  ],
+  "summary": {
+    "accepted": true,
+    "generated_tokens": 357,
+    "prompt_tokens": 327,
+    "rounds": 1,
+    "schema_conformant_submissions": 1,
+    "submissions": 1,
+    "wall_seconds": 15.014428541995585
+  },
+  "trusted_consumer": {
+    "authenticated_head": "a829289108a5d5193287a637fe98822799d27a2197f24bcfccc898d8378f44fe",
+    "authenticated_promotions": 1,
+    "authenticated_records": 1,
+    "kernel_sha256": "99fc382bf618f7eafe6ab8ae7a2ec5f8a5d80df9bb7a133842e79523a336660e",
+    "maximum_kernel_peak_rss_bytes": 11763712,
+    "maximum_kernel_wall_seconds": 0.04501687502488494,
+    "model_visible_test_details": 0,
+    "schema": 1,
+    "suite_sha256": "82456ed2662bb286f7b7956a5d27e547048a5255b6bdbc84c1b7bfc41349381f"
+  },
+  "verifier_kernel_sha256": "99fc382bf618f7eafe6ab8ae7a2ec5f8a5d80df9bb7a133842e79523a336660e",
+  "verifier_mode": "authenticated_service"
+}

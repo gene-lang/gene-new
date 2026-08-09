@@ -1,8 +1,8 @@
 # Draft protocol: verified lifelong skill agent
 
-Status: the local-model qualification gate passed on 2026-08-09; the
-lifelong-task subject remains not frozen and not implementation-ready. See
-[`README.md`](README.md).
+Status: the local-model qualification gate and an excluded verifier-service
+boundary pilot passed on 2026-08-09; the lifelong-task subject remains not
+frozen and not implementation-ready. See [`README.md`](README.md).
 
 ## Subject still to specify
 
@@ -131,6 +131,46 @@ trusted consumer must receive promotions over that channel rather than trust a
 model-supplied receipt. Pilot tasks and skills are permanently excluded from
 the future curriculum and evaluation.
 
+The next excluded pilot implements that shape in
+[`tools/pilot_skill_verifier_service.py`](../../../../tools/pilot_skill_verifier_service.py)
+and
+[`skill_verifier_service_kernel.gene`](../../../../examples/general_intelligence/src/skill_verifier_service_kernel.gene).
+The private service exclusively owns a suite, 32-byte-or-longer HMAC key,
+append-only canonical journal, and Unix socket, all outside the agent worktree
+with no group or other permissions. It invokes an exact Gene kernel with only a
+named read capability for the suite. Candidate Gene is parsed as data and may
+use only the closed, bounded pipeline interpreter; it is never evaluated as
+code.
+
+Each journal receipt authenticates the suite, kernel, candidate source,
+canonical candidate, exact kernel output, failure-code projection, sequence,
+previous receipt, timestamp, wall time, and peak RSS. The model-facing response
+contains only `promoted`, `rejected`, or one generic submission error plus
+opaque candidate and receipt digests. Test identifiers, counts, paths, kernel
+evidence, and receipt authentication data remain on the verifier side. A
+trusted consumer revalidates the complete HMAC/hash chain against its current
+suite and kernel before reading promoted source; it never consumes a receipt
+supplied by the model.
+
+### Verifier-boundary threat model
+
+| Threat | Pilot control | Residual requirement before treatment |
+|---|---|---|
+| Agent reads tests or signing material through its tool surface | Only the socket is a submitter capability; suite and key paths are not in the request or response; the Gene kernel receives one named read capability. | Run the service under a distinct OS/container identity. Mode bits do not hide files from another process controlled by the same Unix user. |
+| Candidate executes arbitrary code or reads verifier state | Parse one bounded Gene form as data and interpret only `trim`, `lowercase`, and bounded literal `replace` steps. | Expand the skill language only with separately reviewed total operations and explicit effect capabilities. |
+| Model or caller forges a passing stdout record | The trusted consumer reads the verifier-owned journal and checks HMAC-SHA-256; submitter output has no promotion authority. | Put key storage, rotation, backup, and consumer access under the verifier identity. HMAC is symmetric trust, not a public signature. |
+| Candidate, suite, kernel, or evidence is altered after verification | Receipts bind every source/evidence digest; the canonical journal is sequence- and previous-receipt-linked. | Freeze treatment suite and kernel digests before any curriculum task is submitted. |
+| Replay, stale writers, or malformed input corrupt the chain | Requests carry the expected journal head; closed schemas, byte limits, timeouts, and per-connection generic errors reject invalid input without appending or exiting. | Use one authoritative writer or transactional storage when moving beyond this sequential pilot. |
+| Repeated pass/fail queries reveal hidden cases | Responses omit case-level data and the service has a bounded request lifetime. | Preregister per-task attempt budgets, rate limits, suite rotation, and leakage audits; aggregate status alone is still an oracle. |
+| Verifier work consumes the claimed benefit | Every authenticated record carries kernel wall time and peak RSS, capped at 1 second and 64 MiB in this pilot. | Measure whole-service and model costs across the projected curriculum and include them in arm budgets. |
+
+The self-test uses only permanently excluded toy cases. It proves one promotion,
+one rejection, continued service after a stale-chain request, zero submitter-
+visible case details, safe rejection of invalid Unicode, authenticated journal
+replay, mutation/forgery rejection, and enforcement of the outside-worktree
+authority rule. It is not evidence that the suite is secret from the
+repository's ordinary user and is not a treatment result.
+
 The qualified model was then connected through
 [`tools/pilot_verified_skill_agent.py`](../../../../tools/pilot_verified_skill_agent.py)
 with only the typed submission capability. The first nested-object schema and a
@@ -153,6 +193,19 @@ verifier output. The accepted receipt digest is
 This fixes the candidate model-facing adapter shape for the next pilot; it does
 not freeze the lifelong-task subject or qualify the checked-in tests as hidden
 from the repository's ordinary coding agent.
+
+The unchanged flat-array contract was then rerun through the authenticated
+service boundary. Its immutable report is
+[`gpt-oss-20b-verified-skill-service-pilot-2026-08-09.json`](../qualifications/gpt-oss-20b-verified-skill-service-pilot-2026-08-09.json).
+It again passed in one round with one conformant submission and 357 generated
+tokens in 15.01 seconds. The model-facing transcript contains one aggregate
+`promoted` status, candidate and receipt digests, and zero test details. After
+the model process completed, the trusted consumer authenticated the one-record
+journal and matching head against the ephemeral external suite and current
+kernel. Kernel execution took 0.0450 seconds and peaked at 11,763,712 RSS bytes,
+within the preregistered pilot ceilings of 1 second and 64 MiB. This closes the
+adapter-to-service mechanism path only; the ephemeral excluded suite and
+same-user host do not satisfy treatment isolation.
 
 ## Candidate arms and evaluation
 
@@ -207,10 +260,11 @@ probes. One calibration is 800 condition executions; three attempts imply a
 The first non-model mechanism pilot promotes a passing skill, rejects a
 deliberately failing candidate, and executes the passing skill on distinct toy
 variants. The first model-connected pilot additionally records rounds, tokens,
-wall time, verifier time, and exact source/output hashes, but it does not yet
-measure peak memory or full projected curriculum cost. The production-boundary
-pilot must add those measurements and verifier-owned hidden storage. Pilot
-tasks and artifacts never enter an experimental arm or library.
+wall time, verifier time, and exact source/output hashes. The service-boundary
+pilot adds verifier-owned external storage plus authenticated per-submission
+kernel wall time and peak RSS. It does not yet measure full-service memory or
+the projected curriculum cost. Pilot tasks and artifacts never enter an
+experimental arm or library.
 
 Planning estimate: 4–8 person-months after a local model qualifies, with roughly
 `2x` uncertainty. This is the largest near-term engineering programme in the

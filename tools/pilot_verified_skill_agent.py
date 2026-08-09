@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Run the non-evaluation local-model -> exact-verifier skill pilot.
+"""Run a non-evaluation local-model -> exact-verifier skill pilot.
 
 The model receives one typed submit_skill tool and no file, shell, or test
-capability. A separate Gene process owns the toy cases and is authoritative:
-model text never counts as promotion. This is a mechanism pilot, not the
-lifelong experiment or its production deployment boundary.
+capability. The default preserves the original checked-in verifier pilot. With
+--verifier-socket, the same fixed adapter uses the authenticated verifier-owned
+service channel and receives no test-level evidence. Model text never counts as
+promotion. Neither mode is the lifelong experiment.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -20,9 +22,19 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from pilot_skill_verifier_service import (
+    GENESIS,
+    ServiceError,
+    submit as submit_to_service,
+)
+
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 VERIFIER = Path("examples/general_intelligence/src/skill_verifier_pilot.gene")
+SERVICE = Path("tools/pilot_skill_verifier_service.py")
+SERVICE_KERNEL = Path(
+    "examples/general_intelligence/src/skill_verifier_service_kernel.gene"
+)
 RECEIPT_PATTERN = re.compile(r'\^receipt_digest "([0-9a-f]{64})"')
 
 SYSTEM_PROMPT = """You propose one reusable declarative skill. You have only
@@ -157,7 +169,7 @@ def candidate_source(arguments: dict[str, Any]) -> str:
     )
 
 
-def submit(arguments: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+def submit_legacy(arguments: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     problem = validate_candidate(arguments)
     if problem:
         return {"accepted": False, "error": problem}, {
@@ -201,11 +213,67 @@ def submit(arguments: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     return safe_result, audit
 
 
+def submit_service(
+    arguments: Any,
+    socket_path: Path,
+    expected_head: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    problem = validate_candidate(arguments)
+    if problem:
+        return {"accepted": False, "error": problem}, {
+            "schema_conformant": False,
+            "error": problem,
+        }
+    source = candidate_source(arguments)
+    request = {
+        "schema": 1,
+        "request_id": os.urandom(16).hex(),
+        "expected_previous_receipt_digest": expected_head,
+        "candidate_source": source,
+    }
+    started = time.monotonic()
+    try:
+        response = submit_to_service(socket_path, request)
+    except (ServiceError, OSError) as exc:
+        wall_seconds = time.monotonic() - started
+        return {"accepted": False, "error": "verifier service unavailable"}, {
+            "schema_conformant": True,
+            "candidate_source": source,
+            "candidate_source_sha256": hashlib.sha256(source.encode()).hexdigest(),
+            "verifier_wall_seconds": wall_seconds,
+            "accepted": False,
+            "service_error": type(exc).__name__,
+        }
+    wall_seconds = time.monotonic() - started
+    status = response["status"]
+    accepted = status == "promoted"
+    safe_result: dict[str, Any] = {"accepted": accepted, "status": status}
+    for field in ("candidate_digest", "receipt_digest", "error_code"):
+        if field in response:
+            safe_result[field] = response[field]
+    audit = {
+        "schema_conformant": True,
+        "candidate_source": source,
+        "candidate_source_sha256": hashlib.sha256(source.encode()).hexdigest(),
+        "safe_response_sha256": hashlib.sha256(
+            json.dumps(response, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "verifier_wall_seconds": wall_seconds,
+        "accepted": accepted,
+        "status": status,
+        "candidate_digest": response.get("candidate_digest"),
+        "receipt_digest": response.get("receipt_digest"),
+    }
+    return safe_result, audit
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="gpt-oss:20b")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-rounds", type=int, default=6)
+    parser.add_argument("--verifier-socket", type=Path)
+    parser.add_argument("--expected-head", default=GENESIS)
     return parser.parse_args()
 
 
@@ -220,6 +288,7 @@ def main() -> int:
     prompt_tokens = 0
     generated_tokens = 0
     rounds = 0
+    expected_head = args.expected_head
     started = time.monotonic()
 
     for rounds in range(1, args.max_rounds + 1):
@@ -253,7 +322,14 @@ def main() -> int:
             name = function.get("name") if isinstance(function, dict) else None
             arguments = function.get("arguments") if isinstance(function, dict) else None
             if name == "submit_skill":
-                result, audit = submit(arguments)
+                if args.verifier_socket:
+                    result, audit = submit_service(
+                        arguments, args.verifier_socket, expected_head
+                    )
+                    if isinstance(audit.get("receipt_digest"), str):
+                        expected_head = audit["receipt_digest"]
+                else:
+                    result, audit = submit_legacy(arguments)
             else:
                 result = {"accepted": False, "error": "unknown tool"}
                 audit = {"schema_conformant": False, "error": "unknown tool"}
@@ -278,11 +354,18 @@ def main() -> int:
     show = post_json("/api/show", {"model": args.model}, timeout=60)
     tags = get_json("/api/tags").get("models", [])
     tag = next((item for item in tags if item.get("name") == args.model), {})
+    service_mode = args.verifier_socket is not None
     report = {
-        "schema": "gene.verified_skill_agent_pilot.v3",
+        "schema": (
+            "gene.verified_skill_service_agent_pilot.v1"
+            if service_mode
+            else "gene.verified_skill_agent_pilot.v3"
+        ),
         "date_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        "verifier_sha256": hashlib.sha256(VERIFIER.read_bytes()).hexdigest(),
+        "verifier_mode": (
+            "authenticated_service" if service_mode else "checked_in_process"
+        ),
         "model": {
             "name": args.model,
             "manifest_digest": tag.get("digest"),
@@ -308,6 +391,16 @@ def main() -> int:
         },
         "submissions": submissions,
     }
+    if service_mode:
+        report["service_sha256"] = hashlib.sha256(SERVICE.read_bytes()).hexdigest()
+        report["verifier_kernel_sha256"] = hashlib.sha256(
+            SERVICE_KERNEL.read_bytes()
+        ).hexdigest()
+        report["final_receipt_digest"] = (
+            None if expected_head == args.expected_head else expected_head
+        )
+    else:
+        report["verifier_sha256"] = hashlib.sha256(VERIFIER.read_bytes()).hexdigest()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"

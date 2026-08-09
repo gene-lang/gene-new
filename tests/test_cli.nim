@@ -220,6 +220,24 @@ suite "cli — gene run":
     check "^failure_codes [\"case_1\" \"case_2\" \"case_4\"]" in ran.output
     check "^skill" notin ran.output
 
+    let serviceBoundary = execCmdEx(
+      "python3 tools/pilot_skill_verifier_service.py self-test")
+    check serviceBoundary.exitCode == 0
+    check "verifier service self-test: promoted=1 rejected=1" in
+      serviceBoundary.output
+    check "submitter-visible test details: 0" in serviceBoundary.output
+    check "authenticated journal records: 2" in serviceBoundary.output
+    check "maximum kernel wall seconds:" in serviceBoundary.output
+    check "maximum kernel peak RSS bytes:" in serviceBoundary.output
+    check "stale chain rejected without service exit: true" in
+      serviceBoundary.output
+    check "invalid Unicode rejected without service exit: true" in
+      serviceBoundary.output
+    check "candidate mutation rejected: true" in serviceBoundary.output
+    check "receipt forgery rejected: true" in serviceBoundary.output
+    check "suite mutation rejected: true" in serviceBoundary.output
+    check "in-worktree authority rejected: true" in serviceBoundary.output
+
   test "main receives only explicitly granted named capabilities":
     let grantedMain = writeCliProgram("granted_main.gene",
       "(fn main [args, ^config : Capability] " &

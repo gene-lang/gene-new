@@ -127,3 +127,41 @@ Its accepted run and the two rejected adapter designs are retained under
 `docs/proposals/general_intelligence/qualifications/`. The passing model-facing
 contract is deliberately flat: exact skill steps cross as a string array and
 the host constructs the canonical Gene node before verification.
+
+`tools/pilot_skill_verifier_service.py` is the next, still-excluded boundary
+pilot. A private Unix-socket service owns an external mode-`0600` test suite,
+HMAC key, and append-only journal. It runs
+`src/skill_verifier_service_kernel.gene` with one named suite-read capability;
+the kernel parses candidate Gene as data and executes only the bounded pipeline
+interpreter. The submitter sees aggregate status and opaque digests. A trusted
+consumer authenticates the journal directly before exposing promoted source.
+Every receipt binds the exact suite, kernel, candidate, evidence, chain head,
+wall time, and peak RSS.
+
+Run the excluded adversarial self-test with:
+
+```bash
+python3 tools/pilot_skill_verifier_service.py self-test
+```
+
+It exercises promotion, rejection, safe recovery from a stale request,
+safe rejection of invalid Unicode, candidate mutation, receipt forgery, suite
+mutation, and rejection of verifier authorities inside the worktree. This
+demonstrates the intended capability flow, not secrecy between processes
+controlled by one Unix user. A treatment deployment must use a distinct
+OS/container identity, frozen hidden suites, and a preregistered
+submission/query budget.
+
+The qualified-model boundary rerun is retained in
+`docs/proposals/general_intelligence/qualifications/gpt-oss-20b-verified-skill-service-pilot-2026-08-09.json`.
+The operator-side command was:
+
+```bash
+python3 tools/pilot_skill_verifier_service.py model-pilot \
+  --model gpt-oss:20b \
+  --output docs/proposals/general_intelligence/qualifications/gpt-oss-20b-verified-skill-service-pilot-2026-08-09.json
+```
+
+It passed in one tool round and appended a trusted-consumer audit projection
+only after authenticating the private journal. The fixed model adapter received
+no suite, key, journal, filesystem, shell, or case-level capability.

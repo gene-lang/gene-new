@@ -16,5 +16,6 @@
     (application "library_induction_evaluation_pilot" ^entry "tests/library_induction_evaluation_pilot.gene")
     (application "verified_skill_records_smoke" ^entry "tests/verified_skill_records_smoke.gene")
     (application "skill_verifier_pilot" ^entry "src/skill_verifier_pilot.gene")
+    (application "skill_verifier_service_kernel" ^entry "src/skill_verifier_service_kernel.gene")
   ]
 }
