@@ -1,0 +1,27 @@
+# Trusted evaluator entry point for one hash-verified frozen episode batch.
+# The caller supplies only read authority and an exact file selected from the
+# freeze manifest. This process never regenerates the episode stream.
+
+(import $fs [read_text])
+(import $serde [read_data write_data])
+(import [default_subject verify_subject] from "./exact_belief.gene")
+(import [evaluate_episode_batch] from "./active_inference_experiment.gene")
+
+(fn main [args, ^episodes : Capability] : Nil
+  (var argv ($body args))
+  (if_not (== (argv ~ size) 2)
+    ($panic
+      "usage: active_inference_frozen_batch <base|shifted> <episode-file>"))
+  (var subject (default_subject))
+  (var subject_evidence (verify_subject subject))
+  (if_not subject_evidence/valid
+    ($panic "frozen-batch evaluator subject is invalid"))
+  (var prior
+    (if (== argv/0 "base")
+      (then subject/base_prior)
+      (else
+        (if_not (== argv/0 "shifted")
+          ($panic "prior must be base or shifted"))
+        subject/shifted_prior)))
+  (var batch (read_data (read_text episodes argv/1)))
+  ($println (write_data (evaluate_episode_batch subject prior batch))))

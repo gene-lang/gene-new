@@ -3,10 +3,11 @@
 These files hold implementation and evaluation details for the experiments
 motivated by [`../architecture.md`](../architecture.md). None of the treatment
 comparisons is frozen or ready to run. Experiment 2 has an executable mechanism
-and compute pilot; experiment 4 has a qualified local model plus a bounded
-verifier pilot. Those readiness artifacts do not pre-register either
-experiment. Candidate thresholds and sample sizes migrated here preserve design
-work without making the architecture note an experimental manual.
+and compute pilot; experiment 1 has a bounded exact interpreter and one-round
+induction smoke; experiment 4 has a qualified local model plus a bounded
+verifier pilot. Those readiness artifacts do not pre-register any treatment
+comparison. Candidate thresholds and sample sizes migrated here preserve
+design work without making the architecture note an experimental manual.
 
 Before an experiment begins, its protocol must specify the complete subject,
 generator or environment, algorithm, controls, evaluator, resource limits,
@@ -29,7 +30,7 @@ not tune the primary treatment effect.
 - Which candidate thresholds survive power analysis and the frozen subject
   design?
 - Which mechanism and compute pilots are sufficient without leaking evaluation
-information?
+  information?
 - Which experiments execute generated code inside `eval` and therefore can use
   its implemented `max_steps` budget? `max_memory_mb` and `timeout_ms` are not
   implemented, and a budgeted unit does not bound a precompiled closure it

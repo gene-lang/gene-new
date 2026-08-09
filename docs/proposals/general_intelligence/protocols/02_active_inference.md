@@ -254,6 +254,61 @@ After independent review, record in a separate freeze manifest:
 - exact commands, platform, and resource ceilings; and
 - reviewer identity and confirmation that no evaluation output was opened.
 
+The implemented freeze procedure is
+[`tools/prepare_active_inference_freeze.py`](../../../../tools/prepare_active_inference_freeze.py).
+It hashes this protocol and every subject, planner, generator, evaluator,
+exporter, smoke, pilot, and freeze-procedure source. The candidate digest also
+binds the Git revision, Gene executable hash, declared seeds, commands,
+platform, and resource ceilings. `packet` refuses a dirty worktree unless the
+caller explicitly requests a development-only inspection; `freeze` has no such
+override. Packet, attestation, and freeze paths are kept outside the worktree so
+creating review evidence cannot silently change the candidate it describes.
+
+The independent reviewer supplies one JSON object with exactly these fields:
+
+```json
+{
+  "schema": 1,
+  "experiment": "active_inference_v1",
+  "candidate_digest": "the digest printed by packet",
+  "reviewer_id": "an externally meaningful identity",
+  "reviewed_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+  "approved": true,
+  "confirmed_independent": true,
+  "confirmed_no_evaluation_output_opened": true,
+  "notes": "review disposition and any non-blocking observations"
+}
+```
+
+The repository can validate the schema and digest binding, but it cannot
+self-certify reviewer independence. That remains an organizational fact. Once
+the attestation exists, the commands are:
+
+```bash
+python3 tools/prepare_active_inference_freeze.py packet \
+  --output ../active-inference-v1-review.json
+python3 tools/prepare_active_inference_freeze.py freeze \
+  --attestation ../active-inference-v1-attestation.json \
+  --output-dir ../frozen-active-inference-v1
+python3 tools/prepare_active_inference_freeze.py verify \
+  --freeze-dir ../frozen-active-inference-v1
+```
+
+The exporter writes potential observations and random-arm draws as canonical
+Gene data, but neither it nor the freeze tool executes an arm or computes a
+treatment metric. Its development self-test exports only the disjoint pilot
+seed, passes that file through the capability-gated frozen-batch evaluator, and
+explicitly reports zero evaluation batches and zero evaluation treatment arms.
+The evaluator consumes the exact frozen file rather than regenerating its
+stream.
+
+On the 2026-08-09 development machine, the complete Python freeze-tool
+self-test took 1.90 seconds and 29,540,352 bytes maximum resident set size. It
+includes the mechanism smoke, compute pilot, canonical pilot export,
+frozen-file evaluation, manifest verification, and mutation rejection. These
+are development observations, not a resource measurement of the unopened full
+evaluation.
+
 Any content change after that manifest creates a new experiment version. The
 estimated implementation and review effort remains 2–4 person-weeks with
 roughly `2x` uncertainty; the finite local run itself is expected to be cheap.

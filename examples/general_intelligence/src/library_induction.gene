@@ -1,0 +1,482 @@
+# Bounded exact program induction for experiment 1. The module keeps a small
+# interface over four operations:
+#
+#   default_induction_subject  exact pilot tasks, DSL, and resource bounds
+#   run_program                execute a validated declarative program
+#   induce_library             extract one positive-MDL repeated subprogram
+#   verify_induction           return end-to-end mechanism evidence
+#
+# Candidate programs are data, never eval input. The implementation expands a
+# bounded declarative language and dispatches only the twelve primitives below.
+
+(mod library_induction
+  @doc "bounded exact library-induction mechanism for list transformations")
+
+(fn default_induction_subject [] : Node
+  (quote
+    (library_induction_subject
+      ^primitive_tokens [
+        (tail)
+        (init)
+        (reverse)
+        (rotate_left)
+        (rotate_right)
+        (map_add_one)
+        (map_sub_one)
+        (map_double)
+        (map_negate)
+        (keep_even)
+        (keep_odd)
+        (duplicate_each)]
+      ^max_input_items 32
+      ^max_output_items 64
+      ^max_expanded_steps 8
+      ^max_abstraction_steps 4
+      ^minimum_occurrences 4
+      ^abstraction_name induced_0
+      ^search_token_depth 3
+      ^candidate_budget 500
+      ^training [
+        (solved_task
+          ^id add_after_tail_reverse
+          ^program (program (tail) (reverse) (map_add_one))
+          ^cases [
+            (case ^input [1 2 3] ^expected [4 3])
+            (case ^input [-1 0 2 4] ^expected [5 3 1])])
+        (solved_task
+          ^id subtract_after_tail_reverse
+          ^program (program (tail) (reverse) (map_sub_one))
+          ^cases [
+            (case ^input [1 2 3] ^expected [2 1])
+            (case ^input [-1 0 2 4] ^expected [3 1 -1])])
+        (solved_task
+          ^id double_after_tail_reverse
+          ^program (program (tail) (reverse) (map_double))
+          ^cases [
+            (case ^input [1 2 3] ^expected [6 4])
+            (case ^input [-1 0 2 4] ^expected [8 4 0])])
+        (solved_task
+          ^id negate_after_tail_reverse
+          ^program (program (tail) (reverse) (map_negate))
+          ^cases [
+            (case ^input [1 2 3] ^expected [-3 -2])
+            (case ^input [-1 0 2 4] ^expected [-4 -2 0])])]
+      ^transfer_task
+        (task
+          ^id duplicate_incremented_tail_reverse
+          ^cases [
+            (case ^input [1 2 3] ^expected [4 4 3 3])
+            (case ^input [-1 0 2 4] ^expected [5 5 3 3 1 1])
+            (case ^input [5] ^expected [])]))))
+
+(fn copy_range [items : (List Int), first : Int, past : Int] : (List Int)
+  (var result : (List Int) [])
+  (var index first)
+  (while (< index past)
+    (result ~ push! items/%index)
+    (set index (+ index 1)))
+  result)
+
+(fn copy_items [items : (List Int)] : (List Int)
+  (copy_range items 0 (items ~ size)))
+
+(fn apply_primitive [step : Node, input : (List Int)] : (List Int)
+  (match step
+    (when (tail)
+      (if (<= (input ~ size) 1)
+        []
+        (copy_range input 1 (input ~ size))))
+    (when (init)
+      (if (<= (input ~ size) 1)
+        []
+        (copy_range input 0 (- (input ~ size) 1))))
+    (when (reverse)
+      (var result : (List Int) [])
+      (var index (- (input ~ size) 1))
+      (while (>= index 0)
+        (result ~ push! input/%index)
+        (set index (- index 1)))
+      result)
+    (when (rotate_left)
+      (if (<= (input ~ size) 1)
+        (then (copy_items input))
+        (else
+          (var result (copy_range input 1 (input ~ size)))
+          (result ~ push! input/0)
+          result)))
+    (when (rotate_right)
+      (if (<= (input ~ size) 1)
+        (then (copy_items input))
+        (else
+          (var result : (List Int) [input/-1])
+          (for item in (copy_range input 0 (- (input ~ size) 1))
+            (result ~ push! item))
+          result)))
+    (when (map_add_one)
+      (var result : (List Int) [])
+      (for item in input (result ~ push! (+ item 1)))
+      result)
+    (when (map_sub_one)
+      (var result : (List Int) [])
+      (for item in input (result ~ push! (- item 1)))
+      result)
+    (when (map_double)
+      (var result : (List Int) [])
+      (for item in input (result ~ push! (* item 2)))
+      result)
+    (when (map_negate)
+      (var result : (List Int) [])
+      (for item in input (result ~ push! (- 0 item)))
+      result)
+    (when (keep_even)
+      (var result : (List Int) [])
+      (for item in input
+        (if_yes (== (// item 2) 0) (result ~ push! item)))
+      result)
+    (when (keep_odd)
+      (var result : (List Int) [])
+      (for item in input
+        (if_not (== (// item 2) 0) (result ~ push! item)))
+      result)
+    (when (duplicate_each)
+      (var result : (List Int) [])
+      (for item in input
+        (result ~ push! item)
+        (result ~ push! item))
+      result)
+    (else ($panic "unknown library-induction primitive"))))
+
+(fn primitive_token? [subject : Node, token : Node] : Bool
+  (for primitive in subject/primitive_tokens
+    (if (== primitive token) (return true)))
+  false)
+
+(fn find_abstraction [library : (List Node), name] : Node?
+  (for abstraction in library
+    (if (== abstraction/name name) (return abstraction)))
+  nil)
+
+(fn expand_program [subject : Node, program : Node,
+                    library : (List Node)] : Node
+  (var expanded : (List Node) [])
+  (match program
+    (when (program tokens...)
+      (for token in tokens
+        (match token
+          (when (use ^name name)
+            (var abstraction (find_abstraction library name))
+            (if (== abstraction nil)
+              (return
+                `(expansion
+                   ^valid false ^steps []
+                   ^error "program references an unknown abstraction")))
+            (match abstraction/body
+              (when (program body_steps...)
+                (for body_step in body_steps
+                  (if_not (primitive_token? subject body_step)
+                    (return
+                      `(expansion
+                         ^valid false ^steps []
+                         ^error "abstraction body must contain only primitives")))
+                  (expanded ~ push! body_step)))
+              (else
+                (return
+                  `(expansion
+                     ^valid false ^steps []
+                     ^error "abstraction body must be a program")))))
+          (else
+            (if_not (primitive_token? subject token)
+              (return
+                `(expansion
+                   ^valid false ^steps []
+                   ^error "program contains an unknown primitive")))
+            (expanded ~ push! token)))
+        (if (> (expanded ~ size) subject/max_expanded_steps)
+          (return
+            `(expansion
+               ^valid false ^steps []
+               ^error "program exceeds the expanded-step bound")))))
+    (else
+      (return
+        `(expansion
+           ^valid false ^steps []
+           ^error "candidate must be a program node"))))
+  `(expansion ^valid true ^steps %expanded ^error nil))
+
+(fn input_valid? [subject : Node, input : (List Int)] : Bool
+  (if (> (input ~ size) subject/max_input_items) (return false))
+  (for item in input
+    (if (> ($math/abs item) 1000000) (return false)))
+  true)
+
+(fn run_program [subject : Node, program : Node, library : (List Node),
+                 input : (List Int)] : (List Int)
+  (if_not (input_valid? subject input)
+    ($panic "program input violates the subject bounds"))
+  (var expansion (expand_program subject program library))
+  (if_not expansion/valid ($panic expansion/error))
+  (var result (copy_items input))
+  (for step in expansion/steps
+    (set result (apply_primitive step result))
+    (if (> (result ~ size) subject/max_output_items)
+      ($panic "program output exceeds the subject bound")))
+  result)
+
+(fn verifies_task? [subject : Node, program : Node, library : (List Node),
+                    task : Node] : Bool
+  (for test_case in task/cases
+    (if_not (== (run_program subject program library test_case/input)
+                test_case/expected)
+      (return false)))
+  true)
+
+(fn take_pattern [steps : (List Node), start : Int,
+                  length : Int] : (List Node)
+  (var pattern : (List Node) [])
+  (var offset 0)
+  (while (< offset length)
+    (var position (+ start offset))
+    (pattern ~ push! steps/%position)
+    (set offset (+ offset 1)))
+  pattern)
+
+(fn pattern_at? [steps : (List Node), pattern : (List Node),
+                 start : Int] : Bool
+  (if (> (+ start (pattern ~ size)) (steps ~ size)) (return false))
+  (var offset 0)
+  (while (< offset (pattern ~ size))
+    (var position (+ start offset))
+    (if_not (== steps/%position pattern/%offset)
+      (return false))
+    (set offset (+ offset 1)))
+  true)
+
+(fn contains_pattern? [program : Node, pattern : (List Node)] : Bool
+  (var steps ($body program))
+  (var start 0)
+  (while (<= (+ start (pattern ~ size)) (steps ~ size))
+    (if (pattern_at? steps pattern start) (return true))
+    (set start (+ start 1)))
+  false)
+
+(fn pattern_support [programs : (List Node), pattern : (List Node)] : Int
+  (var count 0)
+  (for program in programs
+    (if_yes (contains_pattern? program pattern) (set count (+ count 1))))
+  count)
+
+(fn replacement_count [program : Node, pattern : (List Node)] : Int
+  (var steps ($body program))
+  (var count 0)
+  (var index 0)
+  (while (< index (steps ~ size))
+    (if (pattern_at? steps pattern index)
+      (then
+        (set count (+ count 1))
+        (set index (+ index (pattern ~ size))))
+      (else (set index (+ index 1)))))
+  count)
+
+(fn pattern_occurrences [programs : (List Node),
+                         pattern : (List Node)] : Int
+  (var count 0)
+  (for program in programs
+    (set count (+ count (replacement_count program pattern))))
+  count)
+
+(fn compress_program [program : Node, pattern : (List Node), name] : Node
+  (var steps ($body program))
+  (var compressed : (List Node) [])
+  (var index 0)
+  (while (< index (steps ~ size))
+    (if (pattern_at? steps pattern index)
+      (then
+        (compressed ~ push! `(use ^name %name))
+        (set index (+ index (pattern ~ size))))
+      (else
+        (compressed ~ push! steps/%index)
+        (set index (+ index 1)))))
+  `(program %compressed...))
+
+(fn programs_mdl [programs : (List Node)] : Int
+  (var total 0)
+  (for program in programs (set total (+ total (($body program) ~ size))))
+  total)
+
+(fn induce_library [subject : Node, programs : (List Node)] : Node
+  (var best_pattern : List [])
+  (var best_support 0)
+  (var best_occurrences 0)
+  (var best_gain 0)
+  (for program in programs
+    (var steps ($body program))
+    (var start 0)
+    (while (< start (steps ~ size))
+      (var length 2)
+      (while (&& (<= length subject/max_abstraction_steps)
+                 (<= (+ start length) (steps ~ size)))
+        (var pattern (take_pattern steps start length))
+        (var support (pattern_support programs pattern))
+        (var occurrences (pattern_occurrences programs pattern))
+        # One token names an abstraction. Its definition costs that name plus
+        # every primitive in its body. Each occurrence replaces length tokens
+        # with one token.
+        (var gain
+          (- (* occurrences (- length 1)) (+ length 1)))
+        (if_yes (&& (>= support subject/minimum_occurrences)
+                    (> gain best_gain))
+          (set best_pattern pattern)
+          (set best_support support)
+          (set best_occurrences occurrences)
+          (set best_gain gain))
+        (set length (+ length 1)))
+      (set start (+ start 1))))
+
+  (var baseline_mdl (programs_mdl programs))
+  (if (<= best_gain 0)
+    (return
+      `(induction_result
+         ^accepted false ^library [] ^pattern []
+         ^support 0 ^occurrences 0 ^baseline_mdl %baseline_mdl
+         ^induced_mdl %baseline_mdl ^mdl_gain 0
+         ^compressed_programs %programs)))
+
+  (var name subject/abstraction_name)
+  (var body `(program %best_pattern...))
+  (var abstraction
+    `(abstraction
+       ^name %name ^body %body ^support %best_support
+       ^occurrences %best_occurrences
+       ^definition_mdl %(+ (best_pattern ~ size) 1)))
+  (var library : (List Node) [])
+  (library ~ push! abstraction)
+  (var compressed_programs : (List Node) [])
+  (for program in programs
+    (compressed_programs ~ push!
+      (compress_program program best_pattern name)))
+  (var induced_mdl
+    (+ (+ (best_pattern ~ size) 1)
+       (programs_mdl compressed_programs)))
+  `(induction_result
+     ^accepted true
+     ^library %library
+     ^pattern %best_pattern
+     ^support %best_support
+     ^occurrences %best_occurrences
+     ^baseline_mdl %baseline_mdl
+     ^induced_mdl %induced_mdl
+     ^mdl_gain %(- baseline_mdl induced_mdl)
+     ^compressed_programs %compressed_programs))
+
+(fn append_token [program : Node, token : Node] : Node
+  (var steps ($body program))
+  (var result : (List Node) [])
+  (for step in steps (result ~ push! step))
+  (result ~ push! token)
+  `(program %result...))
+
+(fn programs_of_length [tokens : (List Node), length : Int] : (List Node)
+  (if (== length 0) (return [(quote (program))]))
+  (var result : (List Node) [])
+  (for prefix in (programs_of_length tokens (- length 1))
+    (for token in tokens
+      (result ~ push! (append_token prefix token))))
+  result)
+
+(fn search_tokens [subject : Node, library : (List Node)] : (List Node)
+  (var result : (List Node) [])
+  # Learned abstractions receive the predeclared first position. The unrelated
+  # library control must receive the same prior position and token count.
+  (for abstraction in library
+    (result ~ push! `(use ^name %abstraction/name)))
+  (for primitive in subject/primitive_tokens (result ~ push! primitive))
+  result)
+
+(fn search_task [subject : Node, task : Node,
+                 library : (List Node)] : Node
+  (var tokens (search_tokens subject library))
+  (var candidate_executions 0)
+  (var token_depth 0)
+  (while (<= token_depth subject/search_token_depth)
+    (for candidate in (programs_of_length tokens token_depth)
+      (if (>= candidate_executions subject/candidate_budget)
+        (return
+          `(search_result
+             ^solved false ^program nil
+             ^candidate_executions %candidate_executions
+             ^budget_exhausted true)))
+      (set candidate_executions (+ candidate_executions 1))
+      (if (verifies_task? subject candidate library task)
+        (return
+          `(search_result
+             ^solved true ^program %candidate
+             ^candidate_executions %candidate_executions
+             ^budget_exhausted false))))
+    (set token_depth (+ token_depth 1)))
+  `(search_result
+     ^solved false ^program nil
+     ^candidate_executions %candidate_executions
+     ^budget_exhausted false))
+
+(fn program_uses? [program : Node, name] : Bool
+  (for token in ($body program)
+    (match token
+      (when (use ^name used_name)
+        (if (== used_name name) (return true)))
+      (else nil)))
+  false)
+
+(fn verify_induction [subject : Node] : Node
+  (var programs : (List Node) [])
+  (var training_valid true)
+  (for solved in subject/training
+    (programs ~ push! solved/program)
+    (if_not (verifies_task? subject solved/program [] solved)
+      (set training_valid false)))
+  (var induction (induce_library subject programs))
+  (var no_gain_induction
+    (induce_library subject
+      [(quote (program (tail) (init)))
+       (quote (program (reverse) (rotate_left)))
+       (quote (program (rotate_right) (map_add_one)))
+       (quote (program (map_sub_one) (map_double)))]))
+  (var base_search (search_task subject subject/transfer_task []))
+  (var induced_search
+    (search_task subject subject/transfer_task induction/library))
+  (var overlong
+    (quote
+      (program
+        (tail) (tail) (tail) (tail) (tail)
+        (tail) (tail) (tail) (tail))))
+  (var overlong_expansion (expand_program subject overlong []))
+  (var bounds_rejected (! overlong_expansion/valid))
+  (var expected_pattern
+    [(quote (tail)) (quote (reverse))])
+  (var valid
+    (&&
+      (== (subject/primitive_tokens ~ size) 12)
+      training_valid
+      induction/accepted
+      (== induction/pattern expected_pattern)
+      (== induction/support 4)
+      (== induction/occurrences 4)
+      (== induction/baseline_mdl 12)
+      (== induction/induced_mdl 11)
+      (== induction/mdl_gain 1)
+      (! no_gain_induction/accepted)
+      bounds_rejected
+      (! base_search/solved)
+      (== base_search/candidate_executions subject/candidate_budget)
+      induced_search/solved
+      (program_uses? induced_search/program subject/abstraction_name)
+      (verifies_task? subject induced_search/program induction/library
+                      subject/transfer_task)))
+  `(induction_verification
+     ^valid %valid
+     ^primitive_count %(subject/primitive_tokens ~ size)
+     ^training_valid %training_valid
+     ^no_gain_rejected %(! no_gain_induction/accepted)
+     ^bounds_rejected %bounds_rejected
+     ^induction %induction
+     ^base_search %base_search
+     ^induced_search %induced_search))

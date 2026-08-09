@@ -154,10 +154,8 @@
      ^inspections %metrics/2
      ^utility %metrics/3))
 
-(fn evaluate_batch [subject : Node, prior : (List Float), episode_seed : Int,
-                    random_seed : Int, episode_count : Int] : Node
-  (var batch
-    (generate_batch subject prior episode_seed random_seed episode_count))
+(fn evaluate_episode_batch [subject : Node, prior : (List Float),
+                            batch : Node] : Node
   (var greedy (greedy_policy subject prior))
   (var reward (plan subject prior 0.0))
   (var active (plan subject prior subject/beta))
@@ -175,9 +173,9 @@
     (record_result active_metrics
       (execute_policy subject active/policy episode)))
   `(batch_result
-     ^episode_seed %episode_seed
-     ^random_seed %random_seed
-     ^episode_count %episode_count
+     ^episode_seed %batch/episode_seed
+     ^random_seed %batch/random_seed
+     ^episode_count %(batch/episodes ~ size)
      ^greedy_policy %greedy
      ^reward_policy %reward/policy
      ^active_policy %active/policy
@@ -187,6 +185,12 @@
      ^active %(metrics_node active_metrics)
      ^final_episode_state %batch/final_episode_state
      ^final_random_state %batch/final_random_state))
+
+(fn evaluate_batch [subject : Node, prior : (List Float), episode_seed : Int,
+                    random_seed : Int, episode_count : Int] : Node
+  (var batch
+    (generate_batch subject prior episode_seed random_seed episode_count))
+  (evaluate_episode_batch subject prior batch))
 
 (fn evaluate_batches [subject : Node, prior : (List Float),
                       episode_seed_base : Int, random_seed_base : Int,

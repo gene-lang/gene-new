@@ -4,6 +4,19 @@ This package holds executable mechanisms for the falsifiable experiments in
 [`docs/proposals/general_intelligence/architecture.md`](../../docs/proposals/general_intelligence/architecture.md).
 It is research scaffolding, not an AGI claim and not a new runtime dependency.
 
+The library-induction slice for experiment 1 is in
+`src/library_induction.gene`. It interprets a closed 12-primitive list DSL,
+extracts only repeated subprograms with positive corpus MDL, and performs exact
+iterative-deepening search under a candidate counter. Its constructed smoke
+shows a reusable abstraction extending search reach at an equal ceiling; it is
+mechanism evidence, not a treatment result.
+
+Run it with:
+
+```bash
+bin/gene run examples/general_intelligence/tests/library_induction_smoke.gene
+```
+
 The first implemented slice is experiment 2's exact-belief repair lab. Its
 module interface is intentionally narrow:
 
@@ -28,6 +41,19 @@ bin/gene run examples/general_intelligence/tests/active_inference_pilot.gene
 The smoke uses no generated evaluation episodes and does not decide the
 hypothesis. It exists to freeze the finite state/action grammar and prove exact
 enumeration before the treatment comparison is run.
+
+`tools/prepare_active_inference_freeze.py` makes the independent-review gate
+mechanical. Its self-test uses only the disjoint pilot stream. On a clean
+revision, `packet` emits the exact candidate digest for a reviewer; `freeze`
+refuses to generate the 20 evaluation batches unless an attestation approves
+that digest, and `verify` rechecks source, manifest, and episode hashes. The
+tool never executes a treatment arm.
+
+After a legitimate freeze, `src/active_inference_frozen_batch.gene` is the
+trusted consumer: it reads a manifest-selected canonical batch under an
+explicit `Fs/ReadDir` capability and evaluates that batch without regenerating
+its random stream. The tooling self-test exercises this path only on the pilot
+seed.
 
 The second implemented slice is experiment 4's verifier mechanism pilot:
 

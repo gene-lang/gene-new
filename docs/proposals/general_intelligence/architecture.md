@@ -170,7 +170,12 @@ Protocol: [`protocols/05_integration.md`](protocols/05_integration.md)
 Experiment 2's candidate repair domain is now specified and its mechanism smoke
 verifies exact enumeration; its disjoint-seed compute pilot also passes. Its
 protocol still needs independent review and a content-hash freeze before
-evaluation. Experiment 4's local-model gate passed on 2026-08-09: the selected
+evaluation. Experiment 1 now has a closed 12-primitive interpreter and a
+positive-MDL one-round induction smoke: the induced abstraction solves a
+constructed transfer task that the primitive-only search cannot reach at the
+same candidate ceiling. Its generated corpus, iterative stopping rule, and
+matched donor-library procedure still need to be frozen before treatment work.
+Experiment 4's local-model gate passed on 2026-08-09: the selected
 `gpt-oss:20b` artifact accepted all 20 exact mock-tool tasks under the recorded
 resource envelope. The immutable qualification report is
 [`qualifications/gpt-oss-20b-2026-08-09.json`](qualifications/gpt-oss-20b-2026-08-09.json).

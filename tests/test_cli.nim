@@ -136,6 +136,37 @@ suite "cli — gene run":
     check "final_episode_state=264756247" in ran.output
     check "final_random_state=2017023388" in ran.output
 
+    ran = runGene([
+      "run",
+      "examples/general_intelligence/src/active_inference_export.gene",
+      "base", "3000001", "4000001", "100"
+    ])
+    check ran.exitCode == 0
+    check ran.output.count("(episode ^index ") == 100
+    check "^final_episode_state 264756247" in ran.output
+    check "^final_random_state 2017023388" in ran.output
+
+    let freezeTool = execCmdEx(
+      "python3 tools/prepare_active_inference_freeze.py self-test")
+    check freezeTool.exitCode == 0
+    check "pilot batches exported: 1" in freezeTool.output
+    check "evaluation batches exported: 0" in freezeTool.output
+    check "evaluation treatment arms executed: 0" in freezeTool.output
+    check "mutation rejected: true" in freezeTool.output
+
+  test "general-intelligence library induction extracts only useful reuse":
+    let ran = runGene([
+      "run",
+      "examples/general_intelligence/tests/library_induction_smoke.gene"
+    ])
+    check ran.exitCode == 0
+    check "primitives=12 training_valid=true" in ran.output
+    check "pattern=[(tail) (reverse)] support=4 occurrences=4 mdl=12->11" in
+      ran.output
+    check "no_gain_rejected=true bounds_rejected=true" in ran.output
+    check "base_solved=false induced_solved=true induced_candidates=274" in
+      ran.output
+
   test "verified-skill pilot promotes only the verifier-test passing artifact":
     var ran = runGene([
       "run",
