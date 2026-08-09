@@ -116,6 +116,68 @@ suite "cli — gene run":
     let ran = runGene(["run", rawMain, "a", "b,", "c"])
     check ran.exitCode == 0
 
+  test "general-intelligence repair lab enumerates and pilots exactly":
+    var ran = runGene([
+      "run",
+      "examples/general_intelligence/tests/active_inference_smoke.gene"
+    ])
+    check ran.exitCode == 0
+    check "policies=804 branches=2884" in ran.output
+    check "min_entropy=0.6364032504023012 max_mass_error=0.0" in ran.output
+    check "^policy (repair ^fault 0)" in ran.output
+    check "^policy (inspect ^test 1" in ran.output
+
+    ran = runGene([
+      "run",
+      "examples/general_intelligence/tests/active_inference_pilot.gene"
+    ])
+    check ran.exitCode == 0
+    check "episodes=100" in ran.output
+    check "final_episode_state=264756247" in ran.output
+    check "final_random_state=2017023388" in ran.output
+
+  test "verified-skill pilot promotes only the verifier-test passing artifact":
+    var ran = runGene([
+      "run",
+      "examples/general_intelligence/tests/verified_skill_records_smoke.gene"
+    ])
+    check ran.exitCode == 0
+    check "candidate=5bb3ffe53ed1e473fc7fc0a53d786ee6a56eeca9156133b9d18bb07ee6702889" in
+      ran.output
+    check "bounds_rejected=true" in ran.output
+    check "mutation_rejected=true" in ran.output
+
+    let verifier =
+      "examples/general_intelligence/src/skill_verifier_pilot.gene"
+    let passing =
+      "(skill_candidate ^id \"normalize_words_v1\" " &
+      "^name \"normalize_words\" ^version 1 " &
+      "^preconditions [\"string input\"] " &
+      "^effects [\"normalized string\"] " &
+      "^provenance [\"mechanism_pilot\"] " &
+      "(pipeline (trim) (lowercase) (replace ^from \" \" ^to \"_\")))"
+    ran = runGene(["run", verifier, passing, "genesis"])
+    check ran.exitCode == 0
+    check "^status \"promoted\"" in ran.output
+    check "^tests_passed 4 ^tests_total 4" in ran.output
+    check "^previous_receipt_digest \"genesis\"" in ran.output
+    check "^receipt_digest \"63284c0eadd7f8944ddcd8f0f59cda4b9e2986944baa4aee4d3464fa039ea7cd\"" in
+      ran.output
+
+    let failing =
+      "(skill_candidate ^id \"normalize_words_bad\" " &
+      "^name \"normalize_words\" ^version 1 " &
+      "^preconditions [\"string input\"] " &
+      "^effects [\"normalized string\"] " &
+      "^provenance [\"mechanism_pilot\"] " &
+      "(pipeline (trim) (lowercase)))"
+    ran = runGene(["run", verifier, failing, "genesis"])
+    check ran.exitCode == 0
+    check "^status \"rejected\"" in ran.output
+    check "^tests_passed 1 ^tests_total 4" in ran.output
+    check "^failure_codes [\"case_1\" \"case_2\" \"case_4\"]" in ran.output
+    check "^skill" notin ran.output
+
   test "main receives only explicitly granted named capabilities":
     let grantedMain = writeCliProgram("granted_main.gene",
       "(fn main [args, ^config : Capability] " &

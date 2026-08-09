@@ -1,0 +1,22 @@
+# Exhaustive mechanism smoke for experiment 2. This does not evaluate the
+# hypothesis or consume any future evaluation episodes. It verifies that the
+# finite subject is structurally valid, every admissible contingent policy is
+# enumerated, every observation tree has unit mass for every hidden fault, and
+# the information term actually changes the selected policy.
+
+(mod active_inference_smoke)
+
+(import [default_subject verify_subject] from "../src/exact_belief.gene")
+
+(fn main [args] : Nil
+  (var report (verify_subject (default_subject)))
+  (if_not report/valid
+    ($panic $"active-inference subject verification failed: ${report}"))
+  (var invalid_subject (default_subject))
+  (invalid_subject/tests/0/positive_likelihoods ~ set! 0 1.0)
+  (if (verify_subject invalid_subject)/valid
+    ($panic "invalid inspection likelihood accepted"))
+  ($println
+    $"active-inference mechanism smoke: policies=${report/policy_count} branches=${report/branch_count} min_entropy=${report/minimum_one_step_entropy} max_mass_error=${report/maximum_branch_mass_error}")
+  ($println
+    $"base reward=${report/base_reward} active=${report/base_active}"))

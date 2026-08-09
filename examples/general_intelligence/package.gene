@@ -1,0 +1,13 @@
+{
+  ^format 1
+  ^name "gene/general_intelligence"
+  ^description "Falsifiable experiments for exact symbolic learning and planning"
+  ^version "0.1.0"
+  ^library {^entry "src/exact_belief.gene"}
+  ^applications [
+    (application "active_inference_smoke" ^entry "tests/active_inference_smoke.gene")
+    (application "active_inference_pilot" ^entry "tests/active_inference_pilot.gene")
+    (application "verified_skill_records_smoke" ^entry "tests/verified_skill_records_smoke.gene")
+    (application "skill_verifier_pilot" ^entry "src/skill_verifier_pilot.gene")
+  ]
+}

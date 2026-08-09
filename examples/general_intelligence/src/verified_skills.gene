@@ -1,0 +1,132 @@
+# Exact records and bounded executable skill data for experiment 4's verifier
+# mechanism pilot. This module does not own hidden tests and cannot promote a
+# skill. A separate verifier supplies tests and is the only component allowed
+# to emit a promotion outcome.
+
+(mod verified_skills
+  @doc "exact lifelong-skill records and bounded pilot skill execution")
+
+(import $crypto [sha256])
+(import $serde [write_data])
+(import $str [join split lower trim byte_size])
+
+(type Episode
+  ^props {^id Str ^goal Any ^observations List ^actions List ^outputs List
+          ^verifier_result Any ^cost Map})
+
+(type Lesson
+  ^props {^id Str ^failure_hypothesis Str ^episode_ids List ^evidence List})
+
+(type Skill
+  ^props {^id Str ^name Str ^version Int ^program Node
+          ^preconditions List ^effects List ^provenance List
+          ^candidate_digest Str ^verification_receipt Node})
+
+(fn candidate_digest [candidate : Node] : Str
+  (sha256 (write_data candidate)))
+
+(fn known_step? [step : Node] : Bool
+  (match step
+    (when (trim) true)
+    (when (lowercase) true)
+    (when (replace ^from (from : Str) ^to (to : Str))
+      (&& (!= from "") (<= (byte_size from) 64) (<= (byte_size to) 64)))
+    (else false)))
+
+(fn candidate_shape [candidate : Node]
+  (match candidate
+    (when (skill_candidate
+            ^id (id : Str) ^name (name : Str) ^version (version : Int)
+            ^preconditions (preconditions : List)
+            ^effects (effects : List) ^provenance (provenance : List)
+            (pipeline steps...))
+      (var valid_steps true)
+      (for step in steps
+        (if_not (known_step? step) (set valid_steps false)))
+      {^valid (&& (!= id "") (<= (byte_size id) 128)
+                   (!= name "") (<= (byte_size name) 128) (> version 0)
+                   (! (steps ~ empty?)) (<= (steps ~ size) 8)
+                   (<= (preconditions ~ size) 16)
+                   (<= (effects ~ size) 16)
+                   (<= (provenance ~ size) 16)
+                   valid_steps)
+       ^id id ^name name ^version version ^preconditions preconditions
+       ^effects effects ^provenance provenance ^program `(pipeline %steps...)})
+    (else {^valid false})))
+
+(fn apply_step [value : Str, step : Node] : Str
+  (match step
+    (when (trim) (trim value))
+    (when (lowercase) (lower value))
+    (when (replace ^from from ^to to) (join (split value from) to))
+    (else ($panic "unknown verified-skill pilot operation"))))
+
+(fn execute_candidate [candidate : Node, input : Str] : Str
+  (var shape (candidate_shape candidate))
+  (if_not shape/valid
+    ($panic "invalid verified-skill candidate"))
+  (var value input)
+  (match shape/program
+    (when (pipeline steps...)
+      (for step in steps
+        (set value (apply_step value step)))))
+  value)
+
+(fn receipt_payload [receipt : Node] : Node
+  (match receipt
+    (when (verification_receipt
+            ^schema schema ^verifier_id verifier_id
+            ^suite_digest suite_digest ^candidate_digest candidate_id
+            ^passed passed ^tests_passed tests_passed ^tests_total tests_total
+            ^failure_codes failure_codes
+            ^previous_receipt_digest previous_receipt_digest
+            ^receipt_digest _)
+      `(verification_receipt
+         ^schema %schema ^verifier_id %verifier_id
+         ^suite_digest %suite_digest ^candidate_digest %candidate_id
+         ^passed %passed ^tests_passed %tests_passed ^tests_total %tests_total
+         ^failure_codes %failure_codes
+         ^previous_receipt_digest %previous_receipt_digest))
+    (else ($panic "invalid verification receipt"))))
+
+(fn receipt_digest [receipt : Node] : Str
+  (sha256 (write_data (receipt_payload receipt))))
+
+(fn seal_receipt [payload : Node] : Node
+  (match payload
+    (when (verification_receipt
+            ^schema schema ^verifier_id verifier_id
+            ^suite_digest suite_digest ^candidate_digest candidate_id
+            ^passed passed ^tests_passed tests_passed ^tests_total tests_total
+            ^failure_codes failure_codes
+            ^previous_receipt_digest previous_receipt_digest)
+      (var digest (sha256 (write_data payload)))
+      `(verification_receipt
+         ^schema %schema ^verifier_id %verifier_id
+         ^suite_digest %suite_digest ^candidate_digest %candidate_id
+         ^passed %passed ^tests_passed %tests_passed ^tests_total %tests_total
+         ^failure_codes %failure_codes
+         ^previous_receipt_digest %previous_receipt_digest
+         ^receipt_digest %digest))
+    (else ($panic "invalid unsealed verification receipt"))))
+
+(fn receipt_well_formed? [receipt : Node] : Bool
+  (try
+    (match receipt
+      (when (verification_receipt
+              ^schema 1 ^verifier_id (verifier_id : Str)
+              ^suite_digest (suite_digest : Str)
+              ^candidate_digest (candidate_id : Str)
+              ^passed (passed : Bool)
+              ^tests_passed (tests_passed : Int)
+              ^tests_total (tests_total : Int)
+              ^failure_codes (failure_codes : List)
+              ^previous_receipt_digest (previous_receipt_digest : Str)
+              ^receipt_digest (digest : Str))
+        (&& (!= verifier_id "") (!= suite_digest "") (!= candidate_id "")
+            (>= tests_passed 0) (> tests_total 0)
+            (<= tests_passed tests_total)
+            (== passed (== tests_passed tests_total))
+            (== digest (receipt_digest receipt))))
+      (else false))
+  catch _ false))

@@ -1,0 +1,45 @@
+{
+  "date_utc": "2026-08-09T16:48:58Z",
+  "decoding": {
+    "max_rounds": 6,
+    "num_ctx": 32768,
+    "num_predict": 1024,
+    "seed": 20260809,
+    "temperature": 0
+  },
+  "harness_sha256": "203edc6139bae3262735ec1fb0a5fa91ec8f53b4ac378d59eea25a327b958448",
+  "model": {
+    "capabilities": [
+      "completion",
+      "tools",
+      "thinking"
+    ],
+    "manifest_digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "name": "gpt-oss:20b"
+  },
+  "schema": "gene.verified_skill_agent_pilot.v3",
+  "submissions": [
+    {
+      "accepted": true,
+      "candidate_source": "(skill_candidate ^id \"normalize_words\" ^name \"normalize_words\" ^version 1 ^preconditions [\"Input is a string.\"] ^effects [\"The output string is the input string trimmed of surrounding whitespace, converted to lowercase, and all spaces replaced with underscores.\"] ^provenance [\"mechanism_pilot\"] (pipeline (trim) (lowercase) (replace ^from \" \" ^to \"_\")))",
+      "candidate_source_sha256": "ea11fe4da505624add5239a09446dabe67d6076f6b8b7835c0090a16e7b7820e",
+      "receipt_digest": "edaaf1f61e6ea91a120c17785c369f4ca4fe046a47d525319147b80806bb3091",
+      "schema_conformant": true,
+      "tests_passed": 4,
+      "tests_total": 4,
+      "verifier_exit_code": 0,
+      "verifier_output_sha256": "1d5ced0ccfe8b056e7454f86e44224cc3ada1624902e1e39caae0a488f4bbe47",
+      "verifier_wall_seconds": 0.031766457948833704
+    }
+  ],
+  "summary": {
+    "accepted": true,
+    "generated_tokens": 357,
+    "prompt_tokens": 327,
+    "rounds": 1,
+    "schema_conformant_submissions": 1,
+    "submissions": 1,
+    "wall_seconds": 6.958476500120014
+  },
+  "verifier_sha256": "e66f07f0ab0591b157aa4d8d0914396d5eddd13f4db249ce1aa28fb3bf66a78d"
+}

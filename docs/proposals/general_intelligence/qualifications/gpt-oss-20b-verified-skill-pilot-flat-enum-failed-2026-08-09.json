@@ -1,0 +1,35 @@
+{
+  "date_utc": "2026-08-09T16:45:22Z",
+  "decoding": {
+    "max_rounds": 6,
+    "num_ctx": 32768,
+    "num_predict": 1024,
+    "seed": 20260809,
+    "temperature": 0
+  },
+  "harness_sha256": "17e6bcabc5f37afe64c84ecc131324bc0cab9c9dc75eab82bab1b2408f012552",
+  "model": {
+    "capabilities": ["completion", "tools", "thinking"],
+    "manifest_digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "name": "gpt-oss:20b"
+  },
+  "schema": "gene.verified_skill_agent_pilot.v2",
+  "submissions": [
+    {"error": "unsupported operation: Trim leading and trailing whitespace from the input string.", "schema_conformant": false},
+    {"error": "unsupported operation: replace space underscore", "schema_conformant": false},
+    {"error": "unsupported operation: replace ' ' '_'", "schema_conformant": false},
+    {"error": "unsupported operation: ", "schema_conformant": false},
+    {"error": "unsupported operation: strip", "schema_conformant": false},
+    {"error": "unsupported operation: noop", "schema_conformant": false}
+  ],
+  "summary": {
+    "accepted": false,
+    "generated_tokens": 2684,
+    "prompt_tokens": 9427,
+    "rounds": 6,
+    "schema_conformant_submissions": 0,
+    "submissions": 6,
+    "wall_seconds": 53.26991062494926
+  },
+  "verifier_sha256": "2cef5766565dcd175082c409f524c188cc18a9e092be958749f2f237a55882b8"
+}

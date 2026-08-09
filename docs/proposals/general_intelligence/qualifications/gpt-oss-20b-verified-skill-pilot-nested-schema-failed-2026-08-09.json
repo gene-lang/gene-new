@@ -1,0 +1,35 @@
+{
+  "date_utc": "2026-08-09T16:43:14Z",
+  "decoding": {
+    "max_rounds": 6,
+    "num_ctx": 32768,
+    "num_predict": 1024,
+    "seed": 20260809,
+    "temperature": 0
+  },
+  "harness_sha256": "4c270f6a76d0e69e2478d4277270e95d0e97ec1d684a9084d6fea973048b9bff",
+  "model": {
+    "capabilities": ["completion", "tools", "thinking"],
+    "manifest_digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "name": "gpt-oss:20b"
+  },
+  "schema": "gene.verified_skill_agent_pilot.v1",
+  "submissions": [
+    {"error": "preconditions must be a string array", "schema_conformant": false},
+    {"error": "every step requires a string operation", "schema_conformant": false},
+    {"error": "every step requires a string operation", "schema_conformant": false},
+    {"error": "every step requires a string operation", "schema_conformant": false},
+    {"error": "unsupported operation: replace spaces with underscores", "schema_conformant": false},
+    {"error": "unsupported operation: replace(' ','_')", "schema_conformant": false}
+  ],
+  "summary": {
+    "accepted": false,
+    "generated_tokens": 1817,
+    "prompt_tokens": 8039,
+    "rounds": 6,
+    "schema_conformant_submissions": 0,
+    "submissions": 6,
+    "wall_seconds": 36.50086933304556
+  },
+  "verifier_sha256": "2cef5766565dcd175082c409f524c188cc18a9e092be958749f2f237a55882b8"
+}

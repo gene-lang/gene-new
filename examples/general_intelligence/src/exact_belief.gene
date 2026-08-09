@@ -1,0 +1,318 @@
+# Exact, enumerable belief planning for the repair-lab experiment in
+# docs/proposals/general_intelligence/protocols/02_active_inference.md.
+#
+# The public seam is deliberately small:
+#
+#   default_subject  the frozen-candidate repair model as exact Gene data
+#   update_belief    one exact Bayes update after an inspection observation
+#   plan             exhaustive policy selection for a supplied beta
+#   verify_subject   structural and enumeration evidence for protocol readiness
+#
+# Policies are ordinary Gene nodes. Approximate retrieval and learned state are
+# absent from this module: the experiment needs an exact planning oracle before
+# it can test whether information-seeking adds anything.
+
+(mod exact_belief
+  @doc "exact finite belief planner for the general-intelligence repair lab")
+
+(fn default_subject [] : Node
+  (quote
+    (repair_subject
+      ^faults [battery fuse sensor]
+      ^tests [
+        (inspection
+          ^name voltage_test
+          ^outcomes [negative positive]
+          ^positive_likelihoods [0.95 0.40 0.05])
+        (inspection
+          ^name continuity_test
+          ^outcomes [negative positive]
+          ^positive_likelihoods [0.20 0.85 0.30])]
+      ^base_prior [0.45 0.35 0.20]
+      ^shifted_prior [0.40 0.45 0.15]
+      ^correct_repair_utility 0.50
+      ^incorrect_repair_utility -0.50
+      ^defer_utility -0.06
+      ^inspection_cost 0.21
+      ^beta 0.25
+      ^max_inspections 2
+      ^expected_policy_count 804
+      ^expected_branch_count 2884
+      ^residual_entropy_floor 0.60
+      ^branch_mass_tolerance 0.000000000001)))
+
+(fn positive_likelihood [subject : Node, test : Int, fault : Int] : Float
+  subject/tests/%test/positive_likelihoods/%fault)
+
+(fn outcome_probability [subject : Node, belief : (List Float), test : Int,
+                         positive : Bool] : Float
+  (var probability 0.0)
+  (var fault 0)
+  (while (< fault (belief ~ size))
+    (var likelihood (positive_likelihood subject test fault))
+    (var conditional (if positive likelihood (- 1.0 likelihood)))
+    (set probability (+ probability (* belief/%fault conditional)))
+    (set fault (+ fault 1)))
+  probability)
+
+(fn update_belief [subject : Node, belief : (List Float), test : Int,
+                   positive : Bool] : (List Float)
+  (var evidence (outcome_probability subject belief test positive))
+  (if_not (> evidence 0.0)
+    ($panic "inspection outcome has zero probability"))
+  (var posterior : (List Float) [])
+  (var fault 0)
+  (while (< fault (belief ~ size))
+    (var likelihood (positive_likelihood subject test fault))
+    (var conditional (if positive likelihood (- 1.0 likelihood)))
+    (posterior ~ push! (/ (* belief/%fault conditional) evidence))
+    (set fault (+ fault 1)))
+  posterior)
+
+(fn entropy [belief : (List Float)] : Float
+  (var result 0.0)
+  (for probability in belief
+    (if_yes (> probability 0.0)
+      (set result (- result (* probability ($math/log probability))))))
+  result)
+
+(fn relative_entropy [posterior : (List Float), prior : (List Float)] : Float
+  (var result 0.0)
+  (var fault 0)
+  (while (< fault (posterior ~ size))
+    (var probability posterior/%fault)
+    (if_yes (> probability 0.0)
+      (set result
+        (+ result (* probability ($math/log (/ probability prior/%fault))))))
+    (set fault (+ fault 1)))
+  result)
+
+(fn terminal_policies [] : (List Node)
+  [(quote (repair ^fault 0))
+   (quote (repair ^fault 1))
+   (quote (repair ^fault 2))
+   (quote (defer))])
+
+(fn without_test [tests : (List Int), removed : Int] : (List Int)
+  (var result : (List Int) [])
+  (for test in tests
+    (if_not (== test removed) (result ~ push! test)))
+  result)
+
+(fn enumerate_policies [tests : (List Int)] : (List Node)
+  (var result (terminal_policies))
+  (for test in tests
+    (var children (enumerate_policies (without_test tests test)))
+    (for negative_policy in children
+      (for positive_policy in children
+        (result ~ push!
+          `(inspect
+             ^test %test
+             ^negative %negative_policy
+             ^positive %positive_policy)))))
+  result)
+
+(fn terminal_utility [subject : Node, belief : (List Float),
+                      repaired_fault : Int] : Float
+  (var result 0.0)
+  (var fault 0)
+  (while (< fault (belief ~ size))
+    (var utility
+      (if (== fault repaired_fault)
+        subject/correct_repair_utility
+        subject/incorrect_repair_utility))
+    (set result (+ result (* belief/%fault utility)))
+    (set fault (+ fault 1)))
+  result)
+
+(fn score_policy [subject : Node, policy : Node, belief : (List Float),
+                  root_prior : (List Float), beta : Float] : Map
+  (match policy
+    (when (repair ^fault repaired_fault)
+      (var utility (terminal_utility subject belief repaired_fault))
+      (var information_gain (relative_entropy belief root_prior))
+      {^utility utility
+       ^information_gain information_gain
+       ^score (+ utility (* beta information_gain))})
+    (when (defer)
+      (var information_gain (relative_entropy belief root_prior))
+      {^utility subject/defer_utility
+       ^information_gain information_gain
+       ^score (+ subject/defer_utility (* beta information_gain))})
+    (when (inspect ^test test ^negative negative_policy ^positive positive_policy)
+      (var positive_probability
+        (outcome_probability subject belief test true))
+      (var negative_probability (- 1.0 positive_probability))
+      (var negative_belief (update_belief subject belief test false))
+      (var positive_belief (update_belief subject belief test true))
+      (var negative_score
+        (score_policy subject negative_policy negative_belief root_prior beta))
+      (var positive_score
+        (score_policy subject positive_policy positive_belief root_prior beta))
+      (var utility
+        (+ (- 0.0 subject/inspection_cost)
+           (+ (* negative_probability negative_score/utility)
+              (* positive_probability positive_score/utility))))
+      (var information_gain
+        (+ (* negative_probability negative_score/information_gain)
+           (* positive_probability positive_score/information_gain)))
+      {^utility utility
+       ^information_gain information_gain
+       ^score (+ utility (* beta information_gain))})
+    (else ($panic "unknown policy node"))))
+
+(fn plan [subject : Node, belief : (List Float), beta : Float] : Node
+  (var policies (enumerate_policies [0 1]))
+  (var best_policy policies/0)
+  (var best_metrics (score_policy subject best_policy belief belief beta))
+  (var index 1)
+  (while (< index (policies ~ size))
+    (var candidate policies/%index)
+    (var metrics (score_policy subject candidate belief belief beta))
+    # First maximum is the declared deterministic tie-break.
+    (if_yes (> metrics/score best_metrics/score)
+      (set best_policy candidate)
+      (set best_metrics metrics))
+    (set index (+ index 1)))
+  `(decision
+     ^policy %best_policy
+     ^expected_utility %best_metrics/utility
+     ^information_gain %best_metrics/information_gain
+     ^score %best_metrics/score
+     ^beta %beta))
+
+(fn policy_branch_count [policy : Node] : Int
+  (match policy
+    (when (repair ^fault _) 1)
+    (when (defer) 1)
+    (when (inspect ^negative negative_policy ^positive positive_policy)
+      (+ (policy_branch_count negative_policy)
+         (policy_branch_count positive_policy)))
+    (else ($panic "unknown policy node"))))
+
+(fn policy_branch_mass [subject : Node, policy : Node, fault : Int] : Float
+  (match policy
+    (when (repair ^fault _) 1.0)
+    (when (defer) 1.0)
+    (when (inspect ^test test ^negative negative_policy ^positive positive_policy)
+      (var positive_probability (positive_likelihood subject test fault))
+      (+ (* (- 1.0 positive_probability)
+            (policy_branch_mass subject negative_policy fault))
+         (* positive_probability
+            (policy_branch_mass subject positive_policy fault))))
+    (else ($panic "unknown policy node"))))
+
+(fn minimum_probability [probabilities : (List Float)] : Float
+  (var result probabilities/0)
+  (for probability in probabilities
+    (if_yes (< probability result) (set result probability)))
+  result)
+
+(fn probability_sum [probabilities : (List Float)] : Float
+  (var result 0.0)
+  (for probability in probabilities (set result (+ result probability)))
+  result)
+
+(fn likelihoods_valid? [subject : Node] : Bool
+  (if_not (== (subject/tests ~ size) 2) (return false))
+  (var valid true)
+  (for test in subject/tests
+    (if_not (== (test/outcomes ~ size) 2) (set valid false))
+    (if_not (== (test/positive_likelihoods ~ size)
+                (subject/faults ~ size))
+      (set valid false))
+    (for likelihood in test/positive_likelihoods
+      (if_not (&& (> likelihood 0.0) (< likelihood 1.0))
+        (set valid false))))
+  valid)
+
+(fn minimum_one_step_entropy [subject : Node, prior : (List Float)] : Float
+  (var result 1000000.0)
+  (var test 0)
+  (while (< test (subject/tests ~ size))
+    (var negative_entropy (entropy (update_belief subject prior test false)))
+    (var positive_entropy (entropy (update_belief subject prior test true)))
+    (if_yes (< negative_entropy result) (set result negative_entropy))
+    (if_yes (< positive_entropy result) (set result positive_entropy))
+    (set test (+ test 1)))
+  result)
+
+(fn verify_subject [subject : Node] : Node
+  (var policies (enumerate_policies [0 1]))
+  (var branch_count 0)
+  (var maximum_branch_mass_error 0.0)
+  (for policy in policies
+    (set branch_count (+ branch_count (policy_branch_count policy)))
+    (var fault 0)
+    (while (< fault (subject/faults ~ size))
+      (var branch_mass (policy_branch_mass subject policy fault))
+      (var error ($math/abs (- branch_mass 1.0)))
+      (if_yes (> error maximum_branch_mass_error)
+        (set maximum_branch_mass_error error))
+      (set fault (+ fault 1))))
+
+  (var base_reward (plan subject subject/base_prior 0.0))
+  (var base_active (plan subject subject/base_prior subject/beta))
+  (var shifted_reward (plan subject subject/shifted_prior 0.0))
+  (var shifted_active (plan subject subject/shifted_prior subject/beta))
+  (var minimum_entropy
+    ($math/min
+      (minimum_one_step_entropy subject subject/base_prior)
+      (minimum_one_step_entropy subject subject/shifted_prior)))
+  (var repair_regret
+    (- subject/correct_repair_utility subject/incorrect_repair_utility))
+  (var cost_regret_ratio (/ subject/inspection_cost repair_regret))
+
+  (var expected_base_reward (quote (repair ^fault 0)))
+  (var expected_base_active
+    (quote
+      (inspect
+        ^test 1
+        ^negative (inspect
+                    ^test 0
+                    ^negative (repair ^fault 2)
+                    ^positive (repair ^fault 0))
+        ^positive (repair ^fault 1))))
+  (var expected_shifted_reward
+    (quote
+      (inspect
+        ^test 1
+        ^negative (repair ^fault 0)
+        ^positive (repair ^fault 1))))
+
+  (var valid
+    (&&
+      (== (policies ~ size) subject/expected_policy_count)
+      (== branch_count subject/expected_branch_count)
+      (== (subject/faults ~ size) 3)
+      (== (subject/base_prior ~ size) (subject/faults ~ size))
+      (== (subject/shifted_prior ~ size) (subject/faults ~ size))
+      (== subject/max_inspections (subject/tests ~ size))
+      (== subject/beta 0.25)
+      (likelihoods_valid? subject)
+      (<= maximum_branch_mass_error subject/branch_mass_tolerance)
+      (< ($math/abs (- (probability_sum subject/base_prior) 1.0))
+         subject/branch_mass_tolerance)
+      (< ($math/abs (- (probability_sum subject/shifted_prior) 1.0))
+         subject/branch_mass_tolerance)
+      (>= (minimum_probability subject/base_prior) 0.02)
+      (>= (minimum_probability subject/shifted_prior) 0.02)
+      (>= minimum_entropy subject/residual_entropy_floor)
+      (>= cost_regret_ratio 0.15)
+      (<= cost_regret_ratio 0.25)
+      (== base_reward/policy expected_base_reward)
+      (== base_active/policy expected_base_active)
+      (== shifted_reward/policy expected_shifted_reward)
+      (!= shifted_active/policy shifted_reward/policy)))
+
+  `(subject_verification
+     ^valid %valid
+     ^policy_count %(policies ~ size)
+     ^branch_count %branch_count
+     ^maximum_branch_mass_error %maximum_branch_mass_error
+     ^minimum_one_step_entropy %minimum_entropy
+     ^cost_regret_ratio %cost_regret_ratio
+     ^base_reward %base_reward
+     ^base_active %base_active
+     ^shifted_reward %shifted_reward
+     ^shifted_active %shifted_active))
