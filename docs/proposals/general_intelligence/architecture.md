@@ -219,7 +219,17 @@ record authenticated one promotion while the model saw zero test details. This
 is capability-flow evidence, not same-user secrecy: the treatment service still
 requires a distinct OS or container identity, frozen hidden suites, and a
 query-budget policy. No mechanism-pilot task or skill may contribute to the
-later experiment.
+later experiment. The first excluded subject slice generated and revalidated 30
+three-operation workflow families, 150 training tasks, 720 replay cases, 105
+retention probes, and 60 held-out compositions. Its complete tool-loop pilot
+exposed a design failure: the qualified model solved 20/20 two-family workflows
+and 16/20 after the one allowed revision to six-family, 18-operation workflows,
+above the predeclared 75% frontier ceiling. Because public prompts revealed the
+exact primitive tokens, added arity mainly tested trace copying rather than
+learning or retrieving reusable skills. Subject version 1 and its still-unopened
+eight evaluation pairs are retired. Experiment 4 now requires a newly reviewed
+subject whose latent transformations are inferred from demonstrations or
+outcomes, new excluded pilot seeds, and a new unopened evaluation schedule.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment

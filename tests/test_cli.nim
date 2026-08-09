@@ -238,6 +238,18 @@ suite "cli — gene run":
     check "suite mutation rejected: true" in serviceBoundary.output
     check "in-worktree authority rejected: true" in serviceBoundary.output
 
+  test "rejected lifelong-task subject remains exactly reproducible":
+    let ran = runGene([
+      "run",
+      "examples/general_intelligence/tests/lifelong_task_subject_smoke.gene"
+    ])
+    check ran.exitCode == 0
+    check "families=30 training=150 probes=105 heldout=60" in ran.output
+    check "catalog_valid=true operation_coverage=true order_valid=true" in
+      ran.output
+    check "replay_valid=true replay_cases=720 training_valid=true " &
+      "probes_valid=true compositions_valid=true" in ran.output
+
   test "main receives only explicitly granted named capabilities":
     let grantedMain = writeCliProgram("granted_main.gene",
       "(fn main [args, ^config : Capability] " &

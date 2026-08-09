@@ -165,3 +165,33 @@ python3 tools/pilot_skill_verifier_service.py model-pilot \
 It passed in one tool round and appended a trusted-consumer audit projection
 only after authenticating the private journal. The fixed model adapter received
 no suite, key, journal, filesystem, shell, or case-level capability.
+
+`src/lifelong_task_subject.gene` is the retained, rejected version-1 subject
+generator from the experiment-4 difficulty gate. It reuses the exact
+12-operation list interpreter but
+none of experiment 1's tasks, seeds, motifs, libraries, or outcomes. For each
+seed it builds 30 distinct screen-minimal workflow families, five training
+variants per family, 24 verifier replay cases per family, old-family probes
+after each five-family block, and 60 held-out ordered compositions. The final
+revision composes six families (18 primitive operations) per held-out task. The
+verifier projection owns exact programs, outputs, required family identities,
+and replay cases; public tasks expose only operation descriptions and inputs.
+
+Run the permanently excluded full-size smoke with:
+
+```bash
+bin/gene run examples/general_intelligence/tests/lifelong_task_subject_smoke.gene
+```
+
+The smoke uses catalog/order seeds `900505` and `900506` with the faster
+two-family composition shape. It still recomputes the full 30-family catalog,
+operation coverage, 720 replay outputs, 150 training results, 105 probes, and 60
+ordered composition programs, including the rule that both component skills
+materially change each held-out example. The immutable final report pins the
+six-family source and records its full deterministic verification separately.
+
+The model passed 16 of 20 final pilot tasks, above the declared maximum of 15,
+after the only allowed arity change. This subject and its eight never-generated
+evaluation pairs are permanently retired. The source, exporter, harness, three
+immutable run reports, and smoke remain checked in as reproducible negative
+evidence; they are not a treatment-ready task distribution.

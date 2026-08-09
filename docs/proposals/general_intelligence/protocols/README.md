@@ -7,7 +7,8 @@ and compute pilot; experiment 1 has a bounded exact interpreter, deterministic
 screened corpus generator, full-size corpus and control pilots, and a complete
 candidate review/freeze/evaluate toolchain whose treatment gate still awaits an
 independent attestation; experiment 4 has a qualified local model plus a bounded
-verifier pilot.
+verifier pilot, while its first exact-list task subject is rejected after
+failing the preregistered frontier gate.
 Those readiness artifacts do not pre-register any treatment comparison.
 Candidate thresholds and sample sizes migrated here preserve design work
 without making the architecture note an experimental manual.

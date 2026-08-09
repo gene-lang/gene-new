@@ -1,21 +1,130 @@
 # Draft protocol: verified lifelong skill agent
 
 Status: the local-model qualification gate and an excluded verifier-service
-boundary pilot passed on 2026-08-09; the lifelong-task subject remains not
-frozen and not implementation-ready. See [`README.md`](README.md).
+boundary pilot passed on 2026-08-09. The first lifelong-task subject failed its
+preregistered difficulty gate after its one allowed revision and is retained as
+negative evidence only. A replacement subject has not been specified, reviewed,
+or frozen, so the treatment comparison is not implementation-ready. See
+[`README.md`](README.md).
 
-## Subject still to specify
+## Rejected exact-list subject pilot
 
-Define the task families, deterministic generators, hidden tests, initial
-capability ontology, validity/novelty/difficulty rules, frontier-curriculum
-rule, qualified local model, inference runtime, and held-out compositions.
-Held-out tasks should require capabilities learned in different families rather
-than surface variants of one training task.
+The first exact subject is retained in
+[`lifelong_task_subject.gene`](../../../../examples/general_intelligence/src/lifelong_task_subject.gene).
+It is permanently excluded and must not be used as the experiment-4 treatment
+subject. It is a controlled tool-workflow domain, not a claim to cover
+open-ended coding.
+Authoritative inputs, outputs, programs, traces, replay suites, and evidence are
+Gene data. Programs use the same closed 12-operation integer-list interpreter
+as experiment 1 (`tail`, `init`, three reorderings, four numeric maps, two
+filters, and `duplicate_each`), but no experiment-1 task, motif, seed, learned
+library, or outcome is reused.
 
-Open validity question: necessity-based skill compatibility can degrade as a
-library gains redundant ways to solve the same subproblem. Decide whether the
-frozen protocol measures necessity, contribution, substitutability, or all
-three before making retrieval metrics gates.
+The model-facing tools for this subject are fixed to three operations:
+
+- `apply_operation(operation, input)` applies one declared primitive and emits
+  an exact primitive trace token;
+- `invoke_skill(skill_id, input)` runs one independently promoted skill and
+  emits a trace token linked to its authenticated receipt; and
+- `submit_result(task_id, value, trace)` asks the hidden verifier to accept the
+  episode.
+
+The verifier expands every skill trace to primitives and requires byte-exact
+agreement with the task's target operation sequence as well as structural
+equality of the output. Thus computing or guessing the list in model text is
+not success, and an irrelevant skill cannot receive credit merely because the
+answer happens to match. All arms see the natural-language operation sequence
+and input, so the plain arm can solve every task in principle.
+
+For each subject seed, bounded rejection sampling constructs 30 distinct
+three-operation families. A family is accepted only when its behavior on the
+fixed 16-input structural bank has no equivalent program of length zero through
+two and duplicates no earlier family signature. The completed catalog must use
+all 12 primitives. This is finite-bank screen minimality, not a proof of
+semantic minimality over every integer list.
+
+Each family has:
+
+- five sequential training variants with fresh effective inputs;
+- one verifier-owned replay suite containing the 16 structural cases and eight
+  seeded private cases; and
+- one fresh retention probe after every five-family block from its introduction
+  through the end of the curriculum.
+
+That produces 150 training tasks, 720 replay cases, and 105 retention probes
+per seed. The initial pilot used 60 held-out tasks that each composed two
+different family programs in an ordered six-operation workflow. The one allowed
+difficulty revision composed six different families into an 18-operation
+workflow. Tuple order is unique within a seed, and rejection sampling requires
+every component program to change the selected example and the final output to
+be nonempty. Required family identities, target programs, intermediate values,
+expected outputs, and replay cases are verifier data; public goals contain only
+the operation descriptions and input.
+
+The generator is deterministic Park-Miller arithmetic with explicit attempt
+bounds. All three pilot pairs are permanently excluded: `900501`/`900502` for
+the failed adapter run, `900503`/`900504` for the six-operation run, and
+`900505`/`900506` for the revised 18-operation run and checked-in smoke. The
+following eight pairs were selected arithmetically but never generated. They
+are retired with subject version 1 and may not be reassigned to a replacement
+subject:
+
+| Pair | Catalog seed | Order/case seed |
+|---:|---:|---:|
+| 1 | 33000031 | 34000037 |
+| 2 | 33100034 | 34100056 |
+| 3 | 33200037 | 34200075 |
+| 4 | 33300040 | 34300094 |
+| 5 | 33400043 | 34400113 |
+| 6 | 33500046 | 34500132 |
+| 7 | 33600049 | 34600151 |
+| 8 | 33700052 | 34700170 |
+
+Do not generate those pairs. A replacement subject requires a new version, new
+excluded pilot seeds, and a new unopened schedule selected before its external
+review. Any rejected catalog attempt and every final random state remain part
+of the version-1 setup artifact.
+
+Skill compatibility is contribution-based, resolving the earlier ontology
+ambiguity. A promoted family skill is compatible exactly when its canonical
+three-operation program occupies one declared component of the hidden target;
+successful use additionally requires that its receipt-bound invocation appear
+in the exact expanded trace. Necessity and substitutability remain diagnostics,
+not retrieval gates. The initial public ontology is the exact input/output kind
+plus `shrink_sequence`, `reorder_sequence`, `numeric_map`,
+`predicate_filter`, and `expand_sequence`; these tags may retrieve candidates
+but never alter skill semantics or verifier labels.
+
+The complete tool-loop pilot fixed success in the closed interval
+`0.25..0.75` as the admissible frontier band. The first run on
+`900501`/`900502` failed at the adapter layer: the operation descriptions did
+not expose the registered enum tokens, only 9 of 148 calls were schema
+conformant, and no task passed. This was not treated as a difficulty result.
+Its immutable report is
+[`gpt-oss-20b-lifelong-task-difficulty-pilot-2026-08-09.json`](../qualifications/gpt-oss-20b-lifelong-task-difficulty-pilot-2026-08-09.json).
+
+The repaired public wording included each registered operation token while
+preserving the same closed semantics. On new excluded seeds `900503`/`900504`,
+the model passed 20 of 20 six-operation tasks, with 140 of 140 conformant calls,
+so the subject was above the frontier. The report is
+[`gpt-oss-20b-lifelong-task-difficulty-pilot-v2-2026-08-09.json`](../qualifications/gpt-oss-20b-lifelong-task-difficulty-pilot-v2-2026-08-09.json).
+
+The single allowed revision increased compositions from two to six families
+and the round ceiling from 8 to 20, enough for 18 operations and submission.
+On `900505`/`900506`, the model passed 16 of 20 tasks (`0.80`), just outside the
+maximum. It emitted 323 schema-conformant calls out of 324, generated 17,536
+tokens, and took 540.05 seconds including 63.91 seconds of deterministic subject
+export. The immutable report is
+[`gpt-oss-20b-lifelong-task-difficulty-pilot-v3-2026-08-09.json`](../qualifications/gpt-oss-20b-lifelong-task-difficulty-pilot-v3-2026-08-09.json).
+
+Version 1 therefore fails its declared subject-validity gate. More importantly,
+the public goal reveals the exact primitive tokens, so increasing arity mostly
+tests whether the model continues copying a trace; it does not create a strong
+reason to retrieve or learn an executable skill. A replacement must make the
+latent transformation inferable from public demonstrations or outcomes without
+listing its primitive expansion, preserve an exact hidden verifier, and run a
+new disjoint difficulty pilot under a newly reviewed protocol. No result from
+these pilots may tune the replacement's treatment comparison.
 
 ## Candidate model-qualification gate
 
@@ -207,25 +316,53 @@ within the preregistered pilot ceilings of 1 second and 64 MiB. This closes the
 adapter-to-service mechanism path only; the ephemeral excluded suite and
 same-user host do not satisfy treatment isolation.
 
-## Candidate arms and evaluation
+## Provisional arms and evaluation
 
-The current design presents 30 task families sequentially, five variants per
-family, with old-family probes after every fifth family. Compare a fresh agent,
-episodic text only, verified skills only, and both at matched model, tool, and
-wall-time budgets. Use an immutable local model for strict experiments;
-provider-model runs are separately versioned replications.
+The arm semantics and statistical rules below remain candidates, but every task
+count and cost derived from subject version 1 is now illustrative rather than a
+frozen treatment design. The replacement subject must justify or revise them
+before review.
 
-Across eight candidate family-order seeds, evaluate held-out compositions that
-were never available for promotion. The candidate primary comparison is
-zero-shot held-out-composition success of the combined agent versus episodic
-text only. Retention, replay integrity, calls, wall time, curriculum progress,
-retrieval, wrong-skill selection, and abstention are secondary or safety
-measures.
+Present the 30 task families sequentially in the frozen seed order. Every task
+starts a fresh model conversation; only the arm's declared durable store crosses
+task boundaries. Compare:
 
-Candidate pass rule: at least a 15-percentage-point held-out advantage with an
-interval excluding zero, at least 90% retention of earlier-family success, and
-less than 5% hidden-replay failure among promoted skills. Reduced model calls
-are product evidence rather than a transfer criterion.
+| Arm | Cross-task state |
+|---|---|
+| fresh | none |
+| episodic | bounded exact episode records and retrieved lesson text |
+| skills | authenticated promoted skills and structural/lexical retrieval |
+| combined | the same episodic and skill stores together |
+
+All arms receive identical public tasks, primitive tools, decoding, per-task
+round/token ceilings, and total seed-level model/tool/wall budget. The skill
+arms may propose at most one candidate after a family's fifth training variant;
+verification, replay, retrieval, and skill execution consume their budget.
+Non-skill arms receive the same total budget as additional ordinary task
+attempts, but no hidden verifier queries or synthetic memory. Episode and
+lesson stores use byte/item ceilings fixed by the difficulty pilot. Use the
+immutable qualified local model for the strict experiment; provider-model runs
+are separately versioned replications.
+
+After family blocks 5, 10, 15, 20, 25, and 30, run the generated fresh probes
+for every family introduced so far, then rerun every promoted skill's complete
+24-case suite. Probe and replay results cannot enter memory or trigger a new
+promotion. This separates retained task performance from skill integrity.
+
+Across the eight candidate subject pairs, evaluate the 60 held-out compositions
+that were never available for promotion. The primary comparison is the paired
+seed-level held-out success proportion of the combined agent versus episodic
+text only. Use the fixed two-sided 95% Student interval over eight paired
+differences (`df=7`, critical value `2.364624251`). Retention, replay integrity,
+calls, wall time, curriculum progress, retrieval, wrong-skill selection, and
+abstention are secondary or safety measures.
+
+Candidate pass rule: mean held-out advantage of at least 15 percentage points
+with the interval's lower endpoint above zero; pooled combined-arm retention of
+at least 90% over probes whose family initially achieved at least four of five
+training successes, with no seed below 80%; and a promoted-skill hidden-replay
+failure proportion below 5% whose two-sided 95% Wilson upper bound is also below
+5%. Reduced model calls are product evidence rather than a transfer criterion.
 
 Reject the mechanism if verified skills do not improve held-out composition,
 old-task success falls materially, promoted skills fail replay, or the
@@ -235,12 +372,13 @@ model-authored success claim without the external verifier is unknown.
 
 ## Candidate capability calibration
 
-The current draft samples 200 non-evaluation `(task, skill)` pairs across
-derived compatibility labels and library-size quartiles. For each pair, run
+Sample 200 non-evaluation `(task, skill)` pairs, balanced across exact hidden
+component-membership labels and library-size quartiles. For each pair, run
 matched deterministic interventions with the skill supplied and with an
-interface-compatible no-op, repeating each condition. Operational compatibility
-currently requires both supplied runs to invoke the skill and pass while both
-masked replays fail.
+interface-compatible no-op, repeating each condition. Operational contribution
+requires both supplied runs to invoke the receipt-bound skill and pass while
+both masked replays fail exact trace validation. Necessity and alternative-skill
+substitutability are reported separately.
 
 Candidate ontology gate: precision and recall of at least `0.85` against these
 behavioral labels, with at most two recorded ontology revisions on disjoint
@@ -251,11 +389,17 @@ An optional external semantic audit requires two reviewers blinded to the
 derived tags and each other, an adjudicator, exclusion of the ontology author,
 and candidate Cohen's kappa of at least `0.80`.
 
-## Candidate pilots and cost
+## Provisional pilots and cost
 
-The sequential curriculum alone is 4,800 task-arm episodes before holdouts and
-probes. One calibration is 800 condition executions; three attempts imply a
-2,400-execution worst case. Include those, holdouts, and probes in projection.
+Under rejected subject version 1, each seed and arm contains 150 training tasks,
+105 retention probes, and 60 held-out compositions: 315 task episodes. The
+primary four-arm, eight-seed run is therefore 10,080 task episodes. Each
+skills-containing arm may add 720 initial hidden-case executions plus 2,520
+block replay-case executions per seed if all 30 skills are promoted. One
+calibration is 800 condition executions; three attempts imply a 2,400-execution
+worst case.
+Include model calls, candidate generation, all verifier cases, retrieval,
+storage, and trusted-consumer work in the projected and observed budgets.
 
 The first non-model mechanism pilot promotes a passing skill, rejects a
 deliberately failing candidate, and executes the passing skill on distinct toy
@@ -266,6 +410,7 @@ kernel wall time and peak RSS. It does not yet measure full-service memory or
 the projected curriculum cost. Pilot tasks and artifacts never enter an
 experimental arm or library.
 
+This is a version-1 cost projection, not authorization to run the treatment.
 Planning estimate: 4–8 person-months after a local model qualifies, with roughly
 `2x` uncertainty. This is the largest near-term engineering programme in the
 architecture.

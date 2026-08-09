@@ -1,0 +1,590 @@
+{
+  "date_utc": "2026-08-09T20:15:49Z",
+  "decoding": {
+    "max_rounds": 8,
+    "num_ctx": 32768,
+    "num_predict": 1024,
+    "seed": 20260809,
+    "temperature": 0
+  },
+  "exporter_sha256": "089af2c7b25ddfeb54be1a9f766ee5b59727b9532c9e8c4f36837c3edd03120e",
+  "gate": {
+    "maximum_success_rate": 0.75,
+    "minimum_success_rate": 0.25,
+    "passed": false
+  },
+  "harness_sha256": "208e9800b7cff555ae86395293e9ef2093aede352d6643d315ef8bb64ed0828b",
+  "interpreter_sha256": "e07bcb077a28602749d12073aa31b5bc78f8a031a6dc4ec51b17e557c926fd45",
+  "model": {
+    "capabilities": [
+      "completion",
+      "tools",
+      "thinking"
+    ],
+    "loaded_size_bytes": 12757436988,
+    "loaded_vram_bytes": 12757436988,
+    "manifest_digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "name": "gpt-oss:20b"
+  },
+  "outcomes": [
+    {
+      "accepted": true,
+      "final_value_sha256": "8c195bee88fef29e802cebb050c2bddec7736ba159030f631b7a4f2217198dc4",
+      "generated_tokens": 224,
+      "id": "composition_0",
+      "observed_trace": [
+        "rotate_right",
+        "map_add_one",
+        "map_add_one",
+        "keep_odd",
+        "map_double",
+        "map_negate"
+      ],
+      "prompt_tokens": 3854,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "rotate_right",
+        "map_add_one",
+        "map_add_one",
+        "keep_odd",
+        "map_double",
+        "map_negate"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 7.006485417019576
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "06d033ece6645de592db973644cf7357255f24536ff7b03c3b2ace10736f7636",
+      "generated_tokens": 423,
+      "id": "composition_1",
+      "observed_trace": [
+        "map_negate",
+        "rotate_right",
+        "map_double",
+        "map_sub_one",
+        "tail",
+        "rotate_right"
+      ],
+      "prompt_tokens": 4996,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "map_negate",
+        "rotate_right",
+        "map_double",
+        "map_sub_one",
+        "tail",
+        "rotate_right"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 10.57743391697295
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "f22d10a0f23cd917aaa22839ff5f3f338e68500cb8bb447a7bacaf836c63827f",
+      "generated_tokens": 965,
+      "id": "composition_2",
+      "observed_trace": [
+        "keep_even",
+        "init",
+        "map_add_one",
+        "tail",
+        "keep_odd",
+        "reverse"
+      ],
+      "prompt_tokens": 8259,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "keep_even",
+        "init",
+        "map_add_one",
+        "tail",
+        "keep_odd",
+        "reverse"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 20.791758000152186
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "589ffd3acf522ae81192579f297589e93b0c41f748b224d1b4bb5c857a2f70cb",
+      "generated_tokens": 431,
+      "id": "composition_3",
+      "observed_trace": [
+        "rotate_right",
+        "keep_odd",
+        "rotate_left",
+        "tail",
+        "map_double",
+        "map_add_one"
+      ],
+      "prompt_tokens": 5116,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "rotate_right",
+        "keep_odd",
+        "rotate_left",
+        "tail",
+        "map_double",
+        "map_add_one"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 10.853165917098522
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "1ae3592f8248c3f879b56afe3f2ce6aad45ba898434796d35c565684397fb3e6",
+      "generated_tokens": 375,
+      "id": "composition_4",
+      "observed_trace": [
+        "tail",
+        "map_add_one",
+        "rotate_right",
+        "tail",
+        "keep_odd",
+        "reverse"
+      ],
+      "prompt_tokens": 4701,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "tail",
+        "map_add_one",
+        "rotate_right",
+        "tail",
+        "keep_odd",
+        "reverse"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 9.856003625085577
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "080a9ed428559ef602668b4c00f114f1a11c3f6b02a435f0bdc154578e4d7f22",
+      "generated_tokens": 454,
+      "id": "composition_5",
+      "observed_trace": [
+        "duplicate_each",
+        "rotate_left",
+        "map_sub_one",
+        "keep_even",
+        "init",
+        "map_add_one"
+      ],
+      "prompt_tokens": 5386,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "duplicate_each",
+        "rotate_left",
+        "map_sub_one",
+        "keep_even",
+        "init",
+        "map_add_one"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 11.233940625097603
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "0f76e94da2ef0942a9b39e752978f2ff6caad6fc8e9e8bcc1d0a996700f22a8d",
+      "generated_tokens": 741,
+      "id": "composition_6",
+      "observed_trace": [
+        "map_add_one",
+        "duplicate_each",
+        "reverse",
+        "reverse",
+        "map_add_one",
+        "map_negate"
+      ],
+      "prompt_tokens": 7106,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "map_add_one",
+        "duplicate_each",
+        "reverse",
+        "reverse",
+        "map_add_one",
+        "map_negate"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 16.49134474992752
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "8fdc4245d1eba16efacd61a9a66154cf73ace8a48aaf0c24728adcd1d3ba233f",
+      "generated_tokens": 396,
+      "id": "composition_7",
+      "observed_trace": [
+        "rotate_right",
+        "map_add_one",
+        "map_add_one",
+        "rotate_left",
+        "keep_odd",
+        "map_double"
+      ],
+      "prompt_tokens": 5013,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "rotate_right",
+        "map_add_one",
+        "map_add_one",
+        "rotate_left",
+        "keep_odd",
+        "map_double"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 10.550560791045427
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "d124b23c696a85177dac41a7a28c853546e55caa5b4798fb917f2c3dc1b331ce",
+      "generated_tokens": 477,
+      "id": "composition_8",
+      "observed_trace": [
+        "map_sub_one",
+        "map_sub_one",
+        "keep_even",
+        "reverse",
+        "map_add_one",
+        "map_negate"
+      ],
+      "prompt_tokens": 5392,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "map_sub_one",
+        "map_sub_one",
+        "keep_even",
+        "reverse",
+        "map_add_one",
+        "map_negate"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 11.695418833987787
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "3e426cbe1d16687ee77c4144c81357afec11732dfdfe040e1c782fb867128ef6",
+      "generated_tokens": 372,
+      "id": "composition_9",
+      "observed_trace": [
+        "map_sub_one",
+        "tail",
+        "rotate_right",
+        "rotate_left",
+        "keep_odd",
+        "map_double"
+      ],
+      "prompt_tokens": 4732,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "map_sub_one",
+        "tail",
+        "rotate_right",
+        "rotate_left",
+        "keep_odd",
+        "map_double"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 9.77764316694811
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "d0bca111f8628137adc4c16f123496dcdd1d590d06cb5d9acd68b39fe656fb97",
+      "generated_tokens": 434,
+      "id": "composition_10",
+      "observed_trace": [
+        "keep_even",
+        "reverse",
+        "map_add_one",
+        "tail",
+        "map_add_one",
+        "rotate_right"
+      ],
+      "prompt_tokens": 5064,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "keep_even",
+        "reverse",
+        "map_add_one",
+        "tail",
+        "map_add_one",
+        "rotate_right"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 10.991291375132278
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "14aca399ba20845f6e7949bbeff608222224ae9b5cb2bad68f5dd74119858e19",
+      "generated_tokens": 487,
+      "id": "composition_11",
+      "observed_trace": [
+        "tail",
+        "map_add_one",
+        "rotate_right",
+        "keep_even",
+        "reverse",
+        "map_add_one"
+      ],
+      "prompt_tokens": 5406,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "tail",
+        "map_add_one",
+        "rotate_right",
+        "keep_even",
+        "reverse",
+        "map_add_one"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 11.924936790950596
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "50cdb22fecc4d830aab8dfb5280dca39a4e18974f0adbe1f68cfcf2ce4ac497b",
+      "generated_tokens": 705,
+      "id": "composition_12",
+      "observed_trace": [
+        "map_add_one",
+        "duplicate_each",
+        "reverse",
+        "keep_even",
+        "init",
+        "map_add_one"
+      ],
+      "prompt_tokens": 6644,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "map_add_one",
+        "duplicate_each",
+        "reverse",
+        "keep_even",
+        "init",
+        "map_add_one"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 15.857866624835879
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "1933c6eda722297dd8a69ef060d6ea3ee3c2b701e420d6606d0b918efa8f119c",
+      "generated_tokens": 379,
+      "id": "composition_13",
+      "observed_trace": [
+        "keep_even",
+        "map_negate",
+        "map_double",
+        "map_add_one",
+        "rotate_right",
+        "rotate_right"
+      ],
+      "prompt_tokens": 4743,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "keep_even",
+        "map_negate",
+        "map_double",
+        "map_add_one",
+        "rotate_right",
+        "rotate_right"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 10.031316790962592
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "92e12ee5c76c89d7a19fcc8bfc786aa4dbb98edc9c83ad9d14667460bb12a103",
+      "generated_tokens": 561,
+      "id": "composition_14",
+      "observed_trace": [
+        "duplicate_each",
+        "rotate_left",
+        "map_sub_one",
+        "map_sub_one",
+        "rotate_left",
+        "map_negate"
+      ],
+      "prompt_tokens": 5983,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "duplicate_each",
+        "rotate_left",
+        "map_sub_one",
+        "map_sub_one",
+        "rotate_left",
+        "map_negate"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 13.181759792147204
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "14aca399ba20845f6e7949bbeff608222224ae9b5cb2bad68f5dd74119858e19",
+      "generated_tokens": 473,
+      "id": "composition_15",
+      "observed_trace": [
+        "tail",
+        "map_add_one",
+        "rotate_right",
+        "keep_even",
+        "init",
+        "map_add_one"
+      ],
+      "prompt_tokens": 5391,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "tail",
+        "map_add_one",
+        "rotate_right",
+        "keep_even",
+        "init",
+        "map_add_one"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 11.610057750018314
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "34dccd7fb2577c4794be0524017e56658532d671bd364fefd919f83f97515727",
+      "generated_tokens": 549,
+      "id": "composition_16",
+      "observed_trace": [
+        "reverse",
+        "map_add_one",
+        "map_negate",
+        "keep_odd",
+        "map_double",
+        "map_negate"
+      ],
+      "prompt_tokens": 5798,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "reverse",
+        "map_add_one",
+        "map_negate",
+        "keep_odd",
+        "map_double",
+        "map_negate"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 12.966553250094876
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "8c195bee88fef29e802cebb050c2bddec7736ba159030f631b7a4f2217198dc4",
+      "generated_tokens": 336,
+      "id": "composition_17",
+      "observed_trace": [
+        "map_add_one",
+        "duplicate_each",
+        "reverse",
+        "tail",
+        "keep_even",
+        "rotate_left"
+      ],
+      "prompt_tokens": 4416,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "map_add_one",
+        "duplicate_each",
+        "reverse",
+        "tail",
+        "keep_even",
+        "rotate_left"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 9.149604292120785
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "3d5812abc84c11768aa73a732c85d75dbed439188f5bb3239e9b762ea31d9862",
+      "generated_tokens": 833,
+      "id": "composition_18",
+      "observed_trace": [
+        "map_sub_one",
+        "reverse",
+        "duplicate_each",
+        "keep_even",
+        "map_negate",
+        "map_double"
+      ],
+      "prompt_tokens": 7416,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "map_sub_one",
+        "reverse",
+        "duplicate_each",
+        "keep_even",
+        "map_negate",
+        "map_double"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 18.344825458014384
+    },
+    {
+      "accepted": true,
+      "final_value_sha256": "3b7ce75763f16f1d2a28edf7b0bd25450126b6a84c9627d6f600de208448a7ae",
+      "generated_tokens": 745,
+      "id": "composition_19",
+      "observed_trace": [
+        "duplicate_each",
+        "rotate_left",
+        "map_sub_one",
+        "init",
+        "tail",
+        "keep_odd"
+      ],
+      "prompt_tokens": 7310,
+      "rounds": 7,
+      "schema_conformant_calls": 7,
+      "target_operations": [
+        "duplicate_each",
+        "rotate_left",
+        "map_sub_one",
+        "init",
+        "tail",
+        "keep_odd"
+      ],
+      "tool_calls": 7,
+      "wall_seconds": 16.70099754212424
+    }
+  ],
+  "schema": "gene.lifelong_task_difficulty_pilot.v1",
+  "seeds": {
+    "catalog": 900503,
+    "order_and_cases": 900504,
+    "permanently_excluded": true
+  },
+  "subject_sha256": "d8ae4dd69ba0ea82d7b3be7fa9ee4ebf11e3e3b5924ea1fa00e35fa4f5d45d02",
+  "summary": {
+    "accepted": 20,
+    "export_wall_seconds": 1.5607747919857502,
+    "generated_tokens": 10360,
+    "harness_peak_rss_bytes": 34734080,
+    "prompt_tokens": 112726,
+    "schema_conformant_calls": 140,
+    "success_rate": 1.0,
+    "tasks": 20,
+    "tool_calls": 140,
+    "total_wall_seconds": 251.16409375006333
+  }
+}
