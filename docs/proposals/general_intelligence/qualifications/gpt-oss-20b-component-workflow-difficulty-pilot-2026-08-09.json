@@ -1,0 +1,833 @@
+{
+  "attempts_per_component": 2,
+  "base_subject_sha256": "a81e88ef31eac1cfd166633494396e22f31818ebd1e70751178aa7c1ae776d37",
+  "composition_arity": 3,
+  "date_utc": "2026-08-09T23:13:09Z",
+  "decoding": {
+    "max_rounds": 12,
+    "num_ctx": 32768,
+    "num_predict": 1024,
+    "seed": 20260809,
+    "silent_round_cap": 3,
+    "temperature": 0
+  },
+  "exporter_sha256": "e80e5d5d7d4c9b076dce8569bb3dfbcc3b729176ce09aa923a6e934c20b9c0e6",
+  "gate": {
+    "decision": "interaction_liveness_failure",
+    "frontier_passed": false,
+    "liveness_passed": false,
+    "liveness_rate": 0.2,
+    "maximum_success_rate": 0.75,
+    "minimum_liveness_rate": 0.9,
+    "minimum_success_rate": 0.25,
+    "passed": false
+  },
+  "harness_sha256": "76dfce1184c0904f24439e14945ad1e2e6ae92e42157bf56d48a7cd38a758116",
+  "interpreter_sha256": "e07bcb077a28602749d12073aa31b5bc78f8a031a6dc4ec51b17e557c926fd45",
+  "model": {
+    "capabilities": [
+      "completion",
+      "tools",
+      "thinking"
+    ],
+    "loaded_size_bytes": 12757436988,
+    "loaded_vram_bytes": 12757436988,
+    "manifest_digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "name": "gpt-oss:20b"
+  },
+  "model_facing_tools": [
+    "apply_workflow_candidate",
+    "submit_result"
+  ],
+  "model_hidden_task_fields": [
+    "admissible_candidate_counts",
+    "chain_values",
+    "component_operations",
+    "expected",
+    "semantic_signatures"
+  ],
+  "model_visible_task_fields": [
+    "attempts_per_component",
+    "components_in_order",
+    "instruction",
+    "query_input",
+    "task_id"
+  ],
+  "outcomes": [
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "rotate_right",
+          "rotate_right",
+          "map_add_one"
+        ],
+        [
+          "rotate_left",
+          "map_double",
+          "map_double"
+        ],
+        [
+          "rotate_right",
+          "map_add_one",
+          "keep_odd"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "1d2ae991568860d4d447ec05102f1cf730c721c77891528f898d16459c585d7d",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_0",
+      "model_input_sha256": "f965b6ef2775e9970f6039de0554a9b0d26a9762c4e9623c16059be21bd2dfda",
+      "prompt_tokens": 3490,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 80.40695174993016
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "keep_odd",
+          "init",
+          "duplicate_each"
+        ],
+        [
+          "init",
+          "duplicate_each",
+          "tail"
+        ],
+        [
+          "map_sub_one",
+          "map_sub_one",
+          "map_negate"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "66e0a6a9586e39ce1fdf2431cabd3e4e48b031598e00d93585bc5116dc073143",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_1",
+      "model_input_sha256": "c91c0eaac1147acf32de05ccf79277884f09289fe09d31f6e2fc3f87841de26b",
+      "prompt_tokens": 3518,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 80.95361250010319
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "tail",
+          "tail",
+          "map_double"
+        ],
+        [
+          "rotate_right",
+          "map_sub_one",
+          "map_negate"
+        ],
+        [
+          "rotate_left",
+          "tail",
+          "map_negate"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "5d40f2d03337624c2cc2413c6ae68c498836c080c7afd316f8e2e805cf52cca1",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_2",
+      "model_input_sha256": "1888f9eba93f8ff0f0ef93411a616f83e89670d52fbaa692da4b91bcd01e2968",
+      "prompt_tokens": 3474,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 80.76496420800686
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [
+        [
+          "map_negate",
+          "keep_even",
+          "rotate_left"
+        ]
+      ],
+      "canonical_component_operations": [
+        [
+          "map_negate",
+          "keep_even",
+          "rotate_left"
+        ],
+        [
+          "rotate_left",
+          "map_double",
+          "duplicate_each"
+        ],
+        [
+          "init",
+          "duplicate_each",
+          "tail"
+        ]
+      ],
+      "checker_attempts": 1,
+      "components_completed": 1,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "f0b6e5afd316b67571d071fdc4a797801b04b64486500796c3d1460f2cc2e90d",
+      "generated_tokens": 5094,
+      "hidden_reads": 0,
+      "id": "component_composition_3",
+      "model_input_sha256": "d72a42472eba5260536d7780378bbfb5a763ada6d5696f7764d09aeb45fa746b",
+      "prompt_tokens": 5674,
+      "rounds": 5,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 4,
+      "tool_calls": 1,
+      "wall_seconds": 100.34350266703404
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [
+        [
+          "keep_even",
+          "map_double",
+          "rotate_left"
+        ],
+        [
+          "map_add_one",
+          "duplicate_each",
+          "reverse"
+        ]
+      ],
+      "canonical_component_operations": [
+        [
+          "keep_even",
+          "rotate_left",
+          "map_double"
+        ],
+        [
+          "reverse",
+          "map_add_one",
+          "duplicate_each"
+        ],
+        [
+          "tail",
+          "rotate_right",
+          "rotate_right"
+        ]
+      ],
+      "checker_attempts": 2,
+      "components_completed": 2,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "9fdfa86477f9e836832131a491bc9ebf39e6189c2328f5a086a412639e2d7195",
+      "generated_tokens": 5190,
+      "hidden_reads": 0,
+      "id": "component_composition_4",
+      "model_input_sha256": "e3864e22604788f4ba5898285eb05ad54bfd4c8b32ae235f4943772736cd62a8",
+      "prompt_tokens": 7295,
+      "rounds": 6,
+      "schema_conformant_calls": 2,
+      "silent_rounds": 4,
+      "tool_calls": 2,
+      "wall_seconds": 104.79434912488796
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "init",
+          "rotate_left",
+          "map_add_one"
+        ],
+        [
+          "reverse",
+          "keep_odd",
+          "map_double"
+        ],
+        [
+          "rotate_left",
+          "keep_even",
+          "duplicate_each"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "a095f06cd91d9df465151f4e45f701bdd286a52456ab38e9eac511e762f0c30c",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_5",
+      "model_input_sha256": "21ff9ac962035b9024dc5bc43736ea3f6e97fdf30ef395181b6b99175232fc65",
+      "prompt_tokens": 3502,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 82.30489945807494
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "keep_odd",
+          "init",
+          "duplicate_each"
+        ],
+        [
+          "map_double",
+          "map_add_one",
+          "duplicate_each"
+        ],
+        [
+          "tail",
+          "rotate_right",
+          "rotate_right"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "4f442107d0a4f9bfc12d147e70e82ffab53c67795d0e1901f96d3813b368202c",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_6",
+      "model_input_sha256": "ee0db4f4e34cedf05d2a352bce528bf024a1c9bc5a10c9ef0ab7091f20e3c7d6",
+      "prompt_tokens": 3534,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 82.92631791695021
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "init",
+          "rotate_left",
+          "duplicate_each"
+        ],
+        [
+          "duplicate_each",
+          "init",
+          "keep_even"
+        ],
+        [
+          "tail",
+          "reverse",
+          "map_double"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "cb77dc834e53ccdf81abb67840feb46c1429685e78ea0d6ff918b06c8ad74f70",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_7",
+      "model_input_sha256": "33aabeec4096cbfcda538bf435d9caf658e6e3685272736cdbba6fb76a888f17",
+      "prompt_tokens": 3590,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 83.57798208296299
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "rotate_right",
+          "map_sub_one",
+          "map_negate"
+        ],
+        [
+          "rotate_right",
+          "rotate_right",
+          "map_add_one"
+        ],
+        [
+          "map_negate",
+          "keep_even",
+          "rotate_left"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "27167985a1880ed2f5f1401b645f576303d0c4c3e6ca48b5374fcca938410ead",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_8",
+      "model_input_sha256": "f015bd2dfa4d42d9f1774d644408f4dfc7c6cb5e098e0c1a1a3354a7ed164e07",
+      "prompt_tokens": 3506,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 82.82813304197043
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [
+        [
+          "keep_odd",
+          "map_double",
+          "reverse"
+        ]
+      ],
+      "canonical_component_operations": [
+        [
+          "reverse",
+          "keep_odd",
+          "map_double"
+        ],
+        [
+          "rotate_right",
+          "rotate_right",
+          "map_add_one"
+        ],
+        [
+          "rotate_right",
+          "duplicate_each",
+          "rotate_right"
+        ]
+      ],
+      "checker_attempts": 1,
+      "components_completed": 1,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "9f91946badd26cf537ce6955a0e3d39ec5c382413ee770985c338c40345f666d",
+      "generated_tokens": 4768,
+      "hidden_reads": 0,
+      "id": "component_composition_9",
+      "model_input_sha256": "d374126d5ccec3a17125dc97ef99eee5b8e2f78c093ffe66885cf321879b87b0",
+      "prompt_tokens": 5298,
+      "rounds": 5,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 4,
+      "tool_calls": 1,
+      "wall_seconds": 97.41086225002073
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "init",
+          "rotate_left",
+          "map_add_one"
+        ],
+        [
+          "tail",
+          "map_sub_one",
+          "keep_even"
+        ],
+        [
+          "keep_even",
+          "rotate_left",
+          "map_double"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "cf65fdc226f3aa49f59899d586b426221944a517f4f4a464dad5432b729516b6",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_10",
+      "model_input_sha256": "0f52d89207a119f961ad5c542fec7b68902873f2580852de85977c4ca384190b",
+      "prompt_tokens": 3390,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 83.42587520903908
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "rotate_right",
+          "rotate_right",
+          "map_add_one"
+        ],
+        [
+          "keep_even",
+          "rotate_left",
+          "map_double"
+        ],
+        [
+          "map_sub_one",
+          "map_sub_one",
+          "map_sub_one"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "6144934935fe8fe68e112266ec97962e991b6d0862156540aa1c6b91058faa9b",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_11",
+      "model_input_sha256": "5eb2d882df4cf87c975936ce9df7f4845469c6ae1d6d173895003ef1d235a32f",
+      "prompt_tokens": 3486,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 84.24195058294572
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "init",
+          "rotate_left",
+          "duplicate_each"
+        ],
+        [
+          "init",
+          "duplicate_each",
+          "tail"
+        ],
+        [
+          "rotate_left",
+          "map_double",
+          "duplicate_each"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "5d55080ee91fd60289e2d34969c0625e5d6521c05816ca38eb8ea2e1e04c31e7",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_12",
+      "model_input_sha256": "d5c52baa5e2da61d306d28b89706f8cce6d1bf44c0f593504a3f287c44416bd5",
+      "prompt_tokens": 3722,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 84.08762233308516
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [
+        [
+          "rotate_left",
+          "duplicate_each",
+          "init"
+        ]
+      ],
+      "canonical_component_operations": [
+        [
+          "rotate_left",
+          "duplicate_each",
+          "init"
+        ],
+        [
+          "rotate_left",
+          "tail",
+          "map_negate"
+        ],
+        [
+          "tail",
+          "reverse",
+          "map_double"
+        ]
+      ],
+      "checker_attempts": 1,
+      "components_completed": 1,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "a992442d6dd049f20c07096820db53ef71421c45105520b17a3163b4ceeeb5f7",
+      "generated_tokens": 5014,
+      "hidden_reads": 0,
+      "id": "component_composition_13",
+      "model_input_sha256": "caf71352df3e24b188bd0de30490126a1e2df66f966d4d6bc6b829de2cbd5d29",
+      "prompt_tokens": 5704,
+      "rounds": 5,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 4,
+      "tool_calls": 1,
+      "wall_seconds": 102.5090439170599
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "rotate_left",
+          "map_double",
+          "map_double"
+        ],
+        [
+          "rotate_left",
+          "keep_even",
+          "duplicate_each"
+        ],
+        [
+          "rotate_right",
+          "map_add_one",
+          "keep_odd"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "480ce6da6b59f00e51196134eafb361a4702d36ed9be45f661e531a7de4d1ab1",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_14",
+      "model_input_sha256": "d96bc71c991327608dafc4198c8f1fbdb1940c6d16dcf593869fa217024cc257",
+      "prompt_tokens": 3502,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 85.43970816698857
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "map_sub_one",
+          "map_sub_one",
+          "map_negate"
+        ],
+        [
+          "rotate_left",
+          "map_double",
+          "map_double"
+        ],
+        [
+          "rotate_right",
+          "map_add_one",
+          "keep_odd"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "a4340e7dfdf029f6890df8a8ab514645f526644063e783f36605846d37b5fbdb",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_15",
+      "model_input_sha256": "6fa95bc7cb5a3c9818402d6915c9eb174d54c615098714fdb0a7ad28870ffac3",
+      "prompt_tokens": 3494,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 83.71674150018953
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "rotate_right",
+          "rotate_right",
+          "duplicate_each"
+        ],
+        [
+          "reverse",
+          "keep_odd",
+          "map_double"
+        ],
+        [
+          "rotate_right",
+          "map_sub_one",
+          "map_negate"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "9a8882acb435c468e3f8f0acbdd2dbc78938723337b29ea6aa843bbcd34f515a",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_16",
+      "model_input_sha256": "bd3c1ae3570cc9246b3184c7009bb8139a80ef73b52aea504e5bec869342ab87",
+      "prompt_tokens": 3606,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 87.34219583286904
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "rotate_left",
+          "keep_even",
+          "duplicate_each"
+        ],
+        [
+          "init",
+          "duplicate_each",
+          "tail"
+        ],
+        [
+          "rotate_left",
+          "tail",
+          "map_negate"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "dd732c3ca0e1db7e3d95100e2b487f9db98a0018af27efc4d7de7a004448d039",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_17",
+      "model_input_sha256": "76fd3223dd476a4acce06958dce855d0f2c301d0919cd4d1525287c93e0ca833",
+      "prompt_tokens": 3554,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 87.08425437496044
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "tail",
+          "reverse",
+          "map_double"
+        ],
+        [
+          "map_sub_one",
+          "map_sub_one",
+          "map_negate"
+        ],
+        [
+          "rotate_left",
+          "keep_even",
+          "duplicate_each"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "4ff164131de3c230f7f47ed9ee86ecb9bf791d9e2ad2b36ab8284b883eb55b3a",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_18",
+      "model_input_sha256": "783ac355ead40651478c51cb06ba72e78867204853dc678cf18bbebcdec6164b",
+      "prompt_tokens": 3510,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 85.72918679192662
+    },
+    {
+      "accepted": false,
+      "accepted_candidates": [],
+      "canonical_component_operations": [
+        [
+          "init",
+          "rotate_left",
+          "map_add_one"
+        ],
+        [
+          "reverse",
+          "map_add_one",
+          "duplicate_each"
+        ],
+        [
+          "keep_even",
+          "rotate_left",
+          "map_double"
+        ]
+      ],
+      "checker_attempts": 0,
+      "components_completed": 0,
+      "components_total": 3,
+      "end_reason": "silent_round_limit",
+      "final_value_sha256": "4fa6548f0b0a5edd35d449abb1ef39b4e889cbdba0ae9353c18f52c552765a31",
+      "generated_tokens": 4096,
+      "hidden_reads": 0,
+      "id": "component_composition_19",
+      "model_input_sha256": "50e4c7cfa754a67674b7ef9eafa3911c99f34d578edde22200edf4f2f2d996b5",
+      "prompt_tokens": 3582,
+      "rounds": 4,
+      "schema_conformant_calls": 0,
+      "silent_rounds": 4,
+      "tool_calls": 0,
+      "wall_seconds": 85.4810767089948
+    }
+  ],
+  "schema": "gene.component_workflow_difficulty_pilot.v1",
+  "seeds": {
+    "catalog": 920101,
+    "order_and_cases": 920102,
+    "permanently_excluded": true
+  },
+  "subject_sha256": "6c6e9d400e71d6626e43c171d7ccfff458657e0c6fd6620afde5789f61991231",
+  "summary": {
+    "accepted": 0,
+    "checker_attempts": 5,
+    "components_completed": 5,
+    "components_total": 60,
+    "export_wall_seconds": 25.23995574982837,
+    "generated_tokens": 85602,
+    "harness_peak_rss_bytes": 36765696,
+    "hidden_reads": 0,
+    "live_episodes": 4,
+    "prompt_tokens": 80431,
+    "rounds": 85,
+    "schema_conformant_calls": 5,
+    "silent_rounds": 80,
+    "success_rate": 0.0,
+    "tasks": 20,
+    "tool_calls": 5,
+    "total_wall_seconds": 1770.6631783749908
+  }
+}

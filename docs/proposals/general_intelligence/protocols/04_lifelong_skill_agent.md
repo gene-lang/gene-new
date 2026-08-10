@@ -5,11 +5,13 @@ boundary pilot passed on 2026-08-09. The first lifelong-task subject failed its
 preregistered difficulty gate after its one allowed revision and is retained as
 negative evidence only. A version-2 demonstration-defined subject then failed
 at the opposite boundary: the model exhausted its generation budget without
-calling a tool on either preregistered arity. Both versions are retained as
-negative evidence. Version 3 below specifies a component-wise interaction and
-its frozen budgets; it has not been independently reviewed, qualified, or
-frozen for treatment, so the treatment comparison remains not
-implementation-ready. See [`README.md`](README.md).
+calling a tool on either preregistered arity. A version-3 component-wise interaction then
+failed the same way at a preregistered liveness gate, both at the frozen 1,024
+generated tokens and at the one declared 2,048-token repair, so it too is
+rejected. All three versions are retained as negative evidence. The treatment
+comparison remains not implementation-ready, and the binding obstacle is now
+the qualified model's per-round generation envelope rather than the subject
+design. See [`README.md`](README.md).
 
 ## Rejected exact-list subject pilot
 
@@ -226,11 +228,14 @@ program, or carry promotion authority. It is a new interaction design, not a
 post hoc revision of version 2, and requires new excluded pilot seeds and a new
 unopened evaluation schedule after qualification and review.
 
-## Version-3 component-wise workflow subject
+## Rejected version-3 component-wise workflow subject
 
-Status: candidate design. It is specified and budgeted here so that a difficulty
-pilot can be preregistered, but it is not treatment-ready, not independently
-reviewed, and has no evaluation schedule.
+Status: rejected on 2026-08-09 by its own preregistered liveness gate, at both
+the frozen generation budget and the single declared repair. The design and its
+frozen rules are retained below exactly as they stood before model exposure,
+followed by both immutable results. The generator, its soundness rule, and its
+public/hidden boundary remain sound and reusable; the interaction is not
+executable by the qualified model.
 
 Version 3 keeps the version-2 latent-workflow distribution — a workflow is
 identified only by three public input/output demonstrations, never by its
@@ -484,6 +489,137 @@ Version 2 accepted any primitive trace that produced the exact answer. Version 3
 requires per-component identification, which is the reusable-skill problem this
 experiment exists to test. It also raises difficulty, which the frontier band
 and its single declared revision are there to measure.
+
+### First run: interaction-liveness failure
+
+The initial run used the frozen configuration exactly: excluded seeds
+`920101` / `920102`, arity three, two attempts per component, a 12-round
+ceiling, a silent-round cap of three, and 1,024 generated tokens per round. Its
+immutable report is
+[`gpt-oss-20b-component-workflow-difficulty-pilot-2026-08-09.json`](../qualifications/gpt-oss-20b-component-workflow-difficulty-pilot-2026-08-09.json).
+
+It failed the liveness gate. Only 4 of 20 episodes emitted a schema-conformant
+tool call, a liveness rate of `0.200` against the required `0.90`, so **the 0/20
+success rate is not a difficulty result** and the frontier band was not applied.
+
+| Measure | Value |
+|---|---:|
+| Episodes with at least one conformant call | 4 / 20 |
+| Rounds | 85 |
+| Silent rounds | 80 |
+| Generated tokens | 85,602 |
+| Generated tokens per round | ≈ 1,007 |
+| Tool calls | 5 |
+| Schema-conformant tool calls | 5 |
+| Candidate attempts | 5 |
+| Components accepted | 5 / 60 |
+| Hidden expected-output reads | 0 |
+| Total wall seconds | 1,770.66 (25.24 exporting) |
+
+Ninety-four percent of rounds ended with no tool call at essentially the full
+1,024-token allowance, so this is the version-2 truncation failure again rather
+than a refusal, a schema problem, or an inability to identify a component. Two
+details sharpen that reading and neither is a difficulty claim:
+
+- every candidate the model did emit was accepted — 5 attempts, 5 conformant,
+  5 components advanced, no `inconsistent` and no `attempts_exhausted`; and
+- no episode reached submission, so the hidden expected output was read zero
+  times across the whole run.
+
+The five accepted attempts are far too few, and too concentrated in early
+components, to say anything about the task distribution's difficulty. They do
+rule out the adapter and the checker as the cause: when the model finished
+reasoning, the interaction worked exactly as specified. Splitting the task into
+one component per round was necessary but not sufficient; the per-round
+generation envelope is the binding constraint.
+
+The declared liveness repair therefore applies, once: 2,048 generated tokens per
+round, everything else unchanged, on the fresh excluded pair `920105` / `920106`.
+
+### Declared repair: liveness failed again, so version 3 is rejected
+
+The repair ran exactly as declared — 2,048 generated tokens per round, excluded
+seeds `920105` / `920106`, arity three, two attempts per component, a 12-round
+ceiling, and a silent-round cap of three. Its immutable report is
+[`gpt-oss-20b-component-workflow-liveness-repair-2026-08-09.json`](../qualifications/gpt-oss-20b-component-workflow-liveness-repair-2026-08-09.json).
+
+Liveness rose from `0.200` to `0.500` and remained below the required `0.90`.
+
+| Measure | Initial (1,024 tokens) | Repair (2,048 tokens) |
+|---|---:|---:|
+| Episodes with a conformant call | 4 / 20 | 10 / 20 |
+| Liveness rate | 0.200 | 0.500 |
+| Rounds | 85 | 98 |
+| Silent rounds | 80 | 79 |
+| Generated tokens | 85,602 | 181,106 |
+| Generated tokens per round | ≈ 1,007 | ≈ 1,848 |
+| Tool calls / schema-conformant | 5 / 5 | 19 / 19 |
+| Candidate attempts | 5 | 18 |
+| Components accepted | 5 / 60 | 14 / 60 |
+| Hidden expected-output reads | 0 | 1 |
+| Accepted tasks | 0 / 20 | 0 / 20 |
+| Total wall seconds | 1,770.66 | 3,684.76 |
+
+By the preregistered rule, a second liveness failure rejects version 3. It is
+rejected. The recorded finding is that this interaction is beyond the qualified
+model's per-round generation envelope, not that the task distribution is too
+hard or too easy: the frontier band was never applied to either run, and no
+difficulty revision is permitted, because a difficulty revision is defined only
+for a liveness-passing run.
+
+What the two runs show together:
+
+- **The budget is binding and the response is not converging.** Doubling
+  generation doubled liveness but barely moved the silent-round count, 80 to 79.
+  Whenever the model was silent it again consumed nearly the entire allowance
+  (≈1,848 of 2,048 tokens per round). Its reasoning expands to fill whatever
+  budget it is given, so a third increase is neither permitted nor well
+  motivated — and the repair run already took 61 minutes for 20 tasks.
+- **The interaction itself works.** Across both runs the model emitted 23 tool
+  calls, all 23 schema-conformant, and 19 of 23 candidate attempts were accepted.
+  No attempt budget was ever exhausted. When the model finished reasoning it
+  identified components correctly; it simply did not finish often enough.
+- **The authority boundary held exactly as specified.** The hidden expected
+  output was read zero times in the first run and once in the second — the one
+  early submission on task 18, which was rejected. Nothing else in either run
+  touched verifier-owned data.
+
+The 19-of-23 component acceptance rate is **not** a difficulty result and must
+not be treated as one. It is measured only on the components of episodes that
+acted at all, which is half the run at best, and it says nothing about whether a
+model that reliably acted would land inside `0.25..0.75`.
+
+### What the rejection implies for a version 4
+
+These are directions, not decisions. Any of them is a new experimental version
+requiring new excluded seeds, independent review, and a new unopened schedule.
+
+1. Reduce the per-round inference cost below one three-operation component —
+   shorter components, a smaller primitive catalog, or a first action that
+   requires no inference at all. Version 3 already shortened the unit of work
+   from a whole task to one component, and that was necessary but not enough.
+2. Change the model or the decoding regime, which reopens model qualification
+   rather than amending this subject. A model with a smaller reasoning-token
+   appetite, or explicit reasoning-effort control, is a different qualified
+   artifact and a different experiment.
+3. Do not respond by weakening the hidden boundary. The checker and the adapter
+   were never the failure; making more information public would trade away the
+   experiment's validity for a problem it would not fix.
+
+### Qualification gate lesson
+
+The 2026-08-09 qualification gate passed `gpt-oss:20b` at 20 of 20 mock-tool
+tasks using 4,308 generated tokens over 69 calls — roughly 62 tokens per call.
+That gate measured tool-call mechanics on tasks with negligible inference depth,
+and it did not predict that the same model would fall silent on 79 to 80 percent
+of rounds once each round required inverting a three-operation program from
+three examples.
+
+A future qualification gate should therefore include at least one task whose
+per-round inference cost is comparable to the intended subject's, and should
+record generated tokens per round rather than only totals. Otherwise a model can
+pass qualification and still be liveness-incapable of the experiment it was
+qualified for, which is what happened here across two subject versions.
 
 ## Candidate model-qualification gate
 

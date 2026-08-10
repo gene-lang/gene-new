@@ -236,18 +236,27 @@ coverage, and exactly revalidates the full curriculum. That second subject also
 failed its disjoint gate, this time at the floor: both the initial three-workflow
 pilot and the allowed two-workflow revision scored 0/20 because every episode
 used its full generation allowance before returning any tool call. A version-3
-subject now interleaves inference and action: the agent commits to one ordered
+subject then interleaved inference and action: the agent commits to one ordered
 component at a time through a checker that reads only that component's public
 demonstrations, and a generator rule guarantees that no demonstration-consistent
 candidate can diverge from the family's behavior on the value it is applied to.
 The whole model-facing loop is therefore a deterministic function of public data
 except for one terminal hidden comparison, and hidden replay stays reachable
-only through the authenticated promotion service. Its difficulty pilot is
-preregistered with a liveness gate evaluated before the frontier band, so a
-second generation-budget failure would be recorded as interaction evidence
-rather than difficulty evidence. Version 3 has not been run, reviewed, or
-frozen; it still requires independent review and a new unopened evaluation
-schedule before treatment.
+only through the authenticated promotion service. Its pilot was preregistered
+with a liveness gate evaluated before the frontier band, and that gate rejected
+it twice: 4 of 20 episodes emitted a tool call at the frozen 1,024-token budget
+and 10 of 20 at the single declared 2,048-token repair, against a required 18.
+Doubling generation doubled liveness while leaving the silent-round count
+essentially unchanged, because the model's reasoning expands to fill whatever
+budget it is given. Neither run produced a difficulty result. The interaction
+was sound where it ran — all 23 tool calls schema-conformant, 19 of 23 candidate
+attempts accepted, and the hidden output read once in total — so the binding
+obstacle is now the qualified model's per-round generation envelope rather than
+the subject design. Three subject versions have now failed for three different
+reasons, and the accumulated lesson for this experiment is that model
+qualification must include a task whose per-round inference cost matches the
+intended subject; measuring tool-call mechanics on shallow tasks did not predict
+this failure.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment

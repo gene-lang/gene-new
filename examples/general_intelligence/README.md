@@ -264,3 +264,24 @@ are in
 [`protocols/04_lifelong_skill_agent.md`](../../docs/proposals/general_intelligence/protocols/04_lifelong_skill_agent.md).
 No version-3 evaluation schedule exists, and none may be selected before the
 subject qualifies and its protocol is independently reviewed.
+
+Version 3 was rejected on 2026-08-09 by that liveness gate, twice. On excluded
+seeds `920101`/`920102` at 1,024 generated tokens per round, 4 of 20 episodes
+emitted a tool call. The single declared repair — 2,048 tokens, fresh excluded
+seeds `920105`/`920106`, nothing else changed — reached 10 of 20, still under the
+required 18. Because liveness is evaluated before the frontier band, neither
+0/20 success rate is a difficulty result and no arity revision was permitted.
+
+Doubling the budget doubled liveness but barely moved the silent-round count, 80
+to 79: whenever the model went silent it consumed nearly the whole allowance, so
+its reasoning simply expands to fill the budget. The interaction itself worked —
+across both runs all 23 tool calls were schema-conformant, 19 of 23 candidate
+attempts were accepted, no attempt budget was ever exhausted, and the hidden
+expected output was read zero times in the first run and once in the second. The
+obstacle is the qualified model's per-round generation envelope, not the checker,
+the adapter, or the task distribution.
+
+The generator, its soundness rule, and its public/hidden boundary remain sound
+and reusable. The interaction is not executable by `gpt-oss:20b` at this
+envelope. Both reports are retained under
+`docs/proposals/general_intelligence/qualifications/`.
