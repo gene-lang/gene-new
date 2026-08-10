@@ -515,12 +515,40 @@ def schema_conformant(name: Any, arguments: Any) -> bool:
     return False
 
 
+def chat_payload(
+    model: str,
+    messages: list[dict[str, Any]],
+    num_predict: int,
+    think: str | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "tools": TOOLS,
+        "stream": False,
+        "keep_alive": "10m",
+        "options": {
+            "temperature": 0,
+            "seed": 20260809,
+            "num_ctx": 32768,
+            "num_predict": num_predict,
+        },
+    }
+    # Reasoning-effort control, added for version 4. Omitted entirely at default
+    # effort so a default-effort request stays byte-identical to the version-3
+    # runs this harness already produced.
+    if think is not None:
+        payload["think"] = think
+    return payload
+
+
 def run_task(
     model: str,
     task: dict[str, Any],
     max_rounds: int,
     silent_round_cap: int,
     num_predict: int,
+    think: str | None = None,
 ) -> dict[str, Any]:
     user_message = public_user_message(task)
     messages: list[dict[str, Any]] = [
@@ -541,20 +569,7 @@ def run_task(
     finished = False
     for rounds in range(1, max_rounds + 1):
         response = post_json(
-            "/api/chat",
-            {
-                "model": model,
-                "messages": messages,
-                "tools": TOOLS,
-                "stream": False,
-                "keep_alive": "10m",
-                "options": {
-                    "temperature": 0,
-                    "seed": 20260809,
-                    "num_ctx": 32768,
-                    "num_predict": num_predict,
-                },
-            },
+            "/api/chat", chat_payload(model, messages, num_predict, think)
         )
         prompt_tokens += int(response.get("prompt_eval_count", 0))
         generated_tokens += int(response.get("eval_count", 0))
@@ -760,6 +775,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--composition-arity", type=int, default=3)
     parser.add_argument("--num-predict", type=int, default=1024)
     parser.add_argument("--silent-round-cap", type=int, default=3)
+    # Reasoning-effort control. Omitting it reproduces a version-3 request
+    # exactly; version 4 runs at low effort.
+    parser.add_argument("--think", choices=["low", "medium"], default=None)
     return parser.parse_args()
 
 
@@ -790,7 +808,8 @@ def main() -> int:
     outcomes = []
     for index, task in enumerate(tasks):
         outcome = run_task(
-            args.model, task, max_rounds, args.silent_round_cap, args.num_predict
+            args.model, task, max_rounds, args.silent_round_cap,
+            args.num_predict, args.think
         )
         outcomes.append(outcome)
         print(
@@ -855,6 +874,7 @@ def main() -> int:
             "seed": 20260809,
             "num_ctx": 32768,
             "num_predict": args.num_predict,
+            "reasoning_effort": args.think or "default",
             "max_rounds": max_rounds,
             "silent_round_cap": args.silent_round_cap,
         },

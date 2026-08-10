@@ -941,6 +941,68 @@ unchanged — none of them was what failed — but it requires fresh excluded se
 and its own preregistration written before model exposure. Version 3 itself is
 rejected and may not be re-run; its one permitted repair was used.
 
+## Version-4 preregistration
+
+Status: written before any version-4 model call. Version 4 is the version-3
+interaction run against a qualified model configuration. It is not
+treatment-ready and has no evaluation schedule.
+
+Nothing about the subject changed, because nothing about the subject failed. The
+generator, exporter, public checker, soundness rule, and public/hidden boundary
+are reused **byte-identical**, at these digests:
+
+| Artifact | SHA-256 |
+|---|---|
+| `component_workflow_subject.gene` | `6c6e9d400e71d6626e43c171d7ccfff458657e0c6fd6620afde5789f61991231` |
+| `component_workflow_pilot_export.gene` | `e80e5d5d7d4c9b076dce8569bb3dfbcc3b729176ce09aa923a6e934c20b9c0e6` |
+| `latent_workflow_subject.gene` | `a81e88ef31eac1cfd166633494396e22f31818ebd1e70751178aa7c1ae776d37` |
+| `library_induction.gene` | `e07bcb077a28602749d12073aa31b5bc78f8a031a6dc4ec51b17e557c926fd45` |
+
+The pilot harness gains a reasoning-effort flag and therefore a new digest; it
+omits the field at default effort, so a default-effort request stays
+byte-identical to the version-3 runs it already produced.
+
+What is new is the model configuration, the seeds, and this preregistration.
+
+| Item | Value |
+|---|---|
+| Model configuration | `gpt-oss:20b` at **low** reasoning effort |
+| Composition arity | **2** |
+| Attempts per component | 2 |
+| Round ceiling | `3 * arity + 3` (9 at arity 2) |
+| Silent-round cap | 3 |
+| Tasks | 20 held-out compositions |
+| Decoding | temperature `0`, seed `20260809`, context `32768`, 1,024 generated tokens |
+| Liveness gate | ≥ 0.90, evaluated first |
+| Frontier band | closed `0.25..0.75` |
+| Initial excluded seeds | `930101` / `930102` |
+| Revision excluded seeds | `930103` / `930104` |
+
+Arity two is chosen in advance from the stage-two measurement: a `0.583`
+per-component solve rate implies roughly `0.34` at arity two and `0.20` at arity
+three. That estimate comes from a permanently excluded qualification task set,
+never from subject data, which is what makes it a legitimate preregistration
+input rather than tuning.
+
+**No liveness repair is available.** The generation budget stays at 1,024 tokens
+and the reasoning effort stays low. The model configuration has already been
+qualified on liveness at `1.000` on isolated rounds, so a liveness failure here
+would mean the stage-two gate does not transfer to full episodes. That is a
+finding, not a budget problem, and it rejects version 4 rather than triggering
+another budget increase. This is the falsifiable prediction the new gate makes
+about itself.
+
+**One declared difficulty revision**, on `930103` / `930104`: raise arity to
+three if success exceeds `0.75`. There is no lower arity — two is the
+generator's floor — so a result below `0.25` rejects version 4. The asymmetry is
+stated here rather than discovered later.
+
+Everything else carries over from the version-3 contract unchanged: the public
+checker reads only public demonstrations, acceptance applies the model's own
+candidate, `submit_result` is terminal and is the only hidden read, the
+soundness rule is enforced at generation and rechecked in Python, and the public
+checker has no promotion authority.
+
 ## Candidate verifier and records
 
 Package every task family with a deterministic generator and hidden tests owned
