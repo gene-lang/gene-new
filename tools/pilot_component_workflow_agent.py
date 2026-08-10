@@ -20,6 +20,7 @@ import resource
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -170,15 +171,37 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+# A single transient transport failure used to destroy a whole 20-task run. The
+# retry is transport-level only: it re-sends an identical request, and with
+# temperature zero and a fixed seed the model's reply is unchanged, so nothing
+# about the task distribution, budgets, decoding, or gates is affected. Retries
+# are counted and reported so a run that needed them is visible.
+TRANSPORT_ATTEMPTS = 3
+TRANSPORT_BACKOFF_SECONDS = (2.0, 4.0)
+TRANSPORT_RETRIES = 0
+
+
 def post_json(path: str, payload: dict[str, Any], timeout: int = 300) -> dict[str, Any]:
-    request = urllib.request.Request(
-        OLLAMA_URL + path,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    global TRANSPORT_RETRIES
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    last: Exception | None = None
+    for attempt in range(TRANSPORT_ATTEMPTS):
+        request = urllib.request.Request(
+            OLLAMA_URL + path,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+            last = error
+            if attempt + 1 == TRANSPORT_ATTEMPTS:
+                break
+            TRANSPORT_RETRIES += 1
+            time.sleep(TRANSPORT_BACKOFF_SECONDS[attempt])
+    raise PilotError(f"transport failed after {TRANSPORT_ATTEMPTS} attempts: {last}")
 
 
 def get_json(path: str) -> dict[str, Any]:
@@ -910,6 +933,7 @@ def main() -> int:
             "export_wall_seconds": export_wall_seconds,
             "total_wall_seconds": time.monotonic() - started,
             "harness_peak_rss_bytes": peak_rss_bytes(),
+            "transport_retries": TRANSPORT_RETRIES,
         },
         "outcomes": outcomes,
     }

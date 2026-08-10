@@ -272,9 +272,22 @@ eligible. The trade is a mild accuracy cost, from 20 to 19 stage-one tasks and
 from 8-of-8 to 7-of-15 per-attempt accuracy on stage two, because low effort
 converts "never acts" into "acts, sometimes wrong". `gpt-oss:20b` at low
 reasoning effort is therefore a qualified configuration for subject pilots and
-at default effort it is not. A version-4 subject may reuse the version-3 files
-unchanged with fresh excluded seeds and its own preregistration; version 3
-itself stays rejected.
+at default effort it is not. Version 4 then reran the version-3 interaction unchanged at arity two on that
+qualified configuration, with fresh excluded seeds. Liveness reached `1.000`,
+confirming the stage-two gate's falsifiable prediction about itself, but success
+was 0 of 20, below the `0.25` floor with arity two already the generator's
+minimum, so version 4 is rejected with no revision available. The gate turned
+out to predict liveness well and accuracy badly — it estimated `0.34` where the
+subject delivered a `0.125` per-component rate — and the obvious explanation was
+tested and refuted: 11 of the 12 gate programs have the same minimum
+finite-bank depth three as the screened families, so the gap is episode context
+rather than task depth. A stage-three gate must therefore measure a component
+inside a full episode. Separately, these pilots proved not to be exactly
+reproducible: a fixed Ollama seed is not bit-reproducible across sessions, so
+near-threshold gate decisions must not be treated as exact. Experiment 4 now
+faces a reasoning-effort squeeze rather than a subject problem — accurate but
+silent at default effort, live but inaccurate at low effort — with `medium` the
+single untested point, reachable only through a fresh version-5 preregistration.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment

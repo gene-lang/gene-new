@@ -1003,6 +1003,105 @@ candidate, `submit_result` is terminal and is the only hidden read, the
 soundness rule is enforced at generation and rechecked in Python, and the public
 checker has no promotion authority.
 
+### Version-4 result: liveness solved, difficulty below the floor
+
+The immutable report is
+[`gpt-oss-20b-component-workflow-v4-low-effort-2026-08-10.json`](../qualifications/gpt-oss-20b-component-workflow-v4-low-effort-2026-08-10.json).
+
+| Measure | Value |
+|---|---:|
+| **Liveness (threshold 0.90)** | **1.000** (20 / 20) |
+| Success rate (band `0.25..0.75`) | **0.000** (0 / 20) |
+| Components accepted | 5 / 40 (0.125) |
+| Candidate attempts | 37 |
+| Tool calls / schema-conformant | 41 / 41 |
+| Silent rounds | 44 of 85 (0.518) |
+| Hidden expected-output reads | 2 |
+| Generated tokens | 61,631 |
+| Transport retries | 1 |
+| Total wall seconds | 1,302.74 |
+
+**Liveness is solved.** Every one of 20 episodes emitted a schema-conformant
+call, against 4 of 20 and 10 of 20 for version 3. The stage-two gate made a
+falsifiable prediction about itself — that a configuration qualified at liveness
+`1.000` on isolated rounds would stay live on full episodes — and the prediction
+held exactly. That is the qualification methodology working.
+
+**Difficulty is below the floor, so version 4 is rejected** under the rule fixed
+before the run: arity two is the generator's floor, so there is no lower arity
+and no revision is available. Seeds `930103` / `930104` remain unused.
+
+#### The gate predicts liveness but badly over-predicts accuracy
+
+The preregistration estimated `0.34` at arity two from the gate's `0.583`
+per-component solve rate. The subject's actual per-component rate is `5/40 =
+0.125`, which implies about `0.016` at arity two. The estimate was wrong by a
+wide margin and the preregistration is the place that recorded it, which is what
+preregistration is for.
+
+The obvious explanation — that the hand-picked gate programs were shallower than
+the subject's screened depth-three families — was tested and is **false**. Eleven
+of the twelve gate programs have minimum finite-bank depth three; only
+`(init, map_double, keep_even)` collapses to depth two. Task depth does not
+explain the gap.
+
+What remains is episode context. A gate round presents one component's three
+demonstrations and nothing else. A subject round presents two components in
+order, both demonstration packs, a query input, and an accumulating transcript,
+and requires selecting the current component before inferring it. The same
+inference is much harder embedded in an episode than in isolation.
+
+The actionable consequence for a stage-three gate: measure a component **inside
+a full episode**, not standalone. A gate that isolates the unit of work
+generalises to liveness, which is about token budget and therefore insensitive
+to surrounding material, but not to accuracy, which is not.
+
+#### These runs are not exactly reproducible
+
+An earlier attempt at this same configuration aborted at task 19 on a transient
+Ollama `HTTP 500` after completing 18 tasks. It was rerun with an identical
+configuration and identical seeds, on the reasoning that temperature zero and a
+fixed seed make the episodes deterministic.
+
+**That reasoning was wrong.** The 18 completed episodes did not reproduce: the
+aborted attempt accepted task 10 and failed task 1 at zero components, while the
+rerun failed task 10 at zero components and reached one component on task 1.
+Ollama with a fixed seed is not bit-reproducible across sessions — batching,
+KV-cache state, context shift, and flash-attention reduction order all vary, and
+greedy decoding flips wherever two logits are near-tied.
+
+The decision is unaffected: the aborted attempt stood at 1 of 18 and the
+completed run at 0 of 20, both far below the `0.25` floor. But single 20-task
+runs carry real run-to-run noise, and any future gate decision that lands near a
+threshold rather than far from it must not be treated as exact. Record this as a
+methodological limit of every pilot in this protocol, not a property of this run.
+
+The transport retry added after the abort fired exactly once during the
+completed run, so the fix was load-bearing. It re-sends an identical request and
+cannot alter tasks, budgets, decoding, or gates.
+
+#### Where experiment 4 now stands
+
+Four subject versions have been rejected for four distinct reasons: trace
+copying, whole-task inference, generation envelope, and now difficulty at the
+floor. The model configuration is no longer the obstacle, and neither is the
+interaction.
+
+The remaining bind is a squeeze in reasoning effort. At default effort the model
+is accurate when it acts — 8 of 8 on the gate, 19 of 23 candidate attempts on
+version 3 — but it acts on only a fifth to a half of rounds. At low effort it
+acts on every round but solves only an eighth of components. For this task
+family, no tested setting is both live and accurate.
+
+`medium` effort is the one untested point, bracketed by a failure on each side.
+The bounded search rule correctly forbade running it during qualification, where
+it would have been fishing. Testing it is legitimate only as a version 5 with a
+fresh preregistration, fresh excluded seeds, a single declared setting, and a
+declared prediction written before the run. If medium fails too, the honest
+conclusion is that this task family sits outside `gpt-oss:20b`'s frontier at
+every available effort, which is a reportable result about the local-model
+constraint rather than a reason to keep rewriting the subject.
+
 ## Candidate verifier and records
 
 Package every task family with a deterministic generator and hidden tests owned

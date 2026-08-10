@@ -322,6 +322,39 @@ attempts, but per-attempt accuracy fell from 8 of 8 to 7 of 15. Both stages are
 also faster and cheaper at low effort.
 
 **`gpt-oss:20b` at low reasoning effort is a qualified configuration for subject
-pilots; at default effort it is not.** A version-4 subject may reuse the
-version-3 files unchanged with fresh excluded seeds and its own preregistration.
-Version 3 itself stays rejected — its one permitted repair was used.
+pilots; at default effort it is not.** Version 3 itself stays rejected — its one
+permitted repair was used.
+
+Version 4 reran the version-3 interaction unchanged, at arity two on the
+qualified low-effort configuration with fresh excluded seeds `930101`/`930102`.
+Its report is
+`gpt-oss-20b-component-workflow-v4-low-effort-2026-08-10.json`.
+
+Liveness reached **1.000** — all 20 episodes emitted a schema-conformant call,
+against 4 and 10 of 20 for version 3. The stage-two gate's prediction about
+itself held exactly, which is the qualification methodology working. But success
+was 0/20, below the `0.25` floor, and arity two is the generator's minimum, so
+version 4 is rejected with no revision available.
+
+Two findings worth carrying:
+
+- **The gate predicts liveness, not accuracy.** It estimated `0.34` at arity two
+  from a `0.583` per-component solve rate; the subject's actual per-component
+  rate is `0.125`. The obvious explanation — shallower hand-picked gate
+  programs — was tested and is false: 11 of 12 gate programs have minimum
+  finite-bank depth three, same as the screened families. What differs is
+  episode context: a gate round shows one component, a subject round shows two
+  plus ordering, a query input, and an accumulating transcript. A stage-three
+  gate must measure a component inside a full episode.
+- **These runs are not exactly reproducible.** An earlier attempt at this same
+  configuration aborted on a transient Ollama `HTTP 500` after 18 tasks; the
+  rerun with identical seeds did not reproduce those episodes. Ollama with a
+  fixed seed is not bit-reproducible across sessions. The decision was unaffected
+  (1/18 and 0/20, both far below the floor), but a gate decision landing near a
+  threshold must not be treated as exact.
+
+Experiment 4 now faces a reasoning-effort squeeze rather than a subject problem:
+at default effort the model is accurate but acts on a fifth to a half of rounds;
+at low effort it always acts but solves an eighth of components. `medium` is the
+one untested point and would require a version-5 preregistration with fresh
+seeds and a declared prediction.
