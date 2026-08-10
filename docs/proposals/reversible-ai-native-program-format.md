@@ -408,6 +408,13 @@ Gene already has several pieces that support this direction:
 - The current GIR codec is a compiler-internal executable artifact and stores
   reachable reader values as canonical Gene strings inside JSON. It should not
   be confused with this reversible source-program format.
+- Gene's serde (`docs/serialization.md`) round-trips arbitrary runtime
+  values, including nodes, through canonical Gene text with reserved-head
+  escaping. It has no concept of comments, bang lines, or multi-form source
+  units — those never survive the semantic reader into a runtime `Value` —
+  and its wire format is Gene text itself, not a faster-loading binary
+  encoding. It solves durable application data, not reversible program
+  source, and should not be confused with this format either.
 
 These existing boundaries suggest adding a source-document/form-tree layer
 alongside `Value`, not enlarging `Value` or changing its eight-byte layout.
@@ -654,13 +661,24 @@ training curriculum, and corpus contents are implementation design work within
 these decisions. All provisional thresholds and corpus manifests must be
 confirmed before their corresponding measurements begin.
 
-## Appendix: base model for the first training pilot
+## Appendix: base model for the first serious Gene model
 
 This is a point-in-time candidate recommendation, dated 2026-08-10. Model
 availability, licensing, and capability shift quickly; re-verify the
-candidate list and its architecture claims against current model cards before
-starting Step 7 of the sequence above. Unlike the two decisions sections
-above, nothing in this appendix is frozen.
+candidate list and its architecture claims against current model cards
+before acting on it. Unlike the two decisions sections above, nothing in
+this appendix is frozen.
+
+It is also a later, separate effort from the sequence above, not another
+name for the same pilot. Step 7 and "First model-pilot decisions" both
+require the pilot model and its `.gene` control to be trained from scratch
+at matched capacity, compute, data, and context budgets — that match is what
+makes the Model-training study's semantic-benefit verdict valid. Adapting a
+pretrained Qwen3.5 checkpoint with LoRA, as recommended below, does not
+satisfy that requirement: a pretrained multimodal backbone brings capability
+the matched control would not have, which would confound the comparison.
+Read this appendix as a candidate for building a capable Gene model after
+step 8's gates pass, not as a substitute for the from-scratch pilot itself.
 
 ### Recommendation
 
