@@ -290,6 +290,15 @@ suite "cli — gene run":
     check "minimum_liveness=0.9 minimum_solve=0.5 public_hidden_fields=0" in
       checked.output
 
+  test "episode-depth qualification stage keeps the subject's checker rules":
+    let checked = execCmdEx(
+      "python3 tools/qualify_episode_depth.py --self-test")
+    check checked.exitCode == 0
+    check "episodes=10 components=20 round_ceiling=9 attempts=2" in
+      checked.output
+    check "public_hidden_fields=0 soundness_verified=true" in checked.output
+    check "framing=episode programs=stage_two_identical" in checked.output
+
   test "main receives only explicitly granted named capabilities":
     let grantedMain = writeCliProgram("granted_main.gene",
       "(fn main [args, ^config : Capability] " &

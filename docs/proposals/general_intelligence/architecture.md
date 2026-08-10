@@ -292,10 +292,20 @@ reproducing every per-task outcome and both runs' 30,352 generated tokens, so
 the model exposes two effective settings rather than three and no interior
 exists. This task family sits outside `gpt-oss:20b`'s frontier at every
 available effort, which is a reportable result about the local-model constraint
-rather than grounds for a fifth subject rewrite. The next steps are a candidate
-model selected for reasoning-effort control and a stage-three gate that measures
-a component embedded in a full episode, since stage two over-predicted subject
-accuracy roughly 4.7-fold by isolating it.
+rather than grounds for a fifth subject rewrite. A stage-three gate was then built to test why stage two over-predicted subject
+accuracy roughly 4.7-fold, holding its twelve programs and demonstrations
+identical and varying only the framing. It returned `0.500` per component
+against a `0.05..0.25` band declared before the run, so it is not validated and
+the episode-framing hypothesis is falsified: framing costs `0.583 → 0.500` while
+swapping hand-picked programs for the subject's screened families costs
+`0.500 → 0.125`, a task-set effect about 4.5 times larger. Matching a subject on
+a structural screen is not enough — hand-picked probes are biased easy by
+roughly a factor of four, and a gate must instead sample from the subject
+generator's own screened pool on excluded seeds. Episode success did track the
+per-component rate raised to the component count in both gate and subject, so
+the independent-composition extrapolation is sound and only its input was wrong.
+The next steps are that resampled gate and a candidate model selected for
+reasoning-effort control.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment

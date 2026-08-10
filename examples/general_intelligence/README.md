@@ -365,7 +365,30 @@ settings, not three, so there is no interior to the trade-off and no version-5
 pilot worth running. This task family sits outside `gpt-oss:20b`'s frontier at
 every available effort.
 
-The next steps are a different candidate model chosen for reasoning-effort
-control, and a stage-three gate that measures a component embedded in a full
-episode rather than in isolation. Do not rewrite the subject: four versions have
-been rejected and the last two rejections were about the model, not the task.
+`tools/qualify_episode_depth.py` is the stage-three gate built to test why stage
+two over-predicted subject accuracy. It holds the twelve stage-two programs and
+demonstrations byte-identical and varies only the framing, reusing the subject's
+exact tools, budgets, and round formula, so episode context is the single
+variable.
+
+```bash
+python3 tools/qualify_episode_depth.py --self-test
+```
+
+It came back at `0.500` per component against a band of `0.05..0.25` declared
+before the run, so it is **not validated**, and the hypothesis that episode
+framing explained the gap is falsified. Framing costs `0.583 → 0.500`; swapping
+hand-picked programs for the subject's screened families costs `0.500 → 0.125`.
+The task set dominates framing by about 4.5 to 1.
+
+The cause is hand-picking. Matching the subject on minimum finite-bank depth
+(11 of 12) is not enough, because a structural screen does not capture what
+makes a chosen program guessable; the gate's admissible sets average `4.083`
+candidates against the subject's `2.667`. **A future gate must draw its tasks
+from the subject generator's screened pool with the subject's own sampler on
+excluded seeds, never by hand.** One result survived: episode success tracks
+per-component rate to the component power in both the gate and the subject, so
+the independent-composition extrapolation is sound and only its input was wrong.
+
+Do not rewrite the subject: four versions have been rejected and the last two
+rejections were about the model and the measurement, not the task.

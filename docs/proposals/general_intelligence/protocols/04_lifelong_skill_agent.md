@@ -1168,6 +1168,99 @@ KV-cache reduction order rather than with sampling. Short deterministic probes
 are reproducible; long episodes are not, and only the latter carry the gate
 decisions.
 
+### Stage three: per-component accuracy inside a full episode
+
+Stage two predicts liveness well and accuracy badly. Stage three is the
+controlled follow-up, in
+[`tools/qualify_episode_depth.py`](../../../../tools/qualify_episode_depth.py).
+
+It holds the twelve hidden programs and their three demonstration inputs
+**byte-identical to stage two** and varies only the framing. Where a stage-two
+round shows one component and nothing else, a stage-three round shows two
+components in order, both demonstration packs, a query input, and an
+accumulating transcript, and requires selecting the current component before
+inferring it. It reuses the subject's exact tool names, schemas, public-checker
+semantics, attempt budget, round formula, and silent-round cap, so the adapter
+is the one the subject uses. Episode context is therefore the only variable
+between the two stages.
+
+Ten ordered pairs cover all twelve programs, giving twenty components — the same
+component count as the version-4 subject run it is trying to predict. Query
+inputs are chosen from a fixed pool by the same public-checker soundness rule the
+subject enforces: every publicly admissible candidate must agree with the hidden
+program on the exact chain value it receives. All episodes are permanently
+excluded from every experiment.
+
+One implementation detail worth recording, surfaced by the self-test: the
+admissible set contains programs shorter than three operations whenever a hidden
+program collapses below depth three, and those can never cross a tool that
+requires exactly three. Subject families are screened to minimum depth exactly
+three so the case cannot arise there; here it arises for
+`(init, map_double, keep_even)`, the one stage-two program of depth two.
+
+**Declared validation criterion, fixed before the run.** Stage three is
+validated as an accuracy predictor if its per-component solve rate for
+`gpt-oss:20b` at low reasoning effort falls in `0.05..0.25`, bracketing the
+version-4 subject's observed `0.125` and excluding stage two's `0.583`. Liveness
+is expected at or above `0.90`, since the subject reached `1.000` at this
+setting.
+
+If the rate lands near `0.583` again, episode framing is **not** the explanation
+for stage two's over-prediction and the cause lies elsewhere — a finding that
+would invalidate the reasoning in the version-4 analysis above rather than
+confirm it. Either outcome is recorded.
+
+#### Result: not validated, and the version-4 explanation is wrong
+
+The report is
+[`gpt-oss-20b-episode-depth-low-effort-2026-08-10.json`](../qualifications/gpt-oss-20b-episode-depth-low-effort-2026-08-10.json).
+
+Stage three returned a per-component solve rate of `0.500`, outside the declared
+`0.05..0.25` band. **Stage three is not validated as an accuracy predictor**,
+and the explanation offered in the version-4 analysis — that episode framing
+caused stage two's over-prediction — is **falsified**.
+
+| Condition | Framing | Task set | Per-component |
+|---|---|---|---:|
+| Stage two, low effort | isolated | hand-picked twelve | 0.583 |
+| Stage three, low effort | **episode** | hand-picked twelve (identical) | 0.500 |
+| Version-4 subject, low effort | episode | screened and sampled families | 0.125 |
+
+Holding the tasks fixed and adding full episode framing costs `0.583 → 0.500`,
+a drop of `0.083`. Holding the framing fixed and swapping hand-picked tasks for
+the subject's own families costs `0.500 → 0.125`, a drop of `0.375`. **The task
+set dominates framing by roughly four and a half to one.** The version-4
+analysis attributed the whole gap to the smaller of the two effects.
+
+What actually differs is that the twelve gate programs were **chosen by hand**.
+Matching the subject on minimum finite-bank depth — verified earlier, eleven of
+twelve — is not sufficient, because a structural screen does not capture
+whatever makes a hand-chosen program memorable or guessable. One measurable
+symptom: the gate's programs admit more correct answers. Their admissible sets
+average `4.083` candidates across twelve tasks against the subject's `2.667`
+across thirty families, so a gate component accepts about half again as many
+distinct programs.
+
+The concrete fix for any future gate is therefore not more framing fidelity but
+a different sampling procedure: **draw gate tasks from the subject generator's
+own screened behaviour pool, using the subject's deterministic sampler on
+permanently excluded seeds, never by hand.** Hand-picked probes are biased easy
+in ways a structural screen does not detect, and this experiment now has a
+measured estimate of that bias — a factor of four on solve rate.
+
+One result did survive, and it matters. Episode success tracks the
+per-component rate raised to the component count: stage three observed `0.200`
+against `0.500² = 0.25`, and the version-4 subject observed `0.000` against
+`0.125² = 0.016`. The independent-composition model used in the version-4
+preregistration is sound; only its per-component input was wrong. Future
+preregistrations may keep the `p^arity` extrapolation and must fix how `p` is
+estimated.
+
+Liveness reached `1.000` again, as expected, and the silent-round fraction fell
+from `0.545` in stage two to `0.365` here because episodes allow more rounds.
+Liveness continues to generalise across framings and task sets; accuracy does
+not.
+
 ## Candidate verifier and records
 
 Package every task family with a deterministic generator and hidden tests owned
