@@ -12,9 +12,10 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
-import gene/[build, compiler, diagnostics, fmt, gir, package, printer, reader, repl,
-             repl_curses, logging, logging_config, system_dependency, types, vm,
-             web]
+import gene/[build, compiler, diagnostics, document_units, fmt, gir, package,
+             packed_format, printer, program_document, reader, repl,
+             repl_curses, logging, logging_config, system_dependency, types,
+             vm, web]
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
 # executable's dynamic symbol table for a dlopened AOT library to resolve.
@@ -34,7 +35,10 @@ proc usage() =
   echo "  gene runurl <https-url> [args...]  (experimental) run a remote entry module;"
   echo "                              relative imports resolve against the module's URL"
   echo "  gene parse <file.gene>  print canonical parsed forms"
-  echo "  gene fmt <file.gene>    format source through the canonical printer"
+  echo "  gene fmt <file.gene>    human-friendly format: sugar restored, comments kept"
+  echo "  gene docpack <file.gene> -o <out>  encode a reversible packed document"
+  echo "                              (docs/proposals/reversible-ai-native-program-format.md)"
+  echo "  gene docunpack <file>    decode a packed document to canonical .gene"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
   echo "  gene compile --target c <file.gene> print experimental typed_native C"
   echo "  gene build [target] [options] build a package product"
@@ -478,6 +482,55 @@ proc cmdFmt(path: string) =
     stdout.write formatSource(src, absPath)
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
+    quit(1)
+
+proc cmdDocPack(path: string, outPath: string) =
+  ## docs/proposals/reversible-ai-native-program-format.md packed format:
+  ## read `path` into a ProgramDocument (form tree + positional comments) and
+  ## write its packed binary encoding to `outPath`.
+  let src = readSourceFile(path)
+  let absPath = normalizedPath(absolutePath(path))
+  try:
+    let doc = readDocument(src, absPath)
+    let packed = encodePacked(doc)
+    writeFile(outPath, packed)
+  except ReadError as e:
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
+    quit(1)
+  except PackedError as e:
+    stderr.writeLine "Error: " & e.msg
+    quit(1)
+
+proc cmdDocUnits(path: string, outPath: string) =
+  ## docs/proposals/reversible-ai-native-program-format.md model-native
+  ## logical unit export (src/gene/document_units.nim): JSON Lines, one flat
+  ## unit per line, for a training data loader to consume directly.
+  let src = readSourceFile(path)
+  let absPath = normalizedPath(absolutePath(path))
+  try:
+    let doc = readDocument(src, absPath)
+    let units = unitsOf(doc)
+    writeFile(outPath, toJsonLines(units))
+  except ReadError as e:
+    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
+    quit(1)
+  except DocumentUnitsError as e:
+    stderr.writeLine "Error: " & e.msg
+    quit(1)
+
+proc cmdDocUnpack(path: string) =
+  ## Inverse of `gene pack`: decode a packed document and print its
+  ## canonical `.gene` projection.
+  let data =
+    try: readFile(path)
+    except IOError as e:
+      stderr.writeLine "Error: " & e.msg
+      quit(1)
+  try:
+    let doc = decodePacked(data)
+    stdout.write writeCanonical(doc)
+  except PackedError as e:
+    stderr.writeLine "Error: " & e.msg
     quit(1)
 
 proc cmdCompile(path: string) =
@@ -1452,6 +1505,21 @@ proc main() =
       stderr.writeLine "Error: 'fmt' needs a file path"
       quit(1)
     cmdFmt(paramStr(2))
+  of "docpack":
+    if paramCount() < 4 or paramStr(3) != "-o":
+      stderr.writeLine "Error: 'docpack' needs a file path and '-o <output>'"
+      quit(1)
+    cmdDocPack(paramStr(2), paramStr(4))
+  of "docunpack":
+    if paramCount() < 2:
+      stderr.writeLine "Error: 'docunpack' needs a file path"
+      quit(1)
+    cmdDocUnpack(paramStr(2))
+  of "docunits":
+    if paramCount() < 4 or paramStr(3) != "-o":
+      stderr.writeLine "Error: 'docunits' needs a file path and '-o <output>'"
+      quit(1)
+    cmdDocUnits(paramStr(2), paramStr(4))
   of "compile":
     if paramCount() < 2:
       stderr.writeLine "Error: 'compile' needs a file path"

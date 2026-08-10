@@ -12,6 +12,9 @@ tests/*
 benchmarks/bench_core
 benchmarks/bench_native_format
 
+training/corpus/
+training/checkpoints/
+
 .agents/
 
 # ── GSD baseline (auto-generated) ──

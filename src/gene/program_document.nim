@@ -77,7 +77,10 @@ type
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-proc keyStr(formIndex: int, path: DocPath, afterChild: int): string =
+proc keyStr*(formIndex: int, path: DocPath, afterChild: int): string =
+  ## Exported so other modules walking a ProgramDocument in the same
+  ## canonical order (e.g. document_units.nim) can look comments up by the
+  ## same boundary key without duplicating this convention.
   result = $formIndex
   result.add '#'
   for seg in path:
@@ -334,9 +337,9 @@ proc readDocument*(source: string, sourceName = ""): ProgramDocument =
 # writeCanonical: ProgramDocument -> .gene text
 # ---------------------------------------------------------------------------
 
-type CommentEntry = tuple[ordinal: int, placement: CommentPlacement, text: string]
+type CommentEntry* = tuple[ordinal: int, placement: CommentPlacement, text: string]
 
-proc buildCommentIndex(doc: ProgramDocument): Table[string, seq[CommentEntry]] =
+proc buildCommentIndex*(doc: ProgramDocument): Table[string, seq[CommentEntry]] =
   var byKey = initTable[string, seq[CommentEntry]]()
   for c in doc.comments:
     let key = keyStr(c.formIndex, c.containerPath, c.afterChild)
