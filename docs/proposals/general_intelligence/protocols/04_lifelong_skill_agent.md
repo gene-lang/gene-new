@@ -1362,6 +1362,40 @@ consistent with version 4 and reinforcing that this task family sits below the
 band for `gpt-oss:20b` at low effort. It is a probe, not a subject pilot, and
 carries no gate authority over any subject version.
 
+### The effort trade quantified, and what it predicts for candidates
+
+Pooling every subject-distribution run by reasoning effort, on per-attempt
+accuracy — the fraction of candidate submissions the public checker accepted:
+
+| Effort | Runs | Attempts | Accepted | Per-attempt accuracy |
+|---|---|---:|---:|---:|
+| default (= medium) | v3 initial, v3 repair | 23 | 19 | **0.826** |
+| low | v4, probe | 56 | 10 | **0.179** |
+
+Lowering reasoning effort costs a factor of `4.6` in per-attempt accuracy on the
+screened family distribution, and buys liveness from `0.200`–`0.500` up to
+`1.000`. That is the squeeze stated as a number rather than an impression, and
+it is measured on the subject's own tasks rather than on a hand-picked probe.
+
+This has a direct consequence for candidate selection. The two untried
+stage-one fallbacks, `devstral-small-2:24b` and `qwen3-coder:30b`, declare
+`tools` but **not** `thinking`, and expose no reasoning-effort setting. They
+satisfy the revised selection criterion only through its second clause, a
+smaller reasoning-token appetite, and they satisfy it maximally: a non-thinking
+model emits no deliberation at all.
+
+The measured trade therefore predicts they land at or beyond the low-effort
+extreme — reliably live and less accurate than `0.179` per attempt, failing the
+frontier the same way version 4 did rather than passing it. That is a
+prediction, not a result, and a differently pretrained model could break the
+pattern; but it should be weighed before spending 15 GB and an hour on a
+download.
+
+What the trade actually calls for is the opposite corner: a model that
+deliberates *more* per round than `gpt-oss:20b` at low effort while still
+emitting a tool call inside the round budget. Neither remaining local fallback
+is that model.
+
 ## Candidate verifier and records
 
 Package every task family with a deterministic generator and hidden tests owned
