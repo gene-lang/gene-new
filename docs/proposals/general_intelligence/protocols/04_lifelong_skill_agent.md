@@ -1220,17 +1220,41 @@ Stage three returned a per-component solve rate of `0.500`, outside the declared
 and the explanation offered in the version-4 analysis — that episode framing
 caused stage two's over-prediction — is **falsified**.
 
-| Condition | Framing | Task set | Per-component |
-|---|---|---|---:|
-| Stage two, low effort | isolated | hand-picked twelve | 0.583 |
-| Stage three, low effort | **episode** | hand-picked twelve (identical) | 0.500 |
-| Version-4 subject, low effort | episode | screened and sampled families | 0.125 |
+> **Metric correction.** The figures first published here used the harness
+> summary field `components_completed / components_total`. That rate is
+> **diluted**: an episode that fails its first component never attempts its
+> second, so the unreached slot is counted as a failure. It is not a
+> per-component solve probability, and it is not comparable between a
+> one-component instrument and a two-component one. Every comparison below now
+> uses the **first-component solve rate** — the fraction of episodes that solved
+> the component every episode actually reaches — which is undiluted and
+> comparable across all four instruments. Each report retains the per-episode
+> data needed to recompute it.
 
-Holding the tasks fixed and adding full episode framing costs `0.583 → 0.500`,
-a drop of `0.083`. Holding the framing fixed and swapping hand-picked tasks for
-the subject's own families costs `0.500 → 0.125`, a drop of `0.375`. **The task
-set dominates framing by roughly four and a half to one.** The version-4
-analysis attributed the whole gap to the smaller of the two effects.
+| Condition | Framing | Task set | First component | Diluted rate |
+|---|---|---|---:|---:|
+| Stage two, low effort | isolated | hand-picked twelve | 0.583 | 0.583 |
+| Stage three, low effort | **episode** | hand-picked twelve (identical) | **0.700** | 0.500 |
+| Version-4 subject, low effort | episode | screened and sampled families | 0.250 | 0.125 |
+| Accuracy probe, low effort | episode | screened and sampled families | 0.300 | 0.250 |
+
+Holding the tasks fixed and adding full episode framing moves the first-
+component rate `0.583 → 0.700`. **Episode framing costs nothing measurable**;
+the small rise is within noise at these sample sizes. Holding the framing fixed
+and swapping hand-picked tasks for the subject's own families moves it
+`0.700 → 0.250`. The task set is not merely the larger effect — it is the whole
+effect.
+
+The two hand-picked instruments agree with each other (`0.583`, `0.700`) and the
+two screened instruments agree with each other (`0.250`, `0.300`) across
+different seeds and task counts. The separation is between task sets, not
+between framings or samples.
+
+An earlier revision of this section reported "framing costs `0.083`, the task set
+costs `0.375`, a ratio of about 4.5 to 1". Those numbers came from the diluted
+metric and are wrong. The conclusion they supported — that framing is not the
+explanation and hand-picking is the bias — is unchanged and, on the corrected
+metric, stronger.
 
 What actually differs is that the twelve gate programs were **chosen by hand**.
 Matching the subject on minimum finite-bank depth — verified earlier, eleven of
@@ -1248,18 +1272,95 @@ permanently excluded seeds, never by hand.** Hand-picked probes are biased easy
 in ways a structural screen does not detect, and this experiment now has a
 measured estimate of that bias — a factor of four on solve rate.
 
-One result did survive, and it matters. Episode success tracks the
-per-component rate raised to the component count: stage three observed `0.200`
-against `0.500² = 0.25`, and the version-4 subject observed `0.000` against
-`0.125² = 0.016`. The independent-composition model used in the version-4
-preregistration is sound; only its per-component input was wrong. Future
-preregistrations may keep the `p^arity` extrapolation and must fix how `p` is
-estimated.
+One result did survive, in corrected form. Episode success is the product of the
+per-position rates rather than a single rate raised to the arity, because the
+positions are not identically distributed once dilution is removed:
+
+| Instrument | Component 0 | Component 1 given reached | Predicted | Observed |
+|---|---:|---:|---:|---:|
+| Stage three | 0.700 | 0.429 | 0.300 | 0.300 |
+| Version-4 subject | 0.250 | 0.000 | 0.000 | 0.000 |
+| Accuracy probe | 0.300 | 0.667 | 0.200 | 0.200 |
+
+The product model reproduces observed episode success exactly in all three. The
+`p^arity` shorthand used in the version-4 preregistration is the special case
+where every position has the same rate, and it should be replaced by the product
+of measured per-position rates. The second-position estimates rest on three to
+seven episodes and are the noisiest quantity in this protocol; they should not
+carry a gate decision on their own.
 
 Liveness reached `1.000` again, as expected, and the silent-round fraction fell
 from `0.545` in stage two to `0.365` here because episodes allow more rounds.
 Liveness continues to generalise across framings and task sets; accuracy does
 not.
+
+### The bespoke gates were the mistake
+
+Two gates were built to approximate the subject and both failed to predict it,
+each for a different reason. The honest reading is that the approximation itself
+was the error. Every property a gate would have to match — screened behaviour
+pool, deterministic sampling, demonstration packs, ordering, query inputs, chain
+values, soundness rule, tools, budgets, round formula — is already implemented,
+exactly, by the subject generator and harness.
+
+**The accuracy probe is therefore not a new instrument. It is the subject
+harness run small on dedicated permanently excluded seeds.** No bespoke task
+list can match a distribution that a deterministic generator already defines,
+and this session measured the cost of trying: a factor of four.
+
+Preregistered procedure, fixed before its first run:
+
+| Item | Value |
+|---|---|
+| Instrument | `tools/pilot_component_workflow_agent.py`, unchanged |
+| Tasks | 10 held-out compositions |
+| Composition arity | 2 |
+| Attempts, rounds, silent cap | as the subject: 2, `3 * arity + 3`, 3 |
+| Decoding | temperature `0`, seed `20260809`, context `32768`, 1,024 tokens |
+| Probe seeds | `950101` / `950102`, permanently excluded |
+| Primary measure | per-component solve rate |
+
+**Declared validation criterion.** The procedure is validated as a cheap
+predictor if its per-component rate for `gpt-oss:20b` at low reasoning effort
+falls in `0.05..0.25`, bracketing the version-4 subject's `0.125` measured on
+different seeds at twice the task count. A result outside that band means even
+the subject's own distribution does not predict itself at n=10, which would make
+every gate decision in this protocol noise-dominated and would be the most
+important finding of the sequence.
+
+Stage two is retained for liveness only, where it generalised correctly and
+costs a third as much. Stage three is retained as the measurement that
+identified hand-picking bias. Neither is retained as an accuracy predictor.
+
+#### Probe result: the subject's distribution predicts itself
+
+The report is
+[`gpt-oss-20b-accuracy-probe-low-effort-2026-08-10.json`](../qualifications/gpt-oss-20b-accuracy-probe-low-effort-2026-08-10.json).
+
+| Measure | Version 4 (20 tasks) | Probe (10 tasks) |
+|---|---:|---:|
+| Seeds | `930101`/`930102` | `950101`/`950102` |
+| Liveness | 1.000 | 0.900 |
+| First-component solve rate | 0.250 | 0.300 |
+| Component 1 given reached | 0.000 (0 of 5) | 0.667 (2 of 3) |
+| Episode success | 0.000 | 0.200 |
+| Declared band metric | 0.125 | **0.250** |
+
+The declared metric landed at `0.250`, inside the `0.05..0.25` band at its upper
+edge, so **the procedure is validated** — narrowly on the metric as declared, and
+comfortably on the corrected first-component rate, where `0.300` against `0.250`
+is close agreement across different seeds and a halved task count.
+
+Two cautions belong with that verdict. The validation is at the band edge, and
+the second-position rates differ wildly between the two runs — `0` of 5 against
+`2` of 3 — which is the same small-sample fragility flagged above. A ten-task
+probe estimates the first-component rate usefully and the second-position rate
+barely at all.
+
+The probe's own difficulty gate reads `0.200`, below the `0.25` frontier floor,
+consistent with version 4 and reinforcing that this task family sits below the
+band for `gpt-oss:20b` at low effort. It is a probe, not a subject pilot, and
+carries no gate authority over any subject version.
 
 ## Candidate verifier and records
 

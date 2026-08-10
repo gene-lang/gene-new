@@ -293,19 +293,21 @@ the model exposes two effective settings rather than three and no interior
 exists. This task family sits outside `gpt-oss:20b`'s frontier at every
 available effort, which is a reportable result about the local-model constraint
 rather than grounds for a fifth subject rewrite. A stage-three gate was then built to test why stage two over-predicted subject
-accuracy roughly 4.7-fold, holding its twelve programs and demonstrations
-identical and varying only the framing. It returned `0.500` per component
-against a `0.05..0.25` band declared before the run, so it is not validated and
-the episode-framing hypothesis is falsified: framing costs `0.583 → 0.500` while
-swapping hand-picked programs for the subject's screened families costs
-`0.500 → 0.125`, a task-set effect about 4.5 times larger. Matching a subject on
-a structural screen is not enough — hand-picked probes are biased easy by
-roughly a factor of four, and a gate must instead sample from the subject
-generator's own screened pool on excluded seeds. Episode success did track the
-per-component rate raised to the component count in both gate and subject, so
-the independent-composition extrapolation is sound and only its input was wrong.
-The next steps are that resampled gate and a candidate model selected for
-reasoning-effort control.
+accuracy — by a factor of about 2.3 on the undiluted first-component solve rate
+— holding its twelve programs and demonstrations identical and varying only the
+framing. It fell outside the band declared before
+the run, so it is not validated and the episode-framing hypothesis is falsified.
+On the undiluted first-component solve rate, episode framing costs nothing
+(`0.583` isolated versus `0.700` embedded, both hand-picked) while swapping to
+the subject's screened families costs `0.700 → 0.250`: the task set is the whole
+effect. Matching a subject on a structural screen is not enough, because
+hand-picked probes are biased easy in ways the screen does not detect. The
+conclusion is that bespoke gates were the error — the accuracy probe is simply
+the subject harness run small on dedicated excluded seeds, and it validates,
+returning `0.300` against version 4's `0.250` on different seeds at half the
+task count. Episode success is the product of per-position rates and reproduces
+observed success exactly in all three episode instruments. The next step is a
+candidate model selected for reasoning-effort control.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment
