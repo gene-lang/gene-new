@@ -355,6 +355,17 @@ Two findings worth carrying:
 
 Experiment 4 now faces a reasoning-effort squeeze rather than a subject problem:
 at default effort the model is accurate but acts on a fifth to a half of rounds;
-at low effort it always acts but solves an eighth of components. `medium` is the
-one untested point and would require a version-5 preregistration with fresh
-seeds and a declared prediction.
+at low effort it always acts but solves an eighth of components.
+
+A characterisation run settled the remaining question. `think: "medium"` returns
+the default-effort numbers to every recorded digit — every per-task outcome,
+round count, silent count, attempt count, and per-round token count is identical,
+both runs generating exactly 30,352 tokens. The model exposes **two** effective
+settings, not three, so there is no interior to the trade-off and no version-5
+pilot worth running. This task family sits outside `gpt-oss:20b`'s frontier at
+every available effort.
+
+The next steps are a different candidate model chosen for reasoning-effort
+control, and a stage-three gate that measures a component embedded in a full
+episode rather than in isolation. Do not rewrite the subject: four versions have
+been rejected and the last two rejections were about the model, not the task.

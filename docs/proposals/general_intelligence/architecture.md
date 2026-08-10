@@ -286,8 +286,16 @@ inside a full episode. Separately, these pilots proved not to be exactly
 reproducible: a fixed Ollama seed is not bit-reproducible across sessions, so
 near-threshold gate decisions must not be treated as exact. Experiment 4 now
 faces a reasoning-effort squeeze rather than a subject problem — accurate but
-silent at default effort, live but inaccurate at low effort — with `medium` the
-single untested point, reachable only through a fresh version-5 preregistration.
+silent at default effort, live but inaccurate at low effort. A characterisation
+run closed that axis: `medium` effort is behaviourally identical to the default,
+reproducing every per-task outcome and both runs' 30,352 generated tokens, so
+the model exposes two effective settings rather than three and no interior
+exists. This task family sits outside `gpt-oss:20b`'s frontier at every
+available effort, which is a reportable result about the local-model constraint
+rather than grounds for a fifth subject rewrite. The next steps are a candidate
+model selected for reasoning-effort control and a stage-three gate that measures
+a component embedded in a full episode, since stage two over-predicted subject
+accuracy roughly 4.7-fold by isolating it.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment

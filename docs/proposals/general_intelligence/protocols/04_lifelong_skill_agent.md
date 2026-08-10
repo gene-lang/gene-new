@@ -1102,6 +1102,72 @@ conclusion is that this task family sits outside `gpt-oss:20b`'s frontier at
 every available effort, which is a reportable result about the local-model
 constraint rather than a reason to keep rewriting the subject.
 
+#### Recorded deviation: a characterisation run at medium effort
+
+The bounded search rule capped the effort search at two settings, `low` then
+`medium` only if `low` failed liveness. `low` passed, so that rule closed the
+search. This records why one further stage-two run is nevertheless permitted,
+before it is run.
+
+The rule's purpose was to stop a search for a *passing configuration* — trying
+levels until one qualified would be fishing. That purpose is spent: `low` is
+already qualified, and this run **cannot qualify anything**. The qualified
+configuration stays `low` regardless of the outcome, and no subject pilot may be
+run at medium effort on the strength of this measurement alone; that would still
+require a version-5 preregistration of its own.
+
+The purpose here is different and is fixed in advance: complete a three-point
+curve of reasoning effort against liveness and per-component accuracy. Two
+points exist — default at `0.667` liveness and `0.667` solve, low at `1.000` and
+`0.583` — and the subject result showed the model is accurate-but-silent at one
+end and live-but-inaccurate at the other. The middle point determines whether
+that trade-off has a usable interior or is monotone, and it costs about ten
+minutes against roughly twenty-five for a subject pilot.
+
+Declared prediction, written before the run: liveness between `0.75` and
+`1.000`, and solve rate between `0.583` and `0.667`. If medium does not strictly
+dominate low on both axes, the trade-off has no usable interior for this model
+and a version-5 subject pilot is not worth running.
+
+##### Result: medium is the default, so there is no interior
+
+The declared prediction is falsified on liveness. The report is
+[`gpt-oss-20b-inference-depth-medium-effort-2026-08-10.json`](../qualifications/gpt-oss-20b-inference-depth-medium-effort-2026-08-10.json).
+
+Medium returned liveness `0.667`, solve `0.667`, and mean tokens per round
+`948.5` — the default-effort numbers to every recorded digit. Comparing the two
+reports task by task, **every** outcome, round count, silent-round count,
+attempt count, and per-round generated-token count is identical, and both runs
+generated exactly 30,352 tokens. Passing `think: "medium"` is behaviourally
+indistinguishable from omitting the field.
+
+`gpt-oss:20b` therefore exposes **two** effective reasoning-effort settings for
+this harness, not three. The curve has no interior to explore:
+
+| Effort | Gate liveness | Gate solve | Subject liveness | Subject per-component |
+|---|---:|---:|---:|---:|
+| medium (= default) | 0.667 | 0.667 | 0.200 / 0.500 | 19 of 23 attempts |
+| low | 1.000 | 0.583 | 1.000 | 0.125 |
+
+**A version-5 subject pilot at medium effort is therefore pointless**: it would
+reproduce the default-effort condition that version 3 already ran twice and that
+failed the liveness gate both times. No version 5 will be preregistered on this
+basis, and the effort axis is closed.
+
+The honest conclusion is the one the version-4 analysis anticipated: this task
+family sits outside `gpt-oss:20b`'s frontier at every available effort setting.
+That is a reportable result about the local-model constraint, not a reason to
+rewrite the subject a fifth time.
+
+This run also sharpens the reproducibility finding above. Two independent gate
+runs reproduced each other exactly, while the subject's aborted and completed
+runs did not. The gate uses short conversations of at most five rounds; the
+subject accumulates up to nine rounds of long transcripts. Nondeterminism here
+grows with context length and round count, which is consistent with batching and
+KV-cache reduction order rather than with sampling. Short deterministic probes
+are reproducible; long episodes are not, and only the latter carry the gate
+decisions.
+
 ## Candidate verifier and records
 
 Package every task family with a deterministic generator and hidden tests owned
