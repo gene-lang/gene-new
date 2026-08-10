@@ -281,6 +281,15 @@ suite "cli — gene run":
     check "noncanonical_advances=7 budget_checks=6" in checked.output
     check "soundness_verified=true exact_crosscheck=true" in checked.output
 
+  test "inference-depth qualification stage is exact and public-only":
+    let checked = execCmdEx(
+      "python3 tools/qualify_inference_depth.py --self-test")
+    check checked.exitCode == 0
+    check "tasks=12 primitives_covered=12 max_admissible=8" in checked.output
+    check "round_ceiling=5 attempts=2" in checked.output
+    check "minimum_liveness=0.9 minimum_solve=0.5 public_hidden_fields=0" in
+      checked.output
+
   test "main receives only explicitly granted named capabilities":
     let grantedMain = writeCliProgram("granted_main.gene",
       "(fn main [args, ^config : Capability] " &

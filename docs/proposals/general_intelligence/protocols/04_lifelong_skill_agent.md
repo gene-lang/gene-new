@@ -699,6 +699,110 @@ candidate was eligible, the two fallbacks were not downloaded or evaluated.
 These public mock-tool results qualify the model for verifier-pilot work; they
 are not evidence that it can solve the later lifelong-task distribution.
 
+### Revised gate: the inference-depth stage
+
+The 2026-08-09 gate is retained as history, but it is now known to be
+insufficient. It passed `gpt-oss:20b` at roughly 62 generated tokens per call,
+and the same model then fell silent on 79 to 80 percent of rounds across two
+version-3 runs. The gate measured tool-call mechanics; it never measured whether
+a candidate can finish a round's inference inside the round's generation budget.
+
+Every future candidate must therefore pass a second stage before it may be used
+in any subject pilot. This stage is preregistered here, before it is run against
+any model, including the incumbent.
+
+The stage isolates exactly one version-3 round. Each task shows three
+input/output demonstrations of a hidden three-operation program over the same
+closed 12-primitive integer-list catalog, and the model has one tool:
+
+```text
+submit_program(operations: [string, string, string])
+```
+
+The host checks a candidate against only those three public demonstrations, so
+the stage inherits version 3's public-only checker and adds no hidden oracle.
+Twelve tasks are fixed in the harness, cover all 12 primitives, and are
+permanently excluded from every experiment. They are not drawn from any subject
+seed and carry no curriculum, memory, or promotion.
+
+Frozen configuration and thresholds:
+
+| Item | Value |
+|---|---|
+| Tasks | 12, fixed in the harness |
+| Attempts per task | 2 |
+| Round ceiling | 5 |
+| Silent-round cap | 3 |
+| Decoding | temperature `0`, seed `20260809`, context `32768`, 1,024 generated tokens per round |
+| **Liveness threshold** | at least 0.90 of episodes emit a schema-conformant call |
+| **Solve threshold** | at least 0.50 of tasks accepted |
+
+Liveness is the gate that the old one lacked; the solve threshold keeps a model
+that merely emits syntactically valid noise from passing. The report must record
+generated tokens **per round** — mean, p95, and maximum — plus the silent-round
+fraction, not only totals, because the totals were exactly what hid this failure
+last time.
+
+A candidate that fails this stage is not eligible for subject pilots regardless
+of its stage-one result. Passing it is a necessary condition, not a prediction
+that the candidate will land inside a subject's frontier band.
+
+The incumbent `gpt-oss:20b` is expected to fail this stage. Running it first is
+the point: a gate derived from a failure should be shown to reject the model
+that produced the failure, otherwise it is untested. That run is recorded as an
+ordinary dated report and does not retroactively change the 2026-08-09
+qualification record.
+
+#### Incumbent result: the stage rejects `gpt-oss:20b`
+
+Run on 2026-08-10 through
+[`tools/qualify_inference_depth.py`](../../../../tools/qualify_inference_depth.py);
+the immutable report is
+[`gpt-oss-20b-inference-depth-2026-08-10.json`](../qualifications/gpt-oss-20b-inference-depth-2026-08-10.json).
+
+| Measure | Value |
+|---|---:|
+| Liveness rate (threshold 0.90) | **0.667** (8 / 12) |
+| Solve rate (threshold 0.50) | 0.667 (8 / 12) |
+| Rounds | 32 |
+| Silent rounds | 24 (0.75) |
+| Tool calls / schema-conformant / accepted | 8 / 8 / 8 |
+| Attempts used by a solved task | 1, every time |
+| Generated tokens per round, mean / p95 / max | 948.5 / 1,024 / 1,024 |
+| Total wall seconds | 605.14 |
+
+The stage fails the model on liveness while passing it on solve rate, which is
+exactly the discrimination the old gate could not make. Four findings:
+
+1. **Per-round inference depth is the dominant cause of the version-3 failure.**
+   Stripping the round down to a single component, with no ordering, no chain
+   value, and a much smaller prompt, raised liveness from `0.200` on the full
+   subject at the same 1,024-token budget to `0.667` here. Prompt size and
+   component selection were contributing factors, not the mechanism.
+2. **Even the minimal round is outside the model's envelope.** `0.667` is still
+   far below `0.90`. Inverting one three-operation program from three examples
+   is not reliably completable in 1,024 generated tokens by this model, and mean
+   tokens per round of 948.5 with a p95 and maximum both pinned at 1,024 show it
+   saturating the allowance rather than approaching it.
+3. **Accuracy conditional on acting is essentially perfect.** All 8 tool calls
+   were schema-conformant, all 8 were accepted, and every one was accepted on
+   its first attempt. The model can do this task; it cannot reliably finish
+   thinking about it in budget. Failure is bimodal — a task either resolves with
+   a correct first attempt or produces zero attempts across four silent rounds
+   — and the four silent tasks do not have unusually small admissible sets, so
+   they are not the identifiably harder ones.
+4. **Silent-round continuation is worth keeping.** Five of the eight successes
+   arrived only after at least one silent round, one of them after three.
+   Version 2's rule of ending an episode at the first silent round would have
+   scored `0.25` liveness on this same stage instead of `0.667`.
+
+The stage also costs 605 seconds against the subject pilot's 1,771 and 3,685, so
+it is a cheap prerequisite rather than a second experiment.
+
+`gpt-oss:20b` is therefore ineligible for further subject pilots. It remains the
+qualified model for the verifier-boundary and adapter work already recorded
+above, which never depended on deep per-round inference.
+
 ## Candidate verifier and records
 
 Package every task family with a deterministic generator and hidden tests owned

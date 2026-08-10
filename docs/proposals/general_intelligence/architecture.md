@@ -256,7 +256,17 @@ the subject design. Three subject versions have now failed for three different
 reasons, and the accumulated lesson for this experiment is that model
 qualification must include a task whose per-round inference cost matches the
 intended subject; measuring tool-call mechanics on shallow tasks did not predict
-this failure.
+this failure. That gate now exists and has been tested against the model that
+produced the failure: a stage-two stage isolating one version-3 round rejects
+`gpt-oss:20b` on liveness at `0.667` while passing it on solve rate, and shows
+per-round inference depth to be the mechanism — isolating a single component
+raises liveness from `0.200` to `0.667`, but not to the required `0.90`, with
+generated tokens per round pinned at the allowance. Every call the model does
+emit is correct on its first attempt, so the binding constraint is finishing in
+budget rather than capability. The incumbent is ineligible for further subject
+pilots; it remains qualified for the verifier-boundary and adapter work, which
+never depended on deep per-round inference. Selecting a next candidate model is
+now the gating task for experiment 4, ahead of any further subject design.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment

@@ -285,3 +285,28 @@ The generator, its soundness rule, and its public/hidden boundary remain sound
 and reusable. The interaction is not executable by `gpt-oss:20b` at this
 envelope. Both reports are retained under
 `docs/proposals/general_intelligence/qualifications/`.
+
+`tools/qualify_inference_depth.py` is the stage-two model-qualification gate
+that failure produced. The 2026-08-09 stage-one gate measured tool-call
+mechanics at roughly 62 generated tokens per call and did not predict any of
+this. Stage two isolates exactly one version-3 round: twelve fixed,
+permanently excluded tasks, each showing three demonstrations of a hidden
+three-operation program, one `submit_program` tool, two attempts, and a
+public-only consistency check. It gates on liveness at `0.90` and solve rate at
+`0.50`, and it records generated tokens **per round** rather than only totals.
+
+```bash
+python3 tools/qualify_inference_depth.py --self-test
+```
+
+Run against the incumbent on 2026-08-10 it fails the model on liveness
+(`0.667`) while passing it on solve rate (`0.667`) — the discrimination the
+first gate could not make. Isolating one component raised liveness from `0.200`
+on the full subject to `0.667`, so per-round inference depth is the mechanism
+rather than prompt size; but `0.667` is still far under `0.90`, and mean tokens
+per round of 948.5 with p95 and maximum both at 1,024 show the model saturating
+the allowance. Every call it did emit was schema-conformant and accepted on the
+first attempt, so the constraint is finishing in budget, not capability. Five of
+the eight successes arrived only after at least one silent round, which is
+direct evidence for continuing past a silent round instead of ending the
+episode. Any candidate model must pass this stage before a subject pilot.
