@@ -1,8 +1,47 @@
 # Reversible AI-Native Gene Program Format
 
-Status: exploration, dated 2026-08-10. Non-textual program modality for
-training models, with a durable encoding that loads faster than `.gene` and
-translates back to canonical `.gene`.
+Status: durable format v0 implemented and passing its provisional gates
+(2026-08-10); model-training track (below, Steps 6-9 and the appendix) not
+started. Non-textual program modality for training models, with a durable
+encoding that loads faster than `.gene` and translates back to canonical
+`.gene`.
+
+**Durable format v0** (`src/gene/program_document.nim`,
+`src/gene/packed_format.nim`, `tests/test_program_document.nim`,
+`tests/test_packed_format.nim`, `benchmarks/bench_native_format.nim`, run via
+`nimble native_format_perf`) covers Steps 1-4 of the sequence below: a
+logical document (form tree plus a boundary-keyed positional comment
+overlay), a canonical `.gene` writer, and a framed/limited/fail-closed packed
+codec. Value coverage is nil, void, bool, int (int64 range), float, string,
+bytes, char, symbol, node, list, map, and hash-map; regex, range,
+date/time/datetime/timezone/duration, and bigint-overflow ints are cleanly
+rejected at encode time (`PackedUnsupportedError`), not silently mishandled,
+pending a v1 decision on their wire shape. Comment placement is fully
+structural for node/list/map/hash-map and falls back to a coarser
+whole-form anchor (never a silent drop) for quasiquote/unquote/interpolation
+sugar and any other shape this module doesn't finely resolve.
+
+Verified over every `.gene` file in `examples/` and `tests/` (199 files):
+zero crashes, zero dropped comment bytes, and full round-trip/idempotence/
+semantic-equivalence on all but 28 files, whose gap is a single fully
+diagnosed, pre-existing bug in Gene's own reader/printer, independent of
+this module (reproduces with plain `reader.nim`/`printer.nim`, nothing
+routed through this format): a glued `~word` path segment (e.g.
+`obj/~method`) is glued into one symbol only during slash-path lexing, and
+splits into two tokens when the same spelling is reread as an ordinary
+space-separated node body -- affecting `gene parse`'s existing canonical
+printer too, not introduced here. Not yet fixed; tracked as a follow-up, not
+blocking this proposal.
+
+The Step-3 load-speed benchmark passed on a provisional corpus (this repo's
+own `.gene` files, not yet the full committed manifest with generated
+fixtures, comment-density stratification, and a dependency-graph class that
+Step 3/"Benchmark corpus and calculation" specifies): a 3.6x+ overall
+geometric-mean speedup for `decodePacked` over `readAll`, every size class
+comfortably above both the 0.95x per-class floor and the 2x overall bar.
+Because the full manifest-gated corpus and fuzz-testing pass are still
+open, this is "v0 implemented and passing its provisional gates," not yet
+the Step-5 "frozen durable format version 1."
 
 ## Idea and priority
 
