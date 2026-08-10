@@ -799,9 +799,147 @@ exactly the discrimination the old gate could not make. Four findings:
 The stage also costs 605 seconds against the subject pilot's 1,771 and 3,685, so
 it is a cheap prerequisite rather than a second experiment.
 
-`gpt-oss:20b` is therefore ineligible for further subject pilots. It remains the
-qualified model for the verifier-boundary and adapter work already recorded
-above, which never depended on deep per-round inference.
+`gpt-oss:20b` is therefore ineligible for further subject pilots **at default
+reasoning effort**. It remains the qualified model for the verifier-boundary and
+adapter work already recorded above, which never depended on deep per-round
+inference.
+
+#### Recorded deviation: select on reasoning effort, not artifact size
+
+The stage-one candidate order is "ascending advertised local artifact size,
+first eligible wins". That rule is hereby set aside for the next candidate, and
+this is the written justification the protocol requires before deviating.
+
+The rule was written before the failure mode was known. Size was a proxy for
+resource fit, and it is uninformative about the property that actually blocked
+two subject versions: how many tokens a candidate spends reasoning before it
+acts. `gpt-oss:20b` failed on that property at both 1,024 and 2,048 tokens per
+round, and its reasoning expanded to fill each budget, so ordering the next
+candidates by size would be selecting on a variable known to be irrelevant to
+the observed failure.
+
+The replacement selection criterion is **explicit reasoning-effort control or a
+demonstrably smaller reasoning-token appetite**, evaluated against the same
+stage-one eligibility limits.
+
+Applying that criterion changes the immediate answer. `gpt-oss:20b` reports
+capabilities `completion`, `tools`, and `thinking`, and its Ollama template
+honours a reasoning level, emitting `Reasoning: <level>` into the harmony system
+message. The incumbent already satisfies the new criterion, so the next
+candidate requires no download and no removal of existing model blobs. Testing
+it is also strictly cheaper than acquiring a new artifact, and a negative result
+there is more informative than a positive result on an unrelated model, because
+it isolates reasoning effort while holding weights, tokenizer, template, and
+adapter fixed.
+
+A reduced reasoning effort produces a **new qualified configuration**, not a
+re-interpretation of the existing record. The 2026-08-09 stage-one result and
+the 2026-08-10 stage-two result both stand as measurements of the default-effort
+configuration and are not amended.
+
+Bounded search rule, fixed before the first reduced-effort run: **at most two
+reasoning-effort settings may be tried** — `low` first, and `medium` only if
+`low` fails the liveness threshold. Each run is recorded immutably whatever its
+outcome. If neither passes stage two, `gpt-oss:20b` is ineligible in every
+configuration and candidate acquisition resumes under the new selection
+criterion. Trying further settings to find a passing one would be fishing for a
+configuration rather than measuring the model.
+
+A configuration that passes stage two must also pass stage one at the same
+reasoning effort before it may be used in a subject pilot; stage one was
+measured at default effort only.
+
+Harness provenance: the 2026-08-10 baseline used
+`tools/qualify_inference_depth.py` at digest
+`dee06039af379bb38759c3dea3b26a693fe5ac350da1054ffc00bc4f82024432`, the file as
+committed in `2e01a5a`. The harness was then extended with a reasoning-effort
+flag, so later runs carry a different digest. Every report records the digest of
+the harness that produced it, which is what keeps each measurement reproducible
+against its own source. Both qualification harnesses omit the `think` field
+entirely at default effort, so a default-effort request stays byte-identical to
+the run it reproduces.
+
+#### Low reasoning effort passes stage two
+
+The first of the two permitted settings passed, so by the bounded search rule
+`medium` was not run. The immutable report is
+[`gpt-oss-20b-inference-depth-low-effort-2026-08-10.json`](../qualifications/gpt-oss-20b-inference-depth-low-effort-2026-08-10.json).
+
+| Measure | Default effort | Low effort |
+|---|---:|---:|
+| Liveness (threshold 0.90) | 0.667 | **1.000** |
+| Solve rate (threshold 0.50) | 0.667 | 0.583 |
+| Stage verdict | fail | **pass** |
+| Rounds | 32 | 33 |
+| Silent-round fraction | 0.750 | 0.545 |
+| Tokens per round, mean | 948.5 | 708.7 |
+| Tool calls / conformant / accepted | 8 / 8 / 8 | 15 / 15 / 7 |
+| Tasks with zero attempts | 4 | **0** |
+| Wall seconds | 605.14 | 461.55 |
+
+Every episode acted. The reasoning-effort control does exactly what the failure
+analysis predicted it would, and nothing was downloaded or deleted to find it.
+
+The trade is real and must be stated plainly: low effort converts "never acts"
+into "acts, sometimes wrong". No task produced zero attempts, but per-attempt
+accuracy fell from 8 of 8 to 7 of 15, and three tasks exhausted both attempts
+rather than falling silent. Task-level solve rate moved only from `0.667` to
+`0.583` because the tasks that previously produced nothing now produce answers,
+some of them correct. Both settings clear the solve threshold; only low effort
+clears liveness.
+
+Note also that the p95 and maximum tokens per round remain pinned at 1,024 even
+at low effort. The mean fell by 25 percent, but the model still saturates the
+allowance on its hardest rounds. Low effort shortens typical reasoning; it does
+not impose a ceiling.
+
+##### A legitimate input to a future preregistration
+
+A per-component solve rate of `0.583` implies roughly `0.583³ ≈ 0.20` for a
+three-component task and `0.583² ≈ 0.34` for a two-component task, against the
+`0.25..0.75` frontier band. That is an extrapolation from a twelve-task gate,
+not a result, and the component counts and attempt budgets only approximately
+match a subject episode.
+
+It is nevertheless a legitimate input to a future preregistration, because it
+comes from a permanently excluded qualification task set rather than from
+subject data, and because declaring a starting arity in advance from an
+independent measurement is exactly what preregistration is for. A version-4
+preregistration that starts at arity two on this basis is disciplined; revising
+arity after seeing subject results is not, and remains limited to the single
+declared revision.
+
+#### Low reasoning effort also passes stage one
+
+The protocol requires a stage-two-passing configuration to clear stage one at
+the same reasoning effort, because the 2026-08-09 stage-one record measured
+default effort only. It does. The immutable report is
+[`gpt-oss-20b-low-effort-stage-one-2026-08-10.json`](../qualifications/gpt-oss-20b-low-effort-stage-one-2026-08-10.json).
+
+| Stage-one measure | Requirement | Default effort | Low effort |
+|---|---|---:|---:|
+| Accepted artifacts | ≥ 12 of 20 | 20 | 19 |
+| Typed-call conformance | ≥ 0.95 | 1.000 | 0.986 |
+| Context-limit failures | 0 | 0 | 0 |
+| Generated tokens | ≤ 40,000 | 4,308 | 3,088 |
+| Per-task p95 wall seconds | ≤ 180 | 11.44 | 5.63 |
+| Total wall seconds | ≤ 3,600 | 114.60 | 83.52 |
+| Loaded allocation bytes | ≤ 36 GiB | 12,757,436,988 | 12,757,436,988 |
+| Verdict | — | eligible | **eligible** |
+
+One task regressed, `q11`, an error-recovery case, and one typed call of 71 was
+non-conformant. The same mild accuracy cost appears here as in stage two, and
+the configuration still clears every stage-one threshold with margin. Low effort
+is also strictly faster and cheaper on both stages.
+
+**`gpt-oss:20b` at low reasoning effort is therefore a qualified configuration
+for subject pilots.** The default-effort configuration is not, and the
+2026-08-09 and 2026-08-10 default-effort records stand unamended. This unblocks
+a version-4 subject, which is a new experimental version: the version-3
+interaction, generator, soundness rule, and public/hidden boundary may be reused
+unchanged — none of them was what failed — but it requires fresh excluded seeds
+and its own preregistration written before model exposure. Version 3 itself is
+rejected and may not be re-run; its one permitted repair was used.
 
 ## Candidate verifier and records
 

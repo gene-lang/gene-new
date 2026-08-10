@@ -261,7 +261,38 @@ def consistent(task: dict[str, Any], operations: list[str]) -> bool:
     )
 
 
-def run_task(model: str, task: dict[str, Any], num_predict: int) -> dict[str, Any]:
+def chat_payload(
+    model: str,
+    messages: list[dict[str, Any]],
+    num_predict: int,
+    think: str | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "tools": TOOLS,
+        "stream": False,
+        "keep_alive": "10m",
+        "options": {
+            "temperature": 0,
+            "seed": 20260809,
+            "num_ctx": 32768,
+            "num_predict": num_predict,
+        },
+    }
+    # Reasoning-effort control. Omitted entirely at default effort so the
+    # baseline request stays byte-identical to the 2026-08-10 run.
+    if think is not None:
+        payload["think"] = think
+    return payload
+
+
+def run_task(
+    model: str,
+    task: dict[str, Any],
+    num_predict: int,
+    think: str | None = None,
+) -> dict[str, Any]:
     user_message = canonical_json(public_projection(task))
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -281,20 +312,7 @@ def run_task(model: str, task: dict[str, Any], num_predict: int) -> dict[str, An
     finished = False
     for rounds in range(1, ROUND_CEILING + 1):
         response = post_json(
-            "/api/chat",
-            {
-                "model": model,
-                "messages": messages,
-                "tools": TOOLS,
-                "stream": False,
-                "keep_alive": "10m",
-                "options": {
-                    "temperature": 0,
-                    "seed": 20260809,
-                    "num_ctx": 32768,
-                    "num_predict": num_predict,
-                },
-            },
+            "/api/chat", chat_payload(model, messages, num_predict, think)
         )
         prompt_tokens += int(response.get("prompt_eval_count", 0))
         emitted = int(response.get("eval_count", 0))
@@ -432,6 +450,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="gpt-oss:20b")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--num-predict", type=int, default=NUM_PREDICT)
+    # The bounded search rule permits low first, then medium only if low fails
+    # liveness. Omitting the flag reproduces the default-effort baseline.
+    parser.add_argument("--think", choices=["low", "medium"], default=None)
     return parser.parse_args()
 
 
@@ -447,7 +468,7 @@ def main() -> int:
     started = time.monotonic()
     outcomes = []
     for index, task in enumerate(tasks):
-        outcome = run_task(args.model, task, args.num_predict)
+        outcome = run_task(args.model, task, args.num_predict, args.think)
         outcomes.append(outcome)
         print(
             f"task={index + 1}/{len(tasks)} "
@@ -498,6 +519,7 @@ def main() -> int:
             "seed": 20260809,
             "num_ctx": 32768,
             "num_predict": args.num_predict,
+            "reasoning_effort": args.think or "default",
         },
         "gate": {
             "minimum_liveness_rate": MINIMUM_LIVENESS_RATE,

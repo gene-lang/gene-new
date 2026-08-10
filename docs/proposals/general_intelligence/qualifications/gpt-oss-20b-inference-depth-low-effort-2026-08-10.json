@@ -1,0 +1,284 @@
+{
+  "date_utc": "2026-08-10T02:10:50Z",
+  "decoding": {
+    "num_ctx": 32768,
+    "num_predict": 1024,
+    "reasoning_effort": "low",
+    "seed": 20260809,
+    "temperature": 0
+  },
+  "gate": {
+    "liveness_passed": true,
+    "liveness_rate": 1.0,
+    "minimum_liveness_rate": 0.9,
+    "minimum_solve_rate": 0.5,
+    "passed": true,
+    "solve_passed": true,
+    "solve_rate": 0.5833333333333334
+  },
+  "harness_sha256": "d9df46ca9c51326ca0a170e22dd22d85418b6538dd397a5d881a72b638a884d2",
+  "model": {
+    "capabilities": [
+      "completion",
+      "tools",
+      "thinking"
+    ],
+    "loaded_size_bytes": 12757436988,
+    "loaded_vram_bytes": 12757436988,
+    "manifest_digest": "17052f91a42e97930aa6e28a6c6c06a983e6a58dbb00434885a0cf5313e376f7",
+    "name": "gpt-oss:20b"
+  },
+  "outcomes": [
+    {
+      "accepted": true,
+      "admissible_candidates": 6,
+      "attempts": 1,
+      "end_reason": "accepted",
+      "generated_tokens": 321,
+      "generated_tokens_per_round": [
+        321
+      ],
+      "id": "depth_00",
+      "prompt_tokens": 430,
+      "rounds": 1,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 0,
+      "tool_calls": 1,
+      "wall_seconds": 15.655528666917235
+    },
+    {
+      "accepted": true,
+      "admissible_candidates": 8,
+      "attempts": 1,
+      "end_reason": "accepted",
+      "generated_tokens": 1440,
+      "generated_tokens_per_round": [
+        1024,
+        416
+      ],
+      "id": "depth_01",
+      "prompt_tokens": 893,
+      "rounds": 2,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 1,
+      "tool_calls": 1,
+      "wall_seconds": 27.633527416037396
+    },
+    {
+      "accepted": true,
+      "admissible_candidates": 3,
+      "attempts": 1,
+      "end_reason": "accepted",
+      "generated_tokens": 706,
+      "generated_tokens_per_round": [
+        706
+      ],
+      "id": "depth_02",
+      "prompt_tokens": 465,
+      "rounds": 1,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 0,
+      "tool_calls": 1,
+      "wall_seconds": 13.551944833947346
+    },
+    {
+      "accepted": false,
+      "admissible_candidates": 3,
+      "attempts": 2,
+      "end_reason": "attempts_exhausted",
+      "generated_tokens": 992,
+      "generated_tokens_per_round": [
+        941,
+        24,
+        27
+      ],
+      "id": "depth_03",
+      "prompt_tokens": 2353,
+      "rounds": 3,
+      "schema_conformant_calls": 2,
+      "silent_rounds": 1,
+      "tool_calls": 2,
+      "wall_seconds": 19.71793824993074
+    },
+    {
+      "accepted": false,
+      "admissible_candidates": 3,
+      "attempts": 1,
+      "end_reason": "silent_round_limit",
+      "generated_tokens": 3624,
+      "generated_tokens_per_round": [
+        1024,
+        1024,
+        1024,
+        528,
+        24
+      ],
+      "id": "depth_04",
+      "prompt_tokens": 3031,
+      "rounds": 5,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 4,
+      "tool_calls": 1,
+      "wall_seconds": 70.10816991701722
+    },
+    {
+      "accepted": true,
+      "admissible_candidates": 3,
+      "attempts": 1,
+      "end_reason": "accepted",
+      "generated_tokens": 3072,
+      "generated_tokens_per_round": [
+        1024,
+        1024,
+        1024
+      ],
+      "id": "depth_05",
+      "prompt_tokens": 1476,
+      "rounds": 3,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 2,
+      "tool_calls": 1,
+      "wall_seconds": 58.98600458400324
+    },
+    {
+      "accepted": true,
+      "admissible_candidates": 3,
+      "attempts": 1,
+      "end_reason": "accepted",
+      "generated_tokens": 611,
+      "generated_tokens_per_round": [
+        611
+      ],
+      "id": "depth_06",
+      "prompt_tokens": 420,
+      "rounds": 1,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 0,
+      "tool_calls": 1,
+      "wall_seconds": 11.762824583100155
+    },
+    {
+      "accepted": false,
+      "admissible_candidates": 3,
+      "attempts": 1,
+      "end_reason": "silent_round_limit",
+      "generated_tokens": 4078,
+      "generated_tokens_per_round": [
+        1024,
+        1024,
+        982,
+        24,
+        1024
+      ],
+      "id": "depth_07",
+      "prompt_tokens": 3421,
+      "rounds": 5,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 4,
+      "tool_calls": 1,
+      "wall_seconds": 78.50374899990857
+    },
+    {
+      "accepted": true,
+      "admissible_candidates": 6,
+      "attempts": 1,
+      "end_reason": "accepted",
+      "generated_tokens": 1012,
+      "generated_tokens_per_round": [
+        1012
+      ],
+      "id": "depth_08",
+      "prompt_tokens": 436,
+      "rounds": 1,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 0,
+      "tool_calls": 1,
+      "wall_seconds": 19.435243249870837
+    },
+    {
+      "accepted": true,
+      "admissible_candidates": 6,
+      "attempts": 1,
+      "end_reason": "accepted",
+      "generated_tokens": 569,
+      "generated_tokens_per_round": [
+        569
+      ],
+      "id": "depth_09",
+      "prompt_tokens": 432,
+      "rounds": 1,
+      "schema_conformant_calls": 1,
+      "silent_rounds": 0,
+      "tool_calls": 1,
+      "wall_seconds": 11.00607612496242
+    },
+    {
+      "accepted": false,
+      "admissible_candidates": 2,
+      "attempts": 2,
+      "end_reason": "attempts_exhausted",
+      "generated_tokens": 3514,
+      "generated_tokens_per_round": [
+        1024,
+        901,
+        25,
+        1024,
+        540
+      ],
+      "id": "depth_10",
+      "prompt_tokens": 2562,
+      "rounds": 5,
+      "schema_conformant_calls": 2,
+      "silent_rounds": 3,
+      "tool_calls": 2,
+      "wall_seconds": 68.12145412503742
+    },
+    {
+      "accepted": false,
+      "admissible_candidates": 3,
+      "attempts": 2,
+      "end_reason": "attempts_exhausted",
+      "generated_tokens": 3449,
+      "generated_tokens_per_round": [
+        1024,
+        902,
+        24,
+        682,
+        817
+      ],
+      "id": "depth_11",
+      "prompt_tokens": 3457,
+      "rounds": 5,
+      "schema_conformant_calls": 2,
+      "silent_rounds": 3,
+      "tool_calls": 2,
+      "wall_seconds": 67.05664283316582
+    }
+  ],
+  "schema": "gene.inference_depth_qualification.v1",
+  "stage": {
+    "attempts_per_task": 2,
+    "operations_per_program": 3,
+    "permanently_excluded": true,
+    "round_ceiling": 5,
+    "silent_round_cap": 3,
+    "tasks": 12
+  },
+  "summary": {
+    "accepted": 7,
+    "generated_tokens": 23388,
+    "generated_tokens_per_round_max": 1024,
+    "generated_tokens_per_round_mean": 708.7272727272727,
+    "generated_tokens_per_round_p95": 1024.0,
+    "harness_peak_rss_bytes": 35799040,
+    "live_episodes": 12,
+    "prompt_tokens": 19376,
+    "rounds": 33,
+    "schema_conformant_calls": 15,
+    "silent_round_fraction": 0.5454545454545454,
+    "silent_rounds": 18,
+    "tasks": 12,
+    "tool_calls": 15,
+    "total_wall_seconds": 461.5489089579787
+  }
+}

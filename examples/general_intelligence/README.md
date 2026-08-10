@@ -310,3 +310,18 @@ first attempt, so the constraint is finishing in budget, not capability. Five of
 the eight successes arrived only after at least one silent round, which is
 direct evidence for continuing past a silent round instead of ending the
 episode. Any candidate model must pass this stage before a subject pilot.
+
+Both qualification harnesses now accept `--think low|medium`, and both omit the
+field entirely at default effort so a default-effort request stays
+byte-identical to the run it reproduces. `gpt-oss:20b` already exposes
+reasoning-effort control, so the next candidate needed no download: at low
+effort it passes stage two with liveness `1.000` and solve `0.583`, and passes
+stage one as eligible with 19 of 20 tasks and `0.986` conformance. Low effort
+converts "never acts" into "acts, sometimes wrong" — no task produced zero
+attempts, but per-attempt accuracy fell from 8 of 8 to 7 of 15. Both stages are
+also faster and cheaper at low effort.
+
+**`gpt-oss:20b` at low reasoning effort is a qualified configuration for subject
+pilots; at default effort it is not.** A version-4 subject may reuse the
+version-3 files unchanged with fresh excluded seeds and its own preregistration.
+Version 3 itself stays rejected — its one permitted repair was used.

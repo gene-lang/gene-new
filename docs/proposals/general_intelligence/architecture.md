@@ -263,10 +263,18 @@ per-round inference depth to be the mechanism — isolating a single component
 raises liveness from `0.200` to `0.667`, but not to the required `0.90`, with
 generated tokens per round pinned at the allowance. Every call the model does
 emit is correct on its first attempt, so the binding constraint is finishing in
-budget rather than capability. The incumbent is ineligible for further subject
-pilots; it remains qualified for the verifier-boundary and adapter work, which
-never depended on deep per-round inference. Selecting a next candidate model is
-now the gating task for experiment 4, ahead of any further subject design.
+budget rather than capability. Applying a revised selection criterion — reasoning-effort control rather than
+artifact size, with the deviation justified in writing beforehand — then
+resolved the blockage without acquiring a new model at all: `gpt-oss:20b`
+already exposes that control, and at low reasoning effort it passes stage two
+with liveness `1.000` against `0.667` at default effort, and passes stage one as
+eligible. The trade is a mild accuracy cost, from 20 to 19 stage-one tasks and
+from 8-of-8 to 7-of-15 per-attempt accuracy on stage two, because low effort
+converts "never acts" into "acts, sometimes wrong". `gpt-oss:20b` at low
+reasoning effort is therefore a qualified configuration for subject pilots and
+at default effort it is not. A version-4 subject may reuse the version-3 files
+unchanged with fresh excluded seeds and its own preregistration; version 3
+itself stays rejected.
 Experiment 1 additionally needs an external independent reviewer to attest the
 candidate digest before its tooling will freeze the generator, capped library
 rule, search budgets, controls, scoring, and unopened schedule for treatment

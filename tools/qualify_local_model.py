@@ -372,7 +372,38 @@ def execute_tool(
     raise AssertionError(name)
 
 
-def run_task(model: str, task: Task, max_rounds: int) -> dict[str, Any]:
+def chat_payload(
+    model: str,
+    messages: list[dict[str, Any]],
+    think: str | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "tools": TOOLS,
+        "stream": False,
+        "keep_alive": "10m",
+        "options": {
+            "temperature": 0,
+            "seed": 20260809,
+            "num_ctx": 32768,
+            "num_predict": 1024,
+        },
+    }
+    # Reasoning-effort control, added after the stage-two gate showed liveness
+    # depends on it. Omitted entirely at default effort, so a default-effort
+    # request stays byte-identical to the 2026-08-09 qualification run.
+    if think is not None:
+        payload["think"] = think
+    return payload
+
+
+def run_task(
+    model: str,
+    task: Task,
+    max_rounds: int,
+    think: str | None = None,
+) -> dict[str, Any]:
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -395,20 +426,7 @@ def run_task(model: str, task: Task, max_rounds: int) -> dict[str, Any]:
     for rounds in range(1, max_rounds + 1):
         try:
             response = post_json(
-                "/api/chat",
-                {
-                    "model": model,
-                    "messages": messages,
-                    "tools": TOOLS,
-                    "stream": False,
-                    "keep_alive": "10m",
-                    "options": {
-                        "temperature": 0,
-                        "seed": 20260809,
-                        "num_ctx": 32768,
-                        "num_predict": 1024,
-                    },
-                },
+                "/api/chat", chat_payload(model, messages, think)
             )
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
             detail = str(error)
@@ -539,6 +557,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--max-rounds", type=int, default=8)
+    # Reasoning-effort control. Omitting it reproduces the default-effort
+    # 2026-08-09 qualification request exactly.
+    parser.add_argument("--think", choices=["low", "medium"], default=None)
     return parser.parse_args()
 
 
@@ -551,7 +572,7 @@ def main() -> int:
     results = []
     started = time.monotonic()
     for task in TASKS:
-        result = run_task(args.model, task, args.max_rounds)
+        result = run_task(args.model, task, args.max_rounds, args.think)
         results.append(result)
         status = "PASS" if result["passed"] else "FAIL"
         print(
@@ -605,6 +626,7 @@ def main() -> int:
             "seed": 20260809,
             "num_ctx": 32768,
             "num_predict": 1024,
+            "reasoning_effort": args.think or "default",
             "max_tool_rounds": args.max_rounds,
         },
         "hardware": {
