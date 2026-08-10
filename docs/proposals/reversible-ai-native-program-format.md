@@ -1,14 +1,8 @@
----
-title: Reversible AI-Native Gene Program Format
-date: 2026-08-10
-context: >-
-  Exploration of a non-textual program modality for training models, with a
-  durable encoding that loads faster than .gene and translates back to
-  canonical .gene.
-status: exploration
----
-
 # Reversible AI-Native Gene Program Format
+
+Status: exploration, dated 2026-08-10. Non-textual program modality for
+training models, with a durable encoding that loads faster than `.gene` and
+translates back to canonical `.gene`.
 
 ## Idea and priority
 
@@ -81,13 +75,14 @@ The format should be defined first as a logical program document. Physical
 encodings are projections of that one model:
 
 ```text
+                                      .gene
+                              document  |  ^  canonical
+                                reader  v  |  writer
 model-native program units <--> program document <--> durable packed file
-                                    ^     |
-                                    |     +--> canonical .gene
-                                    |
-                         .gene -- document reader
-                                    |
-                                    +--> compiler --> GIR / bytecode / native
+                                        |
+                                        +--> compiler --> GIR / bytecode / native
+                                             (one-directional; not part of the
+                                             reversible contract)
 ```
 
 The version 1 program document contains the semantic form tree plus positional
@@ -334,16 +329,16 @@ must preserve program meaning and comment/documentation placement.
 The core invariants are:
 
 ```text
-decode_units(encode_units(document)) == document
-decode_packed(encode_packed(document)) == document
+decodeUnits(encodeUnits(document)) == document
+decodePacked(encodePacked(document)) == document
 readAll(writeCanonical(document)).forms == document.forms
 readDocument(writeCanonical(document)).comments ==
-  normalize_comments(document.comments)
-encode_packed(decode_packed(canonical_packed_program)) ==
+  normalizeComments(document.comments)
+encodePacked(decodePacked(canonical_packed_program)) ==
   canonical_packed_program
 ```
 
-`encode_units` and `decode_units` operate on logical model units, not
+`encodeUnits` and `decodeUnits` operate on logical units, not
 model-specific vocabulary IDs. The final invariant applies only to the
 canonical packed encoding. Optional derived sections are either excluded from
 canonical equality or regenerated according to their section contract.
@@ -417,6 +412,26 @@ Gene already has several pieces that support this direction:
 These existing boundaries suggest adding a source-document/form-tree layer
 alongside `Value`, not enlarging `Value` or changing its eight-byte layout.
 
+## Relationship to the general-intelligence research program
+
+[`general_intelligence/architecture.md`](general_intelligence/architecture.md)
+proposes a hybrid architecture in which an LLM or small learned model
+proposes programs and Gene executes and verifies them. Its current
+experiments qualify and pilot that proposer role with off-the-shelf,
+text-tokenized models such as `gpt-oss-20b` (see
+`general_intelligence/qualifications/`), reached through ordinary text
+generation and tool calls.
+
+This document's non-goal of text-tokenizer compatibility describes the model
+trained from scratch here. It is not a requirement placed retroactively on
+the proposer role those experiments already use. If the model-training study
+below succeeds, its most direct integration point is as a candidate for that
+proposer role — a Gene-native specialist competing with, not gating, the
+general-purpose LLM proposer in use today. The two efforts are independent
+until then: general-intelligence experiments do not wait on this modality,
+and this modality's pilot gates do not depend on general-intelligence's
+results.
+
 ## Validation and safety
 
 AI-generated programs are untrusted input. Decoding must validate structure
@@ -463,7 +478,7 @@ model experiment succeeds.
 - Cover reader sugars whose canonical output differs from input.
 - Property-test source -> document -> packed -> document -> canonical source
   -> document.
-- Property-test logical model units -> document -> logical model units.
+- Property-test logical units -> document -> logical units.
 - Require canonical logical-unit re-encoding to be unit-for-unit identical.
 - Fuzz malformed, truncated, and interrupted logical-unit streams as well as
   packed files under the same resource limits.
@@ -639,9 +654,15 @@ training curriculum, and corpus contents are implementation design work within
 these decisions. All provisional thresholds and corpus manifests must be
 confirmed before their corresponding measurements begin.
 
-# Base model for a Gene program modality
+## Appendix: base model for the first training pilot
 
-## Recommendation
+This is a point-in-time candidate recommendation, dated 2026-08-10. Model
+availability, licensing, and capability shift quickly; re-verify the
+candidate list and its architecture claims against current model cards before
+starting Step 7 of the sequence above. Unlike the two decisions sections
+above, nothing in this appendix is frozen.
+
+### Recommendation
 
 Use **Qwen3.5-4B-Base** for the first serious Gene model, but do **not**
 full-fine-tune it on one 64 GB GPU. Freeze the existing vision tower, add a
@@ -667,7 +688,7 @@ in base-model training specifically to make LoRA-style adaptation possible
 without retraining the large embedding table. [Qwen3.5-4B-Base model
 card](https://huggingface.co/Qwen/Qwen3.5-4B-Base)
 
-## Why its architecture fits Gene
+### Why its architecture fits Gene
 
 Qwen3.5 already implements the seam Gene needs. It has a modality-specific
 encoder whose output vectors are projected to the language model hidden size,
@@ -707,7 +728,7 @@ kernels matter: Transformers warns that the fallback implementation is slower
 and uses more memory. [Transformers Qwen3.5
 documentation](https://huggingface.co/docs/transformers/model_doc/qwen3_5)
 
-## 64 GB feasibility
+### 64 GB feasibility
 
 A conventional mixed-precision AdamW full fine-tune consumes roughly 18 bytes
 per parameter before activations and temporary buffers. On that rule of thumb,
@@ -750,7 +771,7 @@ not assumed to fit at arbitrary context lengths. The 2B model has a 2048-wide,
 model. [Qwen3.5-2B-Base model
 card](https://huggingface.co/Qwen/Qwen3.5-2B-Base)
 
-## Candidate comparison
+### Candidate comparison
 
 | Candidate | License and size | Gene-modality fit | One 64 GB GPU |
 |---|---|---|---|
@@ -760,7 +781,7 @@ card](https://huggingface.co/Qwen/Qwen3.5-2B-Base)
 | **SmolVLM2-2.2B-Instruct** | Apache-2.0; 2.2B class | Simple Idefics3-style system with a SigLIP encoder and SmolLM2 decoder; easy to understand and modify, but English-focused and less attractive for a code-language model | Comfortable for adapters and plausible for careful full tuning. Good throwaway prototype base, not the primary long-term choice. [Model card](https://huggingface.co/HuggingFaceTB/SmolVLM2-2.2B-Instruct) |
 | **Phi-4-multimodal-instruct** | MIT; 5.6B | The strongest architectural precedent: Microsoft added vision and speech to a 3.8B language backbone using modality encoders, adapters, and modality-specific LoRA routing. It is nevertheless an older instruct model with custom model code. | Adapter-only on 64 GB. Valuable as a design reference rather than the chosen checkpoint. [Model card](https://huggingface.co/microsoft/Phi-4-multimodal-instruct) [technical report](https://arxiv.org/abs/2503.01743) |
 
-## Suggested first training sequence
+### Suggested first training sequence
 
 1. **Alignment:** freeze Qwen; train only the Gene encoder/projector on
    packed-unit-to-canonical-Gene reconstruction, canonical-Gene-to-unit
