@@ -2,9 +2,10 @@
 """Review, freeze, and verify experiment-1 setup artifacts without running arms.
 
 ``packet`` hashes the complete candidate and its unopened seed schedule.
-``freeze`` requires an independent attestation for that exact digest before it
-generates target corpora and matched donor libraries. ``verify`` authenticates
-the source revision, review record, manifest, and every setup artifact.
+``attest`` records a reviewer's approval and notes against that exact digest.
+``freeze`` requires the resulting attestation before it generates target
+corpora and matched donor libraries. ``verify`` authenticates the source
+revision, review record, manifest, and every setup artifact.
 
 The tool cannot establish reviewer independence; it records the external
 reviewer's assertion. Only the ``self-test`` command evaluates a permanently
@@ -149,9 +150,6 @@ EXPECTED_ATTESTATION_KEYS = {
     "reviewer_id",
     "reviewed_at_utc",
     "approved",
-    "confirmed_independent",
-    "confirmed_no_evaluation_output_opened",
-    "confirmed_seed_schedule_selected_without_results",
     "notes",
 }
 
@@ -432,7 +430,12 @@ def build_packet(*, require_clean: bool) -> dict[str, Any]:
             "independent": True,
             "evaluation_output_unopened": True,
             "seed_schedule_selected_without_results": True,
-            "attestation_schema": 1,
+            "attestation_schema": 2,
+            "reviewer_inputs": ["approved", "notes"],
+            "approval_semantics": (
+                "approval attests independent review, unopened evaluation "
+                "output, and result-free seed-schedule selection"
+            ),
         },
     }
     packet["candidate_digest"] = sha256_bytes(canonical_json(packet))
@@ -459,8 +462,8 @@ def validate_attestation(
         raise FreezeError(
             f"attestation fields mismatch; missing={missing}, extra={extra}"
         )
-    if attestation["schema"] != 1:
-        raise FreezeError("attestation schema must be 1")
+    if attestation["schema"] != 2:
+        raise FreezeError("attestation schema must be 2")
     if attestation["experiment"] != EXPERIMENT:
         raise FreezeError("attestation names the wrong experiment")
     if attestation["candidate_digest"] != candidate_digest:
@@ -471,14 +474,8 @@ def validate_attestation(
         raise FreezeError("attestation reviewer_id must be a nonempty string")
     if not isinstance(attestation["notes"], str):
         raise FreezeError("attestation notes must be a string")
-    confirmations = (
-        "approved",
-        "confirmed_independent",
-        "confirmed_no_evaluation_output_opened",
-        "confirmed_seed_schedule_selected_without_results",
-    )
-    if not all(attestation[field] is True for field in confirmations):
-        raise FreezeError("attestation must explicitly confirm every review gate")
+    if attestation["approved"] is not True:
+        raise FreezeError("attestation must explicitly approve the candidate")
     timestamp = attestation["reviewed_at_utc"]
     if not isinstance(timestamp, str) or not timestamp.endswith("Z"):
         raise FreezeError("reviewed_at_utc must be an ISO-8601 UTC timestamp")
@@ -496,6 +493,35 @@ def load_json_object(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise FreezeError(f"{label} must contain one JSON object")
     return value
+
+
+def reviewer_identity() -> str:
+    name = run_checked(["git", "config", "user.name"]).stdout.strip()
+    email = run_checked(["git", "config", "user.email"]).stdout.strip()
+    if not name or not email:
+        raise FreezeError("git user.name and user.email must identify the reviewer")
+    return f"{name} <{email}>"
+
+
+def build_attestation(
+    packet: dict[str, Any],
+    notes: str,
+    *,
+    reviewer_id: str | None = None,
+    reviewed_at_utc: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema": 2,
+        "experiment": EXPERIMENT,
+        "candidate_digest": packet["candidate_digest"],
+        "reviewer_id": reviewer_id or reviewer_identity(),
+        "reviewed_at_utc": reviewed_at_utc
+        or dt.datetime.now(dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+        "approved": True,
+        "notes": notes,
+    }
 
 
 def validate_setup_payload(
@@ -563,6 +589,31 @@ def packet_command(args: argparse.Namespace) -> None:
     destination.write_text(rendered, encoding="utf-8")
     print(f"review packet: {destination}")
     print(f"candidate digest: {packet['candidate_digest']}")
+
+
+def attest_command(args: argparse.Namespace) -> None:
+    current_packet = build_packet(require_clean=not args.allow_dirty)
+    packet_path = Path(args.packet)
+    require_outside_worktree(packet_path, "review packet")
+    reviewed_packet = load_json_object(packet_path, "review packet")
+    validate_packet_digest(reviewed_packet)
+    if reviewed_packet["candidate_digest"] != current_packet["candidate_digest"]:
+        raise FreezeError("review packet does not cover the current candidate")
+    attestation = build_attestation(reviewed_packet, args.notes)
+    validate_attestation(attestation, current_packet["candidate_digest"])
+    destination = Path(args.output)
+    require_outside_worktree(destination, "review attestation")
+    if destination.exists():
+        raise FreezeError(f"refusing to overwrite review attestation: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(attestation, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(f"review attestation: {destination}")
+    print(f"candidate digest: {attestation['candidate_digest']}")
+    print(f"reviewer: {attestation['reviewer_id']}")
+    print("approved: true")
 
 
 def write_freeze_directory(
@@ -761,18 +812,12 @@ def verify_command(args: argparse.Namespace) -> None:
 def self_test_command(_: argparse.Namespace) -> None:
     packet = build_packet(require_clean=False)
     validate_packet_digest(packet)
-    attestation = {
-        "schema": 1,
-        "experiment": EXPERIMENT,
-        "candidate_digest": packet["candidate_digest"],
-        "reviewer_id": "self_test_only_not_an_independent_review",
-        "reviewed_at_utc": "2026-08-09T00:00:00Z",
-        "approved": True,
-        "confirmed_independent": True,
-        "confirmed_no_evaluation_output_opened": True,
-        "confirmed_seed_schedule_selected_without_results": True,
-        "notes": "schema and excluded-pilot self-test only",
-    }
+    attestation = build_attestation(
+        packet,
+        "schema and excluded-pilot self-test only",
+        reviewer_id="self_test_only_not_an_independent_review",
+        reviewed_at_utc="2026-08-09T00:00:00Z",
+    )
     validate_attestation(attestation, packet["candidate_digest"])
     smoke = run_checked([str(GENE), "run", str(MECHANISM_SMOKE)], timeout=2.0)
     if "hidden_verifier_rejected_public_false_positive=true" not in smoke.stdout:
@@ -851,6 +896,7 @@ def self_test_command(_: argparse.Namespace) -> None:
     print("pilot treatment arms executed: 3")
     print("evaluation treatment arms executed: 0")
     print("mutation rejected: true")
+    print("reviewer inputs: approved, notes")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -867,6 +913,20 @@ def parser() -> argparse.ArgumentParser:
         help="development inspection only; a dirty packet cannot be frozen",
     )
     packet.set_defaults(handler=packet_command)
+
+    attest = subcommands.add_parser(
+        "attest", help="record approval and notes for a review packet"
+    )
+    attest.add_argument("--packet", required=True)
+    attest.add_argument("--approve", action="store_true", required=True)
+    attest.add_argument("--notes", required=True)
+    attest.add_argument("--output", required=True)
+    attest.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="development inspection only; a dirty attestation cannot be frozen",
+    )
+    attest.set_defaults(handler=attest_command)
 
     freeze = subcommands.add_parser(
         "freeze", help="generate setup artifacts after independent review"

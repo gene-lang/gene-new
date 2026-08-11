@@ -178,6 +178,45 @@ suite "cli — gene run":
     check analysisTool.exitCode == 0
     check "pass and reuse-failure paths verified" in analysisTool.output
 
+    let reviewDir = cliDir / "library_induction_review"
+    if dirExists(reviewDir): removeDir(reviewDir)
+    createDir(reviewDir)
+    let packetPath = reviewDir / "packet.json"
+    let attestationPath = reviewDir / "attestation.json"
+    let packetTool = execCmdEx(
+      "python3 tools/prepare_library_induction_freeze.py packet " &
+      "--allow-dirty --output " & shellQuote(packetPath))
+    check packetTool.exitCode == 0
+    let approvalTool = execCmdEx(
+      "python3 tools/prepare_library_induction_freeze.py attest " &
+      "--allow-dirty --packet " & shellQuote(packetPath) &
+      " --approve --notes " & shellQuote("human review complete") &
+      " --output " & shellQuote(attestationPath))
+    check approvalTool.exitCode == 0
+    let packet = parseFile(packetPath)
+    let attestation = parseFile(attestationPath)
+    check attestation.len == 7
+    check attestation["schema"].getInt == 2
+    check attestation["experiment"].getStr == "library_induction_v1"
+    check attestation["candidate_digest"].getStr ==
+      packet["candidate_digest"].getStr
+    check attestation["reviewer_id"].getStr.len > 0
+    check attestation["reviewed_at_utc"].getStr.endsWith("Z")
+    check attestation["approved"].getBool
+    check attestation["notes"].getStr == "human review complete"
+    check not attestation.hasKey("confirmed_independent")
+    check not attestation.hasKey("confirmed_no_evaluation_output_opened")
+    check not attestation.hasKey(
+      "confirmed_seed_schedule_selected_without_results")
+
+    let unapproved = execCmdEx(
+      "python3 tools/prepare_library_induction_freeze.py attest " &
+      "--allow-dirty --packet " & shellQuote(packetPath) &
+      " --notes " & shellQuote("not approved") &
+      " --output " & shellQuote(reviewDir / "unapproved.json"))
+    check unapproved.exitCode != 0
+    check "--approve" in unapproved.output
+
   test "verified-skill pilot promotes only the verifier-test passing artifact":
     var ran = runGene([
       "run",
