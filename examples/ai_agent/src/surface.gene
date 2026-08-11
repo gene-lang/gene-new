@@ -38,20 +38,20 @@
     ^events ($cell []) ^next_event_v ($cell 1)
     ^max_panes max_panes))
 
-(fn emit_surface_event! [surface, type : Str, props]
+(fn emit_surface_event [surface, type : Str, props]
   (if (== surface nil) (return nil))
   (var v (surface/next_event_v ~ get))
   (surface/next_event_v ~ set (+ v 1))
   (var event
     {^v v ^type type ^surface_id (surface/instance_id ~ get)})
   (for [key value] in props
-    (event ~ put! key value))
-  ((surface/events ~ get) ~ push! event)
+    (event ~ put key value))
+  ((surface/events ~ get) ~ push event)
   (if_yes (> ((surface/events ~ get) ~ size) 256)
     (var current (surface/events ~ get))
     (var kept [])
     (var first (- current/~size 256))
     (repeat i in current/~size
-      (if (>= i first) (kept ~ push! current/%i)))
+      (if (>= i first) (kept ~ push current/%i)))
     (surface/events ~ set kept))
   event)

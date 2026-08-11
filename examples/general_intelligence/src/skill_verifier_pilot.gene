@@ -30,9 +30,9 @@
       (for test in hidden_tests
         (if (== (execute_candidate candidate test/input) test/expected)
           (set passed_count (+ passed_count 1))
-          (failures ~ push! test/id))))
+          (failures ~ push test/id))))
     (else
-      (for test in hidden_tests (failures ~ push! test/id))))
+      (for test in hidden_tests (failures ~ push test/id))))
   (var total (hidden_tests ~ size))
   (var passed (== passed_count total))
   (var candidate_id (candidate_digest candidate))

@@ -39,7 +39,7 @@ This draft reflects the current direction:
 - typed recoverable errors with `^errors` and `try/catch/ensure`;
 - runtime capability values, but **no static `^effects` system in MVP**;
 - protocol-local derivation through `^impl`, `^derive`, and protocol `derive` forms;
-- `fn!` runtime fexprs for Env-aware syntax calls, and `macro` for limited compile-time templates;
+- explicit named fexprs `(fn name! ...)` for Env-aware syntax calls, and `macro` for limited compile-time templates;
 - direct type construction for canonical data, plus `new`/`ctor` for constructor logic with a pre-created `self` instance;
 - basic generics and gradual typed boundaries;
 - a stable native extension ABI and typed C FFI designed early;
@@ -312,7 +312,7 @@ x...         # spread/gather
 x : T        # annotation
 ^due T?      # optional prop schema: nil-admitting type => omissible
 _            # wildcard / ignore
-name!        # convention for visible syntax behavior (`fn!`, `macro`) and mutation ops (§11/§12)
+name!        # reserved fexpr declaration/invocation marker (§3/§11.1)
 (a; b; c)    # pipe: pure reader head-folding
 (x ~ f a)    # message send; see Section 3 and docs/core.md §9
 /user/name   # selector literal
@@ -704,10 +704,10 @@ not a bare value: `(a; b _ c)` is `(b (a) c)`, not `(b a c)`.
 
 ## 3. Evaluation and callability
 
-Gene has two callability protocols:
+Gene has two lexically distinct invocation kinds:
 
 1. ordinary value callability, where arguments are evaluated before the callee receives them;
-2. syntax callability (`fn!` / fexprs), where the callee receives raw syntax nodes plus the caller environment and decides what to evaluate.
+2. explicit fexpr callability, where a trailing-`!` head receives raw syntax nodes plus the caller environment and decides what to evaluate.
 
 Ordinary calls use a `Call` envelope:
 
@@ -725,49 +725,48 @@ Syntax calls use a `SyntaxCall` envelope:
 ```gene
 (type SyntaxCall
   ^props {^named PropMap ^site Node?}
-  ^body  [Node...])
-
-(protocol SyntaxCallable
-  (message apply_syntax [call : SyntaxCall, caller_env : CallerEnv] : Any))
+  ^body  [Any...])
 ```
 
-`Fn`, `Type`, `Selector`, native functions, and user-defined callable values implement `Callable`. A protocol message in value position is a dispatching closure, so it implements `Callable` too (§3). `Fn!` values created by `fn!` implement `SyntaxCallable`.
+`Fn`, `Type`, `Selector`, native functions, and user-defined callable values
+implement `Callable`. A protocol message in value position is a dispatching
+closure, so it implements `Callable` too (§3). `Fexpr` is a separate runtime
+type and does not implement `Callable`; the compiler may invoke one only from
+its explicit lexical call form.
 
 To evaluate `(h ^p v c1 c2)`:
 
 1. If `h` names a special form, use that special-form rule.
 2. If `h` names a compile-time `macro`, expand it before runtime evaluation.
-3. Otherwise evaluate `h` to a callee.
-4. If the callee implements `SyntaxCallable`, build a `SyntaxCall` from the **unevaluated** prop/body syntax nodes and call `apply_syntax` with a borrowed `CallerEnv`. Ordinary argument evaluation does not happen.
-5. Otherwise evaluate props/body into a `Call` envelope.
-6. If the callee implements `Callable`, call `apply`.
+3. If `h` is a bare lexical name ending in `!`, resolve it as a statically
+   known fexpr binding, build a `SyntaxCall` from the **unevaluated** prop/body
+   syntax nodes, and invoke the `Fexpr` with a borrowed `CallerEnv`.
+4. Otherwise evaluate `h`, then evaluate props/body into a `Call` envelope.
+5. If the callee implements `Callable`, call `apply`.
+6. If an ordinary call encounters a held `Fexpr`, raise `CallKindError`; never
+   reinterpret already-evaluated arguments as syntax.
 7. Otherwise it is a call error.
 
-This makes fexprs (`fn!`) a runtime feature, not a compile-time macro feature. A `fn!` can implement control flow, laziness, DSL evaluation, and explicit `eval` under a caller or sandbox `Env`, while ordinary `fn` remains simple and optimizable.
+The source therefore determines evaluation locally:
 
-Syntax callability is a runtime property of the callee value, so it has an explicit compilation cost model:
+```gene
+(foo a)   # always eager
+(foo! a)  # explicit fexpr invocation; a is syntax
+```
 
-- A call site whose callee is statically known not to implement `SyntaxCallable` — a special form, an expanded macro, a resolved `fn`/native binding, or a callee whose static type excludes `Fn!` — compiles to a direct call. No dispatch check is emitted and the argument syntax nodes are not retained.
-- Every other call site compiles to a generic path: evaluate the head, check the callee for `SyntaxCallable`, then either hand over the retained syntax nodes or evaluate the arguments normally. In the MVP interpreter this is cheap because modules are persisted node trees — the argument nodes are alive regardless — so the added cost is one callee check before argument evaluation.
-- `Fn!` is a sibling of `Fn` in the type hierarchy (§7.2), not a subtype. A `fn!` value does not satisfy an `Fn [...] ...`-typed parameter; passing one across that boundary is a recoverable `TypeError`. Typed regions compiled AOT therefore never hit the syntax path through function-typed values; an `Any`-typed callee keeps the generic path.
+There is no runtime syntax-callability guard on an ordinary call. Aliases,
+expression heads, higher-order parameters, and `Env`-provided ordinary names
+cannot invoke an `Fexpr`. A held fexpr may be inspected or transported as a
+runtime value, but invocation is available only through its statically known
+trailing-`!` binding. Direct selected imports preserve that declaration
+metadata. This keeps ordinary calls simple, permits argument-first fused
+opcodes without a syntax-kind check, and avoids retaining argument syntax for
+dynamic calls.
 
-The generic-path check is the price of first-class fexprs. Code that must compile to direct calls should type its callees.
-
-Retained syntax is also an artifact-size and confidentiality cost: a sealed/AOT
-build may discard argument syntax only at call sites proven ordinary. Dynamic
-sites must retain the source-shaped envelope needed by `SyntaxCallable`, so
-builds that must omit sensitive syntax should exclude `Fn!` statically at those
-boundaries.
-
-The compiler tracks direct `fn!` names (definitions, direct `var` aliases, and
-`from "path"` imports) and emits the syntax path directly while that binding is
-not mutable. Every dynamic or
-`Any` callee—including an untyped function parameter and an Env-provided
-binding—uses the guarded generic path: the callee is loaded and tested before
-any named or positional argument form runs. Arg-first fused call opcodes are
-reserved for callees proven to exclude `SyntaxCallable`, such as stable
-ordinary function declarations and `Fn`/`Callable`-typed parameters. Unknown
-ambient bindings are dynamic even during ordinary source compilation.
+`Fexpr` is a sibling of `Fn` in the type hierarchy (§7.2), not a subtype. It
+does not satisfy an `Fn [...] ...`-typed parameter. `!` is semantic syntax,
+reserved exclusively for fexpr declaration and head-position invocation; it
+is not a mutation or macro naming convention.
 
 Normal calls are callable-first:
 
@@ -846,7 +845,7 @@ not send it?"). Full resolution rules: `docs/core.md §9`.
 **Every non-bare callee must be a message value.** A protocol-qualified message
 (`x ~ P:m`), a held value (`x ~ %m`), and a parenthesized expression all have
 to denote or evaluate to a message; the implementation is then dispatched on
-`x`. A plain function, a slash-selected namespace member, or a held `Fn!` is
+`x`. A plain function, a slash-selected namespace member, or a held `Fexpr` is
 **rejected, not invoked** — so
 `(xs ~ gene/str/join "-")` and `(x ~ %some_fn)` are errors rather than
 back-door function calls. This is what makes "dispatches, and only dispatches"
@@ -901,11 +900,10 @@ the receiver rather than naming a message, and keeps its projection meaning.
 The recoverable error for the wrong kind of non-bare callee or qualifier is
 `CallKindError`, a subtype of `TypeError`, with `^where`, `^expected`, `^actual`,
 and `^actual_value` diagnostics. An ordinary non-message callee reports
-`^expected "Message"`; a direct qualifier must be a `Protocol`; and a `Fn!`
-reports the `SyntaxCallable` mismatch. Rejection happens before any
-remaining send argument is evaluated. Syntax callables are invoked only in
-ordinary call-head position; send syntax is never reinterpreted as a syntax
-call.
+`^expected "Message"`; a direct qualifier must be a `Protocol`; and a held
+`Fexpr` reports its distinct call kind. Rejection happens before any remaining
+send argument is evaluated. Fexprs are invoked only in explicit trailing-`!`
+call-head position; send syntax is never reinterpreted as a syntax call.
 
 **Head position is rejected; value position dispatches.** `(P:msg x)` is a
 compile-time error — `:` reads as its own node, so the check does not wait for
@@ -950,7 +948,7 @@ MVP core special forms:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! let var const set set! new ~ ?~ fn fn! macro quote quasiquote
+do if if_yes if_not && || ?? ! let var const set new ~ ?~ fn macro quote quasiquote
 select path msg ns env eval import mod match while loop repeat for break continue yield
 return try scope supervisor spawn await fail panic type alias enum protocol impl
 derive import_impl web_module
@@ -1084,6 +1082,15 @@ users/~size        # (users ~ size)
 users/%i/~to_html  # ((users/%i) ~ to_html)
 ```
 
+A `~message` segment is an ordinary symbol whose name begins with `~`, so a
+`~` glued directly to a symbol character always reads as one symbol, wherever
+it appears. A `~` followed by whitespace or a delimiter is the send operator:
+
+```gene
+(xs ~ size)   # send: three elements
+(xs ~size)    # two elements; ~size is one symbol
+```
+
 Complex selector stages must use long form:
 
 ```gene
@@ -1092,9 +1099,15 @@ Complex selector stages must use long form:
 
 not:
 
-```gene
+```text
 /users/%($filter /adult)/name # invalid short syntax
 ```
+
+That spelling is a read error, not merely discouraged: `%(` ends the symbol
+lexeme, so a bare `%` segment would otherwise produce an unquoted empty
+symbol *and* silently swallow the following form. `(!= xs/%(- i 1) "\n")`
+would read as a three-argument `!=` whose second argument is the index
+expression — a wrong program that raises nothing.
 
 `%props`, `%body`, `%meta`, `%declarations`, `%to_stream`, and `%to_pairs_stream`
 are not magic selector tokens. They are ordinary functions used as stages, and the
@@ -1401,8 +1414,8 @@ A type may additionally define one constructor with `ctor`:
   ^props {^x F64 ^y F64}
 
   (ctor [x : F64, y : F64]
-    (self ~ set_prop! `x x)
-    (self ~ set_prop! `y y)))
+    (self ~ set_prop `x x)
+    (self ~ set_prop `y y)))
 ```
 
 Constructor invocation uses `new`:
@@ -1429,8 +1442,8 @@ evaluate the type expression to a Type
 ```
 
 There is no `init` special form. The constructor mutates the pre-created `self`
-instance with `(set! self/field v)` (§12.1) or the explicit mutable node/type
-messages — `set_prop!`, `set_body!`, `push_body!` (on `Node`). The ctor
+instance with `(set self/field v)` (§12.1) or the explicit mutable node/type
+messages — `set_prop`, `set_body`, `push_body` (on `Node`). The ctor
 body result is ignored; construction returns the validated `self` instance unless
 the ctor raises a recoverable error or panics.
 
@@ -1445,9 +1458,9 @@ A constructor uses normal function-style argument matching:
   ^props {^name Str ^age Int ^active Bool}
 
   (ctor [name : Str, ^age : Int = 0, ^active : Bool = true]
-    (self ~ set_prop! `name name)
-    (self ~ set_prop! `age age)
-    (self ~ set_prop! `active active)))
+    (self ~ set_prop `name name)
+    (self ~ set_prop `age age)
+    (self ~ set_prop `active active)))
 
 (new User "Ada" ^age 37)
 (User ^name "Ada" ^age 37 ^active true) # direct data construction
@@ -1462,7 +1475,7 @@ Constructors may declare checked errors:
   (ctor [n : Int]
     ^errors [ValidationError]
     (if (&& (>= n 0) (<= n 65535))
-      (self ~ set_prop! `value n)
+      (self ~ set_prop `value n)
       (fail (ValidationError ^message "invalid port")))))
 
 (new Port 8080)
@@ -1494,7 +1507,7 @@ inherited schema:
   ^props {^name Str}
 
   (ctor [name : Str]
-    (self ~ set_prop! `name name)))
+    (self ~ set_prop `name name)))
 
 (type Dog
   ^is Animal)
@@ -1508,8 +1521,8 @@ actor/channel transfer, global or container storage, native rooting, escaping
 closure capture, and error/panic publication. Transient helper returns remain
 inside the constructor's dynamic extent and cannot cross any durable boundary.
 Only the constructor's
-explicit node mutation operations (`Node/set_prop!`, `Node/set_body!`, and
-`Node/push_body!`) may target it; arbitrary receiver dispatch is rejected.
+explicit node mutation operations (`Node/set_prop`, `Node/set_body`, and
+`Node/push_body`) may target it; arbitrary receiver dispatch is rejected.
 After schema validation succeeds, the marker is cleared before `new` returns.
 If construction fails, normal error unwinding and `ensure` cleanup run, and no
 partial instance is registered or exposed. A ctor's declared `^errors` form
@@ -1546,7 +1559,7 @@ Any
 ├── Map
 ├── Gene
 ├── Fn
-├── Fn!      # runtime syntax callable / fexpr
+├── Fexpr    # runtime syntax callable; sibling of Fn
 ├── Env
 ├── Task
 ├── Channel
@@ -2009,7 +2022,7 @@ enclosing function is defined, so forward-referenced protocols resolve
 normally.
 
 `(Tuple A B ...)` is a fixed-length positional product represented by a Gene
-list. `(Fn [A B ...] R)` describes an ordinary `fn`, never `fn!`, by one call
+list. `(Fn [A B ...] R)` describes an ordinary `fn`, never an `Fexpr`, by one call
 shape: it matches any function that admits a call with exactly the listed
 positional arguments — the function's required positional count may not exceed
 the listed arity, extra declared positionals must be optional or absorbed by a
@@ -2235,7 +2248,7 @@ trailing value is discarded and the call yields the declared unit — `nil` for
 
 ```gene
 (fn note [entry : Str] : Nil        # no trailing `nil` needed
-  (log ~ push! entry))
+  (log ~ push entry))
 
 (fn reset [cell : (Cell Int)] : Nil
   (if_yes (< (cell ~ get) 0) (return))   # `return` needs no argument
@@ -2405,7 +2418,7 @@ starts at depth zero and keeps the strict rule.
 ```gene
 (var i 1.0)
 xs/%i            # => the second element
-(set! xs/%i 99)
+(set xs/%i 99)
 ```
 
 The web profile lowers an `F64` index to `xs[i]`, which JavaScript accepts, so
@@ -3147,53 +3160,69 @@ Such a helper expands to a normal `impl Reader BufferedReader` whose messages fo
 Gene separates runtime syntax behavior from compile-time rewriting.
 
 ```text
-fn!    runtime fexpr / syntax callable / CallerEnv-aware DSL tool
+name!  explicit runtime fexpr / syntax callable / CallerEnv-aware DSL tool
 macro  compile-time template expansion
 derive protocol-local compile-time declaration generation
 ```
 
 This split avoids making full Lisp-style macros the default abstraction while still preserving the pieces Gene needs for DSLs, homoiconic code, derivation, and AOT/sealed builds.
 
-### 11.1 `fn!`: runtime fexprs
+### 11.1 Explicit named fexprs
 
-`fn!` defines a runtime syntax callable. It receives unevaluated syntax nodes and a borrowed view of the caller, then decides what to evaluate.
+A named `fn` whose name ends in `!` defines a runtime syntax callable. The
+marker belongs to the binding and its call sites, not to an alternate anonymous
+function form. It receives unevaluated syntax nodes and a borrowed view of the
+caller, then decides what to evaluate.
 
 ```gene
-(fn! unless! [cond, body...]
-  (if (! (eval cond ^in caller_env))
-    (eval `(do %body...) ^in caller_env)
-    nil))
+(fn unless! [cond, body...]
+  (if_not (eval cond ^in caller_env)
+    (eval `(do %body...) ^in caller_env)))
 ```
 
-A `fn!` value implements `SyntaxCallable` (§3). Its parameter vector matches the raw syntax nodes in the call envelope. Inside a `fn!` body, the implementation provides read-only bindings:
+The declaration creates an `Fexpr` runtime value (§3).
+Its parameter vector matches raw syntax nodes, not evaluated argument values.
+Inside its body, the implementation provides read-only implicit bindings:
 
 ```text
 caller_env  CallerEnv   # borrowed; valid only during this syntax call
 syntax_call SyntaxCall  # the full raw call envelope, including props/site
 ```
 
-The ordinary parameter bindings such as `cond` and `body` are syntax values, not evaluated results. A `fn!` may call `eval` explicitly with the live `caller_env`, or explicitly snapshot selected authority into a durable `Env`.
+The parameter bindings such as `cond` and `body` are syntax values. An fexpr
+may call `eval` explicitly with the live `caller_env`, or snapshot selected
+authority into a durable `Env`. `caller_env` and `syntax_call` are invocation
+context and therefore do not appear in the parameter vector.
 
-Like macros, names bound to `fn!` values should keep the `!` suffix by convention (`unless!`); this is not enforced.
+The trailing `!` is enforced. Fexprs must be named and statically identifiable;
+anonymous `(fn [...] ...)` values are ordinary `Fn` values. `fn!` definition
+syntax is invalid. No other binding or message name may end in `!`.
 
-`caller_env` is real authority, and it is the deliberate exception to §11.5's rule that evaluated code does not automatically see caller locals. Calling a `fn!` implicitly grants the callee a borrowed `CallerEnv` view of the caller's full evaluation environment:
+`caller_env` is real authority, and it is the deliberate exception to §11.5's rule that evaluated code does not automatically see caller locals. Calling an explicit fexpr implicitly grants the callee a borrowed `CallerEnv` view of the caller's full evaluation environment:
 
 - `caller_env` resolves the caller's lexical bindings, imports, module namespace, and core built-ins, in §11.5 resolution order.
 - `caller_env` is a read-only view for name resolution. Code evaluated `^in caller_env` cannot create, rebind, or `set` bindings in the caller's scope; declarations made by an evaluated unit live in that unit's own overlay. Mutable values reachable through caller bindings — `Cell`, buffers, actors — can still be mutated. The view is read-only, not deep-frozen.
 - `CallerEnv` is valid only for the dynamic extent of the syntax call. It is not `Send` or serializable. It cannot be returned, used as an error payload, inserted into a heap container or durable `Env`, stored in an outer/global/module binding, captured by an escaping closure, or captured by a spawned task. These checks also apply to closures and containers that transitively carry the borrowed view.
 - Durable capture is explicit: `(caller_env ~ snapshot ["name" ...])` copies exactly the named visible bindings into a new `Env`. Missing or duplicate names fail. Selected closures and capabilities retain only the authority explicitly reachable from those selected values; unlisted caller bindings are absent.
-- Because calling an unknown value may temporarily hand it your environment, security-sensitive code should type callees to exclude `Fn!`. A syntax callable evaluating untrusted syntax should first create a purpose-built snapshot and apply the evaluation policies described in §11.5.
+- Calling an explicit fexpr hands it caller authority. A syntax callable
+  evaluating untrusted syntax should first create a purpose-built snapshot and
+  apply the evaluation policies described in §11.5.
 
 For example, this durable environment contains `config` but not `secret`:
 
 ```gene
-(fn! capture_config! []
+(fn capture_config! []
   (caller_env ~ snapshot ["config"]))
 ```
 
-`fn!` values are runtime values. They may be bound, imported, passed around, stored in maps, and selected like other values. When a call's evaluated callee implements `SyntaxCallable`, the evaluator does not evaluate ordinary arguments; it calls `apply_syntax` with a `SyntaxCall` and a fresh borrowed `CallerEnv`. The compilation cost model for this dispatch is specified in §3.
+`Fexpr` values may be held for reflection, imported through their declared
+name, passed around, or stored. Holding one does not preserve invocation
+semantics through a differently named `var`/`let` alias, an expression head,
+or a higher-order ordinary call: those paths are eager and reject the held
+fexpr after evaluating their arguments. Only lexical `(name! ...)` invokes it
+with a `SyntaxCall` and a fresh borrowed `CallerEnv`.
 
-Use `fn!` for:
+Use an explicit fexpr for:
 
 - custom control flow;
 - lazy arguments;
@@ -3202,18 +3231,22 @@ Use `fn!` for:
 - explicit `Env`-bounded evaluation;
 - syntax utilities that do not need to create module declarations before type checking.
 
-Because `fn!` runs at runtime, its generated/evaluated code may be checked later than normal code. JIT/eval caching may recover performance, but it does not give the same early declaration graph, tooling, or AOT visibility as compile-time expansion.
+Because an fexpr runs at runtime, its generated/evaluated code may be checked
+later than normal code. JIT/eval caching may recover performance, but it does
+not give the same early declaration graph, tooling, or AOT visibility as
+compile-time expansion.
 
 ### 11.2 `macro`: compile-time templates
 
 `macro` defines a compile-time template expander. A macro receives syntax nodes and returns syntax nodes before name resolution, type checking, native compilation, and ordinary runtime evaluation.
 
 ```gene
-(macro when! [cond, body...]
+(macro when [cond, body...]
   `(if_yes %cond %body...))
 ```
 
-The `!` suffix marks visible rewriting by convention. It is not enforced: `(macro twice [x] ...)` is legal, but stdlib and examples should keep `!` for visible expansion.
+Macro names are ordinary `snake_case` names and may not end in `!`; the marker
+is reserved for runtime fexpr invocation.
 
 MVP macros are **template macros**, not arbitrary compile-time functions. A macro body contains exactly one syntax-producing expression, normally a quasiquote/template. General compile-time function macros with arbitrary compile-time evaluation are future work.
 
@@ -3231,7 +3264,7 @@ File-defined macros are module exports selected through top-level `from
 "path"` import lists and honor selection aliases:
 
 ```gene
-(import [when! : unless_not!] from "./control")
+(import [when : unless_not] from "./control")
 ```
 
 Because expansion happens while the importer compiles, a top-level
@@ -3244,7 +3277,7 @@ file-defined macros in MVP because there is no dependency artifact to read. A
 built-in namespace may register compiler-known template macros; a top-level
 namespace selection imports those with the same alias, collision, hygiene, and
 head-position-only rules. The `log` namespace's
-`error!`/`warn!`/`info!`/`debug!`/`trace!` forms are the first such built-ins.
+`error`/`warn`/`info`/`debug`/`trace` forms are the first such built-ins.
 Imports inside nested scopes resolve at runtime only, so all macros must still
 be imported at top level.
 
@@ -3255,7 +3288,7 @@ Use `macro` for:
 - AOT/sealed-build-visible code generation;
 - tooling-visible transformations.
 
-Prefer `fn!` when the transformation is really a runtime DSL or depends on runtime `Env` authority.
+Prefer an explicit fexpr when the transformation is really a runtime DSL or depends on runtime `Env` authority.
 
 ### 11.3 Hygiene
 
@@ -3480,34 +3513,34 @@ Immutable containers support persistent functional updates with structural shari
 Mutable containers use explicit mutating operations, conventionally named with `!`:
 
 ```gene
-(xs ~ set! 1 20)
-(xs ~ push! 30)
-(m ~ put! key value)
-(n ~ set_prop! name value)
+(xs ~ set 1 20)
+(xs ~ push 30)
+(m ~ put key value)
+(n ~ set_prop name value)
 ```
 
-`List/push!` appends to a mutable list in amortized O(1) time and returns the
+`List/push` appends to a mutable list in amortized O(1) time and returns the
 inserted value. It stores `nil` when given `void`. Use it for owned local
 accumulators; repeated copy-and-append growth is quadratic.
 
 A `Buffer` additionally has two **bulk** mutations, and they are not sugar over
-a `set!` loop — they do strictly less work:
+a `set` loop — they do strictly less work:
 
 ```gene
-(b ~ fill! 0.0)
-(b ~ fill! 0.0 start end)
-(dst ~ copy_from! src)
-(dst ~ copy_from! src source_start source_end dest_start)
+(b ~ fill 0.0)
+(b ~ fill 0.0 start end)
+(dst ~ copy_from src)
+(dst ~ copy_from src source_start source_end dest_start)
 ```
 
 The bare forms address the whole buffer; the long forms take a half-open
-`[start, end)` range, and `copy_from!`'s last argument is the offset written to
+`[start, end)` range, and `copy_from`'s last argument is the offset written to
 in the destination.
 
-Writing `n` elements one `set!` at a time re-validates the element type `n`
+Writing `n` elements one `set` at a time re-validates the element type `n`
 times, re-decodes the index `n` times, and pays one interpreter dispatch per
-element. `fill!` checks its value **once** — the element boundary is a property
-of the value, not of the slot — and `copy_from!` skips the check entirely when
+element. `fill` checks its value **once** — the element boundary is a property
+of the value, not of the slot — and `copy_from` skips the check entirely when
 the two buffers share an element type, because every element of the source
 already satisfied that identical boundary on the way in. Measured at 512
 elements: 348x for the fill, 150x for the copy. The web profile emits
@@ -3516,14 +3549,14 @@ backends.
 
 Range endpoints are half-open, so `end - start` is the count. An endpoint past
 the end of the buffer, or an `end` before its `start`, raises — a wrong bound
-is a mistake rather than a request to clamp. `copy_from!` onto the same buffer
+is a mistake rather than a request to clamp. `copy_from` onto the same buffer
 **moves** rather than smears: overlapping ranges copy in the safe direction, so
 shifting a buffer along itself is well defined.
 
-For a typed instance, `set_prop!` accepts only declared properties and checks
+For a typed instance, `set_prop` accepts only declared properties and checks
 the declared field type before changing the value. Removing a required field
 with `void` is an error; `void` still removes an optional or untyped property.
-`set_body!` and `push_body!` likewise enforce the declared fixed/rest body
+`set_body` and `push_body` likewise enforce the declared fixed/rest body
 schema after construction and leave the original instance unchanged on failure.
 
 Selectors remain read-only paths; Gene does not overload selector access with hidden mutation.
@@ -3547,33 +3580,30 @@ aggregate value, which is the one exception and is spelled out below:
 | `var`   | fixed   | rebindable  | yes           | any |
 | `const` | fixed   | fixed, resolved before runtime, frozen | no | module / namespace |
 
-`set` changes a lexical binding. It does not mutate the value previously stored
-in that binding. Its form is exactly `(set name value)`, where `name` is a bare
-`var`; extra arguments are an error. Applying `set` to a `let` or `const`
-binding is a compile-time error.
-
-**`set!` is the mutating counterpart, and it takes a path.** The two are
-deliberately different words: `set` rebinds and never mutates, `set!` mutates
-and never rebinds, and the bang marks it as part of the
-`set_prop!`/`put!`/`push!` family. Selectors stay read-only for *reading* —
-`set!` is an explicit write form, not hidden mutation through selector access.
+`set` takes either a bare name or a glued path. `(set name value)` rebinds a
+`var`; applying it to a `let` or `const` is a compile-time error. `(set path
+value)` mutates the addressed slot in place. Extra arguments are an error.
+Mutation APIs use ordinary snake_case names such as `set_prop`, `put`, and
+`push`; trailing `!` is reserved for fexpr invocation. Selectors stay read-only
+for reading—`set` is an explicit write form, not hidden mutation through
+selector access.
 
 ```gene runnable
 (type T ^props {^n Int})
 (var t (T ^n 1))
-(set! t/n 2)      # 2 — checked against the field's declared type
+(set t/n 2)      # 2 — checked against the field's declared type
 (var xs [1 2 3])
-(set! xs/0 9)     # [9 2 3]
+(set xs/0 9)     # [9 2 3]
 (var m {^a 1})
-(set! m/a 2)      # {^a 2}
+(set m/a 2)      # {^a 2}
 ```
 
-Its form is exactly `(set! path value)`. Evaluation is fixed left to right:
+For a path target, evaluation is fixed left to right:
 base, then any dynamic segments, then the value once. Intermediates resolve
 **read-only** and only the final container is mutated, in place — `assoc_in`
 remains the copying counterpart, and having both is the point.
 
-Every `set!` goes through one checked seam, so assignment obeys exactly the
+Every `set` goes through one checked seam, so assignment obeys exactly the
 rules construction does: the closed schema, declared field types for props
 **and** typed body positions, the frozen bit, and `void` handling. A path
 segment is a key, never something applied: a dynamic `%k` segment must evaluate
@@ -3581,7 +3611,7 @@ to a `Sym`, `Str`, or `Int`. The virtual `Node` projections — `head`, `props`,
 `body`, `meta` — are rejected as assignment targets because they return
 detached copies (§1.3), so writing through one would silently update a
 temporary; a *real* prop of that name keeps ordinary precedence and is
-assignable. A `ctor` may use `(set! self/field v)` to populate fields
+assignable. A `ctor` may use `(set self/field v)` to populate fields
 incrementally, and the completed instance is still validated atomically at
 publication.
 
@@ -3597,7 +3627,7 @@ a mutable value:
 
 A namespace-level `var` is unsynchronized mutable global state — shared across
 tasks and not `Send` (§13) — so it is deliberately the unusual spelling. Named
-declarations (`fn`, `fn!`, `type`, `enum`, `protocol`, `ns`, `macro`, `alias`)
+declarations (`fn`, `type`, `enum`, `protocol`, `ns`, `macro`, `alias`)
 behave as `let`: their bindings are fixed.
 
 **Stable bindings enable member folding (§2.1).** Because a `let`/`const` member
@@ -4651,7 +4681,7 @@ Rules:
   through the associated `Env` instead.
 
 Each module compile artifact exposes a typed namespace-tree interface for its
-guaranteed public declarations. Entries distinguish values, macros, `fn!`,
+guaranteed public declarations. Entries distinguish values, macros, fexprs,
 types, protocols, and namespaces; protocol entries also record message
 identities. Only unconditional module declarations and unconditional nested
 `ns` declarations enter this tree. Wildcard and alias resolution uses the tree,
@@ -4760,7 +4790,7 @@ Compilation and runtime initialization are separate phases with separate
 caches and cycle diagnostics:
 
 1. A compile artifact contains expanded GIR, its typed namespace-tree
-   interface, and exported macro/`fn!` metadata. Building it performs no runtime
+   interface, and exported macro/fexpr metadata. Building it performs no runtime
    evaluation and grants no host/runtime capabilities.
 2. Wildcard and alias imports read dependency interfaces. Macro expansion and
    explicit re-export may require the dependency's full compile artifact;
@@ -5197,10 +5227,10 @@ marker changes two things:
   with an unquoted Type head. Use `(new T ...)`. Without this, `(SqliteDb)`
   would produce a handle-less value that passes a `SqliteDb` annotation and
   fails only at its first query.
-- **Declared fields are initializer-only.** `(set! self/handle …)` works while
+- **Declared fields are initializer-only.** `(set self/handle …)` works while
   the ctor's in-progress `self` is still constructing (§7.1.1) and is rejected
-  afterwards, so `(c ~ set_prop! ^handle "junk")` cannot make the next native
-  call read a `Str` as a pointer. `set_body!` and `push_body!` are rejected on
+  afterwards, so `(c ~ set_prop ^handle "junk")` cannot make the next native
+  call read a `Str` as a pointer. `set_body` and `push_body` are rejected on
   a completed wrapper for the same reason.
 
 The rule is inherited through `^is`: a Gene-side subtype may add messages and
@@ -5214,8 +5244,8 @@ So a binding is an ordinary typed FFI declaration plus an ordinary Gene type:
   ^props {^handle (C/OwnedPtr PGconn) ^conninfo Str}
 
   (ctor [conninfo : Str]
-    (set! self/handle (pq_connect_db conninfo))
-    (set! self/conninfo conninfo)))
+    (set self/handle (pq_connect_db conninfo))
+    (set self/conninfo conninfo)))
 
 (var db (new PgConn "postgresql://localhost/app"))
 ```
@@ -5631,7 +5661,7 @@ Prop print order should be deterministic. MVP recommendation: preserve source or
 12. Bounded typed channels with suspension, close semantics, and backpressure.
 13. Protocols/messages, `Error` and `Send` marker protocols, and visible-implementation coherence.
 14. Typed actors: `ActorRef M`, bounded mailboxes, sequential handlers, request/reply, scope ownership, and basic supervision.
-15. `fn!` runtime fexprs, templates/quasiquote expansion, and hygienic template macros.
+15. explicit named fexprs, templates/quasiquote expansion, and hygienic template macros.
 16. Protocol-local `derive` experiment.
 17. `try/catch/ensure` checked errors and cancellation propagation.
 18. `eval node ^in env`: normal compiler pipeline, isolated overlays, `CompileError`, captured overlay lifetime, policy enforcement, and CLI/REPL environments.
@@ -5655,7 +5685,7 @@ The design is close enough to start implementation once the following MVP cuts a
 2. **Core value model:** implement `Any`, `Never`, `Nil`, `Void`, scalar heads, mutable versus shallow-immutable containers, equality, hashing, and deterministic printing.
 3. **Application/module model:** implement `Application` creation, package-root placeholder, file/eval modules, root namespaces, `ns`, namespace imports, `from` module paths, path normalization, module cache behavior, top-level execution, and `main` invocation.
 4. **Minimal type checker:** support nominal types, single inheritance, direct construction, `new`/`ctor`, basic generics, unions, `T?` / `(? T)`, gradual typed-boundary checks, and recoverable boundary `TypeError`.
-5. **Callable evaluator:** implement callable-first evaluation, syntax-callable dispatch, special forms, lexical bindings, `Call`, `SyntaxCall`, `Callable`, `SyntaxCallable`, `Fn`, `Fn!`, `NativeFn`, and `~` message sends.
+5. **Callable evaluator:** implement callable-first evaluation, explicit fexpr dispatch, special forms, lexical bindings, `Call`, `SyntaxCall`, `Callable`, `Fn`, `Fexpr`, `NativeFn`, and `~` message sends.
 6. **Selectors:** implement selector literals, static and dynamic `%` stages, `void` propagation, strict/default options, list/map/node/module/namespace lookup, and functional update paths.
 7. **Streams and parser pipeline:** implement `(Stream T E)`, `yield`, `peek`, `next`, `has_next`, `close`, `Never` error normalization, declaration streams, and stream-shaped reader/parser output.
 8. **Errors:** implement `Error` marker protocol, `fail`, `panic`, `try/catch/ensure`, `CompileError`, `MatchError`, `TypeError`, `CallKindError`, and checked/dynamic `^errors` rules.
@@ -5698,7 +5728,7 @@ Deferred until after the first implementation slice:
 - `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x ~ P:f a)` names protocol `P`'s message `f`; type-direct message values use `Self:f`, not `T:f`. `(x ~ %m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so `~` never invokes an arbitrary function. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope. `(super ~ f a)` delegates to the implementation above the enclosing type on the `^is` chain.
 - `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes the nearest `ctor` in the type's ancestry with a pre-created in-progress `self`, and fails when the hierarchy has no constructor.
-- `fn!` defines runtime fexprs / syntax callables that receive raw syntax and a borrowed `CallerEnv`; durable authority requires explicit named `snapshot` (on `CallerEnv`). `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
+- `(fn name! ...)` defines a named runtime fexpr that receives raw syntax and a borrowed `CallerEnv`; only `(name! ...)` invokes it. Durable authority requires explicit named `snapshot` (on `CallerEnv`). `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
 - Delegation is explicit protocol forwarding, written manually as `impl`s in MVP; future derive helpers may generate forwarding impls from selector paths.
 - `Any`→typed boundary failures raise recoverable `TypeError` with blame. Internal typed representation contradictions are panics.
 - Generic constraints are deferred until needed for generic derived implementations.

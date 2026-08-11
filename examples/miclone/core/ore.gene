@@ -61,23 +61,23 @@
           ^count    (Buffer F32)}
 
   (ctor []
-    (set! self/names [])
-    (set! self/node ($buffer F32 max_ores))
-    (set! self/wherein ($buffer F32 max_ores))
-    (set! self/shape ($buffer F32 max_ores))
-    (set! self/y_min ($buffer F64 max_ores))
-    (set! self/y_max ($buffer F64 max_ores))
-    (set! self/chance ($buffer F64 max_ores))
-    (set! self/size ($buffer F64 max_ores))
-    (set! self/amount ($buffer F64 max_ores))
-    (set! self/count ($buffer F32 1.0))))
+    (set self/names [])
+    (set self/node ($buffer F32 max_ores))
+    (set self/wherein ($buffer F32 max_ores))
+    (set self/shape ($buffer F32 max_ores))
+    (set self/y_min ($buffer F64 max_ores))
+    (set self/y_max ($buffer F64 max_ores))
+    (set self/chance ($buffer F64 max_ores))
+    (set self/size ($buffer F64 max_ores))
+    (set self/amount ($buffer F64 max_ores))
+    (set self/count ($buffer F32 1.0))))
 
 (fn ore_count [o : OreRegistry] : F64
   (o/count ~ get 0.0))
 
 (type OreRegistryFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for OreRegistryFull)
 
@@ -88,16 +88,16 @@
   (var slot id)
   (if_yes (>= slot max_ores)
     (fail (new OreRegistryFull $"ore registry is full at ${max_ores} entries")))
-  (o/names ~ push! name)
-  (o/node ~ set! slot node)
-  (o/wherein ~ set! slot wherein)
-  (o/shape ~ set! slot shape)
-  (o/y_min ~ set! slot y_min)
-  (o/y_max ~ set! slot y_max)
-  (o/chance ~ set! slot chance)
-  (o/size ~ set! slot size)
-  (o/amount ~ set! slot amount)
-  (o/count ~ set! 0.0 (+ id 1.0))
+  (o/names ~ push name)
+  (o/node ~ set slot node)
+  (o/wherein ~ set slot wherein)
+  (o/shape ~ set slot shape)
+  (o/y_min ~ set slot y_min)
+  (o/y_max ~ set slot y_max)
+  (o/chance ~ set slot chance)
+  (o/size ~ set slot size)
+  (o/amount ~ set slot amount)
+  (o/count ~ set 0.0 (+ id 1.0))
   id)
 
 (fn ore_name [o : OreRegistry id : F64] : Str
@@ -120,7 +120,7 @@
               (&& (&& (>= z 0.0) (< z dim)) (&& (>= wy y_min) (<= wy y_max))))
     (var i (+ x (+ (* y dim) (* z (* dim dim)))))
     (if_yes (== (out ~ get i) wherein)
-      (out ~ set! i node))))
+      (out ~ set i node))))
 
 # `amount` nodes at hashed positions inside a `size³` cube, which is upstream's
 # `ore_scatter`. The cube is anchored anywhere in the cell, so clusters do not

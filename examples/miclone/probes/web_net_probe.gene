@@ -79,7 +79,7 @@
   (var inv ($buffer F64 inv_cells))
   (var inv_n 0.0)
   # A delta is four numbers, so the log is one flat buffer and a count — the
-  # profile has no `set!` on a `(List T)`.
+  # profile has no `set` on a `(List T)`.
   (var dlog ($buffer F64 (* max_deltas 4.0)))
   (var dn 0.0)
   (var ent_n 0.0)
@@ -134,10 +134,10 @@
       (set_node world (delta ~ get delta_x) (delta ~ get delta_y)
                 (delta ~ get delta_z) (delta ~ get delta_id))
       (if_yes (< dn max_deltas)
-        (dlog ~ set! (* dn 4.0) (delta ~ get delta_x))
-        (dlog ~ set! (+ (* dn 4.0) 1.0) (delta ~ get delta_y))
-        (dlog ~ set! (+ (* dn 4.0) 2.0) (delta ~ get delta_z))
-        (dlog ~ set! (+ (* dn 4.0) 3.0) (delta ~ get delta_id))
+        (dlog ~ set (* dn 4.0) (delta ~ get delta_x))
+        (dlog ~ set (+ (* dn 4.0) 1.0) (delta ~ get delta_y))
+        (dlog ~ set (+ (* dn 4.0) 2.0) (delta ~ get delta_z))
+        (dlog ~ set (+ (* dn 4.0) 3.0) (delta ~ get delta_id))
         (set dn (+ dn 1.0))))))
 
   (await ($time/sleep 400.0))
@@ -240,7 +240,7 @@
                       (== (dlog ~ get (+ (* i 4.0) 2.0)) dz)))
         (if_yes (== seen nth)
           (set found true)
-          (out ~ set! 0.0 (dlog ~ get (+ (* i 4.0) 3.0))))
+          (out ~ set 0.0 (dlog ~ get (+ (* i 4.0) 3.0))))
         (set seen (+ seen 1.0)))
       (set i (+ i 1.0)))
     found))

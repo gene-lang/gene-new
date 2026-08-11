@@ -73,20 +73,20 @@
           ^count       (Buffer F32)}  # one cell, as core/registry.gene
 
   (ctor []
-    (set! self/names [])
-    (set! self/kind ($buffer F32 max_tiles))
-    (set! self/r ($buffer F32 max_tiles))
-    (set! self/g ($buffer F32 max_tiles))
-    (set! self/b ($buffer F32 max_tiles))
-    (set! self/spread ($buffer F32 max_tiles))
-    (set! self/seed ($buffer F32 max_tiles))
-    (set! self/base_r ($buffer F32 max_tiles))
-    (set! self/base_g ($buffer F32 max_tiles))
-    (set! self/base_b ($buffer F32 max_tiles))
-    (set! self/base_spread ($buffer F32 max_tiles))
-    (set! self/base_seed ($buffer F32 max_tiles))
-    (set! self/density ($buffer F32 max_tiles))
-    (set! self/count ($buffer F32 1.0))))
+    (set self/names [])
+    (set self/kind ($buffer F32 max_tiles))
+    (set self/r ($buffer F32 max_tiles))
+    (set self/g ($buffer F32 max_tiles))
+    (set self/b ($buffer F32 max_tiles))
+    (set self/spread ($buffer F32 max_tiles))
+    (set self/seed ($buffer F32 max_tiles))
+    (set self/base_r ($buffer F32 max_tiles))
+    (set self/base_g ($buffer F32 max_tiles))
+    (set self/base_b ($buffer F32 max_tiles))
+    (set self/base_spread ($buffer F32 max_tiles))
+    (set self/base_seed ($buffer F32 max_tiles))
+    (set self/density ($buffer F32 max_tiles))
+    (set self/count ($buffer F32 1.0))))
 
 (fn new_tiles [] : TileRegistry
   (new TileRegistry))
@@ -96,7 +96,7 @@
 
 (type TileRegistryFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for TileRegistryFull)
 
@@ -113,20 +113,20 @@
   (if_yes (>= slot max_tiles)
     (fail (new TileRegistryFull
                $"tile registry is full at ${max_tiles} entries; the atlas is 8x8")))
-  (t/names ~ push! name)
-  (t/kind ~ set! slot kind)
-  (t/r ~ set! slot r)
-  (t/g ~ set! slot g)
-  (t/b ~ set! slot b)
-  (t/spread ~ set! slot spread)
-  (t/seed ~ set! slot seed)
-  (t/base_r ~ set! slot base_r)
-  (t/base_g ~ set! slot base_g)
-  (t/base_b ~ set! slot base_b)
-  (t/base_spread ~ set! slot base_spread)
-  (t/base_seed ~ set! slot base_seed)
-  (t/density ~ set! slot density)
-  (t/count ~ set! 0.0 (+ slot 1.0))
+  (t/names ~ push name)
+  (t/kind ~ set slot kind)
+  (t/r ~ set slot r)
+  (t/g ~ set slot g)
+  (t/b ~ set slot b)
+  (t/spread ~ set slot spread)
+  (t/seed ~ set slot seed)
+  (t/base_r ~ set slot base_r)
+  (t/base_g ~ set slot base_g)
+  (t/base_b ~ set slot base_b)
+  (t/base_spread ~ set slot base_spread)
+  (t/base_seed ~ set slot base_seed)
+  (t/density ~ set slot density)
+  (t/count ~ set 0.0 (+ slot 1.0))
   slot)
 
 # --- lookup ------------------------------------------------------------------

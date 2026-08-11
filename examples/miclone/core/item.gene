@@ -87,21 +87,21 @@
           ^counts      (Buffer F32)}  # two cells: items used, tool entries used
 
   (ctor []
-    (set! self/names [])
-    (set! self/descriptions [])
-    (set! self/node ($buffer F32 max_items))
-    (set! self/stack_max ($buffer F32 max_items))
-    (set! self/tool_item ($buffer F32 max_items))
-    (set! self/tool_group ($buffer F32 max_items))
-    (set! self/tool_time ($buffer F32 max_items))
-    (set! self/tool_level ($buffer F32 max_items))
-    (set! self/node_item ($buffer F32 max_content))
-    (set! self/counts ($buffer F32 2.0))
+    (set self/names [])
+    (set self/descriptions [])
+    (set self/node ($buffer F32 max_items))
+    (set self/stack_max ($buffer F32 max_items))
+    (set self/tool_item ($buffer F32 max_items))
+    (set self/tool_group ($buffer F32 max_items))
+    (set self/tool_time ($buffer F32 max_items))
+    (set self/tool_level ($buffer F32 max_items))
+    (set self/node_item ($buffer F32 max_content))
+    (set self/counts ($buffer F32 2.0))
     # `no_item`, not 0: an unfilled cell must not read as "item 0", which is a
     # real item. Buffers zero-initialise, so this is written rather than assumed.
     (var i 0.0)
     (while (< i max_content)
-      (self/node_item ~ set! i no_item)
+      (self/node_item ~ set i no_item)
       (set i (+ i 1.0)))))
 
 (let count_items 0.0)
@@ -118,7 +118,7 @@
 
 (type ItemRegistryFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for ItemRegistryFull)
 
@@ -133,12 +133,12 @@
   (if_yes (>= id max_items)
     (fail (new ItemRegistryFull
                $"item registry is full at ${max_items} entries")))
-  (r/names ~ push! name)
-  (r/descriptions ~ push! description)
-  (r/node ~ set! id node)
-  (r/stack_max ~ set! id stack_max)
-  (if_yes (>= node 0.0) (r/node_item ~ set! node id))
-  (r/counts ~ set! count_items (+ id 1.0))
+  (r/names ~ push name)
+  (r/descriptions ~ push description)
+  (r/node ~ set id node)
+  (r/stack_max ~ set id stack_max)
+  (if_yes (>= node 0.0) (r/node_item ~ set node id))
+  (r/counts ~ set count_items (+ id 1.0))
   id)
 
 # The item a node yields when dug or picked up, or `no_item` for a node nobody
@@ -205,11 +205,11 @@
   (if_yes (>= n max_items)
     (fail (new ItemRegistryFull
                $"item registry is full at ${max_items} tool capabilities")))
-  (r/tool_item ~ set! n item)
-  (r/tool_group ~ set! n group)
-  (r/tool_time ~ set! n time_ms)
-  (r/tool_level ~ set! n level)
-  (r/counts ~ set! count_tools (+ n 1.0)))
+  (r/tool_item ~ set n item)
+  (r/tool_group ~ set n group)
+  (r/tool_time ~ set n time_ms)
+  (r/tool_level ~ set n level)
+  (r/counts ~ set count_tools (+ n 1.0)))
 
 (fn tool_entry_item [r : ItemRegistry i : F64] : F64 (r/tool_item ~ get i))
 (fn tool_entry_group [r : ItemRegistry i : F64] : F64 (r/tool_group ~ get i))

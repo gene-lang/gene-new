@@ -46,7 +46,7 @@
     (var task subject/heldout_compositions/%index)
     (var operations : (List Str) [])
     (for step in (program_steps task/verifier/target_program)
-      (operations ~ push! (operation_name step)))
+      (operations ~ push (operation_name step)))
     ($println
       (stringify
         {^schema 1

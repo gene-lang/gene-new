@@ -19,7 +19,7 @@
   (var donor_seeds : (List Int) [])
   (var index 1)
   (while (< index (argv ~ size))
-    (donor_seeds ~ push! (parse_int argv/%index))
+    (donor_seeds ~ push (parse_int argv/%index))
     (set index (+ index 1)))
 
   (var subject (default_induction_subject))

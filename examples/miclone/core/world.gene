@@ -133,27 +133,27 @@
   (ctor []
     # Zeroed, which is already an all-air block with no light: `content_air` is
     # 0 by construction (see above), so this needs no fill pass.
-    (set! self/content ($buffer F32 block_nodes))
-    (set! self/param1 ($buffer F32 block_nodes))
-    (set! self/param2 ($buffer F32 block_nodes))))
+    (set self/content ($buffer F32 block_nodes))
+    (set self/param1 ($buffer F32 block_nodes))
+    (set self/param2 ($buffer F32 block_nodes))))
 
 (fn get_content [b : Block x : F64 y : F64 z : F64] : F64
   (b/content ~ get (block_index x y z)))
 
 (fn set_content [b : Block x : F64 y : F64 z : F64 id : F64] : Nil
-  (b/content ~ set! (block_index x y z) id))
+  (b/content ~ set (block_index x y z) id))
 
 (fn get_param1 [b : Block x : F64 y : F64 z : F64] : F64
   (b/param1 ~ get (block_index x y z)))
 
 (fn set_param1 [b : Block x : F64 y : F64 z : F64 v : F64] : Nil
-  (b/param1 ~ set! (block_index x y z) v))
+  (b/param1 ~ set (block_index x y z) v))
 
 (fn get_param2 [b : Block x : F64 y : F64 z : F64] : F64
   (b/param2 ~ get (block_index x y z)))
 
 (fn set_param2 [b : Block x : F64 y : F64 z : F64 v : F64] : Nil
-  (b/param2 ~ set! (block_index x y z) v))
+  (b/param2 ~ set (block_index x y z) v))
 
 # --- light, packed into param1 (§4) -------------------------------------------
 #

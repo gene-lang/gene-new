@@ -399,7 +399,7 @@ suite "native api — roots and trampoline":
     check run(compileSource("conn/backend"), scope).print() == "\"demo\""
     check run(compileSource("($head conn)"), scope).print() == "(type Conn)"
     check run(compileSource(
-      "(try (conn ~ set_prop! `handle \"junk\") catch (Error ^message m) m)"),
+      "(try (conn ~ set_prop `handle \"junk\") catch (Error ^message m) m)"),
       scope).print() ==
       "\"cannot set field 'handle' on Conn: native wrapper fields are " &
       "initializer-only\""
@@ -500,7 +500,7 @@ suite "native api — roots and trampoline":
     discard run(compileSource(
       "(type Blob ^repr native_wrapper ^props {^handle (C/OwnedPtr Blob)} " &
       "  (ctor [^borrowed : Bool = false] " &
-      "    (set! self/handle (if borrowed (borrow_blob) (open_blob)))))"), scope)
+      "    (set self/handle (if borrowed (borrow_blob) (open_blob)))))"), scope)
     check run(compileSource("($head (new Blob))"), scope).print() ==
       "(type Blob)"
     # A borrowed pointer fails the declared field type, and the ctor's own
@@ -523,13 +523,13 @@ suite "native api — roots and trampoline":
     let scope = geneModuleScope(module)
     # Each ctor installs a handle and then leaves `label` unset, so schema
     # validation — not the body — is what fails. `Bag` covers the declared
-    # *body* position: `push_body!` is one of the mutations an in-progress
+    # *body* position: `push_body` is one of the mutations an in-progress
     # instance may perform, so the unwind has to reach body items too.
     discard run(compileSource(
       "(type Conn ^repr native_wrapper ^props {^handle Any ^label Str} " &
-      "  (ctor [] (set! self/handle (open_handle)))) " &
+      "  (ctor [] (set self/handle (open_handle)))) " &
       "(type Bag ^repr native_wrapper ^body [Any] ^props {^label Str} " &
-      "  (ctor [] (self ~ push_body! (open_handle))))"), scope)
+      "  (ctor [] (self ~ push_body (open_handle))))"), scope)
     let failed = run(compileSource(
       "(try (new Conn) catch (Error ^message m) m)"), scope)
     check "left required field 'label' unset" in failed.print()

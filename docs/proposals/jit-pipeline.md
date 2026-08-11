@@ -91,7 +91,7 @@ mechanism into one backend-neutral native-lowering request policy rather than
 adding a parallel validator. `^jit true` and typed-native requirements use the
 same source-located lowering errors; only `--jit-required` changes whether a
 failed JIT request is fatal. Runtime fexprs
-(`fn!`, including ctor fexpr behavior) are categorically ineligible because
+(explicit fexprs, including ctor fexpr behavior) are categorically ineligible because
 they require unevaluated forms and a caller environment, so their diagnostic
 names that category rather than an arbitrary first body operation. Template
 macros are expanded before resolved-function lowering; a macro expansion may
@@ -726,7 +726,7 @@ is inspected in tests.
 
 Nothing in the language requires paying that. The lowerable subset is
 *structured by construction*: statement position admits only `let`/`var`, `set`,
-`set!`, `do`, and `while` (`compiler.nim:2952`), and `if` is a three-arm
+`set`, `do`, and `while` (`compiler.nim:2952`), and `if` is a three-arm
 expression that lowers to a ternary. `break`, `continue`, `return`, `for` and
 `try` all exist in Gene (`compiler.nim:7517`) and none of them is lowerable.
 There is no `goto` and no irreducible control flow to represent.
@@ -916,7 +916,7 @@ turns a runtime policy into a build guarantee.
   request cannot lower and otherwise silently falls back to VM code — precisely
   the `^jit true` / `--jit-required` split. Reuse it rather than build a parallel
   one, and keep the two markers' diagnostics phrased alike.
-- **Fexprs and macros go unmentioned.** `fn!` and ctor fexprs receive unevaluated
+- **Fexprs and macros go unmentioned.** Explicit fexprs and ctor fexprs receive unevaluated
   forms and a snapshot caller-env; they can never form a plan. §2.1 promises a
   diagnostic "naming the first unsupported operation", but for a fexpr the honest
   diagnostic is categorical. Worth one line so the failure is a clear rejection

@@ -20,6 +20,7 @@ type
     tkHashLParen,            # #(
     tkHashLBracket,          # #[
     tkHashLBrace,            # #{
+    tkRef, tkDeref,          # #Ref #Deref
     tkCaret, tkCaretCaret,   # ^ ^^
     tkAt, tkAtAt,            # @ @@
     tkTilde,                 # ~
@@ -838,6 +839,20 @@ proc tokenizeImpl(r: var Reader,
         r.advance(); r.addToken(tkHashLBrace, "#{", startLine, startCol, startByte)
         trackDelimiter(tkHashLBrace)
       of '_': r.advance(); r.addToken(tkUnderscore, "#_", startLine, startCol, startByte)
+      of 'R':
+        if r.src.continuesWith("Ref", r.pos) and
+            (r.pos + 3 >= r.src.len or not isSymbolChar(r.src[r.pos + 3])):
+          for _ in 0 ..< 3: r.advance()
+          r.addToken(tkRef, "#Ref", startLine, startCol, startByte)
+        else:
+          r.raiseReservedHashForm(c2, startLine, startCol)
+      of 'D':
+        if r.src.continuesWith("Deref", r.pos) and
+            (r.pos + 5 >= r.src.len or not isSymbolChar(r.src[r.pos + 5])):
+          for _ in 0 ..< 5: r.advance()
+          r.addToken(tkDeref, "#Deref", startLine, startCol, startByte)
+        else:
+          r.raiseReservedHashForm(c2, startLine, startCol)
       of '"':
         let literal = r.parseRegexLiteral()
         r.addToken(tkRegex, literal.pattern, startLine, startCol, startByte,
@@ -909,7 +924,22 @@ proc tokenizeImpl(r: var Reader,
     of ',': r.advance(); r.addToken(tkComma, ",", startLine, startCol, startByte)
     of ':': r.advance(); r.addToken(tkColon, ":", startLine, startCol, startByte)
     of ';': r.advance(); r.addToken(tkSemi, ";", startLine, startCol, startByte)
-    of '~': r.advance(); r.addToken(tkTilde, "~", startLine, startCol, startByte)
+    of '~':
+      # A path send segment (`xs/~size`, design §2.1) desugars to the ordinary
+      # symbol `~size`, so `~` glued to a symbol char has to lex as one symbol
+      # here too. Otherwise the printer's own output for such a symbol rereads
+      # as two tokens (`~` and `size`) and silently changes the form. A `~`
+      # followed by whitespace or a delimiter is still the send operator.
+      if r.pos + 1 < r.src.len and r.src[r.pos + 1].isSymbolChar:
+        let lexStart = r.pos
+        r.advance()
+        while r.pos < r.src.len and r.src[r.pos].isSymbolChar:
+          r.advance()
+        r.addToken(tkSymbol, r.src[lexStart ..< r.pos],
+                   startLine, startCol, startByte)
+      else:
+        r.advance()
+        r.addToken(tkTilde, "~", startLine, startCol, startByte)
     of '%': r.advance(); r.addToken(tkPercent, "%", startLine, startCol, startByte)
     of '`': r.advance(); r.addToken(tkBacktick, "`", startLine, startCol, startByte)
     of '$':
@@ -1049,6 +1079,8 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkHashLParen: "hash_l_paren"
   of tkHashLBracket: "hash_l_bracket"
   of tkHashLBrace: "hash_l_brace"
+  of tkRef: "ref"
+  of tkDeref: "deref"
   of tkCaret: "caret"
   of tkCaretCaret: "caret_caret"
   of tkAt: "at"
@@ -1172,7 +1204,10 @@ proc qualifiedMessageSplit*(lexeme: string): int =
     if lexeme[i] == ':' and lexeme[i - 1] != ':' and lexeme[i + 1] != ':':
       return i
 
-proc desugarPath*(lexeme: string): Value =
+proc desugarPath*(lexeme: string, sourceName = "", line = 0, col = 0): Value =
+  ## `sourceName`/`line`/`col` locate the diagnostic for a rejected segment;
+  ## they are only read on the error path, so callers with no token in hand
+  ## may leave them defaulted.
   if lexeme == "/": return newSym("/")
   # `//` is the remainder operator (design §7.4), not a selector: a selector
   # needs at least one segment, so `//` would otherwise read as the empty
@@ -1189,9 +1224,24 @@ proc desugarPath*(lexeme: string): Value =
       # `%x` escapes to a lexical value; `%$x` escapes to a standard-library
       # one, so `$` means `gene/` wherever a name is legal.
       let inner = p[1..^1]
+      if inner.len == 0:
+        # A bare `%` segment has nothing to escape to. Design §2.1 already
+        # declares this short syntax invalid -- a complex stage must use the
+        # `(select ...)` long form -- and accepting it is actively harmful in
+        # two ways: it yields an unquoted *empty* symbol, which the printer
+        # cannot write back out (`(unquote )` rereads as a body-less
+        # `(unquote)`), and the following form is silently swallowed as a
+        # separate argument, because `%(` ends the symbol lexeme.
+        # `(!= xs/%(- i 1) "\n")` would read as a three-argument `!=` whose
+        # second argument is the index expression -- a wrong program that
+        # raises nothing. Checked here, inside the segment walk that already
+        # exists, so no symbol token pays an extra pass over its lexeme.
+        raiseReadErrorAt(sourceName, line, col,
+          "'%' path segment needs a name; a computed stage must use the " &
+          "long form, e.g. (select xs %stage) (design §2.1)")
       let escaped =
         if inner.startsWith("$") and inner.len > 1:
-          desugarPath("gene/" & inner[1..^1])
+          desugarPath("gene/" & inner[1..^1], sourceName, line, col)
         else:
           newSym(inner)
       body.add newNode(newSym("unquote"), body = @[escaped])
@@ -1555,19 +1605,42 @@ proc parseForm(r: var Reader, inList = false): Value =
         # `msg` of the protocol reached at `ns/Proto`. Only the last segment is
         # the message name, so `:` still splits exactly once.
         finish newNode(newSym("msg"),
-                       body = @[desugarPath(lex[0 ..< colonAt]),
+                       body = @[desugarPath(lex[0 ..< colonAt], r.sourceName,
+                                            tok.line, tok.col),
                                 newSym(lex[colonAt + 1 .. ^1])])
       if not inList:
         if lex.endsWith("..."):
-          finish newNode(newSym("..."), body = @[desugarPath(lex[0..^4])])
-        finish desugarPath(lex)
+          finish newNode(newSym("..."),
+                         body = @[desugarPath(lex[0..^4], r.sourceName,
+                                              tok.line, tok.col)])
+        finish desugarPath(lex, r.sourceName, tok.line, tok.col)
       else: finish newSym(lex)
   of tkGeneMember:
     # `$x` / `$str/join` select from the `gene` root, which cannot be shadowed.
     if tok.lexeme.endsWith("..."):
       finish newNode(newSym("..."),
-                     body = @[desugarPath("gene/" & tok.lexeme[0..^4])])
-    finish desugarPath("gene/" & tok.lexeme)
+                     body = @[desugarPath("gene/" & tok.lexeme[0..^4],
+                                          r.sourceName, tok.line, tok.col)])
+    finish desugarPath("gene/" & tok.lexeme, r.sourceName, tok.line, tok.col)
+  of tkRef, tkDeref:
+    let nameTok = r.next()
+    if nameTok.kind == tkEof:
+      r.raiseReadIncomplete("unexpected end of input")
+    var validName = nameTok.kind == tkSymbol and nameTok.lexeme.len > 0 and
+      nameTok.lexeme[0] in {'a'..'z', '_'}
+    if validName:
+      for c in nameTok.lexeme:
+        if c notin {'a'..'z', '0'..'9', '_'}:
+          validName = false
+          break
+    if not validName:
+      r.raiseReadErrorAt(nameTok,
+        tok.lexeme & " name must be a simple snake_case symbol")
+    let name = newSym(nameTok.lexeme)
+    if tok.kind == tkRef:
+      let value = r.parseForm(inList = inList)
+      finish newNode(newSym("#Ref"), body = @[name, value])
+    finish newNode(newSym("#Deref"), body = @[name])
   of tkLParen:
     r.pushReadContext(tok)
     finish r.parseNode(tkRParen)

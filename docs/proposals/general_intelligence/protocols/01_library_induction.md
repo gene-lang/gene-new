@@ -323,8 +323,11 @@ Before evaluation, an independent reviewer must approve:
 - the exact Student interval and per-corpus reuse gate below.
 
 Nothing generated while selecting these rules may enter an evaluation corpus.
-The reviewer attests the candidate digest, independence, unopened evaluation
-output, and result-free seed selection. A changed byte invalidates that
+The reviewer supplies only approval plus free-form notes. The tooling binds
+that decision to the candidate digest and records the Git reviewer identity and
+UTC timestamp. Approval means the reviewer attests independent review,
+unopened evaluation output, and result-free seed selection; separate checkbox
+fields for those conditions are not required. A changed byte invalidates that
 attestation.
 
 ## Candidate arms
@@ -385,11 +388,14 @@ After independent review, hash the protocol, interpreter, generators, hidden
 verifier, setup exporter, frozen consumer, runner, runtime binary, seed
 schedule, and exact arm configuration in a dated freeze manifest before opening
 any evaluation result. `prepare_library_induction_freeze.py packet` writes the
-review candidate outside the worktree. `freeze` refuses a dirty revision, an
-in-tree attestation or output, an invalid attestation, a setup over 60 seconds
-or 64 MiB, an unmatched donor, and any setup payload containing an arm result.
-It records hashes and observed resources for all eight canonical setup files
-while executing zero held-out searches. `verify` rechecks current source, the
+review candidate outside the worktree. `attest` accepts only `--approve` and
+`--notes` as reviewer decisions, checks the reviewed packet against the current
+candidate, and automatically writes the digest-bound schema-2 record outside
+the worktree. `freeze` refuses a dirty revision, an in-tree attestation or
+output, an invalid or stale attestation, a setup over 60 seconds or 64 MiB, an
+unmatched donor, and any setup payload containing an arm result. It records
+hashes and observed resources for all eight canonical setup files while
+executing zero held-out searches. `verify` rechecks current source, the
 attestation, manifest, schedule, setup shapes, sizes, and hashes.
 
 Only after that freeze may `run_library_induction_evaluation.py run` evaluate

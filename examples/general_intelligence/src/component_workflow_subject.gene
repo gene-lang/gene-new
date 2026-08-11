@@ -42,8 +42,8 @@
       (var projection (teaching_signature subject program inputs))
       (var bucket (index ~ get projection))
       (if (== bucket void) (set bucket []))
-      (bucket ~ push! program)
-      (index ~ put! projection bucket))
+      (bucket ~ push program)
+      (index ~ put projection bucket))
     (set depth (+ depth 1)))
   index)
 
@@ -89,7 +89,7 @@
                 subject candidate_sets/%position current execution/output)
         (set sound false))
       (set current execution/output)
-      (chain ~ push! current)
+      (chain ~ push current)
       (set position (+ position 1)))
     (if (&& valid (! sound)) (set unsound_draws (+ unsound_draws 1)))
     (if (&& valid sound (!= current draw/input) (! (current ~ empty?)))
@@ -109,7 +109,7 @@
                            attempts_per_component : Int] : Node
   (var candidate_counts : (List Int) [])
   (for candidates in candidate_sets
-    (candidate_counts ~ push! (candidates ~ size)))
+    (candidate_counts ~ push (candidates ~ size)))
   `(component_workflow_task
      ^public
        (task
@@ -154,16 +154,16 @@
       (set state family_draw/state)
       (var key $"${family_draw/value}")
       (if_yes (== (selected ~ get key) void)
-        (selected ~ put! key true)
+        (selected ~ put key true)
         (var family_index family_draw/value)
         (var family families/%family_index)
         (var position (programs ~ size))
-        (programs ~ push! family/canonical_program)
-        (signatures ~ push! family/semantic_signature)
-        (components ~ push! (public_component family pack_index position))
-        (candidate_sets ~ push!
+        (programs ~ push family/canonical_program)
+        (signatures ~ push family/semantic_signature)
+        (components ~ push (public_component family pack_index position))
+        (candidate_sets ~ push
           (family_admissible_candidates candidate_index family))
-        (tuple_parts ~ push! key)))
+        (tuple_parts ~ push key)))
     (var tuple_key (join tuple_parts "_"))
     (if_yes (== (used_tuples ~ get tuple_key) void)
       (var draw
@@ -171,9 +171,9 @@
       (set state draw/state)
       (set unsound_draws (+ unsound_draws draw/unsound_draws))
       (if_yes draw/valid
-        (used_tuples ~ put! tuple_key true)
+        (used_tuples ~ put tuple_key true)
         (var task_index (tasks ~ size))
-        (tasks ~ push!
+        (tasks ~ push
           (component_task_record
             $"component_composition_${task_index}"
             (quote heldout_composition) draw/input draw/expected draw/chain
@@ -314,7 +314,7 @@
               (!= next value)
               (candidates_agree? subject candidates value next))
       (return false))
-    (programs ~ push! family/canonical_program)
+    (programs ~ push family/canonical_program)
     (set component_index (+ component_index 1)))
   (var last task/verifier/chain_values/%composition_arity)
   (&&
@@ -330,7 +330,7 @@
   (var teachable (teachable_behavior_catalog subject complete))
   (var teachable_by_signature : Map {})
   (for behavior in teachable/teachable_behaviors
-    (teachable_by_signature ~ put! behavior/signature behavior))
+    (teachable_by_signature ~ put behavior/signature behavior))
   (var candidate_index (admissible_candidate_index subject))
 
   (var catalog_valid (== (candidate/catalog ~ size) candidate/family_count))
@@ -351,8 +351,8 @@
               (== (family_ids ~ get family/id) void)
               (== (family_signatures ~ get family/semantic_signature) void))
       (set catalog_valid false))
-    (family_ids ~ put! family/id true)
-    (family_signatures ~ put! family/semantic_signature true)
+    (family_ids ~ put family/id true)
+    (family_signatures ~ put family/semantic_signature true)
     (set family_index (+ family_index 1)))
   (for primitive in subject/primitive_tokens
     (if_not (primitive_covered? candidate/catalog primitive)
@@ -366,7 +366,7 @@
               (>= index 0) (< index candidate/family_count)
               (== (order_seen ~ get key) void))
       (set order_valid false))
-    (order_seen ~ put! key true))
+    (order_seen ~ put key true))
 
   (var replay_valid
     (== (candidate/replay_suites ~ size) candidate/family_count))
@@ -380,7 +380,7 @@
               (== (suite/cases ~ size) candidate/replay_cases_per_family)
               (== (replay_ids ~ get suite/family_id) void))
       (set replay_valid false))
-    (replay_ids ~ put! suite/family_id true)
+    (replay_ids ~ put suite/family_id true)
     (for test_case in suite/cases
       (set replay_case_count (+ replay_case_count 1))
       (if (== family nil)
@@ -405,7 +405,7 @@
       (set training_valid false))
     (if (!= (training_ids ~ get task/public/id) void)
       (set training_valid false))
-    (training_ids ~ put! task/public/id true)
+    (training_ids ~ put task/public/id true)
     (set training_index (+ training_index 1)))
 
   (var expected_probe_count 0)
@@ -423,7 +423,7 @@
       (set probes_valid false))
     (if (!= (probe_ids ~ get task/public/id) void)
       (set probes_valid false))
-    (probe_ids ~ put! task/public/id true))
+    (probe_ids ~ put task/public/id true))
 
   (var compositions_valid
     (== (candidate/heldout_compositions ~ size)
@@ -440,14 +440,14 @@
       (+ sound_component_count candidate/composition_arity))
     (var tuple_parts : (List Str) [])
     (for component in task/public/components
-      (tuple_parts ~ push! component/workflow_id))
+      (tuple_parts ~ push component/workflow_id))
     (var tuple_key (join tuple_parts "|"))
     (if (!= (composition_tuples ~ get tuple_key) void)
       (set compositions_valid false))
-    (composition_tuples ~ put! tuple_key true)
+    (composition_tuples ~ put tuple_key true)
     (if (!= (composition_ids ~ get task/public/id) void)
       (set compositions_valid false))
-    (composition_ids ~ put! task/public/id true))
+    (composition_ids ~ put task/public/id true))
 
   (var recomputed_stats
     (admissible_candidate_stats candidate_index candidate/catalog))

@@ -46,9 +46,9 @@
           ^count    (Buffer F32)}
 
   (ctor []
-    (set! self/declared ($buffer F32 max_content))
-    (set! self/item ($buffer F32 max_content))
-    (set! self/count ($buffer F32 max_content))))
+    (set self/declared ($buffer F32 max_content))
+    (set self/item ($buffer F32 max_content))
+    (set self/count ($buffer F32 max_content))))
 
 (fn new_drop_table [] : DropTable
   (new DropTable))
@@ -58,9 +58,9 @@
 # and is why "declared" is its own column rather than being inferred from a
 # count.
 (fn register_drop [t : DropTable id : F64 item : F64 count : F64] : Nil
-  (t/declared ~ set! id 1.0)
-  (t/item ~ set! id item)
-  (t/count ~ set! id count))
+  (t/declared ~ set id 1.0)
+  (t/item ~ set id item)
+  (t/count ~ set id count))
 
 (fn declared? [t : DropTable id : F64] : Bool
   (== (t/declared ~ get id) 1.0))

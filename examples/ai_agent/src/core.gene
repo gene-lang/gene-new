@@ -52,8 +52,8 @@
               discard_pending : repl_discard_pending
               eval_guard_begin : repl_eval_guard_begin
               eval_guard_end : repl_eval_guard_end])
-(import $log [new_logger info! warn! error! debug! trace!])
-(import [Pane SurfaceAttachment create_surface emit_surface_event!]
+(import $log [new_logger log_info log_warn log_error log_debug log_trace])
+(import [Pane SurfaceAttachment create_surface emit_surface_event]
         from "./surface")
 
 # Diagnostic logging is intentionally separate from the authoritative event
@@ -82,11 +82,11 @@
 (var client_surface_checkpoint_hook ($cell nil))
 (var client_surface_record_loader ($cell nil))
 
-(fn client_surface_checkpoint! [app, reason : Str]
+(fn client_surface_checkpoint [app, reason : Str]
   (var sink (client_surface_checkpoint_hook ~ get))
   (if ($present? sink) (sink app reason)))
 
-(fn ui_refresh! []
+(fn request_ui_refresh []
   (var f (ui_refresh ~ get))
   (if ($present? f) (f)))
 
@@ -307,7 +307,7 @@
       (var kept [])
       (var first (- values/~size max_count))
       (repeat i in values/~size
-        (if (>= i first) (kept ~ push! values/%i)))
+        (if (>= i first) (kept ~ push values/%i)))
       kept)))
 
 # -----------------------------------------------------------------------------
@@ -415,7 +415,7 @@
           ~ each (fn [b]
               ((to_stream (split b "|"))
                 ~ each (fn [c]
-                    ((segs ~ get) ~ push! (trim c))))))))
+                    ((segs ~ get) ~ push (trim c))))))))
   (segs ~ get))
 
 # The workspace lease can cover only subprocesses whose lifetime the
@@ -558,7 +558,7 @@
 # handler call; the guard runs synchronously before the handler's first await,
 # so concurrent session actors cannot interleave between set and use.
 (var guard_confirm ($cell nil))   # nil -> confirm_destructive? (CLI stdin)
-(var guard_emit ($cell nil))      # nil -> emit_event! (CLI global log)
+(var guard_emit ($cell nil))      # nil -> emit_event (CLI global log)
 
 (fn set_guard_confirm [f]
   (guard_confirm ~ set f))
@@ -569,11 +569,11 @@
     (f cmd)
     (confirm_destructive? cmd)))
 
-(fn guard_emit! [type : Str, props]
+(fn emit_guard_event [type : Str, props]
   (var f (guard_emit ~ get))
   (if (present? f)
     (f type props)
-    (emit_event! type props)))
+    (emit_event type props)))
 
 # -----------------------------------------------------------------------------
 # Authoritative event log (§9.2). Append-only, versioned, redacted at append.
@@ -744,13 +744,13 @@
 (fn make_surface_attachment [id : Str]
   (create_surface id surface_pane_max_count))
 
-(fn surface_emit! [surface, type : Str, props]
+(fn surface_emit [surface, type : Str, props]
   (var safe_props {})
   (for [key value] in props
-    (safe_props ~ put! key (redact_any value)))
-  (var event (emit_surface_event! surface type safe_props))
+    (safe_props ~ put key (redact_any value)))
+  (var event (emit_surface_event surface type safe_props))
   (if (== event nil) (return nil))
-  (trace! event_log "surface event appended"
+  (log_trace event_log "surface event appended"
     ^payload {^event_type type ^event_v event/v
               ^surface_id event/surface_id ^pane_id event/pane_id
               ^worker_id event/worker_id})
@@ -764,7 +764,7 @@
       (var coordinator
         (WorkspaceCoordinator ^root root ^owner ($cell nil)
                               ^waiters ($cell []) ^next_request ($cell 1)))
-      (workspace_coordinators ~ put! root coordinator)
+      (workspace_coordinators ~ put root coordinator)
       coordinator)))
 
 (fn make_worker [id : Str, kind : Str, title : Str, output, controller]
@@ -844,7 +844,7 @@
       (else
         (var fallback {^type type})
         (for [key value] in props
-          (fallback ~ put! key value))
+          (fallback ~ put key value))
         fallback)))
   (for observer in (app/event_observers ~ get)
     (var handler observer/handler)
@@ -881,7 +881,7 @@
              ^stream (if (== type "text_delta")
                        "assistant_delta" "assistant_final")
              ^text props/text}))))
-  (checkpoint_application_event! app type)
+  (checkpoint_application_event app type)
   emitted)
 
 (fn application_find_agent [app, id : Str]
@@ -915,7 +915,7 @@
         ^message "worker name must contain only lowercase letters, digits, '_' or '-'"))))
   normalized)
 
-(fn application_assign_worker_name! [app, worker, requested]
+(fn application_assign_worker_name [app, worker, requested]
   (var name (normalize_worker_name requested))
   (var existing (application_find_worker app name))
   (if (&& existing (!= existing/id worker/id))
@@ -924,7 +924,7 @@
        ^error {^kind "worker_name_taken"
                ^message $"worker name '${name}' is already in use"}})
     (else
-      (worker ~ set_prop! `name name)
+      (worker ~ set_prop `name name)
       {^ok true ^name name ^worker_id worker/id})))
 
 (fn application_available_worker_name [app, requested]
@@ -980,7 +980,7 @@
         controller))
     (var worker
       (make_worker $"w${seq}" kind title output normalized_controller))
-    ((app/workers ~ get) ~ push! worker)
+    ((app/workers ~ get) ~ push worker)
     (application_emit app "worker_started"
       {^worker_id worker/id ^kind kind ^title title})
     worker))
@@ -990,7 +990,7 @@
   (var name (application_available_worker_name app requested_name))
   (var worker (application_new_worker app kind title output controller))
   (if_yes (&& worker name)
-    (worker ~ set_prop! `name name)
+    (worker ~ set_prop `name name)
     (application_emit app "worker_named"
       {^worker_id worker/id ^kind worker/kind ^name name}))
   worker)
@@ -1006,17 +1006,17 @@
         controller))
     (var worker
       (make_worker $"w${seq}" kind title output normalized_controller))
-    ((app/workers ~ get) ~ push! worker)
+    ((app/workers ~ get) ~ push worker)
     (application_emit app "worker_started"
       {^worker_id worker/id ^kind kind ^title title
        ^restarted_from (if previous previous/id)})
     worker))
 
-(fn application_remove_worker_observers! [app, worker_id : Str]
+(fn application_remove_worker_observers [app, worker_id : Str]
   (var kept [])
   (for observer in (app/event_observers ~ get)
     (if (!= observer/worker_id worker_id)
-      (kept ~ push! observer)))
+      (kept ~ push observer)))
   (app/event_observers ~ set kept))
 
 (fn application_find_pane [app, id : Int]
@@ -1051,10 +1051,10 @@
   (var ids [])
   (for pane in (if (== surface nil) [] (surface/panes ~ get))
     (if (== pane/worker_id worker_id)
-      (ids ~ push! pane/id)))
+      (ids ~ push pane/id)))
   ids)
 
-(fn application_prune_stopped_workers! [app] : Int
+(fn application_prune_stopped_workers [app] : Int
   # Live limits bound concurrency; this second limit bounds the terminal
   # snapshots retained after stop. A stopped worker with an attached local
   # pane remains inspectable until that view detaches, while headless stopped
@@ -1076,14 +1076,14 @@
                 (== (worker/lifecycle ~ get) "stopped")
                 (== (application_find_pane_worker app worker/id) nil))
           (then
-            (dropped ~ push! worker/id)
+            (dropped ~ push worker/id)
             (set remaining (- remaining 1)))
-          (else (kept ~ push! worker))))
+          (else (kept ~ push worker))))
       (app/workers ~ set kept)
       (var kept_agents [])
       (for agent in (app/agents ~ get)
         (if_not (dropped ~ contains? agent/id)
-          (kept_agents ~ push! agent)))
+          (kept_agents ~ push agent)))
       (app/agents ~ set kept_agents)
       (for worker_id in dropped
         (application_emit app "worker_retention_dropped"
@@ -1115,16 +1115,16 @@
             ^pending_visible ($cell false)
             ^hidden ($cell false)
             ^close_policy close_policy))
-    ((surface/panes ~ get) ~ push! pane)
+    ((surface/panes ~ get) ~ push pane)
     # A newly opened pane is the natural target for pane-local navigation.
     # Claiming focus also restores a maximized layout so the new pane is
     # not hidden behind another pane's maximized view.
     (surface/focused_pane ~ set id)
     (surface/maximized_pane ~ set nil)
-    (surface_emit! surface "pane_opened"
+    (surface_emit surface "pane_opened"
       {^pane_id id ^worker_id worker/id ^kind worker/kind
        ^owner_id owner_id ^title pane_title})
-    (client_surface_checkpoint! app "pane_opened")
+    (client_surface_checkpoint app "pane_opened")
     pane))
 
 (fn application_attach_worker_pane [app, worker, owner_id,
@@ -1160,7 +1160,7 @@
     verbose
     (utf8_prefix $"[drop:${dropped}]\n" worker_output_max_bytes)))
 
-(fn bounded_worker_append! [worker, text : Str]
+(fn bounded_worker_append [worker, text : Str]
   # Keep retained payload separate from the rendered loss marker. Otherwise
   # every later overflow would count and retain the previous marker as if it
   # were producer output, making dropped-byte accounting drift upward.
@@ -1223,15 +1223,15 @@
       (worker/output ~ set $"${marker}${retained}")))
   nil)
 
-(fn worker_history_push! [worker, value : Str, adapter : Str, surface_id]
-  ((worker/history ~ get) ~ push!
+(fn worker_history_push [worker, value : Str, adapter : Str, surface_id]
+  ((worker/history ~ get) ~ push
     {^text (redact value) ^adapter adapter ^surface_id surface_id})
   (if_yes (> ((worker/history ~ get) ~ size) worker_history_max)
     (var current (worker/history ~ get))
     (var first (- (current ~ size) worker_history_max))
     (var kept [])
     (repeat i in current/~size
-      (if (>= i first) (kept ~ push! current/%i)))
+      (if (>= i first) (kept ~ push current/%i)))
     (worker/history ~ set kept)
     (worker/history_dropped ~ set
       (+ (worker/history_dropped ~ get) first)))
@@ -1244,7 +1244,7 @@
       (if (present? recorder)
         (recorder worker/id value surface_id)))))
 
-(fn application_emit_worker_output!
+(fn application_emit_worker_output
   [app, worker, text : Str, source : Str, projection : Bool]
   (var seq (worker/next_output_seq ~ get))
   (worker/next_output_seq ~ set (+ seq 1))
@@ -1255,9 +1255,9 @@
      ^seq seq ^stream source ^text text ^projection projection})
   seq)
 
-(fn application_append_projection_output!
+(fn application_append_projection_output
   [app, worker, text : Str, source : Str]
-  (bounded_worker_append! worker text)
+  (bounded_worker_append worker text)
   # Projection state is derived from canonical application events. Charging
   # each rendered row back to that same journal multiplies records by the
   # number of live tails/stats workers and can evict the source history. Keep a
@@ -1267,7 +1267,7 @@
   (worker/next_output_seq ~ set (+ seq 1))
   seq)
 
-(fn application_set_projection_output!
+(fn application_set_projection_output
   [app, worker, text : Str, source : Str]
   # Replacement projections (notably stats) are atomic current-state views,
   # not append-only histories. Old truncation metadata must not leak into a
@@ -1276,7 +1276,7 @@
   (worker/output ~ set "")
   (worker/dropped_bytes ~ set 0)
   (worker/dropped_before ~ set nil)
-  (bounded_worker_append! worker text)
+  (bounded_worker_append worker text)
   (var seq (worker/next_output_seq ~ get))
   (worker/next_output_seq ~ set (+ seq 1))
   seq)
@@ -1300,7 +1300,7 @@
                 (found ~ set true))))
           (found ~ get))))))
 
-(fn application_follow_output! [app, output, source]
+(fn application_follow_output [app, output, source]
   (if (|| (== output nil) (!= output/kind "output"))
     (then {^ok false ^error "target must be an output worker"})
     (elif (== source nil)
@@ -1311,12 +1311,12 @@
     (else
       (var following (output/controller/following ~ get))
       (if_not (following ~ contains? source/id)
-        (following ~ push! source/id)
+        (following ~ push source/id)
         (application_emit app "worker_followed"
           {^worker_id output/id ^source_worker_id source/id}))
       {^ok true})))
 
-(fn application_unfollow_output! [app, output, source_id : Str] : Bool
+(fn application_unfollow_output [app, output, source_id : Str] : Bool
   (if (|| (== output nil) (!= output/kind "output"))
     (then false)
     (else
@@ -1325,47 +1325,47 @@
       (for id in (output/controller/following ~ get)
         (if (== id source_id)
           (removed ~ set true)
-          (kept ~ push! id)))
+          (kept ~ push id)))
       (output/controller/following ~ set kept)
       (if (removed ~ get)
         (application_emit app "worker_unfollowed"
           {^worker_id output/id ^source_worker_id source_id}))
       (removed ~ get))))
 
-(fn application_remove_worker_follow_links! [app, worker]
+(fn application_remove_worker_follow_links [app, worker]
   (if (== worker/kind "output")
     (worker/controller/following ~ set []))
   (for candidate in (app/workers ~ get)
     (if (== candidate/kind "output")
-      (application_unfollow_output! app candidate worker/id)))
+      (application_unfollow_output app candidate worker/id)))
   nil)
 
-(fn application_propagate_followers! [app, source, text : Str]
+(fn application_propagate_followers [app, source, text : Str]
   (for candidate in (app/workers ~ get)
     (if (&& (== candidate/kind "output")
             (== (candidate/lifecycle ~ get) "running")
             ((candidate/controller/following ~ get)
               ~ contains? source/id))
       (then
-        (application_append_projection_output!
+        (application_append_projection_output
           app candidate text $"follow:${source/id}")
-        (application_propagate_followers! app candidate text)))))
+        (application_propagate_followers app candidate text)))))
 
-(fn application_append_worker_output! [app, worker, text : Str, source : Str]
+(fn application_append_worker_output [app, worker, text : Str, source : Str]
   (if (|| (== worker nil) (!= worker/kind "output")
           (== (worker/lifecycle ~ get) "stopped"))
     (then false)
     (else
-      (bounded_worker_append! worker text)
-      (application_emit_worker_output! app worker text source false)
+      (bounded_worker_append worker text)
+      (application_emit_worker_output app worker text source false)
       # Pane projections belong only to the concrete local surface. The
       # authoritative journal already contains canonical worker_output.
       (var pane (application_find_pane_worker app worker/id))
       (if pane
-        (surface_emit! app/local_surface "pane_output"
+        (surface_emit app/local_surface "pane_output"
           {^pane_id pane/id
            ^worker_id worker/id ^text text ^source source}))
-      (application_propagate_followers! app worker text)
+      (application_propagate_followers app worker text)
       true)))
 
 (fn application_spawn_agent_with_attachments
@@ -1386,12 +1386,12 @@
     # then owns an independent model cell, so later changes are per-agent.
     (agent/model ~ set (app/main_agent/model ~ get))
     (agent/attachments ~ set attachments)
-    ((app/agents ~ get) ~ push! agent)
-    ((app/workers ~ get) ~ push! agent)
+    ((app/agents ~ get) ~ push agent)
+    ((app/workers ~ get) ~ push agent)
     (var attachment_text (stringify attachments))
     (var attachment_kinds [])
     (for attachment in attachments
-      (attachment_kinds ~ push! attachment/kind))
+      (attachment_kinds ~ push attachment/kind))
     (application_emit app "agent_spawned"
       {^worker_id id ^agent_id id ^parent_agent_id app/main_agent/id
        ^assignment safe_assignment ^title label
@@ -1413,12 +1413,12 @@
     (application_spawn_agent_with_attachments
       app title assignment items transcript attachments))
   (if_yes (&& agent name)
-    (agent ~ set_prop! `name name)
+    (agent ~ set_prop `name name)
     (application_emit app "worker_named"
       {^worker_id agent/id ^kind "agent" ^name name}))
   agent)
 
-(fn application_next_task_id! [app] : Str
+(fn application_next_task_id [app] : Str
   (var seq (app/next_task_id ~ get))
   (app/next_task_id ~ set (+ seq 1))
   $"t${seq}")
@@ -1430,7 +1430,7 @@
       (if (== value void) nil value))
     (else nil)))
 
-(fn application_begin_worker_operation! [app, worker, task, kind : Str]
+(fn application_begin_worker_operation [app, worker, task, kind : Str]
   (if_not (== (worker/lifecycle ~ get) "stopped")
     (var invocation (worker/pending_invocation ~ get))
     (worker/pending_invocation ~ set nil)
@@ -1444,7 +1444,7 @@
     (var declared_kind (invocation_field invocation "operation_name"))
     (var operation_kind (if declared_kind declared_kind kind))
     (var operation
-      {^task_id (application_next_task_id! app) ^kind operation_kind
+      {^task_id (application_next_task_id app) ^kind operation_kind
        ^origin origin ^caller_worker_id caller_worker_id
        ^attachment_id attachment_id ^principal principal})
     (worker/current_task ~ set task)
@@ -1455,17 +1455,17 @@
     (var props
       {^worker_id worker/id ^kind worker/kind
        ^task_id operation/task_id ^operation_kind operation_kind})
-    (if origin (props ~ put! "origin" origin))
+    (if origin (props ~ put "origin" origin))
     (if caller_worker_id
-      (props ~ put! "caller_worker_id" caller_worker_id))
+      (props ~ put "caller_worker_id" caller_worker_id))
     (if attachment_id
-      (props ~ put! "attachment_id" attachment_id))
+      (props ~ put "attachment_id" attachment_id))
     (if principal
-      (props ~ put! "principal" principal))
+      (props ~ put "principal" principal))
     (application_emit app "worker_operation_started" props)
     operation))
 
-(fn application_finish_worker_operation! [app, worker, outcome : Str]
+(fn application_finish_worker_operation [app, worker, outcome : Str]
   (var operation (worker/current_operation ~ get))
   (var task (worker/current_task ~ get))
   (var emitted nil)
@@ -1481,13 +1481,13 @@
        ^operation_kind (if operation operation/kind)
        ^outcome outcome})
     (if (&& operation operation/origin)
-      (props ~ put! "origin" operation/origin))
+      (props ~ put "origin" operation/origin))
     (if (&& operation operation/caller_worker_id)
-      (props ~ put! "caller_worker_id" operation/caller_worker_id))
+      (props ~ put "caller_worker_id" operation/caller_worker_id))
     (if (&& operation operation/attachment_id)
-      (props ~ put! "attachment_id" operation/attachment_id))
+      (props ~ put "attachment_id" operation/attachment_id))
     (if (&& operation operation/principal)
-      (props ~ put! "principal" operation/principal))
+      (props ~ put "principal" operation/principal))
     (set emitted
       (application_emit app "worker_operation_finished" props))
     (worker/last_finish_event ~ set emitted)
@@ -1551,7 +1551,7 @@
         (worker/lifecycle ~ set "stopped")
         (worker/status ~ set "stopped")
         (if had_task
-          (application_finish_worker_operation! app worker "cancelled"))
+          (application_finish_worker_operation app worker "cancelled"))
         (if (== (app/workspace_coordinator/owner ~ get)
                 (workspace_owner_token app worker/id))
           (application_release_workspace app worker/id "worker_stop"))
@@ -1567,13 +1567,13 @@
           (try
             (var final (terminal_stop worker/controller/session))
             (worker/controller/snapshot ~ set final)
-            (terminal_controller_capture! worker/controller)
+            (terminal_controller_capture worker/controller)
           catch _ nil))
-        (application_remove_worker_follow_links! app worker)
-        (application_remove_worker_observers! app worker/id)
+        (application_remove_worker_follow_links app worker)
+        (application_remove_worker_observers app worker/id)
         (application_emit app "worker_stopped"
           {^worker_id worker/id ^kind worker/kind})
-        (application_prune_stopped_workers! app)
+        (application_prune_stopped_workers app)
         true))))
 
 (fn application_stop_agent [app, agent] : Bool
@@ -1584,7 +1584,7 @@
   (if stopped
     (then
       (if had_operation
-        (application_finish_agent_operation!
+        (application_finish_agent_operation
           app agent "cancelled" "" "cancelled" "agent stopped" nil))
       (application_emit app "agent_status"
         {^worker_id agent/id ^agent_id agent/id ^status "stopped"})
@@ -1601,7 +1601,7 @@
       (for pane in (surface/panes ~ get)
         (if (== pane/id id)
           (removed ~ set pane)
-          ((kept ~ get) ~ push! pane)))
+          ((kept ~ get) ~ push pane)))
       (var pane (removed ~ get))
       (if (== pane nil)
         (then false)
@@ -1611,11 +1611,11 @@
             (surface/focused_pane ~ set nil))
           (if (== (surface/maximized_pane ~ get) id)
             (surface/maximized_pane ~ set nil))
-          (surface_emit! surface "pane_closed"
+          (surface_emit surface "pane_closed"
             {^pane_id id ^worker_id pane/worker_id
              ^kind pane/kind ^owner_id pane/owner_id})
-          (client_surface_checkpoint! app "pane_closed")
-          (application_prune_stopped_workers! app)
+          (client_surface_checkpoint app "pane_closed")
+          (application_prune_stopped_workers app)
           true)))))
 
 (fn terminal_capture_projection [session] : Str
@@ -1639,7 +1639,7 @@
      ^output_bytes snapshot/output_bytes
      ^stopped snapshot/stopped ^exit_status snapshot/exit_status}))
 
-(fn terminal_controller_capture! [controller]
+(fn terminal_controller_capture [controller]
   (var snapshot (controller/snapshot ~ get))
   (if_yes controller/session
     (try
@@ -1665,16 +1665,16 @@
         (worker/status ~ set "stopped")
         (if task
           (if (== worker/kind "agent")
-            (application_finish_agent_operation!
+            (application_finish_agent_operation
               app worker "cancelled" "" "cancelled"
               "application shutdown" nil)
-            (application_finish_worker_operation!
+            (application_finish_worker_operation
               app worker "cancelled")))
         (if (&& (== worker/kind "repl") (!= worker/controller nil)
                 (!= worker/controller/session nil))
           (repl_close worker/controller/session))
-        (application_remove_worker_follow_links! app worker)
-        (application_remove_worker_observers! app worker/id)
+        (application_remove_worker_follow_links app worker)
+        (application_remove_worker_observers app worker/id)
         (application_emit app "worker_stopped"
           {^worker_id worker/id ^kind worker/kind
            ^reason "shutdown"}))
@@ -1687,9 +1687,9 @@
         (if pump_task (pump_task ~ cancel))
         (try
           (terminal_stop worker/controller/session)
-          (terminal_controller_capture! worker/controller)
+          (terminal_controller_capture worker/controller)
           (terminal_close worker/controller/session)
-          (worker/controller ~ set_prop! `session nil)
+          (worker/controller ~ set_prop `session nil)
         catch _ nil)))
     (var owner (app/workspace_coordinator/owner ~ get))
     (if (&& (!= owner nil)
@@ -1736,12 +1736,12 @@
       (when (text : Str) $"agent ${agent/id} completed\n${text}")
       (else $"agent ${agent/id} has an invalid result"))))
 
-(fn application_inspect_agent_result! [app, agent] : Str
+(fn application_inspect_agent_result [app, agent] : Str
   (var report (agent_result_report agent))
-  (application_mark_agent_result_read! app agent)
+  (application_mark_agent_result_read app agent)
   report)
 
-(fn application_mark_agent_result_read! [app, agent] : Bool
+(fn application_mark_agent_result_read [app, agent] : Bool
   (var result (agent/result ~ get))
   (if (== result nil)
     (then
@@ -1758,10 +1758,10 @@
       (if_not already
         (agent/result ~ set
           (agent_result_with_flags result true incorporated))
-        (checkpoint_agent_state! app "agent_result_read"))
+        (checkpoint_agent_state app "agent_result_read"))
       true)))
 
-(fn application_incorporate_agent_result! [app, agent] : Bool
+(fn application_incorporate_agent_result [app, agent] : Bool
   (var result (agent/result ~ get))
   (if (== result nil)
     (then false)
@@ -1788,10 +1788,10 @@
             (system_item item_text))))
       (agent/result ~ set
         (agent_result_with_flags result read true))
-      (checkpoint_agent_state! app "agent_result_incorporated")
+      (checkpoint_agent_state app "agent_result_incorporated")
       true)))
 
-(fn application_enqueue_supervisor_result! [app, agent, result]
+(fn application_enqueue_supervisor_result [app, agent, result]
   (var inbox (app/supervisor_inbox ~ get))
   (var normalized
     (match result
@@ -1803,21 +1803,21 @@
         {^task_id nil ^outcome "failed" ^text ""
          ^error {^kind "invalid_result" ^message "invalid agent result"}
          ^finished_v nil ^read false ^incorporated false})))
-  (inbox ~ push!
+  (inbox ~ push
     {^agent_id agent/id ^assignment agent/assignment
      ^result normalized})
   (if_yes (> inbox/~size supervisor_inbox_max_count)
     (var kept [])
     (var first (- inbox/~size supervisor_inbox_max_count))
     (repeat i in inbox/~size
-      (if (>= i first) (kept ~ push! inbox/%i)))
+      (if (>= i first) (kept ~ push inbox/%i)))
     (app/supervisor_inbox ~ set kept)
     (application_emit app "supervisor_result_dropped"
       {^worker_id agent/id ^agent_id agent/id
        ^reason "supervisor_inbox_limit"
        ^limit supervisor_inbox_max_count})))
 
-(fn application_finish_agent_operation!
+(fn application_finish_agent_operation
   [app, agent, outcome : Str, text : Str, error_kind : Str,
    error_text : Str, pane_id]
   # Worker finish, structured result, agent finish, compatibility alias, and
@@ -1847,7 +1847,7 @@
       (agent_checkpoint_suspended ~ set true)
       (try
         (var worker_event
-          (application_finish_worker_operation! app agent outcome))
+          (application_finish_worker_operation app agent outcome))
         (if (== worker_event nil)
           (set worker_event (agent/last_finish_event ~ get)))
         (var task_id (if worker_event worker_event/task_id))
@@ -1885,19 +1885,19 @@
            ^incorporated result_incorporated})
         (agent/result ~ set final_result)
         (if_not main_result
-          (application_enqueue_supervisor_result! app agent final_result))
+          (application_enqueue_supervisor_result app agent final_result))
         (if (== outcome "completed")
           (application_emit app "agent_completed"
             {^worker_id agent/id ^agent_id agent/id
              ^parent_agent_id agent/parent_id ^task_id task_id
              ^status "completed" ^text safe_text ^source_v finished_v}))
         (if_not main_result
-          (append_agent_transcript! app/main_agent
+          (append_agent_transcript app/main_agent
             $"[agent ${agent/id} ${outcome} — /agent ${agent/id} result]\n"))
       ensure
         (agent_checkpoint_suspended ~ set previous_suspension))
-      (checkpoint_agent_state! app "agent_finished")
-      (ui_refresh!)
+      (checkpoint_agent_state app "agent_finished")
+      (request_ui_refresh)
       final_result)))
 
 # Child results cross into the main conversation only at this explicit
@@ -1911,7 +1911,7 @@
         (then
           (if (== (agent/result ~ get) nil)
             (agent/result ~ set result/result))
-          (application_incorporate_agent_result! app agent))
+          (application_incorporate_agent_result app agent))
         (app/main_agent/items ~ set
           (append (app/main_agent/items ~ get)
             (system_item
@@ -1924,7 +1924,7 @@
   (var evidence [])
   (var dropped (event_dropped_before ~ get))
   (for cursor in progress/evidence_v
-    (evidence ~ push!
+    (evidence ~ push
       (if (&& (> dropped 0) (< cursor dropped))
         $"evidence expired (v${cursor})" cursor)))
   (var blocked
@@ -2038,7 +2038,7 @@
        ^evidence_v evidence_v})
     (else (fail (OsError ^message "progress record must be a map")))))
 
-(fn application_update_progress!
+(fn application_update_progress
   [app, objective : Str, phase : Str, status : Str, summary : Str,
    blocked_reason, required_action, agent_ids, worker_ids, evidence_v]
   (var phases ["planning" "research" "implementing" "verifying" "handoff"])
@@ -2079,7 +2079,7 @@
     (app/progress ~ set updated)
   ensure
     (agent_checkpoint_suspended ~ set previous_suspension))
-  (checkpoint_agent_state! app "progress_updated")
+  (checkpoint_agent_state app "progress_updated")
   updated)
 
 (fn workspace_request_ready? [coordinator, request_id : Int]
@@ -2096,7 +2096,7 @@
   (var request
     {^id seq ^application_id app/coordinator_id
      ^worker_id worker_id ^owner_token owner_token ^operation operation})
-  ((coordinator/waiters ~ get) ~ push! request)
+  ((coordinator/waiters ~ get) ~ push request)
   (var acquired ($cell false))
   (try
     (while (&& (! (app/shutting_down ~ get))
@@ -2108,7 +2108,7 @@
         (coordinator/owner ~ set owner_token)
         (var remaining [])
         (for waiter in (coordinator/waiters ~ get)
-          (if (!= waiter/id seq) (remaining ~ push! waiter)))
+          (if (!= waiter/id seq) (remaining ~ push waiter)))
         (coordinator/waiters ~ set remaining)
         (acquired ~ set true)
         (application_emit app "workspace_lease"
@@ -2121,7 +2121,7 @@
     (if_yes (! (acquired ~ get))
       (var remaining [])
       (for waiter in (coordinator/waiters ~ get)
-        (if (!= waiter/id seq) (remaining ~ push! waiter)))
+        (if (!= waiter/id seq) (remaining ~ push waiter)))
       (coordinator/waiters ~ set remaining))))
 
 (fn application_release_workspace [app, worker_id : Str, operation : Str]
@@ -2149,7 +2149,7 @@
     (when (m : Map)
       (var out {})
       (for [k mv] in m
-        (out ~ put! k (redact_any mv)))
+        (out ~ put k (redact_any mv)))
       out)
     (when (xs : List)
       ((to_stream xs) ~ map redact_any ; ~ into []))
@@ -2237,15 +2237,15 @@
         {^v event/v ^type event/type ^truncated true
          ^original_bytes original_bytes
          ^summary "event payload exceeded the journal record capacity"})
-      (if (!= event/turn void) (summary ~ put! "turn" event/turn))
+      (if (!= event/turn void) (summary ~ put "turn" event/turn))
       (for key in ["application_id" "worker_id" "agent_id"
                    "parent_agent_id" "task_id" "turn_id" "tool_call_id"
                    "pane_id" "surface_id"]
         (var value (event ~ get key))
-        (if (!= value void) (summary ~ put! key value)))
+        (if (!= value void) (summary ~ put key value)))
       summary)))
 
-(fn trim_agent_event_journal! [] : Bool
+(fn trim_agent_event_journal [] : Bool
   (var current (agent_events ~ get))
   (var first 0)
   (var retained_bytes (agent_event_bytes ~ get))
@@ -2261,31 +2261,31 @@
     (else
       (var kept [])
       (repeat i in current/~size
-        (if (>= i first) (kept ~ push! current/%i)))
+        (if (>= i first) (kept ~ push current/%i)))
       (agent_events ~ set kept)
       (agent_event_bytes ~ set retained_bytes)
       (agent_evidence ~ set
         ((to_stream kept) ~ filter evidence_event? ; ~ into []))
       true)))
 
-(fn emit_event! [type : Str, props]
+(fn emit_event [type : Str, props]
   (if_not (! (events_enabled ~ get))
     (var v (next_event_v ~ get))
     (next_event_v ~ set (+ v 1))
     (var e {^v v ^turn (current_turn ~ get) ^type type})
     (for [k pv] in props
-      (e ~ put! k (redact_any pv)))
+      (e ~ put k (redact_any pv)))
     (var stored (bounded_event_record e event_max_bytes))
     (var stored_bytes (byte_size (stringify stored)))
     (agent_events ~ set (append (agent_events ~ get) stored))
     (agent_event_bytes ~ set
       (+ (agent_event_bytes ~ get) stored_bytes))
-    (var overflowed (trim_agent_event_journal!))
+    (var overflowed (trim_agent_event_journal))
     (if (&& (! overflowed) (evidence_event? stored))
       (agent_evidence ~ set
         (append (agent_evidence ~ get) stored)))
     (echo_subscribed stored)
-    (trace! event_log "event appended"
+    (log_trace event_log "event appended"
       ^payload {^event_type type ^event_v v
                 ^turn_id (current_turn ~ get)
                 ^worker_id stored/worker_id
@@ -2296,9 +2296,9 @@
                 ^evidence (evidence_event? stored)})
     stored))
 
-(fn begin_turn! []
+(fn begin_turn []
   (current_turn ~ set (+ (current_turn ~ get) 1))
-  (debug! turn_log "turn initialized"
+  (log_debug turn_log "turn initialized"
     ^payload {^turn_id (current_turn ~ get)}))
 
 # Successful file tools record exact before/after snapshots. `/undo` restores
@@ -2315,10 +2315,10 @@
 (fn content_identity [text : Str]
   {^hash ($hash text) ^bytes ($size ($bytes text))})
 
-(fn emit_owned_event! [sink, type : Str, props]
-  (if (present? sink) (sink type props) (emit_event! type props)))
+(fn emit_owned_event [sink, type : Str, props]
+  (if (present? sink) (sink type props) (emit_event type props)))
 
-(fn record_file_change! [sink, op : Str, path : Str, before, after]
+(fn record_file_change [sink, op : Str, path : Str, before, after]
   (var id (next_file_change_id ~ get))
   (next_file_change_id ~ set (+ id 1))
   (var change {^id id ^op op ^path path
@@ -2328,7 +2328,7 @@
   (file_changes ~ set (append (file_changes ~ get) change))
   (var before_id (content_identity before/text))
   (var after_id (content_identity after/text))
-  (emit_owned_event! sink "file_change"
+  (emit_owned_event sink "file_change"
     {^id id ^op op ^path path
      ^before_exists before/exists ^before_hash before_id/hash
      ^before_bytes before_id/bytes
@@ -2374,7 +2374,7 @@
           (found ~ set c))))
   (found ~ get))
 
-(fn undo_file_change! [wanted]
+(fn undo_file_change [wanted]
   (var c (find_file_change wanted))
   (if (== c nil)
     (then
@@ -2389,20 +2389,20 @@
           (if c/before_exists
             (write_text WriteDir path c/before)
             (remove WriteDir path))
-          (c ~ put! "undone" true)
+          (c ~ put "undone" true)
           (var undo_id (next_file_change_id ~ get))
           (next_file_change_id ~ set (+ undo_id 1))
-          (emit_event! "file_change"
+          (emit_event "file_change"
             {^id undo_id ^op "undo" ^path c/path ^undo_of c/id
              ^before_exists c/after_exists ^after_exists c/before_exists})
           $"undid change #${c/id} (${c/path})")))))
 
 (fn undo_with_workspace_lease [app, worker_id : Str, wanted]
   (if (== app nil)
-    (undo_file_change! wanted)
+    (undo_file_change wanted)
     (if (application_acquire_workspace app worker_id "undo")
       (try
-        (undo_file_change! wanted)
+        (undo_file_change wanted)
       ensure
         (application_release_workspace app worker_id "undo"))
       "error: application is shutting down")))
@@ -2494,10 +2494,10 @@
   (var newly (ensure_agents_for_path path include_leaf))
   (for record in newly
     (if (== record/skipped void)
-      (debug! instruction_log "instruction file loaded"
+      (log_debug instruction_log "instruction file loaded"
         ^payload {^instruction_scope record/scope ^instruction_path record/source
                   ^bytes record/bytes})
-      (warn! instruction_log "instruction file skipped"
+      (log_warn instruction_log "instruction file skipped"
         ^payload {^instruction_scope record/scope ^instruction_path record/source
                   ^bytes record/bytes ^reason record/skipped})))
   (format_instruction_records
@@ -2546,12 +2546,12 @@
         (var tok (trim raw))
         (if_not (== tok "")
           (if (== tok "--detail")
-            (then (f ~ put! "detail" true))
+            (then (f ~ put "detail" true))
             (else
               (var kv (split tok "="))
               (if (== kv/~size 2)
-                (f ~ put! kv/0 kv/1)
-                (f ~ put! "type" tok)))))))
+                (f ~ put kv/0 kv/1)
+                (f ~ put "type" tok)))))))
   f)
 
 (fn format_event_with_filters [e, filters] : Str
@@ -2563,12 +2563,12 @@
   (var f (parse_trace_filters rest))
   (var lines ($cell []))
   (if (> (event_dropped_before ~ get) 0)
-    ((lines ~ get) ~ push!
+    ((lines ~ get) ~ push
       $"[events through v${(event_dropped_before ~ get)} were dropped]"))
   ((to_stream (agent_events ~ get))
     ~ filter (fn [e] (event_matches? e f))
     ; ~ each (fn [e]
-        ((lines ~ get) ~ push!
+        ((lines ~ get) ~ push
           (format_event_with_filters e f))))
   (if ($empty? (lines ~ get))
     "no matching events"
@@ -2578,48 +2578,48 @@
 # when the command may run, or the denial text otherwise. Confirmation and
 # audit events go through the injected guard strategy so an embedding host
 # (gateway) gets them in its per-session log and never blocks on stdin.
-(fn guard_audit! [emit, props]
+(fn guard_audit [emit, props]
   (if (present? emit)
     (emit "confirmation" props)
-    (guard_emit! "confirmation" props)))
+    (emit_guard_event "confirmation" props)))
 
 (fn guard_shell_in [cmd : Str, confirm, emit]
   (var detach_reason (mediated_shell_detach_reason cmd))
   (if (present? detach_reason)
     (then
-      (warn! guard_log "background shell command denied"
+      (log_warn guard_log "background shell command denied"
         ^payload {^risk "detached_process" ^decision "deny"
                   ^reason detach_reason})
-      (guard_audit! emit
+      (guard_audit emit
         {^risk "detached_process" ^decision "deny" ^target cmd
          ^reason detach_reason})
       "denied: mediated shell commands must stay in the foreground; use /tty for persistent or background work")
     (else
       (if (! (guard_enabled?))
         (then
-          (debug! guard_log "command guard bypassed"
+          (log_debug guard_log "command guard bypassed"
             ^payload {^guard_enabled false})
           nil)
         (else
           (match (classify_command cmd)
         (when "catastrophic"
-          (warn! guard_log "catastrophic command denied"
+          (log_warn guard_log "catastrophic command denied"
             ^payload {^risk "catastrophic" ^decision "deny"})
-          (guard_audit! emit
+          (guard_audit emit
             {^risk "catastrophic" ^decision "deny" ^target cmd})
           "denied by catastrophe guard (GENE_AGENT_GUARD=0 outside the session overrides)")
         (when "destructive"
           (if (if (present? confirm) (confirm cmd) (guard_confirmed? cmd))
             (then
-              (info! guard_log "destructive command allowed"
+              (log_info guard_log "destructive command allowed"
                 ^payload {^risk "destructive" ^decision "allow"})
-              (guard_audit! emit
+              (guard_audit emit
                 {^risk "destructive" ^decision "allow" ^target cmd})
               nil)
             (else
-              (warn! guard_log "destructive command denied"
+              (log_warn guard_log "destructive command denied"
                 ^payload {^risk "destructive" ^decision "deny"})
-              (guard_audit! emit
+              (guard_audit emit
                 {^risk "destructive" ^decision "deny" ^target cmd})
               "denied: destructive command was not confirmed")))
         (else nil)))))))
@@ -2674,26 +2674,26 @@
         (for metadata in (if (present? self/params) self/params [])
           (if_yes (== metadata/name field/name)
             (if_yes (present? metadata/doc)
-              (spec ~ put! "description" metadata/doc))
+              (spec ~ put "description" metadata/doc))
             (if_yes (present? metadata/enum)
-              (spec ~ put! "enum" metadata/enum))))
-        (props ~ put! field/name spec)
+              (spec ~ put "enum" metadata/enum))))
+        (props ~ put field/name spec)
         (if_not field/optional
-          ((required ~ get) ~ push! field/name)))
+          ((required ~ get) ~ push field/name)))
       (for p in self/params
         (var spec {^type p/type})
         (if_yes (present? p/doc)
-          (spec ~ put! "description" p/doc))
+          (spec ~ put "description" p/doc))
         (if_yes (present? p/enum)
-          (spec ~ put! "enum" p/enum))
-        (props ~ put! p/name spec)
+          (spec ~ put "enum" p/enum))
+        (props ~ put p/name spec)
         (if_yes (== p/required true)
-          ((required ~ get) ~ push! p/name))))
+          ((required ~ get) ~ push p/name))))
     (var parameters
       {^type "object" ^properties props
        ^additionalProperties (if (present? self/args) false true)})
     (if_not ($empty? (required ~ get))
-      (parameters ~ put! "required" (required ~ get)))
+      (parameters ~ put "required" (required ~ get)))
     {^type "function" ^name self/name
      ^description self/description ^parameters parameters})
 
@@ -2712,10 +2712,10 @@
       (var v (args ~ get p/name))
       (if (== v void)
         (if (== p/required true)
-          ((problems ~ get) ~ push!
+          ((problems ~ get) ~ push
             $"missing required argument ${p/name}"))
         (if_not (json_type_ok? p/type v)
-          ((problems ~ get) ~ push!
+          ((problems ~ get) ~ push
             $"argument ${p/name} must be a ${p/type}"))))
     (if_not ($empty? (problems ~ get))
       (join (problems ~ get) "; "))))
@@ -2728,7 +2728,7 @@
     {^module handler_ref/module ^path handler_ref/path
      ^version handler_ref/version}))
 
-(fn capture_dynamic_registration! [record]
+(fn capture_dynamic_registration [record]
   (if_yes (&& (registration_capture_enabled ~ get)
               (! (restoring_registrations ~ get)))
     (var retained [])
@@ -2736,27 +2736,27 @@
       (if_not (&& (== current/kind record/kind)
                   (== current/name record/name)
                   (== current/worker_kind record/worker_kind))
-        (retained ~ push! current)))
-    (retained ~ push! record)
+        (retained ~ push current)))
+    (retained ~ push record)
     (dynamic_registration_records ~ set retained)))
 
 (fn find_tool [name : Str]
   ((tool_registry ~ get) ~ get name))
 
-(fn register_tool! [t]
-  (if (== t/enabled void) (t ~ set_prop! `enabled true))
+(fn register_tool [t]
+  (if (== t/enabled void) (t ~ set_prop `enabled true))
   (var existing (find_tool t/name))
-  ((tool_registry ~ get) ~ put! t/name t)
+  ((tool_registry ~ get) ~ put t/name t)
   (if (== existing void)
     (tool_names ~ set (append (tool_names ~ get) t/name)))
-  (emit_event! "tool_registered" {^name t/name ^risk t/risk})
-  (debug! tool_log
+  (emit_event "tool_registered" {^name t/name ^risk t/risk})
+  (log_debug tool_log
     (if (== existing void) "tool registered" "tool registration replaced")
     ^payload {^tool_name t/name ^risk t/risk
               ^parameter_count
                 (if (present? t/args) ((t/args ~ fields) ~ size)
                   (t/params ~ size))})
-  (capture_dynamic_registration!
+  (capture_dynamic_registration
     {^kind "tool" ^worker_kind nil ^name t/name
      ^description t/description ^risk t/risk
      ^params (if (present? t/params) t/params [])
@@ -2801,11 +2801,11 @@
         "benchmark"
         (if (starts_with? c "nimble wasm") "wasm" "command")))))
 
-(fn emit_check! [sink, tool : Str, command : Str, started : Int, result]
+(fn emit_check [sink, tool : Str, command : Str, started : Int, result]
   (var status (if result result/status))
   (var timed_out (if (== result nil) false (== result/timed_out true)))
   (var truncated (if (== result nil) false (== result/truncated true)))
-  (emit_owned_event! sink "check"
+  (emit_owned_event sink "check"
     {^tool tool ^command command ^scope (command_scope command)
      ^status status ^duration_ms (- (monotonic_ms) started)
      ^timed_out timed_out ^truncated truncated
@@ -2815,15 +2815,15 @@
 (fn run_checked_exec [sink, tool : Str, command : Str, task]
   (var started (monotonic_ms))
   (var result ($cell nil))
-  (debug! tool_log "subprocess started"
+  (log_debug tool_log "subprocess started"
     ^payload {^tool_name tool ^check_scope (command_scope command)})
   (try
     (result ~ set (await_exec task))
-    ((result ~ get) ~ put! "duration_ms"
+    ((result ~ get) ~ put "duration_ms"
       (- (monotonic_ms) started))
-    (emit_check! sink tool command started (result ~ get))
+    (emit_check sink tool command started (result ~ get))
     (var completed_result (result ~ get))
-    (debug! tool_log "subprocess completed"
+    (log_debug tool_log "subprocess completed"
       ^payload {^tool_name tool ^check_scope (command_scope command)
                 ^status completed_result/status
                 ^duration_ms completed_result/duration_ms
@@ -2832,8 +2832,8 @@
     (result ~ get)
   ensure
     (if_yes (== (result ~ get) nil)
-      (emit_check! sink tool command started nil)
-      (info! tool_log "subprocess cancelled"
+      (emit_check sink tool command started nil)
+      (log_info tool_log "subprocess cancelled"
         ^payload {^tool_name tool ^check_scope (command_scope command)
                   ^duration_ms (- (monotonic_ms) started)}))))
 
@@ -2860,7 +2860,7 @@
   (var excerpt [])
   (repeat j in lines/~size
     (if (&& (>= j window_start) (< j window_stop))
-      (excerpt ~ push!
+      (excerpt ~ push
         $"${(+ j 1)} | ${(bounded_line lines/%j)}")))
   (var excerpt_text (join excerpt "\n"))
   $"candidate near line ${(+ i 1)}:\n${excerpt_text}")
@@ -2877,7 +2877,7 @@
         (if_yes (&& (< (candidates ~ get) 3)
                 (== lines/%i anchor))
           (candidates ~ set (+ (candidates ~ get) 1))
-          ((windows ~ get) ~ push!
+          ((windows ~ get) ~ push
             (edit_candidate_window lines i))))
       (if ($empty? (windows ~ get))
         (then $"No current line equals the anchor `${(bounded_line anchor)}`; read the current file and retry.")
@@ -2913,7 +2913,7 @@
       (var selected [])
       (repeat i in total
         (if (&& (>= i start) (< i stop))
-          (selected ~ push! lines/%i)))
+          (selected ~ push lines/%i)))
       {^text (join selected "\n")
        ^first start_line ^last stop ^total total})))
 
@@ -2936,10 +2936,10 @@
               (var headers [])
               (if (|| (> line_range/first 1)
                       (< line_range/last line_range/total))
-                (headers ~ push!
+                (headers ~ push
                   $"lines ${line_range/first}-${line_range/last} of ${line_range/total}"))
               (if (|| (> start_byte 0) (< end_byte total_bytes))
-                (headers ~ push!
+                (headers ~ push
                   $"bytes ${start_byte}-${end_byte} of ${total_bytes}"))
               (if ($empty? headers)
                 (then chunk)
@@ -2956,7 +2956,7 @@
 (type RunShellToolArgs ^props {^command Str ^timeout_ms Int?})
 (type GrepToolArgs ^props {^pattern Str ^path Str?})
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "read_file"
   ^description "Read a bounded line range from a UTF-8 text file inside the workspace."
   ^risk "read"
@@ -2989,7 +2989,7 @@
                 content
                 $"New applicable instructions (parent-to-child):\n${instructions}\n--- file ---\n${content}")))))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "write_file"
   ^description "Write a UTF-8 text file inside the workspace."
   ^risk "write"
@@ -3004,12 +3004,12 @@
         (then
           (var before (file_snapshot path))
           (write_text WriteDir path args/content)
-          (record_file_change! args/_emit "write" args/path before
+          (record_file_change args/_emit "write" args/path before
             {^exists true ^text args/content})
           $"wrote ${args/path}${(gene_parse_warning args/path args/content)}")
         (else "denied by user policy"))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "edit_file"
   ^description "Replace one exact text span in a UTF-8 text file inside the workspace."
   ^risk "write"
@@ -3036,13 +3036,13 @@
                 (else
                   (var after_text (join parts new_text))
                   (write_text WriteDir path after_text)
-                  (record_file_change! args/_emit "edit" args/path
+                  (record_file_change args/_emit "edit" args/path
                     {^exists true ^text text}
                     {^exists true ^text after_text})
                   $"edited ${args/path}${(gene_parse_warning args/path after_text)}"))))
           (else "denied by user policy")))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "list_dir"
   ^description "List directory entries inside the workspace."
   ^risk "read"
@@ -3056,7 +3056,7 @@
       listing
       $"New applicable instructions (parent-to-child):\n${instructions}\n--- listing ---\n${listing}"))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "run_shell"
   ^description "Run a shell command in the workspace (10s default, 120s maximum timeout)."
   ^risk "execute"
@@ -3092,7 +3092,7 @@
                ^truncated (== r/truncated true)})
             (else "denied by user policy"))))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "grep"
   ^description "Search files in the workspace with grep -rn."
   ^risk "read"
@@ -3157,7 +3157,7 @@ When writing Gene code, use the current repo's language, not generic Lisp:
   directly. Use `fail` for recoverable errors and `panic` only for fatal bugs.
 - Data:
   - Lists: `[a b c]`
-    Grow a fresh, locally owned list with `(xs ~ push! value)`, which is
+    Grow a fresh, locally owned list with `(xs ~ push value)`, which is
     amortized O(1). Repeated copy-and-append inside a loop is quadratic;
     reserve persistent copy updates for intentionally shared data.
   - Maps: `{^key value}`; property access is `m/key`
@@ -3181,8 +3181,8 @@ When writing Gene code, use the current repo's language, not generic Lisp:
 - Streams are pull-based and skip `void`. Common shape:
   `((to_stream xs) ~ map (fn [x] ...) ; ~ filter pred ; ~ into [])`.
 - Useful stdlib examples:
-  - `examples/todo_app.gene` for end-to-end web + sqlite.
-  - `examples/web_demo.gene` for nodes, streams, routes, selectors.
+  - `examples/todo_app/src/main.gene` for end-to-end web + sqlite.
+  - `examples/style_guide.gene` for nodes, streams, and selectors.
   - `examples/protocol_demo.gene` for types, protocols, inheritance, messages.
   - `docs/design.md`, `docs/core.md`, and `docs/stdlib.md` for details.
 
@@ -3232,11 +3232,11 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (== item/role "user")
         (then
           (if (! ($empty? (current ~ get)))
-            ((turns ~ get) ~ push! (current ~ get)))
+            ((turns ~ get) ~ push (current ~ get)))
           (current ~ set [item]))
-        (else ((current ~ get) ~ push! item)))))
+        (else ((current ~ get) ~ push item)))))
   (if (! ($empty? (current ~ get)))
-    ((turns ~ get) ~ push! (current ~ get)))
+    ((turns ~ get) ~ push (current ~ get)))
   (turns ~ get))
 
 (fn context_system_items [items]
@@ -3245,7 +3245,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (&& (== item/role "system")
             (!= item/context_summary true)
             (!= item/context_limit_warning true))
-      ((systems ~ get) ~ push! item)))
+      ((systems ~ get) ~ push item)))
   (systems ~ get))
 
 (fn has_context_limit_warning [items] : Bool
@@ -3259,7 +3259,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var out [])
   (for item in items
     (if (!= item/context_limit_warning true)
-      (out ~ push! item)))
+      (out ~ push item)))
   out)
 
 (fn context_stats [items, memory]
@@ -3296,8 +3296,8 @@ State that broader behavior is unverified when no matching successful check ran.
         $"[tool output omitted during context compaction: ${output_bytes} bytes; rerun the tool with a narrower request if supported and the content is still needed]")
       (var candidate {})
       (for [key value] in item
-        (candidate ~ put! key value))
-      (candidate ~ put! "output" marker)
+        (candidate ~ put key value))
+      (candidate ~ put "output" marker)
       (var new_bytes (approximate_bytes candidate))
       (if_yes (< new_bytes old_bytes)
         (set replacement candidate)
@@ -3306,14 +3306,14 @@ State that broader behavior is unverified when no matching successful check ran.
         (elided_count ~ set (+ (elided_count ~ get) 1))
         (elided_bytes ~ set
           (+ (elided_bytes ~ get) (- old_bytes new_bytes)))))
-    ((out ~ get) ~ push! replacement))
+    ((out ~ get) ~ push replacement))
   {^items (out ~ get)
    ^outputs (elided_count ~ get)
    ^bytes (elided_bytes ~ get)})
 
 (fn compact_context [items, emit]
   (var before (context_stats items []))
-  (debug! context_log "context evaluated"
+  (log_debug context_log "context evaluated"
     ^payload {^bytes before/bytes ^items before/items
               ^retained_turns before/retained_turns
               ^over_limit (== before/over_limit true)})
@@ -3356,7 +3356,7 @@ State that broader behavior is unverified when no matching successful check ran.
              ^content "Context remains above its configured floor after whole-turn compaction and tool-output elision. Irreducible system/user content was preserved; use narrower tool reads or start a fresh session if more room is required."}))
         (set after (context_stats result []))
         (if_not had_limit_warning
-          (warn! context_log "context remains over configured limit"
+          (log_warn context_log "context remains over configured limit"
             ^payload {^bytes after/bytes ^items after/items
                       ^max_bytes context_max_bytes
                       ^max_items context_max_items})
@@ -3366,7 +3366,7 @@ State that broader behavior is unverified when no matching successful check ran.
              ^irreducible_over_limit true})))
       (if_yes (|| (> removed_items 0)
                   (> elided/outputs 0))
-          (info! context_log "context compacted"
+          (log_info context_log "context compacted"
             ^payload {^bytes_before before/bytes ^bytes_after after/bytes
                       ^items_before before/items ^items_after after/items
                       ^removed_items removed_items ^removed_turns start
@@ -3521,11 +3521,11 @@ State that broader behavior is unverified when no matching successful check ran.
                 (! (approve? name detail)))
           (then "denied by user policy")
           (else
-            (args ~ put! "_guard_checked" true)
-            (args ~ put! "_approval_checked" true)
-            (args ~ put! "_mutation_digest"
+            (args ~ put "_guard_checked" true)
+            (args ~ put "_approval_checked" true)
+            (args ~ put "_mutation_digest"
               (mutation_digest name args))
-            (args ~ put! "_target_real"
+            (args ~ put "_target_real"
               (mutation_target_real name args))
             nil))))))
 
@@ -3574,9 +3574,9 @@ State that broader behavior is unverified when no matching successful check ran.
              (args ~ get))})
   (var context_agent_id (tool_context_agent_id context))
   (if (present? context_agent_id)
-    (call_props ~ put! "agent_id" context_agent_id))
+    (call_props ~ put "agent_id" context_agent_id))
   (emit "tool_call" call_props)
-  (info! tool_log "tool call started"
+  (log_info tool_log "tool call started"
     ^payload {^tool_name name ^call_id call/call_id
               ^known_tool (!= t void)
               ^risk (if (== t void) "unknown" t/risk)})
@@ -3608,8 +3608,8 @@ State that broader behavior is unverified when no matching successful check ran.
                 # from the wire. Async handlers use this explicit sink
                 # instead of a process-global callback (gateway sessions
                 # may interleave while a subprocess is awaited).
-                (m ~ put! "_emit" emit)
-                (m ~ put! "_context" context)
+                (m ~ put "_emit" emit)
+                (m ~ put "_context" context)
                 (try
                   (normalize_tool_result
                     (invoke_tool_handler t name m context))
@@ -3631,18 +3631,18 @@ State that broader behavior is unverified when no matching successful check ran.
     (if truncated $"${result/text}\n[output truncated]" result/text))
   (var tool_failed (starts_with? result/text "error:"))
   (if tool_failed
-    (warn! tool_log "tool call completed with error"
+    (log_warn tool_log "tool call completed with error"
       ^payload {^tool_name name ^call_id call/call_id
                 ^duration_ms (- (monotonic_ms) started)
                 ^output_bytes (byte_size shown) ^truncated truncated})
-    (info! tool_log "tool call completed"
+    (log_info tool_log "tool call completed"
       ^payload {^tool_name name ^call_id call/call_id
                 ^duration_ms (- (monotonic_ms) started)
                 ^output_bytes (byte_size shown) ^truncated truncated}))
   (var result_props
     {^id call/call_id ^name name ^value shown ^truncated truncated})
   (if (present? context_agent_id)
-    (result_props ~ put! "agent_id" context_agent_id))
+    (result_props ~ put "agent_id" context_agent_id))
   (emit "tool_result" result_props)
   {^type "function_call_output" ^call_id call/call_id ^output (redact shown)})
 
@@ -3706,7 +3706,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (try
     (var native_result
       (exec_native_http_lines url headers body timeout_ms on_line))
-    (debug! transport_log "HTTP request completed"
+    (log_debug transport_log "HTTP request completed"
       ^payload {^backend "native" ^status native_result/status
                 ^http_status native_result/http_status
                 ^duration_ms (- (monotonic_ms) started)
@@ -3714,10 +3714,10 @@ State that broader behavior is unverified when no matching successful check ran.
                 ^truncated (== native_result/truncated true)})
     native_result
   catch (HttpClientError ^kind "unavailable")
-    (warn! transport_log "native HTTP unavailable; using curl fallback"
+    (log_warn transport_log "native HTTP unavailable; using curl fallback"
       ^payload {^backend "curl"})
     (var curl_result (exec_curl_lines curl_args timeout_ms on_line))
-    (debug! transport_log "HTTP request completed"
+    (log_debug transport_log "HTTP request completed"
       ^payload {^backend "curl" ^status curl_result/status
                 ^duration_ms (- (monotonic_ms) started)
                 ^response_bytes (byte_size curl_result/stdout)
@@ -3777,8 +3777,8 @@ State that broader behavior is unverified when no matching successful check ran.
   (if (== (final ~ get) nil)
     (then {^output (output ~ get) ^output_text (output_text ~ get)})
     (else
-      ((final ~ get) ~ put! "output" (output ~ get))
-      ((final ~ get) ~ put! "output_text" (output_text ~ get))
+      ((final ~ get) ~ put "output" (output ~ get))
+      ((final ~ get) ~ put "output_text" (output_text ~ get))
       (final ~ get))))
 
 (fn sse_handle_payload [payload : Str, output, output_text, final, render_stream]
@@ -3790,7 +3790,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (render_stream (redact event/delta))
           (output_text ~ set $"${(output_text ~ get)}${event/delta}"))
         (when SseEventKind/output_item_done
-          ((output ~ get) ~ push! event/item)
+          ((output ~ get) ~ push event/item)
           nil)
         (when SseEventKind/output_text_done
           (output_text ~ set event/text))
@@ -3891,27 +3891,27 @@ State that broader behavior is unverified when no matching successful check ran.
                 (! ($empty? (pending_calls ~ get))))
         (var m {^role "assistant" ^content (pending_text ~ get)})
         (if_not ($empty? (pending_calls ~ get))
-          (m ~ put! "tool_calls" (pending_calls ~ get)))
-        ((msgs ~ get) ~ push! m)
+          (m ~ put "tool_calls" (pending_calls ~ get)))
+        ((msgs ~ get) ~ push m)
         (pending_text ~ set nil)
         (pending_calls ~ set [])))
   (for item in items
     (if (== item/type void)
       (then
         (flush_assistant)
-        ((msgs ~ get) ~ push! item))
+        ((msgs ~ get) ~ push item))
       (else
         (match item/type
         (when "message"
           (var sofar (if (present? (pending_text ~ get)) (pending_text ~ get) ""))
           (pending_text ~ set $"${sofar}${(message_item_text item)}"))
         (when "function_call"
-          ((pending_calls ~ get) ~ push!
+          ((pending_calls ~ get) ~ push
             {^id item/call_id ^type "function"
              ^function {^name item/name ^arguments item/arguments}}))
         (when "function_call_output"
           (flush_assistant)
-          ((msgs ~ get) ~ push!
+          ((msgs ~ get) ~ push
             {^role "tool" ^tool_call_id item/call_id ^content item/output}))
         (else nil)))))
   (flush_assistant)
@@ -3933,15 +3933,15 @@ State that broader behavior is unverified when no matching successful check ran.
   (var entry (calls_map ~ get key))
   (if_yes (== entry void)
     (set entry {^id "" ^name "" ^arguments ""})
-    (calls_map ~ put! key entry)
+    (calls_map ~ put key entry)
     (if (< (max_cell ~ get) (+ idx 1))
       (max_cell ~ set (+ idx 1))))
   (if (present? frag/id)
-    (entry ~ put! "id" frag/id))
+    (entry ~ put "id" frag/id))
   (if (present? frag/function/name)
-    (entry ~ put! "name" $"${entry/name}${frag/function/name}"))
+    (entry ~ put "name" $"${entry/name}${frag/function/name}"))
   (if (present? frag/function/arguments)
-    (entry ~ put! "arguments" $"${entry/arguments}${frag/function/arguments}")))
+    (entry ~ put "arguments" $"${entry/arguments}${frag/function/arguments}")))
 
 (fn chat_call_items [calls_map, max_cell]
   (var items ($cell []))
@@ -3949,7 +3949,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (repeat i in (max_cell ~ get)
     (set entry (calls_map ~ get $"${i}"))
     (if_not (== entry void)
-      ((items ~ get) ~ push!
+      ((items ~ get) ~ push
         {^type "function_call" ^name entry/name
          ^call_id entry/id ^arguments entry/arguments})))
   (items ~ get))
@@ -3989,13 +3989,13 @@ State that broader behavior is unverified when no matching successful check ran.
       (var text (if (present? message/content) message/content ""))
       (var items ($cell []))
       (if_not (== text "")
-        ((items ~ get) ~ push!
+        ((items ~ get) ~ push
           {^type "message" ^role "assistant"
            ^content [{^type "output_text" ^text text}]}))
       (if (present? message/tool_calls)
         ((to_stream message/tool_calls)
           ~ each (fn [tc]
-              ((items ~ get) ~ push!
+              ((items ~ get) ~ push
                 {^type "function_call" ^name tc/function/name
                  ^call_id tc/id ^arguments tc/function/arguments}))))
       {^output (items ~ get) ^output_text text})))
@@ -4062,12 +4062,12 @@ State that broader behavior is unverified when no matching successful check ran.
     (var name $"${key}")
     (if_not (|| (== name "context_summary")
                 (== name "context_limit_warning"))
-      (out ~ put! key value)))
+      (out ~ put key value)))
   out)
 
 (fn wire_items [items]
   (var out [])
-  (for item in items (out ~ push! (wire_item item)))
+  (for item in items (out ~ push (wire_item item)))
   out)
 
 (fn call_model [transport, input_items, render_stream, context = nil]
@@ -4093,10 +4093,10 @@ State that broader behavior is unverified when no matching successful check ran.
   # wire shapes use different field names for the same user-facing control.
   (if (!= effort "default")
     (if (== api_flavor "chat")
-      (request ~ put! "reasoning_effort" effort)
-      (request ~ put! "reasoning" {^effort effort})))
+      (request ~ put "reasoning_effort" effort)
+      (request ~ put "reasoning" {^effort effort})))
   (var body (stringify request))
-  (debug! model_log "model request started"
+  (log_debug model_log "model request started"
     ^payload {^api_flavor api_flavor ^model_name selected_model
               ^reasoning_effort effort
               ^input_items (input_items ~ size)
@@ -4104,12 +4104,12 @@ State that broader behavior is unverified when no matching successful check ran.
               ^request_bytes (byte_size body)})
   (var resp (transport body render_stream))
   (if (!= resp/agent_error void)
-    (warn! model_log "model request failed"
+    (log_warn model_log "model request failed"
       ^payload {^api_flavor api_flavor ^model_name selected_model
                 ^duration_ms (- (monotonic_ms) started)
                 ^request_bytes (byte_size body)
                 ^error_kind "transport_or_api"})
-    (debug! model_log "model request completed"
+    (log_debug model_log "model request completed"
       ^payload {^api_flavor api_flavor ^model_name selected_model
                 ^duration_ms (- (monotonic_ms) started)
                 ^request_bytes (byte_size body)
@@ -4139,7 +4139,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (append active_items
             (system_item "The executable tool-round budget is exhausted. Do not request tools; give an honest final status with any unverified work stated explicitly."))
           active_items))))
-  (debug! turn_log "model round started"
+  (log_debug turn_log "model round started"
     ^payload {^budget_remaining budget ^input_items (active_items ~ size)
               ^request_items (request_items ~ size)})
   (var streamed ($cell false))
@@ -4151,7 +4151,7 @@ State that broader behavior is unverified when no matching successful check ran.
                 # through the sink so /trace and subscriptions see text_delta
                 # events; the gateway sink skips them to avoid double-logging.
                 (var safe (redact text))
-                (trace! model_log "model stream delta"
+                (log_trace model_log "model stream delta"
                   ^payload {^bytes (byte_size safe)
                             ^budget_remaining budget})
                 (emit "text_delta" {^text safe})
@@ -4167,7 +4167,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (each (to_stream (response_output_items resp))
         (fn [item] (emit "model_item" {^item item})))
       (var calls (response_calls resp))
-      (debug! turn_log "model round completed"
+      (log_debug turn_log "model round completed"
         ^payload {^budget_remaining budget ^tool_calls (calls ~ size)
                   ^response_items ((response_output_items resp) ~ size)
                   ^streamed (streamed ~ get)})
@@ -4183,7 +4183,7 @@ State that broader behavior is unverified when no matching successful check ran.
           # which already appends resp's output items).
           (append_all active_items (response_output_items resp)))
         (elif (<= budget 0)
-          (warn! turn_log "tool round budget exhausted"
+          (log_warn turn_log "tool round budget exhausted"
             ^payload {^requested_tools (calls ~ size)
                       ^budget_remaining budget})
           (render "[stopped: tool_call budget exhausted]")
@@ -4197,7 +4197,7 @@ State that broader behavior is unverified when no matching successful check ran.
           # could then leave an awaited subprocess alive in that continuation.
           (var outputs ($cell []))
           (for c in calls
-            ((outputs ~ get) ~ push!
+            ((outputs ~ get) ~ push
               (run_tool_call_in c emit context))
             (render $"  · tool ${c/name} ${c/arguments}"))
           (run_turn_in transport
@@ -4242,7 +4242,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (emit type props))
   (var prepared_items (compact_context input_items tracked_emit))
   (result ~ set prepared_items)
-  (info! turn_log "turn started"
+  (log_info turn_log "turn started"
     ^payload {^turn_id (current_turn ~ get) ^budget budget
               ^input_items (input_items ~ size)
               ^prepared_items (prepared_items ~ size)})
@@ -4265,7 +4265,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var operation_agent
     (if (&& (present? context) (present? context/agent)) context/agent))
   (if (&& (!= operation_app nil) (!= operation_agent nil))
-    (application_begin_worker_operation!
+    (application_begin_worker_operation
       operation_app operation_agent task "agent_turn"))
   (var interrupt_armed (begin_interrupt))
   (var watcher
@@ -4279,13 +4279,13 @@ State that broader behavior is unverified when no matching successful check ran.
     (try (done ~ recv) catch (ChannelClosed) nil)
     (match (outcome ~ get)
       (when "done"
-        (info! turn_log "turn completed"
+        (log_info turn_log "turn completed"
           ^payload {^turn_id (current_turn ~ get)
                     ^duration_ms (- (monotonic_ms) started)
                     ^result_items ((result ~ get) ~ size)})
         (result ~ get))
       (when "failed"
-        (error! turn_log "turn failed"
+        (log_error turn_log "turn failed"
           ^payload {^turn_id (current_turn ~ get)
                     ^duration_ms (- (monotonic_ms) started)
                     ^error_detail (redact (failure_text ~ get))})
@@ -4296,7 +4296,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (render $"[turn failed: ${(failure_text ~ get)}]")
         prepared_items)
       (else
-        (info! turn_log "turn cancelled"
+        (log_info turn_log "turn cancelled"
           ^payload {^turn_id (current_turn ~ get)
                     ^duration_ms (- (monotonic_ms) started)
                     ^interrupt_requested (interrupted ~ get)})
@@ -4317,7 +4317,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (var terminal_outcome
           (if (== (outcome ~ get) "done") "completed"
             (if (== (outcome ~ get) "failed") "failed" "cancelled")))
-        (application_finish_agent_operation!
+        (application_finish_agent_operation
           operation_app operation_agent terminal_outcome
           (final_text ~ get)
           (if (== terminal_outcome "failed") "AgentError" terminal_outcome)
@@ -4325,7 +4325,7 @@ State that broader behavior is unverified when no matching successful check ran.
             (if (== terminal_outcome "cancelled") "turn cancelled" ""))
           nil))
       (else (active_turn_task ~ set nil)))
-    (trace! turn_log "turn resources released"
+    (log_trace turn_log "turn resources released"
       ^payload {^turn_id (current_turn ~ get)})))
 
 (fn run_turn_tracked [transport, input_items, render, render_stream, budget,
@@ -4399,7 +4399,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (store_fs_open ReadWriteDir ^root path))))
 
 (fn close_agent_state []
-  (release_workspace_advisory!)
+  (release_workspace_advisory)
   (agent_loaded_checkpoint ~ set nil)
   (registration_restore_done ~ set false)
   (var store (agent_store ~ get))
@@ -4447,31 +4447,31 @@ State that broader behavior is unverified when no matching successful check ran.
               ((agent_store ~ get) ~ Store:get "checkpoint" ^default nil))
             (if (&& legacy (present? legacy/sequence))
               (agent_checkpoint_seq ~ set legacy/sequence)))))
-      (restore_artifacts!)
-      (claim_workspace_advisory!)
-      (info! state_log "agent state opened"
+      (restore_artifacts)
+      (claim_workspace_advisory)
+      (log_info state_log "agent state opened"
         ^payload {^state_enabled true
                   ^state_backend
                     (if (starts_with? agent_state_spec "db:") "db" "fs")
                   ^resume_enabled (resume_enabled?)})
     catch (StoreError ^message m)
       (close_agent_state)
-      (warn! state_log "agent state disabled"
+      (log_warn state_log "agent state disabled"
         ^payload {^error_kind "store" ^error_detail (redact m)})
       ($println $"agent state disabled: ${m}")
     catch (DbError ^message m)
       (close_agent_state)
-      (warn! state_log "agent state disabled"
+      (log_warn state_log "agent state disabled"
         ^payload {^error_kind "database" ^error_detail (redact m)})
       ($println $"agent state disabled: ${m}")
     catch (OsError ^message m)
       (close_agent_state)
-      (warn! state_log "agent state disabled"
+      (log_warn state_log "agent state disabled"
         ^payload {^error_kind "configuration" ^error_detail (redact m)})
       ($println $"agent state disabled: ${m}")
     catch _
       (close_agent_state)
-      (warn! state_log "agent state disabled"
+      (log_warn state_log "agent state disabled"
         ^payload {^error_kind "unknown"})
       ($println "agent state disabled: could not open store"))))
 
@@ -4526,18 +4526,18 @@ State that broader behavior is unverified when no matching successful check ran.
             (set loaded (migrate_state_record key record))))
         (else
           (set loaded ((agent_store ~ get) ~ Store:get key ^default default))))
-      (trace! state_log "state record loaded" ^payload {^record_key key})
+      (log_trace state_log "state record loaded" ^payload {^record_key key})
       # Sanitize snapshots written by older versions before they can be
       # rendered, resumed, or sent back to a model.
       (redact_any loaded)
     catch (StoreError ^message m)
-      (warn! state_log "state record load failed"
+      (log_warn state_log "state record load failed"
         ^payload {^record_key key ^error_kind "store"
                   ^error_detail (redact m)})
       ($println $"agent state load failed (${key}): ${m}")
       default
     catch _
-      (warn! state_log "state record load failed"
+      (log_warn state_log "state record load failed"
         ^payload {^record_key key ^error_kind "unknown"})
       default)))
 
@@ -4548,14 +4548,14 @@ State that broader behavior is unverified when no matching successful check ran.
       ((agent_store ~ get) ~ Store:get key ^default default)
     catch _ default)))
 
-(fn write_workspace_heartbeat! []
+(fn write_workspace_heartbeat []
   (if (&& (workspace_advisory_owned ~ get)
           (agent_store ~ get))
     ((agent_store ~ get) ~ Store:put workspace_advisory_key
       {^workspace workspace_real ^process_id (process_id)
        ^heartbeat_ms (monotonic_ms)})))
 
-(fn claim_workspace_advisory! []
+(fn claim_workspace_advisory []
   (if_yes (agent_store ~ get)
     (var previous (durable_state_get workspace_advisory_key nil))
     (var live
@@ -4570,20 +4570,20 @@ State that broader behavior is unverified when no matching successful check ran.
           $"WARNING: another Gene agent owns this workspace (pid ${previous/process_id}, ${previous/workspace})"))
       (else
         (workspace_advisory_owned ~ set true)
-        (write_workspace_heartbeat!)))))
+        (write_workspace_heartbeat)))))
 
-(fn start_workspace_heartbeat! []
+(fn start_workspace_heartbeat []
   (if_yes (&& (workspace_advisory_owned ~ get)
               (== (workspace_heartbeat_task ~ get) nil))
     (var task
       (spawn ^lane root
         (loop
           ($sleep 5000)
-          (write_workspace_heartbeat!))))
+          (write_workspace_heartbeat))))
     (workspace_heartbeat_task ~ set task)
     (task ~ detach)))
 
-(fn release_workspace_advisory! []
+(fn release_workspace_advisory []
   (var task (workspace_heartbeat_task ~ get))
   (if task (task ~ cancel))
   (workspace_heartbeat_task ~ set nil)
@@ -4600,7 +4600,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (== artifact/id id) (found ~ set artifact)))
   (found ~ get))
 
-(fn restore_artifacts! []
+(fn restore_artifacts []
   (agent_artifacts ~ set [])
   (next_artifact_id ~ set 1)
   (if_yes (agent_store ~ get)
@@ -4609,7 +4609,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (var data (durable_state_get key nil))
         (if_yes (&& data (present? data/id) (present? data/blob_id)
                 (present? data/kind) (present? data/size))
-          ((agent_artifacts ~ get) ~ push! data)
+          ((agent_artifacts ~ get) ~ push data)
           (var parts (split data/id ":"))
           (if_yes (== (parts ~ size) 2)
             (try
@@ -4623,11 +4623,11 @@ State that broader behavior is unverified when no matching successful check ran.
   (var seen {})
   (for artifact in (agent_artifacts ~ get)
     (if_yes (== (seen ~ get artifact/blob_id) void)
-      (seen ~ put! artifact/blob_id true)
+      (seen ~ put artifact/blob_id true)
       (set total (+ total artifact/size))))
   total)
 
-(fn application_pin_artifact!
+(fn application_pin_artifact
   [app, kind : Str, text : Str, source_worker, source_task]
   (if (== (agent_store ~ get) nil)
     (return {^ok false ^error "agent state is disabled"}))
@@ -4649,14 +4649,14 @@ State that broader behavior is unverified when no matching successful check ran.
      ^source_worker source_worker ^source_task source_task
      ^created_v (- (next_event_v ~ get) 1) ^size size})
   ((agent_store ~ get) ~ Store:put $"artifact/${id}" artifact)
-  ((agent_artifacts ~ get) ~ push! artifact)
+  ((agent_artifacts ~ get) ~ push artifact)
   (if app
     (application_emit app "artifact_pinned"
       {^artifact_id id ^blob_id blob_id ^kind kind
        ^worker_id source_worker ^task_id source_task ^size size}))
   {^ok true ^artifact artifact})
 
-(fn application_delete_artifact! [app, id : Str]
+(fn application_delete_artifact [app, id : Str]
   (var artifact (artifact_find id))
   (if (== artifact nil)
     (return {^ok false ^error $"artifact ${id} not found"}))
@@ -4664,7 +4664,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var blob_referenced false)
   (for current in (agent_artifacts ~ get)
     (if_yes (!= current/id id)
-      (retained ~ push! current)
+      (retained ~ push current)
       (if_yes (== current/blob_id artifact/blob_id)
         (set blob_referenced true))))
   (agent_artifacts ~ set retained)
@@ -4686,7 +4686,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (else
       (var lines [])
       (for artifact in (agent_artifacts ~ get)
-        (lines ~ push!
+        (lines ~ push
           $"${artifact/id} ${artifact/kind} source=${artifact/source_worker} bytes=${artifact/size} blob=${artifact/blob_id}"))
       (join lines "\n"))))
 
@@ -4697,10 +4697,10 @@ State that broader behavior is unverified when no matching successful check ran.
       (== current/path saved/path)
       (== current/version saved/version)))
 
-(fn registration_restore_event! [app, type : Str, props]
-  (if app (application_emit app type props) (emit_event! type props)))
+(fn registration_restore_event [app, type : Str, props]
+  (if app (application_emit app type props) (emit_event type props)))
 
-(fn restore_dynamic_registrations! [app]
+(fn restore_dynamic_registrations [app]
   (if (registration_restore_done ~ get) (return false))
   (registration_restore_done ~ set true)
   (var saved (state_get "registrations" []))
@@ -4714,8 +4714,8 @@ State that broader behavior is unverified when no matching successful check ran.
           (if (&& (!= current void)
                   (handler_ref_matches? current/handler_ref record/handler_ref))
             (then
-              (current ~ set_prop! `enabled true)
-              (registration_restore_event! app "registration_restored"
+              (current ~ set_prop `enabled true)
+              (registration_restore_event app "registration_restored"
                 {^registration_kind "tool" ^name record/name
                  ^handler_ref record/handler_ref}))
             (else
@@ -4725,9 +4725,9 @@ State that broader behavior is unverified when no matching successful check ran.
                     ^risk record/risk ^params record/params
                     ^handler (fn [_args] "error: restored tool handler unavailable")
                     ^handler_ref record/handler_ref ^enabled false))
-                (current ~ set_prop! `enabled false))
-              (register_tool! current)
-              (registration_restore_event! app "restore_record_rejected"
+                (current ~ set_prop `enabled false))
+              (register_tool current)
+              (registration_restore_event app "restore_record_rejected"
                 {^record_kind "tool_handler" ^record_id record/name
                  ^error_text "ephemeral or exact-version handler unavailable"}))))
         (when "operation"
@@ -4737,15 +4737,15 @@ State that broader behavior is unverified when no matching successful check ran.
                   (handler_ref_matches?
                     current/handler_ref record/handler_ref))
             (then
-              (current ~ set_prop! `enabled true)
-              (registration_restore_event! app "registration_restored"
+              (current ~ set_prop `enabled true)
+              (registration_restore_event app "registration_restored"
                 {^registration_kind "operation"
                  ^worker_kind record/worker_kind ^name record/name
                  ^handler_ref record/handler_ref}))
             (else
               (if current
                 (then
-                  (current ~ set_prop! `enabled false))
+                  (current ~ set_prop `enabled false))
                 (else
                   (set current
                     (Operation ^name record/name ^summary record/summary
@@ -4760,8 +4760,8 @@ State that broader behavior is unverified when no matching successful check ran.
                           (fail (OsError ^message "restored operation handler unavailable")))
                       ^parse_cli (fn [text] {^raw text})
                       ^handler_ref record/handler_ref ^enabled false))
-                  (register_worker_operation! record/worker_kind current)))
-              (registration_restore_event! app "restore_record_rejected"
+                  (register_worker_operation record/worker_kind current)))
+              (registration_restore_event app "restore_record_rejected"
                 {^record_kind "operation_handler"
                  ^record_id $"${record/worker_kind}/${record/name}"
                  ^error_text "ephemeral or exact-version handler unavailable"}))))
@@ -4785,10 +4785,10 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn session_config_snapshot [items, memory]
   (var config (config_snapshot))
-  (config ~ put! "context" (context_stats items memory))
+  (config ~ put "context" (context_stats items memory))
   config)
 
-(fn restore_reasoning_effort! []
+(fn restore_reasoning_effort []
   # An explicit environment value is launch configuration and wins over the
   # durable interactive choice. Otherwise resume the last valid choice.
   (if_yes (&& (resume_enabled?) (== configured_reasoning_effort nil))
@@ -4814,8 +4814,8 @@ State that broader behavior is unverified when no matching successful check ran.
   (var i ($cell 0))
   (for item in items
     (if (== (i ~ get) 0)
-      ((out ~ get) ~ push! (system_item (prompt_with_memory memory)))
-      ((out ~ get) ~ push! item))
+      ((out ~ get) ~ push (system_item (prompt_with_memory memory)))
+      ((out ~ get) ~ push item))
     (i ~ set (+ (i ~ get) 1)))
   (if (== (i ~ get) 0)
     (initial_items memory)
@@ -4835,11 +4835,11 @@ State that broader behavior is unverified when no matching successful check ran.
   (var drafts {})
   (var histories {})
   (for [worker_id draft] in (surface/drafts ~ get)
-    (drafts ~ put! worker_id (draft ~ get)))
+    (drafts ~ put worker_id (draft ~ get)))
   (for [worker_id history] in (surface/input_histories ~ get)
-    (histories ~ put! worker_id (history ~ get)))
+    (histories ~ put worker_id (history ~ get)))
   (for pane in (surface/panes ~ get)
-    (panes ~ push!
+    (panes ~ push
       {^id pane/id ^worker_id pane/worker_id ^kind pane/kind
        ^owner_id pane/owner_id ^title pane/title
        ^scroll (pane/scroll ~ get)
@@ -4878,7 +4878,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var agents [])
   (for agent in (app/agents ~ get)
     (if_not (== agent/id "main")
-      (agents ~ push!
+      (agents ~ push
         {^id agent/id ^name agent/name
          ^parent_id agent/parent_id ^title agent/title
          ^assignment agent/assignment ^model (agent/model ~ get)
@@ -4903,9 +4903,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (var terminal_text void)
       (if_yes (== worker/kind "terminal")
         (set terminal_snapshot
-          (terminal_controller_capture! worker/controller))
+          (terminal_controller_capture worker/controller))
         (set terminal_text (worker/controller/restored_text ~ get)))
-      (workers ~ push!
+      (workers ~ push
         {^id worker/id ^name worker/name
          ^kind worker/kind ^title worker/title
          ^output (worker/output ~ get)
@@ -4947,7 +4947,7 @@ State that broader behavior is unverified when no matching successful check ran.
    ^next_worker_id (app/next_worker_id ~ get)
    ^next_task_id (app/next_task_id ~ get)})
 
-(fn emit_restore_normalization! [app, worker, data]
+(fn emit_restore_normalization [app, worker, data]
   # Process-local Tasks, confirmations, and lease requests are never durable.
   # Preserve enough operation identity in the snapshot to close the old
   # observation trail, while restoring no authority that could repeat work.
@@ -4999,9 +4999,9 @@ State that broader behavior is unverified when no matching successful check ran.
          ^incorporated main_result})
       (worker/result ~ set result)
       (if (!= worker/id "main")
-        (application_enqueue_supervisor_result! app worker result)))))
+        (application_enqueue_supervisor_result app worker result)))))
 
-(fn emit_restore_rejected! [app, record_kind : Str, record_id, message : Str]
+(fn emit_restore_rejected [app, record_kind : Str, record_id, message : Str]
   (application_emit app "restore_record_rejected"
     {^record_kind record_kind ^record_id record_id
      ^error_kind "invalid_record"
@@ -5013,7 +5013,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (present? record/id) $"${record/id}" "unknown"))
     (else "unknown")))
 
-(fn restore_surface_record! [app, surface, data]
+(fn restore_surface_record [app, surface, data]
   (match data
     (when (_record : Map) nil)
     (else (fail (OsError ^message "surface record must be a map"))))
@@ -5045,7 +5045,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (for [worker_id text] in saved_drafts
           (match text
             (when (draft_text : Str)
-              (drafts ~ put! worker_id
+              (drafts ~ put worker_id
                 ($cell (utf8_prefix draft_text surface_draft_max_bytes))))
             (else nil)))
         (surface/drafts ~ set drafts))
@@ -5060,7 +5060,7 @@ State that broader behavior is unverified when no matching successful check ran.
               (if_not (list_of_type? history "str")
                 (fail (OsError
                   ^message "surface input history must contain only Str")))
-              (histories ~ put! worker_id
+              (histories ~ put worker_id
                 ($cell (bounded_list_tail history surface_history_max))))
             (else nil)))
         (surface/input_histories ~ set histories))
@@ -5068,7 +5068,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (fail (OsError ^message "surface input_histories must be a map")))))
   true)
 
-(fn restore_application_snapshot! [app, saved]
+(fn restore_application_snapshot [app, saved]
   (if_yes saved
     (match saved
       (when (_record : Map) nil)
@@ -5083,11 +5083,11 @@ State that broader behavior is unverified when no matching successful check ran.
         (match data/model
           (when (saved_model : Str)
             (if (== (trim saved_model) "")
-              (emit_restore_rejected!
+              (emit_restore_rejected
                 app "model" "main" "model must not be blank")
               (app/main_agent/model ~ set (trim saved_model))))
           (else
-            (emit_restore_rejected!
+            (emit_restore_rejected
               app "model" "main" "model must be a Str"))))
       (app/main_agent/status ~ set
         (if (== data/status "working") "idle" data/status))
@@ -5098,10 +5098,10 @@ State that broader behavior is unverified when no matching successful check ran.
           (normalized_agent_result data/result true))
       catch {^message message}
         (app/main_agent/result ~ set nil)
-        (emit_restore_rejected! app "result" "main" message)
+        (emit_restore_rejected app "result" "main" message)
       catch _
         (app/main_agent/result ~ set nil)
-        (emit_restore_rejected! app "result" "main"
+        (emit_restore_rejected app "result" "main"
           "unknown result restore failure"))
       (var saved_history
         (if (present? data/history) data/history []))
@@ -5131,7 +5131,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (app/main_agent/history_dropped ~ set
         (+ (if (present? data/history_dropped) data/history_dropped 0)
            (- saved_history/~size restored_history/~size)))
-      (emit_restore_normalization! app app/main_agent data))
+      (emit_restore_normalization app app/main_agent data))
     (if (present? saved/supervisor_inbox)
       (app/supervisor_inbox ~ set
         (bounded_list_tail saved/supervisor_inbox
@@ -5140,9 +5140,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (try
         (app/progress ~ set (normalized_project_progress saved/progress))
       catch {^message message}
-        (emit_restore_rejected! app "progress" "main" message)
+        (emit_restore_rejected app "progress" "main" message)
       catch _
-        (emit_restore_rejected! app "progress" "main"
+        (emit_restore_rejected app "progress" "main"
           "unknown progress restore failure")))
     (for data in (if (present? saved/agents) saved/agents [])
       (var record_id (persisted_record_id data))
@@ -5207,7 +5207,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (agent/model ~ set (trim data/model))
           (agent/model ~ set (app/main_agent/model ~ get)))
         (if_yes (present? data/name)
-          (var named (application_assign_worker_name! app agent data/name))
+          (var named (application_assign_worker_name app agent data/name))
           (if_not named/ok
             (fail (OsError ^message named/error/message))))
         (agent/status ~ set
@@ -5242,13 +5242,13 @@ State that broader behavior is unverified when no matching successful check ran.
         (if (present? data/retained_output)
           (agent/retained_output ~ set data/retained_output)
           (agent/retained_output ~ set data/transcript))
-        ((app/agents ~ get) ~ push! agent)
-        ((app/workers ~ get) ~ push! agent)
-        (emit_restore_normalization! app agent data)
+        ((app/agents ~ get) ~ push agent)
+        ((app/workers ~ get) ~ push agent)
+        (emit_restore_normalization app agent data)
       catch {^message message}
-        (emit_restore_rejected! app "agent" record_id message)
+        (emit_restore_rejected app "agent" record_id message)
       catch _
-        (emit_restore_rejected! app "agent" record_id
+        (emit_restore_rejected app "agent" record_id
           "unknown agent restore failure")))
     (for data in (if (present? saved/workers) saved/workers [])
       (var record_id (persisted_record_id data))
@@ -5392,7 +5392,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (make_worker data/id data/kind data/title
             ($cell (if unsafe_file_view "" data/output)) controller))
         (if_yes (present? data/name)
-          (var named (application_assign_worker_name! app worker data/name))
+          (var named (application_assign_worker_name app worker data/name))
           (if_not named/ok
             (fail (OsError ^message named/error/message))))
         (var saved_history
@@ -5429,32 +5429,32 @@ State that broader behavior is unverified when no matching successful check ran.
                (- saved_history/~size restored_history/~size)))
           (worker/history_dropped ~ set
             (- saved_history/~size restored_history/~size)))
-        ((app/workers ~ get) ~ push! worker)
-        (emit_restore_normalization! app worker data)
+        ((app/workers ~ get) ~ push worker)
+        (emit_restore_normalization app worker data)
         (if (&& (== (worker/lifecycle ~ get) "running")
                 (== worker/kind "stats"))
-          ((app/event_observers ~ get) ~ push!
+          ((app/event_observers ~ get) ~ push
             {^worker_id worker/id
              ^handler (fn [event]
                (if_not (== event/projection true)
-                 (application_set_projection_output!
+                 (application_set_projection_output
                    app worker (stats_worker_text app) "stats")))})
           (if (&& (== (worker/lifecycle ~ get) "running")
                   (== worker/kind "log_tail"))
-            ((app/event_observers ~ get) ~ push!
+            ((app/event_observers ~ get) ~ push
               {^worker_id worker/id
                ^handler (fn [event]
                  (if (&& (!= event/projection true)
                          (event_matches? event
                            (worker/controller/filter ~ get)))
-                   (application_append_projection_output!
+                   (application_append_projection_output
                      app worker
                      $"${(format_event_with_filters event (worker/controller/filter ~ get))}\n"
                      "log_tail")))})))
       catch {^message message}
-        (emit_restore_rejected! app "worker" record_id message)
+        (emit_restore_rejected app "worker" record_id message)
       catch _
-        (emit_restore_rejected! app "worker" record_id
+        (emit_restore_rejected app "worker" record_id
           "unknown worker restore failure")))
     # Rebuild output follow edges only after every worker exists. Adding each
     # edge through the ordinary validator drops stale references and rejects
@@ -5466,10 +5466,10 @@ State that broader behavior is unverified when no matching successful check ran.
           (worker/controller/following ~ set [])
           (for source_id in saved_following
             (var followed
-              (application_follow_output!
+              (application_follow_output
                 app worker (application_find_worker app source_id)))
             (if_not followed/ok
-              (emit_restore_rejected! app "worker" worker/id
+              (emit_restore_rejected app "worker" worker/id
                 $"invalid follow ${source_id}: ${followed/error}"))))))
     (var surface app/local_surface)
     (var retained_pane_data [])
@@ -5477,7 +5477,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (for data in (if (|| (== surface nil) (! (present? saved/panes)))
                    [] saved/panes)
       (if (< retained_pane_data/~size surface/max_panes)
-        (retained_pane_data ~ push! data)
+        (retained_pane_data ~ push data)
         (set dropped_panes (+ dropped_panes 1))))
     (for data in retained_pane_data
       (var record_id (persisted_record_id data))
@@ -5552,7 +5552,7 @@ State that broader behavior is unverified when no matching successful check ran.
               "stopped" "idle"))
           (if (!= data/history void)
             (worker/history ~ set data/history))
-          ((app/workers ~ get) ~ push! worker))
+          ((app/workers ~ get) ~ push worker))
         (if_yes worker
           (var pane
             (Pane ^id data/id ^worker_id worker/id ^worker worker
@@ -5569,37 +5569,37 @@ State that broader behavior is unverified when no matching successful check ran.
                   ^hidden ($cell (if (present? data/hidden)
                                   data/hidden false))
                   ^close_policy "detach"))
-          ((surface/panes ~ get) ~ push! pane))
+          ((surface/panes ~ get) ~ push pane))
         (if_yes (== worker nil)
           (fail (OsError ^message "pane references a missing worker")))
       catch {^message message}
-        (emit_restore_rejected! app "pane" record_id message)
+        (emit_restore_rejected app "pane" record_id message)
       catch _
-        (emit_restore_rejected! app "pane" record_id
+        (emit_restore_rejected app "pane" record_id
           "unknown pane restore failure")))
     (if_yes (present? saved/next_agent_id)
       (if (match saved/next_agent_id (when (_id : Int) true) (else false))
         (app/next_agent_id ~ set saved/next_agent_id)
-        (emit_restore_rejected! app "counter" "next_agent_id"
+        (emit_restore_rejected app "counter" "next_agent_id"
           "counter must be an Int")))
     (if (present? saved/next_worker_id)
       (if (match saved/next_worker_id (when (_id : Int) true) (else false))
         (app/next_worker_id ~ set saved/next_worker_id)
-        (emit_restore_rejected! app "counter" "next_worker_id"
+        (emit_restore_rejected app "counter" "next_worker_id"
           "counter must be an Int")))
     (if (present? saved/next_task_id)
       (if (match saved/next_task_id (when (_id : Int) true) (else false))
         (app/next_task_id ~ set saved/next_task_id)
-        (emit_restore_rejected! app "counter" "next_task_id"
+        (emit_restore_rejected app "counter" "next_task_id"
           "counter must be an Int")))
     (if (&& (!= surface nil) (present? saved/surface))
       (then
         (try
-          (restore_surface_record! app surface saved/surface)
+          (restore_surface_record app surface saved/surface)
         catch {^message message}
-          (emit_restore_rejected! app "surface" surface/id message)
+          (emit_restore_rejected app "surface" surface/id message)
         catch _
-          (emit_restore_rejected! app "surface" surface/id
+          (emit_restore_rejected app "surface" surface/id
             "unknown surface restore failure")))
       (else
         (if (&& (!= surface nil) (present? saved/next_pane_id))
@@ -5627,20 +5627,20 @@ State that broader behavior is unverified when no matching successful check ran.
             (!= (surface/maximized_pane ~ get)
                 (surface/focused_pane ~ get)))
       (surface/maximized_pane ~ set nil))
-    (application_prune_stopped_workers! app)
+    (application_prune_stopped_workers app)
     (if_not (== saved/surface_only true)
       (application_emit app "application_restored"
         {^agents ((if (present? saved/agents) saved/agents []) ~ size)
          ^workers ((if (present? saved/workers) saved/workers []) ~ size)}))
     true))
 
-(fn restore_surface_snapshot! [app, saved]
+(fn restore_surface_snapshot [app, saved]
   (if (== saved nil) (return false))
   (var compatibility
     {^surface_only true
      ^panes (if (present? saved/panes) saved/panes [])
      ^surface (if (present? saved/surface) saved/surface nil)})
-  (restore_application_snapshot! app compatibility)
+  (restore_application_snapshot app compatibility)
   (var surface app/local_surface)
   (if_yes (&& surface (present? saved/presentation_events))
     (match saved/presentation_events
@@ -5654,13 +5654,13 @@ State that broader behavior is unverified when no matching successful check ran.
       (else nil)))
   true)
 
-(fn restore_application! [app]
+(fn restore_application [app]
   (var restored false)
   (agent_checkpoint_suspended ~ set true)
   (try
     (try
       (set restored
-        (restore_application_snapshot! app
+        (restore_application_snapshot app
           (if (resume_enabled?) (state_get "application" nil))))
       (if_yes (resume_enabled?)
         # The owning client's surface store is authoritative (§0.13); the
@@ -5669,22 +5669,22 @@ State that broader behavior is unverified when no matching successful check ran.
         (var loader (client_surface_record_loader ~ get))
         (var client_record (if (present? loader) (loader)))
         (if (present? client_record)
-          (restore_surface_snapshot! app client_record)
-          (restore_surface_snapshot! app (state_get "surface" nil))))
+          (restore_surface_snapshot app client_record)
+          (restore_surface_snapshot app (state_get "surface" nil))))
     catch {^message message}
-      (emit_restore_rejected! app "application" "application" message)
+      (emit_restore_rejected app "application" "application" message)
       (set restored false)
     catch _
-      (emit_restore_rejected! app "application" "application"
+      (emit_restore_rejected app "application" "application"
         "unknown restore failure")
       (set restored false))
   ensure
     (agent_checkpoint_suspended ~ set false))
-  (if restored (checkpoint_agent_state! app "application_restored"))
+  (if restored (checkpoint_agent_state app "application_restored"))
   restored)
 
 (fn save_agent_state_with_reason [items, transcript, memory, reason : Str]
-  (debug! state_log "agent state snapshot started"
+  (log_debug state_log "agent state snapshot started"
     ^payload {^items (items ~ size) ^transcript_bytes (byte_size transcript)
               ^memory_items (memory ~ size)
               ^events ((agent_events ~ get) ~ size)})
@@ -5720,7 +5720,7 @@ State that broader behavior is unverified when no matching successful check ran.
       {^generation seq ^schema 1 ^records records})
     # Pane/layout state saves at the same boundary but into the owning
     # client's store (invariant §0.13) — never into the session records above.
-    (client_surface_checkpoint! app reason)
+    (client_surface_checkpoint app reason)
     seq))
 
 (fn save_agent_state [items, transcript, memory]
@@ -5745,7 +5745,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (&& (!= app nil) (!= local nil)
       (== app/coordinator_id local/coordinator_id)))
 
-(fn checkpoint_agent_state! [app, reason : Str] : Bool
+(fn checkpoint_agent_state [app, reason : Str] : Bool
   (if (|| (! (state_enabled?))
           (== (agent_store ~ get) nil)
           (! (checkpoint_local_application? app))
@@ -5762,21 +5762,21 @@ State that broader behavior is unverified when no matching successful check ran.
             (main/items ~ get)
             (main/transcript ~ get)
             (app/memory ~ get) reason))
-        (debug! state_log "agent state checkpoint saved"
+        (log_debug state_log "agent state checkpoint saved"
           ^payload {^checkpoint_sequence seq ^checkpoint_reason reason
                     ^turn_id (current_turn ~ get)})
         true
       ensure
         (agent_checkpoint_writing ~ set false)))))
 
-(fn checkpoint_application_event! [app, type : Str]
+(fn checkpoint_application_event [app, type : Str]
   (if (immediate_checkpoint_event? type)
-    (checkpoint_agent_state! app type)
+    (checkpoint_agent_state app type)
     (if (&& (progress_checkpoint_event? type)
             (>= (- (monotonic_ms)
                    (agent_checkpoint_last_ms ~ get))
                 agent_checkpoint_interval_ms))
-      (checkpoint_agent_state! app type))))
+      (checkpoint_agent_state app type))))
 
 (fn restore_events []
   (var saved (state_get "events" nil))
@@ -5792,9 +5792,9 @@ State that broader behavior is unverified when no matching successful check ran.
     (next_event_v ~ set saved/next_v)
     (event_dropped_before ~ set
       (if (== saved/dropped_before void) 0 saved/dropped_before))
-    (trim_agent_event_journal!)
+    (trim_agent_event_journal)
     (current_turn ~ set saved/turn)
-    (info! state_log "event state restored"
+    (log_info state_log "event state restored"
       ^payload {^events (saved/events ~ size) ^next_event_v saved/next_v
                 ^turn_id saved/turn})))
 
@@ -5836,7 +5836,7 @@ State that broader behavior is unverified when no matching successful check ran.
     verbose
     (utf8_prefix $"[drop:${dropped}]\n" transcript_max_bytes)))
 
-(fn append_agent_transcript! [agent, text : Str]
+(fn append_agent_transcript [agent, text : Str]
   (var safe_text (redact text))
   (var combined $"${(agent/transcript_retained ~ get)}${safe_text}")
   (var total (byte_size combined))
@@ -5947,7 +5947,7 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn application_workers_snapshot [app]
   (var out [])
   (for worker in (app/workers ~ get)
-    (out ~ push! (application_worker_snapshot app worker)))
+    (out ~ push (application_worker_snapshot app worker)))
   out)
 
 (fn application_create_worker_from_config [app, kind : Str, config]
@@ -5975,7 +5975,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (OutputController ^source "gateway" ^following ($cell []))
           requested_name))
       (if_yes (&& worker (present? config/text))
-        (application_append_worker_output!
+        (application_append_worker_output
           app worker (redact_any config/text) "gateway"))
       worker)
     (when "stats"
@@ -5983,13 +5983,13 @@ State that broader behavior is unverified when no matching successful check ran.
         (application_new_named_worker app kind title ($cell "")
           (StatsController) requested_name))
       (if_yes worker
-        (application_set_projection_output!
+        (application_set_projection_output
           app worker (stats_worker_text app) "stats")
-        ((app/event_observers ~ get) ~ push!
+        ((app/event_observers ~ get) ~ push
           {^worker_id worker/id
            ^handler (fn [event]
              (if_not (== event/projection true)
-               (application_set_projection_output!
+               (application_set_projection_output
                  app worker (stats_worker_text app) "stats")))}))
       worker)
     (when "log_tail"
@@ -6000,13 +6000,13 @@ State that broader behavior is unverified when no matching successful check ran.
         (application_new_named_worker app kind title ($cell "")
           (LogTailController ^filter ($cell filters)) requested_name))
       (if_yes worker
-        ((app/event_observers ~ get) ~ push!
+        ((app/event_observers ~ get) ~ push
           {^worker_id worker/id
            ^handler (fn [event]
              (if_yes (&& (!= event/projection true)
                          (event_matches? event
                            (worker/controller/filter ~ get)))
-               (application_append_projection_output!
+               (application_append_projection_output
                  app worker
                  $"${(format_event_with_filters event (worker/controller/filter ~ get))}\n"
                  "log_tail")))}))
@@ -6020,7 +6020,7 @@ State that broader behavior is unverified when no matching successful check ran.
               (if (== title kind) $"view ${path}" title)
               ($cell "") (FileViewController ^path path) requested_name))
           (if (!= worker nil)
-            (application_append_projection_output!
+            (application_append_projection_output
               app worker (read_text ReadDir path) "file_view"))
           worker)))
     (else nil)))
@@ -6036,29 +6036,29 @@ State that broader behavior is unverified when no matching successful check ran.
       (controller/snapshot ~ set update/snapshot)
       (if update/snapshot/stopped
         (then
-          (terminal_controller_capture! controller)
+          (terminal_controller_capture controller)
           (worker/lifecycle ~ set "stopped")
           (worker/status ~ set "stopped")
           (worker/last_outcome ~ set "completed")
           (application_emit app "worker_stopped"
             {^worker_id worker/id ^kind "terminal"
              ^exit_status update/snapshot/exit_status})
-          (ui_refresh!)
+          (request_ui_refresh)
           (return nil))
         (else
-          (if update/changed (ui_refresh!))))
+          (if update/changed (request_ui_refresh))))
     catch {^message message}
       (worker/lifecycle ~ set "stopped")
       (worker/status ~ set "failed")
       (worker/last_outcome ~ set "failed")
       (application_emit app "worker_stopped"
         {^worker_id worker/id ^kind "terminal" ^error_kind "pty"})
-      (ui_refresh!)
+      (request_ui_refresh)
       (return nil))
     nil)
   nil)
 
-(fn start_terminal_pump! [app, worker]
+(fn start_terminal_pump [app, worker]
   # The pump may redraw curses and must observe live UI Cells, so capture
   # analysis must never move it to the snapshot-isolated worker lane.
   (var task (spawn ^lane root (terminal_pump_loop app worker)))
@@ -6074,13 +6074,13 @@ State that broader behavior is unverified when no matching successful check ran.
   (for [name value] in (worker/controller/environment ~ get)
     (if (== value void)
       (then
-        (args ~ push! "-u")
-        (args ~ push! name))
+        (args ~ push "-u")
+        (args ~ push name))
       (else
-        (args ~ push! $"${name}=${value}"))))
-  (args ~ push! (get_env Env "SHELL" "sh"))
-  (args ~ push! "-lc")
-  (args ~ push! command)
+        (args ~ push $"${name}=${value}"))))
+  (args ~ push (get_env Env "SHELL" "sh"))
+  (args ~ push "-lc")
+  (args ~ push command)
   args)
 
 (fn normalized_shell_timeout [timeout_ms] : Int
@@ -6098,7 +6098,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (!= (worker/current_task ~ get) nil)
       (then $"shell ${route} is already working")
       (else
-        (worker_history_push! worker command adapter surface_id)
+        (worker_history_push worker command adapter surface_id)
         (var last_output ($cell ""))
         (var process_task ($cell nil))
         (var outcome ($cell "cancelled"))
@@ -6134,25 +6134,25 @@ State that broader behavior is unverified when no matching successful check ran.
                         (set chunk $"${chunk}\n")
                         (last_output ~ set
                           $"${(last_output ~ get)}${chunk}")
-                        (append_worker_transcript! app worker chunk))
+                        (append_worker_transcript app worker chunk))
                     catch (ChannelClosed) nil)
                     (var result (await exec_task))
                     (var duration_ms (- (monotonic_ms) started))
                     (last_output ~ set
                       $"${(last_output ~ get)}${result/stderr}[exit ${result/status}; ${duration_ms} ms]")
-                    (append_worker_transcript! app worker
+                    (append_worker_transcript app worker
                       $"${result/stderr}[exit ${result/status}; ${duration_ms} ms]\n")
                     (outcome ~ set
                       (if (== result/status 0) "completed" "failed")))
                   (else
-                    (append_worker_transcript! app worker
+                    (append_worker_transcript app worker
                       "[application is shutting down]\n")
                     (outcome ~ set "failed")))
               catch {^message message}
-                (append_worker_transcript! app worker $"[shell failed: ${message}]\n")
+                (append_worker_transcript app worker $"[shell failed: ${message}]\n")
                 (outcome ~ set "failed")
               catch _
-                (append_worker_transcript! app worker "[shell failed]\n")
+                (append_worker_transcript app worker "[shell failed]\n")
                 (outcome ~ set "failed")
               ensure
                 (if (!= (process_task ~ get) nil)
@@ -6160,12 +6160,12 @@ State that broader behavior is unverified when no matching successful check ran.
                 (if acquired
                   (application_release_workspace app worker/id
                                                  $"shell:${route}"))
-                (application_finish_worker_operation!
+                (application_finish_worker_operation
                   app worker (outcome ~ get))
                 (refresh_application_input app)))))
-        (application_begin_worker_operation!
+        (application_begin_worker_operation
           app worker task "shell_command")
-        (append_worker_transcript! app worker $"$ ${command}\n")
+        (append_worker_transcript app worker $"$ ${command}\n")
         (task ~ detach)
         (if detached
           (then "accepted")
@@ -6194,7 +6194,7 @@ State that broader behavior is unverified when no matching successful check ran.
             (fn [type props]
               (var tagged {^worker_id worker/id ^kind worker/kind})
               (for [key value] in props
-                (tagged ~ put! key value))
+                (tagged ~ put key value))
               (application_emit app type tagged)))
           (set denial
             (if remote
@@ -6222,7 +6222,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (!= (worker/current_task ~ get) nil)
       (then $"REPL ${route} is already evaluating")
       (else
-        (worker_history_push! worker source adapter surface_id)
+        (worker_history_push worker source adapter surface_id)
         (var last_output ($cell ""))
         (var outcome ($cell "cancelled"))
         (var task
@@ -6239,11 +6239,11 @@ State that broader behavior is unverified when no matching successful check ran.
                 (match result/status
                   (when "ok"
                     (if_not (== result/text "")
-                      (append_worker_transcript! app worker
+                      (append_worker_transcript app worker
                         $"${(pretty_result_text result/text 72)}\n")))
                   (when "incomplete" nil)
                   (else
-                    (append_worker_transcript! app worker $"${result/text}\n")))
+                    (append_worker_transcript app worker $"${result/text}\n")))
                 (outcome ~ set
                   (match result/status
                     (when "error" "failed")
@@ -6254,14 +6254,14 @@ State that broader behavior is unverified when no matching successful check ran.
                 (worker/controller/pending ~ set false)
                 (if (== message "interrupted")
                   (then
-                    (append_worker_transcript! app worker "[cancelled]\n")
+                    (append_worker_transcript app worker "[cancelled]\n")
                     (outcome ~ set "cancelled"))
                   (else
-                    (append_worker_transcript! app worker
+                    (append_worker_transcript app worker
                       $"[REPL failed: ${message}]\n")
                     (outcome ~ set "failed")))
               catch _
-                (append_worker_transcript! app worker "[REPL failed]\n")
+                (append_worker_transcript app worker "[REPL failed]\n")
                 (outcome ~ set "failed")
               ensure
                 (if_yes (&& (!= worker/controller/items nil)
@@ -6273,14 +6273,14 @@ State that broader behavior is unverified when no matching successful check ran.
                       (resume_turn worker/controller/transcript
                         worker/controller/streaming
                         (worker/controller/items ~ get)))))
-                (application_finish_worker_operation!
+                (application_finish_worker_operation
                   app worker (outcome ~ get))
                 (refresh_application_input app)))))
-          (application_begin_worker_operation!
+          (application_begin_worker_operation
             app worker task "repl_eval")
           (var echo_prompt
             (if (worker/controller/pending ~ get) "....> " "gene> "))
-          (append_worker_transcript! app worker $"${echo_prompt}${source}\n")
+          (append_worker_transcript app worker $"${echo_prompt}${source}\n")
           (task ~ detach)
           (if detached
             (then "accepted")
@@ -6306,14 +6306,14 @@ State that broader behavior is unverified when no matching successful check ran.
   (var local (active_application ~ get))
   (if (&& (!= local nil)
           (== local/coordinator_id app/coordinator_id))
-    (ui_refresh!)))
+    (request_ui_refresh)))
 
-(fn append_worker_transcript! [app, worker, text : Str]
-  (bounded_worker_append! worker text)
+(fn append_worker_transcript [app, worker, text : Str]
+  (bounded_worker_append worker text)
   (if (["shell" "repl"] ~ contains? worker/kind)
-    (application_emit_worker_output!
+    (application_emit_worker_output
       app worker text worker/kind false))
-  (application_propagate_followers! app worker text)
+  (application_propagate_followers app worker text)
   (refresh_application_input app))
 
 (fn tool_application [args]
@@ -6372,7 +6372,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (== worker nil)
         (fail (OsError
           ^message $"delegated worker ${attachment/worker_id} was not found")))
-      (attachment ~ put! "worker_id" worker/id)))
+      (attachment ~ put "worker_id" worker/id)))
   (var safe_assignment (redact assignment))
   (var context_text
     (if ($empty? attachments) ""
@@ -6392,7 +6392,7 @@ State that broader behavior is unverified when no matching successful check ran.
 (fn spawn_supervised_agent [app, title : Str, assignment : Str]
   (spawn_supervised_agent_with_context app title assignment []))
 
-(fn release_worker_input_reservation! [worker]
+(fn release_worker_input_reservation [worker]
   (worker/input_reserved ~ set false)
   (if (== (worker/current_task ~ get) nil)
     (worker/status ~ set
@@ -6411,11 +6411,11 @@ State that broader behavior is unverified when no matching successful check ran.
       (else
         (agent/input_reserved ~ set true)
         (agent/status ~ set "admitting")
-        (worker_history_push! agent prompt adapter surface_id)
+        (worker_history_push agent prompt adapter surface_id)
         # The agent pane transcript follows the same turn pattern as pane 0:
         # a ────── separator, the user input verbatim, then agent>-prefixed
         # response text.
-        (bounded_worker_append! agent $"──────\n${prompt}\n")
+        (bounded_worker_append agent $"──────\n${prompt}\n")
         (application_emit app "agent_status"
           {^worker_id agent/id ^agent_id agent/id
            ^parent_agent_id agent/parent_id
@@ -6435,7 +6435,7 @@ State that broader behavior is unverified when no matching successful check ran.
                     (var tagged {^worker_id agent/id ^agent_id agent/id
                                  ^parent_agent_id agent/parent_id})
                     (for [key value] in props
-                      (tagged ~ put! key value))
+                      (tagged ~ put key value))
                     (application_emit app type tagged)))
                 (try
                   (result ~ set
@@ -6445,16 +6445,16 @@ State that broader behavior is unverified when no matching successful check ran.
                         # A streamed round arrives here as "" — close the
                         # streamed line instead of appending an empty echo.
                         (if_yes (agent/streaming ~ get)
-                          (bounded_worker_append! agent "\n")
+                          (bounded_worker_append agent "\n")
                           (agent/streaming ~ set false))
                         (if_not (== text "")
-                          (bounded_worker_append! agent $"agent> ${text}\n")))
+                          (bounded_worker_append agent $"agent> ${text}\n")))
                       (fn [delta]
                         (if_not (== delta "")
                           (if_not (agent/streaming ~ get)
-                            (bounded_worker_append! agent "agent> ")
+                            (bounded_worker_append agent "agent> ")
                             (agent/streaming ~ set true))
-                          (bounded_worker_append! agent delta)))
+                          (bounded_worker_append agent delta)))
                       max_tool_rounds emit {^app app ^agent agent}))
                   (outcome ~ set "completed")
                 catch {^message message}
@@ -6469,15 +6469,15 @@ State that broader behavior is unverified when no matching successful check ran.
                   # A failed or cancelled turn can abandon a streamed line
                   # mid-delta; terminate it so later appends start clean.
                   (if_yes (agent/streaming ~ get)
-                    (bounded_worker_append! agent "\n")
+                    (bounded_worker_append agent "\n")
                     (agent/streaming ~ set false))
                   (agent/items ~ set (result ~ get))
-                (application_finish_agent_operation!
+                (application_finish_agent_operation
                   app agent (outcome ~ get) (final_text ~ get)
                   (error_kind ~ get) (error_text ~ get) nil)))))
         (var operation
-          (application_begin_worker_operation! app agent task "agent_turn"))
-        (release_worker_input_reservation! agent)
+          (application_begin_worker_operation app agent task "agent_turn"))
+        (release_worker_input_reservation agent)
         (if (== operation nil)
           (then
             (var rejected
@@ -6569,7 +6569,7 @@ State that broader behavior is unverified when no matching successful check ran.
           effective_invocation))
       (var rendered (worker_call_text response))
       (if_yes (&& response/ok shell_chdir_path (== adapter "local_tui"))
-        (worker_history_push! worker text adapter surface_id)
+        (worker_history_push worker text adapter surface_id)
         (if (stdin_tty?) (return "accepted")))
       (if_yes (&& response/ok (== adapter "local_tui") (! (stdin_tty?))
                   (== operation/name "send"))
@@ -6641,7 +6641,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (set first false))
   name)
 
-(fn application_shell_chdir! [app, worker, path : Str]
+(fn application_shell_chdir [app, worker, path : Str]
   (var requested (trim path))
   (if_yes (== requested "")
     (fail (OsError ^message "directory path must not be empty")))
@@ -6660,26 +6660,26 @@ State that broader behavior is unverified when no matching successful check ran.
   # list_dir is the capability-aware directory check and rejects files.
   (list_dir ReadDir resolved)
   (worker/controller/cwd ~ set resolved)
-  (append_worker_transcript! app worker $"[cwd ${resolved}]\n")
+  (append_worker_transcript app worker $"[cwd ${resolved}]\n")
   (operation_ack worker true $"cwd: ${resolved}"))
 
-(fn application_shell_set_env! [worker, name : Str, value : Str]
+(fn application_shell_set_env [worker, name : Str, value : Str]
   (var key (valid_environment_name name))
-  ((worker/controller/environment ~ get) ~ put! key value)
+  ((worker/controller/environment ~ get) ~ put key value)
   (operation_ack worker true $"set ${key}"))
 
-(fn application_shell_unset_env! [worker, name : Str]
+(fn application_shell_unset_env [worker, name : Str]
   (var key (valid_environment_name name))
   # `void` removes the binding from Gene's map surface and is also treated as
   # an explicit unset by shell_environment_args during compatibility restore.
-  ((worker/controller/environment ~ get) ~ put! key void)
+  ((worker/controller/environment ~ get) ~ put key void)
   (operation_ack worker true $"unset ${key}"))
 
-(fn application_file_view! [app, worker, path : Str]
+(fn application_file_view [app, worker, path : Str]
   (var safe (safe_path path))
   (var text (read_text ReadDir safe))
-  (worker/controller ~ set_prop! `path safe)
-  (application_set_projection_output! app worker text "file_view")
+  (worker/controller ~ set_prop `path safe)
+  (application_set_projection_output app worker text "file_view")
   (operation_ack worker true $"viewing ${safe}"))
 
 (fn dispatch_worker_operation [app, worker, op, args, invocation]
@@ -6705,7 +6705,7 @@ State that broader behavior is unverified when no matching successful check ran.
             $"stopping worker ${worker/id}" $"stopped worker ${worker/id}")
           $"worker ${worker/id} cannot be stopped")))
     (when "restart"
-      (var restarted (restart_process_worker! app worker))
+      (var restarted (restart_process_worker app worker))
       (if_not restarted/ok
         (fail (OsError ^message restarted/error)))
       (operation_ack restarted/worker true
@@ -6742,10 +6742,10 @@ State that broader behavior is unverified when no matching successful check ran.
         $"model for agent ${worker/id} set to ${selected}"))
     (when "result" (agent_result_value worker))
     (when "mark_result_read"
-      (operation_ack worker (application_mark_agent_result_read! app worker)
+      (operation_ack worker (application_mark_agent_result_read app worker)
         "result marked read"))
     (when "incorporate"
-      (operation_ack worker (application_incorporate_agent_result! app worker)
+      (operation_ack worker (application_incorporate_agent_result app worker)
         "result incorporated"))
     (when "run"
       (var adapter (invocation_field invocation "adapter"))
@@ -6762,11 +6762,11 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (&& detach_task (!= result "accepted"))
         (fail (OsError ^message result)))
       (operation_ack worker true result))
-    (when "chdir" (application_shell_chdir! app worker args/path))
+    (when "chdir" (application_shell_chdir app worker args/path))
     (when "set_env"
-      (application_shell_set_env! worker args/name args/value))
+      (application_shell_set_env worker args/name args/value))
     (when "unset_env"
-      (application_shell_unset_env! worker args/name))
+      (application_shell_unset_env worker args/name))
     (when "write"
       (terminal_write worker/controller/session ^bytes args/bytes)
       (operation_ack worker true "terminal input accepted"))
@@ -6790,14 +6790,14 @@ State that broader behavior is unverified when no matching successful check ran.
         (fail (OsError ^message result)))
       (operation_ack worker true result))
     (when "append"
-      (if_not (application_append_worker_output!
+      (if_not (application_append_worker_output
                 app worker (redact_any args/text)
                 (invocation_field invocation "origin"))
         (fail (OsError ^message "output worker does not accept append")))
       (operation_ack worker true $"appended to worker ${worker/id}"))
     (when "follow"
       (var source (application_find_worker app args/source))
-      (var followed (application_follow_output! app worker source))
+      (var followed (application_follow_output app worker source))
       (if_not followed/ok (fail (OsError ^message followed/error)))
       (operation_ack worker true $"worker ${worker/id} follows ${source/id}"))
     (when "unfollow"
@@ -6805,7 +6805,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (== source nil)
         (fail (OsError ^message "source worker not found")))
       (operation_ack worker
-        (application_unfollow_output! app worker source/id)
+        (application_unfollow_output app worker source/id)
         $"worker ${worker/id} unfollowed ${source/id}"))
     (when "filter"
       (worker/controller/filter ~ set (parse_trace_filters args/expr))
@@ -6814,9 +6814,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (var path worker/controller/path)
       {^worker_id worker/id ^path path
        ^bytes (byte_size (worker/output ~ get)) ^loaded true})
-    (when "view" (application_file_view! app worker args/path))
+    (when "view" (application_file_view app worker args/path))
     (when "reload"
-      (application_file_view! app worker worker/controller/path))
+      (application_file_view app worker worker/controller/path))
     (when "snapshot"
       (if (== worker/kind "terminal")
         {^worker_id worker/id
@@ -6831,32 +6831,32 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (var worker_operation_tables {})
 
-(fn valid_operation_member! [kind : Str, name : Str, field : Str, value,
+(fn valid_operation_member [kind : Str, name : Str, field : Str, value,
                              allowed]
   (if_not (allowed ~ contains? value)
     (fail (OsError
       ^message $"invalid ${field} '${value}' on ${kind}/${name}"))))
 
-(fn register_worker_operation! [kind : Str, operation]
+(fn register_worker_operation [kind : Str, operation]
   (if (== operation/enabled void)
-    (operation ~ set_prop! `enabled true))
+    (operation ~ set_prop `enabled true))
   (if (== (trim operation/name) "")
     (fail (OsError ^message $"${kind} operation name cannot be empty")))
   (for effect in operation/effects
-    (valid_operation_member! kind operation/name "effect" effect
+    (valid_operation_member kind operation/name "effect" effect
       ["observe" "session_write" "model_call" "host_read" "host_write"]))
   (if (&& (operation/effects ~ contains? "observe")
           (!= (operation/effects ~ size) 1))
     (fail (OsError
       ^message $"observe must be the only effect on ${kind}/${operation/name}")))
   (for audience in operation/audience
-    (valid_operation_member! kind operation/name "audience" audience
+    (valid_operation_member kind operation/name "audience" audience
       ["local_user" "remote_user" "supervisor" "delegated" "self"]))
-  (valid_operation_member! kind operation/name "admission"
+  (valid_operation_member kind operation/name "admission"
     operation/admission
     ["none" "session_serialized" "interrupt" "worker_exclusive"
      "terminal_stream"])
-  (valid_operation_member! kind operation/name "audit" operation/audit
+  (valid_operation_member kind operation/name "audit" operation/audit
     ["none" "metadata" "attributed" "full"])
   (if (&& (== operation/audit "none")
           (! (operation/effects ~ contains? "observe")))
@@ -6865,7 +6865,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var current (worker_operation_tables ~ get kind))
   (if_yes (== current void)
     (set current [])
-    (worker_operation_tables ~ put! kind current))
+    (worker_operation_tables ~ put kind current))
   (for existing in current
     (if (== existing/name operation/name)
       (fail (OsError
@@ -6873,8 +6873,8 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (&& operation/primary_input existing/primary_input)
       (fail (OsError
         ^message $"${kind} already has primary input ${existing/name}"))))
-  (current ~ push! operation)
-  (capture_dynamic_registration!
+  (current ~ push operation)
+  (capture_dynamic_registration
     {^kind "operation" ^worker_kind kind ^name operation/name
      ^summary operation/summary ^usage operation/usage
      ^args_schema $"${operation/args}"
@@ -6903,7 +6903,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (== value "")
       (fail (OsError ^message $"missing ${field}")))
     (var out {})
-    (out ~ put! field value)
+    (out ~ put field value)
     out))
 
 (fn cli_word_parser [field : Str]
@@ -6912,7 +6912,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (|| (== value "") (contains? value " "))
       (fail (OsError ^message $"expected one ${field}")))
     (var out {})
-    (out ~ put! field value)
+    (out ~ put field value)
     out))
 
 (fn cli_pair_parser [first_field : Str, second_field : Str]
@@ -6925,8 +6925,8 @@ State that broader behavior is unverified when no matching successful check ran.
       (fail (OsError
         ^message $"expected ${first_field} and ${second_field}")))
     (var out {})
-    (out ~ put! first_field first)
-    (out ~ put! second_field second)
+    (out ~ put first_field first)
+    (out ~ put second_field second)
     out))
 
 (fn parse_cli_terminal_resize [text : Str]
@@ -6935,11 +6935,11 @@ State that broader behavior is unverified when no matching successful check ran.
     (fail (OsError ^message "expected rows and cols")))
   {^rows (parse_int parts/0) ^cols (parse_int parts/1)})
 
-(fn declare_worker_operation!
+(fn declare_worker_operation
   [kind : Str, name : Str, summary : Str, usage : Str, args, result,
    effects, audience, admission : Str, audit : Str, cancellable : Bool,
    idempotent : Bool, task_managed : Bool, primary_input : Bool, parse_cli]
-  (register_worker_operation! kind
+  (register_worker_operation kind
     (Operation ^name name ^summary summary ^usage usage ^args args ^result result
       ^errors [] ^effects effects ^audience audience ^admission admission
       ^audit audit ^cancellable cancellable ^idempotent idempotent
@@ -6953,9 +6953,9 @@ State that broader behavior is unverified when no matching successful check ran.
     (for op in common
       (if_not (&& (== kind "terminal")
                   (["tail" "cancel" "stop" "restart"] ~ contains? op/name))
-        (out ~ push! op))))
+        (out ~ push op))))
   (var specific (worker_operation_tables ~ get kind))
-  (if (!= specific void) (for op in specific (out ~ push! op)))
+  (if (!= specific void) (for op in specific (out ~ push op)))
   out)
 
 (fn worker_operation_for [kind : Str, name : Str]
@@ -6971,7 +6971,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var descriptors [])
   (for [kind operations] in worker_operation_tables
     (for operation in operations
-      (descriptors ~ push!
+      (descriptors ~ push
         {^worker_kind kind ^name operation/name
          ^summary operation/summary ^usage operation/usage
          ^args_schema $"${operation/args}"
@@ -7072,7 +7072,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (else
       false)))
 
-(fn application_emit_operation_boundary!
+(fn application_emit_operation_boundary
   [app, worker, operation, invocation, task_id : Str, phase : Str, outcome]
   (var props
     {^worker_id worker/id ^kind worker/kind ^task_id task_id
@@ -7081,11 +7081,11 @@ State that broader behavior is unverified when no matching successful check ran.
   (var caller (invocation_field invocation "caller_worker_id"))
   (var attachment_id (invocation_field invocation "attachment_id"))
   (var principal (invocation_field invocation "principal"))
-  (if origin (props ~ put! "origin" origin))
-  (if caller (props ~ put! "caller_worker_id" caller))
-  (if attachment_id (props ~ put! "attachment_id" attachment_id))
-  (if principal (props ~ put! "principal" principal))
-  (if outcome (props ~ put! "outcome" outcome))
+  (if origin (props ~ put "origin" origin))
+  (if caller (props ~ put "caller_worker_id" caller))
+  (if attachment_id (props ~ put "attachment_id" attachment_id))
+  (if principal (props ~ put "principal" principal))
+  (if outcome (props ~ put "outcome" outcome))
   (application_emit app $"worker_operation_${phase}" props))
 
 (fn operation_failure [kind : Str, message : Str, worker_id, operation]
@@ -7093,7 +7093,7 @@ State that broader behavior is unverified when no matching successful check ran.
    ^error {^kind kind ^message (redact message)
            ^worker_id worker_id ^operation operation}})
 
-(fn application_reject_worker_operation!
+(fn application_reject_worker_operation
   [app, worker, worker_ref : Str, operation_name : Str, invocation,
    kind : Str, message : Str]
   (var props
@@ -7104,10 +7104,10 @@ State that broader behavior is unverified when no matching successful check ran.
   (var caller (invocation_field invocation "caller_worker_id"))
   (var attachment_id (invocation_field invocation "attachment_id"))
   (var principal (invocation_field invocation "principal"))
-  (if origin (props ~ put! "origin" origin))
-  (if caller (props ~ put! "caller_worker_id" caller))
-  (if attachment_id (props ~ put! "attachment_id" attachment_id))
-  (if principal (props ~ put! "principal" principal))
+  (if origin (props ~ put "origin" origin))
+  (if caller (props ~ put "caller_worker_id" caller))
+  (if attachment_id (props ~ put "attachment_id" attachment_id))
+  (if principal (props ~ put "principal" principal))
   (application_emit app "worker_operation_rejected" props)
   (operation_failure kind message (if worker worker/id worker_ref)
                      operation_name))
@@ -7117,18 +7117,18 @@ State that broader behavior is unverified when no matching successful check ran.
   (var worker (application_find_worker app worker_ref))
   (if (== worker nil)
     (return
-      (application_reject_worker_operation! app nil worker_ref operation_name
+      (application_reject_worker_operation app nil worker_ref operation_name
         invocation "worker_not_found" $"worker ${worker_ref} not found")))
 
   (var operation (worker_operation_for worker/kind operation_name))
   (if (== operation nil)
     (return
-      (application_reject_worker_operation! app worker worker_ref operation_name
+      (application_reject_worker_operation app worker worker_ref operation_name
         invocation "unknown_operation"
         $"${worker/kind} worker has no '${operation_name}' operation")))
   (if (== operation/enabled false)
     (return
-      (application_reject_worker_operation! app worker worker_ref operation_name
+      (application_reject_worker_operation app worker worker_ref operation_name
         invocation "handler_unavailable"
         "operation handler is disabled because its saved version is unavailable")))
   (if_not (invocation_authorized? app worker operation invocation)
@@ -7141,22 +7141,22 @@ State that broader behavior is unverified when no matching successful check ran.
       (if (&& (== denied_audience "remote_user")
               (! (operation/audience ~ contains? "remote_user"))
               (operation/audience ~ contains? "local_user"))
-        (application_reject_worker_operation! app worker worker_ref
+        (application_reject_worker_operation app worker worker_ref
           operation_name invocation "local_only"
           "operation requires the in-process owning surface; remote parity excludes it")
-        (application_reject_worker_operation! app worker worker_ref
+        (application_reject_worker_operation app worker worker_ref
           operation_name invocation "worker_access_denied"
           "caller is not in the operation audience, lacks principal capabilities, or lacks delegation"))))
   (if (&& (== operation/admission "worker_exclusive")
           (worker_busy? worker))
     (return
-      (application_reject_worker_operation! app worker worker_ref operation_name
+      (application_reject_worker_operation app worker worker_ref operation_name
         invocation "worker_busy" "worker is already working")))
   (if (&& (== (worker/lifecycle ~ get) "stopped")
           (!= operation_name "restart")
           (! (operation/effects ~ contains? "observe")))
     (return
-      (application_reject_worker_operation! app worker worker_ref operation_name
+      (application_reject_worker_operation app worker worker_ref operation_name
         invocation "worker_stopped" "worker is stopped")))
 
   (var args nil)
@@ -7169,20 +7169,20 @@ State that broader behavior is unverified when no matching successful check ran.
     (validation_error ~ set "invalid operation arguments"))
   (if (validation_error ~ get)
     (return
-      (application_reject_worker_operation! app worker worker_ref
+      (application_reject_worker_operation app worker worker_ref
         operation_name invocation "invalid_arguments"
         (validation_error ~ get))))
 
   (var task_id nil)
   (if_yes (&& (== operation/audit "full") (! operation/task_managed))
-    (set task_id (application_next_task_id! app))
-    (application_emit_operation_boundary!
+    (set task_id (application_next_task_id app))
+    (application_emit_operation_boundary
       app worker operation invocation task_id "started" nil))
   (if_yes operation/task_managed
     (var pending {})
     (for [key value] in invocation
-      (pending ~ put! key value))
-    (pending ~ put! "operation_name" operation/name)
+      (pending ~ put key value))
+    (pending ~ put "operation_name" operation/name)
     (worker/pending_invocation ~ set pending))
   (var value nil)
   (var execution_error ($cell nil))
@@ -7204,143 +7204,143 @@ State that broader behavior is unverified when no matching successful check ran.
   (if_yes (execution_error ~ get)
     (if_yes (&& operation/task_managed (! task_started))
       (return
-        (application_reject_worker_operation! app worker worker_ref
+        (application_reject_worker_operation app worker worker_ref
           operation_name invocation "operation_rejected"
           (execution_error ~ get))))
     (if_yes task_id
-      (application_emit_operation_boundary!
+      (application_emit_operation_boundary
         app worker operation invocation task_id "finished" "failed"))
     (return
       (operation_failure "operation_failed" (execution_error ~ get)
         worker/id operation_name)))
   (if task_id
-    (application_emit_operation_boundary!
+    (application_emit_operation_boundary
       app worker operation invocation task_id "finished" "completed"))
   {^ok true ^worker_id worker/id ^operation operation_name
    ^effects operation/effects ^result value})
 
 # Universal operations.
-(declare_worker_operation! "*" "status" "Show bounded worker state." "status"
+(declare_worker_operation "*" "status" "Show bounded worker state." "status"
   EmptyArgs WorkerStatusResult ["observe"]
   ["local_user" "remote_user" "supervisor" "delegated"] "none" "none"
   false true false false parse_cli_empty)
-(declare_worker_operation! "*" "tail" "Read recent bounded output." "tail [n]"
+(declare_worker_operation "*" "tail" "Read recent bounded output." "tail [n]"
   TailArgs WorkerTailResult ["observe"]
   ["local_user" "remote_user" "supervisor" "delegated"] "none" "none"
   false true false false parse_cli_tail)
-(declare_worker_operation! "*" "cancel" "Cancel active work." "cancel"
+(declare_worker_operation "*" "cancel" "Cancel active work." "cancel"
   EmptyArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor"] "interrupt" "full"
   true false false false parse_cli_empty)
-(declare_worker_operation! "*" "stop" "Cancel and stop this worker." "stop"
+(declare_worker_operation "*" "stop" "Cancel and stop this worker." "stop"
   EmptyArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor"] "interrupt" "full"
   true false false false parse_cli_empty)
-(declare_worker_operation! "*" "restart" "Restart a stopped worker." "restart"
+(declare_worker_operation "*" "restart" "Restart a stopped worker." "restart"
   EmptyArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor"] "worker_exclusive" "full"
   false false false false parse_cli_empty)
 
 # Agent operations.
-(declare_worker_operation! "agent" "send" "Start a supervised model turn."
+(declare_worker_operation "agent" "send" "Start a supervised model turn."
   "send <prompt>" AgentSendArgs OperationAck ["session_write" "model_call"]
   ["local_user" "remote_user" "supervisor"] "worker_exclusive" "full"
   true false true true (cli_rest_parser "prompt"))
-(declare_worker_operation! "agent" "set_model" "Set subsequent model calls."
+(declare_worker_operation "agent" "set_model" "Set subsequent model calls."
   "set_model <model>" AgentModelArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor"] "worker_exclusive" "full"
   false false false false (cli_word_parser "model"))
-(declare_worker_operation! "agent" "result" "Read the latest result without marking it."
+(declare_worker_operation "agent" "result" "Read the latest result without marking it."
   "result" EmptyArgs AgentResultValue ["observe"]
   ["local_user" "remote_user" "supervisor"] "none" "none"
   false true false false parse_cli_empty)
-(declare_worker_operation! "agent" "mark_result_read" "Mark the result read."
+(declare_worker_operation "agent" "mark_result_read" "Mark the result read."
   "mark_result_read" EmptyArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor"] "session_serialized" "full"
   false true false false parse_cli_empty)
-(declare_worker_operation! "agent" "incorporate" "Add the result to main context."
+(declare_worker_operation "agent" "incorporate" "Add the result to main context."
   "incorporate" EmptyArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor"] "session_serialized" "full"
   false true false false parse_cli_empty)
 
 # Stateful shell operations.
-(declare_worker_operation! "shell" "run" "Run under the worker cwd/environment."
+(declare_worker_operation "shell" "run" "Run under the worker cwd/environment."
   "run <command>" ShellRunArgs OperationAck ["host_write"]
   ["local_user" "remote_user" "supervisor" "delegated"]
   "worker_exclusive" "full" true false true true (cli_rest_parser "command"))
-(declare_worker_operation! "shell" "chdir" "Change confined worker cwd."
+(declare_worker_operation "shell" "chdir" "Change confined worker cwd."
   "chdir <workspace-path>" ShellChdirArgs OperationAck
   ["host_read" "session_write"]
   ["local_user" "remote_user" "supervisor" "delegated"]
   "worker_exclusive" "full" false false false false (cli_rest_parser "path"))
-(declare_worker_operation! "shell" "set_env" "Set a worker environment override."
+(declare_worker_operation "shell" "set_env" "Set a worker environment override."
   "set_env <name> <value>" EnvironmentSetArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor" "delegated"]
   "worker_exclusive" "full" false false false false
   (cli_pair_parser "name" "value"))
-(declare_worker_operation! "shell" "unset_env" "Unset a worker environment value."
+(declare_worker_operation "shell" "unset_env" "Unset a worker environment value."
   "unset_env <name>" EnvironmentUnsetArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor" "delegated"]
   "worker_exclusive" "full" false false false false (cli_word_parser "name"))
 
 # A terminal's byte stream is local-user-only. Metadata audit coalesces
 # lifecycle/counter changes; it never appends one journal event per key.
-(declare_worker_operation! "terminal" "snapshot" "Inspect local terminal state."
+(declare_worker_operation "terminal" "snapshot" "Inspect local terminal state."
   "snapshot" EmptyArgs StatsSnapshotResult ["observe"] ["local_user"] "none" "none"
   false true false false parse_cli_empty)
-(declare_worker_operation! "terminal" "write" "Write bytes from its controller."
+(declare_worker_operation "terminal" "write" "Write bytes from its controller."
   "write <bytes>" TerminalWriteArgs OperationAck ["host_write"]
   ["local_user"] "terminal_stream" "metadata"
   false false false false (cli_rest_parser "bytes"))
-(declare_worker_operation! "terminal" "resize" "Resize its controlling PTY."
+(declare_worker_operation "terminal" "resize" "Resize its controlling PTY."
   "resize <rows> <cols>" TerminalResizeArgs OperationAck ["session_write"]
   ["local_user"] "terminal_stream" "metadata"
   false true false false parse_cli_terminal_resize)
-(declare_worker_operation! "terminal" "signal" "Signal its process group."
+(declare_worker_operation "terminal" "signal" "Signal its process group."
   "signal <HUP|INT|TERM|WINCH|KILL>" TerminalSignalArgs OperationAck
   ["host_write" "session_write"] ["local_user"] "interrupt" "full"
   false false false false (cli_word_parser "name"))
-(declare_worker_operation! "terminal" "stop" "Stop its process group."
+(declare_worker_operation "terminal" "stop" "Stop its process group."
   "stop" EmptyArgs OperationAck ["host_write" "session_write"]
   ["local_user"] "interrupt" "full"
   true false false false parse_cli_empty)
-(declare_worker_operation! "terminal" "restart" "Restart a stopped terminal."
+(declare_worker_operation "terminal" "restart" "Restart a stopped terminal."
   "restart" EmptyArgs OperationAck ["host_write" "session_write"]
   ["local_user"] "worker_exclusive" "full"
   false false false false parse_cli_empty)
 
-(declare_worker_operation! "repl" "eval" "Evaluate one local Gene form."
+(declare_worker_operation "repl" "eval" "Evaluate one local Gene form."
   "eval <form>" ReplEvalArgs OperationAck ["session_write"] ["local_user"]
   "worker_exclusive" "full" true false true true (cli_rest_parser "form"))
-(declare_worker_operation! "output" "append" "Append bounded redacted text."
+(declare_worker_operation "output" "append" "Append bounded redacted text."
   "append <text>" OutputAppendArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor" "delegated"]
   "session_serialized" "full" false false false false (cli_rest_parser "text"))
-(declare_worker_operation! "output" "follow" "Project a worker's future output."
+(declare_worker_operation "output" "follow" "Project a worker's future output."
   "follow <source>" WorkerSourceArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor"] "session_serialized" "full"
   false true false false (cli_word_parser "source"))
-(declare_worker_operation! "output" "unfollow" "Stop projecting a source worker."
+(declare_worker_operation "output" "unfollow" "Stop projecting a source worker."
   "unfollow <source>" WorkerSourceArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor"] "session_serialized" "full"
   false true false false (cli_word_parser "source"))
-(declare_worker_operation! "log_tail" "filter" "Replace event-tail filters."
+(declare_worker_operation "log_tail" "filter" "Replace event-tail filters."
   "filter <expr>" LogFilterArgs OperationAck ["session_write"]
   ["local_user" "remote_user" "supervisor"] "session_serialized" "full"
   false true false true (cli_rest_parser "expr"))
-(declare_worker_operation! "file_view" "info" "Read file-view metadata."
+(declare_worker_operation "file_view" "info" "Read file-view metadata."
   "info" EmptyArgs FileInfoResult ["observe"]
   ["local_user" "remote_user" "supervisor" "delegated"] "none" "none"
   false true false false parse_cli_empty)
-(declare_worker_operation! "file_view" "view" "Load a confined workspace file."
+(declare_worker_operation "file_view" "view" "Load a confined workspace file."
   "view <workspace-path>" FileViewArgs OperationAck
   ["host_read" "session_write"] ["local_user" "remote_user" "supervisor"]
   "worker_exclusive" "full" false false false false (cli_rest_parser "path"))
-(declare_worker_operation! "file_view" "reload" "Reload the current file."
+(declare_worker_operation "file_view" "reload" "Reload the current file."
   "reload" EmptyArgs OperationAck ["host_read" "session_write"]
   ["local_user" "remote_user" "supervisor"] "worker_exclusive" "full"
   false false false false parse_cli_empty)
-(declare_worker_operation! "stats" "snapshot" "Read the bounded stats snapshot."
+(declare_worker_operation "stats" "snapshot" "Read the bounded stats snapshot."
   "snapshot" EmptyArgs StatsSnapshotResult ["observe"]
   ["local_user" "remote_user" "supervisor" "delegated"] "none" "none"
   false true false false parse_cli_empty)
@@ -7361,7 +7361,7 @@ State that broader behavior is unverified when no matching successful check ran.
      (if (&& (present? context) (present? context/agent))
        context/agent/id app/main_agent/id)})
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "call_worker"
   ^description "Invoke a worker's declared typed operation. Use status/tail to supervise without opening a pane."
   ^risk "execute"
@@ -7378,7 +7378,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (if (== args/args void) {} args/args)
           (model_worker_invocation app args)))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "pin_artifact"
   ^description "Promote an agent result or worker tail to durable redacted evidence."
   ^risk "write"
@@ -7397,7 +7397,7 @@ State that broader behavior is unverified when no matching successful check ran.
             "error: agent result not found"
             (then
               (var pinned
-                (application_pin_artifact! app "result"
+                (application_pin_artifact app "result"
                   (agent_result_text result) agent/id result/task_id))
               (if pinned/ok pinned/artifact/id $"error: ${pinned/error}"))))
         (when "tail"
@@ -7407,14 +7407,14 @@ State that broader behavior is unverified when no matching successful check ran.
             (then
               (var operation (worker/current_operation ~ get))
               (var pinned
-                (application_pin_artifact! app "capture"
+                (application_pin_artifact app "capture"
                   (worker/output ~ get) worker/id
                   (if operation operation/task_id nil)))
               (if pinned/ok pinned/artifact/id $"error: ${pinned/error}"))))
         (else
           "error: source must be result or tail"))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "spawn_agent"
   ^description "Create a bounded supervised sub-agent without opening a pane. Returns its stable agent id."
   ^risk "execute"
@@ -7435,7 +7435,7 @@ State that broader behavior is unverified when no matching successful check ran.
           $"error: sub-agent limit reached (${app/max_agents})"
           agent/id))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "send_agent"
   ^description "Send a prompt to an existing supervised agent and wait for its concise result. A visible pane is not required."
   ^risk "execute"
@@ -7461,7 +7461,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (agent_result_text (agent/result ~ get))
           $"error: ${(agent_result_report agent)}"))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "agent_result"
   ^description "Read and explicitly incorporate the latest structured result of a supervised agent into the main model context."
   ^risk "read"
@@ -7487,7 +7487,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (model_worker_invocation app args))
         report)))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "update_progress"
   ^description "Update the main project's bounded objective, phase, status, and summary. Blocked status requires a reason and required action."
   ^risk "execute"
@@ -7501,14 +7501,14 @@ State that broader behavior is unverified when no matching successful check ran.
       (then "error: main supervisor authority is required")
       (else
         (var current (app/progress ~ get))
-        (application_update_progress!
+        (application_update_progress
           app args/objective args/phase args/status args/summary
           (if (== args/blocked_reason void) nil args/blocked_reason)
           (if (== args/required_action void) nil args/required_action)
           current/agent_ids current/worker_ids current/evidence_v)
         (project_progress_report app))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "cancel_agent"
   ^description "Request cancellation of a supervised agent's current task."
   ^risk "execute"
@@ -7523,7 +7523,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (application_call_worker app agent/id "cancel" {}
           (model_worker_invocation app args)))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "stop_agent"
   ^description "Stop a supervised agent. This does not close unrelated panes."
   ^risk "execute"
@@ -7538,7 +7538,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (application_call_worker app agent/id "stop" {}
           (model_worker_invocation app args)))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "open_pane"
   ^description "Create or identify an agent/output worker and request pane presentation. Headless sessions record the hint without creating interface state."
   ^risk "execute"
@@ -7559,7 +7559,7 @@ State that broader behavior is unverified when no matching successful check ran.
             (else
               (application_request_worker_attention app owner
                 (if (== args/title void) owner/title args/title))
-              (ui_refresh!)
+              (request_ui_refresh)
               owner/id)))
         (else
           (if (== args/kind "output")
@@ -7574,13 +7574,13 @@ State that broader behavior is unverified when no matching successful check ran.
                 (then "error: worker limit reached")
                 (else
                   (if_not (== initial "")
-                    (application_append_worker_output! app worker initial "model"))
+                    (application_append_worker_output app worker initial "model"))
                   (application_request_worker_attention app worker worker/title)
-                  (ui_refresh!)
+                  (request_ui_refresh)
                   worker/id)))
             (else "error: model open_pane kind must be agent or output"))))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "append_pane"
   ^description "Append redacted text to an output pane through the authoritative event log."
   ^risk "execute"
@@ -7597,11 +7597,11 @@ State that broader behavior is unverified when no matching successful check ran.
           (var response
             (application_call_worker app pane/worker/id "append"
               {^text args/text} (model_worker_invocation app args)))
-          (if response/ok (ui_refresh!))
+          (if response/ok (request_ui_refresh))
           (if response/ok $"appended to pane ${pane/id}"
             (worker_call_text response))))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "append_worker"
   ^description "Append redacted text to a bounded output worker. A pane is not required."
   ^risk "execute"
@@ -7615,10 +7615,10 @@ State that broader behavior is unverified when no matching successful check ran.
       (var response
         (application_call_worker app worker/id "append"
           {^text args/text} (model_worker_invocation app args)))
-      (if response/ok (ui_refresh!))
+      (if response/ok (request_ui_refresh))
       (worker_call_text response)))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "close_pane"
   ^description "Close a pane without implicitly stopping an attached agent."
   ^risk "execute"
@@ -7628,10 +7628,10 @@ State that broader behavior is unverified when no matching successful check ran.
     (if (== app nil)
       "error: agent application is unavailable"
       (if (application_close_pane app args/pane_id)
-        (then (ui_refresh!) $"closed pane ${args/pane_id}")
+        (then (request_ui_refresh) $"closed pane ${args/pane_id}")
         (else "error: pane not found"))))))
 
-(register_tool! (Tool
+(register_tool (Tool
   ^name "open_extension"
   ^description "Open a secondary agent pane in the interactive TUI and optionally run a delegated prompt in it. The pane keeps its own conversation context."
   ^risk "execute"
@@ -7671,7 +7671,7 @@ State that broader behavior is unverified when no matching successful check ran.
 # workflow module and therefore participate in C5 durability handling.
 (registration_capture_enabled ~ set true)
 
-(fn restart_process_worker! [app, previous]
+(fn restart_process_worker [app, previous]
   # Restart is intentionally identity-preserving only through the
   # `restarted_from` event edge. Captured output remains on the stopped worker;
   # a live shell or REPL always receives a fresh worker id and controller.
@@ -7717,7 +7717,7 @@ State that broader behavior is unverified when no matching successful check ran.
                 ^command previous/controller/command
                 ^args previous/controller/args ^cwd previous/controller/cwd)
               previous))
-          (if_yes worker (start_terminal_pump! app worker)))
+          (if_yes worker (start_terminal_pump app worker)))
         (when "repl"
           (var factory (repl_restart_factory ~ get))
           (if (present? factory)
@@ -7736,13 +7736,13 @@ State that broader behavior is unverified when no matching successful check ran.
                 ^filter ($cell (previous/controller/filter ~ get)))
               previous))
           (if worker
-            ((app/event_observers ~ get) ~ push!
+            ((app/event_observers ~ get) ~ push
               {^worker_id worker/id
                ^handler (fn [event]
                  (var current (worker/controller/filter ~ get))
                  (if (&& (!= event/projection true)
                          (event_matches? event current))
-                   (application_append_projection_output!
+                   (application_append_projection_output
                      app worker
                      $"${(format_event_with_filters event current)}\n"
                      "log_tail")))})))
@@ -7752,20 +7752,20 @@ State that broader behavior is unverified when no matching successful check ran.
             (application_new_worker_from app "file_view" previous/title
               ($cell "") (FileViewController ^path path) previous))
           (if worker
-            (application_set_projection_output!
+            (application_set_projection_output
               app worker (read_text ReadDir (safe_path path)) "file_view")))
         (when "stats"
           (set worker
             (application_new_worker_from app "stats" previous/title
               ($cell "") (StatsController) previous))
           (if_yes worker
-            (application_set_projection_output!
+            (application_set_projection_output
               app worker (stats_worker_text app) "stats")
-            ((app/event_observers ~ get) ~ push!
+            ((app/event_observers ~ get) ~ push
               {^worker_id worker/id
                ^handler (fn [event]
                  (if_not (== event/projection true)
-                   (application_set_projection_output!
+                   (application_set_projection_output
                      app worker (stats_worker_text app) "stats")))})))
         (else nil))
       (if (== worker nil)
@@ -7781,23 +7781,23 @@ State that broader behavior is unverified when no matching successful check ran.
   (var streaming app/main_agent/streaming)
   (match type
     (when "user_input"
-      (append_agent_transcript! agent $"──────\n[remote] ${text}\n"))
+      (append_agent_transcript agent $"──────\n[remote] ${text}\n"))
     (when "text_delta"
       (if_not (== text "")
         (if_not (streaming ~ get)
-          (append_agent_transcript! agent "agent> ")
+          (append_agent_transcript agent "agent> ")
           (streaming ~ set true))
-        (append_agent_transcript! agent text)))
+        (append_agent_transcript agent text)))
     (when "agent_text"
       (var was_streaming (streaming ~ get))
       (if_yes was_streaming
-        (append_agent_transcript! agent "\n")
+        (append_agent_transcript agent "\n")
         (streaming ~ set false))
       (if_not (|| was_streaming (== text ""))
-        (append_agent_transcript! agent $"agent> ${text}\n")))
+        (append_agent_transcript agent $"agent> ${text}\n")))
     (when "turn_done"
       (if_yes (streaming ~ get)
-        (append_agent_transcript! agent "\n")
+        (append_agent_transcript agent "\n")
         (streaming ~ set false)))
     (else nil)))
 
@@ -7808,7 +7808,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var local (active_application ~ get))
   (if (&& (!= local nil)
           (== local/coordinator_id app/coordinator_id))
-    (ui_refresh!)))
+    (request_ui_refresh)))
 
 (fn gateway_save_application [app]
   (save_agent_state (app/main_agent/items ~ get)
@@ -7845,21 +7845,21 @@ State that broader behavior is unverified when no matching successful check ran.
    ^application_stop_worker application_stop_worker
    ^application_stop_agent application_stop_agent
    ^agent_result_report agent_result_report
-   ^application_inspect_agent_result application_inspect_agent_result!
-   ^application_mark_agent_result_read application_mark_agent_result_read!
-   ^application_incorporate_agent_result application_incorporate_agent_result!
+   ^application_inspect_agent_result application_inspect_agent_result
+   ^application_mark_agent_result_read application_mark_agent_result_read
+   ^application_incorporate_agent_result application_incorporate_agent_result
    ^project_progress_report project_progress_report
-   ^application_update_progress application_update_progress!
-   ^application_begin_worker_operation application_begin_worker_operation!
-   ^application_finish_worker_operation application_finish_worker_operation!
-   ^application_finish_agent_operation application_finish_agent_operation!
-   ^record_worker_input worker_history_push!
+   ^application_update_progress application_update_progress
+   ^application_begin_worker_operation application_begin_worker_operation
+   ^application_finish_worker_operation application_finish_worker_operation
+   ^application_finish_agent_operation application_finish_agent_operation
+   ^record_worker_input worker_history_push
    ^application_drain_supervisor_inbox application_drain_supervisor_inbox
    ^application_snapshot application_snapshot
-   ^restore_application restore_application_snapshot!
-   ^application_pin_artifact application_pin_artifact!
+   ^restore_application restore_application_snapshot
+   ^application_pin_artifact application_pin_artifact
    ^agent_result_text agent_result_text
    ^agent_artifacts agent_artifacts
    ^gateway_project_event gateway_project_event
    ^gateway_render_event gateway_render_event
-   ^gateway_save_application gateway_save_application ^begin_turn begin_turn!})
+   ^gateway_save_application gateway_save_application ^begin_turn begin_turn})

@@ -23,8 +23,8 @@
   (var i 0.0)
   (while (< i 4096.0)
     (var y ($math/floor (/ (- i (* 256.0 ($math/floor (/ i 256.0)))) 16.0)))
-    (content ~ set! i (if (< y 8.0) 1.0 0.0))
-    (light ~ set! i (if (< y 8.0) 0.0 15.0))
+    (content ~ set i (if (< y 8.0) 1.0 0.0))
+    (light ~ set i (if (< y 8.0) 0.0 15.0))
     (set i (+ i 1.0))))
 
 (fn main [args] : Nil

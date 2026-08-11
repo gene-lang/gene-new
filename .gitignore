@@ -10,6 +10,10 @@ tests/*
 !tests/transpile/**
 
 benchmarks/bench_core
+benchmarks/bench_native_format
+
+training/corpus/
+training/checkpoints/
 
 .agents/
 

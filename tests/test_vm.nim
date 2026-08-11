@@ -70,24 +70,18 @@ suite "compiler — GIR emission":
     check chunk.constants[chunk.instructions[1].depth].intVal == 2
     check chunk.instructions[2].op == opReturn
 
-  test "guards dynamic callees before argument bytecode":
+  test "ordinary callees evaluate argument bytecode eagerly":
     let dynamic = compileSource("(fn hof [f] (f 1))").functions[0].chunk
     check dynamic.instructions[0].op == opLoadLocal
-    check dynamic.instructions[1].op == opSyntaxGuard
-    check dynamic.instructions[2].op == opPushConst
-    check dynamic.instructions[3].op == opCall1
+    check dynamic.instructions[1].op == opPushConst
+    check dynamic.instructions[2].op == opCall1
 
     let ambient = compileSource("(external 1)")
     check ambient.instructions[0].op == opLoadName
-    check ambient.instructions[1].op == opSyntaxGuard
-    check ambient.instructions[2].op == opPushConst
-    check ambient.instructions[3].op == opCall1
+    check ambient.instructions[1].op == opPushConst
+    check ambient.instructions[2].op == opCall1
 
     let typed = compileSource("(fn hof [f : Fn] (f 1))").functions[0].chunk
-    var typedHasSyntaxGuard = false
-    for inst in typed.instructions:
-      typedHasSyntaxGuard = typedHasSyntaxGuard or inst.op == opSyntaxGuard
-    check not typedHasSyntaxGuard
     check typed.instructions[0].op == opPushConst
     check typed.instructions[1].op == opCallLocal1
 
@@ -274,8 +268,7 @@ suite "compiler — GIR emission":
     let proto = chunk.functions[0]
     check proto.chunk.instructions[5].op == opLoadOuterLocal
     check proto.chunk.instructions[5].name == "fib"
-    check proto.chunk.instructions[6].op == opSyntaxGuard
-    check proto.chunk.instructions[9].op == opCall1
+    check proto.chunk.instructions[8].op == opCall1
 
   test "marks worker-candidate spawns without outer mutation":
     let readOnly = compileSource(
@@ -547,6 +540,92 @@ suite "compiler — GIR emission":
     ck "(type Box ^props {^n Int} (message plus1 [self] (+ self/n 1))) " &
        "(fn run [self] (~ plus1)) (run (Box ^n 2))", "3"
 
+suite "module references":
+  test "all reader and runtime forms share one module table":
+    ck "#Ref shared [1 2] " &
+       "[(same? #Deref shared ($deref shared)) " &
+       " (same? #Deref shared (gene/deref shared))]", "[true true]"
+    ck "($ref shared [1 2]) " &
+       "[(same? #Deref shared ($deref shared)) " &
+       " (same? #Deref shared (gene/deref shared))]", "[true true]"
+    ck "#Ref shared [1 2] (fn get_shared [] #Deref shared) " &
+       "(same? (get_shared) ($deref shared))", "true"
+    ck "(fn get_missing [] " &
+       "  (try #Deref missing catch (UnknownRef ^name n) n)) " &
+       "(get_missing)", "\"missing\""
+
+  test "reference namespace is separate from lexical bindings":
+    ck "(var shared 10) #Ref shared [1 2] " &
+       "[shared ($size #Deref shared)]", "[10 2]"
+
+  test "identity-bearing values are shared and scalar values compare by value":
+    ck "#Ref shared [1] " &
+       "(var a #Deref shared) (var b ($deref shared)) " &
+       "(a ~ set 0 9) [(same? a b) (b ~ first)]", "[true 9]"
+    ck "#Ref answer 42 [#Deref answer ($deref answer)]", "[42 42]"
+    ck "#Ref flag true [#Deref flag ($deref flag)]", "[true true]"
+    ck "#Ref absent nil [#Deref absent ($deref absent)]", "[nil nil]"
+    ck "#Ref skipped void [#Deref skipped ($deref skipped)]", "[void void]"
+    ck "#Ref text \"hello\" [#Deref text ($deref text)]",
+       "[\"hello\" \"hello\"]"
+
+  test "structural dereferences support forward definitions":
+    ck "(var x #Deref shared) #Ref shared [1 2] " &
+       "(same? x ($deref shared))", "true"
+    ck "(var x #Deref config) ($ref config [3 4]) " &
+       "(same? x ($deref config))", "true"
+    ck "(var pair [#Deref later #Deref later]) #Ref later [7] " &
+       "(same? (pair ~ first) (pair ~ last))", "true"
+    ck "(type App ^props {^config (List Int)}) " &
+       "(var app (App ^config #Deref config)) #Ref config [1 2] " &
+       "[(same? app/config ($deref config)) ($size app/config)]",
+       "[true 2]"
+    expect GeneError:
+      discard runStr("(type App ^props {^config (List Int)}) " &
+                     "(var app (App ^config #Deref config)) " &
+                     "#Ref config [1 \"bad\"]")
+    ck "#Ref cycle ($cell #Deref cycle) " &
+       "(same? (($deref cycle) ~ get) ($deref cycle))", "true"
+    ck "(macro define_shared [] `#Ref shared [1]) " &
+       "(define_shared) (($deref shared) ~ first)", "1"
+
+  test "runtime errors are typed and initializers can retry after failure":
+    ck "(try ($deref missing) " &
+       " catch (UnknownRef ^name n) n)", "\"missing\""
+    ck "(var pending #Deref later) " &
+       "(try pending catch (RefNotResolved ^name n) n) " &
+       "#Ref later 1", "1"
+    ck "(var holder {^value #Deref later}) " &
+       "(var observed (try holder/value " &
+       " catch (RefNotResolved ^name n) n)) " &
+       "#Ref later 1 observed", "\"later\""
+    ck "#Ref once 1 " &
+       "(try ($ref once 2) catch (RefAlreadyResolved ^name n) n)",
+       "\"once\""
+    ck "(var caught (try ($ref circular ($deref circular)) " &
+       " catch (CircularRefResolution ^name n) n)) " &
+       "($ref circular 1) caught", "\"circular\""
+    ck "(try ($ref retry (fail (MatchError ^message \"no\"))) " &
+       " catch (MatchError) nil) ($ref retry 9) ($deref retry)", "9"
+
+  test "invalid definitions and unresolved completed units fail":
+    expect GeneError:
+      discard runStr("(fn bad [] ($ref local 1))")
+    expect GeneError:
+      discard runStr("(var pending #Deref never)")
+    expect GeneError:
+      discard runStr("(macro leave_pending [] `#Deref never) " &
+                     "(leave_pending)")
+    expect GeneError:
+      discard runStr("(var values (Set #Deref item 1)) " &
+                     "#Ref item 1 values")
+    expect GeneError:
+      discard runStr("(var values (Set #Deref item)) " &
+                     "#Ref item [1] values")
+    ck "(var caught (try #Ref cycle [#Deref cycle] " &
+       " catch (InvalidRefDefinition ^name n) n)) " &
+       "($ref cycle 1) caught", "\"cycle\""
+
 suite "gir — disassembly":
   test "prints constants and instructions":
     let dump = compileSource("(+ 1 2)").disassemble()
@@ -612,7 +691,7 @@ suite "gir — disassembly":
     check dump.contains("opCallLocalN slot=0 name=call_four argc=4")
     let globalDump = compileSource("(call_four 1 2 3 4)").disassemble()
     check globalDump.contains("opLoadName name=call_four")
-    check globalDump.contains("opSyntaxGuard")
+    check not globalDump.contains("opSyntaxGuard")
     check globalDump.contains("opCall argc=4")
 
 suite "vm — literals and self-evaluation":
@@ -777,74 +856,74 @@ suite "vm — macros":
     check run(compileSource(source), newGlobalScope()).print() == "\"expanded\""
 
   test "macro calls bind named syntax props":
-    ck "(macro scaled! [value ^by n] `(+ %value %n)) " &
-       "(scaled! ^by 3 7)",
+    ck "(macro scaled [value ^by n] `(+ %value %n)) " &
+       "(scaled ^by 3 7)",
        "10"
-    ck "(macro scaled! [value ^by amount] `(+ %value %amount)) " &
-       "(scaled! ^by 4 9)",
+    ck "(macro scaled [value ^by amount] `(+ %value %amount)) " &
+       "(scaled ^by 4 9)",
        "13"
-    ck "(macro tagged! [value ^tag t] `(quote (%t %value))) " &
-       "(tagged! ^tag item 7)",
+    ck "(macro tagged [value ^tag t] `(quote (%t %value))) " &
+       "(tagged ^tag item 7)",
        "(item 7)"
     expect GeneError:
-      discard runStr("(macro scaled! [value ^by n] `(+ %value %n)) " &
-                     "(scaled! 7)")
+      discard runStr("(macro scaled [value ^by n] `(+ %value %n)) " &
+                     "(scaled 7)")
     expect GeneError:
-      discard runStr("(macro scaled! [value ^by n] `(+ %value %n)) " &
-                     "(scaled! ^other 3 7)")
+      discard runStr("(macro scaled [value ^by n] `(+ %value %n)) " &
+                     "(scaled ^other 3 7)")
 
   test "macro parameters destructure syntax patterns":
-    ck "(macro second! [[_ value]] `%value) " &
-       "(second! [ignored (+ 1 2)])",
+    ck "(macro second [[_ value]] `%value) " &
+       "(second [ignored (+ 1 2)])",
        "3"
-    ck "(macro pick-prop! [{^value v}] `%v) " &
-       "(pick-prop! {^value (+ 2 3)})",
+    ck "(macro pick_prop [{^value v}] `%v) " &
+       "(pick_prop {^value (+ 2 3)})",
        "5"
-    ck "(macro call-arg! [(call ^arg v)] `%v) " &
-       "(call-arg! (call ^arg (+ 4 5)))",
+    ck "(macro call_arg [(call ^arg v)] `%v) " &
+       "(call_arg (call ^arg (+ 4 5)))",
        "9"
-    ck "(macro rest-items! [[head tail...]] `(quote %tail)) " &
-       "(rest-items! [1 2 3])",
+    ck "(macro rest_items [[head tail...]] `(quote %tail)) " &
+       "(rest_items [1 2 3])",
        "[2 3]"
-    ck "(macro eval-node! [(form : Node)] `%form) " &
-       "(eval-node! (+ 1 2))",
+    ck "(macro eval_node [(form : Node)] `%form) " &
+       "(eval_node (+ 1 2))",
        "3"
-    ck "(macro eval-flat! [form : Node] `%form) " &
-       "(eval-flat! (+ 2 3))",
+    ck "(macro eval_flat [form : Node] `%form) " &
+       "(eval_flat (+ 2 3))",
        "5"
-    ck "(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
-       "(keep-syms! [a b])",
+    ck "(macro keep_syms [(items : (List Sym))] `(quote %items)) " &
+       "(keep_syms [a b])",
        "[a b]"
-    ck "(macro keep-entry! [^entry item : (List Sym)] `(quote %item)) " &
-       "(keep-entry! ^entry [a b])",
+    ck "(macro keep_entry [^entry item : (List Sym)] `(quote %item)) " &
+       "(keep_entry ^entry [a b])",
        "[a b]"
     expect GeneError:
-      discard runStr("(macro eval-node! [(form : Node)] `%form) " &
-                     "(eval-node! 1)")
+      discard runStr("(macro eval_node [(form : Node)] `%form) " &
+                     "(eval_node 1)")
     expect GeneError:
-      discard runStr("(macro eval-flat! [form : Node] `%form) " &
-                     "(eval-flat! 1)")
+      discard runStr("(macro eval_flat [form : Node] `%form) " &
+                     "(eval_flat 1)")
     expect GeneError:
-      discard runStr("(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
-                     "(keep-syms! [a 1])")
-    ck "(macro named-pair! [^entry [k v]] `(+ %k %v)) " &
-       "(named-pair! ^entry [2 3])",
+      discard runStr("(macro keep_syms [(items : (List Sym))] `(quote %items)) " &
+                     "(keep_syms [a 1])")
+    ck "(macro named_pair [^entry [k v]] `(+ %k %v)) " &
+       "(named_pair ^entry [2 3])",
        "5"
     expect GeneError:
-      discard runStr("(macro second! [[_ value]] `%value) " &
-                     "(second! [only-one])")
-    ck "(macro default-value! [x = 7] `%x) " &
-       "[(default-value!) (default-value! 9)]",
+      discard runStr("(macro second [[_ value]] `%value) " &
+                     "(second [only-one])")
+    ck "(macro default_value [x = 7] `%x) " &
+       "[(default_value) (default_value 9)]",
        "[7 9]"
-    ck "(macro second-or-first! [x y = x] `%y) " &
-       "[(second-or-first! (+ 1 2)) (second-or-first! 1 4)]",
+    ck "(macro second_or_first [x y = x] `%y) " &
+       "[(second_or_first (+ 1 2)) (second_or_first 1 4)]",
        "[3 4]"
-    ck "(macro named-default! [^value v = (+ 2 3)] `%v) " &
-       "[(named-default!) (named-default! ^value 8)]",
+    ck "(macro named_default [^value v = (+ 2 3)] `%v) " &
+       "[(named_default) (named_default ^value 8)]",
        "[5 8]"
-    ck "(macro optional! [x = nil] `%x) (optional!)", "nil"
+    ck "(macro optional [x = nil] `%x) (optional)", "nil"
     expect GeneError:
-      discard compileSource("(macro bad! [x = 1 y] `%y)")
+      discard compileSource("(macro bad [x = 1 y] `%y)")
 
 suite "vm — arithmetic":
   test "addition":
@@ -1261,15 +1340,15 @@ suite "vm — node projection built-ins":
     ck "(var child [1]) " &
        "(var n `(user @note %child ^data %child %child)) " &
        "(var ps ($props n)) (var bs ($body n)) (var ms ($meta n)) " &
-       "(ps ~ put! `extra 2) " &
-       "(bs ~ set! 0 3) " &
-       "(ms ~ put! `other 4) " &
+       "(ps ~ put `extra 2) " &
+       "(bs ~ set 0 3) " &
+       "(ms ~ put `other 4) " &
        "[(== n/extra void) n/0 (== n/%$meta/other void)]",
        "[true [1] true]"
     ck "(var child [1]) " &
        "(var n `(user @note %child ^data %child %child)) " &
        "(var projected ($props n)) " &
-       "(projected/data ~ set! 0 9) " &
+       "(projected/data ~ set 0 9) " &
        "[n/data/0 n/0/0 n/%$meta/note/0]",
        "[9 9 9]"
 
@@ -1317,29 +1396,29 @@ suite "vm — container update built-ins":
        "[#[1 2 3] #[1 20 3]]"
     ck "([1 2] ~ assoc 1 void)", "[1 nil]"
 
-  test "List/set! mutates mutable lists":
-    ck "(var xs [1 2]) [(xs ~ set! 1 9) xs]", "[9 [1 9]]"
-    ck "(var xs [1 2]) [(xs ~ set! 0 void) xs]", "[nil [nil 2]]"
+  test "List/set mutates mutable lists":
+    ck "(var xs [1 2]) [(xs ~ set 1 9) xs]", "[9 [1 9]]"
+    ck "(var xs [1 2]) [(xs ~ set 0 void) xs]", "[nil [nil 2]]"
     expect GeneError:
-      discard runStr("(#[1] ~ set! 0 2)")
+      discard runStr("(#[1] ~ set 0 2)")
 
-  test "List/push! grows mutable lists in place":
-    ck "(var xs [1]) [(xs ~ push! 2) xs]", "[2 [1 2]]"
-    ck "(var xs []) [(xs ~ push! void) xs]", "[nil [nil]]"
+  test "List/push grows mutable lists in place":
+    ck "(var xs [1]) [(xs ~ push 2) xs]", "[2 [1 2]]"
+    ck "(var xs []) [(xs ~ push void) xs]", "[nil [nil]]"
     expect GeneError:
-      discard runStr("(#[1] ~ push! 2)")
+      discard runStr("(#[1] ~ push 2)")
 
-  test "List/push! supports linear accumulator growth":
+  test "List/push supports linear accumulator growth":
     ck "(var xs []) (var i 0) " &
-       "(while (< i 20000) (xs ~ push! i) (set i (+ i 1))) " &
+       "(while (< i 20000) (xs ~ push i) (set i (+ i 1))) " &
        "[($size xs) ($first xs) ($last xs)]",
        "[20000 0 19999]"
 
-  test "Map/put! mutates mutable maps":
-    ck "(var m {^a 1}) [(m ~ put! \"b\" 2) (m ~ /b)]", "[2 2]"
-    ck "(var m {^a 1}) [(m ~ put! \"a\" void) (m ~ /a)]", "[void void]"
+  test "Map/put mutates mutable maps":
+    ck "(var m {^a 1}) [(m ~ put \"b\" 2) (m ~ /b)]", "[2 2]"
+    ck "(var m {^a 1}) [(m ~ put \"a\" void) (m ~ /a)]", "[void void]"
     expect GeneError:
-      discard runStr("(#{^a 1} ~ put! \"a\" 2)")
+      discard runStr("(#{^a 1} ~ put \"a\" 2)")
   test "Map/assoc returns an updated copy":
     ck "(var m #{^a 1}) (var n (m ~ assoc \"b\" 2)) [m n]",
        "[#{^a 1} #{^a 1 ^b 2}]"
@@ -1351,15 +1430,15 @@ suite "vm — container update built-ins":
     ck "(var m {^a 1}) (m ~ get (quote a))", "1"
     expect GeneError: discard runStr("([1] ~ get \"a\")")
 
-  test "Node/set_prop! mutates mutable node props":
+  test "Node/set_prop mutates mutable node props":
     ck "(var n (quote (user ^name \"Ada\"))) " &
-       "[(n ~ set_prop! \"name\" \"Bob\") (n ~ /name)]",
+       "[(n ~ set_prop \"name\" \"Bob\") (n ~ /name)]",
        "[\"Bob\" \"Bob\"]"
     ck "(var n (quote (user ^name \"Ada\"))) " &
-       "[(n ~ set_prop! \"name\" void) (n ~ /name)]",
+       "[(n ~ set_prop \"name\" void) (n ~ /name)]",
        "[void void]"
     expect GeneError:
-      discard runStr("(#(user ^name \"Ada\") ~ set_prop! \"name\" \"Bob\")")
+      discard runStr("(#(user ^name \"Ada\") ~ set_prop \"name\" \"Bob\")")
 
 suite "vm — entrypoint support":
   test "top-level bindings can be looked up and called after run":

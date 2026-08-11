@@ -62,7 +62,7 @@
 
 (type ModLoadError
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for ModLoadError)
 

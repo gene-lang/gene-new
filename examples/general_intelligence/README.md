@@ -44,13 +44,28 @@ depth-three primitive-only, induced, and matched-unrelated enumeration.
 `tools/prepare_library_induction_freeze.py` turns experiment 1's remaining
 independent-review gate into an exact workflow. `packet` hashes the protocol,
 implementation, runtime, arithmetically selected eight-target seed schedule,
-resource ceilings, and analysis. `freeze` accepts only an external attestation
-for that digest, then writes canonical target-corpus/induced-library/matched-
-donor setup artifacts outside the worktree without executing any held-out
-search. `verify` detects source, manifest, attestation, schedule, and setup
-mutation. Its self-test uses only the permanently excluded evaluation-pilot
-seeds and reproduces the known 44-versus-12 result through
+resource ceilings, and analysis. After reviewing that packet, the reviewer runs
+`attest` with only `--approve` and `--notes`; the tool supplies the candidate
+digest, experiment, Git reviewer identity, and UTC time. Approval attests the
+protocol's independence, unopened-output, and result-free-seed conditions.
+`freeze` accepts only that digest-bound record, then writes canonical target-
+corpus/induced-library/matched-donor setup artifacts outside the worktree
+without executing any held-out search. `verify` detects source, manifest,
+attestation, schedule, and setup mutation. Its self-test uses only the
+permanently excluded evaluation-pilot seeds and reproduces the known
+44-versus-12 result through
 `src/library_induction_frozen_evaluation.gene`.
+
+The review commands are:
+
+```bash
+python3 tools/prepare_library_induction_freeze.py packet \
+  --output REVIEW_DIR/review_packet.json
+python3 tools/prepare_library_induction_freeze.py attest \
+  --packet REVIEW_DIR/review_packet.json \
+  --approve --notes "REVIEW_NOTES" \
+  --output REVIEW_DIR/review_attestation.json
+```
 
 After a legitimate freeze, `tools/run_library_induction_evaluation.py run` is
 the only intended treatment runner. It verifies the freeze, evaluates each
@@ -86,16 +101,27 @@ enumeration before the treatment comparison is run.
 
 `tools/prepare_active_inference_freeze.py` makes the independent-review gate
 mechanical. Its self-test uses only the disjoint pilot stream. On a clean
-revision, `packet` emits the exact candidate digest for a reviewer; `freeze`
-refuses to generate the 20 evaluation batches unless an attestation approves
-that digest, and `verify` rechecks source, manifest, and episode hashes. The
-tool never executes a treatment arm.
+revision, `packet` emits the exact candidate digest for a reviewer; `attest`
+accepts only `--approve` and `--notes` as reviewer decisions and records the
+digest, Git identity, and UTC timestamp. `freeze` refuses to generate the 20
+evaluation batches unless that schema-2 record approves the exact digest, and
+`verify` rechecks source, manifest, attestation, and episode hashes. The freeze
+manifest records zero evaluated batches and zero treatment arms.
 
 After a legitimate freeze, `src/active_inference_frozen_batch.gene` is the
 trusted consumer: it reads a manifest-selected canonical batch under an
 explicit `Fs/ReadDir` capability and evaluates that batch without regenerating
-its random stream. The tooling self-test exercises this path only on the pilot
-seed.
+its random stream. Base-prior batches cover the primary comparison, all three
+declared beta values, and all eight one-field preference perturbations;
+shifted-prior batches cover their declared primary robustness comparison. Each
+raw output contains canonical Gene data plus a strict JSON projection.
+
+`tools/run_active_inference_evaluation.py run` is the only intended treatment
+runner. It verifies the freeze, evaluates each batch once, captures time and
+RSS, hashes every raw result, and atomically applies the preregistered paired
+analysis. Its `verify` command authenticates the result set and recomputes all
+four pass gates. The runner self-test uses only excluded pilot seeds and fixed
+synthetic counts, including a forced sensitivity-reversal failure.
 
 The second implemented slice is experiment 4's verifier mechanism pilot:
 

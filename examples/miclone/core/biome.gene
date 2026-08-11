@@ -39,25 +39,25 @@
           ^count           (Buffer F32)}  # one cell, as core/registry.gene
 
   (ctor []
-    (set! self/names [])
-    (set! self/heat ($buffer F64 max_biomes))
-    (set! self/humidity ($buffer F64 max_biomes))
-    (set! self/y_min ($buffer F64 max_biomes))
-    (set! self/y_max ($buffer F64 max_biomes))
-    (set! self/node_top ($buffer F32 max_biomes))
-    (set! self/node_filler ($buffer F32 max_biomes))
-    (set! self/node_stone ($buffer F32 max_biomes))
-    (set! self/node_underwater ($buffer F32 max_biomes))
-    (set! self/depth_top ($buffer F32 max_biomes))
-    (set! self/depth_filler ($buffer F32 max_biomes))
-    (set! self/count ($buffer F32 1.0))))
+    (set self/names [])
+    (set self/heat ($buffer F64 max_biomes))
+    (set self/humidity ($buffer F64 max_biomes))
+    (set self/y_min ($buffer F64 max_biomes))
+    (set self/y_max ($buffer F64 max_biomes))
+    (set self/node_top ($buffer F32 max_biomes))
+    (set self/node_filler ($buffer F32 max_biomes))
+    (set self/node_stone ($buffer F32 max_biomes))
+    (set self/node_underwater ($buffer F32 max_biomes))
+    (set self/depth_top ($buffer F32 max_biomes))
+    (set self/depth_filler ($buffer F32 max_biomes))
+    (set self/count ($buffer F32 1.0))))
 
 (fn biome_count [b : BiomeRegistry] : F64
   (b/count ~ get 0.0))
 
 (type BiomeRegistryFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for BiomeRegistryFull)
 
@@ -71,18 +71,18 @@
   (if_yes (>= slot max_biomes)
     (fail (new BiomeRegistryFull
                $"biome registry is full at ${max_biomes} entries")))
-  (b/names ~ push! name)
-  (b/heat ~ set! slot heat)
-  (b/humidity ~ set! slot humidity)
-  (b/y_min ~ set! slot y_min)
-  (b/y_max ~ set! slot y_max)
-  (b/node_top ~ set! slot node_top)
-  (b/depth_top ~ set! slot depth_top)
-  (b/node_filler ~ set! slot node_filler)
-  (b/depth_filler ~ set! slot depth_filler)
-  (b/node_stone ~ set! slot node_stone)
-  (b/node_underwater ~ set! slot node_underwater)
-  (b/count ~ set! 0.0 (+ id 1.0))
+  (b/names ~ push name)
+  (b/heat ~ set slot heat)
+  (b/humidity ~ set slot humidity)
+  (b/y_min ~ set slot y_min)
+  (b/y_max ~ set slot y_max)
+  (b/node_top ~ set slot node_top)
+  (b/depth_top ~ set slot depth_top)
+  (b/node_filler ~ set slot node_filler)
+  (b/depth_filler ~ set slot depth_filler)
+  (b/node_stone ~ set slot node_stone)
+  (b/node_underwater ~ set slot node_underwater)
+  (b/count ~ set 0.0 (+ id 1.0))
   id)
 
 (fn biome_name [b : BiomeRegistry id : F64] : Str

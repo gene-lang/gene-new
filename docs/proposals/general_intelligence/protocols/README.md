@@ -2,8 +2,10 @@
 
 These files hold implementation and evaluation details for the experiments
 motivated by [`../architecture.md`](../architecture.md). None of the treatment
-comparisons is frozen or ready to run. Experiment 2 has an executable mechanism
-and compute pilot; experiment 1 has a bounded exact interpreter, deterministic
+comparisons is frozen on this candidate branch. Experiment 2 has an executable
+mechanism, compute pilot, sensitivity-complete frozen consumer, and complete
+review/freeze/run/verify toolchain awaiting independent attestation; experiment
+1 has a bounded exact interpreter, deterministic
 screened corpus generator, full-size corpus and control pilots, and a complete
 candidate review/freeze/evaluate toolchain whose treatment gate still awaits an
 independent attestation; experiment 4 has a qualified local model plus a bounded

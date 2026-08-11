@@ -162,7 +162,7 @@ proc declarationPrefixCount(head: string, body: openArray[Value]): int =
   case head
   of "mod", "ns", "type", "enum", "protocol":
     if body.len > 0 and body[0].kind == vkSymbol: 1 else: 0
-  of "fn", "fn!", "macro", "message", "ctor":
+  of "fn", "macro", "message", "ctor":
     var n = 0
     if head != "ctor" and n < body.len and body[n].kind == vkSymbol: inc n
     if n < body.len and body[n].kind == vkList: inc n
@@ -183,7 +183,7 @@ proc headerBodyCount(head: string, body: openArray[Value]): int =
     if body.len >= 3 and body[1].isSym("for"): 3 else: 1
   of "do", "else", "then", "try", "loop", "supervisor":
     0
-  of "fn", "fn!", "macro", "message", "ctor", "mod", "ns", "type",
+  of "fn", "macro", "message", "ctor", "mod", "ns", "type",
      "enum", "protocol":
     declarationPrefixCount(head, body)
   else:
@@ -352,7 +352,7 @@ proc prefersMultiline(v: Value): bool =
   let head = v.head.symVal
   let bodyCount = v.body.len
   case head
-  of "fn", "fn!", "macro", "message", "ctor":
+  of "fn", "macro", "message", "ctor":
     bodyCount > headerBodyCount(head, v.body)
   of "protocol", "impl", "ns":
     bodyCount > headerBodyCount(head, v.body)

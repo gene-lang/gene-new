@@ -39,10 +39,10 @@ const cases = [
   ["[true false nil]", 0, "[true false nil]", ""],
   ['($println "hi")', 0, "nil", "hi\n"],
   ['($str/join ["a" "b"] "-")', 0, '"a-b"', ""],
-  ['(import $log [new_logger debug!]) ' +
+  ['(import $log [new_logger log_debug]) ' +
    '(var logger (new_logger "app/wasm")) ' +
    '(var touched ($cell false)) ' +
-   '(debug! logger (do (touched ~ set true) "hidden")) ' +
+   '(log_debug logger (do (touched ~ set true) "hidden")) ' +
    '(touched ~ get)', 0, "false", ""],
   ["($json/stringify {^a 1 ^b [true nil]})", 0, '"{\\"a\\":1,\\"b\\":[true,null]}"', ""],
   ["(foo-undefined)", 1, "undefined symbol: foo-undefined", ""],

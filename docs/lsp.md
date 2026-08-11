@@ -33,7 +33,7 @@ to log server activity to stderr.
 | `textDocument/didClose` | Clears the document's diagnostics and re-indexes the file from disk, so unsaved buffer definitions do not outlive the buffer. |
 | `workspace/didChangeWatchedFiles` | Keeps the index current for files created/changed/deleted outside open buffers (the VS Code client watches `**/*.gene`). Open documents win — their buffer text drives the index. |
 | `textDocument/publishDiagnostics` | Reader parse errors (`ReadError`) as error-severity diagnostics with real tokenizer positions. One error per document (the reader stops at the first failure). |
-| `textDocument/documentSymbol` | Hierarchical outline: `fn`/`fn!`/`macro` (Function), `var` (Variable), `type` (Class, with nested `message`/`ctor`), `enum` (with unit and tuple variants as EnumMembers), `protocol` (Interface, with messages), `impl P for T` (with messages), `ns` (Namespace, recursive), `mod` (Module). |
+| `textDocument/documentSymbol` | Hierarchical outline: ordinary `fn`, named fexpr `(fn name! ...)`, and `macro` (Function); `var` (Variable), `type` (Class, with nested `message`/`ctor`), `enum` (with unit and tuple variants as EnumMembers), `protocol` (Interface, with messages), `impl P for T` (with messages), `ns` (Namespace, recursive), `mod` (Module). |
 | `textDocument/definition` | The symbol under the cursor, matched by name against the current document first, then the workspace index. Slash paths resolve the segment under the cursor (`Cell/set` on `set` looks up `set`). |
 | `textDocument/hover` | The definition's first source line in a `gene` code block plus its file:line. |
 | `workspace/symbol` | Case-insensitive substring search over the workspace definition index (capped at 500 results). |

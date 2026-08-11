@@ -107,19 +107,19 @@
           ^def_n        (Buffer F32)}
 
   (ctor []
-    (set! self/kind ($buffer F32 max_entities))
-    (set! self/item ($buffer F32 max_entities))
-    (set! self/count ($buffer F32 max_entities))
-    (set! self/x ($buffer F64 max_entities))
-    (set! self/y ($buffer F64 max_entities))
-    (set! self/z ($buffer F64 max_entities))
-    (set! self/def ($buffer F32 max_entities))
-    (set! self/id ($buffer F32 max_entities))
-    (set! self/n ($buffer F32 2.0))
-    (set! self/def_names [])
-    (set! self/def_step [])
-    (set! self/def_activate [])
-    (set! self/def_n ($buffer F32 1.0))))
+    (set self/kind ($buffer F32 max_entities))
+    (set self/item ($buffer F32 max_entities))
+    (set self/count ($buffer F32 max_entities))
+    (set self/x ($buffer F64 max_entities))
+    (set self/y ($buffer F64 max_entities))
+    (set self/z ($buffer F64 max_entities))
+    (set self/def ($buffer F32 max_entities))
+    (set self/id ($buffer F32 max_entities))
+    (set self/n ($buffer F32 2.0))
+    (set self/def_names [])
+    (set self/def_step [])
+    (set self/def_activate [])
+    (set self/def_n ($buffer F32 1.0))))
 
 (let cell_used 0.0)
 (let cell_next 1.0)
@@ -132,7 +132,7 @@
 
 (fn new_entities [] : EntityRegistry
   (var e (new EntityRegistry))
-  (e/n ~ set! cell_next 1.0)
+  (e/n ~ set cell_next 1.0)
   (add_entity_def e item_def_name no_step no_activate)
   e)
 
@@ -140,7 +140,7 @@
 
 (type EntityDefsFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for EntityDefsFull)
 
@@ -160,7 +160,7 @@
 # the ground.
 #
 # It scans backwards rather than overwriting because the web profile has no
-# `set!` on a `(List (Fn …))` — a real constraint, and the design it forced is
+# `set` on a `(List (Fn …))` — a real constraint, and the design it forced is
 # better than the one it refused.
 (fn entity_def_named [e : EntityRegistry name : Str] : F64
   (var names e/def_names)
@@ -180,10 +180,10 @@
   (if_yes (>= id max_entity_defs)
     (fail (new EntityDefsFull
                $"entity definitions are full at ${max_entity_defs}")))
-  (e/def_names ~ push! name)
-  (e/def_step ~ push! on_step)
-  (e/def_activate ~ push! on_activate)
-  (e/def_n ~ set! 0.0 (+ id 1.0))
+  (e/def_names ~ push name)
+  (e/def_step ~ push on_step)
+  (e/def_activate ~ push on_activate)
+  (e/def_n ~ set 0.0 (+ id 1.0))
   id)
 
 (fn entity_def_name_of [e : EntityRegistry def : F64] : Str
@@ -244,7 +244,7 @@
     (set i (+ i 1.0)))
   (if (>= found 0.0) found
     (if (< slots max_entities)
-      (do (e/n ~ set! cell_used (+ slots 1.0)) slots)
+      (do (e/n ~ set cell_used (+ slots 1.0)) slots)
       -1.0)))
 
 (fn spawn_item [e : EntityRegistry item : F64 count : F64
@@ -253,24 +253,24 @@
   (if (< slot 0.0) -1.0
     (do
       (var id (e/n ~ get cell_next))
-      (e/n ~ set! cell_next (+ id 1.0))
-      (e/kind ~ set! slot entity_item)
-      (e/item ~ set! slot item)
-      (e/count ~ set! slot count)
-      (e/x ~ set! slot x)
-      (e/y ~ set! slot y)
-      (e/z ~ set! slot z)
-      (e/def ~ set! slot (entity_def_named e item_def_name))
-      (e/id ~ set! slot id)
+      (e/n ~ set cell_next (+ id 1.0))
+      (e/kind ~ set slot entity_item)
+      (e/item ~ set slot item)
+      (e/count ~ set slot count)
+      (e/x ~ set slot x)
+      (e/y ~ set slot y)
+      (e/z ~ set slot z)
+      (e/def ~ set slot (entity_def_named e item_def_name))
+      (e/id ~ set slot id)
       id)))
 
 # What an `on_step` moves. A continuous position, unclamped: an item that walks
 # off the world is a mod's bug and hiding it inside the setter would make it an
 # engine mystery instead.
 (fn move_entity [e : EntityRegistry slot : F64 x : F64 y : F64 z : F64] : Nil
-  (e/x ~ set! slot x)
-  (e/y ~ set! slot y)
-  (e/z ~ set! slot z))
+  (e/x ~ set slot x)
+  (e/y ~ set slot y)
+  (e/z ~ set slot z))
 
 # A player, spawned into the same table as everything else. `item` carries what
 # to draw it as — `mods/default` registers a `miclone:player` node for exactly
@@ -282,18 +282,18 @@
   (if (< slot 0.0) -1.0
     (do
       (var id (e/n ~ get cell_next))
-      (e/n ~ set! cell_next (+ id 1.0))
-      (e/kind ~ set! slot entity_player)
-      (e/item ~ set! slot visual)
+      (e/n ~ set cell_next (+ id 1.0))
+      (e/kind ~ set slot entity_player)
+      (e/item ~ set slot visual)
       # A player is one of itself. The count is what a dropped stack uses and
       # what a removal sets to 0, so a player carries 1 to stay on the same
       # add/move/remove rule as everything else (§10).
-      (e/count ~ set! slot 1.0)
-      (e/x ~ set! slot x)
-      (e/y ~ set! slot y)
-      (e/z ~ set! slot z)
-      (e/def ~ set! slot (entity_def_named e item_def_name))
-      (e/id ~ set! slot id)
+      (e/count ~ set slot 1.0)
+      (e/x ~ set slot x)
+      (e/y ~ set slot y)
+      (e/z ~ set slot z)
+      (e/def ~ set slot (entity_def_named e item_def_name))
+      (e/id ~ set slot id)
       id)))
 
 # The web profile exports functions, not `let` bindings — the same reason
@@ -306,8 +306,8 @@
   (== (e/kind ~ get slot) entity_player))
 
 (fn despawn [e : EntityRegistry slot : F64] : Nil
-  (e/id ~ set! slot 0.0)
-  (e/count ~ set! slot 0.0))
+  (e/id ~ set slot 0.0)
+  (e/count ~ set slot 0.0))
 
 (fn slot_of_id [e : EntityRegistry id : F64] : F64
   (var found -1.0)

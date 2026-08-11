@@ -1,23 +1,27 @@
 # Calls, selectors, control, and eval contract
 
 **Status:** normative and implemented. Executable coverage:
-`tests/spec_runner.nim`, suites “fn! runtime fexprs”, “selectors”, “pattern
+`tests/spec_runner.nim`, suites “explicit fexprs”, “selectors”, “pattern
 destructuring”, “checked errors”, “Env and eval”, and “absence-guarded
 sends”.
 
-Calls are callable-first. Dynamic call sites resolve the callee and distinguish
-ordinary `Callable` from `SyntaxCallable` before evaluating arguments. `fn!`
-receives raw syntax and a borrowed `CallerEnv`; durable authority requires an
-explicit named `snapshot` (on `CallerEnv`). Message sends dispatch only: bare
+Ordinary calls are callable-first and always eager: `(foo a)` evaluates `foo`
+and `a` before calling. A bare lexical head ending in `!` is the distinct,
+statically resolved fexpr form: `(foo! a)` preserves `a` as syntax and supplies
+the fexpr a borrowed `CallerEnv`. Define one with `(fn foo! [syntax...] ...)`;
+the removed `fn!` form is invalid. Aliases, expression heads, and higher-order
+ordinary calls cannot invoke a held `Fexpr`. Durable caller authority requires
+an explicit named `snapshot` on `CallerEnv`. Message sends dispatch only: bare
 names reach type-direct messages, `P:msg` reaches protocol impls, and dynamic
 callees must be message values. Invalid callees are rejected before send
-arguments run; there is no lexical callable fallback.
+arguments run; message names may not end in `!`, and there is no lexical
+callable fallback.
 
 MVP compiler-dispatched heads:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! let var const set set! new ~ ?~ fn fn! macro quote quasiquote
+do if if_yes if_not && || ?? ! let var const set new ~ ?~ fn macro quote quasiquote
 select path msg ns env eval import import_impl mod match while loop repeat for break
 continue yield return try scope supervisor spawn await fail panic type alias enum
 protocol impl derive web_module

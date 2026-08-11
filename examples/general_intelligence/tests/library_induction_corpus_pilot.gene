@@ -21,7 +21,7 @@
   (var evidence (verify_generated_corpus subject corpus))
   (var programs : (List Node) [])
   (for task in corpus/learning
-    (programs ~ push! task/verifier/target_program))
+    (programs ~ push task/verifier/target_program))
   (var induction (induce_library subject programs))
   (var iterative (induce_library_iterative subject programs))
   (var iterative_evidence

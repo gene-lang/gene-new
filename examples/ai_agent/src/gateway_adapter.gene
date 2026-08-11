@@ -172,7 +172,7 @@
               [(agent_api/system_item agent_api/gene_system_prompt)]
               saved/items))))
   (var app existing_app)
-  (fn trim_events! []
+  (fn trim_events []
     (var current (events ~ get))
     (var first 0)
     (var retained_bytes (event_bytes ~ get))
@@ -186,16 +186,16 @@
     (if_yes (> first 0)
       (var kept [])
       (repeat i in current/~size
-        (if (>= i first) (kept ~ push! current/%i)))
+        (if (>= i first) (kept ~ push current/%i)))
       (events ~ set kept)
       (event_bytes ~ set retained_bytes)))
-  (trim_events!)
-  (fn add_turn_provenance! [props]
+  (trim_events)
+  (fn add_turn_provenance [props]
     (if (current_attachment_id ~ get)
-      (props ~ put! "attachment_id"
+      (props ~ put "attachment_id"
         (current_attachment_id ~ get)))
     (if (current_principal ~ get)
-      (props ~ put! "principal" (current_principal ~ get)))
+      (props ~ put "principal" (current_principal ~ get)))
     props)
   # WebSocket delivery never runs on the turn fiber (same rationale as the
   # Telegram outbox): append_event does a non-blocking try_send of the
@@ -208,7 +208,7 @@
   (var ws_outbox ($channel ^capacity 1024))
   (var ws_outbox_overflow ($cell false))
   (var ws_sender_started ($cell false))
-  (fn ws_deliver! [payload : Str]
+  (fn ws_deliver [payload : Str]
     (var kept [])
     (for client in (ws_clients ~ get)
       (var dropped (ws_send client/conn payload))
@@ -218,9 +218,9 @@
             (stringify
               {^type "cursor_gap"
                ^snapshot_url $"/api/sessions/${id}/snapshot"})))
-        (kept ~ push! client)))
+        (kept ~ push client)))
     (ws_clients ~ set kept))
-  (fn ws_start_sender! []
+  (fn ws_start_sender []
     (if_not (ws_sender_started ~ get)
       (ws_sender_started ~ set true)
       (spawn
@@ -230,17 +230,17 @@
             (set raw (ws_outbox ~ recv))
             (if_yes (ws_outbox_overflow ~ get)
               (ws_outbox_overflow ~ set false)
-              (ws_deliver!
+              (ws_deliver
                 (stringify
                   {^type "cursor_gap"
                    ^snapshot_url $"/api/sessions/${id}/snapshot"})))
-            (ws_deliver! raw))))))
+            (ws_deliver raw))))))
   (fn append_event [event]
     (var stored (agent_api/bounded_event_record event gw_event_max_bytes))
-    ((events ~ get) ~ push! stored)
+    ((events ~ get) ~ push stored)
     (event_bytes ~ set
       (+ (event_bytes ~ get) (byte_size (stringify stored))))
-    (trim_events!)
+    (trim_events)
     (if_yes (! ($empty? (ws_clients ~ get)))
       (if_not (ws_outbox ~ try_send
                 (stringify {^type "event" ^event stored}))
@@ -254,7 +254,7 @@
         (var props
           {^worker_id app/main_agent/id ^agent_id app/main_agent/id
            ^text text ^surface "gateway"})
-        (add_turn_provenance! props)
+        (add_turn_provenance props)
         (agent_api/application_emit app type props))
       (else
         (next_v ~ set (+ (next_v ~ get) 1))
@@ -262,7 +262,7 @@
           {^v (next_v ~ get) ^type type
            ^worker_id app/main_agent/id ^agent_id app/main_agent/id
            ^text (agent_api/redact_any text)})
-        (add_turn_provenance! event)
+        (add_turn_provenance event)
         (append_event event)
         # The application observes the same event and derives canonical
         # worker_output records; its sink intentionally skips the already
@@ -278,14 +278,14 @@
   # keeps its full tool trail. agent_text/text_delta come from the render
   # callbacks below, so the sink skips them to avoid double-logging.
   (fn push_structured [type : Str, props]
-    (add_turn_provenance! props)
+    (add_turn_provenance props)
     (if shared
       (then (agent_api/application_emit app type props))
       (else
         (next_v ~ set (+ (next_v ~ get) 1))
         (var event {^v (next_v ~ get) ^type type})
         (for [k pv] in props
-          (event ~ put! k (agent_api/redact_any pv)))
+          (event ~ put k (agent_api/redact_any pv)))
         (append_event event)
         event)))
   (fn emit_turn_event [type : Str, props]
@@ -475,7 +475,7 @@
   # Persist terminal worker transitions even when no main-agent message runs.
   # Projection deltas are captured by the terminal operation snapshot (or by
   # the synchronous route save below), avoiding a store write per text chunk.
-  ((app/event_observers ~ get) ~ push!
+  ((app/event_observers ~ get) ~ push
     {^worker_id "__gateway_persistence__"
      ^handler (fn [event]
        (if (["worker_operation_finished" "worker_stopped" "agent_spawned"]
@@ -486,7 +486,7 @@
   # boundary instead. Standalone sessions fan out in append_event; installing
   # both would double-deliver.
   (if shared
-    ((app/event_observers ~ get) ~ push!
+    ((app/event_observers ~ get) ~ push
       {^worker_id "__gateway_ws__"
        ^handler (fn [event]
          (if_yes (&& (! ($empty? (ws_clients ~ get)))
@@ -501,7 +501,7 @@
    ^current_task current_task ^input_pending input_pending
    ^pending_confirmation pending_confirmation
    ^submit_input submit_input ^cancel_requested cancel_requested
-   ^ws_clients ws_clients ^ws_start_sender ws_start_sender!
+   ^ws_clients ws_clients ^ws_start_sender ws_start_sender
    ^application app ^shared shared})
 
 (fn events_after [s, cursor : Int]
@@ -595,7 +595,7 @@
   (if (== st void)
     (then
       (set st {^pending ($cell "") ^sent_id ($cell nil) ^sent_len ($cell 0)})
-      (tg_chat_state ~ put! key st)
+      (tg_chat_state ~ put key st)
       st)
     (else st)))
 
@@ -657,7 +657,7 @@
   (if (== s void)
     (then
       (set s (make_session id (make_telegram_sender chat_id) nil nil))
-      (sessions ~ put! id s)
+      (sessions ~ put id s)
       s)
     (else s)))
 
@@ -675,13 +675,13 @@
 
 (fn tg_channel_operations_text [] : Str
   (var lines [])
-  (lines ~ push! "channel commands (observe-only tier):")
+  (lines ~ push "channel commands (observe-only tier):")
   (var seen [])
   (for descriptor in (agent_api/operation_registry_snapshot)
     (if_yes (&& (tg_channel_allowed? descriptor)
                 (! (seen ~ contains? descriptor/name)))
-      (seen ~ push! descriptor/name)
-      (lines ~ push!
+      (seen ~ push descriptor/name)
+      (lines ~ push
         $"/${descriptor/name} <worker> - ${descriptor/summary}")))
   (join lines "\n"))
 
@@ -713,7 +713,7 @@
   (var worker_ref parts/1)
   (var args {})
   (if (&& (== op "tail") (>= parts/~size 3))
-    (try (args ~ put! "n" (parse_int parts/2)) catch _ nil))
+    (try (args ~ put "n" (parse_int parts/2)) catch _ nil))
   (var response
     (agent_api/application_call_worker s/application worker_ref op args
       (tg_channel_invocation)))
@@ -808,31 +808,31 @@
 (fn attachment_expired? [attachment] : Bool
   (>= (monotonic_ms) (attachment/expires_at_ms ~ get)))
 
-(fn prune_gateway_attachments! []
+(fn prune_gateway_attachments []
   (var retained [])
   (for attachment in (gateway_attachments ~ get)
     (if_not (attachment_expired? attachment)
-      (retained ~ push! attachment)))
+      (retained ~ push attachment)))
   (gateway_attachments ~ set retained))
 
 (fn gateway_attachment [id : Str]
-  (prune_gateway_attachments!)
+  (prune_gateway_attachments)
   (for attachment in (gateway_attachments ~ get)
     (if (== attachment/id id)
       (return attachment)))
   nil)
 
-(fn remove_gateway_attachment! [id : Str] : Bool
+(fn remove_gateway_attachment [id : Str] : Bool
   (var retained [])
   (var removed ($cell false))
   (for attachment in (gateway_attachments ~ get)
     (if (== attachment/id id)
       (removed ~ set true)
-      (retained ~ push! attachment)))
+      (retained ~ push attachment)))
   (gateway_attachments ~ set retained)
   (removed ~ get))
 
-(fn touch_gateway_attachment! [attachment]
+(fn touch_gateway_attachment [attachment]
   (attachment/expires_at_ms ~ set
     (+ (monotonic_ms) gateway_attachment_lease_ms))
   attachment)
@@ -843,7 +843,7 @@
   (if_yes (!= s void)
     (var request (s/pending_confirmation ~ get))
     (if (&& request (== request/attachment_id attachment/id))
-      (pending ~ push!
+      (pending ~ push
         {^confirmation_id request/id ^risk request/risk
          ^target request/target ^created_ms request/created_ms})))
   {^attachment_id attachment/id
@@ -858,7 +858,7 @@
   (var s (sessions ~ get session_id))
   (if (== s void)
     (return (json_response 404 {^error "no_such_session"})))
-  (prune_gateway_attachments!)
+  (prune_gateway_attachments)
   (if (>= ((gateway_attachments ~ get) ~ size) gateway_attachment_max)
     (return
       (json_response 429
@@ -888,7 +888,7 @@
             ^ack_cursor ($cell (session_event_cursor s))
             ^expires_at_ms
               ($cell (+ (monotonic_ms) gateway_attachment_lease_ms))))
-        ((gateway_attachments ~ get) ~ push! attachment)
+        ((gateway_attachments ~ get) ~ push attachment)
         (json_response 201 (attachment_response attachment)))
       (else
         (json_response 400
@@ -910,7 +910,7 @@
                  (else false))))
       (return
         (json_response 401 {^error "resume_credential_invalid"})))
-    (touch_gateway_attachment! attachment)
+    (touch_gateway_attachment attachment)
     (json_response 200 (attachment_response attachment))
   catch (JsonError ^message message)
     (json_response 400 {^error "invalid_json" ^message message})))
@@ -929,7 +929,7 @@
     (return
       {^ok false
        ^response (json_response 401 {^error "attachment_invalid"})}))
-  (touch_gateway_attachment! attachment)
+  (touch_gateway_attachment attachment)
   {^ok true ^attachment attachment})
 
 (fn detach_attachment [session_id : Str, attachment_id : Str, attachment]
@@ -941,7 +941,7 @@
     (if_yes (&& pending (== pending/attachment_id attachment_id))
       (pending/reply ~ try_send false)
       (s/pending_confirmation ~ set nil)))
-  (remove_gateway_attachment! attachment_id)
+  (remove_gateway_attachment attachment_id)
   (json_response 200 {^ok true}))
 
 (fn resolve_confirmation
@@ -1009,23 +1009,23 @@
   catch (JsonError ^message message)
     (json_response 400 {^error "invalid_json" ^message message})))
 
-(fn prune_idempotency_records! []
+(fn prune_idempotency_records []
   (var now (monotonic_ms))
   (var retained [])
   (for record in (gateway_idempotency_records ~ get)
     (if (> record/expires_at_ms now)
-      (retained ~ push! record)))
+      (retained ~ push record)))
   (var overflow (- retained/~size gateway_idempotency_max))
   (if_yes (> overflow 0)
     (var bounded [])
     (repeat index in retained/~size
       (if (>= index overflow)
-        (bounded ~ push! retained/%index)))
+        (bounded ~ push retained/%index)))
     (set retained bounded))
   (gateway_idempotency_records ~ set retained))
 
 (fn idempotency_record [session_id : Str, attachment_id : Str, key : Str]
-  (prune_idempotency_records!)
+  (prune_idempotency_records)
   (for record in (gateway_idempotency_records ~ get)
     (if (&& (== record/session_id session_id)
             (== record/attachment_id attachment_id)
@@ -1056,32 +1056,32 @@
           {^error "idempotency_key_reused"
            ^message "Idempotency-Key was already used for a different request"}))))
   (var response (dispatch))
-  ((gateway_idempotency_records ~ get) ~ push!
+  ((gateway_idempotency_records ~ get) ~ push
     (IdempotencyRecord
       ^session_id session_id ^attachment_id attachment/id ^key key
       ^fingerprint fingerprint ^status response/status
       ^headers response/headers ^body response/body
       ^expires_at_ms (+ (monotonic_ms) gateway_idempotency_ttl_ms)))
-  (prune_idempotency_records!)
+  (prune_idempotency_records)
   response)
 
 (fn create_session []
   (session_seq ~ set (+ (session_seq ~ get) 1))
   (var id $"s${(session_seq ~ get)}")
-  (sessions ~ put! id (make_session id nil nil nil))
+  (sessions ~ put id (make_session id nil nil nil))
   (json_response 200 {^id id}))
 
 (fn ensure_local_session []
   (var app (agent_api/active_application ~ get))
   (if (&& (!= app nil) (== (sessions ~ get "local") void))
-    (sessions ~ put! "local" (make_session "local" nil nil app))))
+    (sessions ~ put "local" (make_session "local" nil nil app))))
 
 (fn list_sessions []
   (var out ($cell []))
   (sessions/%$to_pairs_stream
     ~ each (fn [pair]
         (var [k, s] pair)
-        ((out ~ get) ~ push!
+        ((out ~ get) ~ push
           {^id k ^events (session_event_cursor s)
            ^busy (|| (s/input_pending ~ get)
                      (!= (s/current_task ~ get) nil))})))
@@ -1154,7 +1154,7 @@
             (|| (["stats" "log_tail"] ~ contains? worker/kind)
                 (&& (== worker/kind "output")
                     (! ($empty? worker/following)))))
-      (ids ~ push! worker/worker_id)))
+      (ids ~ push worker/worker_id)))
   ids)
 
 (fn get_snapshot [id : Str]
@@ -1207,7 +1207,7 @@
       (for worker in
            (agent_api/application_workers_snapshot s/application)
         (if (== worker/kind "agent")
-          (agents ~ push! worker)))
+          (agents ~ push worker)))
       (json_response 200 {^agents agents}))))
 
 (fn create_agent [id : Str, req]
@@ -1398,7 +1398,7 @@
   (try
     (var args {})
     (if (&& (== operation "tail") (!= req/params/n void))
-      (args ~ put! "n" (parse_int req/params/n)))
+      (args ~ put "n" (parse_int req/params/n)))
     (var response
       (agent_api/application_call_worker s/application worker_id operation args
         (attachment_invocation attachment)))
@@ -1415,7 +1415,7 @@
     (else
       (var artifacts [])
       (for artifact in (agent_api/agent_artifacts ~ get)
-        (artifacts ~ push!
+        (artifacts ~ push
           {^id artifact/id ^kind artifact/kind
            ^source_worker artifact/source_worker
            ^task_id artifact/task_id ^size artifact/size
@@ -2014,12 +2014,12 @@ document.getElementById('f').addEventListener('submit', function (e) {
 (var ws_tickets ($cell []))
 (var ws_ticket_ttl_ms 30000)
 
-(fn prune_ws_tickets! []
+(fn prune_ws_tickets []
   (var now (monotonic_ms))
   (var kept [])
   (for record in (ws_tickets ~ get)
     (if (< now record/expires_ms)
-      (kept ~ push! record)))
+      (kept ~ push record)))
   (ws_tickets ~ set kept))
 
 (fn mint_ws_ticket [id : Str, attachment]
@@ -2027,9 +2027,9 @@ document.getElementById('f').addEventListener('submit', function (e) {
   (if (== s void)
     (then (json_response 404 {^error "no such session"}))
     (else
-      (prune_ws_tickets!)
+      (prune_ws_tickets)
       (var ticket $"wst_${(random_hex 24)}")
-      ((ws_tickets ~ get) ~ push!
+      ((ws_tickets ~ get) ~ push
         {^ticket ticket ^session_id id ^attachment_id attachment/id
          ^expires_ms (+ (monotonic_ms) ws_ticket_ttl_ms)})
       (json_response 200
@@ -2045,7 +2045,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
   (for record in (ws_tickets ~ get)
     (if (secure_equal? record/ticket $"${presented}")
       (found ~ set record)
-      (kept ~ push! record)))
+      (kept ~ push record)))
   (ws_tickets ~ set kept)
   (var record (found ~ get))
   (if (&& (!= record nil)
@@ -2071,7 +2071,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
   (ws_accept req
     ^on_open (fn [conn]
       (s/ws_start_sender)
-      ((s/ws_clients ~ get) ~ push!
+      ((s/ws_clients ~ get) ~ push
         {^conn conn ^attachment_id attachment_id})
       (ws_send conn
         (stringify
@@ -2086,7 +2086,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
       (var kept [])
       (for client in (s/ws_clients ~ get)
         (if (!= client/conn conn)
-          (kept ~ push! client)))
+          (kept ~ push client)))
       (s/ws_clients ~ set kept))))
 
 (fn attached_session_route [req, parts]
@@ -2192,7 +2192,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
           (make_telegram_sender (join (split id "tg-") ""))))
       # Redact legacy snapshots at restore as well as new writes, before any
       # retained model context or transcript becomes live session state.
-      (sessions ~ put! id
+      (sessions ~ put id
         (make_session id hook (agent_api/redact_any saved) nil))
       (restore_session_id_seq id)
       (count ~ set (+ (count ~ get) 1))

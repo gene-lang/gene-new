@@ -70,7 +70,7 @@ The native-extension interface exposes:
 - `newWrapper` — creates a Type-headed node with native-owned props;
 - `wrapperField` — reads a hidden prop for native code.
 
-The empty Gene schema is intentional. Direct construction and `set_prop!`
+The empty Gene schema is intentional. Direct construction and `set_prop`
 cannot supply or replace `handle`, while native code can populate it through
 `newWrapper`. Dispatch, annotations, selectors, protocols, and user impls use
 the ordinary node machinery.
@@ -133,8 +133,8 @@ assembles every wrapper node:
   }
 
   (ctor [conninfo : Str]
-    (set! self/handle (pq_connect_db conninfo))
-    (set! self/conninfo conninfo)))
+    (set self/handle (pq_connect_db conninfo))
+    (set self/conninfo conninfo)))
 
 (var db (new PgConn "postgresql://localhost/app"))
 ```
@@ -158,7 +158,7 @@ Required changes, independent of typed-native compilation:
 3. **Use the ordinary field-write policy.** Declared props are read-only after
    construction unless marked `^mut`; this is not a second wrapper-specific
    mutability mechanism. During the existing constructing state,
-   `set! self/field` validates and initializes them. Metadata may opt into
+   `set self/field` validates and initializes them. Metadata may opt into
    `^mut`, but native handle fields must not.
 4. **Use the ordinary schema as the invariant.** Ctor completion requires every
    declared field and validates types, including the exact `C/OwnedPtr` target.
@@ -337,7 +337,7 @@ lowers to a null policy check if required and one C field/offset load. Writable
 fields similarly lower to an ABI-checked store. A typed FFI/native call lowers
 directly without `GeneCall`, argument boxing, or runtime message resolution.
 
-Native fields are not Gene props. `set_prop!`, node construction, serde, and
+Native fields are not Gene props. `set_prop`, node construction, serde, and
 schema derivation do not address foreign memory.
 
 ### 6.3.1 Out-parameters

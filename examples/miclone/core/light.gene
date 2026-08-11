@@ -110,15 +110,15 @@
 
 (type LightQueueFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for LightQueueFull)
 
 (fn queue_reset [q : (Buffer F32)] : Nil
-  (q ~ set! q_head 0.0)
-  (q ~ set! q_tail 0.0)
-  (q ~ set! q_count 0.0)
-  (q ~ set! q_cap (- q/~len q_base)))
+  (q ~ set q_head 0.0)
+  (q ~ set q_tail 0.0)
+  (q ~ set q_count 0.0)
+  (q ~ set q_cap (- q/~len q_base)))
 
 (fn queue_capacity [q : (Buffer F32)] : F64
   (q ~ get q_cap))
@@ -132,16 +132,16 @@
     (fail (new LightQueueFull
                $"light queue overflowed at ${cap} entries")))
   (var t (q ~ get q_tail))
-  (q ~ set! (+ q_base t) v)
-  (q ~ set! q_tail (if (>= (+ t 1.0) cap) 0.0 (+ t 1.0)))
-  (q ~ set! q_count (+ (q ~ get q_count) 1.0)))
+  (q ~ set (+ q_base t) v)
+  (q ~ set q_tail (if (>= (+ t 1.0) cap) 0.0 (+ t 1.0)))
+  (q ~ set q_count (+ (q ~ get q_count) 1.0)))
 
 (fn queue_pop [q : (Buffer F32)] : F64
   (var h (q ~ get q_head))
   (var v (q ~ get (+ q_base h)))
   (var cap (q ~ get q_cap))
-  (q ~ set! q_head (if (>= (+ h 1.0) cap) 0.0 (+ h 1.0)))
-  (q ~ set! q_count (- (q ~ get q_count) 1.0))
+  (q ~ set q_head (if (>= (+ h 1.0) cap) 0.0 (+ h 1.0)))
+  (q ~ set q_count (- (q ~ get q_count) 1.0))
   v)
 
 # --- region geometry ---------------------------------------------------------
@@ -187,7 +187,7 @@
     (while (< x dx)
       (var col (+ x (* z dx)))
       (var s (sky ~ get col))
-      (floors ~ set! col dy)
+      (floors ~ set col dy)
       (if_yes (> s 0.0)
         (var y (- dy 1.0))
         (var live true)
@@ -197,11 +197,11 @@
             (then
               (var p (param1 ~ get i))
               (if_yes (> s (day_of p))
-                (param1 ~ set! i (with_day p s)))
+                (param1 ~ set i (with_day p s)))
               (if (== s light_max)
                 # Full sunlight continues down at full strength; the floor
                 # follows it.
-                (then (floors ~ set! col y))
+                (then (floors ~ set col y))
                 # Anything less is an ordinary light value: hand it to the flood
                 # and stop, since it does not travel down undiminished.
                 (else
@@ -324,7 +324,7 @@
     (var p (param1 ~ get j))
     (var cur (if day (day_of p) (night_of p)))
     (if_yes (> v cur)
-      (param1 ~ set! j (if day (with_day p v) (with_night p v)))
+      (param1 ~ set j (if day (with_day p v) (with_night p v)))
       (if_yes (>= v light_min_spread) (queue_push q j)))))
 
 # --- full relight ------------------------------------------------------------
@@ -372,7 +372,7 @@
     (if_yes (> e 0.0)
       (var p (param1 ~ get i))
       (if_yes (> e (night_of p))
-        (param1 ~ set! i (with_night p e))
+        (param1 ~ set i (with_night p e))
         (if_yes (>= e light_min_spread) (queue_push q i))))
     (set i (+ i 1.0))))
 
@@ -387,7 +387,7 @@
     (if_yes (> e 0.0)
       (var p (param1 ~ get i))
       (if_yes (> e (day_of p))
-        (param1 ~ set! i (with_day p e))
+        (param1 ~ set i (with_day p e))
         (if_yes (>= e light_min_spread) (queue_push q i))))
     (set i (+ i 1.0))))
 
@@ -424,7 +424,7 @@
 
 (fn set_channel [param1 : (Buffer F32) i : F64 v : F64 day : Bool] : Nil
   (var p (param1 ~ get i))
-  (param1 ~ set! i (if day (with_day p v) (with_night p v))))
+  (param1 ~ set i (if day (with_day p v) (with_night p v))))
 
 # Take back the light derived from the frontier in `q`, collecting the boundary
 # that survives into `q_seed`.
@@ -559,7 +559,7 @@
         (then
           (var p (param1 ~ get i))
           (if_yes (> light_max (day_of p))
-            (param1 ~ set! i (with_day p light_max))
+            (param1 ~ set i (with_day p light_max))
             (queue_push q i)))
         (else (set live false)))
       (set yy (- yy 1.0)))

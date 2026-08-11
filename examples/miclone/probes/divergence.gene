@@ -55,10 +55,10 @@
   (var i 0.0)
   (while (< i 24.0)
     (var x (probe_x i))
-    (out ~ push! (line $"wrap32[$($to_int i)]" (wrap32 (* x 1000.0))))
-    (out ~ push! (line $"mix32[$($to_int i)]" (mix32 (* i 7919.0))))
-    (out ~ push! (line $"smoothstep[$($to_int i)]" (smoothstep (/ i 24.0))))
-    (out ~ push! (line $"lerp[$($to_int i)]" (lerp -3.25 7.125 (/ i 24.0))))
+    (out ~ push (line $"wrap32[$($to_int i)]" (wrap32 (* x 1000.0))))
+    (out ~ push (line $"mix32[$($to_int i)]" (mix32 (* i 7919.0))))
+    (out ~ push (line $"smoothstep[$($to_int i)]" (smoothstep (/ i 24.0))))
+    (out ~ push (line $"lerp[$($to_int i)]" (lerp -3.25 7.125 (/ i 24.0))))
     (set i (+ i 1.0))))
 
 # --- the hash, which every terrain value is downstream of --------------------
@@ -69,8 +69,8 @@
     (var x ($math/floor (probe_x i)))
     (var y ($math/floor (probe_y i)))
     (var z ($math/floor (probe_z i)))
-    (out ~ push! (line $"hash3[$($to_int i)]" (hash3 x y z sample_seed)))
-    (out ~ push! (line $"hash_unit3[$($to_int i)]"
+    (out ~ push (line $"hash3[$($to_int i)]" (hash3 x y z sample_seed)))
+    (out ~ push (line $"hash_unit3[$($to_int i)]"
                        (hash_unit3 x y z sample_seed)))
     (set i (+ i 1.0))))
 
@@ -82,8 +82,8 @@
     (var x (probe_x i))
     (var y (probe_y i))
     (var z (probe_z i))
-    (out ~ push! (line $"value2[$($to_int i)]" (value2 x y sample_seed)))
-    (out ~ push! (line $"value3[$($to_int i)]" (value3 x y z sample_seed)))
+    (out ~ push (line $"value2[$($to_int i)]" (value2 x y sample_seed)))
+    (out ~ push (line $"value3[$($to_int i)]" (value3 x y z sample_seed)))
     (set i (+ i 1.0))))
 
 # The real shape of a mapgen query: several octaves at terrain frequencies,
@@ -95,11 +95,11 @@
     (var x (* (probe_x i) 0.031))
     (var y (* (probe_y i) 0.031))
     (var z (* (probe_z i) 0.017))
-    (out ~ push! (line $"fbm2[$($to_int i)]"
+    (out ~ push (line $"fbm2[$($to_int i)]"
                        (fbm2 x y sample_seed 5.0 2.0 0.5)))
-    (out ~ push! (line $"fbm3[$($to_int i)]"
+    (out ~ push (line $"fbm3[$($to_int i)]"
                        (fbm3 x y z sample_seed 4.0 2.0 0.5)))
-    (out ~ push! (line $"ridged2[$($to_int i)]"
+    (out ~ push (line $"ridged2[$($to_int i)]"
                        (ridged2 x y sample_seed 4.0 2.17 0.55)))
     (set i (+ i 1.0))))
 
@@ -122,9 +122,9 @@
   acc)
 
 (fn checksum_lines [out : (List Str)] : Nil
-  (out ~ push! (line "column_checksum[1337]" (column_checksum 1337.0)))
-  (out ~ push! (line "column_checksum[7]" (column_checksum 7.0)))
-  (out ~ push! (line "column_checksum[-19]" (column_checksum -19.0))))
+  (out ~ push (line "column_checksum[1337]" (column_checksum 1337.0)))
+  (out ~ push (line "column_checksum[7]" (column_checksum 7.0)))
+  (out ~ push (line "column_checksum[-19]" (column_checksum -19.0))))
 
 # The whole report, as one string, computed by one code path on both backends.
 #

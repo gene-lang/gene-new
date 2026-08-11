@@ -99,15 +99,15 @@
   (var n (* (* width height) 4))
   (var i 0)
   (while (< i n)
-    (pixels ~ push! 0)
+    (pixels ~ push 0)
     (set i (+ i 1))))
 
 (fn put4 [i : Int r : Int g : Int b : Int a : Int] : Nil
   (var k i)
-  (set! pixels/%k r)
-  (set k (+ i 1)) (set! pixels/%k g)
-  (set k (+ i 2)) (set! pixels/%k b)
-  (set k (+ i 3)) (set! pixels/%k a))
+  (set pixels/%k r)
+  (set k (+ i 1)) (set pixels/%k g)
+  (set k (+ i 2)) (set pixels/%k b)
+  (set k (+ i 3)) (set pixels/%k a))
 
 (fn put_a [x : Int y : Int c : (List Int) a : Int] : Nil
   (if_yes (&& (&& (>= x 0) (< x width)) (&& (>= y 0) (< y height)))

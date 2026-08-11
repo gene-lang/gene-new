@@ -86,20 +86,20 @@
           ^counts   (Buffer F32)}  # two cells: forms, elements
 
   (ctor []
-    (set! self/names [])
-    (set! self/title [])
-    (set! self/cols ($buffer F32 max_forms))
-    (set! self/rows ($buffer F32 max_forms))
-    (set! self/first ($buffer F32 max_forms))
-    (set! self/len ($buffer F32 max_forms))
-    (set! self/kind ($buffer F32 max_elements))
-    (set! self/x ($buffer F32 max_elements))
-    (set! self/y ($buffer F32 max_elements))
-    (set! self/w ($buffer F32 max_elements))
-    (set! self/h ($buffer F32 max_elements))
-    (set! self/text [])
-    (set! self/action [])
-    (set! self/counts ($buffer F32 2.0))))
+    (set self/names [])
+    (set self/title [])
+    (set self/cols ($buffer F32 max_forms))
+    (set self/rows ($buffer F32 max_forms))
+    (set self/first ($buffer F32 max_forms))
+    (set self/len ($buffer F32 max_forms))
+    (set self/kind ($buffer F32 max_elements))
+    (set self/x ($buffer F32 max_elements))
+    (set self/y ($buffer F32 max_elements))
+    (set self/w ($buffer F32 max_elements))
+    (set self/h ($buffer F32 max_elements))
+    (set self/text [])
+    (set self/action [])
+    (set self/counts ($buffer F32 2.0))))
 
 (let count_forms 0.0)
 (let count_elements 1.0)
@@ -111,7 +111,7 @@
 
 (type FormError
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for FormError)
 
@@ -125,13 +125,13 @@
   (if_yes (|| (<= cols 0.0) (<= rows 0.0))
     (fail (new FormError
                $"form ${name} is $($to_int cols)x$($to_int rows); a form needs a positive size")))
-  (f/names ~ push! name)
-  (f/title ~ push! title)
-  (f/cols ~ set! id cols)
-  (f/rows ~ set! id rows)
-  (f/first ~ set! id (element_count f))
-  (f/len ~ set! id 0.0)
-  (f/counts ~ set! count_forms (+ id 1.0))
+  (f/names ~ push name)
+  (f/title ~ push title)
+  (f/cols ~ set id cols)
+  (f/rows ~ set id rows)
+  (f/first ~ set id (element_count f))
+  (f/len ~ set id 0.0)
+  (f/counts ~ set count_forms (+ id 1.0))
   id)
 
 # The validation, as a question. `add_element` raises on a bad element — that is
@@ -177,15 +177,15 @@
   (if_yes (|| (< y 0.0) (> (+ y h) (f/rows ~ get form)))
     (fail (new FormError
                $"element at row $($to_int y) height $($to_int h) leaves form ${names/%i}, which is $($to_int (f/rows ~ get form)) tall")))
-  (f/kind ~ set! n kind)
-  (f/x ~ set! n x)
-  (f/y ~ set! n y)
-  (f/w ~ set! n w)
-  (f/h ~ set! n h)
-  (f/text ~ push! text)
-  (f/action ~ push! action)
-  (f/counts ~ set! count_elements (+ n 1.0))
-  (f/len ~ set! form (+ (f/len ~ get form) 1.0))
+  (f/kind ~ set n kind)
+  (f/x ~ set n x)
+  (f/y ~ set n y)
+  (f/w ~ set n w)
+  (f/h ~ set n h)
+  (f/text ~ push text)
+  (f/action ~ push action)
+  (f/counts ~ set count_elements (+ n 1.0))
+  (f/len ~ set form (+ (f/len ~ get form) 1.0))
   n)
 
 # --- reading -----------------------------------------------------------------

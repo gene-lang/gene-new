@@ -103,12 +103,12 @@ Because it really is the VM's value, `catch (Error ^message m)` matches it.
 **Indexing follows the VM's rule, not JavaScript's.** A negative index counts
 from the end (design §1/§2, `users/-1/name`) and an out-of-range *write* raises;
 an out-of-range *read* yields `void`. This holds for list path segments, dynamic
-`%` segments, path `set!`, and `Buffer`'s `get`/`set!` alike, and it mirrors
+`%` segments, path `set`, and `Buffer`'s `get`/`set` alike, and it mirrors
 `readIndex`/`updateIndex` in `vm.nim` including the error text. JS agrees with
 none of it — `a[-1]` reads `undefined` and writes an expando the array never
 sees, and a store past the end is silently dropped on a typed array — so reads
 lower through a `$gene_at` helper and writes through `$gene_index`, which is
-what keeps `xs/-1` and `(b ~ set! -1 v)` from meaning two different things by
+what keeps `xs/-1` and `(b ~ set -1 v)` from meaning two different things by
 backend. `tests/transpile/fixtures.json` carries the agreement as `index.*`.
 
 This is not free: it costs roughly 22% on a buffer-indexing hot loop
@@ -118,7 +118,7 @@ half of the rule can apply to it; `Buffer` access always goes through the
 helpers, because its index is a runtime value at every call site that matters.
 
 Supported control/data forms include mutable and immutable locals, `set` and
-path `set!`, compact and clause `if`, guards, short-circuit operators, all core
+path `set`, compact and clause `if`, guards, short-circuit operators, all core
 loops and exits, destructuring and `match` (including list rest patterns),
 static/dynamic path stages, selector closures with captured defaults and strict
 missing-stage errors, quote/quasiquote, and shallow immutable list, prop-map,
@@ -228,7 +228,7 @@ DOM-shaped host.
 
 ## Deliberate exclusions
 
-The compiler gives dedicated diagnostics for `fn!`/`caller_env`, runtime
+The compiler gives dedicated diagnostics for explicit fexprs/`caller_env`, runtime
 `eval`, `derive` (which remains VM module-initialization behavior, and is
 rejected as the `^derive` property as well as the standalone form), actors,
 channels and supervisors, native FFI, `^repr native_wrapper`/`^native`,

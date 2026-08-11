@@ -130,21 +130,21 @@
           ^counts    (Buffer F32)}  # abms, queued edits, pending checks
 
   (ctor []
-    (set! self/labels [])
-    (set! self/actions [])
-    (set! self/trigger ($buffer F32 max_abms))
-    (set! self/group ($buffer F32 max_abms))
-    (set! self/interval ($buffer F32 max_abms))
-    (set! self/chance ($buffer F32 max_abms))
-    (set! self/due ($buffer F32 max_abms))
-    (set! self/queue_x ($buffer F32 max_queued))
-    (set! self/queue_y ($buffer F32 max_queued))
-    (set! self/queue_z ($buffer F32 max_queued))
-    (set! self/queue_id ($buffer F32 max_queued))
-    (set! self/check_x ($buffer F32 max_queued))
-    (set! self/check_y ($buffer F32 max_queued))
-    (set! self/check_z ($buffer F32 max_queued))
-    (set! self/counts ($buffer F32 3.0))))
+    (set self/labels [])
+    (set self/actions [])
+    (set self/trigger ($buffer F32 max_abms))
+    (set self/group ($buffer F32 max_abms))
+    (set self/interval ($buffer F32 max_abms))
+    (set self/chance ($buffer F32 max_abms))
+    (set self/due ($buffer F32 max_abms))
+    (set self/queue_x ($buffer F32 max_queued))
+    (set self/queue_y ($buffer F32 max_queued))
+    (set self/queue_z ($buffer F32 max_queued))
+    (set self/queue_id ($buffer F32 max_queued))
+    (set self/check_x ($buffer F32 max_queued))
+    (set self/check_y ($buffer F32 max_queued))
+    (set self/check_z ($buffer F32 max_queued))
+    (set self/counts ($buffer F32 3.0))))
 
 (let count_abms 0.0)
 (let count_queued 1.0)
@@ -158,7 +158,7 @@
 
 (type AbmRegistryFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for AbmRegistryFull)
 
@@ -170,14 +170,14 @@
   (var id (abm_count a))
   (if_yes (>= id max_abms)
     (fail (new AbmRegistryFull $"abm registry is full at ${max_abms} entries")))
-  (a/labels ~ push! label)
-  (a/actions ~ push! action)
-  (a/trigger ~ set! id trigger)
-  (a/group ~ set! id group)
-  (a/interval ~ set! id interval_ms)
-  (a/chance ~ set! id chance)
-  (a/due ~ set! id 0.0)
-  (a/counts ~ set! count_abms (+ id 1.0))
+  (a/labels ~ push label)
+  (a/actions ~ push action)
+  (a/trigger ~ set id trigger)
+  (a/group ~ set id group)
+  (a/interval ~ set id interval_ms)
+  (a/chance ~ set id chance)
+  (a/due ~ set id 0.0)
+  (a/counts ~ set count_abms (+ id 1.0))
   id)
 
 (fn abm_label [a : AbmRegistry id : F64] : Str
@@ -200,7 +200,7 @@
 (fn abm_chance [a : AbmRegistry id : F64] : F64 (a/chance ~ get id))
 (fn abm_due [a : AbmRegistry id : F64] : F64 (a/due ~ get id))
 (fn set_abm_due [a : AbmRegistry id : F64 at : F64] : Nil
-  (a/due ~ set! id at))
+  (a/due ~ set id at))
 
 # --- the queue ---------------------------------------------------------------
 #
@@ -212,11 +212,11 @@
   (var n (queued_count a))
   (if (>= n max_queued) false
     (do
-      (a/queue_x ~ set! n x)
-      (a/queue_y ~ set! n y)
-      (a/queue_z ~ set! n z)
-      (a/queue_id ~ set! n id)
-      (a/counts ~ set! count_queued (+ n 1.0))
+      (a/queue_x ~ set n x)
+      (a/queue_y ~ set n y)
+      (a/queue_z ~ set n z)
+      (a/queue_id ~ set n id)
+      (a/counts ~ set count_queued (+ n 1.0))
       true)))
 
 (fn queued_x [a : AbmRegistry i : F64] : F64 (a/queue_x ~ get i))
@@ -225,7 +225,7 @@
 (fn queued_id [a : AbmRegistry i : F64] : F64 (a/queue_id ~ get i))
 
 (fn clear_queue [a : AbmRegistry] : Nil
-  (a/counts ~ set! count_queued 0.0))
+  (a/counts ~ set count_queued 0.0))
 
 # --- the check queue ---------------------------------------------------------
 #
@@ -239,10 +239,10 @@
   (var n (check_count a))
   (if (>= n max_queued) false
     (do
-      (a/check_x ~ set! n x)
-      (a/check_y ~ set! n y)
-      (a/check_z ~ set! n z)
-      (a/counts ~ set! count_checks (+ n 1.0))
+      (a/check_x ~ set n x)
+      (a/check_y ~ set n y)
+      (a/check_z ~ set n z)
+      (a/counts ~ set count_checks (+ n 1.0))
       true)))
 
 (fn check_x_at [a : AbmRegistry i : F64] : F64 (a/check_x ~ get i))
@@ -250,7 +250,7 @@
 (fn check_z_at [a : AbmRegistry i : F64] : F64 (a/check_z ~ get i))
 
 (fn clear_checks [a : AbmRegistry] : Nil
-  (a/counts ~ set! count_checks 0.0))
+  (a/counts ~ set count_checks 0.0))
 
 # --- sampling ----------------------------------------------------------------
 #

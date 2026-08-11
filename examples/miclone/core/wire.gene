@@ -70,10 +70,10 @@
   (c ~ get c_pos))
 
 (fn seek [c : (Buffer F64) at : F64] : Nil
-  (c ~ set! c_pos at))
+  (c ~ set c_pos at))
 
 (fn reset [c : (Buffer F64)] : Nil
-  (c ~ set! c_pos 0.0))
+  (c ~ set c_pos 0.0))
 
 # How many bytes are left. A decoder loops on this rather than on a count it
 # was told, so a truncated message stops instead of reading past the end — the
@@ -115,18 +115,18 @@
 
 (fn read_u8 [c : (Buffer F64) b : (Buffer U8)] : F64
   (var at (c ~ get c_pos))
-  (c ~ set! c_pos (+ at 1.0))
+  (c ~ set c_pos (+ at 1.0))
   ($to_float (b ~ get at)))
 
 (fn read_u16 [c : (Buffer F64) b : (Buffer U8)] : F64
   (var at (c ~ get c_pos))
-  (c ~ set! c_pos (+ at 2.0))
+  (c ~ set c_pos (+ at 2.0))
   (+ (* ($to_float (b ~ get at)) 256.0)
      ($to_float (b ~ get (+ at 1.0)))))
 
 (fn read_u32 [c : (Buffer F64) b : (Buffer U8)] : F64
   (var at (c ~ get c_pos))
-  (c ~ set! c_pos (+ at 4.0))
+  (c ~ set c_pos (+ at 4.0))
   (+ (* ($to_float (b ~ get at)) 16777216.0)
      (+ (* ($to_float (b ~ get (+ at 1.0))) 65536.0)
         (+ (* ($to_float (b ~ get (+ at 2.0))) 256.0)
@@ -151,8 +151,8 @@
 
 (fn write_u8 [c : (Buffer F64) b : (Buffer U8) v : F64] : Nil
   (var at (c ~ get c_pos))
-  (b ~ set! at ($to_int v))
-  (c ~ set! c_pos (+ at 1.0)))
+  (b ~ set at ($to_int v))
+  (c ~ set c_pos (+ at 1.0)))
 
 (fn write_u16 [c : (Buffer F64) b : (Buffer U8) v : F64] : Nil
   (var hi ($math/floor (/ v 256.0)))
@@ -201,7 +201,7 @@
   (var slice ($buffer U8 n))
   (var i 0.0)
   (while (< i n)
-    (slice ~ set! i ($to_int (read_u8 c b)))
+    (slice ~ set i ($to_int (read_u8 c b)))
     (set i (+ i 1.0)))
   ($str/from_utf8 slice))
 

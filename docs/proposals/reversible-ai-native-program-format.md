@@ -1,8 +1,172 @@
 # Reversible AI-Native Gene Program Format
 
-Status: exploration, dated 2026-08-10. Non-textual program modality for
-training models, with a durable encoding that loads faster than `.gene` and
-translates back to canonical `.gene`.
+Status: durable format v0 implemented and passing its provisional gates
+(2026-08-10); model-training track (Steps 6-7) has its pipeline and scoring
+harness built and a first matched from-scratch pilot run, closing three
+pre-registered gates and firing one routing rule (see "Model-training track
+status" below); Steps 8-9 and the appendix not started. Non-textual program modality for training models, with
+a durable encoding that loads faster than `.gene` and translates back to
+canonical `.gene`.
+
+**Durable format v0** (`src/gene/program_document.nim`,
+`src/gene/packed_format.nim`, `tests/test_program_document.nim`,
+`tests/test_packed_format.nim`, `benchmarks/bench_native_format.nim`, run via
+`nimble native_format_perf`) covers Steps 1-4 of the sequence below: a
+logical document (form tree plus a boundary-keyed positional comment
+overlay), a canonical `.gene` writer, and a framed/limited/fail-closed packed
+codec. Value coverage is nil, void, bool, int (int64 range), float, string,
+bytes, char, symbol, node, list, map, and hash-map; regex, range,
+date/time/datetime/timezone/duration, and bigint-overflow ints are cleanly
+rejected at encode time (`PackedUnsupportedError`), not silently mishandled,
+pending a v1 decision on their wire shape. Comment placement is fully
+structural for node/list/map/hash-map and falls back to a coarser
+whole-form anchor (never a silent drop) for quasiquote/unquote/interpolation
+sugar and any other shape this module doesn't finely resolve.
+
+Verified over every `.gene` file in `examples/` and `tests/`: zero crashes,
+zero dropped comment bytes, and full round-trip/idempotence/semantic
+equivalence on every file, with no exclusions.
+
+Reaching "every file" required fixing two pre-existing reader/printer bugs
+that this verification surfaced. Both reproduce with plain
+`reader.nim`/`printer.nim` -- nothing routed through this format -- and both
+affected `gene parse`'s existing canonical printer, so neither was
+introduced here:
+
+- A glued `~word` path segment (e.g. `obj/~method`) was glued into one
+  symbol only during slash-path lexing, and split into two tokens when the
+  same spelling was reread as an ordinary node body element. The reader now
+  lexes `~` glued to a symbol character as one symbol everywhere; a spaced
+  `~` is still the send operator (design §2.1).
+- A bare `%` path segment produced an unquoted *empty* symbol, which the
+  printer could not write back out, and silently swallowed the following
+  form: `(!= xs/%(- i 1) "\n")` read as a three-argument `!=` whose second
+  argument was the index expression. Design §2.1 already declared that short
+  syntax invalid, so it is now a read error at the right column rather than
+  a silent mis-parse. One real occurrence existed in this repo
+  (`examples/ai_agent/src/tui.gene`), a latent wrong-arity bug that raised
+  nothing; it is fixed.
+
+The Step-3 load-speed benchmark passed on a provisional corpus (this repo's
+own `.gene` files, not yet the full committed manifest with generated
+fixtures, comment-density stratification, and a dependency-graph class that
+Step 3/"Benchmark corpus and calculation" specifies): a 3.6x+ overall
+geometric-mean speedup for `decodePacked` over `readAll`, every size class
+comfortably above both the 0.95x per-class floor and the 2x overall bar.
+Because the full manifest-gated corpus and fuzz-testing pass are still
+open, this is "v0 implemented and passing its provisional gates," not yet
+the Step-5 "frozen durable format version 1."
+
+### Model-training track status
+
+Steps 6-7 exist as working infrastructure (`src/gene/document_units.nim` and
+its `gene docunits` / `gene docunits --decode` CLI pair; `training/` holds
+the corpus pipeline, the two matched tokenizers, one shared model, the
+matched training driver, and `training/evaluate.py`). `evaluate.py` reports
+one verdict per pre-registered gate and treats a gate whose inputs are
+missing as `NOT_MEASURABLE`, never as a pass.
+
+A first matched from-scratch pilot has been run on one GB10 GPU: both arms
+17.5M parameters, context 1024, 6000 steps, batch 16, identical
+hyperparameters, over 186 documents (16.2M unit-arm training positions vs
+16.55M byte-arm). Scorecard, in the pre-registered terms:
+
+| gate | verdict | measured |
+| --- | --- | --- |
+| G1 zero representation loss | **pass** | 302/302 files, 186/186 corpus documents |
+| G2 memorization >= 99% | **pass** | 99.33% (99.18% scored from document starts) |
+| G3 structural validity >= 99% | not measurable | see below |
+| G4 semantic pass rate >= 20% | not measurable | no task corpus with declared tests |
+| G5 beat control 5pp / 20% rel. | not measurable | depends on G4 |
+| G6 <=1.5x positions, >=80% throughput | **pass** | 0.981x positions, 1.019x throughput |
+| R payload routing rule | **fires** | 95.6% of positions, 93.6% of held-out loss |
+
+G2 was measured on a separate 24-document, 12,889-position corpus, which is
+what "a deliberately tiny corpus" means here (`build_corpus.py
+--max-source-bytes N --limit K --split 100,0,0` builds it reproducibly).
+Reaching the bar needed dropout 0 and enough steps — 93.6% at 4k steps with
+dropout 0.1, 98.98% at 12k with dropout 0, 99.33% at 36k — so the lever is
+optimization budget, and dropout directly opposes the thing this gate
+measures. G3 is not measurable *against this
+corpus*: its median document is ~4,700 logical units, so whole-document
+generation measures document length rather than structure — of 16 sampled
+generations, 14 never closed within a 4096-unit budget, and the 2 that did
+close were genuinely malformed (a role marker where a value belongs), which
+is what a 6000-step model should be expected to produce. Making G3 mean
+something needs either the designed held-out generation task (G4's blocker)
+or a corpus whose documents fit a generation budget.
+
+Read G6's position ratio as corpus-dependent, not as a property of the
+modality — see the generated corpus below, where the same measurement gives
+1.367x rather than 0.981x. Either way it clears the 1.5x bar, but the
+headroom differs enough that quoting 0.981x on its own would mislead. And
+G6 is not the question the study exists to answer: G4 and G5 are, and they
+remain unmeasurable.
+
+### Generated corpus (2026-08-11)
+
+1002 small, self-contained programs across 15 task families, each paired
+with a `.expected` file holding its exact stdout, generated to
+`training/GENERATION_BRIEF.md` and checked by
+`training/validate_examples.sh` (compiles, runs with matching stdout,
+`docpack`-encodable, unit round-trip exact). All 1002 pass, and the corpus
+builder accepts all 1002 with **zero duplicates and zero rejections**.
+
+It differs from this repo's own corpus in the two ways that were blocking
+measurement, and one that reverses an earlier reading:
+
+| | repo corpus (186) | generated (1002) |
+| --- | --- | --- |
+| median positions/document | 4,749 | **359** |
+| documents within a 4096-unit budget | ~half | **1002/1002** |
+| payload share, aggregate / median doc | 95.6% / 79.1% | **60.9% / 60.6%** |
+| position ratio vs byte control | 0.981x | **1.367x** |
+
+- **G3 becomes measurable.** Every document fits a practical generation
+  budget, which is exactly what the repo corpus could not offer.
+- **The payload routing rule stops firing** — 60.9%, under the 70%
+  threshold. The 95.6%/93.6% figures were an artifact of a handful of
+  serialized-session fixtures that are ~99.9% string payload, not a
+  property of the modality. That materially weakens the earlier reading
+  that this work should route to a payload-piece experiment.
+- **The position ratio moves the other way.** On ordinary small programs
+  the structural modality costs *more* positions than canonical text
+  (1.367x), not fewer. The blob-heavy corpus made it look cheaper because
+  both encodings pay the same payload bytes there while the unit stream
+  amortizes its structural overhead across huge strings.
+
+The `.expected` oracle exists because `gene test` is package-level, so a
+loose corpus file cannot declare tests. It is a real pass/fail signal and is
+the missing input G4 needs — but note its limit, found while generating: a
+program that computes the *wrong* answer still runs cleanly and produces
+*some* output, and `.expected` captured from that run enshrines the bug.
+Correctness of the expected value has to be established independently of
+capturing it.
+
+Two further results come from the corpus alone, before any training run:
+
+- **Pilot gate 1 (zero representation loss) passes.** All 302 `.gene` files
+  under `examples/` and `tests/` that v0 can encode round-trip
+  document -> logical units -> JSONL -> document -> canonical text exactly,
+  as do all 186 documents of the built corpus (302 files dedup and
+  compile-filter down to 186). `build_corpus.py` enforces this per file, so
+  a violating document is rejected from the corpus rather than trained on.
+- **The payload-piece routing rule already fires.** Identifier, string, and
+  comment payloads occupy 95.6% of unit-arm model positions in aggregate and
+  79.1% in the median document -- both over the 70% threshold at which this
+  document says the result "routes to a learned lossless payload-piece
+  experiment rather than being blamed on the structural modality." The
+  aggregate figure is inflated by a few serialized-session fixtures that are
+  ~99.9% string payload, but the median clears the threshold on its own, so
+  this is not only corpus skew.
+
+The two gates that speak to modality *benefit* rather than sanity -- the
+held-out semantic pass rate and beating the matched control -- remain
+structurally unmeasurable: no task corpus with declared, executable tests
+exists yet, and the held-out task set this document specifies (requiring
+combinations of structural units absent from the training templates) has not
+been designed. Until that exists, a pilot can be run but not scored on the
+question the study is actually about.
 
 ## Idea and priority
 
@@ -408,6 +572,13 @@ Gene already has several pieces that support this direction:
 - The current GIR codec is a compiler-internal executable artifact and stores
   reachable reader values as canonical Gene strings inside JSON. It should not
   be confused with this reversible source-program format.
+- Gene's serde (`docs/serialization.md`) round-trips arbitrary runtime
+  values, including nodes, through canonical Gene text with reserved-head
+  escaping. It has no concept of comments, bang lines, or multi-form source
+  units — those never survive the semantic reader into a runtime `Value` —
+  and its wire format is Gene text itself, not a faster-loading binary
+  encoding. It solves durable application data, not reversible program
+  source, and should not be confused with this format either.
 
 These existing boundaries suggest adding a source-document/form-tree layer
 alongside `Value`, not enlarging `Value` or changing its eight-byte layout.
@@ -654,13 +825,24 @@ training curriculum, and corpus contents are implementation design work within
 these decisions. All provisional thresholds and corpus manifests must be
 confirmed before their corresponding measurements begin.
 
-## Appendix: base model for the first training pilot
+## Appendix: base model for the first serious Gene model
 
 This is a point-in-time candidate recommendation, dated 2026-08-10. Model
 availability, licensing, and capability shift quickly; re-verify the
-candidate list and its architecture claims against current model cards before
-starting Step 7 of the sequence above. Unlike the two decisions sections
-above, nothing in this appendix is frozen.
+candidate list and its architecture claims against current model cards
+before acting on it. Unlike the two decisions sections above, nothing in
+this appendix is frozen.
+
+It is also a later, separate effort from the sequence above, not another
+name for the same pilot. Step 7 and "First model-pilot decisions" both
+require the pilot model and its `.gene` control to be trained from scratch
+at matched capacity, compute, data, and context budgets — that match is what
+makes the Model-training study's semantic-benefit verdict valid. Adapting a
+pretrained Qwen3.5 checkpoint with LoRA, as recommended below, does not
+satisfy that requirement: a pretrained multimodal backbone brings capability
+the matched control would not have, which would confound the comparison.
+Read this appendix as a candidate for building a capable Gene model after
+step 8's gates pass, not as a substitute for the from-scratch pilot itself.
 
 ### Recommendation
 

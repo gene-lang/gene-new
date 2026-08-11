@@ -35,9 +35,9 @@
 
 (fn set_rgb [i : Int r : Int g : Int b : Int] : Nil
   (var k i)
-  (set! out/%k r)
-  (set k (+ i 1)) (set! out/%k g)
-  (set k (+ i 2)) (set! out/%k b))
+  (set out/%k r)
+  (set k (+ i 1)) (set out/%k g)
+  (set k (+ i 2)) (set out/%k b))
 
 (fn rect [x : Int y : Int w : Int h : Int
           r : Int g : Int b : Int] : Nil
@@ -92,7 +92,7 @@
                   (while (< c 3)
                     (var s (+ si c))
                     (var d (+ di c))
-                    (set! out/%d
+                    (set out/%d
                       ($to_int (+ (* ($to_float atlas/%s) a)
                                   (* ($to_float out/%d) inv))))
                     (set c (+ c 1)))))))
@@ -133,7 +133,7 @@
   (var n (* (* view_w view_h) 4))
   (var i 0)
   (while (< i n)
-    (out ~ push! 255)
+    (out ~ push 255)
     (set i (+ i 1)))
   (sky cam_y)
 
@@ -141,7 +141,7 @@
   (var cells (* map_w map_h))
   (set i 0)
   (while (< i cells)
-    (tiles ~ push! 0.0)
+    (tiles ~ push 0.0)
     (set i (+ i 1)))
   (generate tiles ($to_float map_w) ($to_float map_h) seed)
 

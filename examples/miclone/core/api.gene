@@ -107,19 +107,19 @@
           ^ores   OreRegistry}
 
   (ctor []
-    (set! self/nodes (new_registry))
-    (set! self/tiles (new_tiles))
-    (set! self/items (new_items))
-    (set! self/groups (new_groups))
-    (set! self/drops (new_drop_table))
-    (set! self/abms (new_abms))
-    (set! self/decors (new_decors))
-    (set! self/crafts (new_crafts))
-    (set! self/entities (new_entities))
-    (set! self/forms (new_forms))
-    (set! self/containers (new_containers))
-    (set! self/biomes (new BiomeRegistry))
-    (set! self/ores (new OreRegistry))))
+    (set self/nodes (new_registry))
+    (set self/tiles (new_tiles))
+    (set self/items (new_items))
+    (set self/groups (new_groups))
+    (set self/drops (new_drop_table))
+    (set self/abms (new_abms))
+    (set self/decors (new_decors))
+    (set self/crafts (new_crafts))
+    (set self/entities (new_entities))
+    (set self/forms (new_forms))
+    (set self/containers (new_containers))
+    (set self/biomes (new BiomeRegistry))
+    (set self/ores (new OreRegistry))))
 
 (fn new_game [] : Game
   (new Game))
@@ -128,7 +128,7 @@
 
 (type UnknownTile
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for UnknownTile)
 
@@ -306,7 +306,7 @@
 # discovered at the first dig.
 (type UnknownNode
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for UnknownNode)
 

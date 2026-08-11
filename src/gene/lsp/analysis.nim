@@ -396,7 +396,7 @@ proc declFromNode(form: Value, loc: SourceLoc, unit: SourceUnit,
               selectionRange: nameSelectionRange(src, starts, startOff))
 
   case headName
-  of "fn", "fn!", "macro":
+  of "fn", "macro":
     if body.len > 0 and body[0].kind == vkSymbol:
       result.add named(skFunction, body[0].symVal,
                        if headName == "fn": "" else: headName)

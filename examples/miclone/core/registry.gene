@@ -93,29 +93,29 @@
   }
 
   (ctor []
-    (set! self/names [])
-    (set! self/opens_form [])
-    (set! self/drawtype ($buffer F32 max_content))
-    (set! self/solid ($buffer F32 max_content))
-    (set! self/opaque ($buffer F32 max_content))
-    (set! self/propagates ($buffer F32 max_content))
-    (set! self/merges_same ($buffer F32 max_content))
-    (set! self/light_source ($buffer F32 max_content))
-    (set! self/tile_top ($buffer F32 max_content))
-    (set! self/tile_side ($buffer F32 max_content))
-    (set! self/tile_bottom ($buffer F32 max_content))
-    (set! self/count ($buffer F32 1.0))))
+    (set self/names [])
+    (set self/opens_form [])
+    (set self/drawtype ($buffer F32 max_content))
+    (set self/solid ($buffer F32 max_content))
+    (set self/opaque ($buffer F32 max_content))
+    (set self/propagates ($buffer F32 max_content))
+    (set self/merges_same ($buffer F32 max_content))
+    (set self/light_source ($buffer F32 max_content))
+    (set self/tile_top ($buffer F32 max_content))
+    (set self/tile_side ($buffer F32 max_content))
+    (set self/tile_bottom ($buffer F32 max_content))
+    (set self/count ($buffer F32 1.0))))
 
 # The registry's own size lives in a one-cell buffer rather than an `Int` prop.
 # A web-profile type's fields are checked on construction and the count changes
 # on every registration; keeping it in the same storage as the columns means
-# one mutation path instead of two, and `Buffer/set!` is already the mutator
+# one mutation path instead of two, and `Buffer/set` is already the mutator
 # every other column uses.
 (fn registered_count [r : Registry] : F64
   (r/count ~ get 0.0))
 
 (fn set_registered_count [r : Registry n : F64] : Nil
-  (r/count ~ set! 0.0 n))
+  (r/count ~ set 0.0 n))
 
 (fn bool_byte [v : Bool] : F64
   (if v 1.0 0.0))
@@ -128,7 +128,7 @@
 # every node registered afterwards.
 (type RegistryFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for RegistryFull)
 
@@ -148,17 +148,17 @@
   (if_yes (>= id max_content)
     (fail (new RegistryFull $"node registry is full at ${max_content} entries")))
   (var slot id)
-  (r/names ~ push! name)
-  (r/opens_form ~ push! opens_form)
-  (r/drawtype ~ set! slot drawtype)
-  (r/solid ~ set! slot (bool_byte solid))
-  (r/opaque ~ set! slot (bool_byte opaque))
-  (r/propagates ~ set! slot (bool_byte propagates))
-  (r/merges_same ~ set! slot (bool_byte merges_same))
-  (r/light_source ~ set! slot light_source)
-  (r/tile_top ~ set! slot tile_top)
-  (r/tile_side ~ set! slot tile_side)
-  (r/tile_bottom ~ set! slot tile_bottom)
+  (r/names ~ push name)
+  (r/opens_form ~ push opens_form)
+  (r/drawtype ~ set slot drawtype)
+  (r/solid ~ set slot (bool_byte solid))
+  (r/opaque ~ set slot (bool_byte opaque))
+  (r/propagates ~ set slot (bool_byte propagates))
+  (r/merges_same ~ set slot (bool_byte merges_same))
+  (r/light_source ~ set slot light_source)
+  (r/tile_top ~ set slot tile_top)
+  (r/tile_side ~ set slot tile_side)
+  (r/tile_bottom ~ set slot tile_bottom)
   (set_registered_count r (+ id 1.0))
   id)
 

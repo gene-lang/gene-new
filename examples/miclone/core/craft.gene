@@ -46,11 +46,11 @@
           ^n        (Buffer F32)}  # one cell: recipes registered
 
   (ctor []
-    (set! self/output ($buffer F32 max_recipes))
-    (set! self/yield ($buffer F32 max_recipes))
-    (set! self/item ($buffer F32 (* max_recipes max_ingredients)))
-    (set! self/count ($buffer F32 (* max_recipes max_ingredients)))
-    (set! self/n ($buffer F32 1.0))))
+    (set self/output ($buffer F32 max_recipes))
+    (set self/yield ($buffer F32 max_recipes))
+    (set self/item ($buffer F32 (* max_recipes max_ingredients)))
+    (set self/count ($buffer F32 (* max_recipes max_ingredients)))
+    (set self/n ($buffer F32 1.0))))
 
 (fn new_crafts [] : CraftRegistry
   (new CraftRegistry))
@@ -60,7 +60,7 @@
 
 (type CraftRegistryFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for CraftRegistryFull)
 
@@ -77,13 +77,13 @@
     (fail (new CraftRegistryFull
                $"craft registry is full at ${max_recipes} recipes")))
   (var base (* id max_ingredients))
-  (c/output ~ set! id output)
-  (c/yield ~ set! id yield_n)
-  (c/item ~ set! base i0)        (c/count ~ set! base n0)
-  (c/item ~ set! (+ base 1.0) i1) (c/count ~ set! (+ base 1.0) n1)
-  (c/item ~ set! (+ base 2.0) i2) (c/count ~ set! (+ base 2.0) n2)
-  (c/item ~ set! (+ base 3.0) i3) (c/count ~ set! (+ base 3.0) n3)
-  (c/n ~ set! 0.0 (+ id 1.0))
+  (c/output ~ set id output)
+  (c/yield ~ set id yield_n)
+  (c/item ~ set base i0)        (c/count ~ set base n0)
+  (c/item ~ set (+ base 1.0) i1) (c/count ~ set (+ base 1.0) n1)
+  (c/item ~ set (+ base 2.0) i2) (c/count ~ set (+ base 2.0) n2)
+  (c/item ~ set (+ base 3.0) i3) (c/count ~ set (+ base 3.0) n3)
+  (c/n ~ set 0.0 (+ id 1.0))
   id)
 
 (fn recipe_output [c : CraftRegistry id : F64] : F64 (c/output ~ get id))

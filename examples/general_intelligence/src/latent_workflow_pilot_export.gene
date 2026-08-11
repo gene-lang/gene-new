@@ -29,7 +29,7 @@
 (fn export_component [component : Node] : Map
   (var demonstrations : List [])
   (for example in component/examples
-    (demonstrations ~ push!
+    (demonstrations ~ push
       {^input example/input ^output example/output}))
   {^workflow_id component/workflow_id
    ^demonstrations demonstrations})
@@ -55,10 +55,10 @@
     (var task subject/heldout_compositions/%index)
     (var components : List [])
     (for component in task/public/components
-      (components ~ push! (export_component component)))
+      (components ~ push (export_component component)))
     (var operations : (List Str) [])
     (for step in (program_steps task/verifier/canonical_target_program)
-      (operations ~ push! (operation_name step)))
+      (operations ~ push (operation_name step)))
     ($println
       (stringify
         {^schema 2

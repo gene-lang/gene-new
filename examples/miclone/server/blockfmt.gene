@@ -61,7 +61,7 @@
 
 (type BlockFormatError
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for BlockFormatError)
 
@@ -101,8 +101,8 @@
     (while (&& (< j n) (== values/%j v))
       (set j (+ j 1)))
     (var run (- j i))
-    (parts ~ push! ($binary/put_u16 run))
-    (parts ~ push! ($binary/put_u16 v))
+    (parts ~ push ($binary/put_u16 run))
+    (parts ~ push ($binary/put_u16 v))
     (set i (+ i run)))
   ($binary/concat parts))
 
@@ -118,7 +118,7 @@
     (set at (+ at 4))
     (var k 0)
     (while (< k run)
-      (out ~ push! v)
+      (out ~ push v)
       (set k (+ k 1))))
   (if_yes (> out/~size n)
     (fail_fmt $"run-length payload decoded $out/~size nodes, expected ${n}"))
@@ -136,14 +136,14 @@
   (var out : (List Int) [])
   (var i 0)
   (while (< i n)
-    (out ~ push! ($to_int (b ~ get ($to_float i))))
+    (out ~ push ($to_int (b ~ get ($to_float i))))
     (set i (+ i 1)))
   out)
 
 (fn list_to_buffer [values : (List Int) b : (Buffer F32) n : Int] : Nil
   (var i 0)
   (while (< i n)
-    (b ~ set! ($to_float i) ($to_float values/%i))
+    (b ~ set ($to_float i) ($to_float values/%i))
     (set i (+ i 1))))
 
 # --- the name table ----------------------------------------------------------
@@ -155,13 +155,13 @@
   (var seen ($buffer U8 4096.0))
   (var i 0)
   (while (< i n)
-    (seen ~ set! ($to_float content/%i) 1)
+    (seen ~ set ($to_float content/%i) 1)
     (set i (+ i 1)))
   (var out : (List Int) [])
   (var id 0)
   (while (< id 4096)
     (if_yes (== (seen ~ get ($to_float id)) 1)
-      (out ~ push! id))
+      (out ~ push id))
     (set id (+ id 1)))
   out)
 
@@ -172,8 +172,8 @@
   (while (< i n)
     (var name (name_of r ($to_float ids/%i)))
     (var raw ($binary/from_str name))
-    (parts ~ push! ($binary/put_u16 ($binary/size raw)))
-    (parts ~ push! raw)
+    (parts ~ push ($binary/put_u16 ($binary/size raw)))
+    (parts ~ push raw)
     (set i (+ i 1)))
   ($binary/concat parts))
 
@@ -197,12 +197,12 @@
   (var i 0)
   (var id_count ids/~size)
   (while (< i id_count)
-    (local ~ set! ($to_float ids/%i) i)
+    (local ~ set ($to_float ids/%i) i)
     (set i (+ i 1)))
   (var mapped : (List Int) [])
   (set i 0)
   (while (< i n)
-    (mapped ~ push! ($to_int (local ~ get ($to_float c/%i))))
+    (mapped ~ push ($to_int (local ~ get ($to_float c/%i))))
     (set i (+ i 1)))
 
   (var raw ($binary/concat [(pack_u16_list mapped n) (pack_u16_list p1 n)
@@ -228,7 +228,7 @@
   (var parts : (List Bytes) [])
   (var i 0)
   (while (< i n)
-    (parts ~ push! ($binary/put_u16 values/%i))
+    (parts ~ push ($binary/put_u16 values/%i))
     (set i (+ i 1)))
   ($binary/concat parts))
 
@@ -236,7 +236,7 @@
   (var out : (List Int) [])
   (var i 0)
   (while (< i n)
-    (out ~ push! ($binary/get_u16 payload (+ offset (* i 2))))
+    (out ~ push ($binary/get_u16 payload (+ offset (* i 2))))
     (set i (+ i 1)))
   out)
 
@@ -278,7 +278,7 @@
       (fail_fmt "block name table runs past the end of the block"))
     (var name ($binary/to_str ($binary/slice payload at len)))
     (set at (+ at len))
-    (remap ~ push! ($to_int (id_of r name)))
+    (remap ~ push ($to_int (id_of r name)))
     (set i (+ i 1)))
 
   (if_yes (> (+ at 4) size)
@@ -310,7 +310,7 @@
     (var local c/%i2)
     (if_yes (>= local id_count)
       (fail_fmt $"block references name ${local} but carries only ${id_count}"))
-    (content ~ set! ($to_float i2) ($to_float remap/%local))
+    (content ~ set ($to_float i2) ($to_float remap/%local))
     (set i2 (+ i2 1)))
   (list_to_buffer p1 param1 n)
   (list_to_buffer p2 param2 n))

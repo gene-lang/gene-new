@@ -753,6 +753,7 @@ proc newScope*(parent: Scope = nil,
     if parent != nil: parent.evalBudget
     else: nil
   Scope(application: owner, parent: parent, evalBudget: budget,
+        moduleRefs: (if parent != nil: parent.moduleRefs else: nil),
         borrowedCallerEnv: parent != nil and parent.borrowedCallerEnv)
 
 proc registerOwnedActor(scope: Scope, actor: Value) =
@@ -903,6 +904,27 @@ proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   scope.slotNames = names
   scope.slotMirror = mirror
 
+proc moduleRefRootScope(scope: Scope): Scope =
+  var current = scope
+  var outermost = scope
+  while current != nil:
+    outermost = current
+    if current.moduleRoot:
+      return current
+    current = current.parent
+  outermost
+
+proc ensureModuleRefEntry(scope: Scope, name: string): ModuleRefEntry =
+  let root = scope.moduleRefRootScope()
+  if root.moduleRefs == nil:
+    root.moduleRefs = ModuleRefTable(
+      entries: initTable[string, ModuleRefEntry]())
+  scope.moduleRefs = root.moduleRefs
+  if not root.moduleRefs.entries.hasKey(name):
+    root.moduleRefs.entries[name] =
+      ModuleRefEntry(name: name, state: mrsUnresolved, value: NIL)
+  root.moduleRefs.entries[name]
+
 proc prepareChunkScope(scope: Scope, chunk: Chunk) =
   if chunk.localNames.len > 0:
     if scope.slots.len == 0:
@@ -924,6 +946,8 @@ proc prepareChunkScope(scope: Scope, chunk: Chunk) =
         "chunks with useLocalSlots = false to share one scope.")
   for name in chunk.exportExcludedNames:
     scope.exportExcludedNames.incl name
+  for name in chunk.moduleRefNames:
+    discard scope.ensureModuleRefEntry(name)
 
 
 proc refreshCompiledUnitEntry(scope: Scope) =
@@ -1284,13 +1308,14 @@ proc getArg(named: NamedArgs, name: string): Value =
     if key == name: return named.valueAt(i)
   raise newException(GeneError, "missing named argument: " & name)
 
-proc rejectSyntaxCallWithoutSite(callee: Value) {.noreturn.} =
-  ## Host/native calls do not carry the raw source envelope required by fn!.
-  raise newException(GeneError,
-    "fn! '" & callee.fnName & "' requires a source call site")
+proc rejectSyntaxCallWithoutSite(callee: Value, scope: Scope) {.noreturn.} =
+  ## Ordinary calls are always eager. A held fexpr remains inspectable as a
+  ## value, but only a lexical `(name! ...)` source form may invoke it.
+  raiseCallKindError("ordinary call", "Callable", "Fexpr", callee, scope,
+                     hint = "invoke a named fexpr through (name! ...)")
 
 proc rejectSyntaxSend(callee: Value, scope: Scope) {.noreturn.} =
-  raiseCallKindError("message send", "Callable", "SyntaxCallable", callee,
+  raiseCallKindError("message send", "Callable", "Fexpr", callee,
                      scope)
 
 proc rejectMessageCall(callee: Value, scope: Scope) {.noreturn.} =
@@ -3041,6 +3066,157 @@ proc builtInTypeHead(scope: Scope, name: string): Value =
       return typ
   newSym(name)
 
+proc raiseModuleRefError(scope: Scope, typeName, name, message: string) =
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  props["name"] = newStr(name)
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(builtInTypeHead(scope, typeName), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc patchModuleRefScope(scope: Scope, name: string, target: Value,
+                         seenScopes: var HashSet[pointer],
+                         seenValues: var HashSet[uint64])
+
+proc patchModuleRefValue(value: Value, name: string, target: Value,
+                         seenScopes: var HashSet[pointer],
+                         seenValues: var HashSet[uint64]): Value =
+  result = patchPendingModuleRef(value, name, target, seenValues)
+  if result.kind == vkFunction:
+    patchModuleRefScope(result.fnScope, name, target, seenScopes, seenValues)
+  elif result.kind == vkNamespace:
+    patchModuleRefScope(result.nsScope, name, target, seenScopes, seenValues)
+  elif result.kind == vkModule and result.moduleRootNamespace.kind == vkNamespace:
+    patchModuleRefScope(result.moduleRootNamespace.nsScope, name, target,
+                        seenScopes, seenValues)
+
+proc patchModuleRefScope(scope: Scope, name: string, target: Value,
+                         seenScopes: var HashSet[pointer],
+                         seenValues: var HashSet[uint64]) =
+  if scope == nil or seenScopes.containsOrIncl(cast[pointer](scope)):
+    return
+  for i in 0 ..< scope.slots.len:
+    if scope.slotDefined(i):
+      scope.slots[i] = patchModuleRefValue(scope.slots[i], name, target,
+                                           seenScopes, seenValues)
+  var varNames: seq[string]
+  for key in scope.vars.keys:
+    varNames.add key
+  for key in varNames:
+    scope.vars[key] = patchModuleRefValue(scope.vars[key], name, target,
+                                          seenScopes, seenValues)
+
+proc patchResolvedModuleRef(root: Scope, name: string, target: Value) =
+  var seenScopes = initHashSet[pointer]()
+  var seenValues = initHashSet[uint64]()
+  if root.moduleRefs != nil:
+    for _, entry in root.moduleRefs.entries:
+      if entry.state == mrsResolved:
+        entry.value = patchModuleRefValue(entry.value, name, target,
+                                          seenScopes, seenValues)
+  patchModuleRefScope(root, name, target, seenScopes, seenValues)
+
+proc beginModuleRef(scope: Scope, name: string) =
+  let entry = scope.ensureModuleRefEntry(name)
+  case entry.state
+  of mrsUnresolved:
+    entry.state = mrsResolving
+  of mrsResolving:
+    raiseModuleRefError(scope, "CircularRefResolution", name,
+      "circular module reference resolution: " & name)
+  of mrsResolved:
+    raiseModuleRefError(scope, "RefAlreadyResolved", name,
+      "module reference is already resolved: " & name)
+
+proc finishModuleRef(scope: Scope, name: string, value: Value): Value =
+  let root = scope.moduleRefRootScope()
+  let entry =
+    if root.moduleRefs == nil: nil
+    else: root.moduleRefs.entries.getOrDefault(name)
+  if entry == nil or entry.state != mrsResolving:
+    raiseModuleRefError(scope, "InvalidRefDefinition", name,
+      "module reference is not being resolved: " & name)
+  var seen = initHashSet[uint64]()
+  if containsPendingModuleRef(value, name, seen):
+    raiseModuleRefError(scope, "InvalidRefDefinition", name,
+      "cyclic module reference structures are not supported yet: " & name)
+  entry.value = functionForScopeStorage(value, root)
+  entry.state = mrsResolved
+  root.patchResolvedModuleRef(name, entry.value)
+  if entry.structuralPending:
+    entry.structuralPending = false
+    dec root.moduleRefs.pendingStructural
+  entry.value
+
+proc abortModuleRef(scope: Scope, name: string) =
+  let root = scope.moduleRefRootScope()
+  let entry =
+    if root.moduleRefs == nil: nil
+    else: root.moduleRefs.entries.getOrDefault(name)
+  if entry != nil and entry.state == mrsResolving:
+    entry.value = NIL
+    entry.state = mrsUnresolved
+
+proc getModuleRef(scope: Scope, name: string, structural: bool): Value =
+  let root = scope.moduleRefRootScope()
+  let entry =
+    if root.moduleRefs == nil: nil
+    else: root.moduleRefs.entries.getOrDefault(name)
+  if entry == nil:
+    if structural:
+      let declared = scope.ensureModuleRefEntry(name)
+      declared.structuralPending = true
+      inc root.moduleRefs.pendingStructural
+      return newPendingModuleRef(name)
+    raiseModuleRefError(scope, "UnknownRef", name,
+      "unknown module reference: " & name)
+  case entry.state
+  of mrsResolved:
+    entry.value
+  of mrsResolving:
+    if structural:
+      if not entry.structuralPending:
+        entry.structuralPending = true
+        inc root.moduleRefs.pendingStructural
+      newPendingModuleRef(name)
+    else:
+      raiseModuleRefError(scope, "CircularRefResolution", name,
+        "circular module reference resolution: " & name)
+      NIL
+  of mrsUnresolved:
+    if structural:
+      if not entry.structuralPending:
+        entry.structuralPending = true
+        inc root.moduleRefs.pendingStructural
+      newPendingModuleRef(name)
+    else:
+      raiseModuleRefError(scope, "RefNotResolved", name,
+        "module reference is not resolved: " & name)
+      NIL
+
+proc materializedModuleRefValue(scope: Scope, value: Value): Value {.inline.} =
+  ## The overwhelmingly common path is one nil pointer check. Only a module
+  ## currently carrying unresolved structural slots pays for inspecting the
+  ## loaded value itself.
+  if scope.moduleRefs == nil or scope.moduleRefs.pendingStructural == 0 or
+      not value.isPendingModuleRef:
+    return value
+  getModuleRef(scope, value.pendingModuleRefName, structural = false)
+
+proc validatePatchedModuleRefGraphs(scope: Scope)
+
+proc validateModuleRefsResolved(scope: Scope) =
+  let root = scope.moduleRefRootScope()
+  if root.moduleRefs != nil:
+    for name, entry in root.moduleRefs.entries:
+      if entry.state != mrsResolved:
+        raiseModuleRefError(scope, "RefNotResolved", name,
+          "module reference remains unresolved at publication: " & name)
+  validatePatchedModuleRefGraphs(root)
+
 proc readContextValues(frames: openArray[ReadContextFrame]): Value =
   var values: seq[Value]
   for frame in frames:
@@ -3560,7 +3736,7 @@ proc thawEntries(entries: PropTable): PropTable =
 
 proc freezeRejectName(value: Value): string =
   case value.kind
-  of vkFunction: (if value.isSyntaxFn: "Fn!" else: "Fn")
+  of vkFunction: (if value.isSyntaxFn: "Fexpr" else: "Fn")
   of vkNativeFn: "NativeFn"
   of vkNamespace: "Namespace"
   of vkModule: "Module"
@@ -3754,7 +3930,7 @@ proc declarationKind*(value: Value): string =
   of vkSet: "Set"
   of vkHashMap: "HashMap"
   of vkNode: "Node"
-  of vkFunction: (if value.isSyntaxFn: "Fn!" else: "Fn")
+  of vkFunction: (if value.isSyntaxFn: "Fexpr" else: "Fn")
   of vkNativeFn: "NativeFn"
   of vkNamespace: "Namespace"
   of vkModule: "Module"
@@ -4252,6 +4428,100 @@ proc validateTypedNodeParts(typ: Value, props: var PropTable,
       body[i] = adaptBoundary("body field " & $i & " for " & typeName,
                               restType.typeExpr, body[i], fieldScope)
 
+proc validatePatchedModuleRefValue(value: Value, root: Scope,
+                                   seenValues: var HashSet[uint64],
+                                   seenScopes: var HashSet[pointer])
+
+proc validatePatchedModuleRefScope(scope, root: Scope,
+                                   seenValues: var HashSet[uint64],
+                                   seenScopes: var HashSet[pointer]) =
+  if scope == nil or seenScopes.containsOrIncl(cast[pointer](scope)):
+    return
+  scope.materializeMirroredVars()
+  for _, value in scope.vars:
+    validatePatchedModuleRefValue(value, root, seenValues, seenScopes)
+  for i, value in scope.slots:
+    if scope.slotDefined(i):
+      validatePatchedModuleRefValue(value, root, seenValues, seenScopes)
+
+proc validatePatchedModuleRefValue(value: Value, root: Scope,
+                                   seenValues: var HashSet[uint64],
+                                   seenScopes: var HashSet[pointer]) =
+  ## Resolution has replaced every structural fixup before this cold module
+  ## publication pass. Walk the resulting object graph both to prove that no
+  ## internal placeholder escaped and to apply typed-field boundaries that had
+  ## to be deferred while a forward target was unknown.
+  if value.isPendingModuleRef:
+    let name = value.pendingModuleRefName
+    raiseModuleRefError(root, "RefNotResolved", name,
+      "module reference fixup remains unresolved at publication: " & name)
+  if value.isHeapBacked and seenValues.containsOrIncl(value.bits):
+    return
+  case value.kind
+  of vkFunction:
+    validatePatchedModuleRefScope(value.fnScope, root, seenValues, seenScopes)
+  of vkList:
+    for item in value.listItems:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+  of vkMap:
+    for _, item in value.mapEntries:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+  of vkSet:
+    var checked: seq[Value]
+    for item in value.setItems:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+      requireHashStableKey("module reference set fixup", item)
+      if findEqualValue(checked, item) >= 0:
+        raise newException(GeneError,
+          "module reference fixup creates duplicate Set items")
+      checked.add item
+  of vkHashMap:
+    var checked: seq[HashMapEntry]
+    for entry in value.hashMapEntries:
+      validatePatchedModuleRefValue(entry.key, root, seenValues, seenScopes)
+      validatePatchedModuleRefValue(entry.val, root, seenValues, seenScopes)
+      requireHashStableKey("module reference map fixup", entry.key)
+      if findHashMapKey(checked, entry.key) >= 0:
+        raise newException(GeneError,
+          "module reference fixup creates duplicate general-map keys")
+      checked.add entry
+  of vkNode:
+    validatePatchedModuleRefValue(value.head, root, seenValues, seenScopes)
+    for _, item in value.props:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+    for item in value.body:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+    for _, item in value.meta:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+    if value.head.kind == vkType:
+      var props = copyEntries(value.props)
+      var body = copyItems(value.body)
+      validateTypedNodeParts(value.head, props, body, tnvmMutation)
+      value.setNodePartsAfterModuleRefPatch(props, body)
+  of vkNamespace:
+    validatePatchedModuleRefScope(value.nsScope, root, seenValues, seenScopes)
+  of vkModule:
+    if value.moduleRootNamespace.kind == vkNamespace:
+      validatePatchedModuleRefScope(value.moduleRootNamespace.nsScope, root,
+                                    seenValues, seenScopes)
+  of vkCell:
+    validatePatchedModuleRefValue(value.cellValue, root,
+                                  seenValues, seenScopes)
+  of vkAtomicCell:
+    validatePatchedModuleRefValue(value.atomicCellValue, root,
+                                  seenValues, seenScopes)
+  else:
+    discard
+
+proc validatePatchedModuleRefGraphs(scope: Scope) =
+  var seenValues = initHashSet[uint64]()
+  var seenScopes = initHashSet[pointer]()
+  if scope.moduleRefs != nil:
+    for _, entry in scope.moduleRefs.entries:
+      if entry.state == mrsResolved:
+        validatePatchedModuleRefValue(entry.value, scope, seenValues, seenScopes)
+  validatePatchedModuleRefScope(scope, scope, seenValues, seenScopes)
+
 proc writeUpdateChild(name: string, target, segment, value: Value): Value =
   if value.kind != vkVoid:
     rejectCallerEnvEscape(name & " functional update", value)
@@ -4438,20 +4708,20 @@ proc biListAssoc(args: openArray[Value]): Value {.nimcall.} =
 
 proc biListSetBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
-    raise newException(GeneError, "List/set! expects 3 arguments, got " & $args.len)
-  requireList("List/set!", args[0])
-  rejectCallerEnvEscape("List/set!", args[2])
-  let index = updateIndex("List/set!", args[0].listItems.len,
-                          requireInt64("List/set!", args[1]))
+    raise newException(GeneError, "List/set expects 3 arguments, got " & $args.len)
+  requireList("List/set", args[0])
+  rejectCallerEnvEscape("List/set", args[2])
+  let index = updateIndex("List/set", args[0].listItems.len,
+                          requireInt64("List/set", args[1]))
   let stored = if args[2].kind == vkVoid: NIL else: args[2]
   args[0].setListItem(index, stored)
   stored
 
 proc biListPushBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
-    raise newException(GeneError, "List/push! expects 2 arguments, got " & $args.len)
-  requireList("List/push!", args[0])
-  rejectCallerEnvEscape("List/push!", args[1])
+    raise newException(GeneError, "List/push expects 2 arguments, got " & $args.len)
+  requireList("List/push", args[0])
+  rejectCallerEnvEscape("List/push", args[1])
   let stored = if args[1].kind == vkVoid: NIL else: args[1]
   args[0].pushListItem(stored)
   stored
@@ -4475,10 +4745,10 @@ proc biSetSize(args: openArray[Value]): Value {.nimcall.} =
 
 proc biMapPutBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
-    raise newException(GeneError, "Map/put! expects 3 arguments, got " & $args.len)
-  requirePropMap("Map/put!", args[0])
-  rejectCallerEnvEscape("Map/put!", args[2])
-  args[0].putMapEntry(keySegment("Map/put!", args[1]), args[2])
+    raise newException(GeneError, "Map/put expects 3 arguments, got " & $args.len)
+  requirePropMap("Map/put", args[0])
+  rejectCallerEnvEscape("Map/put", args[2])
+  args[0].putMapEntry(keySegment("Map/put", args[1]), args[2])
   args[2]
 
 proc biMapAssoc(args: openArray[Value]): Value {.nimcall.} =
@@ -4785,43 +5055,43 @@ proc setCheckedNodeProp(node: Value, key: string, value: Value): Value =
     typ.typeName & " has no field '" & key & "'")
 
 proc readSetPathChild(target, segment: Value): Value =
-  ## Read one intermediate segment of a `set!` path. Deliberately *not*
+  ## Read one intermediate segment of a `set` path. Deliberately *not*
   ## `readUpdateChild`: that one answers `head`/`props`/`body`/`meta` with the
   ## node projections, which are detached copies (design §1.3), so
-  ## `(set! n/body/0 v)` would write into a temporary and silently do nothing.
+  ## `(set n/body/0 v)` would write into a temporary and silently do nothing.
   ## A real prop of that name keeps ordinary prop precedence and is assignable.
   if target.kind == vkNode and segment.kind in {vkSymbol, vkString}:
-    let key = keySegment("set!", segment)
+    let key = keySegment("set", segment)
     if not target.props.hasKey(key) and
         key in ["head", "props", "body", "meta"]:
       raise newException(GeneError,
-        "set! cannot assign through a Node projection; props, body, and meta " &
+        "set cannot assign through a Node projection; props, body, and meta " &
         "are copies")
-  result = readUpdateChild("set!", target, segment)
+  result = readUpdateChild("set", target, segment)
   if result.kind == vkVoid:
     raise newException(GeneError,
-      "set! path segment '" & segment.print() & "' is missing")
+      "set path segment '" & segment.print() & "' is missing")
 
 proc biNodeSetPropBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
-      "Node/set_prop! expects 3 arguments, got " & $args.len)
-  requireNode("Node/set_prop!", args[0])
-  rejectCallerEnvEscape("Node/set_prop!", args[2])
-  setCheckedNodeProp(args[0], keySegment("Node/set_prop!", args[1]), args[2])
+      "Node/set_prop expects 3 arguments, got " & $args.len)
+  requireNode("Node/set_prop", args[0])
+  rejectCallerEnvEscape("Node/set_prop", args[2])
+  setCheckedNodeProp(args[0], keySegment("Node/set_prop", args[1]), args[2])
 
 proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
-      "Node/set_body! expects 2 arguments, got " & $args.len)
-  requireNode("Node/set_body!", args[0])
+      "Node/set_body expects 2 arguments, got " & $args.len)
+  requireNode("Node/set_body", args[0])
   if args[1].kind != vkList:
-    raise newException(GeneError, "Node/set_body! expects a List")
-  rejectCallerEnvEscape("Node/set_body!", args[1])
+    raise newException(GeneError, "Node/set_body expects a List")
+  rejectCallerEnvEscape("Node/set_body", args[1])
   var body = copyItems(args[1].listItems)
   if args[0].head.kind == vkType and not args[0].nodeConstructing:
     if args[0].head.isNativeWrapperType:
-      rejectNativeWrapperWrite("Node/set_body! cannot modify " &
+      rejectNativeWrapperWrite("Node/set_body cannot modify " &
                                args[0].head.typeName)
     var props = copyEntries(args[0].props)
     validateTypedNodeParts(args[0].head, props, body, tnvmMutation)
@@ -4829,7 +5099,7 @@ proc biNodeSetBodyBang(args: openArray[Value]): Value {.nimcall.} =
   args[1]
 
 proc setMutableChild(target, segment, value: Value): Value =
-  ## The one checked in-place mutation seam (design §12.1). `set!` calls only
+  ## The one checked in-place mutation seam (design §12.1). `set` calls only
   ## this, so a write cannot skip a gate by taking a different route, and the
   ## gates run in one fixed order: caller-env escape · immutability · segment
   ## kind · `void` · boundary adaptation against the declared prop *or body*
@@ -4847,7 +5117,7 @@ proc setMutableChild(target, segment, value: Value): Value =
   ## that both declares locals and raises is exactly the codegen shape this
   ## file has been bitten by before.
   if value.kind != vkVoid:
-    rejectCallerEnvEscape("set!", value)
+    rejectCallerEnvEscape("set", value)
   var index = 0
   var stored = NIL
   var body: seq[Value] = @[]
@@ -4857,17 +5127,17 @@ proc setMutableChild(target, segment, value: Value): Value =
     of vkSymbol, vkString:
       # Props keep their own checked writer, which already owns immutability,
       # the closed schema, `void` removal, and boundary adaptation.
-      result = setCheckedNodeProp(target, keySegment("set!", segment), value)
+      result = setCheckedNodeProp(target, keySegment("set", segment), value)
     of vkInt:
       if target.nodeImmutable:
         raise newException(GeneError, "cannot mutate immutable Node")
-      index = updateIndex("set!", target.body.len,
-                          requireInt64("set!", segment))
+      index = updateIndex("set", target.body.len,
+                          requireInt64("set", segment))
       stored = if value.kind == vkVoid: NIL else: value
       if target.head.kind == vkType and not target.nodeConstructing:
         # Validate the whole typed shape rather than this position alone: a
         # `^body [T...]` rest field means the position's type is not knowable
-        # from the index by itself. Delegate to `set_body!` rather than
+        # from the index by itself. Delegate to `set_body` rather than
         # reimplementing it — that writer already validates detached parts and
         # publishes atomically, and duplicating the sequence here corrupted the
         # heap whenever the validation raised.
@@ -4880,10 +5150,10 @@ proc setMutableChild(target, segment, value: Value): Value =
         result = stored
     else:
       raise newException(GeneError,
-        "set! path segment must be a Sym, Str, or Int")
+        "set path segment must be a Sym, Str, or Int")
   of vkMap:
     # `putMapEntry` already owns immutability and `void`-removes the entry.
-    target.putMapEntry(keySegment("set!", segment), value)
+    target.putMapEntry(keySegment("set", segment), value)
     result = value
   of vkList:
     if target.listImmutable:
@@ -4895,23 +5165,23 @@ proc setMutableChild(target, segment, value: Value): Value =
     # in any backend, and silently truncating it is how that bug survives.
     var listIndex: int64
     if segment.kind == vkInt:
-      listIndex = requireInt64("set!", segment)
+      listIndex = requireInt64("set", segment)
     elif segment.kind == vkFloat:
       let f = segment.floatVal
       if f != f.trunc or f.classify notin {fcNormal, fcZero, fcNegZero}:
         raise newException(GeneError,
-          "set! into a List requires a whole-number index, got " & $f)
+          "set into a List requires a whole-number index, got " & $f)
       listIndex = int64(f)
     else:
       raise newException(GeneError,
-        "set! into a List requires an Int index")
-    index = updateIndex("set!", target.listItems.len, listIndex)
+        "set into a List requires an Int index")
+    index = updateIndex("set", target.listItems.len, listIndex)
     stored = if value.kind == vkVoid: NIL else: value
     target.setListItem(index, stored)
     result = stored
   else:
     raise newException(GeneError,
-      "set! cannot assign through " & declarationKind(target))
+      "set cannot assign through " & declarationKind(target))
 
 proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
     {.noinline.} =
@@ -4929,12 +5199,12 @@ proc runSetPath(stack: var seq[Value], baseIndex, segCount: int): Value
 proc biNodePushBodyBang(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError,
-      "Node/push_body! expects 2 arguments, got " & $args.len)
-  requireNode("Node/push_body!", args[0])
-  rejectCallerEnvEscape("Node/push_body!", args[1])
+      "Node/push_body expects 2 arguments, got " & $args.len)
+  requireNode("Node/push_body", args[0])
+  rejectCallerEnvEscape("Node/push_body", args[1])
   if args[0].head.kind == vkType and not args[0].nodeConstructing:
     if args[0].head.isNativeWrapperType:
-      rejectNativeWrapperWrite("Node/push_body! cannot modify " &
+      rejectNativeWrapperWrite("Node/push_body cannot modify " &
                                args[0].head.typeName)
     var props = copyEntries(args[0].props)
     var body = copyItems(args[0].body)
@@ -5004,10 +5274,10 @@ proc getCheckedBufferItem*(buffer: Value, index: int): Value =
 proc setCheckedBufferItem*(buffer: Value, index: int, item: Value,
                            scope: Scope = nil): Value =
   if buffer.kind != vkBuffer:
-    raise newException(GeneError, "Buffer/set! expects a Buffer")
-  rejectCallerEnvEscape("Buffer/set!", item)
-  let actualIndex = updateIndex("Buffer/set!", buffer.bufferLen, int64(index))
-  result = checkedBufferItem(buffer, item, "Buffer/set! item", scope)
+    raise newException(GeneError, "Buffer/set expects a Buffer")
+  rejectCallerEnvEscape("Buffer/set", item)
+  let actualIndex = updateIndex("Buffer/set", buffer.bufferLen, int64(index))
+  result = checkedBufferItem(buffer, item, "Buffer/set item", scope)
   buffer.setBufferItem(actualIndex, result)
 
 proc requireBufferIndex(where: string, value: Value): int64 =
@@ -5110,16 +5380,16 @@ proc biBufferSetBang(args: openArray[Value],
                      call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
-      "Buffer/set! expects 3 arguments, got " & $args.len)
-  requireBuffer("Buffer/set!", args[0])
+      "Buffer/set expects 3 arguments, got " & $args.len)
+  requireBuffer("Buffer/set", args[0])
   let scope = if call == nil: nil else: call.dispatchScope
-  setCheckedBufferItem(args[0], int(requireBufferIndex("Buffer/set!", args[1])),
+  setCheckedBufferItem(args[0], int(requireBufferIndex("Buffer/set", args[1])),
                        args[2], scope)
 
 # --- bulk element moves ------------------------------------------------------
 #
-# `fill!` and `copy_from!` exist because the loop they replace is not merely
-# slower — it is doing different work. Writing `n` elements one `Buffer/set!`
+# `fill` and `copy_from` exist because the loop they replace is not merely
+# slower — it is doing different work. Writing `n` elements one `Buffer/set`
 # at a time re-validates the element type `n` times, re-decodes the index `n`
 # times, and pays a full interpreter dispatch per element; the bulk forms check
 # once and then move elements. Numeric array code is built almost entirely out
@@ -5143,22 +5413,22 @@ proc biBufferFillBang(args: openArray[Value],
                       call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2 and args.len != 4:
     raise newException(GeneError,
-      "Buffer/fill! expects 2 or 4 arguments, got " & $args.len)
-  requireBuffer("Buffer/fill!", args[0])
-  rejectCallerEnvEscape("Buffer/fill!", args[1])
+      "Buffer/fill expects 2 or 4 arguments, got " & $args.len)
+  requireBuffer("Buffer/fill", args[0])
+  rejectCallerEnvEscape("Buffer/fill", args[1])
   let scope = if call == nil: nil else: call.dispatchScope
   # Checked once for the whole range — see `fillBufferItems`.
   let item = escapeWeakFunctions(
-    checkedBufferItem(args[0], args[1], "Buffer/fill! item", scope))
+    checkedBufferItem(args[0], args[1], "Buffer/fill item", scope))
   let n = args[0].bufferLen
   var first = 0
   var last = n
   if args.len == 4:
-    first = bufferBound("Buffer/fill!", args[2], n)
-    last = bufferBound("Buffer/fill!", args[3], n)
+    first = bufferBound("Buffer/fill", args[2], n)
+    last = bufferBound("Buffer/fill", args[3], n)
     if last < first:
       raise newException(GeneError,
-        "Buffer/fill!: end (" & $last & ") is before start (" & $first & ")")
+        "Buffer/fill: end (" & $last & ") is before start (" & $first & ")")
   fillBufferItems(args[0], first, last, item)
   NIL
 
@@ -5166,30 +5436,30 @@ proc biBufferCopyFromBang(args: openArray[Value],
                           call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2 and args.len != 5:
     raise newException(GeneError,
-      "Buffer/copy_from! expects 2 or 5 arguments, got " & $args.len)
-  requireBuffer("Buffer/copy_from!", args[0])
-  requireBuffer("Buffer/copy_from!", args[1])
+      "Buffer/copy_from expects 2 or 5 arguments, got " & $args.len)
+  requireBuffer("Buffer/copy_from", args[0])
+  requireBuffer("Buffer/copy_from", args[1])
   let dstLen = args[0].bufferLen
   let srcLen = args[1].bufferLen
   var srcStart = 0
   var srcEnd = srcLen
   var dstStart = 0
   if args.len == 5:
-    srcStart = bufferBound("Buffer/copy_from!", args[2], srcLen)
-    srcEnd = bufferBound("Buffer/copy_from!", args[3], srcLen)
-    dstStart = bufferBound("Buffer/copy_from!", args[4], dstLen)
+    srcStart = bufferBound("Buffer/copy_from", args[2], srcLen)
+    srcEnd = bufferBound("Buffer/copy_from", args[3], srcLen)
+    dstStart = bufferBound("Buffer/copy_from", args[4], dstLen)
     if srcEnd < srcStart:
       raise newException(GeneError,
-        "Buffer/copy_from!: end (" & $srcEnd & ") is before start (" &
+        "Buffer/copy_from: end (" & $srcEnd & ") is before start (" &
         $srcStart & ")")
   elif srcLen != dstLen:
     raise newException(GeneError,
-      "Buffer/copy_from!: whole-buffer copy needs equal lengths, but the " &
+      "Buffer/copy_from: whole-buffer copy needs equal lengths, but the " &
       "destination has " & $dstLen & " and the source has " & $srcLen &
       " — pass an explicit range to copy part of it")
   if dstStart + (srcEnd - srcStart) > dstLen:
     raise newException(GeneError,
-      "Buffer/copy_from!: " & $(srcEnd - srcStart) & " elements do not fit " &
+      "Buffer/copy_from: " & $(srcEnd - srcStart) & " elements do not fit " &
       "at offset " & $dstStart & " of a " & $dstLen & "-element buffer")
   # When the two element types are the same value, every element of `src` has
   # already satisfied `dst`'s boundary — it satisfied the identical one on the
@@ -6146,7 +6416,7 @@ proc buildBuiltins(app: Application): Scope =
                                          scope: result)
                          ])
   result.define("Call", callType)
-  # SyntaxCall mirrors Call for fn! syntax calls (design §3): raw prop/body
+  # SyntaxCall mirrors Call for fexpr syntax calls (design §3): raw prop/body
   # syntax nodes instead of evaluated arguments.
   let syntaxCallType = newType("SyntaxCall", NIL,
                                @[
@@ -6177,7 +6447,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("TypeError", typeError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: typeError)
-  # A send that resolves to a SyntaxCallable is a distinct dynamic call-kind
+  # A send that resolves to an Fexpr is a distinct dynamic call-kind
   # mismatch. It inherits TypeError's diagnostic fields and Error impl so
   # callers can catch it specifically without losing ordinary type matching.
   let callKindError = newType("CallKindError", typeError, @[], @[], result)
@@ -6188,6 +6458,17 @@ proc buildBuiltins(app: Application): Scope =
   # matches, and carries where/receiver_type/message diagnostics.
   let messageError = newType("MessageError", typeError, @[], @[], result)
   result.define("MessageError", messageError)
+  let refError = newType("RefError", NIL,
+                         @[TypeField(name: "message", optional: false,
+                                     typeExpr: newSym("Str"), scope: result),
+                           TypeField(name: "name", optional: false,
+                                     typeExpr: newSym("Str"), scope: result)],
+                         @[errorProtocol], result)
+  result.define("RefError", refError)
+  result.impls.add ProtocolImpl(protocol: errorProtocol, receiver: refError)
+  for name in ["UnknownRef", "RefNotResolved", "RefAlreadyResolved",
+               "CircularRefResolution", "InvalidRefDefinition"]:
+    result.define(name, newType(name, refError, @[], @[], result))
   # Scalars carry no messages, but they register through the same funnel so
   # every built-in type identity lands in `gBuiltinSurfaceTypes`. These kinds
   # are exactly `LeafValueKinds`; the two definitions are one rule.
@@ -6429,8 +6710,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("last", lastFn)
   result.defineBuiltinType(vkList, "List", {
     "assoc": newNativeFn("List/assoc", biListAssoc),
-    "set!": newNativeFn("List/set!", biListSetBang),
-    "push!": newNativeFn("List/push!", biListPushBang),
+    "set": newNativeFn("List/set", biListSetBang),
+    "push": newNativeFn("List/push", biListPushBang),
     "size": sizeFn,
     "empty?": emptyFn,
     "first": firstFn,
@@ -6443,7 +6724,7 @@ proc buildBuiltins(app: Application): Scope =
   let mapType = result.defineBuiltinType(vkMap, "Map", {
     "assoc": newNativeFn("Map/assoc", biMapAssoc),
     "get": newNativeFn("Map/get", biMapGet),
-    "put!": newNativeFn("Map/put!", biMapPutBang),
+    "put": newNativeFn("Map/put", biMapPutBang),
     "to_stream": toStreamFn,
     "to_pairs_stream": toPairsStreamFn})
   gScalarTypes[vkHashMap] = mapType
@@ -6453,9 +6734,9 @@ proc buildBuiltins(app: Application): Scope =
   # distinction between universal anatomy and the concrete `Node` type, and
   # `builtinReceiverMessage` routes the instance case back to this same table.
   result.defineBuiltinType(vkNode, "Node", {
-    "set_prop!": newNativeFn("Node/set_prop!", biNodeSetPropBang),
-    "set_body!": newNativeFn("Node/set_body!", biNodeSetBodyBang),
-    "push_body!": newNativeFn("Node/push_body!", biNodePushBodyBang),
+    "set_prop": newNativeFn("Node/set_prop", biNodeSetPropBang),
+    "set_body": newNativeFn("Node/set_body", biNodeSetBodyBang),
+    "push_body": newNativeFn("Node/push_body", biNodePushBodyBang),
     "head": headFn,
     "props": propsFn,
     "body": bodyFn,
@@ -6463,11 +6744,11 @@ proc buildBuiltins(app: Application): Scope =
   result.defineBuiltinType(vkBuffer, "Buffer", {
     "len": newNativeFn("Buffer/len", biBufferLen),
     "get": newNativeFn("Buffer/get", biBufferGet),
-    "set!": newNativeCallFn("Buffer/set!", biBufferSetBang,
+    "set": newNativeCallFn("Buffer/set", biBufferSetBang,
                             acceptsNamed = false),
-    "fill!": newNativeCallFn("Buffer/fill!", biBufferFillBang,
+    "fill": newNativeCallFn("Buffer/fill", biBufferFillBang,
                              acceptsNamed = false),
-    "copy_from!": newNativeCallFn("Buffer/copy_from!", biBufferCopyFromBang,
+    "copy_from": newNativeCallFn("Buffer/copy_from", biBufferCopyFromBang,
                                   acceptsNamed = false),
     "to_list": newNativeFn("Buffer/to_list", biBufferToList),
     "to_bytes": newNativeFn("Buffer/to_bytes", biBufferToBytes),
@@ -8492,7 +8773,7 @@ proc callableSignatureMismatch(expected, actual: Value): string =
   if expected.kind != vkFunction or actual.kind != vkFunction:
     return "callable category"
   if expected.isSyntaxFn != actual.isSyntaxFn:
-    return "callable category (fn versus fn!)"
+    return "callable category (fn versus fexpr)"
   let expectedCode = expected.fnCode
   let actualCode = actual.fnCode
   if expectedCode == nil or actualCode == nil or
@@ -9019,7 +9300,8 @@ proc builtinBinding(scope: Scope, name: string): Value =
     result = NIL
 
 proc isBuiltinCallable(value: Value): bool =
-  # fn! values implement SyntaxCallable, not Callable (design §3).
+  # Fexpr values have their own explicit lexical call kind, not Callable
+  # (design §3).
   (value.kind == vkFunction and not value.isSyntaxFn) or
     value.kind in {vkNativeFn, vkFfiCallable, vkType,
                    vkProtocolMessage, vkEnumVariant} or
@@ -11873,16 +12155,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opPushConst:
           spush chunk.constants[inst[].intArg]
         of opLoadName:
-          spush scope.lookup(inst[].name)
+          spush materializedModuleRefValue(scope, scope.lookup(inst[].name))
         of opLoadNativeFast:
           spush scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
         of opLoadLocal:
           let slot = inst[].intArg
           if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
-            spush scope.slots[slot]
+            spush materializedModuleRefValue(scope, scope.slots[slot])
           else:
-            spush scope.loadSlot(slot, inst[].name)
+            spush materializedModuleRefValue(
+              scope, scope.loadSlot(slot, inst[].name))
         of opLoadLocalFast:
+          # A proven typed local cannot contain an unresolved structural ref;
+          # keeping this hot opcode branch-free matters to typed call dispatch.
           spush scope.slots[inst[].intArg]
         of opLoadArg:
           # Scopeless calls: arguments live on the shared operand stack at the
@@ -11897,9 +12182,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               scope.scopeAtDepth(inst[].depth, inst[].name)
           if outer != nil and slot >= 0 and slot < outer.slots.len and
               outer.slotDefined(slot):
-            spush outer.slots[slot]
+            spush materializedModuleRefValue(scope, outer.slots[slot])
           else:
-            spush scope.loadSlotAt(inst[].depth, slot, inst[].name)
+            spush materializedModuleRefValue(
+              scope, scope.loadSlotAt(inst[].depth, slot, inst[].name))
         of opDefineName:
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in var")
@@ -11932,6 +12218,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           rejectCallerEnvEscape("set outer binding '" & inst[].name & "'",
                                 stack[sp - 1])
           scope.assignSlotAt(inst[].depth, inst[].intArg, inst[].name, stack[sp - 1])
+        of opRefBegin:
+          scope.beginModuleRef(inst[].name)
+        of opRefFinish:
+          if sp == 0:
+            raise newException(GeneError,
+              "VM stack underflow resolving module reference")
+          stack[sp - 1] = scope.finishModuleRef(inst[].name, stack[sp - 1])
+        of opRefAbort:
+          scope.abortModuleRef(inst[].name)
+        of opRefGet:
+          spush scope.getModuleRef(inst[].name, structural = false)
+        of opRefGetStructural:
+          spush scope.getModuleRef(inst[].name, structural = true)
         of opPop:
           discard spop()
         of opMakeList:
@@ -12034,13 +12333,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError, "VM stack underflow in selector apply")
           let target = spop()
           let selector = spop()
-          spush applySelector(selector, target)
+          spush materializedModuleRefValue(
+            scope, applySelector(selector, target))
         of opApplySelectorTop:
           if sp < 2:
             raise newException(GeneError, "VM stack underflow in selector apply")
           let selector = spop()
           let target = spop()
-          spush applySelector(selector, target)
+          spush materializedModuleRefValue(
+            scope, applySelector(selector, target))
         of opMakeFn:
           let proto = chunk.functions[inst[].intArg]
           let errorTypes = stack.popCheckedErrorTypes(sp, proto.errorTypeCount, scope)
@@ -12545,7 +12846,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
               elif not proto.isGenerator:
                 if callee.isSyntaxFn:
-                  rejectSyntaxCallWithoutSite(callee)
+                  rejectSyntaxCallWithoutSite(callee, scope)
                 let bound = bindCallScope(callee, proto, [], NamedArgs())
                 let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
                 var lbl = ""
@@ -12763,7 +13064,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
               elif not proto.isGenerator:
                 if callee.isSyntaxFn:
-                  rejectSyntaxCallWithoutSite(callee)
+                  rejectSyntaxCallWithoutSite(callee, scope)
                 var boundScope: Scope
                 var boundReturnType: Value
                 var usedUnaryIntFast = false
@@ -12926,7 +13227,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # the first positional argument.
           let receiver = spop()
           if receiver.nodeConstructing and inst[].name notin
-              ["set_prop!", "set_body!", "push_body!"]:
+              ["set_prop", "set_body", "push_body"]:
             raise newException(GeneError,
               "cannot dispatch '" & inst[].name &
               "' on an in-progress constructed instance")
@@ -13057,7 +13358,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             spush callee
           spush receiver
         of opSetPath:
-          # `(set! base/seg…/last value)`. Operands sit on the stack in the
+          # `(set base/seg…/last value)`. Operands sit on the stack in the
           # order the design fixes — base, then dynamic segments left to right,
           # then the RHS once — so they are read in place by index rather than
           # popped into a temporary seq: no per-write heap allocation, and the
@@ -13065,7 +13366,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let segCount = inst[].intArg
           let baseIndex = sp - segCount - 2
           if baseIndex < 0:
-            raise newException(GeneError, "VM stack underflow in set!")
+            raise newException(GeneError, "VM stack underflow in set path assignment")
           # Intermediates resolve read-only; only the final container is
           # mutated, and in place. `assoc_in` stays the copying form.
           let stored = runSetPath(stack, baseIndex, segCount)
@@ -13209,7 +13510,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 # bind via the shared helper, then push a frame carrying the return
                 # type to adapt and the callee's error boundary to translate on throw.
                 if callee.isSyntaxFn:
-                  rejectSyntaxCallWithoutSite(callee)
+                  rejectSyntaxCallWithoutSite(callee, scope)
                 var boundScope: Scope
                 var boundReturnType: Value
                 if namedCount > 0 and proto.canFastBindRequiredNamed:
@@ -13399,7 +13700,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
               elif not fnProto.isGenerator:
                 if callee.isSyntaxFn:
-                  rejectSyntaxCallWithoutSite(callee)
+                  rejectSyntaxCallWithoutSite(callee, scope)
                 var boundScope: Scope
                 var boundReturnType: Value
                 if namedCount == 0 and fnProto.canFastBindPositionalInt and
@@ -14286,17 +14587,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let callNode = spop()
           let callee = spop()
           spush applySyntaxCall(callee, callNode, scope)
-        of opSyntaxGuard:
-          # Generic evaluated-head call site (design §3): if the callee on top
-          # is a fn!, perform the syntax call from the const raw node and jump
-          # past the ordinary argument-evaluation + call sequence.
-          if sp == 0:
-            raise newException(GeneError, "VM stack underflow in syntax guard")
-          if stack[sp - 1].isSyntaxFn:
-            let callee = spop()
-            spush applySyntaxCall(callee, chunk.constants[inst[].depth],
-                                      scope)
-            ip = inst[].intArg
         of opRejectSyntaxSend:
           if sp == 0:
             raise newException(GeneError,
@@ -14306,7 +14596,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opResolveQualifiedMessage:
           # Qualified/dynamic send — (x ~ P:m), (x ~ %m), (x ~ (expr)). The
           # callee must be a message value; `~` dispatches only and never
-          # invokes an arbitrary function or a held fn! (design §3/§8). The impl
+          # invokes an arbitrary function or a held fexpr (design §3/§8). The impl
           # is resolved here rather than by lowering the send to a flipped call,
           # so an ordinary call never legitimately receives a message value.
           if sp < 2:
@@ -14695,6 +14985,10 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       raise newException(GeneError, "internal: scheduler pause outside a fiber")
     if stopped.kind == rskCancel:
       raise newException(GeneCancel, "task was cancelled")
+    # Check the live table rather than only the pre-scan list: macro expansion
+    # can introduce a reference form after source-unit collection.
+    if scope.moduleRefs != nil:
+      scope.validateModuleRefsResolved()
     stopped.value
 
 proc runReplSession*(scope: Scope,
@@ -16097,7 +16391,7 @@ proc runtimeTypeExpr(value: Value): Value =
       newSym("Selector")
     else:
       newSym("Node")
-  of vkFunction: newSym(if value.isSyntaxFn: "Fn!" else: "Fn")
+  of vkFunction: newSym(if value.isSyntaxFn: "Fexpr" else: "Fn")
   of vkNativeFn: newSym("NativeFn")
   of vkNamespace: newSym("Namespace")
   of vkModule: newSym("Module")
@@ -16699,17 +16993,18 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     # `(impl P for Node …)` reaches. Use `Any` for the root type.
     (true, value.isDataNode)
   of "Fn", "Function":
-    # Fn! is a sibling of Fn, not a subtype (design §3/§7.2): a fn! value
+    # Fexpr is a sibling of Fn, not a subtype (design §3/§7.2): an fexpr value
     # never satisfies an Fn-typed boundary.
     (true, value.kind == vkFunction and not value.isSyntaxFn)
-  of "Fn!":
+  of "Fexpr":
     (true, value.isSyntaxFn)
   of "NativeFn":
     (true, value.kind == vkNativeFn)
   of "Selector":
     (true, value.kind == vkNode and value.isSelector)
   of "Callable":
-    # fn! values implement SyntaxCallable, not Callable (design §3).
+    # Fexpr values have their own explicit lexical call kind, not Callable
+    # (design §3).
     (true, (value.kind == vkFunction and not value.isSyntaxFn) or
       value.kind in {vkNativeFn, vkFfiCallable, vkType, vkProtocolMessage} or
       (value.kind == vkNode and value.isSelector))
@@ -17756,7 +18051,7 @@ proc staticLookup(target, segment: Value): Value =
     else:
       VOID
   of vkFloat:
-    # An integral Float indexes a sequence, matching `set!` and matching the
+    # An integral Float indexes a sequence, matching `set` and matching the
     # web profile, which lowers an `F64` index to `xs[i]`. Without this the
     # same source reads a list in the browser and yields `void` on the VM —
     # silently, because `void` is a legal value rather than an error. A
@@ -22708,11 +23003,11 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
   ## generators or ^errors — those stay with the caller.
   let positional = callee.fnParams
   let requiredPositional = proto.requiredPositionalCount()
-  # fn! binds caller_env and syntax_call as implicit leading parameters;
+  # Fexprs bind caller_env and syntax_call as implicit leading parameters;
   # arity diagnostics must count only the user-visible syntax parameters.
   let implicit = if proto.isSyntaxFn: 2 else: 0
   template arityHead(): string =
-    (if proto.isSyntaxFn: "fn! '" else: "function '") & callee.fnName &
+    (if proto.isSyntaxFn: "fexpr '" else: "function '") & callee.fnName &
     "' expects "
   template arityUnit(): string =
     (if proto.isSyntaxFn: " syntax argument(s), got "
@@ -22963,15 +23258,15 @@ proc syntaxCallEnvelope(scope: Scope, node: Value): Value =
   newNode(builtinBinding(scope, "SyntaxCall"), props = props, body = body)
 
 proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value =
-  ## Apply a fn! (design §3 step 4): the callee receives the unevaluated
+  ## Apply an fexpr (design §3 step 4): the callee receives the unevaluated
   ## prop/body syntax nodes and the caller environment. `caller_env` and
   ## `syntax_call` bind as implicit leading parameters.
   if not callee.isSyntaxFn:
     raise newException(GeneError,
-      "syntax call site expects a fn! value, got " & $callee.kind)
+      "syntax call site expects an fexpr value, got " & $callee.kind)
   let code = callee.fnCode
   if code == nil or not (code of FunctionProto):
-    raise newException(GeneError, "fn! has no VM code")
+    raise newException(GeneError, "fexpr has no VM code")
   let proto = FunctionProto(code)
   var args = newSeqOfCap[Value](callNode.body.len + 2)
   let callerEnv = newCallerEnv(callerScope)
@@ -22986,10 +23281,10 @@ proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value 
   try:
     try:
       result = applyFunctionCall(callee, args, named, proto)
-      rejectCallerEnvEscape("fn! return", result)
+      rejectCallerEnvEscape("fexpr return", result)
     except GeneError as e:
       if e.hasErrVal:
-        rejectCallerEnvEscape("fn! error payload", e.errVal)
+        rejectCallerEnvEscape("fexpr error payload", e.errVal)
       attachSourceLoc(e, proto.sourceLoc)
       raise
   finally:
@@ -23019,6 +23314,10 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
   # One funnel for `(T ...)`, `construct_type`, and serde's `serde_inst`, so a
   # wrapper cannot be materialized as replayable data by any of them.
   rejectNativeWrapperConstruction(callee, "direct construction")
+  template adaptRefField(label: string, typeExpr: Value, value: Value,
+                         fieldScope: Scope): Value =
+    (if value.isPendingModuleRef: value
+     else: adaptBoundary(label, typeExpr, value, fieldScope))
   let fields = callee.typeFields
   let bodyFields = callee.typeBodyFields
   if args.len != 0 and bodyFields.len == 0:
@@ -23037,9 +23336,8 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
         $bodyFields.len & " body item(s), got " & $args.len)
     for i, f in bodyFields:
       let fieldScope = f.typeBodyFieldScope(callee.typeScope)
-      body.add adaptBoundary("body field " & $i & " for " &
-                             callee.typeName, f.typeExpr, args[i],
-                             fieldScope)
+      body.add adaptRefField("body field " & $i & " for " &
+                             callee.typeName, f.typeExpr, args[i], fieldScope)
   else:
     if args.len < restBody:
       raise newException(GeneError,
@@ -23048,13 +23346,12 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
     for i in 0 ..< restBody:
       let f = bodyFields[i]
       let fieldScope = f.typeBodyFieldScope(callee.typeScope)
-      body.add adaptBoundary("body field " & $i & " for " &
-                             callee.typeName, f.typeExpr, args[i],
-                             fieldScope)
+      body.add adaptRefField("body field " & $i & " for " &
+                             callee.typeName, f.typeExpr, args[i], fieldScope)
     let restType = bodyFields[restBody]
     let fieldScope = restType.typeBodyFieldScope(callee.typeScope)
     for i in restBody ..< args.len:
-      body.add adaptBoundary("body field " & $i & " for " &
+      body.add adaptRefField("body field " & $i & " for " &
                              callee.typeName, restType.typeExpr, args[i],
                              fieldScope)
   var props = initPropTable()
@@ -23069,7 +23366,7 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
       else:
         let fieldScope = f.typeFieldScope(callee.typeScope)
         props.putById(f.nameId,
-                      adaptBoundary("field '" & f.name & "' for " &
+                      adaptRefField("field '" & f.name & "' for " &
                                     callee.typeName, f.typeExpr, value,
                                     fieldScope))
     elif not f.optional:
@@ -23259,7 +23556,7 @@ proc releaseOwnedWrapperFields(instance: Value) =
   ## Scoped to wrapper types on purpose: an ordinary Gene type's field happens
   ## to hold a pointer, it does not own the resource by declaration.
   ##
-  ## Props *and* body: `push_body!` is one of the mutations an in-progress
+  ## Props *and* body: `push_body` is one of the mutations an in-progress
   ## instance may perform (§7.1.1), so a declared `^body` position can hold an
   ## owned handle just as a prop can.
   proc releaseOwned(value: Value) =
@@ -23360,7 +23657,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     constructEnumVariant(callee, args, named)
   of vkFunction:
     if callee.isSyntaxFn:
-      rejectSyntaxCallWithoutSite(callee)
+      rejectSyntaxCallWithoutSite(callee, dispatchScope)
     let code = callee.fnCode
     if code == nil or not (code of FunctionProto):
       raise newException(GeneError, "function has no VM code")
@@ -23388,7 +23685,9 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       raise newException(GeneError, "selector calls do not accept named arguments")
     if args.len != 1:
       raise newException(GeneError, "selector expects 1 argument, got " & $args.len)
-    applySelector(callee, args[0])
+    let selected = applySelector(callee, args[0])
+    if dispatchScope == nil: selected
+    else: materializedModuleRefValue(dispatchScope, selected)
   else:
     raise newException(GeneError, "value is not callable: " & $callee.kind)
 

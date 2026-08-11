@@ -45,8 +45,8 @@
 
 (fn check [out : (List Str) label : Str got : Str want : Str] : Nil
   (if (== got want)
-    (then (out ~ push! $"ok   ${label}"))
-    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+    (then (out ~ push $"ok   ${label}"))
+    (else (out ~ push $"FAIL ${label}: got ${got}, want ${want}"))))
 
 (fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
   (check out label $"${got}" $"${want}"))
@@ -161,7 +161,7 @@
   (var i 0.0)
   (while (< i total)
     (var idx (sample_index i total stride))
-    (seen ~ set! idx (+ (seen ~ get idx) 1.0))
+    (seen ~ set idx (+ (seen ~ get idx) 1.0))
     (set i (+ i 1.0)))
 
   (var repeats 0.0)
@@ -289,7 +289,7 @@
   (add_entity_def e "beacon"
     no_step
     (fn [world : World s : F64] : Nil
-      (marked ~ set! 0.0 (+ 100.0 s))
+      (marked ~ set 0.0 (+ 100.0 s))
       nil))
   (var born (entity_def_activate e (entity_def_named e "beacon")))
   (born w 4.0)

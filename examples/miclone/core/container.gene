@@ -53,12 +53,12 @@
           ^n     (Buffer F32)}  # one cell: rows in use
 
   (ctor []
-    (set! self/x ($buffer F64 max_containers))
-    (set! self/y ($buffer F64 max_containers))
-    (set! self/z ($buffer F64 max_containers))
-    (set! self/used ($buffer F32 max_containers))
-    (set! self/slots [])
-    (set! self/n ($buffer F32 1.0))))
+    (set self/x ($buffer F64 max_containers))
+    (set self/y ($buffer F64 max_containers))
+    (set self/z ($buffer F64 max_containers))
+    (set self/used ($buffer F32 max_containers))
+    (set self/slots [])
+    (set self/n ($buffer F32 1.0))))
 
 (fn new_containers [] : ContainerStore
   (new ContainerStore))
@@ -103,32 +103,32 @@
         (set i (+ i 1.0)))
       (if (>= free 0.0)
         (do
-          (c/x ~ set! free x)
-          (c/y ~ set! free y)
-          (c/z ~ set! free z)
-          (c/used ~ set! free 1.0)
+          (c/x ~ set free x)
+          (c/y ~ set free y)
+          (c/z ~ set free z)
+          (c/used ~ set free 1.0)
           # The row's buffer is **cleared, not replaced**. The web profile has
-          # no `set!` on a `(List T)` (the same constraint §8.2's definitions
-          # met), so `slots` only ever grows by `push!` and a row's index into
+          # no `set` on a `(List T)` (the same constraint §8.2's definitions
+          # met), so `slots` only ever grows by `push` and a row's index into
           # it is permanent. That is the better invariant anyway: row `i` owns
           # buffer `i` for the life of the store, and nothing can drift.
           (clear_inventory (container_inventory c free))
           free)
         (if (>= n max_containers) -1.0
           (do
-            (c/x ~ set! n x)
-            (c/y ~ set! n y)
-            (c/z ~ set! n z)
-            (c/used ~ set! n 1.0)
-            (c/slots ~ push! (new_inventory container_slots))
-            (c/n ~ set! 0.0 (+ n 1.0))
+            (c/x ~ set n x)
+            (c/y ~ set n y)
+            (c/z ~ set n z)
+            (c/used ~ set n 1.0)
+            (c/slots ~ push (new_inventory container_slots))
+            (c/n ~ set 0.0 (+ n 1.0))
             n))))))
 
 (fn clear_inventory [inv : (Buffer F64)] : Nil
   (var i 0.0)
   (var n inv/~len)
   (while (< i n)
-    (inv ~ set! i 0.0)
+    (inv ~ set i 0.0)
     (set i (+ i 1.0))))
 
 (fn container_inventory [c : ContainerStore row : F64] : (Buffer F64)

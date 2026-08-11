@@ -31,8 +31,8 @@ Build logging as two APIs over one internal event pipeline:
 2. A public `log` namespace for applications. A `Logger` is an immutable,
    attenuated handle with a bound name and optional base payload. Ordinary
    `logger ~ info`-style methods are eager and ergonomic; corresponding
-   `error!`/`warn!`/`info!`/`debug!`/`trace!` macros defer message and payload
-   evaluation until after the level check.
+   `log_error`/`log_warn`/`log_info`/`log_debug`/`log_trace` macros defer
+   message and payload evaluation until after the level check.
 
 Use:
 
@@ -86,8 +86,8 @@ Specific changes:
   reentrancy, and reproducibility.
 - **Offer explicit lazy counterparts.** Ordinary `logger ~ info` methods are
   the concise eager default. They cannot prevent interpolation or payload
-  construction, so `info!`/`debug!`-style macros provide opt-in laziness for
-  expensive or hot-path calls; eager `emit` remains the adapter primitive.
+  construction, so `log_info`/`log_debug`-style macros provide opt-in laziness
+  for expensive or hot-path calls; eager `emit` remains the adapter primitive.
 - **Avoid a global emission lock.** Each sink serializes its own writes.
   Ordering is defined per sink, not globally across unrelated outputs.
 - **Do not flush files after every line.** Buffer ordinary records and expose
@@ -139,7 +139,7 @@ Primary namespace: `log`.
 
 ```gene
 (import log [LogLevel new_logger new_file_logger
-             info! warn! error! debug! trace!])
+             log_error log_warn log_info log_debug log_trace])
 (import $fs [WriteDir])
 
 (var logger
@@ -147,13 +147,14 @@ Primary namespace: `log`.
     ^payload {^service "api" ^version build_version}))
 
 (logger ~ info "listening" ^payload {^host host ^port port})
-(debug! logger $"accepted request ${request/id}"
+(log_debug logger $"accepted request ${request/id}"
   ^payload {^request_id request/id ^route route/name})
 ```
 
-The `!` suffix follows the language convention for visible rewriting and
-avoids reserving common local names such as `error`, `info`, and `trace` in
-every importing module. Expansion is conceptually:
+The `log_*` names are ordinary macro names. Their compile-time import makes
+expansion statically known, avoids collisions with common data/error bindings,
+and leaves trailing `!` reserved for runtime fexpr calls.
+Expansion is conceptually:
 
 ```gene
 (scope
@@ -161,8 +162,7 @@ every importing module. Expansion is conceptually:
   (if (generated_logger ~ enabled? LogLevel/debug)
     (generated_logger ~ emit LogLevel/debug
       $"accepted request ${request/id}"
-      ^payload {^request_id request/id ^route route/name})
-    nil))
+      ^payload {^request_id request/id ^route route/name})))
 ```
 
 The real expansion evaluates `logger` exactly once. Its introduced temporary
@@ -182,10 +182,10 @@ prerequisite:
 
 This is a narrow compiler/stdlib facility, useful for future standard-library
 sugar as well as logging. The logging forms remain ordinary template
-expansions; logging does not become a special form and `fn!` is not used on the
+expansions; logging does not become a special form and an fexpr is not used on the
 hot path. The implementation adds this language rule and its compiler/spec
-tests before registering `error!`, `warn!`, `info!`, `debug!`, and `trace!` in
-`log`.
+tests before registering `log_error`, `log_warn`, `log_info`, `log_debug`, and
+`log_trace` in `log`.
 
 Eager level methods are the concise default when their arguments are already
 cheap values. They delegate to the lower-level `emit` primitive:
@@ -251,7 +251,7 @@ filter it:
 ```
 
 A thunk-based API avoids the work but allocates a closure and is awkward at
-every call site. A `debug!` macro can guard evaluation with the normal
+every call site. A `log_debug` macro can guard evaluation with the normal
 `enabled?` primitive and remains inspectable after expansion. The eager level
 methods keep common call sites concise; `emit` remains the ordinary adapter
 and embedding primitive.
@@ -568,7 +568,7 @@ if RuntimeVmLogger.enabled(llDebug):
   RuntimeVmLogger.emit(llDebug, expensiveMessage())
 ```
 
-For Gene code, `debug!` expands to one `Logger/enabled?` message send plus an
+For Gene code, `log_debug` expands to one `Logger/enabled?` message send plus an
 enum member access and branch. It still allocates nothing and does not evaluate
 the message or payload, but it is not a single native integer compare. On the
 current VM a dynamic send is materially slower than a plain call; applications
@@ -601,9 +601,9 @@ real workloads; do not smuggle in an unbounded channel.
 Add benchmarks before broad runtime adoption:
 
 - disabled constant runtime log;
-- disabled Gene `debug!` with an expensive expression proving it is not run,
+- disabled Gene `log_debug` with an expensive expression proving it is not run,
   recording allocations and send count as well as elapsed time;
-- disabled typed-`Logger` `debug!` versus its dynamic-send form;
+- disabled typed-`Logger` `debug` versus its dynamic-send form;
 - enabled text event with no payload;
 - enabled structured event with 8 payload entries;
 - fan-out to two sinks using one renderer and different renderers;
@@ -699,7 +699,7 @@ than approximated with a global lock or risking a write to a closed handle.
   macros.
 - Add `Logger`, `new_logger`, eager level methods, `enabled?`, `emit`, `child`,
   and `with`.
-- Add lazy `error!`/`warn!`/`info!`/`debug!`/`trace!` macros with source
+- Add lazy `log_error`/`log_warn`/`log_info`/`log_debug`/`log_trace` macros with source
   metadata and a hygienic single-evaluation logger temporary.
 - Enforce immutable data payloads, reserved keys, bounds, and pre-sink
   redaction.
@@ -736,7 +736,7 @@ than approximated with a global lock or risking a write to a closed handle.
 1. **Default level:** `warn` to stderr. `info` by default makes a language
    runtime unexpectedly noisy and can corrupt protocol/TUI stdout behavior.
 2. **Public ergonomics and laziness:** `(logger ~ info ...)`-style methods are
-   eager; `!`-suffixed forms provide opt-in lazy evaluation for expensive or
+   eager; `log_*` macro forms provide opt-in lazy evaluation for expensive or
    hot-path expressions; `emit` is the eager adapter primitive.
 3. **Logger identity:** explicit string names only; no arbitrary `to_str`.
 4. **Configuration:** data-only and explicitly selected; no ambient CWD load.
@@ -753,9 +753,10 @@ than approximated with a global lock or risking a write to a closed handle.
 10. **Scope:** no async queue, reload, rotation, network exporter, metrics, or
     VM instruction tracing in the MVP.
 11. **Macro delivery:** built-in namespaces gain compiler-known template macro
-    exports before the public logging sugar ships; `fn!` is not the fallback.
-12. **Macro naming:** use `error!`, `warn!`, `info!`, `debug!`, and `trace!` to
-    mark visible rewriting and avoid poisoning common local identifiers.
+    exports before the public logging sugar ships; an fexpr is not the fallback.
+12. **Macro naming:** use `log_error`, `log_warn`, `log_info`, `log_debug`, and
+    `log_trace`; the prefix prevents collisions with ordinary bindings, while
+    `!` remains reserved for fexpr calls.
 13. **Two performance budgets:** native disabled logging is an allocation-free,
     lock-free integer compare; Gene disabled logging is one send/access/branch
     with no allocation or message/field evaluation, measured separately.

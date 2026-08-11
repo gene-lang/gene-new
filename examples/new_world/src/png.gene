@@ -60,7 +60,7 @@
   [(band n 255) (band (shr n 8) 255)])
 
 (fn append_all [target : (List Int) items : (List Int)] : Nil
-  (for i in items (target ~ push! i)))
+  (for i in items (target ~ push i)))
 
 # --- chunks ------------------------------------------------------------------
 
@@ -95,7 +95,7 @@
   (set bit_count (+ bit_count 1))
   (if_yes (== bit_count 8)
     (do
-      (bit_out ~ push! bit_acc)
+      (bit_out ~ push bit_acc)
       (set bit_acc 0)
       (set bit_count 0))))
 
@@ -116,7 +116,7 @@
 (fn bits_flush [] : Nil
   (if_yes (> bit_count 0)
     (do
-      (bit_out ~ push! bit_acc)
+      (bit_out ~ push bit_acc)
       (set bit_acc 0)
       (set bit_count 0))))
 
@@ -186,12 +186,12 @@
   (var head : (List Int) [])
   (var i 0)
   (while (< i hash_size)
-    (head ~ push! -1)
+    (head ~ push -1)
     (set i (+ i 1)))
   (var prev : (List Int) [])
   (set i 0)
   (while (< i n)
-    (prev ~ push! -1)
+    (prev ~ push -1)
     (set i (+ i 1)))
 
   # A `%` path segment takes a symbol rather than a call, so every index is
@@ -240,8 +240,8 @@
           (set chain (+ chain 1)))
         # Register this position before moving on, so later positions can find
         # it. Only whole prefixes go in the table.
-        (set! prev/%pos head/%h)
-        (set! head/%h pos)))
+        (set prev/%pos head/%h)
+        (set head/%h pos)))
     (if (>= best_len min_match)
       (do
         (put_match best_len best_dist)
@@ -255,8 +255,8 @@
               (set i1 (+ at 1))
               (set i2 (+ at 2))
               (set h (hash3 data/%at data/%i1 data/%i2))
-              (set! prev/%at head/%h)
-              (set! head/%h at)))
+              (set prev/%at head/%h)
+              (set head/%h at)))
           (set k (+ k 1)))
         (set pos (+ pos best_len)))
       (do
@@ -293,12 +293,12 @@
   (var src 0)
   (var stride (* width 4))
   (while (< y height)
-    (raw ~ push! 0)
+    (raw ~ push 0)
     (set x 0)
     (set row_start (* y stride))
     (while (< x stride)
       (set src (+ row_start x))
-      (raw ~ push! pixels/%src)
+      (raw ~ push pixels/%src)
       (set x (+ x 1)))
     (set y (+ y 1)))
 

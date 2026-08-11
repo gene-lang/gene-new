@@ -29,6 +29,11 @@ type
     opSetName
     opSetLocal
     opSetOuterLocal
+    opRefBegin          # mark a predeclared module reference resolving
+    opRefFinish         # pop target, resolve and patch structural fixups
+    opRefAbort          # reset a still-resolving entry from an ensure body
+    opRefGet            # runtime $deref: resolved target or typed error
+    opRefGetStructural  # reader #Deref: resolved target or internal fixup
     opPop
     opMakeList
     opMakeListSplice
@@ -77,7 +82,7 @@ type
     opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
     opSuperSend       # pop enclosing type + self; resolve msg from the type's ^is parent, push callee + self (super delegation, design §10)
     opSuperQualifiedSend # like opSuperSend, but pops a qualifier too: (super ~ Q:m) selects against the ^is parent, not the receiver
-    opSetPath         # [base, seg..., value] -> checked in-place write through setMutableChild; pushes the stored value (set!, design §12.1)
+    opSetPath         # [base, seg..., value] -> checked in-place write through setMutableChild; pushes the stored value (set, design §12.1)
     opPlaceSendReceiver # move receiver below newly evaluated named args
     opIntAdd2
     opReturnIntAdd2
@@ -129,9 +134,8 @@ type
     opReturnBareInt
     opCheckType
     opDeclareType
-    opSyntaxCall  # pop raw call node + fn! callee, apply the syntax call (design §3/§11.1)
-    opSyntaxGuard # if the callee on top is a fn!, syntax_call the const node and jump
-    opRejectSyntaxSend # reject fn! at a ~ send before evaluating send arguments
+    opSyntaxCall  # pop raw call node + fexpr callee, apply the syntax call (design §3/§11.1)
+    opRejectSyntaxSend # reject an fexpr at a ~ send before evaluating send arguments
     opResolveQualifiedMessage # pop receiver + message value; resolve the impl, push callee + receiver
     opQualifiedSend # pop receiver + protocol (`P` of `P:msg`); dispatch `name` on the receiver
     opBindMessage # pop qualifier; push a message value bound to the current scope
@@ -630,6 +634,7 @@ type
     functions*: seq[FunctionProto]
     localNames*: seq[string]
     mirrorSlots*: bool
+    moduleRefNames*: seq[string] # predeclared before source-unit execution
     exportExcludedNames*: seq[string] # ^private declarations and non-reexported imports
     subchunks*: seq[Chunk]       # bodies of `ns` declarations
     imports*: seq[ImportSpec]
@@ -683,6 +688,7 @@ type
 proc newChunk*(sourceName = ""): Chunk =
   Chunk(sourceName: sourceName, constants: @[], instructions: @[],
         instructionLocs: @[], topLevelForms: @[], functions: @[], subchunks: @[],
+        moduleRefNames: @[],
         imports: @[], importImpls: @[],
         diagnostics: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
         nodeBuilds: @[],
@@ -855,7 +861,8 @@ proc formatInstruction(inst: Instruction): string =
   case inst.op
   of opPushConst:
     result.add " const=" & $inst.intArg
-  of opLoadName, opLoadNativeFast, opDefineName, opRedefineName, opSetName:
+  of opLoadName, opLoadNativeFast, opDefineName, opRedefineName, opSetName,
+     opRefBegin, opRefFinish, opRefAbort, opRefGet, opRefGetStructural:
     result.add " name=" & inst.name
   of opLoadLocal, opLoadLocalFast, opLoadArg, opDefineLocal, opRedefineLocal,
      opSetLocal:
@@ -1029,8 +1036,6 @@ proc formatInstruction(inst: Instruction): string =
     discard
   of opResolveQualifiedMessage, opQualifiedSend, opBindMessage:
     result.add " name=" & inst.name
-  of opSyntaxGuard:
-    result.add " target=" & $inst.intArg & " const=" & $inst.depth
   of opNoop, opPop, opNot, opMakeIterator, opIteratorHasNext, opIteratorNext,
      opIteratorClose, opLoopBreak, opLoopContinue, opAwait, opYield,
      opExplicitReturn, opReturn, opReturnBareInt:
@@ -1605,7 +1610,8 @@ proc emitAotCExpr(expr: Value, params: openArray[string],
         " ? " & emitAotCExpr(expr.body[1], params, paramReprs, available,
                                locals) & " : " &
         emitAotCExpr(expr.body[2], params, paramReprs, available, locals) & ")"
-    elif head == "set!" and expr.body.len == 2:
+    elif head == "set" and expr.body.len == 2 and
+        expr.body[0].kind != vkSymbol:
       let target = expr.body[0]
       var guarded = false
       var rendered = ""

@@ -75,19 +75,19 @@
     [method : Str, path : Str, body, attached : Bool, mutation : Bool]
     (var headers {})
     (if_not (== bearer "")
-      (headers ~ put! "authorization" $"Bearer ${bearer}"))
+      (headers ~ put "authorization" $"Bearer ${bearer}"))
     (if_yes attached
       (var aid (attachment_id ~ get))
       (if (== aid nil)
         (transport_error "not_attached"
           "client has no logical gateway attachment" nil nil))
-      (headers ~ put! "x-gene-attachment" aid))
+      (headers ~ put "x-gene-attachment" aid))
     (var encoded "")
     (if_not (== body nil)
       (set encoded (stringify body))
-      (headers ~ put! "content-type" "application/json"))
+      (headers ~ put "content-type" "application/json"))
     (if mutation
-      (headers ~ put! "idempotency-key" (next_idempotency_key)))
+      (headers ~ put "idempotency-key" (next_idempotency_key)))
     (try
       (parsed_response
         (await
@@ -237,5 +237,5 @@
   # Shape A injects the same method set over direct application calls. Keeping
   # this constructor intentionally boring makes the interface, not localhost
   # serialization, the architectural boundary.
-  (service ~ put! "mode" "direct")
+  (service ~ put "mode" "direct")
   service)

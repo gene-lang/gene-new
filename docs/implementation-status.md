@@ -21,9 +21,9 @@ The front-end transpilation proposal is implemented through its P6 embedded
 web-module slice.
 `gene/html/render` is the shared node-to-text edge, and `gene/css` supplies
 ordered declaration/rule data, nested/media rendering, deterministic scoped
-classes, and scoped keyframes. `examples/todo_app/src/main.gene` and
-`examples/web_demo.gene` use these APIs instead of local renderers or raw CSS
-strings. A backend-neutral fixture manifest and canonical result envelope run
+classes, and scoped keyframes. `examples/todo_app/src/main.gene` uses these APIs
+instead of local renderers or raw CSS strings. A backend-neutral fixture
+manifest and canonical result envelope run
 under `nimble transpile_spec`; the fixed bigint/JSON spike runs under
 `nimble transpile_perf`. `gene build --target web` analyzes the deliberately
 bounded `web` profile into a separate semantic IR and emits readable ES2022,

@@ -39,7 +39,7 @@
 
 (fn ensure_context [s : (List EventTarget)] : EventTarget
   (if_yes (== s/~size 0.0)
-    (s ~ push! ($audio/context)))
+    (s ~ push ($audio/context)))
   (first_context s))
 
 (fn play_dig [s : (List EventTarget)] : Nil

@@ -59,14 +59,14 @@
           ^count      (Buffer F32)}
 
   (ctor []
-    (set! self/names [])
-    (set! self/surface ($buffer F32 max_decors))
-    (set! self/trunk ($buffer F32 max_decors))
-    (set! self/leaf ($buffer F32 max_decors))
-    (set! self/min_height ($buffer F32 max_decors))
-    (set! self/max_height ($buffer F32 max_decors))
-    (set! self/chance ($buffer F32 max_decors))
-    (set! self/count ($buffer F32 1.0))))
+    (set self/names [])
+    (set self/surface ($buffer F32 max_decors))
+    (set self/trunk ($buffer F32 max_decors))
+    (set self/leaf ($buffer F32 max_decors))
+    (set self/min_height ($buffer F32 max_decors))
+    (set self/max_height ($buffer F32 max_decors))
+    (set self/chance ($buffer F32 max_decors))
+    (set self/count ($buffer F32 1.0))))
 
 (fn new_decors [] : DecorRegistry
   (new DecorRegistry))
@@ -76,7 +76,7 @@
 
 (type DecorRegistryFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for DecorRegistryFull)
 
@@ -87,14 +87,14 @@
   (if_yes (>= id max_decors)
     (fail (new DecorRegistryFull
                $"decoration registry is full at ${max_decors} entries")))
-  (d/names ~ push! name)
-  (d/surface ~ set! id surface)
-  (d/trunk ~ set! id trunk)
-  (d/leaf ~ set! id leaf)
-  (d/min_height ~ set! id min_height)
-  (d/max_height ~ set! id max_height)
-  (d/chance ~ set! id chance)
-  (d/count ~ set! 0.0 (+ id 1.0))
+  (d/names ~ push name)
+  (d/surface ~ set id surface)
+  (d/trunk ~ set id trunk)
+  (d/leaf ~ set id leaf)
+  (d/min_height ~ set id min_height)
+  (d/max_height ~ set id max_height)
+  (d/chance ~ set id chance)
+  (d/count ~ set 0.0 (+ id 1.0))
   id)
 
 (fn decor_name [d : DecorRegistry id : F64] : Str

@@ -228,7 +228,7 @@ here so nobody assumes the native one maps over:
 ### A.6 Deliverable
 
 A `gene.wasm` + small JS/WASI loader that evaluates Gene source and returns
-output. First proof: run `examples/web_demo.gene`'s pure-data/render portions
+output. First proof: run `examples/style_guide.gene`'s pure-data portions
 (it already avoids sockets until `serve`) and the `spec_runner` pure-language
 subset in the browser. This is the "Gene playground" most people mean by "wasm
 support," and it dogfoods the GIR image concept from
@@ -373,7 +373,7 @@ does not, and none of the above uses it.
    (§A.2) and the browser-vs-WASI namespace split (§A.4.1).
 2. **Playground loader.** ✅ **Minimal version done.** `web/index.html` feeds
    source in and renders `gene_result_out_*` into a transcript. Follow-ups: run
-   `examples/web_demo.gene`'s render path, add REPL/session handles, and ship the
+   a maintained example render path, add REPL/session handles, and ship the
    GIR image so load does not re-parse.
 3. **fetch bridge (Target A optional).** `net/fetch` over a host Promise import,
    settled through external-pending tasks — the browser analogue of
