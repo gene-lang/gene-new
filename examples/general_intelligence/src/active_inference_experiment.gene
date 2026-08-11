@@ -154,11 +154,47 @@
      ^inspections %metrics/2
      ^utility %metrics/3))
 
-(fn evaluate_episode_batch [subject : Node, prior : (List Float),
-                            batch : Node] : Node
+(fn subject_with_preference_multiplier [subject : Node, field : Str,
+                                        multiplier : Float] : Node
+  (var correct_repair_utility
+    (if (== field "correct_repair_utility")
+      (* subject/correct_repair_utility multiplier)
+      subject/correct_repair_utility))
+  (var incorrect_repair_utility
+    (if (== field "incorrect_repair_utility")
+      (* subject/incorrect_repair_utility multiplier)
+      subject/incorrect_repair_utility))
+  (var defer_utility
+    (if (== field "defer_utility")
+      (* subject/defer_utility multiplier)
+      subject/defer_utility))
+  (var inspection_cost
+    (if (== field "inspection_cost")
+      (* subject/inspection_cost multiplier)
+      subject/inspection_cost))
+  `(repair_subject
+     ^faults %subject/faults
+     ^tests %subject/tests
+     ^base_prior %subject/base_prior
+     ^shifted_prior %subject/shifted_prior
+     ^correct_repair_utility %correct_repair_utility
+     ^incorrect_repair_utility %incorrect_repair_utility
+     ^defer_utility %defer_utility
+     ^inspection_cost %inspection_cost
+     ^beta %subject/beta
+     ^max_inspections %subject/max_inspections
+     ^expected_policy_count %subject/expected_policy_count
+     ^expected_branch_count %subject/expected_branch_count
+     ^residual_entropy_floor %subject/residual_entropy_floor
+     ^branch_mass_tolerance %subject/branch_mass_tolerance))
+
+(fn evaluate_episode_batch_with_beta [subject : Node, prior : (List Float),
+                                      batch : Node, active_beta : Float] : Node
+  (var planner_started ($os/monotonic_ms))
   (var greedy (greedy_policy subject prior))
   (var reward (plan subject prior 0.0))
-  (var active (plan subject prior subject/beta))
+  (var active (plan subject prior active_beta))
+  (var planner_elapsed_ms (- ($os/monotonic_ms) planner_started))
   (var greedy_metrics (new_metrics))
   (var reward_metrics (new_metrics))
   (var random_metrics (new_metrics))
@@ -176,6 +212,8 @@
      ^episode_seed %batch/episode_seed
      ^random_seed %batch/random_seed
      ^episode_count %(batch/episodes ~ size)
+     ^active_beta %active_beta
+     ^planner_elapsed_ms %planner_elapsed_ms
      ^greedy_policy %greedy
      ^reward_policy %reward/policy
      ^active_policy %active/policy
@@ -185,6 +223,36 @@
      ^active %(metrics_node active_metrics)
      ^final_episode_state %batch/final_episode_state
      ^final_random_state %batch/final_random_state))
+
+(fn evaluate_paired_episode_batch [subject : Node, prior : (List Float),
+                                   batch : Node, active_beta : Float] : Node
+  (var planner_started ($os/monotonic_ms))
+  (var reward (plan subject prior 0.0))
+  (var active (plan subject prior active_beta))
+  (var planner_elapsed_ms (- ($os/monotonic_ms) planner_started))
+  (var reward_metrics (new_metrics))
+  (var active_metrics (new_metrics))
+  (for episode in batch/episodes
+    (record_result reward_metrics
+      (execute_policy subject reward/policy episode))
+    (record_result active_metrics
+      (execute_policy subject active/policy episode)))
+  `(paired_batch_result
+     ^episode_seed %batch/episode_seed
+     ^random_seed %batch/random_seed
+     ^episode_count %(batch/episodes ~ size)
+     ^active_beta %active_beta
+     ^planner_elapsed_ms %planner_elapsed_ms
+     ^reward_policy %reward/policy
+     ^active_policy %active/policy
+     ^reward %(metrics_node reward_metrics)
+     ^active %(metrics_node active_metrics)
+     ^final_episode_state %batch/final_episode_state
+     ^final_random_state %batch/final_random_state))
+
+(fn evaluate_episode_batch [subject : Node, prior : (List Float),
+                            batch : Node] : Node
+  (evaluate_episode_batch_with_beta subject prior batch subject/beta))
 
 (fn evaluate_batch [subject : Node, prior : (List Float), episode_seed : Int,
                     random_seed : Int, episode_count : Int] : Node

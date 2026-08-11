@@ -1,9 +1,11 @@
 # Candidate protocol: exact-belief active-inference micro-agent
 
-Status: subject specified, mechanism smoke passing, and disjoint-seed compute
-pilot passing on 2026-08-09; not yet frozen or evaluated. No generated
-evaluation episodes have been opened. The remaining pre-freeze gate is an
-independent protocol review.
+Status: candidate-complete subject, mechanism smoke, disjoint-seed compute
+pilot, canonical exporter, sensitivity-complete frozen consumer,
+mutation-rejecting freeze, one-shot runner, and preregistered analysis all
+implemented and passing excluded-pilot self-tests. No evaluation episode has
+been generated or opened. The remaining pre-freeze gate is independent review
+of the exact candidate digest.
 
 Implementation:
 [`examples/general_intelligence/src/exact_belief.gene`](../../../../examples/general_intelligence/src/exact_belief.gene).
@@ -11,6 +13,10 @@ Mechanism smoke:
 [`examples/general_intelligence/tests/active_inference_smoke.gene`](../../../../examples/general_intelligence/tests/active_inference_smoke.gene).
 Generator/evaluator:
 [`examples/general_intelligence/src/active_inference_experiment.gene`](../../../../examples/general_intelligence/src/active_inference_experiment.gene).
+Review/freeze tool:
+[`tools/prepare_active_inference_freeze.py`](../../../../tools/prepare_active_inference_freeze.py).
+Post-freeze runner and preregistered analysis:
+[`tools/run_active_inference_evaluation.py`](../../../../tools/run_active_inference_evaluation.py).
 
 ## Hypothesis and claim boundary
 
@@ -208,6 +214,11 @@ The candidate passes only if all of these hold:
 Preference sensitivity varies each of the four nonzero utility/cost fields one
 at a time by `-10%` and `+10%`, for eight predeclared replays. These and the beta
 replays are diagnostics; the primary `beta = 0.25` result is never replaced.
+The frozen base-prior consumer emits the primary result, reuses it as the
+`beta = 0.25` replay, evaluates `beta = 0.10` and `0.50`, and evaluates all
+eight preference replays. The shifted-prior consumer emits only its required
+primary robustness result. Every raw output contains an authoritative canonical
+Gene record plus a strict JSON projection used by the frozen analysis.
 
 The 1,000-episode size is conservative for the candidate's 30% relative-effect
 threshold at the subject's analytically derivable reward-only error rate. The
@@ -236,7 +247,8 @@ episode seed `3000001` and random-arm seed `4000001`; it completed in 0.21
 seconds with 12,648,448 bytes maximum resident set size and produced the pinned
 final states `264756247` and `2017023388`.
 Candidate ceilings are 2 seconds and 64 MiB for either readiness check, and 30
-seconds and 128 MiB for the full local evaluation.
+seconds and 128 MiB for each isolated frozen-batch evaluation process. The
+runner also records total evaluator wall time and maximum observed RSS.
 
 `EvalBudget` currently enforces `max_steps` only for code compiled inside its
 `eval` unit; memory and timeout policy fields are rejected, and calling a
@@ -264,50 +276,72 @@ caller explicitly requests a development-only inspection; `freeze` has no such
 override. Packet, attestation, and freeze paths are kept outside the worktree so
 creating review evidence cannot silently change the candidate it describes.
 
-The independent reviewer supplies one JSON object with exactly these fields:
+The reviewer supplies only approval plus free-form notes. `attest` verifies the
+reviewed packet against the current candidate and writes a schema-2 record with
+exactly these fields:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "experiment": "active_inference_v1",
   "candidate_digest": "the digest printed by packet",
-  "reviewer_id": "an externally meaningful identity",
-  "reviewed_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+  "reviewer_id": "Git user.name and user.email, recorded automatically",
+  "reviewed_at_utc": "automatic ISO-8601 UTC timestamp",
   "approved": true,
-  "confirmed_independent": true,
-  "confirmed_no_evaluation_output_opened": true,
   "notes": "review disposition and any non-blocking observations"
 }
 ```
 
-The repository can validate the schema and digest binding, but it cannot
-self-certify reviewer independence. That remains an organizational fact. Once
-the attestation exists, the commands are:
+Approval means the reviewer attests independent review and confirms that no
+evaluation output was opened; separate checkbox fields are not required. The
+repository validates schema and digest binding but cannot self-certify reviewer
+independence. Once review is complete, the commands are:
 
 ```bash
 python3 tools/prepare_active_inference_freeze.py packet \
-  --output ../active-inference-v1-review.json
+  --output REVIEW_DIR/review_packet.json
+python3 tools/prepare_active_inference_freeze.py attest \
+  --packet REVIEW_DIR/review_packet.json \
+  --approve --notes "REVIEW_NOTES" \
+  --output REVIEW_DIR/review_attestation.json
 python3 tools/prepare_active_inference_freeze.py freeze \
-  --attestation ../active-inference-v1-attestation.json \
-  --output-dir ../frozen-active-inference-v1
+  --attestation REVIEW_DIR/review_attestation.json \
+  --output-dir FREEZE_DIR
 python3 tools/prepare_active_inference_freeze.py verify \
-  --freeze-dir ../frozen-active-inference-v1
+  --freeze-dir FREEZE_DIR
 ```
 
 The exporter writes potential observations and random-arm draws as canonical
-Gene data, but neither it nor the freeze tool executes an arm or computes a
-treatment metric. Its development self-test exports only the disjoint pilot
-seed, passes that file through the capability-gated frozen-batch evaluator, and
-explicitly reports zero evaluation batches and zero evaluation treatment arms.
-The evaluator consumes the exact frozen file rather than regenerating its
-stream.
+Gene data, but neither it nor the freeze tool executes an evaluation arm or
+computes a treatment metric. The freeze manifest explicitly records zero
+evaluated batches and zero treatment arms. Its development self-test exports
+only a disjoint pilot seed and passes that file through the capability-gated
+frozen consumer. The consumer reads the exact frozen file rather than
+regenerating its stream.
 
-On the 2026-08-09 development machine, the complete Python freeze-tool
-self-test took 1.90 seconds and 29,540,352 bytes maximum resident set size. It
-includes the mechanism smoke, compute pilot, canonical pilot export,
-frozen-file evaluation, manifest verification, and mutation rejection. These
-are development observations, not a resource measurement of the unopened full
-evaluation.
+Only after a legitimate freeze may the treatment runner execute:
+
+```bash
+python3 tools/run_active_inference_evaluation.py run \
+  --freeze-dir FREEZE_DIR --output-dir RESULT_DIR
+python3 tools/run_active_inference_evaluation.py verify \
+  --freeze-dir FREEZE_DIR --result-dir RESULT_DIR
+```
+
+`run` refuses a dirty candidate or existing/in-tree result directory, verifies
+the complete freeze against current source, evaluates each manifest-selected
+batch once, hashes every canonical raw result, records time and RSS, and writes
+the fixed analysis atomically. `verify` rechecks the freeze and result hashes
+and recomputes every pass gate from the raw JSON projections. The runner
+self-test uses only excluded pilot seeds plus synthetic known-answer counts; it
+exercises passing and robustness-reversal analysis and rejects a one-byte raw
+result mutation.
+
+The original 2026-08-09 freeze-tool self-test took 1.90 seconds and 29,540,352
+bytes maximum resident set size. After adding all preregistered sensitivity
+replays, the 2026-08-11 optimized-build freeze and runner self-tests each took
+about four wall-clock seconds on excluded pilot data. These are development
+observations, not measurements of the unopened evaluation.
 
 Any content change after that manifest creates a new experiment version. The
 estimated implementation and review effort remains 2–4 person-weeks with

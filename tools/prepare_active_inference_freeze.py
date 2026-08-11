@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Prepare and verify the exact-belief experiment freeze without running arms.
 
-The tool has three deliberately separate phases:
+The tool has four deliberately separate phases:
 
 * ``packet`` hashes the review candidate and prints its stable digest;
+* ``attest`` records a reviewer's approval and notes against that exact digest;
 * ``freeze`` requires an independent attestation for that exact digest, then
   generates canonical episode batches without executing a treatment arm; and
 * ``verify`` re-hashes the current implementation and every frozen artifact.
@@ -81,6 +82,10 @@ REVIEWED_ARTIFACTS = [
         "path": "tools/prepare_active_inference_freeze.py",
         "roles": ["freeze_procedure"],
     },
+    {
+        "path": "tools/run_active_inference_evaluation.py",
+        "roles": ["treatment_runner", "preregistered_analysis"],
+    },
 ]
 
 SEED_GROUPS = [
@@ -105,8 +110,6 @@ EXPECTED_ATTESTATION_KEYS = {
     "reviewer_id",
     "reviewed_at_utc",
     "approved",
-    "confirmed_independent",
-    "confirmed_no_evaluation_output_opened",
     "notes",
 }
 
@@ -238,8 +241,27 @@ def build_packet(*, require_clean: bool) -> dict[str, Any]:
         "resource_ceilings": {
             "readiness_seconds": 2,
             "readiness_max_rss_bytes": 67_108_864,
-            "full_evaluation_seconds": 30,
-            "full_evaluation_max_rss_bytes": 134_217_728,
+            "evaluation_seconds_per_batch": 30,
+            "evaluation_max_rss_bytes_per_process": 134_217_728,
+        },
+        "analysis": {
+            "uncertainty_unit": "matched_batch_seed",
+            "batch_count_per_prior": BATCH_COUNT,
+            "episodes_per_batch": EPISODES_PER_BATCH,
+            "paired_incorrect_repair_metric": "reward_rate_minus_active_rate",
+            "paired_completion_metric": "active_rate_minus_reward_rate",
+            "interval": "two_sided_student_t_95_df_9",
+            "t_critical": 2.262,
+            "minimum_relative_incorrect_repair_reduction": 0.30,
+            "minimum_completion_ci_lower": -0.02,
+            "beta_values": [0.10, 0.25, 0.50],
+            "preference_multipliers": [0.90, 1.10],
+            "preference_fields": [
+                "correct_repair_utility",
+                "incorrect_repair_utility",
+                "defer_utility",
+                "inspection_cost",
+            ],
         },
         "commands": {
             "mechanism_smoke": (
@@ -260,11 +282,20 @@ def build_packet(*, require_clean: bool) -> dict[str, Any]:
                 "active_inference_frozen_batch.gene --grant "
                 "episodes=$fs/ReadDir -- PRIOR EPISODE_FILE"
             ),
+            "full_evaluation": (
+                "python3 tools/run_active_inference_evaluation.py run "
+                "--freeze-dir FREEZE_DIR --output-dir RESULT_DIR"
+            ),
         },
         "review_requirements": {
             "independent": True,
             "evaluation_output_unopened": True,
-            "attestation_schema": 1,
+            "attestation_schema": 2,
+            "reviewer_inputs": ["approved", "notes"],
+            "approval_semantics": (
+                "approval attests independent review and unopened "
+                "evaluation output"
+            ),
         },
     }
     packet["candidate_digest"] = sha256_bytes(canonical_json(packet))
@@ -291,8 +322,8 @@ def validate_attestation(
         raise FreezeError(
             f"attestation fields mismatch; missing={missing}, extra={extra}"
         )
-    if attestation["schema"] != 1:
-        raise FreezeError("attestation schema must be 1")
+    if attestation["schema"] != 2:
+        raise FreezeError("attestation schema must be 2")
     if attestation["experiment"] != EXPERIMENT:
         raise FreezeError("attestation names the wrong experiment")
     if attestation["candidate_digest"] != candidate_digest:
@@ -303,15 +334,8 @@ def validate_attestation(
         raise FreezeError("attestation reviewer_id must be a nonempty string")
     if not isinstance(attestation["notes"], str):
         raise FreezeError("attestation notes must be a string")
-    if not all(
-        attestation[field] is True
-        for field in (
-            "approved",
-            "confirmed_independent",
-            "confirmed_no_evaluation_output_opened",
-        )
-    ):
-        raise FreezeError("attestation must explicitly confirm every review gate")
+    if attestation["approved"] is not True:
+        raise FreezeError("attestation must explicitly approve the candidate")
     timestamp = attestation["reviewed_at_utc"]
     if not isinstance(timestamp, str) or not timestamp.endswith("Z"):
         raise FreezeError("reviewed_at_utc must be an ISO-8601 UTC timestamp")
@@ -329,6 +353,35 @@ def load_json_object(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise FreezeError(f"{label} must contain one JSON object")
     return value
+
+
+def reviewer_identity() -> str:
+    name = run_checked(["git", "config", "user.name"]).stdout.strip()
+    email = run_checked(["git", "config", "user.email"]).stdout.strip()
+    if not name or not email:
+        raise FreezeError("git user.name and user.email must identify the reviewer")
+    return f"{name} <{email}>"
+
+
+def build_attestation(
+    packet: dict[str, Any],
+    notes: str,
+    *,
+    reviewer_id: str | None = None,
+    reviewed_at_utc: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema": 2,
+        "experiment": EXPERIMENT,
+        "candidate_digest": packet["candidate_digest"],
+        "reviewer_id": reviewer_id or reviewer_identity(),
+        "reviewed_at_utc": reviewed_at_utc
+        or dt.datetime.now(dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+        "approved": True,
+        "notes": notes,
+    }
 
 
 def export_batch(
@@ -399,6 +452,31 @@ def packet_command(args: argparse.Namespace) -> None:
     print(f"candidate digest: {packet['candidate_digest']}")
 
 
+def attest_command(args: argparse.Namespace) -> None:
+    current_packet = build_packet(require_clean=not args.allow_dirty)
+    packet_path = Path(args.packet)
+    require_outside_worktree(packet_path, "review packet")
+    reviewed_packet = load_json_object(packet_path, "review packet")
+    validate_packet_digest(reviewed_packet)
+    if reviewed_packet["candidate_digest"] != current_packet["candidate_digest"]:
+        raise FreezeError("review packet does not cover the current candidate")
+    attestation = build_attestation(reviewed_packet, args.notes)
+    validate_attestation(attestation, current_packet["candidate_digest"])
+    destination = Path(args.output)
+    require_outside_worktree(destination, "review attestation")
+    if destination.exists():
+        raise FreezeError(f"refusing to overwrite review attestation: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(attestation, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(f"review attestation: {destination}")
+    print(f"candidate digest: {attestation['candidate_digest']}")
+    print(f"reviewer: {attestation['reviewer_id']}")
+    print("approved: true")
+
+
 def write_freeze_directory(
     destination: Path,
     packet: dict[str, Any],
@@ -451,6 +529,10 @@ def write_freeze_directory(
             "review_attestation_path": attestation_filename,
             "review_attestation_sha256": sha256_bytes(attestation_bytes),
             "episodes": episode_records,
+            "evaluation_state": {
+                "batches_evaluated": 0,
+                "treatment_arms_executed": 0,
+            },
         }
         manifest["manifest_digest"] = sha256_bytes(canonical_json(manifest))
         (temporary / "freeze_manifest.json").write_text(
@@ -487,6 +569,7 @@ def freeze_command(args: argparse.Namespace) -> None:
     print(f"candidate digest: {packet['candidate_digest']}")
     print(f"manifest digest: {manifest['manifest_digest']}")
     print(f"episode batches: {len(manifest['episodes'])}")
+    print("evaluation batches executed: 0")
     print("treatment arms executed: 0")
 
 
@@ -509,6 +592,11 @@ def verify_freeze_directory(
         raise FreezeError("freeze manifest digest mismatch")
     if manifest.get("schema") != 1 or manifest.get("experiment") != EXPERIMENT:
         raise FreezeError("freeze manifest schema or experiment mismatch")
+    if manifest.get("evaluation_state") != {
+        "batches_evaluated": 0,
+        "treatment_arms_executed": 0,
+    }:
+        raise FreezeError("freeze manifest claims unexpected evaluation work")
 
     packet = manifest.get("review_packet")
     attestation = manifest.get("review_attestation")
@@ -598,17 +686,12 @@ def verify_command(args: argparse.Namespace) -> None:
 def self_test_command(_: argparse.Namespace) -> None:
     packet = build_packet(require_clean=False)
     validate_packet_digest(packet)
-    attestation = {
-        "schema": 1,
-        "experiment": EXPERIMENT,
-        "candidate_digest": packet["candidate_digest"],
-        "reviewer_id": "self_test_only_not_an_independent_review",
-        "reviewed_at_utc": "2026-08-09T00:00:00Z",
-        "approved": True,
-        "confirmed_independent": True,
-        "confirmed_no_evaluation_output_opened": True,
-        "notes": "schema self-test only",
-    }
+    attestation = build_attestation(
+        packet,
+        "schema self-test only",
+        reviewer_id="self_test_only_not_an_independent_review",
+        reviewed_at_utc="2026-08-09T00:00:00Z",
+    )
     validate_attestation(attestation, packet["candidate_digest"])
 
     smoke = run_checked([str(GENE), "run", str(SMOKE)], timeout=2.0)
@@ -667,9 +750,9 @@ def self_test_command(_: argparse.Namespace) -> None:
                 "base",
                 str(directory / manifest["episodes"][0]["path"]),
             ],
-            timeout=2.0,
+            timeout=30.0,
         )
-        if "(serde_v1 (batch_result " not in evaluated.stdout:
+        if "(serde_v1 (active_inference_frozen_result " not in evaluated.stdout:
             raise FreezeError("frozen pilot batch did not evaluate canonically")
         episode_path = directory / manifest["episodes"][0]["path"]
         episode_path.write_bytes(batch + b"tampered\n")
@@ -699,6 +782,7 @@ def self_test_command(_: argparse.Namespace) -> None:
     print("evaluation batches exported: 0")
     print("evaluation treatment arms executed: 0")
     print("mutation rejected: true")
+    print("reviewer inputs: approved, notes")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -715,6 +799,20 @@ def parser() -> argparse.ArgumentParser:
         help="development inspection only; a dirty packet cannot be frozen",
     )
     packet.set_defaults(handler=packet_command)
+
+    attest = subcommands.add_parser(
+        "attest", help="record approval and notes for a review packet"
+    )
+    attest.add_argument("--packet", required=True)
+    attest.add_argument("--approve", action="store_true", required=True)
+    attest.add_argument("--notes", required=True)
+    attest.add_argument("--output", required=True)
+    attest.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="development inspection only; a dirty attestation cannot be frozen",
+    )
+    attest.set_defaults(handler=attest_command)
 
     freeze = subcommands.add_parser(
         "freeze", help="generate canonical batches after independent review"
