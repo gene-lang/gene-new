@@ -154,6 +154,56 @@ suite "cli — gene run":
     check "evaluation treatment arms executed: 0" in freezeTool.output
     check "mutation rejected: true" in freezeTool.output
 
+    let reviewDir = cliDir / "active_inference_review"
+    if dirExists(reviewDir): removeDir(reviewDir)
+    createDir(reviewDir)
+    let packetPath = reviewDir / "packet.json"
+    let attestationPath = reviewDir / "attestation.json"
+    let packetTool = execCmdEx(
+      "python3 tools/prepare_active_inference_freeze.py packet " &
+      "--allow-dirty --output " & shellQuote(packetPath))
+    check packetTool.exitCode == 0
+    let approvalTool = execCmdEx(
+      "python3 tools/prepare_active_inference_freeze.py attest " &
+      "--allow-dirty --packet " & shellQuote(packetPath) &
+      " --approve --notes " & shellQuote("human review complete") &
+      " --output " & shellQuote(attestationPath))
+    check approvalTool.exitCode == 0
+    let packet = parseFile(packetPath)
+    let attestation = parseFile(attestationPath)
+    check attestation.len == 7
+    check attestation["schema"].getInt == 2
+    check attestation["experiment"].getStr == "active_inference_v1"
+    check attestation["candidate_digest"].getStr ==
+      packet["candidate_digest"].getStr
+    check attestation["reviewer_id"].getStr.len > 0
+    check attestation["reviewed_at_utc"].getStr.endsWith("Z")
+    check attestation["approved"].getBool
+    check attestation["notes"].getStr == "human review complete"
+    check not attestation.hasKey("confirmed_independent")
+    check not attestation.hasKey("confirmed_no_evaluation_output_opened")
+
+    let unapproved = execCmdEx(
+      "python3 tools/prepare_active_inference_freeze.py attest " &
+      "--allow-dirty --packet " & shellQuote(packetPath) &
+      " --notes " & shellQuote("not approved") &
+      " --output " & shellQuote(reviewDir / "unapproved.json"))
+    check unapproved.exitCode != 0
+    check "--approve" in unapproved.output
+
+    let analysisTool = execCmdEx(
+      "python3 tools/run_active_inference_evaluation.py self-test")
+    check analysisTool.exitCode == 0
+    check "known mean incorrect-repair improvement: 0.100000" in
+      analysisTool.output
+    check "known reward completion rate: 0.900000" in analysisTool.output
+    check "pass and robustness-failure paths verified" in analysisTool.output
+    check "pilot batches evaluated: 2" in analysisTool.output
+    check "pilot scenario evaluations: 12" in analysisTool.output
+    check "pilot canonical random-arm records per base batch: 1" in
+      analysisTool.output
+    check "raw result mutation rejected: true" in analysisTool.output
+
   test "general-intelligence library induction extracts only useful reuse":
     var ran = runGene([
       "run",
