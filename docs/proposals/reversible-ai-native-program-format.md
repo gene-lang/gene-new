@@ -96,10 +96,52 @@ is what a 6000-step model should be expected to produce. Making G3 mean
 something needs either the designed held-out generation task (G4's blocker)
 or a corpus whose documents fit a generation budget.
 
-Note what G6 says: the structural modality is not merely affordable, it is
-slightly *cheaper* than canonical text on both axes the study gates on. That
-is a real result, and it is also not the question the study exists to answer
-— G4 and G5 are, and they remain unmeasurable.
+Read G6's position ratio as corpus-dependent, not as a property of the
+modality — see the generated corpus below, where the same measurement gives
+1.367x rather than 0.981x. Either way it clears the 1.5x bar, but the
+headroom differs enough that quoting 0.981x on its own would mislead. And
+G6 is not the question the study exists to answer: G4 and G5 are, and they
+remain unmeasurable.
+
+### Generated corpus (2026-08-11)
+
+1002 small, self-contained programs across 15 task families, each paired
+with a `.expected` file holding its exact stdout, generated to
+`training/GENERATION_BRIEF.md` and checked by
+`training/validate_examples.sh` (compiles, runs with matching stdout,
+`docpack`-encodable, unit round-trip exact). All 1002 pass, and the corpus
+builder accepts all 1002 with **zero duplicates and zero rejections**.
+
+It differs from this repo's own corpus in the two ways that were blocking
+measurement, and one that reverses an earlier reading:
+
+| | repo corpus (186) | generated (1002) |
+| --- | --- | --- |
+| median positions/document | 4,749 | **359** |
+| documents within a 4096-unit budget | ~half | **1002/1002** |
+| payload share, aggregate / median doc | 95.6% / 79.1% | **60.9% / 60.6%** |
+| position ratio vs byte control | 0.981x | **1.367x** |
+
+- **G3 becomes measurable.** Every document fits a practical generation
+  budget, which is exactly what the repo corpus could not offer.
+- **The payload routing rule stops firing** — 60.9%, under the 70%
+  threshold. The 95.6%/93.6% figures were an artifact of a handful of
+  serialized-session fixtures that are ~99.9% string payload, not a
+  property of the modality. That materially weakens the earlier reading
+  that this work should route to a payload-piece experiment.
+- **The position ratio moves the other way.** On ordinary small programs
+  the structural modality costs *more* positions than canonical text
+  (1.367x), not fewer. The blob-heavy corpus made it look cheaper because
+  both encodings pay the same payload bytes there while the unit stream
+  amortizes its structural overhead across huge strings.
+
+The `.expected` oracle exists because `gene test` is package-level, so a
+loose corpus file cannot declare tests. It is a real pass/fail signal and is
+the missing input G4 needs — but note its limit, found while generating: a
+program that computes the *wrong* answer still runs cleanly and produces
+*some* output, and `.expected` captured from that run enshrines the bug.
+Correctness of the expected value has to be established independently of
+capturing it.
 
 Two further results come from the corpus alone, before any training run:
 

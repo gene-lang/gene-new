@@ -14,8 +14,8 @@ remote directory `~/exp/`). Models download directly on the remote host into
 
 ```
 .gene source files
-  -> gene compile             (catches macro/name-resolution errors)
-  -> gene docpack -o out.gdoc  (parse, validate, canonicalize, encode -- one step)
+  -> gene compile               (catches macro/name-resolution errors)
+  -> gene docpack -o out.gdoc   (parse, validate, canonicalize, encode -- one step)
   -> gene docunits -o out.jsonl (model-native logical unit stream)
   -> gene docunpack out.gdoc    (canonical .gene text, for the matched control)
   -> gene docunits --decode     (must reproduce that same canonical text:
