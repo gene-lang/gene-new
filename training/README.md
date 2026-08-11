@@ -47,25 +47,39 @@ reports `NOT_MEASURABLE` and names what is missing -- it is never quietly
 counted as a pass, and the script exits non-zero so a CI wiring cannot read
 an unrun study as a green one.
 
-Where each gate stands against this repo's own corpus:
+Where each gate stands. Read the corpus column carefully: several verdicts
+differ between this repo's own 186 documents and the 1002 generated ones,
+and those differences were properties of the *corpus*, not of the modality.
 
-- **G1** (zero representation loss) **passes**, and `build_corpus.py`
-  enforces it per file at build time.
-- **G2** (memorization) is measurable and currently *fails* at 98.98% -- an
-  optimization-budget result, not a modality one. Dropout is the dominant
-  lever; it directly opposes what this gate measures, so a memorization
-  probe should use `--dropout 0.0`.
-- **G3** (structural validity) is measurable in principle but *not* against
-  this corpus: its median document is ~4,700 logical units, so whole-document
-  generation is dominated by document length rather than structure. The gate
-  reports `NOT_MEASURABLE` when most samples hit the generation budget rather
-  than quoting a number that means something else.
-- **G4/G5** (semantic pass rate; beating the control) are structurally not
-  measurable: there is no task corpus with declared, executable tests, and
-  these are the only two gates that speak to modality *benefit* -- the
-  proposal calls G1-G3 sanity gates in its own words.
-- **G6** (positions, throughput) is measurable.
-- **The payload routing rule fires** (see the proposal's status section).
+- **G1** (zero representation loss) **passes** on both, and
+  `build_corpus.py` enforces it per file at build time.
+- **G2** (memorization) **passes** at 99.33%, on the deliberately tiny
+  corpus the gate is stated over. It takes budget: 93.6% at 4k steps with
+  dropout 0.1, 98.98% at 12k with dropout 0, 99.33% at 36k. Dropout
+  directly opposes what this gate measures -- always probe with
+  `--dropout 0.0`.
+- **G3** (structural validity) is **not measurable on the repo corpus**
+  (median ~4,700 logical units, so whole-document generation measures
+  length) but **is measurable on the generated corpus** (median 359 units,
+  all 1002 inside a 4096-unit budget). The gate reports `NOT_MEASURABLE`
+  when most samples hit the generation budget, rather than quoting a number
+  that means something else.
+- **G4/G5** (semantic pass rate; beating the control) are the only gates
+  that speak to modality *benefit* -- the proposal calls G1-G3 sanity gates
+  in its own words. The generated corpus's `.expected` files are the
+  missing oracle; wiring them into a held-out task split is what remains.
+- **G6** (positions, throughput) is measurable. Position ratio is
+  corpus-dependent: 0.981x on the repo corpus, 1.367x on ordinary small
+  programs. Both clear the 1.5x bar; do not quote the first alone.
+- **The payload routing rule fires on the repo corpus (95.6%) and does not
+  on the generated one (60.9%, threshold 70%).** The repo figure came from
+  a few serialized-session fixtures that are ~99.9% string payload.
+
+A caution about the `.expected` oracle, found while generating the corpus:
+a program that computes the *wrong* answer still runs cleanly and produces
+output, and `.expected` captured from that run enshrines the bug. A green
+validator is not a correctness proof; expected values need independent
+derivation, not just capture.
 
 `--dump-generations DIR` writes G3's generated unit streams out, so
 generation can run on the GPU host and decoding on a host that has a built
@@ -87,18 +101,22 @@ what's still open below.
 
 **Not yet done, in the order they'd need to happen:**
 
-1. A real pilot-scale corpus. This repo's own source is enough to prove the
-   pipeline runs, nowhere near "tens of thousands of candidate programs" the
-   proposal's corpus pipeline assumes, and the current train/validation/test
-   split groups by *source directory* -- a proxy for avoiding near-duplicate
-   leakage, not the proposal's semantic-tree-cluster holdout, which needs a
-   designed task taxonomy that doesn't exist yet.
-2. A held-out **task** set with declared, executable tests. Without it the
-   two semantic gates (G4, G5) cannot be measured at all, and those are the
-   only gates that speak to modality *benefit* -- G1/G2/G3 are explicitly
-   sanity gates in the proposal's own words, not evidence.
-3. Matched from-scratch training runs at whatever capacity the memory probe
-   says fits, scored with `evaluate.py`.
+1. Wire the generated corpus's `.expected` oracles into a held-out task
+   split, which is what G4/G5 need. `build_corpus.py` still groups by source
+   directory; the 15 task families are the intended holdout unit and are not
+   used as such yet.
+2. Decide whether the from-scratch model track is worth continuing at all.
+   Corpus scale is the binding constraint and it is severe: even 200,000
+   programs is ~79M unit tokens, Chinchilla-optimal at roughly 4M
+   parameters. No corpus this project can realistically build produces a
+   model that writes good Gene code, and the corpus itself is generated by a
+   model that already can. The study's gates are *comparative* (beat a
+   matched byte control at identical budget), so weakness does not falsify
+   them -- but a modality advantage measured at ~1M parameters may not
+   survive to any scale anyone deploys. The proposal's own appendix routes
+   "the first serious Gene model" through a pretrained checkpoint instead.
+3. If continuing: matched from-scratch runs scored with `evaluate.py`, on
+   the generated corpus rather than the repo one.
 
 ## Usage
 
