@@ -486,7 +486,7 @@ proc putRequireInt(name: string, args: openArray[Value]): int64 =
   args[0].intVal
 
 proc putRequireFloat(name: string, args: openArray[Value]): float64 =
-  ## Accepts an integral Int as well, for the same reason `Buffer/set!` does
+  ## Accepts an integral Int as well, for the same reason `Buffer/set` does
   ## (design.md §D7.1): a caller holding a whole number should not have to
   ## convert it to hand it to a float field.
   if args.len != 1:

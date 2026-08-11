@@ -741,8 +741,8 @@
     },
     {
       "id": "data.paths_selectors_and_mutation",
-      "source": "(let data {^count 1}) (set! data/count 5) (let pick /count) (pick data)",
-      "web_source": "(mod data_paths_selectors ^profile web) (fn run [] : Int (let data {^count 1}) (set! data/count 5) (let pick /count) (pick data))",
+      "source": "(let data {^count 1}) (set data/count 5) (let pick /count) (pick data)",
+      "web_source": "(mod data_paths_selectors ^profile web) (fn run [] : Int (let data {^count 1}) (set data/count 5) (let pick /count) (pick data))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -780,8 +780,8 @@
     },
     {
       "id": "data.immutable_node",
-      "source": "(type Item ^props {^label Str}) (let node #(Item ^label \"fixed\")) (try (set! node/label \"changed\") catch _ node/label)",
-      "web_source": "(mod data_immutable_node ^profile web) (type Item ^props {^label Str}) (fn run [] : Str (let node #(Item ^label \"fixed\")) (try (set! node/label \"changed\") catch _ node/label))",
+      "source": "(type Item ^props {^label Str}) (let node #(Item ^label \"fixed\")) (try (set node/label \"changed\") catch _ node/label)",
+      "web_source": "(mod data_immutable_node ^profile web) (type Item ^props {^label Str}) (fn run [] : Str (let node #(Item ^label \"fixed\")) (try (set node/label \"changed\") catch _ node/label))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -795,8 +795,8 @@
     },
     {
       "id": "type.constructor_and_message",
-      "source": "(type Counter ^props {^value Int} (ctor [start : Int] (set! self/value start)) (message add [amount : Int] : Int (set! self/value (+ self/value amount)))) (let counter (new Counter 2)) (counter ~ add 3)",
-      "web_source": "(mod type_constructor_and_message ^profile web) (type Counter ^props {^value Int} (ctor [start : Int] (set! self/value start)) (message add [amount : Int] : Int (set! self/value (+ self/value amount)))) (fn run [] : Int (let counter (new Counter 2)) (counter ~ add 3))",
+      "source": "(type Counter ^props {^value Int} (ctor [start : Int] (set self/value start)) (message add [amount : Int] : Int (set self/value (+ self/value amount)))) (let counter (new Counter 2)) (counter ~ add 3)",
+      "web_source": "(mod type_constructor_and_message ^profile web) (type Counter ^props {^value Int} (ctor [start : Int] (set self/value start)) (message add [amount : Int] : Int (set self/value (+ self/value amount)))) (fn run [] : Int (let counter (new Counter 2)) (counter ~ add 3))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -957,8 +957,8 @@
     },
     {
       "id": "type.inheritance_super_and_ctor",
-      "source": "(type Base ^props {^value Int} (ctor [value : Int] (set! self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child ^is Base (message add_twice [amount : Int] : Int (super ~ add (+ amount amount)))) (let child (new Child 5)) (child ~ add_twice 3)",
-      "web_source": "(mod type_inheritance_super ^profile web) (type Base ^props {^value Int} (ctor [value : Int] (set! self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child ^is Base (message add_twice [amount : Int] : Int (super ~ add (+ amount amount)))) (fn run [] : Int (let child (new Child 5)) (child ~ add_twice 3))",
+      "source": "(type Base ^props {^value Int} (ctor [value : Int] (set self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child ^is Base (message add_twice [amount : Int] : Int (super ~ add (+ amount amount)))) (let child (new Child 5)) (child ~ add_twice 3)",
+      "web_source": "(mod type_inheritance_super ^profile web) (type Base ^props {^value Int} (ctor [value : Int] (set self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child ^is Base (message add_twice [amount : Int] : Int (super ~ add (+ amount amount)))) (fn run [] : Int (let child (new Child 5)) (child ~ add_twice 3))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1305,8 +1305,8 @@
     },
     {
       "id": "rejected.fexpr",
-      "source": "(fn! raw [x] (eval x ^in caller_env)) (raw (+ 1 2))",
-      "web_source": "(mod rejected_fexpr ^profile web) (fn! raw [x] (eval x ^in caller_env))",
+      "source": "(fn raw! [x] (eval x ^in caller_env)) (raw! (+ 1 2))",
+      "web_source": "(mod rejected_fexpr ^profile web) (fn raw! [x] (eval x ^in caller_env))",
       "expected_value": {
         "kind": "int",
         "value": "3"
@@ -1315,8 +1315,8 @@
       "expected_stdout": "",
       "profile": {
         "status": "rejected",
-        "reason": "fn! requires a live evaluator and retained call syntax",
-        "diagnostic": "fn! is outside the web profile"
+        "reason": "fexprs require a live evaluator and retained call syntax",
+        "diagnostic": "fexpr 'raw!' is outside the web profile"
       }
     },
     {
@@ -1593,8 +1593,8 @@
     },
     {
       "id": "control.if_condition_evaluated_once",
-      "source": "(fn bump [c] (set! c/0 (+ c/0 1)) (< c/0 3)) (var counter [0]) (var taken (if (bump counter) 10 20)) (+ taken counter/0)",
-      "web_source": "(mod cond_if_once ^profile web) (fn bump [c : (List Int)] : Bool (set! c/0 (+ c/0 1)) (< c/0 3)) (fn run [] : Int (var counter [0]) (var taken (if (bump counter) 10 20)) (+ taken counter/0))",
+      "source": "(fn bump [c] (set c/0 (+ c/0 1)) (< c/0 3)) (var counter [0]) (var taken (if (bump counter) 10 20)) (+ taken counter/0)",
+      "web_source": "(mod cond_if_once ^profile web) (fn bump [c : (List Int)] : Bool (set c/0 (+ c/0 1)) (< c/0 3)) (fn run [] : Int (var counter [0]) (var taken (if (bump counter) 10 20)) (+ taken counter/0))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1608,8 +1608,8 @@
     },
     {
       "id": "control.while_condition_evaluated_once",
-      "source": "(fn bump [c] (set! c/0 (+ c/0 1)) (< c/0 3)) (var counter [0]) (while (bump counter) 0) counter/0",
-      "web_source": "(mod cond_while_once ^profile web) (fn bump [c : (List Int)] : Bool (set! c/0 (+ c/0 1)) (< c/0 3)) (fn run [] : Int (var counter [0]) (while (bump counter) 0) counter/0)",
+      "source": "(fn bump [c] (set c/0 (+ c/0 1)) (< c/0 3)) (var counter [0]) (while (bump counter) 0) counter/0",
+      "web_source": "(mod cond_while_once ^profile web) (fn bump [c : (List Int)] : Bool (set c/0 (+ c/0 1)) (< c/0 3)) (fn run [] : Int (var counter [0]) (while (bump counter) 0) counter/0)",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1665,8 +1665,8 @@
     },
     {
       "id": "statement_return.body_runs_for_effect",
-      "source": "(fn note [log : (List Int) x : Int] : Nil (set! log/0 x)) (var log [0]) (note log 7) log/0",
-      "web_source": "(mod stmt_eff ^profile web) (fn note [log : (List Int) x : Int] : Nil (set! log/0 x)) (fn run [] : Int (var log [0]) (note log 7) log/0)",
+      "source": "(fn note [log : (List Int) x : Int] : Nil (set log/0 x)) (var log [0]) (note log 7) log/0",
+      "web_source": "(mod stmt_eff ^profile web) (fn note [log : (List Int) x : Int] : Nil (set log/0 x)) (fn run [] : Int (var log [0]) (note log 7) log/0)",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1814,8 +1814,8 @@
     },
     {
       "id": "buffer.sized_f32_write_and_sum",
-      "source": "(fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b ~ set! i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b ~ len)) (set s (+ s (b ~ get i))) (set i (+ i 1.0))) s) (run)",
-      "web_source": "(mod buf_f32 ^profile web) (fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b ~ set! i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b ~ len)) (set s (+ s (b ~ get i))) (set i (+ i 1.0))) s)",
+      "source": "(fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b ~ set i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b ~ len)) (set s (+ s (b ~ get i))) (set i (+ i 1.0))) s) (run)",
+      "web_source": "(mod buf_f32 ^profile web) (fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b ~ set i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b ~ len)) (set s (+ s (b ~ get i))) (set i (+ i 1.0))) s)",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",
@@ -1844,8 +1844,8 @@
     },
     {
       "id": "buffer.u16_elements_are_int",
-      "source": "(fn run [] : Int (var b ($buffer U16 2.0)) (b ~ set! 0.0 65535) (b ~ set! 1.0 1) (+ (b ~ get 0.0) (b ~ get 1.0))) (run)",
-      "web_source": "(mod buf_u16 ^profile web) (fn run [] : Int (var b ($buffer U16 2.0)) (b ~ set! 0.0 65535) (b ~ set! 1.0 1) (+ (b ~ get 0.0) (b ~ get 1.0)))",
+      "source": "(fn run [] : Int (var b ($buffer U16 2.0)) (b ~ set 0.0 65535) (b ~ set 1.0 1) (+ (b ~ get 0.0) (b ~ get 1.0))) (run)",
+      "web_source": "(mod buf_u16 ^profile web) (fn run [] : Int (var b ($buffer U16 2.0)) (b ~ set 0.0 65535) (b ~ set 1.0 1) (+ (b ~ get 0.0) (b ~ get 1.0)))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1859,8 +1859,8 @@
     },
     {
       "id": "type.ctor_fills_several_fields",
-      "source": "(type Vec3 ^props {^x Int ^y Int ^z Int} (ctor [a : Int b : Int c : Int] (set! self/x a) (set! self/y b) (set! self/z c))) (fn run [] : Int (var v (new Vec3 1 2 3)) (+ v/x (+ v/y v/z))) (run)",
-      "web_source": "(mod ctor_multi ^profile web) (type Vec3 ^props {^x Int ^y Int ^z Int} (ctor [a : Int b : Int c : Int] (set! self/x a) (set! self/y b) (set! self/z c))) (fn run [] : Int (var v (new Vec3 1 2 3)) (+ v/x (+ v/y v/z)))",
+      "source": "(type Vec3 ^props {^x Int ^y Int ^z Int} (ctor [a : Int b : Int c : Int] (set self/x a) (set self/y b) (set self/z c))) (fn run [] : Int (var v (new Vec3 1 2 3)) (+ v/x (+ v/y v/z))) (run)",
+      "web_source": "(mod ctor_multi ^profile web) (type Vec3 ^props {^x Int ^y Int ^z Int} (ctor [a : Int b : Int c : Int] (set self/x a) (set self/y b) (set self/z c))) (fn run [] : Int (var v (new Vec3 1 2 3)) (+ v/x (+ v/y v/z)))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1874,8 +1874,8 @@
     },
     {
       "id": "buffer.parameterized_annotation_matches",
-      "source": "(fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b ~ set! 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b ~ get 0.0)) (fn run [] : F64 (take (make))) (run)",
-      "web_source": "(mod buf_ann ^profile web) (fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b ~ set! 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b ~ get 0.0)) (fn run [] : F64 (take (make)))",
+      "source": "(fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b ~ set 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b ~ get 0.0)) (fn run [] : F64 (take (make))) (run)",
+      "web_source": "(mod buf_ann ^profile web) (fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b ~ set 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b ~ get 0.0)) (fn run [] : F64 (take (make)))",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",
@@ -2119,8 +2119,8 @@
     },
     {
       "id": "index.list_set_negative",
-      "source": "(var xs [1.0 2.0 3.0]) (set! xs/-1 9.0) xs/2",
-      "web_source": "(mod index_list_set_negative ^profile web) (fn run [] : F64 (var xs [1.0 2.0 3.0]) (set! xs/-1 9.0) xs/2)",
+      "source": "(var xs [1.0 2.0 3.0]) (set xs/-1 9.0) xs/2",
+      "web_source": "(mod index_list_set_negative ^profile web) (fn run [] : F64 (var xs [1.0 2.0 3.0]) (set xs/-1 9.0) xs/2)",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",
@@ -2134,8 +2134,8 @@
     },
     {
       "id": "index.buffer_get_negative",
-      "source": "(var b ($buffer F64 3.0)) (b ~ set! 2.0 42.0) (b ~ get -1.0)",
-      "web_source": "(mod index_buffer_get_negative ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (b ~ set! 2.0 42.0) (b ~ get -1.0))",
+      "source": "(var b ($buffer F64 3.0)) (b ~ set 2.0 42.0) (b ~ get -1.0)",
+      "web_source": "(mod index_buffer_get_negative ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (b ~ set 2.0 42.0) (b ~ get -1.0))",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",
@@ -2149,8 +2149,8 @@
     },
     {
       "id": "index.buffer_set_negative",
-      "source": "(var b ($buffer F64 3.0)) (b ~ set! -1.0 9.0) (b ~ get 2.0)",
-      "web_source": "(mod index_buffer_set_negative ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (b ~ set! -1.0 9.0) (b ~ get 2.0))",
+      "source": "(var b ($buffer F64 3.0)) (b ~ set -1.0 9.0) (b ~ get 2.0)",
+      "web_source": "(mod index_buffer_set_negative ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (b ~ set -1.0 9.0) (b ~ get 2.0))",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",

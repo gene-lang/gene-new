@@ -478,10 +478,10 @@ each lands with the spec coverage the repo requires (`nimble spec`,
 Typed arrays landed not as a new web-only type but as **`(Buffer T)`** — the same
 buffer the VM has — so `core/` meshing code is one module on both backends rather
 than two. `(Buffer F32)` lowers to `Float32Array`, and `(b ~ get i)` /
-`(b ~ set! i v)` compile to plain indexed access. Element vocabulary is
+`(b ~ set i v)` compile to plain indexed access. Element vocabulary is
 `I8 I16 I32 U8 U16 U32 F32 F64`; `I64`/`U64` are excluded because
 `BigInt64Array` elements are `bigint`. **Indices and lengths are `F64` on both
-backends** — the VM's `Buffer/get`/`set!` were widened to accept an integral
+backends** — the VM's `Buffer/get`/`set` were widened to accept an integral
 Float — because an `Int` index is a `bigint` in the profile and would allocate one
 per element write in the meshing loop.
 
@@ -495,14 +495,14 @@ during analysis, so a typo is a compile error naming the argument rather than an
 
 **2. Packed typed `Buffer` (VM). Open.**
 
-`Buffer` is `seq[Value]`: 8 bytes per element and a boxed write per `set!`. A 16³
+`Buffer` is `seq[Value]`: 8 bytes per element and a boxed write per `set`. A 16³
 block is 4,096 nodes; at 4 bytes per node that is 16 KB packed and 32 KB boxed for
 content ids alone, before the two parameter arrays. The consumers are all
 server-side — holding loaded blocks resident, light, and the storage and protocol
 codecs, which both want a packed byte run and both pay an element-by-element pack
 and unpack today.
 
-Wanted: unboxed storage for `U8 U16 I32 F32 F64`, with `Buffer/get`/`set!`
+Wanted: unboxed storage for `U8 U16 I32 F32 F64`, with `Buffer/get`/`set`
 compiling to a direct indexed access on the known-element-type path. This is the
 item most likely to need care — it touches the NaN-boxed value layer, and
 `AGENTS.md`'s rules about `sizeof(Value)`, zero initialization, and
@@ -628,7 +628,7 @@ construction is a click or a keypress.
 **10. The VM's call and message-send cost. Blocks nothing; raises every
 ceiling.**
 
-A `(buf ~ set! i v)` costs ~0.61 µs and a trivial call ~480 ns — roughly 1,500
+A `(buf ~ set i v)` costs ~0.61 µs and a trivial call ~480 ns — roughly 1,500
 cycles, where a tuned bytecode interpreter spends 50–150. That single number is
 what makes 512,000 node visits impossible in 300 ms and what forced §3's
 granularity.
@@ -1764,7 +1764,7 @@ spawns a dropped item from §7.1's overflow path before any mod has run, so one
 exists from construction with callbacks that do nothing. Registering that name
 **appends a definition that shadows it** — lookup finds the newest — which is how
 a mod furnishes a reserved kind without the engine needing a mutation path into a
-callback list. The web profile has no `set!` on a `(List (Fn …))`, and the design
+callback list. The web profile has no `set` on a `(List (Fn …))`, and the design
 that constraint forced is the better one: it is also what §9's loader wants when
 mods are ordered by `depends` and the later one should win.
 

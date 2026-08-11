@@ -93,7 +93,7 @@
 
 (fn zero_buffer [b : (Buffer F32) n : F64] : Nil
   (var i 0.0)
-  (while (< i n) (b ~ set! i 0.0) (set i (+ i 1.0))))
+  (while (< i n) (b ~ set i 0.0) (set i (+ i 1.0))))
 
 # Stage 6 alone, over `reps` blocks.
 #
@@ -195,7 +195,7 @@
       (var b (biome_at biomes (heat_at wx wz seed)
                               (humidity_at wx wz seed)
                               (surface_height wx wz seed)))
-      (counts ~ set! b (+ (counts ~ get b) 1))
+      (counts ~ set b (+ (counts ~ get b) 1))
       (set i (+ i 1.0)))
     (set j (+ j 1.0)))
   (var total (* n n))
@@ -204,7 +204,7 @@
   (while (< k (biome_count biomes))
     (var pct (/ ($math/round (* 1000.0 (/ ($to_float (counts ~ get k)) total)))
                 10.0))
-    (parts ~ push! $"$(biome_name biomes k)=${pct}%")
+    (parts ~ push $"$(biome_name biomes k)=${pct}%")
     (set k (+ k 1.0)))
   ($str/join parts " "))
 
@@ -240,7 +240,7 @@
         (var i 0.0)
         (while (< i block_nodes)
           (var id (out ~ get i))
-          (tally ~ set! id (+ (tally ~ get id) 1))
+          (tally ~ set id (+ (tally ~ get id) 1))
           (set i (+ i 1.0)))
         (set nodes (+ nodes block_nodes))
         (set bx (+ bx 1.0)))
@@ -252,6 +252,6 @@
     (var c ($to_float (tally ~ get k)))
     (if_yes (> c 0.0)
       (var pct (/ ($math/round (* 1000.0 (* 100.0 (/ c nodes)))) 1000.0))
-      (parts ~ push! $"$(name_of r k)=${pct}%"))
+      (parts ~ push $"$(name_of r k)=${pct}%"))
     (set k (+ k 1.0)))
   ($str/join parts " "))

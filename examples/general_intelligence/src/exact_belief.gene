@@ -65,7 +65,7 @@
   (while (< fault (belief ~ size))
     (var likelihood (positive_likelihood subject test fault))
     (var conditional (if positive likelihood (- 1.0 likelihood)))
-    (posterior ~ push! (/ (* belief/%fault conditional) evidence))
+    (posterior ~ push (/ (* belief/%fault conditional) evidence))
     (set fault (+ fault 1)))
   posterior)
 
@@ -96,7 +96,7 @@
 (fn without_test [tests : (List Int), removed : Int] : (List Int)
   (var result : (List Int) [])
   (for test in tests
-    (if_not (== test removed) (result ~ push! test)))
+    (if_not (== test removed) (result ~ push test)))
   result)
 
 (fn enumerate_policies [tests : (List Int)] : (List Node)
@@ -105,7 +105,7 @@
     (var children (enumerate_policies (without_test tests test)))
     (for negative_policy in children
       (for positive_policy in children
-        (result ~ push!
+        (result ~ push
           `(inspect
              ^test %test
              ^negative %negative_policy

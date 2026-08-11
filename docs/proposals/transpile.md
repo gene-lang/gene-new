@@ -28,7 +28,7 @@ Conflating them is the main way this project fails, so name them first.
 | **T3** | Run **behavior** written in Gene in the browser | Either a Gene runtime in the page, or a Gene→JS compiler | Large |
 
 T1 and T2 are stdlib features. Only T3 is a compiler backend. The existing
-`examples/web_demo.gene` and `examples/todo_app/src/main.gene` already model T2 —
+`examples/todo_app/src/main.gene` already models T2 —
 "HTML is ordinary Gene node data until render time … one `node -> text` edge" —
 but each hand-rolls that edge (§3.2), and both fake T1 with a raw `"""…"""`
 string. That string is the gap you feel; the missing renderer is the one behind
@@ -72,7 +72,7 @@ proposal has to justify itself against a working alternative.
 
 | | wasm VM in the page | transpile to TS |
 |---|---|---|
-| Semantic fidelity | **Total.** `fn!`, `eval`, actors, FFI, macros, everything | A subset; drift is a permanent risk |
+| Semantic fidelity | **Total.** explicit fexprs, `eval`, actors, FFI, macros, everything | A subset; drift is a permanent risk |
 | Payload | `web/gene.wasm` is **~4.1 MB** today, flat regardless of program size | Proportional to your code + a small runtime |
 | Tree-shaking / code splitting | None | Ordinary bundler behavior |
 | DOM access | Every call crosses the JS↔wasm boundary | Direct |
@@ -186,7 +186,7 @@ written. Marked *(H)* where it costs a runtime helper.
 
 **In the profile:**
 
-- `fn`, `let`/`var`/`set`, `set!` on paths
+- `fn`, `let`/`var`/`set`, `set` on paths
 - `do`, `if`, `if_yes`, `if_not`, `&&`, `||`, `!`, `??`
 - `while`, `loop`, `repeat`, `for`, `break`, `continue`, `return`
 - `match` and destructuring (§8) — decision tree, native lowering
@@ -213,7 +213,7 @@ written. Marked *(H)* where it costs a runtime helper.
 
 | Rejected | Why |
 |---|---|
-| `fn!` / fexprs / `caller_env` | Needs a live evaluator plus retained argument syntax at every dynamic call site (§3). That is the wasm VM. |
+| explicit fexprs / `caller_env` | Needs a live evaluator plus retained argument syntax at every trailing-`!` call site (§3). That is the wasm VM. |
 | `eval node ^in env` | Needs the whole front end in the page. |
 | Actors, `Channel`, `supervisor`, `ActorRef` | Bounded mailboxes with backpressure and an M:N scheduler need a scheduler; JS has one event loop and no preemption. |
 | FFI, `C/*`, `^repr native_wrapper`, `$ffi/Load` | No dlopen. |
@@ -247,7 +247,7 @@ keep the **unexpanded** source tree. So P1 produces an IR *alongside* the
 original and expanded trees, and must specify their ownership and lifetime.
 
 **The IR is web-only, and GIR is not migrated onto it.** Requiring GIR emission
-to consume it would force the IR to represent *all* of Gene — `fn!`, `eval`,
+to consume it would force the IR to represent *all* of Gene — fexprs, `eval`,
 actors, scoped impls, dynamic modules — before the first tiny P2 function ships.
 That is a whole-compiler replacement, and it puts `compiler.nim`'s hot path at
 risk before the product hypothesis has been tested. Instead: factor only the
@@ -333,7 +333,7 @@ the profile:
 | Gene | The gap |
 |---|---|
 | `(Map K V)` → `Map<K,V>` | Gene keys hash **structurally**; JS `Map` uses SameValueZero, so `{^a 1}` twice is two distinct keys. Needs a keyed wrapper or a hash-consing layer. |
-| `List`, nodes, typed instances | Mutation, `void` normalization (prop deleted vs. list slot → `nil`), and closed-schema revalidation on every `set!` |
+| `List`, nodes, typed instances | Mutation, `void` normalization (prop deleted vs. list slot → `nil`), and closed-schema revalidation on every `set` |
 | `type` → `class` | The class is the easy half; direct `(T …)` vs. `new T` (§7.1.1), required/unknown-field checks, and the in-progress publication marker are runtime |
 | `Any` → `unknown` | **TS `unknown` performs no runtime check.** It is a static discipline; Gene's gradual boundary demands emitted validators, including nested generics and protocol conformance |
 | `try/catch`, `^errors` | TS cannot express a checked error row; typed catch patterns need runtime tests, and cancellation must not be interceptable by an ordinary `catch`. A symbol-head pattern also matches two representations — a class instance and Gene node data — because the VM's builtin errors *are* node data |
@@ -525,7 +525,7 @@ portable operations are conformance-tested against the Nim implementations
 
 **Name mangling** must be injective and documented. Gene names are `snake_case`
 but permit `?`, `!`, and `-`; JS has reserved words and a narrower identifier
-set. A scheme like `empty?` → `empty_$q`, `push!` → `push_$b`, plus a `$`-prefix
+set. A scheme like `empty?` → `empty_$q`, `push` → `push_$b`, plus a `$`-prefix
 escape for reserved words, is fine — pick one, write it down, and make it
 reversible so source maps and stack traces can undo it.
 
@@ -609,7 +609,7 @@ containing module:
 
 (web_module todo_client
   (fn on_click [event : Any] : Void
-    (set! event/target/text_content "…")
+    (set event/target/text_content "…")
     void)
 
   (fn main [root : Any] : Void
@@ -1200,7 +1200,7 @@ building it settled, beyond the plan:
   under a plain `script-src 'self'; style-src 'self'` and nothing has to travel
   on a `Str` return type.
 
-**Never:** `fn!`, `eval`, actors, channels, FFI, capabilities. Those are what
+**Never:** fexprs, `eval`, actors, channels, FFI, capabilities. Those are what
 the wasm VM is for, and saying so plainly is what keeps the profile honest.
 
 ---
@@ -1212,7 +1212,7 @@ the wasm VM is for, and saying so plainly is what keeps the profile honest.
   worse fidelity than wasm and worse performance than transpiled output. Strictly
   dominated by both existing options.
 - **Full-fidelity Gene → JS (no profile).** Rejected: requires shipping the
-  evaluator for `fn!`/`eval`, a scheduler for actors, and a numeric tower — i.e.
+  evaluator for fexprs/`eval`, a scheduler for actors, and a numeric tower — i.e.
   the VM, in JS, slower than the wasm one that already exists.
 - **Emit JS instead of TS.** Rejected: §1. Throws away information the compiler
   already has and gives the rest of the team nothing.
@@ -1286,7 +1286,7 @@ the wasm VM is for, and saying so plainly is what keeps the profile honest.
   right shape — not full-fidelity Gene→JS, which is what the already-implemented
   wasm VM does better.
 - The profile line is **bounded, tree-shakeable runtime support**, measured and
-  published per feature. `fn!`, `eval`, actors, and FFI are out permanently.
+  published per feature. Fexprs, `eval`, actors, and FFI are out permanently.
 - `nil`/`void` → `null`/`undefined` and `??` → `??` really are exact. The rest
   of the "easy" mapping was overstated: maps, mutation, schema validation,
   `Any`, typed errors, streams, and protocol `super` each need a written

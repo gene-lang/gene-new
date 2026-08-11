@@ -110,7 +110,7 @@
             (var i (+ x row))
             (var cur (out ~ get i))
             (if_yes (&& (!= cur air) (!= cur water))
-              (out ~ set! i air)))
+              (out ~ set i air)))
           (set x (+ x 1.0))))
       (set y (+ y 1.0)))
     (set z (+ z 1.0))))

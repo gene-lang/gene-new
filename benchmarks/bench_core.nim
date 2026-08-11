@@ -135,14 +135,14 @@ proc main() =
     let v = read(sample)
     checksum = checksum + int64(v.body.len)
 
-  let demoSource = readFile("examples/web_demo.gene")
-  bench("reader.web_demo.read_all", 1_000, i):
-    let forms = readAll(demoSource)
+  let styleSource = readFile("examples/style_guide.gene")
+  bench("reader.style_guide.read_all", 1_000, i):
+    let forms = readAll(styleSource)
     checksum = checksum + int64(forms.len)
 
-  let demoForms = readAll(demoSource)
-  bench("printer.web_demo.forms", 1_000, i):
-    for f in demoForms:
+  let styleForms = readAll(styleSource)
+  bench("printer.style_guide.forms", 1_000, i):
+    for f in styleForms:
       checksum = checksum + int64(f.print().len)
 
   let simpleProgram = "(+ 1 2 3 4)"
@@ -172,9 +172,9 @@ proc main() =
 
   let disabledGeneScope = newGlobalScope()
   discard run(compileSource(
-    "(import $log [new_logger debug!]) " &
+    "(import $log [new_logger log_debug]) " &
     "(var logger (new_logger \"app/bench\")) " &
-    "(var drive (fn [] (debug! logger \"disabled\")))"),
+    "(var drive (fn [] (log_debug logger \"disabled\")))"),
     disabledGeneScope)
   let disabledGeneChunk = compileSource("(drive)")
   bench("logging.gene_disabled_macro", 500_000, i):
@@ -376,14 +376,14 @@ proc main() =
   # The write side, which is the more expensive half and was unmeasured until
   # this was added. Any elementwise numeric pass — meshing, a vector op, an
   # image filter — is `n` reads and `n` writes, so a regression in
-  # `Buffer/set!` is a regression in every one of them at once.
+  # `Buffer/set` is a regression in every one of them at once.
   let bufferWriteScope = newGlobalScope()
   discard run(compileSource(
     "(var wbuf ($buffer F64 4096.0)) " &
     "(var fill (fn [] " &
     "  (var i 0.0) " &
     "  (while (< i 4096.0) " &
-    "    (do (wbuf ~ set! i 1.0) (set i (+ i 1.0)))) " &
+    "    (do (wbuf ~ set i 1.0) (set i (+ i 1.0)))) " &
     "  i))"), bufferWriteScope)
   let bufferWriteChunk = compileSource("(fill)")
   bench("vm.buffer_fill_4096.compiled_chunk", 200, i):
@@ -626,8 +626,8 @@ proc main() =
   discard run(compileSource(
     "(type WrapperLike ^repr native_wrapper " &
     "  ^props {^handle (C/OwnedPtr Blob) ^backend Str} " &
-    "  (ctor [] (set! self/handle (open_handle)) " &
-    "           (set! self/backend \"demo\"))) " &
+    "  (ctor [] (set self/handle (open_handle)) " &
+    "           (set self/backend \"demo\"))) " &
     "(type UntypedWrapperLike ^repr native_wrapper " &
     "  ^props {^handle Any ^backend Str}) " &
     "(type PlainLike ^props {^handle Any ^backend Str})"), wrapperScope)

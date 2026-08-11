@@ -20,7 +20,7 @@
 (fn usage_summary [usage : (List Node)] : (List Map)
   (var result : (List Map) [])
   (for item in usage
-    (result ~ push!
+    (result ~ push
       {^name item/name ^solutions item/solutions}))
   result)
 

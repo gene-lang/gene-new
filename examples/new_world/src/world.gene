@@ -87,7 +87,7 @@
 (fn poke [tiles : (List F64) i : F64 v : F64] : Void
   # A `: Void` signature discards the body's value (design.md §7.7), so the
   # assignment can just be the body.
-  (set! tiles/%i v))
+  (set tiles/%i v))
 
 (fn get_tile [tiles : (List F64) x : F64 y : F64 w : F64 h : F64] : F64
   # A `%` path segment takes a symbol, not a call, so the index is bound first.

@@ -40,8 +40,8 @@
 
 (fn check [out : (List Str) label : Str got : Str want : Str] : Nil
   (if (== got want)
-    (then (out ~ push! $"ok   ${label}"))
-    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+    (then (out ~ push $"ok   ${label}"))
+    (else (out ~ push $"FAIL ${label}: got ${got}, want ${want}"))))
 
 (fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
   (check out label $"$($to_int got)" $"$($to_int want)"))
@@ -232,7 +232,7 @@
           (while (< y block_dim)
             (var x 0.0)
             (while (< x block_dim)
-              (src ~ set! (+ x (+ (* y block_dim) (* z (* block_dim block_dim))))
+              (src ~ set (+ x (+ (* y block_dim) (* z (* block_dim block_dim))))
                     (+ (* 10000.0 tag) (+ x (* 16.0 (+ y (* 16.0 z))))))
               (set x (+ x 1.0)))
             (set y (+ y 1.0)))

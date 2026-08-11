@@ -1038,6 +1038,11 @@ proc parseWebExtern(analysis: WebAnalysis, form: Value,
   result.returnType = parseWebType(form.body[3], loc)
   result.loc = loc
 
+proc validateWebMessageName(name: string, loc: SourceLoc) =
+  if name.len > 1 and name.endsWith("!"):
+    raise webError(loc,
+      "message names may not end in !; trailing ! is reserved for fexpr calls")
+
 proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
                       loc: SourceLoc): WebTypeDecl =
   if form.body.len < 1 or form.body[0].kind != vkSymbol:
@@ -1089,6 +1094,7 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
       if member.body.len < 5 or member.body[0].kind != vkSymbol or
           member.body[1].kind != vkList or not member.body[2].isSym(":"):
         raise webError(loc, "web message requires name, parameters, return, and body")
+      validateWebMessageName(member.body[0].symVal, loc)
       let methodDecl = WebMethod(sourceName: member.body[0].symVal,
         emittedName: mangleWebName(member.body[0].symVal),
         params: parseParams(analysis, member.body[1], loc),
@@ -1159,6 +1165,7 @@ proc parseWebProtocolDecl(analysis: WebAnalysis, form: Value,
         member.body[1].kind != vkList or not member.body[2].isSym(":"):
       raise webError(loc, "web protocol accepts message signatures")
     let name = member.body[0].symVal
+    validateWebMessageName(name, loc)
     # A signature's `^errors` row is erased; the types in it are checked on the
     # impl side, where `impl Error for T` has already been registered.
     rejectUnknownProps(member, loc, "protocol message " & name, ["errors"])
@@ -1195,6 +1202,7 @@ proc parseWebImplDecl(analysis: WebAnalysis, form: Value,
         member.body.len < 5 or member.body[0].kind != vkSymbol or
         member.body[1].kind != vkList or not member.body[2].isSym(":"):
       raise webError(loc, "web impl accepts message definitions")
+    validateWebMessageName(member.body[0].symVal, loc)
     let messageDecl = findProtocolMessage(protocol, member.body[0].symVal)
     result.methods.add WebImplMethod(protocolName: result.protocolName,
       targetName: result.targetName, message: messageDecl,
@@ -1628,6 +1636,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         analysis.protocolDecls[protocolName], messageName)
     else:
       raise webError(loc, "web send requires a statically known message")
+    validateWebMessageName(messageName, loc)
     var methodDecl = if protocolMessage == nil:
                        analysis.findMethod(receiver.typ, messageName)
                      else: nil
@@ -1707,24 +1716,24 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, params: params, returnType: returnType, loc: loc)
     if methodDecl == nil and receiver.typ.kind == wtkList and
-        messageName in ["push!", "pop!", "size", "clear!"]:
-      # The minimum a List needs to be built and measured. Without `push!` a
+        messageName in ["push", "pop", "size", "clear"]:
+      # The minimum a List needs to be built and measured. Without `push` a
       # program cannot construct a collection at all, which is why every
       # accumulator in this profile had to be pre-sized by its caller.
       let params = case messageName
-        of "push!": @[WebParam(sourceName: "item", emittedName: "item",
+        of "push": @[WebParam(sourceName: "item", emittedName: "item",
                                typ: receiver.typ.item, loc: loc)]
         else: newSeq[WebParam]()
       let returnType = case messageName
-        of "pop!": receiver.typ.item
+        of "pop": receiver.typ.item
         of "size": webType(wtkF64)   # F64, so a length composes with F64 math
         else: webType(wtkVoid)
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, params: params, returnType: returnType, loc: loc)
     if methodDecl == nil and receiver.typ.kind == wtkBuffer and
-        messageName in ["get", "set!", "len", "fill!", "copy_from!"]:
+        messageName in ["get", "set", "len", "fill", "copy_from"]:
       # Index and length are F64, matching `List/size` just above and the VM's
-      # widened `Buffer/get`/`set!`. An Int index would be a `bigint` here, so
+      # widened `Buffer/get`/`set`. An Int index would be a `bigint` here, so
       # every element access in a mesh-building loop would allocate one — the
       # hazard the whole F64 discipline exists to avoid, in the one loop that
       # can least afford it.
@@ -1736,7 +1745,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       let element =
         if bufferElementIsFloat(receiver.typ.name): webType(wtkF64)
         else: webType(wtkInt)
-      # `fill!` and `copy_from!` are the two arity-varying messages here: the
+      # `fill` and `copy_from` are the two arity-varying messages here: the
       # bare form addresses the whole buffer and the long form takes a
       # half-open range. Rather than declare two methods, the parameter list is
       # built from the arity actually written, and the arity check below then
@@ -1746,15 +1755,15 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         WebParam(sourceName: n, emittedName: n, typ: webType(wtkF64), loc: loc)
       let params = case messageName
         of "get": @[bound("index")]
-        of "set!": @[bound("index"),
+        of "set": @[bound("index"),
                      WebParam(sourceName: "item", emittedName: "item",
                               typ: element, loc: loc)]
-        of "fill!":
+        of "fill":
           let item = WebParam(sourceName: "item", emittedName: "item",
                               typ: element, loc: loc)
           if argc == 3: @[item, bound("start"), bound("end")]
           else: @[item]
-        of "copy_from!":
+        of "copy_from":
           let src = WebParam(sourceName: "source", emittedName: "source",
                              typ: receiver.typ, loc: loc)
           if argc == 4:
@@ -2459,7 +2468,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   case name
   of "fn!":
     raise webError(loc,
-      "fn! is outside the web profile: it requires a live evaluator and retained call syntax")
+      "fn! was removed; define a named fexpr with (fn name! ...)")
   of "eval":
     raise webError(loc,
       "eval is outside the web profile: it requires the whole Gene front end in the browser")
@@ -2612,14 +2621,6 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         result.children.add analysis.analyzeExpr(segment.body[0], bindings)
       else: raise webError(loc, "unsupported web selector segment")
     return
-  if name == "set!":
-    if value.body.len != 2 or value.body[0].kind != vkNode or
-        not value.body[0].head.isSym("path"):
-      raise webError(loc, "web set! expects a slash path and value")
-    var pathExpr = analysis.analyzeCall(value.body[0], bindings, nil)
-    let assigned = analysis.analyzeExpr(value.body[1], bindings, pathExpr.typ)
-    return WebExpr(kind: wekSetPath, typ: assigned.typ, loc: loc,
-      keys: pathExpr.keys, children: pathExpr.children & @[assigned])
   if name == "new":
     if value.body.len < 1 or value.body[0].kind != vkSymbol or
         not analysis.typeDecls.hasKey(value.body[0].symVal):
@@ -2800,8 +2801,14 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     return WebExpr(kind: wekBind, typ: typ, loc: loc,
       mutable: name == "var", children: @[initializer], patterns: @[pattern])
   if name == "set":
+    if value.body.len == 2 and value.body[0].kind == vkNode and
+        value.body[0].head.isSym("path"):
+      var pathExpr = analysis.analyzeCall(value.body[0], bindings, nil)
+      let assigned = analysis.analyzeExpr(value.body[1], bindings, pathExpr.typ)
+      return WebExpr(kind: wekSetPath, typ: assigned.typ, loc: loc,
+        keys: pathExpr.keys, children: pathExpr.children & @[assigned])
     if value.body.len != 2 or value.body[0].kind != vkSymbol:
-      raise webError(loc, "web set expects a bare binding and value")
+      raise webError(loc, "web set expects a bare binding or slash path and value")
     let bindingName = value.body[0].symVal
     if not bindings.hasKey(bindingName):
       raise webError(loc, "set of unresolved web binding: " & bindingName)
@@ -3455,6 +3462,11 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
 
   proc registerFunction(form: Value, namespacePath: seq[string],
                         loc: SourceLoc) =
+    if form.body.len > 0 and form.body[0].kind == vkSymbol and
+        form.body[0].symVal.len > 1 and form.body[0].symVal.endsWith("!"):
+      raise webError(loc,
+        "fexpr '" & form.body[0].symVal & "' is outside the web profile: " &
+        "it requires a live evaluator and retained call syntax")
     let fn = parseFunctionHeader(analysis, form)
     analysis.validateCallableProps(form, loc, "function " & fn.sourceName)
     let memberName = fn.sourceName
@@ -3553,7 +3565,7 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       continue
     if form.head.symVal == "fn!":
       raise webError(loc,
-        "fn! is outside the web profile: it requires a live evaluator and retained call syntax")
+        "fn! was removed; define a named fexpr with (fn name! ...)")
     if form.head.symVal in ["type", "enum", "protocol", "impl"]:
       continue
     case form.head.symVal
@@ -4545,13 +4557,13 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       let target = if emitter.typescript: "(" & receiver & " as any[])"
                    else: receiver
       case expr.text
-      of "push!": return "(" & target & ".push(" & arguments[0] & "), undefined)"
-      of "pop!": return target & ".pop()"
+      of "push": return "(" & target & ".push(" & arguments[0] & "), undefined)"
+      of "pop": return target & ".pop()"
       of "size": return target & ".length"
-      of "clear!": return "(" & target & ".splice(0), undefined)"
+      of "clear": return "(" & target & ".splice(0), undefined)"
       else: discard
     # Buffer messages lower to plain indexed access on the typed array. `get`
-    # and `set!` become `a[i]` and `a[i] = v` rather than method calls, which is
+    # and `set` become `a[i]` and `a[i] = v` rather than method calls, which is
     # the point of choosing a typed array in the first place: the meshing loop
     # compiles to the same shape a hand-written renderer would use.
     if expr.children[0].typ != nil and expr.children[0].typ.kind == wtkBuffer:
@@ -4570,7 +4582,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         # and convert nothing.
         return if bufferElementIsFloat(element): read
                else: "BigInt(" & read & ")"
-      of "set!":
+      of "set":
         let written = if bufferElementIsFloat(element): arguments[1]
                       else: "Number(" & arguments[1] & ")"
         # A plain identifier is re-emitted for `.length` rather than hoisted:
@@ -4579,11 +4591,11 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         # through `$gene_put` costs +137%). Anything else goes through the
         # helper, which evaluates the receiver once.
         if isJsIdent(target):
-          return "(" & target & "[$gene_index(\"Buffer/set!\", " & target &
+          return "(" & target & "[$gene_index(\"Buffer/set\", " & target &
             ".length, " & arguments[0] & ")] = " & written & ", undefined)"
         return "($gene_put(" & target & ", " & arguments[0] & ", " & written &
-          ", \"Buffer/set!\"), undefined)"
-      of "fill!":
+          ", \"Buffer/set\"), undefined)"
+      of "fill":
         # `TypedArray.prototype.fill(value, start, end)` is the same half-open
         # range this message declares, so the bulk write is the runtime's own.
         let written = if bufferElementIsFloat(element): arguments[0]
@@ -4592,7 +4604,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
           return "(" & target & ".fill(" & written & ", " & arguments[1] &
             ", " & arguments[2] & "), undefined)"
         return "(" & target & ".fill(" & written & "), undefined)"
-      of "copy_from!":
+      of "copy_from":
         # `set` with a `subarray` view, which the spec requires to behave as a
         # move when the two share a buffer — the same overlap guarantee
         # `copyBufferItems` gives on the VM.
@@ -5375,7 +5387,7 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
   emitter.line("this.$gene_body = body.map(value => value === undefined ? null : value);")
   # An instance under construction is marked, so `$gene_set` can tell a ctor's
   # field write from an ordinary one. Without it, a ctor that fills two fields
-  # could not run at all: the first `set!` triggered a whole-schema check while
+  # could not run at all: the first path `set` triggered a whole-schema check while
   # the second field was still missing, and a type with more than one prop was
   # unconstructable. The VM's rule is that the in-progress `self` accepts
   # writes and the schema is checked at ctor completion (design.md §7.1.1);
@@ -6398,7 +6410,7 @@ proc emitModule(module: WebModule, typescript: bool,
     # attach an expando, so the coercion has to reach the bounds check for
     # `xs/9` as much as for `xs/-1`.
     emitter.line("if (typeof key === \"string\" && (Array.isArray(value?.$gene_body) || Array.isArray(value) || ArrayBuffer.isView(value))) { const code = key.charCodeAt(0); if (code === 45 || (code >= 48 && code <= 57)) { const at = Number(key); if (Number.isInteger(at)) key = at; } }")
-    emitter.line("if (typeof key === \"number\" && (Array.isArray(value?.$gene_body) || Array.isArray(value) || ArrayBuffer.isView(value))) key = $gene_index(\"set!\", (Array.isArray(value?.$gene_body) ? value.$gene_body : value).length, key);")
+    emitter.line("if (typeof key === \"number\" && (Array.isArray(value?.$gene_body) || Array.isArray(value) || ArrayBuffer.isView(value))) key = $gene_index(\"set\", (Array.isArray(value?.$gene_body) ? value.$gene_body : value).length, key);")
     emitter.line("if (Array.isArray(value?.$gene_body) && typeof key === \"number\") { const length = value.$gene_body.length; const previous = value.$gene_body[key]; value.$gene_body[key] = next === undefined ? null : next; if (!value.$gene_in_progress) { try { value.$gene_validate(); } catch (error) { value.$gene_body.length = length; if (key < length) value.$gene_body[key] = previous; throw error; } } return next; }")
     emitter.line("if (Array.isArray(value) && next === undefined) next = null;")
     emitter.line("if ($gene_is_node(value) && typeof key === \"string\") { if (next === undefined) delete value.props[key]; else value.props[key] = next; return next; }")

@@ -30,7 +30,7 @@ const clientModule = """
 
   (fn on_click [event : Any] : Void
     (var target event/target)
-    (set! target/text_content (label 1))
+    (set target/text_content (label 1))
     void)
 
   (fn main [root : EventTarget] : Void
@@ -284,7 +284,7 @@ rejects("capture", """
 (web_module widget
   (fn on_click [event : Any] : Void
     (var target event/target)
-    (set! target/text_content connection)
+    (set target/text_content connection)
     void)
 
   (fn main [root : EventTarget] : Void
@@ -368,7 +368,7 @@ const ajaxModule = """
 
 (web_module widget
   (fn paint [row : Any, mark : Str] : Void
-    (set! row/text_content mark)
+    (set row/text_content mark)
     void)
 
   (fn on_click [event : Any] : Void
@@ -496,7 +496,7 @@ const displayModule = """
     $"i=${42} f=${1.5} b=${true} s=${s} n=${nil}")
 
   (fn main [root : EventTarget] : Void
-    (set! root/text_content (render))
+    (set root/text_content (render))
     void))
 """
 

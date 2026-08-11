@@ -102,7 +102,7 @@ type
     vkNamespace ## named binding container (`ns` or module root namespace)
     vkModule    ## first-class module value with a root namespace
     vkEnv       ## first-class eval environment (design Section 11.1 MVP)
-    vkCallerEnv ## borrowed fn! caller view; valid only during the syntax call
+    vkCallerEnv ## borrowed fexpr caller view; valid only during the syntax call
     vkCell      ## first-class mutable reference (design Section 12.2)
     vkAtomicCell ## first-class shared mutable reference (design Section 12.3)
     vkStream    ## first-class pull stream (design Section 6)
@@ -531,7 +531,7 @@ type
     scope: Scope             # strong capture for escaping closures
     weakScope: pointer       # non-owning Scope used for scope-owned bindings
     checksErrors: bool
-    syntaxFn: bool           # fn! syntax callable / fexpr (design §3/§11.1)
+    syntaxFn: bool           # named fexpr / syntax callable (design §3/§11.1)
     capturesCallerEnv: bool  # closure was created under a borrowed caller view
     errorTypes: seq[Value]
 
@@ -2567,7 +2567,7 @@ proc fnName*(v: Value): lent string =
   cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).name
 
 proc isSyntaxFn*(v: Value): bool {.inline.} =
-  ## True for fn! syntax callables (design §3/§11.1); false for every other
+  ## True for named fexpr syntax callables (design §3/§11.1); false for every other
   ## value, including ordinary functions.
   v.tagOf == FUNCTION_TAG and
     cast[ptr GeneFunction](v.bits and PAYLOAD_MASK).syntaxFn

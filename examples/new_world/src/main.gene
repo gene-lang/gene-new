@@ -39,7 +39,7 @@
   (var out : (List F64) [])
   (var i 0.0)
   (while (< i n)
-    (out ~ push! 0.0)
+    (out ~ push 0.0)
     (set i (+ i 1.0)))
   out)
 
@@ -95,24 +95,24 @@
 
   (var respawn (fn [] : Void
     (var x ($math/floor (/ w 2.0)))
-    (set! player/0 (+ x 0.5))
-    (set! player/1 (spawn_y tiles x w h))
-    (set! player/2 0.0)
-    (set! player/3 0.0)
-    (set! player/4 0.0)
-    (set! player/5 1.0)))
+    (set player/0 (+ x 0.5))
+    (set player/1 (spawn_y tiles x w h))
+    (set player/2 0.0)
+    (set player/3 0.0)
+    (set player/4 0.0)
+    (set player/5 1.0)))
 
   (var new_world (fn [next_seed : F64] : Void
     (set seed next_seed)
     (var i 0.0)
     (while (< i (* w h))
-      (set! tiles/%i 0.0)
+      (set tiles/%i 0.0)
       (set i (+ i 1.0)))
     (var started ($time/now))
     (generate tiles w h seed)
     (set i 0.0)
     (while (< i 16.0)
-      (set! inventory/%i 0.0)
+      (set inventory/%i 0.0)
       (set i (+ i 1.0)))
     (respawn)
     ($console/log ($ "generated in " ($math/round (- ($time/now) started)) " ms"))))
@@ -123,7 +123,7 @@
     (var runs : (List F64) [])
     (var i 0.0)
     (while (< i (* pairs 2.0))
-      (runs ~ push! out/%i)
+      (runs ~ push out/%i)
       (set i (+ i 1.0)))
     ($storage/set (save_key)
       ($json/stringify {^seed seed ^player player ^inventory inventory
@@ -141,9 +141,9 @@
         (var p : (List F64) saved/player)
         (var inv : (List F64) saved/inventory)
         (var i 0.0)
-        (while (< i 6.0) (set! player/%i p/%i) (set i (+ i 1.0)))
+        (while (< i 6.0) (set player/%i p/%i) (set i (+ i 1.0)))
         (set i 0.0)
-        (while (< i 16.0) (set! inventory/%i inv/%i) (set i (+ i 1.0)))
+        (while (< i 16.0) (set inventory/%i inv/%i) (set i (+ i 1.0)))
         (set seed saved/seed)
         (say "loaded")))))
 
@@ -163,8 +163,8 @@
     ($dom/append el label)
     ($dom/append el count)
     ($dom/append bar el)
-    (slot_els ~ push! el)
-    (count_els ~ push! count)
+    (slot_els ~ push el)
+    (count_els ~ push count)
     (set s (+ s 1.0)))
 
   # --- input -----------------------------------------------------------------
@@ -233,12 +233,12 @@
     (if_yes (> mining 0.5)
       (var got (mine tiles player tx ty w h))
       (if_yes (> got 0.5)
-        (set! inventory/%got (+ inventory/%got 1.0))))
+        (set inventory/%got (+ inventory/%got 1.0))))
     (if_yes (> placing 0.5)
       (var id (slot_tile selected))
       (if_yes (&& (> inventory/%id 0.5)
                   (> (place tiles player tx ty id w h) 0.5))
-        (set! inventory/%id (- inventory/%id 1.0))))
+        (set inventory/%id (- inventory/%id 1.0))))
 
     # Sky: depth is legible before a single number is read.
     (var depth (depth_shade cam_y 40.0 90.0 1.0))

@@ -41,8 +41,8 @@
 
 (fn check [out : (List Str) label : Str got : Str want : Str] : Nil
   (if (== got want)
-    (then (out ~ push! $"ok   ${label}"))
-    (else (out ~ push! $"FAIL ${label}: got ${got}, want ${want}"))))
+    (then (out ~ push $"ok   ${label}"))
+    (else (out ~ push $"FAIL ${label}: got ${got}, want ${want}"))))
 
 (fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
   (check out label $"$($to_int got)" $"$($to_int want)"))

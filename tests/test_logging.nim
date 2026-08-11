@@ -178,12 +178,12 @@ suite "structured logging":
   test "Gene eager methods and lazy macros have distinct evaluation":
     installCaptureLogging(llWarn)
     let result = runLoggingSource("""
-(import $log [LogLevel new_logger info! debug!])
+(import $log [LogLevel new_logger log_info log_debug])
 (var logger (new_logger "app/test" ^payload {^service "spec"}))
 (var eager ($cell false))
 (var lazy ($cell false))
 (logger ~ info (do (eager ~ set true) "eager"))
-(debug! logger (do (lazy ~ set true) "lazy"))
+(log_debug logger (do (lazy ~ set true) "lazy"))
 (logger ~ warn "warning" ^payload {^token "hidden"})
 [(eager ~ get) (lazy ~ get) (logger ~ enabled? LogLevel/warn)]
 """)
@@ -200,10 +200,10 @@ suite "structured logging":
     check not logger.enabled(llError)
     logger.emit(llError, "suppressed")
     let result = runLoggingSource("""
-(import $log [new_logger error!])
+(import $log [new_logger log_error])
 (var logger (new_logger "app/off"))
 (var touched ($cell false))
-(error! logger (do (touched ~ set true) "suppressed"))
+(log_error logger (do (touched ~ set true) "suppressed"))
 (touched ~ get)
 """)
     check result == FALSE
@@ -230,9 +230,9 @@ suite "structured logging":
     installCaptureLogging(llInfo)
     let app = newApplication()
     discard run(compileSource(
-      "(import $log [new_logger info!])\n" &
+      "(import $log [new_logger log_info])\n" &
       "(var logger (new_logger \"app/source\"))\n" &
-      "(info! logger \"located\")\n",
+      "(log_info logger \"located\")\n",
       "logging_source.gene"), newGlobalScope(app))
     check loggingCaptured.len == 1
     let event = parseJson(loggingCaptured[0])

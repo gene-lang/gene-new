@@ -1,7 +1,7 @@
 ## Executable Gene language surface spec.
 ##
 ## This file intentionally checks behavior from docs/spec/ and
-## examples/web_demo.gene at a higher level than unit tests. Run after changes:
+## examples/style_guide.gene at a higher level than unit tests. Run after changes:
 ##   nimble spec
 
 import gene/[compiler, gir, package, printer, reader, types, vm]
@@ -273,7 +273,7 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["do", "var", "set", "if"],
       "(do (var x 1) (set x 2) (if true (then x) (else 0)))")
     fixture(["let"], "(let x 1)")
-    fixture(["set!"], "(var m {^a 1}) (set! m/a 2)")
+    discard compileSource("(var m {^a 1}) (set m/a 2)")
     fixture(["new"],
       "(type FixtureNew ^props {} (ctor [] nil)) (new FixtureNew)")
     fixture(["const"], "(const K 1)")
@@ -283,8 +283,7 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
             "[(&& true 1) (|| nil 2) (?? nil 2) (! false)]")
     fixture(["~"], "(fn size-of [self] (~ size))")
     fixture(["fn"], "(fn identity [x] x)")
-    fixture(["fn!"], "(fn! syntax-id! [x] x)")
-    fixture(["macro"], "(macro identity! [x] `%x) (identity! 1)")
+    fixture(["macro"], "(macro identity [x] `%x) (identity 1)")
     fixture(["quote", "quasiquote", "select", "path"],
       "(do (quote x) (quasiquote x) (select name) (path a b))")
     # `msg` is what the reader gives `Proto:msg`; `/` stays `path`.
@@ -427,197 +426,223 @@ suite "spec — templates from design":
 
 suite "spec — macros from design":
   test "template macros expand before calls":
-    check_eval("(macro when! [cond, body...] " &
+    check_eval("(macro when [cond, body...] " &
                "  `(if %cond (then %body...) (else nil))) " &
-               "[(when! true 1) (when! false 2)]",
+               "[(when true 1) (when false 2)]",
                "[1 nil]")
-    check_eval("(macro when! [cond, body...] " &
+    check_eval("(macro when [cond, body...] " &
                "  `(if %cond (then %body...) (else nil))) " &
-               "(when! true (var x 1) (+ x 1))",
+               "(when true (var x 1) (+ x 1))",
                "2")
 
   test "macro call arguments are syntax nodes":
     check_eval("(var hit 0) " &
-               "(macro ignore! [ignored] 7) " &
-               "[(ignore! (set hit 1)) hit]",
+               "(macro ignore_syntax [ignored] 7) " &
+               "[(ignore_syntax (set hit 1)) hit]",
                "[7 0]")
 
   test "MVP macros are template macros: exactly one body expression":
     expect GeneError:
-      discard run(compileSource("(macro two! [x] (var t 1) `(+ %x %t)) " &
-                                "(two! 1)"),
+      discard run(compileSource("(macro two [x] (var t 1) `(+ %x %t)) " &
+                                "(two 1)"),
                   newGlobalScope())
 
   test "macro call props bind named syntax parameters":
-    check_eval("(macro scaled! [value ^by n] `(+ %value %n)) " &
-               "(scaled! ^by 3 7)",
+    check_eval("(macro scaled [value ^by n] `(+ %value %n)) " &
+               "(scaled ^by 3 7)",
                "10")
-    check_eval("(macro scaled! [value ^by amount] `(+ %value %amount)) " &
-               "(scaled! ^by 4 9)",
+    check_eval("(macro scaled [value ^by amount] `(+ %value %amount)) " &
+               "(scaled ^by 4 9)",
                "13")
-    check_eval("(macro tagged! [value ^tag t] `(quote (%t %value))) " &
-               "(tagged! ^tag item 7)",
+    check_eval("(macro tagged [value ^tag t] `(quote (%t %value))) " &
+               "(tagged ^tag item 7)",
                "(item 7)")
     expect GeneError:
       discard run(compileSource(
-        "(macro scaled! [value ^by n] `(+ %value %n)) " &
-        "(scaled! 7)"), newGlobalScope())
+        "(macro scaled [value ^by n] `(+ %value %n)) " &
+        "(scaled 7)"), newGlobalScope())
     expect GeneError:
       discard run(compileSource(
-        "(macro scaled! [value ^by n] `(+ %value %n)) " &
-        "(scaled! ^other 3 7)"), newGlobalScope())
+        "(macro scaled [value ^by n] `(+ %value %n)) " &
+        "(scaled ^other 3 7)"), newGlobalScope())
 
   test "macro parameters destructure syntax patterns":
-    check_eval("(macro second! [[_ value]] `%value) " &
-               "(second! [ignored (+ 1 2)])",
+    check_eval("(macro second [[_ value]] `%value) " &
+               "(second [ignored (+ 1 2)])",
                "3")
-    check_eval("(macro pick-prop! [{^value v}] `%v) " &
-               "(pick-prop! {^value (+ 2 3)})",
+    check_eval("(macro pick_prop [{^value v}] `%v) " &
+               "(pick_prop {^value (+ 2 3)})",
                "5")
-    check_eval("(macro named-pair! [^entry [k v]] `(+ %k %v)) " &
-               "(named-pair! ^entry [2 3])",
+    check_eval("(macro named_pair [^entry [k v]] `(+ %k %v)) " &
+               "(named_pair ^entry [2 3])",
                "5")
     expect GeneError:
       discard run(compileSource(
-        "(macro second! [[_ value]] `%value) " &
-        "(second! [only-one])"), newGlobalScope())
+        "(macro second [[_ value]] `%value) " &
+        "(second [only-one])"), newGlobalScope())
 
   test "macro typed patterns match syntax values":
-    check_eval("(macro eval-node! [(form : Node)] `%form) " &
-               "(eval-node! (+ 1 2))",
+    check_eval("(macro eval_node [(form : Node)] `%form) " &
+               "(eval_node (+ 1 2))",
                "3")
-    check_eval("(macro eval-flat! [form : Node] `%form) " &
-               "(eval-flat! (+ 2 3))",
+    check_eval("(macro eval_flat [form : Node] `%form) " &
+               "(eval_flat (+ 2 3))",
                "5")
-    check_eval("(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
-               "(keep-syms! [a b])",
+    check_eval("(macro keep_syms [(items : (List Sym))] `(quote %items)) " &
+               "(keep_syms [a b])",
                "[a b]")
-    check_eval("(macro keep-entry! [^entry item : (List Sym)] `(quote %item)) " &
-               "(keep-entry! ^entry [a b])",
+    check_eval("(macro keep_entry [^entry item : (List Sym)] `(quote %item)) " &
+               "(keep_entry ^entry [a b])",
                "[a b]")
     expect GeneError:
       discard run(compileSource(
-        "(macro eval-node! [(form : Node)] `%form) " &
-        "(eval-node! 1)"), newGlobalScope())
+        "(macro eval_node [(form : Node)] `%form) " &
+        "(eval_node 1)"), newGlobalScope())
     expect GeneError:
       discard run(compileSource(
-        "(macro eval-flat! [form : Node] `%form) " &
-        "(eval-flat! 1)"), newGlobalScope())
+        "(macro eval_flat [form : Node] `%form) " &
+        "(eval_flat 1)"), newGlobalScope())
     expect GeneError:
       discard run(compileSource(
-        "(macro keep-syms! [(items : (List Sym))] `(quote %items)) " &
-        "(keep-syms! [a 1])"), newGlobalScope())
+        "(macro keep_syms [(items : (List Sym))] `(quote %items)) " &
+        "(keep_syms [a 1])"), newGlobalScope())
 
   test "macro parameter defaults bind syntax values":
-    check_eval("(macro default-value! [x = 7] `%x) " &
-               "[(default-value!) (default-value! 9)]",
+    check_eval("(macro default_value [x = 7] `%x) " &
+               "[(default_value) (default_value 9)]",
                "[7 9]")
-    check_eval("(macro second-or-first! [x y = x] `%y) " &
-               "[(second-or-first! (+ 1 2)) (second-or-first! 1 4)]",
+    check_eval("(macro second_or_first [x y = x] `%y) " &
+               "[(second_or_first (+ 1 2)) (second_or_first 1 4)]",
                "[3 4]")
-    check_eval("(macro named-default! [^value v = (+ 2 3)] `%v) " &
-               "[(named-default!) (named-default! ^value 8)]",
+    check_eval("(macro named_default [^value v = (+ 2 3)] `%v) " &
+               "[(named_default) (named_default ^value 8)]",
                "[5 8]")
-    check_eval("(macro optional! [x = nil] `%x) (optional!)", "nil")
+    check_eval("(macro optional [x = nil] `%x) (optional)", "nil")
     expect GeneError:
-      discard compileSource("(macro bad! [x = 1 y] `%y)")
+      discard compileSource("(macro bad [x = 1 y] `%y)")
 
   test "template macros expand in default arguments":
-    check_eval("(macro seven! [] 7) (fn f [x = (seven!)] x) (f)", "7")
+    check_eval("(macro seven [] 7) (fn f [x = (seven)] x) (f)", "7")
 
   test "template macros avoid introduced local capture":
-    check_eval("(macro local! [x] `(do (var tmp 1) (+ tmp %x))) " &
-               "(var tmp 100) [(local! 2) tmp]",
+    check_eval("(macro local [x] `(do (var tmp 1) (+ tmp %x))) " &
+               "(var tmp 100) [(local 2) tmp]",
                "[3 100]")
 
   test "template macros avoid introduced helper capture":
-    check_eval("(macro helper! [x] " &
+    check_eval("(macro helper_syntax [x] " &
                "  `(do (fn helper [y] (+ y 1)) (helper %x))) " &
-               "(fn helper [y] 100) [(helper! 2) (helper 2)]",
+               "(fn helper [y] 100) [(helper_syntax 2) (helper 2)]",
                "[3 100]")
-    check_eval("(macro recursive! [x] " &
+    check_eval("(macro recursive [x] " &
                "  `(do (fn helper [n] " &
                "          (if (== n 0) 0 (helper (- n 1)))) " &
                "       (helper %x))) " &
-               "(fn helper [n] 99) [(recursive! 3) (helper 3)]",
+               "(fn helper [n] 99) [(recursive 3) (helper 3)]",
                "[0 99]")
 
   test "template macros avoid introduced pattern-binder capture":
     # docs/macro-design.md §12.5: binders introduced by a template's
     # match pattern are hygienically fresh, like var/fn binders.
-    check_eval("(macro first-of! [x] " &
+    check_eval("(macro first_of [x] " &
                "  `(match %x (when [tmp] tmp))) " &
-               "(var tmp 100) [(first-of! [1]) tmp]",
+               "(var tmp 100) [(first_of [1]) tmp]",
                "[1 100]")
 
-suite "spec — fn! runtime fexprs from design (§3/§11.1)":
-  test "fn! receives raw syntax and evaluates through caller_env":
-    check_eval("(fn! unless! [cond, body...] " &
-               "  (if (! (eval cond ^in caller_env)) " &
-               "    (eval `(do %body...) ^in caller_env) " &
-               "    nil)) " &
-               "(var x 10) " &
-               "[(unless! (> x 5) \"small\") (unless! (< x 5) \"not-small\")]",
-               "[nil \"not-small\"]")
-
-  test "fn! call arguments are not evaluated":
+suite "spec — explicit fexprs from design (§3/§11.1)":
+  test "a bang-named fn receives raw syntax":
     check_eval("(var hit ($cell 0)) " &
-               "(fn! ignore! [e] nil) " &
+               "(fn ignore! [e] nil) " &
                "(ignore! (hit ~ set 9)) " &
                "(hit ~ get)",
                "0")
 
+  test "fn! definition syntax is removed":
+    check_compile_error("(fn! old [x] x)",
+                        "fn! was removed; define a named fexpr with fn")
+
+  test "ordinary alias calls stay eager and cannot invoke fexprs":
+    check_eval("(fn quote_it! [e] e) (var f quote_it!) (var side 0) " &
+               "[(try (f (set side 1)) catch (CallKindError) \"blocked\") side]",
+               "[\"blocked\" 1]")
+    check_eval("(ns tools (fn quote_it! [e] e)) (var side 0) " &
+               "[(try (tools/quote_it! (set side 1)) " &
+               "   catch (CallKindError) \"blocked\") side]",
+               "[\"blocked\" 1]")
+
+  test "only fexpr declarations may bind a trailing-bang name":
+    check_compile_error("(fn quote_it! [e] e) (var alias! quote_it!)",
+                        "only a named fexpr may bind a name ending in !")
+    check_compile_error("(macro expand! [e] `%e)",
+                        "only a named fexpr may bind a name ending in !")
+
+  test "anonymous functions remain ordinary eager Fn values":
+    check_eval("(fn keep [f : Fn] \"ok\") (keep (fn [x] x))", "\"ok\"")
+
+  test "message names may not use the fexpr marker":
+    check_compile_error("(protocol P (message mutate! [self]))",
+                        "message names may not end in !")
+    check_compile_error("([1] ~ push! 2)",
+                        "message names may not end in !")
+
+  test "set handles lexical rebinding and path mutation without bang":
+    check_eval("(var x 1) (set x 2) " &
+               "(var record {^value 3}) (set record/value 4) " &
+               "[x record/value]",
+               "[2 4]")
+    check_compile_error("(set! x 3)",
+                        "set! was removed; use set")
+
+  test "Fexpr is the runtime type of a syntax callable":
+    check_eval("(fn quote_it! [e] e) " &
+               "(fn keep [f : Fexpr] \"ok\") (keep quote_it!)",
+               "\"ok\"")
+
+  test "fexpr values print with their defining fn form":
+    check_eval("(fn quote_it! [e] e) quote_it!", "(fn quote_it!)")
+
+  test "a fexpr evaluates selected syntax through caller_env":
+    check_eval("(fn unless! [cond, body...] " &
+               "  (if_not (eval cond ^in caller_env) " &
+               "    (eval `(do %body...) ^in caller_env))) " &
+               "(var x 10) " &
+               "[(unless! (> x 5) \"small\") (unless! (< x 5) \"not-small\")]",
+               "[nil \"not-small\"]")
+
   test "syntax_call carries the raw envelope including site":
-    check_eval("(fn! probe! [a b] syntax_call) " &
+    check_eval("(fn probe! [a b] syntax_call) " &
                "(probe! foo (bar 1))",
                "((type SyntaxCall) ^named {} ^site (probe! foo (bar 1)) " &
                "foo (bar 1))")
 
-  test "fn! values are first-class: aliases and expression heads":
-    check_eval("(fn! quote-it! [e] e) (var q quote-it!) (q (+ 1 2))",
-               "(+ 1 2)")
-    check_eval("(fn! quote-it! [e] e) ((do quote-it!) (+ 1 2))",
-               "(+ 1 2)")
+  test "fexpr values may be held for reflection":
+    check_eval("(fn quote_it! [e] e) (var held quote_it!) held",
+               "(fn quote_it!)")
 
-  test "Fn! is a sibling of Fn, not a subtype":
-    check_eval("(fn! q! [e] e) (fn keep [f : Fn!] \"ok\") (keep q!)",
+  test "Fexpr is a sibling of Fn, not a subtype":
+    check_eval("(fn q! [e] e) (fn keep [f : Fexpr] \"ok\") (keep q!)",
                "\"ok\"")
-    check_eval("(fn! q! [e] e) " &
+    check_eval("(fn q! [e] e) " &
                "(try (fn keep [f : Fn] f) (keep q!) " &
                "catch (TypeError ^expected e) e)",
                "\"Fn\"")
-    check_eval("(fn! q! [e] e) " &
+    check_eval("(fn q! [e] e) " &
                "(try (fn keep [f : Callable] f) (keep q!) " &
                "catch (TypeError ^expected e) e)",
                "\"Callable\"")
 
-  test "dynamic callees choose fn! before evaluating arguments":
-    check_eval("(fn! q! [e] e) (var side 0) " &
-               "(fn hof [f] (f (set side 1))) " &
+  test "higher-order calls stay eager and reject held fexprs":
+    check_eval("(fn q! [e] e) (var side 0) " &
+               "(fn hof [f] " &
+               "  (try (f (set side 1)) catch (CallKindError) \"blocked\")) " &
                "[(hof q!) side]",
-               "[(set side 1) 0]")
-    check_eval("(fn! q! [e] e) " &
-               "(fn hof [f : Any] (f (+ 1 2))) (hof q!)",
-               "(+ 1 2)")
-    check_eval("(fn! q! [^x] x) (var side 0) " &
-               "(fn hof [f] (f ^x (set side 1))) " &
-               "[(hof q!) side]",
-               "[(set side 1) 0]")
-    check_eval("(fn! z! [] 42) (fn hof [f] (f)) (hof z!)", "42")
-    check_eval("(var f (fn [x] x)) (var side 0) " &
-               "(fn invoke [] (f (set side 1))) " &
-               "(set f (fn! [x] x)) [(invoke) side]",
-               "[(set side 1) 0]")
+               "[\"blocked\" 1]")
 
-  test "eval Env bindings use callable-first fn! dispatch":
-    check_eval("(fn! q! [e] e) " &
-               "(var e (env ^bindings {^q q!})) " &
-               "(eval (quote (q (+ 1 2))) ^in e)",
+  test "eval recognizes explicit trailing-bang calls":
+    check_eval("(fn q! [e] e) " &
+               "(var e (env ^bindings {^q! q!})) " &
+               "(eval (quote (q! (+ 1 2))) ^in e)",
                "(+ 1 2)")
-    check_eval("(fn! q! [e] e) " &
-               "(var e (env ^bindings {^+ q!})) " &
-               "(eval (quote (+ (set never 1))) ^in e)",
-               "(set never 1)")
 
   test "sends resolve receiver-first and raise before evaluating arguments":
     # D6: `~` dispatches only. A bare name that is not a message on the
@@ -631,73 +656,73 @@ suite "spec — fn! runtime fexprs from design (§3/§11.1)":
     # The MessageError is raised before any send argument runs.
     check_eval("(var side 0) (try ([1] ~ nope (set side 1)) catch _ side)",
                "0")
-    # An expression callee that is a fn! is rejected as a CallKindError, also
+    # An expression callee that is an fexpr is rejected as a CallKindError, also
     # before evaluating any send argument (design §3/§7).
-    check_eval("(fn! q! [x] x) (var side 0) " &
+    check_eval("(fn q! [x] x) (var side 0) " &
                "(try ([1] ~ (do q!) (set side 1)) catch _ side)",
                "0")
-    check_eval("(fn! q! [x] x) " &
+    check_eval("(fn q! [x] x) " &
                "(try ([1] ~ (do q!) 1) " &
                " catch (CallKindError ^where w ^expected e ^actual a) " &
                " [w e a])",
-               "[\"message send\" \"Callable\" \"SyntaxCallable\"]")
+               "[\"message send\" \"Callable\" \"Fexpr\"]")
 
-  test "fn! prints as a fn! value":
-    check_eval("(fn! q! [e] e) q!", "(fn! q!)")
+  test "fexpr prints as its fn declaration form":
+    check_eval("(fn q! [e] e) q!", "(fn q!)")
 
-  test "fn! arity errors count only syntax parameters":
+  test "fexpr arity errors count only syntax parameters":
     # caller_env and syntax_call bind as implicit leading parameters but must
     # not surface in arity diagnostics.
-    check_eval("(fn! q! [e] e) (try (q!) catch (Error ^message m) m)",
-               "\"fn! 'q!' expects 1..1 syntax argument(s), got 0\"")
+    check_eval("(fn q! [e] e) (try (q!) catch (Error ^message m) m)",
+               "\"fexpr 'q!' expects 1..1 syntax argument(s), got 0\"")
 
   test "caller_env is borrowed and explicit snapshots are durable":
     check_eval("(var x 41) " &
-               "(fn! capture! [] (caller_env ~ snapshot [\"x\"])) " &
+               "(fn capture! [] (caller_env ~ snapshot [\"x\"])) " &
                "(var saved (capture!)) (eval (quote (+ x 1)) ^in saved)",
                "42")
     check_eval("(var x 1) (var secret 9) " &
-               "(fn! capture! [] (caller_env ~ snapshot [\"x\"])) " &
+               "(fn capture! [] (caller_env ~ snapshot [\"x\"])) " &
                "(var saved (capture!)) " &
                "(try (eval (quote secret) ^in saved) catch _ \"absent\")",
                "\"absent\"")
-    check_eval("(fn! type! [] (var e : CallerEnv caller_env) \"ok\") " &
+    check_eval("(fn type! [] (var e : CallerEnv caller_env) \"ok\") " &
                "(type!)",
                "\"ok\"")
 
   test "caller_env escape boundaries reject borrowed authority":
-    check_eval("(fn! leak! [] caller_env) " &
+    check_eval("(fn leak! [] caller_env) " &
                "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
-    check_eval("(fn! leak! [] [caller_env]) " &
+    check_eval("(fn leak! [] [caller_env]) " &
                "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
-    check_eval("(fn! leak! [] ($cell caller_env)) " &
+    check_eval("(fn leak! [] ($cell caller_env)) " &
                "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
-    check_eval("(var leaked nil) (fn! leak! [] (set leaked caller_env)) " &
+    check_eval("(var leaked nil) (fn leak! [] (set leaked caller_env)) " &
                "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(var leaked []) " &
-               "(fn! leak! [] (leaked ~ push! caller_env)) " &
+               "(fn leak! [] (leaked ~ push caller_env)) " &
                "[(try (leak!) catch _ \"blocked\") leaked]",
                "[\"blocked\" []]")
-    check_eval("(fn! leak! [] (fn [] (eval (quote 1) ^in caller_env))) " &
+    check_eval("(fn leak! [] (fn [] (eval (quote 1) ^in caller_env))) " &
                "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
-    check_eval("(fn! leak! [] (fail caller_env)) " &
+    check_eval("(fn leak! [] (fail caller_env)) " &
                "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
-    check_eval("(fn! leak! [] (scope (spawn caller_env))) " &
+    check_eval("(fn leak! [] (scope (spawn caller_env))) " &
                "(try (leak!) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(import $serde [write SerdeError]) " &
-               "(fn! leak! [] " &
+               "(fn leak! [] " &
                "  (try (write caller_env) catch (SerdeError) \"blocked\")) " &
                "(leak!)",
                "\"blocked\"")
     check_eval("(var ch ($channel ^capacity 1)) " &
-               "(fn! leak! [] " &
+               "(fn leak! [] " &
                "  (try (ch ~ send caller_env) " &
                "   catch (TypeError ^expected e) e)) " &
                "(leak!)",
@@ -854,7 +879,7 @@ int main(void) {
       "(type Timespec " &
       "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
       "(fn set_seconds [t : Timespec value : I64] : I64 " &
-      "  (do (set! t/tv_sec value) value))")
+      "  (do (set t/tv_sec value) value))")
     let c = chunk.emitExperimentalC()
     check "int64_t gene_native_set_seconds(CTimespec * t, int64_t value)" in c
     check "(void)(t->tv_sec = value);" in c
@@ -866,7 +891,7 @@ int main(void) {
       "(type BytePtr " &
       "  ^native {^abi CByte ^lifecycle manual ^mutable true}) " &
       "(fn set_byte [p : BytePtr value : I64] : I64 " &
-      "  (set! p/value value))",
+      "  (set p/value value))",
       "typed_native function set_byte cannot lower its body statically")
 
   test "a typed-native body is a sequence, not a single form":
@@ -1809,7 +1834,7 @@ int main(void) {
       "  ^native {^abi CNode ^lifecycle manual ^mutable true}) " &
       "(fn next_node [node : Node] : Node? node/next) " &
       "(fn set_next [node : Node child : Node] : Node " &
-      "  (do (set! node/next child) child))")
+      "  (do (set node/next child) child))")
     let c = chunk.emitExperimentalC()
     check "CNode * gene_native_next_node(CNode * node)" in c
     check "return node->next;" in c
@@ -2044,7 +2069,7 @@ int main(void) {
       "  ^native {^abi CNode ^lifecycle manual ^mutable true}) " &
       "(type Other ^native {^abi COther ^lifecycle manual}) " &
       "(fn lie [node : Node child : Node] : Other " &
-      "  (set! node/next child))",
+      "  (set node/next child))",
       "typed_native function lie cannot lower its body statically")
 
   test "an explicit native entry borrows a managed wrapper for the call":
@@ -2618,7 +2643,7 @@ int main(void) {
       "(type Timespec " &
       "  ^native {^abi CTimespec ^lifecycle manual ^mutable true}) " &
       "(fn maybe_set [t : Timespec? value : I64] : I64 " &
-      "  (set! t/tv_sec value))")
+      "  (set t/tv_sec value))")
     let c = chunk.emitExperimentalC()
     check "t != NULL ? (t->tv_sec = value)" in c
     checkCCompiles(c, "typed_native_nullable_store")
@@ -2630,7 +2655,7 @@ int main(void) {
       "  ^native {^abi CNode ^lifecycle manual ^mutable true}) " &
       "(fn maybe_next [node : Node?] : Node? node/next) " &
       "(fn maybe_set_next [node : Node? child : Node] : Node " &
-      "  (set! node/next child))")
+      "  (set node/next child))")
     let c = chunk.emitExperimentalC()
     check "node != NULL ? node->next : " &
       "gene_typed_native_null_ptr(\"Node\", \"next\")" in c
@@ -3195,7 +3220,7 @@ suite "spec — numeric boundaries from design":
   test "Buffer annotations are Gene-owned typed storage":
     check_eval("(var b ($buffer C/UInt8 [1 2])) " &
                "[(b ~ len) (b ~ get 1) " &
-               "(b ~ set! 0 9) (b ~ to_list)]",
+               "(b ~ set 0 9) (b ~ to_list)]",
                "[2 2 9 [9 2]]")
     check_eval("((fn [b : (Buffer C/UInt8)] true) " &
                "($buffer C/UInt8 [1 2]))",
@@ -3274,7 +3299,7 @@ suite "spec — nominal types from design":
 suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "new is a keyword that invokes the type constructor":
     check_eval("(type Point ^props {^x Int} " &
-               "  (ctor [x : Int] (self ~ set_prop! `x x))) " &
+               "  (ctor [x : Int] (self ~ set_prop `x x))) " &
                "(let new (fn [_] \"shadowed\")) " &
                "(var point (new Point 42)) point/x",
                "42")
@@ -3282,17 +3307,17 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "ctor mutates pre-created self and returns the validated instance":
     check_eval("(type Point ^props {^x F64 ^y F64} " &
                "  (ctor [x : F64, y : F64] " &
-               "    (self ~ set_prop! `x x) " &
-               "    (self ~ set_prop! `y y))) " &
+               "    (self ~ set_prop `x x) " &
+               "    (self ~ set_prop `y y))) " &
                "(var p (new Point 10.0 20.0)) [p/x p/y]",
                "[10.0 20.0]")
 
   test "ctor uses function-style argument matching with named defaults":
     check_eval("(type User ^props {^name Str ^age Int ^active Bool} " &
                "  (ctor [name : Str, ^age : Int = 0, ^active : Bool = true] " &
-               "    (self ~ set_prop! `name name) " &
-               "    (self ~ set_prop! `age age) " &
-               "    (self ~ set_prop! `active active))) " &
+               "    (self ~ set_prop `name name) " &
+               "    (self ~ set_prop `age age) " &
+               "    (self ~ set_prop `active active))) " &
                "(var u (new User \"Ada\" ^age 37)) [u/name u/age u/active]",
                "[\"Ada\" 37 true]")
 
@@ -3302,7 +3327,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(type Port ^props {^value Int} " &
                "  (ctor [n : Int] ^errors [ValidationError] " &
                "    (if (&& (>= n 0) (<= n 65535)) " &
-               "      (self ~ set_prop! `value n) " &
+               "      (self ~ set_prop `value n) " &
                "      (fail (ValidationError ^message \"invalid port\"))))) " &
                "(var ok (new Port 8080)) " &
                "[(try (new Port 99999) catch (ValidationError ^message m) m) " &
@@ -3314,18 +3339,18 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
                "(try (new Bad) catch _ \"required field unset\")",
                "\"required field unset\"")
     check_eval("(type Sneaky ^props {^a Int} " &
-               "  (ctor [] (self ~ set_prop! `a 1) " &
-               "           (self ~ set_prop! `zzz 9))) " &
+               "  (ctor [] (self ~ set_prop `a 1) " &
+               "           (self ~ set_prop `zzz 9))) " &
                "(try (new Sneaky) catch _ \"unknown field\")",
                "\"unknown field\"")
     check_eval("(type Typed ^props {^a Int} " &
-               "  (ctor [] (self ~ set_prop! `a \"nope\"))) " &
+               "  (ctor [] (self ~ set_prop `a \"nope\"))) " &
                "(try (new Typed) catch (TypeError ^where w) w)",
                "\"field 'a' for Typed\"")
 
   test "(T ...) is direct data construction and never runs the ctor":
     check_eval("(type Port2 ^props {^value Int} " &
-               "  (ctor [n : Int] (self ~ set_prop! `value (* n 2)))) " &
+               "  (ctor [n : Int] (self ~ set_prop `value (* n 2)))) " &
                "(var direct (Port2 ^value 8080)) " &
                "(var made (new Port2 8080)) " &
                "[direct/value made/value]",
@@ -3333,28 +3358,28 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
 
   test "direct construction still schema-validates on a ctor type":
     check_eval("(type Port3 ^props {^value Int} " &
-               "  (ctor [n : Int] (self ~ set_prop! `value n))) " &
+               "  (ctor [n : Int] (self ~ set_prop `value n))) " &
                "(try (Port3 ^value \"nope\") catch (TypeError ^where w) w)",
                "\"field 'value' for Port3\"")
     check_eval("(type Port4 ^props {^value Int} " &
-               "  (ctor [n : Int] (self ~ set_prop! `value n))) " &
+               "  (ctor [n : Int] (self ~ set_prop `value n))) " &
                "(try (Port4) catch _ \"missing field\")",
                "\"missing field\"")
 
   test "typed instance property writes preserve field types":
     check_eval("(type Counter ^props {^n Int}) " &
                "(var counter (Counter ^n 1)) " &
-               "[(try (counter ~ set_prop! `n \"bad\") " &
+               "[(try (counter ~ set_prop `n \"bad\") " &
                "  catch (TypeError ^where where) where) counter/n]",
                "[\"field 'n' for Counter\" 1]")
     check_eval("(type Counter ^props {^n Int}) " &
                "(var counter (Counter ^n 1)) " &
-               "[(try (counter ~ set_prop! `n void) " &
+               "[(try (counter ~ set_prop `n void) " &
                "  catch (Error ^message message) message) counter/n]",
                "[\"cannot remove required field 'n' from Counter\" 1]")
     check_eval("(type MaybeCounter ^props {^n Int?}) " &
                "(var counter (MaybeCounter ^n 1)) " &
-               "(counter ~ set_prop! `n void) (counter ~ props)",
+               "(counter ~ set_prop `n void) (counter ~ props)",
                "{}")
 
   test "functional updates preserve typed instance schemas":
@@ -3373,22 +3398,22 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "typed instance body mutation preserves the declared body schema":
     check_eval("(type NamedOnly ^props {^n Int}) " &
                "(var value (NamedOnly ^n 1)) " &
-               "[(try (value ~ set_body! [\"undeclared\"]) " &
+               "[(try (value ~ set_body [\"undeclared\"]) " &
                "  catch (Error ^message message) message) " &
-               " (try (value ~ push_body! \"undeclared\") " &
+               " (try (value ~ push_body \"undeclared\") " &
                "  catch (Error ^message message) message) value]",
                "[\"NamedOnly expects 0 body item(s), got 1\" " &
                "\"NamedOnly expects 0 body item(s), got 1\" " &
                "((type NamedOnly) ^n 1)]")
     check_eval("(type Pair ^body [Int Int]) (var pair (Pair 1 2)) " &
-               "[(try (pair ~ set_body! [1 \"bad\"]) " &
+               "[(try (pair ~ set_body [1 \"bad\"]) " &
                "  catch (TypeError ^where where) where) pair]",
                "[\"body field 1 for Pair\" ((type Pair) 1 2)]")
 
   test "the immutable node reader preserves typed-instance immutability":
     check_eval("(type Counter ^props {^n Int}) " &
                "(var counter #(Counter ^n 1)) " &
-               "[(try (counter ~ set_prop! `n 2) " &
+               "[(try (counter ~ set_prop `n 2) " &
                "  catch (Error ^message message) message) counter]",
                "[\"cannot mutate immutable Node\" #((type Counter) ^n 1)]")
 
@@ -3421,14 +3446,14 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(type Animal ^props {^name Str}) " &
                "(type Dog ^is Animal ^props {^breed Str} " &
                "  (ctor [name : Str, breed : Str] " &
-               "    (self ~ set_prop! `name name) " &
-               "    (self ~ set_prop! `breed breed))) " &
+               "    (self ~ set_prop `name name) " &
+               "    (self ~ set_prop `breed breed))) " &
                "(var d (new Dog \"Rex\" \"Lab\")) [d/name d/breed]",
                "[\"Rex\" \"Lab\"]")
 
   test "new inherits the nearest ancestor ctor":
     check_eval("(type Animal ^props {^name Str} " &
-               "  (ctor [name : Str] (self ~ set_prop! `name name))) " &
+               "  (ctor [name : Str] (self ~ set_prop `name name))) " &
                "(type Dog ^is Animal) " &
                "(var dog (new Dog \"Rex\")) dog",
                "((type Dog) ^name \"Rex\")")
@@ -3436,8 +3461,8 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "ctor fills body fields through mutable node APIs":
     check_eval("(type Pair ^body [Int Int] " &
                "  (ctor [a : Int, b : Int] " &
-               "    (self ~ push_body! a) " &
-               "    (self ~ push_body! b))) " &
+               "    (self ~ push_body a) " &
+               "    (self ~ push_body b))) " &
                "(var pr (new Pair 1 2)) [pr/0 pr/1]",
                "[1 2]")
     check_eval("(type Solo ^body [Int] (ctor [] nil)) " &
@@ -3452,17 +3477,17 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(var leaked nil) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked self) " &
-               "    (self ~ set_prop! `x 1))) " &
+               "    (self ~ set_prop `x 1))) " &
                "[(try (new T) catch _ \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(var box ($cell nil)) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (box ~ set self) " &
-               "    (self ~ set_prop! `x 1))) " &
+               "    (self ~ set_prop `x 1))) " &
                "[(try (new T) catch _ \"blocked\") (box ~ get)]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
-               "  (ctor [] [self] (self ~ set_prop! `x 1))) " &
+               "  (ctor [] [self] (self ~ set_prop `x 1))) " &
                "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} ^impl [Error] " &
@@ -3477,31 +3502,31 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
     check_eval("(var leaked nil) " &
                "(type T ^props {^x Int} " &
                "  (ctor [] (set leaked (fn [] self)) " &
-               "    (self ~ set_prop! `x 1))) " &
+               "    (self ~ set_prop `x 1))) " &
                "[(try (new T) catch _ \"blocked\") leaked]",
                "[\"blocked\" nil]")
     check_eval("(type T ^props {^x Int} " &
                "  (message inspect [self] self/x) " &
                "  (ctor [] (self ~ inspect) " &
-               "    (self ~ set_prop! `x 1))) " &
+               "    (self ~ set_prop `x 1))) " &
                "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(type T ^props {^x Int} " &
                "  (ctor [] (spawn self) " &
-               "    (self ~ set_prop! `x 1))) " &
+               "    (self ~ set_prop `x 1))) " &
                "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
     check_eval("(var ch ($channel ^capacity 1)) " &
                "(type T ^props {^x Int} ^impl [Send] " &
                "  (ctor [] (ch ~ send self) " &
-               "    (self ~ set_prop! `x 1))) " &
+               "    (self ~ set_prop `x 1))) " &
                "(impl Send for T) " &
                "(try (new T) catch _ \"blocked\")",
                "\"blocked\"")
 
   test "successful construction clears the publication guard":
     check_eval("(type T ^props {^x Int} ^impl [Send] " &
-               "  (ctor [] (self ~ set_prop! `x 1))) " &
+               "  (ctor [] (self ~ set_prop `x 1))) " &
                "(impl Send for T) " &
                "(var ch ($channel ^capacity 1)) (var value (new T)) " &
                "(ch ~ send value) " &
@@ -3521,11 +3546,11 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
 suite "spec — native wrapper types (design §16.6)":
   test "^repr native_wrapper marks the type and admits only ctor construction":
     check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
-               "  (ctor [h : Str] (set! self/handle h))) " &
+               "  (ctor [h : Str] (set self/handle h))) " &
                "(var c (new Conn \"H\")) [c/handle ($head c)]",
                "[\"H\" (type Conn)]")
     check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
-               "  (ctor [h : Str] (set! self/handle h))) " &
+               "  (ctor [h : Str] (set self/handle h))) " &
                "(try (Conn ^handle \"junk\") catch (Error ^message m) m)",
                "\"direct construction cannot construct Conn: it is a native " &
                "wrapper; construct it with (new Conn ...)\"")
@@ -3534,7 +3559,7 @@ suite "spec — native wrapper types (design §16.6)":
     # Each of these would otherwise mint a value that passes the `Conn`
     # nominal boundary while carrying no native payload.
     check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
-               "  (ctor [h : Str] (set! self/handle h))) " &
+               "  (ctor [h : Str] (set self/handle h))) " &
                "[(try ($construct_type Conn {^handle \"x\"}) catch _ \"no\") " &
                " (try `(%Conn ^handle \"x\") catch _ \"no\") " &
                " (try ($assoc_in (quote (data ^handle \"x\")) /head Conn) " &
@@ -3543,10 +3568,10 @@ suite "spec — native wrapper types (design §16.6)":
 
   test "wrapper fields are initializer-only after construction":
     check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
-               "  (ctor [h : Str] (set! self/handle h))) " &
+               "  (ctor [h : Str] (set self/handle h))) " &
                "(var c (new Conn \"H\")) " &
-               "[(try (set! c/handle \"junk\") catch (Error ^message m) m) " &
-               " (try (c ~ set_prop! `handle \"junk\") catch _ \"no\") " &
+               "[(try (set c/handle \"junk\") catch (Error ^message m) m) " &
+               " (try (c ~ set_prop `handle \"junk\") catch _ \"no\") " &
                " (try ($assoc_in c /handle \"junk\") catch _ \"no\") " &
                " c/handle]",
                "[\"cannot set field 'handle' on Conn: native wrapper fields " &
@@ -3556,7 +3581,7 @@ suite "spec — native wrapper types (design §16.6)":
     # A Gene-side subtype may add messages and impls; it must not reopen
     # construction on the parent's native payload.
     check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
-               "  (ctor [h : Str] (set! self/handle h))) " &
+               "  (ctor [h : Str] (set self/handle h))) " &
                "(type Tagged ^is Conn " &
                "  (message tag [self] : Str self/handle)) " &
                "[(try (Tagged ^handle \"x\") catch _ \"no\") " &
@@ -3574,7 +3599,7 @@ suite "spec — native wrapper types (design §16.6)":
                "\"direct construction cannot construct SqliteDb: it is a " &
                "native wrapper; construct it with (new SqliteDb ...)\"")
     check_eval("(import $db/sqlite [open Db]) (var c (open \":memory:\")) " &
-               "[(try (set! c/handle \"junk\") catch _ \"no\") " &
+               "[(try (set c/handle \"junk\") catch _ \"no\") " &
                " (try ($assoc_in c /backend \"junk\") catch _ \"no\") " &
                " c/backend]",
                "[\"no\" \"no\" \"sqlite\"]")
@@ -3642,11 +3667,11 @@ suite "spec — sequence indexing by integral Float (§7.4)":
     # accepts. Without this the same source reads a list in the browser and
     # yields `void` on the VM — silently, because `void` is a legal value.
     check_eval("(var l [10 20 30]) (var i 1.0) l/%i", "20")
-    check_eval("(var l [10 20 30]) (var i 1.0) (set! l/%i 99) l", "[10 99 30]")
+    check_eval("(var l [10 20 30]) (var i 1.0) (set l/%i 99) l", "[10 99 30]")
     check_eval("(var l [10 20 30]) (var i 1) l/%i", "20")
   test "a non-integral Float names no element":
     check_eval("(var l [10 20 30]) (var i 1.5) l/%i", "void")
-    check_runtime_error("(var l [10 20 30]) (var i 1.5) (set! l/%i 9)",
+    check_runtime_error("(var l [10 20 30]) (var i 1.5) (set l/%i 9)",
                         "whole-number index")
 
   test "a negative index counts from the end":
@@ -3659,10 +3684,10 @@ suite "spec — sequence indexing by integral Float (§7.4)":
     # (`index.*`); these pin the VM half.
     check_eval("(var l [10 20 30]) l/-1", "30")
     check_eval("(var l [10 20 30]) (var i -2.0) l/%i", "20")
-    check_eval("(var l [10 20 30]) (set! l/-1 99) l", "[10 20 99]")
-    check_eval("(var b ($buffer F64 3.0)) (b ~ set! -1.0 7.0) (b ~ get 2.0)",
+    check_eval("(var l [10 20 30]) (set l/-1 99) l", "[10 20 99]")
+    check_eval("(var b ($buffer F64 3.0)) (b ~ set -1.0 7.0) (b ~ get 2.0)",
                "7.0")
-    check_eval("(var b ($buffer F64 3.0)) (b ~ set! 2.0 7.0) (b ~ get -1.0)",
+    check_eval("(var b ($buffer F64 3.0)) (b ~ set 2.0 7.0) (b ~ get -1.0)",
                "7.0")
 
   test "an out-of-range write raises where an out-of-range read is void":
@@ -3670,59 +3695,59 @@ suite "spec — sequence indexing by integral Float (§7.4)":
     # deliberate and the web profile now matches it rather than growing the
     # array or dropping the store on the floor.
     check_eval("(var l [10 20 30]) l/9", "void")
-    check_runtime_error("(var l [10 20]) (set! l/9 5)", "index out of range")
-    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ set! 9.0 1.0)",
-                        "Buffer/set! index out of range")
-    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ set! -9.0 1.0)",
-                        "Buffer/set! index out of range")
+    check_runtime_error("(var l [10 20]) (set l/9 5)", "index out of range")
+    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ set 9.0 1.0)",
+                        "Buffer/set index out of range")
+    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ set -9.0 1.0)",
+                        "Buffer/set index out of range")
 
 suite "spec — bulk buffer moves":
-  # `fill!` and `copy_from!` are not conveniences over a `set!` loop; they do
+  # `fill` and `copy_from` are not conveniences over a `set` loop; they do
   # less work. The loop re-checks the element type and re-decodes the index once
   # per element and pays an interpreter dispatch for each, where these check
   # once and then move elements — measured at D=512, 348x for the fill and 150x
   # for the copy. Both are emitted as `TypedArray.fill` / `.set` in the web
   # profile, so the same source is bulk on both backends.
-  test "fill! writes a whole buffer, or a half-open range of one":
-    check_eval("(var b ($buffer F64 4.0)) (b ~ fill! 7.0) (b ~ to_list)",
+  test "fill writes a whole buffer, or a half-open range of one":
+    check_eval("(var b ($buffer F64 4.0)) (b ~ fill 7.0) (b ~ to_list)",
                "[7.0 7.0 7.0 7.0]")
-    check_eval("(var b ($buffer F64 4.0)) (b ~ fill! 7.0 1.0 3.0) (b ~ to_list)",
+    check_eval("(var b ($buffer F64 4.0)) (b ~ fill 7.0 1.0 3.0) (b ~ to_list)",
                "[0.0 7.0 7.0 0.0]")
-    check_eval("(var b ($buffer F64 4.0)) (b ~ fill! 7.0 2.0 2.0) (b ~ to_list)",
+    check_eval("(var b ($buffer F64 4.0)) (b ~ fill 7.0 2.0 2.0) (b ~ to_list)",
                "[0.0 0.0 0.0 0.0]")
-  test "fill! checks the element once, against the buffer's type":
-    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ fill! \"x\")",
-                        "Buffer/fill! item")
-  test "copy_from! copies a whole buffer only into an equal-length one":
-    check_eval("(var a ($buffer F64 3.0)) (a ~ fill! 5.0) " &
-               "(var b ($buffer F64 3.0)) (b ~ copy_from! a) (b ~ to_list)",
+  test "fill checks the element once, against the buffer's type":
+    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ fill \"x\")",
+                        "Buffer/fill item")
+  test "copy_from copies a whole buffer only into an equal-length one":
+    check_eval("(var a ($buffer F64 3.0)) (a ~ fill 5.0) " &
+               "(var b ($buffer F64 3.0)) (b ~ copy_from a) (b ~ to_list)",
                "[5.0 5.0 5.0]")
     check_runtime_error("(var a ($buffer F64 2.0)) (var b ($buffer F64 3.0)) " &
-                        "(b ~ copy_from! a)",
+                        "(b ~ copy_from a)",
                         "equal lengths")
-  test "copy_from! takes a source range and a destination offset":
-    check_eval("(var a ($buffer F64 4.0)) (a ~ fill! 1.0 0.0 2.0) " &
-               "(a ~ fill! 2.0 2.0 4.0) " &
-               "(var b ($buffer F64 4.0)) (b ~ copy_from! a 2.0 4.0 1.0) " &
+  test "copy_from takes a source range and a destination offset":
+    check_eval("(var a ($buffer F64 4.0)) (a ~ fill 1.0 0.0 2.0) " &
+               "(a ~ fill 2.0 2.0 4.0) " &
+               "(var b ($buffer F64 4.0)) (b ~ copy_from a 2.0 4.0 1.0) " &
                "(b ~ to_list)",
                "[0.0 2.0 2.0 0.0]")
     check_runtime_error("(var a ($buffer F64 4.0)) (var b ($buffer F64 4.0)) " &
-                        "(b ~ copy_from! a 0.0 4.0 2.0)",
+                        "(b ~ copy_from a 0.0 4.0 2.0)",
                         "do not fit")
-  test "copy_from! onto itself moves rather than smears":
+  test "copy_from onto itself moves rather than smears":
     # A forward loop would read slots it had already written and repeat the
     # first two elements down the buffer. The VM picks the copy direction and
     # the web profile inherits the same guarantee from `TypedArray.set`, which
     # is specified to clone when source and destination share a buffer.
     check_eval("(var a ($buffer F64 6.0)) " &
-               "(var i 0.0) (while (< i 6.0) (a ~ set! i (+ i 1.0)) " &
+               "(var i 0.0) (while (< i 6.0) (a ~ set i (+ i 1.0)) " &
                "  (set i (+ i 1.0))) " &
-               "(a ~ copy_from! a 0.0 4.0 2.0) (a ~ to_list)",
+               "(a ~ copy_from a 0.0 4.0 2.0) (a ~ to_list)",
                "[1.0 2.0 1.0 2.0 3.0 4.0]")
   test "a range endpoint past the end is an error, not a clamp":
-    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ fill! 1.0 0.0 9.0)",
+    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ fill 1.0 0.0 9.0)",
                         "range endpoint is out of range")
-    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ fill! 1.0 2.0 1.0)",
+    check_runtime_error("(var b ($buffer F64 3.0)) (b ~ fill 1.0 2.0 1.0)",
                         "before start")
 
 suite "spec — loop body scoping from design (§9)":
@@ -3730,14 +3755,14 @@ suite "spec — loop body scoping from design (§9)":
     # `for` always worked; `while`, `loop`, and `repeat` share one scope on the
     # VM and would report the second iteration as a duplicate binding.
     check_eval("(var i 0) (var acc []) " &
-               "(while (< i 3) (var x (* i 2)) (acc ~ push! x) (set i (+ i 1))) " &
+               "(while (< i 3) (var x (* i 2)) (acc ~ push x) (set i (+ i 1))) " &
                "acc",
                "[0 2 4]")
     check_eval("(fn f [] (var i 0) (var acc []) " &
-               "  (while (< i 3) (var x (* i 2)) (acc ~ push! x) (set i (+ i 1))) " &
+               "  (while (< i 3) (var x (* i 2)) (acc ~ push x) (set i (+ i 1))) " &
                "  acc) (f)",
                "[0 2 4]")
-    check_eval("(var acc []) (for i in [0 1 2] (var x (* i 2)) (acc ~ push! x)) acc",
+    check_eval("(var acc []) (for i in [0 1 2] (var x (* i 2)) (acc ~ push x)) acc",
                "[0 2 4]")
   test "a genuine redeclaration is still an error":
     check_runtime_error("(fn f [] (var x 1) (var x 2) x) (f)", "duplicate binding")
@@ -3781,8 +3806,8 @@ suite "spec — gene/bit and gene/binary from design (§7.9)":
                "[1 2 255]")
     check_eval("(($binary/to_buffer ($binary/from_list [7])) ~ elem_type)",
                "U8")
-    check_eval("(var b ($buffer U8 3)) (b ~ set! 0 137) (b ~ set! 1 80) " &
-               "(b ~ set! 2 71) (b ~ to_bytes)",
+    check_eval("(var b ($buffer U8 3)) (b ~ set 0 137) (b ~ set 1 80) " &
+               "(b ~ set 2 71) (b ~ to_bytes)",
                "#B16#895047")
     # Round trip, both directions, including the byte values a text encoding
     # could not carry.
@@ -3908,7 +3933,7 @@ suite "spec — statement return types from design (§7.7)":
     check_eval("(fn f [] : Nil \"anything\") (f)", "nil")
     # The point of the rule: a body may end on real work with no trailing `nil`.
     check_eval("(var log []) " &
-               "(fn note [x] : Nil (log ~ push! x)) " &
+               "(fn note [x] : Nil (log ~ push x)) " &
                "(note 1) (note 2) log",
                "[1 2]")
   test "a Void return discards the body value and yields void":
@@ -3932,7 +3957,7 @@ suite "spec — statement return types from design (§7.7)":
                "nil")
     # Early return still cuts the body short.
     check_eval("(var log []) " &
-               "(fn f [x] : Nil (if_yes (< x 0) (return)) (log ~ push! x)) " &
+               "(fn f [x] : Nil (if_yes (< x 0) (return)) (log ~ push x)) " &
                "(f -1) (f 3) log",
                "[3]")
   test "statement returns are bare Nil and Void, not any nil-admitting type":
@@ -4515,8 +4540,8 @@ suite "spec — implicit self in message bodies from design §10":
                "(($map ($to_stream items) (fn [x] (x ~ %m))) ~ into [])",
                "[\"a\" \"b\"]")
 
-  test "sending a held fn! value is a CallKindError":
-    check_eval("(fn! q! [x] x) (var f q!) " &
+  test "sending a held fexpr value is a CallKindError":
+    check_eval("(fn q! [x] x) (var f q!) " &
                "(try ([1] ~ %f 1) catch (CallKindError ^where w) w)",
                "\"message send\"")
 
@@ -4565,7 +4590,7 @@ suite "spec — implicit self in message bodies from design §10":
     # `T/m` is not a callable path. Giving it its real receiver settles it —
     # `Env` keeps only the message that genuinely takes an `Env`.
     check_eval("[Env CallerEnv]", "[(type Env) (type CallerEnv)]")
-    check_eval("(var x 1) (fn! capture! [] (caller_env ~ snapshot [\"x\"])) " &
+    check_eval("(var x 1) (fn capture! [] (caller_env ~ snapshot [\"x\"])) " &
                "($nil? (capture!))",
                "false")
     check_eval("[Date Time DateTime Timezone Duration Range]",
@@ -4688,7 +4713,7 @@ suite "spec — implicit self in message bodies from design §10":
                "[[1 [2 3] 4] 1]")
     # A typed instance's body destructures the same way.
     check_eval("(type P ^props {^a Int} ^body [Any...]) (var p (P ^a 1)) " &
-               "(p ~ push_body! 7) (p ~ push_body! 8) " &
+               "(p ~ push_body 7) (p ~ push_body 8) " &
                "(match p (when (P ^a k xs...) [k xs]) (else \"no\"))",
                "[1 [7 8]]")
     # The macro-time matcher is a separate implementation and needs the same
@@ -4804,7 +4829,7 @@ suite "spec — implicit self in message bodies from design §10":
                "[(n ~ head) (n ~ props) (n ~ body) (n ~ meta)]",
                "[f {} [1 2] {}]")
     check_eval("(type P ^props {^a Int}) (var p (P ^a 1)) " &
-               "[(try (p ~ set_prop! \"b\" 2) " &
+               "[(try (p ~ set_prop \"b\" 2) " &
                "  catch (Error ^message message) message) " &
                " (p ~ head) (p ~ body) (p ~ props)]",
                "[\"P has no field 'b'\" (type P) [] {^a 1}]")
@@ -5537,7 +5562,7 @@ suite "spec — binding forms from design §12.1":
     # Folding shares one Value across every use site, which is only safe
     # because the aggregate was frozen at definition.
     check_eval("(const XS [1 2 3]) (fn f [] XS) (f)", "#[1 2 3]")
-    check_eval_error("(const XS [1 2 3]) (fn f [] XS) ((f) ~ push! 4)",
+    check_eval_error("(const XS [1 2 3]) (fn f [] XS) ((f) ~ push 4)",
                      "cannot mutate immutable List")
 
   test "a const aggregate is frozen, where a let aggregate is not":
@@ -5545,88 +5570,85 @@ suite "spec — binding forms from design §12.1":
     # in what the binding does. It rides on the flag `#[…]` already sets.
     check_eval("(const XS [1 2 3]) XS", "#[1 2 3]")
     check_eval("(const M {^a 1 ^b [2 3]}) M", "#{^a 1 ^b #[2 3]}")
-    check_eval("(let xs [1 2 3]) (xs ~ push! 4) xs", "[1 2 3 4]")
-    check_eval_error("(const XS [1 2 3]) (XS ~ push! 4)",
+    check_eval("(let xs [1 2 3]) (xs ~ push 4) xs", "[1 2 3 4]")
+    check_eval_error("(const XS [1 2 3]) (XS ~ push 4)",
                      "cannot mutate immutable List")
 
-  test "set rejects extra arguments instead of silently discarding them":
+  test "set rejects extra arguments and requires a glued path target":
     check_compile_error("(var x 1) (set x 2 3)",
-                        "set requires exactly a name and a value")
-    # Both spellings of a path target point at `set!`. The glued form is what
-    # people actually type, and it used to fall through to the arity message
-    # because the check looked at `body[1]` while the target is `body[0]`.
-    check_compile_error("(var x {^n 1}) (set x /n 2)", "use set! for property")
-    check_compile_error("(var x {^n 1}) (set x/n 2)", "use set! for property")
+                        "set requires exactly a target and a value")
+    check_compile_error("(var x {^n 1}) (set x /n 2)",
+                        "set path assignment requires one glued path")
+    check_eval("(var x {^n 1}) (set x/n 2) x/n", "2")
 
-  test "set! assigns in place through a path":
-    # design §12.1. `set` rebinds a lexical binding and never mutates; `set!` is
-    # the explicitly mutating spelling, bang-named like set_prop!/put!/push!.
-    check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) (set! t/n 2) t/n", "2")
-    check_eval("(var xs [1 2 3]) (set! xs/0 9) xs", "[9 2 3]")
-    check_eval("(var m {^a 1}) (set! m/a 2) m", "{^a 2}")
-    check_eval("(var xs [1 2 3]) (set! xs/-1 9) xs", "[1 2 9]")
+  test "set assigns in place through a path":
+    # design §12.1. A symbol target rebinds; a path target mutates in place.
+    check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) (set t/n 2) t/n", "2")
+    check_eval("(var xs [1 2 3]) (set xs/0 9) xs", "[9 2 3]")
+    check_eval("(var m {^a 1}) (set m/a 2) m", "{^a 2}")
+    check_eval("(var xs [1 2 3]) (set xs/-1 9) xs", "[1 2 9]")
     # Only the final container is mutated; intermediates resolve read-only.
     check_eval("(type T ^props {^n Int}) (type O ^props {^inner T}) " &
-               "(var o (O ^inner (T ^n 1))) (set! o/inner/n 5) o/inner/n", "5")
+               "(var o (O ^inner (T ^n 1))) (set o/inner/n 5) o/inner/n", "5")
     # It returns the stored value, which is the adapted one at a boundary.
-    check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) (set! t/n 7)", "7")
+    check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) (set t/n 7)", "7")
 
-  test "set! is checked by the same rules as construction":
+  test "set is checked by the same rules as construction":
     # The point of routing every write through one seam: the closed schema and
     # the field types hold for assignment exactly as they do for construction.
     check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) " &
-               "[(try (set! t/n \"bad\") catch (TypeError ^message m) m) t/n]",
+               "[(try (set t/n \"bad\") catch (TypeError ^message m) m) t/n]",
                "[\"field 'n' for T expected Int, got Str\" 1]")
     check_runtime_error("(type T ^props {^n Int}) (var t (T ^n 1)) " &
-                        "(set! t/bogus 1)", "T has no field 'bogus'")
+                        "(set t/bogus 1)", "T has no field 'bogus'")
     check_runtime_error("(type T ^props {^n Int}) (var f #(T ^n 1)) " &
-                        "(set! f/n 2)", "cannot mutate immutable Node")
-    # A typed *body* position had no in-place writer at all before `set!`, so
+                        "(set f/n 2)", "cannot mutate immutable Node")
+    # A typed *body* position had no in-place writer at all before `set`, so
     # it is the case that would have reintroduced unchecked writes.
     check_eval("(type B ^props {^n Int} ^body [Str...]) " &
-               "(var b (B ^n 1 \"a\")) (set! b/0 \"z\") b",
+               "(var b (B ^n 1 \"a\")) (set b/0 \"z\") b",
                "((type B) ^n 1 \"z\")")
     check_runtime_error("(type B ^props {^n Int} ^body [Str...]) " &
-                        "(var b (B ^n 1 \"a\")) (set! b/0 42)",
+                        "(var b (B ^n 1 \"a\")) (set b/0 42)",
                         "body field 0 for B expected Str")
 
-  test "set! path segments are keys, never applied":
+  test "set path segments are keys, never applied":
     # Ordinary selector evaluation *applies* a callable segment; that is
-    # incoherent as an assignment target, so `set!` takes keys only.
+    # incoherent as an assignment target, so `set` takes keys only.
     check_eval("(type T ^props {^n Int}) (var t (T ^n 1)) " &
-               "(var k `n) (set! t/%k 7) t/n", "7")
+               "(var k `n) (set t/%k 7) t/n", "7")
     check_runtime_error("(type T ^props {^n Int}) (var t (T ^n 1)) " &
-                        "(fn f [x] x) (set! t/%f 1)",
-                        "set! path segment must be a Sym, Str, or Int")
-    check_compile_error("(var t {^n 1}) (set! t/~size 1)",
+                        "(fn f [x] x) (set t/%f 1)",
+                        "set path segment must be a Sym, Str, or Int")
+    check_compile_error("(var t {^n 1}) (set t/~size 1)",
                         "cannot assign through a message segment")
 
-  test "set! rejects the virtual Node projections":
+  test "set rejects the virtual Node projections":
     # `head`/`props`/`body`/`meta` are detached copies (design §1.3), so
     # assigning through one would silently write to a temporary.
-    check_runtime_error("(var n (quote (u ^a 1 \"x\"))) (set! n/body/0 \"z\")",
+    check_runtime_error("(var n (quote (u ^a 1 \"x\"))) (set n/body/0 \"z\")",
                         "cannot assign through a Node projection")
     # A real prop of that name keeps ordinary prop precedence and is assignable.
     check_eval("(type P ^props {^body Str}) (var p (P ^body \"ok\")) " &
-               "(set! p/body \"new\") p/body",
+               "(set p/body \"new\") p/body",
                "\"new\"")
 
-  test "set! may populate self during construction":
+  test "set may populate self during construction":
     # A ctor can fill fields incrementally; the completed instance is still
     # validated atomically at publication. The negative case — a ctor that
     # leaves a required field unset — is NOT asserted here: a ctor whose
     # validation raises corrupts the heap, which reproduces on an unmodified
-    # build with `set_prop!` and no `set!` at all. Recorded as its own defect.
-    check_eval("(type C ^props {^x Int} (ctor [v : Int] (set! self/x v))) " &
+    # build with `set_prop` and no `set` at all. Recorded as its own defect.
+    check_eval("(type C ^props {^x Int} (ctor [v : Int] (set self/x v))) " &
                "(var c (new C 5)) c/x",
                "5")
 
-  test "set! requires a path and exactly two operands":
-    check_compile_error("(set! x 1)", "set! requires a path; use set to rebind")
-    check_compile_error("(var t {^n 1}) (set! t/n)",
-                        "set! requires exactly a path and a value")
-    check_compile_error("(var t {^n 1}) (set! t/n 1 2)",
-                        "set! requires exactly a path and a value")
+  test "set requires a target and exactly two operands":
+    check_compile_error("(set)", "set requires exactly a target and a value")
+    check_compile_error("(var t {^n 1}) (set t/n)",
+                        "set requires exactly a target and a value")
+    check_compile_error("(var t {^n 1}) (set t/n 1 2)",
+                        "set requires exactly a target and a value")
 
   test "let destructuring names are immutable":
     check_compile_error("(let [a b] [1 2]) (set a 9)",
@@ -5749,31 +5771,31 @@ suite "spec — mutable containers from design":
     check_eval("(var xs #[1 2 3]) " &
                "(var xs2 (xs ~ assoc 1 20)) " &
                "(var ys [1 2]) " &
-               "(ys ~ set! 0 9) " &
+               "(ys ~ set 0 9) " &
                "(var zs []) " &
-               "(var pushed (zs ~ push! void)) " &
+               "(var pushed (zs ~ push void)) " &
                "(var m #{^a 1}) " &
                "(var m2 (m ~ assoc \"b\" 2)) " &
                "(var mm {^a 1}) " &
-               "(mm ~ put! \"b\" 3) " &
+               "(mm ~ put \"b\" 3) " &
                "(var n (quote (user ^name \"Ada\"))) " &
-               "(n ~ set_prop! \"name\" \"Bob\") " &
+               "(n ~ set_prop \"name\" \"Bob\") " &
                "[xs xs2 ys pushed zs m m2 (mm ~ get \"b\") (n ~ /name)]",
                "[#[1 2 3] #[1 20 3] [9 2] nil [nil] #{^a 1} #{^a 1 ^b 2} 3 \"Bob\"]")
 
-  test "List/push! rejects immutable lists":
-    check_eval("(try (#[1] ~ push! 2) " &
+  test "List/push rejects immutable lists":
+    check_eval("(try (#[1] ~ push 2) " &
                " catch (Error ^message message) message)",
                "\"cannot mutate immutable List\"")
 
   test "built-in operations are type-direct messages (unqualified and path)":
     # `(x ~ get)` is also reachable as `(x ~ get)` / `x/~get`.
     check_eval("(var c ($cell 7)) (c ~ set 20) [(c ~ get) c/~get]", "[20 20]")
-    check_eval("(var xs [1 2 3]) (xs ~ set! 0 9) (xs ~ push! 4) xs",
+    check_eval("(var xs [1 2 3]) (xs ~ set 0 9) (xs ~ push 4) xs",
                "[9 2 3 4]")
-    check_eval("(var m {^a 1}) (m ~ put! \"b\" 2) (m ~ get \"b\")", "2")
+    check_eval("(var m {^a 1}) (m ~ put \"b\" 2) (m ~ get \"b\")", "2")
     check_eval("(var n (quote (user ^name \"Ada\"))) " &
-               "(n ~ set_prop! \"name\" \"Bob\") (n ~ /name)",
+               "(n ~ set_prop \"name\" \"Bob\") (n ~ /name)",
                "\"Bob\"")
 
   test "built-in sends use the unqualified form":
@@ -5836,7 +5858,7 @@ suite "spec — optionality lives on the type, not the key":
     for source in ["(type T ^props {^a? Str})",
                    "(fn f [^w? : Int] nil)",
                    "(fn f [x?] nil)",
-                   "(macro m! [^a? x] `x)"]:
+                   "(macro m [^a? x] `x)"]:
       try:
         discard run(compileSource(source), newGlobalScope())
         check false
@@ -7347,8 +7369,8 @@ suite "spec — macros across modules (design §11/§15)":
     createDir(result)
     writeFile(result / "mlib.gene",
       "(mod mlib)\n" &
-      "(macro triple! [x] `(* 3 %x))\n" &
-      "(fn use_it [] (triple! 5))\n")
+      "(macro triple [x] `(* 3 %x))\n" &
+      "(fn use_it [] (triple 5))\n")
 
   proc moduleVar(m: Value, name: string): string =
     let nsScope = m.moduleRootNamespace.nsScope
@@ -7358,8 +7380,8 @@ suite "spec — macros across modules (design §11/§15)":
   test "module macros import alongside values and expand at compile time":
     let dir = macroModuleDir()
     writeFile(dir / "muse.gene",
-      "(import [triple! use_it] from \"./mlib\")\n" &
-      "(var a (triple! 7))\n" &
+      "(import [triple use_it] from \"./mlib\")\n" &
+      "(var a (triple 7))\n" &
       "(var b (use_it))\n")
     let app = newApplication(dir)
     let m = app.loadFileModule(dir / "muse.gene")
@@ -7369,36 +7391,36 @@ suite "spec — macros across modules (design §11/§15)":
   test "macro-only imports and selection aliases work":
     let dir = macroModuleDir()
     writeFile(dir / "muse.gene",
-      "(import [triple! : t3!] from \"./mlib\")\n" &
-      "(var a (t3! 4))\n")
+      "(import [triple : t3] from \"./mlib\")\n" &
+      "(var a (t3 4))\n")
     let app = newApplication(dir)
     check moduleVar(app.loadFileModule(dir / "muse.gene"), "a") == "12"
 
   test "compile artifacts expose macros without running dependency top levels":
     let dir = macroModuleDir()
     writeFile(dir / "compile_only.gene",
-      "(macro twice! [x] `(+ %x %x))\n" &
+      "(macro twice [x] `(+ %x %x))\n" &
       "(panic \"runtime phase executed\")\n")
     writeFile(dir / "consumer.gene",
-      "(import [twice!] from \"./compile_only\")\n" &
-      "(var answer (twice! 21))\n")
+      "(import [twice] from \"./compile_only\")\n" &
+      "(var answer (twice 21))\n")
     let app = newApplication(dir)
     let first = app.compileFileModule(dir / "consumer.gene")
     let second = app.compileFileModule(dir / "consumer.gene")
     check first == second
-    check not first.disassemble().contains("twice!")
+    check not first.disassemble().contains("twice")
     expect GenePanic:
       discard app.loadFileModule(dir / "consumer.gene")
 
   test "runtime initialization remains separate and runs once":
     let dir = macroModuleDir()
     writeFile(dir / "phase_dep.gene",
-      "(macro identity! [x] `%x)\n" &
+      "(macro identity [x] `%x)\n" &
       "(var starts ($cell 0))\n" &
       "(starts ~ update (fn [n] (+ n 1)))\n")
     writeFile(dir / "phase_user.gene",
-      "(import [identity!] from \"./phase_dep\")\n" &
-      "(var answer (identity! 42))\n")
+      "(import [identity] from \"./phase_dep\")\n" &
+      "(var answer (identity 42))\n")
     let app = newApplication(dir)
     discard app.compileFileModule(dir / "phase_user.gene")
     let user = app.loadFileModule(dir / "phase_user.gene")
@@ -7413,11 +7435,11 @@ suite "spec — macros across modules (design §11/§15)":
   test "macro dependency cycles have a compile-phase diagnostic":
     let dir = macroModuleDir()
     writeFile(dir / "a.gene",
-      "(macro a! [x] `%x)\n" &
-      "(import [b!] from \"./b\")\n")
+      "(macro a [x] `%x)\n" &
+      "(import [b] from \"./b\")\n")
     writeFile(dir / "b.gene",
-      "(macro b! [x] `%x)\n" &
-      "(import [a!] from \"./a\")\n")
+      "(macro b [x] `%x)\n" &
+      "(import [a] from \"./a\")\n")
     var message = ""
     try:
       discard newApplication(dir).compileFileModule(dir / "a.gene")
@@ -7429,15 +7451,15 @@ suite "spec — macros across modules (design §11/§15)":
     let dir = macroModuleDir()
     writeFile(dir / "mid.gene",
       "(mod mid)\n" &
-      "(import [triple!] from \"./mlib\")\n" &
-      "(fn nine_x [x] (triple! (triple! x)))\n")
+      "(import [triple] from \"./mlib\")\n" &
+      "(fn nine_x [x] (triple (triple x)))\n")
     writeFile(dir / "muse.gene",
       "(import [nine_x] from \"./mid\")\n" &
       "(var a (nine_x 2))\n")
     let app = newApplication(dir)
     check moduleVar(app.loadFileModule(dir / "muse.gene"), "a") == "18"
     writeFile(dir / "reexport.gene",
-      "(import [triple!] from \"./mid\")\n")
+      "(import [triple] from \"./mid\")\n")
     let app2 = newApplication(dir)
     expect GeneError:
       discard app2.loadFileModule(dir / "reexport.gene")
@@ -7445,8 +7467,8 @@ suite "spec — macros across modules (design §11/§15)":
   test "importing a macro over a local macro name is a duplicate":
     let dir = macroModuleDir()
     writeFile(dir / "muse.gene",
-      "(import [triple!] from \"./mlib\")\n" &
-      "(macro triple! [x] `(+ %x %x %x))\n")
+      "(import [triple] from \"./mlib\")\n" &
+      "(macro triple [x] `(+ %x %x %x))\n")
     let app = newApplication(dir)
     expect GeneError:
       discard app.loadFileModule(dir / "muse.gene")
@@ -7466,29 +7488,28 @@ suite "spec — macros across modules (design §11/§15)":
   test "importing a macro over a value binding is rejected both ways":
     let dir = macroModuleDir()
     writeFile(dir / "clash1.gene",
-      "(fn triple! [x] x)\n" &
-      "(import [triple!] from \"./mlib\")\n")
+      "(fn triple [x] x)\n" &
+      "(import [triple] from \"./mlib\")\n")
     expect GeneError:
       discard newApplication(dir).loadFileModule(dir / "clash1.gene")
     writeFile(dir / "clash2.gene",
-      "(import [triple!] from \"./mlib\")\n" &
-      "(var triple! 5)\n")
+      "(import [triple] from \"./mlib\")\n" &
+      "(var triple 5)\n")
     expect GeneError:
       discard newApplication(dir).loadFileModule(dir / "clash2.gene")
 
-suite "spec — fn! across modules (design §11.1/§15)":
-  # fn! values import as ordinary runtime bindings; the exported name set
-  # travels to the importer's compiler so call sites keep raw syntax.
-  test "imported fn! names keep syntax_call sites":
+suite "spec — fexprs across modules (design §11.1/§15)":
+  # Fexpr values import as runtime bindings; exported fexpr metadata travels
+  # to the importer so lexically named bang call sites keep raw syntax.
+  test "imported fexpr names keep syntax_call sites":
     let dir = getTempDir() / "gene_spec_fnbang_modules"
     removeDir(dir)
     createDir(dir)
     writeFile(dir / "flib.gene",
       "(mod flib)\n" &
-      "(fn! unless! [cond, body...]\n" &
-      "  (if (! (eval cond ^in caller_env))\n" &
-      "    (eval `(do %body...) ^in caller_env)\n" &
-      "    nil))\n")
+      "(fn unless! [cond, body...]\n" &
+      "  (if_not (eval cond ^in caller_env)\n" &
+      "    (eval `(do %body...) ^in caller_env)))\n")
     writeFile(dir / "fuse.gene",
       "(import [unless!] from \"./flib\")\n" &
       "(var x 1)\n" &
@@ -7690,29 +7711,29 @@ suite "spec — net/http_client native client contract":
 
 suite "spec — structured logging contract":
   test "Logger API is importable and eager/lazy evaluation is explicit":
-    check_eval("(import $log [Logger LogLevel new_logger debug!]) " &
+    check_eval("(import $log [Logger LogLevel new_logger log_debug]) " &
                "(var logger (new_logger \"app/spec\" ^payload {^x 1})) " &
                "(var eager ($cell false)) (var lazy ($cell false)) " &
                "(logger ~ info (do (eager ~ set true) \"eager\")) " &
-               "(debug! logger (do (lazy ~ set true) \"lazy\")) " &
+               "(log_debug logger (do (lazy ~ set true) \"lazy\")) " &
                "(fn accepts [x : Logger] (x ~ enabled? LogLevel/warn)) " &
                "[(eager ~ get) (lazy ~ get) (accepts logger)]",
                "[true false true]")
 
   test "built-in namespace macros support selection aliases":
-    check_eval("(import $log [new_logger debug! : diagnostic!]) " &
+    check_eval("(import $log [new_logger log_debug : diagnostic]) " &
                "(var logger (new_logger \"app/spec\")) " &
                "(var touched ($cell false)) " &
-               "(diagnostic! logger (do (touched ~ set true) \"x\")) " &
+               "(diagnostic logger (do (touched ~ set true) \"x\")) " &
                "(touched ~ get)",
                "false")
 
   test "a lazy logging macro carries its LogLevel dependency":
     check_eval("(import $log [new_logger]) " &
                "(var logger (new_logger \"app/spec\")) " &
-               "(import $log [debug!]) " &
+               "(import $log [log_debug]) " &
                "(var touched ($cell false)) " &
-               "(debug! logger (do (touched ~ set true) \"x\")) " &
+               "(log_debug logger (do (touched ~ set true) \"x\")) " &
                "(touched ~ get)",
                "false")
 
@@ -8264,7 +8285,7 @@ suite "spec — serde data core (docs/serialization.md stage 1)":
   test "maps with non-literal keys use the serde_map escape":
     check_eval("(import $serde [write_data read_data]) " &
                "(import $str [contains?]) " &
-               "(var m {}) (m ~ put! \"weird key\" 1) " &
+               "(var m {}) (m ~ put \"weird key\" 1) " &
                "(var text (write_data m)) " &
                "[(contains? text \"serde_map\") " &
                " (== m (read_data text))]",
@@ -8304,7 +8325,7 @@ suite "spec — serde data core (docs/serialization.md stage 1)":
   test "cycles are detected with a path":
     check_eval("(import $serde [write_data SerdeError]) " &
                "(import $str [contains?]) " &
-               "(var m {}) (m ~ put! \"self\" m) " &
+               "(var m {}) (m ~ put \"self\" m) " &
                "(try (write_data m) " &
                "catch (SerdeError ^message msg) (contains? msg \"cycle\"))",
                "true")
@@ -8459,22 +8480,6 @@ suite "spec — serde references (stage 3)":
                "(try (write ($atomic_cell 1)) " &
                "catch (SerdeError ^message m) (contains? m \"atomic\"))",
                "true")
-
-suite "spec — web demo remains parseable":
-  test "web demo parses as a module source unit":
-    let forms = readAll(readFile("examples/web_demo.gene"))
-    check forms.len == 31
-    check forms[0].print().startsWith("(mod @doc ")
-    check forms[1].print() == "(import (path gene net http) [Request Response serve])"
-    check forms[^1].print().startsWith("(fn main ")
-
-  test "web demo exercises selector-core examples":
-    let rendered = readAll(readFile("examples/web_demo.gene")).mapIt(it.print()).join("\n")
-    check "(unquote ($ \"$\" (path self price)))" in rendered
-    check "(path routes (unquote (path gene to_pairs_stream)))" in rendered
-    check "(path req params name)" in rendered
-    check "(scoped \"web_demo\" (css " in rendered
-    check "(render (try " in rendered
 
 suite "spec — qualified message spelling":
   test "Proto:msg names a protocol message":
@@ -8659,7 +8664,7 @@ suite "spec — documentation contract":
       var declared: HashSet[string]
       for blk in blocks:
         for line in blk:
-          for kw in ["(fn ", "(fn! ", "(var ", "(let ", "(const ", "(macro ",
+          for kw in ["(fn ", "(fn ", "(var ", "(let ", "(const ", "(macro ",
                      "(type ", "(enum ", "(protocol ", "(ns ", "(alias "]:
             var at = line.find(kw)
             while at >= 0:
@@ -8847,7 +8852,7 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
     check "color: fade;" in cssText
 
 suite "spec — naming convention":
-  test "registered names use underscores, never hyphens":
+  test "registered names use underscores and reserve trailing bang":
     # The stdlib naming convention is snake_case. Walk every binding reachable
     # from the global scope (namespaces recursively, protocol message names)
     # and reject any registered name containing a hyphen. Wire-format strings
@@ -8862,13 +8867,14 @@ suite "spec — naming convention":
       scope.materializeMirroredVars()
       for name, v in scope.vars:
         let qual = if prefix.len > 0: prefix & "/" & name else: name
-        if '-' in name:
+        if '-' in name or (name.len > 1 and name.endsWith("!")):
           offenders.add qual
         if v.kind == vkNamespace and not seen.containsOrIncl(v.bits):
           stack.add((qual, v.nsScope))
         elif v.kind == vkProtocol and not seen.containsOrIncl(v.bits):
           for msgName, _ in v.protocolMessages:
-            if '-' in msgName:
+            if '-' in msgName or
+                (msgName.len > 1 and msgName.endsWith("!")):
               offenders.add qual & "/" & msgName
     sort(offenders)
     check offenders == newSeq[string]()

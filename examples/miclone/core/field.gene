@@ -65,7 +65,7 @@
     (var i 0.0)
     (while (< i dim)
       (var wx (+ lx (* i step)))
-      (out ~ set! (+ i row)
+      (out ~ set (+ i row)
             (fbm2 (* wx scale) (* wz scale) seed octaves 2.0 0.5))
       (set i (+ i 1.0)))
     (set j (+ j 1.0))))

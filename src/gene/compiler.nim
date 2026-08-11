@@ -74,15 +74,9 @@ type
     # they are not re-exported and not looked up as runtime bindings.
     importedMacroSets: Table[string, Table[string, MacroDef]]
     importedMacroNames: HashSet[string]
-    # Names statically known to hold fn! syntax callables (design §3/§11.1).
-    # Call sites with these heads compile to opSyntaxCall so props/body stay
-    # raw syntax. Rebinding a name removes it (shadowing is ordinary binding).
-    # Unlike macros, fn! values stay runtime bindings; imports carry only the
-    # name set so the importer's call sites keep raw syntax.
-    syntaxFnNames: Table[string, bool]
     # Names proven to hold ordinary fn values in the current compilation flow.
     # Dynamic parameters/Any bindings are deliberately absent and use the
-    # callable-first syntax guard before argument evaluation.
+    # general eager-call path.
     ordinaryFnNames: Table[string, bool]
     # A whole-unit conservative prepass records every syntactic `set` target.
     # A name in this set is not a stable callable proof, including when the
@@ -124,7 +118,6 @@ type
     # time (design §10). NIL outside a message body with an `^is` parent.
     superType: Value
     importedSyntaxFnSets: Table[string, seq[string]]
-    importedSyntaxFnNames: HashSet[string]
     importedInterfaces: Table[string, CompileNamespaceInterface]
     ownCompileInterface: CompileNamespaceInterface
     ## Compile interfaces of the enclosing `ns` levels, innermost first. A
@@ -180,8 +173,8 @@ const MaxMacroExpansionDepth = 100
 
 const CoreSpecialFormNames* = [
   "do", "if", "if_yes", "if_not", "&&", "||", "??", "!",
-  "let", "var", "const", "set", "set!", "new", "~", "?~",
-  "fn", "fn!", "macro", "quote", "quasiquote", "select", "path", "msg", "ns",
+  "let", "var", "const", "set", "new", "~", "?~",
+  "fn", "macro", "quote", "quasiquote", "select", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
   "supervisor", "spawn", "await", "fail", "panic", "type", "alias", "enum",
@@ -287,7 +280,7 @@ proc validateDeclarationCase(kind, name: string) =
       kind & " '" & name & "' must start uppercase; lowercase names are " &
       "namespaces and functions (design §2.1)")
 
-proc validateBindingName(name: string) =
+proc validateBindingName(name: string, allowFexprName = false) =
   if name in reservedStdlibRoots:
     raise newException(GeneError,
       "reserved standard-library root cannot be bound: " & name)
@@ -295,9 +288,13 @@ proc validateBindingName(name: string) =
     raise newException(GeneError,
       "'" & name & "' is reserved (send operator / super receiver / Self) " &
       "and cannot be bound (design §3/§10)")
+  if name.len > 1 and name.endsWith("!") and not allowFexprName:
+    raise newException(GeneError,
+      "only a named fexpr may bind a name ending in !: " & name)
 
-proc reserveLocal(c: var Compiler, name: string): int =
-  validateBindingName(name)
+proc reserveLocal(c: var Compiler, name: string,
+                  allowFexprName = false): int =
+  validateBindingName(name, allowFexprName)
   # `self` is the compiler-owned receiver and is reserved throughout a message
   # or ctor body, nested scopes included (design §10/§12.1) — otherwise an inner
   # `(fn f [self] ...)` or pattern binding would retarget every later leading
@@ -313,9 +310,6 @@ proc reserveLocal(c: var Compiler, name: string): int =
   if c.hasMacros and c.macros.hasKey(name):
     raise newException(GeneError,
       "binding '" & name & "' conflicts with a macro of the same name")
-  # A rebound name is an ordinary binding again; fn! call-site tracking must
-  # not survive shadowing (design §11.1). fn! definitions re-add themselves.
-  c.syntaxFnNames.del(name)
   c.ordinaryFnNames.del(name)
   c.declaredNames.incl name
   # A fresh binding is rebindable until something says otherwise, so it clears
@@ -348,7 +342,7 @@ proc localType(c: Compiler, name: string): Value =
     return c.localTypes[name]
   NIL
 
-proc typeExcludesSyntaxCallable(expr: Value): bool =
+proc typeExcludesFexpr(expr: Value): bool =
   case expr.kind
   of vkSymbol:
     expr.symVal in ["Fn", "Callable", "NativeFn", "Type",
@@ -363,7 +357,7 @@ proc typeExcludesSyntaxCallable(expr: Value): bool =
       if expr.body.len == 0:
         return false
       for item in expr.body:
-        if not typeExcludesSyntaxCallable(item):
+        if not typeExcludesFexpr(item):
           return false
       return true
     false
@@ -504,7 +498,7 @@ proc calleeKnownOrdinary(c: Compiler, callee: Value): bool =
         callee.symVal notin c.mutableBindingNames:
       return true
     let local = c.localType(callee.symVal)
-    if local.kind != vkNil and local.typeExcludesSyntaxCallable:
+    if local.kind != vkNil and local.typeExcludesFexpr:
       return true
     # These names map to compiler-known ordinary native operators. Every other
     # ambient name can come from a caller-supplied Scope/Env and stays guarded.
@@ -622,8 +616,9 @@ proc intFastConstOp(kind: NativeFastKind): OpCode =
   of nfkGe: opIntGeConst
   else: opIntFastConst
 
-proc emitDefineBinding(c: var Compiler, name: string, immutable = false) =
-  validateBindingName(name)
+proc emitDefineBinding(c: var Compiler, name: string, immutable = false,
+                       allowFexprName = false) =
+  validateBindingName(name, allowFexprName)
   # Record the binding even when this body compiles without slots, so the
   # bare-name lint can tell a declaration from a standard-library reference.
   c.declaredNames.incl name
@@ -636,7 +631,7 @@ proc emitDefineBinding(c: var Compiler, name: string, immutable = false) =
   let inLoop = c.loopDepth > 0
   if c.useLocalSlots:
     discard c.emit(if inLoop: opRedefineLocal else: opDefineLocal,
-                   c.reserveLocal(name), name = name)
+                   c.reserveLocal(name, allowFexprName), name = name)
   else:
     discard c.emit(if inLoop: opRedefineName else: opDefineName, name = name)
   # Named declarations (fn/type/enum/protocol/ns/macro/alias) are let-class
@@ -727,7 +722,6 @@ proc childCompiler(c: Compiler): Compiler =
            allowAmbientImports: c.allowAmbientImports,
            importedMacroSets: c.importedMacroSets,
            importedMacroNames: c.importedMacroNames,
-           syntaxFnNames: c.syntaxFnNames,
            ordinaryFnNames: c.ordinaryFnNames,
            mutableBindingNames: c.mutableBindingNames,
            letNames: c.letNames,
@@ -735,7 +729,6 @@ proc childCompiler(c: Compiler): Compiler =
            selfReserved: c.selfReserved,
            superType: c.superType,
            importedSyntaxFnSets: c.importedSyntaxFnSets,
-           importedSyntaxFnNames: c.importedSyntaxFnNames,
            importedInterfaces: c.importedInterfaces,
            ownCompileInterface: c.ownCompileInterface,
            localCompileInterfaces: c.localCompileInterfaces,
@@ -1556,7 +1549,7 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
         raise newException(GeneError, "named parameter requires a name")
       let arg = rejectOptionalSuffix(items[i].symVal, "named parameter",
         "use a default (`^" & items[i].symVal[0 .. ^2] &
-        " = nil`) for an optional macro/fn! parameter")
+        " = nil`) for an optional macro/fexpr parameter")
       if arg.len == 0:
         raise newException(GeneError, "named parameter requires a name")
       var defaultValue = MacroDefault()
@@ -1607,7 +1600,7 @@ proc macroParamDef(c: Compiler, paramList: Value): tuple[params: seq[MacroParam]
       else:
         let name = rejectOptionalSuffix(s, "parameter",
           "use a default (`" & s[0 .. ^2] &
-          " = nil`) for an optional macro/fn! parameter")
+          " = nil`) for an optional macro/fexpr parameter")
         if name.len == 0:
           raise newException(GeneError, "parameter requires a name")
         var defaultValue = MacroDefault()
@@ -1670,7 +1663,7 @@ proc introducedBinderName(node: Value): string =
   of "var", "let", "const", "type", "protocol", "ns", "macro":
     if node.body[0].kind == vkSymbol:
       return node.body[0].symVal
-  of "fn", "fn!":
+  of "fn":
     if node.body.len >= 2 and node.body[1].kind == vkList:
       if node.body[0].kind == vkSymbol:
         return node.body[0].symVal
@@ -2924,7 +2917,8 @@ proc isTypedNativeAotExpr(c: Compiler, expr: Value,
     if fieldRepr.kind != arkNone:
       return resultRepr.aotReprAccepts(fieldRepr)
     return resolved.field.typeExpr.fieldMatchesAotResult(resultRepr)
-  if expr.head.symVal == "set!" and expr.body.len == 2:
+  if expr.head.symVal == "set" and expr.body.len == 2 and
+      expr.body[0].kind != vkSymbol:
     let resolved = expr.body[0].typedNativeField(params, paramReprs, locals)
     if not resolved.found or not resolved.nativeType.mutable:
       return false
@@ -3103,7 +3097,8 @@ proc isTypedNativeAotStatement(c: Compiler, statement: Value,
       return false
     return c.isTypedNativeAotExpr(statement.body[1], params, paramReprs,
                                   target, ffiFns, locals)
-  if statement.head.symVal == "set!" and statement.body.len == 2:
+  if statement.head.symVal == "set" and statement.body.len == 2 and
+      statement.body[0].kind != vkSymbol:
     let valueRepr = statement.body[1].aotBindingRepr(params, paramReprs, locals)
     if valueRepr.kind == arkNone:
       return false
@@ -3681,7 +3676,7 @@ proc nativeResultSources(expr: Value, params: openArray[string],
     return
   if expr.head.isSymbol("path") and expr.body.len > 0:
     return nativeResultSources(expr.body[0], params, locals)
-  if expr.head.kind == vkSymbol and expr.head.symVal in ["set", "set!"] and
+  if expr.head.kind == vkSymbol and expr.head.symVal == "set" and
       expr.body.len == 2:
     return nativeResultSources(expr.body[1], params, locals)
   if expr.head.isSymbol("do") and expr.body.len > 0:
@@ -3970,19 +3965,7 @@ proc compileVar(c: var Compiler, node: Value, immutable = false) =
       c.emitDeclareType(body[0].symVal, body[2])
     if body[0].symVal == "self":
       c.selfAvailable = true
-    # Direct aliases of fn! values keep syntax_call sites (design §11.1):
-    # (var g unless!) or (var g (fn! [..] ..)).
     if body.len > valueIndex and
-        ((body[valueIndex].kind == vkSymbol and
-          c.syntaxFnNames.hasKey(body[valueIndex].symVal)) or
-         (body[valueIndex].kind == vkNode and
-          body[valueIndex].head.isSymbol("fn!"))):
-      c.syntaxFnNames[body[0].symVal] = true
-      if c.moduleSyntaxFnExports != nil and
-          node.bits in c.staticTopLevelImpls and not node.declarationIsPrivate:
-        c.moduleSyntaxFnExports[].incl(
-          (c.namespacePath & @[body[0].symVal]).join("/"))
-    elif body.len > valueIndex and
         ((body[valueIndex].kind == vkSymbol and
           c.ordinaryFnNames.hasKey(body[valueIndex].symVal)) or
          (body[valueIndex].kind == vkNode and
@@ -4157,22 +4140,25 @@ proc compileConst(c: var Compiler, node: Value) =
 proc setTargetIsPath(v: Value): bool =
   v.kind == vkNode and (v.head.isSymbol("path") or v.head.isSymbol("select"))
 
+proc compileSetPath(c: var Compiler, node: Value)
+
 proc compileSet(c: var Compiler, node: Value) =
   let body = node.body
   # The assignment target is `body[0]`. Testing `body[1]` meant only the spaced
   # `(set t /n 2)` got the helpful text, while the glued `(set t/n 2)` — which
   # is what people actually type, and reads as a single `path` node — fell
   # through to the generic arity message.
-  if (body.len == 2 and setTargetIsPath(body[0])) or
-      (body.len == 3 and setTargetIsPath(body[1])):
+  if body.len == 2 and setTargetIsPath(body[0]):
+    compileSetPath(c, node)
+    return
+  if body.len == 3 and setTargetIsPath(body[1]):
     raise newException(GeneError,
-      "set changes a lexical binding and requires exactly a name and a value; " &
-      "use set! for property mutation")
+      "set path assignment requires one glued path and a value")
   if body.len != 2:
     raise newException(GeneError,
-      "set requires exactly a name and a value")
+      "set requires exactly a target and a value")
   if body[0].kind != vkSymbol:
-    raise newException(GeneError, "set requires a name and a value")
+    raise newException(GeneError, "set requires a name or path and a value")
   validateBindingName(body[0].symVal)
   if body[0].symVal in c.letNames:
     # `self` is compiler-owned, so "use var" is not advice a caller can act on;
@@ -4184,10 +4170,9 @@ proc compileSet(c: var Compiler, node: Value) =
         "(design §10)")
     raise newException(GeneError,
       "cannot set '" & body[0].symVal & "': let, const, and named declarations " &
-      "(fn, fn!, type, enum, protocol, ns, macro, alias) are fixed bindings " &
+      "(fn, type, enum, protocol, ns, macro, alias) are fixed bindings " &
       "(design §12.1); use var for a rebindable binding")
   compileExpr(c, body[1])
-  c.syntaxFnNames.del(body[0].symVal)
   if c.moduleSyntaxFnExports != nil:
     c.moduleSyntaxFnExports[].excl(
       (c.namespacePath & @[body[0].symVal]).join("/"))
@@ -4234,8 +4219,8 @@ proc compileFn(c: var Compiler, node: Value, inferredName: string) =
     c.emitDefineBinding(name, immutable = true)
     c.ordinaryFnNames[name] = true
 
-proc compileFnBang(c: var Compiler, node: Value) =
-  ## (fn! name [params] body...) — runtime fexpr / syntax callable (design
+proc compileFexpr(c: var Compiler, node: Value) =
+  ## `(fn name! [params] body...)` — runtime fexpr / syntax callable (design
   ## §3/§11.1). Parameters bind raw syntax nodes; `caller_env` and
   ## `syntax_call` arrive as implicit leading parameters at syntax_call time,
   ## so the body resolves them like ordinary locals.
@@ -4248,13 +4233,13 @@ proc compileFnBang(c: var Compiler, node: Value) =
     definesName = true
     idx = 1
   if idx >= body.len or body[idx].kind != vkList:
-    raise newException(GeneError, "fn! requires a parameter vector")
+    raise newException(GeneError, "fexpr requires a parameter vector")
+  if not definesName or name.len <= 1 or not name.endsWith("!"):
+    raise newException(GeneError,
+      "fexprs must be named by a trailing-! binding: (fn name! [syntax...] body...)")
   if definesName:
     if c.useLocalSlots:
-      discard c.reserveLocal(name)
-    # Registered before the body compiles so recursive syntax calls resolve
-    # (childCompiler copies the table).
-    c.syntaxFnNames[name] = true
+      discard c.reserveLocal(name, allowFexprName = true)
   let errorRow = compileErrorRow(c, node)
   var params = @[newSym("caller_env"), newSym("syntax_call")]
   for item in body[idx].listItems:
@@ -4273,8 +4258,7 @@ proc compileFnBang(c: var Compiler, node: Value) =
   proto.fastBindRequiredNamed = false
   discard c.emit(opMakeFn, c.chunk.addFunction(proto))
   if definesName:
-    c.emitDefineBinding(name, immutable = true)
-    c.syntaxFnNames[name] = true
+    c.emitDefineBinding(name, immutable = true, allowFexprName = true)
     if c.moduleSyntaxFnExports != nil and
         node.bits in c.staticTopLevelImpls and not node.declarationIsPrivate:
       c.moduleSyntaxFnExports[].incl(
@@ -4481,13 +4465,11 @@ proc protocolInterfaceMessages(form: Value): seq[string] =
 
 proc collectCompileInterfaceForms(forms: openArray[Value], first: int,
                                   target: CompileNamespaceInterface,
-                                  syntaxNames: var HashSet[string],
                                   sourceName: string,
                                   namespacePath: seq[string])
 
 proc collectCompileInterfaceForm(form: Value,
                                  target: CompileNamespaceInterface,
-                                 syntaxNames: var HashSet[string],
                                  sourceName: string,
                                  namespacePath: seq[string]) =
   if form.kind != vkNode:
@@ -4506,10 +4488,10 @@ proc collectCompileInterfaceForm(form: Value,
     return
   case head
   of "mod":
-    collectCompileInterfaceForms(form.body, 1, target, syntaxNames,
+    collectCompileInterfaceForms(form.body, 1, target,
                                  sourceName, namespacePath)
   of "do":
-    collectCompileInterfaceForms(form.body, 0, target, syntaxNames,
+    collectCompileInterfaceForms(form.body, 0, target,
                                  sourceName, namespacePath)
   of "ns":
     let name = form.declaredName
@@ -4520,8 +4502,7 @@ proc collectCompileInterfaceForm(form: Value,
         target.entries[name].category == cbcNamespace and
         target.entries[name].namespace != nil:
       child = target.entries[name].namespace
-    var childSyntax = initHashSet[string]()
-    collectCompileInterfaceForms(form.body, 1, child, childSyntax,
+    collectCompileInterfaceForms(form.body, 1, child,
                                  sourceName, namespacePath & @[name])
     if not form.declarationIsPrivate:
       target.entries[name] = CompileInterfaceEntry(
@@ -4530,13 +4511,14 @@ proc collectCompileInterfaceForm(form: Value,
     let name = form.declaredName
     if name.len > 0 and not form.declarationIsPrivate:
       target.entries[name] = CompileInterfaceEntry(category: cbcMacro)
-  of "fn!":
+  of "fn":
     let name = form.declaredName
-    if name.len > 0:
-      syntaxNames.incl name
+    if name.len > 1 and name.endsWith("!"):
       if not form.declarationIsPrivate:
         target.entries[name] = CompileInterfaceEntry(category: cbcSyntaxFn)
-  of "fn", "web_module":
+    elif name.len > 0 and not form.declarationIsPrivate:
+      target.entries[name] = CompileInterfaceEntry(category: cbcValue)
+  of "web_module":
     let name = form.declaredName
     if name.len > 0 and not form.declarationIsPrivate:
       target.entries[name] = CompileInterfaceEntry(category: cbcValue)
@@ -4544,22 +4526,11 @@ proc collectCompileInterfaceForm(form: Value,
     let name = form.declaredName
     if name.len == 0:
       return
-    let valueIndex =
-      if form.body.len >= 3 and form.body[1].isSymbol(":"): 3
-      else: 1
-    var category = cbcValue
-    if valueIndex < form.body.len:
-      let value = form.body[valueIndex]
-      if (value.kind == vkSymbol and value.symVal in syntaxNames) or
-          (value.kind == vkNode and value.head.isSymbol("fn!")):
-        category = cbcSyntaxFn
-        syntaxNames.incl name
     if not form.declarationIsPrivate:
-      target.entries[name] = CompileInterfaceEntry(category: category)
+      target.entries[name] = CompileInterfaceEntry(category: cbcValue)
   of "set":
     let name = form.declaredName
     if name.len > 0:
-      syntaxNames.excl name
       if target.entries.hasKey(name):
         var entry = target.entries[name]
         if entry.category == cbcSyntaxFn:
@@ -4606,13 +4577,12 @@ proc collectCompileInterfaceForm(form: Value,
 
 proc collectCompileInterfaceForms(forms: openArray[Value], first: int,
                                   target: CompileNamespaceInterface,
-                                  syntaxNames: var HashSet[string],
                                   sourceName: string,
                                   namespacePath: seq[string]) =
   if first > forms.high:
     return
   for i in first .. forms.high:
-    collectCompileInterfaceForm(forms[i], target, syntaxNames,
+    collectCompileInterfaceForm(forms[i], target,
                                 sourceName, namespacePath)
 
 proc isCIdentifier(symbol: string): bool =
@@ -4815,8 +4785,7 @@ proc buildCompileInterface*(forms: openArray[Value],
   ## namespace-qualified, so a sub-namespace interface built at the root path
   ## would mint identities that never match the compiler's.
   result = newCompileNamespaceInterface()
-  var syntaxNames = initHashSet[string]()
-  collectCompileInterfaceForms(forms, 0, result, syntaxNames,
+  collectCompileInterfaceForms(forms, 0, result,
                                sourceName, namespacePath)
   resolveNativeInterfaceTypes(result, sourceName, namespacePath)
   resolveInterfacePointees(result)
@@ -4977,7 +4946,7 @@ proc collectDeclaredUnitNames(form: Value, names: var HashSet[string]) =
   if form.kind != vkNode or form.head.kind != vkSymbol:
     return
   case form.head.symVal
-  of "var", "let", "const", "fn", "fn!", "macro", "type", "enum", "protocol",
+  of "var", "let", "const", "fn", "macro", "type", "enum", "protocol",
      "ns", "alias", "web_module":
     let name = form.declaredName
     if name.len > 0:
@@ -5000,7 +4969,7 @@ proc collectRuntimeDeclaredUnitNames(c: Compiler, form: Value,
   if form.kind != vkNode or form.head.kind != vkSymbol:
     return
   case form.head.symVal
-  of "var", "let", "const", "fn", "fn!", "type", "enum", "protocol", "ns",
+  of "var", "let", "const", "fn", "type", "enum", "protocol", "ns",
      "alias", "web_module":
     let name = form.declaredName
     if name.len > 0:
@@ -5109,7 +5078,10 @@ proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first: int) 
   if c.useLocalSlots:
     for name in runtimeNames:
       if c.wildcardCandidates.hasKey(name):
-        discard c.reserveLocal(name)
+        let candidates = c.wildcardCandidates[name]
+        let importsFexpr = candidates.len == 1 and
+          candidates[0].category == cbcSyntaxFn
+        discard c.reserveLocal(name, allowFexprName = importsFexpr)
 
 proc importedCandidates(c: Compiler,
                         name: string): seq[StaticWildcardCandidate] =
@@ -5183,26 +5155,6 @@ proc importedMacroForHead(c: Compiler, value: Value):
       "module compile interface marked a missing macro: " & path)
   (true, definitions[path])
 
-proc importedSyntaxHead(c: Compiler, value: Value): bool =
-  let candidates = c.importedHeadCandidates(value)
-  if candidates.len > 1:
-    let name =
-      if value.kind == vkSymbol: value.symVal
-      else: pathSymbolSegments(value).join("/")
-    raise importedNameError(name, candidates)
-  candidates.len == 1 and candidates[0].category == cbcSyntaxFn
-
-
-
-
-
-
-proc importLocalNames(node: Value): seq[string] =
-  ## Local names an import binds. Wildcards and module/namespace aliases bind
-  ## no individual name, so they contribute nothing to hoist.
-  for selection in parseImportSpec(node).selections:
-    result.add selection.local
-
 proc reserveProtocolBindings(c: var Compiler, forms: openArray[Value])
 
 proc importMacroLocals(c: Compiler, node: Value): HashSet[string] =
@@ -5234,9 +5186,14 @@ proc reserveProtocolBinding(c: var Compiler, value: Value) =
       discard c.reserveLocal(value.body[0].symVal)
   of "import":
     let macroLocals = c.importMacroLocals(value)
-    for itemName in importLocalNames(value):
-      if itemName notin macroLocals:
-        discard c.reserveLocal(itemName)
+    let spec = parseImportSpec(value)
+    for selection in spec.selections:
+      if selection.local notin macroLocals:
+        let importsFexpr = spec.fromModule and
+          c.importedSyntaxFnSets.hasKey(spec.importKey) and
+          selection.name in c.importedSyntaxFnSets[spec.importKey]
+        discard c.reserveLocal(selection.local,
+                               allowFexprName = importsFexpr)
   of "do", "if", "if_yes", "if_not", "&&", "||", "??", "while", "loop",
      "repeat":
     c.reserveProtocolBindings(value.body)
@@ -5789,7 +5746,7 @@ proc builtinNamespaceMacros(segments: openArray[string]):
       (segments.len == 2 and segments[0] == "gene" and
        segments[1] == "log"):
     for level in ["error", "warn", "info", "debug", "trace"]:
-      result[level & "!"] = builtinLogMacro(level)
+      result["log_" & level] = builtinLogMacro(level)
   elif (segments.len == 1 and segments[0] == "css") or
       (segments.len == 2 and segments[0] == "gene" and
        segments[1] == "css"):
@@ -5815,7 +5772,11 @@ proc compileImport(c: var Compiler, node: Value) =
   if spec.alias.len > 0:
     validateBindingName(spec.alias)
   for selection in spec.selections:
-    validateBindingName(selection.local)
+    let importsFexpr = spec.fromModule and
+      c.importedSyntaxFnSets.hasKey(spec.importKey) and
+      selection.name in c.importedSyntaxFnSets[spec.importKey]
+    validateBindingName(selection.local,
+                        allowFexprName = importsFexpr)
   if (spec.wildcard or spec.alias.len > 0 or spec.reexport) and
       node.bits notin c.staticTopLevelImpls:
     raise newException(GeneError,
@@ -5872,21 +5833,15 @@ proc compileImport(c: var Compiler, node: Value) =
     if spec.alias.len > 0:
       discard c.reserveLocal(spec.alias)
     for sel in spec.selections:
-      discard c.reserveLocal(sel.local)
+      let importsFexpr = spec.fromModule and
+        c.importedSyntaxFnSets.hasKey(spec.importKey) and
+        sel.name in c.importedSyntaxFnSets[spec.importKey]
+      discard c.reserveLocal(sel.local, allowFexprName = importsFexpr)
   if not spec.reexport:
     if spec.alias.len > 0:
       c.chunk.exportExcludedNames.add spec.alias
     for sel in spec.selections:
       c.chunk.exportExcludedNames.add sel.local
-  # Cross-module fn! names (design §3/§11.1): the values import as ordinary
-  # runtime bindings above; the name set keeps the importer's call sites on
-  # the syntax_call path. Registered after reserveLocal, which clears names.
-  if spec.fromModule and c.importedSyntaxFnSets.hasKey(spec.importKey):
-    let exported = c.importedSyntaxFnSets[spec.importKey]
-    for sel in spec.selections:
-      if sel.name in exported:
-        c.syntaxFnNames[sel.local] = true
-        c.importedSyntaxFnNames.incl sel.local
   discard c.emit(opImport, c.chunk.addImport(spec))
 
 proc compileImportImpl(c: var Compiler, node: Value) =
@@ -6240,43 +6195,41 @@ proc compilePath(c: var Compiler, node: Value) =
       compileSelectorParts(c, parts.toOpenArray(start, i - 1))
       discard c.emit(opApplySelectorTop)
 
-proc compileSetBang(c: var Compiler, node: Value) =
-  ## `(set! path value)` — checked in-place assignment (design §12.1). `set`
-  ## still means "rebind a lexical binding" and never mutates; this is the
-  ## explicitly-mutating spelling, which is why it is bang-named like the
-  ## `set_prop!`/`put!`/`push!` family.
+proc compileSetPath(c: var Compiler, node: Value) =
+  ## `(set path value)` — checked in-place assignment (design §12.1). A symbol
+  ## target rebinds a lexical `var`; a path target updates the addressed slot.
   let body = node.body
   if body.len != 2:
     raise newException(GeneError,
-      "set! requires exactly a path and a value")
+      "set requires exactly a target and a value")
   let target = body[0]
   if target.kind == vkSymbol:
     raise newException(GeneError,
-      "set! requires a path; use set to rebind a var")
+      "set path assignment requires a path")
   if target.kind != vkNode or not target.head.isSymbol("path") or
       target.body.len < 2:
     raise newException(GeneError,
-      "set! requires a path; use set to rebind a var")
+      "set path assignment requires a path")
   let parts = target.body
   compileExpr(c, parts[0])
   for i in 1 ..< parts.len:
     let seg = parts[i]
     if seg.isPathSendSegment:
       raise newException(GeneError,
-        "set! cannot assign through a message segment")
+        "set cannot assign through a message segment")
     if seg.kind == vkNode and seg.head.isSymbol("unquote"):
       # Dynamic segments are key-only: ordinary selector evaluation *applies*
       # a callable segment, which is incoherent as an assignment target, so the
       # value is checked at run time and never applied.
       if seg.body.len != 1:
         raise newException(GeneError,
-          "set! path segment must be a Sym, Str, or Int")
+          "set path segment must be a Sym, Str, or Int")
       compileExpr(c, seg.body[0])
     elif seg.kind in {vkSymbol, vkString, vkInt}:
       c.emitConst seg
     else:
       raise newException(GeneError,
-        "set! path segment must be a Sym, Str, or Int")
+        "set path segment must be a Sym, Str, or Int")
   compileExpr(c, body[1])
   discard c.emit(opSetPath, parts.len - 1)
 
@@ -6385,6 +6338,7 @@ proc compileHashMapValue(c: var Compiler, value: Value) =
   discard c.emit(opMakeHashMap, value.hashMapEntries.len)
 
 proc compileCall(c: var Compiler, node: Value, allowSyntax = true)
+proc validateMessageName(name: string)
 
 proc sendCalleeName(callee: Value): string =
   ## Display name for a non-bare send callee, used in diagnostics only.
@@ -6445,6 +6399,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
   ## dynamic callee (`%m` or an expression); it must evaluate to a message
   ## value, and its impl is resolved here rather than by lowering the send to an
   ## ordinary call — so a message value never reaches a call opcode.
+  validateMessageName(sendName)
   var names: seq[string]
   var shortCircuit = -1
   let isSuper = receiver.kind == vkSymbol and receiver.symVal == "super"
@@ -6601,15 +6556,14 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       compileSend(c, node, node.head, sendCalleeName(node.body[1]), 2,
                   messageExpr = resolved, optional = optional)
     return
-  let localSyntaxHead = c.syntaxFnNames.len > 0 and
-    node.head.kind == vkSymbol and c.syntaxFnNames.hasKey(node.head.symVal) and
-    node.head.symVal notin c.mutableBindingNames
-  if localSyntaxHead or c.importedSyntaxHead(node.head):
+  let explicitSyntaxHead = node.head.kind == vkSymbol and
+    node.head.symVal.len > 1 and node.head.symVal.endsWith("!")
+  if explicitSyntaxHead:
     if not allowSyntax:
       compileExpr(c, node.head)
       discard c.emit(opRejectSyntaxSend)
       return
-    # Known fn! callee (design §3 step 4): props/body stay raw syntax nodes;
+    # Explicit fexpr callee (design §3 step 4): props/body stay raw syntax nodes;
     # no argument evaluation happens.
     compileExpr(c, node.head)
     c.emitConst node
@@ -6710,18 +6664,11 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
                 messageExpr = messageExpr)
     return
   compileExpr(c, node.head)
-  # Generic evaluated-head path (design §3): the callee value may turn out to
-  # be a fn!, so guard before evaluating props/body. On the syntax branch the
-  # VM performs the syntax call from the raw node and jumps past the plain
-  # call sequence.
-  let syntaxGuardAt =
-    if allowSyntax and not knownOrdinary:
-      c.emit(opSyntaxGuard, 0, depth = c.chunk.addConst(node))
-    elif not allowSyntax:
-      discard c.emit(opRejectSyntaxSend)
-      -1
-    else:
-      -1
+  # Every ordinary call evaluates its arguments. Syntax-preserving calls are
+  # selected solely by a trailing `!` on a lexical head above, never by
+  # inspecting a runtime callee value.
+  if not allowSyntax:
+    discard c.emit(opRejectSyntaxSend)
   var names: seq[string]
   for k, value in node.props:
     if k in ["types", "protocol", "receiver"]:
@@ -6741,8 +6688,6 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       else:
         c.emit(opCall, node.body.len, names = names)
     c.chunk.callSites[callIndex] = node
-  if syntaxGuardAt >= 0:
-    c.patchJump(syntaxGuardAt)
 
 proc compileNew(c: var Compiler, node: Value) =
   ## `new` is a core form, not a binding. Evaluate the type first, followed by
@@ -7237,6 +7182,12 @@ proc nativeTypeMarker(c: Compiler, node: Value,
       "::" & (c.namespacePath & @[name]).join("/"),
     abi)
 
+proc validateMessageName(name: string) =
+  if name.len > 1 and name.endsWith("!"):
+    raise newException(GeneError,
+      "message names may not end in !; trailing ! is reserved for fexpr calls: " &
+      name)
+
 proc messageNameParts(node: Value): tuple[protocolPath: seq[string], name: string] =
   ## A message name is a simple symbol, or a qualified path in impl bodies for
   ## disambiguating same-named closure messages (docs/core.md §3.6.1):
@@ -7247,6 +7198,7 @@ proc messageNameParts(node: Value): tuple[protocolPath: seq[string], name: strin
     raise newException(GeneError, "message requires a name and parameter vector")
   let nameForm = node.body[0]
   if nameForm.kind == vkSymbol:
+    validateMessageName(nameForm.symVal)
     return (@[], nameForm.symVal)
   # `Protocol:name` is the message spelling; `path` is still accepted for a
   # namespace-qualified owner, where the leading segments are a namespace path
@@ -7268,6 +7220,7 @@ proc messageNameParts(node: Value): tuple[protocolPath: seq[string], name: strin
       else:
         raise newException(GeneError,
           "message requires a name and parameter vector")
+    validateMessageName(segments[^1])
     return (segments[0 ..^ 2], segments[^1])
   raise newException(GeneError, "message requires a name and parameter vector")
 
@@ -7889,11 +7842,11 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   let h = node.head
   if node.props.hasKey("private"):
     if h.kind != vkSymbol or h.symVal notin
-        ["var", "let", "const", "fn", "fn!", "macro", "type", "alias", "enum",
+        ["var", "let", "const", "fn", "macro", "type", "alias", "enum",
          "protocol", "ns", "web_module"]:
       raise newException(GeneError,
         "^private is only valid on a named declaration " &
-        "(let, var, const, fn, fn!, macro, type, alias, enum, protocol, ns, " &
+        "(let, var, const, fn, macro, type, alias, enum, protocol, ns, " &
         "web_module)")
     if node.declarationIsPrivate:
       if node.bits notin c.staticTopLevelImpls:
@@ -7963,8 +7916,8 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       compileSet(c, node)
       return
     of "set!":
-      compileSetBang(c, node)
-      return
+      raise newException(GeneError,
+        "set! was removed; use set for both lexical and path assignment")
     of "new":
       compileNew(c, node)
       return
@@ -7975,11 +7928,15 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       compileLeadingSelfCall(c, node, optional = true)
       return
     of "fn":
-      compileFn(c, node)
+      if node.body.len > 0 and node.body[0].kind == vkSymbol and
+          node.body[0].symVal.endsWith("!"):
+        compileFexpr(c, node)
+      else:
+        compileFn(c, node)
       return
     of "fn!":
-      compileFnBang(c, node)
-      return
+      raise newException(GeneError,
+        "fn! was removed; define a named fexpr with fn: (fn name! [syntax...] body...)")
     of "macro":
       compileMacro(c, node)
       return
@@ -8133,7 +8090,7 @@ proc collectMutableBindingNames(value: Value,
   ## Conservatively collect mutation targets across nested closures before any
   ## call site is lowered. Quoted/generated syntax may produce false positives,
   ## which only disables an optimization; missing a later captured mutation
-  ## would make an argument-first call semantically incorrect for fn! values.
+  ## could leave a direct-call opcode targeting a binding whose value changed.
   case value.kind
   of vkNode:
     if value.head.isSymbol("set") and value.body.len > 0 and
@@ -8247,8 +8204,8 @@ proc compileFormsWithMacros*(forms: openArray[Value],
   ## Module-loader entry point (design §11/§15): compile a source unit with the
   ## macro exports of its `from "path"` dependencies available (keyed by the
   ## raw path string), and return this unit's own macro definitions — imported
-  ## macros are usable but not re-exported. fn! names travel the same way so
-  ## importers keep syntax_call sites (design §3/§11.1); the fn! values remain
+  ## macros are usable but not re-exported. Fexpr names travel the same way so
+  ## importers retain their declaration metadata; the fexpr values remain
   ## ordinary runtime bindings.
   var moduleMacroExports: ref Table[string, MacroDef]
   new(moduleMacroExports)

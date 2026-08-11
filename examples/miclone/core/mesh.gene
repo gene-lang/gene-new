@@ -179,13 +179,13 @@
                 px : F64 py : F64 pz : F64
                 u : F64 v : F64 light : F64 shade : F64] : Nil
   (var o (* at floats_per_vertex))
-  (verts ~ set! o px)
-  (verts ~ set! (+ o 1.0) py)
-  (verts ~ set! (+ o 2.0) pz)
-  (verts ~ set! (+ o 3.0) u)
-  (verts ~ set! (+ o 4.0) v)
-  (verts ~ set! (+ o 5.0) light)
-  (verts ~ set! (+ o 6.0) shade))
+  (verts ~ set o px)
+  (verts ~ set (+ o 1.0) py)
+  (verts ~ set (+ o 2.0) pz)
+  (verts ~ set (+ o 3.0) u)
+  (verts ~ set (+ o 4.0) v)
+  (verts ~ set (+ o 5.0) light)
+  (verts ~ set (+ o 6.0) shade))
 
 # Two triangles over the four corners just written, in the order that makes the
 # quad front-facing from outside.
@@ -204,12 +204,12 @@
 # point out of the block, away from the node the face belongs to.
 (fn put_face_indices [idx : (Buffer U32) face : F64 base : F64] : Nil
   (var o (* face indices_per_face))
-  (idx ~ set! o ($to_int base))
-  (idx ~ set! (+ o 1.0) ($to_int (+ base 1.0)))
-  (idx ~ set! (+ o 2.0) ($to_int (+ base 2.0)))
-  (idx ~ set! (+ o 3.0) ($to_int base))
-  (idx ~ set! (+ o 4.0) ($to_int (+ base 2.0)))
-  (idx ~ set! (+ o 5.0) ($to_int (+ base 3.0))))
+  (idx ~ set o ($to_int base))
+  (idx ~ set (+ o 1.0) ($to_int (+ base 1.0)))
+  (idx ~ set (+ o 2.0) ($to_int (+ base 2.0)))
+  (idx ~ set (+ o 3.0) ($to_int base))
+  (idx ~ set (+ o 4.0) ($to_int (+ base 2.0)))
+  (idx ~ set (+ o 5.0) ($to_int (+ base 3.0))))
 
 # Emit one quad. The four corners arrive already in winding order; this only
 # adds the atlas offset and the shared light and shading values.

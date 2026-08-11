@@ -123,8 +123,8 @@
   (fn paint_row [row : Any, button : Any, done : Bool] : Void
     (var was : Str row/class_name)
     (var peek (if (peeking? was) " peek" ""))
-    (set! row/class_name (if done $"done${peek}" $"open${peek}"))
-    (set! button/text_content (if done "✓" "○")))
+    (set row/class_name (if done $"done${peek}" $"open${peek}"))
+    (set button/text_content (if done "✓" "○")))
 
   # `event` is the DOM `Any` boundary, so each field read is annotated where it
   # re-enters typed code — that annotation is the only place a mistake about
@@ -137,7 +137,7 @@
       (var row target/parent_element)
       (if_yes row
         (var row_class : Str row/class_name)
-        (set! row/class_name (toggled row_class))))
+        (set row/class_name (toggled row_class))))
     (if_yes (== target_class "toggle")
       # Stop the form POST *before* the request goes out: after an await the
       # browser has already navigated and nothing this handler does can matter.

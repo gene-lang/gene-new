@@ -97,7 +97,7 @@ Hello, Gene
 ```
 
 Two larger programs worth reading:
-[`examples/web_demo.gene`](examples/web_demo.gene) is an end-to-end language
+[`examples/style_guide.gene`](examples/style_guide.gene) is an end-to-end language
 showcase, and [`examples/todo_app/src/main.gene`](examples/todo_app/src/main.gene)
 is a complete web application — routes, SQLite, HTML, CSS, and browser
 behavior — in one file.

@@ -639,7 +639,7 @@ dispatches it on `x`. `%m` is the ordinary `%` escape (design §5): a bare name
 after `~` is a static message name, `%m` pulls a message value from lexical
 scope. This is the one path by which a lexically-held value participates in a
 send — and it stays a *send*: the value must be a message, so a plain function,
-a namespace member, or a held `Fn!` raises `CallKindError`
+a namespace member, or a held `Fexpr` raises `CallKindError`
 (`^expected "Message"`) rather than being invoked. A parenthesized expression
 callee `(x ~ (expr) ...)` carries the same requirement. The one exception is a
 **selector** callee `(x ~ /name)`, which projects the receiver rather than

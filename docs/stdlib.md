@@ -56,7 +56,7 @@ Implementation status:
 
 ## Goals
 
-- Make `examples/web_demo.gene` runnable without test-only stubs.
+- Keep `examples/todo_app/src/main.gene` runnable without test-only stubs.
 - Support a small server-rendered web app with routes, request parsing, HTML
   rendering, forms, redirects, cookies, and static assets.
 - Support SQLite-backed persistence with prepared statements, transactions,
@@ -89,7 +89,7 @@ Initial modules should be available through namespace imports:
 (import net/http_client [Http request stream HttpClientError])
 (import crypto [sha256 random_hex secure_equal?])
 (import os [process_id])
-(import log [Logger LogLevel new_logger info! debug!])
+(import log [Logger LogLevel new_logger log_info log_debug])
 (import curses [Screen open close dimensions draw read_input refresh_input
                 escape_pressed? next_event CursesError])
 (import sqlite [Database Statement Row SqliteError])
@@ -114,22 +114,23 @@ from program output, typed errors, authoritative event/audit logs, metrics, and
 execution traces. The default route emits `warn` and `error` to stderr.
 
 ```gene
-(import log [Logger LogLevel new_logger debug!])
+(import log [Logger LogLevel new_logger log_debug])
 
 (var logger
   (new_logger "app/http" ^payload {^service "api"}))
 
 (logger ~ info "listening" ^payload {^port 8080})  # eager
-(debug! logger (expensive_message)                  # lazy
+(log_debug logger (expensive_message)                  # lazy
   ^payload {^request_id id})
 ```
 
 `Logger` is an immutable, Send-safe native handle. `new_logger` creates names
 under `app/*`; `child` derives a descendant and `with` adds immutable base
 payload. Eager `error`/`warn`/`info`/`debug`/`trace` methods evaluate arguments
-normally. Their `!` macro counterparts evaluate the logger once and skip
-message/payload evaluation when disabled. `enabled?` accepts `LogLevel`; `emit`
-is the eager level-parametric primitive.
+normally. The `log_error`/`log_warn`/`log_info`/`log_debug`/`log_trace` macro
+forms evaluate the logger once and skip message/payload evaluation when
+disabled. `enabled?` accepts `LogLevel`; `emit` is the eager level-parametric
+primitive.
 
 Payloads are PropMaps/general maps with string or symbol keys and data-only
 values. Base and event payloads merge with event keys winning. Payloads are
@@ -322,7 +323,7 @@ should export them under a stable namespace:
 
 Acceptance:
 
-- `examples/web_demo.gene` imports `gene/stream` successfully.
+- `examples/todo_app/src/main.gene` imports `gene/stream` successfully.
 - Stream helpers remain lazy where they are lazy today.
 - `each` consumes a stream for side effects and returns `nil`.
 
@@ -769,7 +770,8 @@ library behavior is fixed by this target.
 1. Register stdlib namespaces for existing built-ins:
    `gene/stream`, `gene/node`, `gene/parse`.
 2. Add `str/join`, `str/split`, and `html/escape`.
-3. Move app-local HTML rendering from `web_demo.gene` into `html`.
+3. Move app-local HTML rendering from `examples/todo_app/src/main.gene` into
+   `html`.
 4. Add `url` query parsing and wire it into `Request/params`.
 5. Add blocking `net/http` server capability and response helpers.
 6. Add SQLite native binding with open/close/exec/query/execute.

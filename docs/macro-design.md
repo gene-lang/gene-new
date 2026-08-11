@@ -1,843 +1,231 @@
-# Gene Macro and Fexpr Design
+# Explicit fexprs and template macros
 
-**Status:** Phases 1–2 (§11) implemented and spec-locked (`tests/spec_runner.nim`:
-"spec — macros from design", "spec — fn! runtime fexprs from design", and the
-cross-module suites). Phase 3 derive ships with normal type checking and
-manual-vs-generated coherence, but without the declaration overlay or
-provenance meta. `docs/design.md` (§2, §3, §11, §11.1, §15) is the
-authoritative surface; §4.2 and §5.2–§5.4 below have been revised to match the
-shipped semantics — notably static fn! call-site tracking with guarded
-expression heads, and a read-only `caller_env`.  
-**Scope:** user-defined syntax extension, runtime fexprs, and compile-time templates  
-**Decision:** use `fn!` for fexprs and `macro` for compile-time templates.
+**Status:** normative and implemented. The executable contract lives in
+`tests/spec_runner.nim`, especially the “explicit fexprs,” “macros from
+design,” and cross-module suites.
 
----
-
-## 1. Summary
-
-Gene should not treat full Lisp-style macros as the primary metaprogramming model.
-
-Gene has a strong node model, explicit `Env`, callable-first evaluation, and runtime typed boundaries. Those features make **fexprs** a better default abstraction for user-defined syntax and DSLs.
-
-The proposed split is:
+Gene separates four mechanisms whose source forms reveal their evaluation
+model:
 
 ```text
-special forms   compiler-owned core language forms
-fn!             runtime syntax-callable / fexpr
-macro           compile-time template expander
-derive          controlled compile-time declaration generation
+(foo a)       ordinary eager call
+(foo! a)      explicit runtime fexpr call
+(x ~ foo a)   eager message dispatch
+(macro ...)   compile-time template expansion
 ```
 
-In other words:
+Core special forms such as `if`, `match`, `fn`, and `var` keep plain names.
+They are compiler primitives, not user-defined fexpr bindings.
+
+## 1. The `!` rule
+
+`!` is semantic syntax, not a style hint:
+
+> A trailing `!` is reserved exclusively for a named fexpr declaration and a
+> head-position fexpr invocation.
+
+It is not a mutation convention and it is not a macro convention. Mutating
+messages use ordinary snake_case names such as `push`, `put`, `set_prop`, and
+`copy_from`. Macro names are ordinary snake_case names too. Message names and
+all non-fexpr bindings ending in `!` are rejected.
+
+This partition is intentionally narrow:
 
 ```gene
-(fn  name [args...] body...)   # ordinary function; arguments are evaluated first
-(fn! name [syntax...] body...) # fexpr; arguments are passed as syntax nodes
-(macro name [syntax...] body)  # compile-time template; expands syntax before normal compilation
+(foo arg)        # evaluate arg, then call foo
+(foo! arg)       # pass arg as syntax to the fexpr foo!
+(value ~ foo arg) # evaluate arg, then dispatch foo
 ```
 
-`fn!` should be the common user-facing syntax-extension tool. `macro` should be smaller, more restricted, and mainly used when compile-time expansion is truly required.
+Fexpr semantics apply only to a lexical call head. A send such as
+`(value ~ foo! arg)` is invalid rather than becoming syntax-preserving message
+dispatch.
 
----
+## 2. Declaring an fexpr
 
-## 2. Goals
-
-This design aims to support:
-
-- custom control flow;
-- lazy arguments;
-- DSLs;
-- hygienic template expansion where useful;
-- protocol-local derivation;
-- explicit authority through `Env`;
-- good tooling and module behavior;
-- future native/AOT compilation where possible.
-
-It avoids making arbitrary compile-time execution the default mechanism for ordinary DSLs.
-
----
-
-## 3. Terminology
-
-### 3.1 Ordinary function
-
-An ordinary function evaluates its arguments before the call:
+A named `fn` ending in `!` declares an fexpr:
 
 ```gene
-(fn add1 [x]
-  (+ x 1))
-
-(add1 (+ 1 2)) # add1 receives 3
-```
-
-### 3.2 Fexpr / syntax callable
-
-A fexpr receives unevaluated argument syntax and an explicit caller environment.
-
-Gene spelling:
-
-```gene
-(fn! name [syntax_params...]
-  body...)
-```
-
-Example:
-
-```gene
-(fn! when! [cond, body...]
-  (if (eval cond ^in caller_env)
+(fn unless! [cond body...]
+  (if_not (eval cond ^in caller_env)
     (eval `(do %body...) ^in caller_env)))
+
+(unless! false
+  ($println "hi"))
 ```
 
-The exact name of the caller environment binding is specified below.
+The removed `(fn! ...)` form is an error. Anonymous functions remain ordinary
+eager `Fn` values; there is no anonymous fexpr form. This puts the special
+evaluation property on the callable's visible binding and call sites.
 
-### 3.3 Compile-time template macro
-
-A macro is a compile-time template expander:
-
-```gene
-(macro when! [cond, body...]
-  `(if_yes %cond %body...))
-```
-
-A macro transforms syntax before normal compilation continues.
-
-### 3.4 Derive
-
-`derive` is a protocol-local compile-time declaration generator. It is not a general runtime fexpr.
-
-```gene
-(protocol HasLabel
-  (message label [self] : Str)
-
-  (derive [t : Type, req]
-    `(impl HasLabel for %t
-       (message label [self] : Str
-         (to_str self/name)))))
-```
-
----
-
-## 4. Evaluation model
-
-### 4.1 Ordinary call
-
-For a normal call:
-
-```gene
-(f a b ^x c)
-```
-
-Evaluation is:
+An ordinary `fn` binds evaluated values. A named fexpr binds the raw syntax
+values from its call:
 
 ```text
-1. evaluate head `f`;
-2. if result is Callable, evaluate arguments and named arguments;
-3. call Callable/apply.
+fn add      parameters receive values after evaluation
+fn quote_it! parameters receive syntax before evaluation
 ```
 
-### 4.2 Fexpr call
+Fexpr parameters use the same positional, named, default, and rest shape
+machinery, but matching operates on syntax values.
 
-For a fexpr call:
+## 3. Invocation is source-visible
+
+Ordinary calls never inspect the runtime callee to choose evaluation rules.
+They evaluate every argument first. If the resulting callee is a held
+`Fexpr`, the call raises `CallKindError`.
 
 ```gene
-(f! a b ^x c)
+(fn quote_it! [form] form)
+(var held quote_it!)
+
+(quote_it! (+ 1 2)) # => (+ 1 2)
+(held (+ 1 2))      # eager argument, then CallKindError
 ```
 
-Evaluation is:
+The same eager rule applies to higher-order parameters and expression heads.
+There is no generic runtime “is this a syntax callable?” guard and no attempt
+to reconstruct source after evaluation.
+
+A held fexpr remains a runtime value for reflection and transport. Its runtime
+type is `Fexpr`, a sibling of `Fn`, not a subtype. It does not satisfy an `Fn`
+annotation and does not implement the ordinary invocation path.
+
+Direct module imports retain fexpr metadata, so importing the declared
+trailing-`!` name preserves explicit invocation:
+
+```gene
+(import [unless!] from "./control")
+(unless! ready? (start))
+```
+
+Renaming it to a non-bang alias or storing it in an ordinary binding does not
+create another fexpr call site. Creating arbitrary bang-suffixed aliases is
+forbidden.
+
+## 4. Invocation context
+
+Every fexpr body receives two implicit read-only bindings:
 
 ```text
-1. evaluate head `f!`;
-2. if result is SyntaxCallable, do not evaluate body arguments or named arguments;
-3. package raw syntax nodes into SyntaxCall;
-4. pass SyntaxCall plus a borrowed CallerEnv to the fexpr body;
-5. the fexpr decides what, when, and where to evaluate.
+caller_env  CallerEnv   borrowed lexical environment of the invocation
+syntax_call SyntaxCall  raw props, body, and optional source site
 ```
 
-This means only the callee position is evaluated normally. Argument evaluation is controlled by the fexpr.
+They do not appear in the parameter vector because the caller does not supply
+them as ordinary arguments. The declared parameters bind `syntax_call`'s raw
+syntax payload.
 
-**As implemented (design §3):** call sites whose head is a stable, statically
-tracked fn! name compile to the syntax path directly. Every dynamic/`Any`
-callee—including untyped parameters, expression heads, and Env-provided
-bindings—uses a guarded generic path that checks the evaluated callee before
-touching named or positional arguments. Argument-first fused calls are emitted
-only when the compiler can exclude `SyntaxCallable`.
+`caller_env` is authority. It resolves the caller's lexical bindings, imports,
+module namespace, and built-ins. Code evaluated in it cannot create or rebind
+bindings in the caller's scope, although reachable mutable values can still be
+mutated.
 
-Relatedly, `Fn!` is a sibling of `Fn` in the type hierarchy, not a subtype: a
-fn! value does not satisfy an `Fn`-typed (or `Callable`-typed) parameter, so
-typed regions compiled AOT never hit the syntax path through function-typed
-values (design §3).
-
----
-
-## 5. `fn!`: fexprs / syntax callables
-
-### 5.1 Syntax
+The view is valid only for the dynamic extent of the fexpr call. It is not
+`Send` or serializable and cannot escape through a return, error payload,
+container, outer binding, closure, or spawned task. Durable capture is
+explicit and selective:
 
 ```gene
-(fn! name [params...]
-  body...)
+(fn capture_config! []
+  (caller_env ~ snapshot ["config"]))
 ```
 
-Anonymous form:
+This returns a durable `Env` containing `config`, not the caller's full
+authority.
+
+## 5. Runtime call envelopes
+
+Ordinary calls carry evaluated values:
 
 ```gene
-(fn! [params...]
-  body...)
+(type Call
+  ^props {^named PropMap ^site Node?}
+  ^body [Any...])
+
+(protocol Callable
+  (message apply [call : Call] : Any))
 ```
 
-By the `name!` convention (design §2), names bound to fn! values keep the `!`
-suffix; this is not enforced.
-
-A `fn!` defines a runtime value implementing `SyntaxCallable`.
-
-```gene
-(protocol SyntaxCallable
-  (message apply_syntax
-    [call : SyntaxCall, env : Env] : Any))
-```
-
-`SyntaxCallable` is the conceptual dispatch model, not a user-implementable
-protocol: in the MVP only values created by `fn!` implement it, and there is
-no `SyntaxCallable` protocol value to write an `impl` for (unlike `Callable`,
-which user types can implement).
-
-Conceptual `SyntaxCall`:
+Fexpr calls carry syntax and caller context:
 
 ```gene
 (type SyntaxCall
-  ^props {
-    ^named PropMap
-    ^site Node
-  }
-  ^body [Node...])
+  ^props {^named PropMap ^site Node?}
+  ^body [Any...])
 ```
 
-### 5.2 Bound environment
+`Fexpr` is a distinct runtime type, not an implementation of `Callable` and
+not a user-extensible call protocol. The compiler emits its syntax-call path
+only for a trailing-`!` lexical head.
+Every ordinary call compiles its arguments eagerly and can use direct/fused
+call opcodes without a syntax-kind guard. This also means ordinary dynamic
+calls need not retain argument syntax.
 
-Inside a `fn!`, Gene provides a lexical binding:
+## 6. Template macros
+
+`macro` is a compile-time template expander, not a runtime value:
 
 ```gene
-caller_env : CallerEnv
-```
-
-`caller_env` is a **borrowed, read-only view** of the caller's evaluation environment
-(design §11.1). It resolves the caller's lexical bindings, imports, module
-namespace, and core built-ins, and it can be passed to `eval`. Code evaluated
-`^in caller_env` cannot create, rebind, or `set` bindings in the caller's
-scope — declarations made by an evaluated unit live in that unit's own
-overlay. Mutable values reachable through caller bindings (`Cell`, buffers,
-actors) can still be mutated; the view is read-only, not deep-frozen. The view
-cannot escape the syntax call through returns, containers, closures, tasks,
-serialization, or `Send` boundaries. Use `(caller_env ~ snapshot ["name" ...])`
-to create a durable `Env` containing only explicitly selected bindings.
-
-Example:
-
-```gene
-(fn! unless! [cond, body...]
-  (if (not (eval cond ^in caller_env))
-    (eval `(do %body...) ^in caller_env)
-    nil))
-```
-
-### 5.3 Parameters
-
-`fn!` parameters match syntax nodes, not evaluated values.
-
-```gene
-(fn! ignore! [x]
-  nil)
-
-(ignore! (panic "not evaluated")) # returns nil
-```
-
-**Not yet implemented:** destructuring patterns in fn! parameter vectors.
-`macro` parameters destructure syntax patterns today, but `fn` and `fn!`
-parameters bind whole values only — the intended future form
-
-```gene
-(fn! second! [[_, value]]
-  (eval value ^in caller_env))
-```
-
-does not compile yet; destructure inside the body with `var`/`match` instead.
-
-Named syntax parameters are allowed:
-
-```gene
-(fn! with_timeout! [expr, ^ms timeout]
-  ...)
-```
-
-Defaults are syntax defaults, not evaluated-value defaults, unless explicitly evaluated in the fexpr body.
-
-### 5.4 `fn!` is a value
-
-Unlike `macro`, `fn!` produces an ordinary runtime value.
-
-It can be:
-
-```gene
-(var w when!)
-(w cond body...)
-```
-
-It can be passed to functions, stored in maps, exported from modules, and
-imported through ordinary imports.
-
-This is a key difference from `macro`.
-
-**MVP calling restriction (design §3):** holding a fn! value anywhere is fine,
-but *invoking* one only works through a statically tracked name, an expression
-head, or a `from "path"`-imported name. A fn! that arrives through a function
-parameter and is then called — even a parameter typed `: Fn!` — is rejected
-with a recoverable error rather than mis-evaluating its arguments:
-
-```gene
-(fn! q! [e] e)
-(fn hof [f] (f 1))
-(hof q!)   # error: fn! 'q!' reached a call site with pre-evaluated arguments
-```
-
-### 5.5 Authority
-
-A fexpr can evaluate only with the `Env` values it has.
-
-The common case uses `caller_env`:
-
-```gene
-(eval node ^in caller_env)
-```
-
-But a fexpr may evaluate in a restricted environment:
-
-```gene
-(eval node ^in sandbox_env)
-```
-
-This makes fexprs compatible with Gene’s authority model. No ambient filesystem, network, subprocess, FFI, or native-compilation authority is granted unless present in the selected `Env`.
-
-### 5.6 Return value
-
-A `fn!` returns an ordinary runtime value.
-
-If it evaluates syntax, the result is the result of `eval`:
-
-```gene
-(fn! do1! [x]
-  (eval x ^in caller_env))
-```
-
-If it builds data, it may return data directly:
-
-```gene
-(fn! quote_node! [x]
-  x)
-```
-
----
-
-## 6. `macro`: compile-time templates
-
-### 6.1 Role
-
-`macro` is not a general compile-time function system. It is a compile-time **template expander**.
-
-A macro receives syntax nodes and returns syntax that is compiled in place.
-
-```gene
-(macro when! [cond, body...]
-  `(if_yes %cond %body...))
-```
-
-Macros should be used when expansion must happen before type checking, declaration collection, or native/AOT compilation.
-
-Most DSLs and custom control flow should use `fn!` instead.
-
-### 6.2 Syntax
-
-```gene
-(macro name [params...]
-  template_expr)
-```
-
-MVP restriction:
-
-```text
-A macro body contains exactly one syntax-producing expression.
-```
-
-Usually that expression is a template/quasiquote.
-
-```gene
-(macro twice! [x]
-  `(do %x %x))
-```
-
-### 6.3 Macro parameters
-
-Macro parameters receive syntax nodes.
-
-They may destructure syntax nodes with patterns:
-
-```gene
-(macro second! [[_, value]]
-  `%value)
-```
-
-Named macro parameters are syntax nodes:
-
-```gene
-(macro tagged! [value, ^tag t]
-  `(quote (%t %value)))
-```
-
-### 6.4 Macro namespace rule
-
-Macros are compile-time rewriters, not runtime values.
-
-A macro name occupies the same visible name space as bindings:
-
-```text
-- defining a macro whose name conflicts with a visible binding is an error;
-- defining a binding whose name conflicts with a visible macro is an error;
-- using a macro name in value position is an error;
-- macros are called only in head position.
-```
-
-Example:
-
-```gene
-(macro when! [cond, body...] ...)
-when! # error: macro cannot be used as a value
-```
-
-This differs from `fn!`, which creates a normal runtime value.
-
-### 6.5 Macro imports
-
-Macros are module exports, but only for compile-time use.
-
-```gene
-(import [when! : unless_not!] from "./control")
-```
-
-Rules:
-
-```text
-- only top-level `from "path"` imports can import macros;
-- imported macros come from a cached compile artifact and are available while
-  compiling the importing module;
-- building that artifact never executes runtime top-level forms or grants
-  runtime/host capabilities;
-- imported macros are not runtime bindings;
-- imported macros are not re-exported by default;
-- namespace-path imports do not carry macros in MVP;
-- importing a macro whose local name conflicts with a visible macro or binding is an error.
-```
-
-Runtime fexprs do not have these restrictions because they are ordinary values.
-
-### 6.6 Hygiene
-
-MVP macro hygiene is fresh_name based.
-
-When a template introduces a binder in a recognized binding form, the compiler rewrites that introduced name to a fresh internal symbol.
-
-Example:
-
-```gene
-(macro local! [x]
-  `(do
-     (var tmp 1)
-     (+ tmp %x)))
-
-(var tmp 100)
-[(local! 2) tmp] # => [3 100]
-```
-
-The introduced `tmp` inside the expansion does not capture or overwrite the caller’s `tmp`.
-
-Target model for the future:
-
-```text
-symbols = text + hygiene marks
-```
-
-MVP does not need full mark-set hygiene immediately, but the implementation should leave room for it.
-
-### 6.7 Intentional capture
-
-Intentional capture must be explicit.
-
-The simplest MVP rule:
-
-```text
-A macro captures caller names only by unquoting caller-provided syntax.
-```
-
-Example:
-
-```gene
-(macro bind_user_name! [name]
-  `(var %name "Alice"))
-```
-
-A future low-level hygiene escape may be added, but it should not be part of the normal macro style.
-
----
-
-## 7. Choosing between `fn!` and `macro`
-
-Use `fn!` when:
-
-```text
-- custom evaluation order is enough;
-- syntax is evaluated at runtime;
-- the construct needs borrowed caller authority;
-- the construct is a DSL or control abstraction;
-- the result does not need to create compile-time declarations;
-- tooling does not need to see the expanded form ahead of time.
-```
-
-Use `macro` when:
-
-```text
-- expansion must happen before type checking;
-- expansion must create code that participates in AOT/native compilation;
-- expansion must create declarations visible later in the same module;
-- the compiler/tooling must see the expanded syntax;
-- protocol derive or FFI wrapper generation needs syntax before runtime.
-```
-
-Use `derive` when:
-
-```text
-- a protocol generates an implementation for a type;
-- generated declarations should live in a compiler-owned overlay;
-- source modules should not be mutated.
-```
-
----
-
-## 8. Examples
-
-### 8.1 Fexpr `when!`
-
-```gene
-(fn! when! [cond, body...]
-  (if (eval cond ^in caller_env)
-    (eval `(do %body...) ^in caller_env)
-    nil))
-```
-
-Usage:
-
-```gene
-(when! (> x 0)
-  ($println "positive")
-  x)
-```
-
-### 8.2 Fexpr `assert!`
-
-```gene
-(fn! assert! [cond, ^message msg = "assertion failed"]
-  (if (eval cond ^in caller_env)
-    true
-    (panic msg)))
-```
-
-### 8.3 Fexpr `with_resource!`
-
-```gene
-(fn! with_resource! [binding, body...]
-  (match binding
-    (when [name init]
-      (var value (eval init ^in caller_env))
-      (try
-        (eval `(do (var %name %value) %body...) ^in caller_env)
-      ensure
-        (value ~ Closeable:close)))))
-```
-
-### 8.4 Template macro `unless!`
-
-```gene
-(macro unless! [cond, body...]
-  `(if_not %cond %body...))
-```
-
-The generated guard is type-checked and compiled as if it appeared in the source.
-
-### 8.5 Template macro introducing a local
-
-```gene
-(macro with_temp! [value, body...]
-  `(do
-     (var tmp %value)
-     %body...))
-```
-
-The introduced `tmp` is hygienically fresh in MVP.
-
-### 8.6 Protocol derive
-
-```gene
-(protocol HasLabel
-  (message label [self] : Str)
-
-  (derive [t : Type, req]
-    `(impl HasLabel for %t
-       (message label [self] : Str
-         (to_str self/name)))))
-```
-
----
-
-## 9. Relationship to `Env` and `eval`
-
-`fn!` depends directly on `Env` and `eval`.
-
-A fexpr receives caller syntax and may evaluate it explicitly:
-
-```gene
-(eval syntax-node ^in caller_env)
-```
-
-This preserves Gene’s authority model:
-
-```text
-syntax is not automatically authority;
-Env grants authority;
-eval uses the normal compiler pipeline;
-policy controls execution, imports, FFI, native compilation, and limits.
-```
-
-`macro` normally does not receive runtime `Env`. It expands during compilation. Future compile-time function macros may receive a compile-time environment, but that is not part of the initial macro system.
-
----
-
-## 10. Tooling and compilation implications
-
-### 10.1 `fn!`
-
-Because `fn!` runs at runtime, tooling cannot always know what syntax it will evaluate.
-
-This affects:
-
-```text
-- static diagnostics inside fexpr-controlled syntax;
-- AOT/native compilation of the fexpr body’s evaluated syntax;
-- sealed application images;
-- declaration discovery;
-- route discovery;
-- refactoring tools.
-```
-
-The runtime may cache compiled `eval` results by semantic node hash, environment shape/version, visible implementation set, compiler version, and policy.
-
-A JIT can optimize repeated fexpr/eval patterns, but JIT does not replace the semantic benefits of compile-time expansion.
-
-### 10.2 `macro`
-
-Because `macro` expands before normal compilation, tooling can inspect the expanded syntax.
-
-This helps:
-
-```text
-- type checking;
-- declaration collection;
-- protocol impl visibility;
-- AOT/native compilation;
-- sealed builds;
-- documentation generation;
-- LSP and refactoring.
-```
-
-That is why `macro` remains useful even if `fn!` is the preferred DSL mechanism.
-
----
-
-## 11. Implementation plan
-
-### Phase 1: MVP template macros — implemented
-
-Spec-locked in `tests/spec_runner.nim` ("spec — macros from design",
-"spec — macros across modules"):
-
-```text
-- `(macro name [params...] template_expr)`;
-- syntax-node arguments;
-- syntax-pattern parameter matching (incl. typed patterns);
-- rest and named syntax parameters, syntax defaults;
-- template/quasiquote expansion;
-- fresh_name hygiene for recognized introduced binders (var, fn, and
-  pattern binders such as match);
-- top-level `from "path"` macro imports, aliases, no re-export;
-- compile-artifact/runtime-initialization cache separation and phase-specific
-  cycle diagnostics;
-- macro/value namespace conflict checks ("one name means one thing").
-```
-
-### Phase 2: `fn!` fexprs — implemented
-
-Spec-locked in `tests/spec_runner.nim` ("spec — fn! runtime fexprs from
-design", "spec — fn! across modules"), with the §4.2/§5.2/§5.4 MVP notes:
-
-```text
-- `SyntaxCall` value (^named, ^site, raw body nodes);
-- `fn!` definition form, named and anonymous;
-- read-only borrowed CallerEnv binding (plus syntax_call), as implicit leading
-  parameters;
-- guarded dynamic/Any call sites before argument evaluation; fused sites only
-  for callees proven ordinary (SyntaxCallable stays conceptual — see §5.1);
-- explicit eval through live `caller_env`, and named durable `snapshot` (on `CallerEnv`);
-- tests for lazy args, named syntax args, borrowed authority/escape rejection,
-  durable snapshots, and fn! value aliasing.
-```
-
-Not yet implemented: destructuring patterns in fn! parameter vectors (§5.3).
-
-### Phase 3: compile-time derive and declaration overlays — partial
-
-Shipped: protocol-local `derive`, normal type checking of generated impls,
-and visible-implementation coherence (manual-vs-generated duplicates are
-errors). Generated impls register directly rather than in a compiler-owned
-overlay, and carry no provenance meta:
-
-```text
-- protocol-local `derive`;                      # implemented
-- normal type checking of generated impls;      # implemented
-- visible-implementation coherence;             # implemented
-- generated declaration overlay;                # not implemented
-- provenance meta.                              # not implemented
-```
-
-### Phase 4: future full compile-time functions
-
-Optional later:
-
-```text
-- compile-time Env;
-- compile-time value evaluation;
-- richer macro APIs;
-- mark-set hygiene;
-- explicit intentional capture API;
-- macro-generated imports/declarations with phase tracking.
-```
-
----
-
-## 12. Required tests
-
-All of the behaviors below are covered by `tests/spec_runner.nim` (the macro,
-fn!, and cross-module suites); this section is kept as the readable inventory.
-
-### 12.1 `fn!`
-
-```gene
-(var hit 0)
-(fn! ignore! [x] nil)
-[(ignore! (set hit 1)) hit] # => [nil 0]
-```
-
-```gene
-(fn! eval1! [x]
-  (eval x ^in caller_env))
-
-(eval1! (+ 1 2)) # => 3
-```
-
-```gene
-(var x 10)
-(fn! quote_syntax! [x] x)
-(quote_syntax! (+ x 1)) # => (+ x 1)
-```
-
-### 12.2 Macro templates
-
-```gene
-(macro when! [cond, body...]
+(macro when [cond body...]
   `(if_yes %cond %body...))
 
-[(when! true 1) (when! false 2)] # => [1 nil]
+(when ready? (start))
 ```
 
-### 12.3 Macro/value separation
+Macro arguments are syntax nodes. Parameters may destructure syntax patterns
+and may use named, default, typed, and rest positions. The MVP body is exactly
+one syntax-producing expression, normally quasiquote. Arbitrary compile-time
+function execution remains future work.
+
+Macro names share the namespace with runtime bindings. Defining or importing a
+macro over a value binding is an error, binding a value over a visible macro is
+an error, and a macro cannot be used in value position. The macro name does
+not end in `!`; expansion is known statically from the compiler's macro table.
+
+File-defined macros are imported from compile artifacts without executing the
+dependency's runtime top level:
 
 ```gene
-(macro m! [] 1)
-m! # error: macro cannot be used as value
+(import [when : when_ready] from "./control")
+(when_ready ready? (start))
 ```
 
-```gene
-(macro m! [] 1)
-(var m! 2) # error
-```
+Imported macros are usable by the importer but are not implicitly re-exported.
+Built-in namespaces may expose compiler-known macros through the same import
+surface. The logging namespace's `error`, `warn`, `info`, `debug`, and `trace`
+macros use this mechanism to preserve lazy payload evaluation.
 
-### 12.4 Imported macros
+## 7. Hygiene
 
-```gene
-# control.gene
-(macro when! [cond, body...]
-  `(if_yes %cond %body...))
+Template macros are hygienic. Names introduced by the template are fresh, so
+they neither capture caller names nor get captured by them. Unquoted
+caller-provided symbols intentionally retain call-site identity.
 
-# app.gene
-(import [when!] from "./control")
-(when! true 1)
-```
+The implementation freshens recognized binder contexts including `var`, `fn`,
+type/protocol/namespace declarations, and pattern binders. Full mark-set
+hygiene and an explicit low-level capture API remain future work.
 
-Alias:
+## 8. Choosing a mechanism
 
-```gene
-(import [when! : if_true!] from "./control")
-(if_true! true 1)
-```
+Use an explicit fexpr for runtime control of evaluation, lazy arguments,
+runtime DSLs, or code that deliberately evaluates under `CallerEnv`/`Env`
+authority.
 
-Not re-exported by default:
+Use a macro for a small compile-time surface rewrite that should become normal
+Gene before name resolution, checking, tooling, or AOT lowering.
 
-```gene
-# middle.gene
-(import [when!] from "./control")
+Use a core special form only for a primitive compiler semantic. Use a protocol
+message for eager receiver-based behavior. These categories do not fall back
+to one another.
 
-# app.gene
-(import [when!] from "./middle") # error unless middle defines/re-exports it explicitly
-```
+## 9. Current implementation boundaries
 
-### 12.5 Hygiene
-
-```gene
-(macro local! [x]
-  `(do (var tmp 1) (+ tmp %x)))
-
-(var tmp 100)
-[(local! 2) tmp] # => [3 100]
-```
-
-Pattern-binder hygiene should also be tested:
-
-```gene
-(macro m! [x]
-  `(match %x
-     (when [tmp]
-       tmp)))
-
-(var tmp 100)
-[(m! [1]) tmp] # => [1 100]
-```
-
----
-
-## 13. Final recommendation
-
-Gene should use `fn!` as the primary user syntax-extension mechanism and keep `macro` as a restricted compile-time template system.
-
-```text
-fn!   = runtime fexpr / syntax callable / Env-aware DSL tool
-macro = compile-time template expansion for code the compiler must see
-derive = protocol-local compile-time declaration generation
-```
-
-This gives Gene most of the expressive power users expect from macros, while preserving a clearer runtime authority model and avoiding the full complexity of Lisp macros as the default path.
+- Fexprs are named `(fn name! ...)` declarations; `fn!` is rejected.
+- Only `(name! ...)` selects syntax-preserving invocation.
+- `caller_env` and `syntax_call` are implicit and read-only.
+- Held fexprs have runtime type `Fexpr` but ordinary calls reject them.
+- Macro names and message names cannot end in `!`.
+- Mutation APIs use ordinary snake_case names.
+- The web profile rejects fexprs because it has no live evaluator or retained
+  caller syntax.

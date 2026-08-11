@@ -76,12 +76,12 @@ when defined(geneRcStats):
 
     test "borrowed caller environments and snapshots are reclaimed":
       check leakedManaged(
-        "(fn! inspect! [] (eval (quote 1) ^in caller_env)) (inspect!)") == 0
+        "(fn inspect! [] (eval (quote 1) ^in caller_env)) (inspect!)") == 0
       check leakedManaged(
-        "(fn! reject! [] (try [caller_env] catch * nil)) (reject!)") == 0
+        "(fn reject! [] (try [caller_env] catch * nil)) (reject!)") == 0
       check leakedManaged(
         "(var x 1) " &
-        "(fn! snapshot! [] (caller_env ~ snapshot [\"x\"])) " &
+        "(fn snapshot! [] (caller_env ~ snapshot [\"x\"])) " &
         "(snapshot!)") == 0
 
     test "namespace and stream values are reclaimed when they do not capture functions":

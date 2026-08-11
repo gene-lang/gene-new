@@ -676,7 +676,7 @@ the single source of truth; the registry entry, model-facing JSON Schema (both
 wire shapes), argument validation, and risk class all derive from it:
 
 ```gene
-(register_tool! (Tool
+(register_tool (Tool
   ^name "read_file"
   ^description "Read a UTF-8 text file inside the workspace."
   ^risk "read"
@@ -2121,8 +2121,8 @@ pseudocode.
   (var effort (reasoning_effort ~ get))
   (if (!= effort "default")
     (if (== api_flavor "chat")
-      (request ~ put! "reasoning_effort" effort)
-      (request ~ put! "reasoning" {^effort effort})))
+      (request ~ put "reasoning_effort" effort)
+      (request ~ put "reasoning" {^effort effort})))
   (transport (stringify request) render_stream))
 
 # Call the model; if it asks for tools, execute them and recur with the model
@@ -2163,7 +2163,7 @@ pseudocode.
           # cannot strand a subprocess in a lazy mapper continuation.
           (var outputs (cell []))
           (for c in calls
-            ((outputs ~ get) ~ push! (run_tool_call c emit))
+            ((outputs ~ get) ~ push (run_tool_call c emit))
             (render $"  · tool ${c/name} ${c/arguments}"))
           (run_turn
             transport
@@ -2183,7 +2183,7 @@ pseudocode.
             (fn [text]
               (render_agent_delta transcript streaming text))
             max_tool_turns
-            emit_event!))
+            emit_event))
 ```
 
 The `emit` sink redacts every nested value at append (§9.2); that sink is the
@@ -2753,7 +2753,7 @@ Choose exact ordering from dogfood pain:
   reject unknown item fields;
 - **Done:** dogfood feedback improvements: structured reader opener contexts,
   immediate `.gene` write/edit parse warnings, bounded edit mismatch excerpts,
-  configurable shell timeouts, `List/push!`, and configurable tool-round
+  configurable shell timeouts, `List/push`, and configurable tool-round
   landing notices;
 - prompt/TUI improvements where the current UI causes friction;
 - **Done:** hierarchical `AGENTS.md` loading for work outside the Gene

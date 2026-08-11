@@ -26,8 +26,8 @@
   (var ty (- (* py ts) (/ view_h 2.0)))
   (var cx (+ cam/0 (* (- tx cam/0) ease)))
   (var cy (+ cam/1 (* (- ty cam/1) ease)))
-  (set! cam/0 ($math/clamp cx 0.0 (- (* w ts) view_w)))
-  (set! cam/1 ($math/clamp cy 0.0 (- (* h ts) view_h))))
+  (set cam/0 ($math/clamp cx 0.0 (- (* w ts) view_w)))
+  (set cam/1 ($math/clamp cy 0.0 (- (* h ts) view_h))))
 
 # How dark the world is at this camera height: 0 at the surface, rising
 # underground. Drives both the sky gradient and the depth overlay.
@@ -65,8 +65,8 @@
         (if_yes (< (* pairs 2.0) cap)
           (var a (* pairs 2.0))
           (var b (+ a 1.0))
-          (set! out/%a last)
-          (set! out/%b run))
+          (set out/%a last)
+          (set out/%b run))
         (set pairs (+ pairs 1.0))
         (set last v)
         (set run 1.0)))
@@ -74,8 +74,8 @@
   (if_yes (< (* pairs 2.0) cap)
     (var a (* pairs 2.0))
     (var b (+ a 1.0))
-    (set! out/%a last)
-    (set! out/%b run))
+    (set out/%a last)
+    (set out/%b run))
   (+ pairs 1.0))
 
 (fn rle_decode [runs : (List F64) pairs : F64
@@ -89,7 +89,7 @@
     (var count runs/%b)
     (var k 0.0)
     (while (&& (< k count) (< at n))
-      (set! tiles/%at value)
+      (set tiles/%at value)
       (set at (+ at 1.0))
       (set k (+ k 1.0)))
     (set p (+ p 1.0))))

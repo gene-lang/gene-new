@@ -472,7 +472,7 @@ suite "net/http server e2e":
         (var out [])
         (var i (- ($binary/size payload) 1))
         (while (>= i 0)
-          (out ~ push! ($binary/get payload i))
+          (out ~ push ($binary/get payload i))
           (set i (- i 1)))
         (ws_send conn ($binary/from_list out))))))
 """)

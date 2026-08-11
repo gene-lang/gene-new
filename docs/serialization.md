@@ -113,7 +113,7 @@ Every value falls into exactly one:
 1. **Data** — scalars and containers of data. Serialized by value (printed),
    deserialized by construction. No environment needed to read back.
 2. **Named definitions** — types, protocols, enums, enum variants, functions
-   (`fn`/`fn!`), namespaces, and (narrowly, §7) module-level named constants.
+   (`Fn`/`Fexpr`), namespaces, and (narrowly, §7) module-level named constants.
    Serialized as **typed references** (§5); resolution is policy-controlled
    (§6). Typed *instances* (§7) also live here: they need their type ref
    resolved.
@@ -128,7 +128,7 @@ Bucket 3, some entries gene-new-specific:
 |---|---|
 | **Capability values** (`Os/Exec`, `$fs/*`, `$net/Connect`, `$ffi/Load`, ...) | Authority must never round-trip through data. A deserialized payload must not be able to mint capabilities (§6). |
 | **Cells and atomic cells** | Identity-equality values (`equality.nim` compares them by identity); a reconstructed cell is a *different* cell, which would silently break the round-trip guarantee and aliasing expectations. Serialize the *contents* explicitly (`(c ~ get)`); see §7 for the opt-in snapshot wrapper in full `write`. |
-| Closures (fns with captured scope), `fn!` values | Captured scopes reference live scope chains; snapshotting them is the fiber-continuation problem, out of scope. Top-level named fns serialize as refs (bucket 2). |
+| Closures (fns with captured scope), `Fexpr` values | Captured scopes reference live scope chains; snapshotting them is the fiber-continuation problem, out of scope. Top-level named fns serialize as refs (bucket 2). |
 | Channels, tasks, actor refs, streams/generators | Live scheduler state. `actor/snapshot` output (a data value) serializes fine; the actor itself does not. |
 | `Env` values | Binding environments are execution state, not data. |
 | Native handles (`db` connections, `CPtr`/`CSlice`, buffers, FFI libraries, HTTP servers) | Process-bound resources. Types owning them can opt into reconstruction hooks (§7). |

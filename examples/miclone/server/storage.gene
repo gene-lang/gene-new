@@ -43,8 +43,8 @@
   ^props {^db Any
           ^root Str}
   (ctor [db : Any root : Str]
-    (set! self/db db)
-    (set! self/root root)))
+    (set self/db db)
+    (set self/root root)))
 
 # --- opening -----------------------------------------------------------------
 

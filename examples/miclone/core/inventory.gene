@@ -75,13 +75,13 @@
   (var at (* slot cells_per_slot))
   (if (<= count 0.0)
     (then
-      (inv ~ set! at 0.0)
-      (inv ~ set! (+ at cell_count) 0.0)
-      (inv ~ set! (+ at cell_wear) 0.0))
+      (inv ~ set at 0.0)
+      (inv ~ set (+ at cell_count) 0.0)
+      (inv ~ set (+ at cell_wear) 0.0))
     (else
-      (inv ~ set! at item)
-      (inv ~ set! (+ at cell_count) count)
-      (inv ~ set! (+ at cell_wear) wear))))
+      (inv ~ set at item)
+      (inv ~ set (+ at cell_count) count)
+      (inv ~ set (+ at cell_wear) wear))))
 
 (fn set_slot [inv : (Buffer F64) slot : F64 item : F64 count : F64] : Nil
   (set_slot_worn inv slot item count 0.0))

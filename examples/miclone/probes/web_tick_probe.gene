@@ -54,7 +54,7 @@
   (var block_l ($buffer F32 block_nodes))
   (var reg (new_wire_registry))
   # A delta is four numbers, so the log is one flat buffer and a count. The
-  # profile has no `set!` on a `(List T)`, and a buffer is the shape the rest of
+  # profile has no `set` on a `(List T)`, and a buffer is the shape the rest of
   # this engine already logs into.
   (var dlog ($buffer F64 (* max_deltas 4.0)))
   (var dn 0.0)
@@ -82,10 +82,10 @@
     (if_yes (== kind msg_node_delta)
       (decode_node_delta b c delta)
       (if_yes (< dn max_deltas)
-        (dlog ~ set! (* dn 4.0) (delta ~ get delta_x))
-        (dlog ~ set! (+ (* dn 4.0) 1.0) (delta ~ get delta_y))
-        (dlog ~ set! (+ (* dn 4.0) 2.0) (delta ~ get delta_z))
-        (dlog ~ set! (+ (* dn 4.0) 3.0) (delta ~ get delta_id))
+        (dlog ~ set (* dn 4.0) (delta ~ get delta_x))
+        (dlog ~ set (+ (* dn 4.0) 1.0) (delta ~ get delta_y))
+        (dlog ~ set (+ (* dn 4.0) 2.0) (delta ~ get delta_z))
+        (dlog ~ set (+ (* dn 4.0) 3.0) (delta ~ get delta_id))
         (set dn (+ dn 1.0))))))
 
   (await ($time/sleep 900.0))

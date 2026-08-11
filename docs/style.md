@@ -108,7 +108,7 @@ spaces:
   (var output [])
   (for item in items
     (if_yes (< output/~size limit)
-      (output ~ push! item)))
+      (output ~ push item)))
   output)
 ```
 
@@ -163,7 +163,7 @@ Use receiver syntax when it reads as an operation on the receiver, and slash
 paths for static navigation:
 
 ```gene
-(items ~ push! value)
+(items ~ push value)
 session/user/name
 session/items/-1
 ```
@@ -192,11 +192,11 @@ it is why the shortcut cannot be widened to carry arguments.
 
 ```gene
 # Right
-(buf ~ set! i v)
-(items ~ push! value)
+(buf ~ set i v)
+(items ~ push value)
 
-# Wrong — reads as "send `set!` with no arguments, then call the result"
-(buf/~set! i v)
+# Wrong — reads as "send `set` with no arguments, then call the result"
+(buf/~set i v)
 ```
 
 Chains read left to right and may mix navigation with sends:
@@ -214,14 +214,14 @@ level. Do not vertically align arguments with arbitrary spaces.
 Use quasiquote and unquote sugar in macros and data templates:
 
 ```gene
-(macro unless! [condition, body...]
+(macro unless [condition, body...]
   `(if_not %condition %body...))
 ```
 
 Use commas consistently in parameter, binding, and pattern vectors. The
 formatter treats commas as separators, not general expression punctuation.
-Names use `snake_case`; a trailing `!` identifies visible mutation or syntax
-behavior, and a trailing `?` identifies predicates.
+Names use `snake_case`; a trailing `!` is reserved for named fexpr calls, and
+a trailing `?` identifies predicates.
 
 ## Comments and formatter boundaries
 

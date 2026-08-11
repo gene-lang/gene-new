@@ -609,10 +609,10 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     writeFile(fixture, """
 (import [active_application make_application application_spawn_agent
          application_attach_worker_pane
-         application_begin_worker_operation!
-         application_finish_agent_operation!]
+         application_begin_worker_operation
+         application_finish_agent_operation]
   from "./core.gene")
-(import [show_surface_help! open_shell_pane open_repl_pane
+(import [show_surface_help open_shell_pane open_repl_pane
          open_output_pane open_log_tail_pane open_stats_pane
          open_file_view_pane]
   from "./tui.gene")
@@ -623,16 +623,16 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (var events ($cell []))
 (fn sink [type, props]
   (var event {^v (+ ((events ~ get) ~ size) 1) ^type type})
-  (for [key value] in props (event ~ put! key value))
-  ((events ~ get) ~ push! event)
+  (for [key value] in props (event ~ put key value))
+  ((events ~ get) ~ push event)
   event)
 (var app (make_application items transcript memory sink))
 (active_application ~ set app)
 (var child
   (application_spawn_agent app "reviewer" "review" ($cell []) ($cell "ready\n")))
 (application_attach_worker_pane app child child/id "detach")
-(application_begin_worker_operation! app child nil "agent_turn")
-(application_finish_agent_operation!
+(application_begin_worker_operation app child nil "agent_turn")
+(application_finish_agent_operation
   app child "completed" "ready" "" "" nil)
 (open_shell_pane)
 (open_repl_pane items transcript memory)
@@ -643,13 +643,13 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (var before_text (transcript ~ get))
 (var before_items (items ~ get))
 (var before_events ((events ~ get) ~ size))
-(var full_help (show_surface_help! app transcript "/help"))
-(var alias_help (show_surface_help! app transcript "/?"))
+(var full_help (show_surface_help app transcript "/help"))
+(var alias_help (show_surface_help app transcript "/?"))
 (var all_routes true)
 (for pane in (app/local_surface/panes ~ get)
   (app/local_surface/focused_pane ~ set pane/id)
   (app/local_surface/maximized_pane ~ set pane/id)
-  (show_surface_help! app transcript "/? input")
+  (show_surface_help app transcript "/? input")
   (if (|| (!= (app/local_surface/focused_pane ~ get) nil)
           (!= (app/local_surface/maximized_pane ~ get) nil))
     (set all_routes false)))
@@ -782,8 +782,8 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [make_application application_create_worker_from_config
-         application_follow_output!
-         application_append_worker_output!]
+         application_follow_output
+         application_append_worker_output]
   from "./core.gene")
 (import $str [contains?])
 (var app
@@ -791,10 +791,10 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     (fn [_type, _props] nil)))
 (var one (application_create_worker_from_config app "output" {^title "one"}))
 (var two (application_create_worker_from_config app "output" {^title "two"}))
-(var linked (application_follow_output! app two one))
-(application_append_worker_output! app one "evidence\n" "test")
-(var cycle (application_follow_output! app one two))
-(var self (application_follow_output! app two two))
+(var linked (application_follow_output app two one))
+(application_append_worker_output app one "evidence\n" "test")
+(var cycle (application_follow_output app one two))
+(var self (application_follow_output app two two))
 ($println $"linked=${linked/ok} copied=${(contains? (two/output ~ get) \"evidence\")} cycle=${cycle/error} self=${self/error}")
 """)
     let followed = runGene(["run", fixture])
@@ -839,8 +839,8 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (var sink
   (fn [type, props]
     (var event {^type type})
-    (for [key value] in props (event ~ put! key value))
-    ((events ~ get) ~ push! event)
+    (for [key value] in props (event ~ put key value))
+    ((events ~ get) ~ push event)
     event))
 (var items ($cell []))
 (var transcript ($cell ""))
@@ -1191,7 +1191,7 @@ catch {^message message} (set duplicate message))
 (import $json [stringify])
 (var events ($cell []))
 (fn emit [type props]
-  ((events ~ get) ~ push! {^type type ^props props}))
+  ((events ~ get) ~ push {^type type ^props props}))
 (var app (make_application_with_task ($cell []) ($cell "") ($cell []) emit
                                       ($cell nil)))
 (var context {^app app ^agent app/main_agent ^pane nil})
@@ -1280,21 +1280,21 @@ catch {^message message} (set duplicate message))
     writeFile(fixture, """
 (import $json [stringify])
 (import [make_application_with_task application_spawn_agent
-         application_enqueue_supervisor_result! application_snapshot
-         restore_application_snapshot!
-         application_drain_supervisor_inbox worker_history_push!]
+         application_enqueue_supervisor_result application_snapshot
+         restore_application_snapshot
+         application_drain_supervisor_inbox worker_history_push]
   from "./core.gene")
 (var restored_events ($cell []))
 (fn sink [type, props]
-  ((restored_events ~ get) ~ push! type)
+  ((restored_events ~ get) ~ push type)
   {^type type ^^props})
 (var first
   (make_application_with_task ($cell []) ($cell "") ($cell []) sink ($cell nil)))
 (var agent
   (application_spawn_agent first "reviewer" "review reader" ($cell [])
                            ($cell "")))
-(application_enqueue_supervisor_result! first agent "reader is sound")
-(worker_history_push! first/main_agent "remote prompt" "http" nil)
+(application_enqueue_supervisor_result first agent "reader is sound")
+(worker_history_push first/main_agent "remote prompt" "http" nil)
 (first/main_agent/current_operation ~ set
   {^task_id "t-before-restart" ^kind "agent_turn"})
 (first/main_agent/input_reserved ~ set true)
@@ -1302,7 +1302,7 @@ catch {^message message} (set duplicate message))
 (var saved (application_snapshot first))
 (var restored
   (make_application_with_task ($cell []) ($cell "") ($cell []) sink ($cell nil)))
-(restore_application_snapshot! restored saved)
+(restore_application_snapshot restored saved)
 (var queued ((restored/supervisor_inbox ~ get) ~ size))
 (application_drain_supervisor_inbox restored)
 ($println $"queued=${queued} empty=${((restored/supervisor_inbox ~ get) ~ size)} status=${(restored/main_agent/status ~ get)} reserved=${(restored/main_agent/input_reserved ~ get)} operation=${(restored/main_agent/current_operation ~ get)} events=${(stringify (restored_events ~ get))} history=${(stringify (restored/main_agent/history ~ get))} items=${(stringify (restored/main_agent/items ~ get))}")
@@ -1326,12 +1326,12 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [active_application make_application application_spawn_agent
-         application_begin_worker_operation!
-         application_finish_agent_operation!
-         application_inspect_agent_result!
-         application_incorporate_agent_result!
-         application_update_progress! application_snapshot
-         restore_application_snapshot! application_find_agent
+         application_begin_worker_operation
+         application_finish_agent_operation
+         application_inspect_agent_result
+         application_incorporate_agent_result
+         application_update_progress application_snapshot
+         restore_application_snapshot application_find_agent
          application_stop_agent agent_result_report
          project_progress_report event_dropped_before]
   from "./core.gene")
@@ -1341,8 +1341,8 @@ catch {^message message} (set duplicate message))
 (fn sink [type, props]
   (var event {^v (next_v ~ get) ^type type})
   (next_v ~ set (+ (next_v ~ get) 1))
-  (for [key value] in props (event ~ put! key value))
-  ((events ~ get) ~ push! event)
+  (for [key value] in props (event ~ put key value))
+  ((events ~ get) ~ push event)
   event)
 (var main_items ($cell []))
 (var main_transcript ($cell ""))
@@ -1351,9 +1351,9 @@ catch {^message message} (set duplicate message))
 (var agent
   (application_spawn_agent app "reviewer" "review reader"
     ($cell []) ($cell "ready\n")))
-(application_begin_worker_operation! app agent nil "agent_turn")
+(application_begin_worker_operation app agent nil "agent_turn")
 (var completed
-  (application_finish_agent_operation!
+  (application_finish_agent_operation
     app agent "completed" "reader is sound" "" "" nil))
 (var linked false)
 (for event in (events ~ get)
@@ -1362,26 +1362,26 @@ catch {^message message} (set duplicate message))
       (if (&& (== source/v event/source_v)
               (== source/type "worker_operation_finished"))
         (set linked true)))))
-(application_inspect_agent_result! app agent)
+(application_inspect_agent_result app agent)
 (var inspected (agent/result ~ get))
 (var before ((app/main_agent/items ~ get) ~ size))
-(application_incorporate_agent_result! app agent)
+(application_incorporate_agent_result app agent)
 (var once ((app/main_agent/items ~ get) ~ size))
-(application_incorporate_agent_result! app agent)
+(application_incorporate_agent_result app agent)
 (var twice ((app/main_agent/items ~ get) ~ size))
-(application_begin_worker_operation! app agent nil "agent_turn")
+(application_begin_worker_operation app agent nil "agent_turn")
 (var failed
-  (application_finish_agent_operation!
+  (application_finish_agent_operation
     app agent "failed" "" "TypeError" "bad tool value" nil))
 (var stopped_agent
   (application_spawn_agent app "stop-test" "stop active agent"
     ($cell []) ($cell "ready\n")))
-(application_begin_worker_operation! app stopped_agent nil "agent_turn")
+(application_begin_worker_operation app stopped_agent nil "agent_turn")
 (var stopped (application_stop_agent app stopped_agent))
 (var stopped_result (stopped_agent/result ~ get))
 # A cancelled Task's later ensure must reuse the $terminal result rather than
 # emitting a second agent boundary.
-(application_finish_agent_operation!
+(application_finish_agent_operation
   app stopped_agent "cancelled" "" "cancelled" "late cleanup" nil)
 (var finished_count 0)
 (var stopped_linked false)
@@ -1395,12 +1395,12 @@ catch {^message message} (set duplicate message))
               (== source/task_id event/task_id)
               (== source/type "worker_operation_finished"))
         (set stopped_linked true)))))
-(application_update_progress! app "ship C3" "verifying" "active"
+(application_update_progress app "ship C3" "verifying" "active"
   "checking results" nil nil [agent/id] [] [failed/finished_v])
 (var saved (application_snapshot app))
 (var restored
   (make_application ($cell []) ($cell "") ($cell []) sink))
-(restore_application_snapshot! restored saved)
+(restore_application_snapshot restored saved)
 (event_dropped_before ~ set 1000)
 (var restored_agent (application_find_agent restored agent/id))
 (var restored_result (restored_agent/result ~ get))
@@ -1431,8 +1431,8 @@ catch {^message message} (set duplicate message))
 (import [active_application make_application application_spawn_agent
          application_attach_worker_pane
          application_attach_worker_pane_as application_snapshot
-         surface_snapshot restore_application_snapshot!
-         restore_surface_snapshot!]
+         surface_snapshot restore_application_snapshot
+         restore_surface_snapshot]
   from "./core.gene")
 (import [open_shell_pane open_repl_pane open_output_pane
          open_log_tail_pane open_stats_pane open_file_view_pane]
@@ -1455,42 +1455,42 @@ catch {^message message} (set duplicate message))
 (open_file_view_pane "examples/ai_agent/docs/design.md")
 (var saved (application_snapshot first))
 (var saved_surface (surface_snapshot first))
-(saved/main_worker ~ put! "result" {^outcome 7})
-(saved/agents ~ push! {^id "bad-agent" ^title 7})
-(saved/workers ~ push!
+(saved/main_worker ~ put "result" {^outcome 7})
+(saved/agents ~ push {^id "bad-agent" ^title 7})
+(saved/workers ~ push
   {^id "bad-worker" ^kind "unknown" ^title "bad"})
 (var bad_output_worker (parse (stringify saved/workers/0)))
-(bad_output_worker ~ put! "id" "bad-output")
-(bad_output_worker ~ put! "output" 7)
-(saved/workers ~ push! bad_output_worker)
-(saved_surface/panes ~ push!
+(bad_output_worker ~ put "id" "bad-output")
+(bad_output_worker ~ put "output" 7)
+(saved/workers ~ push bad_output_worker)
+(saved_surface/panes ~ push
   {^id 99 ^worker_id "missing" ^kind "output"})
 (var bad_scroll_pane (parse (stringify saved_surface/panes/0)))
-(bad_scroll_pane ~ put! "id" 98)
-(bad_scroll_pane ~ put! "scroll" "bad")
-(saved_surface/panes ~ push! bad_scroll_pane)
-(saved ~ put! "progress" {^objective 7})
-(saved_surface/surface ~ put! "next_pane_id" "bad-counter")
+(bad_scroll_pane ~ put "id" 98)
+(bad_scroll_pane ~ put "scroll" "bad")
+(saved_surface/panes ~ push bad_scroll_pane)
+(saved ~ put "progress" {^objective 7})
+(saved_surface/surface ~ put "next_pane_id" "bad-counter")
 (var rejected ($cell []))
 (var next_v ($cell 1))
 (fn sink [type, props]
   (var event {^v (next_v ~ get) ^type type})
   (next_v ~ set (+ (next_v ~ get) 1))
-  (for [key value] in props (event ~ put! key value))
+  (for [key value] in props (event ~ put key value))
   (if (== type "restore_record_rejected")
-    ((rejected ~ get) ~ push!
+    ((rejected ~ get) ~ push
       $"${props/record_kind}:${props/record_id}:${props/error_text}"))
   event)
 (var restored
   (make_application ($cell []) ($cell "") ($cell []) sink))
-(restore_application_snapshot! restored saved)
-(restore_surface_snapshot! restored saved_surface)
+(restore_application_snapshot restored saved)
+(restore_surface_snapshot restored saved_surface)
 (var kinds [])
 (var titles [])
 (for worker in (restored/workers ~ get)
-  (if (!= worker/id "main") (kinds ~ push! worker/kind)))
+  (if (!= worker/id "main") (kinds ~ push worker/kind)))
 (for pane in (restored/local_surface/panes ~ get)
-  (titles ~ push! pane/title))
+  (titles ~ push pane/title))
 ($println $"main=${(restored/main_agent/transcript ~ get)} agents=${((restored/agents ~ get) ~ size)} panes=${((restored/local_surface/panes ~ get) ~ size)} kinds=${(stringify kinds)} titles=${(stringify titles)} rejected=${(stringify (rejected ~ get))}")
 """)
     let ran = runGene(["run", fixture])
@@ -1514,9 +1514,9 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [active_application make_application_with_task
-         application_spawn_agent application_begin_worker_operation!
+         application_spawn_agent application_begin_worker_operation
          application_cancel_worker
-         application_finish_worker_operation!]
+         application_finish_worker_operation]
   from "./core.gene")
 (import [open_shell_pane run_shell_pane_command_unchecked]
   from "./tui.gene")
@@ -1527,13 +1527,13 @@ catch {^message message} (set duplicate message))
 (var agent
   (application_spawn_agent app "reviewer" "review" ($cell []) ($cell "")))
 (var agent_task (spawn ($sleep 500)))
-(application_begin_worker_operation! app agent agent_task "agent_turn")
+(application_begin_worker_operation app agent agent_task "agent_turn")
 (var shell (open_shell_pane))
 (var result (run_shell_pane_command_unchecked shell "printf shell-ready"))
 ($println $"agent_busy=${(!= (agent/current_task ~ get) nil)} result=${result}")
 (application_cancel_worker app agent)
 ($sleep 25)
-(application_finish_worker_operation! app agent "cancelled")
+(application_finish_worker_operation app agent "cancelled")
 """)
     let ran = runGene(["run", fixture])
     if ran.exitCode != 0: checkpoint ran.output
@@ -1551,13 +1551,13 @@ catch {^message message} (set duplicate message))
 (import [active_application make_application_with_task
          application_emit]
   from "./core.gene")
-(import [open_log_tail_pane handle_surface_escape!]
+(import [open_log_tail_pane handle_surface_escape]
   from "./tui.gene")
 (var app
   (make_application_with_task ($cell []) ($cell "") ($cell [])
     (fn [type, props]
       (var event {^type type ^v 1 ^turn 1})
-      (for [key value] in props (event ~ put! key value))
+      (for [key value] in props (event ~ put key value))
       event)
     ($cell nil)))
 (active_application ~ set app)
@@ -1566,7 +1566,7 @@ catch {^message message} (set duplicate message))
 (application_emit app "check"
   {^command "nimble test" ^status 0 ^verified true})
 (var editor {^values ($cell [])})
-(var restored (handle_surface_escape! editor))
+(var restored (handle_surface_escape editor))
 ($println $"followed=${(contains? (pane/output ~ get) \"nimble test\")} restored=${restored} max=${(app/local_surface/maximized_pane ~ get)}")
 """)
     let ran = runGene(["run", fixture])
@@ -1582,7 +1582,7 @@ catch {^message message} (set duplicate message))
     writeFile(fixture, """
 (import [make_application_with_task application_open_pane]
   from "./core.gene")
-(import [application_pane_views application_scroll_target!
+(import [application_pane_views application_scroll_target
          application_pane_page_rows]
   from "./tui.gene")
 (var app
@@ -1592,13 +1592,13 @@ catch {^message message} (set duplicate message))
   (application_open_pane app "output" nil "checks" ($cell "ready\n") nil
                          "detach"))
 (var main_scroll ($cell 0))
-(application_scroll_target! app main_scroll 1 3)
+(application_scroll_target app main_scroll 1 3)
 (var views (application_pane_views app))
 ($println $"focused=${(app/local_surface/focused_pane ~ get)} pane=${views/0/scroll} main=${(main_scroll ~ get)} title=${views/0/title}")
 ($println $"page=${(application_pane_page_rows app 18)}")
-(application_scroll_target! app main_scroll -1 3)
+(application_scroll_target app main_scroll -1 3)
 (app/local_surface/focused_pane ~ set nil)
-(application_scroll_target! app main_scroll 1 4)
+(application_scroll_target app main_scroll 1 4)
 ($println $"pane=${(pane/scroll ~ get)} main=${(main_scroll ~ get)}")
 """)
     let ran = runGene(["run", fixture])
@@ -1685,7 +1685,7 @@ catch {^message message} (set duplicate message))
 (preflight_tool_mutation "run_shell" checked nil)
 (var preflight_valid (mutation_preflight_valid? "run_shell" checked))
 ($println $"preflight=${preflight_valid}")
-(checked ~ put! "command" "echo changed")
+(checked ~ put "command" "echo changed")
 (var changed_valid (mutation_preflight_valid? "run_shell" checked))
 ($println $"changed=${changed_valid}")
 """)
@@ -1816,7 +1816,7 @@ catch {^message message} (set duplicate message))
 (import [active_application make_application_with_task
          application_open_pane]
   from "./core.gene")
-(import [handle_surface_escape!]
+(import [handle_surface_escape]
   from "./tui.gene")
 (var app
   (make_application_with_task ($cell []) ($cell "") ($cell [])
@@ -1825,10 +1825,10 @@ catch {^message message} (set duplicate message))
 (application_open_pane app "output" nil "checks" ($cell "") nil "detach")
 (app/local_surface/maximized_pane ~ set 1)
 (var editor {^values ($cell ["x"])})
-($println $"max=${(handle_surface_escape! editor)} focus=${(app/local_surface/focused_pane ~ get)} zoom=${(app/local_surface/maximized_pane ~ get)}")
-($println $"draft=${(handle_surface_escape! editor)} focus=${(app/local_surface/focused_pane ~ get)}")
+($println $"max=${(handle_surface_escape editor)} focus=${(app/local_surface/focused_pane ~ get)} zoom=${(app/local_surface/maximized_pane ~ get)}")
+($println $"draft=${(handle_surface_escape editor)} focus=${(app/local_surface/focused_pane ~ get)}")
 (editor/values ~ set [])
-($println $"empty=${(handle_surface_escape! editor)} focus=${(app/local_surface/focused_pane ~ get)}")
+($println $"empty=${(handle_surface_escape editor)} focus=${(app/local_surface/focused_pane ~ get)}")
 """)
     let ran = runGene(["run", fixture])
     if ran.exitCode != 0: checkpoint ran.output
@@ -1846,9 +1846,9 @@ catch {^message message} (set duplicate message))
 (import [active_application make_application_with_task
          application_open_pane application_shutdown]
   from "./core.gene")
-(import [application_cycle_visible_pane! surface_route_draft
-         surface_route_history editor_sync_focused_route!
-         editor_set_text! editor_text]
+(import [application_cycle_visible_pane surface_route_draft
+         surface_route_history editor_sync_focused_route
+         editor_set_text editor_text]
   from "./tui.gene")
 (var app
   (make_application_with_task ($cell []) ($cell "") ($cell [])
@@ -1865,18 +1865,18 @@ catch {^message message} (set duplicate message))
    ^history_index ($cell ((first_history ~ get) ~ size))
    ^draft first_draft ^paste ($cell false) ^terminal_pane nil
    ^terminal_direct ($cell false) ^overlay ($cell nil)})
-(application_cycle_visible_pane! app 1)
-(editor_sync_focused_route! editor)
+(application_cycle_visible_pane app 1)
+(editor_sync_focused_route editor)
 ($println $"to_two focus=${(app/local_surface/focused_pane ~ get)} first=${(first_draft ~ get)} current=${(editor_text (editor/values ~ get))}")
-(editor_set_text! editor "edited-two")
+(editor_set_text editor "edited-two")
 (var second_draft editor/draft)
-(application_cycle_visible_pane! app 1)
-(editor_sync_focused_route! editor)
+(application_cycle_visible_pane app 1)
+(editor_sync_focused_route editor)
 ($println $"to_main focus=${(app/local_surface/focused_pane ~ get)} second=${(second_draft ~ get)} current=${(editor_text (editor/values ~ get))}")
-(editor_set_text! editor "edited-main")
+(editor_set_text editor "edited-main")
 (var main_draft editor/draft)
-(application_cycle_visible_pane! app -1)
-(editor_sync_focused_route! editor)
+(application_cycle_visible_pane app -1)
+(editor_sync_focused_route editor)
 ($println $"back_two focus=${(app/local_surface/focused_pane ~ get)} main=${(main_draft ~ get)} current=${(editor_text (editor/values ~ get))}")
 (application_shutdown app)
 """)
@@ -2106,8 +2106,8 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [make_application_with_task application_new_worker
-         application_append_worker_output!
-         application_set_projection_output!]
+         application_append_worker_output
+         application_set_projection_output]
   from "./core.gene")
 (import $str [byte_size])
 (var app
@@ -2115,13 +2115,13 @@ catch {^message message} (set duplicate message))
     (fn [_type, _props] nil) ($cell nil)))
 (var worker
   (application_new_worker app "output" "bounded" ($cell "") nil))
-(application_append_worker_output! app worker
+(application_append_worker_output app worker
   "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" "test")
-(application_append_worker_output! app worker
+(application_append_worker_output app worker
   "more-output-abcdefghijklmnopqrstuvwxyz" "test")
 ($println (worker/output ~ get))
 ($println $"bytes=${(byte_size (worker/output ~ get))} dropped=${(worker/dropped_bytes ~ get)} before=${(worker/dropped_before ~ get)}")
-(application_set_projection_output! app worker "fresh" "stats")
+(application_set_projection_output app worker "fresh" "stats")
 ($println $"replacement=${(worker/output ~ get)} dropped=${(worker/dropped_bytes ~ get)} before=${(worker/dropped_before ~ get)}")
 """)
     let ran = execCmdEx(
@@ -2183,8 +2183,8 @@ catch {^message message} (set duplicate message))
 (var emitted ($cell []))
 (fn sink [type, props]
   (var event {^v (+ ((emitted ~ get) ~ size) 1) ^type type})
-  (for [key value] in props (event ~ put! key value))
-  ((emitted ~ get) ~ push! event)
+  (for [key value] in props (event ~ put key value))
+  ((emitted ~ get) ~ push event)
   event)
 (var app
   (make_application_with_task ($cell []) ($cell "") ($cell []) sink ($cell nil)))
@@ -2344,7 +2344,7 @@ catch {^message message} (set duplicate message))
 (var dropped ($cell []))
 (fn emit [type, props]
   (if (== type "worker_retention_dropped")
-    ((dropped ~ get) ~ push! props/worker_id) nil))
+    ((dropped ~ get) ~ push props/worker_id) nil))
 (var app
   (make_headless_application_with_task
     ($cell []) ($cell "") ($cell []) emit ($cell nil)))
@@ -2378,7 +2378,7 @@ catch {^message message} (set duplicate message))
 (import $json [stringify])
 (import $str [byte_size join])
 (var pieces [])
-(repeat i in 2400 (pieces ~ push! "x"))
+(repeat i in 2400 (pieces ~ push "x"))
 (var event
   {^v 7 ^turn 2 ^type "worker_output" ^worker_id "w9" ^task_id "t3"
    ^text (join pieces "")})
@@ -2843,7 +2843,7 @@ catch {^message message} (set duplicate message))
 (import $json [parse stringify])
 (import [application_call_worker application_find_agent application_snapshot
          call_model make_application_with_task application_spawn_agent
-         restore_application_snapshot!]
+         restore_application_snapshot]
   from "./core.gene")
 (fn sink [_type, _props] nil)
 (var first
@@ -2865,12 +2865,12 @@ catch {^message message} (set duplicate message))
 (var saved (application_snapshot first))
 (var restored
   (make_application_with_task ($cell []) ($cell "") ($cell []) sink ($cell nil)))
-(restore_application_snapshot! restored saved)
+(restore_application_snapshot restored saved)
 (var restored_child (application_find_agent restored child/id))
 (var requested [])
 (fn transport [body, _render_stream]
   (var request (parse body))
-  (requested ~ push! request/model)
+  (requested ~ push request/model)
   {^output []})
 (call_model transport [] (fn [_text] nil)
   {^app restored ^agent restored/main_agent})
@@ -2952,11 +2952,11 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import [init_agent_state make_application active_application
-         application_emit emit_event!]
+         application_emit emit_event]
   from "./core.gene")
 (init_agent_state)
 (var app (make_application ($cell []) ($cell "tool checkpoint\n")
-                           ($cell []) emit_event!))
+                           ($cell []) emit_event))
 (active_application ~ set app)
 (application_emit app "tool_call"
   {^worker_id "main" ^agent_id "main" ^id "call-1"
@@ -3106,17 +3106,17 @@ catch {^message message} (set duplicate message))
     writeFile(fixture, """
 (import $os [get_env Env])
 (import [Tool HandlerRef Operation EmptyArgs OperationAck
-         register_tool! register_worker_operation!
+         register_tool register_worker_operation
          worker_operation_for init_agent_state
-         restore_dynamic_registrations! save_agent_state
+         restore_dynamic_registrations save_agent_state
          close_agent_state find_tool agent_events]
   from "./core.gene")
 (var mode (get_env Env "HANDLER_MODE"))
 (var exact (HandlerRef ^module "test/workflows" ^path "run"
                        ^version "sha256:exact"))
-(register_tool! (Tool ^name "durable_check" ^description "durable"
+(register_tool (Tool ^name "durable_check" ^description "durable"
   ^risk "read" ^params [] ^handler (fn [_args] "ok") ^handler_ref exact))
-(register_worker_operation! "output"
+(register_worker_operation "output"
   (Operation ^name "durable_op" ^summary "durable" ^usage "durable_op"
     ^args EmptyArgs ^result OperationAck ^errors [] ^effects ["observe"]
     ^audience ["local_user"] ^admission "none" ^audit "none"
@@ -3127,9 +3127,9 @@ catch {^message message} (set duplicate message))
     ^parse_cli (fn [_text] {}) ^handler_ref exact))
 (if (== mode "write")
   (do
-    (register_tool! (Tool ^name "ephemeral_check" ^description "ephemeral"
+    (register_tool (Tool ^name "ephemeral_check" ^description "ephemeral"
       ^risk "read" ^params [] ^handler (fn [_args] "live")))
-    (register_worker_operation! "output"
+    (register_worker_operation "output"
       (Operation ^name "ephemeral_op" ^summary "ephemeral"
         ^usage "ephemeral_op" ^args EmptyArgs ^result OperationAck ^errors []
         ^effects ["observe"] ^audience ["local_user"]
@@ -3143,7 +3143,7 @@ catch {^message message} (set duplicate message))
     (close_agent_state))
   (do
     (init_agent_state)
-    (restore_dynamic_registrations! nil)
+    (restore_dynamic_registrations nil)
     (var ephemeral_tool (find_tool "ephemeral_check"))
     (var durable_tool (find_tool "durable_check"))
     (var ephemeral_op (worker_operation_for "output" "ephemeral_op"))
@@ -3178,11 +3178,11 @@ catch {^message message} (set duplicate message))
       if fileExists(fixture): removeFile(fixture)
     writeFile(fixture, """
 (import $os [get_env Env])
-(import [init_agent_state start_workspace_heartbeat!
+(import [init_agent_state start_workspace_heartbeat
          close_agent_state]
   from "./core.gene")
 (init_agent_state)
-(start_workspace_heartbeat!)
+(start_workspace_heartbeat)
 (if (== (get_env Env "OWNER_MODE") "hold") ($sleep 10000))
 (close_agent_state)
 """)
@@ -4155,7 +4155,7 @@ catch {^message message}
       for path in [writer, reader]:
         if fileExists(path): removeFile(path)
     writeFile(writer, """
-(import [compact_context init_agent_state save_agent_state emit_event!]
+(import [compact_context init_agent_state save_agent_state emit_event]
         from "TUI_PATH")
 (var items
   [{^role "system" ^content "instructions + remembered decision: keep API v2"}
@@ -4170,7 +4170,7 @@ catch {^message message}
    {^type "message" ^role "assistant"
     ^content [{^type "output_text" ^text "recent-answer"}]}])
 (init_agent_state)
-(var compacted (compact_context items emit_event!))
+(var compacted (compact_context items emit_event))
 (save_agent_state compacted "saved" ["keep API v2"])
 ($println "wrote")
 """.replace("TUI_PATH", tui))
@@ -4257,7 +4257,7 @@ catch {^message message}
     (set markers (+ markers 1))))
 (var bodies [])
 (fn transport [body, _render_stream]
-  (bodies ~ push! body)
+  (bodies ~ push body)
   {^output []})
 (call_model transport compacted (fn [_text] nil))
 (var body bodies/0)
@@ -5135,13 +5135,13 @@ catch {^message message}
       buildGeneCli()
       let fixture = writeCliProgram("curses_log_suppression.gene", """
 (import $curses [open close draw])
-(import $log [new_logger warn!])
+(import $log [new_logger log_warn])
 (var logger (new_logger "app/curses_test"))
 (var screen (open))
 (try
   (do
     (draw screen ^output "screen active" ^output_scroll 0)
-    (warn! logger "hidden while screen owns terminal")
+    (log_warn logger "hidden while screen owns terminal")
     (close screen)
     ($println "CURSES-LOG-SUPPRESSION:ok"))
   ensure
@@ -6288,9 +6288,9 @@ console.log(JSON.stringify({
     writeFile(fixture, """
 (import [make_application application_new_worker
          application_attach_worker_pane_as application_close_pane
-         surface_emit! OutputController ShellController]
+         surface_emit OutputController ShellController]
   from "./core.gene")
-(import [application_focus_pane!] from "./tui.gene")
+(import [application_focus_pane] from "./tui.gene")
 (import $json [stringify])
 (var app (make_application ($cell []) ($cell "") ($cell []) (fn [_t, _p] nil)))
 (var surface app/local_surface)
@@ -6306,25 +6306,25 @@ console.log(JSON.stringify({
 (var w4 (application_new_worker app "output" "fourth" ($cell "")
           (OutputController ^source "test" ^following ($cell []))))
 (var p4 (application_attach_worker_pane_as app w4 nil "detach" nil))
-(application_focus_pane! app 1)
+(application_focus_pane app 1)
 (surface/maximized_pane ~ set 2)
 (application_close_pane app 2)
-(application_focus_pane! app 0)
+(application_focus_pane app 0)
 (fn strip_surface [event]
   (var out {})
   (for [key value] in event
-    (if (!= $"${key}" "surface_id") (out ~ put! key value)))
+    (if (!= $"${key}" "surface_id") (out ~ put key value)))
   out)
 (var lifecycle [])
 (for event in (surface/events ~ get)
-  (lifecycle ~ push! (strip_surface event)))
-(repeat i in 300 (surface_emit! surface "note" {^i i}))
+  (lifecycle ~ push (strip_surface event)))
+(repeat i in 300 (surface_emit surface "note" {^i i}))
 (var ring (surface/events ~ get))
 (var last_v ($cell 0))
 (for event in ring (last_v ~ set event/v))
 (var panes [])
 (for pane in (surface/panes ~ get)
-  (panes ~ push!
+  (panes ~ push
     {^id pane/id ^worker_id pane/worker_id ^kind pane/kind
      ^title pane/title ^hidden (pane/hidden ~ get)}))
 ($println (stringify
@@ -7764,14 +7764,14 @@ suite "cli — gene parse/fmt/compile":
 
   test "compile loads macro artifacts without running dependency top levels":
     discard writeCliProgram("compile_macro_dep.gene",
-      "(macro twice! [x] `(+ %x %x))\n" &
+      "(macro twice [x] `(+ %x %x))\n" &
       "(panic \"dependency runtime should not run\")\n")
     let path = writeCliProgram("compile_macro_user.gene",
-      "(import [twice!] from \"./compile_macro_dep\")\n" &
-      "(var answer (twice! 21))\n")
+      "(import [twice] from \"./compile_macro_dep\")\n" &
+      "(var answer (twice 21))\n")
     let ran = runGene(["compile", path])
     check ran.exitCode == 0
-    check "twice!" notin ran.output
+    check "twice" notin ran.output
     check "Panic:" notin ran.output
 
   test "compile target c prints experimental typed_native C":
@@ -7963,19 +7963,31 @@ suite "cli — gene parse/fmt/compile":
   test "build target web rejects VM-only forms with a profile reason":
     let path = writeCliProgram("web_rejected.gene",
       "(mod web_rejected ^profile web)\n" &
-      "(fn! raw [x] x)\n")
+      "(fn raw! [x] x)\n")
     let outDir = cliDir / "web_rejected_out"
     createDir(outDir)
     let ran = runGene(["build", "--target", "web", "--out-dir", outDir, path])
     check ran.exitCode == 1
-    check "fn! is outside the web profile" in ran.output
+    check "fexpr 'raw!' is outside the web profile" in ran.output
+
+  test "build target web reserves trailing bang for fexpr calls":
+    let path = writeCliProgram("web_bang_message.gene",
+      "(mod web_bang_message ^profile web)\n" &
+      "(type Box ^props {}\n" &
+      "  (message mutate! [] : Int 1))\n" &
+      "(fn main [] : Int 0)\n")
+    let outDir = cliDir / "web_bang_message_out"
+    createDir(outDir)
+    let ran = runGene(["build", "--target", "web", "--out-dir", outDir, path])
+    check ran.exitCode == 1
+    check "message names may not end in !" in ran.output
 
   test "web macro diagnostics point at the expansion call site":
     let path = writeCliProgram("web_macro_diagnostic.gene",
       "(mod web_macro_diagnostic ^profile web)\n" &
-      "(macro broken! [value] `(missing_web_fn %value))\n" &
+      "(macro broken [value] `(missing_web_fn %value))\n" &
       "\n" &
-      "(fn run [] : Int (broken! 1))\n")
+      "(fn run [] : Int (broken 1))\n")
     let outDir = cliDir / "web_macro_diagnostic_out"
     createDir(outDir)
     let ran = runGene(["build", "--target", "web", "--out-dir", outDir, path])
@@ -8076,16 +8088,16 @@ suite "cli — gene parse/fmt/compile":
 (protocol Drawable (message draw [] : Str))
 (fn area [p : Point] : Int (* p/x p/y))
 (type Counter ^props {^n Int}
-  (ctor [start] ($println "COUNTER-CTOR-RAN") (self ~ set_prop! `n start)))
+  (ctor [start] ($println "COUNTER-CTOR-RAN") (self ~ set_prop `n start)))
 (type Conn ^props {^host Str ^live Bool}
   (message serde_state [self] {^host self/host})
   (message serde_restore [state] (Conn ^host state/host ^live true)))
 (type Handle ^repr native_wrapper ^props {^host Str}
-  (ctor [host : Str] (set! self/host host))
+  (ctor [host : Str] (set self/host host))
   (message serde_state [self] {^host self/host})
   (message serde_restore [state] (new Handle state/host)))
 (type Opaque ^repr native_wrapper ^props {^host Str}
-  (ctor [host : Str] (set! self/host host)))
+  (ctor [host : Str] (set self/host host)))
 (type Registry ^props {^label Str ^marker Int?})
 (impl SerdeRef for Registry)
 (var REGISTRY (Registry ^label "the-one"))
@@ -8155,7 +8167,7 @@ suite "cli — gene parse/fmt/compile":
 # stage 6: SerdeRef module singleton -> identity value_ref
 (check "value-ref-form" (contains? (write REGISTRY) "serde_value_ref"))
 (var reg2 (read (write REGISTRY)))
-(reg2 ~ set_prop! `marker 99)
+(reg2 ~ set_prop `marker 99)
 (check "value-ref-identity" (== 99 REGISTRY/marker))
 # a non-SerdeRef module instance serializes by value, not as a value_ref
 (check "plain-by-value" (! (contains? (write (Point ^x 1 ^y 2)) "value_ref")))

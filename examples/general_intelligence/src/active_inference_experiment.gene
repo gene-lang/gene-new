@@ -43,8 +43,8 @@
     (var random_draws : (List Float) [])
     (repeat _ in 3
       (set random_state (next_random_state random_state))
-      (random_draws ~ push! (random_unit random_state)))
-    (episodes ~ push!
+      (random_draws ~ push (random_unit random_state)))
+    (episodes ~ push
       `(episode
          ^index %episode_index
          ^fault %fault
@@ -99,7 +99,7 @@
 (fn without_test [tests : (List Int), removed : Int] : (List Int)
   (var result : (List Int) [])
   (for test in tests
-    (if_not (== test removed) (result ~ push! test)))
+    (if_not (== test removed) (result ~ push test)))
   result)
 
 (fn execute_random_from [subject : Node, episode : Node,
@@ -142,10 +142,10 @@
 (fn new_metrics [] : List [0 0 0 0.0])
 
 (fn record_result [metrics : List, result : Node] : Nil
-  (if_yes result/incorrect (set! metrics/0 (+ metrics/0 1)))
-  (if_yes result/completed (set! metrics/1 (+ metrics/1 1)))
-  (set! metrics/2 (+ metrics/2 result/inspections))
-  (set! metrics/3 (+ metrics/3 result/utility)))
+  (if_yes result/incorrect (set metrics/0 (+ metrics/0 1)))
+  (if_yes result/completed (set metrics/1 (+ metrics/1 1)))
+  (set metrics/2 (+ metrics/2 result/inspections))
+  (set metrics/3 (+ metrics/3 result/utility)))
 
 (fn metrics_node [metrics : List] : Node
   `(arm_metrics
@@ -267,7 +267,7 @@
   (repeat batch_index in batch_count
     (var episode_seed (+ episode_seed_base (* 7919 batch_index)))
     (var random_seed (+ random_seed_base (* 7919 batch_index)))
-    (results ~ push!
+    (results ~ push
       (evaluate_batch subject prior episode_seed random_seed episode_count)))
   results)
 

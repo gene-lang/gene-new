@@ -104,7 +104,7 @@ bridge that does not exist:
 
 Choosing wasm means building a host-call bridge, persistent VM state, and a
 canvas binding before drawing a single pixel. And the fidelity that would
-justify that cost buys `fn!`, `eval`, actors, and FFI — **none of which a game
+justify that cost buys fexprs, `eval`, actors, and FFI — **none of which a game
 client needs**. The argument for the wasm path is exactly the argument that does
 not apply here. Transpiling gives direct canvas access with no per-call boundary
 crossing, payload proportional to the code, real stack frames and source maps,
@@ -249,10 +249,10 @@ profile offers no way to mark a boundary already-validated.
 - **Top-level `var` is rejected**, so a module holds no mutable state. Game
   state must be threaded through parameters or owned by JS. This is the
   restriction most likely to shape the architecture.
-- **`List` has no `push!`, `at`, or `len`** in the profile — only `size`, which
+- **`List` has no `push`, `at`, or `len`** in the profile — only `size`, which
   returns a bigint. Collections must be built and sized outside Gene.
-- **`set!` yields the assigned value**, so a write in tail position needed
-  `(var ignored (set! …))` and every `: Void` body ended in a bookkeeping
+- **`set` yields the assigned value**, so a write in tail position needed
+  `(var ignored (set …))` and every `: Void` body ended in a bookkeeping
   `void`. **Fixed** — `docs/design.md` §7.7 makes `Nil` and `Void` *statement*
   signatures on both backends: the body's trailing value is discarded, the
   frame yields the declared unit, and `(return)` needs no argument. `src/world.gene`

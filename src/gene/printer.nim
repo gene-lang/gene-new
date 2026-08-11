@@ -211,7 +211,7 @@ proc print*(v: Value): string =
   # Callables are runtime values, not literals; rendered for display only.
   of vkFunction:
     if v.isSyntaxFn:
-      (if v.fnName.len > 0: "(fn! " & v.fnName & ")" else: "(fn!)")
+      (if v.fnName.len > 0: "(fn " & v.fnName & ")" else: "(fexpr)")
     else:
       (if v.fnName.len > 0: "(fn " & v.fnName & ")" else: "(fn)")
   of vkNativeFn:

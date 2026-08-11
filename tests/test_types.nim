@@ -2122,14 +2122,14 @@ suite "types — function boundaries":
        "(b ~ to_list) (b ~ elem_type)]",
        "[3 1 3 [1 2 3] Int]"
     ck "(var b ($buffer C/UInt8 [1 2])) " &
-       "[(b ~ set! 1 255) (b ~ to_list) " &
+       "[(b ~ set 1 255) (b ~ to_list) " &
        "((fn [x : (Buffer C/UInt8)] true) b)]",
        "[255 [1 255] true]"
     ck "((fn [b : (Buffer Int)] true) ($buffer [1 2]))", "true"
     ck "(try ($buffer C/UInt8 [1 256]) " &
        "catch (TypeError ^expected e) e)", "\"C/UInt8\""
     expect GeneError:
-      discard runStr("(var b ($buffer C/UInt8 [1])) (b ~ set! 0 256)")
+      discard runStr("(var b ($buffer C/UInt8 [1])) (b ~ set 0 256)")
     expect GeneError:
       discard runStr("((fn [b : (Buffer C/UInt8)] b) ($buffer C/Int32 [1]))")
     expect GeneError:
@@ -7097,8 +7097,8 @@ suite "types — function boundaries":
       discard runStr("(fn use [f : (Fn [Int] Str)] f) " &
                      "(use (fn [x : Str] : Str x))")
     expect GeneError:
-      discard runStr("(fn use [f : (Fn [Int] Str)] f) " &
-                     "(use (fn! [x] x))")
+      discard runStr("(fn syntax! [x] x) " &
+                     "(fn use [f : (Fn [Int] Str)] f) (use syntax!)")
     expect GeneError:
       discard runStr("(fn use [f : (Fn Int Str)] f) (use (fn [x] x))")
 

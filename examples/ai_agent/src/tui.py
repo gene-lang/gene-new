@@ -648,7 +648,7 @@ When writing Gene code, use the current repo's language, not generic Lisp:
   and `match`; boolean operators are `&&`, `||`, and `!`.
 - Recoverable errors use `try`/`catch`/`ensure` and `fail`; reserve `panic` for bugs.
 - Lists use `[a b]`, maps use `{^key value}`, and nodes use `(tag ^prop value ...)`.
-  Grow owned lists with `List/push!`; repeated copy-and-append in loops is quadratic.
+  Grow owned lists with `List/push`; repeated copy-and-append in loops is quadratic.
 - `nil` is absence; `void` is a missing selector or omitted storage.
 - `x/key` is selector access, `xs/~size` sends a message, and `(x ~ msg arg)` is a
   message send. User-facing names use snake_case; `-` remains a symbol character.
@@ -656,7 +656,7 @@ When writing Gene code, use the current repo's language, not generic Lisp:
   `impl`; single data inheritance is `^is` and behavioral composition is `^inherit`.
 - Streams are pull-based and skip `void`; common operators are `map`, `filter`,
   `each`, and `into` from `std/stream`.
-- Useful references are `examples/todo_app.gene`, `examples/web_demo.gene`,
+- Useful references are `examples/todo_app/src/main.gene`, `examples/style_guide.gene`,
   `examples/protocol_demo.gene`, `docs/design.md`, `docs/core.md`, and `docs/stdlib.md`.
 
 Before changing Gene code, inspect nearby examples or docs if uncertain. After

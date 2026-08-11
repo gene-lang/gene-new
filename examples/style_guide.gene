@@ -80,7 +80,7 @@ line two"""
 
 (fn append_all [target, values...]
   (for value in values
-    (target ~ push! value))
+    (target ~ push value))
   target)
 
 (fn active_names [users : (List User)] : (List Str)
@@ -107,8 +107,8 @@ line two"""
 
 (fn note_activation [user : User, events]
   (if_yes user/active
-    (events ~ push! $"activated ${user/name}")
-    (events ~ push! "notification queued"))
+    (events ~ push $"activated ${user/name}")
+    (events ~ push "notification queued"))
   events)
 
 (fn load_if_missing [cached, load, save]
@@ -201,10 +201,10 @@ line two"""
 
 # Syntax values, macros, fexprs, templates, selectors, and spread.
 
-(macro unless! [condition, body...]
+(macro unless [condition, body...]
   `(if_not %condition %body...))
 
-(fn! raw_head! [form]
+(fn raw_head! [form]
   ($head form))
 
 (fn user_card [user : User]

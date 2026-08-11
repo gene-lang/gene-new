@@ -276,24 +276,23 @@ suite "modules — file imports":
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() ==
       "[84 84]"
 
-  test "wildcards carry qualified and bare macro and fn! metadata":
+  test "wildcards carry macro metadata and selected fexprs stay explicit":
     writeModule("syntax_exports.gene",
-      "(macro twice! [x] `(+ %x %x)) " &
-      "(fn! raw! [x] x) " &
+      "(macro twice [x] `(+ %x %x)) " &
+      "(fn raw! [x] x) " &
       "(ns tools " &
-      "  (macro thrice! [x] `(+ %x %x %x)) " &
-      "  (fn! nested_raw! [x] x))")
+      "  (macro thrice [x] `(+ %x %x %x)))")
     writeModule("syntax_user.gene",
       "(import * from \"./syntax_exports\") " &
       "(import * : syntax from \"./syntax_exports\") " &
+      "(import [raw!] from \"./syntax_exports\") " &
       "(import tools/* : tools from \"./syntax_exports\") " &
-      "(var observed [(twice! 21) (syntax/twice! 20) " &
-      "  (tools/thrice! 10) (raw! (+ 1 2)) " &
-      "  (syntax/raw! (+ 2 3)) (tools/nested_raw! (+ 3 4))])")
+      "(var observed [(twice 21) (syntax/twice 20) " &
+      "  (tools/thrice 10) (raw! (+ 1 2))])")
     let app = newApplication(modDir)
     let loaded = app.loadFileModule(modDir / "syntax_user.gene")
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() ==
-      "[42 40 30 (+ 1 2) (+ 2 3) (+ 3 4)]"
+      "[42 40 30 (+ 1 2)]"
 
   test "private declarations stay out of selections and wildcard interfaces":
     writeModule("private_exports.gene",
@@ -322,12 +321,12 @@ suite "modules — file imports":
 
   test "explicit selected re-exports enter downstream wildcard interfaces":
     writeModule("reexport_base.gene",
-      "(var answer 42) (macro twice! [x] `(+ %x %x))")
+      "(var answer 42) (macro twice [x] `(+ %x %x))")
     writeModule("reexport_mid.gene",
-      "(import [answer twice!] from \"./reexport_base\" ^export true)")
+      "(import [answer twice] from \"./reexport_base\" ^export true)")
     writeModule("reexport_user.gene",
       "(import * from \"./reexport_mid\") " &
-      "(var observed [(twice! answer) answer])")
+      "(var observed [(twice answer) answer])")
     let app = newApplication(modDir)
     let loaded = app.loadFileModule(modDir / "reexport_user.gene")
     check loaded.moduleRootNamespace.nsScope.lookup("observed").print() ==
@@ -714,7 +713,7 @@ suite "modules — built-in identity and scope hygiene":
       "(gene/str/join [\"a\" \"b\"] \"-\")]").print() ==
       "[true \"a-b\"]"
     discard compileSource(
-      "(fn log_message [logger] (gene/log/info! logger \"hello\"))")
+      "(fn log_message [logger] (gene/log/info logger \"hello\"))")
     for source in [
       "(var gene 1)",
       "(fn f [genex] genex)",
@@ -968,7 +967,7 @@ suite "modules — the capability sandbox (design §D5)":
     let modRoot = modDir / "mods" / "shared_mod"
     createDir(modRoot / "src")
     writeModule("host_type.gene",
-      "(type Reg ^props {^n Int} (ctor [n : Int] (set! self/n n)))")
+      "(type Reg ^props {^n Int} (ctor [n : Int] (set self/n n)))")
     writeFile(modRoot / "src" / "shared_mod.gene",
       "(import [Reg] from \"../../../host_type\") " &
       "(fn take_it [r : Reg] : Int r/n)")

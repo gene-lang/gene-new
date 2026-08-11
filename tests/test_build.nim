@@ -75,8 +75,8 @@ suite "build engine — pure Gene targets":
     writeBuildFile(root / "src/index.gene", "(var package_name \"app\")")
     writeBuildFile(root / "src/unused.gene", "((unterminated")
     writeBuildFile(root / "src/cli.gene", """
-(import [answer twice!] from "." ^pkg "math")
-(var doubled (twice! answer))
+(import [answer twice] from "." ^pkg "math")
+(var doubled (twice answer))
 (fn main [] doubled)
 """)
     writeBuildFile(root / "src/admin.gene", "(fn main [] 0)")
@@ -91,7 +91,7 @@ suite "build engine — pure Gene targets":
     writeBuildFile(root / "packages/math/src/index.gene", """
 (import [base] from "." ^pkg "core")
 (var answer base)
-(macro twice! [x] `(+ %x %x))
+(macro twice [x] `(+ %x %x))
 """)
     writeBuildFile(root / "packages/core/package.gene", """
 {^format 1

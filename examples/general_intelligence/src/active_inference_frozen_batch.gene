@@ -39,9 +39,9 @@
 
 (fn append_beta_result [details : List, summaries : List, name : Str,
                         beta : Float, result : Node] : Nil
-  (details ~ push!
+  (details ~ push
     `(beta_sensitivity ^name %name ^beta %beta ^result %result))
-  (summaries ~ push!
+  (summaries ~ push
     {^name name
      ^beta beta
      ^reward (metrics_map result/reward)
@@ -56,10 +56,10 @@
     (subject_with_preference_multiplier subject field multiplier))
   (var result
     (evaluate_paired_episode_batch varied prior batch varied/beta))
-  (details ~ push!
+  (details ~ push
     `(preference_sensitivity
        ^name %name ^field %field ^multiplier %multiplier ^result %result))
-  (summaries ~ push!
+  (summaries ~ push
     {^name name
      ^field field
      ^multiplier multiplier

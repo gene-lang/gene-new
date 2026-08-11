@@ -62,10 +62,10 @@
       (for test in cases
         (if (== (execute_candidate candidate test/input) test/expected)
           (set passed_count (+ passed_count 1))
-          (failures ~ push! test/id))))
+          (failures ~ push test/id))))
     (else
       (for test in cases
-        (failures ~ push! test/id))))
+        (failures ~ push test/id))))
   (var total (cases ~ size))
   (var passed (== passed_count total))
   (var candidate_id (candidate_digest candidate))

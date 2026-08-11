@@ -159,7 +159,7 @@
   (var y ($math/max 0.0 y0))
   (var top ($math/min (- dim 1.0) y1))
   (while (<= y top)
-    (out ~ set! (+ column (* y dim)) id)
+    (out ~ set (+ column (* y dim)) id)
     (set y (+ y 1.0))))
 
 # --- the pipeline ------------------------------------------------------------
@@ -225,7 +225,7 @@
       # §4's boundary: the terrain is a heightfield, so a column's sun is
       # unobstructed down to its surface, and this region's top is open exactly
       # when it sits above that surface.
-      (sky ~ set! (+ x (* z dim))
+      (sky ~ set (+ x (* z dim))
             (if (> (+ oy (- dim 1.0)) surface) light_max 0.0))
       (var b (biome_at biomes
                        (* 100.0 (lattice_value heat bd bx bz biome_step wx wz))
@@ -360,7 +360,7 @@
                   (&& (>= lz 0.0) (< lz dim))))
     (var at (+ lx (+ (* ly dim) (* lz plane))))
     (if_yes (== (out ~ get at) 0.0)
-      (out ~ set! at node))))
+      (out ~ set at node))))
 
 # --- stage 6: lighting -------------------------------------------------------
 #

@@ -14,7 +14,7 @@ envelope; exclusions must fail compilation with their recorded reason.
 | destructuring, match, list rest | `pattern.*` |
 | static namespaces and closed relative modules | `module.*` |
 | local and imported template macros/provenance | `macro.*`, `tests/test_vm.nim`, `tests/test_cli.nim` |
-| paths, default/strict selectors, `set!`, shallow immutable data | `data.*` |
+| paths, default/strict selectors, `set`, shallow immutable data | `data.*` |
 | structural Map keys, PropMap, Node, Range, Sym | `data.*`, `scalar.symbol` |
 | nominal types, body schemas/patterns, ctors, inheritance, direct and protocol super | `type.*`, `protocol.super_chain` |
 | enums and pattern payloads | `enum.payload_match` |
@@ -24,7 +24,7 @@ envelope; exclusions must fail compilation with their recorded reason.
 | structured spawn/await/scope | `async.scope_spawn_await`, `tests/transpile_async_runner.nim` |
 | portable string/URL/HTML/JSON/node/stream stdlib | `stdlib.*`, `web_advanced.gene` |
 | DOM node edge and checked event callback | `tests/transpile_dom_runner.nim` |
-| fn!/eval/actors/FFI/capabilities/import_impl/AtomicCell/freeze/derive/effects | `rejected.*` |
+| fexprs/eval/actors/FFI/capabilities/import_impl/AtomicCell/freeze/derive/effects | `rejected.*` |
 
 The current manifest contains 57 cases. `tests/transpile_typecheck.mjs` also
 strictly checks emitted advanced, namespace, interop, equality, and component

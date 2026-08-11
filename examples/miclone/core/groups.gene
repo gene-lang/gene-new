@@ -48,11 +48,11 @@
           ^counts  (Buffer F32)}   # two cells: names used, entries used
 
   (ctor []
-    (set! self/names [])
-    (set! self/owner ($buffer F32 max_group_entries))
-    (set! self/group ($buffer F32 max_group_entries))
-    (set! self/rating ($buffer F32 max_group_entries))
-    (set! self/counts ($buffer F32 2.0))))
+    (set self/names [])
+    (set self/owner ($buffer F32 max_group_entries))
+    (set self/group ($buffer F32 max_group_entries))
+    (set self/rating ($buffer F32 max_group_entries))
+    (set self/counts ($buffer F32 2.0))))
 
 (let count_names 0.0)
 (let count_entries 1.0)
@@ -73,7 +73,7 @@
 
 (type GroupRegistryFull
   ^props {^message Str}
-  (ctor [message : Str] (set! self/message message)))
+  (ctor [message : Str] (set self/message message)))
 
 (impl Error for GroupRegistryFull)
 
@@ -106,8 +106,8 @@
       (if_yes (>= id max_group_names)
         (fail (new GroupRegistryFull
                    $"group registry is full at ${max_group_names} names")))
-      (g/names ~ push! name)
-      (g/counts ~ set! count_names (+ id 1.0))
+      (g/names ~ push name)
+      (g/counts ~ set count_names (+ id 1.0))
       id)))
 
 # --- ratings -----------------------------------------------------------------
@@ -129,10 +129,10 @@
       (fail (new GroupRegistryFull
                  $"group registry is full at ${max_group_entries} entries")))
     (set at n)
-    (g/counts ~ set! count_entries (+ n 1.0)))
-  (g/owner ~ set! at owner)
-  (g/group ~ set! at group)
-  (g/rating ~ set! at rating))
+    (g/counts ~ set count_entries (+ n 1.0)))
+  (g/owner ~ set at owner)
+  (g/group ~ set at group)
+  (g/rating ~ set at rating))
 
 # 0 when `owner` is not in `group` — see the header for why that is a value
 # rather than an absence.

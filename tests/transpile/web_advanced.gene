@@ -6,7 +6,7 @@
 (type Item
   ^props {^name Str}
   (ctor [name : Str]
-    (set! self/name name)))
+    (set self/name name)))
 
 (impl Named for Item
   (message name [self] : Str
