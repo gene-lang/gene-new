@@ -29,6 +29,11 @@ type
     opSetName
     opSetLocal
     opSetOuterLocal
+    opRefBegin          # mark a predeclared module reference resolving
+    opRefFinish         # pop target, resolve and patch structural fixups
+    opRefAbort          # reset a still-resolving entry from an ensure body
+    opRefGet            # runtime $deref: resolved target or typed error
+    opRefGetStructural  # reader #Deref: resolved target or internal fixup
     opPop
     opMakeList
     opMakeListSplice
@@ -629,6 +634,7 @@ type
     functions*: seq[FunctionProto]
     localNames*: seq[string]
     mirrorSlots*: bool
+    moduleRefNames*: seq[string] # predeclared before source-unit execution
     exportExcludedNames*: seq[string] # ^private declarations and non-reexported imports
     subchunks*: seq[Chunk]       # bodies of `ns` declarations
     imports*: seq[ImportSpec]
@@ -682,6 +688,7 @@ type
 proc newChunk*(sourceName = ""): Chunk =
   Chunk(sourceName: sourceName, constants: @[], instructions: @[],
         instructionLocs: @[], topLevelForms: @[], functions: @[], subchunks: @[],
+        moduleRefNames: @[],
         imports: @[], importImpls: @[],
         diagnostics: @[], forLoops: @[], matches: @[], tries: @[], listBuilds: @[],
         nodeBuilds: @[],
@@ -854,7 +861,8 @@ proc formatInstruction(inst: Instruction): string =
   case inst.op
   of opPushConst:
     result.add " const=" & $inst.intArg
-  of opLoadName, opLoadNativeFast, opDefineName, opRedefineName, opSetName:
+  of opLoadName, opLoadNativeFast, opDefineName, opRedefineName, opSetName,
+     opRefBegin, opRefFinish, opRefAbort, opRefGet, opRefGetStructural:
     result.add " name=" & inst.name
   of opLoadLocal, opLoadLocalFast, opLoadArg, opDefineLocal, opRedefineLocal,
      opSetLocal:

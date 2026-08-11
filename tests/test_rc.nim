@@ -49,6 +49,15 @@ when defined(geneRcStats):
       check leakedManaged("(fn make [] (var x 1) (fn [] x)) (make)") == 0
       check leakedManaged("(fn fac [n] (if (== n 0) 1 (* n (fac (- n 1))))) (fac 5)") == 0
 
+    test "module reference targets and structural fixups are reclaimed":
+      check leakedManaged("#Ref shared [1 2] ($deref shared)") == 0
+      check leakedManaged(
+        "(var before #Deref shared) #Ref shared [1] " &
+        "(same? before ($deref shared))") == 0
+      check leakedManaged("#Ref callable (fn [] 1) (($deref callable))") == 0
+      check leakedManaged("#Ref cycle ($cell #Deref cycle) " &
+                          "(same? (($deref cycle) ~ get) ($deref cycle))") == 0
+
     test "self-referential closures stored in their scope are reclaimed":
       check leakedManaged("(var f nil) (set f (fn [] f))") == 0
 

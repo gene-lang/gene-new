@@ -20,6 +20,7 @@ type
     tkHashLParen,            # #(
     tkHashLBracket,          # #[
     tkHashLBrace,            # #{
+    tkRef, tkDeref,          # #Ref #Deref
     tkCaret, tkCaretCaret,   # ^ ^^
     tkAt, tkAtAt,            # @ @@
     tkTilde,                 # ~
@@ -838,6 +839,20 @@ proc tokenizeImpl(r: var Reader,
         r.advance(); r.addToken(tkHashLBrace, "#{", startLine, startCol, startByte)
         trackDelimiter(tkHashLBrace)
       of '_': r.advance(); r.addToken(tkUnderscore, "#_", startLine, startCol, startByte)
+      of 'R':
+        if r.src.continuesWith("Ref", r.pos) and
+            (r.pos + 3 >= r.src.len or not isSymbolChar(r.src[r.pos + 3])):
+          for _ in 0 ..< 3: r.advance()
+          r.addToken(tkRef, "#Ref", startLine, startCol, startByte)
+        else:
+          r.raiseReservedHashForm(c2, startLine, startCol)
+      of 'D':
+        if r.src.continuesWith("Deref", r.pos) and
+            (r.pos + 5 >= r.src.len or not isSymbolChar(r.src[r.pos + 5])):
+          for _ in 0 ..< 5: r.advance()
+          r.addToken(tkDeref, "#Deref", startLine, startCol, startByte)
+        else:
+          r.raiseReservedHashForm(c2, startLine, startCol)
       of '"':
         let literal = r.parseRegexLiteral()
         r.addToken(tkRegex, literal.pattern, startLine, startCol, startByte,
@@ -1064,6 +1079,8 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkHashLParen: "hash_l_paren"
   of tkHashLBracket: "hash_l_bracket"
   of tkHashLBrace: "hash_l_brace"
+  of tkRef: "ref"
+  of tkDeref: "deref"
   of tkCaret: "caret"
   of tkCaretCaret: "caret_caret"
   of tkAt: "at"
@@ -1605,6 +1622,25 @@ proc parseForm(r: var Reader, inList = false): Value =
                      body = @[desugarPath("gene/" & tok.lexeme[0..^4],
                                           r.sourceName, tok.line, tok.col)])
     finish desugarPath("gene/" & tok.lexeme, r.sourceName, tok.line, tok.col)
+  of tkRef, tkDeref:
+    let nameTok = r.next()
+    if nameTok.kind == tkEof:
+      r.raiseReadIncomplete("unexpected end of input")
+    var validName = nameTok.kind == tkSymbol and nameTok.lexeme.len > 0 and
+      nameTok.lexeme[0] in {'a'..'z', '_'}
+    if validName:
+      for c in nameTok.lexeme:
+        if c notin {'a'..'z', '0'..'9', '_'}:
+          validName = false
+          break
+    if not validName:
+      r.raiseReadErrorAt(nameTok,
+        tok.lexeme & " name must be a simple snake_case symbol")
+    let name = newSym(nameTok.lexeme)
+    if tok.kind == tkRef:
+      let value = r.parseForm(inList = inList)
+      finish newNode(newSym("#Ref"), body = @[name, value])
+    finish newNode(newSym("#Deref"), body = @[name])
   of tkLParen:
     r.pushReadContext(tok)
     finish r.parseNode(tkRParen)

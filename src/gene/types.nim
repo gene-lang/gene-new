@@ -331,6 +331,27 @@ type
     ## object representation from being optimized into a singleton.
     marker: bool
 
+  ModuleRefState* = enum
+    mrsUnresolved
+    mrsResolving
+    mrsResolved
+
+  ModuleRefEntry* = ref object
+    ## Stable one-time resolution slot owned by a module root scope. Keeping
+    ## the resolved Value here roots identity-bearing targets for the module's
+    ## lifetime; scalar Values use their ordinary copy/boxing semantics.
+    name*: string
+    state*: ModuleRefState
+    value*: Value
+    structuralPending*: bool
+
+  ModuleRefTable* = ref object
+    ## Lazily allocated only for a module root that actually uses `#Ref` or
+    ## `$ref`. Ordinary lexical/call scopes keep a single nil pointer instead
+    ## of carrying a full Table header on every allocation.
+    entries*: Table[string, ModuleRefEntry]
+    pendingStructural*: int
+
   WildcardFallback* = object
     ## Runtime value installed by a bare wildcard import. It deliberately
     ## lives outside `vars`, so reflection and export lookup never re-export it.
@@ -369,6 +390,7 @@ type
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
     moduleStatic*: bool     # unconditional module/namespace declaration scope
+    moduleRefs*: ModuleRefTable
     borrowedCallerEnv*: bool # scope or ancestor is inside a live syntax call
     requiredImplTypes*: seq[Value]
     evalBudget*: EvalBudget
@@ -2561,6 +2583,16 @@ proc setNodeBodyItem*(v: Value, index: int, item: Value) =
     raise newException(GeneError, "node body index out of range: " & $index)
   p.body[index] = item
 
+proc setNodePartsAfterModuleRefPatch*(v: Value, props: sink PropTable,
+                                      body: sink seq[Value]) =
+  ## Internal construction-time update used after all module-reference fixups
+  ## have landed. Public mutability is intentionally not consulted here.
+  if v.tagOf != NODE_TAG:
+    raise newException(FieldDefect, "value is not a Node")
+  let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  p.props = props
+  p.body = body
+
 proc fnName*(v: Value): lent string =
   if v.tagOf != FUNCTION_TAG:
     raise newException(FieldDefect, "value is not a Function")
@@ -4666,6 +4698,111 @@ proc newNode*(head: Value,
   p.body = body
   p.meta = withoutVoidEntries(meta)
   boxPtr(NODE_TAG, p)
+
+const pendingModuleRefHead = "\x00gene_module_ref_pending"
+
+proc newPendingModuleRef*(name: string): Value =
+  ## Internal-only structural fixup. Its head contains NUL, which source text
+  ## cannot produce, so ordinary Gene data cannot alias this representation.
+  newNode(newSym(pendingModuleRefHead), body = @[newSym(name)], immutable = true)
+
+proc isPendingModuleRef*(v: Value): bool {.inline.} =
+  v.kind == vkNode and v.head.kind == vkSymbol and
+    v.head.symVal == pendingModuleRefHead and v.body.len == 1 and
+    v.body[0].kind == vkSymbol
+
+proc pendingModuleRefName*(v: Value): string =
+  if not v.isPendingModuleRef:
+    raise newException(FieldDefect, "value is not a pending module reference")
+  $v.body[0].symVal
+
+proc containsPendingModuleRef*(v: Value, name: string,
+                               seen: var HashSet[uint64]): bool =
+  if v.isPendingModuleRef:
+    return v.body[0].symVal == name
+  if not v.isManaged or seen.containsOrIncl(v.bits):
+    return false
+  case v.kind
+  of vkList:
+    for item in v.listItems:
+      if containsPendingModuleRef(item, name, seen): return true
+  of vkMap:
+    for _, item in v.mapEntries:
+      if containsPendingModuleRef(item, name, seen): return true
+  of vkSet:
+    for item in v.setItems:
+      if containsPendingModuleRef(item, name, seen): return true
+  of vkHashMap:
+    for entry in v.hashMapEntries:
+      if containsPendingModuleRef(entry.key, name, seen) or
+          containsPendingModuleRef(entry.val, name, seen): return true
+  of vkNode:
+    if containsPendingModuleRef(v.head, name, seen): return true
+    for _, item in v.props:
+      if containsPendingModuleRef(item, name, seen): return true
+    for item in v.body:
+      if containsPendingModuleRef(item, name, seen): return true
+    for _, item in v.meta:
+      if containsPendingModuleRef(item, name, seen): return true
+  # A mutable cell is an allocate/patch-capable cycle boundary. Do not report
+  # a self-reference through it as an unsupported immutable cycle; the patch
+  # pass below safely installs the target into the already-allocated cell.
+  of vkCell, vkAtomicCell:
+    discard
+  else:
+    discard
+  false
+
+proc patchPendingModuleRef*(v: Value, name: string, target: Value,
+                            seen: var HashSet[uint64]): Value =
+  ## Construction-time allocate/patch/seal support. This deliberately bypasses
+  ## public immutability checks: no source unit is published until every fixup
+  ## has been replaced.
+  if v.isPendingModuleRef:
+    if v.body[0].symVal == name: return target
+    return v
+  if not v.isManaged or seen.containsOrIncl(v.bits):
+    return v
+  case v.kind
+  of vkList:
+    let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
+    for i in 0 ..< p.items.len:
+      p.items[i] = patchPendingModuleRef(p.items[i], name, target, seen)
+  of vkMap:
+    let p = cast[ptr GeneMap](v.bits and PAYLOAD_MASK)
+    for i in 0 ..< p.entries.data.len:
+      p.entries.data[i].val =
+        patchPendingModuleRef(p.entries.data[i].val, name, target, seen)
+  of vkHashMap:
+    let data = HashMapData(objData(v))
+    for i in 0 ..< data.entries.len:
+      data.entries[i].key =
+        patchPendingModuleRef(data.entries[i].key, name, target, seen)
+      data.entries[i].val =
+        patchPendingModuleRef(data.entries[i].val, name, target, seen)
+  of vkSet:
+    let data = SetData(objData(v))
+    for i in 0 ..< data.items.len:
+      data.items[i] = patchPendingModuleRef(data.items[i], name, target, seen)
+  of vkNode:
+    let p = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+    p.head = patchPendingModuleRef(p.head, name, target, seen)
+    for i in 0 ..< p.props.data.len:
+      p.props.data[i].val =
+        patchPendingModuleRef(p.props.data[i].val, name, target, seen)
+    for i in 0 ..< p.body.len:
+      p.body[i] = patchPendingModuleRef(p.body[i], name, target, seen)
+    for i in 0 ..< p.meta.data.len:
+      p.meta.data[i].val =
+        patchPendingModuleRef(p.meta.data[i].val, name, target, seen)
+  of vkCell:
+    v.setCellValue(patchPendingModuleRef(v.cellValue, name, target, seen))
+  of vkAtomicCell:
+    v.setAtomicCellValue(
+      patchPendingModuleRef(v.atomicCellValue, name, target, seen))
+  else:
+    discard
+  v
 
 proc newFunction*(name: string, params: sink seq[string],
                   code: FunctionCode, scope: Scope,

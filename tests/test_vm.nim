@@ -540,6 +540,92 @@ suite "compiler — GIR emission":
     ck "(type Box ^props {^n Int} (message plus1 [self] (+ self/n 1))) " &
        "(fn run [self] (~ plus1)) (run (Box ^n 2))", "3"
 
+suite "module references":
+  test "all reader and runtime forms share one module table":
+    ck "#Ref shared [1 2] " &
+       "[(same? #Deref shared ($deref shared)) " &
+       " (same? #Deref shared (gene/deref shared))]", "[true true]"
+    ck "($ref shared [1 2]) " &
+       "[(same? #Deref shared ($deref shared)) " &
+       " (same? #Deref shared (gene/deref shared))]", "[true true]"
+    ck "#Ref shared [1 2] (fn get_shared [] #Deref shared) " &
+       "(same? (get_shared) ($deref shared))", "true"
+    ck "(fn get_missing [] " &
+       "  (try #Deref missing catch (UnknownRef ^name n) n)) " &
+       "(get_missing)", "\"missing\""
+
+  test "reference namespace is separate from lexical bindings":
+    ck "(var shared 10) #Ref shared [1 2] " &
+       "[shared ($size #Deref shared)]", "[10 2]"
+
+  test "identity-bearing values are shared and scalar values compare by value":
+    ck "#Ref shared [1] " &
+       "(var a #Deref shared) (var b ($deref shared)) " &
+       "(a ~ set 0 9) [(same? a b) (b ~ first)]", "[true 9]"
+    ck "#Ref answer 42 [#Deref answer ($deref answer)]", "[42 42]"
+    ck "#Ref flag true [#Deref flag ($deref flag)]", "[true true]"
+    ck "#Ref absent nil [#Deref absent ($deref absent)]", "[nil nil]"
+    ck "#Ref skipped void [#Deref skipped ($deref skipped)]", "[void void]"
+    ck "#Ref text \"hello\" [#Deref text ($deref text)]",
+       "[\"hello\" \"hello\"]"
+
+  test "structural dereferences support forward definitions":
+    ck "(var x #Deref shared) #Ref shared [1 2] " &
+       "(same? x ($deref shared))", "true"
+    ck "(var x #Deref config) ($ref config [3 4]) " &
+       "(same? x ($deref config))", "true"
+    ck "(var pair [#Deref later #Deref later]) #Ref later [7] " &
+       "(same? (pair ~ first) (pair ~ last))", "true"
+    ck "(type App ^props {^config (List Int)}) " &
+       "(var app (App ^config #Deref config)) #Ref config [1 2] " &
+       "[(same? app/config ($deref config)) ($size app/config)]",
+       "[true 2]"
+    expect GeneError:
+      discard runStr("(type App ^props {^config (List Int)}) " &
+                     "(var app (App ^config #Deref config)) " &
+                     "#Ref config [1 \"bad\"]")
+    ck "#Ref cycle ($cell #Deref cycle) " &
+       "(same? (($deref cycle) ~ get) ($deref cycle))", "true"
+    ck "(macro define_shared [] `#Ref shared [1]) " &
+       "(define_shared) (($deref shared) ~ first)", "1"
+
+  test "runtime errors are typed and initializers can retry after failure":
+    ck "(try ($deref missing) " &
+       " catch (UnknownRef ^name n) n)", "\"missing\""
+    ck "(var pending #Deref later) " &
+       "(try pending catch (RefNotResolved ^name n) n) " &
+       "#Ref later 1", "1"
+    ck "(var holder {^value #Deref later}) " &
+       "(var observed (try holder/value " &
+       " catch (RefNotResolved ^name n) n)) " &
+       "#Ref later 1 observed", "\"later\""
+    ck "#Ref once 1 " &
+       "(try ($ref once 2) catch (RefAlreadyResolved ^name n) n)",
+       "\"once\""
+    ck "(var caught (try ($ref circular ($deref circular)) " &
+       " catch (CircularRefResolution ^name n) n)) " &
+       "($ref circular 1) caught", "\"circular\""
+    ck "(try ($ref retry (fail (MatchError ^message \"no\"))) " &
+       " catch (MatchError) nil) ($ref retry 9) ($deref retry)", "9"
+
+  test "invalid definitions and unresolved completed units fail":
+    expect GeneError:
+      discard runStr("(fn bad [] ($ref local 1))")
+    expect GeneError:
+      discard runStr("(var pending #Deref never)")
+    expect GeneError:
+      discard runStr("(macro leave_pending [] `#Deref never) " &
+                     "(leave_pending)")
+    expect GeneError:
+      discard runStr("(var values (Set #Deref item 1)) " &
+                     "#Ref item 1 values")
+    expect GeneError:
+      discard runStr("(var values (Set #Deref item)) " &
+                     "#Ref item [1] values")
+    ck "(var caught (try #Ref cycle [#Deref cycle] " &
+       " catch (InvalidRefDefinition ^name n) n)) " &
+       "($ref cycle 1) caught", "\"cycle\""
+
 suite "gir — disassembly":
   test "prints constants and instructions":
     let dump = compileSource("(+ 1 2)").disassemble()

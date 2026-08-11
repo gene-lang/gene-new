@@ -199,6 +199,14 @@ proc print*(v: Value): string =
     sb.add "}}"
     sb
   of vkNode:
+    if v.head.kind == vkSymbol and v.head.symVal == "#Ref" and
+        v.props.len == 0 and v.meta.len == 0 and
+        v.body.len == 2 and v.body[0].kind == vkSymbol:
+      return "#Ref " & v.body[0].symVal & " " & print(v.body[1])
+    if v.head.kind == vkSymbol and v.head.symVal == "#Deref" and
+        v.props.len == 0 and v.meta.len == 0 and
+        v.body.len == 1 and v.body[0].kind == vkSymbol:
+      return "#Deref " & v.body[0].symVal
     var sb = if v.nodeImmutable: "#(" else: "("
     sb.add print(v.head)
     printProps(sb, v.meta, "@")

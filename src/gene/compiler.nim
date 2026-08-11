@@ -700,6 +700,14 @@ proc isPath(v: Value, segments: openArray[string]): bool =
       return false
   true
 
+proc validModuleRefName(name: string): bool =
+  if name.len == 0 or name[0] notin {'a'..'z', '_'}:
+    return false
+  for c in name:
+    if c notin {'a'..'z', '0'..'9', '_'}:
+      return false
+  true
+
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
 proc reserveProtocolBindingsFor(c: var Compiler, forms: openArray[Value])
 proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first = 0)
@@ -7838,6 +7846,51 @@ proc compileImpl(c: var Compiler, node: Value) =
                                       exported: exported))
   discard c.emit(opMakeImpl, idx)
 
+proc moduleRefName(node: Value, expectedBodyLen: int): string =
+  if node.props.len != 0 or node.meta.len != 0 or
+      node.body.len != expectedBodyLen or node.body[0].kind != vkSymbol:
+    raise newException(GeneError,
+      "module reference form requires a literal name" &
+      (if expectedBodyLen == 2: " and one value" else: ""))
+  result = node.body[0].symVal
+  if not validModuleRefName(result):
+    raise newException(GeneError,
+      "module reference name must be a simple snake_case symbol")
+
+proc compileModuleRefDefinition(c: var Compiler, node: Value,
+                                readerForm: bool) =
+  let name = moduleRefName(node, 2)
+  if c.inFunction:
+    raise newException(GeneError,
+      (if readerForm: "#Ref" else: "$ref") &
+      " is only valid during module-level initialization")
+
+  # The initializer runs inside an internal try/ensure. Success resolves before
+  # the ensure executes (so abort is a no-op); every error/return path reaches
+  # abort while the entry is still resolving. This reuses the VM's established
+  # structured-unwind machinery instead of adding an ad-hoc exception guard.
+  discard c.emit(opRefBegin, name = name)
+  var bodyCompiler = c.childCompiler()
+  compileExpr(bodyCompiler, node.body[1])
+  discard bodyCompiler.emit(opRefFinish, name = name)
+  discard bodyCompiler.emit(opReturn)
+  var ensureCompiler = c.childCompiler()
+  discard ensureCompiler.emit(opRefAbort, name = name)
+  ensureCompiler.emitConst NIL
+  discard ensureCompiler.emit(opReturn)
+  let tp = TryProto(body: bodyCompiler.chunk,
+                    ensureBody: ensureCompiler.chunk)
+  discard c.emit(opTry, c.chunk.addTry(tp))
+
+proc compileModuleRefGet(c: var Compiler, node: Value, structural: bool) =
+  let name = moduleRefName(node, 1)
+  # A reader spelling executed after initialization is an ordinary module-ref
+  # load, not a persistent graph slot. This also keeps internal placeholders
+  # out of function arguments and locals entirely.
+  discard c.emit(if structural and not c.inFunction:
+                   opRefGetStructural else: opRefGet,
+                 name = name)
+
 proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   let h = node.head
   if node.props.hasKey("private"):
@@ -7874,8 +7927,20 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
   if h.isPath(["ffi", "signature"]):
     compileFfiSignature(c, node, fskDynamic)
     return
+  if h.isPath(["gene", "ref"]):
+    compileModuleRefDefinition(c, node, readerForm = false)
+    return
+  if h.isPath(["gene", "deref"]):
+    compileModuleRefGet(c, node, structural = false)
+    return
   if h.kind == vkSymbol:
     case h.symVal
+    of "#Ref":
+      compileModuleRefDefinition(c, node, readerForm = true)
+      return
+    of "#Deref":
+      compileModuleRefGet(c, node, structural = true)
+      return
     of "do":
       compileBody(c, node.body)
       return
@@ -8132,6 +8197,43 @@ proc topLevelFormInfo(form: Value, loc: SourceLoc): TopLevelFormInfo =
   of vkHashMap: result.label = "{{…}}"
   else: result.label = $form.kind
 
+proc collectModuleRefNames(value: Value, names: var seq[string],
+                           seen: var HashSet[string], inFunction = false) =
+  ## Predeclare source-unit references before the first initializer executes.
+  ## Runtime $deref is intentionally not a declaration; #Deref is, because it
+  ## is the structural forward-use form.
+  case value.kind
+  of vkNode:
+    if value.head.isSymbol("quote") or value.head.isSymbol("quasiquote"):
+      return
+    let declares = not inFunction and
+      (value.head.isSymbol("#Ref") or value.head.isSymbol("#Deref") or
+       value.head.isPath(["gene", "ref"]))
+    if declares and value.body.len > 0 and value.body[0].kind == vkSymbol:
+      let name = value.body[0].symVal
+      if validModuleRefName(name) and not seen.containsOrIncl(name):
+        names.add name
+    let childInFunction = inFunction or value.head.isSymbol("fn")
+    collectModuleRefNames(value.head, names, seen, inFunction)
+    for _, item in value.props:
+      collectModuleRefNames(item, names, seen, childInFunction)
+    for item in value.body:
+      collectModuleRefNames(item, names, seen, childInFunction)
+    for _, item in value.meta:
+      collectModuleRefNames(item, names, seen, childInFunction)
+  of vkList:
+    for item in value.listItems:
+      collectModuleRefNames(item, names, seen, inFunction)
+  of vkMap:
+    for _, item in value.mapEntries:
+      collectModuleRefNames(item, names, seen, inFunction)
+  of vkHashMap:
+    for entry in value.hashMapEntries:
+      collectModuleRefNames(entry.key, names, seen, inFunction)
+      collectModuleRefNames(entry.val, names, seen, inFunction)
+  else:
+    discard
+
 proc compileFormsInto(c: var Compiler, forms: openArray[Value],
                       useLocalSlots: bool): Chunk =
   # A top-level-form label only adds information for a multi-form source unit.
@@ -8142,6 +8244,9 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
         c.chunk.topLevelForms.add topLevelFormInfo(form, c.formLocs[i])
   for form in forms:
     collectMutableBindingNames(form, c.mutableBindingNames)
+  var seenModuleRefs = initHashSet[string]()
+  for form in forms:
+    collectModuleRefNames(form, c.chunk.moduleRefNames, seenModuleRefs)
   if c.ownCompileInterface == nil:
     c.ownCompileInterface = buildCompileInterface(forms, c.sourceName)
   if useLocalSlots:

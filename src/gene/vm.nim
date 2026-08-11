@@ -753,6 +753,7 @@ proc newScope*(parent: Scope = nil,
     if parent != nil: parent.evalBudget
     else: nil
   Scope(application: owner, parent: parent, evalBudget: budget,
+        moduleRefs: (if parent != nil: parent.moduleRefs else: nil),
         borrowedCallerEnv: parent != nil and parent.borrowedCallerEnv)
 
 proc registerOwnedActor(scope: Scope, actor: Value) =
@@ -903,6 +904,27 @@ proc prepareSlots(scope: Scope, names: seq[string], mirror = false) =
   scope.slotNames = names
   scope.slotMirror = mirror
 
+proc moduleRefRootScope(scope: Scope): Scope =
+  var current = scope
+  var outermost = scope
+  while current != nil:
+    outermost = current
+    if current.moduleRoot:
+      return current
+    current = current.parent
+  outermost
+
+proc ensureModuleRefEntry(scope: Scope, name: string): ModuleRefEntry =
+  let root = scope.moduleRefRootScope()
+  if root.moduleRefs == nil:
+    root.moduleRefs = ModuleRefTable(
+      entries: initTable[string, ModuleRefEntry]())
+  scope.moduleRefs = root.moduleRefs
+  if not root.moduleRefs.entries.hasKey(name):
+    root.moduleRefs.entries[name] =
+      ModuleRefEntry(name: name, state: mrsUnresolved, value: NIL)
+  root.moduleRefs.entries[name]
+
 proc prepareChunkScope(scope: Scope, chunk: Chunk) =
   if chunk.localNames.len > 0:
     if scope.slots.len == 0:
@@ -924,6 +946,8 @@ proc prepareChunkScope(scope: Scope, chunk: Chunk) =
         "chunks with useLocalSlots = false to share one scope.")
   for name in chunk.exportExcludedNames:
     scope.exportExcludedNames.incl name
+  for name in chunk.moduleRefNames:
+    discard scope.ensureModuleRefEntry(name)
 
 
 proc refreshCompiledUnitEntry(scope: Scope) =
@@ -3042,6 +3066,157 @@ proc builtInTypeHead(scope: Scope, name: string): Value =
       return typ
   newSym(name)
 
+proc raiseModuleRefError(scope: Scope, typeName, name, message: string) =
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  props["name"] = newStr(name)
+  var e: ref GeneError
+  new(e)
+  e.msg = message
+  e.errVal = newNode(builtInTypeHead(scope, typeName), props = props)
+  e.hasErrVal = true
+  raise e
+
+proc patchModuleRefScope(scope: Scope, name: string, target: Value,
+                         seenScopes: var HashSet[pointer],
+                         seenValues: var HashSet[uint64])
+
+proc patchModuleRefValue(value: Value, name: string, target: Value,
+                         seenScopes: var HashSet[pointer],
+                         seenValues: var HashSet[uint64]): Value =
+  result = patchPendingModuleRef(value, name, target, seenValues)
+  if result.kind == vkFunction:
+    patchModuleRefScope(result.fnScope, name, target, seenScopes, seenValues)
+  elif result.kind == vkNamespace:
+    patchModuleRefScope(result.nsScope, name, target, seenScopes, seenValues)
+  elif result.kind == vkModule and result.moduleRootNamespace.kind == vkNamespace:
+    patchModuleRefScope(result.moduleRootNamespace.nsScope, name, target,
+                        seenScopes, seenValues)
+
+proc patchModuleRefScope(scope: Scope, name: string, target: Value,
+                         seenScopes: var HashSet[pointer],
+                         seenValues: var HashSet[uint64]) =
+  if scope == nil or seenScopes.containsOrIncl(cast[pointer](scope)):
+    return
+  for i in 0 ..< scope.slots.len:
+    if scope.slotDefined(i):
+      scope.slots[i] = patchModuleRefValue(scope.slots[i], name, target,
+                                           seenScopes, seenValues)
+  var varNames: seq[string]
+  for key in scope.vars.keys:
+    varNames.add key
+  for key in varNames:
+    scope.vars[key] = patchModuleRefValue(scope.vars[key], name, target,
+                                          seenScopes, seenValues)
+
+proc patchResolvedModuleRef(root: Scope, name: string, target: Value) =
+  var seenScopes = initHashSet[pointer]()
+  var seenValues = initHashSet[uint64]()
+  if root.moduleRefs != nil:
+    for _, entry in root.moduleRefs.entries:
+      if entry.state == mrsResolved:
+        entry.value = patchModuleRefValue(entry.value, name, target,
+                                          seenScopes, seenValues)
+  patchModuleRefScope(root, name, target, seenScopes, seenValues)
+
+proc beginModuleRef(scope: Scope, name: string) =
+  let entry = scope.ensureModuleRefEntry(name)
+  case entry.state
+  of mrsUnresolved:
+    entry.state = mrsResolving
+  of mrsResolving:
+    raiseModuleRefError(scope, "CircularRefResolution", name,
+      "circular module reference resolution: " & name)
+  of mrsResolved:
+    raiseModuleRefError(scope, "RefAlreadyResolved", name,
+      "module reference is already resolved: " & name)
+
+proc finishModuleRef(scope: Scope, name: string, value: Value): Value =
+  let root = scope.moduleRefRootScope()
+  let entry =
+    if root.moduleRefs == nil: nil
+    else: root.moduleRefs.entries.getOrDefault(name)
+  if entry == nil or entry.state != mrsResolving:
+    raiseModuleRefError(scope, "InvalidRefDefinition", name,
+      "module reference is not being resolved: " & name)
+  var seen = initHashSet[uint64]()
+  if containsPendingModuleRef(value, name, seen):
+    raiseModuleRefError(scope, "InvalidRefDefinition", name,
+      "cyclic module reference structures are not supported yet: " & name)
+  entry.value = functionForScopeStorage(value, root)
+  entry.state = mrsResolved
+  root.patchResolvedModuleRef(name, entry.value)
+  if entry.structuralPending:
+    entry.structuralPending = false
+    dec root.moduleRefs.pendingStructural
+  entry.value
+
+proc abortModuleRef(scope: Scope, name: string) =
+  let root = scope.moduleRefRootScope()
+  let entry =
+    if root.moduleRefs == nil: nil
+    else: root.moduleRefs.entries.getOrDefault(name)
+  if entry != nil and entry.state == mrsResolving:
+    entry.value = NIL
+    entry.state = mrsUnresolved
+
+proc getModuleRef(scope: Scope, name: string, structural: bool): Value =
+  let root = scope.moduleRefRootScope()
+  let entry =
+    if root.moduleRefs == nil: nil
+    else: root.moduleRefs.entries.getOrDefault(name)
+  if entry == nil:
+    if structural:
+      let declared = scope.ensureModuleRefEntry(name)
+      declared.structuralPending = true
+      inc root.moduleRefs.pendingStructural
+      return newPendingModuleRef(name)
+    raiseModuleRefError(scope, "UnknownRef", name,
+      "unknown module reference: " & name)
+  case entry.state
+  of mrsResolved:
+    entry.value
+  of mrsResolving:
+    if structural:
+      if not entry.structuralPending:
+        entry.structuralPending = true
+        inc root.moduleRefs.pendingStructural
+      newPendingModuleRef(name)
+    else:
+      raiseModuleRefError(scope, "CircularRefResolution", name,
+        "circular module reference resolution: " & name)
+      NIL
+  of mrsUnresolved:
+    if structural:
+      if not entry.structuralPending:
+        entry.structuralPending = true
+        inc root.moduleRefs.pendingStructural
+      newPendingModuleRef(name)
+    else:
+      raiseModuleRefError(scope, "RefNotResolved", name,
+        "module reference is not resolved: " & name)
+      NIL
+
+proc materializedModuleRefValue(scope: Scope, value: Value): Value {.inline.} =
+  ## The overwhelmingly common path is one nil pointer check. Only a module
+  ## currently carrying unresolved structural slots pays for inspecting the
+  ## loaded value itself.
+  if scope.moduleRefs == nil or scope.moduleRefs.pendingStructural == 0 or
+      not value.isPendingModuleRef:
+    return value
+  getModuleRef(scope, value.pendingModuleRefName, structural = false)
+
+proc validatePatchedModuleRefGraphs(scope: Scope)
+
+proc validateModuleRefsResolved(scope: Scope) =
+  let root = scope.moduleRefRootScope()
+  if root.moduleRefs != nil:
+    for name, entry in root.moduleRefs.entries:
+      if entry.state != mrsResolved:
+        raiseModuleRefError(scope, "RefNotResolved", name,
+          "module reference remains unresolved at publication: " & name)
+  validatePatchedModuleRefGraphs(root)
+
 proc readContextValues(frames: openArray[ReadContextFrame]): Value =
   var values: seq[Value]
   for frame in frames:
@@ -4252,6 +4427,100 @@ proc validateTypedNodeParts(typ: Value, props: var PropTable,
     for i in restBody ..< bodyLen:
       body[i] = adaptBoundary("body field " & $i & " for " & typeName,
                               restType.typeExpr, body[i], fieldScope)
+
+proc validatePatchedModuleRefValue(value: Value, root: Scope,
+                                   seenValues: var HashSet[uint64],
+                                   seenScopes: var HashSet[pointer])
+
+proc validatePatchedModuleRefScope(scope, root: Scope,
+                                   seenValues: var HashSet[uint64],
+                                   seenScopes: var HashSet[pointer]) =
+  if scope == nil or seenScopes.containsOrIncl(cast[pointer](scope)):
+    return
+  scope.materializeMirroredVars()
+  for _, value in scope.vars:
+    validatePatchedModuleRefValue(value, root, seenValues, seenScopes)
+  for i, value in scope.slots:
+    if scope.slotDefined(i):
+      validatePatchedModuleRefValue(value, root, seenValues, seenScopes)
+
+proc validatePatchedModuleRefValue(value: Value, root: Scope,
+                                   seenValues: var HashSet[uint64],
+                                   seenScopes: var HashSet[pointer]) =
+  ## Resolution has replaced every structural fixup before this cold module
+  ## publication pass. Walk the resulting object graph both to prove that no
+  ## internal placeholder escaped and to apply typed-field boundaries that had
+  ## to be deferred while a forward target was unknown.
+  if value.isPendingModuleRef:
+    let name = value.pendingModuleRefName
+    raiseModuleRefError(root, "RefNotResolved", name,
+      "module reference fixup remains unresolved at publication: " & name)
+  if value.isHeapBacked and seenValues.containsOrIncl(value.bits):
+    return
+  case value.kind
+  of vkFunction:
+    validatePatchedModuleRefScope(value.fnScope, root, seenValues, seenScopes)
+  of vkList:
+    for item in value.listItems:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+  of vkMap:
+    for _, item in value.mapEntries:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+  of vkSet:
+    var checked: seq[Value]
+    for item in value.setItems:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+      requireHashStableKey("module reference set fixup", item)
+      if findEqualValue(checked, item) >= 0:
+        raise newException(GeneError,
+          "module reference fixup creates duplicate Set items")
+      checked.add item
+  of vkHashMap:
+    var checked: seq[HashMapEntry]
+    for entry in value.hashMapEntries:
+      validatePatchedModuleRefValue(entry.key, root, seenValues, seenScopes)
+      validatePatchedModuleRefValue(entry.val, root, seenValues, seenScopes)
+      requireHashStableKey("module reference map fixup", entry.key)
+      if findHashMapKey(checked, entry.key) >= 0:
+        raise newException(GeneError,
+          "module reference fixup creates duplicate general-map keys")
+      checked.add entry
+  of vkNode:
+    validatePatchedModuleRefValue(value.head, root, seenValues, seenScopes)
+    for _, item in value.props:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+    for item in value.body:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+    for _, item in value.meta:
+      validatePatchedModuleRefValue(item, root, seenValues, seenScopes)
+    if value.head.kind == vkType:
+      var props = copyEntries(value.props)
+      var body = copyItems(value.body)
+      validateTypedNodeParts(value.head, props, body, tnvmMutation)
+      value.setNodePartsAfterModuleRefPatch(props, body)
+  of vkNamespace:
+    validatePatchedModuleRefScope(value.nsScope, root, seenValues, seenScopes)
+  of vkModule:
+    if value.moduleRootNamespace.kind == vkNamespace:
+      validatePatchedModuleRefScope(value.moduleRootNamespace.nsScope, root,
+                                    seenValues, seenScopes)
+  of vkCell:
+    validatePatchedModuleRefValue(value.cellValue, root,
+                                  seenValues, seenScopes)
+  of vkAtomicCell:
+    validatePatchedModuleRefValue(value.atomicCellValue, root,
+                                  seenValues, seenScopes)
+  else:
+    discard
+
+proc validatePatchedModuleRefGraphs(scope: Scope) =
+  var seenValues = initHashSet[uint64]()
+  var seenScopes = initHashSet[pointer]()
+  if scope.moduleRefs != nil:
+    for _, entry in scope.moduleRefs.entries:
+      if entry.state == mrsResolved:
+        validatePatchedModuleRefValue(entry.value, scope, seenValues, seenScopes)
+  validatePatchedModuleRefScope(scope, scope, seenValues, seenScopes)
 
 proc writeUpdateChild(name: string, target, segment, value: Value): Value =
   if value.kind != vkVoid:
@@ -6189,6 +6458,17 @@ proc buildBuiltins(app: Application): Scope =
   # matches, and carries where/receiver_type/message diagnostics.
   let messageError = newType("MessageError", typeError, @[], @[], result)
   result.define("MessageError", messageError)
+  let refError = newType("RefError", NIL,
+                         @[TypeField(name: "message", optional: false,
+                                     typeExpr: newSym("Str"), scope: result),
+                           TypeField(name: "name", optional: false,
+                                     typeExpr: newSym("Str"), scope: result)],
+                         @[errorProtocol], result)
+  result.define("RefError", refError)
+  result.impls.add ProtocolImpl(protocol: errorProtocol, receiver: refError)
+  for name in ["UnknownRef", "RefNotResolved", "RefAlreadyResolved",
+               "CircularRefResolution", "InvalidRefDefinition"]:
+    result.define(name, newType(name, refError, @[], @[], result))
   # Scalars carry no messages, but they register through the same funnel so
   # every built-in type identity lands in `gBuiltinSurfaceTypes`. These kinds
   # are exactly `LeafValueKinds`; the two definitions are one rule.
@@ -11875,16 +12155,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opPushConst:
           spush chunk.constants[inst[].intArg]
         of opLoadName:
-          spush scope.lookup(inst[].name)
+          spush materializedModuleRefValue(scope, scope.lookup(inst[].name))
         of opLoadNativeFast:
           spush scope.loadNativeFast(NativeFastKind(inst[].intArg), inst[].name)
         of opLoadLocal:
           let slot = inst[].intArg
           if slot >= 0 and slot < scope.slots.len and scope.slotDefined(slot):
-            spush scope.slots[slot]
+            spush materializedModuleRefValue(scope, scope.slots[slot])
           else:
-            spush scope.loadSlot(slot, inst[].name)
+            spush materializedModuleRefValue(
+              scope, scope.loadSlot(slot, inst[].name))
         of opLoadLocalFast:
+          # A proven typed local cannot contain an unresolved structural ref;
+          # keeping this hot opcode branch-free matters to typed call dispatch.
           spush scope.slots[inst[].intArg]
         of opLoadArg:
           # Scopeless calls: arguments live on the shared operand stack at the
@@ -11899,9 +12182,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               scope.scopeAtDepth(inst[].depth, inst[].name)
           if outer != nil and slot >= 0 and slot < outer.slots.len and
               outer.slotDefined(slot):
-            spush outer.slots[slot]
+            spush materializedModuleRefValue(scope, outer.slots[slot])
           else:
-            spush scope.loadSlotAt(inst[].depth, slot, inst[].name)
+            spush materializedModuleRefValue(
+              scope, scope.loadSlotAt(inst[].depth, slot, inst[].name))
         of opDefineName:
           if sp == 0:
             raise newException(GeneError, "VM stack underflow in var")
@@ -11934,6 +12218,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           rejectCallerEnvEscape("set outer binding '" & inst[].name & "'",
                                 stack[sp - 1])
           scope.assignSlotAt(inst[].depth, inst[].intArg, inst[].name, stack[sp - 1])
+        of opRefBegin:
+          scope.beginModuleRef(inst[].name)
+        of opRefFinish:
+          if sp == 0:
+            raise newException(GeneError,
+              "VM stack underflow resolving module reference")
+          stack[sp - 1] = scope.finishModuleRef(inst[].name, stack[sp - 1])
+        of opRefAbort:
+          scope.abortModuleRef(inst[].name)
+        of opRefGet:
+          spush scope.getModuleRef(inst[].name, structural = false)
+        of opRefGetStructural:
+          spush scope.getModuleRef(inst[].name, structural = true)
         of opPop:
           discard spop()
         of opMakeList:
@@ -12036,13 +12333,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError, "VM stack underflow in selector apply")
           let target = spop()
           let selector = spop()
-          spush applySelector(selector, target)
+          spush materializedModuleRefValue(
+            scope, applySelector(selector, target))
         of opApplySelectorTop:
           if sp < 2:
             raise newException(GeneError, "VM stack underflow in selector apply")
           let selector = spop()
           let target = spop()
-          spush applySelector(selector, target)
+          spush materializedModuleRefValue(
+            scope, applySelector(selector, target))
         of opMakeFn:
           let proto = chunk.functions[inst[].intArg]
           let errorTypes = stack.popCheckedErrorTypes(sp, proto.errorTypeCount, scope)
@@ -14686,6 +14985,10 @@ proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
       raise newException(GeneError, "internal: scheduler pause outside a fiber")
     if stopped.kind == rskCancel:
       raise newException(GeneCancel, "task was cancelled")
+    # Check the live table rather than only the pre-scan list: macro expansion
+    # can introduce a reference form after source-unit collection.
+    if scope.moduleRefs != nil:
+      scope.validateModuleRefsResolved()
     stopped.value
 
 proc runReplSession*(scope: Scope,
@@ -23011,6 +23314,10 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
   # One funnel for `(T ...)`, `construct_type`, and serde's `serde_inst`, so a
   # wrapper cannot be materialized as replayable data by any of them.
   rejectNativeWrapperConstruction(callee, "direct construction")
+  template adaptRefField(label: string, typeExpr: Value, value: Value,
+                         fieldScope: Scope): Value =
+    (if value.isPendingModuleRef: value
+     else: adaptBoundary(label, typeExpr, value, fieldScope))
   let fields = callee.typeFields
   let bodyFields = callee.typeBodyFields
   if args.len != 0 and bodyFields.len == 0:
@@ -23029,9 +23336,8 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
         $bodyFields.len & " body item(s), got " & $args.len)
     for i, f in bodyFields:
       let fieldScope = f.typeBodyFieldScope(callee.typeScope)
-      body.add adaptBoundary("body field " & $i & " for " &
-                             callee.typeName, f.typeExpr, args[i],
-                             fieldScope)
+      body.add adaptRefField("body field " & $i & " for " &
+                             callee.typeName, f.typeExpr, args[i], fieldScope)
   else:
     if args.len < restBody:
       raise newException(GeneError,
@@ -23040,13 +23346,12 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
     for i in 0 ..< restBody:
       let f = bodyFields[i]
       let fieldScope = f.typeBodyFieldScope(callee.typeScope)
-      body.add adaptBoundary("body field " & $i & " for " &
-                             callee.typeName, f.typeExpr, args[i],
-                             fieldScope)
+      body.add adaptRefField("body field " & $i & " for " &
+                             callee.typeName, f.typeExpr, args[i], fieldScope)
     let restType = bodyFields[restBody]
     let fieldScope = restType.typeBodyFieldScope(callee.typeScope)
     for i in restBody ..< args.len:
-      body.add adaptBoundary("body field " & $i & " for " &
+      body.add adaptRefField("body field " & $i & " for " &
                              callee.typeName, restType.typeExpr, args[i],
                              fieldScope)
   var props = initPropTable()
@@ -23061,7 +23366,7 @@ proc constructTypedInstance(callee: Value, args: openArray[Value],
       else:
         let fieldScope = f.typeFieldScope(callee.typeScope)
         props.putById(f.nameId,
-                      adaptBoundary("field '" & f.name & "' for " &
+                      adaptRefField("field '" & f.name & "' for " &
                                     callee.typeName, f.typeExpr, value,
                                     fieldScope))
     elif not f.optional:
@@ -23380,7 +23685,9 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       raise newException(GeneError, "selector calls do not accept named arguments")
     if args.len != 1:
       raise newException(GeneError, "selector expects 1 argument, got " & $args.len)
-    applySelector(callee, args[0])
+    let selected = applySelector(callee, args[0])
+    if dispatchScope == nil: selected
+    else: materializedModuleRefValue(dispatchScope, selected)
   else:
     raise newException(GeneError, "value is not callable: " & $callee.kind)
 

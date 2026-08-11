@@ -8260,6 +8260,36 @@ suite "spec — serde data core (docs/serialization.md stage 1)":
                "(== evil2 (read_data (write_data evil2)))",
                "true")
 
+  test "shared identity-bearing values use #Ref/#Deref and preserve identity":
+    check_eval("(import $serde [write_data read_data]) " &
+               "(import $str [contains?]) " &
+               "(var shared [1 2]) (var value [shared shared]) " &
+               "(var text (write_data value)) " &
+               "(var rt (read_data text)) " &
+               "[(contains? text \"#Ref serde_ref_1\") " &
+               " (contains? text \"#Deref serde_ref_1\") " &
+               " (same? (rt ~ first) (rt ~ last))]",
+               "[true true true]")
+
+  test "repeated identity-free values stay inline":
+    check_eval("(import $serde [write_data read_data]) " &
+               "(import $str [contains?]) " &
+               "(var text_value \"same\") " &
+               "(var text (write_data [42 42 true true nil nil " &
+               "                           text_value text_value])) " &
+               "[(contains? text \"#Ref\") " &
+               " (== (read_data text) " &
+               "     [42 42 true true nil nil \"same\" \"same\"])]",
+               "[false true]")
+
+  test "unsupported cycles fail explicitly":
+    check_eval("(import $serde [write_data SerdeError]) " &
+               "(import $str [contains?]) " &
+               "(var cyclic [nil]) (cyclic ~ set 0 cyclic) " &
+               "(try (write_data cyclic) " &
+               " catch (SerdeError ^message m) (contains? m \"cycle\"))",
+               "true")
+
   test "float specials use canonical serde_float forms":
     check_eval("(import $serde [write_data read_data]) " &
                "(import $str [contains?]) " &

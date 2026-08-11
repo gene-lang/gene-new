@@ -54,6 +54,23 @@ suite "modules — file imports":
     writeModule("math.gene", "(var pi 3)")
     check runProgram("(import pi from \"./math\") pi").print() == "3"
 
+  test "module reference tables are isolated by defining module":
+    writeModule("refs_a.gene",
+      "#Ref shared [1]\n(fn get_shared [] ($deref shared))")
+    writeModule("refs_b.gene",
+      "#Ref shared [2]\n(fn get_shared [] ($deref shared))")
+    check runProgram(
+      "(import [get_shared : get_a] from \"./refs_a\") " &
+      "(import [get_shared : get_b] from \"./refs_b\") " &
+      "(var a (get_a)) (var b (get_b)) " &
+      "[(a ~ first) (b ~ first) (same? a b)]").print() ==
+      "[1 2 false]"
+
+  test "a module with unresolved structural fixups is not published":
+    writeModule("bad_refs.gene", "(var pending #Deref never)")
+    expect GeneError:
+      discard runProgram("(import * from \"./bad_refs\")")
+
   test "typed-native layout metadata crosses a selected module import":
     writeModule("native_layout.gene",
       "(ffi/struct CTimespec " &

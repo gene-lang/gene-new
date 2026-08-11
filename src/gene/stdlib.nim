@@ -6630,6 +6630,9 @@ type SerdeWriter = object
   allowRefs: bool                   # serde/write emits refs; write_data errors
   path: seq[string]
   onPath: HashSet[uint64]           # container identities on the current path
+  shareCounts: Table[uint64, int]   # identity-bearing occurrence counts
+  shareNames: Table[uint64, string] # generated simple snake_case ref names
+  shareEmitted: HashSet[uint64]     # first occurrence already emitted as #Ref
   symCache: Table[string, bool]     # symbol text -> re-reads verbatim
   keyCache: Table[string, bool]     # prop key -> usable as ^key literal
 
@@ -6641,6 +6644,8 @@ type SerdeReader = object
   nodes: int
   symbols: HashSet[string]
   path: seq[string]
+  refs: Table[string, Value]        # local #Ref/#Deref serialization unit
+  resolvingRefs: HashSet[string]
 
 proc serdePathText(path: seq[string]): string =
   if path.len == 0: "payload" else: path.join("/")
@@ -6811,6 +6816,67 @@ proc serdeOriginOf(w: var SerdeWriter, v: Value):
   else:
     (false, "", "")
 
+proc serdeIdentityBearing(v: Value): bool {.inline.} =
+  ## Module refs may explicitly name scalars, but generated serialization refs
+  ## are useful only where Gene exposes object identity.
+  v.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode}
+
+proc serdeCountSharing(w: var SerdeWriter, v: Value,
+                       visited, onPath: var HashSet[uint64]) =
+  if not serdeIdentityBearing(v):
+    return
+  if v.bits in onPath:
+    raiseSerdeError(w.scope,
+      "cycle detected (cyclic serialization is not supported yet)", w.path)
+  w.shareCounts[v.bits] = w.shareCounts.getOrDefault(v.bits) + 1
+  if visited.containsOrIncl(v.bits):
+    return
+  onPath.incl v.bits
+  case v.kind
+  of vkList:
+    for item in v.listItems:
+      serdeCountSharing(w, item, visited, onPath)
+  of vkMap:
+    for _, item in v.mapEntries:
+      serdeCountSharing(w, item, visited, onPath)
+  of vkSet:
+    for item in v.setItems:
+      serdeCountSharing(w, item, visited, onPath)
+  of vkHashMap:
+    for entry in v.hashMapEntries:
+      serdeCountSharing(w, entry.key, visited, onPath)
+      serdeCountSharing(w, entry.val, visited, onPath)
+  of vkNode:
+    serdeCountSharing(w, v.head, visited, onPath)
+    for _, item in v.props:
+      serdeCountSharing(w, item, visited, onPath)
+    for item in v.body:
+      serdeCountSharing(w, item, visited, onPath)
+    for _, item in v.meta:
+      serdeCountSharing(w, item, visited, onPath)
+  else:
+    discard
+  onPath.excl v.bits
+
+proc serdePrepareSharing(w: var SerdeWriter, v: Value) =
+  var visited = initHashSet[uint64]()
+  var onPath = initHashSet[uint64]()
+  serdeCountSharing(w, v, visited, onPath)
+
+proc serdeEmitSharedPrefix(w: var SerdeWriter, v: Value): bool =
+  ## Returns true when this occurrence was completely emitted as #Deref.
+  if not serdeIdentityBearing(v) or w.shareCounts.getOrDefault(v.bits) < 2:
+    return false
+  var name = w.shareNames.getOrDefault(v.bits)
+  if name.len == 0:
+    name = "serde_ref_" & $(w.shareNames.len + 1)
+    w.shareNames[v.bits] = name
+  if w.shareEmitted.containsOrIncl(v.bits):
+    w.sb.add "#Deref " & name
+    return true
+  w.sb.add "#Ref " & name & " "
+  false
+
 proc serdeEmit(w: var SerdeWriter, v: Value)
 proc serdeEmitInst(w: var SerdeWriter, v: Value)
 
@@ -6887,7 +6953,9 @@ proc serdeEmitMapValue(w: var SerdeWriter, entries: PropTable,
     serdeEmitEscapedMap(w, entries, immutable)
 
 proc serdeNodeNeedsEscape(w: var SerdeWriter, v: Value): bool =
-  if v.head.kind == vkSymbol and v.head.symVal.startsWith(serdeReservedPrefix):
+  if v.head.kind == vkSymbol and
+      (v.head.symVal.startsWith(serdeReservedPrefix) or
+       v.head.symVal in ["#Ref", "#Deref"]):
     return true
   for k, _ in v.props:
     if not serdePropKeyUsable(w, k):
@@ -6900,6 +6968,8 @@ proc serdeNodeNeedsEscape(w: var SerdeWriter, v: Value): bool =
 proc serdeEmit(w: var SerdeWriter, v: Value) =
   if v.isNil:
     w.sb.add "nil"
+    return
+  if serdeEmitSharedPrefix(w, v):
     return
   case v.kind
   of vkNil, vkVoid, vkBool, vkInt, vkString, vkBytes, vkChar,
@@ -7248,6 +7318,7 @@ proc serdeDataValueP(v: Value): bool =
 
 proc serdeWriteDataText(v: Value, scope: Scope): string =
   var w = SerdeWriter(scope: scope)
+  serdePrepareSharing(w, v)
   w.sb.add "(serde_v1 "
   serdeEmit(w, v)
   w.sb.add ')'
@@ -7256,6 +7327,7 @@ proc serdeWriteDataText(v: Value, scope: Scope): string =
 proc serdeWriteFullText(v: Value, scope: Scope): string =
   var w = SerdeWriter(scope: scope, allowRefs: true,
                       app: application(scope))
+  serdePrepareSharing(w, v)
   w.sb.add "(serde_v1 "
   serdeEmit(w, v)
   w.sb.add ')'
@@ -7306,6 +7378,33 @@ proc serdeLimitsFrom(policy: Value, scope: Scope): SerdePolicyLimits =
                                         result.allowRestore, scope)
 
 proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value
+
+proc serdeLocalRefName(r: var SerdeReader, v: Value, tag: string,
+                       bodyLen: int): string =
+  if v.props.len != 0 or v.meta.len != 0 or v.body.len != bodyLen or
+      v.body[0].kind != vkSymbol:
+    raiseSerdeError(r.scope, tag & " has an invalid reference shape", r.path)
+  result = v.body[0].symVal
+
+proc serdeDecodeLocalRef(r: var SerdeReader, v: Value, depth: int): Value =
+  let tag = v.head.symVal
+  if tag == "#Deref":
+    let name = serdeLocalRefName(r, v, tag, 1)
+    if r.refs.hasKey(name):
+      return r.refs[name]
+    if name in r.resolvingRefs:
+      raiseSerdeError(r.scope,
+        "cyclic #Ref/#Deref payloads are not supported yet", r.path)
+    raiseSerdeError(r.scope, "unresolved #Deref: " & name, r.path)
+  let name = serdeLocalRefName(r, v, tag, 2)
+  if r.refs.hasKey(name) or name in r.resolvingRefs:
+    raiseSerdeError(r.scope, "duplicate #Ref: " & name, r.path)
+  r.resolvingRefs.incl name
+  try:
+    result = serdeDecode(r, v.body[1], depth + 1)
+    r.refs[name] = result
+  finally:
+    r.resolvingRefs.excl name
 
 proc serdeCountValue(r: var SerdeReader, depth: int) =
   inc r.nodes
@@ -7729,6 +7828,8 @@ proc serdeDecode(r: var SerdeReader, v: Value, depth: int): Value =
       entries.add HashMapEntry(key: k, val: value)
     newHashMap(entries)
   of vkNode:
+    if v.head.kind == vkSymbol and v.head.symVal in ["#Ref", "#Deref"]:
+      return serdeDecodeLocalRef(r, v, depth)
     if v.head.kind == vkSymbol and
         v.head.symVal.startsWith(serdeReservedPrefix):
       return serdeDecodeControl(r, v, v.head.symVal, depth)

@@ -212,6 +212,32 @@ suite "reader — reserved '#' forms are rejected":
     check read("#\"\\d+\"").print() == "#\"\\d+\""
     check read("#B64#SGk=").print() == "#B16#4869"  # bytes print canonically
 
+suite "reader — module references":
+  test "reference forms are single prefix values and print canonically":
+    check_read("#Ref shared [1 2]", "#Ref shared [1 2]")
+    check_read("#Deref shared", "#Deref shared")
+    check_read("[#Ref shared [1 2] #Deref shared]",
+               "[#Ref shared [1 2] #Deref shared]")
+
+  test "reference names are literal simple snake_case symbols":
+    for source in ["#Ref CamelCase 1", "#Ref kebab-case 1",
+                   "#Ref path/name 1", "#Ref 12 1",
+                   "#Deref CamelCase", "#Deref path/name"]:
+      expect ReadError:
+        discard read(source)
+
+  test "reference forms require their fixed operands":
+    expect ReadIncompleteError:
+      discard read("#Ref shared")
+    expect ReadIncompleteError:
+      discard read("#Deref")
+
+  test "longer hash words remain reserved":
+    expect ReadError:
+      discard read("#Reference shared 1")
+    expect ReadError:
+      discard read("#Dereference shared")
+
 suite "reader — datum comments are spacing":
   test "discards next top-level form":
     check readAll("#_ (a) (b)").len == 1
