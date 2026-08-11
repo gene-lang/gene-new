@@ -143,8 +143,13 @@ def main() -> int:
     }), encoding="utf-8")
 
     model = TinyGeneModel(cfg).to(args.device)
+    # These runs are normally detached (tmux/nohup) with stdout redirected to
+    # a file, where print() is block-buffered -- without flush the log looks
+    # empty for the whole run and a live job is indistinguishable from a hung
+    # one. train_log.jsonl is already flushed per record for the same reason.
     print(f"[{args.arm}] vocab_size={cfg.vocab_size} params={model.num_parameters():,} "
-          f"train_tokens={len(train_stream):,} val_tokens={len(val_stream):,} device={args.device}")
+          f"train_tokens={len(train_stream):,} val_tokens={len(val_stream):,} device={args.device}",
+          flush=True)
 
     train_ds = ChunkDataset(train_stream, args.context_len, args.samples_per_epoch)
     val_ds = ChunkDataset(val_stream, args.context_len, args.samples_per_epoch)
@@ -173,7 +178,8 @@ def main() -> int:
                               "elapsed_s": elapsed, "tokens_per_s": step * args.batch_size *
                               args.context_len / max(elapsed, 1e-9)}
                     print(f"step {step}/{args.steps}  train_loss={loss.item():.4f}  "
-                          f"val_loss={val_loss:.4f}  {record['tokens_per_s']:.0f} tok/s")
+                          f"val_loss={val_loss:.4f}  {record['tokens_per_s']:.0f} tok/s",
+                          flush=True)
                     log_f.write(json.dumps(record) + "\n")
                     log_f.flush()
                     torch.save({"model": model.state_dict(), "config": cfg.__dict__, "step": step},

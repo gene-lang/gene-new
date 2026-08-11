@@ -1,10 +1,12 @@
 # Reversible AI-Native Gene Program Format
 
 Status: durable format v0 implemented and passing its provisional gates
-(2026-08-10); model-training track (below, Steps 6-9 and the appendix) not
-started. Non-textual program modality for training models, with a durable
-encoding that loads faster than `.gene` and translates back to canonical
-`.gene`.
+(2026-08-10); model-training track (Steps 6-7) has its pipeline and scoring
+harness built and a first matched from-scratch pilot run, closing three
+pre-registered gates and firing one routing rule (see "Model-training track
+status" below); Steps 8-9 and the appendix not started. Non-textual program modality for training models, with
+a durable encoding that loads faster than `.gene` and translates back to
+canonical `.gene`.
 
 **Durable format v0** (`src/gene/program_document.nim`,
 `src/gene/packed_format.nim`, `tests/test_program_document.nim`,
@@ -21,17 +23,29 @@ structural for node/list/map/hash-map and falls back to a coarser
 whole-form anchor (never a silent drop) for quasiquote/unquote/interpolation
 sugar and any other shape this module doesn't finely resolve.
 
-Verified over every `.gene` file in `examples/` and `tests/` (199 files):
-zero crashes, zero dropped comment bytes, and full round-trip/idempotence/
-semantic-equivalence on all but 28 files, whose gap is a single fully
-diagnosed, pre-existing bug in Gene's own reader/printer, independent of
-this module (reproduces with plain `reader.nim`/`printer.nim`, nothing
-routed through this format): a glued `~word` path segment (e.g.
-`obj/~method`) is glued into one symbol only during slash-path lexing, and
-splits into two tokens when the same spelling is reread as an ordinary
-space-separated node body -- affecting `gene parse`'s existing canonical
-printer too, not introduced here. Not yet fixed; tracked as a follow-up, not
-blocking this proposal.
+Verified over every `.gene` file in `examples/` and `tests/`: zero crashes,
+zero dropped comment bytes, and full round-trip/idempotence/semantic
+equivalence on every file, with no exclusions.
+
+Reaching "every file" required fixing two pre-existing reader/printer bugs
+that this verification surfaced. Both reproduce with plain
+`reader.nim`/`printer.nim` -- nothing routed through this format -- and both
+affected `gene parse`'s existing canonical printer, so neither was
+introduced here:
+
+- A glued `~word` path segment (e.g. `obj/~method`) was glued into one
+  symbol only during slash-path lexing, and split into two tokens when the
+  same spelling was reread as an ordinary node body element. The reader now
+  lexes `~` glued to a symbol character as one symbol everywhere; a spaced
+  `~` is still the send operator (design §2.1).
+- A bare `%` path segment produced an unquoted *empty* symbol, which the
+  printer could not write back out, and silently swallowed the following
+  form: `(!= xs/%(- i 1) "\n")` read as a three-argument `!=` whose second
+  argument was the index expression. Design §2.1 already declared that short
+  syntax invalid, so it is now a read error at the right column rather than
+  a silent mis-parse. One real occurrence existed in this repo
+  (`examples/ai_agent/src/tui.gene`), a latent wrong-arity bug that raised
+  nothing; it is fixed.
 
 The Step-3 load-speed benchmark passed on a provisional corpus (this repo's
 own `.gene` files, not yet the full committed manifest with generated
@@ -42,6 +56,75 @@ comfortably above both the 0.95x per-class floor and the 2x overall bar.
 Because the full manifest-gated corpus and fuzz-testing pass are still
 open, this is "v0 implemented and passing its provisional gates," not yet
 the Step-5 "frozen durable format version 1."
+
+### Model-training track status
+
+Steps 6-7 exist as working infrastructure (`src/gene/document_units.nim` and
+its `gene docunits` / `gene docunits --decode` CLI pair; `training/` holds
+the corpus pipeline, the two matched tokenizers, one shared model, the
+matched training driver, and `training/evaluate.py`). `evaluate.py` reports
+one verdict per pre-registered gate and treats a gate whose inputs are
+missing as `NOT_MEASURABLE`, never as a pass.
+
+A first matched from-scratch pilot has been run on one GB10 GPU: both arms
+17.5M parameters, context 1024, 6000 steps, batch 16, identical
+hyperparameters, over 186 documents (16.2M unit-arm training positions vs
+16.55M byte-arm). Scorecard, in the pre-registered terms:
+
+| gate | verdict | measured |
+| --- | --- | --- |
+| G1 zero representation loss | **pass** | 302/302 files, 186/186 corpus documents |
+| G2 memorization >= 99% | **pass** | 99.33% (99.18% scored from document starts) |
+| G3 structural validity >= 99% | not measurable | see below |
+| G4 semantic pass rate >= 20% | not measurable | no task corpus with declared tests |
+| G5 beat control 5pp / 20% rel. | not measurable | depends on G4 |
+| G6 <=1.5x positions, >=80% throughput | **pass** | 0.981x positions, 1.019x throughput |
+| R payload routing rule | **fires** | 95.6% of positions, 93.6% of held-out loss |
+
+G2 was measured on a separate 24-document, 12,889-position corpus, which is
+what "a deliberately tiny corpus" means here (`build_corpus.py
+--max-source-bytes N --limit K --split 100,0,0` builds it reproducibly).
+Reaching the bar needed dropout 0 and enough steps — 93.6% at 4k steps with
+dropout 0.1, 98.98% at 12k with dropout 0, 99.33% at 36k — so the lever is
+optimization budget, and dropout directly opposes the thing this gate
+measures. G3 is not measurable *against this
+corpus*: its median document is ~4,700 logical units, so whole-document
+generation measures document length rather than structure — of 16 sampled
+generations, 14 never closed within a 4096-unit budget, and the 2 that did
+close were genuinely malformed (a role marker where a value belongs), which
+is what a 6000-step model should be expected to produce. Making G3 mean
+something needs either the designed held-out generation task (G4's blocker)
+or a corpus whose documents fit a generation budget.
+
+Note what G6 says: the structural modality is not merely affordable, it is
+slightly *cheaper* than canonical text on both axes the study gates on. That
+is a real result, and it is also not the question the study exists to answer
+— G4 and G5 are, and they remain unmeasurable.
+
+Two further results come from the corpus alone, before any training run:
+
+- **Pilot gate 1 (zero representation loss) passes.** All 302 `.gene` files
+  under `examples/` and `tests/` that v0 can encode round-trip
+  document -> logical units -> JSONL -> document -> canonical text exactly,
+  as do all 186 documents of the built corpus (302 files dedup and
+  compile-filter down to 186). `build_corpus.py` enforces this per file, so
+  a violating document is rejected from the corpus rather than trained on.
+- **The payload-piece routing rule already fires.** Identifier, string, and
+  comment payloads occupy 95.6% of unit-arm model positions in aggregate and
+  79.1% in the median document -- both over the 70% threshold at which this
+  document says the result "routes to a learned lossless payload-piece
+  experiment rather than being blamed on the structural modality." The
+  aggregate figure is inflated by a few serialized-session fixtures that are
+  ~99.9% string payload, but the median clears the threshold on its own, so
+  this is not only corpus skew.
+
+The two gates that speak to modality *benefit* rather than sanity -- the
+held-out semantic pass rate and beating the matched control -- remain
+structurally unmeasurable: no task corpus with declared, executable tests
+exists yet, and the held-out task set this document specifies (requiring
+combinations of structural units absent from the training templates) has not
+been designed. Until that exists, a pilot can be run but not scored on the
+question the study is actually about.
 
 ## Idea and priority
 

@@ -1084,6 +1084,15 @@ users/~size        # (users ~ size)
 users/%i/~to_html  # ((users/%i) ~ to_html)
 ```
 
+A `~message` segment is an ordinary symbol whose name begins with `~`, so a
+`~` glued directly to a symbol character always reads as one symbol, wherever
+it appears. A `~` followed by whitespace or a delimiter is the send operator:
+
+```gene
+(xs ~ size)   # send: three elements
+(xs ~size)    # two elements; ~size is one symbol
+```
+
 Complex selector stages must use long form:
 
 ```gene
@@ -1092,9 +1101,15 @@ Complex selector stages must use long form:
 
 not:
 
-```gene
+```text
 /users/%($filter /adult)/name # invalid short syntax
 ```
+
+That spelling is a read error, not merely discouraged: `%(` ends the symbol
+lexeme, so a bare `%` segment would otherwise produce an unquoted empty
+symbol *and* silently swallow the following form. `(!= xs/%(- i 1) "\n")`
+would read as a three-argument `!=` whose second argument is the index
+expression — a wrong program that raises nothing.
 
 `%props`, `%body`, `%meta`, `%declarations`, `%to_stream`, and `%to_pairs_stream`
 are not magic selector tokens. They are ordinary functions used as stages, and the

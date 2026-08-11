@@ -22,7 +22,7 @@
 ## regex/range/date-family this repo's packed_format.nim also declines) is
 ## rejected explicitly rather than mis-emitted.
 
-import std/[json, tables, unicode]
+import std/[json, strutils, tables, unicode]
 import ./program_document
 import ./source_index
 import ./printer
@@ -63,6 +63,20 @@ proc emitComments(units: var seq[Unit], idx: Table[string, seq[CommentEntry]],
       (if entry.placement == cpTrailing: ukCommentTrailing else: ukCommentStandalone),
       entry.text)
 
+proc emitOpenComments(units: var seq[Unit], idx: Table[string, seq[CommentEntry]],
+                       formIndex: int, path: DocPath) =
+  ## Mirrors program_document.nim's `emitOpen`: a container's opening
+  ## boundary drains both the precise "before the first child" bucket (-1)
+  ## and the opaque "somewhere in here" bucket (-2), in that order. Draining
+  ## only -1 would silently drop every opaquely-anchored comment from the
+  ## unit stream while the canonical writer still emitted it -- a
+  ## representation loss the pilot's first gate exists to catch.
+  ##
+  ## The decoder re-anchors both buckets at -1, which reprints identically
+  ## because the writer drains the two adjacently and in this same order.
+  emitComments(units, idx, formIndex, path, -1)
+  emitComments(units, idx, formIndex, path, -2)
+
 proc emitValue(units: var seq[Unit], v: Value, idx: Table[string, seq[CommentEntry]],
                 formIndex: int, path: DocPath) =
   case v.kind
@@ -81,7 +95,7 @@ proc emitValue(units: var seq[Unit], v: Value, idx: Table[string, seq[CommentEnt
   of vkSymbol: units.add u(ukSymbol, v.symVal)
   of vkNode:
     units.add u(if v.nodeImmutable: ukNodeImmutableStart else: ukNodeStart)
-    emitComments(units, idx, formIndex, path, -1)
+    emitOpenComments(units, idx, formIndex, path)
     units.add u(ukRoleHead)
     emitValue(units, v.head, idx, formIndex, path & propertySegment("head"))
     emitComments(units, idx, formIndex, path, 0)
@@ -105,14 +119,14 @@ proc emitValue(units: var seq[Unit], v: Value, idx: Table[string, seq[CommentEnt
     units.add u(ukNodeEnd)
   of vkList:
     units.add u(if v.listImmutable: ukListImmutableStart else: ukListStart)
-    emitComments(units, idx, formIndex, path, -1)
+    emitOpenComments(units, idx, formIndex, path)
     for i, it in v.listItems:
       emitValue(units, it, idx, formIndex, path & indexSegment(i.int64))
       emitComments(units, idx, formIndex, path, i)
     units.add u(ukListEnd)
   of vkMap:
     units.add u(if v.mapImmutable: ukMapImmutableStart else: ukMapStart)
-    emitComments(units, idx, formIndex, path, -1)
+    emitOpenComments(units, idx, formIndex, path)
     var i = 0
     for k, val in v.mapEntries:
       units.add u(ukRoleMapKey, k)
@@ -122,7 +136,7 @@ proc emitValue(units: var seq[Unit], v: Value, idx: Table[string, seq[CommentEnt
     units.add u(ukMapEnd)
   of vkHashMap:
     units.add u(ukHashMapStart)
-    emitComments(units, idx, formIndex, path, -1)
+    emitOpenComments(units, idx, formIndex, path)
     for i, entry in v.hashMapEntries:
       units.add u(ukRoleHashMapKey)
       emitValue(units, entry.key, idx, formIndex, path & indexSegment(i.int64))
@@ -156,3 +170,257 @@ proc toJsonLines*(units: seq[Unit]): string =
       obj["t"] = %unit.text
     result.add $obj
     result.add '\n'
+
+# ---------------------------------------------------------------------------
+# Decoding: units -> ProgramDocument
+# ---------------------------------------------------------------------------
+#
+# The inverse of `unitsOf`. The proposal's first pre-registered pilot gate is
+# that the training data loader and generated logical units round-trip "with
+# zero representation loss", which is only checkable against a real decoder --
+# so this direction is part of the format, not a test helper.
+#
+# Comment records are rebuilt by walking the same canonical boundaries
+# `emitValue` emits them at, so `writeCanonical` reprints them identically.
+# Only their relative order within a boundary is load-bearing (that is what
+# `buildCommentIndex` sorts on), so a single ascending counter suffices for
+# `ordinal` -- the original numbering is not recoverable and does not matter.
+
+const decodeMaxDepth* = 512
+  ## Matches packed_format.nim's `PackedLimits.maxDepth`. A decoder is fed
+  ## model-generated streams, where an unbounded run of container-start units
+  ## is an ordinary sampling outcome -- without this, `decodeValue`'s
+  ## recursion turns that into a stack overflow (a crash the caller cannot
+  ## catch) instead of a structural failure it can count.
+
+type
+  Decoder = object
+    units: seq[Unit]
+    pos: int
+    doc: ProgramDocument
+    ordinal: int
+    depth: int
+
+proc isCanonicalIntText(s: string): bool =
+  ## `ukInt` payloads are exactly what `$v.intVal` produced: optional `-`,
+  ## then digits. Anything else came from a corrupt or generated stream.
+  var i = 0
+  if i < s.len and s[i] == '-': inc i
+  if i >= s.len: return false
+  while i < s.len:
+    if s[i] notin {'0'..'9'}: return false
+    inc i
+  true
+
+proc atEnd(d: Decoder): bool {.inline.} = d.pos >= d.units.len
+
+proc fail(d: Decoder, msg: string) {.noreturn.} =
+  raise newException(DocumentUnitsError,
+    "unit stream at index " & $d.pos & ": " & msg)
+
+proc take(d: var Decoder, expected: UnitKind): Unit =
+  if d.atEnd:
+    d.fail("expected " & $expected & ", got end of stream")
+  result = d.units[d.pos]
+  if result.kind != expected:
+    d.fail("expected " & $expected & ", got " & $result.kind)
+  inc d.pos
+
+proc takeComments(d: var Decoder, formIndex: int, path: DocPath, afterChild: int) =
+  while not d.atEnd and
+        d.units[d.pos].kind in {ukCommentStandalone, ukCommentTrailing}:
+    let unit = d.units[d.pos]
+    inc d.pos
+    d.doc.comments.add CommentRecord(
+      formIndex: formIndex, containerPath: path, afterChild: afterChild,
+      ordinal: d.ordinal,
+      placement:
+        (if unit.kind == ukCommentTrailing: cpTrailing else: cpStandalone),
+      text: unit.text)
+    inc d.ordinal
+
+proc decodeValue(d: var Decoder, formIndex: int, path: DocPath): Value
+
+proc decodeNode(d: var Decoder, immutable: bool, formIndex: int,
+                path: DocPath): Value =
+  takeComments(d, formIndex, path, -1)
+  discard d.take(ukRoleHead)
+  let head = d.decodeValue(formIndex, path & propertySegment("head"))
+  takeComments(d, formIndex, path, 0)
+  var meta = initPropTable()
+  var props = initPropTable()
+  var body = newSeq[Value]()
+  # `emitValue` emits every meta key, then every prop key, then the body, so
+  # each group's count is already final when the next group starts -- which is
+  # what makes these boundary indices agree with the writer's.
+  var metaCount, propCount = 0
+  while true:
+    if d.atEnd: d.fail("unterminated node: expected " & $ukNodeEnd)
+    let unit = d.units[d.pos]
+    case unit.kind
+    of ukRoleMetaKey:
+      inc d.pos
+      meta[unit.text] = d.decodeValue(
+        formIndex, path & propertySegment("meta") & propertySegment(unit.text))
+      takeComments(d, formIndex, path, 1 + metaCount)
+      inc metaCount
+    of ukRolePropKey:
+      inc d.pos
+      props[unit.text] = d.decodeValue(formIndex, path & propertySegment(unit.text))
+      takeComments(d, formIndex, path, 1 + metaCount + propCount)
+      inc propCount
+    of ukRoleBody:
+      inc d.pos
+      let bi = body.len
+      body.add d.decodeValue(formIndex, path & indexSegment(bi.int64))
+      takeComments(d, formIndex, path, 1 + metaCount + propCount + bi)
+    of ukNodeEnd:
+      inc d.pos
+      break
+    else:
+      d.fail("unexpected " & $unit.kind & " inside a node")
+  newNode(head, props, body, meta, immutable)
+
+proc decodeList(d: var Decoder, immutable: bool, formIndex: int,
+                path: DocPath): Value =
+  takeComments(d, formIndex, path, -1)
+  var items = newSeq[Value]()
+  while true:
+    if d.atEnd: d.fail("unterminated list: expected " & $ukListEnd)
+    if d.units[d.pos].kind == ukListEnd:
+      inc d.pos
+      break
+    let i = items.len
+    items.add d.decodeValue(formIndex, path & indexSegment(i.int64))
+    takeComments(d, formIndex, path, i)
+  newList(items, immutable)
+
+proc decodeMap(d: var Decoder, immutable: bool, formIndex: int,
+               path: DocPath): Value =
+  takeComments(d, formIndex, path, -1)
+  var entries = initPropTable()
+  var i = 0
+  while true:
+    if d.atEnd: d.fail("unterminated map: expected " & $ukMapEnd)
+    let unit = d.units[d.pos]
+    if unit.kind == ukMapEnd:
+      inc d.pos
+      break
+    if unit.kind != ukRoleMapKey:
+      d.fail("expected " & $ukRoleMapKey & " inside a map, got " & $unit.kind)
+    inc d.pos
+    entries[unit.text] = d.decodeValue(formIndex, path & propertySegment(unit.text))
+    takeComments(d, formIndex, path, i)
+    inc i
+  newMap(entries, immutable)
+
+proc decodeHashMap(d: var Decoder, formIndex: int, path: DocPath): Value =
+  takeComments(d, formIndex, path, -1)
+  var entries = newSeq[HashMapEntry]()
+  var i = 0
+  while true:
+    if d.atEnd: d.fail("unterminated hash map: expected " & $ukHashMapEnd)
+    if d.units[d.pos].kind == ukHashMapEnd:
+      inc d.pos
+      break
+    discard d.take(ukRoleHashMapKey)
+    let key = d.decodeValue(formIndex, path & indexSegment(i.int64))
+    discard d.take(ukRoleHashMapValue)
+    let val = d.decodeValue(formIndex, path & indexSegment(i.int64))
+    entries.add HashMapEntry(key: key, val: val)
+    takeComments(d, formIndex, path, i)
+    inc i
+  newHashMap(entries)
+
+proc decodeValue(d: var Decoder, formIndex: int, path: DocPath): Value =
+  if d.atEnd: d.fail("expected a value, got end of stream")
+  let unit = d.units[d.pos]
+  inc d.pos
+  case unit.kind
+  of ukNil: NIL
+  of ukVoid: VOID
+  of ukBoolTrue: TRUE
+  of ukBoolFalse: FALSE
+  # Numeric payloads are canonical decimal *text*, and a decoder is also fed
+  # model-generated streams, so a payload that is not a number has to become
+  # a reportable structural failure rather than an escaping ValueError.
+  of ukInt:
+    # Validated rather than try/except: `newIntFromDecimal` raises a *Defect*
+    # on non-numeric text, which `except CatchableError` does not catch and
+    # which callers cannot recover from at all.
+    if not isCanonicalIntText(unit.text):
+      d.fail($ukInt & " payload is not a canonical integer: " & unit.text.escape)
+    newIntFromDecimal(unit.text)
+  of ukFloat:
+    try: newFloat(parseFloat(unit.text))
+    except CatchableError:
+      d.fail($ukFloat & " payload is not a canonical float: " & unit.text.escape)
+  of ukString: newStr(unit.text)
+  of ukBytes: newBytes(unit.text)
+  of ukChar:
+    if unit.text.len == 0: d.fail("empty " & $ukChar & " payload")
+    newChar(unit.text.runeAt(0))
+  of ukSymbol: newSym(unit.text)
+  of ukNodeStart, ukNodeImmutableStart, ukListStart, ukListImmutableStart,
+     ukMapStart, ukMapImmutableStart, ukHashMapStart:
+    inc d.depth
+    if d.depth > decodeMaxDepth:
+      d.fail("nesting depth exceeds " & $decodeMaxDepth)
+    defer: dec d.depth
+    case unit.kind
+    of ukNodeStart: d.decodeNode(false, formIndex, path)
+    of ukNodeImmutableStart: d.decodeNode(true, formIndex, path)
+    of ukListStart: d.decodeList(false, formIndex, path)
+    of ukListImmutableStart: d.decodeList(true, formIndex, path)
+    of ukMapStart: d.decodeMap(false, formIndex, path)
+    of ukMapImmutableStart: d.decodeMap(true, formIndex, path)
+    else: d.decodeHashMap(formIndex, path)
+  else:
+    d.fail($unit.kind & " is not a value")
+
+proc documentOf*(units: seq[Unit], sourceName = ""): ProgramDocument =
+  ## Rebuilds the logical document a unit stream came from. Raises
+  ## `DocumentUnitsError` on any stream the grammar does not accept, so an
+  ## ill-formed (e.g. model-generated) stream is a reportable structural
+  ## failure rather than a partially-built document.
+  var d = Decoder(units: units)
+  d.doc.sourceName = sourceName
+  if not d.atEnd and d.units[0].kind == ukBangLine:
+    d.doc.hasBangLine = true
+    d.doc.bangLine = d.units[0].text
+    d.pos = 1
+  takeComments(d, -1, @[], -1)
+  var f = 0
+  while not d.atEnd:
+    discard d.take(ukFormStart)
+    d.doc.forms.add d.decodeValue(f, @[])
+    discard d.take(ukFormEnd)
+    takeComments(d, -1, @[], f)
+    inc f
+  d.doc
+
+proc parseUnitLines*(text: string): seq[Unit] =
+  ## Parses the JSON Lines `toJsonLines` produces. Blank lines are skipped;
+  ## anything else that is not a `{"k": ..., "t"?: ...}` object with a known
+  ## kind is an error, since silently dropping a line would turn a corrupt
+  ## stream into a plausible-looking shorter document.
+  let lines: seq[string] = text.splitLines()
+  for lineNo in 0 ..< lines.len:
+    let stripped = lines[lineNo].strip()
+    if stripped.len == 0: continue
+    var node: JsonNode
+    try:
+      node = parseJson(stripped)
+    except CatchableError as e:
+      raise newException(DocumentUnitsError,
+        "line " & $(lineNo + 1) & ": not valid JSON: " & e.msg)
+    if node.kind != JObject or not node.hasKey("k"):
+      raise newException(DocumentUnitsError,
+        "line " & $(lineNo + 1) & ": expected an object with a \"k\" field")
+    var kind: UnitKind
+    try:
+      kind = parseEnum[UnitKind](node["k"].getStr)
+    except ValueError:
+      raise newException(DocumentUnitsError,
+        "line " & $(lineNo + 1) & ": unknown unit kind " & node["k"].getStr.escape)
+    result.add u(kind, if node.hasKey("t"): node["t"].getStr else: "")

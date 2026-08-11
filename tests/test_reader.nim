@@ -134,6 +134,34 @@ suite "reader — paths":
   test "path with unquote":  check_read("user/%field",  "(path user (unquote field))")
   test "qualified import path stays neutral":
     check_read("(import $net/http)", "(import (path gene net http))")
+  test "a bare '%' path segment is rejected, not silently mis-parsed":
+    # `xs/%(- i 1)` used to lex as the symbol `xs/%` plus a *separate*
+    # `(- i 1)` form, quietly giving the enclosing call an extra argument.
+    expect ReadError: discard read("xs/%")
+    expect ReadError: discard read("(!= xs/%(- i 1) \"\\n\")")
+    expect ReadError: discard read("$str/%")
+    check_read("xs/%i", "(path xs (unquote i))")  # a named stage still reads
+  test "send segment": check_read("xs/~size", "(path xs ~size)")
+  test "send segment after an unquote stage":
+    check_read("users/%i/~to_html", "(path users (unquote i) ~to_html)")
+
+suite "reader — glued '~' is a symbol, spaced '~' is the send operator":
+  # The printer has no symbol-escaping syntax, so a `~name` symbol produced by
+  # path desugaring must reread as itself; otherwise printing and rereading
+  # changes the form (design §2.1 send segments).
+  test "glued tilde reads as one symbol":
+    check_read("(a ~b)", "(a ~b)")
+    check_read("(path xs ~size)", "(path xs ~size)")
+  test "spaced tilde still reads as the send operator":
+    check_read("(a ~ b)", "(a ~ b)")
+    check_read("(~ name)", "(~ name)")
+  test "tilde before a delimiter stays a bare symbol":
+    check_read("(a ~)", "(a ~)")
+    check_read("[~ 1]", "[~ 1]")
+  test "a glued-tilde symbol survives print and reread":
+    for src in ["xs/~size", "(a ~b)", "users/%i/~to_html", "(a ~ b)"]:
+      let once = read(src).print()
+      check read(once).print() == once
 
 suite "reader — unquote":
   test "unquote symbol":     check_read("%name",         "(unquote name)")

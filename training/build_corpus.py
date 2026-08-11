@@ -24,6 +24,10 @@ Implementation notes and honest scope (v0):
   covered by tests/test_packed_format.nim, not re-verified per file here --
   re-checking a proven invariant on every corpus file would just be
   spending CPU to re-confirm something already gated at the code level.
+  The *unit* stream's round-trip is verified per file, though: it is the
+  study's first pre-registered gate, it is what the treatment arm actually
+  trains on, and a violation has to be rejected from the corpus rather than
+  merely reported afterwards.
 - "compile and run declared tests" is narrowed to "compiles" (`gene
   compile`, which forces macro expansion and name resolution, catching
   errors `docpack` alone would not). Actually discovering and running each
@@ -182,6 +186,26 @@ def process_file(
         return
     dest_canonical.write_text(canonical.stdout, encoding="utf-8")
 
+    # The Model-training study's first pre-registered gate -- the logical
+    # units must round-trip "with zero representation loss" -- is enforced
+    # here, per file, rather than assumed: a training corpus whose unit
+    # stream decodes to a *different* program would silently invalidate
+    # every downstream comparison between the two arms. Cheap enough to run
+    # on every file, and the only place a violation can still be rejected
+    # instead of trained on.
+    decoded = run_gene(gene_bin, ["docunits", "--decode", str(dest_units)])
+    if decoded.returncode != 0 or decoded.stdout != canonical.stdout:
+        reason = (decoded.stderr.strip().splitlines()[-1]
+                  if decoded.returncode != 0 and decoded.stderr
+                  else "units decoded to different text than the canonical projection")
+        report.rejected.append(Rejection(
+            source_label, "units round-trip (zero-representation-loss gate)", reason))
+        seen_hashes.discard(digest)
+        dest_packed.unlink(missing_ok=True)
+        dest_units.unlink(missing_ok=True)
+        dest_canonical.unlink(missing_ok=True)
+        return
+
     report.accepted.append(CorpusEntry(
         source=source_label, sha256=digest, packed_bytes=len(packed_bytes),
         unit_count=unit_count, canonical_bytes=len(canonical.stdout.encode("utf-8")),
@@ -197,6 +221,14 @@ def main() -> int:
     parser.add_argument("--out", required=True, help="output corpus directory")
     parser.add_argument("--split", default="80,10,10",
                          help="train,validation,test integer ratios (default 80,10,10)")
+    # The memorization gate is stated over "a deliberately tiny corpus". Make
+    # that corpus reproducible from a flag rather than an ad-hoc directory of
+    # hand-copied files, so the probe can be rerun and its inputs pinned.
+    parser.add_argument("--max-source-bytes", type=int,
+                         help="skip source files larger than this (tiny-corpus probes)")
+    parser.add_argument("--limit", type=int,
+                         help="stop after accepting this many documents "
+                              "(applied after size filtering, in scan order)")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
@@ -221,6 +253,11 @@ def main() -> int:
                 continue  # a `.gene` directory (Gene project metadata), not a source file
             if ".gene" in path.relative_to(source_dir).parts[:-1]:
                 continue  # inside a .gene/ build-cache dir (auto-generated, not source)
+            if args.max_source_bytes is not None and \
+                    path.stat().st_size > args.max_source_bytes:
+                continue
+            if args.limit is not None and len(report.accepted) >= args.limit:
+                break
             process_file(args.gene_bin, path, source_dir, out_dir, seen_hashes, report)
 
     for entry in report.accepted:

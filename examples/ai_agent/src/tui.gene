@@ -623,8 +623,12 @@
 (fn editor_home! [editor]
   (var values (editor/values ~ get))
   (var cursor (editor/cursor ~ get))
-  (while (&& (> cursor 0) (!= values/%(- cursor 1) "\n"))
-    (set cursor (- cursor 1)))
+  # A `%` path stage takes a name, not an expression (design §2.1), so the
+  # index the loop looks back at is carried in its own binding.
+  (var prev (- cursor 1))
+  (while (&& (> cursor 0) (!= values/%prev "\n"))
+    (set cursor prev)
+    (set prev (- cursor 1)))
   (editor/cursor ~ set cursor))
 
 (fn editor_end! [editor]

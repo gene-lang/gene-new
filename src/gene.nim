@@ -39,6 +39,8 @@ proc usage() =
   echo "  gene docpack <file.gene> -o <out>  encode a reversible packed document"
   echo "                              (docs/proposals/reversible-ai-native-program-format.md)"
   echo "  gene docunpack <file>    decode a packed document to canonical .gene"
+  echo "  gene docunits <file.gene> -o <out>  export model-native logical units"
+  echo "  gene docunits --decode <units.jsonl>  rebuild canonical .gene from units"
   echo "  gene compile <file.gene> print compiled GIR bytecode"
   echo "  gene compile --target c <file.gene> print experimental typed_native C"
   echo "  gene build [target] [options] build a package product"
@@ -514,6 +516,25 @@ proc cmdDocUnits(path: string, outPath: string) =
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)
+  except DocumentUnitsError as e:
+    stderr.writeLine "Error: " & e.msg
+    quit(1)
+
+proc cmdDocUnitsDecode(path: string) =
+  ## Inverse of `gene docunits`: rebuild the logical document from a unit
+  ## stream and print its canonical `.gene` projection. This is what makes
+  ## the proposal's first pilot gate ("round-trip the training data loader
+  ## and generated logical units with zero representation loss") checkable
+  ## against the real encoder rather than against a reimplementation, and
+  ## what lets a model-generated unit stream be scored for structural
+  ## validity.
+  let data =
+    try: readFile(path)
+    except IOError as e:
+      stderr.writeLine "Error: " & e.msg
+      quit(1)
+  try:
+    stdout.write writeCanonical(documentOf(parseUnitLines(data), path))
   except DocumentUnitsError as e:
     stderr.writeLine "Error: " & e.msg
     quit(1)
@@ -1516,10 +1537,14 @@ proc main() =
       quit(1)
     cmdDocUnpack(paramStr(2))
   of "docunits":
-    if paramCount() < 4 or paramStr(3) != "-o":
-      stderr.writeLine "Error: 'docunits' needs a file path and '-o <output>'"
+    if paramCount() >= 3 and paramStr(2) == "--decode":
+      cmdDocUnitsDecode(paramStr(3))
+    elif paramCount() < 4 or paramStr(3) != "-o":
+      stderr.writeLine "Error: 'docunits' needs a file path and '-o <output>', " &
+        "or '--decode <units.jsonl>'"
       quit(1)
-    cmdDocUnits(paramStr(2), paramStr(4))
+    else:
+      cmdDocUnits(paramStr(2), paramStr(4))
   of "compile":
     if paramCount() < 2:
       stderr.writeLine "Error: 'compile' needs a file path"

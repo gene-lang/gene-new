@@ -97,7 +97,6 @@ suite "program_document — comment placement and canonical round trip":
 suite "program_document — real corpus round trip":
   test "every .gene file under examples/ and tests/ round-trips without losing a comment or crashing":
     var scanned = 0
-    var knownTildePathGap = 0
     for dir in ["examples", "tests"]:
       if not dirExists(dir): continue
       for path in walkDirRec(dir):
@@ -126,20 +125,6 @@ suite "program_document — real corpus round trip":
             if src[t.startByte ..< t.endByte] notin out1:
               checkpoint("comment dropped in " & path & ": " & src[t.startByte ..< t.endByte])
               fail()
-        # Known pre-existing gap in the reader/printer (not in this module --
-        # reproduces with plain printer.nim/reader.nim, nothing routed
-        # through program_document): a symbol whose name is a bare `~` glued
-        # straight onto the next word (e.g. a slash path's `.../~method`
-        # segment) is glued into one symbol only during slash-path lexing;
-        # printed back out as an ordinary space-separated node body and
-        # reread, `~method` splits into two tokens (`~` and `method`),
-        # changing the form on rereads. That breaks both semantic equality
-        # and idempotence for these files, for a reason outside this
-        # module's control -- skip both checks for them; every other file
-        # must satisfy both exactly.
-        if "/~" in src:
-          inc knownTildePathGap
-          continue
         let doc2 =
           try: readDocument(out1, path & "#2")
           except CatchableError as e:
@@ -170,6 +155,5 @@ suite "program_document — real corpus round trip":
             if reforms[i].print() != doc.forms[i].print():
               checkpoint("form " & $i & " mismatch in " & path)
               fail()
-    checkpoint("scanned " & $scanned & " files, " & $knownTildePathGap &
-      " skipped the semantic check for the known ~path gap")
+    checkpoint("scanned " & $scanned & " files")
     check scanned > 0
