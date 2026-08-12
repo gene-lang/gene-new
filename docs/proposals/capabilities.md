@@ -36,7 +36,7 @@ Declarations use a list of capability selectors:
 ^capabilities [
   fs/*
   (fs/WriteDir "tmp")
-  (device/Compute ^optional true)
+  (device/Compute ^^optional)
 ]
 ```
 
@@ -191,14 +191,16 @@ or depends on the active capability context
 1. (fs/WriteDir "tmp") constructs an inert specification. No authority yet.
 2. The runtime verifies the type explicitly implements CapabilitySpec.
 3. canonicalize validates and freezes it.
-4. attenuate intersects it with the inherited specification.
-5. The runtime retains the inherited *sealed grant* and attaches the
-   narrower effective specification to it.
-6. The adapter enforces both the sealed grant and the effective
-   specification.
+4. attenuate proposes a requested narrowing of the inherited specification.
+5. The type's *trusted provider* validates that request against the parent's
+   sealed grant and mints a new sealed derivative grant, or refuses.
+6. The child context holds the derivative grant. The adapter enforces
+   against that derivative, not against the host root.
 ```
 
-Step 5 is the crux and is expanded in §3.2.
+Steps 5 and 6 are the crux: user code proposes, trusted code disposes. §3.2.2
+explains why the alternative — keeping only the host grant and re-checking it
+— fails to preserve `child <= parent`.
 
 ### 3.2 Capability grant
 
@@ -223,26 +225,77 @@ which grant a specification is attached to, and cannot reinterpret an `fs`
 grant as some other type. Built-in native adapters accept only grants issued
 by their own trusted provider.
 
-### 3.2.2 What a hostile or buggy `attenuate` can do
+### 3.2.2 The checked ceiling must advance at every boundary
 
 The laws in §3.1.3 are obligations on implementers, and an open protocol
 means some implementation will violate them — by accident or on purpose. The
-design must be safe anyway, so state the bound explicitly:
+design must be safe anyway.
 
-Because the runtime keeps the **inherited sealed grant** and the adapter
-checks it independently (§7.4's second enforcement layer), an `attenuate`
-that returns something broader than `self` **cannot widen real authority**.
-The worst it achieves is failing to narrow — leaving the caller with exactly
-the authority the sealed grant already carried, which an ancestor had already
-approved.
-
-So for any capability backed by a host-issued grant:
+**An earlier draft of this section got this wrong**, and the error is worth
+recording because it is the natural thing to believe. It argued that keeping
+the inherited *host* sealed grant and re-checking it in the adapter bounds a
+hostile `attenuate`. That only establishes:
 
 ```text
-effective authority <= sealed grant, always, regardless of user code
+effective authority <= the host's original grant
 ```
 
-The specification is *advisory narrowing*. The grant is the *hard ceiling*.
+The invariant actually required by §3.5 is `child <= parent`. Those differ,
+and the gap is exploitable in one deterministic implementation — no
+replacement of a built-in is needed:
+
+```text
+1. host sealed grant is  /
+2. entry correctly attenuates to  /tmp
+3. a later buggy attenuate receives /tmp and returns /
+4. adapter checks against the host grant / and permits
+```
+
+The child has recovered authority the entry removed. A ceiling that never
+advances past the host root is not a ceiling.
+
+**The rule: every attenuation boundary must produce a new sealed derivative
+grant, and the adapter checks against the nearest one, not the root.**
+
+The consequence for the open protocol is the important part:
+
+> A user-supplied `attenuate` may *describe* a requested narrowing. It can
+> never be the *proof* that the narrowing is sound.
+
+So narrowing is a two-party operation:
+
+```text
+user code:          proposes a requested specification via attenuate
+trusted provider:   validates the request against the *parent's effective
+                    grant*, and mints a new sealed derivative grant
+```
+
+The provider for a capability type is trusted code that owns the resource —
+the filesystem provider for `fs/*`, the host for its own grants. It is the
+only thing that mints, and it validates against the parent's derivative
+grant, so each boundary's ceiling is at or below the previous one by
+construction rather than by user cooperation.
+
+Given that, a hostile `attenuate` can request anything it likes; the provider
+refuses to mint a derivative broader than its input, and:
+
+```text
+grant(child) <= grant(parent) <= ... <= grant(host)
+```
+
+holds at every level regardless of user code, which is what §3.5 needs.
+
+Two viable alternatives to provider-minted derivatives, if minting proves too
+costly: the adapter carries an immutable chain of every ancestor constraint
+and checks all of them, or the context stores the parent's effective
+specification and a trusted per-type narrowing operation validates the
+user-produced specification against it. All three share the same essential
+move — the trusted side, not the open protocol, decides whether a narrowing
+is legitimate.
+
+This is a load-bearing change to the model, and it must be settled before
+runtime representations are chosen, because it decides what a context and a
+grant have to contain.
 
 **The important exception.** A user-defined capability type with **no
 underlying sealed grant and no trusted adapter** — a pure-Gene
@@ -328,23 +381,24 @@ or call-site form can violate this invariant.
 
 Because capability types are open (§3.1.1), "proven by the owning capability
 type" needs care: `attenuate` is user-supplied code and may be wrong. The
-invariant therefore holds at two levels, and only one of them depends on
-that code being correct:
+invariant holds because the *provider*, not the protocol implementation,
+mints every derivative grant (§3.2.2):
 
 ```text
-grant level          enforced by construction — a child context can only
-                     ever hold grants the parent held, and the adapter
-                     validates against the sealed grant
+grant level          enforced by construction — each boundary's sealed
+                     derivative is minted by the trusted provider from the
+                     parent's derivative, so the checked ceiling advances
+                     downward at every step
 
-specification level  an obligation on the implementer (§3.1.3), bounded
-                     by §3.2.2 — violating it fails to narrow, and cannot
-                     widen past the sealed grant
+specification level  an obligation on the implementer (§3.1.3) — a wrong
+                     attenuate produces a request the provider refuses, so
+                     it can cause denial but not widening
 ```
 
 The security invariant is the first. The second is what makes declarations
 *meaningful* rather than merely safe. For an advisory capability type with no
-sealed grant behind it, only the second exists — which is exactly why §3.2.2
-insists that distinction be visible.
+provider and no sealed grant behind it, only the second exists — which is why
+§3.2.2 and §11 insist that distinction be visible.
 
 ## 4. Selector syntax
 
@@ -372,10 +426,10 @@ namespaces. Static analysis should warn on `*` at a public boundary, and the
 entry module should be discouraged from using it, since the entry's whole
 job is to choose a ceiling.
 
-Note `^^optional` above: this document elsewhere writes `^optional true`.
-Gene's `^^flag` sugar is exactly "this property, set to true", so `^^optional`
-is the idiomatic spelling and both are the same property. Examples in this
-document should be read as equivalent.
+This document spells the optional marker `^^optional` throughout. Gene's
+`^^flag` sugar means exactly "this property, set to true"; the long form
+`^optional true` is the same property, but a security contract should not
+present two spellings.
 
 A declaration is a list of selectors:
 
@@ -385,7 +439,7 @@ A declaration is a list of selectors:
   ^capabilities [
     (fs/ReadFile source)
     (fs/WriteFile output)
-    (device/Compute ^optional true)
+    (device/Compute ^^optional)
   ]
   ...)
 ```
@@ -393,10 +447,10 @@ A declaration is a list of selectors:
 An exact selector is mandatory by default. If no inherited grant satisfies it,
 the boundary fails before the body runs.
 
-The common property `^optional true` marks an exact selector as optional:
+The common property `^^optional` marks an exact selector as optional:
 
 ```gene
-(device/Compute ^optional true)
+(device/Compute ^^optional)
 ```
 
 If no inherited grant satisfies an optional selector, it contributes no grant
@@ -441,11 +495,12 @@ handling, so a declaration reads as data rather than as calls:
   application in this position.
 - The resulting value is then passed through `canonicalize` (§3.1.1).
 
-This is why `^capabilities` rows can be validated and frozen without running
-user program logic: constructing a specification is a constructor call and a
-`canonicalize`, both required to be pure and total, not arbitrary evaluation.
-`^optional` is consumed by the capability system before the type sees its
-arguments; everything else is the type's own vocabulary.
+A capability type's canonical constructor *is* program logic, so this does not
+by itself make declaration processing safe — it makes it well-defined. What
+bounds it is §4.6.1's trust boundary: native compiler-owned constructors for
+adapter-backed types, and a restricted schema or isolated execution for
+advisory ones. `^optional` is consumed by the capability system before the
+type sees its arguments; everything else is the type's own vocabulary.
 
 ### 4.3 Namespace projection
 
@@ -566,24 +621,66 @@ memoized.
 What compile time genuinely delivers is the *static half* of the work, and
 then a runtime design that makes the dynamic half nearly free.
 
-**Compile time** — all of it, for every declaration:
+There are three distinct stages, and conflating them is what made an earlier
+draft claim that `(fs/WriteFile filename)` is canonicalized at compile time.
+It cannot be: `filename` has no value then, and emitting its slot index does
+not supply one.
+
+**Stage 1 — compile time, for every declaration.** Operates on a *symbolic
+selector template*, not a concrete specification:
 
 - parse the row and separate `^optional` from type-owned arguments;
-- construct the specification via the canonical constructor (§4.2.1);
-- run `canonicalize`, which must be pure and total;
-- validate arguments, properties, and unknown-type errors;
-- intern the capability type and namespace to compact IDs;
+- validate arity, property names, and unknown-type errors against the type;
 - reject a type that does not explicitly implement `CapabilitySpec`;
-- emit a flat descriptor, with parameter references as slot indices.
+- intern the capability type and namespace to compact IDs;
+- canonicalize the *template*, including any fully literal arguments;
+- emit a flat descriptor with parameter references as slot indices.
 
-By the time the program runs there is no parsing, no property-map building,
-no string comparison of type names, and no allocation for a static row.
+A row with only literal arguments is fully concrete here, and construction
+plus `canonicalize` can run at compile time subject to §4.6.1. A row naming a
+parameter stays symbolic.
 
-**Runtime** — only what genuinely depends on runtime values:
+**Stage 2 — runtime binding, only for parameter-dependent rows.** Bind slot
+values, run the canonical constructor and `canonicalize` on the now-concrete
+arguments, and match against the active context. This is the constructor and
+canonicalization work that stage 1 could not do.
 
-- binding parameter slots into a descriptor that references them;
-- matching the descriptor against the active context;
-- calling `attenuate` where the inherited grant is not an exact match.
+**Stage 3 — operation time.** Construct the proof for a deferred constraint
+(§13.3), if the operation is actually performed.
+
+By the time a *static* row runs there is no parsing, no property-map
+building, no string comparison of type names, and no allocation.
+
+**Interface fingerprints use the stage-1 symbolic template.** A
+runtime-dependent specification has no concrete canonical form at compile
+time, so a fingerprint must be over the template and its slot references —
+not over a pretended concrete value.
+
+### 4.6.1 Compile-time execution needs a real trust boundary
+
+Saying `canonicalize` is "pure and total by protocol law" is a statement of
+intent, not an isolation mechanism. A user type's canonical constructor and
+protocol methods are ordinary program logic. Totality is undecidable in
+general, and a capability-free compile-time context prevents host I/O but not
+nontermination, memory exhaustion, mutation of compiler-visible state, or
+nondeterminism. A static checker can reject obvious violations; it cannot be
+the security argument.
+
+Pick a concrete boundary per capability type:
+
+- **Adapter-backed types**: canonicalization and the canonical constructor
+  are **native, compiler-owned** code. No user logic runs in the compiler for
+  the types that are actual security boundaries. This is the default and
+  covers all built-ins.
+- **Advisory types** (§3.2.2): either restrict them to a declarative
+  specification schema the compiler evaluates itself, or run their
+  constructor and `canonicalize` under isolated execution — frozen inputs,
+  deterministic APIs only, instruction and memory limits, denial on breach.
+- Where neither is available at compile time, defer canonicalization to first
+  use and memoize it. Deferral is always sound; it costs one resolution.
+
+The canonical constructor is subject to exactly the same restrictions as
+`canonicalize` and `attenuate`. §12 previously named only the latter two.
 
 An entirely static row (`fs/*`, `(fs/WriteDir "tmp")`) compiles to a
 descriptor naming a *context transformation*. It still has to be applied to
@@ -606,6 +703,45 @@ what keep that execution safe, and they should be enforced rather than
 assumed — see §12.
 
 ## 5. Where capabilities are declared
+
+### 5.0 Normative defaults
+
+An omitted `^capabilities` row and an explicit empty one are **different**,
+and the default differs by boundary. Earlier drafts left this implicit and
+contradicted themselves: §5.2 said omission means an empty context, while
+§13.1 requires a non-declaring function to touch nothing, which necessarily
+means it inherits its caller's context.
+
+| boundary | row omitted | `^capabilities []` |
+| --- | --- | --- |
+| entry module | **empty context** | empty context |
+| imported module | **empty context** | empty context |
+| function / method | **inherit unchanged** | empty context |
+| protocol message | **inherit unchanged** | empty context |
+| `with_capabilities` | n/a — row required | empty context |
+
+Modules default to empty because a module boundary is a policy decision and
+silence there should not grant anything. Functions default to inheritance
+because the alternative is unworkable: if omission meant empty, every
+ordinary helper call would have to save and clear the context, capability-
+bearing code could not call an undeclared helper without losing its
+authority, and §13.1's zero-cost property would be impossible.
+
+**Functions are therefore effect-polymorphic on omission**, and one claim
+elsewhere in this document must be read accordingly:
+
+> An undeclared function may perform any effect its caller's context permits.
+> Required authority is **not** visible in an undeclared function's
+> interface.
+
+A declaration on a function is a *narrowing*, not a disclosure. Visibility of
+required authority is recovered by static analysis (§12) inferring an
+effective requirement transitively, not by the declaration syntax alone. A
+public API that wants an enforced, visible contract must declare a row;
+tooling should be able to report undeclared effectful functions as such.
+
+`^capabilities []` is the explicit way to drop all authority, and it is
+never implied.
 
 ### 5.1 Runtime root
 
@@ -642,8 +778,10 @@ body and imports.
 
 This is the main policy point controlled by the application developer.
 
-An omitted or empty `^capabilities` row means an empty context. There is no
-implicit inherit-all behavior.
+For an entry or imported module, an omitted or explicitly empty
+`^capabilities` row means an empty context. There is no implicit inherit-all
+behavior at a module boundary. Functions differ — see the defaults table in
+§5.0.
 
 ### 5.3 Imported modules
 
@@ -658,10 +796,32 @@ available by its importer:
 This passes through only the importer's filesystem grants. If the importer
 removed network access, the imported module cannot recover it.
 
-Module initialization executes under the module's selected context. Cached
-module instances must include an appropriate capability-context identity or
-policy fingerprint in their cache key. A module initialized with broad
-authority must not be reused accidentally in a narrower context.
+Module initialization executes under the module's selected context. A module
+initialized with broad authority must not be reused accidentally in a
+narrower context.
+
+Adding capability identity to the module cache key is not merely cache
+invalidation — it changes Gene's module instancing model. Today there is one
+initialized instance per `<package_identity>::<module_path>`; keying on
+context means one source module loaded under two contexts initializes twice.
+That must be decided explicitly, because both answers have failure modes:
+
+- **Duplicating** module-level types, protocols, and canonical
+  implementations can break dispatch and conformance, since two structurally
+  identical types would not be the same type.
+- **Sharing** them, while duplicating mutable state, can leak authority
+  captured during the broader initialization into the narrower instance.
+
+The workable split is: types, protocols, and implementations are shared and
+context-independent; module-level *mutable state and any authority-bearing
+value captured at initialization* are per-context. A module whose
+initialization captures no authority needs only one instance, which should be
+the common case and should be detectable statically.
+
+The fingerprint must include **grant and provider provenance**, not only the
+canonical visible selectors. Two roots with the same selector shape but
+different underlying grants must not share initialized authority-bearing
+state.
 
 ### 5.4 Functions and methods
 
@@ -689,8 +849,8 @@ supply:
 
 ```gene
 (protocol Persistable
-  (fn persist
-    [this destination]
+  (message persist
+    [destination]
     ^capabilities [(fs/WriteFile destination)]))
 ```
 
@@ -700,19 +860,41 @@ authority broader than the public message contract.
 Formally, for every valid parent context, an implementation's selected
 context must be no broader than the public message's selected context.
 
-This check routes through `attenuate`, not through a separate subsumption
-oracle (§3.1.1). For each selector the implementation declares:
+For **fully concrete** selectors this check routes through `attenuate`, not
+through a separate subsumption oracle (§3.1.1):
 
 ```text
 message_spec.attenuate(impl_spec) must succeed and yield impl_spec
 ```
 
 If it returns `nil`, the implementation demands authority the public contract
-does not promise, and the implementation is rejected. If it returns something
-narrower than `impl_spec`, the implementation's own declaration is broader
-than what the contract can supply, which is the same rejection. Using the one
-operation for both the runtime narrowing and the static contract check means
-the two can never disagree about what the message permits.
+does not promise. If it returns something narrower than `impl_spec`, the
+implementation's declaration is broader than the contract can supply. Both
+are rejections, and using one operation for the runtime narrowing and the
+concrete contract check means the two cannot disagree.
+
+**This does not generalize to parameter-dependent selectors.** "No broader
+for every valid parent context" is universally quantified over runtime
+arguments, and a single concrete `attenuate` call cannot establish it — the
+two specifications may reference different parameter slots entirely. The
+check must therefore be a conservative *symbolic* relation:
+
+- accept when message and implementation reference the **identical parameter
+  slot** with the implementation's literal arguments statically narrowing the
+  message's;
+- accept when both are fully concrete and `attenuate` succeeds as above;
+- **reject everything else**, or require an explicit trusted proof.
+
+Anything outside that subset is rejected rather than assumed sound. Runtime
+attenuation still happens, but it cannot retroactively make an unsound public
+contract substitutable — by the time it runs, the caller has already been
+type-checked against the message.
+
+Scoped and overlay protocol implementations add a second limit: compile-time
+and runtime dispatch need not select the same implementation. A statically
+checked implementation relationship is only binding if implementation
+visibility is frozen into the interface; otherwise the check is advisory and
+the runtime boundary is what enforces.
 
 An implementation also may not turn a publicly optional requirement into a
 mandatory one. If an implementation needs extra authority, the protocol
@@ -776,12 +958,12 @@ The result is always a subset of or attenuation of `available`.
 
 ### 6.2 Mandatory and optional selection
 
-Exact selectors are mandatory unless `^optional true` is present.
+Exact selectors are mandatory unless `^^optional` is present.
 
 ```gene
 ^capabilities [
   (fs/WriteFile output)
-  (device/Compute ^optional true)
+  (device/Compute ^^optional)
 ]
 ```
 
@@ -791,7 +973,7 @@ without compute acceleration.
 Within the body:
 
 ```gene
-(if (device/Compute ^optional true)
+(if (device/Compute ^^optional)
   (accelerated_path)
   (portable_path))
 ```
@@ -838,6 +1020,34 @@ Capability context follows dynamic execution:
 
 The context must be task-local execution state, not a process-global mutable
 variable.
+
+### 6.4.1 Attached contexts must intersect, not replace
+
+A callback registered under a broad context and invoked inside a narrowed one
+would, if its attached context simply replaced the invoker's, restore
+authority the narrowing removed:
+
+```gene
+(var cb (broad/register (fn [] (fs/write_file "/etc/x" data))))
+(with_capabilities [(fs/WriteDir "scratch")]
+  (cb))              # must not regain the broad grant
+```
+
+So invocation uses the **intersection** of the attached context with the
+invoker's current context. Replacement is a widening operation and is not
+available to source code; only the host may attach a context that is not
+bounded by the invoker.
+
+This makes a callback closer to a delegated capability than to a plain
+closure, and it interacts with §10.1: if callbacks are values that carry
+attached authority, they are authority-bearing values and inherit that
+section's restrictions.
+
+Spawned tasks raise the lifetime version of the same question. A task
+captures the context active at spawn; if a grant is revoked afterwards, the
+captured context must observe the revocation at its next operation-safe
+point, not continue on a stale copy. Revocation is therefore a property of
+the grant, not of the context that references it.
 
 ## 7. Concrete filesystem example
 
@@ -1036,6 +1246,38 @@ Capability-type implementations must obey:
 - failure does not fall back to ambient host access;
 - reflection does not expose secret provider state.
 
+### 8.0 Entailment needs a trusted index, not a linear scan
+
+§3.4 indexes contexts by `CapabilityTypeId`, but the central example asks a
+`WriteDir` grant to satisfy a `WriteFile` selector. Looking only under the
+requested type ID never finds it. Calling `attenuate` on every inherited
+grant would find it, but that makes resolution O(context size), executes
+unrelated user-defined code on every check, and contradicts the indexed,
+cacheable presence checks §13 depends on.
+
+Discovery must therefore be a **trusted entailment index**, separate from
+scope decisions:
+
+```text
+index:   requested type ID -> candidate grant type IDs that may satisfy it
+answer:  attenuate decides whether a candidate edge's scope actually covers
+         this request
+```
+
+The index is registration-time data owned by providers, not derived by
+running user code. It must define:
+
+- how an edge is registered, and by whom;
+- conflict resolution when two grant types claim the same requested type;
+- cycle rejection, since entailment must be a partial order;
+- invalidation, which participates in the capability epoch (§13.2);
+- whether a user library may add edges **to adapter-backed types** — the
+  default should be no, since an edge into `fs` is a claim about filesystem
+  authority and belongs to the filesystem provider.
+
+`attenuate` decides scope along a candidate edge. It is not the
+candidate-discovery mechanism.
+
 ### 8.1 Built-in and custom capability types
 
 Both are first-class. They differ in who provides them and in whether they
@@ -1057,10 +1299,27 @@ topic publisher, a database pool:
 (db/Query ^schema "analytics" ^^read_only)
 ```
 
-They implement `CapabilitySpec` like any other type. Importing such a library
-is safe at compile time because importing it executes no module body: the
-import brings in a protocol implementation, and the only code that runs is
-`canonicalize` (pure and total by §3.1.3) when a declaration is processed.
+They implement `CapabilitySpec` like any other type.
+
+**Identity.** A textual namespace-qualified name is not globally unique
+across packages, package versions, module instances, or lexical aliases, so
+`db/Query` alone cannot be the identity. A custom capability type's identity
+is its **declaration identity** — defining package, version, module, and
+declaration — interned to an ID. Namespace projection resolves against the
+capability's *defining* namespace identity, not whichever alias spelling
+appears at the use site, so aliasing an import cannot capture another
+package's grants.
+
+**Compile-time availability.** The claim that importing such a library
+"executes no module body" holds for compile-artifact discovery, not for
+ordinary runtime import, which initializes a module once. So the compiler
+needs the constructor and `CapabilitySpec` implementation without running
+module initialization. Per §4.6.1 this is resolved by construction rather
+than by assumption: adapter-backed types use native compiler-owned
+canonicalizers, and advisory types either use a declarative schema the
+compiler evaluates directly or have their canonicalization deferred to first
+use. A custom type whose implementation is only available after module
+initialization simply takes the deferred path, which is always sound.
 
 A custom type is a *security* boundary only if it is adapter-backed by a
 host-issued grant. Otherwise it is advisory — see §3.2.2, which is the more
@@ -1120,15 +1379,39 @@ capability it needs:
 Native implementations must accept resolved grants or proofs, not look up
 unrestricted process-global facilities.
 
-Low-level explicit-grant APIs may still be useful for adapters and advanced
-code:
+### 10.1 Proofs and other authority-bearing values
 
-```gene
-(fs/write_file_with proof filename content)
+A resolved proof is authority in a value. If ordinary code can obtain, store,
+return, capture in a closure, send to another task, or attach to an error
+value such a proof, it has exactly the authority-recovery channel the dynamic
+context exists to prevent: acquire a broad proof, then use it inside a
+narrowed context.
+
+**For version 1, proofs are not first-class.** They are unobservable and
+non-escapable: the runtime holds a resolved proof in a hidden frame slot
+(§7.4), and no source-level operation yields one as a value. An API of the
+shape
+
+```text
+fs/write_file_with(proof, filename, content)
 ```
 
-They do not replace declaration checks. They provide an explicit plumbing
-escape hatch when multiple grants would otherwise be ambiguous.
+is **adapter-internal**, not a public escape hatch. Exposing it publicly is a
+model change, not a convenience: the central invariant would then have to
+track authority in values rather than only in the active context, and the
+whole-program verifier (§19) would have to do the same.
+
+The same question applies to every authority-bearing *resource* — an open
+file handle, a connected client, a device queue — acquired under a broad
+context and used under a narrow one. Version 1 does not solve this in
+general; it must at minimum be stated as a known limitation, and adapters
+should prefer designs where a handle re-checks its originating grant at each
+operation rather than trusting its own existence.
+
+The existing guidance that "an error value must not accidentally carry a
+forgeable grant" is too weak. An **unforgeable** grant carried across a
+boundary is precisely what conveys authority; the requirement is that no
+grant or proof escapes into a value at all.
 
 No public standard-library function should silently use unrestricted current
 directory, environment, network, clock, random source, process, or device
@@ -1269,28 +1552,67 @@ Requirements this places on the representation: contexts must be
 walk, and so module-cache fingerprinting (§5.3) and the guard share one
 mechanism.
 
-### 13.3 Split parameter-dependent selectors into presence and proof
+**Threading.** This cache is mutable per-call-site state on a shared chunk,
+which is exactly why the existing protocol dispatch cache is compiled out in
+the atomic threaded build
+(`dispatchCacheEnabled = not (threads and gcAtomicArc)` in `vm.nim`). The
+capability transition cache inherits that problem and must state its answer:
+per-worker side tables, immutable copy-on-write cells, atomics, or compiled
+out in that build like its predecessor. Until that is chosen, the "compare
+plus load" figure describes the single-lane implementation only, and the
+acceptance criterion must be qualified by build profile.
+
+**Lifetime.** Hash-consed contexts retain sealed grants, which retain host
+handles. Interning them in a global table keeps those resources alive for the
+process lifetime and grows without bound under repeated dynamic attenuation —
+a long-running server that narrows per request would leak a context per
+request. Interning must therefore be weak, or scoped to an application
+lifetime with explicit reclamation, and grant release must not wait on it.
+Context churn and resource release need their own tests.
+
+### 13.3 Defer the proof, never the constraint
 
 `(fs/WriteFile filename)` is the expensive case: it depends on a runtime
 value, and doing it properly means path canonicalization, escape rejection,
 and symlink policy — real work, not a compare.
 
-Split it in two:
+What may be deferred is the **proof**, never the **constraint**. An earlier
+draft of this section proposed checking only that the context held *some*
+grant able to entail `fs/WriteFile`, and deferring everything else. That is
+wrong, and badly so: it converts an exact declaration into broad filesystem
+authority. A body declaring `(fs/WriteFile filename)` would still hold the
+parent's `WriteDir` grant and could write any other path beneath it, which
+defeats §4.5, §6.1 and §7.3 rather than merely weakening diagnostics.
 
-- **At function entry, check presence only**: does the active context hold
-  any grant that could entail `fs/WriteFile` at all? This is
-  context-id-cacheable exactly like §13.2 and preserves the design's
-  fail-before-the-body property for the overwhelmingly common failure, which
-  is "no filesystem authority here at all".
-- **Defer the proof to the operation**, memoized in a hidden frame slot. The
-  adapter has to validate the concrete path anyway (§7.4's second layer), so
-  computing a full proof at entry duplicates work the security boundary
-  repeats. A function that declares a parameter-dependent selector and then
-  returns early pays nothing for it.
+The child context must carry an **immutable deferred constraint bound to the
+parameter**, established at entry:
 
-The cost is a narrower fail-fast guarantee: a path-escape violation surfaces
-at the operation rather than at entry. Since the operation is where it is
-actually enforced, that is a diagnostic difference and not a security one.
+```text
+child context holds:
+  the parent grant, wrapped by a deferred constraint
+  { type: fs/WriteFile, template: <symbolic selector>, bindings: [slot 0] }
+```
+
+Properties this must have:
+
+- Every operation performed in the body, and in every nested call that
+  inherits this context, resolves through the constraint. It is part of the
+  context, not a memo on the side.
+- `(fs/write_file other content)` **fails** even when `other` is beneath the
+  parent root, because the constraint names `filename`, not the root.
+- The hidden frame slot caches the *resolved proof for the bound value*. It
+  is an optimization over a constraint that already exists — not the
+  mechanism by which the constraint exists.
+
+What is genuinely saved is the expensive half: path canonicalization, escape
+rejection, and symlink policy run once at first use rather than at entry, and
+not at all if the body returns without performing the operation. Establishing
+the constraint itself is cheap — binding a slot into an interned template.
+
+The residual cost is a narrower fail-fast guarantee for *scope* errors: a
+path escape surfaces at first use rather than at entry. Absence of any
+satisfying grant can still be detected at entry and should be, since that
+check is context-id-cacheable per §13.2.
 
 ### 13.4 Built-in types bypass the protocol
 
@@ -1432,12 +1754,32 @@ The current filesystem capability representation is useful as a starting
 point but name-only capability data and raw host paths do not provide scoped
 confinement.
 
+Two migration facts that are easy to miss:
+
+**This is a source-level API change, not only a representation change.** The
+runtime today spells built-in capabilities `$fs/ReadDir` — see the
+`fs/read_text expects (fs/ReadDir, path)` diagnostics in `stdlib.nim` — and
+passes them as explicit arguments. This proposal makes `fs/ReadDir` an
+ambient descriptor resolved from the active context. Existing call sites
+change, so the migration needs a deprecation path and a mechanical rewrite,
+not just an internal swap.
+
+**The launcher boot order must change.** `gene run` currently loads and
+executes the entry module and *then* evaluates `--grant` expressions in that
+module's scope. That cannot remain the authority-origin path: the entry
+ceiling has to exist before the entry module's top-level imports and forms
+run, or module initialization happens with undefined authority. Step 4 below
+therefore requires reordering boot to: parse trusted host policy, mint the
+root context, *then* load the entry module under its declared ceiling.
+Evaluating grant expressions from an already-running entry scope is exactly
+the source-can-mint-authority pattern §5.1 forbids.
+
 Migration should proceed in layers:
 
 1. Introduce interned `CapabilityType`, immutable
    `CapabilityContext`, and unforgeable `CapabilityGrant` runtime values.
 2. Parse and normalize list-form `^capabilities` rows.
-3. Implement exact selectors, `^optional true`, and namespace projections.
+3. Implement exact selectors, `^^optional`, and namespace projections.
 4. Establish host-root and entry-module ceilings.
 5. Apply function, method, and protocol-message boundary checks.
 6. Add `with_capabilities` with exception-safe dynamic extent.
@@ -1485,11 +1827,16 @@ Open-protocol criteria (§3.1, §3.2.2):
   selector position, even if it defines methods with the right names.
 - A user-defined capability type resolves, attenuates, and reflects exactly
   like a built-in one.
-- **An `attenuate` that returns a specification broader than `self` does not
-  widen real authority**: the adapter still refuses the operation on the
-  sealed grant. This is the single most important test in this document, and
-  it should exist as a deliberately hostile implementation in the test suite,
-  not only as a property test.
+- **Intermediate attenuation survives a hostile `attenuate`.** With a host
+  grant of `/`, an entry narrowing to `/tmp`, and a nested boundary whose
+  `attenuate` returns `/`, the operation is refused. This is the single most
+  important test in this document: it is the case an earlier draft got wrong
+  by checking only against the host root, and it must exist as a deliberately
+  hostile implementation, not only as a property test.
+- A boundary's checked ceiling is the nearest sealed derivative grant, not
+  the host root.
+- A user-supplied `attenuate` cannot cause a derivative grant to be minted
+  that its provider would refuse.
 - An `attenuate` that raises surfaces as `CapabilityTypeError` and denies the
   boundary; it does not fall through to ambient access.
 - `canonicalize` is idempotent, and two equivalent specifications produce
@@ -1517,6 +1864,27 @@ Performance criteria (§13):
 - A function declaring a parameter-dependent selector that returns before
   performing the operation does not compute an operation proof.
 - Built-in capability checks perform no dynamic protocol send.
+- Repeated dynamic attenuation in a long-running loop does not grow context
+  interning without bound, and releases grants and host handles.
+
+Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
+
+- A function with an omitted row inherits its caller's context unchanged; one
+  with `^capabilities []` receives an empty context.
+- A body declaring `(fs/WriteFile filename)` **cannot** write a different
+  path beneath the same parent root. This is the test that distinguishes a
+  deferred *proof* from a deferred *constraint*.
+- A callback registered under a broad context and invoked inside
+  `with_capabilities` cannot perform an operation the narrowing removed.
+- A grant revoked after task spawn is observed by the spawned task at its
+  next operation-safe point.
+- A `WriteDir` grant satisfies a `WriteFile` selector through the registered
+  entailment index, without scanning unrelated grants or running unrelated
+  user code.
+- No source-level operation yields a grant or resolved proof as a value,
+  including via error values and closure capture.
+- A module whose initialization captures no authority is instantiated once
+  across differing contexts; one that does capture authority is not shared.
 
 ## 19. Application: Gene as an agent's sole action surface
 
@@ -1553,16 +1921,40 @@ to programs therefore trades *per-action* authorization for *per-session*
 authorization, which is a real loss of control, not a detail of
 implementation.
 
-This proposal closes exactly that gap. §11's `(capabilities_of f)` returns
-canonical selectors; §12 can reject "a call whose statically known context
-cannot satisfy a mandatory selector". Together they support a **pre-execution
-verifier**: given a candidate program and a grant, decide whether the program
-can exercise authority beyond the grant, and refuse to run it if so.
+This proposal narrows that gap, within limits that must be stated. §11's
+`(capabilities_of f)` returns canonical selectors; §12 can reject "a call
+whose statically known context cannot satisfy a mandatory selector". Together
+they support a **pre-execution verifier**: given a candidate program and a
+grant, decide whether the program can exercise authority beyond the grant.
 
-That converts "the model emitted arbitrary code" into "the model emitted code
-statically bounded by these authorities" — which is a stronger claim than a
-tool-call schema makes, because a schema constrains the *shape* of one
-request while a capability bound constrains everything the program can reach.
+**Complete capability enumeration is not available for arbitrary Gene
+programs.** §12 already concedes that dynamic dispatch, plugins, host policy
+and runtime values require runtime checks; add higher-order calls, `eval`,
+fexprs, dynamic imports, native extensions, and open protocol
+implementations, and static enumeration is undecidable in the general case.
+§5.0 compounds this: an undeclared function is effect-polymorphic, so its
+requirement must be *inferred* transitively rather than read off.
+
+The verifier is therefore sound only on a restricted subset, and its
+rejection policy is part of its definition:
+
+- closed-world imports, resolved before verification;
+- no `eval`, no dynamic module loading, no native library loading;
+- every call target statically resolvable, so every reachable callable has a
+  computed capability summary;
+- open-protocol dispatch permitted only where the implementation set is
+  frozen;
+- **anything unresolved is rejected, not assumed capability-free.**
+
+Within that subset the claim holds and is stronger than a tool-call schema,
+because a schema constrains the shape of one request while a capability bound
+constrains everything the program can reach. Outside it, the honest position
+is that the runtime boundary is the enforcement and the verifier is a filter
+that refuses to certify what it cannot analyze.
+
+This also depends on §5.0's omitted-declaration semantics and on §10.1
+keeping authority out of values; if proofs became first-class, the verifier
+would have to track authority through data flow, not just call structure.
 
 Parameter-dependent selectors matter here more than anywhere else in this
 document. `fs/WriteFile` narrowed by an argument is what lets a grant say
