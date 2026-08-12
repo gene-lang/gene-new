@@ -95,27 +95,173 @@ device/Compute
 ```
 
 A capability type is not an ordinary constructible Gene type. Calling a
-capability type never mints a grant. It creates a selector and resolves that
-selector only against the inherited context.
-
-Each capability type defines:
-
-- argument and property normalization;
-- validation;
-- matching against existing grants;
-- attenuation into narrower grants or operation proofs;
-- entailment between related types;
-- stable reflection and diagnostic formatting.
+capability type never mints a grant. It creates an inert *specification* and
+resolves that specification only against the inherited context.
 
 For example, `fs/WriteDir` may entail a particular
 `fs/WriteFile` operation when the resolved file is safely beneath the
 granted directory and the requested write mode is allowed.
+
+### 3.1.1 The `CapabilitySpec` protocol
+
+Capability types are **open**. Any type may become one by implementing an
+ordinary Gene protocol:
+
+```gene
+(protocol CapabilitySpec
+  (message canonicalize [] : CapabilitySpec)
+  (message attenuate [requested : CapabilitySpec] : CapabilitySpec?)
+  (message describe [] : Str))
+```
+
+```gene
+(impl CapabilitySpec for WriteDir
+  (message canonicalize [] ...)
+  (message attenuate [requested] ...)
+  (message describe [] ...))
+```
+
+Conformance is **explicit**, never structural. A type that happens to define
+a method named `attenuate` does not become a capability type. Explicit
+conformance means the compiler can validate it, dispatch goes through
+qualified protocol messages, and no type acquires capability semantics by
+accident.
+
+Only `canonicalize` and `attenuate` are required. `describe` has a default
+implementation deriving a string from the canonical specification form.
+
+Deliberately **not** in the protocol:
+
+- **`subsumes`.** A successful `attenuate` already answers "does the
+  inherited authority satisfy this request?". Two oracles for one question
+  can disagree, and a disagreement between them is a security hole, not a
+  bug. Everywhere this document previously said "subsumption" — including
+  the protocol-implementation check in §5.5 — the answer now comes from
+  `attenuate`.
+- **`intersect`.** Same reason: it is `attenuate` under another name.
+- **`fs/*` and `^optional`.** These are runtime-level composition over a set
+  of specifications, not questions any single specification can answer. They
+  stay in the capability system, which keeps the protocol small.
+
+### 3.1.2 Direction and meaning of `attenuate`
+
+The argument order is load-bearing and easy to get backwards:
+
+```text
+inherited.attenuate(requested) -> effective | nil
+```
+
+- `self` is the **inherited** specification — what the parent context makes
+  available.
+- `requested` is what the child boundary asks for.
+- The result is the **effective** specification, conferring no more authority
+  than `self`.
+- `nil` means the request is not satisfiable from this inherited
+  specification. It is a denial, not an error.
+
+`attenuate` must be **total**: it returns `nil` rather than raising for an
+unsatisfiable request. Raising is reserved for a malformed specification and
+surfaces as `CapabilityTypeError`.
+
+### 3.1.3 Laws
+
+Implementations must satisfy these. They are checkable by property test and
+belong in any capability type's test suite:
+
+```text
+canonicalize is pure, total, deterministic, and idempotent:
+  canonicalize(canonicalize(x)) == canonicalize(x)
+
+attenuate never widens:
+  attenuate(a, b) is nil, or confers no more authority than a
+
+attenuate is transitive:
+  attenuate(attenuate(a, b), c) confers no more than attenuate(a, c)
+
+equivalent specifications canonicalize identically:
+  they must be indistinguishable to context keying and fingerprinting
+
+neither message performs I/O, mutates state, captures authority,
+or depends on the active capability context
+```
+
+### 3.1.4 Resolution flow
+
+```text
+1. (fs/WriteDir "tmp") constructs an inert specification. No authority yet.
+2. The runtime verifies the type explicitly implements CapabilitySpec.
+3. canonicalize validates and freezes it.
+4. attenuate intersects it with the inherited specification.
+5. The runtime retains the inherited *sealed grant* and attaches the
+   narrower effective specification to it.
+6. The adapter enforces both the sealed grant and the effective
+   specification.
+```
+
+Step 5 is the crux and is expanded in §3.2.
 
 ### 3.2 Capability grant
 
 A capability grant is an unforgeable runtime value created by trusted host or
 runtime code. It contains or references the authority needed to perform an
 operation.
+
+### 3.2.1 Specifications are open; grants are sealed
+
+This is the separation that makes an open protocol safe:
+
+| | `CapabilitySpec` | `CapabilityGrant` |
+| --- | --- | --- |
+| who creates it | anyone | trusted host/runtime only |
+| forgeable | yes, freely | no |
+| carries authority | **no** | yes |
+| extensible by user libraries | yes | no |
+| role | describes and narrows | *is* the authority |
+
+Implementing `CapabilitySpec` therefore cannot mint authority, cannot change
+which grant a specification is attached to, and cannot reinterpret an `fs`
+grant as some other type. Built-in native adapters accept only grants issued
+by their own trusted provider.
+
+### 3.2.2 What a hostile or buggy `attenuate` can do
+
+The laws in §3.1.3 are obligations on implementers, and an open protocol
+means some implementation will violate them — by accident or on purpose. The
+design must be safe anyway, so state the bound explicitly:
+
+Because the runtime keeps the **inherited sealed grant** and the adapter
+checks it independently (§7.4's second enforcement layer), an `attenuate`
+that returns something broader than `self` **cannot widen real authority**.
+The worst it achieves is failing to narrow — leaving the caller with exactly
+the authority the sealed grant already carried, which an ancestor had already
+approved.
+
+So for any capability backed by a host-issued grant:
+
+```text
+effective authority <= sealed grant, always, regardless of user code
+```
+
+The specification is *advisory narrowing*. The grant is the *hard ceiling*.
+
+**The important exception.** A user-defined capability type with **no
+underlying sealed grant and no trusted adapter** — a pure-Gene
+`app/PublishTopic` enforced only by library code that reads the effective
+specification — has no second layer. There the specification *is* the
+enforcement, and a buggy `attenuate` is a real hole.
+
+Two consequences:
+
+- Such types are honest policy *documentation* and useful composition, but
+  they are not a security boundary against code that can call the underlying
+  library directly.
+- A capability type that wants to be a real boundary must be backed by a
+  host-issued grant and an adapter that validates against it. The runtime
+  should be able to report which capability types are adapter-backed, so a
+  reviewer can tell load-bearing types from advisory ones.
+
+This distinction should appear in reflection (§11) rather than living only in
+readers' heads.
 
 A filesystem grant should ultimately be backed by a trusted root handle and a
 rights mask, not merely by a source-visible path string. A network grant may
@@ -180,11 +326,58 @@ child_context <= parent_context
 No module declaration, function declaration, message implementation, macro,
 or call-site form can violate this invariant.
 
+Because capability types are open (§3.1.1), "proven by the owning capability
+type" needs care: `attenuate` is user-supplied code and may be wrong. The
+invariant therefore holds at two levels, and only one of them depends on
+that code being correct:
+
+```text
+grant level          enforced by construction — a child context can only
+                     ever hold grants the parent held, and the adapter
+                     validates against the sealed grant
+
+specification level  an obligation on the implementer (§3.1.3), bounded
+                     by §3.2.2 — violating it fails to narrow, and cannot
+                     widen past the sealed grant
+```
+
+The security invariant is the first. The second is what makes declarations
+*meaningful* rather than merely safe. For an advisory capability type with no
+sealed grant behind it, only the second exists — which is exactly why §3.2.2
+insists that distinction be visible.
+
 ## 4. Selector syntax
 
-### 4.1 Declaration rows are lists
+### 4.1 Declaration rows
 
-`^capabilities` takes a list of selectors:
+`^capabilities` accepts three shapes. All three mean the same thing after
+normalization — a list of selectors:
+
+```gene
+^capabilities *                      # inherit everything available
+
+^capabilities (fs/WriteDir "tmp")    # one selector, no list needed
+
+^capabilities [                      # the general form
+  fs/*
+  (fs/WriteDir "tmp")
+  (device/Compute ^^optional)
+]
+```
+
+A bare `*` is the whole-context projection: inherit every grant the parent
+makes available. It is the natural companion to `fs/*` and carries the same
+review consequence as any wildcard (§4.3) — more so, since it spans
+namespaces. Static analysis should warn on `*` at a public boundary, and the
+entry module should be discouraged from using it, since the entry's whole
+job is to choose a ceiling.
+
+Note `^^optional` above: this document elsewhere writes `^optional true`.
+Gene's `^^flag` sugar is exactly "this property, set to true", so `^^optional`
+is the idiomatic spelling and both are the same property. Examples in this
+document should be read as equivalent.
+
+A declaration is a list of selectors:
 
 ```gene
 (fn generate_report
@@ -233,6 +426,26 @@ no argument and `"*"` have the same meaning.
 Outside a selector position, `fs/WriteDir` evaluates to the capability-type
 descriptor. Calling it resolves against the current context; it still cannot
 create authority.
+
+### 4.2.1 Selector positions construct specifications automatically
+
+Inside a capability-selector position the capability system applies special
+handling, so a declaration reads as data rather than as calls:
+
+- A bare capability type is its own empty application:
+  `fs/WriteDir` becomes `(fs/WriteDir)`.
+- An applied form `(fs/WriteDir "tmp")` invokes the type's canonical
+  constructor (its `ctor`, or the type's declared canonical constructor)
+  automatically, producing an inert specification. The author does not write
+  a construction call, and the form never evaluates as an ordinary function
+  application in this position.
+- The resulting value is then passed through `canonicalize` (§3.1.1).
+
+This is why `^capabilities` rows can be validated and frozen without running
+user program logic: constructing a specification is a constructor call and a
+`canonicalize`, both required to be pure and total, not arbitrary evaluation.
+`^optional` is consumed by the capability system before the type sees its
+arguments; everything else is the type's own vocabulary.
 
 ### 4.3 Namespace projection
 
@@ -322,6 +535,52 @@ Requirement expressions are deliberately restricted. They may contain:
 
 They may not run arbitrary Gene code, perform I/O, or mutate state. Resolution
 must be total except for a structured capability error.
+
+### 4.6 What happens at compile time, and what cannot
+
+Capability declarations must be processed at compile time so that runtime
+performance is not affected. Taken literally that conflicts with §4.5:
+`(fs/WriteFile filename)` names a runtime parameter, so it cannot be resolved
+before the program runs. The requirement is real but applies to a specific
+half of the work.
+
+**Compile time** — all of it, for every declaration:
+
+- parse the row and separate `^optional` from type-owned arguments;
+- construct the specification via the canonical constructor (§4.2.1);
+- run `canonicalize`, which must be pure and total;
+- validate arguments, properties, and unknown-type errors;
+- intern the capability type and namespace to compact IDs;
+- reject a type that does not explicitly implement `CapabilitySpec`;
+- emit a flat descriptor, with parameter references as slot indices.
+
+By the time the program runs there is no parsing, no property-map building,
+no string comparison of type names, and no allocation for a static row.
+
+**Runtime** — only what genuinely depends on runtime values:
+
+- binding parameter slots into a descriptor that references them;
+- matching the descriptor against the active context;
+- calling `attenuate` where the inherited grant is not an exact match.
+
+So an entirely static row (`fs/*`, `(fs/WriteDir "tmp")`) is resolvable to a
+context transformation at compile time, and its runtime cost is a context
+pointer swap. A parameter-dependent row costs one match plus at most one
+`attenuate` on the declaring function only.
+
+**Built-in types must not pay protocol dispatch.** `CapabilitySpec` is the
+*extension* mechanism, not the hot path. Runtime-provided types implement
+`canonicalize` and `attenuate` natively, and the runtime calls those
+directly; the protocol exists so user libraries can join the system on equal
+terms, not so that every filesystem check becomes a dynamic send. A security
+boundary should not depend on inline-cache behaviour for its cost profile.
+
+**Compile-time execution is itself capability-relevant.** Running
+`canonicalize` at compile time means user code from an imported capability
+library executes in the compiler. §14 already requires a separate
+compile-time capability context; the purity and totality laws in §3.1.3 are
+what keep that execution safe, and they should be enforced rather than
+assumed — see §12.
 
 ## 5. Where capabilities are declared
 
@@ -417,8 +676,20 @@ authority broader than the public message contract.
 
 Formally, for every valid parent context, an implementation's selected
 context must be no broader than the public message's selected context.
-Capability types provide selector-subsumption rules so built-in and statically
-known cases can be checked.
+
+This check routes through `attenuate`, not through a separate subsumption
+oracle (§3.1.1). For each selector the implementation declares:
+
+```text
+message_spec.attenuate(impl_spec) must succeed and yield impl_spec
+```
+
+If it returns `nil`, the implementation demands authority the public contract
+does not promise, and the implementation is rejected. If it returns something
+narrower than `impl_spec`, the implementation's own declaration is broader
+than what the contract can supply, which is the same rejection. Using the one
+operation for both the runtime narrowing and the static contract check means
+the two can never disagree about what the message permits.
 
 An implementation also may not turn a publicly optional requirement into a
 mandatory one. If an implementation needs extra authority, the protocol
@@ -742,8 +1013,38 @@ Capability-type implementations must obey:
 - failure does not fall back to ambient host access;
 - reflection does not expose secret provider state.
 
-User-defined capability types may be supported later, but the code that mints
-root grants or defines native entailment remains trusted.
+### 8.1 Built-in and custom capability types
+
+Both are first-class. They differ in who provides them and in whether they
+are adapter-backed (§3.2.2), not in how they are declared or resolved.
+
+**Built-in capabilities** are provided by the runtime and standard library —
+filesystem access, environment variables, dynamic-library loading, clock,
+network. They need **no import**: `fs/WriteDir` is reachable wherever a
+selector is legal. They are adapter-backed, so they are real security
+boundaries. Their namespaces are reserved; a user library cannot define a
+type that collides with `fs/WriteDir` and thereby capture its grants. Type
+identity is the interned namespace-qualified ID, not a name match.
+
+**Custom capabilities** are provided by user libraries — Slack access, a
+topic publisher, a database pool:
+
+```gene
+(app/PublishTopic "events")
+(db/Query ^schema "analytics" ^^read_only)
+```
+
+They implement `CapabilitySpec` like any other type. Importing such a library
+is safe at compile time because importing it executes no module body: the
+import brings in a protocol implementation, and the only code that runs is
+`canonicalize` (pure and total by §3.1.3) when a declaration is processed.
+
+A custom type is a *security* boundary only if it is adapter-backed by a
+host-issued grant. Otherwise it is advisory — see §3.2.2, which is the more
+important half of this distinction and should be read alongside it.
+
+The code that mints root grants and defines native entailment remains
+trusted, regardless of who defines the specification type.
 
 ## 9. Runtime support versus granted authority
 
@@ -819,9 +1120,26 @@ Reflection should expose canonical selectors:
 # => [(fs/WriteFile filename)]
 ```
 
+Reflection must also distinguish load-bearing capability types from advisory
+ones (§3.2.2), since the two look identical in a declaration:
+
+```gene
+(capability_type_info fs/WriteDir)
+# => {^adapter_backed true  ^provider "host/fs"}
+
+(capability_type_info app/PublishTopic)
+# => {^adapter_backed false ^provider nil}
+```
+
+A reviewer reading `^capabilities [(app/PublishTopic "events")]` cannot
+otherwise tell whether that row is enforced by a trusted adapter or merely
+documented by a library. Tooling should mark advisory rows explicitly.
+
 Useful tooling includes:
 
 - listing the entry ceiling;
+- reporting which capability types in a program are advisory rather than
+  adapter-backed;
 - showing which ancestor supplied a grant;
 - explaining every attenuation step;
 - checking protocol implementation compatibility;
@@ -845,13 +1163,18 @@ credentials, host handles, and inaccessible host paths.
 Static checking can reject:
 
 - unknown capability types;
+- a selector type that does not explicitly implement `CapabilitySpec`;
 - malformed selector arguments and properties;
 - duplicate or conflicting selector rows;
 - parameter references that are not bound at the boundary;
-- an implementation broader than its protocol message;
+- an implementation broader than its protocol message (via `attenuate`, §5.5);
 - a call whose statically known context cannot satisfy a mandatory selector;
 - attempts to use capability constructors as ordinary authority-minting
-  values.
+  values;
+- a `canonicalize` or `attenuate` implementation that performs I/O, mutates
+  state, or requires capabilities of its own. These run at compile time
+  (§4.6), so this is not a style rule: an impure implementation is a
+  compile-time sandbox escape.
 
 Static analysis may also warn when:
 
@@ -1012,6 +1335,32 @@ The implementation is ready when tests demonstrate all of the following:
   contention.
 - Capability-free call benchmarks show no material avoidable regression.
 
+Open-protocol criteria (§3.1, §3.2.2):
+
+- A type that does not explicitly implement `CapabilitySpec` is rejected in a
+  selector position, even if it defines methods with the right names.
+- A user-defined capability type resolves, attenuates, and reflects exactly
+  like a built-in one.
+- **An `attenuate` that returns a specification broader than `self` does not
+  widen real authority**: the adapter still refuses the operation on the
+  sealed grant. This is the single most important test in this document, and
+  it should exist as a deliberately hostile implementation in the test suite,
+  not only as a property test.
+- An `attenuate` that raises surfaces as `CapabilityTypeError` and denies the
+  boundary; it does not fall through to ambient access.
+- `canonicalize` is idempotent, and two equivalent specifications produce
+  identical context keys and interface fingerprints.
+- A `canonicalize` or `attenuate` that attempts I/O is rejected at compile
+  time.
+- A user library cannot define a type that captures grants belonging to a
+  reserved built-in namespace.
+- `^capabilities *`, `^capabilities (fs/WriteDir "tmp")`, and the list form
+  normalize to the same descriptors.
+- Reflection reports `adapter_backed` correctly for a built-in and for a
+  pure-Gene capability type.
+- A static row compiles to a descriptor requiring no runtime parsing or
+  allocation; a parameter-dependent row adds cost only to its own boundary.
+
 ## 19. Application: Gene as an agent's sole action surface
 
 Added 2026-08-11. This section records a direction, not a committed design;
@@ -1123,9 +1472,16 @@ In rough dependency order:
 The following can be decided during implementation without changing the core
 model:
 
-- the exact host CLI and embedding configuration syntax;
-- whether user-defined pure selector types are allowed initially;
+- the exact host CLI and embedding configuration syntax, and externalizing
+  capability policy to command-line arguments or a config file. The host
+  already interprets such policy and mints grants from it (§5.1); what is
+  deferred is the surface syntax, not the model;
 - whether revoked grants use epochs, handles, or provider callbacks;
+- whether `describe`'s default implementation is derived structurally from
+  the canonical form or supplied per namespace;
+- whether advisory (non-adapter-backed) capability types should require an
+  explicit marker at declaration rather than only being reported by
+  reflection;
 - which operating systems receive handle-relative filesystem support first;
 - whether a broad selector lookup returns a dedicated `CapabilitySet` value
   or only supports iteration and narrowing;
