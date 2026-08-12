@@ -538,11 +538,33 @@ must be total except for a structured capability error.
 
 ### 4.6 What happens at compile time, and what cannot
 
-Capability declarations must be processed at compile time so that runtime
-performance is not affected. Taken literally that conflicts with §4.5:
-`(fs/WriteFile filename)` names a runtime parameter, so it cannot be resolved
-before the program runs. The requirement is real but applies to a specific
-half of the work.
+The goal is that capability declarations cost nothing at runtime. Full
+compile-time *resolution* is not achievable, and it is worth being precise
+about why, because the reasons decide the performance design (§13).
+
+**Resolution cannot happen at compile time.** A declaration is static, but
+the context it resolves against is a runtime value:
+
+- A function is compiled once and called from many contexts. Its child
+  context depends on the caller's, which is not known at compile time.
+- `with_capabilities`, task spawn, and host policy all produce contexts that
+  exist only while running.
+- Separately compiled and dynamically loaded modules (`gene runurl`, plugins)
+  are compiled without their eventual caller.
+- Scoped and overlay protocol implementations mean the `attenuate` target for
+  a user-defined type is not always statically known.
+- §4.5's parameter-dependent selectors name runtime values by construction.
+
+**Running `canonicalize` in the compiler is also not free.** It requires the
+capability library to be loaded and its implementation available during
+compilation, and it executes user code in the compiler. That is acceptable
+only under the purity and totality laws (§3.1.3), enforced per §12, and under
+a separate compile-time context (§14). Where an implementation is not
+available at compile time, canonicalization is deferred to first use and
+memoized.
+
+What compile time genuinely delivers is the *static half* of the work, and
+then a runtime design that makes the dynamic half nearly free.
 
 **Compile time** — all of it, for every declaration:
 
@@ -563,10 +585,11 @@ no string comparison of type names, and no allocation for a static row.
 - matching the descriptor against the active context;
 - calling `attenuate` where the inherited grant is not an exact match.
 
-So an entirely static row (`fs/*`, `(fs/WriteDir "tmp")`) is resolvable to a
-context transformation at compile time, and its runtime cost is a context
-pointer swap. A parameter-dependent row costs one match plus at most one
-`attenuate` on the declaring function only.
+An entirely static row (`fs/*`, `(fs/WriteDir "tmp")`) compiles to a
+descriptor naming a *context transformation*. It still has to be applied to
+whatever context the caller supplies, but §13.1 makes that a cache hit rather
+than a resolution. A parameter-dependent row costs a presence check at entry
+and defers the expensive part to the operation (§13.2).
 
 **Built-in types must not pay protocol dispatch.** `CapabilitySpec` is the
 *extension* mechanism, not the hot path. Runtime-provided types implement
@@ -1190,7 +1213,116 @@ dynamic dispatch, plugins, and runtime values.
 ## 13. Performance model
 
 Capability checks occur at security-relevant boundaries, but they should not
-penalize capability-free code.
+penalize capability-free code. Since resolution is inherently dynamic (§4.6),
+the cost has to be engineered away at runtime rather than assumed away at
+compile time. Five techniques, in descending order of payoff.
+
+### 13.1 Capability-free code pays nothing, by absence
+
+The dominant case is code that declares no capabilities at all. For it the
+machinery must be *absent from the emitted code*, not present and skipped: no
+frame field, no branch, no guard. A "fast path" still costs a predictable
+branch on every call, and this repo's call path is already tight enough that
+such a branch is measurable.
+
+Two consequences for the implementation:
+
+- The compiler emits a different function prologue for declaring and
+  non-declaring functions. Non-declaring functions are byte-identical to
+  today.
+- The active context lives in a **VM register**, not a per-frame field, and
+  is saved and restored only by boundaries that actually change it — the same
+  shape as the operand-stack `sp` register work. A call that neither declares
+  nor narrows never touches it.
+
+This is the acceptance criterion that matters most: capability-free call
+benchmarks must be indistinguishable from the pre-capability build, not
+merely "no material regression".
+
+### 13.2 Cache the context transition per call site
+
+This is the largest win for code that *does* declare capabilities.
+
+For a static row, the result of `resolve(declaration, parent_context)`
+depends only on the declaration and the parent context. Both are interned, so
+the pair is a cache key and the transition is memoizable per call site,
+exactly like the existing per-call-site protocol-send cache:
+
+```text
+guard:  parent_context_id == cached_parent_id
+hit:    child_context_id = cached_child_id     # one compare, one load
+miss:   full resolve, then fill the cache
+```
+
+Contexts change rarely — only at explicit boundaries — so a given call site
+almost always sees the same parent. The steady-state cost of a static
+declaration becomes a compare and a load, with the resolve paid once.
+
+The guard must also include a **capability epoch** bumped by anything that
+can change resolution (grant revocation, a scoped `CapabilitySpec`
+implementation coming into or out of scope), so a stale transition can never
+be reused after the policy changes. This mirrors the `implEpoch` guard the
+dispatch cache already uses.
+
+Requirements this places on the representation: contexts must be
+**hash-consed**, so identity is a pointer compare rather than a structural
+walk, and so module-cache fingerprinting (§5.3) and the guard share one
+mechanism.
+
+### 13.3 Split parameter-dependent selectors into presence and proof
+
+`(fs/WriteFile filename)` is the expensive case: it depends on a runtime
+value, and doing it properly means path canonicalization, escape rejection,
+and symlink policy — real work, not a compare.
+
+Split it in two:
+
+- **At function entry, check presence only**: does the active context hold
+  any grant that could entail `fs/WriteFile` at all? This is
+  context-id-cacheable exactly like §13.2 and preserves the design's
+  fail-before-the-body property for the overwhelmingly common failure, which
+  is "no filesystem authority here at all".
+- **Defer the proof to the operation**, memoized in a hidden frame slot. The
+  adapter has to validate the concrete path anyway (§7.4's second layer), so
+  computing a full proof at entry duplicates work the security boundary
+  repeats. A function that declares a parameter-dependent selector and then
+  returns early pays nothing for it.
+
+The cost is a narrower fail-fast guarantee: a path-escape violation surfaces
+at the operation rather than at entry. Since the operation is where it is
+actually enforced, that is a diagnostic difference and not a security one.
+
+### 13.4 Built-in types bypass the protocol
+
+`CapabilitySpec` is the extension mechanism, not the hot path. Runtime and
+standard-library types implement `canonicalize` and `attenuate` natively, and
+the runtime calls them directly through the interned type ID. A filesystem
+check must not become a dynamic protocol send, and a security boundary must
+not depend on inline-cache behaviour for its cost profile. Only user-defined
+types dispatch, and they are the ones already off the hot path.
+
+### 13.5 Entry checks are elidable; adapter checks are not
+
+The strongest lever, if the above is still not enough.
+
+§7.4 establishes two enforcement layers, and they have different jobs: the
+function-entry check gives clear contracts and early diagnostics, while the
+**native adapter is the security boundary**. That layering means entry checks
+can be reduced or elided in a release profile without weakening security —
+the adapter still refuses the operation against the sealed grant.
+
+If this is done it must be explicit and audited, because two properties are
+lost: effects that occur before a denial are no longer prevented (a function
+may do half its work before the adapter refuses), and the diagnostic quality
+drops sharply. The recommendation is to keep entry checks on by default,
+treat elision as a measured optimization for a proven-hot boundary, and never
+allow the adapter layer to be configurable at all.
+
+An adapter check on a real filesystem or network operation is noise next to
+the syscall it guards, so the security boundary is affordable regardless of
+what happens to the diagnostic layer.
+
+### 13.6 Representation
 
 Recommended representation:
 
@@ -1210,13 +1342,25 @@ They must not add heap reads to unrelated scalar operations.
 
 Benchmarks should measure:
 
-- capability-free direct calls;
-- one exact static selector;
-- one parameter-dependent filesystem selector;
+- capability-free direct calls, against a pre-capability baseline build,
+  where the bar is *no measurable difference* (§13.1);
+- one exact static selector, warm and cold in the transition cache;
+- the transition-cache hit rate under realistic call patterns, since §13.2's
+  whole argument rests on it being high;
+- one parameter-dependent filesystem selector, separating the entry presence
+  check from the deferred proof (§13.3);
+- a boundary whose capability epoch is bumped repeatedly, to confirm
+  invalidation is not pathological;
 - `fs/*` over small and large contexts;
 - nested `with_capabilities`;
 - module initialization and cache lookup;
-- task spawn with context capture.
+- task spawn with context capture;
+- a user-defined capability type against a built-in one, to quantify what
+  protocol dispatch costs when it is not bypassed (§13.4).
+
+This repo's benchmark noise floor is high enough that a single run cannot
+settle a few-percent question. A capability-free regression claim needs
+reproduction across batches and a mechanism, not one number.
 
 ## 14. Environments, evaluation, and macros
 
@@ -1360,6 +1504,19 @@ Open-protocol criteria (§3.1, §3.2.2):
   pure-Gene capability type.
 - A static row compiles to a descriptor requiring no runtime parsing or
   allocation; a parameter-dependent row adds cost only to its own boundary.
+
+Performance criteria (§13):
+
+- Capability-free calls are indistinguishable from a pre-capability baseline
+  build, reproduced across benchmark batches rather than in one run.
+- A repeated static declaration hits the context-transition cache and costs a
+  compare plus a load in steady state.
+- Bumping the capability epoch invalidates cached transitions, and a stale
+  transition is never reused after revocation or a scoped implementation
+  change.
+- A function declaring a parameter-dependent selector that returns before
+  performing the operation does not compute an operation proof.
+- Built-in capability checks perform no dynamic protocol send.
 
 ## 19. Application: Gene as an agent's sole action surface
 
