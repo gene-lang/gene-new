@@ -1,10 +1,12 @@
 # Reversible AI-Native Gene Program Format
 
 Status: durable format v0 implemented and passing its provisional gates
-(2026-08-10); model-training track (Steps 6-7) has its pipeline and scoring
-harness built and a first matched from-scratch pilot run, closing three
-pre-registered gates and firing one routing rule (see "Model-training track
-status" below); Steps 8-9 and the appendix not started. Non-textual program modality for training models, with
+(2026-08-10). **The from-scratch model-training track is recommended for
+retirement** (2026-08-11) after a first matched pilot measured the modality
+at 2.2% *worse* than canonical text in nats per program -- see
+"Recommendation: retire the from-scratch model-training track" below. The
+durable format stands on its own evidence and is unaffected. The forward
+direction for Gene-plus-LLM work is `capabilities.md` §19. Non-textual program modality for training models, with
 a durable encoding that loads faster than `.gene` and translates back to
 canonical `.gene`.
 
@@ -162,11 +164,61 @@ Two further results come from the corpus alone, before any training run:
 
 The two gates that speak to modality *benefit* rather than sanity -- the
 held-out semantic pass rate and beating the matched control -- remain
-structurally unmeasurable: no task corpus with declared, executable tests
-exists yet, and the held-out task set this document specifies (requiring
-combinations of structural units absent from the training templates) has not
-been designed. Until that exists, a pilot can be run but not scored on the
-question the study is actually about.
+structurally unmeasurable, for a deeper reason than the missing task corpus.
+`train.py` concatenates programs into one stream and samples random windows
+for next-token prediction: it is *unconditional* language modelling. There is
+no prompt, no task description, and no input/output pairing, and G3's
+generation is seeded with a bare `ukFormStart`. So there is no way to pose a
+task to this model at all. Reaching G4 needs paired (description, program)
+data and conditional training -- a different pipeline, not merely a different
+corpus.
+
+### Recommendation: retire the from-scratch model-training track
+
+Added 2026-08-11, on evidence gathered above rather than on preference.
+
+**The modality shows no modelling advantage.** Cross-entropy per token is not
+comparable across two tokenizations, but total nats per program is. On the
+pilot's validation split the units arm needs 39,241 positions at 0.7709
+nats/token against the control's 35,873 at 0.8252 -- a ratio of **1.0218**,
+i.e. the structural modality costs 2.2% *more* to model than canonical text.
+Small sample (13 documents, 6000 steps, one seed), so treat it as a first
+read; but it is the correct metric and it points against the hypothesis. On
+ordinary small programs the modality also costs 1.367x the positions.
+
+**The capability ceiling is arithmetic, not effort.** At ~394 unit tokens per
+program, 10,000 programs is 3.9M tokens, 50,000 is 19.7M, and 200,000 is
+78.8M -- Chinchilla-optimal at roughly 0.2M, 1.0M and 3.9M parameters
+respectively. No corpus this project can realistically build supports a model
+that writes good Gene code.
+
+**The corpus is model-generated, so the track is distillation.** Training on
+programs written by a frontier model cannot exceed that model at writing
+them.
+
+**A skill dominates a fine-tune for the actual use case.** Frontier models
+already write valid, non-trivial Gene; a curated skill closes most of the
+remainder. A fine-tuned small model trades away the general reasoning that
+makes it useful, so it is the worse design even with unlimited compute.
+
+The study's gates are *comparative*, so weakness alone would not falsify the
+modality question -- but the comparative measurement now exists and is
+negative, which does. What survives, on its own justification and not the
+model's:
+
+- **The durable format.** 3.76x faster loading, lossless round-trip, zero
+  exclusions across 302 files. Independent of any model. Freezing v1 (the
+  manifest corpus and a fuzz pass) remains the highest-certainty work here.
+- **The generated corpus**, repurposed: reference material for a Gene skill,
+  an eval set with executable oracles, and -- because all 1002 programs are
+  pure computation by construction -- the natural first test corpus for the
+  capability verifier in `capabilities.md` §19.
+- **The scoring harness**, which is what made the negative result legible
+  instead of invisible.
+
+The forward direction is `capabilities.md` §19: Gene as an agent's sole
+action surface, under statically verified capability bounds. It needs none of
+the training work.
 
 ## Idea and priority
 

@@ -1012,7 +1012,113 @@ The implementation is ready when tests demonstrate all of the following:
   contention.
 - Capability-free call benchmarks show no material avoidable regression.
 
-## 19. Deferred questions
+## 19. Application: Gene as an agent's sole action surface
+
+Added 2026-08-11. This section records a direction, not a committed design;
+it changes no part of the model above. It exists because the machinery in
+§11 and §12 turns out to answer a problem outside this proposal's original
+scope, and that changes what this work is worth.
+
+### The idea
+
+An LLM agent today acts through *tool calls*: a name and typed arguments,
+matched against a schema. The proposal here is to delete that surface
+entirely and give the agent one way to act — **emit a Gene program, executed
+by the interpreter under an explicit capability grant.**
+
+The immediate win is composition. A tool call is a single invocation;
+composing several means round-tripping through the model's context (call,
+read result, reason, call again). A program expresses control flow,
+iteration, composition, and error handling in one emission, so a multi-step
+action costs one turn instead of N.
+
+That argument is not specific to Gene — it is the general "code as action"
+case, and it applies to a Python sandbox equally. What is specific to Gene
+is the *second* half.
+
+### Why capabilities are the load-bearing part
+
+The reason code-as-action is not already the default is authorization
+granularity. A tool call is narrow and inspectable: a human or policy engine
+can approve `read_file("/etc/hosts")` on its own terms. Arbitrary code is
+not reviewable that way, and a coarse sandbox grant ("you may touch the
+filesystem") authorizes far more than any individual tool call would. Moving
+to programs therefore trades *per-action* authorization for *per-session*
+authorization, which is a real loss of control, not a detail of
+implementation.
+
+This proposal closes exactly that gap. §11's `(capabilities_of f)` returns
+canonical selectors; §12 can reject "a call whose statically known context
+cannot satisfy a mandatory selector". Together they support a **pre-execution
+verifier**: given a candidate program and a grant, decide whether the program
+can exercise authority beyond the grant, and refuse to run it if so.
+
+That converts "the model emitted arbitrary code" into "the model emitted code
+statically bounded by these authorities" — which is a stronger claim than a
+tool-call schema makes, because a schema constrains the *shape* of one
+request while a capability bound constrains everything the program can reach.
+
+Parameter-dependent selectors matter here more than anywhere else in this
+document. `fs/WriteFile` narrowed by an argument is what lets a grant say
+"this program may write exactly the file it was given", which is the
+tool-call guarantee recovered inside a program.
+
+### What this direction does *not* require
+
+Worth stating plainly, because it was initially conflated with adjacent work:
+
+- **It does not require the reversible native program format**, nor any
+  model trained on it. The agent emits ordinary `.gene` *text*. See
+  `reversible-ai-native-program-format.md` §"Model-training track status".
+- **It does not require training a model at all.** Current frontier models
+  write valid, non-trivial Gene by generalizing from other Lisps and reading
+  the reference; a curated skill closes most of the remaining gap. A
+  fine-tuned small model is strictly worse for this purpose, since it trades
+  away the general reasoning that makes an agent useful.
+- **It is available now**, ahead of the rest of this proposal, in a reduced
+  form: run untrusted programs under a coarse grant, with the verifier added
+  as the enforcement layer once §12 lands.
+
+### Open problems
+
+These are the reasons "completely replace tool calls" is a goal rather than
+a conclusion:
+
+- **Partial execution.** A malformed tool call is rejected whole. A program
+  can fail halfway with some effects already applied. Capability bounds
+  limit *what* can happen, not *how much of it* happened before the failure.
+  Transactional or compensating semantics are an open question.
+- **Adaptation.** Tool calls let a model observe a result and change course.
+  A program is fire-and-forget unless it can suspend and resume. Gene's
+  tasks, channels, and actors make this expressible; the interface an agent
+  should see is undesigned.
+- **Reviewability.** A capability bound is machine-checkable but not
+  human-legible. A person approving an action wants to know what it will do,
+  not only what it may reach. Rendering a verified program's intended effects
+  back into something reviewable is unsolved.
+- **Model competence.** Models are meaningfully weaker at Gene than at
+  Python, and pretraining exposure makes that gap durable. The direction pays
+  only if verified capability-bounded execution is worth more than that
+  competence costs. It probably is — it is a safety property unobtainable
+  from a Python sandbox at any model scale — but this is the assumption the
+  whole direction rests on and should be stated before building, not after.
+
+### What would make this concrete
+
+In rough dependency order:
+
+1. §12 static checking, specifically capability enumeration over a whole
+   program rather than a single call boundary.
+2. A host entry that accepts a program plus a grant and refuses to execute
+   when enumeration exceeds the grant.
+3. A capability-free verdict on a known-pure corpus as the verifier's first
+   test: `training/corpus/generated/` holds 1002 programs that are pure
+   computation by construction, so every one should enumerate to the empty
+   set. Anything else is a verifier bug or a genuine surprise.
+4. A Gene skill, so the model's output is good enough that verification
+   failures are about authority rather than syntax.
+
+## 20. Deferred questions
 
 The following can be decided during implementation without changing the core
 model:
