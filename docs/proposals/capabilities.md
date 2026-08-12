@@ -381,11 +381,31 @@ subsumes(spec_a, spec_b) -> yes | no | unknown
     no grant, so the compiler can call it. Three-valued: `unknown` is a
     rejection at an interface boundary, never an assumption of safety.
 
-provenance(grant) -> identity + generation
-    Stable grant identity and a monotonically increasing generation,
-    exposing no secrets, for fingerprints (§5.3), epochs (§13.2),
-    revocation (§13.3), and diagnostics (§11).
+provenance(grant) -> identity + revocation dependency set
+    Stable grant identity, and the set of revocation dependencies this
+    grant's validity rests on. Exposes no secrets. Used by fingerprints
+    (§5.3), epochs (§13.2), revocation (§13.3), and diagnostics (§11).
 ```
+
+**Revocation propagates through the whole lineage.** Every boundary mints a
+derivative, `entail` mints a grant of a different type, and `meet` mints one
+depending on two inputs — so a grant's validity is not a property of that
+grant alone. A single self-generation is insufficient: revoking an ancestor
+would leave a descendant's own generation unchanged, and a cached proof
+against the descendant would still pass. `meet` is worse, since revoking
+*either* operand must invalidate the result.
+
+The normative rule:
+
+```text
+every derived, entailed, or meet grant carries the revocation
+dependencies of all its ancestors, and validating a proof checks the
+whole dependency set — not just the grant it names
+```
+
+Implementations may realize this as shared lineage tokens, composite
+generations, or provider callbacks. §20 may defer the *representation*; it
+may not defer this requirement.
 
 **Who owns a cross-type edge.** `entail` is implemented by the provider that
 owns the **source** grant, and it may only mint a grant of a type that same
@@ -826,12 +846,11 @@ means it inherits its caller's context.
 | protocol message | **caller ∩ defining module ceiling** | empty context |
 | `with_capabilities` | n/a — row required | empty context |
 
-The function rule is an intersection, not plain inheritance. An earlier draft
-said "inherit unchanged", which breaks the central invariant: a module
-declaring `^capabilities []` could export a row-less function, and a broad
-caller invoking it would hand it the broad context, defeating the module
-ceiling entirely. A callee is always bounded by its *defining* module's
-ceiling (§5.4, §6.1), so omission means:
+The function rule is an intersection, not plain inheritance. Plain
+inheritance would break the invariant: a module declaring `^capabilities []`
+could export a row-less function, and a broad caller would hand it the broad
+context, defeating the module ceiling. A callee is always bounded by its
+*defining* module's ceiling (§5.4, §6.1), so omission means:
 
 ```text
 child = caller_context  ∩  defining_module_ceiling
@@ -875,11 +894,10 @@ now scoped to calls where the intersection is provably a no-op:
   §13.2's transition, so the steady-state cost is a compare and a load rather
   than a provider call.
 
-So the honest form of the zero-cost claim is: *capability-free code within a
-module boundary is byte-identical to today; a cross-module call into a
-differently-ceilinged module pays a cached meet.* An earlier draft asserted
-the stronger version, which is not compatible with module ceilings being
-enforced at all.
+So the zero-cost claim is precisely: *capability-free code within a module
+boundary is byte-identical to today; a cross-module call into a
+differently-ceilinged module pays a cached meet.* An unqualified version of
+that claim is not compatible with enforcing module ceilings at all.
 
 ### 5.1 Runtime root
 
@@ -910,11 +928,15 @@ The entry module establishes the application-level ceiling:
   ])
 ```
 
-The entry selector list is resolved against the host root. The resulting
-context, not the complete host context, is inherited by the entry module's
-body and imports.
+The entry row is resolved against the host root **by the host, when it
+invokes `main`** — not when the module is loaded. Module loading and
+initialization run under an empty context (§5.3), so there is no point during
+loading at which the entry's ceiling could be materialized, and no authority
+for top-level forms or imports to receive.
 
-This is the main policy point controlled by the application developer.
+This is the main policy point controlled by the application developer. It
+governs what `main` and everything it calls may do; it does not govern the
+loading of the program.
 
 For an entry or imported module, an omitted or explicitly empty
 `^capabilities` row means an empty context. There is no implicit inherit-all
@@ -923,22 +945,26 @@ behavior at a module boundary. Functions differ — see the defaults table in
 
 ### 5.3 Imported modules
 
-An imported module resolves its own declaration against the context made
-available by its importer:
+**A module row is an immutable selector template, not a context.** It is
+never materialized at import time. Loading and initialization run under an
+empty capability context, and importing brings in *definitions* without
+transferring any authority:
 
 ```gene
 (mod report
   ^capabilities [fs/*])
 ```
 
-This passes through only the importer's filesystem grants. If the importer
-removed network access, the imported module cannot recover it.
+This says: whenever a function of `report` is called, its ceiling is the
+caller's filesystem grants — resolved at that call, against that caller's
+already-bounded context (§5.0, §6.1). It does not say the module holds
+filesystem authority, and there is no moment at which it does.
 
-Module initialization runs under an **empty** capability context; the
-declared row is the ceiling applied to the module's functions when they are
-called, not a context its top-level forms execute under. The reasoning is
-below, and it removes the "a broadly initialized module must not be reused
-narrowly" problem entirely rather than trying to detect it.
+That is what makes the singleton sound. Resolving a module's row against
+"the context supplied by its importer" would be incoherent once
+initialization is empty: there is no importer context at load time, and a
+module imported by two differently-authorized callers would have to keep
+whichever imported it first. As a template the question does not arise.
 
 Adding capability identity to the module cache key is not merely cache
 invalidation — it changes Gene's module instancing model. Today there is one
@@ -952,32 +978,23 @@ That must be decided explicitly, because both answers have failure modes:
 - **Sharing** them, while duplicating mutable state, can leak authority
   captured during the broader initialization into the narrower instance.
 
-An earlier draft proposed sharing types, protocols, and implementations while
-making mutable state and authority-bearing initialization results
-per-context. That is an architecture sketch, not a module model, and it does
-not fit the current runtime: a module is one initialized scope, function and
-message values close over that scope, and the namespace holds declarations
-and mutable state together. A shared function cannot close over several
-per-context state instances without an implicit module-instance parameter or
-cloned closures, and type messages and canonical implementations can
-reference module state too. The accompanying "instantiate once when
-initialization captures no authority" optimization needs an effect-and-escape
-analysis able to see authority returned indirectly through native calls and
-helpers — not a cheap classification.
+Sharing types, protocols, and implementations while making mutable state
+per-context does not fit this runtime: a module is one initialized scope,
+function and message values close over it, and a shared function cannot close
+over several per-context state instances without an implicit module-instance
+parameter or cloned closures.
 
 **Version 1 takes the simple option: module initialization runs under an
 empty capability context.** A module's declared row is *metadata* — the
 ceiling applied to its functions when they are called (§5.0) — not a context
 its top-level forms execute under.
 
-An earlier draft instead allowed initialization under the declared context
-while forbidding module state from retaining "a grant, a resource, or a value
-derived from one", and claimed that was checkable at the store site. It is
-not. A module can read a protected file during broad initialization and store
-the returned **ordinary string**: no grant is retained, no resource is
-retained, and a `Str` carries no origin a store check can inspect. Catching
-that needs pervasive information-flow tainting, and the same hole exists for
-environment variables and network reads.
+The alternative — initialize under the declared context, but forbid module
+state from retaining authority — is not enforceable. A module can read a
+protected file during broad initialization and store the returned **ordinary
+string**: no grant retained, and a `Str` carries no origin a store check can
+inspect. Catching that needs pervasive information-flow tainting, and the
+same hole exists for environment variables and network reads.
 
 Running initialization with an empty context closes the channel at its
 source: there is no authority available to leak, so nothing needs to be
@@ -1057,21 +1074,18 @@ provider.subsumes(message_spec, impl_spec) must return `yes`
 ```
 
 `subsumes` is the provider's non-authorizing static relation (§3.2.3). An
-earlier draft wrote `provider.derive(message_spec_as_grant, impl_spec)`,
-which is not implementable: a specification is explicitly not a grant, and
-the compiler has no parent grant to mint a derivative from. `unknown` is a
-rejection here, never an assumption that the implementation is compatible.
+`provider.derive(message_spec_as_grant, impl_spec)` is not implementable in
+its place: a specification is explicitly not a grant, and the compiler has no
+parent grant to mint a derivative from. `unknown` is a rejection here, never
+an assumption that the implementation is compatible.
 
-An earlier draft routed this through `message_spec.attenuate(impl_spec)` and
-claimed that using one operation for runtime narrowing and static checking
-meant the two could not disagree. That reasoning belonged to the previous
-model and is now false: §3.2.2 explicitly permits a hostile or buggy
-`attenuate`, and the provider is authoritative over it. A lying `attenuate`
-could therefore make the compiler accept an implementation whose capability
-contract is broader than its protocol message. The provider would still
-refuse to widen at runtime — but callers would receive denial where the
-public protocol promised success, which makes substitutability unsound even
-though nothing is over-authorized.
+Routing this through `message_spec.attenuate(impl_spec)` would be unsound.
+§3.2.2 permits a hostile or buggy `attenuate`, and the provider is
+authoritative over it, so a lying implementation could make the compiler
+accept a capability contract broader than its protocol message. The provider
+still refuses to widen at runtime — but callers receive denial where the
+public protocol promised success, so substitutability breaks even though
+nothing is over-authorized.
 
 Static interface checking must consult the same authority that decides at
 runtime. (If provider-less advisory types are added later, they have no such
@@ -1142,25 +1156,45 @@ evaluation, dispatch, and the callee body with unambiguous semantics.
 
 ### 6.1 Boundary algorithm
 
-At each module, call, or explicit attenuation boundary:
+**This is the normative algorithm.** Other sections describe how it is
+lowered (§4.6), represented and cached (§13), or illustrated (§7); where any
+of them appears to state different semantics, this section governs.
+
+At each call or explicit attenuation boundary:
 
 ```text
-parent = active capability context
-ceiling = enclosing module or entry ceiling
-available = intersection(parent, ceiling)
-selected = resolve(declaration selectors, available)
+parent    = active capability context
+ceiling   = defining module's row, resolved as a template against parent
+available = provider.meet(parent, ceiling)          # §3.2.3
 
-if a mandatory exact selector is unsatisfied:
-  fail before executing the body
+for each selector in the declaration (or, if the row is omitted,
+                                      the identity selection):
+    candidates = entailment_index[selector.type]     # §8.0
+    grant      = provider.derive(available, selector)     # same type
+              or provider.entail(available, selector)     # cross type
+    if grant is denial and the selector is mandatory:
+        fail here, before the body runs
+    if grant is denial and the selector is optional:
+        contribute nothing
 
-child = immutable context containing selected grants
-execute under child
+child = immutable context of the minted derivative grants
+execute the body under child
 ```
 
-Namespace projections contribute every matching available grant. Exact
-selectors contribute matching grants or attenuated derivatives.
+Three properties this fixes, each established elsewhere and restated here
+only because this is where they take effect:
 
-The result is always a subset of or attenuation of `available`.
+- Every contributed grant is a **provider-minted derivative** (§3.2.2), not
+  the parent's grant retained. The checked ceiling advances at every
+  boundary.
+- Mandatory selectors fail **before the body**, always, in every execution
+  profile (§13.3, §13.5).
+- Module loading never runs this algorithm, because loading is empty (§5.3).
+  A module's row participates only as the `ceiling` template above, resolved
+  per call.
+
+Namespace projections contribute every matching available grant. The result
+is always at or below `available`.
 
 ### 6.2 Mandatory and optional selection
 
@@ -1616,9 +1650,9 @@ whole-program verifier (§19) would have to do the same.
 The same channel exists for every authority-bearing *resource* — an open file
 handle, a connected client, a device queue. A broad caller opens one, passes
 the handle into a narrowed or empty context, and that code operates through
-it. An earlier draft recorded this as a known version-1 limitation. That is
-not tenable: the document states its invariant unqualified, and a caveat that
-large makes the design not an end-to-end boundary.
+it. This cannot be left as a known limitation: the invariant here is stated
+unqualified, and a caveat that large would mean the design is not an
+end-to-end boundary.
 
 Rechecking only the handle's *originating* grant is insufficient. It proves
 the original grant is still valid; it says nothing about whether the
@@ -1830,68 +1864,83 @@ Context churn and resource release need their own tests.
 value, and doing it properly means path canonicalization, escape rejection,
 and symlink policy — real work, not a compare.
 
-What may be deferred is the **proof**, never the **constraint**. An earlier
-draft of this section proposed checking only that the context held *some*
-grant able to entail `fs/WriteFile`, and deferring everything else. That is
-wrong, and badly so: it converts an exact declaration into broad filesystem
-authority. A body declaring `(fs/WriteFile filename)` would still hold the
-parent's `WriteDir` grant and could write any other path beneath it, which
-defeats §4.5, §6.1 and §7.3 rather than merely weakening diagnostics.
-
-The child context must carry an **immutable deferred constraint bound to the
-parameter**, established at entry:
+The child context holds a **sealed derivative grant minted for the bound
+argument** — not the parent grant with a constraint attached beside it. This
+is the same rule as every other boundary (§3.2.2, §6.1); a parameter-
+dependent selector is only unusual in that its argument is known at the
+boundary rather than at compile time.
 
 ```text
 child context holds:
-  the parent grant, wrapped by a deferred constraint
-  { type: fs/WriteFile, template: <symbolic selector>, bindings: [slot 0] }
+  fs/WriteFile grant, derived by the provider for exactly `filename`
+  (the parent's fs/WriteDir grant is NOT in the child context)
 ```
 
-Properties this must have:
+Consequences, which are the point of the exact declaration:
 
-- Every operation performed in the body, and in every nested call that
-  inherits this context, resolves through the constraint. It is part of the
-  context, not a memo on the side.
-- `(fs/write_file other content)` **fails** even when `other` is beneath the
-  parent root, because the constraint names `filename`, not the root.
+- `(fs/write_file other content)` **fails** even when `other` sits beneath
+  the parent root, because the child holds authority for one file, not for
+  the root. Checking only that the context held *some* `WriteFile`-entailing
+  grant would leave the parent's `WriteDir` grant reachable and silently
+  convert an exact declaration into broad filesystem authority.
+- Nested calls inherit the derivative, so confinement propagates without any
+  side-channel bookkeeping.
 - The hidden frame slot caches the *resolved proof for the bound value*. It
   is an optimization over a constraint that already exists — not the
   mechanism by which the constraint exists.
-- **A cached proof carries the grant generation it was minted under**
-  (§3.2.3's `provenance`), and every adapter use compares that against the
-  grant's current generation, re-authorizing on mismatch. Without this, a
-  proof resolved before a revocation stays usable after it: the capability
-  epoch (§13.2) guards context-transition caches only, and nothing else
-  guards a frame-slot proof. Caching a canonicalized *target* is safe;
-  caching an authorization *decision* across a revocation is not.
+- **A carried proof is validated against its grant's whole revocation
+  dependency set** (§3.2.3) on every use, not just against the grant it
+  names — an ancestor's revocation must invalidate it. The capability epoch
+  (§13.2) guards context-transition caches only and does not reach a
+  frame-slot proof. Caching a canonicalized *target* is safe; caching an
+  authorization *decision* across a revocation is not.
 
 **Validation is not deferred. Only its reuse is.** §§4.1, 6.1 and 15 promise
 that an unsatisfied mandatory selector fails before the body runs, and §18
-tests it. An earlier draft of this section quietly contradicted that by
-moving scope validation to first use, which would let a body perform
-unrelated effects before discovering that its declared path was outside the
-granted root — or return without discovering it at all. Confinement was
-preserved, but a mandatory selector cannot be an entry precondition in one
-section and a lazy operation constraint in another.
+tests it. Moving scope validation to first use would let a body perform
+unrelated effects before discovering that its declared path lies outside the
+granted root, or return without discovering it at all. A mandatory selector
+cannot be an entry precondition in one section and a lazy operation
+constraint in another.
 
-The normative rule is **fail before the body**, for presence *and* scope:
+The normative rule is **fail before the body** — but policy validation and
+filesystem object resolution are different events, and conflating them
+reintroduces the check-then-open race §7.5 forbids:
 
 ```text
-at the boundary:  bind the parameter, run provider.authorize once,
-                  fail here if it denies
-in the body:      the resulting proof is reused from the frame slot
+at the boundary:   bind the parameter, canonicalize the selector, and
+                   provider.derive / provider.entail the exact sealed
+                   child grant. Fail here if policy cannot satisfy it.
+
+at the operation:  provider.authorize produces a race-safe proof against
+                   that grant, and performs the operation atomically.
 ```
 
-What is saved is the **duplication** the original design carried, not the
-work itself. Entry validated the selector and the adapter then repeated the
-whole path canonicalization, escape rejection, and symlink resolution at the
-operation. Now `authorize` runs once, at entry, and the operation reuses its
-proof.
+A previous draft ran full `authorize` at entry and reused its result at the
+operation. That is unsafe. Between the boundary and the write, another
+process can replace a path component or the leaf, so a cached path or a
+cached authorization decision is exactly the stale check the secure-path
+rules exist to prevent. And for a `^create true` selector, eagerly opening
+the target to stabilize it would create or truncate the file *before the
+function body runs* — not a neutral validation step.
 
-The cost of this choice, stated plainly: a function declaring a
-parameter-dependent selector pays full validation even on a path that never
-performs the operation. Parameter-dependent selectors are opt-in and
-uncommon, and correctness of a security precondition outranks the saving.
+So proof reuse is legal only under a specific condition:
+
+> A proof may be carried from the boundary to the operation **only if it
+> holds stable operating-system objects** — an open directory handle, an open
+> target handle — and the eventual operation is atomic and handle-relative.
+> Otherwise `authorize` runs again at the operation.
+
+What the boundary check guarantees is therefore a **policy** precondition: if
+the active context cannot authorize this selector for this argument under any
+filesystem state, the function fails before its body. What it does not
+guarantee is that the filesystem still looks the same at the write; only a
+handle-relative atomic operation gives that, and that is the adapter's job.
+
+The cost, stated plainly: a function declaring a parameter-dependent selector
+pays policy validation even on a path that never performs the operation.
+Parameter-dependent selectors are opt-in and uncommon, and a security
+precondition outranks the saving.
 
 ### 13.4 Built-in types bypass the protocol
 
@@ -1904,12 +1953,7 @@ types dispatch, and they are the ones already off the hot path.
 
 ### 13.5 Nothing at a declaration boundary is elidable
 
-An earlier draft of this section proposed eliding function-entry checks in a
-release profile, on the grounds that the adapter is the real boundary. That
-conflated two different things a declaration does, and only one of them is a
-check.
-
-A declaration:
+A declaration does two different things, and only one is a check:
 
 1. **checks satisfaction** — will the required authority be available? This
    is eager diagnostics, and it is genuinely redundant with the adapter.
@@ -1937,12 +1981,11 @@ satisfaction checking         is a normative precondition (§4.1, §6.1, §13.3)
 Static rows install their child context from a cached transition (§13.2);
 parameter-dependent rows validate once at entry and reuse the proof (§13.3).
 
-An earlier draft offered a release profile that skipped eager satisfaction
-checks. Two later findings closed that door: eliding the *transformation* is
-a security hole (above), and §13.3 makes eager satisfaction a normative
-precondition that other sections and the acceptance criteria depend on. What
+A release profile that skipped eager satisfaction checks is not available:
+eliding the *transformation* is a security hole (above), and §13.3 makes
+eager satisfaction a normative precondition other sections depend on. What
 would remain elidable is a compare and a load, which is not worth a second
-execution profile or the semantic divergence between builds.
+execution profile or semantic divergence between builds.
 
 So this section is no longer an optimization lever. §§13.1–13.4 carry the
 performance argument on their own, and the affordability claim rests on the
@@ -2023,7 +2066,9 @@ Capability scopes must compose with existing cleanup semantics:
 
 - `with_capabilities` restores the previous context on all exits;
 - resources acquired under a context are released normally;
-- an error value must not accidentally carry a forgeable grant;
+- no error value may carry a grant or a resolved proof at all — not merely
+  no *forgeable* one, since an unforgeable grant is precisely what conveys
+  authority (§10.1);
 - revocation, if supported, is checked at an operation-safe point.
 
 Optional audit events may record:
@@ -2056,49 +2101,60 @@ Generally:
 Canonical selector forms should participate in module and interface
 fingerprints where cached compilation or module reuse depends on policy.
 
-## 17. Migration from the current runtime
+## 17. Implementation plan
 
-The current filesystem capability representation is useful as a starting
-point but name-only capability data and raw host paths do not provide scoped
-confinement.
+Gene is pre-release and has no external users, so there is **no migration
+path, no deprecation window, and no compatibility shim**. Incompatible code
+is deleted and replaced. This is a deliberate simplification: a compatibility
+layer that wraps a raw host path is exactly the source-can-mint-authority
+pattern §5.1 forbids, and not having to keep one removes the most dangerous
+part of the work.
 
-Two migration facts that are easy to miss:
+### 17.1 What gets deleted
 
-**This is a source-level API change, not only a representation change.** The
-runtime today spells built-in capabilities `$fs/ReadDir` — see the
-`fs/read_text expects (fs/ReadDir, path)` diagnostics in `stdlib.nim` — and
-passes them as explicit arguments. This proposal makes `fs/ReadDir` an
-ambient descriptor resolved from the active context. Existing call sites
-change, so the migration needs a deprecation path and a mechanical rewrite,
-not just an internal swap.
+- The current name-only capability values and every path that passes a raw
+  host path as authority. They provide no scoped confinement and cannot be
+  made to.
+- The explicit-argument spelling of built-in capabilities. Today the runtime
+  spells these `$fs/ReadDir` and passes them as ordinary arguments — see the
+  `fs/read_text expects (fs/ReadDir, path)` diagnostics in `stdlib.nim`. They
+  become ambient descriptors resolved from the active context, so every such
+  call site is rewritten rather than bridged.
+- `gene run`'s current boot order, which loads and executes the entry module
+  and *then* evaluates `--grant` expressions in that module's scope. That is
+  authority minted by already-running source, and it is replaced outright
+  (§17.2 step 3).
 
-**The launcher boot order must change.** `gene run` currently loads and
-executes the entry module and *then* evaluates `--grant` expressions in that
-module's scope. That cannot remain the authority-origin path: the entry
-ceiling has to exist before the entry module's top-level imports and forms
-run, or module initialization happens with undefined authority. Step 4 below
-therefore requires reordering boot to: parse trusted host policy, mint the
-root context, *then* load the entry module under its declared ceiling.
-Evaluating grant expressions from an already-running entry scope is exactly
-the source-can-mint-authority pattern §5.1 forbids.
+### 17.2 Build order
 
-Migration should proceed in layers:
+Ordered by dependency, not by risk, since nothing has to keep working
+in between:
 
-1. Introduce interned `CapabilityType`, immutable
-   `CapabilityContext`, and unforgeable `CapabilityGrant` runtime values.
-2. Parse and normalize list-form `^capabilities` rows.
-3. Implement exact selectors, `^^optional`, and namespace projections.
-4. Establish host-root and entry-module ceilings.
-5. Apply function, method, and protocol-message boundary checks.
-6. Add `with_capabilities` with exception-safe dynamic extent.
-7. Convert filesystem adapters to root-handle-based confinement.
-8. Convert standard-library APIs to parameter-dependent selectors.
-9. Add task propagation, reflection, and module-cache fingerprints.
-10. Add static protocol and selector validation.
+1. **The provider contract (§3.2.3)** — `derive`, `entail`, `meet`,
+   `authorize`, `subsumes`, `provenance` with lineage revocation. This is the
+   trusted security interface and it determines what a grant and a context
+   must contain, so nothing below it can be designed first.
+2. Interned `CapabilityType`, unforgeable `CapabilityGrant`, immutable
+   hash-consed `CapabilityContext`.
+3. **Launcher boot**: parse trusted host policy, mint the root context, then
+   load the program with module initialization running empty (§5.3), then
+   resolve the entry row and invoke `main` under it (§5.2).
+4. Row parsing and normalization: the three `^capabilities` shapes,
+   `^^optional`, namespace projection, and the selector-position constructor
+   rule (§4.2.1).
+5. The boundary algorithm (§6.1) at function, method, and protocol-message
+   boundaries, including the omitted-row `caller ∩ module ceiling` rule.
+6. `with_capabilities`, with exception-safe dynamic extent.
+7. The filesystem provider: root-handle confinement, handle-relative atomic
+   operations, symlink policy, rights masks (§7.5). This is where the design
+   either holds or does not.
+8. Standard-library APIs converted to parameter-dependent selectors.
+9. The entailment index (§8.0), task propagation, and reflection (§11).
+10. Static checking (§12) and the `CapabilitySpec` protocol for
+    provider-supplied custom types.
 
-During migration, any compatibility path that wraps a raw path must remain
-trusted-host-only. It must not be exposed as a source-level capability
-constructor.
+Steps 1–3 are the ones worth getting right before writing much else; 7 is
+where most of the real difficulty lives.
 
 ## 18. Acceptance criteria
 
@@ -2171,16 +2227,19 @@ Performance criteria (§13):
 - Bumping the capability epoch invalidates cached transitions, and a stale
   transition is never reused after revocation or a scoped implementation
   change.
-- A function declaring a parameter-dependent selector whose scope is
-  violated fails **before** the body runs, in every execution profile.
+- A function declaring a parameter-dependent selector that policy cannot
+  satisfy fails **before** the body runs, in every execution profile; the
+  race-safe proof is still produced at the operation (§13.3).
+- Replacing a path component between the boundary and the operation cannot
+  make a write land outside the granted root.
 - Built-in capability checks perform no dynamic protocol send.
 - Repeated dynamic attenuation in a long-running loop does not grow context
   interning without bound, and releases grants and host handles.
 
 Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 
-- A function with an omitted row inherits its caller's context unchanged; one
-  with `^capabilities []` receives an empty context.
+- A function with an omitted row receives `caller ∩ defining module ceiling`;
+  one with `^capabilities []` receives an empty context.
 - A body declaring `(fs/WriteFile filename)` **cannot** write a different
   path beneath the same parent root. This is the test that distinguishes a
   deferred *proof* from a deferred *constraint*.
@@ -2193,9 +2252,9 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
   user code.
 - No source-level operation yields a grant or resolved proof as a value,
   including via error values and closure capture.
-- Module initialization that attempts to retain a grant or a resource in
-  module-level state is a boundary error, and there is exactly one runtime
-  module instance regardless of context.
+- Module initialization runs with an empty context, so a capability-requiring
+  operation attempted during it is denied; there is exactly one runtime module
+  instance regardless of context, and no capability fingerprint in its key.
 - A function declaring `(fs/WriteFile a)` cannot operate on `b`, in every
   execution profile: the declaration transformation is never elided (§13.5).
 - An authority-bearing resource opened under a broad context and used inside
@@ -2210,8 +2269,9 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 - A canonical specification containing a mutable collection or closure is
   rejected at canonicalization; mutating a value after insertion cannot
   change an already-cached transition.
-- **A grant revoked after a proof is cached denies a second operation in the
-  same frame**, via the generation check in §13.3.
+- **A grant revoked after a proof is carried denies a second operation in the
+  same frame.** So does revoking an *ancestor* of that grant, and revoking
+  *either operand* of a `meet` the grant descends from (§3.2.3).
 - A broad caller invoking an undeclared function exported by a module whose
   ceiling is `^capabilities []` cannot perform an effect through it (§5.0).
 - An intra-module call to an undeclared function performs no context work; a
@@ -2228,133 +2288,15 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 
 ## 19. Application: Gene as an agent's sole action surface
 
-Added 2026-08-11. This section records a direction, not a committed design;
-it changes no part of the model above. It exists because the machinery in
-§11 and §12 turns out to answer a problem outside this proposal's original
-scope, and that changes what this work is worth.
+The machinery in §11 and §12 answers a problem outside this proposal's
+original scope: an LLM agent that acts by emitting a Gene program, rather
+than a tool call, needs exactly the pre-execution capability enumeration this
+document specifies. Moving from tool calls to programs otherwise trades
+per-action authorization for per-session authorization, and a capability
+bound is what recovers the narrower guarantee.
 
-### The idea
-
-An LLM agent today acts through *tool calls*: a name and typed arguments,
-matched against a schema. The proposal here is to delete that surface
-entirely and give the agent one way to act — **emit a Gene program, executed
-by the interpreter under an explicit capability grant.**
-
-The immediate win is composition. A tool call is a single invocation;
-composing several means round-tripping through the model's context (call,
-read result, reason, call again). A program expresses control flow,
-iteration, composition, and error handling in one emission, so a multi-step
-action costs one turn instead of N.
-
-That argument is not specific to Gene — it is the general "code as action"
-case, and it applies to a Python sandbox equally. What is specific to Gene
-is the *second* half.
-
-### Why capabilities are the load-bearing part
-
-The reason code-as-action is not already the default is authorization
-granularity. A tool call is narrow and inspectable: a human or policy engine
-can approve `read_file("/etc/hosts")` on its own terms. Arbitrary code is
-not reviewable that way, and a coarse sandbox grant ("you may touch the
-filesystem") authorizes far more than any individual tool call would. Moving
-to programs therefore trades *per-action* authorization for *per-session*
-authorization, which is a real loss of control, not a detail of
-implementation.
-
-This proposal narrows that gap, within limits that must be stated. §11's
-`(capabilities_of f)` returns canonical selectors; §12 can reject "a call
-whose statically known context cannot satisfy a mandatory selector". Together
-they support a **pre-execution verifier**: given a candidate program and a
-grant, decide whether the program can exercise authority beyond the grant.
-
-**Complete capability enumeration is not available for arbitrary Gene
-programs.** §12 already concedes that dynamic dispatch, plugins, host policy
-and runtime values require runtime checks; add higher-order calls, `eval`,
-fexprs, dynamic imports, native extensions, and open protocol
-implementations, and static enumeration is undecidable in the general case.
-§5.0 compounds this: an undeclared function is effect-polymorphic, so its
-requirement must be *inferred* transitively rather than read off.
-
-The verifier is therefore sound only on a restricted subset, and its
-rejection policy is part of its definition:
-
-- closed-world imports, resolved before verification;
-- no `eval`, no dynamic module loading, no native library loading;
-- every call target statically resolvable, so every reachable callable has a
-  computed capability summary;
-- open-protocol dispatch permitted only where the implementation set is
-  frozen;
-- **anything unresolved is rejected, not assumed capability-free.**
-
-Within that subset the claim holds and is stronger than a tool-call schema,
-because a schema constrains the shape of one request while a capability bound
-constrains everything the program can reach. Outside it, the honest position
-is that the runtime boundary is the enforcement and the verifier is a filter
-that refuses to certify what it cannot analyze.
-
-This also depends on §5.0's omitted-declaration semantics and on §10.1
-keeping authority out of values; if proofs became first-class, the verifier
-would have to track authority through data flow, not just call structure.
-
-Parameter-dependent selectors matter here more than anywhere else in this
-document. `fs/WriteFile` narrowed by an argument is what lets a grant say
-"this program may write exactly the file it was given", which is the
-tool-call guarantee recovered inside a program.
-
-### What this direction does *not* require
-
-Worth stating plainly, because it was initially conflated with adjacent work:
-
-- **It does not require the reversible native program format**, nor any
-  model trained on it. The agent emits ordinary `.gene` *text*. See
-  `reversible-ai-native-program-format.md` §"Model-training track status".
-- **It does not require training a model at all.** Current frontier models
-  write valid, non-trivial Gene by generalizing from other Lisps and reading
-  the reference; a curated skill closes most of the remaining gap. A
-  fine-tuned small model is strictly worse for this purpose, since it trades
-  away the general reasoning that makes an agent useful.
-- **It is available now**, ahead of the rest of this proposal, in a reduced
-  form: run untrusted programs under a coarse grant, with the verifier added
-  as the enforcement layer once §12 lands.
-
-### Open problems
-
-These are the reasons "completely replace tool calls" is a goal rather than
-a conclusion:
-
-- **Partial execution.** A malformed tool call is rejected whole. A program
-  can fail halfway with some effects already applied. Capability bounds
-  limit *what* can happen, not *how much of it* happened before the failure.
-  Transactional or compensating semantics are an open question.
-- **Adaptation.** Tool calls let a model observe a result and change course.
-  A program is fire-and-forget unless it can suspend and resume. Gene's
-  tasks, channels, and actors make this expressible; the interface an agent
-  should see is undesigned.
-- **Reviewability.** A capability bound is machine-checkable but not
-  human-legible. A person approving an action wants to know what it will do,
-  not only what it may reach. Rendering a verified program's intended effects
-  back into something reviewable is unsolved.
-- **Model competence.** Models are meaningfully weaker at Gene than at
-  Python, and pretraining exposure makes that gap durable. The direction pays
-  only if verified capability-bounded execution is worth more than that
-  competence costs. It probably is — it is a safety property unobtainable
-  from a Python sandbox at any model scale — but this is the assumption the
-  whole direction rests on and should be stated before building, not after.
-
-### What would make this concrete
-
-In rough dependency order:
-
-1. §12 static checking, specifically capability enumeration over a whole
-   program rather than a single call boundary.
-2. A host entry that accepts a program plus a grant and refuses to execute
-   when enumeration exceeds the grant.
-3. A capability-free verdict on a known-pure corpus as the verifier's first
-   test: `training/corpus/generated/` holds 1002 programs that are pure
-   computation by construction, so every one should enumerate to the empty
-   set. Anything else is a verifier bug or a genuine surprise.
-4. A Gene skill, so the model's output is good enough that verification
-   failures are about authority rather than syntax.
+That direction is developed in `agent-code-as-action.md`. It depends on this
+proposal and changes nothing in it; nothing here should be justified by it.
 
 ## 20. Deferred questions
 
