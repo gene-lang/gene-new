@@ -104,64 +104,51 @@ granted directory and the requested write mode is allowed.
 
 ### 3.1.1 The `CapabilitySpec` protocol
 
-Capability types are **open**. Any type may become one by implementing an
-ordinary Gene protocol:
+Capability types are **open** in their vocabulary. Any type may describe a
+kind of authority by implementing an ordinary Gene protocol:
 
 ```gene
 (protocol CapabilitySpec
   (message canonicalize [] : CapabilitySpec)
-  (message attenuate [requested : CapabilitySpec] : CapabilitySpec?)
   (message describe [] : Str))
 ```
 
 ```gene
 (impl CapabilitySpec for WriteDir
   (message canonicalize [] ...)
-  (message attenuate [requested] ...)
   (message describe [] ...))
 ```
 
 Conformance is **explicit**, never structural. A type that happens to define
-a method named `attenuate` does not become a capability type. Explicit
+a method with a matching name does not become a capability type. Explicit
 conformance means the compiler can validate it, dispatch goes through
 qualified protocol messages, and no type acquires capability semantics by
 accident.
 
-Only `canonicalize` and `attenuate` are required. `describe` has a default
-implementation deriving a string from the canonical specification form.
+Only `canonicalize` is required. `describe` defaults to a string derived from
+the canonical form.
+
+**The protocol is purely descriptive. It decides nothing about authority.**
+That is the logical end of the principle this design started from — user
+types must not be trusted grants. A specification is a *request written in a
+type's own vocabulary*; every question about whether a request is satisfiable,
+and every act of minting authority, belongs to the trusted provider (§3.2.3).
 
 Deliberately **not** in the protocol:
 
-- **`subsumes`.** A successful `attenuate` already answers "does the
-  inherited authority satisfy this request?". Two oracles for one question
-  can disagree, and a disagreement between them is a security hole, not a
-  bug. Everywhere this document previously said "subsumption" — including
-  the protocol-implementation check in §5.5 — the answer now comes from
-  `attenuate`.
-- **`intersect`.** Same reason: it is `attenuate` under another name.
-- **`fs/*` and `^optional`.** These are runtime-level composition over a set
-  of specifications, not questions any single specification can answer. They
-  stay in the capability system, which keeps the protocol small.
+- **`attenuate`.** An earlier design had the specification propose a
+  narrowing for the provider to validate. Since the provider must
+  independently prove the result anyway, the proposal step changes no outcome
+  while adding an untrusted call to the normative path — and a context holds
+  *grants*, not inherited specifications, so there was no well-defined
+  receiver for it. Narrowing is `provider.derive` / `provider.entail` (§6.1).
+- **`subsumes`, `intersect`.** Both are provider operations (§3.2.3). Two
+  oracles for one question can disagree, and a disagreement between an
+  untrusted and a trusted one is a security hole.
+- **`fs/*` and `^optional`.** Runtime composition over sets of grants (§6.1),
+  not questions a single specification can answer.
 
-### 3.1.2 Direction and meaning of `attenuate`
-
-The argument order is load-bearing and easy to get backwards:
-
-```text
-inherited.attenuate(requested) -> effective | nil
-```
-
-- `self` is the **inherited** specification — what the parent context makes
-  available.
-- `requested` is what the child boundary asks for.
-- The result is the **effective** specification, conferring no more authority
-  than `self`.
-- `nil` means the request is not satisfiable from this inherited
-  specification. It is a denial, not an error.
-
-`attenuate` must be **total**: it returns `nil` rather than raising for an
-unsatisfiable request. Raising is reserved for a malformed specification and
-surfaces as `CapabilityTypeError`.
+This keeps exactly one narrowing oracle, and it is the trusted one.
 
 ### 3.1.3 Laws
 
@@ -175,17 +162,11 @@ canonicalize produces a transitively immutable snapshot:
 canonicalize is pure, total, deterministic, and idempotent:
   canonicalize(canonicalize(x)) == canonicalize(x)
 
-attenuate never widens:
-  attenuate(a, b) is nil, or confers no more authority than a
-
-attenuate is transitive:
-  attenuate(attenuate(a, b), c) confers no more than attenuate(a, c)
-
 equivalent specifications canonicalize identically:
   they must be indistinguishable to context keying and fingerprinting
 
-neither message performs I/O, mutates state, captures authority,
-or depends on the active capability context
+canonicalize performs no I/O, mutates no state, captures no authority,
+and does not depend on the active capability context
 ```
 
 **Transitive immutability is a cache-soundness requirement, not value
@@ -210,14 +191,15 @@ copied.
 1. (fs/WriteDir "tmp") constructs an inert specification. No authority yet.
 2. The runtime verifies the type explicitly implements CapabilitySpec.
 3. canonicalize validates and freezes it.
-4. attenuate proposes a requested narrowing of the inherited specification.
-5. The type's *trusted provider* validates that request against the parent's
-   sealed grant and mints a new sealed derivative grant, or refuses.
-6. The child context holds the derivative grant. The adapter enforces
+4. The runtime finds candidate parent grants (§6.1) and asks the type's
+   *trusted provider* to derive from them.
+5. The provider validates the request against the parent's sealed grant and
+   mints a new sealed derivative grant, or refuses.
+6. The child context holds the derivative grant. Operations are enforced
    against that derivative, not against the host root.
 ```
 
-Steps 5 and 6 are the crux: user code proposes, trusted code disposes. §3.2.2
+Steps 4-6 are the crux: user code describes, trusted code decides. §3.2.2
 explains why the alternative — keeping only the host grant and re-checking it
 — fails to preserve `child <= parent`.
 
@@ -250,10 +232,9 @@ The laws in §3.1.3 are obligations on implementers, and an open protocol
 means some implementation will violate them — by accident or on purpose. The
 design must be safe anyway.
 
-**An earlier draft of this section got this wrong**, and the error is worth
-recording because it is the natural thing to believe. It argued that keeping
-the inherited *host* sealed grant and re-checking it in the adapter bounds a
-hostile `attenuate`. That only establishes:
+The natural thing to believe is that keeping the inherited *host* sealed
+grant and re-checking it at the operation is enough. It is not. That only
+establishes:
 
 ```text
 effective authority <= the host's original grant
@@ -265,8 +246,8 @@ replacement of a built-in is needed:
 
 ```text
 1. host sealed grant is  /
-2. entry correctly attenuates to  /tmp
-3. a later buggy attenuate receives /tmp and returns /
+2. entry correctly narrows to    /tmp
+3. a later boundary derives from the HOST grant rather than from /tmp
 4. adapter checks against the host grant / and permits
 ```
 
@@ -278,15 +259,15 @@ grant, and the adapter checks against the nearest one, not the root.**
 
 The consequence for the open protocol is the important part:
 
-> A user-supplied `attenuate` may *describe* a requested narrowing. It can
-> never be the *proof* that the narrowing is sound.
+> A `CapabilitySpec` *describes* a requested narrowing. It is never the
+> *proof* that the narrowing is sound.
 
 So narrowing is a two-party operation:
 
 ```text
-user code:          proposes a requested specification via attenuate
-trusted provider:   validates the request against the *parent's effective
-                    grant*, and mints a new sealed derivative grant
+user code:          describes a request in the type's own vocabulary
+trusted provider:   validates it against the *parent's* grant and mints a
+                    new sealed derivative, or refuses
 ```
 
 The provider for a capability type is trusted code that owns the resource —
@@ -295,8 +276,8 @@ only thing that mints, and it validates against the parent's derivative
 grant, so each boundary's ceiling is at or below the previous one by
 construction rather than by user cooperation.
 
-Given that, a hostile `attenuate` can request anything it likes; the provider
-refuses to mint a derivative broader than its input, and:
+Given that, source code can request anything it likes; the provider refuses
+to mint a derivative broader than its input, and:
 
 ```text
 grant(child) <= grant(parent) <= ... <= grant(host)
@@ -368,12 +349,18 @@ entail(parent_grant, requested_spec_of_other_type) -> child_grant | denial
     satisfy an fs/WriteFile selector.
 
 meet(grant_a, grant_b) -> grant | empty
-    The trusted intersection of two grants. When the two are of related
-    but different types, the caller entails both to a common type first;
-    a provider is never asked to meet types it does not own.
+    The trusted intersection of two grants of a type this provider owns.
+    Per-grant only: the runtime lifts it to contexts via
+    intersect_contexts (§6.1). A provider is never asked to meet types it
+    does not own, and cross-type intersection entails to a common type
+    first.
 
-authorize(grant, operation) -> proof | denial
-    Validate a concrete operation against a grant. The final boundary.
+perform(grant, operation) -> result | denial
+    Validate AND perform a concrete operation, atomically. The final
+    boundary. Exports no proof: there is no value that represents "this
+    operation was authorized", so nothing can be captured, stored, returned,
+    or replayed. Handle resolution and the operation itself happen inside
+    this call, handle-relative, so no path can be swapped in between.
 
 subsumes(spec_a, spec_b) -> yes | no | unknown
     NON-AUTHORIZING, static. Does spec_a's authority cover spec_b's, for
@@ -391,7 +378,7 @@ provenance(grant) -> identity + revocation dependency set
 derivative, `entail` mints a grant of a different type, and `meet` mints one
 depending on two inputs — so a grant's validity is not a property of that
 grant alone. A single self-generation is insufficient: revoking an ancestor
-would leave a descendant's own generation unchanged, and a cached proof
+would leave a descendant's own generation unchanged, and an operation
 against the descendant would still pass. `meet` is worse, since revoking
 *either* operand must invalidate the result.
 
@@ -399,8 +386,8 @@ The normative rule:
 
 ```text
 every derived, entailed, or meet grant carries the revocation
-dependencies of all its ancestors, and validating a proof checks the
-whole dependency set — not just the grant it names
+dependencies of all its ancestors, and `perform` checks the whole
+dependency set — not just the grant it names
 ```
 
 Implementations may realize this as shared lineage tokens, composite
@@ -417,19 +404,17 @@ such an edge is genuinely wanted, the **target** provider must explicitly
 register acceptance of the source provider; the source cannot claim it
 unilaterally.
 
-**Why `subsumes` is separate from `attenuate`.** §3.1.1 removed `subsumes`
-from the open protocol because a second oracle can disagree with `attenuate`.
-That reasoning applies to *untrusted* code. Here the provider is the single
-authority, so its `subsumes` and its `derive` cannot disagree — they are the
-same trusted component. The compiler needs an operation that answers a
-question about two *specifications* without a parent grant to mint from,
-which `derive` structurally cannot do.
+**Why `subsumes` is a provider operation.** The compiler needs to answer a
+question about two *specifications*, with no parent grant to mint from, which
+`derive` structurally cannot do. Keeping it on the provider means it and
+`derive` cannot disagree — they are the same trusted component.
 
 **`meet` is not optional, and identity comparison cannot replace it.** Two
 places already require intersecting authority rather than selecting from a
 set:
 
-- §6.1 intersects the caller's context with the enclosing module ceiling;
+- §6.1 intersects the caller's context with the enclosing module ceiling,
+  via `intersect_contexts`;
 - §6.4.1 intersects a callback's attached context with the invoker's;
 - §10.2 intersects a resource's originating grant with the active context.
 
@@ -439,10 +424,43 @@ along different paths, say. Set intersection by grant identity finds nothing
 there and would silently yield an empty context, or worse, pick one. Only the
 provider can decide what the overlap actually is, and mint it.
 
-A capability type without a registered provider cannot participate in the
-model. This is what makes the protocol open in a useful sense: a library adds
-a capability type *together with* a provider, and the trusted surface grows
-deliberately rather than by anyone implementing two messages.
+### 3.2.4 Provider admission
+
+A provider mints sealed grants, defines narrowing, and is the final operation
+boundary. Admitting one therefore **extends the trusted base**, and ordinary
+library initialization must not be able to do it — a library that could
+register a provider could mint its own authority, and the sealed-grant
+boundary would be circular.
+
+```text
+who admits      the host, explicitly, over native or otherwise
+                authenticated implementations. Never Gene source, never
+                an import, never module initialization.
+
+ownership       exactly one provider per capability type, exclusively.
+                A type's provider cannot be replaced or shadowed.
+
+lifetime        the registry is populated during host boot and frozen
+                before any program code runs. No admission, replacement,
+                or unloading afterwards.
+
+edges           entailment edges (§8.0) are registered with the provider
+                that owns both endpoint types, and are frozen with it.
+```
+
+**Version 1 forbids cross-provider entailment edges.** An earlier sketch let
+a target provider "accept" an edge from a source provider, but never said
+which provider mints the target grant or how both revocation lineages are
+preserved — and a source provider asserting an edge into another's types is
+precisely the circularity above. If such edges are needed later, the shape is
+an explicit **bridge** operation on the *target* provider that consumes a
+source grant, mints its own grant, and records both providers' revocation
+dependencies. Source-provider assertion alone must never suffice.
+
+A capability type without an admitted provider cannot participate in the
+model at all. This is the honest scope of "open": a library supplies a
+capability *vocabulary* freely (§3.1.1), and supplies enforcement only if the
+host admits it.
 
 This contract must be settled before `CapabilityGrant` and `CapabilityContext`
 representations are chosen, since it determines what they must contain.
@@ -504,9 +522,7 @@ No module declaration, function declaration, message implementation, macro,
 or call-site form can violate this invariant.
 
 Because capability types are open (§3.1.1), "proven by the owning capability
-type" needs care: `attenuate` is user-supplied code and may be wrong. The
-invariant holds because the *provider*, not the protocol implementation,
-mints every derivative grant (§3.2.2):
+type" means the *provider*, which mints every derivative grant (§3.2.2):
 
 ```text
 grant level          enforced by construction — each boundary's sealed
@@ -515,8 +531,8 @@ grant level          enforced by construction — each boundary's sealed
                      downward at every step
 
 specification level  an obligation on the implementer (§3.1.3) — a wrong
-                     attenuate produces a request the provider refuses, so
-                     it can cause denial but not widening
+                     canonical form yields a request the provider refuses,
+                     so it can cause denial but not widening
 ```
 
 The security invariant is the first. The second is what makes declarations
@@ -729,8 +745,8 @@ the context it resolves against is a runtime value:
   exist only while running.
 - Separately compiled and dynamically loaded modules (`gene runurl`, plugins)
   are compiled without their eventual caller.
-- Scoped and overlay protocol implementations mean the `attenuate` target for
-  a user-defined type is not always statically known.
+- Scoped and overlay protocol implementations mean the `canonicalize` target
+  for a user-defined type is not always statically known.
 - §4.5's parameter-dependent selectors name runtime values by construction.
 
 **Running `canonicalize` in the compiler is also not free.** It requires the
@@ -768,8 +784,8 @@ values, run the canonical constructor and `canonicalize` on the now-concrete
 arguments, and match against the active context. This is the constructor and
 canonicalization work that stage 1 could not do.
 
-**Stage 3 — operation time.** Construct the proof for a deferred constraint
-(§13.3), if the operation is actually performed.
+**Stage 3 — operation time.** `provider.perform` validates against the child
+grant and executes atomically (§3.2.3, §13.3).
 
 By the time a *static* row runs there is no parsing, no property-map
 building, no string comparison of type names, and no allocation.
@@ -779,54 +795,37 @@ runtime-dependent specification has no concrete canonical form at compile
 time, so a fingerprint must be over the template and its slot references —
 not over a pretended concrete value.
 
-### 4.6.1 Compile-time execution needs a real trust boundary
+### 4.6.1 No user code runs in the compiler
 
-Saying `canonicalize` is "pure and total by protocol law" is a statement of
-intent, not an isolation mechanism. A user type's canonical constructor and
-protocol methods are ordinary program logic. Totality is undecidable in
-general, and a capability-free compile-time context prevents host I/O but not
-nontermination, memory exhaustion, mutation of compiler-visible state, or
-nondeterminism. A static checker can reject obvious violations; it cannot be
-the security argument.
+Purity laws and an empty compile-time capability context do not isolate
+arbitrary Gene code: totality is undecidable, and an empty context prevents
+host I/O but not nontermination, memory exhaustion, mutation of
+compiler-visible state, or nondeterminism. Static analysis can reject obvious
+violations; it cannot be the security argument, and an earlier draft leaned
+on it in three places.
 
-Pick a concrete boundary per capability type:
+**Version 1 takes the only boundary it can actually enforce: the compiler
+executes no user-supplied capability code.**
 
-- **Adapter-backed types**: canonicalization and the canonical constructor
-  are **native, compiler-owned** code. No user logic runs in the compiler for
-  the types that are actual security boundaries. This is the default and
-  covers all built-ins.
-- **Provider-supplied custom types**: the provider registers a canonicalizer
-  along with the type (§3.2.3). It is trusted by the same act that made the
-  provider trusted, so no isolation machinery is needed — but a provider
-  that supplies a non-terminating canonicalizer degrades the compiler, so
-  registration should require it to be native or to run under instruction and
-  memory limits with denial on breach.
-- Where a canonicalizer is not available at compile time, defer
-  canonicalization to first use and memoize it. Deferral is always sound; it
-  costs one resolution.
+```text
+host-provided types      canonicalizers are native, compiler-owned. Rows
+                         are fully processed at compile time (stage 1).
 
-The canonical constructor is subject to exactly the same restrictions as
-`canonicalize` and `attenuate`. §12 previously named only the latter two.
+library-provided types   canonicalization is DEFERRED to first use at
+                         runtime, and memoized. The compiler validates
+                         the row's shape against the registered type but
+                         never runs the type's own code.
+```
 
-An entirely static row (`fs/*`, `(fs/WriteDir "tmp")`) compiles to a
-descriptor naming a *context transformation*. It still has to be applied to
-whatever context the caller supplies, but §13.1 makes that a cache hit rather
-than a resolution. A parameter-dependent row costs a presence check at entry
-and defers the expensive part to the operation (§13.2).
+This costs a first-use resolution for custom capability rows and nothing for
+built-ins, which are the common case. In exchange, compiling an untrusted
+package cannot execute that package's logic inside the compiler — a property
+worth more than the saved resolution, and one no amount of static checking
+would have delivered.
 
-**Built-in types must not pay protocol dispatch.** `CapabilitySpec` is the
-*extension* mechanism, not the hot path. Runtime-provided types implement
-`canonicalize` and `attenuate` natively, and the runtime calls those
-directly; the protocol exists so user libraries can join the system on equal
-terms, not so that every filesystem check becomes a dynamic send. A security
-boundary should not depend on inline-cache behaviour for its cost profile.
-
-**Compile-time execution is itself capability-relevant.** Running
-`canonicalize` at compile time means user code from an imported capability
-library executes in the compiler. §14 already requires a separate
-compile-time capability context; the purity and totality laws in §3.1.3 are
-what keep that execution safe, and they should be enforced rather than
-assumed — see §12.
+It also removes an inconsistency §8.1 raised: a custom implementation only
+available after module initialization is no longer a special case, because
+*every* custom implementation takes the deferred path.
 
 ## 5. Where capabilities are declared
 
@@ -1067,7 +1066,7 @@ Formally, for every valid parent context, an implementation's selected
 context must be no broader than the public message's selected context.
 
 For **fully concrete** selectors on an adapter-backed type, the check uses the
-**provider's** trusted narrowing relation (§3.2.3), not `attenuate`:
+**provider's** trusted `subsumes` relation (§3.2.3):
 
 ```text
 provider.subsumes(message_spec, impl_spec) must return `yes`
@@ -1079,13 +1078,11 @@ its place: a specification is explicitly not a grant, and the compiler has no
 parent grant to mint a derivative from. `unknown` is a rejection here, never
 an assumption that the implementation is compatible.
 
-Routing this through `message_spec.attenuate(impl_spec)` would be unsound.
-§3.2.2 permits a hostile or buggy `attenuate`, and the provider is
-authoritative over it, so a lying implementation could make the compiler
-accept a capability contract broader than its protocol message. The provider
-still refuses to widen at runtime — but callers receive denial where the
-public protocol promised success, so substitutability breaks even though
-nothing is over-authorized.
+Routing this through untrusted specification code would be unsound: a lying
+implementation could make the compiler accept a capability contract broader
+than its protocol message. The provider still refuses to widen at runtime —
+but callers receive denial where the public protocol promised success, so
+substitutability breaks even though nothing is over-authorized.
 
 Static interface checking must consult the same authority that decides at
 runtime. (If provider-less advisory types are added later, they have no such
@@ -1094,14 +1091,14 @@ rather than as a checked contract.)
 
 **This does not generalize to parameter-dependent selectors.** "No broader
 for every valid parent context" is universally quantified over runtime
-arguments, and a single concrete `attenuate` call cannot establish it — the
+arguments, and a single concrete `subsumes` call cannot establish it — the
 two specifications may reference different parameter slots entirely. The
 check must therefore be a conservative *symbolic* relation:
 
 - accept when message and implementation reference the **identical parameter
   slot** with the implementation's literal arguments statically narrowing the
   message's — where "narrowing" is decided by the provider's relation, not by
-  `attenuate`;
+  `subsumes`;
 - accept when both are fully concrete and the provider check above succeeds;
 - **reject everything else**, or require an explicit trusted proof.
 
@@ -1160,26 +1157,59 @@ evaluation, dispatch, and the callee body with unambiguous semantics.
 lowered (§4.6), represented and cached (§13), or illustrated (§7); where any
 of them appears to state different semantics, this section governs.
 
+**The runtime owns composition; the provider owns grant semantics.** Provider
+operations (§3.2.3) are defined over *individual grants*. A context is a
+multimap holding zero or more grants per type (§3.4), so composing them is
+the runtime's job, through two runtime-owned operations:
+
+```text
+intersect_contexts(a, b) -> context
+    For each capability type present in both, for each pair of grants
+    (one from a, one from b) in canonical order, call the owning
+    provider's meet. Drop empty results, deduplicate by canonical grant
+    identity, and keep the surviving set. A type present in only one
+    input contributes nothing.
+
+resolve_selector(context, selector) -> grant set | denial
+    candidates = [selector.type] ++ entailment_index[selector.type]   §8.0
+    for each candidate type, in registration order, and each grant of
+    that type in the context, in canonical order:
+        provider.derive  when the candidate type == selector.type
+        provider.entail  otherwise
+    Collect every successful mint, deduplicated by canonical identity.
+```
+
 At each call or explicit attenuation boundary:
 
 ```text
 parent    = active capability context
 ceiling   = defining module's row, resolved as a template against parent
-available = provider.meet(parent, ceiling)          # §3.2.3
+available = intersect_contexts(parent, ceiling)
 
 for each selector in the declaration (or, if the row is omitted,
                                       the identity selection):
-    candidates = entailment_index[selector.type]     # §8.0
-    grant      = provider.derive(available, selector)     # same type
-              or provider.entail(available, selector)     # cross type
-    if grant is denial and the selector is mandatory:
+    grants = resolve_selector(available, selector)
+    if grants is empty and the selector is mandatory:
         fail here, before the body runs
-    if grant is denial and the selector is optional:
+    if grants is empty and the selector is optional:
         contribute nothing
+    otherwise contribute every grant in the set
 
 child = immutable context of the minted derivative grants
 execute the body under child
 ```
+
+**Set-valued by design, ambiguity reported late.** A selector may legitimately
+resolve to several grants — §6.3's two writable roots — so `resolve_selector`
+returns a set and a boundary never fails merely because it found more than
+one. `AmbiguousCapability` is raised at the *operation*, when one concrete
+grant must be chosen and two non-equivalent candidates could serve it (§6.3),
+not during resolution.
+
+**Determinism.** Candidate types are visited in registration order and grants
+in canonical identity order, so resolution does not depend on insertion order
+or hash iteration. Two contexts that are equal as sets produce equal results,
+which is what makes the transition cache in §13.2 sound.
 
 Three properties this fixes, each established elsewhere and restated here
 only because this is where they take effect:
@@ -1232,7 +1262,7 @@ A broad selector may intentionally produce a set:
 (fs/WriteDir)
 ```
 
-An operation requiring one concrete proof must resolve unambiguously. If two
+An operation requiring one concrete grant must resolve unambiguously. If two
 grants can map the same source path to different host targets, the runtime
 raises `AmbiguousCapability` instead of choosing based on insertion order.
 
@@ -1333,8 +1363,8 @@ fs/WriteDir(root_handle=<cwd>, rights=[create, truncate, write])
 At the entry boundary:
 
 1. The parent has write authority rooted at `<cwd>`.
-2. `(fs/WriteDir "tmp")` asks `fs/WriteDir` to attenuate that grant to its
-   `tmp` descendant.
+2. `(fs/WriteDir "tmp")` asks the filesystem provider to derive a grant for
+   the `tmp` descendant of that root.
 3. The application context is rooted at `<cwd>/tmp`.
 4. The host's broader `<cwd>` grant is no longer visible inside the module.
 
@@ -1360,7 +1390,7 @@ If the host already grants only `<cwd>/tmp`, the entry may instead use
 ```
 
 When called with `"test.md"`, `fs/WriteFile` resolves that relative name
-against the inherited `<cwd>/tmp` root and produces an operation proof for:
+against the inherited `<cwd>/tmp` root and derives a grant for:
 
 ```text
 <cwd>/tmp/test.md
@@ -1401,17 +1431,17 @@ There are two enforcement layers:
 
 1. Function entry resolves `(fs/WriteFile filename)` and fails before the
    body if the active context cannot satisfy it.
-2. The native filesystem adapter receives the resolved proof and validates
-   every operation against its trusted root and rights.
+2. `provider.perform` validates every operation against the derived grant's
+   trusted root and rights, and executes it atomically.
 
 The first layer gives clear contracts and early diagnostics. The second layer
 is the security boundary. A bug in declaration processing must not turn a raw
 path string into unrestricted host access.
 
 The implementation need not expose `native_write_file` to normal Gene code.
-The runtime may store the pre-resolved proof in a hidden frame slot so the
-second `(fs/WriteFile filename)` lookup is allocation-free and cannot select
-a different grant.
+The runtime may store the derived grant in a hidden frame slot so the second
+`(fs/WriteFile filename)` lookup is allocation-free and cannot select a
+different grant.
 
 ### 7.5 Secure path resolution
 
@@ -1490,10 +1520,9 @@ Capability-type implementations must obey:
 
 §3.4 indexes contexts by `CapabilityTypeId`, but the central example asks a
 `WriteDir` grant to satisfy a `WriteFile` selector. Looking only under the
-requested type ID never finds it. Calling `attenuate` on every inherited
-grant would find it, but that makes resolution O(context size), executes
-unrelated user-defined code on every check, and contradicts the indexed,
-cacheable presence checks §13 depends on.
+requested type ID never finds it. Asking every inherited grant's provider
+would find it, but that makes resolution O(context size) and contradicts the
+indexed, cacheable checks §13 depends on.
 
 Discovery must therefore be a **trusted entailment index**, separate from
 scope decisions:
@@ -1515,10 +1544,8 @@ running user code. It must define:
   default should be no, since an edge into `fs` is a claim about filesystem
   authority and belongs to the filesystem provider.
 
-`attenuate` may *propose* along a candidate edge, but per §3.2.2 it never
-decides: the owning provider's `entail` is what accepts an edge and mints the
-resulting grant. The index supplies candidates; the provider supplies the
-answer.
+The index supplies candidates; the owning provider's `entail` accepts an edge
+and mints the resulting grant. Discovery and decision stay separate.
 
 ### 8.1 Built-in and custom capability types
 
@@ -1620,30 +1647,28 @@ capability it needs:
   ...)
 ```
 
-Native implementations must accept resolved grants or proofs, not look up
-unrestricted process-global facilities.
+Native implementations must go through `provider.perform` with a resolved
+grant, not look up unrestricted process-global facilities.
 
 ### 10.1 Proofs and other authority-bearing values
 
-A resolved proof is authority in a value. If ordinary code can obtain, store,
-return, capture in a closure, send to another task, or attach to an error
-value such a proof, it has exactly the authority-recovery channel the dynamic
-context exists to prevent: acquire a broad proof, then use it inside a
-narrowed context.
+An authorization decision held in a value would be authority in a value: if
+code could obtain, store, return, capture in a closure, send to another task,
+or attach to an error one, it would have exactly the authority-recovery
+channel the dynamic context exists to prevent.
 
-**For version 1, proofs are not first-class.** They are unobservable and
-non-escapable: the runtime holds a resolved proof in a hidden frame slot
-(§7.4), and no source-level operation yields one as a value. An API of the
-shape
+**There is no such value.** §3.2.3's `perform` validates and executes in one
+call and exports nothing, so no proof exists to escape. This is why the
+operation boundary is `perform(grant, operation) -> result` rather than
+`authorize(grant, operation) -> proof`: the second interface would require a
+sealed proof-consumption protocol binding provider identity, exact operation,
+stable handles, and revocation lineage, and would still leave the question of
+who may consume a proof and whether it is one-shot.
 
-```text
-fs/write_file_with(proof, filename, content)
-```
-
-is **adapter-internal**, not a public escape hatch. Exposing it publicly is a
-model change, not a convenience: the central invariant would then have to
-track authority in values rather than only in the active context, and the
-whole-program verifier (§19) would have to do the same.
+An API of the shape `fs/write_file_with(proof, ...)` therefore does not
+exist. Adding one is a model change, not a convenience: the central invariant
+would have to track authority in values rather than only in the active
+context, and the agent verifier would have to do the same.
 
 ### 10.2 Authority-bearing resources
 
@@ -1669,8 +1694,8 @@ authorized(op) requires:
   op is within the active context's grant for that capability type
 ```
 
-The meet is computed by the trusted provider (§3.2.3), not by comparing grant
-identities — two grants independently derived from one root may overlap
+The meet is computed by `intersect_contexts` (§6.1) over the trusted
+per-grant `meet` (§3.2.3), not by comparing grant identities — two grants independently derived from one root may overlap
 without either being an ancestor of the other.
 
 Consequences, all intended:
@@ -1763,10 +1788,11 @@ Static checking can reject:
 - a call whose statically known context cannot satisfy a mandatory selector;
 - attempts to use capability constructors as ordinary authority-minting
   values;
-- a `canonicalize` or `attenuate` implementation that performs I/O, mutates
-  state, or requires capabilities of its own. These run at compile time
-  (§4.6), so this is not a style rule: an impure implementation is a
-  compile-time sandbox escape.
+- a `canonicalize` implementation that performs I/O, mutates state, or
+  requires capabilities of its own. This is a correctness check on a
+  registered type, not a sandbox: §4.6.1 keeps user canonicalizers out of the
+  compiler entirely, so static rejection here is defence in depth rather than
+  the security argument.
 
 Static analysis may also warn when:
 
@@ -1888,12 +1914,10 @@ Consequences, which are the point of the exact declaration:
 - The hidden frame slot caches the *resolved proof for the bound value*. It
   is an optimization over a constraint that already exists — not the
   mechanism by which the constraint exists.
-- **A carried proof is validated against its grant's whole revocation
-  dependency set** (§3.2.3) on every use, not just against the grant it
-  names — an ancestor's revocation must invalidate it. The capability epoch
-  (§13.2) guards context-transition caches only and does not reach a
-  frame-slot proof. Caching a canonicalized *target* is safe; caching an
-  authorization *decision* across a revocation is not.
+- **Nothing carries an authorization decision.** `perform` (§3.2.3) checks
+  the grant's whole revocation dependency set at each call, so an ancestor's
+  revocation takes effect immediately. Caching a canonicalized *target* is
+  safe; there is no cached decision to go stale.
 
 **Validation is not deferred. Only its reuse is.** §§4.1, 6.1 and 15 promise
 that an unsatisfied mandatory selector fails before the body runs, and §18
@@ -1912,30 +1936,23 @@ at the boundary:   bind the parameter, canonicalize the selector, and
                    provider.derive / provider.entail the exact sealed
                    child grant. Fail here if policy cannot satisfy it.
 
-at the operation:  provider.authorize produces a race-safe proof against
-                   that grant, and performs the operation atomically.
+at the operation:  provider.perform validates against that grant and
+                   performs the operation atomically, handle-relative.
 ```
 
-A previous draft ran full `authorize` at entry and reused its result at the
-operation. That is unsafe. Between the boundary and the write, another
-process can replace a path component or the leaf, so a cached path or a
-cached authorization decision is exactly the stale check the secure-path
-rules exist to prevent. And for a `^create true` selector, eagerly opening
-the target to stabilize it would create or truncate the file *before the
-function body runs* — not a neutral validation step.
+Running validation at the boundary and *reusing its result* at the operation
+would be unsafe: between the two, another process can replace a path
+component or the leaf, so a carried decision is exactly the stale check the
+secure-path rules exist to prevent. And for a `^create true` selector,
+eagerly opening the target to stabilize it would create or truncate the file
+*before the function body runs* — not a neutral validation step.
 
-So proof reuse is legal only under a specific condition:
-
-> A proof may be carried from the boundary to the operation **only if it
-> holds stable operating-system objects** — an open directory handle, an open
-> target handle — and the eventual operation is atomic and handle-relative.
-> Otherwise `authorize` runs again at the operation.
-
-What the boundary check guarantees is therefore a **policy** precondition: if
-the active context cannot authorize this selector for this argument under any
-filesystem state, the function fails before its body. What it does not
-guarantee is that the filesystem still looks the same at the write; only a
-handle-relative atomic operation gives that, and that is the adapter's job.
+Hence the split. The boundary check is a **policy** precondition: if the
+active context cannot satisfy this selector for this argument under any
+filesystem state, the function fails before its body. Whether the filesystem
+still looks the same at the write is guaranteed only by `perform` being
+atomic and handle-relative, which is why authorization and execution are one
+operation and not two.
 
 The cost, stated plainly: a function declaring a parameter-dependent selector
 pays policy validation even on a path that never performs the operation.
@@ -2189,24 +2206,33 @@ Open-protocol criteria (§3.1, §3.2.2):
 
 - A type that does not explicitly implement `CapabilitySpec` is rejected in a
   selector position, even if it defines methods with the right names.
-- A user-defined capability type resolves, attenuates, and reflects exactly
-  like a built-in one.
-- **Intermediate attenuation survives a hostile `attenuate`.** With a host
-  grant of `/`, an entry narrowing to `/tmp`, and a nested boundary whose
-  `attenuate` returns `/`, the operation is refused. This is the single most
-  important test in this document: it is the case an earlier draft got wrong
-  by checking only against the host root, and it must exist as a deliberately
-  hostile implementation, not only as a property test.
+- A capability type whose provider was not admitted by the host is rejected;
+  Gene source cannot admit one, and the registry is frozen before program
+  code runs.
+- A cross-provider entailment edge is rejected in version 1.
+- `intersect_contexts` and `resolve_selector` (§6.1) are deterministic:
+  equal contexts give equal results regardless of insertion order, a
+  selector may resolve to a set, and `AmbiguousCapability` is raised at the
+  operation rather than during resolution.
+- A user-defined capability type resolves and reflects exactly like a
+  built-in one.
+- **Intermediate narrowing is preserved.** With a host grant of `/` and an
+  entry narrowing to `/tmp`, no nested boundary can obtain authority above
+  `/tmp`, and a derivation attempted against the host root rather than the
+  parent derivative is refused. This is the single most important test in
+  this document.
 - A boundary's checked ceiling is the nearest sealed derivative grant, not
   the host root.
-- A user-supplied `attenuate` cannot cause a derivative grant to be minted
-  that its provider would refuse.
-- An `attenuate` that raises surfaces as `CapabilityTypeError` and denies the
-  boundary; it does not fall through to ambient access.
+- A `CapabilitySpec` implementation cannot cause a derivative grant to be
+  minted that its provider would refuse; it has no path to authority at
+  all.
+- A `canonicalize` that raises surfaces as `CapabilityTypeError` and denies
+  the boundary; it does not fall through to ambient access.
 - `canonicalize` is idempotent, and two equivalent specifications produce
   identical context keys and interface fingerprints.
-- A `canonicalize` or `attenuate` that attempts I/O is rejected at compile
-  time.
+- A library-provided `canonicalize` never executes during compilation; it
+  runs at first use and its result is memoized.
+- A `canonicalize` that attempts I/O is denied at that first use.
 - A user library cannot define a type that captures grants belonging to a
   reserved built-in namespace.
 - `^capabilities *`, `^capabilities (fs/WriteDir "tmp")`, and the list form
@@ -2269,6 +2295,9 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 - A canonical specification containing a mutable collection or closure is
   rejected at canonicalization; mutating a value after insertion cannot
   change an already-cached transition.
+- No source-level operation yields an authorization decision as a value:
+  `perform` validates and executes in one call (§3.2.3), so there is nothing
+  to capture, store, or replay.
 - **A grant revoked after a proof is carried denies a second operation in the
   same frame.** So does revoking an *ancestor* of that grant, and revoking
   *either operand* of a `meet` the grant descends from (§3.2.3).
@@ -2283,8 +2312,8 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 - `provider.subsumes` returning `unknown` rejects a protocol implementation
   rather than accepting it.
 - Concrete protocol-implementation compatibility is decided by the provider's
-  narrowing relation, and a lying `attenuate` cannot make the compiler accept
-  a broader implementation.
+  `subsumes` relation, so untrusted specification code cannot make the
+  compiler accept a broader implementation.
 
 ## 19. Application: Gene as an agent's sole action surface
 
