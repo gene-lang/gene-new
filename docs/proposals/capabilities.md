@@ -359,18 +359,51 @@ must supply four operations, not the single minting step §3.2.2 describes:
 
 ```text
 derive(parent_grant, requested_spec) -> child_grant | denial
-    Mint a sealed derivative no broader than parent_grant, or refuse.
+    Mint a sealed derivative of the SAME type, no broader than
+    parent_grant, or refuse.
+
+entail(parent_grant, requested_spec_of_other_type) -> child_grant | denial
+    Cross-type derivation: mint a grant of the requested type from a
+    grant of a related one. This is what makes an fs/WriteDir grant
+    satisfy an fs/WriteFile selector.
 
 meet(grant_a, grant_b) -> grant | empty
-    The trusted intersection of two grants of this type.
+    The trusted intersection of two grants. When the two are of related
+    but different types, the caller entails both to a common type first;
+    a provider is never asked to meet types it does not own.
 
 authorize(grant, operation) -> proof | denial
     Validate a concrete operation against a grant. The final boundary.
 
-provenance(grant) -> identity
-    Stable grant and revocation identity, exposing no secrets, for
-    fingerprints (§5.3), epochs (§13.2), and diagnostics (§11).
+subsumes(spec_a, spec_b) -> yes | no | unknown
+    NON-AUTHORIZING, static. Does spec_a's authority cover spec_b's, for
+    every grant either could resolve against? Mints nothing and touches
+    no grant, so the compiler can call it. Three-valued: `unknown` is a
+    rejection at an interface boundary, never an assumption of safety.
+
+provenance(grant) -> identity + generation
+    Stable grant identity and a monotonically increasing generation,
+    exposing no secrets, for fingerprints (§5.3), epochs (§13.2),
+    revocation (§13.3), and diagnostics (§11).
 ```
+
+**Who owns a cross-type edge.** `entail` is implemented by the provider that
+owns the **source** grant, and it may only mint a grant of a type that same
+provider owns. `fs/WriteDir -> fs/WriteFile` is legal because one filesystem
+provider owns both. A cross-*provider* edge — an `app` grant minting
+something the `fs` adapter would accept — is forbidden by default, since it
+would let one provider manufacture authority another adapter honours. Where
+such an edge is genuinely wanted, the **target** provider must explicitly
+register acceptance of the source provider; the source cannot claim it
+unilaterally.
+
+**Why `subsumes` is separate from `attenuate`.** §3.1.1 removed `subsumes`
+from the open protocol because a second oracle can disagree with `attenuate`.
+That reasoning applies to *untrusted* code. Here the provider is the single
+authority, so its `subsumes` and its `derive` cannot disagree — they are the
+same trusted component. The compiler needs an operation that answers a
+question about two *specifications* without a parent grant to mint from,
+which `derive` structurally cannot do.
 
 **`meet` is not optional, and identity comparison cannot replace it.** Two
 places already require intersecting authority rather than selecting from a
@@ -789,9 +822,20 @@ means it inherits its caller's context.
 | --- | --- | --- |
 | entry module | **empty context** | empty context |
 | imported module | **empty context** | empty context |
-| function / method | **inherit unchanged** | empty context |
-| protocol message | **inherit unchanged** | empty context |
+| function / method | **caller ∩ defining module ceiling** | empty context |
+| protocol message | **caller ∩ defining module ceiling** | empty context |
 | `with_capabilities` | n/a — row required | empty context |
+
+The function rule is an intersection, not plain inheritance. An earlier draft
+said "inherit unchanged", which breaks the central invariant: a module
+declaring `^capabilities []` could export a row-less function, and a broad
+caller invoking it would hand it the broad context, defeating the module
+ceiling entirely. A callee is always bounded by its *defining* module's
+ceiling (§5.4, §6.1), so omission means:
+
+```text
+child = caller_context  ∩  defining_module_ceiling
+```
 
 Modules default to empty because a module boundary is a policy decision and
 silence there should not grant anything. Functions default to inheritance
@@ -815,6 +859,27 @@ tooling should be able to report undeclared effectful functions as such.
 
 `^capabilities []` is the explicit way to drop all authority, and it is
 never implied.
+
+**Where the zero-cost promise applies.** §13.1's "touches nothing" claim is
+now scoped to calls where the intersection is provably a no-op:
+
+- **Intra-module calls are always free.** The active context inside a module
+  is already at or below that module's ceiling, established when the module
+  boundary was crossed, so intersecting again changes nothing. This is the
+  overwhelming majority of calls.
+- **Cross-module calls need the meet**, unless the compiler can prove the
+  caller's context is already below the callee module's ceiling — which it
+  can whenever both ceilings are static and one is contained in the other.
+- When the meet is required, it is keyed on
+  `(caller_context_id, callee_module_ceiling_id)` and cached exactly like
+  §13.2's transition, so the steady-state cost is a compare and a load rather
+  than a provider call.
+
+So the honest form of the zero-cost claim is: *capability-free code within a
+module boundary is byte-identical to today; a cross-module call into a
+differently-ceilinged module pays a cached meet.* An earlier draft asserted
+the stronger version, which is not compatible with module ceilings being
+enforced at all.
 
 ### 5.1 Runtime root
 
@@ -869,9 +934,11 @@ available by its importer:
 This passes through only the importer's filesystem grants. If the importer
 removed network access, the imported module cannot recover it.
 
-Module initialization executes under the module's selected context. A module
-initialized with broad authority must not be reused accidentally in a
-narrower context.
+Module initialization runs under an **empty** capability context; the
+declared row is the ceiling applied to the module's functions when they are
+called, not a context its top-level forms execute under. The reasoning is
+below, and it removes the "a broadly initialized module must not be reused
+narrowly" problem entirely rather than trying to detect it.
 
 Adding capability identity to the module cache key is not merely cache
 invalidation — it changes Gene's module instancing model. Today there is one
@@ -898,24 +965,44 @@ initialization captures no authority" optimization needs an effect-and-escape
 analysis able to see authority returned indirectly through native calls and
 helpers — not a cheap classification.
 
-**Version 1 takes the simple option: module initialization may not capture
-authority.** A module body runs under its declared context for the purpose of
-*checking* its declarations, but may not retain a grant, a resource, or a
-value derived from one in module-level state. Consequences:
+**Version 1 takes the simple option: module initialization runs under an
+empty capability context.** A module's declared row is *metadata* — the
+ceiling applied to its functions when they are called (§5.0) — not a context
+its top-level forms execute under.
+
+An earlier draft instead allowed initialization under the declared context
+while forbidding module state from retaining "a grant, a resource, or a value
+derived from one", and claimed that was checkable at the store site. It is
+not. A module can read a protected file during broad initialization and store
+the returned **ordinary string**: no grant is retained, no resource is
+retained, and a `Str` carries no origin a store check can inspect. Catching
+that needs pervasive information-flow tainting, and the same hole exists for
+environment variables and network reads.
+
+Running initialization with an empty context closes the channel at its
+source: there is no authority available to leak, so nothing needs to be
+tracked. Consequences:
 
 - There is exactly one runtime instance per
-  `<package_identity>::<module_path>`, as today. Gene's module and type
-  identity semantics are unchanged.
-- The module cache key does **not** need a capability fingerprint, which
-  removes the identity and state problems entirely.
-- Effectful initialization — opening a config file at load time, connecting a
-  pool — moves into an explicit function the application calls under a
-  context it chooses. This is a real restriction and better discipline: it
-  makes the authority a module uses visible at a call site rather than
-  implicit in load order.
-- Violations are a boundary error at initialization, which is enforceable
-  without whole-program escape analysis because it is checked where a grant
-  or resource would be stored, not inferred.
+  `<package_identity>::<module_path>`, as today, and it is
+  context-independent by construction. Gene's module and type identity
+  semantics are unchanged, and the module cache key needs no capability
+  fingerprint.
+- The "which importer's ceiling does the singleton retain?" question
+  disappears. It retains none: initialization had none, and each call into
+  the module intersects with its declared ceiling at the call boundary.
+- Effectful initialization — reading config at load time, connecting a pool —
+  becomes an explicit function the application calls under a context it
+  chooses. This is a real restriction, and it is the better discipline: the
+  authority a module uses becomes visible at a call site instead of implicit
+  in load order.
+- Enforcement is trivial and needs no analysis: a capability-requiring
+  operation attempted during module initialization simply finds an empty
+  context and is denied, by the same mechanism that denies it anywhere else.
+
+If effectful initialization is later required, the alternative is per-context
+runtime module scopes with stable declaration and type identities across
+them — not a store-site check.
 
 If per-context module instances are wanted later, the shape is: share
 compiled declaration identities, create per-context runtime module scopes,
@@ -966,9 +1053,14 @@ For **fully concrete** selectors on an adapter-backed type, the check uses the
 **provider's** trusted narrowing relation (§3.2.3), not `attenuate`:
 
 ```text
-provider.derive(message_spec_as_grant, impl_spec) must succeed
-and yield exactly impl_spec's authority
+provider.subsumes(message_spec, impl_spec) must return `yes`
 ```
+
+`subsumes` is the provider's non-authorizing static relation (§3.2.3). An
+earlier draft wrote `provider.derive(message_spec_as_grant, impl_spec)`,
+which is not implementable: a specification is explicitly not a grant, and
+the compiler has no parent grant to mint a derivative from. `unknown` is a
+rejection here, never an assumption that the implementation is compatible.
 
 An earlier draft routed this through `message_spec.attenuate(impl_spec)` and
 claimed that using one operation for runtime narrowing and static checking
@@ -1374,8 +1466,8 @@ scope decisions:
 
 ```text
 index:   requested type ID -> candidate grant type IDs that may satisfy it
-answer:  attenuate decides whether a candidate edge's scope actually covers
-         this request
+answer:  the owning provider's `entail` decides whether a candidate edge
+         actually covers this request, and mints the target grant
 ```
 
 The index is registration-time data owned by providers, not derived by
@@ -1389,8 +1481,10 @@ running user code. It must define:
   default should be no, since an edge into `fs` is a claim about filesystem
   authority and belongs to the filesystem provider.
 
-`attenuate` decides scope along a candidate edge. It is not the
-candidate-discovery mechanism.
+`attenuate` may *propose* along a candidate edge, but per §3.2.2 it never
+decides: the owning provider's `entail` is what accepts an edge and mints the
+resulting grant. The index supplies candidates; the provider supplies the
+answer.
 
 ### 8.1 Built-in and custom capability types
 
@@ -1630,7 +1724,8 @@ Static checking can reject:
 - malformed selector arguments and properties;
 - duplicate or conflicting selector rows;
 - parameter references that are not bound at the boundary;
-- an implementation broader than its protocol message (via `attenuate`, §5.5);
+- an implementation broader than its protocol message (via the provider's
+  `subsumes`, §5.5);
 - a call whose statically known context cannot satisfy a mandatory selector;
 - attempts to use capability constructors as ordinary authority-minting
   values;
@@ -1668,8 +1763,10 @@ such a branch is measurable.
 Two consequences for the implementation:
 
 - The compiler emits a different function prologue for declaring and
-  non-declaring functions. Non-declaring functions are byte-identical to
-  today.
+  non-declaring functions. A non-declaring function reached by an
+  intra-module call is byte-identical to today; a cross-module call whose
+  meet is not provably a no-op pays the cached intersection described in
+  §5.0.
 - The active context lives in a **VM register**, not a per-frame field, and
   is saved and restored only by boundaries that actually change it — the same
   shape as the operand-stack `sp` register work. A call that neither declares
@@ -1760,16 +1857,41 @@ Properties this must have:
 - The hidden frame slot caches the *resolved proof for the bound value*. It
   is an optimization over a constraint that already exists — not the
   mechanism by which the constraint exists.
+- **A cached proof carries the grant generation it was minted under**
+  (§3.2.3's `provenance`), and every adapter use compares that against the
+  grant's current generation, re-authorizing on mismatch. Without this, a
+  proof resolved before a revocation stays usable after it: the capability
+  epoch (§13.2) guards context-transition caches only, and nothing else
+  guards a frame-slot proof. Caching a canonicalized *target* is safe;
+  caching an authorization *decision* across a revocation is not.
 
-What is genuinely saved is the expensive half: path canonicalization, escape
-rejection, and symlink policy run once at first use rather than at entry, and
-not at all if the body returns without performing the operation. Establishing
-the constraint itself is cheap — binding a slot into an interned template.
+**Validation is not deferred. Only its reuse is.** §§4.1, 6.1 and 15 promise
+that an unsatisfied mandatory selector fails before the body runs, and §18
+tests it. An earlier draft of this section quietly contradicted that by
+moving scope validation to first use, which would let a body perform
+unrelated effects before discovering that its declared path was outside the
+granted root — or return without discovering it at all. Confinement was
+preserved, but a mandatory selector cannot be an entry precondition in one
+section and a lazy operation constraint in another.
 
-The residual cost is a narrower fail-fast guarantee for *scope* errors: a
-path escape surfaces at first use rather than at entry. Absence of any
-satisfying grant can still be detected at entry and should be, since that
-check is context-id-cacheable per §13.2.
+The normative rule is **fail before the body**, for presence *and* scope:
+
+```text
+at the boundary:  bind the parameter, run provider.authorize once,
+                  fail here if it denies
+in the body:      the resulting proof is reused from the frame slot
+```
+
+What is saved is the **duplication** the original design carried, not the
+work itself. Entry validated the selector and the adapter then repeated the
+whole path canonicalization, escape rejection, and symlink resolution at the
+operation. Now `authorize` runs once, at entry, and the operation reuses its
+proof.
+
+The cost of this choice, stated plainly: a function declaring a
+parameter-dependent selector pays full validation even on a path that never
+performs the operation. Parameter-dependent selectors are opt-in and
+uncommon, and correctness of a security precondition outranks the saving.
 
 ### 13.4 Built-in types bypass the protocol
 
@@ -1780,7 +1902,7 @@ check must not become a dynamic protocol send, and a security boundary must
 not depend on inline-cache behaviour for its cost profile. Only user-defined
 types dispatch, and they are the ones already off the hot path.
 
-### 13.5 Satisfaction checking may be lazy; the transformation may not be elided
+### 13.5 Nothing at a declaration boundary is elidable
 
 An earlier draft of this section proposed eliding function-entry checks in a
 release profile, on the grounds that the adapter is the real boundary. That
@@ -1802,24 +1924,29 @@ filesystem operation, and that operation's adapter check correctly approves
 it against the broader grant it can still see. Nothing at the operation
 recovers the enclosing declaration that was never installed.
 
-**The rule:**
+**The rule: neither is elidable.**
 
 ```text
-eager satisfaction checking   may be deferred, cached, or made lazy
 the declaration's context     must be installed in every execution profile
-transformation                  — there is no build where it is skipped
+transformation
+
+satisfaction checking         is a normative precondition (§4.1, §6.1, §13.3)
+                              and fails before the body in every profile
 ```
 
-Static rows may install their child context from a cached transition
-(§13.2); parameter-dependent rows install the deferred constraint (§13.3).
-Both are installations, not checks. What may vary by profile is only *when
-and whether* the runtime eagerly reports that a required grant is absent.
+Static rows install their child context from a cached transition (§13.2);
+parameter-dependent rows validate once at entry and reuse the proof (§13.3).
 
-A release profile therefore saves the eager satisfaction check and nothing
-else. Since §13.2 makes that check a compare and a load in steady state, the
-saving is small — which is the honest conclusion: this is not the escape
-hatch the earlier draft claimed, and §§13.1–13.4 have to carry the
-performance argument on their own.
+An earlier draft offered a release profile that skipped eager satisfaction
+checks. Two later findings closed that door: eliding the *transformation* is
+a security hole (above), and §13.3 makes eager satisfaction a normative
+precondition that other sections and the acceptance criteria depend on. What
+would remain elidable is a compare and a load, which is not worth a second
+execution profile or the semantic divergence between builds.
+
+So this section is no longer an optimization lever. §§13.1–13.4 carry the
+performance argument on their own, and the affordability claim rests on the
+transition cache rather than on skipping work.
 
 An adapter check on a real filesystem or network operation is noise next to
 the syscall it guards, so the final boundary is affordable regardless. The
@@ -1996,8 +2123,8 @@ The implementation is ready when tests demonstrate all of the following:
 - Multiple non-equivalent matching grants produce
   `AmbiguousCapability`.
 - Protocol implementations cannot broaden public capability contracts.
-- Module caching cannot reuse a broadly initialized instance in a narrower
-  incompatible context.
+- A capability-requiring operation attempted during module initialization is
+  denied, because initialization has an empty context.
 - Spawned tasks receive the intended immutable context without global
   contention.
 - Capability-free call benchmarks show no material avoidable regression.
@@ -2044,8 +2171,8 @@ Performance criteria (§13):
 - Bumping the capability epoch invalidates cached transitions, and a stale
   transition is never reused after revocation or a scoped implementation
   change.
-- A function declaring a parameter-dependent selector that returns before
-  performing the operation does not compute an operation proof.
+- A function declaring a parameter-dependent selector whose scope is
+  violated fails **before** the body runs, in every execution profile.
 - Built-in capability checks perform no dynamic protocol send.
 - Repeated dynamic attenuation in a long-running loop does not grow context
   interning without bound, and releases grants and host handles.
@@ -2069,9 +2196,8 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 - Module initialization that attempts to retain a grant or a resource in
   module-level state is a boundary error, and there is exactly one runtime
   module instance regardless of context.
-- **In a release profile with eager satisfaction checks disabled, a function
-  declaring `(fs/WriteFile a)` still cannot operate on `b`.** The declaration
-  transformation is installed in every profile (§13.5).
+- A function declaring `(fs/WriteFile a)` cannot operate on `b`, in every
+  execution profile: the declaration transformation is never elided (§13.5).
 - An authority-bearing resource opened under a broad context and used inside
   a narrower one is authorized by the meet, so an operation the narrowing
   removed is refused (§10.2).
@@ -2084,6 +2210,18 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 - A canonical specification containing a mutable collection or closure is
   rejected at canonicalization; mutating a value after insertion cannot
   change an already-cached transition.
+- **A grant revoked after a proof is cached denies a second operation in the
+  same frame**, via the generation check in §13.3.
+- A broad caller invoking an undeclared function exported by a module whose
+  ceiling is `^capabilities []` cannot perform an effect through it (§5.0).
+- An intra-module call to an undeclared function performs no context work; a
+  cross-module call into a differently-ceilinged module takes the cached
+  meet.
+- `provider.entail` mints a cross-type grant the target adapter accepts, and
+  a provider cannot mint a grant for a type it does not own without the
+  target provider's registered acceptance.
+- `provider.subsumes` returning `unknown` rejects a protocol implementation
+  rather than accepting it.
 - Concrete protocol-implementation compatibility is decided by the provider's
   narrowing relation, and a lying `attenuate` cannot make the compiler accept
   a broader implementation.
