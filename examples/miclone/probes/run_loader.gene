@@ -79,7 +79,7 @@
 
   # And the sandbox is on. A mod that names `$fs` under an empty grant list must
   # fail — the manifest is what decides, and `mods/default` declares `^grants []`.
-  (var root ($os/get_env $os/Env "GENE_MICLONE_MODS" "mods"))
+  (var root ($os/get_env "GENE_MICLONE_MODS" "mods"))
   (var probe_dir $"${root}/../probes/badmod")
   (var reached false)
   (try

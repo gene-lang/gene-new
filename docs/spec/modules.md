@@ -32,10 +32,12 @@ entrypoint, serde, native API, and CLI suites.
   does not execute dependency top-level forms or grant host runtime authority.
 - Runtime `declarations` exposes only bindings with real runtime `^value`;
   macros/derives remain compiler artifacts.
-- `gene run file [--grant name=expr] [--] [args...]` executes top level, then
-  calls `main`. Positional strings form the first argument; explicit grants are
-  named arguments. Missing named capabilities fail before the body. Embedders
-  use the same `GeneCall` named envelope.
+- `gene run [--allow_read_dir dir] [--allow_write_dir dir]
+  [--allow_read_write_dir dir] file [--] [args...]` executes top level, then
+  calls `main`. Pre-entry directory options mint host grants without evaluating
+  Gene code. Positional strings form the first argument; `--grant` after the
+  entry file is ordinary program data, not an authority channel. Embedders
+  establish the root capability context through the host API.
 - `main` returns `Nil` for exit 0 or an in-range `Int` exit code; other values
   are boundary errors.
 - Native code retains values only through roots. Borrowed CallerEnv and

@@ -23,6 +23,12 @@ proc runProgramInOwnApp(src: string): Value =
   initModuleContext(getTempDir())
   run(compileSource(src), newGlobalScope(newApplication(modDir)))
 
+proc runSandboxProgram(src: string): Value =
+  ## Capability sandbox cases need a fresh host root at the fixture directory;
+  ## ambient filesystem authority is application-owned and cannot be retrofitted
+  ## onto the process-global application after earlier module tests materialize it.
+  run(compileSource(src), newGlobalScope(newApplication(modDir)))
+
 proc loadSandboxed(dir, entry, grants: string, shared = "[]"): string =
   ## A `$runtime/load_sandboxed` call, as source. The directory and the entry are
   ## separate arguments: `dir` is the sandbox boundary and the host supplies it,
@@ -883,54 +889,65 @@ suite "modules — the capability sandbox (design §D5)":
   setup:
     removeDir(modDir)
     createDir(modDir)
-    removeFile(getTempDir() / "gene_sandbox_escape")
+    removeFile(modDir / "gene_sandbox_escape")
 
   test "a denied namespace cannot be reached, with no import line":
     ## §D5.1's exact program, verbatim.
     writeModule("evil.gene",
-      "($fs/write_text $fs/WriteDir \"" &
-      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") &
+      "($fs/write_text \"" &
+      (modDir / "gene_sandbox_escape").replace("\\", "/") &
       "\" \"escaped\")")
     expect GeneError:
-      discard runProgram(loadSandboxed(modDir, "evil.gene", "[]"))
-    check not fileExists(getTempDir() / "gene_sandbox_escape")
+      discard runSandboxProgram(loadSandboxed(modDir, "evil.gene", "[]"))
+    check not fileExists(modDir / "gene_sandbox_escape")
 
-  test "a granted namespace still works":
+  test "module initialization stays empty even when a namespace is granted":
     writeModule("good.gene",
-      "($fs/write_text $fs/WriteDir \"" &
-      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") &
+      "($fs/write_text \"" &
+      (modDir / "gene_sandbox_escape").replace("\\", "/") &
       "\" \"allowed\") (fn ok [] : Int 1)")
-    discard runProgram(loadSandboxed(modDir, "good.gene", "[\"fs\"]"))
-    check fileExists(getTempDir() / "gene_sandbox_escape")
+    expect GeneError:
+      discard runSandboxProgram(loadSandboxed(modDir, "good.gene", "[\"fs\"]"))
+    check not fileExists(modDir / "gene_sandbox_escape")
+
+  test "a granted namespace works after initialization":
+    writeModule("good.gene",
+      "(fn write_it [p : Str] : Int ($fs/write_text p \"allowed\") 1)")
+    check runSandboxProgram(
+      "(var m " & loadSandboxed(modDir, "good.gene", "[\"fs\"]") & ") " &
+      "(m/write_it \"" &
+      (modDir / "gene_sandbox_escape").replace("\\", "/") & "\")"
+      ).print() == "1"
+    check fileExists(modDir / "gene_sandbox_escape")
 
   test "the restriction reaches a module the sandboxed one imports":
     ## The half that makes it a boundary rather than a speed bump: a mod that
     ## cannot name `$fs` must not be able to import a friend that can.
     writeModule("helper.gene",
-      "(fn sneak [] : Str ($fs/write_text $fs/WriteDir \"" &
-      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") &
+      "(fn sneak [] : Str ($fs/write_text \"" &
+      (modDir / "gene_sandbox_escape").replace("\\", "/") &
       "\" \"via import\") \"wrote\")")
     writeModule("viaimport.gene",
       "(import [sneak] from \"./helper\") (sneak)")
     expect GeneError:
-      discard runProgram(loadSandboxed(modDir, "viaimport.gene", "[]"))
-    check not fileExists(getTempDir() / "gene_sandbox_escape")
+      discard runSandboxProgram(loadSandboxed(modDir, "viaimport.gene", "[]"))
+    check not fileExists(modDir / "gene_sandbox_escape")
 
   test "calling into a sandboxed module later is still restricted":
     ## The restriction is on the module's scope, not on the load, so a function
     ## exported *out* of a sandbox carries it — which is what makes a mod API
     ## safe to call back into on a tick.
     writeModule("quiet_helper.gene",
-      "(fn sneak [p : Str] : Str ($fs/write_text $fs/WriteDir p \"w\") \"wrote\")")
+      "(fn sneak [p : Str] : Str ($fs/write_text p \"w\") \"wrote\")")
     writeModule("quiet.gene",
       "(import [sneak] from \"./quiet_helper\") " &
       "(fn try_it [p : Str] : Str (sneak p))")
     expect GeneError:
-      discard runProgram(
+      discard runSandboxProgram(
         "(var m " & loadSandboxed(modDir, "quiet.gene", "[]") & ") " &
         "(m/try_it \"" &
-        (getTempDir() / "gene_sandbox_escape").replace("\\", "/") & "\")")
-    check not fileExists(getTempDir() / "gene_sandbox_escape")
+        (modDir / "gene_sandbox_escape").replace("\\", "/") & "\")")
+    check not fileExists(modDir / "gene_sandbox_escape")
 
   test "trusted code keeps full authority over a file a sandbox also loaded":
     ## The module cache is keyed by the grant set. Without that it is a hole in
@@ -940,16 +957,16 @@ suite "modules — the capability sandbox (design §D5)":
     ## direction, which is the one that would look like a mysterious bug rather
     ## than a breach.
     writeModule("shared_helper.gene",
-      "(fn sneak [p : Str] : Str ($fs/write_text $fs/WriteDir p \"w\") \"wrote\")")
+      "(fn sneak [p : Str] : Str ($fs/write_text p \"w\") \"wrote\")")
     writeModule("sandboxed_user.gene",
       "(import [sneak] from \"./shared_helper\") (fn noop [] : Int 1)")
-    check runProgram(
+    check runSandboxProgram(
       loadSandboxed(modDir, "sandboxed_user.gene", "[]") & " " &
       "(import [sneak] from \"./shared_helper\") " &
       "(sneak \"" &
-      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") & "\")"
+      (modDir / "gene_sandbox_escape").replace("\\", "/") & "\")"
       ).print() == "\"wrote\""
-    check fileExists(getTempDir() / "gene_sandbox_escape")
+    check fileExists(modDir / "gene_sandbox_escape")
 
   test "a sandbox cannot load another sandbox":
     ## Nesting would let a mod choose its own grants, and the grants a mod gets
@@ -957,14 +974,14 @@ suite "modules — the capability sandbox (design §D5)":
     writeModule("inner.gene", "(fn ok [] : Int 1)")
     writeModule("nester.gene", loadSandboxed(modDir, "inner.gene", "[\"fs\"]"))
     expect GeneError:
-      discard runProgram(loadSandboxed(modDir, "nester.gene", "[\"runtime\"]"))
+      discard runSandboxProgram(loadSandboxed(modDir, "nester.gene", "[\"runtime\"]"))
 
   test "an unknown grant is refused rather than ignored":
     ## A manifest asking for "filesystem" instead of "fs" would otherwise load
     ## with less authority than it declared and fail somewhere unrelated.
     writeModule("plain.gene", "(fn ok [] : Int 1)")
     expect GeneError:
-      discard runProgram(loadSandboxed(modDir, "plain.gene", "[\"filesystem\"]"))
+      discard runSandboxProgram(loadSandboxed(modDir, "plain.gene", "[\"filesystem\"]"))
 
   test "a mod loads into the caller's application, so a shared type is one type":
     ## The property M7's runtime loader stands on, and the one the cases above
@@ -1007,20 +1024,23 @@ suite "modules — the capability sandbox (design §D5)":
     let modRoot = modDir / "mods" / "deep_mod"
     createDir(modRoot / "src" / "a")
     writeFile(modRoot / "free.gene",
-      "(fn go [] : Nil ($fs/write_text $fs/WriteDir \"" &
-      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") &
+      "(fn go [] : Nil ($fs/write_text \"" &
+      (modDir / "gene_sandbox_escape").replace("\\", "/") &
       "\" \"escaped\"))")
     writeFile(modRoot / "src" / "a" / "deep_mod.gene",
-      "(import [go] from \"../../free\") (go)")
+      "(import [go] from \"../../free\") (fn run [] : Nil (go))")
     expect GeneError:
-      discard runProgram(
-        loadSandboxed(modRoot, "src/a/deep_mod.gene", "[]"))
-    check not fileExists(getTempDir() / "gene_sandbox_escape")
+      discard runSandboxProgram(
+        "(var m " & loadSandboxed(modRoot, "src/a/deep_mod.gene", "[]") & ") " &
+        "(m/run)")
+    check not fileExists(modDir / "gene_sandbox_escape")
     # The control, so this cannot rot into a pass for the wrong reason. Same
     # layout, same import, `fs` granted: it must load and write. Without this the
     # case above would still be green if `../../free` simply stopped resolving.
-    discard runProgram(loadSandboxed(modRoot, "src/a/deep_mod.gene", "[\"fs\"]"))
-    check fileExists(getTempDir() / "gene_sandbox_escape")
+    discard runSandboxProgram(
+      "(var m " & loadSandboxed(modRoot, "src/a/deep_mod.gene", "[\"fs\"]") & ") " &
+      "(m/run)")
+    check fileExists(modDir / "gene_sandbox_escape")
 
   test "an out-of-dir import the host did not share is refused":
     ## §D5.2 said "the restriction covers everything the module imports" and did
@@ -1031,24 +1051,24 @@ suite "modules — the capability sandbox (design §D5)":
     ## file of its choosing. The host cannot meet "do not leave reachable code
     ## where a mod can reach it" — so the host names the shared set instead.
     writeModule("host_authority.gene",
-      "(fn touch [p : Str] : Str ($fs/write_text $fs/WriteDir p \"host\") \"w\")")
+      "(fn touch [p : Str] : Str ($fs/write_text p \"host\") \"w\")")
     let modRoot = modDir / "mods" / "reacher"
     createDir(modRoot / "src")
     writeFile(modRoot / "src" / "reacher.gene",
       "(import [touch] from \"../../../host_authority\") " &
       "(fn go [p : Str] : Str (touch p))")
     expect GeneError:
-      discard runProgram(loadSandboxed(modRoot, "src/reacher.gene", "[]"))
-    check not fileExists(getTempDir() / "gene_sandbox_escape")
+      discard runSandboxProgram(loadSandboxed(modRoot, "src/reacher.gene", "[]"))
+    check not fileExists(modDir / "gene_sandbox_escape")
     # The control, so this is a refusal about *authority* and not a broken path:
     # named as shared, the identical import loads and works.
-    check runProgram(
+    check runSandboxProgram(
       "(var m " & loadSandboxed(modRoot, "src/reacher.gene", "[]",
         "[\"" & (modDir / "host_authority.gene").replace("\\", "/") & "\"]") &
       ") (m/go \"" &
-      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") & "\")"
+      (modDir / "gene_sandbox_escape").replace("\\", "/") & "\")"
       ).print() == "\"w\""
-    check fileExists(getTempDir() / "gene_sandbox_escape")
+    check fileExists(modDir / "gene_sandbox_escape")
 
   test "a granted `runtime` cannot re-enter the sandbox after its load finished":
     ## The nesting guard read `sandboxRoot != nil`, which is true only *during* a
@@ -1060,17 +1080,17 @@ suite "modules — the capability sandbox (design §D5)":
     createDir(modRoot / "src")
     createDir(modRoot / "inner")
     writeFile(modRoot / "inner" / "inner.gene",
-      "($fs/write_text $fs/WriteDir \"" &
-      (getTempDir() / "gene_sandbox_escape").replace("\\", "/") &
+      "($fs/write_text \"" &
+      (modDir / "gene_sandbox_escape").replace("\\", "/") &
       "\" \"grants I chose myself\")")
     writeFile(modRoot / "src" / "climber2.gene",
       "(fn escalate [] : Any ($runtime/load_sandboxed \"" &
       modRoot.replace("\\", "/") & "/inner\" \"inner.gene\" [\"fs\"] []))")
     expect GeneError:
-      discard runProgram(
+      discard runSandboxProgram(
         "(var m " & loadSandboxed(modRoot, "src/climber2.gene",
                                   "[\"runtime\"]") & ") (m/escalate)")
-    check not fileExists(getTempDir() / "gene_sandbox_escape")
+    check not fileExists(modDir / "gene_sandbox_escape")
 
   test "and the host's own loader is not reachable to launder that call":
     ## The other half, and the one the allowlist owns. A mod cannot be stopped
@@ -1094,7 +1114,7 @@ suite "modules — the capability sandbox (design §D5)":
       "(import [load_it] from \"../../../host_loader\") " &
       "(fn go [] : Any (load_it \"x\" \"y.gene\"))")
     expect GeneError:
-      discard runProgram(loadSandboxed(modRoot, "src/climber3.gene", "[]"))
+      discard runSandboxProgram(loadSandboxed(modRoot, "src/climber3.gene", "[]"))
 
   test "an entry that points out of its own directory is refused":
     ## The other half of the same rule. If the entry could escape `dir`, the mod's
@@ -1103,7 +1123,7 @@ suite "modules — the capability sandbox (design §D5)":
     writeModule("outside.gene", "(fn ok [] : Int 1)")
     createDir(modDir / "mods" / "climber")
     expect GeneError:
-      discard runProgram(
+      discard runSandboxProgram(
         loadSandboxed(modDir / "mods" / "climber", "../../outside.gene", "[]"))
 
   test "computation is not withheld — a sandbox can still do arithmetic":
@@ -1112,4 +1132,4 @@ suite "modules — the capability sandbox (design §D5)":
     ## cannot harm.
     writeModule("compute.gene",
       "(fn f [] : Int ($math/abs -3))")
-    discard runProgram(loadSandboxed(modDir, "compute.gene", "[]"))
+    discard runSandboxProgram(loadSandboxed(modDir, "compute.gene", "[]"))

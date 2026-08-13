@@ -417,9 +417,9 @@ def build_packet(*, require_clean: bool) -> dict[str, Any]:
                 "library_induction_export.gene TARGET_SEED DONOR_SEED..."
             ),
             "frozen_evaluation": (
-                "bin/gene run examples/general_intelligence/src/"
-                "library_induction_frozen_evaluation.gene --grant "
-                "setups=$fs/ReadDir -- SETUP_FILE"
+                "bin/gene run --allow_read_dir FREEZE_DIR "
+                "examples/general_intelligence/src/"
+                "library_induction_frozen_evaluation.gene SETUP_FILE"
             ),
             "full_evaluation": (
                 "python3 tools/run_library_induction_evaluation.py run "
@@ -852,10 +852,9 @@ def self_test_command(_: argparse.Namespace) -> None:
             [
                 str(GENE),
                 "run",
+                "--allow_read_dir",
+                str(directory),
                 str(FROZEN_EVALUATOR),
-                "--grant",
-                "setups=$fs/ReadDir",
-                "--",
                 str(setup_path),
             ],
             timeout=90.0,

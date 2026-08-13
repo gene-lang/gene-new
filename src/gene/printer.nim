@@ -5,6 +5,7 @@
 ## output re-reads to a structurally equal value (AST-level round-trip).
 
 import std/[strutils, unicode]
+import ./capabilities
 import ./types
 
 proc print*(v: Value): string
@@ -20,6 +21,39 @@ proc escapeStr(s: string): string =
     of '\r': result.add "\\r"
     else: result.add ch
   result.add "\""
+
+proc printCapabilityArg(argument: CapabilityArg): string =
+  case argument.kind
+  of cakNil: result = "nil"
+  of cakBool: result = if argument.boolValue: "true" else: "false"
+  of cakInt: result = $argument.intValue
+  of cakString: result = escapeStr(argument.stringValue)
+  of cakSymbol: result = argument.symbolValue
+  of cakList:
+    result = "#["
+    for i, item in argument.listValue:
+      if i > 0: result.add " "
+      result.add printCapabilityArg(item)
+    result.add "]"
+  of cakMap:
+    result = "#{"
+    for i, item in argument.mapValue:
+      if i > 0: result.add " "
+      result.add "^" & item.name & " " & printCapabilityArg(item.value)
+    result.add "}"
+
+proc printCapability(v: Value): string =
+  if not v.capabilityIsAdmitted:
+    return "(capability " & v.capabilityName & ")"
+  let spec = v.capabilitySpec
+  result = "(" & v.capabilityName
+  for named in spec.named:
+    result.add " ^" & named.name & " "
+    result.add printCapabilityArg(named.value)
+  for arg in spec.positional:
+    result.add " "
+    result.add printCapabilityArg(arg)
+  result.add ")"
 
 proc printFloat(f: float64): string =
   result = $f
@@ -278,9 +312,7 @@ proc print*(v: Value): string =
     "(device-buffer " & v.deviceBufferBackend & " " & elemType & " " &
       $v.deviceBufferLen & ")"
   of vkCapability:
-    "(capability " & v.capabilityName & ")"
-  of vkFfiLoad:
-    "(ffi-load)"
+    printCapability(v)
   of vkFfiLibrary:
     if v.ffiLibraryClosed:
       "(ffi-library closed)"

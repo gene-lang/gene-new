@@ -24,11 +24,11 @@
       {^name item/name ^solutions item/solutions}))
   result)
 
-(fn main [args, ^setups : Capability] : Nil
+(fn main [args] : Nil
   (var argv ($body args))
   (if_not (== (argv ~ size) 1)
     ($panic "usage: library_induction_frozen_evaluation <setup-file>"))
-  (var setup (read_data (read_text setups argv/0)))
+  (var setup (read_data (read_text argv/0)))
   (var subject (default_induction_subject))
   (var corpus setup/corpus)
   (var corpus_evidence (verify_generated_corpus subject corpus))

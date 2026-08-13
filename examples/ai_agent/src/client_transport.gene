@@ -9,7 +9,7 @@
 (mod ai_agent_client_transport
   @doc "direct/remote client boundary for the Gene AI-agent service")
 
-(import $net/http_client [Http request HttpClientError])
+(import $net/http_client [request HttpClientError])
 (import $crypto [random_hex])
 (import $json [parse stringify JsonError])
 (import $str [starts_with? ends_with? trim byte_size slice_bytes])
@@ -91,7 +91,7 @@
     (try
       (parsed_response
         (await
-          (request Http ^method method ^url $"${origin}${path}"
+          (request ^method method ^url $"${origin}${path}"
             ^headers headers ^body encoded ^timeout_ms 30000
             ^max_bytes 4194304)))
     catch (HttpClientError ^kind kind ^message message)

@@ -398,23 +398,44 @@ suite "cli — gene run":
     check "public_hidden_fields=0 soundness_verified=true" in checked.output
     check "framing=episode programs=stage_two_identical" in checked.output
 
-  test "main receives only explicitly granted named capabilities":
-    let grantedMain = writeCliProgram("granted_main.gene",
-      "(fn main [args, ^config : Capability] " &
-      "  (if (same? config $fs/ReadDir) 0 4))")
-    var ran = runGene(["run", grantedMain, "--grant", "config=$fs/ReadDir",
-                       "--", "arg"])
+  test "--grant is an ordinary program argument, not an authority channel":
+    let grantedMain = writeCliProgram("grant_is_argv.gene",
+      "(fn main [args] " &
+      "  (if (== args/0 \"--grant\") 0 4))")
+    var ran = runGene(["run", grantedMain, "--grant", "config=$fs/ReadDir"])
     check ran.exitCode == 0
 
     let missingMain = writeCliProgram("missing_grant_main.gene",
       "(fn main [args, ^config : Capability] " &
       "  (do ($println \"BODY-RAN\") 0))")
-    ran = runGene(["run", missingMain])
+    ran = runGene(["run", missingMain, "--grant", "config=$fs/ReadDir"])
     check ran.exitCode == 1
     check "missing named argument: config" in ran.output
     check ("at " & normalizedPath(absolutePath(missingMain)) & ":1:1") in
       ran.output
     check not ran.output.startsWith("BODY-RAN\n")
+
+  test "pre-entry directory policy mints host grants without Gene values":
+    let externalDir = getTempDir() / "gene_cli_external_capability"
+    createDir(externalDir)
+    let externalFile = externalDir / "message.txt"
+    writeFile(externalFile, "allowed")
+    defer:
+      if fileExists(externalFile): removeFile(externalFile)
+      if dirExists(externalDir): removeDir(externalDir)
+    let readerMain = writeCliProgram("host_read_policy.gene", """
+      (import $fs [read_text])
+      (fn main [args]
+        (if (== (read_text args/0) "allowed") 0 4))
+    """)
+
+    var ran = runGene(["run", readerMain, externalFile])
+    check ran.exitCode == 1
+    check "MissingCapability: fs/read_text requires fs/ReadFile" in ran.output
+
+    ran = runGene(["run", "--allow_read_dir", externalDir,
+                   readerMain, externalFile])
+    check ran.exitCode == 0
 
   test "run loads explicit structured logging config before the entry module":
     let logDir = cliDir / "configured_logs"
@@ -452,7 +473,7 @@ suite "cli — gene run":
       "{^sinks {^console {^type \"console\"}} ^targets [\"missing\"]}")
     let fixture = writeCliProgram("bad_logging_entry.gene",
       "(import $fs [write_text WriteDir]) " &
-      "(write_text WriteDir " & geneQuote(marker) & " \"ran\")")
+      "(write_text " & geneQuote(marker) & " \"ran\")")
     let ran = runGene(["run", "--log-config", configPath, fixture])
     check ran.exitCode == 1
     check "unknown sink 'missing'" in ran.output
@@ -3121,7 +3142,7 @@ catch {^message message} (set duplicate message))
          restore_dynamic_registrations save_agent_state
          close_agent_state find_tool agent_events]
   from "./core.gene")
-(var mode (get_env Env "HANDLER_MODE"))
+(var mode (get_env "HANDLER_MODE"))
 (var exact (HandlerRef ^module "test/workflows" ^path "run"
                        ^version "sha256:exact"))
 (register_tool (Tool ^name "durable_check" ^description "durable"
@@ -3193,7 +3214,7 @@ catch {^message message} (set duplicate message))
   from "./core.gene")
 (init_agent_state)
 (start_workspace_heartbeat)
-(if (== (get_env Env "OWNER_MODE") "hold") ($sleep 10000))
+(if (== (get_env "OWNER_MODE") "hold") ($sleep 10000))
 (close_agent_state)
 """)
     let common = ["GENE_AGENT_STATE=fs:" & stateDir,
@@ -4535,7 +4556,7 @@ catch {^message message}
 (fn handle [req]
   (hits ~ set (+ (hits ~ get) 1))
   (var n (hits ~ get))
-  (write_text WriteDir $"tmp/agents-req-${n}.json" req/body)
+  (write_text $"tmp/agents-req-${n}.json" req/body)
   (var chunks
     (match n
       (when 1 (tool_turn "a1" "write_file"

@@ -236,10 +236,9 @@ def write_evaluation_directory(
                 [
                     str(freeze.GENE),
                     "run",
+                    "--allow_read_dir",
+                    str(freeze_directory),
                     str(freeze.FROZEN_EVALUATOR),
-                    "--grant",
-                    "setups=$fs/ReadDir",
-                    "--",
                     str(setup_path),
                 ],
                 timeout=90.0,

@@ -25,7 +25,7 @@ suite "net/http_client e2e":
     ready.close()
     let client = runHttpClient("client-request.gene", """
 (import $net/http_client [Http request])
-(var r (await (request Http ^method "POST" ^url "http://127.0.0.1:8201/echo"
+(var r (await (request ^method "POST" ^url "http://127.0.0.1:8201/echo"
                        ^headers {^content-type "text/plain"} ^body "hello")))
 ($println [r/status r/body r/truncated r/headers/x-test])
 """)
@@ -44,7 +44,7 @@ suite "net/http_client e2e":
     ready.close()
     let client = runHttpClient("client-stream.gene", """
 (import $net/http_client [Http stream])
-(var transfer (stream Http ^url "http://127.0.0.1:8202/events"
+(var transfer (stream ^url "http://127.0.0.1:8202/events"
                       ^channel_capacity 2 ^max_pending_bytes 4096))
 (var seen ($cell ""))
 (try
@@ -69,7 +69,7 @@ suite "net/http_client e2e":
     ready.close()
     let client = runHttpClient("client-cap.gene", """
 (import $net/http_client [Http request])
-(var r (await (request Http ^url "http://127.0.0.1:8203/cap" ^max_bytes 4)))
+(var r (await (request ^url "http://127.0.0.1:8203/cap" ^max_bytes 4)))
 ($println [r/status r/body r/truncated])
 """)
     check client.exitCode == 0
@@ -87,7 +87,7 @@ suite "net/http_client e2e":
     let started = getMonoTime()
     let client = runHttpClient("client-cancel.gene", """
 (import $net/http_client [Http request])
-(var t (request Http ^url "http://127.0.0.1:8204/slow"))
+(var t (request ^url "http://127.0.0.1:8204/slow"))
 ($sleep 100)
 (t ~ cancel)
 ($println "cancelled")
@@ -120,13 +120,13 @@ suite "net/http_client e2e":
       ready.close()
       let untrusted = runHttpClient("client-tls-untrusted.gene", """
 (import $net/http_client [Http request])
-(await (request Http ^url "https://127.0.0.1:8205/" ^timeout_ms 5000))
+(await (request ^url "https://127.0.0.1:8205/" ^timeout_ms 5000))
 """)
       check untrusted.exitCode != 0
       let client = runHttpClient("client-tls.gene", """
 (import $net/http_client [Http request])
 (import $str [starts_with?])
-(var r (await (request Http ^url "https://127.0.0.1:8205/"
+(var r (await (request ^url "https://127.0.0.1:8205/"
                        ^ca_file "/CERT_PATH/" ^timeout_ms 5000)))
 ($println [r/status (starts_with? r/effective_url "https://") r/truncated])
 """.replace("/CERT_PATH/", cert))

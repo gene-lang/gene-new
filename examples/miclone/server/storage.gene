@@ -53,8 +53,8 @@
 # is roughly an order of magnitude faster than `full` for the write-heavy
 # pattern §11 describes (a block per modification, batched).
 (fn open_world [root : Str] : WorldStore
-  (if_not ($fs/exists? $fs/ReadDir root)
-    ($fs/make_dir $fs/WriteDir root))
+  (if_not ($fs/exists? root)
+    ($fs/make_dir root))
   (var db (open $"${root}/map.sqlite"))
   (db ~ Db:exec "pragma journal_mode = wal")
   (db ~ Db:exec "pragma synchronous = normal")
@@ -78,17 +78,17 @@
 # so it round-trips without a hand-written parser.
 
 (fn write_meta [w : WorldStore seed : F64 name : Str] : Nil
-  ($fs/write_text $fs/WriteDir $"${w/root}/world.gene"
+  ($fs/write_text $"${w/root}/world.gene"
     ($serde/write {^format store_version
                    ^name name
                    ^seed seed
                    ^block_dim 16})))
 
 (fn read_meta [w : WorldStore] : Map
-  ($serde/read ($fs/read_text $fs/ReadDir $"${w/root}/world.gene")))
+  ($serde/read ($fs/read_text $"${w/root}/world.gene")))
 
 (fn world_exists? [root : Str] : Bool
-  ($fs/exists? $fs/ReadDir $"${root}/world.gene"))
+  ($fs/exists? $"${root}/world.gene"))
 
 # --- blocks ------------------------------------------------------------------
 

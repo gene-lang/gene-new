@@ -951,7 +951,7 @@ MVP core special forms:
 do if if_yes if_not && || ?? ! let var const set new ~ ?~ fn macro quote quasiquote
 select path msg ns env eval import mod match while loop repeat for break continue yield
 return try scope supervisor spawn await fail panic type alias enum protocol impl
-derive import_impl web_module
+derive import_impl with_capabilities web_module
 ```
 <!-- compiler-head-dispatch:end -->
 
@@ -971,6 +971,11 @@ independently dispatched core forms. `new` is a compiler-dispatched constructor
 form and is reserved in head position.
 
 `select` is special because selector bodies are quoted-like contexts: bare names become static segments, and `%` escapes to lexical values.
+
+`with_capabilities` resolves a capability selector row against the active
+context, runs its body under the resulting attenuation, and restores the
+previous context on every exit path. Its full contract is in
+`docs/proposals/capabilities.md`.
 
 Normative front-end order for one read unit:
 
@@ -1373,6 +1378,14 @@ Construction stamps the value's head with the type value. Construction schemas a
 `native_wrapper`, for a type whose props hold native state: only its `ctor`
 may create an instance, its declared fields are initializer-only, and the rule
 is inherited through `^is`. See §16.6. `^sealed` remains reserved.
+
+`^capability "namespace/Type"` marks an ordinary type as the Gene facade for
+a host-admitted capability descriptor. Such a type must contain exactly one
+explicit inline `CapabilitySpec` implementation. The compiler derives its
+schema hash from the declared `^props` and `^body`; the linker derives its
+declaration identity and verifies both against the frozen host registry. The
+marker does not admit a provider or mint authority. See
+`docs/proposals/capabilities.md` §3.1.1.
 
 ### 7.1.1 Direct construction, `new`, and `ctor`
 
@@ -2363,7 +2376,7 @@ in Gene at all, which is what kept every binary encoder in a host language.
 ```gene
 ($bit/xor 12 10)                    # => 6
 ($binary/from_list [137 80 78 71])  # => #B16#89504e47
-($fs/write_bytes $fs/WriteDir "out.png" data)
+($fs/write_bytes "out.png" data)
 ```
 
 **`gene/bit`** — `and` `or` `xor` `not` `shl` `shr`, over Int. Operands are the
@@ -4128,51 +4141,44 @@ Deferred features include distributed actors, transparent remote references, wor
 
 ---
 
-## 14. Runtime capability values, no MVP effect checker
+## 14. Ambient capability contexts
 
-MVP has no static `^effects` checker.
+MVP has no static `^effects` checker. External authority instead lives in an
+immutable runtime capability context created by the host and attenuated at
+module, function, protocol-message, and call-site boundaries. Grants are
+sealed runtime objects and never Gene values.
 
-However, Gene should still use ordinary runtime capability values for external authority.
-
-Example filesystem capabilities:
-
-```gene
-$fs/ReadDir
-$fs/WriteDir
-$fs/ReadWriteDir
-```
-
-APIs require capability values explicitly:
+Capability names construct inert specifications:
 
 ```gene
-(fs/read_text config "app.gene")
-(fs/write_text logs "run.log" text)
+(fs/ReadDir "config")
+(fs/WriteFile "run.log")
 ```
 
-There is no ambient filesystem authority in the intended runtime API.
-
-Entry points can receive granted capability values:
+Effectful APIs use the active context and require the exact operation; no
+grant is passed as an ordinary argument:
 
 ```gene
-(fn main [args : (List Str), ^config : fs/ReadDir, ^logs : fs/WriteDir] : Nil
-  ...)
+($fs/read_text "config/app.gene")
+($fs/write_text "run.log" text)
 ```
 
-For `gene run`, positional strings remain the first `main` argument. Named
-capabilities are injected only by explicit host grants:
+Open mode is the compatibility default and inherits its parent's context.
+Strict declarations make the contract explicit:
 
-```text
-gene run app.gene --grant config=$fs/ReadDir --grant logs=$fs/WriteDir -- args...
+```gene
+(fn write_report [filename text]
+  ^capabilities [(fs/WriteFile filename)]
+  ($fs/write_text filename text))
 ```
 
-Each grant expression is evaluated by the host in the loaded entry-module
-scope and passed as a named call argument. `--` ends host-option parsing.
-Missing required grants fail normal named-parameter/type boundary validation
-before the body runs; globals are never searched implicitly to fill them.
-Embedding hosts use the same named-argument call envelope (`GeneCall`) and are
-responsible for constructing and granting capability values explicitly.
-
-Static `^effects [fs io net]`, capability-row inference, and hidden capability threading are deferred until the core language stabilizes.
+`gene run [--allow_read_dir dir] [--allow_write_dir dir]
+[--allow_read_write_dir dir] file [--] [args...]` passes only positional
+program arguments to `main`; the pre-entry options mint host grants directly,
+while `--grant` is not an authority channel. The entry module may declare an
+application ceiling, while embedding hosts construct the root context
+directly. `with_capabilities` can attenuate one call or dynamic block. The full
+normative model is `docs/proposals/capabilities.md`.
 
 ---
 

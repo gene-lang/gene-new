@@ -91,7 +91,7 @@
 # compiled in.
 (fn load_mod_at [game : Game dir : Str] : Str
   (var manifest_path $"${dir}/${manifest_name}")
-  (var text (read_text ReadDir manifest_path))
+  (var text (read_text manifest_path))
   # A manifest is Gene data, so reading it is `read_all` and a prop lookup —
   # there is no parser here and there should not be one. `read_all` answers a
   # stream of top-level forms and a manifest is exactly one.
@@ -136,6 +136,6 @@
 
 (fn load_mods_from_disk [] : Game
   (var game (new_game))
-  (var root (get_env Env "GENE_MICLONE_MODS" default_mods_dir))
+  (var root (get_env "GENE_MICLONE_MODS" default_mods_dir))
   (load_mod_at game $"${root}/${default_mod}")
   game)

@@ -8,7 +8,7 @@
 #
 # This was JavaScript until `src/png.gene` could write a PNG.
 #
-#   gene run screenshot --grant out=$fs/WriteDir -- [seed] [cam_x] [cam_y]
+#   gene run screenshot -- [seed] [cam_x] [cam_y]
 
 (mod screenshot)
 
@@ -196,7 +196,7 @@
 (fn default_cam_y [seed : Float] : Float
   (* (- (surface_at ($to_float (/ map_w 2)) seed) 8.0) 16.0))
 
-(fn main [args, ^out_dir : Capability] : Nil
+(fn main [args] : Nil
   # Whole tiles only: a fractional camera would land the blit on a
   # non-integer pixel index, which the JavaScript this replaces silently
   # turned into a blank frame.
@@ -210,6 +210,6 @@
                ($to_float ($parse/parse_int argv/2)) (default_cam_y seed)))
   (var pixels (shoot seed cam_x cam_y))
   (var path ($ "assets/screenshot_seed" ($to_int seed) ".png"))
-  ($fs/write_bytes out_dir path (encode view_w view_h pixels))
+  ($fs/write_bytes path (encode view_w view_h pixels))
   ($println "wrote " path "  (seed " ($to_int seed)
             ", cam " ($to_int cam_x) "," ($to_int cam_y) ")"))

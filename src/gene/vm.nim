@@ -1,9 +1,9 @@
 ## Stack VM for compiled Gene GIR chunks.
 
-import std/[algorithm, base64, dynlib, json, locks, math, monotimes, net, os,
-            osproc, sets, strutils, tables, times, unicode]
-import ./[compiler, diagnostics, equality, gir, package, printer,
-          reader, types]
+import std/[algorithm, atomics, base64, dynlib, json, locks, math, monotimes, net, os,
+            options, osproc, sets, strutils, tables, times, unicode]
+import ./[capabilities, compiler, diagnostics, equality, fs_capabilities, gir,
+          host_capabilities, package, printer, reader, types]
 import ./ext/logging
 export package.Package, package.PackageKind, package.PackageOrigin,
        package.PackageError, package.PackageErrorClass, package.DependencyDecl,
@@ -124,6 +124,7 @@ type
     fkEnsurePanicBody
     fkEnsureCancelBody
     fkEnsureReturnBody
+    fkCapabilityBody
     fkForBody
     fkTaskScopeBody
     fkSupervisorBody
@@ -144,6 +145,9 @@ type
     forBody: Chunk
     ownedScope: Scope
     namespaceName: string
+    restoreCapabilities: CapabilityContext
+    restoreCapabilityPresence: CapabilityPresence
+    restoresCapabilityState: bool
 
   ## A suspended caller frame on the VM's explicit call-frame stack. Simple Gene
   ## function calls push one of these instead of recursing through Nim, so a call
@@ -225,6 +229,8 @@ type
     forBody: Chunk
     ownedScope: Scope
     namespaceName: string
+    capabilityContext: CapabilityContext
+    capabilityPresence: CapabilityPresence
     started: bool          # false until first scheduled (resume restores the rest)
     workerSafe: bool       # snapshot-isolated; eligible for opt-in worker lane
     task: Value            # the Task this fiber settles, for spawn/await fibers
@@ -272,6 +278,8 @@ type
     maxBytes: int
     timeoutMs: int
     task: Value
+    filesystemProvider: FilesystemProvider
+    capabilityContext: CapabilityContext
 
   CaptureSafetyMode = enum
     csmSend
@@ -317,6 +325,19 @@ type
     syntaxFnExports: seq[string]
     compileInterface: CompileNamespaceInterface
 
+  ResourceCapabilityRecord = object
+    application: RuntimeContext
+    context: CapabilityContext
+
+  CapabilityFacadeBinding = object
+    facade: Value
+    scope: Scope
+
+  CapabilityHostConfigureProc* = proc(
+    registry: CapabilityRegistry,
+    filesystem: FilesystemProvider,
+    host: HostCapabilityProvider): seq[CapabilityGrant] {.closure.}
+
   Application* = ref object of RuntimeContext
     builtins: Scope
     # The whole standard library, i.e. the scope behind the `gene` namespace.
@@ -334,6 +355,15 @@ type
     nativeGt: Value
     nativeLe: Value
     nativeGe: Value
+    capabilityRegistry: CapabilityRegistry
+    filesystemProvider: FilesystemProvider
+    hostCapabilityProvider: HostCapabilityProvider
+    rootCapabilityContext: CapabilityContext
+    applicationCapabilityContext: CapabilityContext
+    capabilitiesMaterialized: bool
+    capabilitySpecProtocol: Value
+    capabilityFacades: Table[string, CapabilityFacadeBinding]
+    capabilityCanonicalCache: Table[string, CapabilitySpec]
     moduleCache: Table[string, Value]
     moduleLoading: HashSet[string]
     moduleCompileHeaders: Table[string, ModuleCompileHeader]
@@ -591,6 +621,7 @@ proc resolveModulePath*(app: Application, rawPath: string): string
 proc resolveApplicationModulePath*(app: Application, rawPath: string): string
 proc applicationPackage*(app: Application): Package
 proc moduleIdentityFor*(app: Application, absPath: string): string
+proc materializeScriptCapabilities(app: Application)
 
 proc builtinTypeBinding(scope: Scope, name: string, value: var Value): bool =
   ## Resolve a standard-library type the VM raises or checks against (`Error`,
@@ -622,6 +653,27 @@ var activeScheduler {.threadvar.}: SchedulerState
 var activeFiberRunning {.threadvar.}: bool
 var activeWorkerThread {.threadvar.}: bool
 var activeConstructionDepth {.threadvar.}: int
+var activeCapabilityContext {.threadvar.}: CapabilityContext
+var activeCapabilityPresence {.threadvar.}: CapabilityPresence
+
+var nextResourceAuthorityId {.global.}: Atomic[uint64]
+var resourceAuthorityLock: Lock
+var resourceAuthorityRecords = initTable[uint64, ResourceCapabilityRecord]()
+
+proc releaseResourceAuthorityRecord(id: uint64) {.nimcall, raises: [].} =
+  if id == 0:
+    return
+  acquire(resourceAuthorityLock)
+  resourceAuthorityRecords.del(id)
+  release(resourceAuthorityLock)
+
+proc resourceAuthorityRecordCount*(): int =
+  acquire(resourceAuthorityLock)
+  result = resourceAuthorityRecords.len
+  release(resourceAuthorityLock)
+
+initLock(resourceAuthorityLock)
+installResourceAuthorityReleaseHook(releaseResourceAuthorityRecord)
 
 proc currentScheduler(): SchedulerState
 
@@ -711,13 +763,18 @@ proc endSchedulerWorkerLease(lease: SchedulerWorkerLease)
 proc schedulerRunOneRoot(lease: SchedulerWorkerLease): bool
 proc schedulerRunOneRootUntil(deadline: MonoTime,
                               lease: SchedulerWorkerLease): bool
-proc enqueueAsyncReadText(path: string, task: Value): AsyncIoEnqueueResult
+proc enqueueAsyncReadText(provider: FilesystemProvider,
+                          context: CapabilityContext,
+                          path: string, task: Value): AsyncIoEnqueueResult
 proc enqueueAsyncWriteText(path, text: string,
+                           provider: FilesystemProvider,
+                           context: CapabilityContext,
                            task: Value): AsyncIoEnqueueResult
 proc enqueueAsyncTcpReadText(host: string, port, maxBytes, timeoutMs: int,
+                             context: CapabilityContext,
                              task: Value): AsyncIoEnqueueResult
 proc enqueueAsyncTcpWriteText(host: string, port: int, text: string,
-                              timeoutMs: int,
+                              timeoutMs: int, context: CapabilityContext,
                               task: Value): AsyncIoEnqueueResult
 proc timerDeadline(milliseconds: int64): MonoTime
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
@@ -755,6 +812,7 @@ proc newScope*(parent: Scope = nil,
     else: nil
   Scope(application: owner, parent: parent, evalBudget: budget,
         moduleRefs: (if parent != nil: parent.moduleRefs else: nil),
+        moduleBase: (if parent != nil: parent.moduleBase else: nil),
         borrowedCallerEnv: parent != nil and parent.borrowedCallerEnv)
 
 proc registerOwnedActor(scope: Scope, actor: Value) =
@@ -1351,6 +1409,13 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
                    named: NamedArgs): tuple[scope: Scope, returnType: Value]
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool
 proc typeExprLabel(expr: Value): string
+proc capabilityArgFromValue(value: Value): CapabilityArg
+proc moduleRootScope(scope: Scope): Scope
+proc resolveQualifiedSend(scope: Scope, qualifier: Value, name: string,
+                          receiver: Value): Value
+proc capabilitySpecFromValue(value: Value, scope: Scope): CapabilitySpec
+proc capabilityTypeForFacade(app: Application, facade: Value): CapabilityType
+proc fileModulePath(scope: Scope): string
 
 # ---------------------------------------------------------------------------
 # Built-in functions
@@ -1589,6 +1654,20 @@ proc biSame(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "same? expects 2 arguments, got " & $args.len)
   newBool(same(args[0], args[1]))
+
+proc biCapabilityAvailable(args: openArray[Value],
+                           call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError,
+      "capability_available? expects one admitted capability specification")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let requested = capabilitySpecFromValue(args[0], scope)
+  if activeCapabilityPresence == nil:
+    return FALSE
+  for entry in activeCapabilityPresence.entries:
+    if entry.spec == requested:
+      return newBool(entry.available)
+  FALSE
 
 proc tryFastNativeKind2(kind: NativeFastKind, a, b: Value): tuple[handled: bool, value: Value] {.inline.} =
   case kind
@@ -3743,7 +3822,6 @@ proc freezeRejectName(value: Value): string =
   of vkBuffer: "Buffer"
   of vkDeviceBuffer: "device/Buffer"
   of vkCapability: "Capability"
-  of vkFfiLoad: "ffi/Load"
   of vkFfiLibrary: "ffi/Library"
   of vkFfiCallable: "ffi/Callable"
   else: $value.kind
@@ -3798,7 +3876,7 @@ proc freezeValue(value: Value): Value =
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
      vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
-     vkFfiLoad, vkFfiLibrary, vkFfiCallable:
+     vkFfiLibrary, vkFfiCallable:
     raise newException(GeneError, "freeze cannot freeze " & freezeRejectName(value))
 
 proc thawValue(value: Value): Value =
@@ -3938,7 +4016,6 @@ proc declarationKind*(value: Value): string =
   of vkBuffer: "Buffer"
   of vkDeviceBuffer: "DeviceBuffer"
   of vkCapability: "Capability"
-  of vkFfiLoad: "FfiLoad"
   of vkFfiLibrary: "FfiLibrary"
   of vkFfiCallable: "FfiCallable"
   of vkLogger: "Logger"
@@ -5532,23 +5609,151 @@ proc biBufferToBytes(args: openArray[Value]): Value {.nimcall.} =
     raw[i] = char(byte(v))
   newBytes(raw)
 
+proc activeCapabilitiesForCall(call: ptr NativeCall):
+    tuple[app: Application, context: CapabilityContext] =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  result.app = scope.application()
+  if result.app == nil:
+    raise newException(GeneError,
+      "capability-protected operation requires an application runtime")
+  result.context =
+    if activeCapabilityContext != nil:
+      activeCapabilityContext
+    elif result.app.applicationCapabilityContext != nil:
+      result.app.applicationCapabilityContext
+    else:
+      result.app.rootCapabilityContext
+
+proc raiseCapabilityGeneError(scope: Scope, kind, message: string,
+                              capability = "", operation = "")
+                              {.noreturn.} =
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  if capability.len > 0:
+    props["capability"] = newStr(capability)
+  if operation.len > 0:
+    props["operation"] = newStr(operation)
+  var error: ref GeneError
+  new(error)
+  error.msg = kind & ": " & message
+  error.errVal = newNode(builtInTypeHead(scope, kind), props = props)
+  error.hasErrVal = true
+  raise error
+
+proc capabilityErrorKind(message: string): string =
+  if message.startsWith("unknown capability type"):
+    "UnknownCapabilityType"
+  elif message.startsWith("UnsupportedCapability"):
+    "UnsupportedCapability"
+  elif message.startsWith("AmbiguousCapability"):
+    "AmbiguousCapability"
+  elif message.startsWith("MissingCapability"):
+    "MissingCapability"
+  elif "scope" in message or "outside" in message or "escapes" in message:
+    "CapabilityScopeError"
+  else:
+    "CapabilityTypeError"
+
+proc requireActiveCapability(name, typeName: string, call: ptr NativeCall,
+                             positional: openArray[CapabilityArg] = [],
+                             named: openArray[CapabilityNamedArg] = []):
+                             CapabilityGrant =
+  let active = activeCapabilitiesForCall(call)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  try:
+    let capabilityType = active.app.capabilityRegistry.capabilityType(typeName)
+    let spec = newCapabilitySpec(capabilityType, positional, named)
+    let grants = active.app.capabilityRegistry.resolveSelector(active.context, spec)
+    if grants.len == 0:
+      raiseCapabilityGeneError(scope, "MissingCapability",
+        name & " requires " & typeName, typeName, name)
+    if grants.len > 1:
+      raiseCapabilityGeneError(scope, "AmbiguousCapability",
+        name & " matched multiple grants for " & typeName, typeName, name)
+    grants[0]
+  except CapabilityError as error:
+    raiseCapabilityGeneError(scope, capabilityErrorKind(error.msg),
+      name & ": " & error.msg, typeName, name)
+
+proc requireRetainedCapabilities(name: string, call: ptr NativeCall,
+                                 retained: CapabilityContext):
+                                 CapabilityContext =
+  if retained == nil:
+    return nil
+  let active = activeCapabilitiesForCall(call)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  try:
+    result = intersectContexts(active.context, retained)
+    if result.len == 0:
+      raiseCapabilityGeneError(scope, "MissingCapability",
+        name & " requires its retained resource authority", operation = name)
+  except CapabilityError as error:
+    raiseCapabilityGeneError(scope, capabilityErrorKind(error.msg),
+      name & ": " & error.msg, operation = name)
+
+proc retainResourceCapabilities(scope: Scope, resource: Value,
+                                context: CapabilityContext) =
+  let app = scope.application()
+  if app == nil or context == nil or context.len == 0 or
+      resource.kind != vkNode:
+    raise newException(GeneError,
+      "retained resource capabilities require an application, node resource, " &
+      "and context")
+  if resource.resourceAuthorityId != 0:
+    raise newException(GeneError,
+      "resource already has retained capability authority")
+  let id = nextResourceAuthorityId.fetchAdd(1'u64) + 1'u64
+  if id == 0:
+    raise newException(GeneError,
+      "resource capability identity space is exhausted")
+  acquire(resourceAuthorityLock)
+  resourceAuthorityRecords[id] = ResourceCapabilityRecord(
+    application: app, context: context)
+  release(resourceAuthorityLock)
+  resource.setResourceAuthorityId(id)
+
+proc retainedResourceCapabilities(name: string, resource: Value,
+                                  call: ptr NativeCall): CapabilityContext =
+  let active = activeCapabilitiesForCall(call)
+  let id = resource.resourceAuthorityId
+  var record: ResourceCapabilityRecord
+  var found = false
+  if id != 0:
+    acquire(resourceAuthorityLock)
+    if resourceAuthorityRecords.hasKey(id):
+      record = resourceAuthorityRecords[id]
+      found = true
+    release(resourceAuthorityLock)
+  if not found:
+    let scope = if call == nil: nil else: call[].dispatchScope
+    raiseCapabilityGeneError(scope, "MissingCapability",
+      name & ": resource has no retained capability ceiling",
+      operation = name)
+  if Application(record.application) != active.app:
+    raise newException(GeneError,
+      name & ": resource belongs to another application runtime")
+  requireRetainedCapabilities(name, call, record.context)
+
+proc releaseResourceCapabilities(scope: Scope, resource: Value) =
+  discard scope
+  releaseResourceAuthorityRecord(resource.takeResourceAuthorityId())
+
 proc biDeviceBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 4:
+  if args.len != 3:
     raise newException(GeneError,
-      "device/buffer expects 4 arguments, got " & $args.len)
-  if args[0].kind != vkCapability or args[0].capabilityName != "device/Compute":
-    raise newException(GeneError,
-      "device/buffer expects a device/Compute capability")
-  if args[1].kind != vkString:
-    raiseTypeError("device/buffer backend", "Str", args[1],
+      "device/buffer expects 3 arguments, got " & $args.len)
+  if args[0].kind != vkString:
+    raiseTypeError("device/buffer backend", "Str", args[0],
                    if call == nil: nil else: call.dispatchScope)
+  discard requireActiveCapability("device/buffer", "device/Compute", call,
+                                  [capString(args[0].strVal)])
   let scope = if call == nil: nil else: call.dispatchScope
-  let elemType = closeTypeExpr(bufferTypeExprArg("device/buffer elem_type", args[2]),
+  let elemType = closeTypeExpr(bufferTypeExprArg("device/buffer elem_type", args[1]),
                                scope)
-  let rawLen = requireInt64("device/buffer length", args[3])
+  let rawLen = requireInt64("device/buffer length", args[2])
   if rawLen < 0 or rawLen > int64(high(int)):
     raise newException(GeneError, "device/buffer length must be non-negative")
-  newDeviceBuffer(args[1].strVal, elemType, int(rawLen))
+  newDeviceBuffer(args[0].strVal, elemType, int(rawLen))
 
 proc biDeviceBufferLen(args: openArray[Value]): Value {.nimcall.} =
   requireOne("device/Buffer/len", args)
@@ -5719,8 +5924,9 @@ proc biPrintln(args: openArray[Value]): Value {.nimcall.} =
 proc timerDeadline(milliseconds: int64): MonoTime =
   getMonoTime() + initDuration(milliseconds = milliseconds)
 
-proc biSleep(args: openArray[Value]): Value {.nimcall.} =
+proc biSleep(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("sleep", args)
+  discard requireActiveCapability("sleep", "clock/Monotonic", call)
   let milliseconds = requireInt64("sleep", args[0])
   if milliseconds < 0:
     raise newException(GeneError, "sleep duration must be non-negative")
@@ -5756,10 +5962,6 @@ proc biSleep(args: openArray[Value]): Value {.nimcall.} =
       os.sleep(max(1, int(min(remaining.inMilliseconds, int64(high(int))))))
   NIL
 
-proc requireFfiLoad(name: string, value: Value) =
-  if value.kind != vkFfiLoad:
-    raise newException(GeneError, name & " expects an ffi/Load capability")
-
 proc requireFfiLibrary(name: string, value: Value) =
   if value.kind != vkFfiLibrary:
     raise newException(GeneError, name & " expects an ffi/Library")
@@ -5767,17 +5969,19 @@ proc requireFfiLibrary(name: string, value: Value) =
 proc unloadFfiLibrary(handle: pointer) {.nimcall.} =
   unloadLib(cast[LibHandle](handle))
 
-proc biFfiOpen(args: openArray[Value]): Value {.nimcall.} =
-  if args.len != 2:
+proc biFfiOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
     raise newException(GeneError,
-      "ffi/open expects 2 arguments, got " & $args.len)
-  requireFfiLoad("ffi/open", args[0])
-  requireStr("ffi/open", args[1])
-  let path = args[1].strVal
+      "ffi/open expects 1 argument, got " & $args.len)
+  requireStr("ffi/open", args[0])
+  let path = args[0].strVal
+  let grant = requireActiveCapability("ffi/open", "ffi/Load", call,
+                                      [capString(path)])
   let handle = loadLib(path)
   if handle == nil:
     raise newException(GeneError, "ffi/open failed to load library: " & path)
-  newFfiLibrary(cast[pointer](handle), path, unloadFfiLibrary)
+  newFfiLibrary(cast[pointer](handle), path, unloadFfiLibrary,
+                newCapabilityContext([grant]))
 
 proc isDynamicFfiScalarParamLabel(label: string): bool =
   label in [
@@ -5845,11 +6049,13 @@ proc isSupportedDynamicFfiSignature(params: openArray[Value],
   else:
     false
 
-proc biFfiBind(args: openArray[Value]): Value {.nimcall.} =
+proc biFfiBind(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len notin 4..5:
     raise newException(GeneError,
       "ffi/bind expects 4..5 arguments, got " & $args.len)
   requireFfiLibrary("ffi/bind", args[0])
+  discard requireRetainedCapabilities("ffi/bind", call,
+                                      args[0].ffiLibraryCapabilityContext)
   if args[0].ffiLibraryClosed:
     raise newException(GeneError, "ffi/bind library is closed")
   requireStr("ffi/bind symbol", args[1])
@@ -5924,22 +6130,102 @@ proc biCapabilityName(args: openArray[Value]): Value {.nimcall.} =
   requireCapability("Capability/name", args[0])
   newStr(args[0].capabilityName)
 
-proc requireFsReadDir(name: string, value: Value) =
-  requireCapability(name, value)
-  let cap = value.capabilityName
-  if cap != "fs/ReadDir" and cap != "fs/ReadWriteDir":
-    raise newException(GeneError, name & " expects fs/ReadDir authority")
+proc biCapabilityCanonicalize(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("CapabilitySpec/canonicalize", args)
+  requireCapability("CapabilitySpec/canonicalize", args[0])
+  args[0]
 
-proc requireFsWriteDir(name: string, value: Value) =
-  requireCapability(name, value)
-  let cap = value.capabilityName
-  if cap != "fs/WriteDir" and cap != "fs/ReadWriteDir":
-    raise newException(GeneError, name & " expects fs/WriteDir authority")
+proc biCapabilityDescribe(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("CapabilitySpec/describe", args)
+  if args[0].kind == vkCapability:
+    newStr(args[0].capabilityName)
+  else:
+    newStr(args[0].print)
 
-proc requireNetConnect(name: string, value: Value) =
-  requireCapability(name, value)
-  if value.capabilityName != "net/Connect":
-    raise newException(GeneError, name & " expects net/Connect authority")
+proc capabilityArgValue(argument: CapabilityArg): Value =
+  case argument.kind
+  of cakNil: NIL
+  of cakBool: newBool(argument.boolValue)
+  of cakInt: newInt(argument.intValue)
+  of cakString: newStr(argument.stringValue)
+  of cakSymbol: newSym(argument.symbolValue)
+  of cakList:
+    var items = newSeqOfCap[Value](argument.listValue.len)
+    for item in argument.listValue:
+      items.add capabilityArgValue(item)
+    newList(items, immutable = true)
+  of cakMap:
+    var entries = initPropTable()
+    for item in argument.mapValue:
+      entries[item.name] = capabilityArgValue(item.value)
+    newMap(entries, immutable = true)
+
+proc capabilityTemplateArgValue(argument: CapabilityTemplateArg): Value =
+  case argument.kind
+  of ctakLiteral:
+    capabilityArgValue(argument.literal)
+  of ctakParameter:
+    newSym(argument.parameterName)
+
+proc capabilitySelectorValue(selector: CapabilitySelectorTemplate): Value =
+  case selector.kind
+  of cskAll:
+    newSym("*")
+  of cskNamespace:
+    newSym(selector.namespaceName & "/*")
+  of cskExact:
+    var properties = initPropTable()
+    if selector.optional:
+      properties["optional"] = TRUE
+    for argument in selector.named:
+      properties[argument.name] = capabilityTemplateArgValue(argument.value)
+    var positional: seq[Value]
+    for argument in selector.positional:
+      positional.add capabilityTemplateArgValue(argument)
+    newNode(newSym(selector.typeName), props = properties, body = positional)
+
+proc biCapabilitiesOf(args: openArray[Value]): Value {.nimcall.} =
+  requireOne("capabilities_of", args)
+  var callable = args[0]
+  if callable.kind == vkProtocolMessage:
+    callable = callable.protocolMessageSignatureFn
+  if callable.kind != vkFunction or callable.fnCode == nil or
+      not (callable.fnCode of FunctionProto):
+    raise newException(GeneError,
+      "capabilities_of expects a function or protocol message")
+  let row = FunctionProto(callable.fnCode).capabilityRow
+  if row.inheritsCapabilities:
+    return newList(@[newSym("*")])
+  var selectors: seq[Value]
+  for selector in row.selectors:
+    selectors.add capabilitySelectorValue(selector)
+  newList(selectors)
+
+proc biCapabilityTypeInfo(args: openArray[Value],
+                          call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("capability_type_info", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let app = scope.application()
+  if app == nil:
+    raise newException(GeneError,
+      "capability_type_info requires an application runtime")
+  let capabilityType =
+    if args[0].kind == vkCapability and args[0].capabilityIsAdmitted:
+      args[0].capabilitySpec.capabilityType
+    elif args[0].kind == vkType:
+      app.capabilityTypeForFacade(args[0])
+    elif args[0].kind == vkNode and args[0].head.kind == vkType:
+      app.capabilityTypeForFacade(args[0].head)
+    else:
+      raise newException(GeneError,
+        "capability_type_info expects an admitted capability type")
+  let provider = app.capabilityRegistry.providerFor(capabilityType)
+  var info = initPropTable()
+  info["name"] = newStr(capabilityType.name)
+  info["provider"] = newStr(provider.name)
+  info["enforced"] = TRUE
+  info["gene_facade"] = newBool(capabilityType.isGeneFacade)
+  newMap(info)
 
 proc requirePort(name: string, value: Value): int =
   let raw = requireInt64(name, value)
@@ -5953,15 +6239,19 @@ proc requirePositiveInt(name: string, value: Value): int =
     raise newException(GeneError, name & " expects a positive Int")
   int(raw)
 
-proc completedReadTextTask(path: string): Value =
+proc completedReadTextTask(provider: FilesystemProvider,
+                           context: CapabilityContext,
+                           path: string): Value =
   try:
-    newCompletedTask(newStr(readFile(path)))
+    newCompletedTask(newStr(provider.readText(context, path)))
   except CatchableError as e:
     newFailedTask("fs/read_text_async failed: " & e.msg)
 
-proc completedWriteTextTask(path, text: string): Value =
+proc completedWriteTextTask(provider: FilesystemProvider,
+                            context: CapabilityContext,
+                            path, text: string): Value =
   try:
-    writeFile(path, text)
+    provider.writeText(context, path, text)
     newCompletedTask(NIL)
   except CatchableError as e:
     newFailedTask("fs/write_text_async failed: " & e.msg)
@@ -6000,54 +6290,77 @@ proc completedTcpWriteTextTask(host: string, port: int, text: string,
 proc asyncIoQueueFullTask(name: string): Value =
   newFailedTask(name & " failed: async I/O queue full")
 
-proc biFsReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
-  if args.len != 2:
+proc activeFilesystemForCall(call: ptr NativeCall):
+    tuple[provider: FilesystemProvider, context: CapabilityContext] =
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let app = scope.application()
+  if app == nil or app.filesystemProvider == nil:
     raise newException(GeneError,
-      "fs/read_text_async expects 2 arguments, got " & $args.len)
-  requireFsReadDir("fs/read_text_async", args[0])
-  requireString("fs/read_text_async path", args[1])
-  let path = args[1].strVal
+      "filesystem operation requires an application runtime")
+  let context =
+    if activeCapabilityContext != nil:
+      activeCapabilityContext
+    elif app.applicationCapabilityContext != nil:
+      app.applicationCapabilityContext
+    else:
+      app.rootCapabilityContext
+  (app.filesystemProvider, context)
+
+proc biFsReadTextAsync(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError,
+      "fs/read_text_async expects 1 argument, got " & $args.len)
+  requireString("fs/read_text_async path", args[0])
+  let path = args[0].strVal
+  let fs = activeFilesystemForCall(call)
   let task = newExternalTask()
-  case enqueueAsyncReadText(path, task)
+  case enqueueAsyncReadText(fs.provider, fs.context, path, task)
   of aioQueued:
     task
   of aioUnavailable:
-    completedReadTextTask(path)
+    completedReadTextTask(fs.provider, fs.context, path)
   of aioQueueFull:
     asyncIoQueueFullTask("fs/read_text_async")
 
-proc biFsWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
-  if args.len != 3:
+proc biFsWriteTextAsync(args: openArray[Value],
+                        call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
     raise newException(GeneError,
-      "fs/write_text_async expects 3 arguments, got " & $args.len)
-  requireFsWriteDir("fs/write_text_async", args[0])
-  requireString("fs/write_text_async path", args[1])
-  requireString("fs/write_text_async text", args[2])
-  let path = args[1].strVal
-  let text = args[2].strVal
+      "fs/write_text_async expects 2 arguments, got " & $args.len)
+  requireString("fs/write_text_async path", args[0])
+  requireString("fs/write_text_async text", args[1])
+  let path = args[0].strVal
+  let text = args[1].strVal
+  let fs = activeFilesystemForCall(call)
   let task = newExternalTask()
-  case enqueueAsyncWriteText(path, text, task)
+  case enqueueAsyncWriteText(path, text, fs.provider, fs.context, task)
   of aioQueued:
     task
   of aioUnavailable:
-    completedWriteTextTask(path, text)
+    completedWriteTextTask(fs.provider, fs.context, path, text)
   of aioQueueFull:
     asyncIoQueueFullTask("fs/write_text_async")
 
-proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
-  if args.len != 5:
+proc biNetTcpReadTextAsync(args: openArray[Value],
+                           call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 4:
     raise newException(GeneError,
-      "net/tcp_read_text_async expects 5 arguments, got " & $args.len)
-  requireNetConnect("net/tcp_read_text_async", args[0])
-  requireString("net/tcp_read_text_async host", args[1])
-  let host = args[1].strVal
-  let port = requirePort("net/tcp_read_text_async port", args[2])
+      "net/tcp_read_text_async expects 4 arguments, got " & $args.len)
+  requireString("net/tcp_read_text_async host", args[0])
+  let host = args[0].strVal
+  let port = requirePort("net/tcp_read_text_async port", args[1])
   let maxBytes = requirePositiveInt("net/tcp_read_text_async max_bytes",
-                                    args[3])
+                                    args[2])
   let timeoutMs = requirePositiveInt("net/tcp_read_text_async timeout_ms",
-                                     args[4])
+                                     args[3])
+  let grant = requireActiveCapability("net/tcp_read_text_async", "net/Connect",
+    call, named = [capNamed("host", capString(host)),
+                   capNamed("port", capInt(port))])
+  let operationContext = newCapabilityContext([grant])
   let task = newExternalTask()
-  case enqueueAsyncTcpReadText(host, port, maxBytes, timeoutMs, task)
+  case enqueueAsyncTcpReadText(host, port, maxBytes, timeoutMs,
+                               operationContext, task)
   of aioQueued:
     task
   of aioUnavailable:
@@ -6055,20 +6368,25 @@ proc biNetTcpReadTextAsync(args: openArray[Value]): Value {.nimcall.} =
   of aioQueueFull:
     asyncIoQueueFullTask("net/tcp_read_text_async")
 
-proc biNetTcpWriteTextAsync(args: openArray[Value]): Value {.nimcall.} =
-  if args.len != 5:
+proc biNetTcpWriteTextAsync(args: openArray[Value],
+                            call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 4:
     raise newException(GeneError,
-      "net/tcp_write_text_async expects 5 arguments, got " & $args.len)
-  requireNetConnect("net/tcp_write_text_async", args[0])
-  requireString("net/tcp_write_text_async host", args[1])
-  let host = args[1].strVal
-  let port = requirePort("net/tcp_write_text_async port", args[2])
-  requireString("net/tcp_write_text_async text", args[3])
-  let text = args[3].strVal
+      "net/tcp_write_text_async expects 4 arguments, got " & $args.len)
+  requireString("net/tcp_write_text_async host", args[0])
+  let host = args[0].strVal
+  let port = requirePort("net/tcp_write_text_async port", args[1])
+  requireString("net/tcp_write_text_async text", args[2])
+  let text = args[2].strVal
   let timeoutMs = requirePositiveInt("net/tcp_write_text_async timeout_ms",
-                                     args[4])
+                                     args[3])
+  let grant = requireActiveCapability("net/tcp_write_text_async", "net/Connect",
+    call, named = [capNamed("host", capString(host)),
+                   capNamed("port", capInt(port))])
+  let operationContext = newCapabilityContext([grant])
   let task = newExternalTask()
-  case enqueueAsyncTcpWriteText(host, port, text, timeoutMs, task)
+  case enqueueAsyncTcpWriteText(host, port, text, timeoutMs,
+                                operationContext, task)
   of aioQueued:
     task
   of aioUnavailable:
@@ -6128,7 +6446,8 @@ proc runReplSessionForEnv*(env: Value,
                            options: ReplOptions): int
 proc incrementalReplScopeForEnv*(env: Value): Scope
 proc run*(chunk: Chunk, scope: Scope,
-          validateImplRequirements = true): Value
+          validateImplRequirements = true,
+          initialCapabilities: CapabilityContext = nil): Value
 
 when not defined(geneWasm):
   # Host-only, for the reason the `web` import above states.
@@ -6390,6 +6709,14 @@ proc buildBuiltins(app: Application): Scope =
   # serializes by identity reference (serde, docs/serialization.md §7).
   let serdeRefProtocol = newProtocol("SerdeRef", [])
   result.define("SerdeRef", serdeRefProtocol)
+  let capabilityDescribeDefault = newNativeFn(
+    "CapabilitySpec/describe", biCapabilityDescribe)
+  let capabilitySpecProtocol = newProtocol(
+    "CapabilitySpec", ["canonicalize", "describe"],
+    signatures = [NIL, capabilityDescribeDefault],
+    hasDefaults = [false, true], scope = result)
+  app.capabilitySpecProtocol = capabilitySpecProtocol
+  result.define("CapabilitySpec", capabilitySpecProtocol)
   let callType = newType("Call", NIL,
                          @[
                            TypeField(name: "named", optional: false,
@@ -6435,6 +6762,21 @@ proc buildBuiltins(app: Application): Scope =
   result.define("TypeError", typeError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: typeError)
+  let capabilityError = newType("CapabilityError", NIL,
+    @[TypeField(name: "message", optional: false,
+                typeExpr: newSym("Str"), scope: result),
+      TypeField(name: "capability", optional: true,
+                typeExpr: newSym("Str"), scope: result),
+      TypeField(name: "operation", optional: true,
+                typeExpr: newSym("Str"), scope: result)],
+    @[errorProtocol], result)
+  result.define("CapabilityError", capabilityError)
+  result.impls.add ProtocolImpl(protocol: errorProtocol,
+                                receiver: capabilityError)
+  for name in ["UnknownCapabilityType", "UnsupportedCapability",
+               "MissingCapability", "CapabilityScopeError",
+               "AmbiguousCapability", "CapabilityTypeError"]:
+    result.define(name, newType(name, capabilityError, @[], @[], result))
   # A send that resolves to an Fexpr is a distinct dynamic call-kind
   # mismatch. It inherits TypeError's diagnostic fields and Error impl so
   # callers can catch it specifically without losing ordinary type matching.
@@ -6589,6 +6931,14 @@ proc buildBuiltins(app: Application): Scope =
   result.define("contains?",
                 sharedBuiltinNative("contains?", newNativeFn("contains?", biContains)))
   result.define("same?", newNativeFn("same?", biSame))
+  result.define("capability_available?",
+                newNativeCallFn("capability_available?", biCapabilityAvailable,
+                                acceptsNamed = false))
+  result.define("capabilities_of",
+                newNativeFn("capabilities_of", biCapabilitiesOf))
+  result.define("capability_type_info",
+                newNativeCallFn("capability_type_info", biCapabilityTypeInfo,
+                                acceptsNamed = false))
   result.define("hash", newNativeFn("hash", biHash))
   result.define("not", newNativeFn("not", biNot))
   # The four node projections are both bare wrapper functions and messages on
@@ -6774,7 +7124,8 @@ proc buildBuiltins(app: Application): Scope =
                     ("Char", vkChar)]:
         gBareScalarAnnotations.add (newSym(entry[0]).symbolId, entry[1])
   let deviceScope = newScope(result)
-  deviceScope.define("Compute", newCapability("device/Compute"))
+  deviceScope.define("Compute",
+    newCapability(app.hostCapabilityProvider.types.deviceCompute))
   deviceScope.define("buffer", newNativeCallFn("device/buffer", biDeviceBuffer,
                                                acceptsNamed = false))
   let deviceBufferScope = newScope(deviceScope)
@@ -6788,8 +7139,23 @@ proc buildBuiltins(app: Application): Scope =
                                        biDeviceBufferElemType))
   deviceScope.define("Buffer", newNamespace("device/Buffer", deviceBufferScope))
   result.define("device", newNamespace("device", deviceScope))
-  result.defineBuiltinType(vkCapability, "Capability", {
+  let clockScope = newScope(result)
+  clockScope.define("Monotonic",
+    newCapability(app.hostCapabilityProvider.types.clockMonotonic))
+  result.define("clock", newNamespace("clock", clockScope))
+  let capabilityTypeValue = result.defineBuiltinType(vkCapability, "Capability", {
     "name": newNativeFn("Capability/name", biCapabilityName)})
+  result.impls.add ProtocolImpl(
+    protocol: capabilitySpecProtocol,
+    receiver: capabilityTypeValue,
+    messages: @[
+      ImplMessage(
+        message: capabilitySpecProtocol.protocolMessages["canonicalize"],
+        fn: newNativeFn("CapabilitySpec/canonicalize",
+                        biCapabilityCanonicalize)),
+      ImplMessage(
+        message: capabilitySpecProtocol.protocolMessages["describe"],
+        fn: capabilityDescribeDefault)])
   let runtimeScope = newScope(result)
   runtimeScope.define("gc_stats",
                       newNativeFn("runtime/gc_stats", biRuntimeGcStats))
@@ -6810,25 +7176,35 @@ proc buildBuiltins(app: Application): Scope =
                                       acceptsNamed = false))
   result.define("runtime", newNamespace("runtime", runtimeScope))
   let fsScope = newScope(result)
-  fsScope.define("ReadDir", newCapability("fs/ReadDir"))
-  fsScope.define("WriteDir", newCapability("fs/WriteDir"))
-  fsScope.define("ReadWriteDir", newCapability("fs/ReadWriteDir"))
-  fsScope.define("read_text_async", newNativeFn("fs/read_text_async",
-                                                biFsReadTextAsync))
-  fsScope.define("write_text_async", newNativeFn("fs/write_text_async",
-                                                 biFsWriteTextAsync))
+  fsScope.define("ReadDir", newCapability(app.filesystemProvider.types.readDir))
+  fsScope.define("WriteDir", newCapability(app.filesystemProvider.types.writeDir))
+  fsScope.define("ReadWriteDir",
+                 newCapability(app.filesystemProvider.types.readWriteDir))
+  fsScope.define("ReadFile", newCapability(app.filesystemProvider.types.readFile))
+  fsScope.define("WriteFile", newCapability(app.filesystemProvider.types.writeFile))
+  fsScope.define("read_text_async",
+                 newNativeCallFn("fs/read_text_async", biFsReadTextAsync,
+                                 acceptsNamed = false))
+  fsScope.define("write_text_async",
+                 newNativeCallFn("fs/write_text_async", biFsWriteTextAsync,
+                                 acceptsNamed = false))
   result.define("fs", newNamespace("fs", fsScope))
   # `net` is created here with the socket capability and the raw TCP ops;
   # `registerStdlibNamespaces` extends this same namespace with `http` and
   # `http_client` rather than rebinding the name, so there is one `net`.
   let netScope = newScope(result)
-  netScope.define("Connect", newCapability("net/Connect"))
+  netScope.define("Connect",
+    newCapability(app.hostCapabilityProvider.types.netConnect))
+  netScope.define("Listen",
+    newCapability(app.hostCapabilityProvider.types.netListen))
   netScope.define("tcp_read_text_async",
-                  newNativeFn("net/tcp_read_text_async",
-                              biNetTcpReadTextAsync))
+                  newNativeCallFn("net/tcp_read_text_async",
+                                  biNetTcpReadTextAsync,
+                                  acceptsNamed = false))
   netScope.define("tcp_write_text_async",
-                  newNativeFn("net/tcp_write_text_async",
-                              biNetTcpWriteTextAsync))
+                  newNativeCallFn("net/tcp_write_text_async",
+                                  biNetTcpWriteTextAsync,
+                                  acceptsNamed = false))
   result.define("net", newNamespace("net", netScope))
   result.define("cell", newNativeFn("cell", biCell))
   result.defineBuiltinType(vkCell, "Cell", {
@@ -6855,11 +7231,14 @@ proc buildBuiltins(app: Application): Scope =
     cScope.define(name, cAbiTypeValue(name))
   result.define("C", newNamespace("C", cScope))
   let ffiScope = newScope(result)
-  ffiScope.define("open", newNativeFn("ffi/open", biFfiOpen))
-  ffiScope.define("bind", newNativeFn("ffi/bind", biFfiBind))
+  ffiScope.define("open", newNativeCallFn("ffi/open", biFfiOpen,
+                                           acceptsNamed = false))
+  ffiScope.define("bind", newNativeCallFn("ffi/bind", biFfiBind,
+                                           acceptsNamed = false))
   # The FFI capability/type surface joins the same `ffi` namespace as the
   # operations, rather than sitting beside it under an uppercase name.
-  ffiScope.define("Load", ffiTypeValue("Load"))
+  ffiScope.define("Load",
+    newCapability(app.hostCapabilityProvider.types.ffiLoad))
   ffiScope.define("Callable", ffiTypeValue("Callable"))
   let ffiLibraryScope = newScope(ffiScope)
   ffiLibraryScope.define("close",
@@ -6962,7 +7341,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("assoc_in", newNativeFn("assoc_in", biAssocIn))
   result.define("update_in", newNativeFn("update_in", biUpdateIn))
   result.define("panic", newNativeFn("panic", biPanic))
-  result.define("sleep", newNativeFn("sleep", biSleep))
+  result.define("sleep", newNativeCallFn("sleep", biSleep,
+                                          acceptsNamed = false))
   result.define("print", newNativeFn("print", biPrint))
   result.define("println", newNativeFn("println", biPrintln))
   registerStdlibNamespaces(result)
@@ -7025,8 +7405,38 @@ proc newSchedulerState(): SchedulerState =
   when compileOption("threads") and defined(gcAtomicArc):
     initCond(result.workerCond)
 
-proc newApplicationState(root: string): Application =
-  Application(moduleCache: initTable[string, Value](),
+proc newApplicationState(root: string,
+                         configure: CapabilityHostConfigureProc = nil): Application =
+  let launchRoot = normalizedDir("")
+  let capabilityRegistry = newCapabilityRegistry()
+  let filesystemProvider = capabilityRegistry.admitFilesystemProvider()
+  let hostCapabilityProvider = capabilityRegistry.admitHostCapabilityProvider()
+  let configuredGrants =
+    if configure == nil: @[]
+    else: configure(capabilityRegistry, filesystemProvider,
+                    hostCapabilityProvider)
+  capabilityRegistry.freeze()
+  # Package discovery and filesystem authority are independent. Relative
+  # stdlib paths have always been launch-cwd relative, and the capability root
+  # must use the same anchor (`gene run path/to/app.gene` must not silently
+  # reinterpret "tmp/x" beneath the entry file's directory).
+  var rootGrants = @[filesystemProvider.grantReadWriteDir(launchRoot)]
+  rootGrants.add hostCapabilityProvider.rootGrants()
+  for grant in configuredGrants:
+    if not grant.belongsTo(capabilityRegistry):
+      raise newException(CapabilityError,
+        "host capability configuration returned a foreign or nil root grant")
+    rootGrants.add grant
+  let rootCapabilityContext = newCapabilityContext(rootGrants)
+  Application(capabilityRegistry: capabilityRegistry,
+                       filesystemProvider: filesystemProvider,
+                       hostCapabilityProvider: hostCapabilityProvider,
+                       rootCapabilityContext: rootCapabilityContext,
+                       capabilityFacades:
+                         initTable[string, CapabilityFacadeBinding](),
+                       capabilityCanonicalCache:
+                         initTable[string, CapabilitySpec](),
+                       moduleCache: initTable[string, Value](),
                        moduleLoading: initHashSet[string](),
                        moduleCompileHeaders:
                          initTable[string, ModuleCompileHeader](),
@@ -7037,7 +7447,7 @@ proc newApplicationState(root: string): Application =
                          initTable[tuple[receiver, message: uint64], seq[Scope]](),
                        scheduler: newSchedulerState(),
                        currentModuleDir: root,
-                       launchDir: normalizedDir(""),
+                       launchDir: launchRoot,
                        userStoreRoot: userStoreDir())
 
 proc attachPackageGraph(app: Application, graph: MaterializedGraph) =
@@ -7074,6 +7484,29 @@ proc newApplication*(startDir = ""): Application =
     result.attachPackageGraph(manager.sync(resolution,
       SyncPolicy(userStoreRoot: result.userStoreRoot)))
 
+proc newApplicationConfigured*(startDir: string,
+                               configure: CapabilityHostConfigureProc):
+                               Application =
+  ## Host-only extension seam. The callback admits trusted providers, types,
+  ## entailments, and root grants before the registry freezes; it is never
+  ## callable from Gene source.
+  if configure == nil:
+    raise newException(CapabilityError,
+      "configured application requires a host capability callback")
+  let root = normalizedDir(startDir)
+  result = newApplicationState(root, configure)
+  when defined(geneWasm):
+    result.attachPackageGraph(
+      singlePackageGraph(discoverApplicationPackage(root)))
+  else:
+    let manager = newPackageManager(result.userStoreRoot)
+    let lockPath = packageLockPathFor(root)
+    let resolution =
+      if fileExists(lockPath): manager.loadResolutionLock(root)
+      else: manager.resolve(ResolveRequest(startDir: root))
+    result.attachPackageGraph(manager.sync(resolution,
+      SyncPolicy(userStoreRoot: result.userStoreRoot)))
+
 proc newApplication*(graph: MaterializedGraph, startDir = ""): Application =
   ## Construct directly from the immutable graph supplied by the package
   ## manager. Build/runtime embedding uses this overload so it never resolves
@@ -7095,6 +7528,33 @@ proc applicationPackage*(app: Application): Package =
 
 proc packageRoot*(app: Application): string =
   app.appPackage.root
+
+proc capabilities*(app: Application): CapabilityRegistry =
+  app.capabilityRegistry
+
+proc filesystemCapabilities*(app: Application): FilesystemProvider =
+  app.filesystemProvider
+
+proc hostCapabilities*(app: Application): HostCapabilityProvider =
+  app.hostCapabilityProvider
+
+proc rootCapabilities*(app: Application): CapabilityContext =
+  app.rootCapabilityContext
+
+proc applicationCapabilities*(app: Application): CapabilityContext =
+  if app.applicationCapabilityContext != nil:
+    app.applicationCapabilityContext
+  else:
+    app.rootCapabilityContext
+
+proc setRootCapabilities*(app: Application, context: CapabilityContext) =
+  if app == nil or context == nil:
+    raise newException(GeneError,
+      "application root capabilities require an application and context")
+  if app.capabilitiesMaterialized:
+    raise newException(GeneError,
+      "application root capabilities are frozen after entry materialization")
+  app.rootCapabilityContext = context
 
 proc launchDirectory*(app: Application): string =
   app.launchDir
@@ -7200,6 +7660,297 @@ proc application*(scope: Scope): Application =
   if scope != nil and scope.application != nil:
     return Application(scope.application)
   currentApplication()
+
+proc executionCapabilities(scope: Scope): CapabilityContext =
+  if activeCapabilityContext != nil:
+    return activeCapabilityContext
+  let app = scope.application()
+  if app == nil or app.rootCapabilityContext == nil:
+    return newCapabilityContext()
+  if app.applicationCapabilityContext != nil:
+    app.applicationCapabilityContext
+  else:
+    app.rootCapabilityContext
+
+proc boundCapabilityArg(argument: CapabilityTemplateArg,
+                        boundScope: Scope): CapabilityArg =
+  case argument.kind
+  of ctakLiteral:
+    argument.literal
+  of ctakParameter:
+    if boundScope == nil:
+      raise newException(GeneError,
+        "capability selector parameter is unavailable: " &
+        argument.parameterName)
+    let slot = argument.parameterSlot
+    let value =
+      if slot >= 0 and slot < boundScope.slots.len and
+          boundScope.slotDefined(slot):
+        boundScope.slots[slot]
+      else:
+        boundScope.lookup(argument.parameterName)
+    capabilityArgFromValue(value)
+
+proc linkCapabilityFacade(app: Application, proto: TypeProto,
+                          facade: Value, scope: Scope) =
+  if proto.capabilityName.len == 0:
+    return
+  if not proto.staticTopLevel:
+    raise newException(GeneError,
+      "capability specification facade " & proto.name &
+      " must be a static top-level declaration")
+  let capabilityType = app.capabilityRegistry.capabilityType(
+    proto.capabilityName)
+  if not capabilityType.isGeneFacade:
+    raise newException(GeneError,
+      "capability type is native and cannot be claimed by a Gene facade: " &
+      proto.capabilityName)
+  let modulePath = scope.fileModulePath()
+  let declarationIdentity =
+    (if modulePath.len == 0: "program"
+     else: app.moduleIdentityFor(modulePath)) & "#" & proto.name
+  if capabilityType.facadeIdentity != declarationIdentity or
+      capabilityType.schemaHash != proto.capabilitySchemaHash:
+    raise newException(GeneError,
+      "capability facade metadata does not match the host-admitted descriptor: " &
+      proto.capabilityName)
+  if app.capabilityFacades.hasKey(proto.capabilityName):
+    let existing = app.capabilityFacades[proto.capabilityName]
+    if not same(existing.facade, facade):
+      raise newException(GeneError,
+        "capability facade is already linked: " & proto.capabilityName)
+    return
+  app.capabilityFacades[proto.capabilityName] =
+    CapabilityFacadeBinding(facade: facade, scope: scope)
+
+proc invokeCapabilityCanonicalizer(app: Application,
+                                   binding: CapabilityFacadeBinding,
+                                   value: Value): Value =
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
+  activeCapabilityContext = newCapabilityContext()
+  activeCapabilityPresence = nil
+  try:
+    let target = resolveQualifiedSend(binding.scope,
+      app.capabilitySpecProtocol, "canonicalize", value)
+    result = applyCall(target, [value], NamedArgs(), binding.scope)
+  finally:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
+
+proc specFromCanonicalFacade(capabilityType: CapabilityType,
+                             binding: CapabilityFacadeBinding,
+                             value: Value): CapabilitySpec =
+  if value.kind != vkNode or not same(value.head, binding.facade):
+    raise newException(CapabilityError,
+      "CapabilitySpec/canonicalize must return the linked facade type")
+  if not value.nodeImmutable:
+    raise newException(CapabilityError,
+      "CapabilitySpec/canonicalize must return a deeply immutable snapshot")
+  if value.meta.len != 0:
+    raise newException(CapabilityError,
+      "CapabilitySpec/canonicalize result must not contain metadata")
+  var positional = newSeqOfCap[CapabilityArg](value.body.len)
+  for item in value.body:
+    positional.add capabilityArgFromValue(item)
+  var named = newSeqOfCap[CapabilityNamedArg](value.props.len)
+  for name, item in value.props:
+    named.add capNamed(name, capabilityArgFromValue(item))
+  newCapabilitySpec(capabilityType, positional, named)
+
+proc canonicalCapabilitySpec(app: Application,
+                             capabilityType: CapabilityType,
+                             positional: openArray[CapabilityArg],
+                             named: openArray[CapabilityNamedArg]):
+                             CapabilitySpec =
+  let raw = newCapabilitySpec(capabilityType, positional, named)
+  if not capabilityType.isGeneFacade:
+    return raw
+  let key = raw.canonicalKey
+  if app.capabilityCanonicalCache.hasKey(key):
+    return app.capabilityCanonicalCache[key]
+  if not app.capabilityFacades.hasKey(capabilityType.name):
+    raise newException(CapabilityError,
+      "UnsupportedCapability: admitted Gene facade is not linked: " &
+      capabilityType.name)
+  let binding = app.capabilityFacades[capabilityType.name]
+  var body = newSeqOfCap[Value](raw.positional.len)
+  for item in raw.positional:
+    body.add capabilityArgValue(item)
+  var names = newSeqOfCap[string](raw.named.len)
+  var values = newSeqOfCap[Value](raw.named.len)
+  for item in raw.named:
+    names.add item.name
+    values.add capabilityArgValue(item.value)
+  try:
+    let input = constructTypedInstance(binding.facade, body,
+      NamedArgs(names: names, values: values), immutable = true)
+    let firstValue = app.invokeCapabilityCanonicalizer(binding, input)
+    let first = specFromCanonicalFacade(capabilityType, binding, firstValue)
+    let secondValue = app.invokeCapabilityCanonicalizer(binding, firstValue)
+    let second = specFromCanonicalFacade(capabilityType, binding, secondValue)
+    if first != second:
+      raise newException(CapabilityError,
+        "CapabilitySpec/canonicalize must be idempotent")
+    app.capabilityCanonicalCache[key] = first
+    first
+  except CapabilityError:
+    raise
+  except GeneError as error:
+    raise newException(CapabilityError,
+      "CapabilitySpec/canonicalize failed for " & capabilityType.name &
+      ": " & error.msg)
+
+proc capabilityTypeForFacade(app: Application, facade: Value): CapabilityType =
+  for name, binding in app.capabilityFacades:
+    if same(binding.facade, facade):
+      return app.capabilityRegistry.capabilityType(name)
+  raise newException(CapabilityError,
+    "UnsupportedCapability: value is not a linked capability facade")
+
+proc capabilitySpecFromValue(value: Value, scope: Scope): CapabilitySpec =
+  if value.kind == vkCapability and value.capabilityIsAdmitted:
+    return value.capabilitySpec
+  let app = scope.application()
+  if app == nil:
+    raise newException(GeneError,
+      "capability specification requires an application runtime")
+  let facade =
+    if value.kind == vkType: value
+    elif value.kind == vkNode and value.head.kind == vkType: value.head
+    else: NIL
+  if facade.kind != vkType:
+    raise newException(GeneError,
+      "expected an admitted capability specification or linked facade")
+  let capabilityType = app.capabilityTypeForFacade(facade)
+  if value.kind == vkType:
+    return app.canonicalCapabilitySpec(capabilityType, [], [])
+  if value.meta.len != 0:
+    raise newException(GeneError,
+      "capability specification values must not contain metadata")
+  var positional = newSeqOfCap[CapabilityArg](value.body.len)
+  for item in value.body:
+    positional.add capabilityArgFromValue(item)
+  var named = newSeqOfCap[CapabilityNamedArg](value.props.len)
+  for name, item in value.props:
+    named.add capNamed(name, capabilityArgFromValue(item))
+  app.canonicalCapabilitySpec(capabilityType, positional, named)
+
+proc resolveCapabilityTransition(app: Application, row: CapabilityRow,
+                                 parent: CapabilityContext,
+                                 inheritedPresence: CapabilityPresence,
+                                 boundScope: Scope): CapabilityTransition =
+  if row.inheritsCapabilities:
+    return CapabilityTransition(context: parent,
+                                presence: inheritedPresence)
+  if app == nil:
+    raise newException(GeneError,
+      "capability declaration requires an application runtime")
+  var selected: seq[CapabilityGrant]
+  var presence = CapabilityPresence()
+  try:
+    for selector in row.selectors:
+      case selector.kind
+      of cskAll:
+        for grant in app.capabilityRegistry.resolveProjection(parent):
+          selected.add grant
+      of cskNamespace:
+        for grant in app.capabilityRegistry.resolveProjection(
+            parent, selector.namespaceName):
+          selected.add grant
+      of cskExact:
+        let capabilityType = app.capabilityRegistry.capabilityType(
+          selector.typeName)
+        var positional = newSeqOfCap[CapabilityArg](selector.positional.len)
+        for argument in selector.positional:
+          positional.add boundCapabilityArg(argument, boundScope)
+        var named = newSeqOfCap[CapabilityNamedArg](selector.named.len)
+        for argument in selector.named:
+          named.add capNamed(argument.name,
+                             boundCapabilityArg(argument.value, boundScope))
+        let spec = app.canonicalCapabilitySpec(capabilityType,
+                                               positional, named)
+        let grants = app.capabilityRegistry.resolveSelector(parent, spec)
+        presence.entries.add CapabilityPresenceEntry(
+          spec: spec, available: grants.len > 0)
+        if grants.len == 0 and not selector.optional:
+          raiseCapabilityGeneError(boundScope, "MissingCapability",
+            "declaration requires " & selector.typeName,
+            selector.typeName, "capability declaration")
+        for grant in grants:
+          selected.add grant
+    CapabilityTransition(context: newCapabilityContext(selected),
+                         presence: presence)
+  except CapabilityError as error:
+    raiseCapabilityGeneError(boundScope, capabilityErrorKind(error.msg),
+      error.msg, operation = "capability declaration")
+
+proc resolveCapabilityRow(app: Application, row: CapabilityRow,
+                          parent: CapabilityContext,
+                          boundScope: Scope): CapabilityContext =
+  resolveCapabilityTransition(app, row, parent, nil, boundScope).context
+
+proc functionCapabilityTransition(proto: FunctionProto, boundScope: Scope,
+                                  callerScope: Scope,
+                                  parent: CapabilityContext,
+                                  parentPresence: CapabilityPresence):
+                                  CapabilityTransition =
+  let calleeRoot = boundScope.moduleRootScope()
+  let callerRoot = callerScope.moduleRootScope()
+  let crossesModule = calleeRoot != nil and calleeRoot != callerRoot
+  if not crossesModule and
+      (proto == nil or proto.capabilityRow.inheritsCapabilities):
+    return CapabilityTransition(context: parent, presence: parentPresence)
+
+  let app = boundScope.application()
+  var ceiling: CapabilityContext
+  if crossesModule:
+    var module: Value
+    if calleeRoot.lookupOptional("this_mod", module) and
+        module.kind == vkModule:
+      ceiling = module.moduleCapabilityCeiling
+
+  when not (compileOption("threads") and defined(gcAtomicArc)):
+    if proto != nil and proto.capabilityRow.isStatic and
+        proto.capabilityCacheRegistryId == app.capabilityRegistry.identity and
+        proto.capabilityCacheEpoch == app.capabilityRegistry.capabilityEpoch and
+        proto.capabilityCacheParent == parent and
+        proto.capabilityCacheCeiling == ceiling:
+      return proto.capabilityCacheTransition
+
+  var available = parent
+  var availablePresence = parentPresence
+  if crossesModule:
+    available =
+      if ceiling == nil: newCapabilityContext()
+      else: intersectContexts(parent, ceiling)
+    # Crossing a module ceiling is a new declaration boundary. Exact
+    # availability from the caller cannot leak through as though this
+    # boundary had evaluated the caller's row.
+    availablePresence = nil
+  result =
+    if proto == nil or proto.capabilityRow.inheritsCapabilities:
+      CapabilityTransition(context: available,
+                           presence: availablePresence)
+    else:
+      resolveCapabilityTransition(app, proto.capabilityRow,
+                                  available, availablePresence, boundScope)
+  when not (compileOption("threads") and defined(gcAtomicArc)):
+    if proto != nil and proto.capabilityRow.isStatic:
+      proto.capabilityCacheRegistryId = app.capabilityRegistry.identity
+      proto.capabilityCacheEpoch = app.capabilityRegistry.capabilityEpoch
+      proto.capabilityCacheParent = parent
+      proto.capabilityCacheCeiling = ceiling
+      proto.capabilityCacheTransition = result
+
+proc canBypassCapabilityBoundary(proto: FunctionProto, calleeScope,
+                                 callerScope: Scope): bool {.inline.} =
+  ## Declared rows always transform the context. An omitted/private row needs
+  ## no work only within one module; crossing modules must still apply the
+  ## callee's once-materialized ceiling.
+  proto != nil and proto.capabilityRow.inheritsCapabilities and
+    calleeScope != nil and callerScope != nil and
+    calleeScope.moduleBase == callerScope.moduleBase
 
 proc builtinsScope*(app: Application): Scope =
   ## The single built-ins root scope for this application. Every module/program
@@ -7308,6 +8059,7 @@ proc newGlobalScope*(app: Application): Scope =
     else: app.builtinsScope()
   result = newScope(parent, application = app)
   result.moduleRoot = true
+  result.moduleBase = result
   result.moduleStatic = true
 
 proc newGlobalScope*(): Scope =
@@ -7373,6 +8125,7 @@ proc bindThisModule*(scope: Scope, name: string, path = "",
   ## Package lexically, never through a process-global current package.
   let root = newNamespace(name, scope, path, moduleRoot = true)
   scope.moduleRoot = true
+  scope.moduleBase = scope
   scope.moduleStatic = true
   # A named module base is enumerable for reload (file modules, the reload
   # replacement, native modules). Already retained by moduleCache, so this adds
@@ -8199,6 +8952,9 @@ proc resetCallScope(scope, parent: Scope, names: seq[string]) =
     if parent != nil: parent.application
     else: nil
   scope.parent = parent
+  scope.moduleBase =
+    if parent != nil: parent.moduleBase
+    else: nil
   scope.simpleCallScope = false
   scope.typeBoundaryToken = nil
   scope.typeBoundarySnapshot = false
@@ -8255,6 +9011,9 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
     if parent != nil: parent.application
     else: nil
   result.parent = parent
+  result.moduleBase =
+    if parent != nil: parent.moduleBase
+    else: nil
   result.simpleCallScope = true
   result.borrowedCallerEnv = parent != nil and parent.borrowedCallerEnv
   result.evalBudget =
@@ -8529,6 +9288,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     if scope.slotTypes.len != 0:
       scope.slotTypes.setLen(0)
     scope.parent = nil
+    scope.moduleBase = nil
     scope.application = nil
     scope.evalBudget = nil
     scope.borrowedCallerEnv = false
@@ -8580,6 +9340,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
   if scope.ownedActors.len != 0:
     scope.ownedActors.setLen(0)
   scope.parent = nil
+  scope.moduleBase = nil
   scope.application = nil
   scope.evalBudget = nil
   scope.borrowedCallerEnv = false
@@ -8825,9 +9586,12 @@ proc validateCallableSignature(expected, actual: Value, label: string) =
     label & " has incompatible " & mismatch & locations)
 
 proc moduleRootScope(scope: Scope): Scope =
+  if scope != nil and scope.moduleBase != nil:
+    return scope.moduleBase
   var current = scope
   while current != nil:
     if current.moduleRoot:
+      scope.moduleBase = current
       return current
     current = current.parent
 
@@ -8956,6 +9720,84 @@ proc affectedIndexedScopes(app: Application, impl: ProtocolImpl): seq[Scope] =
       if not present:
         result.add scope
 
+proc literalCapabilitySpec(app: Application,
+                           selector: CapabilitySelectorTemplate):
+                           Option[CapabilitySpec] =
+  if app == nil or selector.kind != cskExact:
+    return none(CapabilitySpec)
+  var positional: seq[CapabilityArg]
+  for argument in selector.positional:
+    if argument.kind != ctakLiteral:
+      return none(CapabilitySpec)
+    positional.add argument.literal
+  var named: seq[CapabilityNamedArg]
+  for argument in selector.named:
+    if argument.value.kind != ctakLiteral:
+      return none(CapabilitySpec)
+    named.add capNamed(argument.name, argument.value.literal)
+  try:
+    some(newCapabilitySpec(
+      app.capabilityRegistry.capabilityType(selector.typeName),
+      positional, named))
+  except CapabilityError:
+    none(CapabilitySpec)
+
+proc selectorCoveredByContract(app: Application, contract,
+                               implementation: CapabilitySelectorTemplate): bool =
+  case contract.kind
+  of cskAll:
+    true
+  of cskNamespace:
+    case implementation.kind
+    of cskAll:
+      false
+    of cskNamespace:
+      implementation.namespaceName == contract.namespaceName
+    of cskExact:
+      implementation.typeName.startsWith(contract.namespaceName & "/")
+  of cskExact:
+    if implementation.kind != cskExact:
+      return false
+    if contract.optional and not implementation.optional:
+      return false
+    if sameSelectorAuthority(contract, implementation):
+      return true
+    let broadSpec = app.literalCapabilitySpec(contract)
+    let narrowSpec = app.literalCapabilitySpec(implementation)
+    if broadSpec.isNone or narrowSpec.isNone:
+      return false
+    let provider = app.capabilityRegistry.providerFor(
+      broadSpec.get.capabilityType)
+    if provider != app.capabilityRegistry.providerFor(
+        narrowSpec.get.capabilityType):
+      return false
+    provider.subsumes(broadSpec.get, narrowSpec.get) == csYes
+
+proc capabilityContractCompatible(app: Application, contractFn,
+                                  implementationFn: Value): bool =
+  if contractFn.kind != vkFunction or implementationFn.kind != vkFunction or
+      contractFn.fnCode == nil or implementationFn.fnCode == nil or
+      not (contractFn.fnCode of FunctionProto) or
+      not (implementationFn.fnCode of FunctionProto):
+    return false
+  let contract = FunctionProto(contractFn.fnCode).capabilityRow
+  let implementation = FunctionProto(implementationFn.fnCode).capabilityRow
+  if sameCapabilityRow(contract, implementation):
+    return true
+  if contract.inheritsCapabilities:
+    return implementation.inheritsCapabilities
+  if implementation.inheritsCapabilities:
+    return false
+  for selector in implementation.selectors:
+    var covered = false
+    for allowed in contract.selectors:
+      if app.selectorCoveredByContract(allowed, selector):
+        covered = true
+        break
+    if not covered:
+      return false
+  true
+
 proc registerImpl(scope: Scope, protocol, receiver: Value,
                   entries: sink seq[ImplMessage],
                   visibility = ivOverlay, exported = false) =
@@ -8963,6 +9805,14 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
     raise newException(GeneError, "impl target must be a protocol")
   if receiver.kind != vkType:
     raise newException(GeneError, "impl receiver must be a type")
+  let app = scope.application()
+  let isCapabilitySpec = app != nil and
+    app.capabilitySpecProtocol.kind == vkProtocol and
+    same(protocol, app.capabilitySpecProtocol)
+  if isCapabilitySpec and visibility != ivCanonical:
+    raise newException(GeneError,
+      "CapabilitySpec has one application-global implementation per facade; " &
+      "scoped and overlay implementations are not allowed")
   # Completeness is keyed by message identity. An explicit impl establishes
   # conformance; shared defaults fill only messages omitted by that impl.
   for message in protocol.protocolClosure:
@@ -8971,10 +9821,26 @@ proc registerImpl(scope: Scope, protocol, receiver: Value,
       if entry.message.bits == message.bits:
         inc count
         let signatureFn = message.protocolMessageSignatureFn
-        if signatureFn.kind != vkNil:
+        if signatureFn.kind != vkNil and not isCapabilitySpec:
           validateCallableSignature(signatureFn, entry.fn,
             "impl " & protocol.protocolName & " for " & receiver.typeName &
             " message " & qualifiedMessageName(message))
+          if not capabilityContractCompatible(scope.application(),
+                                               signatureFn, entry.fn):
+            raise newException(GeneError,
+              "impl " & protocol.protocolName & " for " & receiver.typeName &
+              " message " & qualifiedMessageName(message) &
+              " broadens its ^capabilities contract")
+        if isCapabilitySpec and
+            message.protocolMessageName == "canonicalize":
+          if entry.fn.kind != vkFunction or entry.fn.fnCode == nil or
+              not (entry.fn.fnCode of FunctionProto):
+            raise newException(GeneError,
+              "CapabilitySpec/canonicalize must be a Gene function")
+          let row = FunctionProto(entry.fn.fnCode).capabilityRow
+          if not row.declaresCapabilities or row.selectors.len != 0:
+            raise newException(GeneError,
+              "CapabilitySpec/canonicalize must declare ^capabilities []")
     if count == 0:
       let defaultFn = message.protocolMessageDefaultFn
       if defaultFn.kind != vkNil:
@@ -9672,7 +10538,7 @@ proc isSendableValue(value: Value, scope: Scope,
     value.nsScope != nil and value.nsScope.parent == root
   of vkModule, vkEnv, vkCallerEnv, vkCell, vkStream, vkActorContext,
      vkActorStep, vkCPtr, vkCSlice, vkBuffer,
-     vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary, vkFfiCallable:
+     vkDeviceBuffer, vkCapability, vkFfiLibrary, vkFfiCallable:
     false
 
 proc isSendableValue(value: Value, scope: Scope): bool =
@@ -10682,6 +11548,11 @@ proc cloneSuperProto(proto: FunctionProto,
     return cloned[key]
   let copy = FunctionProto()
   copy[] = proto[]
+  copy.capabilityCacheRegistryId = 0
+  copy.capabilityCacheEpoch = 0
+  copy.capabilityCacheParent = nil
+  copy.capabilityCacheCeiling = nil
+  copy.capabilityCacheTransition = CapabilityTransition()
   cloned[key] = copy
   copy.chunk = cloneSuperChunk(proto.chunk, copy, cloned)
   copy.scopelessChunk = cloneSuperChunk(proto.scopelessChunk, copy, cloned)
@@ -11173,28 +12044,39 @@ proc enqueueAsyncIoRequest(req: AsyncIoRequest): AsyncIoEnqueueResult =
   else:
     aioUnavailable
 
-proc enqueueAsyncReadText(path: string,
+proc enqueueAsyncReadText(provider: FilesystemProvider,
+                          context: CapabilityContext,
+                          path: string,
                           task: Value): AsyncIoEnqueueResult =
   enqueueAsyncIoRequest(AsyncIoRequest(kind: aioReadText, path: path,
-                                       task: task))
+                                       task: task,
+                                       filesystemProvider: provider,
+                                       capabilityContext: context))
 
 proc enqueueAsyncWriteText(path, text: string,
+                           provider: FilesystemProvider,
+                           context: CapabilityContext,
                            task: Value): AsyncIoEnqueueResult =
   enqueueAsyncIoRequest(AsyncIoRequest(kind: aioWriteText, path: path,
-                                       text: text, task: task))
+                                       text: text, task: task,
+                                       filesystemProvider: provider,
+                                       capabilityContext: context))
 
 proc enqueueAsyncTcpReadText(host: string, port, maxBytes, timeoutMs: int,
+                             context: CapabilityContext,
                              task: Value): AsyncIoEnqueueResult =
   enqueueAsyncIoRequest(AsyncIoRequest(kind: aioTcpReadText, host: host,
                                        port: port, maxBytes: maxBytes,
-                                       timeoutMs: timeoutMs, task: task))
+                                       timeoutMs: timeoutMs, task: task,
+                                       capabilityContext: context))
 
 proc enqueueAsyncTcpWriteText(host: string, port: int, text: string,
-                              timeoutMs: int,
+                              timeoutMs: int, context: CapabilityContext,
                               task: Value): AsyncIoEnqueueResult =
   enqueueAsyncIoRequest(AsyncIoRequest(kind: aioTcpWriteText, host: host,
                                        port: port, text: text,
-                                       timeoutMs: timeoutMs, task: task))
+                                       timeoutMs: timeoutMs, task: task,
+                                       capabilityContext: context))
 
 proc inCancelCleanup(f: Fiber): bool =
   if f.frameKind == fkEnsureCancelBody:
@@ -11412,6 +12294,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var frames: seq[Frame]
   var chunk = chunkArg
   var scope = scopeArg
+  var capabilityContext = executionCapabilities(scope)
+  var capabilityPresence = activeCapabilityPresence
   var recycleScope = false
   var stack = move stackArg
   # --- sp-register operand stack ---------------------------------------------
@@ -11522,10 +12406,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curForBody = fiber.forBody
     curOwnedScope = fiber.ownedScope
     curNamespaceName = fiber.namespaceName
+    capabilityContext = fiber.capabilityContext
+    if capabilityContext == nil:
+      capabilityContext = executionCapabilities(scope)
+    activeCapabilityContext = capabilityContext
+    capabilityPresence = fiber.capabilityPresence
+    activeCapabilityPresence = capabilityPresence
     evalBudget = scope.evalBudget
   elif fiber != nil:
     frames = acquireFrameStack(gVmPools)
     recycleScope = fiber.recycleScope
+    if fiber.capabilityContext != nil:
+      capabilityContext = fiber.capabilityContext
+      activeCapabilityContext = capabilityContext
+    capabilityPresence = fiber.capabilityPresence
+    activeCapabilityPresence = capabilityPresence
   else:
     frames = acquireFrameStack(gVmPools)
 
@@ -11579,6 +12474,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curForBody = f.extra.forBody
       curOwnedScope = f.extra.ownedScope
       curNamespaceName = f.extra.namespaceName
+      if f.extra.restoresCapabilityState:
+        capabilityContext = f.extra.restoreCapabilities
+        activeCapabilityContext = capabilityContext
+        capabilityPresence = f.extra.restoreCapabilityPresence
+        activeCapabilityPresence = capabilityPresence
     evalBudget = scope.evalBudget
 
   template pushFrame() =
@@ -11642,6 +12542,19 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       pushFrame()
     returnDepth = frames.len
 
+  template installCapabilityTransition(nextTransition: CapabilityTransition) =
+    if nextTransition.context != capabilityContext or
+        nextTransition.presence != capabilityPresence:
+      if frames[^1].extra == nil:
+        frames[^1].extra = FrameExtra()
+      frames[^1].extra.restoresCapabilityState = true
+      frames[^1].extra.restoreCapabilities = capabilityContext
+      frames[^1].extra.restoreCapabilityPresence = capabilityPresence
+      capabilityContext = nextTransition.context
+      capabilityPresence = nextTransition.presence
+      activeCapabilityContext = capabilityContext
+      activeCapabilityPresence = capabilityPresence
+
   template enterFrame(nextChunk: Chunk, nextScope: Scope, nextValidate: bool,
                       nextKind: FrameKind = fkNormal) =
     chunk = nextChunk
@@ -11703,6 +12616,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.forBody = curForBody
     fiber.ownedScope = curOwnedScope
     fiber.namespaceName = curNamespaceName
+    fiber.capabilityContext = capabilityContext
+    fiber.capabilityPresence = capabilityPresence
     fiber.started = true
     fiber.frames = move frames
     fiber.tailTraceFrames = move tailTraceFrames
@@ -11891,6 +12806,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       let ns = newNamespace(nsName, nsScope)
       scope.define(nsName, ns)
       spush ns
+    elif curFrameKind == fkCapabilityBody:
+      strunc(curStackBase)
+      var owner = frames.pop()
+      strunc(curStackBase)
+      loadFrameRegs(owner)
+      spush retValue
     elif curFrameKind == fkTryBody:
       # The try body succeeded: drop its handler, run ensure, then hand its value
       # back to the enclosing frame (the owner pushed by opTry).
@@ -12503,6 +13424,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               scope.requiredImplTypes.add typ
             else:
               scope.validateRequiredImplType(typ)
+          scope.application().linkCapabilityFacade(proto, typ, scope)
           spush typ
         of opMakeEnum:
           let proto = chunk.enumProtos[inst[].intArg]
@@ -12777,12 +13699,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let proto = FunctionProto(code)
-              if proto.nativeOp != ncoNone:
+              if proto.nativeOp != ncoNone and
+                  proto.canBypassCapabilityBoundary(callee.fnScope, scope):
                 let native = applyNativeCompiled(callee, proto, [], NamedArgs())
                 if native.handled:
                   spush native.value
                   continue
-              if proto.scopelessChunk != nil and proto.params.len == 0:
+              if proto.scopelessChunk != nil and proto.params.len == 0 and
+                  proto.canBypassCapabilityBoundary(callee.fnScope, scope):
                 # Scopeless 0-arg call (see the direct-call site).
                 pushCallFrame()
                 scope = frames[^1].scope
@@ -12814,10 +13738,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                       let fresh = newScope(callee.fnScope)
                       fresh.prepareSlots(proto.localNames)
                       fresh
-                  else:
+                else:
                     callee.fnScope
                 callScope.seedFunctionProtocolEntry(callee)
+                let nextTransition = functionCapabilityTransition(
+                  proto, callScope, scope, capabilityContext,
+                  capabilityPresence)
                 pushCallFrame()
+                installCapabilityTransition(nextTransition)
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
@@ -12836,11 +13764,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 if callee.isSyntaxFn:
                   rejectSyntaxCallWithoutSite(callee, scope)
                 let bound = bindCallScope(callee, proto, [], NamedArgs())
+                let nextTransition = functionCapabilityTransition(
+                  proto, bound.scope, scope, capabilityContext,
+                  capabilityPresence)
                 let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
                 pushCallFrame()
+                installCapabilityTransition(nextTransition)
                 chunk = proto.chunk
                 scope = bound.scope
                 recycleScope = proto.poolCallScope
@@ -12927,7 +13859,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let proto = FunctionProto(code)
-              if proto.nativeOp != ncoNone:
+              if proto.nativeOp != ncoNone and
+                  proto.canBypassCapabilityBoundary(callee.fnScope, scope):
                 let native =
                   if argCount == 0:
                     applyNativeCompiled(callee, proto, [], NamedArgs())
@@ -12939,6 +13872,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   spush native.value
                   continue
               if proto.scopelessChunk != nil and argCount == proto.params.len and
+                  proto.canBypassCapabilityBoundary(callee.fnScope, scope) and
                   (not proto.scopelessNeedsIntArgs or inst[].flag or
                    scopelessIntArgsOk(stack, argsStart, argCount)):
                 # Scopeless call: the args already on the shared stack become
@@ -12988,11 +13922,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     callee.fnScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(argsStart)
-                if argsStart == 0 and canReplaceCurrentTailCall(callee.fnScope):
+                let nextTransition = functionCapabilityTransition(
+                  proto, callScope, scope, capabilityContext,
+                  capabilityPresence)
+                if argsStart == 0 and
+                    nextTransition.context == capabilityContext and
+                    nextTransition.presence == capabilityPresence and
+                    canReplaceCurrentTailCall(callee.fnScope):
                   enterTailCallFrame(proto, callScope, proto.poolCallScope,
                     proto.frameNeedsImplValidation, NIL, "", false, @[],
                     callee.fnName)
                 pushCallFrame()
+                installCapabilityTransition(nextTransition)
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
@@ -13009,6 +13950,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
               elif argCount == 1 and proto.canFastBindUnaryInt and
                   proto.returnKnownBareInt and
+                  proto.canBypassCapabilityBoundary(callee.fnScope, scope) and
                   (inst[].flag or stack[argsStart].kind == vkInt):
                 let callScope = bindUnaryIntCallScope(callee, proto,
                                                       stack[argsStart])
@@ -13030,6 +13972,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 continue
               elif argCount > 1 and proto.canFastBindPositionalInt and
                   proto.returnKnownBareInt and argCount == proto.params.len and
+                  proto.canBypassCapabilityBoundary(callee.fnScope, scope) and
                   inst[].flag:
                 let callScope = bindPositionalIntCallScope(callee, proto,
                   stack.toOpenArray(argsStart, (sp - 1)),
@@ -13077,12 +14020,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                         stack.toOpenArray(argsStart, (sp - 1)), NamedArgs())
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
+                let nextTransition = functionCapabilityTransition(
+                  proto, boundScope, scope, capabilityContext,
+                  capabilityPresence)
                 strunc(argsStart)
                 boundReturnType = proto.checkedFrameReturnType(boundReturnType)
                 var lbl = ""
                 if boundReturnType.kind != vkNil and not usedUnaryIntFast:
                   lbl = "return from '" & callee.fnName & "'"
                 pushCallFrame()
+                installCapabilityTransition(nextTransition)
                 chunk = proto.chunk
                 scope = boundScope
                 recycleScope = proto.poolCallScope
@@ -13407,7 +14354,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let proto = FunctionProto(code)
-              if proto.nativeOp != ncoNone:
+              if proto.nativeOp != ncoNone and
+                  proto.canBypassCapabilityBoundary(callee.fnScope, scope):
                 var nativeNamed: NamedArgs
                 if namedCount > 0:
                   nativeNamed = namedArgsFromStack(inst[].names, stack,
@@ -13425,6 +14373,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   continue
               if namedCount == 0 and proto.scopelessChunk != nil and
                   argCount == proto.params.len and
+                  proto.canBypassCapabilityBoundary(callee.fnScope, scope) and
                   (not proto.scopelessNeedsIntArgs or
                    scopelessIntArgsOk(stack, argsStart, argCount)):
                 # Scopeless call (see the direct-call site): shift the args
@@ -13474,11 +14423,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   callee.fnScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)        # consume callee + args
-                if calleeIndex == 0 and canReplaceCurrentTailCall(callee.fnScope):
+                let nextTransition = functionCapabilityTransition(
+                  proto, callScope, scope, capabilityContext,
+                  capabilityPresence)
+                if calleeIndex == 0 and
+                    nextTransition.context == capabilityContext and
+                    nextTransition.presence == capabilityPresence and
+                    canReplaceCurrentTailCall(callee.fnScope):
                   enterTailCallFrame(proto, callScope, proto.poolCallScope,
                     proto.frameNeedsImplValidation, NIL, "", false, @[],
                     callee.fnName)
                 pushCallFrame()
+                installCapabilityTransition(nextTransition)
                 chunk = proto.chunk
                 scope = callScope
                 recycleScope = proto.poolCallScope
@@ -13524,12 +14480,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                     stack.toOpenArray(argsStart, (sp - 1)), named)
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
+                let nextTransition = functionCapabilityTransition(
+                  proto, boundScope, scope, capabilityContext,
+                  capabilityPresence)
                 let frameReturnType = proto.checkedFrameReturnType(boundReturnType)
                 strunc(calleeIndex)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
                 pushCallFrame()
+                installCapabilityTransition(nextTransition)
                 chunk = proto.chunk
                 scope = boundScope
                 recycleScope = proto.poolCallScope
@@ -13645,7 +14605,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let code = callee.fnCode
             if code != nil and code of FunctionProto:
               let fnProto = FunctionProto(code)
-              if fnProto.nativeOp != ncoNone:
+              if fnProto.nativeOp != ncoNone and
+                  fnProto.canBypassCapabilityBoundary(callee.fnScope, scope):
                 let native = applyNativeCompiled(callee, fnProto, args, named)
                 if native.handled:
                   strunc(calleeIndex)
@@ -13671,7 +14632,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     callee.fnScope
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)
+                let nextTransition = functionCapabilityTransition(
+                  fnProto, callScope, scope, capabilityContext,
+                  capabilityPresence)
                 pushFrame()
+                installCapabilityTransition(nextTransition)
                 chunk = fnProto.chunk
                 scope = callScope
                 recycleScope = fnProto.poolCallScope
@@ -13700,12 +14665,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   let bound = bindCallScope(callee, fnProto, args, named)
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
+                let nextTransition = functionCapabilityTransition(
+                  fnProto, boundScope, scope, capabilityContext,
+                  capabilityPresence)
                 let frameReturnType = fnProto.checkedFrameReturnType(boundReturnType)
                 strunc(calleeIndex)
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
                 pushFrame()
+                installCapabilityTransition(nextTransition)
                 chunk = fnProto.chunk
                 scope = boundScope
                 recycleScope = fnProto.poolCallScope
@@ -14357,6 +15326,26 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           curFrameKind = fkTryBody
           evalBudget = scope.evalBudget
           continue
+        of opWithCapabilities:
+          let capBlock = chunk.capabilityBlocks[inst[].intArg]
+          let nextTransition = resolveCapabilityTransition(
+            scope.application(), capBlock.row, capabilityContext,
+            capabilityPresence, scope)
+          pushFrame()
+          installCapabilityTransition(nextTransition)
+          scope = frames[^1].scope
+          chunk = capBlock.body
+          curStackBase = sp
+          ip = 0
+          validateImplRequirements = false
+          returnType = NIL
+          returnLabel = ""
+          curChecksErrors = false
+          curErrorTypes = @[]
+          curFnName = ""
+          curFrameKind = fkCapabilityBody
+          evalBudget = scope.evalBudget
+          continue
         of opTaskScope:
           let taskScope = newScope(scope)
           taskScope.ownsTasks = true
@@ -14956,7 +15945,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       fiber.waitDeadline = se.deadline
       return RunStop(kind: rskSuspend, value: NIL)
 
-proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true): Value =
+proc run*(chunk: Chunk, scope: Scope, validateImplRequirements = true,
+          initialCapabilities: CapabilityContext = nil): Value =
+  if initialCapabilities == nil and scope != nil:
+    var module: Value
+    if not scope.lookupOptional("this_mod", module):
+      scope.application().materializeScriptCapabilities()
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
+  activeCapabilityContext =
+    if initialCapabilities != nil: initialCapabilities
+    elif savedCapabilities != nil: savedCapabilities
+    else: scope.executionCapabilities()
+  if initialCapabilities != nil or savedCapabilities == nil:
+    activeCapabilityPresence = nil
+  defer:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
   withScheduler(scope):
     let workerLease = beginSchedulerWorkerLease()
     defer:
@@ -15099,6 +16104,14 @@ proc runReplSessionForEnv*(env: Value,
 
 proc runPooled(chunk: Chunk, scope: Scope,
                validateImplRequirements = true): Value =
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
+  if activeCapabilityContext == nil:
+    activeCapabilityContext = scope.executionCapabilities()
+    activeCapabilityPresence = nil
+  defer:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
   withScheduler(scope):
     if chunk.localNames.len == 0:
       return run(chunk, scope, validateImplRequirements)
@@ -15389,7 +16402,9 @@ proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
   Fiber(chunk: proto.chunk, scope: bound.scope, recycleScope: proto.poolCallScope,
         actorOwner: actor, actorReturnType: bound.returnType, actorScope: scope,
         actorAskReply: item.reply, actorMessage: item.message, started: false,
-        workerSafe: workerSafe)
+        workerSafe: workerSafe,
+        capabilityContext: scope.executionCapabilities(),
+        capabilityPresence: activeCapabilityPresence)
 
 proc scheduleActor(actor: Value, scope: Scope) =
   ## If the actor is idle (no live handler fiber) and has a queued message, start
@@ -15430,8 +16445,13 @@ proc runFiber(f: Fiber) =
   var dummyStack: seq[Value]
   var dummyIp = 0
   let savedActive = currentFiberActive
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
   currentFiberActive = true
-  defer: currentFiberActive = savedActive
+  defer:
+    currentFiberActive = savedActive
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
   let actor = f.actorOwner
   let isActorFiber = actor.kind == vkActorRef
   try:
@@ -15671,13 +16691,23 @@ when compileOption("threads") and defined(gcAtomicArc):
         dec s.activeAsyncIoWorkers
       broadcast(s.workerCond)
 
+  proc requireAsyncIoAuthority(req: AsyncIoRequest) =
+    if req.capabilityContext == nil or req.capabilityContext.len == 0:
+      raise newException(GeneError,
+        "asynchronous host operation has no retained capability")
+    for grant in req.capabilityContext.grants:
+      if not grant.isValid:
+        raise newException(GeneError,
+          "asynchronous host operation capability was revoked")
+
   proc runAsyncIoRequest(req: AsyncIoRequest) =
     if req.task.kind == vkTask and req.task.taskDone:
       return
     case req.kind
     of aioReadText:
       try:
-        let text = readFile(req.path)
+        let text = req.filesystemProvider.readText(req.capabilityContext,
+                                                   req.path)
         let value = newStr(text)
         markSharedValue(value)
         if tryCompleteTask(req.task, value):
@@ -15688,7 +16718,8 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
     of aioWriteText:
       try:
-        writeFile(req.path, req.text)
+        req.filesystemProvider.writeText(req.capabilityContext, req.path,
+                                         req.text)
         if tryCompleteTask(req.task, NIL):
           wakeTaskWaiters(req.task)
       except CatchableError as e:
@@ -15697,6 +16728,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
     of aioTcpReadText:
       try:
+        requireAsyncIoAuthority(req)
         let text = tcpReadText(req.host, req.port, req.maxBytes,
                                req.timeoutMs)
         let value = newStr(text)
@@ -15709,6 +16741,7 @@ when compileOption("threads") and defined(gcAtomicArc):
           wakeTaskWaiters(req.task)
     of aioTcpWriteText:
       try:
+        requireAsyncIoAuthority(req)
         tcpWriteText(req.host, req.port, req.text, req.timeoutMs)
         if tryCompleteTask(req.task, NIL):
           wakeTaskWaiters(req.task)
@@ -15863,7 +16896,9 @@ proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value =
   ## operations drive the run queue until the task completes or parks.
   let task = newPendingTask()
   let f = Fiber(chunk: chunk, scope: scope, task: task, actorOwner: NIL,
-                started: false, workerSafe: workerSafe)
+                started: false, workerSafe: workerSafe,
+                capabilityContext: scope.executionCapabilities(),
+                capabilityPresence: activeCapabilityPresence)
   enqueueRunnable(f)
   task
 
@@ -16445,7 +17480,6 @@ proc runtimeTypeExpr(value: Value): Value =
       else: value.cSliceTargetType
     typeNode("C/Slice", @[targetType])
   of vkCapability: newSym("Capability")
-  of vkFfiLoad: newSym("ffi/Load")
   of vkFfiLibrary: newSym("ffi/Library")
   of vkFfiCallable: newSym("ffi/Callable")
   of vkLogger: newSym("Logger")
@@ -16959,8 +17993,6 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     (true, value.kind == vkDeviceBuffer)
   of "Capability":
     (true, value.kind == vkCapability)
-  of "ffi/Load":
-    (true, value.kind == vkFfiLoad)
   of "ffi/Library":
     (true, value.kind == vkFfiLibrary)
   of "ffi/Callable":
@@ -18590,13 +19622,17 @@ proc ffiAotBufferLease*(where, label: string, value: Value): FfiBufferLease =
   result.length = csize_t(result.bytes.len)
 
 proc applyFfiCallable(callee: Value, args: openArray[Value],
-                      named: NamedArgs): Value =
+                      named: NamedArgs, dispatchScope: Scope): Value =
   if named.len != 0:
     raise newException(GeneError,
       "FFI callable '" & callee.ffiCallableName & "' does not accept named arguments")
   if callee.ffiCallableLibrary.ffiLibraryClosed:
     raise newException(GeneError,
       "FFI callable '" & callee.ffiCallableName & "' library is closed")
+  var capabilityCall = NativeCall(calleeName: callee.ffiCallableName,
+                                  dispatchScope: dispatchScope)
+  discard requireRetainedCapabilities("ffi/Callable", addr capabilityCall,
+    callee.ffiCallableLibrary.ffiLibraryCapabilityContext)
   let params = callee.ffiCallableParamTypes
   if args.len != params.len:
     raise newException(GeneError,
@@ -23153,11 +24189,13 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
   (callScope, rt)
 
 proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
-                       proto: FunctionProto): Value =
+                       proto: FunctionProto,
+                       callerScope: Scope = nil): Value =
   let positional = callee.fnParams
-  let native = applyNativeCompiled(callee, proto, args, named)
-  if native.handled:
-    return native.value
+  if proto.canBypassCapabilityBoundary(callee.fnScope, callerScope):
+    let native = applyNativeCompiled(callee, proto, args, named)
+    if native.handled:
+      return native.value
   if proto.simpleCall and named.len == 0:
     if args.len != positional.len:
       raise newException(GeneError,
@@ -23178,13 +24216,22 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
         if args.len > 0:
           created.bindSimpleCallSlots(proto, args)
         created
-      else:
-        callee.fnScope
+    else:
+      callee.fnScope
     callScope.seedFunctionProtocolEntry(callee)
+    let callTransition = functionCapabilityTransition(
+      proto, callScope, callerScope, callScope.executionCapabilities(),
+      activeCapabilityPresence)
+    let savedCapabilities = activeCapabilityContext
+    let savedPresence = activeCapabilityPresence
+    activeCapabilityContext = callTransition.context
+    activeCapabilityPresence = callTransition.presence
     try:
       return runPooled(proto.chunk, callScope,
                        validateImplRequirements = proto.frameNeedsImplValidation)
     finally:
+      activeCapabilityContext = savedCapabilities
+      activeCapabilityPresence = savedPresence
       if proto.poolCallScope:
         releaseCallScope(callScope)
   var callScope: Scope
@@ -23202,8 +24249,13 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     callScope = bound.scope
     returnType = bound.returnType
   let frameReturnType = proto.checkedFrameReturnType(returnType)
+  let callTransition = functionCapabilityTransition(
+    proto, callScope, callerScope, callScope.executionCapabilities(),
+    activeCapabilityPresence)
   if proto.isGenerator:
-    let fiber = Fiber(chunk: proto.chunk, scope: callScope)
+    let fiber = Fiber(chunk: proto.chunk, scope: callScope,
+                      capabilityContext: callTransition.context,
+                      capabilityPresence: callTransition.presence)
     var resultValue = newGeneratorStream(proto, callScope, pullGeneratorStream,
                                          closeGeneratorStream)
     resultValue.setStreamGeneratorContinuation(fiber)
@@ -23211,6 +24263,10 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
       resultValue = adaptBoundary("return from '" & callee.fnName & "'",
                                   frameReturnType, resultValue, callScope)
     return resultValue
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
+  activeCapabilityContext = callTransition.context
+  activeCapabilityPresence = callTransition.presence
   try:
     var resultValue: Value
     try:
@@ -23228,6 +24284,8 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
                                   frameReturnType, resultValue, callScope)
     resultValue
   finally:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
     if proto.poolCallScope:
       releaseCallScope(callScope)
 
@@ -23268,7 +24326,7 @@ proc applySyntaxCall(callee: Value, callNode: Value, callerScope: Scope): Value 
     named.values.add value
   try:
     try:
-      result = applyFunctionCall(callee, args, named, proto)
+      result = applyFunctionCall(callee, args, named, proto, callerScope)
       rejectCallerEnvEscape("fexpr return", result)
     except GeneError as e:
       if e.hasErrVal:
@@ -23585,6 +24643,38 @@ proc constructWithCtor(callee: Value, args: openArray[Value], named: NamedArgs,
   finally:
     dec activeConstructionDepth
 
+proc capabilityArgFromValue(value: Value): CapabilityArg =
+  case value.kind
+  of vkNil:
+    capNil()
+  of vkBool:
+    capBool(value.boolVal)
+  of vkInt:
+    capInt(value.intVal)
+  of vkString:
+    capString(value.strVal)
+  of vkSymbol:
+    capSymbol(value.symVal)
+  of vkList:
+    if not value.listImmutable:
+      raise newException(GeneError,
+        "capability specification lists must be deeply immutable")
+    var items = newSeqOfCap[CapabilityArg](value.listItems.len)
+    for item in value.listItems:
+      items.add capabilityArgFromValue(item)
+    capList(items)
+  of vkMap:
+    if not value.mapImmutable:
+      raise newException(GeneError,
+        "capability specification maps must be deeply immutable")
+    var entries = newSeqOfCap[CapabilityNamedArg](value.mapEntries.len)
+    for name, item in value.mapEntries:
+      entries.add capNamed(name, capabilityArgFromValue(item))
+    capMap(entries)
+  else:
+    raise newException(GeneError,
+      "capability specifications accept only deeply immutable data")
+
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
                loc = SourceLoc()): Value =
@@ -23640,7 +24730,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                           loc: loc)
     callImpl(args, addr call)
   of vkFfiCallable:
-    applyFfiCallable(callee, args, named)
+    applyFfiCallable(callee, args, named, dispatchScope)
   of vkEnumVariant:
     constructEnumVariant(callee, args, named)
   of vkFunction:
@@ -23651,7 +24741,7 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       raise newException(GeneError, "function has no VM code")
     let proto = FunctionProto(code)
     try:
-      applyFunctionCall(callee, args, named, proto)
+      applyFunctionCall(callee, args, named, proto, dispatchScope)
     except GeneError as e:
       attachSourceLoc(e, proto.sourceLoc)
       raise
@@ -23664,6 +24754,20 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     # `new` only.
     constructTypedInstance(callee, args, named,
       immutable = site.kind == vkNode and site.nodeImmutable)
+  of vkCapability:
+    if not callee.capabilityIsAdmitted:
+      raise newException(GeneError,
+        "capability type has no admitted provider: " & callee.capabilityName)
+    var positional = newSeqOfCap[CapabilityArg](args.len)
+    for arg in args:
+      positional.add capabilityArgFromValue(arg)
+    var properties = newSeqOfCap[CapabilityNamedArg](named.len)
+    for i, name in named.names:
+      if name == "optional":
+        raise newException(GeneError,
+          "^^optional is valid only in a ^capabilities declaration")
+      properties.add capNamed(name, capabilityArgFromValue(named.valueAt(i)))
+    newCapability(callee.capabilitySpec.capabilityType, positional, properties)
   of vkNode:
     if not callee.isSelector:
       if callee.valueImplementsCallable(dispatchScope):
@@ -23845,9 +24949,16 @@ proc compileModuleArtifact(app: Application,
           if entry.category == cbcNamespace:
             entry.namespace = cloneCompileInterface(entry.namespace)
           ownInterface.entries[selection.local] = entry
+    var capabilityCatalog = initTable[string, CapabilityCompileDescriptor]()
+    for capabilityType in app.capabilityRegistry.capabilityTypes:
+      capabilityCatalog[capabilityType.name] = CapabilityCompileDescriptor(
+        facadeIdentity: capabilityType.facadeIdentity,
+        schemaHash: capabilityType.schemaHash)
     let compiled = compileFormsWithMacros(header.unit, importedMacros,
                                           importedSyntaxFns,
-                                          importedInterfaces)
+                                          importedInterfaces,
+                                          capabilityCatalog,
+                                          enforceCapabilityCatalog = true)
     attachCompiledNativeMetadata(ownInterface, compiled.chunk,
                                  header.unit.sourceName)
     var macroExports = compiled.macroExports
@@ -23892,6 +25003,82 @@ proc compileModuleArtifact(app: Application,
     app.currentModuleDir = savedDir
     app.currentPackage = savedPkg
     app.moduleCompileLoading.excl identity
+
+proc resolvedModuleCeiling(app: Application, module: Value,
+                           parent: CapabilityContext): CapabilityContext =
+  let row = module.moduleCapabilityRow
+  if row.inheritsCapabilities:
+    parent
+  else:
+    resolveCapabilityRow(app, row, parent, nil)
+
+proc materializeLoadedModule(app: Application, module: Value) =
+  if app == nil or module.kind != vkModule or
+      app.applicationCapabilityContext == nil:
+    return
+  module.setModuleCapabilityCeiling(
+    app.resolvedModuleCeiling(module, app.applicationCapabilityContext))
+
+proc moduleInitializationCapabilities(app: Application,
+                                      row: CapabilityRow): CapabilityContext =
+  ## Open/pass-through modules preserve Gene's existing top-level semantics.
+  ## Once materialized, lazy initialization uses the fixed application context
+  ## rather than whichever narrowed caller happened to load the singleton
+  ## first. Before materialization it inherits the enclosing initialization
+  ## context. A module that declares any narrowing initializes empty and must
+  ## perform effects from a declared callable after ceilings are materialized.
+  if app != nil and app.sandboxRoot != nil:
+    return newCapabilityContext()
+  if not row.inheritsCapabilities:
+    return newCapabilityContext()
+  if app != nil and app.applicationCapabilityContext != nil:
+    return app.applicationCapabilityContext
+  if activeCapabilityContext != nil:
+    return activeCapabilityContext
+  if app != nil and app.rootCapabilityContext != nil:
+    return app.rootCapabilityContext
+  newCapabilityContext()
+
+proc materializeApplicationCapabilities(app: Application, entry: Value) =
+  if app == nil or entry.kind != vkModule:
+    raise newException(GeneError,
+      "capability materialization requires an entry module")
+  if app.capabilitiesMaterialized:
+    return
+  let applicationContext =
+    if entry.moduleCapabilityRow.inheritsCapabilities:
+      app.rootCapabilityContext
+    else:
+      resolveCapabilityRow(app, entry.moduleCapabilityRow,
+                           app.rootCapabilityContext, nil)
+  var ceilings: seq[tuple[module: Value, ceiling: CapabilityContext]]
+  for _, module in app.moduleCache:
+    if module.kind != vkModule:
+      continue
+    let ceiling =
+      if same(module, entry):
+        applicationContext
+      else:
+        app.resolvedModuleCeiling(module, applicationContext)
+    ceilings.add (module: module, ceiling: ceiling)
+  app.applicationCapabilityContext = applicationContext
+  for item in ceilings:
+    item.module.setModuleCapabilityCeiling(item.ceiling)
+  app.capabilitiesMaterialized = true
+
+proc materializeScriptCapabilities(app: Application) =
+  ## `compileSource`/REPL execution is an implicit open-mode entry. It has no
+  ## module header to trigger the file-entry materialization phase, but imports
+  ## made from it still need stable module ceilings before their functions are
+  ## called.
+  if app == nil or app.capabilitiesMaterialized:
+    return
+  app.applicationCapabilityContext = app.rootCapabilityContext
+  for _, module in app.moduleCache:
+    if module.kind == vkModule:
+      module.setModuleCapabilityCeiling(
+        app.resolvedModuleCeiling(module, app.applicationCapabilityContext))
+  app.capabilitiesMaterialized = true
 
 proc loadModuleValue(app: Application, absPath: string): Value =
   ## Initialize/cache the runtime phase of a compiled module. Compile-time
@@ -23983,7 +25170,16 @@ proc loadModuleValue(app: Application, absPath: string): Value =
                           app.currentPackage)
   try:
     let artifact = compileModuleArtifact(app, absPath)
-    discard run(artifact.chunk, modScope)
+    result.setModuleCapabilities(artifact.chunk.moduleCapabilityRow)
+    let initializationCapabilities = app.moduleInitializationCapabilities(
+      artifact.chunk.moduleCapabilityRow)
+    # Top-level code may call functions declared by this module before the
+    # application-wide materialization pass. Give those boundaries the same
+    # provisional ceiling as the module's initialization context; the fixed
+    # application-derived ceiling replaces it after loading.
+    result.setModuleCapabilityCeiling(initializationCapabilities)
+    discard run(artifact.chunk, modScope,
+                initialCapabilities = initializationCapabilities)
     activateStagedImpls(modScope)
   finally:
     app.sandboxRestricting = savedRestricting
@@ -23991,6 +25187,8 @@ proc loadModuleValue(app: Application, absPath: string): Value =
     app.currentPackage = savedPkg
     app.moduleLoading.excl identity
   app.moduleCache[identity] = result
+  if app.capabilitiesMaterialized:
+    app.materializeLoadedModule(result)
 
 proc validateImplCollection(impls: openArray[ProtocolImpl]) =
   for i in 0 ..< impls.len:
@@ -24106,7 +25304,12 @@ proc reloadFileModule*(app: Application, path: string): Value =
         not compileInterfacesEqual(oldInterface, artifact.compileInterface):
       raise newException(GeneError,
         "reload changed the module compile interface: " & absPath)
-    discard run(artifact.chunk, replacementScope)
+    replacement.setModuleCapabilities(artifact.chunk.moduleCapabilityRow)
+    let initializationCapabilities = app.moduleInitializationCapabilities(
+      artifact.chunk.moduleCapabilityRow)
+    replacement.setModuleCapabilityCeiling(initializationCapabilities)
+    discard run(artifact.chunk, replacementScope,
+                initialCapabilities = initializationCapabilities)
 
     var canonical: seq[ProtocolImpl]
     for impl in app.builtinsScope().impls:
@@ -24182,7 +25385,8 @@ proc loadUrlModule*(app: Application, url: string): Value =
   ## Experimental `gene runurl` entry (design §15.9): load a remote module
   ## graph rooted at `url`. The caller must have enabled `allowUrlModules`;
   ## resolveModulePath validates the scheme and normalizes the identity.
-  loadModuleValue(app, app.resolveModulePath(url))
+  result = loadModuleValue(app, app.resolveModulePath(url))
+  app.materializeApplicationCapabilities(result)
 
 proc entryModulePath(app: Application, path: string): string =
   ## Host file path -> absolute module path, with the boundary check every
@@ -24220,7 +25424,8 @@ proc loadFileModule*(app: Application, path: string): Value =
   ## `resolveModulePath` so leading slash stays package-root-relative there.
   let absPath = app.entryModulePath(path)
   app.adoptEntryModule(absPath)
-  loadModuleValue(app, absPath)
+  result = loadModuleValue(app, absPath)
+  app.materializeApplicationCapabilities(result)
 
 proc loadSandboxedModule*(app: Application, dir, entry: string,
                           grants: seq[string], shared: seq[string]): Value =
@@ -24425,13 +25630,19 @@ proc loadCompiledFileModule*(app: Application, path: string,
   result = bindThisModule(modScope, splitFile(absPath).name, absPath,
                           app.currentPackage)
   try:
-    discard run(chunk, modScope)
+    result.setModuleCapabilities(chunk.moduleCapabilityRow)
+    let initializationCapabilities = app.moduleInitializationCapabilities(
+      chunk.moduleCapabilityRow)
+    result.setModuleCapabilityCeiling(initializationCapabilities)
+    discard run(chunk, modScope,
+                initialCapabilities = initializationCapabilities)
     activateStagedImpls(modScope)
   finally:
     app.currentModuleDir = savedDir
     app.currentPackage = savedPkg
     app.moduleLoading.excl identity
   app.moduleCache[identity] = result
+  app.materializeApplicationCapabilities(result)
 
 proc compileFileModule*(app: Application, path: string): Chunk =
   ## Compile a file module and its macro dependencies without running any

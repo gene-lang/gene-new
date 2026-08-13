@@ -4,7 +4,7 @@
 ## examples/style_guide.gene at a higher level than unit tests. Run after changes:
 ##   nimble spec
 
-import gene/[compiler, gir, package, printer, reader, types, vm]
+import gene/[capabilities, compiler, gir, package, printer, reader, types, vm]
 # Side-effect import: puts the {.exportc, dynlib.} AOT boundary helpers into
 # this test binary's dynamic symbol table so a dlopened AOT library resolves
 # them, exactly as the gene executable does.
@@ -41,6 +41,11 @@ template check_read(src: string, expected: string) =
 
 template check_eval(src: string, expected: string) =
   check run(compileSource(src), newGlobalScope()).print() == expected
+
+template check_eval_at(src: string, expected: string, root: string) =
+  block:
+    let app = newApplication(root)
+    check run(compileSource(src), newGlobalScope(app)).print() == expected
 
 template check_eval_error(src: string, fragment: string) =
   var raised = false
@@ -306,6 +311,7 @@ suite "spec — compiler special-form inventory from docs/spec/calls.md":
     fixture(["supervisor"], "(supervisor ^strategy stop nil)")
     fixture(["spawn"], "(scope (spawn 1))")
     fixture(["await"], "(scope (await (spawn 1)))")
+    fixture(["with_capabilities"], "(with_capabilities [] 1)")
     fixture(["fail"], "(fail error-value)")
     fixture(["panic"], "(panic)")
     fixture(["type"], "(type FixtureType ^props {})")
@@ -1384,7 +1390,6 @@ size_t total(uint32_t a, size_t b) { return (size_t)a + b; }
       ## call succeeded and what it produced.
       proc outcome(program: string): string =
         let scope = newGlobalScope()
-        scope.define("ffi_load", newFfiLoadCapability())
         try:
           run(compileSource(program), scope).print()
         except CatchableError:
@@ -1394,7 +1399,7 @@ size_t total(uint32_t a, size_t b) { return (size_t)a + b; }
       for (suffix, label) in parityLabels:
         let aotPrelude = "(import $aot [load]) " &
           "(var n (load " & geneString(libPath) & ")) "
-        let dynPrelude = "(var lib ($ffi/open ffi_load " &
+        let dynPrelude = "(var lib ($ffi/open " &
           geneString(libPath) & ")) " &
           "(var f ($ffi/bind lib \"id_" & suffix & "\" [" & label & "] " &
           label & ")) "
@@ -3243,7 +3248,7 @@ suite "spec — numeric boundaries from design":
                   newGlobalScope())
 
   test "Device buffers are opaque native-compute handles":
-    check_eval("(var b ($device/buffer $device/Compute \"mock\" C/Int64 4)) " &
+    check_eval("(var b ($device/buffer \"mock\" C/Int64 4)) " &
                "[($device/Buffer/backend b) " &
                " ($device/Buffer/elem_type b) " &
                " ($device/Buffer/len b) " &
@@ -3253,27 +3258,24 @@ suite "spec — numeric boundaries from design":
                " b]",
                "[\"mock\" C/Int64 4 4 C/Int64 (device-buffer mock C/Int64 4)]")
     expect GeneError:
-      discard run(compileSource("($device/buffer nil \"mock\" C/Int64 1)"),
+      discard run(compileSource("($device/buffer nil C/Int64 1)"),
                   newGlobalScope())
-    check_eval("(var b ($device/buffer $device/Compute \"mock\" C/Int64 4)) " &
+    check_eval("(var b ($device/buffer \"mock\" C/Int64 4)) " &
                "(try ((fn [buf : (device/Buffer F64)] buf) b) " &
                "catch (TypeError ^expected e) e)",
                "\"(device/Buffer F64)\"")
 
-  test "FFI runtime loading requires explicit authority":
-    check_eval("$ffi/Load", "(ffi_type Load)")
-    let scope = newGlobalScope()
-    scope.define("native", newFfiLoadCapability())
-    check run(compileSource("((fn [cap : ffi/Load] cap) native)"),
-              scope).print() == "(ffi-load)"
+  test "FFI runtime loading uses ambient authority":
+    check_eval("[$ffi/Load ($ffi/Load ~ name)]",
+               "[(ffi/Load) \"ffi/Load\"]")
+    let denied = newApplication()
+    denied.setRootCapabilities(newCapabilityContext())
     expect GeneError:
-      discard run(compileSource("((fn [cap : ffi/Load] cap) nil)"), scope)
+      discard run(compileSource("($ffi/open \"libmissing-gene-new\")"),
+                  newGlobalScope(denied))
     expect GeneError:
-      discard run(compileSource("($ffi/open nil \"libmissing-gene-new\")"),
-                  scope)
-    expect GeneError:
-      discard run(compileSource("($ffi/open native \"libmissing-gene-new\")"),
-                  scope)
+      discard run(compileSource("($ffi/open \"libmissing-gene-new\")"),
+                  newGlobalScope())
 
 suite "spec — nominal types from design":
   test "child types preserve inherited field schemas":
@@ -7114,11 +7116,11 @@ suite "spec — Env and eval from design":
                "[(eval (quote fs) ^in e) (eval (quote net) ^in e)]",
                "[\"binding\" \"closed\"]")
 
-  test "runtime capabilities are opaque library values":
+  test "capability types construct inert specifications":
     check_eval("[$fs/ReadDir " &
                " ($fs/ReadDir ~ name) " &
                " ((fn [cap : Capability] (cap ~ name)) $fs/WriteDir)]",
-               "[(capability fs/ReadDir) \"fs/ReadDir\" \"fs/WriteDir\"]")
+               "[(fs/ReadDir) \"fs/ReadDir\" \"fs/WriteDir\"]")
     check_eval("(var e (env ^capabilities {^fs $fs/ReadDir})) " &
                "(eval (quote (fs ~ name)) ^in e)",
                "\"fs/ReadDir\"")
@@ -7675,7 +7677,7 @@ suite "spec — net/http_client native client contract":
 
   test "client rejects non-http URL schemes before starting work":
     check_eval("(import $net/http_client [Http request HttpClientError]) " &
-               "(try (request Http ^url \"file:///etc/passwd\") false " &
+               "(try (request ^url \"file:///etc/passwd\") false " &
                " catch (HttpClientError ^message m) " &
                "   ($str/contains? m \"http:// or https://\"))",
                "true")
@@ -7685,11 +7687,11 @@ suite "spec — net/http_client native client contract":
     # confused with libcurl load failures (^kind "unavailable"): the agent's
     # curl(1) fallback catches only the latter.
     check_eval("(import $net/http_client [Http request HttpClientError]) " &
-               "(try (request Http ^url \"file:///x\") false " &
+               "(try (request ^url \"file:///x\") false " &
                " catch (HttpClientError ^kind k) (== k \"usage\"))",
                "true")
     check_eval("(import $net/http_client [Http request HttpClientError]) " &
-               "(try (request Http ^url \"file:///x\") false " &
+               "(try (request ^url \"file:///x\") false " &
                " catch (HttpClientError ^kind \"unavailable\") \"fallback\" " &
                " catch (HttpClientError ^kind \"usage\") \"surfaced\")",
                geneString("surfaced"))
@@ -7847,14 +7849,13 @@ suite "spec — store persistence protocol":
       removeDir(dir)
     createDir(dir)
     writeFile(dir / "junk.tmp", "not a record")
-    check_eval("(import $store/fs [open : store-open Store StoreError]) " &
-               "(import $fs [ReadWriteDir]) " &
-               "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
+    check_eval_at("(import $store/fs [open : store-open Store StoreError]) " &
+               "(var s (store-open ^root " & geneString(dir) & ")) " &
                "(s ~ Store:put \"session:tg/42\" {^x 1}) " &
                "[(s ~ Store:get \"session:tg/42\") " &
                " (s ~ Store:keys) " &
                " (try (s ~ Store:put \"\" 1) catch (StoreError ^kind k) k)]",
-               "[{^x 1} [\"session:tg/42\"] invalid_key]")
+               "[{^x 1} [\"session:tg/42\"] invalid_key]", dir)
 
   test "sqlite checkpoints publish one hash-validated generation atomically":
     check_eval("(import $db/sqlite [open]) " &
@@ -7874,57 +7875,78 @@ suite "spec — store persistence protocol":
       let path = getTempDir() / "gene-store-owner-only-spec.sqlite"
       for suffix in ["", "-wal", "-shm", "-journal"]:
         if fileExists(path & suffix): removeFile(path & suffix)
-      check_eval("(import $db/sqlite [open Db]) " &
+      check_eval_at("(import $db/sqlite [open Db]) " &
                  "(import $store/sqlite [open : store-open Store]) " &
                  "(var db (open " & geneString(path) & ")) " &
                  "(var s (store-open db)) " &
                  "(s ~ Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
                  "(s ~ Store:close) (db ~ Db:close) true",
-                 "true")
+                 "true", parentDir(path))
       check getFilePermissions(path) == {fpUserRead, fpUserWrite}
+
+  test "file sqlite persists through the filesystem provider without sidecars":
+    let path = getTempDir() / "gene-provider-backed-sqlite-spec.sqlite"
+    for suffix in ["", "-wal", "-shm", "-journal"]:
+      if fileExists(path & suffix):
+        removeFile(path & suffix)
+    defer:
+      for suffix in ["", "-wal", "-shm", "-journal"]:
+        if fileExists(path & suffix):
+          removeFile(path & suffix)
+    check_eval_at("(import $db/sqlite [open Db]) " &
+               "(var first (open " & geneString(path) & ")) " &
+               "(first ~ Db:exec \"create table t (x integer)\") " &
+               "(first ~ Db:execute \"insert into t(x) values (?)\" 7) " &
+               "(first ~ Db:close) " &
+               "(var second (open " & geneString(path) & ")) " &
+               "(var row (second ~ Db:query_one \"select x from t\")) " &
+               "(second ~ Db:close) row/x",
+               "7", parentDir(path))
+    check fileExists(path)
+    for suffix in ["-wal", "-shm", "-journal"]:
+      check not fileExists(path & suffix)
 
   test "filesystem checkpoints fall back from a corrupt newest generation":
     let dir = getTempDir() / "gene-store-fs-checkpoint-spec"
     if dirExists(dir):
       removeDir(dir)
     createDir(dir)
-    check_eval("(import $store/fs [open : store-open Store]) " &
-               "(import $fs [ReadWriteDir]) " &
-               "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
+    check_eval_at("(import $store/fs [open : store-open Store]) " &
+               "(var s (store-open ^root " & geneString(dir) & ")) " &
                "(s ~ Store:checkpoint 1 {^session {^schema 1 ^data {^x 1}}}) " &
                "(s ~ Store:checkpoint 2 {^session {^schema 1 ^data {^x 2}}}) " &
                "(var loaded (s ~ Store:load_checkpoint)) " &
                "[loaded/generation loaded/records/session/data/x]",
-               "[2 2]")
+               "[2 2]", dir)
     let newest = dir / "generations" / "00000000000000000002" /
                  "session.gene"
     writeFile(newest, "corrupt")
-    check_eval("(import $store/fs [open : store-open Store]) " &
-               "(import $fs [ReadWriteDir]) " &
-               "(var s (store-open ReadWriteDir ^root " & geneString(dir) & ")) " &
+    check_eval_at("(import $store/fs [open : store-open Store]) " &
+               "(var s (store-open ^root " & geneString(dir) & ")) " &
                "(var loaded (s ~ Store:load_checkpoint)) " &
                "[loaded/generation loaded/records/session/data/x]",
-               "[1 1]")
+               "[1 1]", dir)
     when defined(posix):
       check getFilePermissions(dir) ==
         {fpUserRead, fpUserWrite, fpUserExec}
 
 suite "spec — os and json from ai-agent plan":
-  test "os/get_env reads, defaults, and errors under Os/Env":
-    check_eval("(import $os [get_env env? Env]) " &
-               "[(env? Env \"GENE_SPEC_UNSET_XYZ\") " &
-               " (get_env Env \"GENE_SPEC_UNSET_XYZ\" \"fallback\")]",
+  test "os/get_env reads, defaults, and errors under ambient os/Env":
+    check_eval("(import $os [get_env env?]) " &
+               "[(env? \"GENE_SPEC_UNSET_XYZ\") " &
+               " (get_env \"GENE_SPEC_UNSET_XYZ\" \"fallback\")]",
                "[nil \"fallback\"]")
-    check_eval("(import $os [get_env Env OsError]) " &
-               "(try (get_env Env \"GENE_SPEC_UNSET_XYZ\") " &
+    check_eval("(import $os [get_env OsError]) " &
+               "(try (get_env \"GENE_SPEC_UNSET_XYZ\") " &
                "catch (OsError ^message _) \"unset\")",
                "\"unset\"")
 
-  test "os/get_env rejects a non-Os/Env capability":
-    check_eval("(import $os [get_env OsError]) " &
-               "(try (get_env $net/Connect \"HOME\") " &
-               "catch (OsError ^message _) \"denied\")",
-               "\"denied\"")
+  test "os/get_env is denied when the active context lacks os/Env":
+    let app = newApplication()
+    app.setRootCapabilities(newCapabilityContext())
+    expect GeneError:
+      discard run(compileSource("($os/get_env \"HOME\")"),
+                  newGlobalScope(app))
 
   test "os/executable_path identifies the running Gene executable":
     check_eval("(import $os [executable_path]) " &
@@ -7934,16 +7956,16 @@ suite "spec — os and json from ai-agent plan":
 
   test "os/exec runs a program, captures output, and enforces timeout":
     check_eval("(import $os [exec Exec]) " &
-               "(var r (exec Exec ^cmd \"echo\" ^args [\"hi\"])) " &
+               "(var r (exec ^cmd \"echo\" ^args [\"hi\"])) " &
                "[r/status r/timed_out]",
                "[0 false]")
     check_eval("(import $os [exec Exec]) " &
-               "(var r (exec Exec ^cmd \"sleep\" ^args [\"5\"] ^timeout_ms 150)) " &
+               "(var r (exec ^cmd \"sleep\" ^args [\"5\"] ^timeout_ms 150)) " &
                "r/timed_out",
                "true")
 
     check_eval("(import $os [exec Exec]) " &
-               "(var r (exec Exec ^cmd \"printf\" ^args [\"abcdef\"] ^max_bytes 3)) " &
+               "(var r (exec ^cmd \"printf\" ^args [\"abcdef\"] ^max_bytes 3)) " &
                "[r/stdout r/stdout_truncated r/truncated]",
                "[\"abc\" true true]")
 
@@ -7951,7 +7973,7 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(import $os [exec_stream Exec]) " &
                "(import gene/stream [to_stream into]) " &
                "(var seen ($cell [])) " &
-               "(var r (exec_stream Exec ^cmd \"printf\" ^args [\"a\\nb\\n\"] " &
+               "(var r (exec_stream ^cmd \"printf\" ^args [\"a\\nb\\n\"] " &
                "                    ^stdout_line (fn [line] " &
                "                      (seen ~ set ((to_stream [line]) ~ into (seen ~ get)))))) " &
                "[r/status r/stdout (seen ~ get)]",
@@ -7959,7 +7981,7 @@ suite "spec — os and json from ai-agent plan":
 
   test "os/exec_stdio runs with parent streams and returns status":
     check_eval("(import $os [exec_stdio Exec]) " &
-               "(exec_stdio Exec ^cmd \"sh\" ^args [\"-c\" \"exit 7\"])",
+               "(exec_stdio ^cmd \"sh\" ^args [\"-c\" \"exit 7\"])",
                "7")
 
   test "os/exec_stdio_async inherits streams without blocking the scheduler":
@@ -7970,25 +7992,25 @@ suite "spec — os and json from ai-agent plan":
                "  (spawn (repeat 5 (do ($sleep 20) " &
                "    (ticks ~ set (+ (ticks ~ get) 1))))) " &
                "  (status ~ set " &
-               "    (await (exec_stdio_async Exec ^cmd \"sh\" " &
+               "    (await (exec_stdio_async ^cmd \"sh\" " &
                "      ^args [\"-c\" \"sleep 0.2; exit 7\"])))) " &
                "[(status ~ get) (ticks ~ get)]",
                "[7 5]")
 
   test "os/exec_async settles a task off-thread with the exec result map":
     check_eval("(import $os [exec_async Exec]) " &
-               "(var r (await (exec_async Exec ^cmd \"echo\" ^args [\"hi\"]))) " &
+               "(var r (await (exec_async ^cmd \"echo\" ^args [\"hi\"]))) " &
                "[r/status r/timed_out]",
                "[0 false]")
     check_eval("(import $os [exec_async Exec]) " &
-               "(var r (await (exec_async Exec ^cmd \"sleep\" ^args [\"5\"] " &
+               "(var r (await (exec_async ^cmd \"sleep\" ^args [\"5\"] " &
                "                          ^timeout_ms 150))) " &
                "r/timed_out",
                "true")
     check_eval("(import $os [exec_async Exec]) " &
                "(var status 1) " &
                "(repeat 20 " &
-               "  (set status ((await (exec_async Exec ^cmd \"true\")) ~ /status))) " &
+               "  (set status ((await (exec_async ^cmd \"true\")) ~ /status))) " &
                "status",
                "0")
 
@@ -7998,7 +8020,7 @@ suite "spec — os and json from ai-agent plan":
                "(var status -1) " &
                "(scope " &
                "  (var distant (spawn ($sleep 1500))) " &
-               "  (var r (await (exec_async Exec ^cmd \"sh\" " &
+               "  (var r (await (exec_async ^cmd \"sh\" " &
                "    ^args [\"-c\" \"sleep 0.05\"]))) " &
                "  (set status r/status) " &
                "  (distant ~ cancel)) " &
@@ -8010,7 +8032,7 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(import $os [exec_stream_async Exec]) " &
                "(import gene/stream [to_stream into]) " &
                "(var ch ($channel ^capacity 8)) " &
-               "(var t (exec_stream_async Exec ^cmd \"printf\" " &
+               "(var t (exec_stream_async ^cmd \"printf\" " &
                "         ^args [\"a\\nb\\n\"] ^stdout_chan ch)) " &
                "(var seen ($cell [])) (var line nil) " &
                "(try (loop (set line (ch ~ recv)) " &
@@ -8040,7 +8062,7 @@ suite "spec — os and json from ai-agent plan":
     check_eval("(import $os [exec_stream_async Exec]) " &
                "(scope " &
                "  (var ch ($channel ^capacity 1)) " &
-               "  (var t (exec_stream_async Exec ^cmd \"sleep\" ^args [\"2\"] " &
+               "  (var t (exec_stream_async ^cmd \"sleep\" ^args [\"2\"] " &
                "           ^stdout_chan ch)) " &
                "  (spawn (do ($sleep 50) (t ~ cancel))) " &
                "  (try (loop (ch ~ recv)) " &
@@ -8052,7 +8074,7 @@ suite "spec — os and json from ai-agent plan":
     let started = getMonoTime()
     check_eval("(import $os [exec_stdio_async Exec]) " &
                "(scope " &
-               "  (var t (exec_stdio_async Exec ^cmd \"sleep\" ^args [\"2\"])) " &
+               "  (var t (exec_stdio_async ^cmd \"sleep\" ^args [\"2\"])) " &
                "  (spawn (do ($sleep 50) (t ~ cancel))) " &
                "  ($sleep 200) " &
                "  \"cancelled\")",
@@ -8069,7 +8091,7 @@ suite "spec — os and json from ai-agent plan":
                "(scope " &
                "  (spawn (repeat 5 (do ($sleep 20) " &
                "    (ticks ~ set (+ (ticks ~ get) 1))))) " &
-               "  (var r (await (exec_async Exec ^cmd \"sleep\" ^args [\"0.3\"]))) " &
+               "  (var r (await (exec_async ^cmd \"sleep\" ^args [\"0.3\"]))) " &
                "  (during ~ set (ticks ~ get))) " &
                "(during ~ get)",
                "5")
@@ -8082,17 +8104,18 @@ suite "spec — os and json from ai-agent plan":
     let path = dir / "note.txt"
     let made = dir / "made"
     let removable = dir / "remove-me.txt"
-    check_eval("(import $fs [read_text write_text exists? list_dir make_dir remove " &
-               "ReadDir WriteDir]) " &
-               "(write_text WriteDir " & geneString(path) & " \"hello\") " &
-               "(write_text WriteDir " & geneString(removable) & " \"bye\") " &
-               "(make_dir WriteDir " & geneString(made) & ") " &
-               "(remove WriteDir " & geneString(removable) & ") " &
-               "[(read_text ReadDir " & geneString(path) & ") " &
-               " (exists? ReadDir " & geneString(path) & ") " &
-               " (exists? ReadDir " & geneString(removable) & ") " &
-               " (list_dir ReadDir " & geneString(dir) & ")]",
-               "[\"hello\" true false [\"made\" \"note.txt\"]]")
+    let scope = newGlobalScope(newApplication(dir))
+    check run(compileSource(
+      "(import $fs [read_text write_text exists? list_dir make_dir remove]) " &
+      "(write_text " & geneString(path) & " \"hello\") " &
+      "(write_text " & geneString(removable) & " \"bye\") " &
+      "(make_dir " & geneString(made) & ") " &
+      "(remove " & geneString(removable) & ") " &
+      "[(read_text " & geneString(path) & ") " &
+      " (exists? " & geneString(path) & ") " &
+      " (exists? " & geneString(removable) & ") " &
+      " (list_dir " & geneString(dir) & ")]"), scope).print() ==
+      "[\"hello\" true false [\"made\" \"note.txt\"]]"
 
   test "$fs/real_path resolves an existing file and a not-yet-created path":
     ## examples/ai_agent/design.md §8.5: workspace confinement resolves real paths before
@@ -8105,22 +8128,19 @@ suite "spec — os and json from ai-agent plan":
     createDir(dir)
     let path = dir / "here.txt"
     writeFile(path, "x")
-    check_eval("(import $fs [real_path write_text ReadDir WriteDir]) " &
-               "(import $str [starts_with?]) " &
-               "(var base (real_path ReadDir " & geneString(dir) & ")) " &
-               "(var direct (real_path ReadDir " & geneString(path) & ")) " &
-               "(var detour (real_path ReadDir " &
-               geneString(dir / "sub" / ".." / "new.txt") & ")) " &
-               "[(== direct (real_path ReadDir " & geneString(dir & "/here.txt") & ")) " &
-               " (starts_with? direct base) " &
-               " (starts_with? detour base)]",
-               "[true true true]")
+    let scope = newGlobalScope(newApplication(dir))
+    check run(compileSource(
+      "(import $fs [real_path write_text]) " &
+      "(import $str [starts_with?]) " &
+      "(var base (real_path " & geneString(dir) & ")) " &
+      "(var direct (real_path " & geneString(path) & ")) " &
+      "(var detour (real_path " &
+      geneString(dir / "sub" / ".." / "new.txt") & ")) " &
+      "[(== direct (real_path " & geneString(dir & "/here.txt") & ")) " &
+      " (starts_with? direct base) " &
+      " (starts_with? detour base)]"), scope).print() == "[true true true]"
 
-  test "$fs/real_path follows a dangling final symlink to its real target":
-    ## examples/ai_agent/design.md §8.5: a workspace symlink whose target does not exist
-    ## yet must still resolve to (and be confined against) where a write would
-    ## land, not be treated as an ordinary in-workspace name — otherwise a
-    ## dangling symlink is a write escape.
+  test "$fs/real_path rejects a dangling symlink under no-follow policy":
     let root = getTempDir() / "gene-ai-agent-symlink-spec"
     if dirExists(root):
       removeDir(root)
@@ -8130,15 +8150,11 @@ suite "spec — os and json from ai-agent plan":
     createDir(ws)
     createDir(outside)
     createSymlink(outside / "new-file", ws / "escape")
-    # Compare against the resolved outside dir (getTempDir may itself sit under
-    # a symlink, e.g. macOS /var -> /private/var), so both sides are real paths.
-    check_eval("(import $fs [real_path ReadDir]) " &
-               "(import $str [starts_with?]) " &
-               "(var base (real_path ReadDir " & geneString(ws) & ")) " &
-               "(var outside-real (real_path ReadDir " & geneString(outside) & ")) " &
-               "(var rp (real_path ReadDir " & geneString(ws / "escape") & ")) " &
-               "[(starts_with? rp base) (starts_with? rp outside-real)]",
-               "[false true]")
+    let scope = newGlobalScope(newApplication(ws))
+    expect GeneError:
+      discard run(compileSource(
+        "(import $fs [real_path]) " &
+        "(real_path " & geneString(ws / "escape") & ")"), scope)
 
   test "json round-trips objects, arrays, scalars, and escapes":
     check_eval("(import $json [parse stringify]) " &

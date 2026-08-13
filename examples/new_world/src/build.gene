@@ -16,7 +16,7 @@
 #
 # `index.html` and `dist/` are generated; do not edit them.
 #
-#   gene run build --grant out=$fs/WriteDir --grant exec=$os/Exec
+#   gene run build
 
 (mod build)
 
@@ -27,30 +27,30 @@
 
 (let web_modules ["world" "shell" "render" "main"])
 
-(fn build_atlas [out : Capability] : Nil
+(fn build_atlas [] : Nil
   ($println "atlas   assets/tiles.png")
-  ($fs/write_bytes out "assets/tiles.png"
+  ($fs/write_bytes "assets/tiles.png"
     (encode atlas_width atlas_height (draw_atlas))))
 
-(fn build_web [exec : Capability] : Nil
+(fn build_web [] : Nil
   # `gene` is a reserved standard-library root, so the compiler path cannot be
   # bound under that name.
   (var compiler ($os/executable_path))
   (for name in web_modules
     ($println $"web     src/${name}.gene -> dist/")
-    (var run ($os/exec exec ^cmd compiler
+    (var run ($os/exec ^cmd compiler
                ^args ["build" "--target" "web" ($ "src/" name ".gene")
                       "--out-dir" "dist"]))
     (if_yes (!= run/status 0)
       ($panic ($ "web build failed for src/" name ".gene (status "
                  run/status ")\n" run/stderr)))))
 
-(fn build_page [out : Capability] : Nil
+(fn build_page [] : Nil
   ($println "page    index.html")
-  ($fs/write_text out "index.html" (page)))
+  ($fs/write_text "index.html" (page)))
 
-(fn main [args, ^out : Capability ^exec : Capability] : Nil
-  (build_atlas out)
-  (build_web exec)
-  (build_page out)
+(fn main [args] : Nil
+  (build_atlas)
+  (build_web)
+  (build_page)
   ($println "done"))

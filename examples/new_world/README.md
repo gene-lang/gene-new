@@ -23,13 +23,13 @@ cd <repo root>
 nimble build                       # once, produces bin/gene
 
 cd examples/new_world
-gene run build --grant out=$fs/WriteDir --grant exec=$os/Exec
+gene run build
 python3 -m http.server 8000        # any static server will do
 ```
 
-The build writes files and shells out to the compiler for the web modules, so
-it asks for exactly those two authorities and gets nothing else — no ambient
-filesystem or process access (`docs/design.md` §15.2).
+The build writes files and shells out to the compiler for the web modules. The
+entry inherits the launch policy; an embedding host can narrow it, and strict
+applications can make the filesystem and process rows explicit.
 
 Then open <http://localhost:8000/>. It must be served over HTTP — the page uses
 ES modules, which `file://` will not load.
@@ -56,7 +56,7 @@ node tools/test.mjs                # 41 logic checks, no browser needed
 node tools/test_input.mjs          # input wiring and the frame loop
 
 # composite a real viewport to a PNG
-gene run screenshot --grant out_dir=$fs/WriteDir -- [seed] [cam_x] [cam_y]
+gene run screenshot -- [seed] [cam_x] [cam_y]
 ```
 
 `tools/test.mjs` asserts the properties that matter rather than pixel output:

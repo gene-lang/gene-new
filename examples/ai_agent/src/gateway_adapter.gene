@@ -21,7 +21,7 @@
 (mod agent_gateway_adapter
   @doc "multi-session gateway over the ai_agent turn loop (§12 milestone 8)")
 
-(import $os [get_env exec_async monotonic_ms Env Exec])
+(import $os [get_env exec_async monotonic_ms])
 (import $crypto [random_hex secure_equal?])
 (import $store/fs [Store])
 (import $json [parse stringify JsonError])
@@ -31,22 +31,22 @@
 (import gene/parse [parse_int])
 (import $net/http [Server serve listen stop Response
                   ws_accept ws_send ws_close])
-(import $net/http_client [Http request HttpClientError])
+(import $net/http_client [request HttpClientError])
 
-(var gw_host (get_env Env "GENE_GATEWAY_HOST" "127.0.0.1"))
+(var gw_host (get_env "GENE_GATEWAY_HOST" "127.0.0.1"))
 (var gw_port 8090)
-(var gw_token (get_env Env "GENE_GATEWAY_TOKEN" ""))
+(var gw_token (get_env "GENE_GATEWAY_TOKEN" ""))
 # Optional persistence (examples/ai_agent/design.md §12 milestone 11): set GENE_GATEWAY_DB
 # to a sqlite path and sessions survive restarts — transcripts and event logs
 # are pure data, stored as serde text (docs/serialization.md §4).
-(var gw_db_path (get_env Env "GENE_GATEWAY_DB" ""))
-(var gw_state_dir (get_env Env "GENE_GATEWAY_STATE" ""))
-(var gw_resume (get_env Env "GENE_GATEWAY_RESUME" "1"))
+(var gw_db_path (get_env "GENE_GATEWAY_DB" ""))
+(var gw_state_dir (get_env "GENE_GATEWAY_STATE" ""))
+(var gw_resume (get_env "GENE_GATEWAY_RESUME" "1"))
 (var gw_quiet false)
 
 (fn positive_env_int [name : Str, fallback : Int] : Int
   (try
-    (var parsed (parse_int (get_env Env name $"${fallback}")))
+    (var parsed (parse_int (get_env name $"${fallback}")))
     (if (> parsed 0) parsed fallback)
   catch _ fallback))
 
@@ -68,9 +68,9 @@
 
 # Telegram channel (examples/ai_agent/design.md §12.6). Outbound HTTPS only: a getUpdates
 # long-poll rides os/exec_async, so no inbound port, webhook, or TLS server.
-(var tg_token (get_env Env "TELEGRAM_BOT_TOKEN" ""))
-(var tg_base  (get_env Env "TELEGRAM_API_BASE" "https://api.telegram.org"))
-(var tg_allowed (get_env Env "TELEGRAM_ALLOWED_CHAT_IDS" ""))
+(var tg_token (get_env "TELEGRAM_BOT_TOKEN" ""))
+(var tg_base  (get_env "TELEGRAM_API_BASE" "https://api.telegram.org"))
+(var tg_allowed (get_env "TELEGRAM_ALLOWED_CHAT_IDS" ""))
 
 # -----------------------------------------------------------------------------
 # Sessions. Each is an actor whose handler runs one user turn; the mailbox
@@ -528,13 +528,13 @@
   (var body (stringify payload))
   (try
     (var response
-      (await (request Http ^method "POST" ^url url
+      (await (request ^method "POST" ^url url
                       ^headers ["Content-Type: application/json"]
                       ^body body ^timeout_ms 30000 ^max_bytes 400000)))
     {^status 0 ^stdout response/body ^stderr ""
      ^http_status response/status ^truncated response/truncated}
   catch (HttpClientError ^kind "unavailable")
-    (await (exec_async Exec ^cmd "curl"
+    (await (exec_async ^cmd "curl"
               ^args ["-sS" "-X" "POST" url
                      "-H" "Content-Type: application/json" "-d" body]
               ^timeout_ms 30000 ^max_bytes 400000))))
@@ -753,7 +753,7 @@
 # One getUpdates long-poll round. Loop-local state lives in the fn body (fresh
 # scope per call) because re-`var` inside a loop body is a duplicate binding.
 (fn telegram_poll_once [offset]
-  (var r (await (exec_async Exec ^cmd "curl"
+  (var r (await (exec_async ^cmd "curl"
             ^args ["-sS" $"${tg_base}/bot${tg_token}/getUpdates?timeout=50&offset=${(offset ~ get)}"]
             ^timeout_ms 65000 ^max_bytes 1000000)))
   (if (== r/status 0)
@@ -2219,7 +2219,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
         (finish_gateway_store gw_db_path)))
     (else
       (gw_store ~ set
-        (agent_api/store_fs_open agent_api/ReadWriteDir ^root gw_state_dir))
+        (agent_api/store_fs_open ^root gw_state_dir))
       (finish_gateway_store gw_state_dir))))
 
 (fn prepare_gateway [api, options]
@@ -2231,7 +2231,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
   (set gw_port
     (if (&& (!= options nil) (!= options/port void))
       options/port
-      (parse_int (get_env Env "GENE_GATEWAY_PORT" "8090"))))
+      (parse_int (get_env "GENE_GATEWAY_PORT" "8090"))))
   (if (|| (< gw_port 1) (> gw_port 65535))
     (fail (OsError ^message "gateway port must be between 1 and 65535")))
   (if_not (["127.0.0.1" "::1" "localhost"] ~ contains? gw_host)

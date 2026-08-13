@@ -67,7 +67,7 @@
      ^active (metrics_map result/active)
      ^planner_elapsed_ms result/planner_elapsed_ms}))
 
-(fn main [args, ^episodes : Capability] : Nil
+(fn main [args] : Nil
   (var argv ($body args))
   (if_not (== (argv ~ size) 2)
     ($panic
@@ -84,7 +84,7 @@
         (if_not (== prior_name "shifted")
           ($panic "prior must be base or shifted"))
         subject/shifted_prior)))
-  (var batch (read_data (read_text episodes argv/1)))
+  (var batch (read_data (read_text argv/1)))
   (var primary (evaluate_episode_batch subject prior batch))
   (var beta_details [])
   (var beta_summaries [])

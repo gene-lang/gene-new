@@ -392,9 +392,10 @@ Pure stdlib / runtime pieces (no new authority):
 
 What already exists and is directly reusable:
 
-- **Capabilities** as ambient values: `$fs/ReadDir`, `$fs/WriteDir`,
-  `$fs/ReadWriteDir`, `$net/Connect`, `$ffi/Load` (`src/gene/vm.nim`
-  `buildBuiltins`). New host authority should follow this shape.
+- **Capabilities** as an inherited immutable context: selectors such as
+  `(fs/ReadDir ".")`, `(fs/WriteDir ".")`, `net/Connect`, and `ffi/Load`
+  describe requested authority, while sealed grants remain runtime-only.
+  Native adapters enforce the active exact grant.
 - **Runtime dynamic library loading**: `ffi/open` + `ffi/bind` over an
   `$ffi/Load` capability, and — more importantly — the *native-namespace over
   dynlib* pattern used by `db/sqlite`/`db/postgres` in `src/gene/stdlib.nim`.
@@ -505,23 +506,24 @@ Before this work there was no OS-environment access at the Gene surface. The
 environment, unrelated to `getenv`. The implemented `os/get_env` surface below
 exposes Nim's `os.getEnv` under explicit `Os/Env` authority.
 
-**Implemented**: an `os` namespace with `os/get_env` gated by a new
-`Os/Env` capability, so environment reads are explicit host authority like
+**Implemented**: an `os` namespace with `os/get_env` gated by the
+`os/Env` capability, so environment reads are explicit host authority like
 everything else:
 
 ```gene
-(import os [get_env Env])
-(var token (get_env Env "OPENAI_AUTH_TOKEN"))   ; Env : Os/Env
+(import os [get_env])
+(var token (get_env "OPENAI_AUTH_TOKEN"))
 ```
 
 Native surface (small, in `src/gene/stdlib.nim` next to the db backends):
 
-- `os/get_env : Os/Env, Str -> Str` (raises `OsError` if unset), and
-  `os/get_env : Os/Env, Str, Str -> Str` (with default) — nil-safe variant
-  `os/env? : Os/Env, Str -> Str | Nil` for optional keys.
+- `os/get_env : Str -> Str` (raises `OsError` if unset), and
+  `os/get_env : Str, Str -> Str` (with default) — nil-safe variant
+  `os/env? : Str -> Str | Nil` for optional keys. Each adapter requires the
+  active `os/Env` grant; no authority value appears in the call.
 
-`Os/Env` is granted the same way `native`/`$ffi/Load` is in tests: defined on the
-root scope, or injected by a launcher (see §8).
+`os/Env` is minted only by the host launcher and inherited or attenuated by
+capability declarations (see §8 and `docs/proposals/capabilities.md`).
 
 ## 4. HTTPS client (§4)
 
@@ -596,12 +598,12 @@ Both transports present the same non-streaming Gene API; only the native client
 adds `stream`:
 
 ```gene
-(import net/http_client [request Http])
-(var resp (await (request Http ^method "POST" ^url url ^headers hs ^body json_body)))
+(import net/http_client [request])
+(var resp (await (request ^method "POST" ^url url ^headers hs ^body json_body)))
 ; resp => {^status Int ^body Str}
 
-(import net/http_client [stream Http])
-(var transfer (stream Http ^method "POST" ^url url ^headers hs ^body json_body))
+(import net/http_client [stream])
+(var transfer (stream ^method "POST" ^url url ^headers hs ^body json_body))
 ; transfer/channel => bounded Channel of raw Str chunks, drained with Channel/recv
 ; transfer/task => cancellable Task yielding the final response map
 ```
@@ -653,11 +655,11 @@ results. Tools needed for a coding agent:
   (`max_bytes=262144`), including for a file containing one very long line.
   Path confinement runs before hierarchical instruction discovery.
 - `run_shell`, `grep` — subprocess via the implemented `os` namespace entry
-  gated by a new `Os/Exec` capability:
+  gated by the `os/Exec` capability:
 
   ```gene
-  (import os [exec Exec])
-  (var r (exec Exec ^cmd "grep" ^args ["-rn" pattern "."] ^timeout_ms 10000))
+  (import os [exec])
+  (var r (exec ^cmd "grep" ^args ["-rn" pattern "."] ^timeout_ms 10000))
   ; r => {^status Int ^stdout Str ^stderr Str}
   ```
 
@@ -668,7 +670,7 @@ results. Tools needed for a coding agent:
   `run_shell` is the stateless one-shot spelling; the stateful per-worker
   variant with persistent cwd/env is §7.2's `shell run` operation, under the
   same classifier, lease, and events.
-  `Os/Exec` is deliberately a *distinct* capability from `Os/Env` so a launcher
+  `os/Exec` is deliberately a *distinct* capability from `os/Env` so a launcher
   can grant file+env without shell access.
 
 Tools are **typed `Tool` declarations** (shipped, slices A/C4). One `Tool` value is
@@ -682,7 +684,7 @@ wire shapes), argument validation, and risk class all derive from it:
   ^risk "read"
   ^params [{^name "path" ^type "string" ^required true
             ^doc "workspace-relative file path"}]
-  ^handler (fn [args] (read_text ReadDir (safe_path args/path)))))
+  ^handler (fn [args] (read_text (safe_path args/path)))))
 ```
 
 This original `^params` spelling remains supported for live experiments and
@@ -1964,8 +1966,8 @@ application leader resolves genuine key collisions.
 
 ## 8. Capabilities and the launcher (§8)
 
-Every new host power is a capability value, consistent with the existing model
-(`src/gene/vm.nim` defines `$net/Connect`, `$fs/*`, `$ffi/Load`):
+Every new host power is represented by an ambient capability type and enforced
+by its native adapter:
 
 - `Os/Env` — read environment variables (§3);
 - `Os/Exec` — spawn subprocesses (§6);
@@ -1974,12 +1976,10 @@ Every new host power is a capability value, consistent with the existing model
 - `$net/Connect` — outbound network (reuse; §4);
 - `$fs/ReadWriteDir` — workspace file tools (reuse; §6).
 
-`gene run` now supports explicit named entrypoint grants such as
-`--grant env=Os/Env --grant exec=Os/Exec --`. The current personal-agent script
-still reads the built-in capability values for backward compatibility; moving
-its `main` signature to named grants is the next packaging/hardening slice, not
-a missing runtime mechanism. Embedding hosts can already pass the same named
-capabilities through `GeneCall`.
+`gene run` inherits the launcher's root context; `--grant` is ordinary program
+data. The entry and sensitive call sites can narrow authority with
+`^capabilities` and `with_capabilities`. Embedding hosts establish the root
+context directly rather than passing forgeable Gene values through `GeneCall`.
 
 ### 8.5 Catastrophe guard
 

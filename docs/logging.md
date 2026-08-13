@@ -140,7 +140,6 @@ Primary namespace: `log`.
 ```gene
 (import log [LogLevel new_logger new_file_logger
              log_error log_warn log_info log_debug log_trace])
-(import $fs [WriteDir])
 
 (var logger
   (new_logger "app/http"
@@ -197,10 +196,11 @@ cheap values. They delegate to the lower-level `emit` primitive:
 (logger ~ child "worker" ^payload {^pool 2})  # -> Logger
 (logger ~ with {^request_id id})              # -> Logger
 
-# Explicit authority creates an attenuated direct-to-file logger without
-# mutating hierarchical process configuration.
+# Ambient authority creates an attenuated direct-to-file logger without
+# mutating hierarchical process configuration. The caller may narrow it with
+# `with_capabilities` at the call site.
 (var audit_debug
-  (new_file_logger WriteDir "app/debug_file" "logs/debug.jsonl"
+  (new_file_logger "app/debug_file" "logs/debug.jsonl"
     ^level LogLevel/debug ^format "jsonl" ^flush "error"))
 ```
 
@@ -235,7 +235,8 @@ API rules:
   It can only emit through routes selected by the host, within its bound name
   subtree. Libraries should accept a logger from their application and call
   `child` rather than claiming a process-global name.
-- `new_file_logger` is the explicit exception: it requires `$fs/WriteDir` and
+- `new_file_logger` is the explicit exception: it requires an ambient
+  `(fs/WriteFile path ^append true)` and
   returns a logger attenuated to one newly opened file sink. It does not alter
   global routes or other loggers. Its `^level`, `^format`, `^flush`, and
   `^payload` options follow the ordinary configuration vocabulary and it is

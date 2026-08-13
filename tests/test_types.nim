@@ -2142,24 +2142,17 @@ suite "types — function boundaries":
               scope).print() == "(buffer C/Char 2)"
 
   test "FFI load capability gates runtime library loading":
-    ck "$ffi/Load", "(ffi_type Load)"
+    ck "$ffi/Load", "(ffi/Load)"
 
     let scope = newGlobalScope()
-    scope.define("native", newFfiLoadCapability())
-    check run(compileSource("((fn [cap : ffi/Load] cap) native)"),
-              scope).print() == "(ffi-load)"
     expect GeneError:
-      discard run(compileSource("((fn [cap : ffi/Load] cap) nil)"), scope)
-    expect GeneError:
-      discard run(compileSource("($ffi/open nil \"libmissing-gene-new\")"), scope)
-    expect GeneError:
-      discard run(compileSource("($ffi/open native \"libmissing-gene-new\")"),
+      discard run(compileSource("($ffi/open \"libmissing-gene-new\")"),
                   scope)
 
     let libName = loadableFfiLibrary()
     if libName.len > 0:
       scope.define("lib-name", newStr(libName))
-      let lib = run(compileSource("($ffi/open native lib-name)"), scope)
+      let lib = run(compileSource("($ffi/open lib-name)"), scope)
       check lib.kind == vkFfiLibrary
       check lib.ffiLibraryPath == libName
       check not lib.ffiLibraryClosed

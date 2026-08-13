@@ -163,10 +163,29 @@ routes out of that restriction and why neither is in version 1.
 ```
 
 ```gene
-(impl CapabilitySpec for WriteDir
-  (message canonicalize [] ...)
-  (message describe [] ...))
+(type WriteArea
+  ^capability "app/WriteArea"
+  ^body [Str]
+  (impl CapabilitySpec
+    (message canonicalize []
+      ^capabilities []
+      ($freeze (WriteArea ($str/lower self/0))))))
 ```
+
+`^capability` contains only the provider-facing qualified name. Declaration
+identity and the schema hash are verification metadata, so library authors do
+not repeat either in source: the linker derives identity from the defining
+package, module, and type declaration, while the compiler hashes the declared
+`^props` and `^body` schema. Both must match the descriptor admitted by the
+host before this facade can link. The admitted descriptor should come from an
+authenticated compile artifact; it is not an arbitrary declaration made by
+module initialization.
+
+The host-facing setup seam is deliberately before Gene execution. An embedding
+host creates the application with a configuration callback, admits each
+provider and its descriptors there, and returns the root grants. Registry
+freeze happens immediately after that callback and before entry or imported
+module code runs. Gene has no corresponding admission operation.
 
 Conformance is **explicit**, never structural. A type that happens to define
 a method with a matching name does not become a capability type. Explicit
@@ -486,7 +505,9 @@ semantic key      Every grant has a stable key derived from its authority
                   within one application run and provider epoch. Stability
                   ACROSS runs is not required: host handles and root
                   lineage have no meaningful cross-run identity, and every
-                  cache in this document is per-run.
+                  cache in this document is per-run. The key used for
+                  authority equality is a collision-free canonical identity;
+                  a fixed-width hash may only be a lookup or sort hint.
 
 resolve           Deterministic by semantic key: resolve(g, s) called twice
                   yields grants with the same key. Idempotent on an
@@ -527,13 +548,12 @@ may not defer this requirement.
 
 **Who owns a cross-type edge.** A cross-type `resolve` is implemented by the
 provider that owns the **source** grant, and it may only mint a grant of a
-type that same provider owns. `fs/WriteDir -> fs/WriteFile` is legal because one filesystem
-provider owns both. A cross-*provider* edge — an `app` grant minting
-something the `fs` adapter would accept — is forbidden by default, since it
-would let one provider manufacture authority another adapter honours. Where
-such an edge is genuinely wanted, the **target** provider must explicitly
-register acceptance of the source provider; the source cannot claim it
-unilaterally.
+type that same provider owns. `fs/WriteDir -> fs/WriteFile` is legal because
+one filesystem provider owns both. A cross-*provider* edge — an `app` grant
+minting something the `fs` adapter would accept — is forbidden in version 1,
+without an acceptance exception. A future bridge must be an explicit target-
+provider operation with both revocation lineages (§3.2.4); it is not an
+entailment edge and is outside this version.
 
 **Why `subsumes` belongs to the provider even though it is optional.** The
 compiler needs to answer a question about two *specifications*, with no parent
@@ -918,33 +938,42 @@ loads" are both true, and are different events:
 
 ```text
 1. host boot     admit providers; freeze provider and TYPE OWNERSHIP.
-                 No Gene code has run. Nothing can be replaced later.
+                 A type is identified here by the declaration identity from
+                 its authenticated compile artifact, provider identity,
+                 canonical display name, and schema hash. No Gene code has
+                 run. Nothing can be replaced later.
 
 2. link          install the one canonical CapabilitySpec implementation
-                 for each type, taken from declaration METADATA. The
-                 implementation is bound, not executed.
+                 for each Gene facade, taken from declaration METADATA, and
+                 verify that its qualified name and schema hash match the
+                 already-admitted descriptor. The implementation is bound,
+                 not executed; a facade cannot claim an unowned name.
 
-3. module init   runs under an empty context (§5.3). A capability type's
-                 module may initialize here; this does not re-open
-                 ownership, which was frozen at phase 1.
+3. module init   follows §5.3: a pass-through/open module inherits the
+                 enclosing initialization context, while any narrowing row
+                 initializes empty. A capability type's module may initialize
+                 here; this does not re-open ownership, frozen at phase 1.
 
 4. first use     the canonicalizer may finally EXECUTE, and its result is
                  memoized (§4.6.1).
 ```
 
-Ownership freezes at phase 1, binding happens at phase 2 from metadata,
-execution defers to phase 4. A Gene-defined capability type is therefore
-supported with no phase at which a running program could install or replace a
-provider (§3.2.4), and the `canonicalize` target is statically known from
-phase 2 onward.
+Ownership freezes at phase 1 as a host descriptor; binding a Gene `Type`
+facade happens at phase 2 from metadata; execution defers to phase 4. The
+distinction removes the apparent cycle between “the registry freezes before
+Gene code” and “a library defines the type.” A Gene-defined facade is
+therefore supported with no phase at which running code can install, replace,
+or seize a provider (§3.2.4), and the `canonicalize` target is statically
+known from phase 2 onward.
 
-**Running `canonicalize` in the compiler is also not free.** It requires the
-capability library to be loaded and its implementation available during
-compilation, and it executes user code in the compiler. That is acceptable
-only under the purity and totality laws (§3.1.3), enforced per §12, and under
-a separate compile-time context (§14). Where an implementation is not
-available at compile time, canonicalization is deferred to first use and
-memoized.
+**The compiler never runs a Gene-defined `canonicalize`.** Built-in providers
+may expose a native, compiler-owned schema and canonicalizer; these are part of
+the trusted toolchain, not library code. For a library-defined type the
+compiler verifies that the facade's derived schema hash matches the
+provider-admitted descriptor and emits a symbolic template. Exact constructor-
+shape validation happens when that template first binds to the linked facade.
+Its Gene implementation then runs and the canonical result is memoized
+(§4.6.1).
 
 What compile time genuinely delivers is the *static half* of the work, and
 then a runtime design that makes the dynamic half nearly free.
@@ -958,26 +987,34 @@ not supply one.
 selector template*, not a concrete specification:
 
 - parse the row and separate `^optional` from type-owned arguments;
-- validate arity, property names, and unknown-type errors against the type;
+- validate built-in arity/property rules and reject names absent from the
+  admitted catalog; for a custom facade, verify its declaration schema hash
+  and retain its arguments for typed construction at first binding;
 - reject a type that does not explicitly implement `CapabilitySpec`;
 - intern the capability type and namespace to compact IDs;
-- canonicalize the *template*, including any fully literal arguments;
+- canonicalize the *template* with a native compiler-owned canonicalizer when
+  the admitted type provides one; otherwise preserve its literal arguments in
+  normalized descriptor form without executing library code;
 - emit a flat descriptor with parameter references as slot indices.
 
-A row with only literal arguments is fully concrete here, and construction
-plus `canonicalize` can run at compile time subject to §4.6.1. A row naming a
-parameter stays symbolic.
+A built-in row with only literal arguments is fully concrete here. A custom
+row, or any row naming a parameter, retains a symbolic descriptor for runtime
+binding. No purity claim is used as permission to execute user code in the
+compiler.
 
-**Stage 2 — runtime binding, only for parameter-dependent rows.** Bind slot
-values, run the canonical constructor and `canonicalize` on the now-concrete
-arguments, and match against the active context. This is the constructor and
-canonicalization work that stage 1 could not do.
+**Stage 2 — runtime binding, for parameter-dependent or custom rows.** Bind
+slot values, validate custom arguments through the linked facade's closed type
+schema, run `canonicalize` on the now-concrete specification, and match against
+the active context. This is the constructor and canonicalization work that
+stage 1 could not safely do.
 
 **Stage 3 — operation time.** A provider-owned adapter validates against the
 child grant and executes atomically (§3.2.3, §13.3).
 
-By the time a *static* row runs there is no parsing, no property-map
-building, no string comparison of type names, and no allocation.
+By the time a static *built-in* row runs there is no parsing, property-map
+building, string comparison of type names, or allocation. A static custom row
+pays its deferred first-use construction once and then uses the memoized
+canonical form.
 
 **Interface fingerprints use the stage-1 symbolic template.** A
 runtime-dependent specification has no concrete canonical form at compile
@@ -1045,8 +1082,16 @@ context   always inherits from the parent and only ever narrows,
 | boundary | row omitted, open mode |
 | --- | --- |
 | entry module | **inherits the host root** |
-| imported module | **inherits its importer's context** |
+| imported module ceiling | **inherits the application context once** |
 | any function / method / message | **inherits the caller's context** |
+
+An imported module's effective context on a call is still
+`caller ∩ module ceiling` (§5.2.1). Materializing the open ceiling against the
+application context, rather than whichever importer happened to load it first,
+keeps one module instance deterministic while preserving caller attenuation.
+During load, the same pass-through convention preserves top-level behavior:
+an open entry starts under the host root and open imports inherit that
+initialization context. §5.3 gives the strict/narrowed rule and its caveat.
 
 Rows are still honoured where written, so `with_capabilities` and a narrowing
 declaration work normally — they are simply not required. An open-mode
@@ -1226,6 +1271,19 @@ Root grants must be created through trusted APIs. Parsing
 launcher interprets that data and creates the grant. Evaluating the same form
 in untrusted Gene source only resolves inherited authority.
 
+The version-1 CLI uses host-only options before the entry path:
+
+```text
+gene run --allow_read_dir config --allow_write_dir output app.gene -- args...
+gene run --allow_read_write_dir workspace app.gene
+```
+
+These options accept directory paths, validate them, and mint provider grants
+directly. They do not evaluate Gene expressions or pass named arguments to
+`main`. Once the entry path has been consumed, identical strings are ordinary
+program arguments. Richer policy files and the embedding API syntax remain
+separate host-surface decisions.
+
 ### 5.2 Entry module
 
 In strict mode the entry module establishes the application-level ceiling.
@@ -1252,9 +1310,13 @@ This section governs; §5.3 and §6.1 describe consequences of it.
 ```text
 1. host boot        host_root = grants the host mints (§5.1)
 
-2. load             every module is loaded and initialized under an EMPTY
-                    context. No row is materialized. Imports transfer
-                    definitions, never authority.
+2. load             no row is materialized yet. A pass-through/open entry
+                    initializes under host_root, and pass-through imports
+                    inherit that initialization context. A module with any
+                    narrowing row initializes under EMPTY. Consequently a
+                    strict or narrowed entry also causes its pass-through
+                    import subtree to initialize empty. Imports transfer no
+                    authority beyond this inherited initialization context.
 
 3. materialize      app_context = resolve_row(entry_row, host_root)
                                   host_root, if the entry row is omitted
@@ -1274,7 +1336,9 @@ This section governs; §5.3 and §6.1 describe consequences of it.
 
 A module loaded lazily after step 3 materializes its ceiling against the
 stored `app_context`, so it gets the same ceiling it would have had at step 3.
-`app_context` is fixed for the life of the program.
+`app_context` is fixed for the life of the program. A lazy pass-through
+module also initializes under that fixed context, rather than under whichever
+narrowed caller happened to trigger the singleton load first.
 
 Two consequences worth stating, because earlier drafts contradicted themselves
 on both:
@@ -1330,42 +1394,40 @@ function and message values close over it, and a shared function cannot close
 over several per-context state instances without an implicit module-instance
 parameter or cloned closures.
 
-**Version 1 takes the simple option: module initialization runs under an
-empty capability context.** A module's declared row is *metadata* — the
-ceiling applied to its functions when they are called (§5.0) — not a context
-its top-level forms execute under.
+**Version 1 makes initialization follow the declaration mode.** A
+pass-through row (including an omitted row in open mode) preserves Gene's
+existing top-level behavior and inherits the enclosing initialization
+context. Any narrowing row — including an omitted row in strict mode and
+`^capabilities []` — initializes under an empty context. Once the application
+context exists, a lazily loaded pass-through module initializes against that
+fixed application context, not a first caller's transient narrowing.
 
-The alternative — initialize under the declared context, but forbid module
-state from retaining authority — is not enforceable. A module can read a
-protected file during broad initialization and store the returned **ordinary
-string**: no grant retained, and a `Str` carries no origin a store check can
-inspect. Catching that needs pervasive information-flow tainting, and the
-same hole exists for environment variables and network reads.
+This distinction is intentional. Default-open mode promises compatibility,
+not confinement: an open module may read protected data at initialization and
+retain the returned **ordinary string**. A later call-site attenuation cannot
+retroactively erase information already captured. Catching that would require
+pervasive information-flow tainting. An application that treats capabilities
+as a security boundary therefore uses a strict or narrowed entry; its
+initialization context is empty, and pass-through imports can inherit only
+empty during the load phase.
 
-Running initialization with an empty context closes the channel at its
-source: there is no authority available to leak, so nothing needs to be
-tracked. Consequences:
+Consequences:
 
 - There is exactly one runtime instance per
-  `<package_identity>::<module_path>`, as today, and it is
-  context-independent by construction. Gene's module and type identity
-  semantics are unchanged, and the module cache key needs no capability
-  fingerprint.
-- The "which importer's ceiling does the singleton retain?" question
-  disappears. It retains none: initialization had none, and each call into
-  the module intersects with its declared ceiling at the call boundary.
-- Effectful initialization — reading config at load time, connecting a pool —
-  becomes an explicit function the application calls under a context it
-  chooses. This is a real restriction, and it is the better discipline: the
-  authority a module uses becomes visible at a call site instead of implicit
-  in load order.
-- Enforcement is trivial and needs no analysis: a capability-requiring
-  operation attempted during module initialization simply finds an empty
-  context and is denied, by the same mechanism that denies it anywhere else.
-
-If effectful initialization is later required, the alternative is per-context
-runtime module scopes with stable declaration and type identities across
-them — not a store-site check.
+  `<package_identity>::<module_path>`, as today. Gene's module and type
+  identity semantics are unchanged, and the module cache key needs no
+  capability fingerprint.
+- In an open application, initialization intentionally has legacy ambient
+  behavior. The application has not asked the declaration system to confine
+  it; native adapters still require grants from the host root.
+- In a strict or narrowed application, effectful initialization becomes an
+  explicit function called after materialization under a context the
+  application chooses. The authority is visible at a call boundary instead
+  of implicit in load order.
+- A capability-requiring operation attempted while a narrowing module
+  initializes finds an empty context and is denied by the ordinary mechanism.
+- A lazy open module uses the fixed application context, so first-caller order
+  does not choose the singleton's initialization authority.
 
 If per-context module instances are wanted later, the shape is: share
 compiled declaration identities, create per-context runtime module scopes,
@@ -1437,10 +1499,10 @@ arguments, and a single concrete `subsumes` call cannot establish it — the
 two specifications may reference different parameter slots entirely. The
 check must therefore be a conservative *symbolic* relation:
 
-- accept when message and implementation reference the **identical parameter
-  slot** with the implementation's literal arguments statically narrowing the
-  message's — where "narrowing" is decided by the provider's relation, not by
-  `subsumes`;
+- accept when message and implementation reference the **same external
+  boundary slot** with the implementation's literal arguments statically
+  narrowing the message's — where "narrowing" is decided by the provider's
+  relation, not by `subsumes`;
 - accept when both are fully concrete and the provider check above succeeds;
 - **reject everything else**, or require an explicit trusted proof.
 
@@ -1448,6 +1510,16 @@ Anything outside that subset is rejected rather than assumed sound. Runtime
 attenuation still happens, but it cannot retroactively make an unsound public
 contract substitutable — by the time it runs, the caller has already been
 type-checked against the message.
+
+“Same slot” is independent of a local parameter spelling. Positional slots are
+identified by index; named slots by their external call key; rest parameters
+by their declared positional or named-rest role; `this` has its own fixed
+slot. Thus an implementation may rename `destination` to `path` and still
+match a protocol message's first positional parameter. Conversely, two local
+variables with the same spelling do not match when they occupy different
+external slots. Optionality is compared selector-by-selector after this
+mapping: a publicly optional selector may remain optional or be omitted, but
+may not become mandatory.
 
 Scoped and overlay protocol implementations add a second limit: compile-time
 and runtime dispatch need not select the same implementation, so a static
@@ -2019,19 +2091,19 @@ package's grants.
 
 **Compile-time availability.** The claim that importing such a library
 "executes no module body" holds for compile-artifact discovery, not for
-ordinary runtime import, which initializes a module once. So the compiler
-needs the constructor and `CapabilitySpec` implementation without running
-module initialization. Per §4.6.1 this is resolved by construction rather
-than by assumption: adapter-backed types use native compiler-owned
-canonicalizers, and advisory types either use a declarative schema the
-compiler evaluates directly or have their canonicalization deferred to first
-use. A custom type whose implementation is only available after module
-initialization simply takes the deferred path, which is always sound.
+ordinary runtime import, which initializes a module once. The compiler
+therefore consumes only the admitted descriptor and declarative row schema.
+It does not need to execute, or even load executable code for, the Gene
+`CapabilitySpec` implementation. Adapter-backed built-ins may additionally
+provide native compiler-owned canonicalizers. A custom implementation binds
+at link time and canonicalizes at first runtime use (§4.6.1).
 
-A custom type must register a provider (§3.2.3) to participate at all in
-version 1; provider-less advisory types are deferred (§3.2.2). Registering a
-provider is the act that makes a library's capability type trusted, so it is
-a deliberate extension of the trusted surface rather than an implicit
+A custom type must have a provider admitted by the host (§3.2.3) to
+participate at all in version 1; provider-less advisory types are deferred
+(§3.2.2). A package may ship a provider implementation and authenticated
+descriptor, but importing that package does not admit it. Host admission is
+the act that makes the library's capability type trusted, so it is a
+deliberate extension of the trusted surface rather than an implicit
 consequence of implementing two messages.
 
 The code that mints root grants and defines native entailment remains
@@ -2087,6 +2159,14 @@ capability it needs:
 
 Native implementations must go through a provider-owned adapter with a
 resolved grant, not look up unrestricted process-global facilities.
+
+The apparent `grant` parameter in §3.2.3 is a host-interface parameter, not a
+Gene argument. A fused native builtin obtains the active child context from
+the VM, resolves the exact operation grant into a private non-`Value` slot,
+and immediately calls its provider-owned adapter. If the native ABI represents
+that slot explicitly, its type is opaque and cannot be boxed, reflected,
+captured, or supplied by Gene code. Validation and effect remain one native
+operation; there is no public `native_write_file(grant, ...)` surface.
 
 ### 10.1 Proofs and other authority-bearing values
 
@@ -2148,6 +2228,23 @@ Consequences, all intended:
 - Resources need no escape analysis, no `Send` restriction, and no
   non-escapability rule, because authority is re-derived from the active
   context at each use rather than carried by the value.
+
+The runtime still has to remember the resource's creation-time ceiling. That
+metadata is **runtime-internal origin state**, not a Gene field and not a
+`CapabilityGrant` value. A native resource node contains a hidden, monotonic,
+never-reused identity; a runtime table maps that identity to the owning
+application and immutable origin context. Every resource adapter loads the
+entry, intersects it with the active context, and performs the operation
+atomically.
+
+The table deliberately does **not** retain the resource value, which would
+make the entry and resource keep one another alive. Explicit close atomically
+takes the hidden identity and removes its entry; final release of a resource
+node does the same through a runtime cleanup hook. Because identities are not
+addresses and are never reused, recycling a node or boxed-bit pattern cannot
+inherit another resource's authority. Reflection, serialization, equality,
+copying, property access, and ordinary message sends cannot reveal or
+reproduce this metadata.
 
 Two alternatives are rejected. **Explicit delegation** — possession of a
 sealed resource conveys its restricted authority — is the ocap answer and is
@@ -2322,11 +2419,11 @@ Contexts change rarely — only at explicit boundaries — so a given call site
 almost always sees the same parent. The steady-state cost of a static
 declaration becomes a compare and a load, with the resolve paid once.
 
-The guard must also include a **capability epoch** bumped by anything that
-can change resolution (grant revocation, a scoped `CapabilitySpec`
-implementation coming into or out of scope), so a stale transition can never
-be reused after the policy changes. This mirrors the `implEpoch` guard the
-dispatch cache already uses.
+The guard must also include a **capability epoch** bumped by anything that can
+change resolution, notably grant or ancestor revocation, so a stale transition
+can never be reused after policy changes. `CapabilitySpec` implementations are
+canonical, application-global, and never scoped (§4.6), so ordinary dispatch
+scope changes do not participate in this epoch.
 
 Requirements this places on the representation: contexts must be
 **hash-consed**, so identity is a pointer compare rather than a structural
@@ -2626,8 +2723,8 @@ in between:
    designed first.
 2. Interned `CapabilityType`, unforgeable `CapabilityGrant`, immutable
    hash-consed `CapabilityContext`.
-3. **Launcher boot**: parse trusted host policy, mint the root context, then
-   load the program with module initialization running empty (§5.3), then
+3. **Launcher boot**: parse trusted host policy, mint the root context, load
+   the program using §5.3's pass-through-or-empty initialization rule, then
    resolve the entry row and invoke `main` under it (§5.2).
 4. Row parsing and normalization: the three `^capabilities` shapes,
    `^^optional`, namespace projection, and the selector-position constructor
@@ -2704,8 +2801,10 @@ The implementation is ready when tests demonstrate all of the following:
   cannot hand an undeclared exported helper ambient authority.
 - `^capabilities *` on an exported function is the pass-through, so the
   migration is mechanical.
-- A capability-requiring operation attempted during module initialization is
-  denied, because initialization has an empty context.
+- A pass-through module in an open application can retain legacy top-level
+  behavior. A module with a narrowing row initializes empty, and an open
+  import below a narrowed entry can inherit only that empty initialization
+  context.
 - Spawned tasks receive the intended immutable context without global
   contention.
 - Capability-free call benchmarks show no material avoidable regression.
@@ -2745,8 +2844,10 @@ Open-protocol criteria (§3.1, §3.2.2):
   reserved built-in namespace.
 - `^capabilities *`, `^capabilities (fs/WriteDir "tmp")`, and the list form
   normalize to the same descriptors.
-- A static row compiles to a descriptor requiring no runtime parsing or
-  allocation; a parameter-dependent row adds cost only to its own boundary.
+- A static built-in row compiles to a descriptor requiring no runtime parsing
+  or allocation. A static custom row pays construction and canonicalization
+  once at first use, then reuses the memoized canonical form. A
+  parameter-dependent row adds cost only to its own boundary.
 
 Performance criteria (§13):
 
@@ -2770,8 +2871,9 @@ separately so a regression in one is visible rather than averaged away:
 - A repeated static declaration hits the context-transition cache and costs a
   compare plus a load in steady state.
 - Bumping the capability epoch invalidates cached transitions, and a stale
-  transition is never reused after revocation or a scoped implementation
-  change.
+  transition is never reused after revocation. `CapabilitySpec` has one
+  application-global implementation, so scoped dispatch cannot change a
+  selector's meaning.
 - A function declaring a parameter-dependent selector that policy cannot
   satisfy fails **before** the body runs, in every execution profile; the
   race-safe proof is still produced at the operation (§13.3).
@@ -2813,9 +2915,12 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
   as a value — including via error values and closure capture. Adapters
   validate and execute in one call (§3.2.3), so there is nothing to capture,
   store, or replay.
-- Module initialization runs with an empty context, so a capability-requiring
-  operation attempted during it is denied; there is exactly one runtime module
-  instance regardless of context, and no capability fingerprint in its key.
+- A narrowing module's initialization runs with an empty context, so a
+  capability-requiring operation attempted there is denied. A pass-through
+  module preserves open-mode initialization compatibility. There is exactly
+  one runtime module instance regardless of context and no capability
+  fingerprint in its key; lazy pass-through initialization uses the fixed
+  application context rather than a first caller's transient context.
 - A function declaring `(fs/WriteFile a)` cannot operate on `b`, in every
   execution profile: the declaration transformation is never elided (§13.5).
 - An authority-bearing resource opened under a broad context and used inside
@@ -2837,9 +2942,9 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 - An intra-module call to a private undeclared function performs no context
   work; a cross-module call into a differently-ceilinged module takes the
   cached meet.
-- A cross-type `provider.resolve` mints a grant the target adapter accepts,
-  and a provider cannot mint a grant for a type it does not own without the
-  target provider's registered acceptance.
+- A cross-type `provider.resolve` mints a grant the target adapter accepts
+  only when both types belong to that provider. Any cross-provider
+  entailment is rejected in version 1.
 - A provider implementing `resolve`, `intersect`, and `validity` but not
   `subsumes` is conforming: `subsumes` reads as `unknown`, which rejects at
   interface boundaries rather than admitting anything, and §5.5 still accepts
@@ -2867,10 +2972,9 @@ and revocation detail resting on unmade decisions.
 The following can be decided during implementation without changing the core
 model:
 
-- the exact host CLI and embedding configuration syntax, and externalizing
-  capability policy to command-line arguments or a config file. The host
-  already interprets such policy and mints grants from it (§5.1); what is
-  deferred is the surface syntax, not the model;
+- richer host policy-file syntax and the final embedding configuration API.
+  The minimal CLI directory options are fixed in §5.1; arbitrary capability
+  schemas and external policy documents remain deferred;
 - whether revoked grants use epochs, handles, or provider callbacks;
 - whether `describe`'s default implementation is derived structurally from
   the canonical form or supplied per namespace;

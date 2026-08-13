@@ -64,7 +64,6 @@ type
   GeneCallCallbackProc* = proc(callback: GeneCallbackHandle,
                                call: GeneCall): GeneResult
   GeneReleaseCallbackProc* = proc(callback: GeneCallbackHandle)
-  GeneNewFfiLoadProc* = proc(): Value
   GeneAttachThreadProc* = proc(): GeneThreadAttachment
   GeneDetachThreadProc* = proc(attachment: GeneThreadAttachment)
   GeneThreadAttachedProc* = proc(): bool
@@ -142,7 +141,6 @@ type
     newCallback*: GeneNewCallbackProc
     callCallback*: GeneCallCallbackProc
     releaseCallback*: GeneReleaseCallbackProc
-    newFfiLoad*: GeneNewFfiLoadProc
     attachThread*: GeneAttachThreadProc
     detachThread*: GeneDetachThreadProc
     threadAttached*: GeneThreadAttachedProc
@@ -150,9 +148,9 @@ type
     logEnabled*: GeneLogEnabledProc
     logEmit*: GeneLogEmitProc
 
-const GeneApiVersion* = 2   # 2: wrapper types declare a schema and carry the
-                            #    `^repr native_wrapper` marker (design §16.6)
-const GeneApiFeatureCount* = 36
+const GeneApiVersion* = 3   # 3: authority tokens were removed from the value
+                            #    ABI; hosts configure runtime capability context.
+const GeneApiFeatureCount* = 35
 const GeneModuleInitSymbol* = "gene_module_init"
 
 var geneThreadAttachDepth {.threadvar.}: int
@@ -509,9 +507,6 @@ proc geneReleaseCallback*(callback: GeneCallbackHandle) =
   geneRootRelease(callback.callee)
   callback.released = true
 
-proc geneNewFfiLoad*(): Value =
-  newFfiLoadCapability()
-
 proc geneAttachThread*(): GeneThreadAttachment =
   inc geneThreadAttachDepth
   GeneThreadAttachment(ownerThreadId: getThreadId())
@@ -601,7 +596,6 @@ proc geneApi*(): GeneApi =
           newCallback: geneNewCallback,
           callCallback: geneCallCallback,
           releaseCallback: geneReleaseCallback,
-          newFfiLoad: geneNewFfiLoad,
           attachThread: geneAttachThread,
           detachThread: geneDetachThread,
           threadAttached: geneThreadAttached,

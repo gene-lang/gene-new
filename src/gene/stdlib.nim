@@ -1383,43 +1383,37 @@ proc raiseOsError(message: string, scope: Scope) =
   e.hasErrVal = true
   raise e
 
-proc requireOsEnv(name: string, value: Value, scope: Scope) =
-  if value.kind != vkCapability or value.capabilityName != "Os/Env":
-    raiseOsError(name & " expects Os/Env authority", scope)
-
-proc requireOsExec(name: string, value: Value, scope: Scope) =
-  if value.kind != vkCapability or value.capabilityName != "Os/Exec":
-    raiseOsError(name & " expects Os/Exec authority", scope)
-
 proc biOsGetEnv(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  if args.len notin 2..3:
+  if args.len notin 1..2:
     raise newException(GeneError,
-      "os/get_env expects (Os/Env, name) or (Os/Env, name, default), got " &
+      "os/get_env expects (name) or (name, default), got " &
       $args.len & " arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireOsEnv("os/get_env", args[0], scope)
-  requireStr("os/get_env name", args[1])
-  if existsEnv(args[1].strVal):
-    newStr(getEnv(args[1].strVal))
-  elif args.len == 3:
-    args[2]
+  requireStr("os/get_env name", args[0])
+  discard requireActiveCapability("os/get_env", "os/Env", call,
+    [capString(args[0].strVal)])
+  if existsEnv(args[0].strVal):
+    newStr(getEnv(args[0].strVal))
+  elif args.len == 2:
+    args[1]
   else:
     raiseOsError("os/get_env: environment variable not set: " &
-                 args[1].strVal, scope)
+                 args[0].strVal, scope)
     NIL
 
 proc biOsEnvOpt(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 2:
-    raise newException(GeneError, "os/env? expects (Os/Env, name)")
-  let scope = if call == nil: nil else: call[].dispatchScope
-  requireOsEnv("os/env?", args[0], scope)
-  requireStr("os/env? name", args[1])
-  if existsEnv(args[1].strVal): newStr(getEnv(args[1].strVal)) else: NIL
+  if args.len != 1:
+    raise newException(GeneError, "os/env? expects (name)")
+  requireStr("os/env? name", args[0])
+  discard requireActiveCapability("os/env?", "os/Env", call,
+    [capString(args[0].strVal)])
+  if existsEnv(args[0].strVal): newStr(getEnv(args[0].strVal)) else: NIL
 
-proc biOsExecutablePath(args: openArray[Value]): Value {.nimcall.} =
+proc biOsExecutablePath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError,
       "os/executable_path expects no arguments, got " & $args.len)
+  discard requireActiveCapability("os/executable_path", "os/Process", call)
   newStr(getAppFilename())
 
 const osExecDefaultOutputCap = 1024 * 1024
@@ -1431,11 +1425,9 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## unless the caller passes a shell explicitly), `^timeout_ms` bounds the run,
   ## and captured output is truncated at `^max_bytes`. Never uses a shell to
   ## split the command, so injection through argument values is not possible.
-  if args.len != 1:
-    raise newException(GeneError,
-      "os/exec expects the Os/Exec capability plus named arguments")
+  if args.len != 0:
+    raise newException(GeneError, "os/exec expects only named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireOsExec("os/exec", args[0], scope)
   var cmd = ""
   var cmdSet = false
   var procArgs: seq[string]
@@ -1465,6 +1457,8 @@ proc biOsExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
         raiseOsError("os/exec got unexpected named argument: " & name, scope)
   if not cmdSet or cmd.len == 0:
     raiseOsError("os/exec requires a non-empty ^cmd", scope)
+  discard requireActiveCapability("os/exec", "os/Exec", call,
+    [capString(cmd)])
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
   var process: Process
@@ -1556,11 +1550,10 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   ## arrives: ^stdout receives raw chunks and ^stdout_line receives complete
   ## stdout lines without the trailing newline. The final return value keeps the
   ## same captured-output shape as os/exec.
-  if args.len != 1:
+  if args.len != 0:
     raise newException(GeneError,
-      "os/exec_stream expects the Os/Exec capability plus named arguments")
+      "os/exec_stream expects only named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireOsExec("os/exec_stream", args[0], scope)
   var cmd = ""
   var cmdSet = false
   var procArgs: seq[string]
@@ -1599,6 +1592,8 @@ proc biOsExecStream(args: openArray[Value], call: ptr NativeCall): Value {.nimca
         raiseOsError("os/exec_stream got unexpected named argument: " & name, scope)
   if not cmdSet or cmd.len == 0:
     raiseOsError("os/exec_stream requires a non-empty ^cmd", scope)
+  discard requireActiveCapability("os/exec_stream", "os/Exec", call,
+    [capString(cmd)])
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
 
@@ -1736,11 +1731,10 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   ## Run a subprocess attached to this process's stdin/stdout/stderr and return
   ## its exit status. This is for terminal handoff cases where captured
   ## `os/exec` would break interactive behavior.
-  if args.len != 1:
+  if args.len != 0:
     raise newException(GeneError,
-      "os/exec_stdio expects the Os/Exec capability plus named arguments")
+      "os/exec_stdio expects only named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireOsExec("os/exec_stdio", args[0], scope)
   var cmd = ""
   var cmdSet = false
   var procArgs: seq[string]
@@ -1766,6 +1760,8 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
         raiseOsError("os/exec_stdio got unexpected named argument: " & name, scope)
   if not cmdSet or cmd.len == 0:
     raiseOsError("os/exec_stdio requires a non-empty ^cmd", scope)
+  discard requireActiveCapability("os/exec_stdio", "os/Exec", call,
+    [capString(cmd)])
   when compileOption("threads"):
     acquire(osExecStdioLock)
   var process: Process
@@ -1866,6 +1862,8 @@ when compileOption("threads"):
       ctx: ptr OsExecAsyncCtx
       taskOwner: Value
       lineChanOwner: Value
+      capabilityContext: CapabilityContext
+      authorityRevoked: bool
 
   proc sharedExecText(text: string): SharedExecText =
     result.len = text.len
@@ -1951,10 +1949,20 @@ when compileOption("threads"):
         let ctx = pending.ctx
         var task {.cursor.}: Value
         task.bits = ctx.taskBits
+        if not pending.authorityRevoked:
+          for grant in pending.capabilityContext.grants:
+            if not grant.isValid:
+              pending.authorityRevoked = true
+              atomicStoreN(addr ctx.cancelRequested, true, ATOMIC_RELEASE)
+              if tryFailTask(task,
+                  "os/exec_async failed: retained capability was revoked"):
+                wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+              break
         let taskCancelled = task.taskCancelled
         if taskCancelled:
           atomicStoreN(addr ctx.cancelRequested, true, ATOMIC_RELEASE)
-        let cancelling = ctx.resultCancelled or taskCancelled
+        let cancelling = ctx.resultCancelled or taskCancelled or
+                         pending.authorityRevoked
         var lineHead, lineTail: ptr SharedExecLine
         withLock ctx.lineLock:
           lineHead = ctx.lineHead
@@ -2000,7 +2008,8 @@ when compileOption("threads"):
             let scheduler = cast[SchedulerState](ctx.schedulerPtr)
             wakeAllChannelWaitersIn(scheduler, channel, wakeSenders = false)
             wakeAllChannelWaitersIn(scheduler, channel, wakeSenders = true)
-          if not ctx.resultCancelled and not task.taskCancelled:
+          if not ctx.resultCancelled and not task.taskCancelled and
+              not pending.authorityRevoked:
             if ctx.resultFailed:
               let failure = consumeSharedExecText(ctx.resultFailure)
               if tryFailTask(task, failure):
@@ -2300,11 +2309,10 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
                        inheritStdio: bool,
                        args: openArray[Value],
                        call: ptr NativeCall): Value =
-  if args.len != 1:
+  if args.len != 0:
     raise newException(GeneError,
-      name & " expects the Os/Exec capability plus named arguments")
+      name & " expects only named arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireOsExec(name, args[0], scope)
   var cmd = ""
   var cmdSet = false
   var procArgs: seq[string]
@@ -2348,6 +2356,7 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
                      scope)
   if not cmdSet or cmd.len == 0:
     raiseOsError(name & " requires a non-empty ^cmd", scope)
+  let grant = requireActiveCapability(name, "os/Exec", call, [capString(cmd)])
   if maxBytes <= 0:
     maxBytes = osExecDefaultOutputCap
   if wantChan and lineChan.kind == vkNil:
@@ -2385,7 +2394,8 @@ proc biOsExecAsyncImpl(name: string, wantChan: bool,
     # A sink into the ctx without the explicit retain would leave two logical
     # owners sharing one ref and completion cleanup would free the caller's
     # live handle.
-    let pending = OsExecPending(ctx: ctx)
+    let pending = OsExecPending(ctx: ctx,
+      capabilityContext: newCapabilityContext([grant]))
     pending.taskOwner = retainedCopy(task)
     pending.lineChanOwner = retainedCopy(lineChan)
     # Scheduler-side ownership: the pending ref retains task/channel while the
@@ -2425,9 +2435,12 @@ proc biOsExecStdioAsync(args: openArray[Value],
   ## Task for its integer exit status. Cancellation terminates the child.
   biOsExecAsyncImpl("os/exec_stdio_async", false, true, args, call)
 
+proc activeFilesystem(call: ptr NativeCall):
+    tuple[provider: FilesystemProvider, context: CapabilityContext]
+
 # --- net/http_client: native libcurl client ---------------------------------
 #
-# libcurl owns TLS, certificate verification, redirects, proxies, and HTTP
+# libcurl owns TLS, certificate verification, proxies, and HTTP
 # framing. The perform call runs on a persistent worker. Its callbacks only
 # copy bytes into explicitly shared native buffers; Gene strings/maps/channels
 # are created and touched exclusively by pollHttpClientCompletions on the
@@ -2457,7 +2470,7 @@ const
   CurlOptNoProgress = 43.cint
   CurlOptFollowLocation = 52.cint
   CurlOptNoSignal = 99.cint
-  CurlOptCaInfo = 10065.cint
+  CurlOptCaInfoBlob = 40309.cint
   CurlOptAcceptEncoding = 10102.cint
   CurlOptTimeoutMs = 155.cint
   CurlOptHeaderFunction = 20079.cint
@@ -2474,6 +2487,11 @@ const
   HttpHardPendingBytes = 16 * 1024 * 1024
 
 type
+  CurlBlob {.bycopy.} = object
+    data: pointer
+    len: csize_t
+    flags: cuint
+
   CurlApi = object
     lib: LibHandle
     globalInit: proc(flags: clong): cint {.cdecl.}
@@ -2668,7 +2686,7 @@ when compileOption("threads"):
       httpMethod: SharedExecText
       url: SharedExecText
       body: SharedExecText
-      caFile: SharedExecText
+      caData: SharedExecText
       headers: ptr SharedExecArg
       taskBits: uint64
       chunkChanBits: uint64
@@ -2698,6 +2716,8 @@ when compileOption("threads"):
       ctx: ptr HttpClientCtx
       taskOwner: Value
       channelOwner: Value
+      capabilityContext: CapabilityContext
+      authorityRevoked: bool
 
   const httpClientMaxWorkers = 16
   var httpClientLock: Lock
@@ -2796,7 +2816,7 @@ when compileOption("threads"):
     discard consumeSharedExecText(ctx.httpMethod)
     discard consumeSharedExecText(ctx.url)
     discard consumeSharedExecText(ctx.body)
-    discard consumeSharedExecText(ctx.caFile)
+    discard consumeSharedExecText(ctx.caData)
     discard consumeSharedExecText(ctx.effectiveUrl)
     discard consumeSharedExecText(ctx.resultFailure)
     freeHttpBuffer(ctx.responseBody)
@@ -2841,7 +2861,17 @@ when compileOption("threads"):
         let ctx = pending.ctx
         var task {.cursor.}: Value
         task.bits = ctx.taskBits
-        let cancelled = task.taskCancelled or ctx.resultCancelled
+        if not pending.authorityRevoked:
+          for grant in pending.capabilityContext.grants:
+            if not grant.isValid:
+              pending.authorityRevoked = true
+              atomicStoreN(addr ctx.cancelRequested, true, ATOMIC_RELEASE)
+              if tryFailTask(task,
+                  "net/http_client: retained capability was revoked"):
+                wakeTaskWaitersIn(cast[SchedulerState](ctx.schedulerPtr), task)
+              break
+        let cancelled = task.taskCancelled or ctx.resultCancelled or
+                        pending.authorityRevoked
         if task.taskCancelled:
           atomicStoreN(addr ctx.cancelRequested, true, ATOMIC_RELEASE)
         var head, tail: ptr SharedExecLine
@@ -2896,7 +2926,8 @@ when compileOption("threads"):
             let scheduler = cast[SchedulerState](ctx.schedulerPtr)
             wakeAllChannelWaitersIn(scheduler, channel, wakeSenders = false)
             wakeAllChannelWaitersIn(scheduler, channel, wakeSenders = true)
-          if not cancelled and not task.taskCancelled:
+          if not cancelled and not task.taskCancelled and
+              not pending.authorityRevoked:
             if ctx.resultFailed:
               let failure = consumeSharedExecText(ctx.resultFailure)
               if tryFailTask(task, failure):
@@ -2937,7 +2968,6 @@ when compileOption("threads"):
       let httpMethod = readSharedExecText(ctx.httpMethod)
       let url = readSharedExecText(ctx.url)
       let body = readSharedExecText(ctx.body)
-      let caFile = readSharedExecText(ctx.caFile)
       let easy = gCurlApi.easyInit()
       if easy == nil:
         fail("curl_easy_init failed")
@@ -2954,16 +2984,21 @@ when compileOption("threads"):
                "method")
         setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptNoSignal, 1),
                "no-signal")
-        setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptFollowLocation, 1),
-               "redirects")
+        # The selector authorizes exactly `url`; transparently following a
+        # redirect would connect to a second URL outside that grant.
+        setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptFollowLocation, 0),
+               "redirect policy")
         setopt(cCurlSetoptLong(gCurlApi.setoptAddr, easy, CurlOptTimeoutMs,
                                ctx.timeoutMs.clong),
                "timeout")
         setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptAcceptEncoding, ""),
                "content decoding")
-        if caFile.len > 0:
-          setopt(cCurlSetoptStr(gCurlApi.setoptAddr, easy, CurlOptCaInfo,
-                                caFile.cstring), "CA file")
+        var caBlob: CurlBlob
+        if ctx.caData.len > 0:
+          caBlob = CurlBlob(data: ctx.caData.data,
+                            len: csize_t(ctx.caData.len), flags: 0)
+          setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptCaInfoBlob,
+                                addr caBlob), "CA data")
         setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptWriteFunction,
                               cast[pointer](httpWriteCallback)), "write callback")
         setopt(cCurlSetoptPtr(gCurlApi.setoptAddr, easy, CurlOptWriteData, ctx),
@@ -3094,14 +3129,14 @@ proc validHttpMethod(httpMethod: string): bool =
 proc biHttpClientStart(name: string, streaming: bool,
                        args: openArray[Value], call: ptr NativeCall): Value =
   let scope = if call == nil: nil else: call[].dispatchScope
-  if args.len != 1 or args[0].kind != vkCapability or
-      args[0].capabilityName != "net/Http":
-    raiseHttpClientError(name & " expects Http authority", scope)
+  if args.len != 0:
+    raiseHttpClientError(name & " expects only named arguments", scope)
   var httpMethod = "GET"
   var url = ""
   var headers: seq[string]
   var body = ""
   var caFile = ""
+  var caData = ""
   var timeoutMs = HttpDefaultTimeoutMs
   var maxBytes = HttpDefaultMaxBytes
   var pendingBytes = HttpDefaultPendingBytes
@@ -3156,6 +3191,12 @@ proc biHttpClientStart(name: string, streaming: bool,
     raiseHttpClientError(name & " ^method contains invalid characters", scope)
   if not (url.startsWith("http://") or url.startsWith("https://")):
     raiseHttpClientError(name & " ^url must use http:// or https://", scope)
+  var grant: CapabilityGrant
+  try:
+    grant = requireActiveCapability(name, "net/Http", call,
+      named = [capNamed("url", capString(url))])
+  except GeneError as error:
+    raiseHttpClientError(error.msg, scope)
   if timeoutMs <= 0 or maxBytes <= 0 or pendingBytes <= 0 or channelCapacity <= 0:
     raiseHttpClientError(name & " limits must be positive", scope)
   if timeoutMs > 86_400_000 or maxBytes > HttpHardMaxBytes or
@@ -3172,6 +3213,12 @@ proc biHttpClientStart(name: string, streaming: bool,
       raiseHttpClientError(name & " header exceeds 65536 bytes", scope)
     if '\r' in header or '\n' in header:
       raiseHttpClientError(name & " rejects newline characters in headers", scope)
+  if caFile.len > 0:
+    try:
+      let fs = activeFilesystem(call)
+      caData = fs.provider.readBytes(fs.context, caFile)
+    except CatchableError as error:
+      raiseHttpClientError(name & " ^ca_file: " & error.msg, scope)
   loadCurlApi(scope)
   when compileOption("threads"):
     if scope == nil or scope.application == nil:
@@ -3186,7 +3233,7 @@ proc biHttpClientStart(name: string, streaming: bool,
     ctx.httpMethod = sharedExecText(httpMethod)
     ctx.url = sharedExecText(url)
     ctx.body = sharedExecText(body)
-    ctx.caFile = sharedExecText(caFile)
+    ctx.caData = sharedExecText(caData)
     ctx.taskBits = task.bits
     ctx.chunkChanBits = if streaming: channel.bits else: 0'u64
     ctx.schedulerPtr = cast[pointer](schedulerForScope(scope))
@@ -3205,7 +3252,8 @@ proc biHttpClientStart(name: string, streaming: bool,
       else:
         headerTail.next = node
       headerTail = node
-    let pending = HttpClientPending(ctx: ctx)
+    let pending = HttpClientPending(ctx: ctx,
+      capabilityContext: newCapabilityContext([grant]))
     pending.taskOwner = retainedCopy(task)
     pending.channelOwner = retainedCopy(channel)
     withLock httpClientLock:
@@ -3265,14 +3313,16 @@ proc biOsEndInterrupt(args: openArray[Value]): Value {.nimcall.} =
     cTurnInterruptEnd()
   NIL
 
-proc biOsMonotonicMs(args: openArray[Value]): Value {.nimcall.} =
+proc biOsMonotonicMs(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "os/monotonic_ms takes no arguments")
+  discard requireActiveCapability("os/monotonic_ms", "clock/Monotonic", call)
   newInt(getMonoTime().ticks div 1_000_000)
 
-proc biOsProcessId(args: openArray[Value]): Value {.nimcall.} =
+proc biOsProcessId(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 0:
     raise newException(GeneError, "os/process_id takes no arguments")
+  discard requireActiveCapability("os/process_id", "os/Process", call)
   newInt(getCurrentProcessId())
 
 proc biOsStdinTty(args: openArray[Value]): Value {.nimcall.} =
@@ -3513,159 +3563,153 @@ proc biReplRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
 
 # --- fs: synchronous read + directory listing (examples/ai_agent/design.md §6) ---
 
-proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 2:
-    raise newException(GeneError, "fs/read_text expects (fs/ReadDir, path)")
+proc activeFilesystem(call: ptr NativeCall):
+    tuple[provider: FilesystemProvider, context: CapabilityContext] =
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("fs/read_text", args[0])
-  requireStr("fs/read_text path", args[1])
+  let app = scope.application()
+  if app == nil or app.filesystemProvider == nil:
+    raise newException(GeneError,
+      "filesystem operation requires an application runtime")
+  let context =
+    if activeCapabilityContext != nil:
+      activeCapabilityContext
+    elif app.applicationCapabilityContext != nil:
+      app.applicationCapabilityContext
+    else:
+      app.rootCapabilityContext
+  (app.filesystemProvider, context)
+
+proc raiseFilesystemOperationError(name, capability, message: string,
+                                   scope: Scope) {.noreturn.} =
+  if message.startsWith("MissingCapability"):
+    raiseCapabilityGeneError(scope, "MissingCapability",
+      name & " requires " & capability, capability, name)
+  if message.startsWith("AmbiguousCapability"):
+    raiseCapabilityGeneError(scope, "AmbiguousCapability",
+      name & " matched multiple grants for " & capability, capability, name)
+  if "outside" in message or "escapes" in message:
+    raiseCapabilityGeneError(scope, "CapabilityScopeError",
+      name & ": " & message, capability, name)
+  raiseOsError(name & ": " & message, scope)
+
+proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError, "fs/read_text expects (path)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireStr("fs/read_text path", args[0])
   try:
-    newStr(readFile(args[1].strVal))
-  except IOError as e:
-    raiseOsError("fs/read_text: " & e.msg, scope)
-    NIL
+    let fs = activeFilesystem(call)
+    newStr(fs.provider.readText(fs.context, args[0].strVal))
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/read_text", "fs/ReadFile", e.msg, scope)
 
 proc biFsReadBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## The binary sibling of fs/read_text, and the read half `fs/write_bytes` has
   ## been missing (design.md §D7.3). Same capability and same path confinement;
   ## the difference is that the result is Bytes, so a byte with the high bit set
   ## survives instead of being interpreted as UTF-8 and mangled.
-  if args.len != 2:
-    raise newException(GeneError, "fs/read_bytes expects (fs/ReadDir, path)")
+  if args.len != 1:
+    raise newException(GeneError, "fs/read_bytes expects (path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("fs/read_bytes", args[0])
-  requireStr("fs/read_bytes path", args[1])
+  requireStr("fs/read_bytes path", args[0])
   try:
-    newBytes(readFile(args[1].strVal))
-  except IOError as e:
-    raiseOsError("fs/read_bytes: " & e.msg, scope)
-    NIL
+    let fs = activeFilesystem(call)
+    newBytes(fs.provider.readBytes(fs.context, args[0].strVal))
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/read_bytes", "fs/ReadFile", e.msg, scope)
 
 proc biFsWriteBytesSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## The binary sibling of fs/write_text. Same capability, same path
   ## confinement — the only difference is that the payload is Bytes, so a byte
   ## with the high bit set survives instead of being mangled by UTF-8 handling.
-  if args.len != 3:
-    raise newException(GeneError,
-      "fs/write_bytes expects (fs/WriteDir, path, bytes)")
+  if args.len != 2:
+    raise newException(GeneError, "fs/write_bytes expects (path, bytes)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsWriteDir("fs/write_bytes", args[0])
-  requireStr("fs/write_bytes path", args[1])
-  if args[2].kind != vkBytes:
+  requireStr("fs/write_bytes path", args[0])
+  if args[1].kind != vkBytes:
     raise newException(GeneError,
-      "fs/write_bytes expects Bytes, got " & $args[2].kind)
+      "fs/write_bytes expects Bytes, got " & $args[1].kind)
   try:
-    writeFile(args[1].strVal, args[2].bytesVal)
-  except IOError as e:
-    raiseOsError("fs/write_bytes: " & e.msg, scope)
+    let fs = activeFilesystem(call)
+    fs.provider.writeBytes(fs.context, args[0].strVal, args[1].bytesVal)
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/write_bytes", "fs/WriteFile", e.msg,
+                                  scope)
   NIL
 
 proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 3:
-    raise newException(GeneError, "fs/write_text expects (fs/WriteDir, path, text)")
+  if args.len != 2:
+    raise newException(GeneError, "fs/write_text expects (path, text)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsWriteDir("fs/write_text", args[0])
-  requireStr("fs/write_text path", args[1])
-  requireStr("fs/write_text text", args[2])
+  requireStr("fs/write_text path", args[0])
+  requireStr("fs/write_text text", args[1])
   try:
-    writeFile(args[1].strVal, args[2].strVal)
-  except IOError as e:
-    raiseOsError("fs/write_text: " & e.msg, scope)
+    let fs = activeFilesystem(call)
+    fs.provider.writeText(fs.context, args[0].strVal, args[1].strVal)
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/write_text", "fs/WriteFile", e.msg,
+                                  scope)
   NIL
 
 proc biFsExists(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 2:
-    raise newException(GeneError, "fs/exists? expects (fs/ReadDir, path)")
-  requireFsReadDir("fs/exists?", args[0])
-  requireStr("fs/exists? path", args[1])
-  let path = args[1].strVal
-  newBool(fileExists(path) or dirExists(path) or symlinkExists(path))
+  if args.len != 1:
+    raise newException(GeneError, "fs/exists? expects (path)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireStr("fs/exists? path", args[0])
+  try:
+    let fs = activeFilesystem(call)
+    newBool(fs.provider.pathExists(fs.context, args[0].strVal))
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/exists?", "fs/ReadDir", e.msg, scope)
 
 proc biFsListDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 2:
-    raise newException(GeneError, "fs/list_dir expects (fs/ReadDir, path)")
+  if args.len != 1:
+    raise newException(GeneError, "fs/list_dir expects (path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("fs/list_dir", args[0])
-  requireStr("fs/list_dir path", args[1])
-  if not dirExists(args[1].strVal):
-    raiseOsError("fs/list_dir: not a directory: " & args[1].strVal, scope)
-  var names: seq[Value]
+  requireStr("fs/list_dir path", args[0])
   try:
-    for kind, path in walkDir(args[1].strVal, relative = true):
-      names.add newStr(path)
-  except OSError as e:
-    raiseOsError("fs/list_dir: " & e.msg, scope)
-  newList(names)
+    let fs = activeFilesystem(call)
+    var names: seq[Value]
+    for name in fs.provider.listDir(fs.context, args[0].strVal):
+      names.add newStr(name)
+    newList(names)
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/list_dir", "fs/ReadDir", e.msg, scope)
 
 proc biFsMakeDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 2:
-    raise newException(GeneError, "fs/make_dir expects (fs/WriteDir, path)")
+  if args.len != 1:
+    raise newException(GeneError, "fs/make_dir expects (path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsWriteDir("fs/make_dir", args[0])
-  requireStr("fs/make_dir path", args[1])
+  requireStr("fs/make_dir path", args[0])
   try:
-    createDir(args[1].strVal)
-  except OSError as e:
-    raiseOsError("fs/make_dir: " & e.msg, scope)
+    let fs = activeFilesystem(call)
+    fs.provider.makeDir(fs.context, args[0].strVal)
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/make_dir", "fs/WriteDir", e.msg, scope)
   NIL
 
 proc biFsRemove(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 2:
-    raise newException(GeneError, "fs/remove expects (fs/WriteDir, path)")
+  if args.len != 1:
+    raise newException(GeneError, "fs/remove expects (path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsWriteDir("fs/remove", args[0])
-  requireStr("fs/remove path", args[1])
+  requireStr("fs/remove path", args[0])
   try:
-    if fileExists(args[1].strVal):
-      removeFile(args[1].strVal)
-  except OSError as e:
-    raiseOsError("fs/remove: " & e.msg, scope)
+    let fs = activeFilesystem(call)
+    fs.provider.removeFile(fs.context, args[0].strVal)
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/remove", "fs/WriteFile", e.msg, scope)
   NIL
 
 proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  ## Absolute, symlink-resolved form of a path (examples/ai_agent/design.md §8.5:
-  ## protected-root checks must run on real paths). A path that does not exist
-  ## yet resolves its longest existing ancestor and reattaches the remaining
-  ## suffix, so a to-be-created file still confines correctly. A final symlink
-  ## is followed even when its target does not exist yet — a dangling symlink
-  ## must resolve to (and be checked against) where it would actually write,
-  ## not treated as an ordinary in-workspace name.
-  if args.len != 2:
-    raise newException(GeneError, "fs/real_path expects (fs/ReadDir, path)")
+  if args.len != 1:
+    raise newException(GeneError, "fs/real_path expects (path)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("fs/real_path", args[0])
-  requireStr("fs/real_path path", args[1])
-  var p = if args[1].strVal.len > 0: args[1].strVal else: "."
+  requireStr("fs/real_path path", args[0])
   try:
-    # Follow a chain of final symlinks whose target may not exist (a dangling
-    # link fails fileExists/dirExists but symlinkExists still sees it), so the
-    # returned path reflects the real destination. Bounded against loops.
-    var hops = 0
-    while symlinkExists(p) and not (fileExists(p) or dirExists(p)):
-      var target = expandSymlink(p)
-      if not isAbsolute(target):
-        target = parentDir(absolutePath(p)) / target
-      p = target
-      inc hops
-      if hops > 64:
-        break
-    if fileExists(p) or dirExists(p):
-      return newStr(expandFilename(p))
-    var base = normalizedPath(absolutePath(p))
-    var tail: seq[string]
-    while base.len > 0 and not dirExists(base):
-      let (head, name) = splitPath(base)
-      if head == base or head.len == 0:
-        break
-      tail.add name
-      base = head
-    var resolved = if dirExists(base): expandFilename(base) else: base
-    for i in countdown(tail.high, 0):
-      resolved = resolved / tail[i]
-    newStr(normalizedPath(resolved))
-  except OSError as e:
-    raiseOsError("fs/real_path: " & e.msg, scope)
-    NIL
+    let fs = activeFilesystem(call)
+    newStr(fs.provider.realPath(fs.context, args[0].strVal))
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/real_path", "fs/ReadDir", e.msg, scope)
 
 # --- json: parse and stringify over Gene value kinds (examples/ai_agent/design.md §5) ---
 
@@ -4127,6 +4171,8 @@ proc logSource(call: ptr NativeCall): LogSource =
 proc emitLogger(name: string, logger: Value, level: LogLevel, message: Value,
                 payload: Value, call: ptr NativeCall): Value =
   requireLogger(name, logger)
+  discard requireRetainedCapabilities(name, call,
+                                      logger.loggerCapabilityContext)
   requireStr(name & " message", message)
   let eventPayload = normalizeLogPayload(payload).value
   let merged = normalizeLogPayload(
@@ -4151,15 +4197,14 @@ proc biLogNewLogger(args: openArray[Value], call: ptr NativeCall): Value {.nimca
 
 proc biLogNewFileLogger(args: openArray[Value],
                         call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 3:
+  if args.len != 2:
     raise newException(GeneError,
-      "log/new_file_logger expects (fs/WriteDir, name, path)")
+      "log/new_file_logger expects (name, path)")
   requireLogNamed("log/new_file_logger", call,
                   ["payload", "format", "flush", "level"])
-  requireFsWriteDir("log/new_file_logger", args[0])
-  requireStr("log/new_file_logger name", args[1])
-  requireStr("log/new_file_logger path", args[2])
-  let name = args[1].strVal
+  requireStr("log/new_file_logger name", args[0])
+  requireStr("log/new_file_logger path", args[1])
+  let name = args[0].strVal
   if name != "app" and not name.startsWith("app/"):
     raise newException(GeneError,
       "log/new_file_logger names must be in the app/* namespace")
@@ -4188,9 +4233,13 @@ proc biLogNewFileLogger(args: openArray[Value],
       "log/new_file_logger is unavailable in wasm")
   else:
     try:
-      let sink = newFileLogSink("direct:" & name, args[2].strVal,
-                                format, flush)
-      newLogger(name, newDirectLogRoute(sink, level), payload)
+      let fs = activeFilesystem(call)
+      let opened = fs.provider.openWriteFile(fs.context, args[1].strVal,
+                                              append = true, create = true)
+      let sink = newFileLogSinkFromHandle("direct:" & name,
+        opened.grant.scope, opened.file, format, flush)
+      newLogger(name, newDirectLogRoute(sink, level), payload,
+                newCapabilityContext([opened.grant]))
     except CatchableError as e:
       raise newException(GeneError, "log/new_file_logger: " & e.msg)
 
@@ -4205,7 +4254,8 @@ proc biLoggerChild(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
     raise newException(GeneError, "Logger/child invalid name: " & name)
   let payload = normalizeLogPayload(namedLogPayload(call)).value
   newLogger(name, resolveRouteId(name),
-    mergeLogPayload(args[0].loggerPayload, payload))
+    mergeLogPayload(args[0].loggerPayload, payload),
+    args[0].loggerCapabilityContext)
 
 proc biLoggerWith(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -4214,7 +4264,8 @@ proc biLoggerWith(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   requireLogger("Logger/with", args[0])
   let payload = normalizeLogPayload(args[1]).value
   newLogger(args[0].loggerName, args[0].loggerRouteId,
-    mergeLogPayload(args[0].loggerPayload, payload))
+    mergeLogPayload(args[0].loggerPayload, payload),
+    args[0].loggerCapabilityContext)
 
 proc biLoggerEnabled(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -5626,6 +5677,17 @@ proc dbConnHandleValue(name: string, conn: Value, expectedType: string,
 
 proc dbConnHandle(name: string, conn: Value, expectedType: string,
                   scope: Scope): pointer =
+  let authorityBearing =
+    if expectedType == "PostgresDb":
+      true
+    elif expectedType == "SqliteDb":
+      let path = conn.props.getOrDefault("path", VOID)
+      path.kind == vkString and path.strVal != ":memory:"
+    else:
+      false
+  if authorityBearing:
+    var authorityCall = NativeCall(dispatchScope: scope)
+    discard retainedResourceCapabilities(name, conn, addr authorityCall)
   let handle = dbConnHandleValue(name, conn, expectedType, scope)
   if handle.cPtrClosed or handle.cPtrIsNull:
     raiseDbError(name & ": connection is closed", scope)
@@ -5681,6 +5743,14 @@ type SqliteApi = object
   columnBlob: proc(stmt: pointer, i: cint): pointer {.cdecl.}
   columnBytes: proc(stmt: pointer, i: cint): cint {.cdecl.}
   columnName: proc(stmt: pointer, i: cint): cstring {.cdecl.}
+  stmtReadonly: proc(stmt: pointer): cint {.cdecl.}
+  getAutocommit: proc(db: pointer): cint {.cdecl.}
+  serialize: proc(db: pointer, schema: cstring, size: ptr int64,
+                  flags: cuint): pointer {.cdecl.}
+  deserialize: proc(db: pointer, schema: cstring, data: pointer,
+                    dbSize, bufferSize: int64, flags: cuint): cint {.cdecl.}
+  malloc64: proc(size: uint64): pointer {.cdecl.}
+  free: proc(data: pointer) {.cdecl.}
 
 var gSqliteApi: SqliteApi
 
@@ -5724,6 +5794,12 @@ proc loadSqliteApi(scope: Scope) =
   api.columnBlob = cast[typeof(api.columnBlob)](sym"sqlite3_column_blob")
   api.columnBytes = cast[typeof(api.columnBytes)](sym"sqlite3_column_bytes")
   api.columnName = cast[typeof(api.columnName)](sym"sqlite3_column_name")
+  api.stmtReadonly = cast[typeof(api.stmtReadonly)](sym"sqlite3_stmt_readonly")
+  api.getAutocommit = cast[typeof(api.getAutocommit)](sym"sqlite3_get_autocommit")
+  api.serialize = cast[typeof(api.serialize)](sym"sqlite3_serialize")
+  api.deserialize = cast[typeof(api.deserialize)](sym"sqlite3_deserialize")
+  api.malloc64 = cast[typeof(api.malloc64)](sym"sqlite3_malloc64")
+  api.free = cast[typeof(api.free)](sym"sqlite3_free")
   api.lib = lib
   gSqliteApi = api
 
@@ -5762,7 +5838,7 @@ proc sqliteColumnValue(stmt: pointer, i: cint): Value =
 
 proc sqliteRunStmt(db: pointer, sql: string, params: openArray[Value],
                    where: string, scope: Scope):
-    tuple[rows: seq[Value], changes: int] =
+    tuple[rows: seq[Value], changes: int, mutated: bool] =
   var stmt: pointer
   var tail: cstring
   if gSqliteApi.prepare(db, sql.cstring, cint(sql.len), addr stmt,
@@ -5771,6 +5847,7 @@ proc sqliteRunStmt(db: pointer, sql: string, params: openArray[Value],
   if stmt == nil:
     raiseDbError(where & ": empty SQL statement", scope)
   defer: discard gSqliteApi.finalize(stmt)
+  result.mutated = gSqliteApi.stmtReadonly(stmt) == 0
   if tail != nil and ($tail).strip().len > 0:
     raiseDbError(where & " runs a single statement; use exec for scripts",
                  scope)
@@ -5821,7 +5898,8 @@ proc sqliteRunStmt(db: pointer, sql: string, params: openArray[Value],
       sqliteError(db, where, scope)
   result.changes = int(gSqliteApi.changes(db))
 
-proc sqliteExecScript(db: pointer, sql: string, where: string, scope: Scope) =
+proc sqliteExecScript(db: pointer, sql: string, where: string,
+                      scope: Scope): bool =
   ## Run a possibly multi-statement SQL script without parameters.
   var remaining = sql
   while remaining.strip().len > 0:
@@ -5832,6 +5910,8 @@ proc sqliteExecScript(db: pointer, sql: string, where: string, scope: Scope) =
       sqliteError(db, where, scope)
     let rest = if tail == nil: "" else: $tail
     if stmt != nil:
+      if gSqliteApi.stmtReadonly(stmt) == 0:
+        result = true
       while true:
         let rc = gSqliteApi.step(stmt)
         if rc == SQLITE_ROW:
@@ -5842,23 +5922,90 @@ proc sqliteExecScript(db: pointer, sql: string, where: string, scope: Scope) =
         break
     remaining = rest
 
+proc sqlitePersistenceContext(conn: Value, call: ptr NativeCall,
+                              scope: Scope): CapabilityContext =
+  var authorityCall =
+    if call == nil: NativeCall(dispatchScope: scope)
+    else: call[]
+  retainedResourceCapabilities("sqlite persistence", conn,
+                               addr authorityCall)
+
+proc sqlitePersist(conn: Value, db: pointer, call: ptr NativeCall,
+                   scope: Scope) =
+  let path = conn.props.getOrDefault("path", VOID)
+  if path.kind != vkString or path.strVal == ":memory:":
+    return
+  let context = sqlitePersistenceContext(conn, call, scope)
+  var size: int64
+  let data = gSqliteApi.serialize(db, "main".cstring, addr size, 0)
+  if data == nil or size < 0:
+    sqliteError(db, "sqlite persist", scope)
+  defer: gSqliteApi.free(data)
+  var content = newString(int(size))
+  if size > 0:
+    copyMem(addr content[0], data, int(size))
+  let app = scope.application()
+  try:
+    app.filesystemProvider.writeBytesAtomic(context, path.strVal, content)
+  except CatchableError as error:
+    raiseDbError("sqlite persist: " & error.msg, scope)
+
+proc sqlitePersistIfCommitted(conn: Value, db: pointer, mutated: bool,
+                              call: ptr NativeCall, scope: Scope) =
+  if mutated and gSqliteApi.getAutocommit(db) != 0:
+    sqlitePersist(conn, db, call, scope)
+
 proc biSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("sqlite/open", args)
   requireStr("sqlite/open path", args[0])
   let scope = if call == nil: nil else: call[].dispatchScope
+  var databasePath = args[0].strVal
+  var capabilityContext: CapabilityContext
+  var initialContent = ""
+  if databasePath != ":memory:":
+    databasePath = normalizedPath(absolutePath(databasePath))
+    let directory = parentDir(databasePath)
+    let grant = requireActiveCapability("sqlite/open", "fs/ReadWriteDir",
+      call, [capString(directory)])
+    capabilityContext = newCapabilityContext([grant])
+    let fs = activeFilesystem(call)
+    if fs.provider.pathExists(capabilityContext, databasePath):
+      discard fs.provider.realPath(capabilityContext, databasePath)
+      initialContent = fs.provider.readBytes(capabilityContext, databasePath)
   loadSqliteApi(scope)
   var db: pointer
-  if gSqliteApi.open(args[0].strVal.cstring, addr db) != SQLITE_OK:
+  if gSqliteApi.open(":memory:".cstring, addr db) != SQLITE_OK:
     let msg = if db == nil: "unknown sqlite error" else: $gSqliteApi.errmsg(db)
     if db != nil:
       type CloseProc = proc(p: pointer): cint {.cdecl.}
       discard cast[CloseProc](gSqliteApi.closeAddr)(db)
     raiseDbError("sqlite/open: " & msg, scope)
-  newNativeWrapper(builtInTypeHead(scope, "SqliteDb"),
+  if initialContent.len > 0:
+    const sqliteDeserializeFreeOnClose = 1'u32
+    const sqliteDeserializeResizable = 2'u32
+    let buffer = gSqliteApi.malloc64(uint64(initialContent.len))
+    if buffer == nil:
+      type CloseProc = proc(p: pointer): cint {.cdecl.}
+      discard cast[CloseProc](gSqliteApi.closeAddr)(db)
+      raiseDbError("sqlite/open: could not allocate the provider-backed image",
+                   scope)
+    copyMem(buffer, unsafeAddr initialContent[0], initialContent.len)
+    let rc = gSqliteApi.deserialize(db, "main".cstring, buffer,
+      int64(initialContent.len), int64(initialContent.len),
+      sqliteDeserializeFreeOnClose or sqliteDeserializeResizable)
+    if rc != SQLITE_OK:
+      let msg = $gSqliteApi.errmsg(db)
+      type CloseProc = proc(p: pointer): cint {.cdecl.}
+      discard cast[CloseProc](gSqliteApi.closeAddr)(db)
+      raiseDbError("sqlite/open: " & msg, scope)
+  let connection = newNativeWrapper(builtInTypeHead(scope, "SqliteDb"),
     {"handle": newCForeignOwnedPtr(db, gSqliteApi.closeAddr,
                                    targetType = newSym("sqlite3")),
      "backend": newStr("sqlite"),
-     "path": args[0]})
+     "path": newStr(databasePath)})
+  if capabilityContext != nil:
+    retainResourceCapabilities(scope, connection, capabilityContext)
+  connection
 
 proc biSqliteExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -5866,7 +6013,8 @@ proc biSqliteExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   requireStr("Db/exec sql", args[1])
   let scope = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/exec", args[0], scope)
-  sqliteExecScript(db, args[1].strVal, "Db/exec", scope)
+  let mutated = sqliteExecScript(db, args[1].strVal, "Db/exec", scope)
+  sqlitePersistIfCommitted(args[0], db, mutated, call, scope)
   NIL
 
 proc biSqliteQuery(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -5875,8 +6023,10 @@ proc biSqliteQuery(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
   requireStr("Db/query sql", args[1])
   let scope = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/query", args[0], scope)
-  newList(sqliteRunStmt(db, args[1].strVal, args[2..^1], "Db/query",
-                        scope).rows)
+  let resultSet = sqliteRunStmt(db, args[1].strVal, args[2..^1], "Db/query",
+                                scope)
+  sqlitePersistIfCommitted(args[0], db, resultSet.mutated, call, scope)
+  newList(resultSet.rows)
 
 proc biSqliteQueryOne(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len < 2:
@@ -5884,9 +6034,10 @@ proc biSqliteQueryOne(args: openArray[Value], call: ptr NativeCall): Value {.nim
   requireStr("Db/query_one sql", args[1])
   let scope = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/query_one", args[0], scope)
-  let rows = sqliteRunStmt(db, args[1].strVal, args[2..^1], "Db/query_one",
-                           scope).rows
-  if rows.len == 0: NIL else: rows[0]
+  let resultSet = sqliteRunStmt(db, args[1].strVal, args[2..^1],
+                                "Db/query_one", scope)
+  sqlitePersistIfCommitted(args[0], db, resultSet.mutated, call, scope)
+  if resultSet.rows.len == 0: NIL else: resultSet.rows[0]
 
 proc biSqliteExecute(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len < 2:
@@ -5894,8 +6045,10 @@ proc biSqliteExecute(args: openArray[Value], call: ptr NativeCall): Value {.nimc
   requireStr("Db/execute sql", args[1])
   let scope = if call == nil: nil else: call[].dispatchScope
   let db = sqliteHandle("Db/execute", args[0], scope)
-  newInt(sqliteRunStmt(db, args[1].strVal, args[2..^1], "Db/execute",
-                       scope).changes)
+  let resultSet = sqliteRunStmt(db, args[1].strVal, args[2..^1], "Db/execute",
+                                scope)
+  sqlitePersistIfCommitted(args[0], db, resultSet.mutated, call, scope)
+  newInt(resultSet.changes)
 
 proc biDbClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Db/close", args)
@@ -5905,8 +6058,14 @@ proc biDbClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
   let handle = args[0].props.getOrDefault("handle", VOID)
   if handle.kind != vkCPtr:
     raiseDbError("Db/close: connection has no native handle", scope)
+  if nativeReceiverIs(scope, args[0], "SqliteDb") and
+      not handle.cPtrClosed and
+      args[0].props.getOrDefault("path", VOID).kind == vkString and
+      args[0].props["path"].strVal != ":memory:":
+    sqlitePersist(args[0], handle.cPtrAddress, call, scope)
   if not handle.cPtrClosed:
     closeCPtr(handle)
+  releaseResourceCapabilities(scope, args[0])
   NIL
 
 proc biDbClosed(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
@@ -5938,10 +6097,13 @@ proc biSqliteTransaction(args: openArray[Value], call: ptr NativeCall): Value {.
   if args.len != 2:
     raise newException(GeneError, "Db/transaction expects (conn, fn)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  dbRunTransaction(args[0], args[1], scope,
+  let transactionResult = dbRunTransaction(args[0], args[1], scope,
     proc(conn: Value, sql: string, scope: Scope) =
-      sqliteExecScript(sqliteHandle("Db/transaction", conn, scope), sql,
-                       "Db/transaction", scope))
+      discard sqliteExecScript(sqliteHandle("Db/transaction", conn, scope), sql,
+                               "Db/transaction", scope))
+  let db = sqliteHandle("Db/transaction", args[0], scope)
+  sqlitePersist(args[0], db, call, scope)
+  transactionResult
 
 # -- postgres ----------------------------------------------------------------
 
@@ -6085,6 +6247,8 @@ proc biPostgresOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimca
   requireOne("postgres/open", args)
   requireStr("postgres/open conninfo", args[0])
   let scope = if call == nil: nil else: call[].dispatchScope
+  let grant = requireActiveCapability("postgres/open", "db/Postgres", call,
+    [capString(args[0].strVal)])
   loadPgApi(scope)
   let db = gPgApi.connectdb(args[0].strVal.cstring)
   if db == nil:
@@ -6094,10 +6258,13 @@ proc biPostgresOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimca
     type FinishProc = proc(p: pointer) {.cdecl.}
     cast[FinishProc](gPgApi.finishAddr)(db)
     raiseDbError("postgres/open: " & msg, scope)
-  newNativeWrapper(builtInTypeHead(scope, "PostgresDb"),
+  let connection = newNativeWrapper(builtInTypeHead(scope, "PostgresDb"),
     {"handle": newCForeignOwnedPtr(db, gPgApi.finishAddr,
                                    targetType = newSym("PGconn")),
-     "backend": newStr("postgres")})
+     "backend": newStr("postgres"),
+     "conninfo": args[0]})
+  retainResourceCapabilities(scope, connection, newCapabilityContext([grant]))
+  connection
 
 proc biPostgresExec(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -6245,6 +6412,7 @@ proc biCryptoSha256(args: openArray[Value], call: ptr NativeCall): Value {.nimca
 
 proc biCryptoRandomHex(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("crypto/random_hex", args)
+  discard requireActiveCapability("crypto/random_hex", "crypto/Random", call)
   let size = requireInt64("crypto/random_hex", args[0])
   if size < 1 or size > 1024:
     raise newException(GeneError,
@@ -6278,40 +6446,6 @@ proc biCryptoSecureEqual(args: openArray[Value], call: ptr NativeCall): Value {.
     let b = if i < right.len: ord(right[i]) else: 0
     difference = difference or (a xor b)
   newBool(difference == 0)
-
-proc storeOwnerOnly(path: string, directory = false) =
-  try:
-    if directory:
-      setFilePermissions(path, {fpUserRead, fpUserWrite, fpUserExec})
-    else:
-      setFilePermissions(path, {fpUserRead, fpUserWrite})
-  except OSError:
-    discard
-
-proc storeFsync(path: string, directory = false) =
-  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-    let fd = posix.open(path.cstring, O_RDONLY)
-    if fd >= 0:
-      discard posix.fsync(fd)
-      discard posix.close(fd)
-
-proc storeWriteDurable(path, data: string) =
-  writeFile(path, data)
-  storeOwnerOnly(path)
-  storeFsync(path)
-
-when defined(posix):
-  proc storeCRename(source, destination: cstring): cint
-    {.importc: "rename", header: "<stdio.h>".}
-
-proc storeReplaceFile(source, destination: string) =
-  when defined(posix):
-    if storeCRename(source.cstring, destination.cstring) != 0:
-      raiseOSError(osLastError())
-  else:
-    if fileExists(destination):
-      removeFile(destination)
-    moveFile(source, destination)
 
 proc storeGenerationName(generation: int64): string =
   align($generation, 20, '0')
@@ -6376,7 +6510,8 @@ proc storeSqlIdent(scope: Scope, ident, label: string): string =
         "invalid SQL identifier for " & label)
   ident
 
-proc storeRequire(scope: Scope, value: Value): string =
+proc storeRequire(scope: Scope, value: Value,
+                  call: ptr NativeCall = nil): string =
   if value.kind != vkNode or value.head.kind != vkType:
     raiseStoreError(scope, "closed", "Store operation expects a Store")
   # Backend selection reads the name, but admission is by canonical Type
@@ -6387,10 +6522,17 @@ proc storeRequire(scope: Scope, value: Value): string =
     else: ""
   if name.len == 0:
     raiseStoreError(scope, "closed", "Store operation expects a Store")
+  if name == "FsStore" and call != nil:
+    discard retainedResourceCapabilities("Store", value, call)
   let closed = value.props.getOrDefault("closed", NIL)
   if closed.kind == vkCell and closed.cellValue.isTruthy:
     raiseStoreError(scope, "closed", "store is closed")
   name
+
+proc storeFilesystemAccess(store: Value, call: ptr NativeCall):
+    tuple[provider: FilesystemProvider, context: CapabilityContext] =
+  let active = activeFilesystem(call)
+  (active.provider, retainedResourceCapabilities("Store", store, call))
 
 proc storeClose(store: Value) =
   let closed = store.props.getOrDefault("closed", NIL)
@@ -6439,15 +6581,9 @@ proc storeSqliteDb(store: Value, scope: Scope): pointer =
   let dbVal = store.props.getOrDefault("db", NIL)
   sqliteHandle("Store/sqlite", dbVal, scope)
 
-proc storeSqliteOwnerOnly(store: Value) =
-  let dbValue = store.props.getOrDefault("db", VOID)
-  if dbValue.kind == vkNode:
-    let path = dbValue.props.getOrDefault("path", VOID)
-    if path.kind == vkString and path.strVal != ":memory:":
-      storeOwnerOnly(path.strVal)
-      for suffix in ["-wal", "-shm", "-journal"]:
-        if fileExists(path.strVal & suffix):
-          storeOwnerOnly(path.strVal & suffix)
+proc storeSqlitePersist(store: Value, db: pointer, mutated: bool,
+                        call: ptr NativeCall, scope: Scope) =
+  sqlitePersistIfCommitted(store.props["db"], db, mutated, call, scope)
 
 proc storeSqliteTable(store: Value): tuple[tableName, keyColumn, dataColumn: string] =
   (store.props["table"].strVal,
@@ -6455,7 +6591,7 @@ proc storeSqliteTable(store: Value): tuple[tableName, keyColumn, dataColumn: str
    store.props["data_column"].strVal)
 
 proc storeSqliteEnsureSchema(db: pointer, tableName, keyColumn,
-                             dataColumn: string, scope: Scope) =
+                             dataColumn: string, scope: Scope): bool =
   sqliteExecScript(db, "create table if not exists " & tableName &
     " (" & keyColumn & " text primary key, " & dataColumn & " text not null)",
     "store/sqlite/open", scope)
@@ -6486,14 +6622,10 @@ proc biStoreSqliteOpen(args: openArray[Value], call: ptr NativeCall): Value {.ni
     if name notin ["table", "key_column", "data_column", "mode", "policy"]:
       raiseStoreError(scope, "invalid_key",
         "store/sqlite/open got unexpected named argument: " & name)
-  storeSqliteEnsureSchema(sqliteHandle("store/sqlite/open", args[0], scope),
-                          tableName, keyColumn, dataColumn, scope)
-  let databasePath = args[0].props.getOrDefault("path", VOID)
-  if databasePath.kind == vkString:
-    storeOwnerOnly(databasePath.strVal)
-    for suffix in ["-wal", "-shm", "-journal"]:
-      if fileExists(databasePath.strVal & suffix):
-        storeOwnerOnly(databasePath.strVal & suffix)
+  let db = sqliteHandle("store/sqlite/open", args[0], scope)
+  let schemaMutated = storeSqliteEnsureSchema(db, tableName, keyColumn,
+                                               dataColumn, scope)
+  sqlitePersistIfCommitted(args[0], db, schemaMutated, call, scope)
   newNativeWrapper(builtInTypeHead(scope, "SqliteStore"),
     {"db": args[0],
      "table": newStr(tableName),
@@ -6507,7 +6639,7 @@ proc biStorePut(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   if args.len != 3:
     raise newException(GeneError, "Store/put expects (store, key, value)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  let kind = storeRequire(scope, args[0])
+  let kind = storeRequire(scope, args[0], call)
   requireStr("Store/put key", args[1])
   let key = args[1].strVal
   storeValidateKey(scope, key)
@@ -6516,18 +6648,16 @@ proc biStorePut(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   if kind == "SqliteStore":
     let db = storeSqliteDb(args[0], scope)
     let names = storeSqliteTable(args[0])
-    discard sqliteRunStmt(db, "insert or replace into " & names.tableName &
+    let resultSet = sqliteRunStmt(db, "insert or replace into " & names.tableName &
       "(" & names.keyColumn & ", " & names.dataColumn & ") values (?, ?)",
       [newStr(key), newStr(data)], "Store/put", scope)
-    storeSqliteOwnerOnly(args[0])
+    storeSqlitePersist(args[0], db, resultSet.mutated, call, scope)
   else:
     let root = args[0].props["root"].strVal
     let path = root / (urlEncodeComponent(key) & ".gene")
     try:
-      let temporary = path & ".tmp-" & $getCurrentProcessId()
-      storeWriteDurable(temporary, data)
-      storeReplaceFile(temporary, path)
-      storeFsync(root, directory = true)
+      let fs = storeFilesystemAccess(args[0], call)
+      fs.provider.writeTextAtomic(fs.context, path, data)
     except IOError as e:
       raiseStoreError(scope, "io", "Store/put: " & e.msg, key)
     except OSError as e:
@@ -6538,7 +6668,7 @@ proc biStoreGet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   if args.len != 2:
     raise newException(GeneError, "Store/get expects (store, key)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  let kind = storeRequire(scope, args[0])
+  let kind = storeRequire(scope, args[0], call)
   requireStr("Store/get key", args[1])
   let key = args[1].strVal
   storeValidateKey(scope, key)
@@ -6562,12 +6692,13 @@ proc biStoreGet(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   else:
     let root = args[0].props["root"].strVal
     let path = root / (urlEncodeComponent(key) & ".gene")
-    if fileExists(path):
-      try:
-        text = readFile(path)
+    try:
+      let fs = storeFilesystemAccess(args[0], call)
+      if fs.provider.pathExists(fs.context, path):
+        text = fs.provider.readText(fs.context, path)
         found = true
-      except IOError as e:
-        raiseStoreError(scope, "io", "Store/get: " & e.msg, key)
+    except CatchableError as e:
+      raiseStoreError(scope, "io", "Store/get: " & e.msg, key)
   if not found:
     if named.hasArg("default"):
       return named.getArg("default")
@@ -6578,7 +6709,7 @@ proc biStoreHas(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
   if args.len != 2:
     raise newException(GeneError, "Store/has? expects (store, key)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  let kind = storeRequire(scope, args[0])
+  let kind = storeRequire(scope, args[0], call)
   requireStr("Store/has? key", args[1])
   let key = args[1].strVal
   storeValidateKey(scope, key)
@@ -6591,27 +6722,30 @@ proc biStoreHas(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.}
     if row.len > 0: TRUE else: FALSE
   else:
     let path = args[0].props["root"].strVal / (urlEncodeComponent(key) & ".gene")
-    if fileExists(path): TRUE else: FALSE
+    let fs = storeFilesystemAccess(args[0], call)
+    newBool(fs.provider.pathExists(fs.context, path))
 
 proc biStoreDelete(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "Store/delete expects (store, key)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  let kind = storeRequire(scope, args[0])
+  let kind = storeRequire(scope, args[0], call)
   requireStr("Store/delete key", args[1])
   let key = args[1].strVal
   storeValidateKey(scope, key)
   if kind == "SqliteStore":
     let db = storeSqliteDb(args[0], scope)
     let names = storeSqliteTable(args[0])
-    discard sqliteRunStmt(db, "delete from " & names.tableName & " where " &
+    let resultSet = sqliteRunStmt(db, "delete from " & names.tableName & " where " &
       names.keyColumn & " = ?", [newStr(key)], "Store/delete", scope)
+    storeSqlitePersist(args[0], db, resultSet.mutated, call, scope)
   else:
     let path = args[0].props["root"].strVal / (urlEncodeComponent(key) & ".gene")
     try:
-      if fileExists(path):
-        removeFile(path)
-    except OSError as e:
+      let fs = storeFilesystemAccess(args[0], call)
+      if fs.provider.pathExists(fs.context, path):
+        fs.provider.removeFile(fs.context, path)
+    except CatchableError as e:
       raiseStoreError(scope, "io", "Store/delete: " & e.msg, key)
   NIL
 
@@ -6630,7 +6764,7 @@ proc storeKeyFromFsName(scope: Scope, name: string): tuple[ok: bool, key: string
 proc biStoreKeys(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Store/keys", args)
   let scope = if call == nil: nil else: call[].dispatchScope
-  let kind = storeRequire(scope, args[0])
+  let kind = storeRequire(scope, args[0], call)
   var keys: seq[Value]
   if kind == "SqliteStore":
     let db = storeSqliteDb(args[0], scope)
@@ -6643,33 +6777,34 @@ proc biStoreKeys(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.
   else:
     let root = args[0].props["root"].strVal
     try:
-      for kind, path in walkDir(root, relative = true):
-        if kind == pcFile:
-          let decoded = storeKeyFromFsName(scope, path)
-          if decoded.ok:
-            keys.add newStr(decoded.key)
-    except OSError as e:
+      let fs = storeFilesystemAccess(args[0], call)
+      for path in fs.provider.listDir(fs.context, root):
+        let decoded = storeKeyFromFsName(scope, path)
+        if decoded.ok:
+          keys.add newStr(decoded.key)
+    except CatchableError as e:
       raiseStoreError(scope, "io", "Store/keys: " & e.msg)
   newList(keys)
 
 proc biStoreClear(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Store/clear", args)
   let scope = if call == nil: nil else: call[].dispatchScope
-  let kind = storeRequire(scope, args[0])
+  let kind = storeRequire(scope, args[0], call)
   if kind == "SqliteStore":
     let db = storeSqliteDb(args[0], scope)
     let names = storeSqliteTable(args[0])
-    discard sqliteRunStmt(db, "delete from " & names.tableName, [],
-                          "Store/clear", scope)
+    let resultSet = sqliteRunStmt(db, "delete from " & names.tableName, [],
+                                  "Store/clear", scope)
+    storeSqlitePersist(args[0], db, resultSet.mutated, call, scope)
   else:
     let root = args[0].props["root"].strVal
     try:
-      for kind, path in walkDir(root, relative = true):
-        if kind == pcFile:
-          let decoded = storeKeyFromFsName(scope, path)
-          if decoded.ok:
-            removeFile(root / path)
-    except OSError as e:
+      let fs = storeFilesystemAccess(args[0], call)
+      for path in fs.provider.listDir(fs.context, root):
+        let decoded = storeKeyFromFsName(scope, path)
+        if decoded.ok:
+          fs.provider.removeFile(fs.context, root / path)
+    except CatchableError as e:
       raiseStoreError(scope, "io", "Store/clear: " & e.msg)
   NIL
 
@@ -6715,56 +6850,66 @@ proc storeDecodeCheckpoint(scope: Scope, store: Value, generation: int64,
 
 proc storeFilesystemCheckpoint(scope: Scope, store: Value, generation: int64,
                                encoded: seq[(string, string)],
-                               manifestText: string) =
+                               manifestText: string,
+                               call: ptr NativeCall) =
+  let fs = storeFilesystemAccess(store, call)
   let root = store.props["root"].strVal
   let generations = root / "generations"
-  createDir(generations)
-  storeOwnerOnly(root, directory = true)
-  storeOwnerOnly(generations, directory = true)
   let generationName = storeGenerationName(generation)
   let finalDir = generations / generationName
-  let tempDir = generations / (".tmp-" & generationName & "-" &
-    $getCurrentProcessId())
-  if dirExists(tempDir):
-    removeDir(tempDir)
-  if dirExists(finalDir):
+  var generationExists = false
+  try:
+    fs.provider.makeDir(fs.context, generations)
+    generationExists = fs.provider.pathExists(fs.context, finalDir)
+  except CatchableError as e:
+    raiseStoreError(scope, "io", "Store/checkpoint: " & e.msg)
+  if generationExists:
     raiseStoreError(scope, "conflict",
       "checkpoint generation already exists: " & $generation)
-  createDir(tempDir)
-  storeOwnerOnly(tempDir, directory = true)
   try:
+    # A generation becomes readable only when MANIFEST.gene is published.
+    # Building directly in the final, generation-unique directory avoids a
+    # path-level directory rename while keeping interrupted writes invisible.
+    fs.provider.makeDir(fs.context, finalDir)
     for (name, data) in encoded:
-      storeWriteDurable(tempDir / (urlEncodeComponent(name) & ".gene"), data)
-    storeWriteDurable(tempDir / "MANIFEST.gene", manifestText)
-    storeFsync(tempDir, directory = true)
-    storeReplaceFile(tempDir, finalDir)
-    storeFsync(generations, directory = true)
-    let currentTemp = root / (".CURRENT-" & $getCurrentProcessId())
-    storeWriteDurable(currentTemp, generationName & "\n")
-    storeReplaceFile(currentTemp, root / "CURRENT")
-    storeFsync(root, directory = true)
-  except OSError as e:
-    if dirExists(tempDir):
-      try: removeDir(tempDir)
-      except OSError: discard
+      fs.provider.writeTextAtomic(fs.context,
+        finalDir / (urlEncodeComponent(name) & ".gene"), data)
+    fs.provider.writeTextAtomic(fs.context, finalDir / "MANIFEST.gene",
+                                manifestText)
+    fs.provider.writeTextAtomic(fs.context, root / "CURRENT",
+                                generationName & "\n")
+  except CatchableError as e:
     raiseStoreError(scope, "io", "Store/checkpoint: " & e.msg)
 
   var complete: seq[string]
-  for kind, path in walkDir(generations, relative = true):
-    if kind == pcDir and not path.startsWith(".tmp-"):
-      complete.add path
+  try:
+    for name in fs.provider.listDir(fs.context, generations):
+      if name.len == 20 and name.allCharsInSet({'0'..'9'}) and
+          fs.provider.pathExists(fs.context,
+            generations / name / "MANIFEST.gene"):
+        complete.add name
+  except CatchableError as e:
+    raiseStoreError(scope, "io", "Store/checkpoint: " & e.msg)
   complete.sort(SortOrder.Descending)
   if complete.len > storeCheckpointRetain:
     for name in complete[storeCheckpointRetain .. ^1]:
-      try: removeDir(generations / name)
-      except OSError: discard
+      let oldDir = generations / name
+      try:
+        for entry in fs.provider.listDir(fs.context, oldDir):
+          fs.provider.removeFile(fs.context, oldDir / entry)
+        fs.provider.removeDir(fs.context, oldDir)
+      except CatchableError:
+        # Retention is best effort. A concurrent reader or an unexpected entry
+        # may keep an old, complete generation alive without harming CURRENT.
+        discard
 
 proc storeSqliteCheckpoint(scope: Scope, store: Value, generation: int64,
                            encoded: seq[(string, string)],
-                           manifestText: string) =
+                           manifestText: string,
+                           call: ptr NativeCall) =
   let db = storeSqliteDb(store, scope)
   let names = storeSqliteTable(store)
-  sqliteExecScript(db, "BEGIN IMMEDIATE", "Store/checkpoint", scope)
+  discard sqliteExecScript(db, "BEGIN IMMEDIATE", "Store/checkpoint", scope)
   try:
     for (name, data) in encoded:
       discard sqliteRunStmt(db, "insert or replace into " & names.tableName &
@@ -6779,10 +6924,10 @@ proc storeSqliteCheckpoint(scope: Scope, store: Value, generation: int64,
       "(" & names.keyColumn & ", " & names.dataColumn & ") values (?, ?)",
       [newStr("checkpoint/CURRENT"), newStr(storeGenerationName(generation))],
       "Store/checkpoint", scope)
-    sqliteExecScript(db, "COMMIT", "Store/checkpoint", scope)
-    storeSqliteOwnerOnly(store)
+    discard sqliteExecScript(db, "COMMIT", "Store/checkpoint", scope)
+    storeSqlitePersist(store, db, true, call, scope)
   except GeneError, GenePanic:
-    try: sqliteExecScript(db, "ROLLBACK", "Store/checkpoint", scope)
+    try: discard sqliteExecScript(db, "ROLLBACK", "Store/checkpoint", scope)
     except GeneError: discard
     raise
 
@@ -6797,13 +6942,14 @@ proc storeSqliteCheckpoint(scope: Scope, store: Value, generation: int64,
       discard sqliteRunStmt(db, "delete from " & names.tableName & " where " &
         names.keyColumn & " like ?", [newStr(prefix & "%")],
         "Store/checkpoint", scope)
+    storeSqlitePersist(store, db, true, call, scope)
 
 proc biStoreCheckpoint(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError,
       "Store/checkpoint expects (store, generation, records)")
   let scope = if call == nil: nil else: call[].dispatchScope
-  let kind = storeRequire(scope, args[0])
+  let kind = storeRequire(scope, args[0], call)
   if args[1].kind != vkInt or args[1].intVal < 1:
     raiseStoreError(scope, "invalid_key",
       "Store/checkpoint generation must be a positive Int")
@@ -6818,19 +6964,26 @@ proc biStoreCheckpoint(args: openArray[Value], call: ptr NativeCall): Value {.ni
     encoded.add (name, storeEncode(scope, mode, value))
   let manifestText = storeCheckpointManifest(scope, generation, encoded)
   if kind == "SqliteStore":
-    storeSqliteCheckpoint(scope, args[0], generation, encoded, manifestText)
+    storeSqliteCheckpoint(scope, args[0], generation, encoded, manifestText,
+                          call)
   else:
-    storeFilesystemCheckpoint(scope, args[0], generation, encoded, manifestText)
+    storeFilesystemCheckpoint(scope, args[0], generation, encoded,
+                              manifestText, call)
   newInt(generation)
 
-proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value): Value =
+proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value,
+                                   call: ptr NativeCall): Value =
+  let fs = storeFilesystemAccess(store, call)
   let generations = store.props["root"].strVal / "generations"
-  if not dirExists(generations):
-    return NIL
   var candidates: seq[string]
-  for kind, path in walkDir(generations, relative = true):
-    if kind == pcDir and not path.startsWith(".tmp-"):
-      candidates.add path
+  try:
+    if not fs.provider.pathExists(fs.context, generations):
+      return NIL
+    for name in fs.provider.listDir(fs.context, generations):
+      if name.len == 20 and name.allCharsInSet({'0'..'9'}):
+        candidates.add name
+  except CatchableError as e:
+    raiseStoreError(scope, "io", "Store/load_checkpoint: " & e.msg)
   candidates.sort(SortOrder.Descending)
   for name in candidates:
     var generation: int64
@@ -6838,10 +6991,10 @@ proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value): Value =
     except ValueError: continue
     let dir = generations / name
     let manifestPath = dir / "MANIFEST.gene"
-    if not fileExists(manifestPath):
-      continue
     try:
-      let manifestText = readFile(manifestPath)
+      if not fs.provider.pathExists(fs.context, manifestPath):
+        continue
+      let manifestText = fs.provider.readText(fs.context, manifestPath)
       let manifest = storeDecode(scope, "data", manifestText, NIL, "manifest")
       if manifest.kind != vkMap:
         continue
@@ -6852,16 +7005,16 @@ proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value): Value =
       var complete = true
       for recordName, _ in hashes.mapEntries:
         let path = dir / (urlEncodeComponent(recordName) & ".gene")
-        if not fileExists(path):
+        if not fs.provider.pathExists(fs.context, path):
           complete = false
           break
-        encoded[recordName] = readFile(path)
+        encoded[recordName] = fs.provider.readText(fs.context, path)
       if complete:
         let loaded = storeDecodeCheckpoint(scope, store, generation,
                                            manifestText, encoded)
         if loaded.kind != vkVoid:
           return loaded
-    except GeneError, IOError, OSError:
+    except GeneError, IOError, OSError, FilesystemCapabilityError:
       discard
   NIL
 
@@ -6911,30 +7064,33 @@ proc storeLoadSqliteCheckpoint(scope: Scope, store: Value): Value =
 proc biStoreLoadCheckpoint(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Store/load_checkpoint", args)
   let scope = if call == nil: nil else: call[].dispatchScope
-  let kind = storeRequire(scope, args[0])
+  let kind = storeRequire(scope, args[0], call)
   if kind == "SqliteStore":
     storeLoadSqliteCheckpoint(scope, args[0])
   else:
-    storeLoadFilesystemCheckpoint(scope, args[0])
+    storeLoadFilesystemCheckpoint(scope, args[0], call)
 
 proc biStoreClose(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Store/close", args)
   let scope = if call == nil: nil else: call[].dispatchScope
-  discard storeRequire(scope, args[0])
+  let kind = storeRequire(scope, args[0])
   storeClose(args[0])
+  if kind == "FsStore":
+    releaseResourceCapabilities(scope, args[0])
   NIL
 
 proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
-  requireOne("store/fs/open", args)
+  if args.len != 0:
+    raise newException(GeneError, "store/fs/open expects no positional arguments")
   let scope = if call == nil: nil else: call[].dispatchScope
-  requireFsReadDir("store/fs/open", args[0])
-  requireFsWriteDir("store/fs/open", args[0])
   let named = storeNamed(call)
   if not named.hasArg("root"):
     raiseStoreError(scope, "invalid_key", "store/fs/open requires ^root")
   let rootVal = named.getArg("root")
   requireStr("store/fs/open ^root", rootVal)
   let root = rootVal.strVal
+  let grant = requireActiveCapability("store/fs/open", "fs/ReadWriteDir",
+                                      call, [capString(root)])
   let mode = if named.hasArg("mode"):
       storeModeText(scope, named.getArg("mode"))
     else:
@@ -6945,16 +7101,18 @@ proc biStoreFsOpen(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
       raiseStoreError(scope, "invalid_key",
         "store/fs/open got unexpected named argument: " & name)
   try:
-    createDir(root)
-    storeOwnerOnly(root, directory = true)
-  except OSError as e:
+    let fs = activeFilesystem(call)
+    fs.provider.makeDir(fs.context, root)
+    fs.provider.restrictDirToOwner(fs.context, root)
+  except CatchableError as e:
     raiseStoreError(scope, "io", "store/fs/open: " & e.msg)
-  newNativeWrapper(builtInTypeHead(scope, "FsStore"),
-    {"fs": args[0],
-     "root": newStr(root),
+  let store = newNativeWrapper(builtInTypeHead(scope, "FsStore"),
+    {"root": newStr(root),
      "mode": newSym(mode),
      "policy": policy,
      "closed": newCell(FALSE)})
+  retainResourceCapabilities(scope, store, newCapabilityContext([grant]))
+  store
 
 ## typed_native AOT loading (docs/proposals/native-type.md §6.4).
 ##
@@ -6967,6 +7125,7 @@ type AotEntryBinding = object
   ## check the ABI epoch without a second lookup.
   entry: AotEntryProc
   module: AotModuleRequirements
+  capabilityContext: CapabilityContext
 
 var aotEntries: Table[string, AotEntryBinding]
 var aotModuleHandles: seq[LibHandle]
@@ -6981,6 +7140,8 @@ proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
     raise newException(GeneError,
       "no AOT entry registered for '" & name.rsplit('\x1f', 1)[^1] & "'")
   let binding = aotEntries[name]
+  discard requireRetainedCapabilities("aot/entry", call,
+                                      binding.capabilityContext)
   ## The ABI guard, and the single chokepoint for it: every callable `aot/load`
   ## hands out is bound to this proc. Load-time validation is a snapshot, so a
   ## Type re-registered afterwards — same identity, different ABI or policy —
@@ -7005,7 +7166,7 @@ proc aotEntryDispatch(args: openArray[Value], call: ptr NativeCall): Value
       else: "AOT entry '" & name & "' failed with status " & $status)
   value
 
-proc biAotLoad(args: openArray[Value]): Value =
+proc biAotLoad(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   ## `(aot/load "path")` — open a typed_native AOT library and return a map of
   ## `name -> callable` for every function that carries a `^native_entry`
   ## adapter. Functions compiled without one are present in the manifest but
@@ -7014,6 +7175,9 @@ proc biAotLoad(args: openArray[Value]): Value =
   if args.len != 1 or args[0].kind != vkString:
     raise newException(GeneError, "aot/load expects one Str path")
   let path = args[0].strVal
+  let grant = requireActiveCapability("aot/load", "ffi/Load", call,
+                                      [capString(path)])
+  let capabilityContext = newCapabilityContext([grant])
   let handle = loadLib(path)
   if handle == nil:
     raise newException(GeneError, "could not load AOT library: " & path)
@@ -7157,11 +7321,13 @@ proc biAotLoad(args: openArray[Value]): Value =
   commitAotMeasuredLayouts(measured)
   moduleRequirements = registerAotModuleRequirements(path, requirements)
   for (key, entry) in stagedEntries:
-    aotEntries[key] = AotEntryBinding(entry: entry, module: moduleRequirements)
+    aotEntries[key] = AotEntryBinding(entry: entry,
+      module: moduleRequirements, capabilityContext: capabilityContext)
   aotModuleHandles.add handle
   newMap(entries)
 
 proc registerStdlibNamespaces(root: Scope) =
+  let app = root.application()
   ## Define the importable stdlib namespaces (gene/*, str, html, url, net/http,
   ## db, db/sqlite, db/postgres) and their error types on the built-ins root
   ## scope. Every namespace is also reachable under the `gene` root registered
@@ -7347,7 +7513,8 @@ proc registerStdlibNamespaces(root: Scope) =
   strScope.define("contains?", newNativeFn("str/contains?", biStrContains))
   root.define("str", newNamespace("str", strScope))
   let aotScope = newScope(root)
-  aotScope.define("load", newNativeFn("aot/load", biAotLoad))
+  aotScope.define("load", newNativeCallFn("aot/load", biAotLoad,
+                                           acceptsNamed = false))
   root.define("aot", newNamespace("aot", aotScope))
   let htmlScope = newScope(root)
   htmlScope.define("escape", newNativeFn("html/escape", biHtmlEscape))
@@ -7469,7 +7636,8 @@ proc registerStdlibNamespaces(root: Scope) =
                                                acceptsNamed = false))
   httpScope.define("HttpError", root.vars["HttpError"])
   let httpClientScope = newScope(root)
-  httpClientScope.define("Http", newCapability("net/Http"))
+  httpClientScope.define("Http",
+    newCapability(app.hostCapabilityProvider.types.netHttp))
   httpClientScope.define("request",
     newNativeCallFn("net/http_client/request", biHttpClientRequest))
   httpClientScope.define("stream",
@@ -7499,6 +7667,8 @@ proc registerStdlibNamespaces(root: Scope) =
   let dbScope = newScope(root)
   dbScope.define("Db", dbProtocol)
   dbScope.define("DbError", dbError)
+  dbScope.define("Postgres",
+    newCapability(app.hostCapabilityProvider.types.dbPostgres))
   # Native wrappers (design §16.6): the props hold an owned connection pointer,
   # so only the backend's `open` may create one. The marker is what rejects
   # `(SqliteDb)`, a value that would pass the nominal boundary and fail only at
@@ -7520,6 +7690,8 @@ proc registerStdlibNamespaces(root: Scope) =
   let postgresDbType = newType("PostgresDb", NIL,
     @[ownedHandleField(root, "PGconn"),
       TypeField(name: "backend", optional: false, typeExpr: newSym("Str"),
+                scope: root),
+      TypeField(name: "conninfo", optional: false, typeExpr: newSym("Str"),
                 scope: root)],
     @[dbProtocol], root, repr = trNativeWrapper)
   root.define("PostgresDb", postgresDbType)
@@ -7613,7 +7785,7 @@ proc registerStdlibNamespaces(root: Scope) =
       storeField("closed", "Any")],
     @[storeProtocol], root, repr = trNativeWrapper)
   let fsStoreType = newType("FsStore", NIL,
-    @[storeField("fs", "Any"), storeField("root", "Str"),
+    @[storeField("root", "Str"),
       storeField("mode", "Sym"), storeField("policy", "Any"),
       storeField("closed", "Any")],
     @[storeProtocol], root, repr = trNativeWrapper)
@@ -7696,6 +7868,8 @@ proc registerStdlibNamespaces(root: Scope) =
   root.define("store", newNamespace("store", storeScope))
 
   let cryptoScope = newScope(root)
+  cryptoScope.define("Random",
+    newCapability(app.hostCapabilityProvider.types.cryptoRandom))
   cryptoScope.define("sha256", newNativeCallFn("crypto/sha256",
                                                biCryptoSha256,
                                                acceptsNamed = false))
@@ -7710,15 +7884,18 @@ proc registerStdlibNamespaces(root: Scope) =
   # os: env, subprocess, line input (examples/ai_agent/design.md §3,§6). Capabilities are
   # ambient values like net/Connect; a launcher can withhold them.
   let osScope = newScope(root)
-  osScope.define("Env", newCapability("Os/Env"))
-  osScope.define("Exec", newCapability("Os/Exec"))
-  osScope.define("Pty", newCapability("Os/Pty"))
+  osScope.define("Env", newCapability(app.hostCapabilityProvider.types.osEnv))
+  osScope.define("Exec", newCapability(app.hostCapabilityProvider.types.osExec))
+  osScope.define("Pty", newCapability(app.hostCapabilityProvider.types.osPty))
+  osScope.define("Process",
+    newCapability(app.hostCapabilityProvider.types.osProcess))
   osScope.define("get_env", newNativeCallFn("os/get_env", biOsGetEnv,
                  acceptsNamed = false))
   osScope.define("env?", newNativeCallFn("os/env?", biOsEnvOpt,
                  acceptsNamed = false))
   osScope.define("executable_path",
-                 newNativeFn("os/executable_path", biOsExecutablePath))
+                 newNativeCallFn("os/executable_path", biOsExecutablePath,
+                                 acceptsNamed = false))
   osScope.define("exec", newNativeCallFn("os/exec", biOsExec))
   osScope.define("exec_stream", newNativeCallFn("os/exec_stream", biOsExecStream))
   osScope.define("exec_stdio", newNativeCallFn("os/exec_stdio", biOsExecStdio))
@@ -7734,9 +7911,11 @@ proc registerStdlibNamespaces(root: Scope) =
   osScope.define("end_interrupt",
                  newNativeFn("os/end_interrupt", biOsEndInterrupt))
   osScope.define("monotonic_ms",
-                 newNativeFn("os/monotonic_ms", biOsMonotonicMs))
+                 newNativeCallFn("os/monotonic_ms", biOsMonotonicMs,
+                                 acceptsNamed = false))
   osScope.define("process_id",
-                 newNativeFn("os/process_id", biOsProcessId))
+                 newNativeCallFn("os/process_id", biOsProcessId,
+                                 acceptsNamed = false))
   osScope.define("stdin_tty?", newNativeFn("os/stdin_tty?", biOsStdinTty))
   osScope.define("read_line", newNativeFn("os/read_line", biOsReadLine))
   osScope.define("read_input", newNativeCallFn("os/read_input", biOsReadInput))

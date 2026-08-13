@@ -5,7 +5,7 @@
 # blow-up is 64x the atlas and encoding it costs far more than everything else
 # the build does put together. The art only needs reviewing when it changes.
 #
-#   gene run preview --grant out=$fs/WriteDir
+#   gene run preview
 
 (mod preview)
 
@@ -16,7 +16,7 @@
 
 (fn round_half [v : Float] : Int ($to_int ($math/floor (+ v 0.5))))
 
-(fn main [args, ^out : Capability] : Nil
+(fn main [args] : Nil
   (var atlas (build))
   (var pw (* atlas_width scale))
   (var ph (* atlas_height scale))
@@ -47,5 +47,5 @@
       (px ~ push 255)
       (set x (+ x 1)))
     (set y (+ y 1)))
-  ($fs/write_bytes out "assets/tiles_preview.png" (encode pw ph px))
+  ($fs/write_bytes "assets/tiles_preview.png" (encode pw ph px))
   ($println $"wrote assets/tiles_preview.png (${pw}x${ph} review blow-up)"))

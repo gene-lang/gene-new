@@ -287,10 +287,9 @@ def run_kernel(
         + [
                 str(GENE),
                 "run",
+                "--allow_read_dir",
+                str(suite_path.parent),
                 str(KERNEL),
-                "--grant",
-                "suites=$fs/ReadDir",
-                "--",
                 candidate_source,
                 str(suite_path),
         ],

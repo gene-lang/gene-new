@@ -22,7 +22,7 @@
             begin_interrupt take_interrupt end_interrupt
             monotonic_ms process_id
             stdin_tty? read_line
-            Env Exec Pty OsError])
+            Pty OsError])
 (import $terminal [open : terminal_open close : terminal_close
                   next_update : terminal_next_update
                   snapshot : terminal_snapshot
@@ -40,9 +40,8 @@
              slice_bytes])
 (import gene/stream [to_stream map filter take into each])
 (import gene/parse [parse_int read_all ParseError])
-(import $fs [read_text write_text exists? remove list_dir real_path
-            ReadDir WriteDir ReadWriteDir])
-(import $net/http_client [Http stream HttpClientError])
+(import $fs [read_text write_text exists? remove list_dir real_path])
+(import $net/http_client [stream HttpClientError])
 (import $db/sqlite [open : sqlite_open DbError Db])
 (import $store/fs [open : store_fs_open StoreError Store])
 (import $store/sqlite [open : store_sqlite_open])
@@ -120,24 +119,24 @@
 # Config (all from the environment; nothing hard-coded).
 # -----------------------------------------------------------------------------
 
-(var auth_token (env? Env "OPENAI_AUTH_TOKEN"))
+(var auth_token (env? "OPENAI_AUTH_TOKEN"))
 (if (== auth_token nil)
-  (set auth_token (env? Env "OPENAI_API_KEY")))
+  (set auth_token (env? "OPENAI_API_KEY")))
 (if (== auth_token nil)
-  (set auth_token (env? Env "CODEX_ACCESS_TOKEN")))
+  (set auth_token (env? "CODEX_ACCESS_TOKEN")))
 (var codex_base "https://chatgpt.com/backend-api/codex")
-(var base    (get_env Env "OPENAI_BASE_URL" codex_base))
-(var model   (get_env Env "OPENAI_MODEL" "gpt-5.6-terra"))
+(var base    (get_env "OPENAI_BASE_URL" codex_base))
+(var model   (get_env "OPENAI_MODEL" "gpt-5.6-terra"))
 # Wire shape: the Codex backend speaks the Responses API; generic
 # OpenAI-compatible endpoints (MiniMax, DeepSeek, vLLM, ...) speak Chat
 # Completions. Default follows the backend; override with
 # OPENAI_API=responses|chat.
 (var api_flavor
-  (get_env Env "OPENAI_API" (if (== base codex_base) "responses" "chat")))
+  (get_env "OPENAI_API" (if (== base codex_base) "responses" "chat")))
 (var reasoning_effort_levels
   ["default" "none" "minimal" "low" "medium" "high" "xhigh" "max"])
 (var reasoning_effort_levels_text (join reasoning_effort_levels ", "))
-(var configured_reasoning_effort (env? Env "OPENAI_REASONING_EFFORT"))
+(var configured_reasoning_effort (env? "OPENAI_REASONING_EFFORT"))
 (var initial_reasoning_effort
   (if configured_reasoning_effort
     (lower (trim configured_reasoning_effort))
@@ -151,16 +150,16 @@
     ^message $"OPENAI_REASONING_EFFORT must be one of ${reasoning_effort_levels_text}")))
 (var reasoning_effort ($cell initial_reasoning_effort))
 (var workspace_root ".")
-(var approve_all (get_env Env "GENE_AGENT_APPROVE_ALL" "1"))
-(var agent_home (get_env Env "GENE_AGENT_HOME" ""))
-(var configured_agent_state (env? Env "GENE_AGENT_STATE"))
+(var approve_all (get_env "GENE_AGENT_APPROVE_ALL" "1"))
+(var agent_home (get_env "GENE_AGENT_HOME" ""))
+(var configured_agent_state (env? "GENE_AGENT_STATE"))
 (var agent_state_spec
   (if (&& configured_agent_state
           (!= (trim configured_agent_state) ""))
     configured_agent_state
     (if_not (== (trim agent_home) "") $"fs:${agent_home}")))
-(var agent_resume (get_env Env "GENE_AGENT_RESUME" "1"))
-(var guard_flag (get_env Env "GENE_AGENT_GUARD" "1"))
+(var agent_resume (get_env "GENE_AGENT_RESUME" "1"))
+(var guard_flag (get_env "GENE_AGENT_GUARD" "1"))
 
 # `present?`/`absent?`/`nil?`/`void?` are now builtins (design §1.6); this
 # module keeps its own `present?` export for the importers that select it.
@@ -172,12 +171,12 @@
 
 (fn positive_env_int [name : Str, fallback : Int] : Int
   (try
-    (var parsed (parse_int (get_env Env name $"${fallback}")))
+    (var parsed (parse_int (get_env name $"${fallback}")))
     (if (> parsed 0) parsed fallback)
   catch _ fallback))
 
 (var configured_terminal_leader
-  (env? Env "GENE_AGENT_TERMINAL_LEADER_CODE"))
+  (env? "GENE_AGENT_TERMINAL_LEADER_CODE"))
 (var terminal_leader_code
   (if configured_terminal_leader
     (try
@@ -331,7 +330,7 @@
 
 # The workspace root as a real (symlink-resolved, absolute) path; every file
 # tool path must resolve inside it.
-(var workspace_real (real_path ReadDir workspace_root))
+(var workspace_real (real_path workspace_root))
 
 # Confine every file path to the workspace root: reject absolute paths and
 # `..` segments up front, then realpath the target so a symlink inside the
@@ -343,7 +342,7 @@
       (then
         (fail (OsError ^message $"unsafe path rejected (escapes workspace): ${p}")))
       (else
-        (var rp (real_path ReadDir p))
+        (var rp (real_path p))
         (if (|| (== rp workspace_real)
                 (starts_with? rp $"${workspace_real}/"))
           rp
@@ -367,7 +366,7 @@
   (match p
     (when (candidate : Str)
       (try
-        (var resolved (real_path ReadDir candidate))
+        (var resolved (real_path candidate))
         (|| (== resolved workspace_real)
             (starts_with? resolved $"${workspace_real}/"))
       catch _ false))
@@ -2308,8 +2307,8 @@
 (var next_file_change_id ($cell 1))
 
 (fn file_snapshot [path : Str]
-  (if (exists? ReadDir path)
-    {^exists true ^text (read_text ReadDir path)}
+  (if (exists? path)
+    {^exists true ^text (read_text path)}
     {^exists false ^text ""}))
 
 (fn content_identity [text : Str]
@@ -2387,8 +2386,8 @@
         (then $"refused: ${c/path} changed after agent change #${c/id}; current content was preserved")
         (else
           (if c/before_exists
-            (write_text WriteDir path c/before)
-            (remove WriteDir path))
+            (write_text path c/before)
+            (remove path))
           (c ~ put "undone" true)
           (var undo_id (next_file_change_id ~ get))
           (next_file_change_id ~ set (+ undo_id 1))
@@ -2425,9 +2424,9 @@
     (loaded_instruction_paths ~ set
       (append (loaded_instruction_paths ~ get) source))
     (var safe (safe_path source))
-    (if_not (! (exists? ReadDir safe))
+    (if_not (! (exists? safe))
       (try
-        (var text (read_text ReadDir safe))
+        (var text (read_text safe))
         (var bytes_count ($size ($bytes text)))
         (if (> bytes_count max_instruction_file_bytes)
           (then
@@ -2983,7 +2982,7 @@
             (else
               (var instructions (newly_loaded_instruction_text args/path false))
               (var content
-                (read_file_range (read_text ReadDir path)
+                (read_file_range (read_text path)
                                  start_line max_lines start_byte max_bytes))
               (if (== instructions "")
                 content
@@ -3003,7 +3002,7 @@
               (approve? "write_file" args/path))
         (then
           (var before (file_snapshot path))
-          (write_text WriteDir path args/content)
+          (write_text path args/content)
           (record_file_change args/_emit "write" args/path before
             {^exists true ^text args/content})
           $"wrote ${args/path}${(gene_parse_warning args/path args/content)}")
@@ -3026,7 +3025,7 @@
         (if (|| (== args/_approval_checked true)
                 (approve? "edit_file" args/path))
           (then
-            (var text (read_text ReadDir path))
+            (var text (read_text path))
             (var parts (split text old_text))
             (var matches (- parts/~size 1))
             (if (== matches 0)
@@ -3035,7 +3034,7 @@
                 (then $"error: old_text matched ${matches} times; provide a larger unique old_text")
                 (else
                   (var after_text (join parts new_text))
-                  (write_text WriteDir path after_text)
+                  (write_text path after_text)
                   (record_file_change args/_emit "edit" args/path
                     {^exists true ^text text}
                     {^exists true ^text after_text})
@@ -3051,7 +3050,7 @@
     (var p (if (== args/path void) "." args/path))
     (var checked_path (safe_path p))
     (var instructions (newly_loaded_instruction_text p true))
-    (var listing (join (list_dir ReadDir checked_path) "\n"))
+    (var listing (join (list_dir checked_path) "\n"))
     (if (== instructions "")
       listing
       $"New applicable instructions (parent-to-child):\n${instructions}\n--- listing ---\n${listing}"))))
@@ -3079,7 +3078,7 @@
                   (approve? "run_shell" args/command))
             (then
               (var r (run_checked_exec args/_emit "run_shell" args/command
-                       (exec_async Exec ^cmd "sh" ^args ["-c" args/command]
+                       (exec_async ^cmd "sh" ^args ["-c" args/command]
                                    ^dir workspace_root
                                    ^timeout_ms timeout_ms ^max_bytes 65536)))
               (var tail
@@ -3102,7 +3101,7 @@
     (var checked_path (safe_path p))
     (var command $"grep -rn ${args/pattern} ${p}")
     (var r (run_checked_exec args/_emit "grep" command
-             (exec_async Exec ^cmd "grep"
+             (exec_async ^cmd "grep"
                          ^args ["-rn" args/pattern checked_path]
                          ^dir workspace_root
                          ^timeout_ms 10000 ^max_bytes 65536)))
@@ -3657,7 +3656,7 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn exec_curl_lines [curl_args, timeout_ms, on_line]
   (var ch ($channel ^capacity 256))
-  (var t (exec_stream_async Exec ^cmd "curl" ^args curl_args
+  (var t (exec_stream_async ^cmd "curl" ^args curl_args
                             ^timeout_ms timeout_ms ^max_bytes 4000000
                             ^stdout_chan ch))
   (var line nil)
@@ -3684,7 +3683,7 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn exec_native_http_lines [url, headers, body, timeout_ms, on_line]
   (var transfer
-    (stream Http ^method "POST" ^url url ^headers headers ^body body
+    (stream ^method "POST" ^url url ^headers headers ^body body
                  ^timeout_ms timeout_ms ^max_bytes 4000000
                  ^channel_capacity 256 ^max_pending_bytes 1000000))
   (var pending ($cell ""))
@@ -4396,7 +4395,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (var path (state_fs_path spec))
       (if (== (trim path) "")
         (fail (OsError ^message "GENE_AGENT_STATE filesystem path is empty")))
-      (store_fs_open ReadWriteDir ^root path))))
+      (store_fs_open ^root path))))
 
 (fn close_agent_state []
   (release_workspace_advisory)
@@ -4423,7 +4422,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (if (!= db nil)
           (store_sqlite_open db ^table name)))
       (else
-        (store_fs_open ReadWriteDir
+        (store_fs_open
           ^root $"${(state_fs_path agent_state_spec)}/${name}")))
   catch _ nil))
 
@@ -5535,7 +5534,7 @@ State that broader behavior is unverified when no matching successful check ran.
                   ^restored_text
                     ($cell (if (== data/output void) "" data/output))
                   ^pump_task ($cell nil) ^controller_surface_id ($cell nil)
-                  ^command (get_env Env "SHELL" "/bin/sh")
+                  ^command (get_env "SHELL" "/bin/sh")
                   ^args [] ^cwd workspace_root))
               (else (OutputController ^source "restored" ^following ($cell [])))))
           (set worker
@@ -5963,8 +5962,8 @@ State that broader behavior is unverified when no matching successful check ran.
             workspace_real)
           (else
             (safe_path config/cwd)
-            (list_dir ReadDir config/cwd)
-            (real_path ReadDir config/cwd))))
+            (list_dir config/cwd)
+            (real_path config/cwd))))
       (application_new_named_worker app kind title
         ($cell $"cwd: ${cwd}\n")
         (ShellController ^cwd ($cell cwd) ^environment ($cell {}))
@@ -6014,14 +6013,14 @@ State that broader behavior is unverified when no matching successful check ran.
     (when "file_view"
       (if_not (! (present? config/path))
         (var path (safe_path config/path))
-        (if_not (! (exists? ReadDir path))
+        (if_not (! (exists? path))
           (var worker
             (application_new_named_worker app kind
               (if (== title kind) $"view ${path}" title)
               ($cell "") (FileViewController ^path path) requested_name))
           (if (!= worker nil)
             (application_append_projection_output
-              app worker (read_text ReadDir path) "file_view"))
+              app worker (read_text path) "file_view"))
           worker)))
     (else nil)))
 
@@ -6078,7 +6077,7 @@ State that broader behavior is unverified when no matching successful check ran.
         (args ~ push name))
       (else
         (args ~ push $"${name}=${value}"))))
-  (args ~ push (get_env Env "SHELL" "sh"))
+  (args ~ push (get_env "SHELL" "sh"))
   (args ~ push "-lc")
   (args ~ push command)
   args)
@@ -6115,7 +6114,7 @@ State that broader behavior is unverified when no matching successful check ran.
                     (var started (monotonic_ms))
                     (var stdout_chan ($channel ^capacity 256))
                     (var exec_task
-                      (exec_stream_async Exec
+                      (exec_stream_async
                         ^cmd "env"
                         ^args (shell_environment_args worker command)
                         ^dir (worker/controller/cwd ~ get)
@@ -6651,13 +6650,13 @@ State that broader behavior is unverified when no matching successful check ran.
   # Resolve and confine before listing the target. Validating the result,
   # rather than rejecting .., permits normal shell navigation without
   # allowing the worker to escape its workspace.
-  (var resolved (real_path ReadDir candidate))
+  (var resolved (real_path candidate))
   (if_not (|| (== resolved workspace_real)
               (starts_with? resolved $"${workspace_real}/"))
     (fail (OsError
       ^message $"unsafe path rejected (resolves outside workspace): ${path}")))
   # list_dir is the capability-aware directory check and rejects files.
-  (list_dir ReadDir resolved)
+  (list_dir resolved)
   (worker/controller/cwd ~ set resolved)
   (append_worker_transcript app worker $"[cwd ${resolved}]\n")
   (operation_ack worker true $"cwd: ${resolved}"))
@@ -6676,7 +6675,7 @@ State that broader behavior is unverified when no matching successful check ran.
 
 (fn application_file_view [app, worker, path : Str]
   (var safe (safe_path path))
-  (var text (read_text ReadDir safe))
+  (var text (read_text safe))
   (worker/controller ~ set_prop `path safe)
   (application_set_projection_output app worker text "file_view")
   (operation_ack worker true $"viewing ${safe}"))
@@ -7752,7 +7751,7 @@ State that broader behavior is unverified when no matching successful check ran.
               ($cell "") (FileViewController ^path path) previous))
           (if worker
             (application_set_projection_output
-              app worker (read_text ReadDir (safe_path path)) "file_view")))
+              app worker (read_text (safe_path path)) "file_view")))
         (when "stats"
           (set worker
             (application_new_worker_from app "stats" previous/title
@@ -7823,7 +7822,7 @@ State that broader behavior is unverified when no matching successful check ran.
    ^auth_token auth_token ^redact_any redact_any
    ^bounded_event_record bounded_event_record
    ^store_fs_open store_fs_open ^sqlite_open sqlite_open
-   ^store_sqlite_open store_sqlite_open ^ReadWriteDir ReadWriteDir
+   ^store_sqlite_open store_sqlite_open
    ^active_application active_application ^agent_events agent_events
    ^next_event_v next_event_v ^event_dropped_before event_dropped_before
    ^make_application make_headless_application_with_task

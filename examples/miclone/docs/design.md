@@ -248,37 +248,34 @@ do this project in Gene specifically.
 That property is built and enforced (§D5.2, §9.3). Getting there required
 understanding why the obvious mechanism does not provide it.
 
-### D5.1 Why capability values alone are not a sandbox
+### D5.1 Why namespace filtering alone is not a sandbox
 
-Gene's capability values are real — `fs/write_text` requires a `$fs/WriteDir`
-and refuses without one, so the check at the call is genuine. **But the value is
-not scarce.** Any module may simply ask for one:
+Gene's capability names construct inert specifications; they do not mint
+authority. A filesystem operation succeeds only when the active context
+contains a matching sealed grant. Merely naming the builtin is insufficient:
 
 ```gene
-($fs/write_text $fs/WriteDir "/tmp/anything" "written")
+($fs/write_text "/tmp/anything" "written")
 ```
 
-That runs, and it writes the file. There is no `import` line, because `$fs`
-resolves straight from the builtins root. So requiring a capability stops an
-accident and not an adversary.
+That call is denied in an empty context even though `$fs` resolves from the
+builtins root.
 
 That rules out the two cheap fixes:
 
-- **Withholding capability arguments does nothing**, because the mod can name
-  them itself. `gene run --grant` is not a sandbox: it evaluates expressions and
-  passes them to `main` as named arguments, which does nothing about what the
-  application imports.
+- **Withholding namespace imports is not the authority boundary.** The active
+  capability context is; `--grant` is not a launcher authority channel.
 - **Auditing a mod's `import` lines does nothing**, because the mod need not
   write one.
 
-**So the sandbox has to be at the import boundary, not the argument list.** Every
-module root is `newGlobalScope(app)`, whose parent is `app.builtinsScope()` — the
-one shared root holding both the language builtins and the capability
-namespaces. A mod loaded into that scope has the filesystem whatever it is
-handed. The only shape that works is a module root parented to a **restricted
-builtins scope**.
+**The security boundary is the module's capability ceiling.** Namespace
+filtering remains useful defense in depth and produces clearer “API absent”
+errors, but it is not what protects the filesystem. A sandboxed module gets a
+restricted builtins scope *and* a sealed context ceiling; nested imports and
+later re-entry intersect with that ceiling, so neither a visible builtin nor a
+broader caller can restore removed authority.
 
-### D5.2 The restricted root
+### D5.2 The restricted root (surface filtering)
 
 The design turns on one property of the VM: **`gene` is resolved at runtime, not
 baked in at compile time.**

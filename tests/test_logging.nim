@@ -1,6 +1,6 @@
 import std/[json, os, strutils, tables, unittest]
 import gene/ext/[logging, logging_config]
-import gene/[compiler, printer, reader, types, vm]
+import gene/[capabilities, compiler, fs_capabilities, printer, reader, types, vm]
 
 var loggingCaptured {.threadvar.}: seq[string]
 var reentrantLogger {.threadvar.}: RuntimeLogger
@@ -31,6 +31,10 @@ proc installCaptureLogging(level: LogLevel, format = lfJsonl) =
 
 proc runLoggingSource(source: string): Value =
   let app = newApplication()
+  run(compileSource(source), newGlobalScope(app))
+
+proc runLoggingSourceAt(source, root: string): Value =
+  let app = newApplication(root)
   run(compileSource(source), newGlobalScope(app))
 
 proc loggingGeneQuote(text: string): string =
@@ -396,12 +400,11 @@ suite "structured logging":
     let path = dir / "direct.gene.log"
     if fileExists(path): removeFile(path)
     resetLogging()
-    discard runLoggingSource(
+    discard runLoggingSourceAt(
       "(import $log [new_file_logger]) " &
-      "(import $fs [WriteDir]) " &
-      "(var logger (new_file_logger WriteDir \"app/direct\" " &
+      "(var logger (new_file_logger \"app/direct\" " &
         loggingGeneQuote(path) & " ^flush \"close\")) " &
-      "(logger ~ info \"direct\" ^payload {^x 1})")
+      "(logger ~ info \"direct\" ^payload {^x 1})", dir)
     shutdownLogging()
     check fileExists(path)
     let event = read(readFile(path).strip())
@@ -417,12 +420,11 @@ suite "structured logging":
     let path = dir / "direct.jsonl"
     if fileExists(path): removeFile(path)
     resetLogging()
-    discard runLoggingSource(
+    discard runLoggingSourceAt(
       "(import $log [new_file_logger]) " &
-      "(import $fs [WriteDir]) " &
-      "(var logger (new_file_logger WriteDir \"app/direct_json\" " &
+      "(var logger (new_file_logger \"app/direct_json\" " &
         loggingGeneQuote(path) & " ^format \"json\" ^flush \"close\")) " &
-      "(logger ~ info \"direct\" ^payload {^x 1})")
+      "(logger ~ info \"direct\" ^payload {^x 1})", dir)
     shutdownLogging()
     let event = parseJson(readFile(path).strip())
     check event["logger"].getStr == "app/direct_json"
@@ -431,12 +433,17 @@ suite "structured logging":
     removeDir(dir)
 
   test "programmatic file logger rejects read-only authority":
-    let result = runLoggingSource(
+    let dir = getTempDir() / "gene_direct_read_only_logger"
+    createDir(dir)
+    let app = newApplication(dir)
+    app.setRootCapabilities(newCapabilityContext([
+      app.filesystemCapabilities.grantReadDir(dir)]))
+    let result = run(compileSource(
       "(import $log [new_file_logger]) " &
-      "(import $fs [ReadDir]) " &
-      "(try (new_file_logger ReadDir \"app/direct\" \"ignored.jsonl\") " &
-      "  false catch _ true)")
+      "(try (new_file_logger \"app/direct\" \"ignored.jsonl\") " &
+      "  false catch _ true)"), newGlobalScope(app))
     check result == TRUE
+    removeDir(dir)
 
   test "reserved envelope keys cannot be smuggled through payload":
     let result = runLoggingSource(

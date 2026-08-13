@@ -12,6 +12,7 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
+import gene/[capabilities, fs_capabilities]
 import gene/[build, compiler, diagnostics, gir, package, printer, reader,
              repl, system_dependency, types, vm, web]
 import gene/ext/[logging, logging_config]
@@ -60,9 +61,10 @@ proc usage() =
   echo "Usage:"
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
   echo "  gene repl              read/eval/print source lines from stdin"
-  echo "  gene run [--log-config path] [--package-root dir] [--debug] <file.gene>"
-  echo "           [--grant name=expr] [--] [args...]"
-  echo "                              execute a file and explicitly grant main capabilities"
+  echo "  gene run [--log-config path] [--package-root dir] [--debug]"
+  echo "           [--allow_read_dir dir] [--allow_write_dir dir]"
+  echo "           [--allow_read_write_dir dir] <file.gene>"
+  echo "           [--] [args...]     execute a file under the host capability policy"
   echo "  gene runurl <https-url> [args...]  (experimental) run a remote entry module;"
   echo "                              relative imports resolve against the module's URL"
   echo "  gene parse <file.gene>  print canonical parsed forms"
@@ -164,6 +166,9 @@ type RunCli = object
   rebuild: bool
   explain: bool
   jobs: int
+  allowReadDirs: seq[string]
+  allowWriteDirs: seq[string]
+  allowReadWriteDirs: seq[string]
 
 proc parseRunCli(label = "run", pathNoun = "a file path",
                  pathRequired = true): RunCli =
@@ -176,7 +181,8 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
     let arg = paramStr(i)
     case arg
     of "--log-config", "--package-root", "--target", "--profile", "--mode",
-       "--debug_info", "--jobs":
+       "--debug_info", "--jobs", "--allow_read_dir", "--allow_write_dir",
+       "--allow_read_write_dir":
       inc i
       if i > paramCount():
         raise newException(ValueError, arg & " expects a value")
@@ -195,6 +201,9 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
         else: raise newException(ValueError, "--mode expects vm or mixed")
       of "--debug_info": result.debugInfo = value
       of "--jobs": result.jobs = parseInt(value)
+      of "--allow_read_dir": result.allowReadDirs.add value
+      of "--allow_write_dir": result.allowWriteDirs.add value
+      of "--allow_read_write_dir": result.allowReadWriteDirs.add value
       else: discard
     of "--debug":
       result.debugging = true
@@ -226,6 +235,12 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
         result.debugInfo = arg[13 .. ^1]
       elif arg.startsWith("--jobs="):
         result.jobs = parseInt(arg[7 .. ^1])
+      elif arg.startsWith("--allow_read_dir="):
+        result.allowReadDirs.add arg[17 .. ^1]
+      elif arg.startsWith("--allow_write_dir="):
+        result.allowWriteDirs.add arg[18 .. ^1]
+      elif arg.startsWith("--allow_read_write_dir="):
+        result.allowReadWriteDirs.add arg[23 .. ^1]
       elif arg.startsWith("-"):
         raise newException(ValueError, "unknown run option: " & arg)
       else:
@@ -256,40 +271,33 @@ proc configureRunLogging(options: RunCli) =
                                            level: llDebug)
   installLoggingConfig(config)
 
-type MainGrantSpec = object
-  name: string
-  expr: string
-
-proc splitMainInvocation(raw: openArray[string]): tuple[args: seq[string],
-                                                        grants: seq[MainGrantSpec]] =
-  var hostOptions = true
-  var i = 0
-  while i < raw.len:
-    if hostOptions and raw[i] == "--":
-      hostOptions = false
-      inc i
-      continue
-    var spec = ""
-    if hostOptions and raw[i] == "--grant":
-      inc i
-      if i >= raw.len:
-        raise newException(GeneError, "--grant expects name=expression")
-      spec = raw[i]
-    elif hostOptions and raw[i].startsWith("--grant="):
-      spec = raw[i][8 .. ^1]
-    else:
-      result.args.add raw[i]
-      inc i
-      continue
-    let equals = spec.find('=')
-    if equals <= 0 or equals == spec.high:
-      raise newException(GeneError, "--grant expects name=expression")
-    let name = spec[0 ..< equals]
-    for existing in result.grants:
-      if existing.name == name:
-        raise newException(GeneError, "duplicate main grant: " & name)
-    result.grants.add MainGrantSpec(name: name, expr: spec[equals + 1 .. ^1])
-    inc i
+proc applyRunCapabilityPolicy(app: Application, options: RunCli) =
+  ## Host policy is parsed before the entry path and mints sealed grants
+  ## directly. It is never evaluated as Gene source and never becomes a call
+  ## argument or Value.
+  if app == nil:
+    raise newException(ValueError, "run capability policy needs an application")
+  var grants = @(app.rootCapabilities.grants)
+  let fs = app.filesystemCapabilities
+  for requested in options.allowReadDirs:
+    let path = normalizedPath(absolutePath(requested))
+    if not dirExists(path):
+      raise newException(ValueError,
+        "--allow_read_dir is not a directory: " & requested)
+    grants.add fs.grantReadDir(path)
+  for requested in options.allowWriteDirs:
+    let path = normalizedPath(absolutePath(requested))
+    if not dirExists(path):
+      raise newException(ValueError,
+        "--allow_write_dir is not a directory: " & requested)
+    grants.add fs.grantWriteDir(path)
+  for requested in options.allowReadWriteDirs:
+    let path = normalizedPath(absolutePath(requested))
+    if not dirExists(path):
+      raise newException(ValueError,
+        "--allow_read_write_dir is not a directory: " & requested)
+    grants.add fs.grantReadWriteDir(path)
+  app.setRootCapabilities(newCapabilityContext(grants))
 
 proc raiseMainReturnTypeError(scope: Scope, value: Value) =
   let message = "main return expected Nil or Int, got " & $value.kind
@@ -341,20 +349,16 @@ proc exitFromMain(scope: Scope, value: Value) =
 proc invokeEntryMain(scope: Scope, args: openArray[string]) =
   var mainBinding: Value
   if scope.lookupOptional("main", mainBinding):
-    let invocation = splitMainInvocation(args)
-    var grantNames: seq[string]
-    var grantValues: seq[Value]
-    for grant in invocation.grants:
-      grantNames.add grant.name
-      grantValues.add run(compileEvalSource(grant.expr,
-                                            sourceName = "<main-grant:" &
-                                              grant.name & ">"), scope)
+    var programArgs = @args
+    if programArgs.len > 0 and programArgs[0] == "--":
+      programArgs.delete(0)
     let positional =
       if mainBinding.kind == vkFunction and mainBinding.fnParams.len == 0:
         newSeq[Value]()
       else:
-        @[argsValue(invocation.args)]
-    let result = mainBinding.call(positional, grantNames, grantValues, scope)
+        @[argsValue(programArgs)]
+    let result = mainBinding.call(positional, newSeq[string](),
+                                  newSeq[Value](), scope)
     exitFromMain(scope, result)
 
 proc applicationForEntry(absPath, packageRootOverride: string): Application =
@@ -373,7 +377,7 @@ proc applicationForEntry(absPath, packageRootOverride: string): Application =
   result.requireEntryWithinPackage(absPath)
 
 proc cmdRun(path: string, args: openArray[string] = [],
-            packageRootOverride = "") =
+            packageRootOverride = "", options = RunCli()) =
   if not fileExists(path):
     stderr.writeLine "Error: file not found: " & path
     quit(1)
@@ -382,6 +386,7 @@ proc cmdRun(path: string, args: openArray[string] = [],
   try:
     let absPath = normalizedPath(absolutePath(path))
     app = applicationForEntry(absPath, packageRootOverride)
+    app.applyRunCapabilityPolicy(options)
     let entryModule = app.loadFileModule(absPath)
     let scope = entryModule.moduleRootNamespace.nsScope
     replScope = scope
@@ -399,7 +404,7 @@ proc cmdRun(path: string, args: openArray[string] = [],
     quit(1)
 
 proc cmdRunUrl(url: string, args: openArray[string] = [],
-               packageRootOverride = "") =
+               packageRootOverride = "", options = RunCli()) =
   ## Experimental URL entry (design §15.9): run a remote module graph. URL
   ## sources are enabled only for this entry; `gene run` never fetches, and
   ## package resolution never fetches for either entry. A URL entry has no
@@ -413,6 +418,7 @@ proc cmdRunUrl(url: string, args: openArray[string] = [],
   try:
     app = newApplication(if packageRootOverride.len > 0: packageRootOverride
                          else: getCurrentDir())
+    app.applyRunCapabilityPolicy(options)
     app.allowUrlModules = true
     let entryModule = app.loadUrlModule(url)
     let scope = entryModule.moduleRootNamespace.nsScope
@@ -790,6 +796,7 @@ proc cmdProjectRun(options: RunCli) =
     let executionGraph = built.executionGraph
     let executionPackage = executionGraph.packagesById[pkg.id]
     let app = newApplication(executionGraph, executionPackage.root)
+    app.applyRunCapabilityPolicy(options)
     for artifact in built.artifacts:
       app.installCompiledModules(artifact.compiledModules)
     let chunk = built.rootArtifact.compiledChunk
@@ -1379,7 +1386,7 @@ proc main() =
       stderr.writeLine "Error: " & e.msg
       quit(1)
     if options.path.len > 0 and fileExists(options.path):
-      cmdRun(options.path, options.args, options.packageRoot)
+      cmdRun(options.path, options.args, options.packageRoot, options)
     elif options.path.endsWith(".gapp"):
       stderr.writeLine "Error: BUILD_FEATURE_UNAVAILABLE: portable .gapp " &
         "execution is not implemented"
@@ -1394,7 +1401,7 @@ proc main() =
     except CatchableError as e:
       stderr.writeLine "Error: " & e.msg
       quit(1)
-    cmdRunUrl(options.path, options.args, options.packageRoot)
+    cmdRunUrl(options.path, options.args, options.packageRoot, options)
   of "parse":
     if paramCount() < 2:
       stderr.writeLine "Error: 'parse' needs a file path"

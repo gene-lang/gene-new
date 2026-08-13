@@ -83,7 +83,8 @@
          format_event_with_filters gateway_api gene_system_prompt
          guard_enabled? guard_shell ignore_stream_delta init_agent_state
          initial_items interactive_confirm interactive_resume_turn
-         interactive_transport live_transport load_memory load_session
+         interactive_transport
+         live_transport load_memory load_session
          make_application max_tool_rounds model open_client_store
          parse_trace_filters present?
          project_progress_report reasoning_effort
@@ -118,7 +119,7 @@
             begin_interrupt take_interrupt end_interrupt
             monotonic_ms process_id
             stdin_tty? read_line
-            Env Exec Pty OsError])
+            Pty OsError])
 (import $terminal [open : terminal_open close : terminal_close
                   next_update : terminal_next_update
                   snapshot : terminal_snapshot
@@ -141,9 +142,8 @@
              slice_bytes])
 (import gene/stream [to_stream map filter take into each])
 (import gene/parse [parse_int read_all ParseError])
-(import $fs [read_text write_text exists? remove list_dir real_path
-            ReadDir WriteDir ReadWriteDir])
-(import $net/http_client [Http stream HttpClientError])
+(import $fs [read_text write_text exists? remove list_dir real_path])
+(import $net/http_client [stream HttpClientError])
 (import $db/sqlite [open : sqlite_open DbError])
 (import $store/fs [open : store_fs_open StoreError Store])
 (import $store/sqlite [open : store_sqlite_open])
@@ -784,7 +784,7 @@
     (if (== path_parts/directory "") "." path_parts/directory))
   (try
     (var checked_directory (safe_path directory))
-    (for name in (list_dir ReadDir checked_directory)
+    (for name in (list_dir checked_directory)
       (if_yes (&& (< out/~size surface_overlay_max_items)
                   (starts_with? name path_parts/base))
         (var candidate
@@ -792,7 +792,7 @@
             $"${path_parts/directory}/${name}"))
         (var detail "workspace")
         (try
-          (list_dir ReadDir (safe_path candidate))
+          (list_dir (safe_path candidate))
           (set candidate $"${candidate}/")
           (set detail "workspace directory")
         catch _ nil)
@@ -1760,13 +1760,13 @@
     # the workspace. Arbitrary host inspection remains available via /tty
     # or an external editor without entering shared state.
     (var path (safe_path requested_path))
-    (if_yes (exists? ReadDir path)
+    (if_yes (exists? path)
       (var worker
         (application_new_worker app "file_view" $"view ${path}"
           ($cell "") (FileViewController ^path path)))
       (if_yes worker
         (application_append_projection_output
-          app worker (read_text ReadDir path) "file_view")
+          app worker (read_text path) "file_view")
         (application_attach_worker_pane app worker nil "detach")))
     catch _ nil))
 
@@ -1784,7 +1784,7 @@
         (if_yes (== worker nil)
           (var executable
             (if (|| (== command nil) (== command ""))
-              (get_env Env "SHELL" "/bin/sh") command))
+              (get_env "SHELL" "/bin/sh") command))
           (var child_args (if (== args nil) [] args))
           (var session
             (terminal_open Pty ^cmd executable ^args child_args
@@ -1921,14 +1921,14 @@
     "usage: /export <workspace-file> | /N export <workspace-file>"
     (try
       (safe_path path)
-      (if (exists? ReadDir path)
+      (if (exists? path)
         $"export refused: ${path} already exists"
         (do
           (var text
             (if (== pane nil)
               (transcript ~ get)
               (pane_export_text pane)))
-          (write_text WriteDir path text)
+          (write_text path text)
           (emit_event "pane_exported"
             {^pane_id (if (== pane nil) 0 pane/id)
              ^kind (if (== pane nil) "main" pane/kind)
@@ -2560,7 +2560,7 @@
 
 (fn run_shell_session []
   (suspend_user_input)
-  (var shell (get_env Env "SHELL" "sh"))
+  (var shell (get_env "SHELL" "sh"))
   ($println $"Entering shell (${shell}). Ctrl-C stops the running command or clears the line; exit/quit or Ctrl-D returns.")
   (if (stdin_tty?)
     (then
@@ -2568,7 +2568,7 @@
       # (cleared line) instead of exiting; a running command just dies and the
       # loop continues. EOF (read fails without the mark) exits the session.
       (var script "intr=0; trap 'intr=1; printf \"\\n\"' INT; while true; do printf 'sh> '; intr=0; IFS= read -r line; rc=$?; if [ $rc -ne 0 ]; then if [ $intr -eq 1 ]; then continue; fi; break; fi; case \"$line\" in exit|quit) break;; *) eval \"$line\";; esac; done")
-      (await (exec_stdio_async Exec ^cmd shell ^args ["-c" script]
+      (await (exec_stdio_async ^cmd shell ^args ["-c" script]
                                ^dir workspace_root))
       ($println "")
       nil)
@@ -2594,7 +2594,7 @@
               (if (present? denial)
                 (then ($println denial))
                 (else
-                  (set r (exec Exec ^cmd shell ^args ["-lc" line] ^dir workspace_root
+                  (set r (exec ^cmd shell ^args ["-lc" line] ^dir workspace_root
                              ^timeout_ms 60000 ^max_bytes 400000))
                   ($print (redact r/stdout))
                   ($print (redact r/stderr))
@@ -2869,12 +2869,12 @@
   words)
 
 (fn external_editor_draft [draft : Str]
-  (var configured (env? Env "VISUAL"))
+  (var configured (env? "VISUAL"))
   # Empty environment values mean “unset”. This matters in an embedding (and
   # in the combined test process), where restoring a previously absent value
   # may leave VISUAL="" while EDITOR is valid.
   (if (|| (== configured nil) (== (trim configured) ""))
-    (set configured (env? Env "EDITOR")))
+    (set configured (env? "EDITOR")))
   (if (|| (== configured nil) (== (trim configured) ""))
     (set configured "vi"))
   (var words (editor_command_words configured))
@@ -2885,16 +2885,16 @@
   (repeat i in words/~size
     (if (> i 0) (args ~ push words/%i)))
   (var path $".gene-agent-draft-${(monotonic_ms)}.tmp")
-  (write_text WriteDir path draft)
+  (write_text path draft)
   (suspend_user_input)
   (try
     (args ~ push path)
     (var status
-      (await (exec_stdio_async Exec ^cmd executable ^args args
+      (await (exec_stdio_async ^cmd executable ^args args
                                ^dir workspace_root)))
     (if (== status 0)
       (then
-        (var composed (read_text ReadDir path))
+        (var composed (read_text path))
         (if (> (byte_size composed) surface_draft_max_bytes)
           (fail (OsError
             ^message $"editor draft exceeds ${surface_draft_max_bytes} bytes"))
@@ -2902,7 +2902,7 @@
       (else draft))
   ensure
     (resume_user_input)
-    (if (exists? ReadDir path) (remove WriteDir path))))
+    (if (exists? path) (remove path))))
 
 (fn run_gene_view [app, path : Str] : Int
   (var owner app/main_agent/id)
@@ -2911,7 +2911,7 @@
       ^message "workspace is busy; stop the mutating worker and retry /view")))
   (try
     (suspend_user_input)
-    (await (exec_stdio_async Exec ^cmd (executable_path)
+    (await (exec_stdio_async ^cmd (executable_path)
                              ^args ["view" path] ^dir workspace_root))
   ensure
     (resume_user_input)
@@ -3805,7 +3805,7 @@
         $"${artifact/id} ${artifact/kind} source=${artifact/source_worker} bytes=${artifact/size} blob=${artifact/blob_id}"))))
 
 (fn run_remote_entry [launch, task : Str]
-  (var gateway_token (get_env Env "GENE_GATEWAY_TOKEN" ""))
+  (var gateway_token (get_env "GENE_GATEWAY_TOKEN" ""))
   (var client (remote_transport launch/connect gateway_token))
   (try
     (var attached (client/connect launch/session "gene-tui"))

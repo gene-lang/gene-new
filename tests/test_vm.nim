@@ -1,4 +1,5 @@
-import gene/[compiler, gir, printer, reader, types, vm]
+import gene/[capabilities, compiler, fs_capabilities, gir, printer, reader,
+             types, vm]
 import std/[os, strutils, tables, unittest]
 
 template ck(src, expected: string) =
@@ -1981,18 +1982,27 @@ suite "vm — cooperative scheduler":
     defer:
       if fileExists(path):
         removeFile(path)
-    let scope = newGlobalScope()
+    let app = newApplication()
+    app.setRootCapabilities(newCapabilityContext([
+      app.filesystemCapabilities.grantReadWriteDir(getTempDir())
+    ]))
+    let scope = newGlobalScope(app)
     scope.define("path", newStr(path))
     check run(compileSource(
         "(var payload ($binary/from_list [0 127 128 255 10])) " &
-        "($fs/write_bytes $fs/WriteDir path payload) " &
-        "(== ($binary/to_list ($fs/read_bytes $fs/ReadDir path)) " &
+        "($fs/write_bytes path payload) " &
+        "(== ($binary/to_list ($fs/read_bytes path)) " &
         "    ($binary/to_list payload))"),
       scope).print() == "true"
-    # Reading needs ReadDir, not WriteDir: the capability is checked, not the
-    # fact that the caller happens to hold some fs authority.
+    # Reading needs active read authority, not merely some filesystem grant.
+    let writeOnly = newApplication()
+    writeOnly.setRootCapabilities(newCapabilityContext([
+      writeOnly.filesystemCapabilities.grantWriteDir(getTempDir())
+    ]))
+    let writeOnlyScope = newGlobalScope(writeOnly)
+    writeOnlyScope.define("path", newStr(path))
     expect GeneError:
-      discard run(compileSource("($fs/read_bytes $fs/WriteDir path)"), scope)
+      discard run(compileSource("($fs/read_bytes path)"), writeOnlyScope)
 
   test "$fs/read_text_async returns an awaitable task":
     let path = getTempDir() / "gene-read-text-async-test.txt"
@@ -2000,37 +2010,58 @@ suite "vm — cooperative scheduler":
     defer:
       if fileExists(path):
         removeFile(path)
-    let scope = newGlobalScope()
+    let app = newApplication()
+    app.setRootCapabilities(newCapabilityContext([
+      app.filesystemCapabilities.grantReadDir(getTempDir())
+    ]))
+    let scope = newGlobalScope(app)
     scope.define("path", newStr(path))
-    check run(compileSource("(await ($fs/read_text_async $fs/ReadDir path))"),
+    check run(compileSource("(await ($fs/read_text_async path))"),
               scope).print() == "\"hello async\""
+    let deniedApp = newApplication()
+    deniedApp.setRootCapabilities(newCapabilityContext([
+      deniedApp.filesystemCapabilities.grantWriteDir(getTempDir())
+    ]))
+    let deniedScope = newGlobalScope(deniedApp)
+    deniedScope.define("path", newStr(path))
     expect GeneError:
-      discard run(compileSource("($fs/read_text_async $fs/WriteDir path)"), scope)
+      discard run(compileSource("(await ($fs/read_text_async path))"), deniedScope)
 
   test "$fs/write_text_async returns an awaitable task":
     let path = getTempDir() / "gene-write-text-async-test.txt"
     defer:
       if fileExists(path):
         removeFile(path)
-    let scope = newGlobalScope()
+    let app = newApplication()
+    app.setRootCapabilities(newCapabilityContext([
+      app.filesystemCapabilities.grantWriteDir(getTempDir())
+    ]))
+    let scope = newGlobalScope(app)
     scope.define("path", newStr(path))
     check run(compileSource(
-      "(await ($fs/write_text_async $fs/WriteDir path \"written async\"))"),
+      "(await ($fs/write_text_async path \"written async\"))"),
       scope).kind == vkNil
     check readFile(path) == "written async"
+    let deniedApp = newApplication()
+    deniedApp.setRootCapabilities(newCapabilityContext([
+      deniedApp.filesystemCapabilities.grantReadDir(getTempDir())
+    ]))
+    let deniedScope = newGlobalScope(deniedApp)
+    deniedScope.define("path", newStr(path))
     expect GeneError:
       discard run(compileSource(
-        "($fs/write_text_async $fs/ReadDir path \"nope\")"), scope)
+        "(await ($fs/write_text_async path \"nope\"))"), deniedScope)
 
   test "net TCP async operations require connect authority":
+    let app = newApplication()
+    app.setRootCapabilities(newCapabilityContext())
+    let scope = newGlobalScope(app)
     expect GeneError:
       discard run(compileSource(
-        "($net/tcp_read_text_async $fs/ReadDir \"127.0.0.1\" 1 1 1)"),
-        newGlobalScope())
+        "($net/tcp_read_text_async \"127.0.0.1\" 1 1 1)"), scope)
     expect GeneError:
       discard run(compileSource(
-        "($net/tcp_write_text_async $fs/ReadDir \"127.0.0.1\" 1 \"x\" 1)"),
-        newGlobalScope())
+        "($net/tcp_write_text_async \"127.0.0.1\" 1 \"x\" 1)"), scope)
 
   test "root channel waits can be unblocked by sleeping tasks":
     ck "(scope (var ch ($channel ^capacity 1)) " &

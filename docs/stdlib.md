@@ -86,7 +86,7 @@ Initial modules should be available through namespace imports:
 (import html [escape attr_escape render])
 (import css [css rule decl media keyframes frame scoped class_name render])
 (import net/http [Request Response Server serve redirect])
-(import net/http_client [Http request stream HttpClientError])
+(import net/http_client [request stream HttpClientError])
 (import crypto [sha256 random_hex secure_equal?])
 (import os [process_id])
 (import log [Logger LogLevel new_logger log_info log_debug])
@@ -147,8 +147,9 @@ execution. Under wasm, console logging uses captured host output and file sinks
 are unavailable. See [the logging proposal](logging.md) for the full
 schema and performance contract.
 
-When application-selected file output is required, `new_file_logger` takes an
-explicit `$fs/WriteDir`, logger name, and path and returns a direct one-file
+When application-selected file output is required, `new_file_logger` takes a
+logger name and path and resolves an ambient append-only `fs/WriteFile` grant,
+returning a direct one-file
 logger. It defaults to one reader-valid Gene data map per line. Pass
 `^format "json"` or `^format "jsonl"` only when JSON interoperability is
 required; `^format "text"` remains available for concise human lines. It does
@@ -160,17 +161,17 @@ The subprocess surface separates captured execution from whole-terminal
 handoff:
 
 ```gene
-(import os [executable_path exec_async exec_stream_async exec_stdio_async Exec])
+(import os [executable_path exec_async exec_stream_async exec_stdio_async])
 
 # Absolute path of the currently running Gene executable.
 (var gene (executable_path))
 
 (var result
-  (await (exec_async Exec ^cmd "sh" ^args ["-lc" "nimble test"])))
+  (await (exec_async ^cmd "sh" ^args ["-lc" "nimble test"])))
 
 # The child inherits stdin/stdout/stderr, while only this fiber waits.
 (var status
-  (await (exec_stdio_async Exec ^cmd "vi" ^args ["notes.txt"])))
+  (await (exec_stdio_async ^cmd "vi" ^args ["notes.txt"])))
 ```
 
 `exec_async` returns a cancellable `Task` yielding the same captured result map
@@ -196,16 +197,16 @@ The native client is separate from the server namespace because its authority,
 error, lifetime, and streaming contracts differ:
 
 ```gene
-(import net/http_client [Http request stream])
+(import net/http_client [request stream])
 
 (var response
-  (await (request Http ^method "POST" ^url "https://example.test/api"
+  (await (request ^method "POST" ^url "https://example.test/api"
                   ^headers {^content-type "application/json"}
                   ^body "{}" ^timeout_ms 30000 ^max_bytes 4000000)))
 
 (var transfer
-  (stream Http ^url "https://example.test/events"
-               ^channel_capacity 256 ^max_pending_bytes 1000000))
+  (stream ^url "https://example.test/events"
+          ^channel_capacity 256 ^max_pending_bytes 1000000))
 ```
 
 `request` returns `Task`; its value has `status`, normalized `headers`, `body`,
@@ -692,6 +693,15 @@ Safety:
 - `transaction` rolls back on recoverable error or panic, commits on normal
   return.
 - SQL syntax and constraint failures become `SqliteError`.
+- `:memory:` remains an in-memory SQLite database. A file-backed database
+  requires an exact parent `fs/ReadWriteDir` grant. The runtime reads and
+  atomically publishes a serialized SQLite image through the filesystem
+  provider instead of giving SQLite an unrestricted pathname, so SQLite
+  cannot create unmediated journal, WAL, or shared-memory sidecar files.
+- Each committed mutating operation publishes the image before returning.
+  Closing publishes once more. A reopened database therefore observes the
+  previous committed state while all path traversal, symlink, and file-mode
+  enforcement remains inside the filesystem provider.
 
 Acceptance:
 

@@ -733,7 +733,7 @@
   # engine numbers it.
   (var player_visual (item_of_node items (id_of reg "miclone:player")))
 
-  (var root (get_env Env "GENE_MICLONE_WORLD" default_world_root))
+  (var root (get_env "GENE_MICLONE_WORLD" default_world_root))
   (var fresh (! (world_exists? root)))
   (var store (open_world root))
   (if fresh

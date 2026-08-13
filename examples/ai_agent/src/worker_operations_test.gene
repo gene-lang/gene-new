@@ -1,0 +1,96 @@
+(import [active_application make_application
+         application_create_worker_from_config
+         application_call_worker application_find_worker
+         application_spawn_agent_with_attachments]
+  from "./core.gene")
+(import [open_repl_pane]
+  from "./tui.gene")
+(import $str [contains?])
+(var events ($cell []))
+(var sink
+  (fn [type, props]
+    (var event {^type type})
+    (for [key value] in props (event ~ put key value))
+    ((events ~ get) ~ push event)
+    event))
+(var items ($cell []))
+(var transcript ($cell ""))
+(var memory ($cell []))
+(var app (make_application items transcript memory sink))
+(active_application ~ set app)
+(var shell
+  (application_create_worker_from_config app "shell"
+    {^title "build" ^name "build-shell"}))
+(var addressed (application_find_worker app "build-shell"))
+(var invocation {^origin "worker" ^caller_worker_id "main"
+                 ^adapter "model" ^detached false})
+(var changed
+  (application_call_worker app "build-shell" "chdir" {^path "tests"}
+    invocation))
+(var escaped
+  (application_call_worker app "build-shell" "chdir" {^path "../.."}
+    invocation))
+(var env_set
+  (application_call_worker app "build-shell" "set_env"
+    {^name "C4_MARKER" ^value "stateful"} invocation))
+(var ran
+  (application_call_worker app "build-shell" "run"
+    {^command "printf $C4_MARKER; pwd"} invocation))
+(var before_observe ((events ~ get) ~ size))
+(var status
+  (application_call_worker app "build-shell" "status" {}
+    {^origin "user" ^caller_worker_id "main"}))
+(var tail
+  (application_call_worker app "build-shell" "tail" {^n 5}
+    {^origin "worker" ^caller_worker_id "main"}))
+(var observe_events (- ((events ~ get) ~ size) before_observe))
+(var child
+  (application_spawn_agent_with_attachments app "child" "test" ($cell [])
+    ($cell "") []))
+(var denied
+  (application_call_worker app shell/id "status" {}
+    {^origin "model" ^caller_worker_id child/id}))
+(var delegated
+  (application_spawn_agent_with_attachments app "delegated" "test" ($cell [])
+    ($cell "") [{^kind "worker" ^worker_id shell/id}]))
+(var allowed
+  (application_call_worker app shell/id "tail" {^n 2}
+    {^origin "model" ^caller_worker_id delegated/id}))
+(var repl_pane (open_repl_pane items transcript memory))
+(var repl_denied
+  (application_call_worker app repl_pane/worker/id "eval" {^form "(+ 1 2)"}
+    {^origin "model" ^caller_worker_id "main"}))
+(var busy
+  (application_call_worker app shell/id "run" {^command "sleep 5"}
+    {^origin "worker" ^caller_worker_id "main" ^adapter "model"
+     ^detached true}))
+# Let the detached task enter its guarded $body before testing cancellation;
+# otherwise this fixture can cancel it before its `ensure` is installed.
+($sleep 25)
+(var busy_status
+  (application_call_worker app shell/id "status" {}
+    {^origin "worker" ^caller_worker_id "main"}))
+(var cancelled
+  (application_call_worker app shell/id "cancel" {}
+    {^origin "worker" ^caller_worker_id "main"}))
+(while (!= (shell/current_task ~ get) nil) ($sleep 10))
+(var attributed false)
+(for event in (events ~ get)
+  (if (&& (== event/type "worker_operation_started")
+          (== event/operation_kind "run") (== event/origin "worker")
+          (== event/caller_worker_id "main"))
+    (set attributed true)))
+(var duplicate "")
+(try
+  (application_create_worker_from_config app "output" {^name "build-shell"})
+catch {^message message} (set duplicate message))
+($println "named" (== addressed/id shell/id)
+  "changed" changed/ok "env" env_set/ok "run" ran/ok
+  "escape" escaped/error/kind
+  "stateful" (contains? (shell/output ~ get) "stateful")
+  "cwd" (contains? (shell/output ~ get) "/tests")
+  "observe_events" observe_events "status" status/result/status "tail" tail/ok
+  "denied" denied/error/kind "delegated" allowed/ok
+  "repl" repl_denied/error/kind "busy" busy/ok busy_status/result/busy
+  "cancel" cancelled/ok "attributed" attributed
+  "duplicate" (contains? duplicate "worker_name_taken"))

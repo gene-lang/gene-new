@@ -260,6 +260,17 @@ proc newFileLogSink*(name, path: string, format = lfGene,
       kind: lskFile, path: absolute, file: handle)
     initLock(result.lock)
 
+proc newFileLogSinkFromHandle*(name, path: string, file: File,
+                               format = lfGene,
+                               flush = lflError): LogSink =
+  ## Construct a sink around a handle already opened by an authority provider.
+  ## Ownership transfers to the sink.
+  if file == nil:
+    raise newException(IOError, "file log sink handle must not be nil")
+  result = LogSink(name: name, format: format, flush: flush,
+    kind: lskFile, path: path, file: file)
+  initLock(result.lock)
+
 proc closeLogSink*(sink: LogSink) =
   if sink == nil: return
   when compileOption("threads"):

@@ -473,10 +473,9 @@ def evaluate_records(
             [
                 str(freeze.GENE),
                 "run",
+                "--allow_read_dir",
+                str(freeze_directory),
                 str(freeze.FROZEN_BATCH_EVALUATOR),
-                "--grant",
-                "episodes=$fs/ReadDir",
-                "--",
                 expected["prior"],
                 str(freeze_directory / expected["path"]),
             ],

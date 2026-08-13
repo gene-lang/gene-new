@@ -278,9 +278,9 @@ def build_packet(*, require_clean: bool) -> dict[str, Any]:
                 "RANDOM_SEED 100"
             ),
             "frozen_batch_evaluation": (
-                "bin/gene run examples/general_intelligence/src/"
-                "active_inference_frozen_batch.gene --grant "
-                "episodes=$fs/ReadDir -- PRIOR EPISODE_FILE"
+                "bin/gene run --allow_read_dir FREEZE_DIR "
+                "examples/general_intelligence/src/"
+                "active_inference_frozen_batch.gene PRIOR EPISODE_FILE"
             ),
             "full_evaluation": (
                 "python3 tools/run_active_inference_evaluation.py run "
@@ -743,10 +743,9 @@ def self_test_command(_: argparse.Namespace) -> None:
             [
                 str(GENE),
                 "run",
+                "--allow_read_dir",
+                str(directory),
                 str(FROZEN_BATCH_EVALUATOR),
-                "--grant",
-                "episodes=$fs/ReadDir",
-                "--",
                 "base",
                 str(directory / manifest["episodes"][0]["path"]),
             ],

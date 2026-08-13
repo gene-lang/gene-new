@@ -35,6 +35,7 @@
 
 import std/[locks, monotimes, sets, strutils, sysatomics, tables, times,
             unicode]
+import ./capabilities
 
 when not defined(geneWasm):
   import std/re as nre
@@ -116,8 +117,7 @@ type
     vkCSlice    ## opaque non-owning C pointer + element count
     vkBuffer    ## Gene-owned typed contiguous storage
     vkDeviceBuffer ## opaque accelerator/device buffer handle
-    vkCapability ## explicit named runtime authority value
-    vkFfiLoad   ## explicit authority to load native libraries at runtime
+    vkCapability ## inert named capability specification
     vkFfiLibrary ## loaded native library handle
     vkFfiCallable ## dynamically bound foreign callable
     vkLogger    ## immutable structured diagnostic logger handle
@@ -185,6 +185,16 @@ const
 # Value lifecycle hooks (must precede any Value-containing type so the managed
 # heap objects below pick up these hooks, not an implicitly-generated one).
 # ---------------------------------------------------------------------------
+
+type ResourceAuthorityReleaseHook* = proc(id: uint64) {.nimcall, raises: [].}
+
+var resourceAuthorityReleaseHook: ResourceAuthorityReleaseHook
+
+proc installResourceAuthorityReleaseHook*(hook: ResourceAuthorityReleaseHook) =
+  ## Installed once by the VM. Keeping the hook in the value layer lets a
+  ## resource node release opaque authority metadata on its final refcount
+  ## transition without importing the VM or exposing that metadata to Gene.
+  resourceAuthorityReleaseHook = hook
 
 proc rcRetain(bits: uint64) {.raises: [].}
 proc rcRelease(bits: uint64) {.raises: [].}
@@ -281,6 +291,7 @@ type
     shared: int
     immutable: bool
     constructing: bool
+    resourceAuthorityId: uint64
     head: Value
     props: PropTable
     body: seq[Value]
@@ -389,6 +400,7 @@ type
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
+    moduleBase*: Scope      # cached nearest module root; nil outside a module
     moduleStatic*: bool     # unconditional module/namespace declaration scope
     moduleRefs*: ModuleRefTable
     borrowedCallerEnv*: bool # scope or ancestor is inside a live syntax call
@@ -597,7 +609,6 @@ type
     okBuffer
     okDeviceBuffer
     okCapability
-    okFfiLoad
     okFfiLibrary
     okFfiCallable
     okLogger
@@ -623,6 +634,8 @@ type
     path: string
     root: Value
     meta: PropTable
+    capabilityRow: CapabilityRow
+    capabilityCeiling: CapabilityContext
 
   BigIntData = ref object of GeneObjectData
     value: BigIntValue
@@ -842,14 +855,14 @@ type
 
   CapabilityData = ref object of GeneObjectData
     name: string
-
-  FfiLoadData = ref object of GeneObjectData
+    spec: CapabilitySpec
 
   FfiLibraryData = ref object of GeneObjectData
     handle: pointer
     path: string
     closed: bool
     close: FfiLibraryCloseProc
+    capabilityContext: CapabilityContext
 
   FfiCallableData = ref object of GeneObjectData
     name: string
@@ -865,6 +878,7 @@ type
     name: string
     routeId: int
     payload: Value
+    capabilityContext: CapabilityContext
 
   TypeRepr* = enum
     ## How instances of a nominal type are represented and created.
@@ -1632,7 +1646,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
       emit(val)
   of okDeviceBuffer:
     emit(DeviceBufferData(data).elemType)
-  of okCapability, okFfiLoad, okFfiLibrary:
+  of okCapability, okFfiLibrary:
     discard
   of okFfiCallable:
     let d = FfiCallableData(data)
@@ -1802,7 +1816,7 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.items.setLen(0)
   of okDeviceBuffer:
     clearValueSlot(DeviceBufferData(data).elemType)
-  of okCapability, okFfiLoad, okFfiLibrary:
+  of okCapability, okFfiLibrary:
     discard
   of okFfiCallable:
     let d = FfiCallableData(data)
@@ -2113,6 +2127,8 @@ proc rcRelease(bits: uint64) =
   of NODE_TAG:
     let p = cast[ptr GeneNode](payload)
     releaseManual(p):
+      if p.resourceAuthorityId != 0 and resourceAuthorityReleaseHook != nil:
+        resourceAuthorityReleaseHook(p.resourceAuthorityId)
       reset(p[]); dealloc(p); trackFree()
   of FUNCTION_TAG:
     let p = cast[ptr GeneFunction](payload)
@@ -2240,7 +2256,6 @@ proc kind*(v: Value): ValueKind {.inline, raises: [].} =
     of okBuffer: vkBuffer
     of okDeviceBuffer: vkDeviceBuffer
     of okCapability: vkCapability
-    of okFfiLoad: vkFfiLoad
     of okFfiLibrary: vkFfiLibrary
     of okFfiCallable: vkFfiCallable
     of okLogger: vkLogger
@@ -2770,6 +2785,29 @@ proc setModuleMeta*(v: Value, meta: sink PropTable) =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
     raise newException(FieldDefect, "value is not a Module")
   ModuleData(objData(v)).meta = meta
+
+proc moduleCapabilityRow*(v: Value): CapabilityRow =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).capabilityRow
+
+proc moduleCapabilityCeiling*(v: Value): CapabilityContext =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).capabilityCeiling
+
+proc setModuleCapabilities*(v: Value, row: CapabilityRow,
+                            ceiling: CapabilityContext = nil) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  let data = ModuleData(objData(v))
+  data.capabilityRow = row
+  data.capabilityCeiling = ceiling
+
+proc setModuleCapabilityCeiling*(v: Value, ceiling: CapabilityContext) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).capabilityCeiling = ceiling
 
 proc envParent*(v: Value): Value =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
@@ -3934,6 +3972,16 @@ proc capabilityData(v: Value): CapabilityData =
 proc capabilityName*(v: Value): string =
   capabilityData(v).name
 
+proc capabilityIsAdmitted*(v: Value): bool =
+  capabilityData(v).spec.capabilityType.isValid
+
+proc capabilitySpec*(v: Value): CapabilitySpec =
+  let data = capabilityData(v)
+  if not data.spec.capabilityType.isValid:
+    raise newException(GeneError,
+      "capability type is not admitted: " & data.name)
+  data.spec
+
 proc ffiLibraryData(v: Value): FfiLibraryData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okFfiLibrary:
     raise newException(FieldDefect, "value is not an FFI library")
@@ -3947,6 +3995,9 @@ proc ffiLibraryPath*(v: Value): string =
 
 proc ffiLibraryClosed*(v: Value): bool =
   ffiLibraryData(v).closed
+
+proc ffiLibraryCapabilityContext*(v: Value): CapabilityContext =
+  ffiLibraryData(v).capabilityContext
 
 proc closeFfiLibrary*(v: Value) =
   let data = ffiLibraryData(v)
@@ -4699,6 +4750,25 @@ proc newNode*(head: Value,
   p.meta = withoutVoidEntries(meta)
   boxPtr(NODE_TAG, p)
 
+proc resourceAuthorityId*(v: Value): uint64 =
+  if v.kind != vkNode:
+    raise newException(FieldDefect,
+      "resource authority metadata requires a node")
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).resourceAuthorityId
+
+proc setResourceAuthorityId*(v: Value, id: uint64) =
+  if v.kind != vkNode:
+    raise newException(FieldDefect,
+      "resource authority metadata requires a node")
+  cast[ptr GeneNode](v.bits and PAYLOAD_MASK).resourceAuthorityId = id
+
+proc takeResourceAuthorityId*(v: Value): uint64 =
+  if v.kind != vkNode:
+    return 0
+  let node = cast[ptr GeneNode](v.bits and PAYLOAD_MASK)
+  result = node.resourceAuthorityId
+  node.resourceAuthorityId = 0
+
 const pendingModuleRefHead = "\x00gene_module_ref_pending"
 
 proc newPendingModuleRef*(name: string): Value =
@@ -5324,7 +5394,7 @@ proc escapeWeakFunctions*(v: Value): Value =
                               returnType: data.returnType,
                               releaseName: data.releaseName,
                               releaseAddress: data.releaseAddress))
-  of vkDeviceBuffer, vkCapability, vkFfiLoad, vkFfiLibrary:
+  of vkDeviceBuffer, vkCapability, vkFfiLibrary:
     v
   else:
     v
@@ -5538,26 +5608,37 @@ proc newDeviceBuffer*(backend: string, elemType: Value, length: int): Value =
                              elemType: elemType,
                              length: length))
 
-proc newFfiLoadCapability*(): Value =
-  boxObject(FfiLoadData(objKind: okFfiLoad))
-
 proc newCapability*(name: string): Value =
   if name.len == 0:
     raise newException(GeneError, "capability name must not be empty")
   boxObject(CapabilityData(objKind: okCapability, name: name))
 
+proc newCapability*(capabilityType: CapabilityType,
+                    positional: openArray[CapabilityArg] = [],
+                    named: openArray[CapabilityNamedArg] = []): Value =
+  if not capabilityType.isValid:
+    raise newException(GeneError, "capability type must be admitted")
+  boxObject(CapabilityData(
+    objKind: okCapability,
+    name: capabilityType.name,
+    spec: newCapabilitySpec(capabilityType, positional, named)))
+
 proc newFfiLibrary*(handle: pointer, path: string,
-                    close: FfiLibraryCloseProc): Value =
+                    close: FfiLibraryCloseProc,
+                    capabilityContext: CapabilityContext = nil): Value =
   if handle == nil:
     raise newException(GeneError, "FFI library handle must not be nil")
   boxObject(FfiLibraryData(objKind: okFfiLibrary, handle: handle,
-                           path: path, close: close))
+                           path: path, close: close,
+                           capabilityContext: capabilityContext))
 
-proc newLogger*(name: string, routeId: int, payload: Value): Value =
+proc newLogger*(name: string, routeId: int, payload: Value,
+                capabilityContext: CapabilityContext = nil): Value =
   if name.len == 0:
     raise newException(GeneError, "Logger name must not be empty")
   boxObject(LoggerData(objKind: okLogger, name: name, routeId: routeId,
-                       payload: payload))
+                       payload: payload,
+                       capabilityContext: capabilityContext))
 
 proc loggerName*(v: Value): string =
   if v.kind != vkLogger:
@@ -5573,6 +5654,11 @@ proc loggerPayload*(v: Value): Value =
   if v.kind != vkLogger:
     raise newException(FieldDefect, "value is not a Logger")
   LoggerData(objData(v)).payload
+
+proc loggerCapabilityContext*(v: Value): CapabilityContext =
+  if v.kind != vkLogger:
+    raise newException(FieldDefect, "value is not a Logger")
+  LoggerData(objData(v)).capabilityContext
 
 proc newFfiCallable*(name, symbol: string, address: pointer, library: Value,
                      paramTypes: seq[Value], returnType: Value,
