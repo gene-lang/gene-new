@@ -2,7 +2,7 @@ import std/[monotimes, os, sequtils, strutils, times, unittest]
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   import std/posix
-  import gene/pty_process
+  import gene/ext/term/pty_process
 
   proc collect(process: PtyProcess, timeoutMs = 3000): string =
     let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)

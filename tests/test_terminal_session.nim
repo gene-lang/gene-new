@@ -1,7 +1,7 @@
 import std/[monotimes, os, strutils, times, unittest]
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-  import gene/terminal_session
+  import gene/ext/term/terminal_session
 
   proc pumpUntilStopped(session: TerminalSession, timeoutMs = 3000) =
     let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)

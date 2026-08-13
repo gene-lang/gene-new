@@ -1,6 +1,6 @@
 import std/[options, strutils, unittest]
 import gene/[source_index]
-import gene/tui/terminal
+import gene/ext/term/tui
 import gene/viewer/model
 
 suite "viewer — pure navigation model":

@@ -1,7 +1,7 @@
 import std/[strutils, unittest]
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-  import gene/vterm
+  import gene/ext/term/vterm
 
   suite "embedded terminal — libvterm state":
     test "ANSI, Unicode, cursor, and colors become attributed cells":

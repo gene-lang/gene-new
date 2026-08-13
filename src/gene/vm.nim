@@ -18,8 +18,8 @@ when not defined(geneWasm):
   import ./web
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
-  import ./tui/terminal as tui_terminal
-  import ./[pty_process, terminal_session, vterm]
+  import ./ext/term/tui as tui_terminal
+  import ./ext/term/[pty_process, terminal_session, vterm]
 
 when not defined(geneWasm):
   import std/re as nre

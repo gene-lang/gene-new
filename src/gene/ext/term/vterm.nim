@@ -9,7 +9,8 @@ import std/[os, strutils, unicode]
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   const
     moduleDir = currentSourcePath.parentDir
-    vtermRoot = moduleDir / "../../vendor/libvterm"
+    # src/gene/ext/term -> repo root is four levels up.
+    vtermRoot = moduleDir / "../../../../vendor/libvterm"
 
   {.passC: "-std=c99 -I" & vtermRoot / "include" &
            " -I" & vtermRoot / "src" & " -I" & moduleDir.}

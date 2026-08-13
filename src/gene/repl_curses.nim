@@ -6,7 +6,7 @@
 
 import std/strutils
 import ./[types, vm]
-import ./tui/terminal
+import ./ext/term/tui
 
 proc appendOutput(lines: var seq[string], text: string) =
   var start = 0

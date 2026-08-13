@@ -2,7 +2,7 @@
 
 import std/[options, os]
 import ../source_index
-import ../tui/terminal
+import ../ext/term/tui
 import ./[editor, model]
 
 type
