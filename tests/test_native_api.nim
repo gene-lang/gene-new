@@ -1,4 +1,5 @@
-import gene/[compiler, logging, native_api, printer, types, vm]
+import gene/ext/logging
+import gene/[compiler, native_api, printer, types, vm]
 import std/[dynlib, strutils, tables, unittest]
 
 proc nativeInc(args: openArray[Value]): Value {.nimcall.} =

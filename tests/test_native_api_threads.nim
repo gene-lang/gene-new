@@ -1,4 +1,5 @@
-import gene/[compiler, logging, native_api, types, vm]
+import gene/ext/logging
+import gene/[compiler, native_api, types, vm]
 import std/[os, strutils, tables]
 import std/unittest
 

@@ -1,7 +1,8 @@
 ## Data-only logging configuration loader (docs/logging.md §7).
 
 import std/[algorithm, os, sets, strutils, tables]
-import ./[logging, reader, types]
+import ./logging
+import ../[reader, types]
 
 proc configError(message: string): ref ValueError =
   newException(ValueError, "logging config: " & message)

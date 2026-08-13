@@ -1,5 +1,6 @@
 import std/[json, os, strutils, tables, unittest]
-import gene/[compiler, logging, logging_config, printer, reader, types, vm]
+import gene/ext/[logging, logging_config]
+import gene/[compiler, printer, reader, types, vm]
 
 var loggingCaptured {.threadvar.}: seq[string]
 var reentrantLogger {.threadvar.}: RuntimeLogger

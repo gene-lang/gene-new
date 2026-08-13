@@ -13,8 +13,8 @@
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
 import gene/[build, compiler, diagnostics, fmt, gir, package, printer, reader,
-             repl, repl_curses, logging, logging_config, system_dependency,
-             types, vm, web]
+             repl, repl_curses, system_dependency, types, vm, web]
+import gene/ext/[logging, logging_config]
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
 # executable's dynamic symbol table for a dlopened AOT library to resolve.

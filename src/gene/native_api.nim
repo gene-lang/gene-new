@@ -7,7 +7,8 @@
 
 import std/[dynlib, json]
 
-import ./[logging, types, vm]
+import ./ext/logging
+import ./[types, vm]
 
 type
   GeneRootProc* = proc(value: Value): GeneRoot

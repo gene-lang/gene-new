@@ -7,7 +7,8 @@
 ## Run:
 ##   nimble perf
 
-import gene/[compiler, equality, gir, logging, printer, reader, types, vm]
+import gene/ext/logging
+import gene/[compiler, equality, gir, printer, reader, types, vm]
 import std/[json, monotimes, os, osproc, strutils, tables, times]
 
 var positiveZeroInput {.volatile.}: float64 = 0.0

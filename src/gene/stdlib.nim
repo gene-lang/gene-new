@@ -1365,7 +1365,7 @@ proc biStreamEach(args: openArray[Value]): Value {.nimcall.} =
 
 
 # net/http server implementation (event loop, dispatch, helpers).
-include ./http_server
+include ./ext/http_server
 
 # --- os: environment, subprocess, and line input (examples/ai_agent/design.md §3,§6) ---
 #

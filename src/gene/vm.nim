@@ -2,8 +2,9 @@
 
 import std/[algorithm, base64, dynlib, json, locks, math, monotimes, net, os,
             osproc, sets, strutils, tables, times, unicode]
-import ./[compiler, diagnostics, equality, fmt, gir, logging, package, printer,
+import ./[compiler, diagnostics, equality, fmt, gir, package, printer,
           reader, types]
+import ./ext/logging
 export package.Package, package.PackageKind, package.PackageOrigin,
        package.PackageError, package.PackageErrorClass, package.DependencyDecl,
        package.packageIdentity, package.userStoreDir,
