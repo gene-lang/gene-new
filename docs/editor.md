@@ -553,10 +553,12 @@ Curses is the right default frontend: it handles resize, keypad decoding,
 mouse events, repainting, and terminal restoration better than ad hoc ANSI
 output. It should remain an adapter, not leak into the model.
 
-The repository has two curses consumers today. `src/gene/stdlib.nim` provides
-the public owned Gene `curses/Screen` surface used by
-`examples/ai_agent/src/tui.gene`; `src/gene/repl_curses.nim` separately implements
-the native REPL frontend. The public `curses/draw` call is specialized to a
+The repository has one curses consumer today: `src/gene/ext/term/stdlib_term.nim`
+provides the public owned Gene `curses/Screen` surface used by
+`examples/ai_agent/src/tui.gene`. A second native REPL frontend
+(`src/gene/repl_curses.nim`) was removed on 2026-08-13 -- the `$repl` and
+`$curses` namespaces already expose everything it needed, so it belongs in Gene
+rather than in the runtime. The public `curses/draw` call is specialized to a
 transcript + input + status layout, and `next_event` already covers resize,
 Unicode text, mouse wheel, and common navigation but does not distinguish
 every viewer key such as Page Up/Down. Building the viewer directly on that
@@ -565,7 +567,7 @@ high-level draw API would bend a line editor into a tree widget.
 The C shim in `stdlib.nim` already saves/restores termios, decodes SGR wheel
 events, and installs signal/exit restoration hooks. Extraction is primarily a
 move and consolidation of proven behavior, not a new terminal implementation.
-The MVP moves `repl_curses.nim` and the viewer onto the shared native adapter.
+The MVP moves the viewer onto the shared native adapter.
 The asynchronous public Gene surface keeps its existing backend for now; its
 behavior is protected by the existing AI-agent/curses tests. Folding that
 stateful async surface onto the adapter is a follow-up, not a prerequisite for
@@ -574,9 +576,8 @@ the viewer.
 Instead, extract or introduce a small shared native terminal layer:
 
 ```text
-src/gene/tui/terminal.nim     lifecycle, resize, input decoding, cell width
-src/gene/repl_curses.nim     existing REPL frontend
-src/gene/viewer/app.nim      viewer frontend
+src/gene/ext/term/tui.nim    lifecycle, resize, input decoding, cell width
+src/tools/viewer/app.nim     viewer frontend
 ```
 
 The shared layer should provide:
@@ -665,19 +666,19 @@ only for visible or searched rows.
 ## 11. Proposed modules
 
 ```text
-src/gene/source_positions.nim   line starts and byte/UTF-16 conversions
-src/gene/source_index.nim       reader-backed spans, paths, lazy child pages
-src/gene/lsp/analysis.nim       LSP consumer; sheds duplicate range scanning
-src/gene/viewer/model.nim       pure modes, frames, anchors, commands
-src/gene/viewer/editor.nim      editor resolution and safe handoff
-src/gene/viewer/file_edit.nim   conflict checks and atomic span replacement
-src/gene/viewer/app.nim         render/event loop
-src/gene/tui/terminal.nim       shared terminal contract
-src/gene/repl_curses.nim        existing REPL frontend on the shared layer
+src/tools/source_positions.nim  line starts and byte/UTF-16 conversions
+src/tools/source_index.nim      reader-backed spans, paths, lazy child pages
+src/tools/lsp/analysis.nim      LSP consumer; sheds duplicate range scanning
+src/tools/viewer/model.nim      pure modes, frames, anchors, commands
+src/tools/viewer/editor.nim     editor resolution and safe handoff
+src/tools/viewer/file_edit.nim  conflict checks and atomic span replacement
+src/tools/viewer/app.nim        render/event loop
+src/gene/ext/term/tui.nim       shared terminal contract
 ```
 
-`src/gene.nim` registers the CLI command directly, following the current
-single-binary command dispatch. If command count continues to grow, command
+`gene view` delegates to the separately built `gene-viewer` binary (design
+§18): the viewer is a tool, so it is not linked into the `gene` runtime. If
+command count continues to grow, command
 dispatch can be extracted separately; the viewer should not introduce a new
 command framework by itself.
 
@@ -781,8 +782,8 @@ result, repeat the benchmark rather than combining span work with viewer code.
 
 1. Extract shared terminal lifecycle/input primitives from the current curses
    implementation.
-2. Adapt `repl_curses.nim` onto the shared layer and preserve the public Gene
-   curses surface behind its existing async backend and compatibility tests.
+2. Preserve the public Gene curses surface behind its existing async backend
+   and compatibility tests.
 3. Add viewer rendering, resize, Page Up/Down, mouse wheel, help, and CLI
    validation.
 4. Add compatibility and PTY cleanup tests before enabling the command by

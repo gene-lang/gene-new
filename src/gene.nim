@@ -13,7 +13,7 @@
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
 import gene/[build, compiler, diagnostics, gir, package, printer, reader,
-             repl, repl_curses, system_dependency, types, vm, web]
+             repl, system_dependency, types, vm, web]
 import gene/ext/[logging, logging_config]
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
@@ -59,7 +59,7 @@ proc usage() =
   echo ""
   echo "Usage:"
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
-  echo "  gene repl [--curses]   read/eval/print source lines from stdin"
+  echo "  gene repl              read/eval/print source lines from stdin"
   echo "  gene run [--log-config path] [--package-root dir] [--debug] <file.gene>"
   echo "           [--grant name=expr] [--] [args...]"
   echo "                              execute a file and explicitly grant main capabilities"
@@ -123,18 +123,10 @@ proc cmdEval(src: string) =
     maybeReplOnError(scope, app)
     quit(1)
 
-proc cursesReplEnabled(): bool =
-  let value = getEnv("GENE_REPL_NCURSES").strip().toLowerAscii()
-  value in ["1", "true", "yes", "on"]
-
-proc cmdRepl(useCurses = false) =
+proc cmdRepl() =
   let app = initModuleContext(getCurrentDir())
   let scope = newGlobalScope(app)
-  let code =
-    if useCurses or cursesReplEnabled():
-      runCursesRepl(scope)
-    else:
-      runRepl(scope)
+  let code = runRepl(scope)
   if code != 0:
     quit(code)
 
@@ -1374,16 +1366,10 @@ proc main() =
       quit(1)
     cmdEval(paramStr(2))
   of "repl":
-    var useCurses = false
     if paramCount() >= 2:
-      for i in 2 .. paramCount():
-        case paramStr(i)
-        of "--curses":
-          useCurses = true
-        else:
-          stderr.writeLine "Error: unknown repl option: " & paramStr(i)
-          quit(1)
-    cmdRepl(useCurses)
+      stderr.writeLine "Error: unknown repl option: " & paramStr(2)
+      quit(1)
+    cmdRepl()
   of "run":
     var options: RunCli
     try:
