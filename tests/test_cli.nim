@@ -8203,37 +8203,6 @@ suite "cli — gene parse/fmt/compile":
     # The ctor ran exactly once (from `new`), never during read-back.
     check ran.output.count("COUNTER-CTOR-RAN") == 1
 
-suite "cli — reversible document format":
-  setup:
-    createDir(cliDir)
-
-  test "docpack/docunpack and docunits/--decode both reproduce canonical text":
-    # The two decode paths must agree with each other, not merely each run:
-    # the packed codec is the durable format, the unit stream is what a model
-    # trains on, and the study's first gate is that neither loses anything.
-    let src = "# leading\n(fn f [x] # trailing\n  [x 1 {^k \"v\"}])\n"
-    let path = writeCliProgram("doc_subject.gene", src)
-    let packedPath = cliDir / "doc_subject.gdoc"
-    let unitsPath = cliDir / "doc_subject.units.jsonl"
-
-    check runGene(["docpack", path, "-o", packedPath]).exitCode == 0
-    check runGene(["docunits", path, "-o", unitsPath]).exitCode == 0
-
-    let unpacked = runGene(["docunpack", packedPath])
-    check unpacked.exitCode == 0
-    let decoded = runGene(["docunits", "--decode", unitsPath])
-    check decoded.exitCode == 0
-    check decoded.output == unpacked.output
-    check "# leading" in decoded.output
-    check "# trailing" in decoded.output
-
-  test "a malformed unit stream is a clean error, not a crash":
-    let broken = writeCliProgram("doc_broken.units.jsonl",
-      "{\"k\":\"ukFormStart\"}\n{\"k\":\"ukListStart\"}\n")
-    let ran = runGene(["docunits", "--decode", broken])
-    check ran.exitCode == 1
-    check "Error:" in ran.output
-
 suite "cli — gene doc":
   setup:
     createDir(cliDir)

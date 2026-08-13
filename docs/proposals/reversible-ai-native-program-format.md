@@ -1,5 +1,23 @@
 # Reversible AI-Native Gene Program Format
 
+> **RETIRED 2026-08-13 — the implementation has been removed from the tree.**
+>
+> Deleted: `src/gene/{program_document,packed_format,document_units}.nim`,
+> `tests/test_{program_document,packed_format,document_units}.nim`,
+> `benchmarks/bench_native_format.nim`, the `nimble native_format_perf` task,
+> and the `gene docpack` / `docunpack` / `docunits` subcommands.
+>
+> The code was correct, tested, and benchmarked (3.76x faster load than
+> `readAll`); it is retired because the model-training track it was built for
+> was itself recommended for retirement on 2026-08-11 (see the recommendation
+> section below), leaving it with no consumer. Nothing in the reader, compiler,
+> or VM ever depended on it — that is what made removal a clean cut.
+>
+> **This document is kept as the map back to the code.** Everything below
+> describes the design as implemented; recover it from git history at the
+> commit that removed it. `training/` still describes the pipeline that used
+> these subcommands and no longer runs against a current build.
+
 Status: durable format v0 implemented and passing its provisional gates
 (2026-08-10). **The from-scratch model-training track is recommended for
 retirement** (2026-08-11) after a first matched pilot measured the modality

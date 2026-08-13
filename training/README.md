@@ -1,9 +1,21 @@
 # Reversible-format model-training pipeline
 
+> **RETIRED 2026-08-13 — this pipeline no longer runs.**
+>
+> The track was recommended for retirement on 2026-08-11 (the modality measured
+> 2.2% *worse* than canonical text in nats per program). On 2026-08-13 the
+> durable-format implementation it stands on was deleted from the tree, taking
+> with it the `gene docpack` / `docunpack` / `docunits` subcommands that
+> `build_corpus.py`, `units_dataset.py`, and `evaluate.py` invoke.
+>
+> Everything here is kept as a record of what was run and measured. To use it
+> again you would need to restore the format modules from git history — see the
+> RETIRED header in `docs/proposals/reversible-ai-native-program-format.md`.
+
 Implements Steps 6-7 of `docs/proposals/reversible-ai-native-program-format.md`'s
-suggested sequence, on top of the already-implemented and verified durable
-format (`src/gene/program_document.nim`, `src/gene/packed_format.nim`,
-`src/gene/document_units.nim`).
+suggested sequence, on top of the durable format that used to live in
+`src/gene/program_document.nim`, `src/gene/packed_format.nim`, and
+`src/gene/document_units.nim`.
 
 Code lives in this repo and is developed/tested locally; training runs on a
 remote GPU host over SSH (`training/sync.sh`, default host alias `lenovo`,

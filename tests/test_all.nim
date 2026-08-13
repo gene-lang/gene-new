@@ -2,9 +2,6 @@
 {.warning[UnusedImport]: off.}
 include test_reader
 include test_source_index
-include test_program_document
-include test_packed_format
-include test_document_units
 include test_viewer
 include test_viewer_editor
 include test_vterm
