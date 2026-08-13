@@ -54,17 +54,24 @@ The runtime remains the enforcement boundary. Declarations make the policy
 visible and compositional; unforgeable grants and native adapters make it
 real.
 
-### 1.1 Four decisions that shape everything else
+### 1.1 Five decisions that shape everything else
 
 Each changes what ordinary code looks like, so disagreeing with any means
 disagreeing with most of the detail that follows.
 
-**1. A public declaration is a contract, not an optional narrowing.** An
-exported function or protocol message must carry a `^capabilities` row;
-`^capabilities *` says "whatever my caller has". Private helpers may omit and
-inherit. Otherwise a module granted `fs/*` gives every undeclared exported
-helper ambient filesystem authority, and §2's visibility goal is false for the
-declarations other code depends on. §5.0.
+**0. Declaration requirements are a mode, and open is the default.** A
+program that attenuates nothing writes no capability code at all. Modes nest
+(`open -> strict -> open`), and mode governs *declarations only* — an open
+region inside a strict one inherits the narrowed context and cannot exceed it,
+so going open never widens authority. Every rule below describes *strict*
+mode. §5.0.
+
+**1. In strict mode, a public declaration is a contract, not an optional
+narrowing.** An exported function or protocol message must carry a
+`^capabilities` row; `^capabilities *` says "whatever my caller has". Private
+helpers may omit and inherit. Otherwise a module granted `fs/*` gives every
+undeclared exported helper ambient filesystem authority, and §2's visibility
+goal is false for the declarations other code depends on. §5.0.
 
 **2. Version 1 capability types are provider-backed, without exception.** Any
 library may *define* a capability type, but it is usable only once the host
@@ -297,22 +304,13 @@ The consequence for the open protocol is the important part:
 > A `CapabilitySpec` *describes* a requested narrowing. It is never the
 > *proof* that the narrowing is sound.
 
-So narrowing is a two-party operation:
-
-```text
-user code:          describes a request in the type's own vocabulary
-trusted provider:   validates it against the *parent's* grant and mints a
-                    new sealed derivative, or refuses
-```
-
-The provider for a capability type is trusted code that owns the resource —
-the filesystem provider for `fs/*`, the host for its own grants. It is the
-only thing that mints, and it validates against the parent's derivative
-grant, so each boundary's ceiling is at or below the previous one by
-construction rather than by user cooperation.
-
-Given that, source code can request anything it likes; the provider refuses
-to mint a derivative broader than its input, and:
+So narrowing is a two-party operation: user code describes a request in the
+type's own vocabulary, and the trusted provider validates it against the
+*parent's* grant and mints a new sealed derivative or refuses. The provider
+owns the resource — the filesystem provider for `fs/*`, the host for its own
+grants — and is the only thing that mints, so each boundary's ceiling is at or
+below the previous one by construction rather than by user cooperation.
+Source code can request anything it likes, and:
 
 ```text
 grant(child) <= grant(parent) <= ... <= grant(host)
@@ -484,8 +482,11 @@ These are conformance requirements, testable per provider:
 ```text
 semantic key      Every grant has a stable key derived from its authority
                   and lineage — never an allocation identity. Two grants
-                  with equal authority and equal lineage have equal keys,
-                  in the same run and across runs.
+                  with equal authority and equal lineage have equal keys
+                  within one application run and provider epoch. Stability
+                  ACROSS runs is not required: host handles and root
+                  lineage have no meaningful cross-run identity, and every
+                  cache in this document is per-run.
 
 resolve           Deterministic by semantic key: resolve(g, s) called twice
                   yields grants with the same key. Idempotent on an
@@ -521,7 +522,7 @@ dependency set — not just the grant it names
 ```
 
 Implementations may realize this as shared lineage tokens, composite
-generations, or provider callbacks. §20 may defer the *representation*; it
+generations, or provider callbacks. §19 may defer the *representation*; it
 may not defer this requirement.
 
 **Who owns a cross-type edge.** A cross-type `resolve` is implemented by the
@@ -899,21 +900,43 @@ the context it resolves against is a runtime value:
 - §4.5's parameter-dependent selectors name runtime values by construction.
 
 **`CapabilitySpec` is exempt from scoped dispatch.** A capability type has
-exactly one `CapabilitySpec` implementation, owned by the type and frozen when
-its provider is admitted (§3.2.4). Scoped and overlay implementations do not
-apply to it.
+exactly one `CapabilitySpec` implementation. Scoped and overlay
+implementations do not apply to it.
 
 Ordinary protocols stay scoped; this one cannot be, because provider ownership
 is already global and frozen while dispatch is not. If `canonicalize` were
 scope-dependent, the same nominal declaration would describe different
 requests depending on where it was dispatched — so a canonical key would not
-be canonical, and interface fingerprints (§5.3) and transition caches (§13.2)
-would key on a value that varies by caller. It would also let an overlay
-change what a security declaration *means* without changing its text.
+be canonical, and fingerprints (§5.3) and transition caches (§13.2) would key
+on a value that varies by caller. It would also let an overlay change what a
+security declaration *means* without changing its text.
 
-This removes what would otherwise be a third source of compile-time
-uncertainty: the `canonicalize` target for a type is always statically known
-once the type is.
+#### 4.6.0 Four bootstrap phases
+
+"Frozen when its provider is admitted" and "available only after its module
+loads" are both true, and are different events:
+
+```text
+1. host boot     admit providers; freeze provider and TYPE OWNERSHIP.
+                 No Gene code has run. Nothing can be replaced later.
+
+2. link          install the one canonical CapabilitySpec implementation
+                 for each type, taken from declaration METADATA. The
+                 implementation is bound, not executed.
+
+3. module init   runs under an empty context (§5.3). A capability type's
+                 module may initialize here; this does not re-open
+                 ownership, which was frozen at phase 1.
+
+4. first use     the canonicalizer may finally EXECUTE, and its result is
+                 memoized (§4.6.1).
+```
+
+Ownership freezes at phase 1, binding happens at phase 2 from metadata,
+execution defers to phase 4. A Gene-defined capability type is therefore
+supported with no phase at which a running program could install or replace a
+provider (§3.2.4), and the `canonicalize` target is statically known from
+phase 2 onward.
 
 **Running `canonicalize` in the compiler is also not free.** It requires the
 capability library to be loaded and its implementation available during
@@ -995,10 +1018,44 @@ available after module initialization is no longer a special case, because
 
 ## 5. Where capabilities are declared
 
-### 5.0 Normative defaults
+### 5.0 Open and strict mode
 
-An omitted `^capabilities` row and an explicit empty one are **different**,
-and the default differs by boundary:
+**A program that does not attenuate anything writes no capability code at
+all.** Scripts, tests, internal tools, anything early in development — the
+rules below must not tax them. So declaration *requirements* are a mode, set
+per module and defaulting to the package and then the application:
+
+```gene
+^capabilities_mode strict     # or open; default open
+```
+
+**Mode governs declarations, never authority.** This is the whole rule, and
+everything else follows from it:
+
+```text
+mode      decides whether a missing ^capabilities row is an error
+          or an inheritance
+
+context   always inherits from the parent and only ever narrows,
+          in both modes, at every boundary (§3.5)
+```
+
+**Open mode (default).** Nothing is required and nothing is implied:
+
+| boundary | row omitted, open mode |
+| --- | --- |
+| entry module | **inherits the host root** |
+| imported module | **inherits its importer's context** |
+| any function / method / message | **inherits the caller's context** |
+
+Rows are still honoured where written, so `with_capabilities` and a narrowing
+declaration work normally — they are simply not required. An open-mode
+application behaves exactly like a pre-capability Gene program, and reflection
+(§11) reports it as unenforced so nothing reads an absent row as a checked
+contract.
+
+**Strict mode.** Declarations become contracts, and omission means what §2's
+visibility goal requires:
 
 | boundary | row omitted | `^capabilities []` |
 | --- | --- | --- |
@@ -1008,6 +1065,71 @@ and the default differs by boundary:
 | **private** function / method | **caller ∩ defining module ceiling** | empty context |
 | protocol message | **compile error** — row required | empty context |
 | `with_capabilities` | n/a — row required | empty context |
+
+#### 5.0.1 Hybrid: modes may alternate
+
+Modes nest freely along an import chain — `open -> strict -> open -> strict`
+is well defined, and each module's mode governs only its own declarations.
+
+**An `open` region inside a `strict` one is not an escape hatch.** It means
+"this code does not specify capabilities", so it inherits — and inheriting is
+exactly what bounds it. It receives the strict parent's already-narrowed
+context, never the host root, and cannot perform anything the inherited
+context does not permit.
+
+```text
+app          open     inherits host root:            fs/*, net/*
+  sandbox    strict   ^capabilities [(fs/WriteDir "tmp")]  =>  tmp only
+    helper   open     no rows; inherits                    =>  tmp only
+      inner  strict   ^capabilities [(fs/ReadDir "tmp")]   =>  tmp read only
+```
+
+`helper` writes no capability code and gets no authority back: it can use
+`tmp`, because that is what `sandbox` left, and nothing else. Going open never
+widens — §3.5's monotonic attenuation holds across every mode change, because
+mode is not consulted when composing contexts.
+
+What alternation buys is that adopting strictness is *incremental*. A team can
+make one sensitive subtree strict without annotating the program around it,
+and an audited strict library can call an unannotated helper without that
+helper becoming a hole.
+
+**Dependencies need not be annotated to be safe.** A strict module may import
+an open library; its undeclared exports behave as `^capabilities *`, bounded
+by its module ceiling and the importing context (§6.1). What is lost is
+*visibility*, not safety — the enforcing mechanism is the ceiling, not the
+annotation. A lint reports unannotated dependencies, so an application that
+wants them fully declared can require it as policy.
+
+Everything below describes strict mode, where someone relies on the
+declarations. In open mode it is all optional.
+
+#### 5.0.2 Mode is erased before runtime
+
+**Mode is package-owned, and the compiler normalizes it away.** An application
+cannot change a dependency's mode: a package compiled once must not mean two
+things. Every omission is rewritten to an explicit descriptor at compile or
+link time:
+
+```text
+open    callable omission   ->  *
+open    module omission     ->  app_context  (the application ceiling)
+strict  public omission     ->  compile / link error
+strict  module omission     ->  []
+        private omission    ->  inherited context
+```
+
+After this pass **the runtime knows nothing about `capabilities_mode`** — only
+normalized descriptors. So there is no mode check on any hot path and no way
+for mode to affect resolution, which is the mechanical reason §5.0's "mode
+governs declarations, never authority" holds rather than being merely
+asserted. It also settles mixed-mode protocol implementations (§5.5): an
+omitted open-mode implementation row normalizes to `*` and is compared as `*`.
+
+An application wanting annotated dependencies states it as a **link-time
+validation policy**, `^require_strict_dependencies`, which checks interface
+metadata and fails the link rather than recompiling a dependency under a mode
+its author did not choose.
 
 **A public declaration is a contract.** An exported function, method, or
 protocol message must carry a `^capabilities` row; omitting one is a compile
@@ -1106,7 +1228,9 @@ in untrusted Gene source only resolves inherited authority.
 
 ### 5.2 Entry module
 
-The entry module establishes the application-level ceiling:
+In strict mode the entry module establishes the application-level ceiling.
+(In open mode there is no entry row and the entry inherits the host root,
+§5.0.)
 
 ```gene
 (mod app
@@ -1116,20 +1240,54 @@ The entry module establishes the application-level ceiling:
   ])
 ```
 
-The entry row is resolved against the host root **by the host, when it
-invokes `main`** — not when the module is loaded. Module loading and
-initialization run under an empty context (§5.3), so there is no point during
-loading at which the entry's ceiling could be materialized, and no authority
-for top-level forms or imports to receive.
-
 This is the main policy point controlled by the application developer. It
 governs what `main` and everything it calls may do; it does not govern the
 loading of the program.
 
-For an entry or imported module, an omitted or explicitly empty
-`^capabilities` row means an empty context. There is no implicit inherit-all
-behavior at a module boundary. Functions differ — see the defaults table in
-§5.0.
+#### 5.2.1 Ceiling lifecycle (normative)
+
+Ceilings are resolved **once**, in one phase, after loading and before `main`.
+This section governs; §5.3 and §6.1 describe consequences of it.
+
+```text
+1. host boot        host_root = grants the host mints (§5.1)
+
+2. load             every module is loaded and initialized under an EMPTY
+                    context. No row is materialized. Imports transfer
+                    definitions, never authority.
+
+3. materialize      app_context = resolve_row(entry_row, host_root)
+                                  host_root, if the entry row is omitted
+                                             in open mode
+                                  empty,     if omitted in strict mode
+
+                    entry.module_ceiling = app_context
+
+                    module_ceiling(M) =
+                        resolve_row(M.row, app_context)  when M declares one
+                        app_context                      omitted, open mode
+                        empty                            omitted, strict mode
+
+4. run              main executes under app_context. Every boundary computes
+                    intersect(parent, callee.module_ceiling) (§6.1).
+```
+
+A module loaded lazily after step 3 materializes its ceiling against the
+stored `app_context`, so it gets the same ceiling it would have had at step 3.
+`app_context` is fixed for the life of the program.
+
+Two consequences worth stating, because earlier drafts contradicted themselves
+on both:
+
+- **Nothing is resolved per call.** Step 3 happens once; a call only
+  intersects an already-materialized ceiling with its caller's context.
+- **Nothing is resolved during load.** At step 2 there is no `app_context` to
+  resolve against, which is exactly why materialization is its own phase
+  rather than part of loading.
+
+Relative selectors depend on this: `(fs/WriteDir "tmp")` resolves against
+`app_context` once, so what "tmp" is relative *to* is a single well-defined
+context rather than whatever happened to be active.
 
 ### 5.3 Imported modules
 
@@ -1143,8 +1301,8 @@ transferring any authority:
   ^capabilities [fs/*])
 ```
 
-This is a *ceiling*, resolved once against the application root at load and
-fixed thereafter (§6.1). It bounds what any call into `report` may receive; it
+This is a *ceiling*, materialized once against `app_context` in §5.2.1's step
+3 and fixed thereafter. It bounds what any call into `report` may receive; it
 does not say the module holds that authority, and there is no moment at which
 it does — what a call actually gets is `intersect(caller_context, ceiling)`.
 
@@ -1402,15 +1560,15 @@ resolve_row(row, context) -> context
     Apply every selector in `row` against `context`, yielding the minted
     grants. The result is bounded by `context` by construction. Note this
     does NOT make the boundary's intersection redundant: a module ceiling
-    is resolved against the application root, not against the caller, so
-    it must still be intersected with the caller's context (below).
+    is materialized against app_context, not against the caller, so it
+    must still be intersected with the caller's context (below).
 ```
 
-**A module ceiling is resolved once, against the application root**, when the
-module is loaded — never against a caller's context:
+**A module ceiling is materialized once, against `app_context`** (§5.2.1 step
+3) — never against a caller's context, and never during load:
 
 ```text
-module_ceiling(M) = resolve_row(M.capabilities_row, application_root_context)
+module_ceiling(M) = resolve_row(M.row, app_context)
 ```
 
 It is immutable and cached for the life of the program. Then at each call or
@@ -1477,8 +1635,8 @@ only because this is where they take effect:
 - Mandatory selectors fail **before the body**, always, in every execution
   profile (§13.3, §13.5).
 - Module loading never runs this algorithm, because loading is empty (§5.3).
-  A module's row participates only as the `ceiling` template above, resolved
-  per call.
+  A module's row is materialized once in §5.2.1 step 3; a boundary only
+  intersects the resulting ceiling.
 
 Namespace projections contribute every matching available grant. The result
 is always at or below `available`.
@@ -1948,7 +2106,7 @@ who may consume a proof and whether it is one-shot.
 An API of the shape `fs/write_file_with(proof, ...)` therefore does not
 exist. Adding one is a model change, not a convenience: the central invariant
 would have to track authority in values rather than only in the active
-context, and the agent verifier would have to do the same.
+context, and any pre-execution verifier would have to do the same.
 
 ### 10.2 Authority-bearing resources
 
@@ -1995,8 +2153,8 @@ Two alternatives are rejected. **Explicit delegation** — possession of a
 sealed resource conveys its restricted authority — is the ocap answer and is
 legitimate; it is what a later version should adopt if delegation is wanted.
 But it puts authority in values, and then §3.5's invariant, closure and task
-capture, `Send` rules, and the agent verifier (§19) must all track authority
-through data flow. **Two resource classes**, context-bound and delegable, is
+capture, `Send` rules, and any pre-execution verifier must all track
+authority through data flow. **Two resource classes**, context-bound and delegable, is
 worse than either: its failure mode is a delegable handle where a
 context-bound one was assumed, which is the confusion the design exists to
 prevent, now with two spellings.
@@ -2068,9 +2226,9 @@ Static checking can reject:
 - malformed selector arguments and properties;
 - duplicate or conflicting selector rows;
 - parameter references that are not bound at the boundary;
-- **an exported function, method, or protocol message with no `^capabilities`
-  row** (§5.0) — the public-contract rule, and the one static check the
-  visibility goal now rests on;
+- **in strict mode, an exported function, method, or protocol message with
+  no `^capabilities` row** (§5.0) — the public-contract rule, and the one
+  static check the visibility goal rests on. Not a check in open mode;
 - `^^optional` outside a declaration row (§4.2.1, §6.2);
 - an implementation broader than its protocol message (via the provider's
   `subsumes`, §5.5), including when `subsumes` answers `unknown`;
@@ -2518,11 +2676,32 @@ The implementation is ready when tests demonstrate all of the following:
 - Multiple non-equivalent matching grants produce
   `AmbiguousCapability`.
 - Protocol implementations cannot broaden public capability contracts.
-- An exported function, method, or protocol message with no `^capabilities`
-  row is a compile error; the same declaration marked private compiles and
-  inherits `caller ∩ module ceiling`. So a module granted `fs/*` cannot hand
-  an undeclared exported helper ambient authority — that helper does not
-  compile.
+- **An open-mode application with no `^capabilities` anywhere — no entry row,
+  no module rows, no function rows — compiles and runs with the host's full
+  authority**, and is byte-identical in behaviour to a pre-capability build.
+- **Ceilings materialize once, between load and `main`** (§5.2.1): no row is
+  resolved during module loading, and none is resolved per call. A module
+  loaded lazily after that phase gets the same ceiling it would have had.
+- After the normalization pass (§5.0.2) no runtime structure records
+  `capabilities_mode`; a precompiled package behaves identically in an open
+  and a strict application, and `^require_strict_dependencies` fails at link
+  rather than recompiling the dependency.
+- A Gene-defined capability type works end to end across the four bootstrap
+  phases (§4.6.0), and no phase permits installing or replacing a provider
+  after host boot.
+- Switching a module to strict mode is the only thing that turns its missing
+  rows into errors; reflection reports it as unenforced until then.
+- **An open module nested inside a strict one gains no authority**: it
+  inherits the strict parent's narrowed context and is denied anything outside
+  it. `open -> strict -> open -> strict` attenuates monotonically at every
+  step.
+- A strict module importing an open library runs: the library's undeclared
+  exports behave as `^capabilities *`, still bounded by its module ceiling and
+  the importing context.
+- In strict mode, an exported function, method, or protocol message with no
+  `^capabilities` row is a compile error; the same declaration marked private
+  compiles and inherits `caller ∩ module ceiling`. So a module granted `fs/*`
+  cannot hand an undeclared exported helper ambient authority.
 - `^capabilities *` on an exported function is the pass-through, so the
   migration is mechanical.
 - A capability-requiring operation attempted during module initialization is
@@ -2535,45 +2714,37 @@ Open-protocol criteria (§3.1, §3.2.2):
 
 - A type that does not explicitly implement `CapabilitySpec` is rejected in a
   selector position, even if it defines methods with the right names.
-- A capability type whose provider was not admitted by the host is rejected;
-  Gene source cannot admit one, and the registry is frozen before program
-  code runs.
+- A capability type whose provider the host did not admit is rejected in a
+  selector position; Gene source cannot admit one, and the registry is frozen
+  before program code runs.
 - A cross-provider entailment edge is rejected in version 1.
 - **Provider algebra (§3.2.3.1)**: `resolve` is deterministic by semantic key;
-  `intersect` is commutative, associative, and idempotent, and its output is
-  normalized; equal authority plus equal lineage gives equal keys across runs;
-  both reject revoked inputs. Equal contexts therefore give equal results
-  regardless of insertion order, and `AmbiguousCapability` is raised at the
-  operation rather than during resolution.
-- A provider violating any algebra law fails the conformance suite that
-  admission (§3.2.4) requires.
-- A user-defined capability type resolves and reflects exactly like a
-  built-in one.
+  `intersect` is commutative, associative, idempotent, and normalized; equal
+  authority plus equal lineage gives equal keys within a run and epoch; both
+  reject revoked inputs. Equal contexts therefore give equal results regardless of
+  insertion order, and `AmbiguousCapability` is raised at the operation rather
+  than during resolution. A provider violating any law fails the conformance
+  suite admission (§3.2.4) requires.
+- A user-defined capability type resolves and reflects exactly like a built-in
+  one, and reflection reports the correct provider for both.
 - **Intermediate narrowing is preserved.** With a host grant of `/` and an
   entry narrowing to `/tmp`, no nested boundary can obtain authority above
   `/tmp`, and a derivation attempted against the host root rather than the
-  parent derivative is refused. This is the single most important test in
-  this document.
-- A boundary's checked ceiling is the nearest sealed derivative grant, not
-  the host root.
-- A `CapabilitySpec` implementation cannot cause a derivative grant to be
-  minted that its provider would refuse; it has no path to authority at
-  all.
-- A `canonicalize` that raises surfaces as `CapabilityTypeError` and denies
-  the boundary; it does not fall through to ambient access.
-- `canonicalize` is idempotent, and two equivalent specifications produce
-  identical context keys and interface fingerprints.
-- A library-provided `canonicalize` never executes during compilation; it
-  runs at first use and its result is memoized.
-- A `canonicalize` that attempts I/O is denied at that first use.
+  parent derivative is refused. A boundary's checked ceiling is the nearest
+  sealed derivative, not the host root. This is the single most important test
+  in this document.
+- A `CapabilitySpec` implementation cannot cause a grant to be minted that its
+  provider would refuse; it has no path to authority at all.
+- `canonicalize` is idempotent; equivalent specifications produce identical
+  context keys and fingerprints; one that raises surfaces as
+  `CapabilityTypeError` and denies the boundary rather than falling through to
+  ambient access.
+- A library-provided `canonicalize` never runs during compilation — it runs at
+  first use, is memoized, and is denied there if it attempts I/O.
 - A user library cannot define a type that captures grants belonging to a
   reserved built-in namespace.
 - `^capabilities *`, `^capabilities (fs/WriteDir "tmp")`, and the list form
   normalize to the same descriptors.
-- Reflection reports the correct provider for a built-in type and for a
-  library-supplied one.
-- A capability type with no registered provider is rejected in a selector
-  position.
 - A static row compiles to a descriptor requiring no runtime parsing or
   allocation; a parameter-dependent row adds cost only to its own boundary.
 
@@ -2615,12 +2786,12 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 - A *private* function with an omitted row receives
   `caller ∩ defining module ceiling`; one with `^capabilities []` receives an
   empty context; an *exported* one with no row does not compile (§5.0).
-- **A module row with a relative selector is applied once per crossing.** A
-  module declaring `(fs/WriteDir "tmp")`, entered with `<cwd>`, resolves to
-  `<cwd>/tmp`; an intra-module call to a private helper still sees
-  `<cwd>/tmp`, never `<cwd>/tmp/tmp` (§6.1).
-- Re-entering the same module from a differently-scoped caller resolves the
-  row against that caller, not against the earlier result.
+- **A module ceiling is materialized once, against `app_context`** (§5.2.1).
+  A module declaring `(fs/WriteDir "tmp")` under an `app_context` of `/`
+  yields `/tmp`; an intra-module call, and re-entry via `A -> B -> A`, both
+  still see `/tmp` and never `/tmp/tmp` (§6.1).
+- The same module entered from two differently-scoped callers has one ceiling
+  and two different effective contexts, each `caller ∩ ceiling`.
 - **Cross-type intersection survives.** A context holding `fs/WriteDir "/tmp"`
   intersected with one holding `fs/WriteFile "/tmp/a"` yields a usable grant
   for `/tmp/a`, not the empty context a type-keyed comparison would produce
@@ -2638,8 +2809,10 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 - A `WriteDir` grant satisfies a `WriteFile` selector through the registered
   entailment index, without scanning unrelated grants or running unrelated
   user code.
-- No source-level operation yields a grant or resolved proof as a value,
-  including via error values and closure capture.
+- No source-level operation yields a grant, proof, or authorization decision
+  as a value — including via error values and closure capture. Adapters
+  validate and execute in one call (§3.2.3), so there is nothing to capture,
+  store, or replay.
 - Module initialization runs with an empty context, so a capability-requiring
   operation attempted during it is denied; there is exactly one runtime module
   instance regardless of context, and no capability fingerprint in its key.
@@ -2650,17 +2823,11 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
   removed is refused (§10.2).
 - A resource passed into an empty context is unusable.
 - `provider.intersect` finds the overlap of two grants independently derived
-  from
-  one root where neither is an ancestor of the other; grant-identity
+  from one root where neither is an ancestor of the other; grant-identity
   comparison alone does not.
-- A capability type whose provider is absent cannot be used, and one whose
-  provider refuses a derivation yields denial rather than a wider grant.
 - A canonical specification containing a mutable collection or closure is
   rejected at canonicalization; mutating a value after insertion cannot
   change an already-cached transition.
-- No source-level operation yields an authorization decision as a value:
-  `perform` validates and executes in one call (§3.2.3), so there is nothing
-  to capture, store, or replay.
 - **A grant revoked after a proof is carried denies a second operation in the
   same frame.** So does revoking an *ancestor* of that grant, and revoking
   *either operand* of an `intersect` the grant descends from (§3.2.3).
@@ -2686,19 +2853,7 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
   `subsumes` relation, so untrusted specification code cannot make the
   compiler accept a broader implementation.
 
-## 19. Application: Gene as an agent's sole action surface
-
-The machinery in §11 and §12 answers a problem outside this proposal's
-original scope: an LLM agent that acts by emitting a Gene program, rather
-than a tool call, needs exactly the pre-execution capability enumeration this
-document specifies. Moving from tool calls to programs otherwise trades
-per-action authorization for per-session authorization, and a capability
-bound is what recovers the narrower guarantee.
-
-That direction is developed in `agent-code-as-action.md`. It depends on this
-proposal and changes nothing in it; nothing here should be justified by it.
-
-## 20. Deferred questions
+## 19. Deferred questions
 
 Four questions that were previously here, or scattered as unresolved tensions,
 have been **settled** and moved to §1.1: whether a public declaration is a
