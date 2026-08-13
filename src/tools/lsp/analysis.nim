@@ -12,7 +12,7 @@
 ## Conversions live here so the server never sees reader coordinates.
 
 import std/[strutils, tables, unicode]
-import ../reader, ../types
+import ../../gene/[reader, types]
 import ../source_positions
 export source_positions
 

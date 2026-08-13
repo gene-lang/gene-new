@@ -5,7 +5,8 @@
 ## properties, comments outside forms, and exact byte locations.
 
 import std/[os, strutils, tables, unicode]
-import ./[reader, source_positions, types]
+import ../gene/[reader, types]
+import ./source_positions
 
 type
   SyntaxKind* = enum

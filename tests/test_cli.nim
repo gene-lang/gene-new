@@ -22,6 +22,16 @@ proc buildGeneCli() =
   if build.exitCode != 0:
     checkpoint build.output
   check build.exitCode == 0
+  # `gene fmt|lsp|view` exec a sibling binary resolved from getAppDir(), so the
+  # tools must sit next to geneExe for those subcommands to work here. Building
+  # them means the delegation path itself is under test, not stubbed.
+  for (module, exe) in [("gene_fmt", "gene-fmt"), ("gene_lsp", "gene-lsp"),
+                        ("gene_viewer", "gene-viewer")]:
+    let toolBuild = execCmdEx("nim c --path:src --hints:off -o:" &
+                              (cliDir / exe) & " src/" & module & ".nim")
+    if toolBuild.exitCode != 0:
+      checkpoint toolBuild.output
+    check toolBuild.exitCode == 0
   cliBuilt = true
 
 proc writeCliProgram(name, src: string): string =

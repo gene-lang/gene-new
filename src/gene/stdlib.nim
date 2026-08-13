@@ -7259,8 +7259,10 @@ proc registerStdlibNamespaces(root: Scope) =
   stdParseScope.define("parse_int", newNativeCallFn("parse_int", biParseInt,
                                                     acceptsNamed = false))
   stdParseScope.define("read_all", root.vars["read_all"])
-  stdParseScope.define("format", newNativeCallFn("format", biParseFormat,
-                                                 acceptsNamed = false))
+  # `format` was removed from the runtime: canonical formatting is a tool
+  # surface, not a language one, and it was the only thing linking fmt.nim
+  # (and transitively lsp/analysis.nim) into every Gene binary. Use the
+  # `gene fmt` CLI, which delegates to the separately built gene-fmt.
   stdParseScope.define("ParseError", root.vars["ParseError"])
   # The former `std/*` namespaces are registered bare at the root — like `str`,
   # `net`, etc. — so buildBuiltins' `gene` root reaches them as `gene/stream`,

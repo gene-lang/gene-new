@@ -1,5 +1,6 @@
 import std/[strutils, unicode, unittest]
-import gene/[reader, source_index, source_positions]
+import gene/reader
+import tools/[source_index, source_positions]
 
 suite "source index — reader-backed occurrences":
   test "tokens carry exact raw spans despite cooked lexemes":

@@ -1,10 +1,10 @@
 ## Tests for the Gene language server (docs/lsp.md):
-## unit tests over gene/lsp/analysis plus one JSON-RPC stdio e2e against the
+## unit tests over tools/lsp/analysis plus one JSON-RPC stdio e2e against the
 ## built CLI (`gene lsp`). Included by test_all.nim after test_cli, so the
 ## e2e reuses its buildGeneCli/geneExe helpers.
 
 import std/[json, os, osproc, streams, strutils, unittest]
-import gene/lsp/analysis
+import tools/lsp/analysis
 
 const lspSample = """
 (mod sample @doc "demo")

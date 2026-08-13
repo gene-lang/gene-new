@@ -6,7 +6,16 @@ description    = "Gene — a homoiconic general purpose language"
 license       = "MIT"
 srcDir        = "src"
 binDir        = "bin"
-bin           = @["gene"]
+
+# The formatter, language server, and structural viewer are tools, not runtime.
+# Building them separately is what keeps fmt.nim, the LSP analyzer, the
+# structural index, and the viewer out of every Gene process; `gene fmt|lsp|view`
+# exec the sibling binary. namedBin maps the Nim module name (no hyphens
+# allowed) to the hyphenated executable the CLI looks for.
+bin           = @["gene", "gene_fmt", "gene_lsp", "gene_viewer"]
+namedBin["gene_fmt"] = "gene-fmt"
+namedBin["gene_lsp"] = "gene-lsp"
+namedBin["gene_viewer"] = "gene-viewer"
 
 # Dependencies
 
@@ -42,6 +51,15 @@ task native_example, "Build and run the typed_native SQLite example":
   ## libsqlite3, and runs the result. Requires a C compiler and SQLite headers;
   ## needs bin/gene, so run `nimble build` first.
   exec "examples/native/build.sh"
+
+task tools, "Build gene-fmt, gene-lsp, and gene-viewer":
+  ## `gene fmt|lsp|view` exec these, resolved next to the running `gene` binary
+  ## and then on PATH. Without them those three subcommands report a clear
+  ## error naming both places they looked.
+  exec "mkdir -p bin"
+  exec "nim c --path:src --hints:off -o:bin/gene-fmt src/gene_fmt.nim"
+  exec "nim c --path:src --hints:off -o:bin/gene-lsp src/gene_lsp.nim"
+  exec "nim c --path:src --hints:off -o:bin/gene-viewer src/gene_viewer.nim"
 
 task test, "Run the test suite":
   exec "nim c -r --path:src --hints:off tests/test_all.nim"

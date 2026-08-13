@@ -1,7 +1,7 @@
 import std/[options, strutils, unittest]
-import gene/[source_index]
+import tools/source_index
 import gene/ext/term/tui
-import gene/viewer/model
+import tools/viewer/model
 
 suite "viewer — pure navigation model":
   test "enter leave paging and paths are terminal independent":

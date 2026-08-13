@@ -39,7 +39,7 @@
 (import $str [join split starts_with? ends_with? contains? lower trim byte_size
              slice_bytes])
 (import gene/stream [to_stream map filter take into each])
-(import gene/parse [parse_int read_all format ParseError])
+(import gene/parse [parse_int read_all ParseError])
 (import $fs [read_text write_text exists? remove list_dir real_path
             ReadDir WriteDir ReadWriteDir])
 (import $net/http_client [Http stream HttpClientError])
@@ -6288,19 +6288,18 @@ State that broader behavior is unverified when no matching successful check ran.
               (await task)
               $"REPL ${route}: ${(last_output ~ get)}"))))))
 
-(fn pretty_result_text [text : Str, width : Int] : Str
-  # Long results go through the canonical formatter so nested structures
-  # indent by depth (the old " ^"-split rendering flattened nested maps and
-  # made their stacked closers read as an extra brace). Display-only: short
-  # results echo the canonical print untouched, and text that does not parse
-  # (a truncated transcript line) falls back to itself.
-  (if (< ($size ($bytes text)) width)
-    text
-    (try
-      # trim: format ends with the source-unit trailing newline and the
-      # transcript appender adds its own.
-      (trim (format text))
-    catch _ text)))
+(fn pretty_result_text [text : Str, _width : Int] : Str
+  # Display-only pass-through. This used to run long results through
+  # `gene/parse/format` so nested structures indented by depth, but that
+  # builtin was removed: canonical formatting is a tool surface (`gene fmt`,
+  # which execs the separately built gene-fmt), and it was the only thing
+  # linking the formatter and the LSP analyzer into every Gene process.
+  #
+  # The cost is real but small and display-only: long results now render as
+  # the canonical print on one line rather than wrapped and indented by depth.
+  # Restore the indenting by importing `genex/fmt` once bundled libraries land
+  # (docs/proposals/bundled-libraries.md §7).
+  text)
 
 (fn refresh_application_input [app]
   (var local (active_application ~ get))

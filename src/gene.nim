@@ -12,15 +12,47 @@
 ##   gene doc <file>     print module metadata, imports, and declarations
 
 import std/[algorithm, os, osproc, sets, streams, strutils, tables]
-import gene/[build, compiler, diagnostics, fmt, gir, package, printer, reader,
+import gene/[build, compiler, diagnostics, gir, package, printer, reader,
              repl, repl_curses, system_dependency, types, vm, web]
 import gene/ext/[logging, logging_config]
 # Imported for its side effect: the typed_native AOT boundary helpers are
 # {.exportc, dynlib.}, and importing the module is what puts them in this
 # executable's dynamic symbol table for a dlopened AOT library to resolve.
 import gene/aot_runtime
-import gene/lsp/server as lsp_server
-import gene/viewer/app as viewer_app
+
+when defined(posix):
+  import std/posix
+
+proc delegateToTool(tool: string, args: openArray[string]) =
+  ## `gene fmt|lsp|view` are separate executables. The formatter, language
+  ## server, and structural viewer are tools rather than runtime, and keeping
+  ## them out of this binary is what removes fmt.nim, the LSP analyzer, the
+  ## structural index, and the viewer from every Gene process.
+  ##
+  ## execv rather than spawn-and-wait: the tool *replaces* this process, so it
+  ## inherits stdio, the controlling terminal, and signal disposition directly.
+  ## That is what the stdio JSON-RPC server and the full-screen viewer both
+  ## need, and it makes the exit code the tool's by construction rather than by
+  ## translation.
+  let sibling = getAppDir() / tool
+  var exe = if fileExists(sibling): sibling else: findExe(tool)
+  if exe.len == 0:
+    stderr.writeLine "Error: '" & tool & "' was not found next to " &
+      getAppFilename() & " or on PATH."
+    stderr.writeLine "  It is built separately from `gene`: run `nimble tools`."
+    quit(1)
+  when defined(posix):
+    var argv = @[exe]
+    for a in args: argv.add a
+    var cargs = allocCStringArray(argv)
+    discard execv(exe.cstring, cargs)
+    # execv returns only on failure.
+    deallocCStringArray(cargs)
+    stderr.writeLine "Error: failed to exec " & exe
+    quit(1)
+  else:
+    let p = startProcess(exe, args = @args, options = {poParentStreams})
+    quit(p.waitForExit())
 
 proc usage() =
   echo "Gene — a homoiconic general purpose language"
@@ -120,52 +152,6 @@ proc commandArgs(first: int): seq[string] =
   if first <= paramCount():
     for i in first .. paramCount():
       result.add paramStr(i)
-
-proc parseViewCli(): viewer_app.ViewerOptions =
-  result.col = 1
-  var i = 2
-  while i <= paramCount():
-    let arg = paramStr(i)
-    case arg
-    of "--readonly": result.readonly = true
-    of "--no-color": result.noColor = true
-    of "--editor", "--path", "--line":
-      inc i
-      if i > paramCount():
-        raise newException(ValueError, arg & " expects a value")
-      let value = paramStr(i)
-      case arg
-      of "--editor": result.editor = value
-      of "--path": result.initialPath = value
-      of "--line":
-        let parts = value.split(':', maxsplit = 1)
-        result.line = parseInt(parts[0])
-        if parts.len == 2: result.col = parseInt(parts[1])
-        if result.line <= 0 or result.col <= 0:
-          raise newException(ValueError, "--line expects positive N[:COLUMN]")
-      else: discard
-    else:
-      if arg.startsWith("--editor="):
-        result.editor = arg[9 .. ^1]
-      elif arg.startsWith("--path="):
-        result.initialPath = arg[7 .. ^1]
-      elif arg.startsWith("--line="):
-        let parts = arg[7 .. ^1].split(':', maxsplit = 1)
-        result.line = parseInt(parts[0])
-        if parts.len == 2: result.col = parseInt(parts[1])
-        if result.line <= 0 or result.col <= 0:
-          raise newException(ValueError, "--line expects positive N[:COLUMN]")
-      elif arg.startsWith("-"):
-        raise newException(ValueError, "unknown view option: " & arg)
-      elif result.path.len == 0:
-        result.path = arg
-      else:
-        raise newException(ValueError, "view accepts one file path")
-    inc i
-  if result.path.len == 0:
-    raise newException(ValueError, "'view' needs a file path")
-  if result.initialPath.len > 0 and result.line > 0:
-    raise newException(ValueError, "--path and --line are mutually exclusive")
 
 type RunCli = object
   path: string
@@ -275,14 +261,6 @@ proc configureRunLogging(options: RunCli) =
       defaultLoggingConfig()
   if options.debugging:
     config.overrides.add LogRouteOverride(name: "gene", hasLevel: true,
-                                           level: llDebug)
-  installLoggingConfig(config)
-
-proc configureLspLogging() =
-  var config = defaultLoggingConfig()
-  if getEnv("GENE_LSP_LOG", "").strip().toLowerAscii() in
-      ["1", "true", "yes", "on"]:
-    config.overrides.add LogRouteOverride(name: "gene/lsp", hasLevel: true,
                                            level: llDebug)
   installLoggingConfig(config)
 
@@ -465,17 +443,6 @@ proc cmdParse(path: string) =
   try:
     for f in readAll(src, normalizedPath(absolutePath(path))):
       echo f.print()
-  except ReadError as e:
-    stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
-    quit(1)
-
-proc cmdFmt(path: string) =
-  ## Human-friendly formatting (src/gene/fmt.nim): wrapped/indented forms,
-  ## reader sugar restored, comments preserved. `gene parse` stays canonical.
-  let src = readSourceFile(path)
-  let absPath = normalizedPath(absolutePath(path))
-  try:
-    stdout.write formatSource(src, absPath)
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     quit(1)
@@ -1448,10 +1415,7 @@ proc main() =
       quit(1)
     cmdParse(paramStr(2))
   of "fmt":
-    if paramCount() < 2:
-      stderr.writeLine "Error: 'fmt' needs a file path"
-      quit(1)
-    cmdFmt(paramStr(2))
+    delegateToTool("gene-fmt", commandArgs(2))
   of "compile":
     if paramCount() < 2:
       stderr.writeLine "Error: 'compile' needs a file path"
@@ -1508,14 +1472,9 @@ proc main() =
   of "pkg":
     cmdPkg()
   of "view":
-    try:
-      quit(viewer_app.runViewer(parseViewCli()))
-    except CatchableError as error:
-      stderr.writeLine "Error: " & error.msg
-      quit(1)
+    delegateToTool("gene-viewer", commandArgs(2))
   of "lsp":
-    configureLspLogging()
-    quit(runLspServer())
+    delegateToTool("gene-lsp", commandArgs(2))
   of "-h", "--help", "help":
     usage()
   else:

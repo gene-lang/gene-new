@@ -9,7 +9,7 @@
 ## and workspace/symbol over an index of the workspace's .gene files.
 
 import std/[json, os, strutils, tables, uri]
-import ../ext/logging
+import ../../gene/ext/logging
 import ./analysis
 
 type

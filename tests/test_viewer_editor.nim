@@ -1,5 +1,5 @@
 import std/[os, unittest]
-import gene/viewer/editor
+import tools/viewer/editor
 
 suite "viewer — external editor":
   test "configured commands are parsed without a shell":

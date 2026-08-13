@@ -5609,6 +5609,24 @@ Every command that creates an `Application` — `run`, `runurl`, `eval`, `repl`,
 (§15.3) and preserves the process working directory. Pure reader commands
 (`parse`, `fmt`) have no package context.
 
+`fmt`, `lsp`, and `view` are **delegating subcommands**: the `gene` binary
+resolves a sibling executable (`gene-fmt`, `gene-lsp`, `gene-viewer`) next to
+itself, then on `PATH`, and `execv`s it with the remaining arguments. The
+formatter, language server, and structural viewer are tools rather than
+runtime, and keeping them out of the `gene` binary is what removes the
+formatter, the LSP analyzer, the structural index, and the viewer from every
+Gene process. Because `execv` replaces the process, the tool inherits stdio,
+the controlling terminal, and signal disposition directly, and its exit code
+is the command's exit code.
+
+The consequence is a distribution requirement: **`gene` alone does not provide
+`fmt`, `lsp`, or `view`.** A packaged installation ships the tool binaries
+alongside it. When one is missing, the subcommand fails with a message naming
+both locations it searched.
+
+For the same reason there is no `format` function in `gene/parse`: canonical
+formatting is reachable through `gene fmt`, not from inside a running program.
+
 `gene pkg` inspects that context without executing a program:
 
 ```text

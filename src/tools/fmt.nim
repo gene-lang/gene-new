@@ -16,7 +16,7 @@
 ## (`tests/test_cli.nim` asserts parse-equivalence and idempotence).
 
 import std/[strutils]
-import ./reader, ./types, ./printer
+import ../gene/[reader, types, printer]
 import ./lsp/analysis as span
 
 const MaxWidth = 100
