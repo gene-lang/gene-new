@@ -54,6 +54,36 @@ The runtime remains the enforcement boundary. Declarations make the policy
 visible and compositional; unforgeable grants and native adapters make it
 real.
 
+### 1.1 Four decisions that shape everything else
+
+Each changes what ordinary code looks like, so disagreeing with any means
+disagreeing with most of the detail that follows.
+
+**1. A public declaration is a contract, not an optional narrowing.** An
+exported function or protocol message must carry a `^capabilities` row;
+`^capabilities *` says "whatever my caller has". Private helpers may omit and
+inherit. Otherwise a module granted `fs/*` gives every undeclared exported
+helper ambient filesystem authority, and §2's visibility goal is false for the
+declarations other code depends on. §5.0.
+
+**2. Version 1 capability types are provider-backed, without exception.** Any
+library may *define* a capability type, but it is usable only once the host
+admits a provider for it. A pure-Gene `app/PublishTopic` with no provider does
+not work in version 1. §3.1.1, §3.2.3.
+
+**3. Authority lives in the context, never in values.** Possessing a file
+handle or connected client conveys no permission; every operation intersects
+the resource's originating grant with the *active* context. **This is not an
+object-capability model** — passing a handle delegates nothing, and one passed
+into an empty context is unusable. Explicit delegation is rejected
+deliberately, not by omission. §10.2.
+
+**4. A capability-type call always constructs an inert specification.** It
+never resolves or authorizes by virtue of where it appears. `^capabilities`
+and `with_capabilities` resolve specifications; presence is tested with
+`(capability_available? spec)`; adapters receive grants through runtime state
+no expression can name. §4.2.1, §6.2.
+
 ## 2. Design goals
 
 The design should:
@@ -104,8 +134,20 @@ granted directory and the requested write mode is allowed.
 
 ### 3.1.1 The `CapabilitySpec` protocol
 
-Capability types are **open** in their vocabulary. Any type may describe a
-kind of authority by implementing an ordinary Gene protocol:
+Capability types are **open in vocabulary, closed in enforcement**. Any type
+may *describe* a kind of authority by implementing an ordinary Gene protocol,
+but describing one is not enough to use it: a capability type is only valid in
+a selector position once the host has admitted a provider for it (§3.2.3,
+§3.2.4). Defining the type is ordinary library code; making it mean something
+extends the trusted base and is the host's decision.
+
+The practical consequence is worth stating plainly, because the word "open"
+otherwise promises more than the provider model delivers: **an ordinary
+library cannot introduce a working capability type on its own.** A library may
+ship `app/PublishTopic` and its `CapabilitySpec` implementation, but until a
+provider for it is admitted, a selector naming it is rejected (§18). Version 1
+is scoped to host-backed capability types; §3.2.2 records the two candidate
+routes out of that restriction and why neither is in version 1.
 
 ```gene
 (protocol CapabilitySpec
@@ -141,7 +183,7 @@ Deliberately **not** in the protocol:
   independently prove the result anyway, the proposal step changes no outcome
   while adding an untrusted call to the normative path — and a context holds
   *grants*, not inherited specifications, so there was no well-defined
-  receiver for it. Narrowing is `provider.derive` / `provider.entail` (§6.1).
+  receiver for it. Narrowing is `provider.resolve` (§6.1).
 - **`subsumes`, `intersect`.** Both are provider operations (§3.2.3). Two
   oracles for one question can disagree, and a disagreement between an
   untrusted and a trusted one is a security hole.
@@ -232,17 +274,10 @@ The laws in §3.1.3 are obligations on implementers, and an open protocol
 means some implementation will violate them — by accident or on purpose. The
 design must be safe anyway.
 
-The natural thing to believe is that keeping the inherited *host* sealed
-grant and re-checking it at the operation is enough. It is not. That only
-establishes:
-
-```text
-effective authority <= the host's original grant
-```
-
-The invariant actually required by §3.5 is `child <= parent`. Those differ,
-and the gap is exploitable in one deterministic implementation — no
-replacement of a built-in is needed:
+Keeping the inherited *host* grant and re-checking it at the operation only
+establishes `effective authority <= the host's original grant`. §3.5 requires
+`child <= parent`. Those differ, and the gap is exploitable with no
+replacement of a built-in:
 
 ```text
 1. host sealed grant is  /
@@ -312,8 +347,32 @@ provider** (§3.2.3). The protocol stays open in the sense that matters — a
 library may add a capability type — but it adds a type *together with* a
 provider, so the trusted surface grows deliberately.
 
-If advisory types are wanted later, the shape is an explicit context-entry
-sum type:
+There are two candidate routes out of this restriction. Neither is in version
+1; both are recorded so the choice is made deliberately rather than by
+default, and so §3.1.1's "open" is not read as a promise.
+
+**Route A — a generic provider for application-defined nominal policies.** One
+trusted, host-admitted provider that owns every capability type in an
+application-reserved namespace and implements matching generically: nominal
+type identity plus a declarative comparison over the specification's canonical
+arguments (exact match, or a rule the runtime defines rather than the library
+does). A library then gets `app/PublishTopic` with no bespoke host code, and
+the grant stays sealed and enforced, because the *provider* is still trusted
+code the host admitted — the library only supplies descriptions for it to
+compare. This is the stronger of the two: it keeps every claim in the document
+true, and it is what an application should want.
+
+The cost is that the generic provider must define matching for types it knows
+nothing about. `intersect` and `subsumes` over arbitrary nominal specs can
+only be
+structural, so `(app/PublishTopic "a/*")` cannot subsume
+`(app/PublishTopic "a/b")` unless the runtime defines the glob rule itself —
+which means the runtime, not the library, owns the semantics of every generic
+capability type. That is a real design commitment and is why it is not
+version 1.
+
+**Route B — an explicit advisory arm**, for contracts that document rather
+than enforce:
 
 ```text
 ContextEntry = SealedGrant(provider, grant)
@@ -322,7 +381,10 @@ ContextEntry = SealedGrant(provider, grant)
 
 with trusted rules for seeding and inheritance of the advisory arm, and
 reflection (§11) reporting which arm a row came from so a reviewer can tell
-an enforced contract from a documented one.
+an enforced contract from a documented one. This is weaker and more dangerous
+than it looks: an advisory row is indistinguishable from an enforced one at a
+glance, which is exactly the confusion the sealed-grant boundary exists to
+prevent. If it is ever added, reflection reporting the arm is not optional.
 
 A filesystem grant should ultimately be backed by a trusted root handle and a
 rights mask, not merely by a source-visible path string. A network grant may
@@ -335,58 +397,126 @@ context may contain separate writable roots for `tmp` and `output`.
 
 Once narrowing is provider-proved (§3.2.2), the provider — not
 `CapabilitySpec` — is the security interface. `CapabilitySpec` is its
-*request language*. The provider is trusted code owning a resource, and it
-must supply four operations, not the single minting step §3.2.2 describes:
+*request language*. The provider is trusted code owning a resource.
+
+The seam has **two halves**, and separating them is what keeps it small. The
+provider proper is a *grant authority*: it mints, intersects, and vouches for
+grants. It performs no effects. Effects belong to **provider-owned adapters**,
+which are ordinary typed native functions.
 
 ```text
-derive(parent_grant, requested_spec) -> child_grant | denial
-    Mint a sealed derivative of the SAME type, no broader than
-    parent_grant, or refuse.
+CapabilityProvider — REQUIRED, all three
 
-entail(parent_grant, requested_spec_of_other_type) -> child_grant | denial
-    Cross-type derivation: mint a grant of the requested type from a
-    grant of a related one. This is what makes an fs/WriteDir grant
-    satisfy an fs/WriteFile selector.
+resolve(parent_grant, requested_spec) -> child_grant | denial
+    Mint a sealed grant no broader than parent_grant, or refuse.
+    Covers same-type narrowing and cross-type derivation in one
+    operation: an fs/WriteDir grant satisfying an fs/WriteFile selector
+    is the same question as an fs/WriteDir grant satisfying a narrower
+    fs/WriteDir selector, and splitting it into derive/entail forced
+    every provider to implement two paths that must agree with each
+    other. The requested spec's type may differ from the parent's; it
+    must be a type this same provider owns (see "who owns a cross-type
+    edge" below).
 
-meet(grant_a, grant_b) -> grant | empty
-    The trusted intersection of two grants of a type this provider owns.
-    Per-grant only: the runtime lifts it to contexts via
-    intersect_contexts (§6.1). A provider is never asked to meet types it
-    does not own, and cross-type intersection entails to a common type
-    first.
+intersect(left_grants, right_grants) -> grant set
+    The trusted intersection of two SETS of grants this provider owns.
+    Set-valued and provider-scoped rather than a per-type pairwise meet,
+    because related types intersect: WriteDir "/tmp" and WriteFile
+    "/tmp/a" overlap, and a per-type meet never compares them. May
+    return zero, one, or several grants, of any types this provider
+    owns. The runtime groups a context's grants by provider and calls
+    this once per provider (§6.1).
 
-perform(grant, operation) -> result | denial
-    Validate AND perform a concrete operation, atomically. The final
-    boundary. Exports no proof: there is no value that represents "this
-    operation was authorized", so nothing can be captured, stored, returned,
-    or replayed. Handle resolution and the operation itself happen inside
-    this call, handle-relative, so no path can be swapped in between.
+validity(grant) -> identity + revocation dependency set
+    Stable grant identity, and the set of revocation dependencies this
+    grant's validity rests on. Exposes no secrets. Used by fingerprints
+    (§5.3), epochs (§13.2), revocation (§13.3), and diagnostics (§11).
+
+CapabilityProvider — OPTIONAL
 
 subsumes(spec_a, spec_b) -> yes | no | unknown
     NON-AUTHORIZING, static. Does spec_a's authority cover spec_b's, for
     every grant either could resolve against? Mints nothing and touches
-    no grant, so the compiler can call it. Three-valued: `unknown` is a
-    rejection at an interface boundary, never an assumption of safety.
+    no grant, so the compiler can call it. Three-valued, and a provider
+    that does not implement it is treated as answering `unknown`
+    everywhere — which is a rejection at an interface boundary, never an
+    assumption of safety. Genuinely optional: §5.5 accepts exact
+    canonical equality without it, so subsumes is needed only to prove a
+    non-identical narrowing.
 
-provenance(grant) -> identity + revocation dependency set
-    Stable grant identity, and the set of revocation dependencies this
-    grant's validity rests on. Exposes no secrets. Used by fingerprints
-    (§5.3), epochs (§13.2), revocation (§13.3), and diagnostics (§11).
+PROVIDER-OWNED ADAPTERS — typed, one per operation
+
+read_file(grant, ...)     write_file(grant, ...)
+connect(grant, ...)       publish(grant, ...)      ...
+
+    Each adapter is registered by, and belongs to, exactly one provider.
+    Each one MUST atomically validate against a grant its own provider
+    issued and perform the operation in the same call, handle-relative,
+    so nothing can be swapped between the check and the use.
+
+    An adapter exports no proof: there is no value representing "this
+    operation was authorized", so nothing can be captured, stored,
+    returned, or replayed.
 ```
 
-**Revocation propagates through the whole lineage.** Every boundary mints a
-derivative, `entail` mints a grant of a different type, and `meet` mints one
-depending on two inputs — so a grant's validity is not a property of that
-grant alone. A single self-generation is insufficient: revoking an ancestor
-would leave a descendant's own generation unchanged, and an operation
-against the descendant would still pass. `meet` is worse, since revoking
-*either* operand must invalidate the result.
+**Why effects are adapters rather than one `perform`.** A single
+`perform(grant, operation)` forces every effect through a dynamically typed
+envelope, losing static types at the boundary that most needs them, and a
+provider without it cannot exercise its capability at all — so it was never
+really optional. Splitting keeps the atomicity rule, restated as an obligation
+on every adapter, and adapters are provider-*owned*, so the responsible
+component is still named. `write_file(grant, path, bytes)` is now an ordinary
+typed function rather than `perform(grant, {op: :write_file, ...})`.
+
+`resolve`, `intersect`, and `validity` are all required, with no minimal
+subset: a provider that cannot mint cannot participate, one that cannot
+intersect breaks §6.1 and §10.2, and one that cannot answer `validity` cannot
+participate in revocation — which is not optional.
+
+### 3.2.3.1 Provider algebra: the laws a provider must satisfy
+
+Deduplication (§6.1), ambiguity detection (§6.3), fingerprints (§5.3), and
+transition caching (§13.2) all assume contexts behave like sets and compare
+stably. None of that follows from the signatures — a provider free to mint a
+fresh grant per call makes all of it provider-dependent and caching unsound.
+These are conformance requirements, testable per provider:
+
+```text
+semantic key      Every grant has a stable key derived from its authority
+                  and lineage — never an allocation identity. Two grants
+                  with equal authority and equal lineage have equal keys,
+                  in the same run and across runs.
+
+resolve           Deterministic by semantic key: resolve(g, s) called twice
+                  yields grants with the same key. Idempotent on an
+                  already-satisfying grant.
+
+intersect         Commutative and associative up to semantic key, and
+                  idempotent: intersect(G, G) == G. Output is normalized —
+                  no grant in the result is subsumed by another in the
+                  result, and no duplicates by key.
+
+both              Reject a revoked or malformed input rather than minting
+                  from it. Never widen: every output is bounded by every
+                  input it derives from.
+```
+
+Determinism is up to semantic key, not object identity, so a provider may
+allocate freely while the runtime hash-conses on the key. Commutativity and
+associativity are what let §6.1 intersect per provider in any order. The
+runtime cannot detect a violation in general, so conformance is a condition of
+admission (§3.2.4).
+
+**Revocation propagates through the whole lineage.** A grant's validity is not
+a property of that grant alone: revoking an ancestor must invalidate a
+derivative, and revoking *either* operand must invalidate an `intersect`
+result. A self-generation per grant is insufficient for both.
 
 The normative rule:
 
 ```text
-every derived, entailed, or meet grant carries the revocation
-dependencies of all its ancestors, and `perform` checks the whole
+every resolved or intersected grant carries the revocation
+dependencies of all its ancestors, and every adapter checks the whole
 dependency set — not just the grant it names
 ```
 
@@ -394,9 +524,9 @@ Implementations may realize this as shared lineage tokens, composite
 generations, or provider callbacks. §20 may defer the *representation*; it
 may not defer this requirement.
 
-**Who owns a cross-type edge.** `entail` is implemented by the provider that
-owns the **source** grant, and it may only mint a grant of a type that same
-provider owns. `fs/WriteDir -> fs/WriteFile` is legal because one filesystem
+**Who owns a cross-type edge.** A cross-type `resolve` is implemented by the
+provider that owns the **source** grant, and it may only mint a grant of a
+type that same provider owns. `fs/WriteDir -> fs/WriteFile` is legal because one filesystem
 provider owns both. A cross-*provider* edge — an `app` grant minting
 something the `fs` adapter would accept — is forbidden by default, since it
 would let one provider manufacture authority another adapter honours. Where
@@ -404,17 +534,21 @@ such an edge is genuinely wanted, the **target** provider must explicitly
 register acceptance of the source provider; the source cannot claim it
 unilaterally.
 
-**Why `subsumes` is a provider operation.** The compiler needs to answer a
-question about two *specifications*, with no parent grant to mint from, which
-`derive` structurally cannot do. Keeping it on the provider means it and
-`derive` cannot disagree — they are the same trusted component.
+**Why `subsumes` belongs to the provider even though it is optional.** The
+compiler needs to answer a question about two *specifications*, with no parent
+grant to mint from, which `resolve` structurally cannot do. Putting it
+anywhere but the provider would create a second oracle for a question
+`resolve` also answers, and the two could disagree — a disagreement between an
+untrusted oracle and a trusted one is a security hole. Optional means a
+provider may decline to answer (`unknown` everywhere, §3.2.3), not that
+someone else may answer instead.
 
-**`meet` is not optional, and identity comparison cannot replace it.** Two
-places already require intersecting authority rather than selecting from a
-set:
+**`intersect` is not optional, and identity comparison cannot replace it.**
+Three places already require intersecting authority rather than selecting from
+a set:
 
-- §6.1 intersects the caller's context with the enclosing module ceiling,
-  via `intersect_contexts`;
+- §6.1 intersects the caller's context with a callee module's ceiling on a
+  module crossing, via `intersect_contexts`;
 - §6.4.1 intersects a callback's attached context with the invoker's;
 - §10.2 intersects a resource's originating grant with the active context.
 
@@ -594,9 +728,17 @@ The common property `^^optional` marks an exact selector as optional:
 ```
 
 If no inherited grant satisfies an optional selector, it contributes no grant
-to the child context. Code may query the selector and receive `nil`.
+to the child context, and the boundary still succeeds. Code tests for it with
+`(capability_available? (device/Compute))` (§6.2).
 
-`^optional` is interpreted by the capability system. All other arguments
+`^^optional` is meaningful **only in a declaration row**, where it answers
+"may this boundary proceed without the grant?". It has no meaning in an
+expression: a capability-type call constructs an inert specification wherever
+it appears (§4.2), so `(device/Compute ^^optional)` outside a row is a
+specification carrying a property the capability system will reject rather
+than a disguised presence check.
+
+`^^optional` is interpreted by the capability system. All other arguments
 and properties are passed to the named capability type.
 
 ### 4.2 Bare, empty, and wildcard forms
@@ -617,9 +759,18 @@ This equivalence is capability-type-defined. `"*"` is passed to
 `fs/WriteDir`; it is not a universal parser feature. The type declares that
 no argument and `"*"` have the same meaning.
 
-Outside a selector position, `fs/WriteDir` evaluates to the capability-type
-descriptor. Calling it resolves against the current context; it still cannot
-create authority.
+**A capability-type call always constructs an inert specification**, wherever
+it appears. `(fs/WriteDir "tmp")` does not resolve, check, or authorize
+anything; it describes something. Only two forms resolve a specification
+against the active context — `^capabilities` and `with_capabilities` — and
+only `(capability_available? spec)` tests presence (§6.2).
+
+One expression previously meant three things by position — constructing a
+specification, resolving authority, and presence-checking inside `if`. Since
+grants are deliberately not expressible as values (§10.2), "resolving" in
+expression position had no value to produce anyway. Adapters receive grants
+through runtime state no expression can name (§10.1); nothing an author writes
+evaluates to a grant.
 
 ### 4.2.1 Selector positions construct specifications automatically
 
@@ -745,9 +896,24 @@ the context it resolves against is a runtime value:
   exist only while running.
 - Separately compiled and dynamically loaded modules (`gene runurl`, plugins)
   are compiled without their eventual caller.
-- Scoped and overlay protocol implementations mean the `canonicalize` target
-  for a user-defined type is not always statically known.
 - §4.5's parameter-dependent selectors name runtime values by construction.
+
+**`CapabilitySpec` is exempt from scoped dispatch.** A capability type has
+exactly one `CapabilitySpec` implementation, owned by the type and frozen when
+its provider is admitted (§3.2.4). Scoped and overlay implementations do not
+apply to it.
+
+Ordinary protocols stay scoped; this one cannot be, because provider ownership
+is already global and frozen while dispatch is not. If `canonicalize` were
+scope-dependent, the same nominal declaration would describe different
+requests depending on where it was dispatched — so a canonical key would not
+be canonical, and interface fingerprints (§5.3) and transition caches (§13.2)
+would key on a value that varies by caller. It would also let an overlay
+change what a security declaration *means* without changing its text.
+
+This removes what would otherwise be a third source of compile-time
+uncertainty: the `canonicalize` target for a type is always statically known
+once the type is.
 
 **Running `canonicalize` in the compiler is also not free.** It requires the
 capability library to be loaded and its implementation available during
@@ -784,8 +950,8 @@ values, run the canonical constructor and `canonicalize` on the now-concrete
 arguments, and match against the active context. This is the constructor and
 canonicalization work that stage 1 could not do.
 
-**Stage 3 — operation time.** `provider.perform` validates against the child
-grant and executes atomically (§3.2.3, §13.3).
+**Stage 3 — operation time.** A provider-owned adapter validates against the
+child grant and executes atomically (§3.2.3, §13.3).
 
 By the time a *static* row runs there is no parsing, no property-map
 building, no string comparison of type names, and no allocation.
@@ -832,71 +998,94 @@ available after module initialization is no longer a special case, because
 ### 5.0 Normative defaults
 
 An omitted `^capabilities` row and an explicit empty one are **different**,
-and the default differs by boundary. Earlier drafts left this implicit and
-contradicted themselves: §5.2 said omission means an empty context, while
-§13.1 requires a non-declaring function to touch nothing, which necessarily
-means it inherits its caller's context.
+and the default differs by boundary:
 
 | boundary | row omitted | `^capabilities []` |
 | --- | --- | --- |
 | entry module | **empty context** | empty context |
 | imported module | **empty context** | empty context |
-| function / method | **caller ∩ defining module ceiling** | empty context |
-| protocol message | **caller ∩ defining module ceiling** | empty context |
+| **exported** function / method | **compile error** — row required | empty context |
+| **private** function / method | **caller ∩ defining module ceiling** | empty context |
+| protocol message | **compile error** — row required | empty context |
 | `with_capabilities` | n/a — row required | empty context |
 
-The function rule is an intersection, not plain inheritance. Plain
-inheritance would break the invariant: a module declaring `^capabilities []`
-could export a row-less function, and a broad caller would hand it the broad
-context, defeating the module ceiling. A callee is always bounded by its
-*defining* module's ceiling (§5.4, §6.1), so omission means:
+**A public declaration is a contract.** An exported function, method, or
+protocol message must carry a `^capabilities` row; omitting one is a compile
+error. Inheritance-on-omission is not survivable at a public boundary: it
+means a module granted `fs/*` hands every undeclared exported helper ambient
+filesystem authority, and it makes §2's goal — required authority visible on
+public declarations — false for exactly the declarations other code depends
+on.
 
-```text
-child = caller_context  ∩  defining_module_ceiling
+`^capabilities *` is the explicit pass-through: "whatever my caller has,
+bounded by my module's ceiling". An author who wants an effect-polymorphic
+public helper says so in one token, and a reviewer sees it.
+
+```gene
+(fn ^export copy_tree [src, dst]
+  ^capabilities *          # explicit: I use whatever my caller has
+  ...)
+
+(fn ^export read_config [path]
+  ^capabilities [(fs/ReadFile path)]   # enforced, visible contract
+  ...)
 ```
 
+**Private helpers still inherit**, which keeps the rule affordable: a row on
+every internal function would destroy §13.1's zero-cost property, since every
+helper call would have to save and clear the context. Inheritance is an
+intersection — `child = caller_context ∩ defining_module_ceiling` (§5.4, §6.1)
+— because plain inheritance would let a module declaring `^capabilities []`
+contain a row-less function that a broad caller hands the broad context.
+
+For private helpers, static analysis (§12) infers an effective requirement
+transitively and tooling should be able to report it. That inference is now
+doing the job it is suited to — describing internal code — rather than
+substituting for a missing public contract.
+
 Modules default to empty because a module boundary is a policy decision and
-silence there should not grant anything. Functions default to inheritance
-because the alternative is unworkable: if omission meant empty, every
-ordinary helper call would have to save and clear the context, capability-
-bearing code could not call an undeclared helper without losing its
-authority, and §13.1's zero-cost property would be impossible.
-
-**Functions are therefore effect-polymorphic on omission**, and one claim
-elsewhere in this document must be read accordingly:
-
-> An undeclared function may perform any effect its caller's context permits.
-> Required authority is **not** visible in an undeclared function's
-> interface.
-
-A declaration on a function is a *narrowing*, not a disclosure. Visibility of
-required authority is recovered by static analysis (§12) inferring an
-effective requirement transitively, not by the declaration syntax alone. A
-public API that wants an enforced, visible contract must declare a row;
-tooling should be able to report undeclared effectful functions as such.
+silence there should not grant anything.
 
 `^capabilities []` is the explicit way to drop all authority, and it is
 never implied.
 
-**Where the zero-cost promise applies.** §13.1's "touches nothing" claim is
-now scoped to calls where the intersection is provably a no-op:
+**Cost of the rule.** It is a source-compatibility break for any exported
+function that would have omitted the row, and the migration is mechanical:
+add `^capabilities *` to preserve existing behaviour exactly, then tighten
+where a real contract is wanted. §16 treats adding a row to a published
+function as a narrowing, so the tightening step is the breaking one and is
+visible as such.
 
-- **Intra-module calls are always free.** The active context inside a module
-  is already at or below that module's ceiling, established when the module
-  boundary was crossed, so intersecting again changes nothing. This is the
-  overwhelming majority of calls.
-- **Cross-module calls need the meet**, unless the compiler can prove the
-  caller's context is already below the callee module's ceiling — which it
-  can whenever both ceilings are static and one is contained in the other.
-- When the meet is required, it is keyed on
+**Where the zero-cost promise applies.** §13.1's "touches nothing" claim is
+scoped by the module-crossing rule (§6.1):
+
+- **Intra-module calls do no context work at all.** The module row is applied
+  when execution *crosses into* the module, not on every call within it, so an
+  intra-module call has no ceiling to apply and nothing to intersect. This is
+  the overwhelming majority of calls.
+
+  This is a correctness rule before it is a performance one. Relative
+  selectors are not idempotent: re-applying `(fs/WriteDir "tmp")` to a context
+  already scoped to `<cwd>/tmp` yields `<cwd>/tmp/tmp`, so a design that
+  re-resolved the row per call would be wrong as well as slow (§6.1).
+
+- **Cross-module calls apply the callee module's row**, unless the compiler
+  can prove the result equals the caller's context — which it can whenever
+  both ceilings are static and the caller's is contained in the callee's.
+- When the crossing is required, it is keyed on
   `(caller_context_id, callee_module_ceiling_id)` and cached exactly like
   §13.2's transition, so the steady-state cost is a compare and a load rather
   than a provider call.
+- **A declared row is applied at every call**, intra-module or not — that is
+  what a declaration means. `^capabilities []` on an exported function
+  installs and restores an empty context even for a capability-free body, so
+  it is not free (§13.1, §18).
 
-So the zero-cost claim is precisely: *capability-free code within a module
-boundary is byte-identical to today; a cross-module call into a
-differently-ceilinged module pays a cached meet.* An unqualified version of
-that claim is not compatible with enforcing module ceilings at all.
+So the zero-cost claim is precisely: *a private capability-free call within a
+module is byte-identical to today; crossing into a differently-ceilinged
+module pays a cached transition; a declared row always costs its own
+boundary.* An unqualified version of that claim is not compatible with
+enforcing module ceilings at all.
 
 ### 5.1 Runtime root
 
@@ -954,16 +1143,16 @@ transferring any authority:
   ^capabilities [fs/*])
 ```
 
-This says: whenever a function of `report` is called, its ceiling is the
-caller's filesystem grants — resolved at that call, against that caller's
-already-bounded context (§5.0, §6.1). It does not say the module holds
-filesystem authority, and there is no moment at which it does.
+This is a *ceiling*, resolved once against the application root at load and
+fixed thereafter (§6.1). It bounds what any call into `report` may receive; it
+does not say the module holds that authority, and there is no moment at which
+it does — what a call actually gets is `intersect(caller_context, ceiling)`.
 
-That is what makes the singleton sound. Resolving a module's row against
-"the context supplied by its importer" would be incoherent once
-initialization is empty: there is no importer context at load time, and a
-module imported by two differently-authorized callers would have to keep
-whichever imported it first. As a template the question does not arise.
+That is what makes the singleton sound. Resolving a module's row against "the
+context supplied by its importer" would be incoherent: there is no importer
+context at load time, and a module imported by two differently-authorized
+callers would have to keep whichever imported it first. An absolute ceiling
+plus a per-call intersection answers both without instancing the module.
 
 Adding capability identity to the module cache key is not merely cache
 invalidation — it changes Gene's module instancing model. Today there is one
@@ -1023,7 +1212,8 @@ them — not a store-site check.
 If per-context module instances are wanted later, the shape is: share
 compiled declaration identities, create per-context runtime module scopes,
 and keep nominal type identity stable across them. Then a fingerprint becomes
-necessary, and it must include **grant and provider provenance** (§3.2.3), not
+necessary, and it must include **grant and provider identity** (`validity`,
+§3.2.3), not
 only canonical visible selectors — two roots with the same selector shape but
 different underlying grants must never share initialized authority-bearing
 state.
@@ -1044,8 +1234,8 @@ The body receives exactly the selected child context. It does not retain all
 of the caller's grants merely because the caller had them.
 
 Closures capture lexical values, not ambient capability authority. At
-invocation, their capability declarations resolve against the caller's active
-context and any narrower module ceiling.
+invocation, their declarations resolve against the caller's active context
+intersected with their defining module's ceiling (§6.1).
 
 ### 5.5 Protocol messages and implementations
 
@@ -1072,22 +1262,16 @@ For **fully concrete** selectors on an adapter-backed type, the check uses the
 provider.subsumes(message_spec, impl_spec) must return `yes`
 ```
 
-`subsumes` is the provider's non-authorizing static relation (§3.2.3). An
-`provider.derive(message_spec_as_grant, impl_spec)` is not implementable in
-its place: a specification is explicitly not a grant, and the compiler has no
-parent grant to mint a derivative from. `unknown` is a rejection here, never
-an assumption that the implementation is compatible.
+`resolve` cannot substitute for it: a specification is not a grant, and the
+compiler has no parent grant to mint from. `unknown` — including from a
+provider that omits `subsumes` — rejects rather than assumes compatibility.
 
 Routing this through untrusted specification code would be unsound: a lying
-implementation could make the compiler accept a capability contract broader
-than its protocol message. The provider still refuses to widen at runtime —
-but callers receive denial where the public protocol promised success, so
-substitutability breaks even though nothing is over-authorized.
-
-Static interface checking must consult the same authority that decides at
-runtime. (If provider-less advisory types are added later, they have no such
-authority, and tooling must report their compatibility result as unverified
-rather than as a checked contract.)
+implementation could make the compiler accept a contract broader than its
+message. The provider still refuses to widen at runtime, but callers then
+receive denial where the public protocol promised success, so substitutability
+breaks even though nothing is over-authorized. Static interface checking must
+consult the same authority that decides at runtime.
 
 **This does not generalize to parameter-dependent selectors.** "No broader
 for every valid parent context" is universally quantified over runtime
@@ -1108,10 +1292,39 @@ contract substitutable — by the time it runs, the caller has already been
 type-checked against the message.
 
 Scoped and overlay protocol implementations add a second limit: compile-time
-and runtime dispatch need not select the same implementation. A statically
-checked implementation relationship is only binding if implementation
-visibility is frozen into the interface; otherwise the check is advisory and
-the runtime boundary is what enforces.
+and runtime dispatch need not select the same implementation, so a static
+check against the statically visible implementation does not cover the one
+that actually runs.
+
+**That gap is closed by validating every implementation when it is registered
+or activated, not by calling the static check advisory.** Runtime attenuation
+prevents *excess authority* — a scoped implementation cannot exceed its
+context. It does not preserve the *protocol contract*: a caller satisfying the
+public message row can still get `MissingCapability` because the
+implementation selected at runtime secretly requires more, and the public row
+promised that call would work.
+
+So registration is a checkpoint:
+
+```text
+registering or activating an implementation of a protocol message
+  requires: implementation_row is no broader than message_row
+  rejected at registration, not at the call that later fails
+```
+
+This is affordable because the common case needs no provider reasoning:
+
+- **Exact canonical equality is always accepted.** An implementation whose row
+  canonicalizes identically to the message's is compatible by inspection —
+  no `subsumes` call, no provider involvement.
+- **`subsumes` is needed only to prove a non-identical narrowing**, and a
+  provider that does not implement it answers `unknown`, which rejects that
+  implementation rather than admitting it.
+
+This is what makes `subsumes` genuinely optional (§3.2.3) rather than
+nominally so: without it, a provider still supports every implementation that
+restates its message's row, and only loses the ability to register a
+strictly-narrower one.
 
 An implementation also may not turn a publicly optional requirement into a
 mandatory one. If an implementation needs extra authority, the protocol
@@ -1157,37 +1370,58 @@ evaluation, dispatch, and the callee body with unambiguous semantics.
 lowered (§4.6), represented and cached (§13), or illustrated (§7); where any
 of them appears to state different semantics, this section governs.
 
-**The runtime owns composition; the provider owns grant semantics.** Provider
-operations (§3.2.3) are defined over *individual grants*. A context is a
-multimap holding zero or more grants per type (§3.4), so composing them is
-the runtime's job, through two runtime-owned operations:
+**The runtime owns composition; the provider owns grant semantics.** A context
+is a multimap holding zero or more grants per type (§3.4). Composition is the
+runtime's job, but it cannot be done type-by-type, because the design relies
+on related types (§8.0) — a context holding `fs/WriteDir "/tmp"` and one
+holding `fs/WriteFile "/tmp/a"` have a real intersection that no type-keyed
+comparison finds. Grants are therefore grouped by **owning provider**, not by
+capability type, and the provider returns a set:
 
 ```text
 intersect_contexts(a, b) -> context
-    For each capability type present in both, for each pair of grants
-    (one from a, one from b) in canonical order, call the owning
-    provider's meet. Drop empty results, deduplicate by canonical grant
-    identity, and keep the surviving set. A type present in only one
-    input contributes nothing.
+    Group both inputs' grants by owning provider. For each provider
+    present in BOTH groupings, call
+
+        provider.intersect(left_grants, right_grants) -> grant set
+
+    which may return zero, one, or several grants, of any types that
+    provider owns — including a type present in neither input, when the
+    overlap of two related types is a third. Deduplicate by canonical
+    identity. A provider present in only one input contributes nothing.
 
 resolve_selector(context, selector) -> grant set | denial
     candidates = [selector.type] ++ entailment_index[selector.type]   §8.0
     for each candidate type, in registration order, and each grant of
     that type in the context, in canonical order:
-        provider.derive  when the candidate type == selector.type
-        provider.entail  otherwise
+        provider.resolve  (one operation; the candidate type may differ
+                          from the selector type, §3.2.3)
     Collect every successful mint, deduplicated by canonical identity.
+
+resolve_row(row, context) -> context
+    Apply every selector in `row` against `context`, yielding the minted
+    grants. The result is bounded by `context` by construction. Note this
+    does NOT make the boundary's intersection redundant: a module ceiling
+    is resolved against the application root, not against the caller, so
+    it must still be intersected with the caller's context (below).
 ```
 
-At each call or explicit attenuation boundary:
+**A module ceiling is resolved once, against the application root**, when the
+module is loaded — never against a caller's context:
+
+```text
+module_ceiling(M) = resolve_row(M.capabilities_row, application_root_context)
+```
+
+It is immutable and cached for the life of the program. Then at each call or
+explicit attenuation boundary:
 
 ```text
 parent    = active capability context
-ceiling   = defining module's row, resolved as a template against parent
-available = intersect_contexts(parent, ceiling)
+available = intersect_contexts(parent, callee.module_ceiling)
 
-for each selector in the declaration (or, if the row is omitted,
-                                      the identity selection):
+for each selector in the declaration (or, for a private helper with no
+                                      row, the identity selection):
     grants = resolve_selector(available, selector)
     if grants is empty and the selector is mandatory:
         fail here, before the body runs
@@ -1198,6 +1432,29 @@ for each selector in the declaration (or, if the row is omitted,
 child = immutable context of the minted derivative grants
 execute the body under child
 ```
+
+**Why the ceiling is absolute rather than caller-relative.** Selectors are not
+idempotent, so a ceiling re-derived from whatever context is active compounds.
+With `(fs/WriteDir "tmp")` on module `A` and root `/`, resolving A's row per
+crossing gives `/tmp` on entry, then `/tmp/tmp` on re-entry from `B` — and
+`A -> B -> A` is ordinary: a callback, mutual recursion, or a cyclic import
+all produce it. Resolving once against the root makes the ceiling idempotent
+under any call order, depth, or re-entry.
+
+The intersection with `parent` is load-bearing, not redundant: `module_ceiling`
+is not derived from `parent`, so it is what stops a module regaining authority
+its caller dropped.
+
+**Intra-module calls remain free**, now as a provable optimization rather than
+a rule. Inside `M` the active context was established by a crossing into `M` —
+hence at or below `module_ceiling(M)` — and only narrows (§3.5), so the
+intersection is a no-op and is skipped.
+
+Consequently a module row's `fs/*` means "the filesystem authority the
+*application* holds", not "what my caller holds". Caller-relative attenuation
+is already supplied by intersecting with `parent`; making the ceiling
+caller-relative too was double-counting, and was the source of the
+compounding.
 
 **Set-valued by design, ambiguity reported late.** A selector may legitimately
 resolve to several grants — §6.3's two writable roots — so `resolve_selector`
@@ -1240,19 +1497,42 @@ Exact selectors are mandatory unless `^^optional` is present.
 The function cannot start without authority for `output`. It can start
 without compute acceleration.
 
-Within the body:
+Within the body, presence is tested explicitly:
 
 ```gene
-(if (device/Compute ^^optional)
+(if (capability_available? (device/Compute))
   (accelerated_path)
   (portable_path))
 ```
 
-Resolving a declared optional selector returns `nil` when absent.
+**`capability_available?` is a lookup, not a resolution.** It answers only
+about selectors the enclosing declaration already evaluated at its boundary:
 
-An undeclared selector cannot reach through to the parent. Resolving it fails
-even if an ancestor held a matching grant, because it is absent from the
-body's active child context.
+```text
+capability_available?(spec) =
+    spec canonicalizes to a selector in THIS boundary's declaration,
+    and that selector contributed at least one grant to the active context
+```
+
+`true` or `false`. It mints nothing, calls no provider, and performs no
+entailment discovery.
+
+That restriction is the point. Cross-type satisfaction is discovered by
+`resolve` (§6.1), which *mints* — so a general presence test would either mint
+a grant it discards, or need a second pure query path whose answers must agree
+with `resolve`'s forever. Two oracles for one question is the failure mode
+§3.2.3 already rejects.
+
+The useful case needs none of it: an optional selector was declared, so it was
+already resolved at the boundary and the question is whether it produced
+anything. Asking about an undeclared capability is `false`, not an error, and
+never reaches the parent; *using* one still fails at the boundary (§6.1).
+General "could I obtain X?" queries would need a separate pure provider
+operation with a stated consistency guarantee, and are not in version 1.
+
+`^^optional` appears only in declaration rows, never in this expression: it
+says whether a boundary may start without a grant, which is meaningless once
+the boundary has already started.
 
 ### 6.3 Multiple matching grants
 
@@ -1431,8 +1711,8 @@ There are two enforcement layers:
 
 1. Function entry resolves `(fs/WriteFile filename)` and fails before the
    body if the active context cannot satisfy it.
-2. `provider.perform` validates every operation against the derived grant's
-   trusted root and rights, and executes it atomically.
+2. The filesystem provider's adapters validate every operation against the
+   derived grant's trusted root and rights, and execute it atomically.
 
 The first layer gives clear contracts and early diagnostics. The second layer
 is the security boundary. A bug in declaration processing must not turn a raw
@@ -1529,7 +1809,7 @@ scope decisions:
 
 ```text
 index:   requested type ID -> candidate grant type IDs that may satisfy it
-answer:  the owning provider's `entail` decides whether a candidate edge
+answer:  the owning provider's `resolve` decides whether a candidate edge
          actually covers this request, and mints the target grant
 ```
 
@@ -1544,7 +1824,7 @@ running user code. It must define:
   default should be no, since an edge into `fs` is a claim about filesystem
   authority and belongs to the filesystem provider.
 
-The index supplies candidates; the owning provider's `entail` accepts an edge
+The index supplies candidates; the owning provider's `resolve` accepts an edge
 and mints the resulting grant. Discovery and decision stay separate.
 
 ### 8.1 Built-in and custom capability types
@@ -1647,8 +1927,8 @@ capability it needs:
   ...)
 ```
 
-Native implementations must go through `provider.perform` with a resolved
-grant, not look up unrestricted process-global facilities.
+Native implementations must go through a provider-owned adapter with a
+resolved grant, not look up unrestricted process-global facilities.
 
 ### 10.1 Proofs and other authority-bearing values
 
@@ -1657,9 +1937,9 @@ code could obtain, store, return, capture in a closure, send to another task,
 or attach to an error one, it would have exactly the authority-recovery
 channel the dynamic context exists to prevent.
 
-**There is no such value.** §3.2.3's `perform` validates and executes in one
-call and exports nothing, so no proof exists to escape. This is why the
-operation boundary is `perform(grant, operation) -> result` rather than
+**There is no such value.** §3.2.3's adapters validate and execute in one call
+and export nothing, so no proof exists to escape. This is why the operation
+boundary is `write_file(grant, ...) -> result` rather than
 `authorize(grant, operation) -> proof`: the second interface would require a
 sealed proof-consumption protocol binding provider identity, exact operation,
 stable handles, and revocation lineage, and would still leave the question of
@@ -1674,19 +1954,20 @@ context, and the agent verifier would have to do the same.
 
 The same channel exists for every authority-bearing *resource* — an open file
 handle, a connected client, a device queue. A broad caller opens one, passes
-the handle into a narrowed or empty context, and that code operates through
-it. This cannot be left as a known limitation: the invariant here is stated
-unqualified, and a caveat that large would mean the design is not an
-end-to-end boundary.
-
-Rechecking only the handle's *originating* grant is insufficient. It proves
-the original grant is still valid; it says nothing about whether the
-**current** context authorizes the operation, so the ancestor's attenuation
-is still bypassed.
+it into a narrowed or empty context, and that code operates through it.
+Rechecking only the handle's *originating* grant proves the original grant is
+still valid but says nothing about whether the **current** context authorizes
+the operation, so the ancestor's attenuation is still bypassed.
 
 **Version 1 rule: every operation on an authority-bearing resource intersects
 the resource's originating grant with the active context, and is authorized
-by the meet.**
+by the meet** (decision 3 of §1.1).
+
+Name it plainly: **this is contextual authority, not an object-capability
+model.** In ocap, possessing a reference *is* the permission and passing it
+delegates. Here possession is necessary and never sufficient. Readers arriving
+with ocap expectations — reasonable, given "capability" — will otherwise
+mis-predict every I/O interface in the standard library.
 
 ```text
 authorized(op) requires:
@@ -1695,8 +1976,10 @@ authorized(op) requires:
 ```
 
 The meet is computed by `intersect_contexts` (§6.1) over the trusted
-per-grant `meet` (§3.2.3), not by comparing grant identities — two grants independently derived from one root may overlap
-without either being an ancestor of the other.
+per-provider `intersect` (§3.2.3), not by comparing grant identities — two
+grants independently derived from one root may overlap without either being an
+ancestor of the other, and two grants of *related* types may overlap without
+sharing a type at all.
 
 Consequences, all intended:
 
@@ -1708,19 +1991,19 @@ Consequences, all intended:
   non-escapability rule, because authority is re-derived from the active
   context at each use rather than carried by the value.
 
-The rejected alternative is worth naming: **explicit capability delegation**,
-where passing a resource deliberately conveys authority. It is a legitimate
-design, and it is what a later version should adopt if delegation is wanted.
-But it puts authority *in values*, and then §3.5's invariant, closure and task
+Two alternatives are rejected. **Explicit delegation** — possession of a
+sealed resource conveys its restricted authority — is the ocap answer and is
+legitimate; it is what a later version should adopt if delegation is wanted.
+But it puts authority in values, and then §3.5's invariant, closure and task
 capture, `Send` rules, and the agent verifier (§19) must all track authority
-through data flow rather than through the active context. That is a different
-and much larger model, and choosing it should be deliberate rather than
-arrived at by leaving handles unspecified.
+through data flow. **Two resource classes**, context-bound and delegable, is
+worse than either: its failure mode is a delegable handle where a
+context-bound one was assumed, which is the confusion the design exists to
+prevent, now with two spellings.
 
-The existing guidance that "an error value must not accidentally carry a
-forgeable grant" is too weak. An **unforgeable** grant carried across a
-boundary is precisely what conveys authority; the requirement is that no
-grant or proof escapes into a value at all.
+Note also that "an error value must not accidentally carry a forgeable grant"
+is too weak — an *unforgeable* grant crossing a boundary is precisely what
+conveys authority. No grant or proof escapes into a value at all.
 
 No public standard-library function should silently use unrestricted current
 directory, environment, network, clock, random source, process, or device
@@ -1779,12 +2062,18 @@ credentials, host handles, and inaccessible host paths.
 Static checking can reject:
 
 - unknown capability types;
+- a capability type with no admitted provider, in a selector position
+  (§3.1.1);
 - a selector type that does not explicitly implement `CapabilitySpec`;
 - malformed selector arguments and properties;
 - duplicate or conflicting selector rows;
 - parameter references that are not bound at the boundary;
+- **an exported function, method, or protocol message with no `^capabilities`
+  row** (§5.0) — the public-contract rule, and the one static check the
+  visibility goal now rests on;
+- `^^optional` outside a declaration row (§4.2.1, §6.2);
 - an implementation broader than its protocol message (via the provider's
-  `subsumes`, §5.5);
+  `subsumes`, §5.5), including when `subsumes` answers `unknown`;
 - a call whose statically known context cannot satisfy a mandatory selector;
 - attempts to use capability constructors as ordinary authority-minting
   values;
@@ -1797,10 +2086,15 @@ Static checking can reject:
 Static analysis may also warn when:
 
 - an entry uses a broad namespace projection;
+- an exported function declares `^capabilities *`, which is legal and explicit
+  but is the pass-through, not a contract;
 - a function declares `fs/WriteFile` but its arguments permit a more precise
   selector;
-- an optional selector is never checked;
-- a component declares grants it never resolves or passes onward.
+- an optional selector is never tested with `capability_available?`;
+- a component declares grants it never resolves or passes onward;
+- a **private** helper's inferred effective requirement exceeds what its
+  module's exported surface declares — the inference that used to substitute
+  for public declarations now checks them instead.
 
 Runtime checks remain mandatory because contexts may depend on host policy,
 dynamic dispatch, plugins, and runtime values.
@@ -1812,13 +2106,28 @@ penalize capability-free code. Since resolution is inherently dynamic (§4.6),
 the cost has to be engineered away at runtime rather than assumed away at
 compile time. Five techniques, in descending order of payoff.
 
-### 13.1 Capability-free code pays nothing, by absence
+### 13.1 Private capability-free code pays nothing, by absence
 
-The dominant case is code that declares no capabilities at all. For it the
-machinery must be *absent from the emitted code*, not present and skipped: no
-frame field, no branch, no guard. A "fast path" still costs a predictable
+The dominant case is a private helper that declares no capabilities. For it
+the machinery must be *absent from the emitted code*, not present and skipped:
+no frame field, no branch, no guard. A "fast path" still costs a predictable
 branch on every call, and this repo's call path is already tight enough that
 such a branch is measurable.
+
+Since §5.0 requires a row on every *exported* declaration, "non-declaring"
+means "private helper" — which is what the dominant case was in practice
+anyway.
+
+**The zero-cost claim is scoped to that case, and cannot be broader.** A pure
+exported function declaring `^capabilities []` must install and restore an
+empty context when a capability-bearing caller invokes it, since the whole
+point of `[]` is that the callee does not see the caller's authority. That is
+not byte-identical to a pre-capability build, and no amount of caching makes
+it so — only proof-based elimination would, by showing the caller's context is
+already empty. §18 therefore states three separate performance tiers rather
+than one claim: private intra-module calls (no measurable overhead),
+cross-module public calls (bounded cached cost), and capability-declaring
+calls (measured cold and warm).
 
 Two consequences for the implementation:
 
@@ -1914,7 +2223,7 @@ Consequences, which are the point of the exact declaration:
 - The hidden frame slot caches the *resolved proof for the bound value*. It
   is an optimization over a constraint that already exists — not the
   mechanism by which the constraint exists.
-- **Nothing carries an authorization decision.** `perform` (§3.2.3) checks
+- **Nothing carries an authorization decision.** An adapter (§3.2.3) checks
   the grant's whole revocation dependency set at each call, so an ancestor's
   revocation takes effect immediately. Caching a canonicalized *target* is
   safe; there is no cached decision to go stale.
@@ -1933,10 +2242,10 @@ reintroduces the check-then-open race §7.5 forbids:
 
 ```text
 at the boundary:   bind the parameter, canonicalize the selector, and
-                   provider.derive / provider.entail the exact sealed
-                   child grant. Fail here if policy cannot satisfy it.
+                   provider.resolve the exact sealed child grant.
+                   Fail here if policy cannot satisfy it.
 
-at the operation:  provider.perform validates against that grant and
+at the operation:  a provider-owned adapter validates against that grant and
                    performs the operation atomically, handle-relative.
 ```
 
@@ -1950,7 +2259,7 @@ eagerly opening the target to stabilize it would create or truncate the file
 Hence the split. The boundary check is a **policy** precondition: if the
 active context cannot satisfy this selector for this argument under any
 filesystem state, the function fails before its body. Whether the filesystem
-still looks the same at the write is guaranteed only by `perform` being
+still looks the same at the write is guaranteed only by the adapter being
 atomic and handle-relative, which is why authorization and execution are one
 operation and not two.
 
@@ -2100,10 +2409,15 @@ arguments.
 
 ## 16. Compatibility and interface evolution
 
-Capability declarations are part of a public callable's interface.
+Capability declarations are part of a public callable's interface — and since
+§5.0 requires one on every exported callable, every public callable now has an
+interface to evolve, rather than an absence to reinterpret later.
 
 Generally:
 
+- replacing `^capabilities *` with any narrower row is breaking. This is the
+  migration path §5.0 describes: `*` preserves prior behaviour exactly, and
+  the later tightening is the change callers can observe;
 - adding a mandatory selector is breaking;
 - broadening a selector is security-significant and usually breaking;
 - changing optional to mandatory is breaking;
@@ -2147,10 +2461,11 @@ part of the work.
 Ordered by dependency, not by risk, since nothing has to keep working
 in between:
 
-1. **The provider contract (§3.2.3)** — `derive`, `entail`, `meet`,
-   `authorize`, `subsumes`, `provenance` with lineage revocation. This is the
-   trusted security interface and it determines what a grant and a context
-   must contain, so nothing below it can be designed first.
+1. **The provider contract (§3.2.3)** — `resolve`, `intersect`, `validity`
+   with lineage revocation, optional `subsumes`, and the provider-owned
+   adapter rule. This is the trusted security interface and it determines
+   what a grant and a context must contain, so nothing below it can be
+   designed first.
 2. Interned `CapabilityType`, unforgeable `CapabilityGrant`, immutable
    hash-consed `CapabilityContext`.
 3. **Launcher boot**: parse trusted host policy, mint the root context, then
@@ -2160,7 +2475,8 @@ in between:
    `^^optional`, namespace projection, and the selector-position constructor
    rule (§4.2.1).
 5. The boundary algorithm (§6.1) at function, method, and protocol-message
-   boundaries, including the omitted-row `caller ∩ module ceiling` rule.
+   boundaries, including the private-helper `caller ∩ module ceiling` rule
+   and the exported-declaration requirement (§5.0).
 6. `with_capabilities`, with exception-safe dynamic extent.
 7. The filesystem provider: root-handle confinement, handle-relative atomic
    operations, symlink policy, rights masks (§7.5). This is where the design
@@ -2186,7 +2502,13 @@ The implementation is ready when tests demonstrate all of the following:
 - `fs/WriteDir`, `(fs/WriteDir)`, and
   `(fs/WriteDir "*")` normalize equivalently.
 - An exact mandatory selector fails before the body runs when absent.
-- An optional exact selector resolves to `nil` when absent.
+- An optional exact selector contributes no grant when absent, and the
+  boundary still starts.
+- `(capability_available? spec)` answers `false` for an absent optional
+  selector and for an undeclared one, mints nothing, and never reaches the
+  parent context.
+- `^^optional` in an expression position is rejected, not treated as a
+  presence check.
 - A parameter-dependent `fs/WriteFile` selector rejects path escape.
 - The standard-library filesystem adapter independently enforces its resolved
   root and rights.
@@ -2196,6 +2518,13 @@ The implementation is ready when tests demonstrate all of the following:
 - Multiple non-equivalent matching grants produce
   `AmbiguousCapability`.
 - Protocol implementations cannot broaden public capability contracts.
+- An exported function, method, or protocol message with no `^capabilities`
+  row is a compile error; the same declaration marked private compiles and
+  inherits `caller ∩ module ceiling`. So a module granted `fs/*` cannot hand
+  an undeclared exported helper ambient authority — that helper does not
+  compile.
+- `^capabilities *` on an exported function is the pass-through, so the
+  migration is mechanical.
 - A capability-requiring operation attempted during module initialization is
   denied, because initialization has an empty context.
 - Spawned tasks receive the intended immutable context without global
@@ -2210,10 +2539,14 @@ Open-protocol criteria (§3.1, §3.2.2):
   Gene source cannot admit one, and the registry is frozen before program
   code runs.
 - A cross-provider entailment edge is rejected in version 1.
-- `intersect_contexts` and `resolve_selector` (§6.1) are deterministic:
-  equal contexts give equal results regardless of insertion order, a
-  selector may resolve to a set, and `AmbiguousCapability` is raised at the
+- **Provider algebra (§3.2.3.1)**: `resolve` is deterministic by semantic key;
+  `intersect` is commutative, associative, and idempotent, and its output is
+  normalized; equal authority plus equal lineage gives equal keys across runs;
+  both reject revoked inputs. Equal contexts therefore give equal results
+  regardless of insertion order, and `AmbiguousCapability` is raised at the
   operation rather than during resolution.
+- A provider violating any algebra law fails the conformance suite that
+  admission (§3.2.4) requires.
 - A user-defined capability type resolves and reflects exactly like a
   built-in one.
 - **Intermediate narrowing is preserved.** With a host grant of `/` and an
@@ -2246,8 +2579,23 @@ Open-protocol criteria (§3.1, §3.2.2):
 
 Performance criteria (§13):
 
-- Capability-free calls are indistinguishable from a pre-capability baseline
-  build, reproduced across benchmark batches rather than in one run.
+Three tiers, because one unqualified claim was not achievable. A pure exported
+function declaring `^capabilities []` must install and restore an empty
+context when a capability-bearing caller invokes it; that cannot be
+byte-identical to a pre-capability build without proof-based elimination, and
+§5.0 now requires a row on every exported callable. State the tiers
+separately so a regression in one is visible rather than averaged away:
+
+- **Private intra-module capability-free calls: no measurable overhead**,
+  reproduced across benchmark batches rather than in one run. This is the
+  overwhelming majority of calls and the byte-identical claim applies here
+  and only here.
+- **Cross-module public calls: bounded, cached boundary cost.** A published
+  per-call ceiling, met by the `(caller_context_id, callee_module_ceiling_id)`
+  cache (§5.0), not by an unqualified "no overhead" claim.
+- **Capability-declaring calls: measured cold and warm resolution costs**,
+  reported separately. Cold pays canonicalization and provider resolution;
+  warm pays the cached transition.
 - A repeated static declaration hits the context-transition cache and costs a
   compare plus a load in steady state.
 - Bumping the capability epoch invalidates cached transitions, and a stale
@@ -2264,8 +2612,22 @@ Performance criteria (§13):
 
 Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
 
-- A function with an omitted row receives `caller ∩ defining module ceiling`;
-  one with `^capabilities []` receives an empty context.
+- A *private* function with an omitted row receives
+  `caller ∩ defining module ceiling`; one with `^capabilities []` receives an
+  empty context; an *exported* one with no row does not compile (§5.0).
+- **A module row with a relative selector is applied once per crossing.** A
+  module declaring `(fs/WriteDir "tmp")`, entered with `<cwd>`, resolves to
+  `<cwd>/tmp`; an intra-module call to a private helper still sees
+  `<cwd>/tmp`, never `<cwd>/tmp/tmp` (§6.1).
+- Re-entering the same module from a differently-scoped caller resolves the
+  row against that caller, not against the earlier result.
+- **Cross-type intersection survives.** A context holding `fs/WriteDir "/tmp"`
+  intersected with one holding `fs/WriteFile "/tmp/a"` yields a usable grant
+  for `/tmp/a`, not the empty context a type-keyed comparison would produce
+  (§6.1, §3.2.3).
+- A scoped or overlay implementation whose row exceeds its protocol message's
+  is rejected **at registration or activation**, not at a later call that
+  fails with MissingCapability (§5.5).
 - A body declaring `(fs/WriteFile filename)` **cannot** write a different
   path beneath the same parent root. This is the test that distinguishes a
   deferred *proof* from a deferred *constraint*.
@@ -2287,7 +2649,8 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
   a narrower one is authorized by the meet, so an operation the narrowing
   removed is refused (§10.2).
 - A resource passed into an empty context is unusable.
-- `provider.meet` finds the overlap of two grants independently derived from
+- `provider.intersect` finds the overlap of two grants independently derived
+  from
   one root where neither is an ancestor of the other; grant-identity
   comparison alone does not.
 - A capability type whose provider is absent cannot be used, and one whose
@@ -2300,15 +2663,23 @@ Semantics criteria (§5.0, §6.4.1, §8.0, §10.1, §13.3):
   to capture, store, or replay.
 - **A grant revoked after a proof is carried denies a second operation in the
   same frame.** So does revoking an *ancestor* of that grant, and revoking
-  *either operand* of a `meet` the grant descends from (§3.2.3).
-- A broad caller invoking an undeclared function exported by a module whose
-  ceiling is `^capabilities []` cannot perform an effect through it (§5.0).
-- An intra-module call to an undeclared function performs no context work; a
-  cross-module call into a differently-ceilinged module takes the cached
-  meet.
-- `provider.entail` mints a cross-type grant the target adapter accepts, and
-  a provider cannot mint a grant for a type it does not own without the
+  *either operand* of an `intersect` the grant descends from (§3.2.3).
+- A broad caller invoking a `^capabilities *` function exported by a module
+  whose ceiling is `^capabilities []` cannot perform an effect through it:
+  the pass-through is still bounded by the defining module's ceiling (§5.0).
+- An intra-module call to a private undeclared function performs no context
+  work; a cross-module call into a differently-ceilinged module takes the
+  cached meet.
+- A cross-type `provider.resolve` mints a grant the target adapter accepts,
+  and a provider cannot mint a grant for a type it does not own without the
   target provider's registered acceptance.
+- A provider implementing `resolve`, `intersect`, and `validity` but not
+  `subsumes` is conforming: `subsumes` reads as `unknown`, which rejects at
+  interface boundaries rather than admitting anything, and §5.5 still accepts
+  exact canonical equality without it.
+- `provider.intersect` returns a grant of a type present in NEITHER input
+  when that is the true overlap of two related types, and the runtime keeps
+  it.
 - `provider.subsumes` returning `unknown` rejects a protocol implementation
   rather than accepting it.
 - Concrete protocol-implementation compatibility is decided by the provider's
@@ -2329,6 +2700,15 @@ proposal and changes nothing in it; nothing here should be justified by it.
 
 ## 20. Deferred questions
 
+Four questions that were previously here, or scattered as unresolved tensions,
+have been **settled** and moved to §1.1: whether a public declaration is a
+contract (§5.0), whether version 1 capability types must be provider-backed
+(§3.1.1), whether resource possession delegates authority (§10.2), and what a
+capability-type call means in expression position (§4.2, §6.2). They are
+listed there because each one changes what ordinary code looks like, and
+deferring them would have left the compiler, protocol-substitution, caching,
+and revocation detail resting on unmade decisions.
+
 The following can be decided during implementation without changing the core
 model:
 
@@ -2339,9 +2719,12 @@ model:
 - whether revoked grants use epochs, handles, or provider callbacks;
 - whether `describe`'s default implementation is derived structurally from
   the canonical form or supplied per namespace;
-- whether advisory (non-adapter-backed) capability types should require an
-  explicit marker at declaration rather than only being reported by
-  reflection;
+- which route out of the version-1 host-backed restriction to take, if either:
+  a generic provider for application-defined nominal policies, or an explicit
+  advisory arm (§3.2.2 records both and why neither is version 1). This is
+  deferred as *which*, not *whether* — version 1 is host-backed regardless;
+- if the advisory route is taken, whether advisory types require an explicit
+  marker at declaration rather than only being reported by reflection;
 - which operating systems receive handle-relative filesystem support first;
 - whether a broad selector lookup returns a dedicated `CapabilitySet` value
   or only supports iteration and narrowing;
