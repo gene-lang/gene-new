@@ -1,0 +1,9 @@
+# The launcher's default root is the launch directory. Reaching outside it is
+# denied until `--allow_read_dir` (or an embedding host) says otherwise.
+#
+# Takes the path to read as an argument, so the same file demonstrates both
+# the denial and the grant.
+
+(fn main [args]
+  ($println ($fs/read_text args/0))
+  0)

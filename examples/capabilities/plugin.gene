@@ -1,0 +1,8 @@
+# A dependency that declares nothing. Left to itself it inherits whatever the
+# importer has — which is exactly why an importer may want to bound it.
+
+(mod plugin)
+
+(fn write_where [path]
+  ($fs/write_text path "from the plugin")
+  ($println "plugin wrote " path))

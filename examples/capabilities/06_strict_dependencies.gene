@@ -1,0 +1,19 @@
+# `^require_strict_dependencies` is a link-time policy: an application that
+# wants every dependency to carry a capability contract states it once, and
+# the link fails naming the modules that do not.
+#
+# It validates interface metadata. It never recompiles a dependency under a
+# mode its author did not choose — an open-mode library stays open-mode; the
+# application simply declines to depend on it.
+
+(mod cap_strict_deps
+  ^capabilities_mode strict
+  ^require_strict_dependencies true
+  ^capabilities [])
+
+(import [helper] from "./open_dep.gene")
+
+(fn main [args]
+  ^capabilities []
+  ($println (helper))
+  0)

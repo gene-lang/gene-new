@@ -1,0 +1,31 @@
+# Call-site attenuation: narrow the context for one call, without changing
+# either the entry ceiling or the callee's declaration.
+#
+# `render` asks only for what its caller has. Called directly it can write
+# anywhere under `out/`; wrapped in `with_capabilities` it is confined to
+# `out/public` for that call alone, and the wider authority is back afterwards.
+#
+# Every path here is relative to the *granted* directory, not to the process
+# cwd: under `(fs/WriteDir "out")`, "private.txt" means "out/private.txt".
+# Run `mkdir -p out/public` first — a granted directory has to exist.
+
+(mod cap_attenuate
+  ^capabilities [(fs/WriteDir "out")])
+
+(fn render [path]
+  ^capabilities *
+  ($fs/write_text path "rendered")
+  ($println "wrote " path))
+
+(fn main [args]
+  (render "private.txt")
+
+  (with_capabilities [(fs/WriteDir "public")]
+    (render "inside.txt")
+    (try
+      (render "../private_again.txt")
+      catch _
+      ($println "denied under with_capabilities: ../private_again.txt")))
+
+  (render "after.txt")
+  0)

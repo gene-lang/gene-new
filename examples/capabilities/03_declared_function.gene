@@ -1,0 +1,27 @@
+# A declared row is a contract checked *before the body runs*.
+#
+# `save_report` asks for exactly the file it was handed. The entry module
+# narrows the application to `reports/`, so a call naming a file inside it
+# succeeds and one naming a path outside is refused at the boundary — the body
+# never executes, so nothing partial is written.
+#
+# Note the second call uses an *absolute* path. A relative path would not
+# escape: relative requests resolve against the granted directory, so
+# "escape.txt" would simply mean "reports/escape.txt".
+
+(mod cap_declared
+  ^capabilities [(fs/WriteDir "reports")])
+
+(fn save_report [path content]
+  ^capabilities [(fs/WriteFile path)]
+  ($fs/write_text path content)
+  ($println "wrote " path))
+
+(fn main [args]
+  ($fs/make_dir "reports")
+  (save_report "ok.txt" "inside the ceiling")
+  (try
+    (save_report args/0 "outside the ceiling")
+    catch _
+    ($println "denied: " args/0 " is outside (fs/WriteDir \"reports\")"))
+  0)

@@ -1,0 +1,5 @@
+# An open-mode dependency: it declares no capability contract at all.
+
+(mod open_dep)
+
+(fn helper [] 1)

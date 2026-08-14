@@ -1,0 +1,23 @@
+# Import-site ceiling: bound a dependency you do not control, once, at the
+# import — instead of remembering to wrap every call site.
+#
+# The entry is scoped to `out/`. `plugin.gene` declares nothing, so without the
+# `^capabilities` row on the import it would inherit all of that. The row
+# confines every call into that module to `out/plugin`.
+#
+# Run `mkdir -p out/plugin` first — a granted directory has to exist.
+
+(mod cap_import_ceiling
+  ^capabilities [(fs/WriteDir "out")])
+
+(import [write_where] from "./plugin.gene"
+  ^capabilities [(fs/WriteDir "plugin")])
+
+(fn main [args]
+  (write_where "allowed.txt")
+
+  (try
+    (write_where "../escaped.txt")
+    catch _
+    ($println "denied: the import ceiling confines the plugin to out/plugin"))
+  0)

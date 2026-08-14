@@ -1,0 +1,9 @@
+# Open mode: a program that attenuates nothing writes no capability code.
+# It runs exactly as it would have before capabilities existed, bounded only
+# by the root the launcher granted (the launch directory).
+
+(fn main [args]
+  ($fs/write_text "cap_demo_open.txt" "written under the launcher's root")
+  ($println ($fs/read_text "cap_demo_open.txt"))
+  ($fs/remove "cap_demo_open.txt")
+  0)
