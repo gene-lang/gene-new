@@ -1,4 +1,4 @@
-import gene/[compiler, gir, types, vm, printer]
+import gene/[capabilities, compiler, fs_capabilities, gir, types, vm, printer]
 import std/[os, osproc, strutils, unittest]
 
 let modDir = getTempDir() / "gene_module_tests"
@@ -27,7 +27,18 @@ proc runSandboxProgram(src: string): Value =
   ## Capability sandbox cases need a fresh host root at the fixture directory;
   ## ambient filesystem authority is application-owned and cannot be retrofitted
   ## onto the process-global application after earlier module tests materialize it.
-  run(compileSource(src), newGlobalScope(newApplication(modDir)))
+  ##
+  ## `newApplication`'s argument anchors *module resolution* only. Filesystem
+  ## authority deliberately follows the launch directory instead, so that
+  ## `gene run path/to/app.gene` cannot reinterpret "tmp/x" beneath the entry
+  ## file (vm.nim, newApplicationState) — the CLI passes the entry's package
+  ## root here. So the fixture root is granted explicitly, the way an embedding
+  ## host or `--allow_read_write_dir` would.
+  let app = newApplication(modDir)
+  app.setRootCapabilities(newCapabilityContext(
+    @(app.rootCapabilities.grants) &
+    @[app.filesystemCapabilities.grantReadWriteDir(modDir)]))
+  run(compileSource(src), newGlobalScope(app))
 
 proc loadSandboxed(dir, entry, grants: string, shared = "[]"): string =
   ## A `$runtime/load_sandboxed` call, as source. The directory and the entry are

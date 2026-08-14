@@ -35,6 +35,14 @@ proc runLoggingSource(source: string): Value =
 
 proc runLoggingSourceAt(source, root: string): Value =
   let app = newApplication(root)
+  # `newApplication`'s argument anchors *module resolution*, not authority:
+  # the capability root deliberately follows the launch directory so that
+  # `gene run path/to/app.gene` cannot reinterpret "tmp/x" beneath the entry
+  # file (vm.nim, newApplicationState). A test writing under `root` therefore
+  # has to grant `root` the way an embedding host or `--allow_*` would.
+  app.setRootCapabilities(newCapabilityContext(
+    @(app.rootCapabilities.grants) &
+    @[app.filesystemCapabilities.grantReadWriteDir(root)]))
   run(compileSource(source), newGlobalScope(app))
 
 proc loggingGeneQuote(text: string): string =

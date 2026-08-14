@@ -2,11 +2,19 @@
 ## loopback tests validate request/response, streaming, bounds, and cancellation
 ## without external network access; TLS coverage below uses a local certificate.
 
-proc runHttpClient(name, source: string): tuple[output: string, exitCode: int] =
+proc runHttpClient(name, source: string,
+                   allowReadDir = ""): tuple[output: string, exitCode: int] =
   buildHttpGene()
   let path = httpTestDir / name
   writeFile(path, source)
-  let run = execCmdEx(httpGeneExe & " run " & quoteShell(path))
+  # `gene run`'s default filesystem root is the launch directory
+  # (proposals/capabilities.md §5.1), and these fixtures live under the system
+  # temp dir. A test that hands the client a path to read has to grant that
+  # directory the same way a real invocation would.
+  var policy = ""
+  if allowReadDir.len > 0:
+    policy = " --allow_read_dir " & quoteShell(allowReadDir)
+  let run = execCmdEx(httpGeneExe & " run" & policy & " " & quoteShell(path))
   (run.output.strip, run.exitCode)
 
 suite "net/http_client e2e":
@@ -129,6 +137,6 @@ suite "net/http_client e2e":
 (var r (await (request ^url "https://127.0.0.1:8205/"
                        ^ca_file "/CERT_PATH/" ^timeout_ms 5000)))
 ($println [r/status (starts_with? r/effective_url "https://") r/truncated])
-""".replace("/CERT_PATH/", cert))
+""".replace("/CERT_PATH/", cert), allowReadDir = cert.parentDir)
       check client.exitCode == 0
       check client.output == "[200 true false]"

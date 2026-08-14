@@ -4,7 +4,8 @@
 ## examples/style_guide.gene at a higher level than unit tests. Run after changes:
 ##   nimble spec
 
-import gene/[capabilities, compiler, gir, package, printer, reader, types, vm]
+import gene/[capabilities, compiler, fs_capabilities, gir, package, printer,
+             reader, types, vm]
 # Side-effect import: puts the {.exportc, dynlib.} AOT boundary helpers into
 # this test binary's dynamic symbol table so a dlopened AOT library resolves
 # them, exactly as the gene executable does.
@@ -44,7 +45,15 @@ template check_eval(src: string, expected: string) =
 
 template check_eval_at(src: string, expected: string, root: string) =
   block:
+    # `newApplication`'s argument anchors *module resolution*; filesystem
+    # authority deliberately follows the launch directory instead, so that
+    # `gene run path/to/app.gene` cannot reinterpret "tmp/x" beneath the entry
+    # file (vm.nim, newApplicationState). A spec that operates under `root`
+    # grants it the way an embedding host or `--allow_read_write_dir` would.
     let app = newApplication(root)
+    app.setRootCapabilities(newCapabilityContext(
+      @(app.rootCapabilities.grants) &
+      @[app.filesystemCapabilities.grantReadWriteDir(root)]))
     check run(compileSource(src), newGlobalScope(app)).print() == expected
 
 template check_eval_error(src: string, fragment: string) =
@@ -8104,7 +8113,13 @@ suite "spec — os and json from ai-agent plan":
     let path = dir / "note.txt"
     let made = dir / "made"
     let removable = dir / "remove-me.txt"
-    let scope = newGlobalScope(newApplication(dir))
+    # See `check_eval_at`: the application argument anchors module resolution,
+    # not authority, so the fixture directory is granted explicitly.
+    let fsApp = newApplication(dir)
+    fsApp.setRootCapabilities(newCapabilityContext(
+      @(fsApp.rootCapabilities.grants) &
+      @[fsApp.filesystemCapabilities.grantReadWriteDir(dir)]))
+    let scope = newGlobalScope(fsApp)
     check run(compileSource(
       "(import $fs [read_text write_text exists? list_dir make_dir remove]) " &
       "(write_text " & geneString(path) & " \"hello\") " &
@@ -8128,7 +8143,13 @@ suite "spec — os and json from ai-agent plan":
     createDir(dir)
     let path = dir / "here.txt"
     writeFile(path, "x")
-    let scope = newGlobalScope(newApplication(dir))
+    # See `check_eval_at`: the application argument anchors module resolution,
+    # not authority, so the fixture directory is granted explicitly.
+    let realPathApp = newApplication(dir)
+    realPathApp.setRootCapabilities(newCapabilityContext(
+      @(realPathApp.rootCapabilities.grants) &
+      @[realPathApp.filesystemCapabilities.grantReadWriteDir(dir)]))
+    let scope = newGlobalScope(realPathApp)
     check run(compileSource(
       "(import $fs [real_path write_text]) " &
       "(import $str [starts_with?]) " &

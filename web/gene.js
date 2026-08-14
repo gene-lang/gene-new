@@ -4535,6 +4535,8 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
   }
   }
 
+  var ___syscall_fadvise64 = (fd, offset, len, advice) => 0;
+
   var syscallGetVarargI = () => {
       assert(SYSCALLS.varargs != undefined);
       // the `+` prepended here is necessary to convince the JSCompiler that varargs is indeed a number.
@@ -5287,6 +5289,20 @@ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
   
       path = SYSCALLS.getStr(path);
       return SYSCALLS.writeStat(buf, FS.stat(path));
+    } catch (e) {
+    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    return -e.errno;
+  }
+  }
+
+  function ___syscall_symlinkat(target, dirfd, linkpath) {
+  try {
+  
+      target = SYSCALLS.getStr(target);
+      linkpath = SYSCALLS.getStr(linkpath);
+      linkpath = SYSCALLS.calculateAt(dirfd, linkpath);
+      FS.symlink(target, linkpath);
+      return 0;
     } catch (e) {
     if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
     return -e.errno;
@@ -6558,6 +6574,8 @@ var wasmImports = {
   /** @export */
   __syscall_dup3: ___syscall_dup3,
   /** @export */
+  __syscall_fadvise64: ___syscall_fadvise64,
+  /** @export */
   __syscall_fcntl64: ___syscall_fcntl64,
   /** @export */
   __syscall_fstat64: ___syscall_fstat64,
@@ -6595,6 +6613,8 @@ var wasmImports = {
   __syscall_socket: ___syscall_socket,
   /** @export */
   __syscall_stat64: ___syscall_stat64,
+  /** @export */
+  __syscall_symlinkat: ___syscall_symlinkat,
   /** @export */
   __syscall_unlinkat: ___syscall_unlinkat,
   /** @export */

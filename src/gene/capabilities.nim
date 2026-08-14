@@ -4,7 +4,7 @@
 ## CapabilityProvider can construct CapabilityGrant values. The VM propagates
 ## grants through CapabilityContext rather than exposing them as Gene Values.
 
-import std/[algorithm, atomics, locks, options, strutils, tables]
+import std/[algorithm, atomics, locks, options, sets, strutils, tables]
 
 const
   MaxCapabilityGrantCacheEntries* = 4096
@@ -128,6 +128,7 @@ type
     types: Table[string, CapabilityType]
     sourcesByTarget: Table[uint32, seq[uint32]]
     targetsBySource: Table[uint32, seq[uint32]]
+    entailmentClosure: Table[uint32, seq[uint32]]
     identityLock: Lock
     nextGrantId: uint64
     nextContextId: uint64
@@ -285,6 +286,12 @@ proc policyBool*(grant: CapabilityGrant, name: string,
 proc isOwnedBy*(grant: CapabilityGrant,
                 provider: CapabilityProvider): bool {.inline.} =
   grant != nil and grant.provider == provider
+
+proc owningProvider*(grant: CapabilityGrant): CapabilityProvider {.inline.} =
+  ## The provider that minted this grant. Holding the provider confers no
+  ## authority — minting still requires owning the capability type — so this
+  ## only lets a provider reach its own state from one of its own grants.
+  if grant == nil: nil else: grant.provider
 
 proc belongsTo*(grant: CapabilityGrant,
                 registry: CapabilityRegistry): bool {.inline.} =
@@ -545,8 +552,26 @@ proc admitEntailment*(registry: CapabilityRegistry,
     registry.targetsBySource.mgetOrPut(sourceType.id, @[]).add targetType.id
 
 proc freeze*(registry: CapabilityRegistry) =
+  ## Admission is closed here, so the entailment closure can be computed once
+  ## instead of re-walked per resolution (§8.0 asks for an index, not a scan).
   if registry == nil:
     raise newException(CapabilityError, "cannot freeze a nil capability registry")
+  registry.entailmentClosure = initTable[uint32, seq[uint32]]()
+  for targetId in registry.sourcesByTarget.keys:
+    var sources: seq[uint32]
+    var seen = initHashSet[uint32]()
+    var pending = @[targetId]
+    while pending.len > 0:
+      let current = pending.pop()
+      if not registry.sourcesByTarget.hasKey(current):
+        continue
+      for sourceId in registry.sourcesByTarget[current]:
+        if sourceId == targetId or seen.containsOrIncl(sourceId):
+          continue
+        sources.add sourceId
+        pending.add sourceId
+    sources.sort()
+    registry.entailmentClosure[targetId] = sources
   registry.frozen = true
 
 proc capabilityType*(registry: CapabilityRegistry,
@@ -731,28 +756,33 @@ proc deriveGrant*(provider: CapabilityProvider, parent: CapabilityGrant,
   let key = derivationKey(parent, capabilityType,
                           scope & "\x00" & base & "\x00" & anchor & "\x00" &
                           policyKey(policy))
+  # `try/finally` is not decoration: everything below allocates, and
+  # `newRevocationToken` takes `registry.identityLock` while this one is held.
+  # An exception escaping with `grantCacheLock` still held would wedge every
+  # later mint in the process, so the release has to be unconditional.
   acquire(provider.grantCacheLock)
-  if provider.grantCache.hasKey(key):
-    result = provider.grantCache[key]
-    if result.isValid:
-      release(provider.grantCacheLock)
-      return
-    provider.grantCache.del(key)
-  let token = newRevocationToken(provider.registry)
-  result = CapabilityGrant(provider: provider, capabilityType: capabilityType,
-                           scope: scope, resolutionBase: base,
-                           operationAnchor: anchor,
-                           policy: @policy,
-                           parent: parent, revocation: token,
-                           dependencies: parent.dependencies)
-  result.dependencies.add token.ownDependency
-  result.semanticIdentity = provider.grantSemanticIdentity(
-    capabilityType, scope, base, anchor, policy, result.dependencies)
-  result.semanticId = stableHash64(result.semanticIdentity)
-  if provider.grantCache.len >= MaxCapabilityGrantCacheEntries:
-    provider.grantCache.clear()
-  provider.grantCache[key] = result
-  release(provider.grantCacheLock)
+  try:
+    if provider.grantCache.hasKey(key):
+      result = provider.grantCache[key]
+      if result.isValid:
+        return
+      provider.grantCache.del(key)
+    let token = newRevocationToken(provider.registry)
+    result = CapabilityGrant(provider: provider, capabilityType: capabilityType,
+                             scope: scope, resolutionBase: base,
+                             operationAnchor: anchor,
+                             policy: @policy,
+                             parent: parent, revocation: token,
+                             dependencies: parent.dependencies)
+    result.dependencies.add token.ownDependency
+    result.semanticIdentity = provider.grantSemanticIdentity(
+      capabilityType, scope, base, anchor, policy, result.dependencies)
+    result.semanticId = stableHash64(result.semanticIdentity)
+    if provider.grantCache.len >= MaxCapabilityGrantCacheEntries:
+      provider.grantCache.clear()
+    provider.grantCache[key] = result
+  finally:
+    release(provider.grantCacheLock)
 
 proc intersectGrant*(provider: CapabilityProvider,
                      left, right: CapabilityGrant,
@@ -794,35 +824,36 @@ proc intersectGrant*(provider: CapabilityProvider,
                             scope & "\x00" & base & "\x00" & anchor & "\x00" &
                             policyKey(policy))
   acquire(provider.grantCacheLock)
-  if provider.grantCache.hasKey(key):
-    result = provider.grantCache[key]
-    if result.isValid:
-      release(provider.grantCacheLock)
-      return
-    provider.grantCache.del(key)
-  result = CapabilityGrant(provider: provider, capabilityType: capabilityType,
-                           scope: scope, resolutionBase: base,
-                           operationAnchor: anchor,
-                           policy: @policy,
-                           revocation: nil)
-  for dependency in left.dependencies:
-    result.dependencies.add dependency
-  for dependency in right.dependencies:
-    var duplicate = false
-    for existing in result.dependencies:
-      if existing.token == dependency.token and
-          existing.generation == dependency.generation:
-        duplicate = true
-        break
-    if not duplicate:
+  try:
+    if provider.grantCache.hasKey(key):
+      result = provider.grantCache[key]
+      if result.isValid:
+        return
+      provider.grantCache.del(key)
+    result = CapabilityGrant(provider: provider, capabilityType: capabilityType,
+                             scope: scope, resolutionBase: base,
+                             operationAnchor: anchor,
+                             policy: @policy,
+                             revocation: nil)
+    for dependency in left.dependencies:
       result.dependencies.add dependency
-  result.semanticIdentity = provider.grantSemanticIdentity(
-    capabilityType, scope, base, anchor, policy, result.dependencies)
-  result.semanticId = stableHash64(result.semanticIdentity)
-  if provider.grantCache.len >= MaxCapabilityGrantCacheEntries:
-    provider.grantCache.clear()
-  provider.grantCache[key] = result
-  release(provider.grantCacheLock)
+    for dependency in right.dependencies:
+      var duplicate = false
+      for existing in result.dependencies:
+        if existing.token == dependency.token and
+            existing.generation == dependency.generation:
+          duplicate = true
+          break
+      if not duplicate:
+        result.dependencies.add dependency
+    result.semanticIdentity = provider.grantSemanticIdentity(
+      capabilityType, scope, base, anchor, policy, result.dependencies)
+    result.semanticId = stableHash64(result.semanticIdentity)
+    if provider.grantCache.len >= MaxCapabilityGrantCacheEntries:
+      provider.grantCache.clear()
+    provider.grantCache[key] = result
+  finally:
+    release(provider.grantCacheLock)
 
 proc lineageIsValid(grant: CapabilityGrant): bool =
   if grant == nil:
@@ -985,23 +1016,16 @@ proc resolveSelector*(registry: CapabilityRegistry, context: CapabilityContext,
       "capability specification belongs to another registry")
   if context == nil:
     return
-  var sourceTypeIds: seq[uint32]
-  var pending = @[requested.capabilityType.id]
-  while pending.len > 0:
-    let targetId = pending.pop()
-    if registry.sourcesByTarget.hasKey(targetId):
-      for sourceId in registry.sourcesByTarget[targetId]:
-        if sourceId != requested.capabilityType.id and
-            sourceId notin sourceTypeIds:
-          sourceTypeIds.add sourceId
-          pending.add sourceId
-  sourceTypeIds.sort()
-  var candidateTypeIds = @[requested.capabilityType.id]
-  candidateTypeIds.add sourceTypeIds
+  # Precomputed at freeze, so a resolution reads the closure instead of
+  # rebuilding it (§8.0). The common case — a type that entails nothing — does
+  # not allocate at all.
+  let sourceTypeIds =
+    registry.entailmentClosure.getOrDefault(requested.capabilityType.id)
   for parent in context.items:
     if parent == nil or not parent.isValid or
         parent.capabilityType.registryId != registry.registryId or
-        parent.capabilityType.id notin candidateTypeIds:
+        (parent.capabilityType.id != requested.capabilityType.id and
+         parent.capabilityType.id notin sourceTypeIds):
       continue
     let resolved = parent.provider.resolve(parent, requested)
     if resolved.isNone:
@@ -1011,9 +1035,14 @@ proc resolveSelector*(registry: CapabilityRegistry, context: CapabilityContext,
         grant.capabilityType != requested.capabilityType or not grant.isValid:
       raise newException(CapabilityError,
         "capability provider returned an invalid resolution grant")
+    # Canonical identity, not reference identity (§6.1). The grant cache is
+    # bounded and clears on overflow, so the same derivation can hand back a
+    # fresh object with an identical `semanticIdentity`; comparing references
+    # would report those as competing grants and raise a spurious
+    # `AmbiguousCapability`.
     var duplicate = false
     for existing in result:
-      if existing == grant:
+      if existing.semanticIdentity == grant.semanticIdentity:
         duplicate = true
         break
     if not duplicate:

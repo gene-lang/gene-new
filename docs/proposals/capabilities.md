@@ -1240,9 +1240,10 @@ scoped by the module-crossing rule (§6.1):
   can prove the result equals the caller's context — which it can whenever
   both ceilings are static and the caller's is contained in the callee's.
 - When the crossing is required, it is keyed on
-  `(caller_context_id, callee_module_ceiling_id)` and cached exactly like
-  §13.2's transition, so the steady-state cost is a compare and a load rather
-  than a provider call.
+  `(caller_context_id, callee_ceiling_id)` — the module ceiling already folded
+  with any import ceiling (§5.3.1, §6.1) — and cached exactly like §13.2's
+  transition, so the steady-state cost is a compare and a load rather than a
+  provider call.
 - **A declared row is applied at every call**, intra-module or not — that is
   what a declaration means. `^capabilities []` on an exported function
   installs and restores an empty context even for a capability-free body, so
@@ -1284,6 +1285,22 @@ directly. They do not evaluate Gene expressions or pass named arguments to
 program arguments. Richer policy files and the embedding API syntax remain
 separate host-surface decisions.
 
+**With no such option the default filesystem root is the launch directory**,
+and the nominal host capabilities (§8.1) are granted whole. `--allow_*` adds
+directories to that root; it does not replace it.
+
+This is narrower than "everything the process could do", and deliberately so.
+§17 gives up compatibility with pre-capability builds outright — there are no
+external users and no migration shim — so nothing is owed to a program that
+read `/etc` by ambient authority, and a launcher that hands out the whole
+filesystem leaves an entry row nothing worth narrowing. §18's "runs with the
+host's full authority" means *whatever the host granted*, which is this; it
+does not mean unrestricted.
+
+The cost is that a program reading outside its launch directory — a temp file,
+`$HOME` — must be given that directory explicitly, by `--allow_*` or by an
+embedding host. That is the intended friction.
+
 ### 5.2 Entry module
 
 In strict mode the entry module establishes the application-level ceiling.
@@ -1313,9 +1330,12 @@ This section governs; §5.3 and §6.1 describe consequences of it.
 2. load             no row is materialized yet. A pass-through/open entry
                     initializes under host_root, and pass-through imports
                     inherit that initialization context. A module with any
-                    narrowing row initializes under EMPTY. Consequently a
-                    strict or narrowed entry also causes its pass-through
-                    import subtree to initialize empty. Imports transfer no
+                    narrowing row initializes under EMPTY, as does a module
+                    that ANY import bounds with a ceiling (§5.3.1) — the
+                    module is a singleton, so the narrower answer is the
+                    only one that cannot leak. Consequently a strict or
+                    narrowed entry also causes its pass-through import
+                    subtree to initialize empty. Imports transfer no
                     authority beyond this inherited initialization context.
 
 3. materialize      app_context = resolve_row(entry_row, host_root)
@@ -1330,8 +1350,14 @@ This section governs; §5.3 and §6.1 describe consequences of it.
                         app_context                      omitted, open mode
                         empty                            omitted, strict mode
 
+                    import_ceiling(I, M) =
+                        resolve_row(I's import row for M, app_context)
+                                                         when I declares one
+                        unbounded                        otherwise   (§5.3.1)
+
 4. run              main executes under app_context. Every boundary computes
-                    intersect(parent, callee.module_ceiling) (§6.1).
+                    intersect(parent, callee_ceiling(caller_module,
+                                                     callee_module)) (§6.1).
 ```
 
 A module loaded lazily after step 3 materializes its ceiling against the
@@ -1416,7 +1442,8 @@ Consequences:
 - There is exactly one runtime instance per
   `<package_identity>::<module_path>`, as today. Gene's module and type
   identity semantics are unchanged, and the module cache key needs no
-  capability fingerprint.
+  capability fingerprint — including with import-site ceilings (§5.3.1),
+  which separate importers by per-call intersection rather than by instancing.
 - In an open application, initialization intentionally has legacy ambient
   behavior. The application has not asked the declaration system to confine
   it; native adapters still require grants from the host root.
@@ -1437,6 +1464,69 @@ necessary, and it must include **grant and provider identity** (`validity`,
 only canonical visible selectors — two roots with the same selector shape but
 different underlying grants must never share initialized authority-bearing
 state.
+
+#### 5.3.1 Import-site ceilings
+
+The row above is authored by the dependency. An importer that wants to bound a
+dependency it does not control has, so far, only `with_capabilities` at each
+call site (§5.6) — which is per-call, easy to forget, and useless for anything
+the dependency does at load time. So an import may declare its own ceiling:
+
+```gene
+(import * : plugin from "./plugin"
+  ^capabilities [(fs/WriteDir "tmp")])
+```
+
+This is the caller-side counterpart of §5.3's module row: one declaration, at
+the importer, per dependency. It composes by intersection like every other
+boundary, so a call from importer `I` into module `M` receives
+
+```text
+caller_context ∩ module_ceiling(M) ∩ import_ceiling(I, M)
+```
+
+and §3.5's monotonic-downward invariant holds by construction — an import
+ceiling can only remove authority, never restore it, and it cannot exceed what
+`M`'s own row already allows.
+
+Like a module ceiling, an import ceiling is **materialized once against
+`app_context`** (§6.1), not against the importer's transient context at the
+moment of a call. It is therefore immutable, and the two ceilings fold into a
+single precomputed bound per `(importer, module)` pair — a static property of
+the call site — so §13.2's per-call-site transition cache is keyed and reused
+exactly as before, with no extra runtime composition.
+
+**It does not key the module cache.** There is still exactly one instance per
+`<package_identity>::<module_path>`, and §5.3's argument against capability
+fingerprints is untouched: differently-authorized importers are separated by
+per-call intersection, not by instancing.
+
+**A module imported with any import ceiling initializes under an empty
+context.** This is the rule that makes the ceiling real rather than decorative.
+§5.3 is explicit that an open module's initialization inherits the enclosing
+context and may capture protected data as ordinary values, which no later
+call-site attenuation can retract:
+
+> A later call-site attenuation cannot retroactively erase information already
+> captured. Catching that would require pervasive information-flow tainting.
+
+An importer that bounds a dependency is asking for confinement, so load time
+cannot be exempt from it. This is not a new initialization mode — it is §5.3's
+existing "any narrowing row initializes under an empty context" rule, extended
+to narrowing declared by the importer rather than by the module.
+
+The quantifier is deliberately conservative: because the module is a singleton,
+**any** import declaring a ceiling forces empty-context initialization for
+every importer, including those that declared none. Import specifications are
+static and unconditional (§5.0.2's link phase), so the set of imports of a
+module is known before initialization and the choice never depends on load
+order. Taking the narrower option is the only answer that cannot leak: the
+alternative would let an unbounded importer decide whether a bounded importer's
+confinement holds.
+
+A dependency whose initialization genuinely needs authority exposes it as an
+explicit setup function the importer calls under a context it chooses, which is
+what §5.3 already prescribes for strict and narrowed applications.
 
 ### 5.4 Functions and methods
 
@@ -1643,12 +1733,26 @@ resolve_row(row, context) -> context
 module_ceiling(M) = resolve_row(M.row, app_context)
 ```
 
-It is immutable and cached for the life of the program. Then at each call or
+An import ceiling (§5.3.1) is materialized the same way and folded into the
+same bound. Both are static properties of the call site, so the pair is
+precomputed once per `(importer, module)`:
+
+```text
+import_ceiling(I, M)  = resolve_row(I.import_row_for(M), app_context)
+callee_ceiling(I, M)  = intersect_contexts(module_ceiling(M),
+                                           import_ceiling(I, M))
+```
+
+An absent import row contributes no bound, leaving `callee_ceiling` equal to
+`module_ceiling(M)`.
+
+Both are immutable and cached for the life of the program. Then at each call or
 explicit attenuation boundary:
 
 ```text
 parent    = active capability context
-available = intersect_contexts(parent, callee.module_ceiling)
+available = intersect_contexts(parent, callee_ceiling(caller_module,
+                                                     callee_module))
 
 for each selector in the declaration (or, for a private helper with no
                                       row, the identity selection):
@@ -2728,7 +2832,11 @@ in between:
    resolve the entry row and invoke `main` under it (§5.2).
 4. Row parsing and normalization: the three `^capabilities` shapes,
    `^^optional`, namespace projection, and the selector-position constructor
-   rule (§4.2.1).
+   rule (§4.2.1). This includes accepting `^capabilities` on `import`
+   (§5.3.1); `parseImportSpec` currently has a closed property allow-list
+   (`^export`, `^pkg`, `^as`) that rejects everything else, so the option has
+   to be added there and threaded into the module's load decision before
+   step 3 can honour it.
 5. The boundary algorithm (§6.1) at function, method, and protocol-message
    boundaries, including the private-helper `caller ∩ module ceiling` rule
    and the exported-declaration requirement (§5.0).
@@ -2768,14 +2876,27 @@ The implementation is ready when tests demonstrate all of the following:
 - The standard-library filesystem adapter independently enforces its resolved
   root and rights.
 - `with_capabilities` can narrow a call and cannot widen it.
+- **An import-site ceiling bounds a dependency the importer does not control**
+  (§5.3.1): calls into it receive
+  `caller ∩ module_ceiling ∩ import_ceiling`, an import ceiling cannot restore
+  authority the module row or the caller dropped, and the module still has
+  exactly one runtime instance shared by bounded and unbounded importers.
+- **A module bounded by any import ceiling initializes under an empty
+  context**, so a dependency cannot capture protected data at load time and
+  retain it as ordinary values past the bound — including when a second,
+  unbounded importer of the same module exists.
 - Context restoration works for return, error, cancellation, and non-local
   control flow.
 - Multiple non-equivalent matching grants produce
   `AmbiguousCapability`.
 - Protocol implementations cannot broaden public capability contracts.
 - **An open-mode application with no `^capabilities` anywhere — no entry row,
-  no module rows, no function rows — compiles and runs with the host's full
-  authority**, and is byte-identical in behaviour to a pre-capability build.
+  no module rows, no function rows — compiles and runs with whatever the host
+  granted**, and declaration processing changes nothing about its behaviour.
+  "Full authority" here means the host root (§5.1), which for `gene run`
+  defaults to the launch directory — not the whole filesystem. A program
+  reaching outside it is denied until `--allow_*` or an embedding host says
+  otherwise, and that denial is the design working.
 - **Ceilings materialize once, between load and `main`** (§5.2.1): no row is
   resolved during module loading, and none is resolved per call. A module
   loaded lazily after that phase gets the same ceiling it would have had.
@@ -2863,8 +2984,9 @@ separately so a regression in one is visible rather than averaged away:
   overwhelming majority of calls and the byte-identical claim applies here
   and only here.
 - **Cross-module public calls: bounded, cached boundary cost.** A published
-  per-call ceiling, met by the `(caller_context_id, callee_module_ceiling_id)`
-  cache (§5.0), not by an unqualified "no overhead" claim.
+  per-call ceiling, met by the `(caller_context_id, callee_ceiling_id)` cache
+  (§5.0), not by an unqualified "no overhead" claim. An import-site ceiling
+  (§5.3.1) folds into the same key and must not add a second lookup.
 - **Capability-declaring calls: measured cold and warm resolution costs**,
   reported separately. Cold pays canonicalization and provider resolution;
   warm pays the cached transition.

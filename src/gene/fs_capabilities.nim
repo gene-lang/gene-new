@@ -4,7 +4,7 @@
 ## specifications against inherited directory grants and returns sealed grants;
 ## filesystem adapters consume those grants separately.
 
-import std/[algorithm, atomics, options, os, strutils]
+import std/[algorithm, atomics, locks, options, os, strutils, tables]
 import ./capabilities
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
@@ -13,6 +13,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   {.emit: """
   #include <errno.h>
   #include <fcntl.h>
+  #include <stdio.h>
   #include <sys/stat.h>
   #include <unistd.h>
 
@@ -120,6 +121,16 @@ type
 
   FilesystemProvider* = ref object of CapabilityProvider
     types*: FilesystemCapabilityTypes
+    when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+      ## Retained anchor handles, keyed by `operationAnchor` (§7.5: "anchor
+      ## resolution at a directory handle"). Re-opening the anchor by path per
+      ## operation re-walks its ancestors every time, and `O_NOFOLLOW` guards
+      ## only the final component — so a directory swapped above the granted
+      ## root between two operations would silently redirect the second. The
+      ## table is bounded in practice because a derived grant inherits its
+      ## parent's anchor: distinct anchors come only from host root grants.
+      anchorLock*: Lock
+      anchorHandles*: Table[string, cint]
 
   FilesystemCapabilityError* = object of CapabilityError
   AmbiguousCapabilityError* = object of FilesystemCapabilityError
@@ -392,6 +403,9 @@ proc admitFilesystemProvider*(registry: CapabilityRegistry): FilesystemProvider 
     raise newException(CapabilityError,
       "filesystem provider admission requires a registry")
   result = FilesystemProvider()
+  when defined(posix) and not defined(emscripten) and not defined(geneWasm):
+    initLock(result.anchorLock)
+    result.anchorHandles = initTable[string, cint]()
   registry.admitProvider(result, "fs")
   result.types.readDir = registry.admitType(result, "fs/ReadDir")
   result.types.writeDir = registry.admitType(result, "fs/WriteDir")
@@ -458,7 +472,12 @@ proc relativeOperationPath(grant: CapabilityGrant): string =
   if not grant.scope.isPathWithin(root):
     raise newException(FilesystemCapabilityError,
       "filesystem grant target escapes its resolution root")
-  grant.scope[(root.len + 1) .. ^1]
+  # `root.len + 1` skips the separator *between* root and the remainder. The
+  # filesystem root is its own separator, so it has no such character to skip
+  # and the same arithmetic would eat the first byte of the first component
+  # ("/var/x" under "/" becoming "ar/x").
+  let skip = if root == $DirSep: root.len else: root.len + 1
+  grant.scope[skip .. ^1]
 
 when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   proc operationParts(grant: CapabilityGrant): seq[string] =
@@ -471,9 +490,44 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
           "filesystem path contains an invalid component")
       result.add part
 
+  const MaxRetainedAnchorHandles = 64
+
+  proc openAnchor(grant: CapabilityGrant): cint =
+    ## A descriptor for the grant's anchor directory, duplicated from a handle
+    ## the provider opened once and retains. Callers close what they get back;
+    ## the retained handle stays open, so every later operation walks from the
+    ## *same* directory inode rather than re-resolving the anchor's ancestors.
+    let provider = FilesystemProvider(grant.owningProvider)
+    let anchor = grant.operationAnchor
+    if provider == nil:
+      return openRoot(anchor.cstring)
+    acquire(provider.anchorLock)
+    try:
+      var retained: cint = -1
+      if provider.anchorHandles.hasKey(anchor):
+        retained = provider.anchorHandles[anchor]
+      else:
+        retained = openRoot(anchor.cstring)
+        if retained < 0:
+          return retained
+        if provider.anchorHandles.len >= MaxRetainedAnchorHandles:
+          # Anchors come from host root grants and do not accumulate in
+          # practice; if that ever stops being true, drop the table rather
+          # than leak descriptors. Outstanding duplicates stay valid.
+          for _, handle in provider.anchorHandles:
+            discard posix.close(handle)
+          provider.anchorHandles.clear()
+        provider.anchorHandles[anchor] = retained
+      result = posix.dup(retained)
+      if result < 0:
+        raise newException(FilesystemCapabilityError,
+          "filesystem capability root handle could not be duplicated")
+    finally:
+      release(provider.anchorLock)
+
   proc openDirectory(grant: CapabilityGrant): cint =
     let parts = grant.operationParts
-    result = openRoot(grant.operationAnchor.cstring)
+    result = grant.openAnchor
     if result < 0:
       raise newException(FilesystemCapabilityError,
         "filesystem capability root is unavailable")
@@ -494,7 +548,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
     if parts.len == 0:
       raise newException(FilesystemCapabilityError,
         "filesystem operation requires a target beneath the granted root")
-    result.fd = openRoot(grant.operationAnchor.cstring)
+    result.fd = grant.openAnchor
     if result.fd < 0:
       raise newException(FilesystemCapabilityError,
         "filesystem capability root is unavailable")
@@ -528,7 +582,7 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
 
   proc makeDirectory(grant: CapabilityGrant) =
     let parts = grant.operationParts
-    var current = openRoot(grant.operationAnchor.cstring)
+    var current = grant.openAnchor
     if current < 0:
       raise newException(FilesystemCapabilityError,
         "filesystem capability root is unavailable")

@@ -53,6 +53,17 @@ proc newGeneFacadeTestApp(capabilityName, identity, schema: string,
         capabilityName, identity, schema)
       @[provider.mintRootGrant(capabilityType, root)])
 
+proc newApplicationRootedAt(root: string): Application =
+  ## `newApplication`'s argument anchors *module resolution* only; filesystem
+  ## authority deliberately follows the launch directory so `gene run
+  ## path/to/app.gene` cannot reinterpret "tmp/x" beneath the entry file
+  ## (vm.nim, newApplicationState). A fixture operating under `root` grants it
+  ## the way an embedding host or `--allow_read_write_dir` would.
+  result = newApplication(root)
+  result.setRootCapabilities(newCapabilityContext(
+    @(result.rootCapabilities.grants) &
+    @[result.filesystemCapabilities.grantReadWriteDir(root)]))
+
 proc facadeSchema(name: string, hasStringBody = true): string =
   capabilityFacadeSchemaHash(name, bodySchema =
     (if hasStringBody: newList(@[newSym("Str")]) else: NIL))
@@ -900,7 +911,7 @@ suite "capability call boundaries":
         (set read_denied true))
       (db ~ Db:close)
       [write_denied read_denied]
-    """), newGlobalScope(newApplication(root)))
+    """), newGlobalScope(newApplicationRootedAt(root)))
     check value.print == "[true true]"
 
   test "retained resource authority is released on close and final drop":
@@ -912,7 +923,7 @@ suite "capability call boundaries":
       if dirExists(root): removeDir(root)
     let baseline = resourceAuthorityRecordCount()
     block:
-      let app = newApplication(root)
+      let app = newApplicationRootedAt(root)
       let scope = newGlobalScope(app)
       let resource = run(compileSource(
         "(import $store/fs [open]) (open ^root " &
