@@ -16,12 +16,14 @@ subscribe handlers, publish values, and cancel subscriptions without involving
 the VM:
 
 ```gene
+(import gene/event [Bus])
+
 (type UserCreated
-  ^is event/Event
+  ^is $event/Event
   ^props {^user_id Str})
 
 (var bus
-  (event/Bus))
+  (Bus))
 
 (var subscription
   (bus ~ subscribe UserCreated on_user_created))
@@ -32,23 +34,52 @@ the VM:
 (subscription ~ cancel)
 ```
 
+(This first example deliberately shows both spellings side by side: `Bus` via
+an explicit import for the name used repeatedly, `$event/Event` inline for a
+name used once. Later examples generally pick whichever fits their code, not
+both at once.)
+
 Separately, a runtime may produce structured events for tooling,
 observability, testing, profiling, and diagnostics:
 
 ```gene
 (var bus
-  (event/Bus ^error_policy event/collect))
+  ($event/Bus ^error_policy $event/collect))
 
 (bus ~ subscribe
-  runtime/task/Completed
+  $runtime/task/Completed
   on_task_completed)
 
 (runtime_events ~ attach bus)
 ```
 
 `runtime_events` in this example is a host-created
-`runtime/EventStream`. It is explicit runtime state supplied to the entry
+`$runtime/EventStream`. It is explicit runtime state supplied to the entry
 program or embedding host, not a process-global bus available to every module.
+
+Both `event` and `runtime` are ordinary lowercase stdlib namespaces, not
+bare capability namespaces (`bareCapabilityNamespaces` in
+`src/gene/compiler.nim` lists only `fs`). Per `staysBare`, a lowercase
+namespace name is not kept bare when the standard library moves under `gene`
+— it is reached as `gene/event`, `gene/runtime`, or the `$` sugar
+`$event`/`$runtime`, exactly like `math` or `str`. Every `gene` code sample in
+this document uses either an explicit `(import gene/event [...])` /
+`(import gene/runtime [...])` for names it uses repeatedly, or the `$` sugar
+inline; there is no bare `event/...` or bare `runtime/...` spelling in code.
+
+Prose, by contrast, keeps writing `event/Bus`, `runtime/EventStream`, and
+similar dotted paths throughout this document. Read those as **the logical
+qualified name** — "the member `Bus` of the `event` namespace" — not as
+literal executable syntax; the equivalent code is `$event/Bus` or
+`(import gene/event [Bus]) ... Bus`. This is the same convention design docs
+use elsewhere to talk about a stdlib member by its full path without
+namespace-sugar noise. A few places make the declaration-shorthand version of
+this explicit, marked "conceptually" or "illustrative" (§7.2, §11.1, §11.2,
+§12.2, §13, §19): a `(type event/PublishResult ...)` or
+`(type runtime/EventsDropped ...)` block shows a type's logical dotted path
+as its declaration head for readability, not a literal `(type ...)` form —
+the real declaration nests the type inside `(ns event ...)` / `(ns runtime
+...)`, matching the executable `(ns order ...)` pattern in §6.2.
 
 Runtime event production is off by default:
 
@@ -151,7 +182,7 @@ events published by application code.
 
 ```gene
 (var bus
-  (event/Bus))
+  ($event/Bus))
 ```
 
 Creating a bus does not enable runtime instrumentation.
@@ -184,8 +215,18 @@ Gene-level event consumers share one small protocol:
 (protocol EventSink
   (message emit
     [event]
-    : Nil))
+    : Nil
+    ^errors [EventPublishError]))
 ```
+
+`emit` declares `^errors [EventPublishError]` rather than leaving it dynamic
+(design: "Missing `^errors` means dynamic/unchecked errors"). §7.2 and §12.3
+make `EventPublishError` the entire mechanism by which an attached
+`event/collect` bus cannot silently swallow observer failures — the adapter's
+draining loop (§12.3) depends on catching exactly that raise. Leaving `emit`
+unchecked would make the one deterministic, documented raise the interface
+exists to guarantee into an unchecked contract, undercutting the "cannot be
+misconfigured into silence" claim in §7.2.
 
 `event/Bus` implements `EventSink`. Other useful implementations include:
 
@@ -219,7 +260,7 @@ Every publishable event is an instance of `event/Event` or one of its
 
 ```gene
 (type OrderPlaced
-  ^is event/Event
+  ^is $event/Event
   ^props {
     ^order_id Str
     ^total F64
@@ -246,6 +287,14 @@ accident. A value that is not an `event/Event` descendant fails `publish` with
 is a normal typed value, so the rejection must name that cause rather than
 surface as a missing-metadata internal error. Event payloads remain ordinary Gene typed nodes and use ordinary
 field validation.
+
+Because `^is` is single-inheritance, this also means a pre-existing domain
+type cannot itself be published: an `Order` cannot become an event by adding
+`^is event/Event` if it already has a domain `^is` parent, and every example
+in this document declares a dedicated event type (`OrderPlaced`, not `Order`)
+for exactly this reason. Events are snapshots of a domain occurrence, not the
+domain entities themselves, and that separation is enforced by the type
+system rather than being a style preference.
 
 Using types provides:
 
@@ -279,10 +328,10 @@ event/Event
 is the only naming convention the design needs:
 
 ```gene
-event/Event
-runtime/Event
-runtime/module/Event
-runtime/task/Event
+$event/Event
+$runtime/Event
+$runtime/module/Event
+$runtime/task/Event
 ```
 
 These are ordinary first-class type values. `runtime/task/Event` is a normal
@@ -294,7 +343,7 @@ For example, a family is declared as:
 ```gene
 (ns order
   (type Event
-    ^is event/Event
+    ^is $event/Event
     ^props {^request_id Str?})
 
   (type Placed
@@ -350,11 +399,11 @@ descendants:
 
 ```gene
 (bus ~ subscribe
-  runtime/task/Event
+  $runtime/task/Event
   record_task_event)
 
 (bus ~ subscribe
-  runtime/task/Completed
+  $runtime/task/Completed
   record_completed_task)
 ```
 
@@ -367,7 +416,7 @@ An exact-type selector excludes descendants:
 
 ```gene
 (bus ~ subscribe
-  (event/exact runtime/task/Completed)
+  ($event/exact $runtime/task/Completed)
   record_exact_completed_task)
 ```
 
@@ -376,7 +425,7 @@ needed:
 
 ```gene
 (bus ~ subscribe
-  event/Event
+  $event/Event
   record_everything)
 ```
 
@@ -476,6 +525,11 @@ touches. The observable semantics are identical.
 
 A publication in progress uses the snapshot it resolved at entry (§7.5); a
 generation bump during dispatch never mutates the list currently executing.
+This holds because a stale-entry rebuild (above) replaces the cached entry
+with a newly built list rather than mutating the existing one in place — the
+cache is copy-on-write. A publication that already read the old entry keeps
+running against that unchanged list even if a concurrent subscribe or cancel
+rebuilds the cache slot underneath it.
 
 The common cached publication path is therefore:
 
@@ -497,39 +551,73 @@ fixed small scratch storage rather than allocate.
 
 An event is a snapshot, not a shared mutable command.
 
-`publish` deep-freezes the event before invoking any handler. If the value
-cannot be frozen, publication fails before dispatch begins. A value already
-known to be frozen takes the fast path.
+`publish` deep-freezes the event before invoking any handler, using the same
+deep `freeze` the language already provides (`docs/spec/types.md`
+§"Deep `freeze` rejects a wrapper..."). If the value cannot be frozen,
+publication fails before dispatch begins. A value already known to be frozen
+takes the fast path described below.
 
-**The freeze is in place**, so the publisher's own reference is frozen when
-`publish` returns. This is observable:
+**The freeze is copy-based, matching the implemented `freeze`, not in
+place.** `freeze` (`biFreeze`/`freezeValue` in `src/gene/vm.nim`) builds a new
+immutable `List`/`Map`/`Node` rather than mutating the input, and `thaw`
+proves the original untouched: `($thaw ($freeze [1 {^a [2]}]))` round-trips to
+the original mutable `[1 {^a [2]}]` (`tests/spec_runner.nim`,
+"freeze helpers make mutability explicit"; `tests/test_vm.nim`,
+"freeze and thaw convert container mutability explicitly"). An in-place deep freeze — one that mutates the
+existing node and every reachable child to immutable — is a different,
+unimplemented primitive, and it would have a sharp edge this proposal does not
+want: freezing in place freezes every other alias of the value and of any
+shared nested child, not just the publisher's reference, so a `List` shared
+between the event payload and an unrelated variable would make that unrelated
+variable's list silently immutable. `publish` does not do that. Instead:
 
 ```gene
 (var e (OrderPlaced ^order_id "o_1" ^total 19.95))
 (bus ~ publish e)
-(set e/order_id "o_2")   # raises: the value is frozen
+(set e/order_id "o_2")   # succeeds: e is unchanged, publish froze a copy
 ```
 
-Freezing a copy instead would be worse: it would double the allocation on every
-publication and give the publisher a handle that no subscriber ever saw. Code
-wanting a mutable working value should keep it separate from the event it
-publishes.
+The value every subscriber receives is the frozen copy, not `e`. Code wanting
+a mutable working value can keep mutating it after `publish` returns; nothing
+it does afterward is observable through the event already delivered.
 
 Deep-freezing a freshly constructed event is `O(payload)`, and events are
 normally constructed at the publish site, so this traversal — not dispatch — is
 the dominant cost of publishing a small event to few handlers. §17.3's
 "proportional to matched handlers" requirement covers dispatch bookkeeping, not
-the freeze. An implementation should let an event be *constructed* already
-frozen (a construction-site flag, or frozen literal props) so the common path
-skips the traversal entirely rather than re-deriving that the value is
-immutable.
+the freeze. This copy cost is real and is the reason an implementation should
+let an event be *constructed* already frozen (a construction-site flag, or
+frozen literal props) so the common path skips both the traversal and the
+allocation, rather than re-deriving that the value is immutable on every
+publish. Constructing frozen is the only way to avoid the copy; there is no
+in-place option to fall back on.
 
 Both fast paths need an `O(1)` "already frozen?" answer for an arbitrary node.
-`docs/spec/types.md` specifies `freeze`/`freeze_shallow`/`thaw` but no
-per-value frozen bit, and `Value` is pinned to 64 bits, so the flag has to live
-on the heap object header or on the type ("all instances immutable"). Phase 1
-must confirm one of those exists; without it, §17.3's "without traversing it
-again" is an unbacked layout promise and every publish pays the full traversal.
+The existing `immutable: bool` field on `GeneList`, `GeneMap`, and `GeneNode`
+headers (`src/gene/types.nim`) is not that answer by itself: `freeze_shallow`
+(`biFreezeShallow`) sets it directly on a node whose children are untouched,
+so a top-level `immutable = true` node can still hold a mutable `Cell` or
+`List` reachable through it. The O(1) fast path in §17.3 ("freeze an
+already-frozen event without traversing it again") is therefore only sound
+when "already frozen" means *constructed deep-frozen* — every reachable value
+immutable from the moment the event was built.
+
+Distinguishing that requires a **second, distinct header bit** — a
+`deep_frozen: bool` alongside the existing `immutable: bool`, not a
+repurposing of it. Two producers are allowed to set it: deep `freeze`
+(`freezeValue`) sets it on every node it builds, because each child was
+itself produced by a recursive `freezeValue` call and so is already
+`deep_frozen`, which makes the composed invariant hold by construction; and
+the event-construction-time "already frozen" path (the flag/frozen-literal-props
+option above) must go through the same recursive guarantee — assembling props
+only from values that are themselves already `deep_frozen`, or delegating to
+`freezeValue` internally — before it may set the bit on the node it produces.
+`freeze_shallow` must never set `deep_frozen`, only `immutable`, which keeps
+the two bits meaning different things: `immutable` says "this container's own
+head/props/body cannot change," `deep_frozen` says "nothing reachable from
+here can change." `publish`'s O(1) check reads `deep_frozen`, not `immutable`;
+a value whose immutability was only ever established shallowly still takes
+the full deep-freeze traversal.
 
 Freezing ensures:
 
@@ -544,9 +632,17 @@ supports safe frozen identity.
 
 ## 7. Event bus interface
 
-`event` is a new stdlib root, registered bare and under `gene/event` like every
-other stdlib namespace, so `event/Bus` and `(import gene/event [Bus])` both
-work. Its members:
+`event` is a new stdlib root, registered under `gene/event` like every other
+lowercase stdlib namespace (`math`, `str`, `stream`, `log`, ...). Case is the
+rule the compiler already enforces (`staysBare` in `src/gene/compiler.nim`):
+an uppercase name is a type and stays bare so annotations keep resolving
+structurally, but a lowercase name is a namespace and is reached as
+`gene/event`/`$event`, not bare. The only bare capability namespace is `fs`
+(`bareCapabilityNamespaces`); `event` is not on that list, and this proposal
+does not ask for it to be added. So `$event/Bus` and
+`(import gene/event [Bus])` both work; bare `event/Bus` does not. `runtime`
+follows the same rule (§13, §15) — it is reached as `gene/runtime`/`$runtime`,
+the same posture `$runtime/load_sandboxed` already relies on. Its members:
 
 | Member | Kind |
 | --- | --- |
@@ -584,8 +680,8 @@ accepted and then fails once per non-matching event, at dispatch time:
 
 ```gene
 (bus ~ subscribe
-  runtime/task/Event
-  record_completed)          # [event : runtime/task/Completed]
+  $runtime/task/Event
+  record_completed)          # [event : $runtime/task/Completed]
 ```
 
 Under the default error policy that surfaces as an `EventPublishError` raised
@@ -727,8 +823,8 @@ running. The bus catches handler errors, continues through the publication
 snapshot, and applies one of these policies afterward:
 
 ```gene
-event/raise_after
-event/collect
+$event/raise_after
+$event/collect
 ```
 
 `event/raise_after` is the default:
@@ -743,8 +839,8 @@ handling to the publisher:
 
 ```gene
 (var bus
-  (event/Bus
-    ^error_policy event/collect))
+  ($event/Bus
+    ^error_policy $event/collect))
 ```
 
 The policy governs `publish` only. `EventSink:emit` reports a nonzero `failed`
@@ -860,6 +956,30 @@ Recommended initial categories:
 | `allocation` | heap allocation samples | very high |
 | `instruction` | VM instruction execution | extreme |
 
+The category symbols `module` and `task` are configuration selectors, not
+namespace references — `^runtime_events [module task]` does not name
+`gene/runtime/module` or `gene/runtime/task`. For these two categories they
+happen to print the same as the family namespaces §11.2 concretely defines
+for them (`runtime/module/Loaded`, `runtime/task/Completed`), which is
+intentional — enabling the `module` category is what makes `runtime/module/*`
+events exist to subscribe to — but can read as a collision at a glance. No
+resolution ambiguity exists — one is a bare config symbol in a category list,
+the other is a qualified type path — but a reader skimming
+`^runtime_events [module task]` next to `runtime/module/Loaded` should read
+the pairing as "this category populates that family," not as two spellings of
+the same name.
+
+This one-category-to-one-family pattern is confirmed only for `module` and
+`task`, the two categories §11.2 defines event types for. It is the expected
+shape for the rest — `lifecycle`, `actor`, `gc`, `call`, `allocation`, and
+`instruction` should each get their own `runtime/lifecycle/Event`,
+`runtime/actor/Event`, and so on, as direct children of `runtime/Event` — but
+this proposal does not name those family base types or their concrete event
+types. §11.2's diagram and declarations should grow the remaining families
+before Phase 2 instruments those categories; until then, treat "the category
+you enable is the family you receive" as the design intent, not something
+already specified for every row in the table above.
+
 The `capability` category is reserved but **not implementable yet**.
 `docs/proposals/capabilities.md` §15 lists four audit event *kinds* — grant
 creation, entry and call-site attenuation, denied selector resolution, native
@@ -951,11 +1071,15 @@ resolve those IDs while materializing the public event.
 Materialized runtime events are frozen typed values under the `runtime`
 namespace.
 
-A common base type provides correlation fields:
+A common base type provides correlation fields. Declaration heads below are
+written as dotted paths for readability, the same illustrative shorthand
+§11.1 uses for the native record layout; the real declaration nests each
+type inside `(ns runtime ...)` and `(ns runtime (ns module ...))` /
+`(ns runtime (ns task ...))`, matching the `(ns order ...)` pattern in §6.2:
 
 ```gene
 (type runtime/Event
-  ^is event/Event
+  ^is $event/Event
   ^props {
     ^producer_id Int
     ^sequence Int
@@ -969,10 +1093,10 @@ extend that base:
 
 ```gene
 (type runtime/module/Event
-  ^is runtime/Event)
+  ^is $runtime/Event)
 
 (type runtime/module/Loaded
-  ^is runtime/module/Event
+  ^is $runtime/module/Event
   ^props {
     ^module_id Int
     ^module_name Str
@@ -980,10 +1104,10 @@ extend that base:
   })
 
 (type runtime/task/Event
-  ^is runtime/Event)
+  ^is $runtime/Event)
 
 (type runtime/task/Completed
-  ^is runtime/task/Event
+  ^is $runtime/task/Event
   ^props {
     ^completed_task_id Int
     ^duration_ns Int?
@@ -994,6 +1118,19 @@ These family base types are what a subscriber names to observe a whole
 category: `runtime/Event` for everything, `runtime/module/Event` or
 `runtime/task/Event` for one family. The nominal `^is` chain is the only
 hierarchy; there is no parallel topic hierarchy to keep in sync with it.
+
+`^producer_id` and `^task_id` on `runtime/Event` identify the *observing
+context* — which producer emitted the record and, if it happened inside a
+task, which task that was. They are not the subject of the event. A concrete
+event's own subject gets its own field, disambiguated by name, as
+`runtime/task/Completed` does with `^completed_task_id`: for a task-lifecycle
+event the inherited `^task_id` and the concrete `^completed_task_id` may
+coincide, but they need not — a module-load event's `^task_id` identifies the
+task that triggered the load, while a future cross-task event (one task
+observing another's completion, say) would have a `^task_id` distinct from
+whatever subject field names the task it is about. Concrete event types should
+follow the same pattern: give the subject its own specifically-named field
+rather than overloading the inherited correlation fields to mean two things.
 
 Field names and meanings are a versioned interface. New optional fields may
 be compatible. Renaming fields, changing units, changing identity semantics,
@@ -1068,7 +1205,7 @@ only its size:
 
 ```gene
 (type runtime/EventsDropped
-  ^is runtime/Event
+  ^is $runtime/Event
   ^props {
     ^dropped_producer_id Int
     ^dropped_count Int
@@ -1166,7 +1303,7 @@ A conceptual entry function is:
 (fn main
   [
     args : (List Str)
-    ^runtime_events : runtime/EventStream?
+    ^runtime_events : $runtime/EventStream?
   ]
   (if runtime_events
     (runtime_events ~ attach app_event_bus))
@@ -1233,7 +1370,7 @@ attach operation performed at a safe point.
 (import gene/event [Bus])
 
 (type PaymentReceived
-  ^is event/Event
+  ^is $event/Event
   ^props {
     ^payment_id Str
     ^amount F64
@@ -1270,7 +1407,7 @@ Both handlers receive the same frozen event in subscription order.
 
 ```gene
 (type ApplicationReady
-  ^is event/Event)
+  ^is $event/Event)
 
 (bus ~ subscribe
   ApplicationReady
@@ -1293,11 +1430,11 @@ The entry program receives `runtime_events` explicitly:
 
 ```gene
 (var observations
-  (event/Bus
-    ^error_policy event/collect))
+  ($event/Bus
+    ^error_policy $event/collect))
 
 (observations ~ subscribe
-  runtime/task/Completed
+  $runtime/task/Completed
   record_task_duration)
 
 (runtime_events ~ attach observations)
@@ -1318,7 +1455,7 @@ to `observations`.
 
 ```gene
 (var recorder
-  (event/RecordingSink))
+  ($event/RecordingSink))
 
 (var replayed
   (runtime_events ~ attach recorder))
@@ -1334,7 +1471,7 @@ to `observations`.
 
 (expect
   (recorder ~ events)
-  ^contains_type runtime/module/Loaded)
+  ^contains_type $runtime/module/Loaded)
 ```
 
 `flush` drains records already emitted. It does not wait for unrelated
@@ -1350,7 +1487,7 @@ under-provisioned buffer.
 
 ```gene
 (var sink
-  (event/CompositeSink [
+  ($event/CompositeSink [
     metrics_bus
     trace_recorder
   ]))
@@ -1391,9 +1528,10 @@ stream value is sufficient for the initial interface.
 **Sandboxed modules cannot name the runtime event surface, and that is
 intended.** `runtime` is already in `sandboxableNamespaces` and is not granted
 by default, so a sandboxed module sees no `runtime` namespace at all — it
-cannot resolve `runtime/EventStream`, `runtime/task/Completed`, or any other
-`runtime/...` type. The refusal is a missing namespace rather than a check,
-which is the same posture `runtime/load_sandboxed` already relies on.
+cannot resolve `$runtime/EventStream`, `$runtime/task/Completed`, or any other
+`gene/runtime/...` type. The refusal is a missing namespace rather than a
+check, which is the same posture `$runtime/load_sandboxed` (design §D5)
+already relies on.
 
 This means a runtime event value must not be handed to a sandboxed module as a
 `runtime/...`-typed value it is expected to match on. A host that wants a
@@ -1494,8 +1632,10 @@ overhead for module events says nothing about call or instruction tracing.
 - avoid copying handler lists when no mutation occurred;
 - avoid parsing names, comparing path strings, or scanning unrelated
   subscriptions during publication;
-- freeze an already-frozen event without traversing it again, and allow an
-  event to be constructed already frozen;
+- freeze an already-frozen event without traversing it again — where
+  "already frozen" means constructed deep-frozen (§6.5), not merely bearing a
+  `freeze_shallow`-set top-level `immutable` bit — and allow an event to be
+  constructed already frozen;
 - keep publish *bookkeeping* proportional to matched handlers.
 
 The last point is about dispatch only. Deep-freezing a freshly constructed
@@ -1521,9 +1661,16 @@ Recommended runtime stream errors:
 - `RuntimeEventsDisabled`: an operation requires a stream that was not
   configured;
 - `RuntimeEventConfigError`: unknown category or invalid option;
-- `RuntimeEventSinkError`: a sink failed while draining;
 - `RuntimeEventAttachError`: conflicting sink attachment;
 - `RuntimeEventFlushError`: safe draining could not complete.
+
+There is no `RuntimeEventSinkError`: per §12.3, a sink failure during draining
+is caught, counted in `sink_failures` (§19), and draining continues — it is
+never raised to anything. Introducing an error type with no raise site would
+be dead interface surface; a future version that adds one (for example,
+validating a sink at `attach` time before any record is delivered, distinct
+from a failure encountered while draining) should name the specific trigger
+when it lands.
 
 Sink failures should be inspectable through stream statistics or the host
 diagnostic hook. They must not replace the application operation that emitted
@@ -1574,10 +1721,12 @@ WASM runtimes may use:
 - browser performance timestamps when explicitly enabled;
 - a host adapter that forwards records to developer tools.
 
-The native record producers and host sinks are host-only subsystems and must
-carry the `when not defined(geneWasm)` gate the rest of the runtime uses.
-Ungated host-only code has regressed the wasm payload before, and `nimble test`
-does not catch it — only `nimble wasm` rebuilds.
+The per-thread ring buffers, monotonic native clocks, and background native
+consumers listed above are host-only subsystems and must carry the
+`when not defined(geneWasm)` gate the rest of the runtime uses — WASM still
+needs producers and a queue of its own, just the linear-memory ones described
+above, not these. Ungated host-only code has regressed the wasm payload
+before, and `nimble test` does not catch it — only `nimble wasm` rebuilds.
 
 An embedding host may supply a native sink without materializing Gene values.
 The native sink interface is internal and receives versioned
@@ -1688,8 +1837,8 @@ The application library is ready when:
 - separate overlapping subscriptions invoke the handler separately;
 - `subscribe` rejects a handler whose declared parameter type cannot accept
   everything its selector matches;
-- all handlers receive the same frozen value, and the publisher's own
-  reference is frozen after `publish` returns;
+- all handlers receive the same frozen value, distinct from the publisher's
+  own (still-mutable, unless constructed frozen) reference (§6.5);
 - subscription order is deterministic;
 - subscription mutation affects the next publication only;
 - cancellation is explicit and idempotent;
