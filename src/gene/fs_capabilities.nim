@@ -304,10 +304,14 @@ proc requestedPath(parent: CapabilityGrant, requested: CapabilitySpec): string =
   let raw = requested.positionalString(0)
   if raw == "*" or raw.len == 0:
     return parent.scope
+  # Lexical only. Root scopes are already stored resolved, so a request that
+  # is genuinely inside one matches without touching the filesystem — and this
+  # runs per operation, so a `realpath` here costs every file the program
+  # opens. `resolve` retries with resolution only when the lexical check fails.
   if raw.isAbsolute:
-    canonicalCapabilityPath(raw)
+    normalizedPath(absolutePath(raw))
   else:
-    canonicalCapabilityPath(parent.resolutionBase / raw)
+    normalizedPath(absolutePath(parent.resolutionBase / raw))
 
 method resolve*(provider: FilesystemProvider, parent: CapabilityGrant,
                 requested: CapabilitySpec): Option[CapabilityGrant] =
@@ -318,9 +322,16 @@ method resolve*(provider: FilesystemProvider, parent: CapabilityGrant,
   if requestedRights == {} or not (requestedRights <= availableRights):
     return none(CapabilityGrant)
   let requestedPolicy = provider.validateSpec(requested)
-  let path = requestedPath(parent, requested)
+  var path = requestedPath(parent, requested)
   if not path.isPathWithin(parent.scope):
-    return none(CapabilityGrant)
+    # The lexical spelling is outside, but it may be a symlinked route to a
+    # path that is inside — `/tmp/x` against a root stored as `/private/tmp`.
+    # Resolving only here keeps the cost off every successful operation and
+    # pays it once, on the request that would otherwise be refused.
+    let resolved = canonicalCapabilityPath(path)
+    if resolved == path or not resolved.isPathWithin(parent.scope):
+      return none(CapabilityGrant)
+    path = resolved
   if provider.isFileType(parent.capabilityType) and path != parent.scope:
     return none(CapabilityGrant)
   if provider.isFileType(parent.capabilityType):

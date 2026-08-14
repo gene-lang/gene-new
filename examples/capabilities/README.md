@@ -72,12 +72,12 @@ $G run --allow_read_dir /tmp 02_outside_root.gene /tmp/gene_cap_demo.txt
 demo payload
 ```
 
-> **Known limitation.** `--allow_*` cannot grant a *symlinked* directory. The
-> anchor is opened `O_NOFOLLOW`, so `--allow_read_dir /etc` on macOS (where
-> `/etc -> private/etc`) mints a grant that can never be opened and every
-> operation reports `filesystem capability root is unavailable`. Pass the
-> resolved path (`/private/etc`) instead. This affects macOS `/tmp` and
-> `$TMPDIR` too.
+`/tmp` is a symlink to `private/tmp` on macOS, and a grant names the resource
+rather than the route to it: the root is resolved once when the grant is
+minted, so `--allow_read_dir /tmp` and `--allow_read_dir /private/tmp` mean the
+same thing. A symlink planted *inside* a granted directory is still refused —
+that is the confinement §7.5 is for, and it is checked before any handle is
+opened.
 
 ## 3. A declared row is checked before the body runs
 
