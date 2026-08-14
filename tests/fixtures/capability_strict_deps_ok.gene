@@ -1,0 +1,10 @@
+(mod capability_strict_deps_ok
+  ^capabilities_mode strict
+  ^require_strict_dependencies true
+  ^capabilities [fs/*])
+
+(import [declared] from "./capability_strict_dep.gene")
+
+(fn main []
+  ^capabilities *
+  (declared))

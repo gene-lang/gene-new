@@ -1,0 +1,6 @@
+(mod capability_ceiling_dep
+  ^capabilities [])
+
+(fn attempt []
+  ^capabilities [(fs/WriteDir "tmp")]
+  1)

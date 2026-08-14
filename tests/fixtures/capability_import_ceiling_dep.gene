@@ -1,0 +1,5 @@
+(mod capability_import_ceiling_dep)
+
+(fn wants_fs []
+  ^capabilities [(fs/WriteDir "tmp")]
+  1)

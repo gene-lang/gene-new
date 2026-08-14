@@ -1,0 +1,13 @@
+(mod capability_import_init_dep)
+
+# Top-level effect: under an import ceiling this must run with an empty
+# context, so the capture §5.3 warns about cannot happen.
+(var captured
+  (try
+    ($fs/read_text "tests/fixtures/capability_import_init_dep.gene")
+    catch _
+    "denied"))
+
+(fn what_happened [] : Str
+  ^capabilities *
+  captured)

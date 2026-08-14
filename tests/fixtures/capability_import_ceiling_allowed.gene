@@ -1,0 +1,11 @@
+(mod capability_import_ceiling_allowed
+  ^capabilities [fs/*])
+
+# The same dependency, bounded to exactly what it asks for: the call succeeds
+# because an import ceiling narrows, it does not deny.
+(import [wants_fs] from "./capability_import_ceiling_dep.gene"
+  ^capabilities [(fs/WriteDir "tmp")])
+
+(fn main []
+  ^capabilities *
+  (wants_fs))

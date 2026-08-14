@@ -119,7 +119,7 @@
             begin_interrupt take_interrupt end_interrupt
             monotonic_ms process_id
             stdin_tty? read_line
-            Pty OsError])
+            OsError])
 (import $terminal [open : terminal_open close : terminal_close
                   next_update : terminal_next_update
                   snapshot : terminal_snapshot
@@ -1787,7 +1787,7 @@
               (get_env "SHELL" "/bin/sh") command))
           (var child_args (if (== args nil) [] args))
           (var session
-            (terminal_open Pty ^cmd executable ^args child_args
+            (terminal_open ^cmd executable ^args child_args
               ^dir workspace_real ^rows 24 ^cols 80
               ^scrollback_lines 2000))
           (var controller

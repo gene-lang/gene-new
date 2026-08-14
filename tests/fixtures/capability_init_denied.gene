@@ -1,0 +1,8 @@
+(mod capability_init_denied
+  ^capabilities [])
+
+(fn needs_fs []
+  ^capabilities [(fs/WriteDir "tmp")]
+  1)
+
+(needs_fs)

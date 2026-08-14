@@ -8,6 +8,11 @@ tests/*
 !tests/test_ai_agent_tui.py
 !tests/transpile/
 !tests/transpile/**
+# Hand-written Gene programs the capability suite loads as entry modules. They
+# are source, not build output, and `tests/*` was silently excluding them — the
+# suite passed only on a machine where they happened to exist.
+!tests/fixtures/
+!tests/fixtures/**
 
 benchmarks/bench_core
 benchmarks/bench_native_format

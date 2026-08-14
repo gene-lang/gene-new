@@ -1,0 +1,10 @@
+(mod capability_strict_deps_entry
+  ^capabilities_mode strict
+  ^require_strict_dependencies true
+  ^capabilities [fs/*])
+
+(import [attempt] from "./capability_ceiling_dep.gene")
+
+(fn main []
+  ^capabilities *
+  (attempt))

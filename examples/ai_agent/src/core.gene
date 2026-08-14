@@ -22,7 +22,7 @@
             begin_interrupt take_interrupt end_interrupt
             monotonic_ms process_id
             stdin_tty? read_line
-            Pty OsError])
+            OsError])
 (import $terminal [open : terminal_open close : terminal_close
                   next_update : terminal_next_update
                   snapshot : terminal_snapshot
@@ -7700,7 +7700,7 @@ State that broader behavior is unverified when no matching successful check ran.
               previous)))
         (when "terminal"
           (var session
-            (terminal_open Pty ^cmd previous/controller/command
+            (terminal_open ^cmd previous/controller/command
               ^args previous/controller/args ^dir previous/controller/cwd
               ^rows 24 ^cols 80 ^scrollback_lines 2000))
           (set worker
