@@ -28,40 +28,6 @@ type
   HostCapabilityProvider* = ref object of CapabilityProvider
     types*: HostCapabilityTypes
 
-proc appendArgumentKey(key: var string, argument: CapabilityArg) =
-  key.add $ord(argument.kind)
-  key.add ':'
-  case argument.kind
-  of cakNil:
-    discard
-  of cakBool:
-    key.add(if argument.boolValue: "1" else: "0")
-  of cakInt:
-    key.add $argument.intValue
-  of cakString:
-    key.add $argument.stringValue.len
-    key.add ':'
-    key.add argument.stringValue
-  of cakSymbol:
-    key.add $argument.symbolValue.len
-    key.add ':'
-    key.add argument.symbolValue
-  of cakList:
-    key.add '['
-    for item in argument.listValue:
-      key.appendArgumentKey(item)
-      key.add ';'
-    key.add ']'
-  of cakMap:
-    key.add '{'
-    for item in argument.mapValue:
-      key.add $item.name.len
-      key.add ':'
-      key.add item.name
-      key.add '='
-      key.appendArgumentKey(item.value)
-      key.add ';'
-    key.add '}'
 
 proc nominalScope(spec: CapabilitySpec): string =
   if spec.positional.len == 0 and spec.named.len == 0:
@@ -72,7 +38,7 @@ proc nominalScope(spec: CapabilitySpec): string =
     return "*"
   result = "p:"
   for argument in spec.positional:
-    result.appendArgumentKey(argument)
+    result.appendArgKey(argument)
     result.add ';'
   result.add "|n:"
   for argument in spec.named:
@@ -80,7 +46,7 @@ proc nominalScope(spec: CapabilitySpec): string =
     result.add ':'
     result.add argument.name
     result.add '='
-    result.appendArgumentKey(argument.value)
+    result.appendArgKey(argument.value)
     result.add ';'
 
 method validity*(provider: HostCapabilityProvider,

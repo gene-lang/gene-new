@@ -7849,7 +7849,13 @@ proc resolveCapabilityTransition(app: Application, row: CapabilityRow,
     raise newException(GeneError,
       "capability declaration requires an application runtime")
   var selected: seq[CapabilityGrant]
-  var presence = CapabilityPresence()
+  # Allocated only if an exact selector actually records an entry. Allocating
+  # unconditionally made every declared-capability call produce a presence ref
+  # distinct from its parent's, which in turn forced `installCapabilityTransition`
+  # to allocate a `FrameExtra` on each such call. An empty presence and a nil
+  # one answer `capability_available?` identically (both `FALSE`), so the only
+  # difference was the garbage.
+  var presence: CapabilityPresence = nil
   try:
     for selector in row.selectors:
       case selector.kind
@@ -7873,6 +7879,8 @@ proc resolveCapabilityTransition(app: Application, row: CapabilityRow,
         let spec = app.canonicalCapabilitySpec(capabilityType,
                                                positional, named)
         let grants = app.capabilityRegistry.resolveSelector(parent, spec)
+        if presence == nil:
+          presence = CapabilityPresence()
         presence.entries.add CapabilityPresenceEntry(
           spec: spec, available: grants.len > 0)
         if grants.len == 0 and not selector.optional:
@@ -7921,11 +7929,21 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: Scope,
       if callerRoot != nil and
           callerRoot.lookupOptional("this_mod", importer) and
           importer.hasImportCapabilityCeilings:
-        let bound = importer.importCapabilityCeiling(module.modulePath)
-        if bound != nil:
-          ceiling =
-            if ceiling == nil: bound
-            else: intersectContexts(ceiling, bound)
+        let dependencyPath = module.modulePath
+        var folded = importer.foldedImportCeiling(dependencyPath)
+        if folded == nil:
+          let bound = importer.importCapabilityCeiling(dependencyPath)
+          if bound != nil:
+            folded =
+              if ceiling == nil: bound
+              else: intersectContexts(ceiling, bound)
+            # Memoized only once ceilings are fixed. Before materialization the
+            # callee still carries its provisional initialization ceiling, and
+            # caching that would pin a bound the application never chose.
+            if app.capabilitiesMaterialized:
+              importer.setFoldedImportCeiling(dependencyPath, folded)
+        if folded != nil:
+          ceiling = folded
 
   when not (compileOption("threads") and defined(gcAtomicArc)):
     if proto != nil and proto.capabilityRow.isStatic and
@@ -7965,9 +7983,18 @@ proc canBypassCapabilityBoundary(proto: FunctionProto, calleeScope,
   ## Declared rows always transform the context. An omitted/private row needs
   ## no work only within one module; crossing modules must still apply the
   ## callee's once-materialized ceiling.
-  proto != nil and proto.capabilityRow.inheritsCapabilities and
-    calleeScope != nil and callerScope != nil and
-    calleeScope.moduleBase == callerScope.moduleBase
+  ##
+  ## This must decide "same module" exactly as `functionCapabilityTransition`
+  ## does, so it calls the same helper rather than reading `moduleBase`
+  ## directly. `moduleBase` is a *cache* that `moduleRootScope` populates; two
+  ## scopes that had not yet populated it would both read nil, compare equal,
+  ## and skip a boundary the transition would have applied. A security check
+  ## must not depend on when some other call path warmed a cache.
+  if proto == nil or not proto.capabilityRow.inheritsCapabilities or
+      calleeScope == nil or callerScope == nil:
+    return false
+  let calleeRoot = calleeScope.moduleRootScope()
+  calleeRoot != nil and calleeRoot == callerScope.moduleRootScope()
 
 proc builtinsScope*(app: Application): Scope =
   ## The single built-ins root scope for this application. Every module/program
@@ -24681,6 +24708,14 @@ proc capabilityArgFromValue(value: Value): CapabilityArg =
   of vkBool:
     capBool(value.boolVal)
   of vkInt:
+    # The same guard `compileCapabilityLiteral` applies. Without it `intVal`
+    # truncates a bignum silently, and because arguments are canonicalized
+    # into a spec's key — and from there into grant identity — two requests
+    # that differ only above 64 bits would resolve to one grant.
+    if not value.intFitsInt64:
+      raise newException(GeneError,
+        "capability specification integer is outside the capability " &
+        "scalar range")
     capInt(value.intVal)
   of vkString:
     capString(value.strVal)
@@ -25051,6 +25086,9 @@ proc materializeImportCeilings(app: Application, module: Value,
   ## (importer, dependency).
   if module.importCapabilityRows.len == 0:
     return
+  # Any fold computed while loading used a provisional callee ceiling; drop it
+  # so the next boundary recomputes against the materialized one.
+  module.clearFoldedImportCeilings()
   for dependencyPath, row in module.importCapabilityRows:
     let ceiling =
       if row.inheritsCapabilities: applicationContext

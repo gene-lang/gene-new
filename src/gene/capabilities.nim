@@ -615,7 +615,11 @@ proc namespaceName*(capabilityType: CapabilityType): string =
 
 proc isValid*(grant: CapabilityGrant): bool
 
-proc appendArgKey(key: var string, argument: CapabilityArg) =
+proc appendArgKey*(key: var string, argument: CapabilityArg) =
+  ## Canonical serialization of a specification argument. Exported because a
+  ## provider that derives its own scope key must produce byte-identical
+  ## output — a second copy that drifts would make two providers disagree
+  ## about whether two specifications are the same.
   key.add $ord(argument.kind)
   key.add ':'
   case argument.kind

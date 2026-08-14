@@ -643,6 +643,12 @@ type
     ## boundary checks `len` before it looks anything up.
     importCapabilityRows: Table[string, CapabilityRow]
     importCapabilityCeilings: Table[string, CapabilityContext]
+    ## `module_ceiling(M) ∩ import_ceiling(I, M)`, memoized per dependency.
+    ## Both operands are fixed once ceilings materialize, so the fold is
+    ## computed once per (importer, dependency) instead of per call — §6.1
+    ## specifies it as precomputed and §13.2 requires that a bound add no
+    ## second lookup at the boundary.
+    importCapabilityFolded: Table[string, CapabilityContext]
 
   BigIntData = ref object of GeneObjectData
     value: BigIntValue
@@ -2856,6 +2862,23 @@ proc importCapabilityCeiling*(v: Value,
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
     raise newException(FieldDefect, "value is not a Module")
   ModuleData(objData(v)).importCapabilityCeilings.getOrDefault(dependencyPath)
+
+proc foldedImportCeiling*(v: Value,
+                          dependencyPath: string): CapabilityContext {.inline.} =
+  ## nil means "not folded yet": a real fold is never nil, because
+  ## `intersectContexts` yields the interned empty context rather than nil.
+  ModuleData(objData(v)).importCapabilityFolded.getOrDefault(dependencyPath)
+
+proc setFoldedImportCeiling*(v: Value, dependencyPath: string,
+                             ceiling: CapabilityContext) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).importCapabilityFolded[dependencyPath] = ceiling
+
+proc clearFoldedImportCeilings*(v: Value) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).importCapabilityFolded.clear()
 
 proc envParent*(v: Value): Value =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
