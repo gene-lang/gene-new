@@ -145,8 +145,41 @@ type
     create: bool
     followSymlinks: bool
 
-proc canonicalPath(path: string): string =
-  normalizedPath(absolutePath(path))
+proc canonicalCapabilityPath*(path: string): string =
+  ## Lexical normalization, then the real path of the longest prefix that
+  ## exists — a grant names a *resource*, not a route to it.
+  ##
+  ## Without this, granting a symlinked directory mints a grant that can never
+  ## be opened: the handle walk opens each component `O_NOFOLLOW` (§7.5), so
+  ## `--allow_read_dir /tmp` on macOS, where `/tmp -> private/tmp`, fails every
+  ## operation with "filesystem capability root is unavailable". `/tmp`,
+  ## `$TMPDIR` and `/etc` all have that shape, which is most of the directories
+  ## anyone actually wants to grant.
+  ##
+  ## Resolving here rather than relaxing the walk keeps `O_NOFOLLOW` meaning
+  ## the thing that matters: no symlink appeared *after* we decided what this
+  ## path denotes. A symlink planted inside a granted directory is still
+  ## refused — and now refused at resolution, before any handle is opened.
+  ##
+  ## Every path reaching a grant goes through here, root scopes and requested
+  ## paths alike, so containment comparisons stay consistent.
+  let lexical = normalizedPath(absolutePath(path))
+  var existing = lexical
+  var trailing: seq[string]
+  while existing.len > 1 and not existing.fileExists and not existing.dirExists:
+    let (parent, name) = splitPath(existing)
+    if name.len == 0 or parent.len == 0 or parent == existing:
+      break
+    trailing.add name
+    existing = parent
+  var resolved =
+    try:
+      expandFilename(existing)
+    except CatchableError:
+      return lexical
+  for i in countdown(trailing.high, 0):
+    resolved = resolved / trailing[i]
+  normalizedPath(resolved)
 
 proc isPathWithin(path, root: string): bool =
   if path == root:
@@ -254,8 +287,8 @@ method subsumes*(provider: FilesystemProvider,
   if narrower.positional.len == 0:
     return csNo
   try:
-    let broadPath = canonicalPath($DirSep / broader.positionalString(0))
-    let narrowPath = canonicalPath($DirSep / narrower.positionalString(0))
+    let broadPath = canonicalCapabilityPath($DirSep / broader.positionalString(0))
+    let narrowPath = canonicalCapabilityPath($DirSep / narrower.positionalString(0))
     if provider.isFileType(broader.capabilityType):
       if broadPath == narrowPath: csYes else: csNo
     elif narrowPath.isPathWithin(broadPath):
@@ -272,9 +305,9 @@ proc requestedPath(parent: CapabilityGrant, requested: CapabilitySpec): string =
   if raw == "*" or raw.len == 0:
     return parent.scope
   if raw.isAbsolute:
-    canonicalPath(raw)
+    canonicalCapabilityPath(raw)
   else:
-    canonicalPath(parent.resolutionBase / raw)
+    canonicalCapabilityPath(parent.resolutionBase / raw)
 
 method resolve*(provider: FilesystemProvider, parent: CapabilityGrant,
                 requested: CapabilitySpec): Option[CapabilityGrant] =
@@ -424,15 +457,15 @@ proc admitFilesystemProvider*(registry: CapabilityRegistry): FilesystemProvider 
 
 proc grantReadDir*(provider: FilesystemProvider,
                    root: string): CapabilityGrant =
-  provider.mintRootGrant(provider.types.readDir, canonicalPath(root))
+  provider.mintRootGrant(provider.types.readDir, canonicalCapabilityPath(root))
 
 proc grantWriteDir*(provider: FilesystemProvider,
                     root: string): CapabilityGrant =
-  provider.mintRootGrant(provider.types.writeDir, canonicalPath(root))
+  provider.mintRootGrant(provider.types.writeDir, canonicalCapabilityPath(root))
 
 proc grantReadWriteDir*(provider: FilesystemProvider,
                         root: string): CapabilityGrant =
-  provider.mintRootGrant(provider.types.readWriteDir, canonicalPath(root))
+  provider.mintRootGrant(provider.types.readWriteDir, canonicalCapabilityPath(root))
 
 proc resolveOperation(provider: FilesystemProvider, context: CapabilityContext,
                       capabilityType: CapabilityType, path: string,

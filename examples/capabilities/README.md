@@ -49,11 +49,11 @@ written under the launcher's root
 ## 2. The default root, and widening it
 
 ```bash
-echo "demo payload" > "$HOME/gene_cap_demo.txt"
-$G run 02_outside_root.gene "$HOME/gene_cap_demo.txt"
+echo "demo payload" > /tmp/gene_cap_demo.txt
+$G run 02_outside_root.gene /tmp/gene_cap_demo.txt
 ```
 
-Denied — `$HOME` is outside the launch directory:
+Denied — `/tmp` is outside the launch directory:
 
 ```
 Error: MissingCapability: fs/read_text requires fs/ReadFile
@@ -65,7 +65,7 @@ Error: MissingCapability: fs/read_text requires fs/ReadFile
 The same program with the host policy that grants it:
 
 ```bash
-$G run --allow_read_dir "$HOME" 02_outside_root.gene "$HOME/gene_cap_demo.txt"
+$G run --allow_read_dir /tmp 02_outside_root.gene /tmp/gene_cap_demo.txt
 ```
 
 ```
@@ -177,7 +177,7 @@ depend on it.
 ## Cleaning up
 
 ```bash
-rm -rf out reports "$HOME/gene_cap_demo.txt"
+rm -rf out reports "/tmp/gene_cap_demo.txt"
 ```
 
 ## Where to read more

@@ -378,9 +378,9 @@ suite "filesystem capability provider":
       newCapabilitySpec(fs.types.writeFile, [capString("test.md")])))
 
     check exact.len == 1
-    check exact[0].scope == root / "tmp" / "test.md"
-    check exact[0].resolutionBase == root / "tmp"
-    check exact[0].operationAnchor == root
+    check exact[0].scope == canonicalCapabilityPath(root) / "tmp" / "test.md"
+    check exact[0].resolutionBase == canonicalCapabilityPath(root) / "tmp"
+    check exact[0].operationAnchor == canonicalCapabilityPath(root)
     fs.writeText(exact, "test.md", "anchored")
     check readFile(root / "tmp" / "test.md") == "anchored"
 
@@ -417,7 +417,7 @@ suite "filesystem capability provider":
     check not fs.pathExists(context, "nested/missing.txt")
     check fs.listDir(context, "nested") == @["file.txt"]
     check fs.realPath(context, "nested/file.txt") ==
-      root / "nested" / "file.txt"
+      canonicalCapabilityPath(root) / "nested" / "file.txt"
     fs.removeFile(context, "nested/file.txt")
     check not fileExists(root / "nested" / "file.txt")
     fs.removeDir(context, "nested")

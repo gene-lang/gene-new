@@ -53,7 +53,9 @@ vendor/
 !vendor/libvterm/**
 logs/
 *.log
+out/
 *.out
+reports/
 coverage/
 .cache/
 .claude/
