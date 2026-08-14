@@ -366,6 +366,10 @@ type
     sourceLabel*: string              # stable diagnostic label for fallback entries
     reexport*: bool                   # selected/alias binding is intentionally public
     selections*: seq[ImportSelection]
+    hasCapabilityRow*: bool           # `^capabilities` on the import itself
+    capabilityRowSource*: Value       # its raw form, until `compileImport`
+    capabilityRow*: CapabilityRow     # the importer's ceiling for this
+                                      # dependency (capabilities.md §5.3.1)
 
   ImportImplSpec* = object
     modulePath*: string
@@ -645,6 +649,9 @@ type
     topLevelForms*: seq[TopLevelFormInfo]
     owner* {.cursor.}: FunctionProto
     moduleCapabilityRow*: CapabilityRow
+    capabilitiesStrict*: bool         # this module was compiled in strict mode
+    requireStrictDependencies*: bool  # entry policy: every dependency must be
+                                      # strict (capabilities.md §5.0.2)
     functions*: seq[FunctionProto]
     localNames*: seq[string]
     mirrorSlots*: bool

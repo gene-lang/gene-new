@@ -361,6 +361,8 @@ type
     rootCapabilityContext: CapabilityContext
     applicationCapabilityContext: CapabilityContext
     capabilitiesMaterialized: bool
+    requireStrictDependencies: bool
+    boundedModulePaths: HashSet[string]
     capabilitySpecProtocol: Value
     capabilityFacades: Table[string, CapabilityFacadeBinding]
     capabilityCanonicalCache: Table[string, CapabilitySpec]
@@ -7909,6 +7911,21 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: Scope,
     if calleeRoot.lookupOptional("this_mod", module) and
         module.kind == vkModule:
       ceiling = module.moduleCapabilityCeiling
+      # §5.3.1: the effective bound is
+      # `caller ∩ module_ceiling(M) ∩ import_ceiling(I, M)`. Folded here,
+      # before the cache comparison below, so a cached transition is keyed on
+      # the combined ceiling and two importers with different bounds cannot
+      # share an entry. Both operands are interned, so equal folds are the
+      # same ref and the cache still hits.
+      var importer: Value
+      if callerRoot != nil and
+          callerRoot.lookupOptional("this_mod", importer) and
+          importer.hasImportCapabilityCeilings:
+        let bound = importer.importCapabilityCeiling(module.modulePath)
+        if bound != nil:
+          ceiling =
+            if ceiling == nil: bound
+            else: intersectContexts(ceiling, bound)
 
   when not (compileOption("threads") and defined(gcAtomicArc)):
     if proto != nil and proto.capabilityRow.isStatic and
@@ -13610,8 +13627,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var source: Value
           if spec.fromModule:
             let app = scope.application()
-            source = loadModuleValue(app,
-              app.resolveModuleRef(spec.modulePath, spec.pkgName))
+            let dependencyPath =
+              app.resolveModuleRef(spec.modulePath, spec.pkgName)
+            if spec.hasCapabilityRow:
+              # §5.3.1. Recorded before the load, because the dependency has
+              # to *initialize* under the bound too — a call-boundary
+              # intersection alone arrives after its top level has already
+              # run, and §5.3 is explicit that data captured then cannot be
+              # retracted. The path set is consulted by
+              # `moduleInitializationCapabilities`.
+              app.boundedModulePaths.incl dependencyPath
+              var importer: Value
+              if scope.moduleRootScope().lookupOptional("this_mod", importer) and
+                  importer.kind == vkModule:
+                importer.recordImportCapabilityRow(dependencyPath,
+                                                   spec.capabilityRow)
+            source = loadModuleValue(app, dependencyPath)
           else:
             # Resolve the import-source root as initialized-local → builtin →
             # error. `lookupOptional` walks the scope chain (nearer in-file
@@ -25012,15 +25043,31 @@ proc resolvedModuleCeiling(app: Application, module: Value,
   else:
     resolveCapabilityRow(app, row, parent, nil)
 
+proc materializeImportCeilings(app: Application, module: Value,
+                               applicationContext: CapabilityContext) =
+  ## An import ceiling materializes exactly like a module ceiling — once,
+  ## against `app_context`, never against the importer's transient context
+  ## (§5.3.1, §6.1) — so the pair folds into one immutable bound per
+  ## (importer, dependency).
+  if module.importCapabilityRows.len == 0:
+    return
+  for dependencyPath, row in module.importCapabilityRows:
+    let ceiling =
+      if row.inheritsCapabilities: applicationContext
+      else: resolveCapabilityRow(app, row, applicationContext, nil)
+    module.setImportCapabilityCeiling(dependencyPath, ceiling)
+
 proc materializeLoadedModule(app: Application, module: Value) =
   if app == nil or module.kind != vkModule or
       app.applicationCapabilityContext == nil:
     return
   module.setModuleCapabilityCeiling(
     app.resolvedModuleCeiling(module, app.applicationCapabilityContext))
+  app.materializeImportCeilings(module, app.applicationCapabilityContext)
 
 proc moduleInitializationCapabilities(app: Application,
-                                      row: CapabilityRow): CapabilityContext =
+                                      row: CapabilityRow,
+                                      modulePath = ""): CapabilityContext =
   ## Open/pass-through modules preserve Gene's existing top-level semantics.
   ## Once materialized, lazy initialization uses the fixed application context
   ## rather than whichever narrowed caller happened to load the singleton
@@ -25030,6 +25077,13 @@ proc moduleInitializationCapabilities(app: Application,
   if app != nil and app.sandboxRoot != nil:
     return newCapabilityContext()
   if not row.inheritsCapabilities:
+    return newCapabilityContext()
+  # An importer bounding this dependency (§5.3.1) is asking for confinement,
+  # and load time cannot be exempt from it. The quantifier is deliberately
+  # "any importer": the module is a singleton, so letting an unbounded
+  # importer decide whether a bounded importer's confinement holds is the one
+  # answer that can leak.
+  if app != nil and modulePath.len > 0 and modulePath in app.boundedModulePaths:
     return newCapabilityContext()
   if app != nil and app.applicationCapabilityContext != nil:
     return app.applicationCapabilityContext
@@ -25051,6 +25105,22 @@ proc materializeApplicationCapabilities(app: Application, entry: Value) =
     else:
       resolveCapabilityRow(app, entry.moduleCapabilityRow,
                            app.rootCapabilityContext, nil)
+  # `^require_strict_dependencies` is a *link* check (§5.0.2): it validates
+  # interface metadata and fails, rather than recompiling a dependency under a
+  # mode its author did not choose. Reported as one error naming every
+  # offender, because fixing them one round-trip at a time is the whole cost.
+  if app.requireStrictDependencies:
+    var open: seq[string]
+    for _, module in app.moduleCache:
+      if module.kind != vkModule or same(module, entry):
+        continue
+      if not module.moduleCapabilitiesStrict:
+        open.add module.modulePath
+    if open.len > 0:
+      open.sort()
+      raise newException(GeneError,
+        "^require_strict_dependencies: these modules were compiled in open " &
+        "mode and declare no capability contract: " & open.join(", "))
   var ceilings: seq[tuple[module: Value, ceiling: CapabilityContext]]
   for _, module in app.moduleCache:
     if module.kind != vkModule:
@@ -25064,6 +25134,7 @@ proc materializeApplicationCapabilities(app: Application, entry: Value) =
   app.applicationCapabilityContext = applicationContext
   for item in ceilings:
     item.module.setModuleCapabilityCeiling(item.ceiling)
+    app.materializeImportCeilings(item.module, applicationContext)
   app.capabilitiesMaterialized = true
 
 proc materializeScriptCapabilities(app: Application) =
@@ -25171,8 +25242,11 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   try:
     let artifact = compileModuleArtifact(app, absPath)
     result.setModuleCapabilities(artifact.chunk.moduleCapabilityRow)
+    result.setModuleCapabilitiesStrict(artifact.chunk.capabilitiesStrict)
+    if artifact.chunk.requireStrictDependencies:
+      app.requireStrictDependencies = true
     let initializationCapabilities = app.moduleInitializationCapabilities(
-      artifact.chunk.moduleCapabilityRow)
+      artifact.chunk.moduleCapabilityRow, absPath)
     # Top-level code may call functions declared by this module before the
     # application-wide materialization pass. Give those boundaries the same
     # provisional ceiling as the module's initialization context; the fixed
@@ -25306,7 +25380,7 @@ proc reloadFileModule*(app: Application, path: string): Value =
         "reload changed the module compile interface: " & absPath)
     replacement.setModuleCapabilities(artifact.chunk.moduleCapabilityRow)
     let initializationCapabilities = app.moduleInitializationCapabilities(
-      artifact.chunk.moduleCapabilityRow)
+      artifact.chunk.moduleCapabilityRow, absPath)
     replacement.setModuleCapabilityCeiling(initializationCapabilities)
     discard run(artifact.chunk, replacementScope,
                 initialCapabilities = initializationCapabilities)
@@ -25631,8 +25705,9 @@ proc loadCompiledFileModule*(app: Application, path: string,
                           app.currentPackage)
   try:
     result.setModuleCapabilities(chunk.moduleCapabilityRow)
+    result.setModuleCapabilitiesStrict(chunk.capabilitiesStrict)
     let initializationCapabilities = app.moduleInitializationCapabilities(
-      chunk.moduleCapabilityRow)
+      chunk.moduleCapabilityRow, absPath)
     result.setModuleCapabilityCeiling(initializationCapabilities)
     discard run(chunk, modScope,
                 initialCapabilities = initializationCapabilities)

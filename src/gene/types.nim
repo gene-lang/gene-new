@@ -636,6 +636,13 @@ type
     meta: PropTable
     capabilityRow: CapabilityRow
     capabilityCeiling: CapabilityContext
+    capabilitiesStrict: bool
+    ## This module's `^capabilities` rows on its own imports, and the ceilings
+    ## they materialize to, keyed by the dependency's absolute module path
+    ## (capabilities.md §5.3.1). Empty for almost every module, so the call
+    ## boundary checks `len` before it looks anything up.
+    importCapabilityRows: Table[string, CapabilityRow]
+    importCapabilityCeilings: Table[string, CapabilityContext]
 
   BigIntData = ref object of GeneObjectData
     value: BigIntValue
@@ -2808,6 +2815,47 @@ proc setModuleCapabilityCeiling*(v: Value, ceiling: CapabilityContext) =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
     raise newException(FieldDefect, "value is not a Module")
   ModuleData(objData(v)).capabilityCeiling = ceiling
+
+proc moduleCapabilitiesStrict*(v: Value): bool =
+  ## Link metadata, not resolution input: `^require_strict_dependencies`
+  ## checks it and nothing else consults it (capabilities.md §5.0.2).
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).capabilitiesStrict
+
+proc setModuleCapabilitiesStrict*(v: Value, strict: bool) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).capabilitiesStrict = strict
+
+proc recordImportCapabilityRow*(v: Value, dependencyPath: string,
+                                row: CapabilityRow) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).importCapabilityRows[dependencyPath] = row
+
+proc importCapabilityRows*(v: Value): lent Table[string, CapabilityRow] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).importCapabilityRows
+
+proc setImportCapabilityCeiling*(v: Value, dependencyPath: string,
+                                 ceiling: CapabilityContext) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).importCapabilityCeilings[dependencyPath] = ceiling
+
+proc hasImportCapabilityCeilings*(v: Value): bool {.inline.} =
+  ## The guard the cross-module call boundary reads before looking anything
+  ## up; almost every module answers false.
+  v.tagOf == OBJECT_TAG and objData(v).objKind == okModule and
+    ModuleData(objData(v)).importCapabilityCeilings.len > 0
+
+proc importCapabilityCeiling*(v: Value,
+                              dependencyPath: string): CapabilityContext =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).importCapabilityCeilings.getOrDefault(dependencyPath)
 
 proc envParent*(v: Value): Value =
   if not v.isObjectTagged or objData(v).objKind != okEnv:

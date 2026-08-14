@@ -4569,6 +4569,13 @@ proc parseImportSpec*(node: Value): ImportSpec =
         raise newException(GeneError,
           "import ^pkg must be a non-empty package name string")
       result.pkgName = value.strVal
+    of "capabilities":
+      # The importer's own ceiling for this dependency (§5.3.1). Kept raw
+      # here: `parseImportSpec` also runs during dependency-graph analysis,
+      # where no Compiler exists to lower a selector row. `compileImport`
+      # lowers it before the spec reaches a chunk.
+      result.hasCapabilityRow = true
+      result.capabilityRowSource = value
     of "as":
       raise newException(GeneError,
         "import ^as was removed; use `source : alias`")
@@ -6007,6 +6014,12 @@ proc compileImport(c: var Compiler, node: Value) =
   if not c.allowAmbientImports:
     raise newException(GeneError, "eval cannot use import; add imports to Env")
   var spec = parseImportSpec(node)
+  if spec.hasCapabilityRow:
+    if not spec.fromModule:
+      raise newException(GeneError,
+        "import ^capabilities bounds a module dependency and requires " &
+        "`from \"path\"`")
+    spec.capabilityRow = c.compileCapabilityRow(spec.capabilityRowSource)
   if spec.alias.len > 0:
     validateBindingName(spec.alias)
   for selection in spec.selections:
@@ -6158,6 +6171,16 @@ proc compileMod(c: var Compiler, node: Value, allowModDecl: bool) =
       raise newException(GeneError,
         "^capabilities_mode must be open or strict")
     c.capabilitiesStrict = mode.symVal == "strict"
+  if node.props.hasKey("require_strict_dependencies"):
+    let requested = node.props["require_strict_dependencies"]
+    if requested.kind != vkBool:
+      raise newException(GeneError,
+        "^require_strict_dependencies must be Bool")
+    c.chunk.requireStrictDependencies = requested.boolVal
+  # Recorded so a dependency's mode can be *checked* without recompiling it
+  # under a mode its author did not choose (§5.0.2). Mode is still erased from
+  # everything the runtime consults for resolution; this is link metadata.
+  c.chunk.capabilitiesStrict = c.capabilitiesStrict
   c.chunk.moduleCapabilityRow =
     if node.props.hasKey("capabilities"):
       c.compileCapabilityRow(node.props["capabilities"])

@@ -1063,3 +1063,57 @@ suite "application and module ceilings":
     let app = newApplicationForEntryFile(entryPath)
     let entry = app.loadFileModule(entryPath)
     check entry.moduleRootNamespace.nsScope.lookup("initialized").intVal == 1
+
+  test "an import-site ceiling bounds a dependency the importer does not control":
+    # §5.3.1. The dependency declares nothing and would inherit the entry's
+    # `fs/*`; the importer bounds it once, at the import, instead of wrapping
+    # every call site.
+    let entryPath = getCurrentDir() / "tests" / "fixtures" /
+      "capability_import_ceiling_entry.gene"
+    let app = newApplicationForEntryFile(entryPath)
+    let entry = app.loadFileModule(entryPath)
+    let main = entry.moduleRootNamespace.nsScope.lookup("main")
+    expect GeneError:
+      discard main.call()
+
+  test "an import-site ceiling narrows rather than denies":
+    let entryPath = getCurrentDir() / "tests" / "fixtures" /
+      "capability_import_ceiling_allowed.gene"
+    let app = newApplicationForEntryFile(entryPath)
+    let entry = app.loadFileModule(entryPath)
+    let main = entry.moduleRootNamespace.nsScope.lookup("main")
+    check main.call().intVal == 1
+
+  test "a module bounded by an import ceiling initializes under an empty context":
+    # The half that makes the ceiling real: a call-boundary intersection alone
+    # arrives after the dependency's top level has already run, and §5.3 says
+    # what it captured then cannot be retracted.
+    let entryPath = getCurrentDir() / "tests" / "fixtures" /
+      "capability_import_init_entry.gene"
+    let app = newApplicationForEntryFile(entryPath)
+    let entry = app.loadFileModule(entryPath)
+    let main = entry.moduleRootNamespace.nsScope.lookup("main")
+    check main.call().strVal == "denied"
+
+  test "require_strict_dependencies fails the link on an open dependency":
+    # §5.0.2: the policy validates interface metadata; it must not recompile
+    # the dependency under a mode its author did not choose, and it must name
+    # the offender rather than failing somewhere inside it later.
+    let entryPath = getCurrentDir() / "tests" / "fixtures" /
+      "capability_strict_deps_entry.gene"
+    let app = newApplicationForEntryFile(entryPath)
+    var message = ""
+    try:
+      discard app.loadFileModule(entryPath)
+    except CatchableError as error:
+      message = error.msg
+    check "require_strict_dependencies" in message
+    check "capability_ceiling_dep" in message
+
+  test "require_strict_dependencies accepts a strict dependency":
+    let entryPath = getCurrentDir() / "tests" / "fixtures" /
+      "capability_strict_deps_ok.gene"
+    let app = newApplicationForEntryFile(entryPath)
+    let entry = app.loadFileModule(entryPath)
+    let main = entry.moduleRootNamespace.nsScope.lookup("main")
+    check main.call().intVal == 1

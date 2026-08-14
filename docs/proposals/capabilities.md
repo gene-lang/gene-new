@@ -1517,12 +1517,24 @@ to narrowing declared by the importer rather than by the module.
 
 The quantifier is deliberately conservative: because the module is a singleton,
 **any** import declaring a ceiling forces empty-context initialization for
-every importer, including those that declared none. Import specifications are
-static and unconditional (§5.0.2's link phase), so the set of imports of a
-module is known before initialization and the choice never depends on load
-order. Taking the narrower option is the only answer that cannot leak: the
-alternative would let an unbounded importer decide whether a bounded importer's
-confinement holds.
+every importer, including those that declared none. Taking the narrower option
+is the only answer that cannot leak — the alternative would let an unbounded
+importer decide whether a bounded importer's confinement holds.
+
+**The implemented guarantee is order-dependent in one case, and it is worth
+stating exactly.** The bound is recorded when the bounding `import` executes,
+which is before that dependency loads, so the dependency initializes empty. But
+if some *other* importer already loaded the same module earlier in the program
+with no ceiling, that initialization has already run: the singleton exists, and
+nothing can retract what its top level captured. Calls are still confined —
+every boundary intersects the import ceiling regardless of load order — so this
+is an initialization-capture residual, not an authority leak.
+
+Closing it needs a pre-pass that walks the entry's static import graph and
+collects every ceiling before any module initializes. Import specifications are
+static and unconditional, so the pass is possible; it is deferred rather than
+impossible. Until then, a program that cares should bound a dependency at every
+import of it, which a lint can check.
 
 A dependency whose initialization genuinely needs authority exposes it as an
 explicit setup function the importer calls under a context it chooses, which is
@@ -2832,11 +2844,10 @@ in between:
    resolve the entry row and invoke `main` under it (§5.2).
 4. Row parsing and normalization: the three `^capabilities` shapes,
    `^^optional`, namespace projection, and the selector-position constructor
-   rule (§4.2.1). This includes accepting `^capabilities` on `import`
-   (§5.3.1); `parseImportSpec` currently has a closed property allow-list
-   (`^export`, `^pkg`, `^as`) that rejects everything else, so the option has
-   to be added there and threaded into the module's load decision before
-   step 3 can honour it.
+   rule (§4.2.1), plus `^capabilities` on `import` (§5.3.1). The import row is
+   parsed raw and lowered in `compileImport`, because `parseImportSpec` also
+   runs during dependency-graph analysis where no compiler exists to lower a
+   selector.
 5. The boundary algorithm (§6.1) at function, method, and protocol-message
    boundaries, including the private-helper `caller ∩ module ceiling` rule
    and the exported-declaration requirement (§5.0).
@@ -2881,10 +2892,14 @@ The implementation is ready when tests demonstrate all of the following:
   `caller ∩ module_ceiling ∩ import_ceiling`, an import ceiling cannot restore
   authority the module row or the caller dropped, and the module still has
   exactly one runtime instance shared by bounded and unbounded importers.
-- **A module bounded by any import ceiling initializes under an empty
-  context**, so a dependency cannot capture protected data at load time and
-  retain it as ordinary values past the bound — including when a second,
-  unbounded importer of the same module exists.
+- **A module bounded by an import ceiling initializes under an empty context**,
+  so a dependency cannot capture protected data at load time and retain it as
+  ordinary values past the bound. The order-dependent residual in §5.3.1 — a
+  module already initialized by an earlier unbounded importer — is a known
+  deferral, not a passing case.
+- **`^require_strict_dependencies` fails the link** when any dependency was
+  compiled in open mode, names every offender, and does not recompile the
+  dependency under a mode its author did not choose (§5.0.2).
 - Context restoration works for return, error, cancellation, and non-local
   control flow.
 - Multiple non-equivalent matching grants produce
