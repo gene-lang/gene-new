@@ -88,8 +88,8 @@ deliberately, not by omission. §10.2.
 **4. A capability-type call always constructs an inert specification.** It
 never resolves or authorizes by virtue of where it appears. `^capabilities`
 and `with_capabilities` resolve specifications; presence is tested with
-`(capability_available? spec)`; adapters receive grants through runtime state
-no expression can name. §4.2.1, §6.2.
+`(check_capabilities spec ...)`; adapters receive grants
+through runtime state no expression can name. §4.2.1, §6.2.
 
 ## 2. Design goals
 
@@ -750,7 +750,7 @@ The common property `^^optional` marks an exact selector as optional:
 
 If no inherited grant satisfies an optional selector, it contributes no grant
 to the child context, and the boundary still succeeds. Code tests for it with
-`(capability_available? (device/Compute))` (§6.2).
+`(check_capabilities (device/Compute))` (§6.2).
 
 `^^optional` is meaningful **only in a declaration row**, where it answers
 "may this boundary proceed without the grant?". It has no meaning in an
@@ -784,7 +784,7 @@ no argument and `"*"` have the same meaning.
 it appears. `(fs/WriteDir "tmp")` does not resolve, check, or authorize
 anything; it describes something. Only two forms resolve a specification
 against the active context — `^capabilities` and `with_capabilities` — and
-only `(capability_available? spec)` tests presence (§6.2).
+presence is tested by `(check_capabilities spec ...)` (§6.2).
 
 One expression previously meant three things by position — constructing a
 specification, resolving authority, and presence-checking inside `if`. Since
@@ -1846,35 +1846,64 @@ without compute acceleration.
 Within the body, presence is tested explicitly:
 
 ```gene
-(if (capability_available? (device/Compute))
+(if (check_capabilities (device/Compute))
   (accelerated_path)
   (portable_path))
 ```
 
-**`capability_available?` is a lookup, not a resolution.** It answers only
-about selectors the enclosing declaration already evaluated at its boundary:
+### 6.2.1 `check_capabilities`
 
-```text
-capability_available?(spec) =
-    spec canonicalizes to a selector in THIS boundary's declaration,
-    and that selector contributed at least one grant to the active context
+```gene
+(check_capabilities (fs/WriteFile "/tmp/test"))
+(check_capabilities (fs/ReadDir "workspace") $os/Env)
 ```
 
-`true` or `false`. It mints nothing, calls no provider, and performs no
-entailment discovery.
+`true` when *every* argument resolves in the active context, `false` when any
+resolves to nothing; at least one argument is required. A malformed or
+unregistered specification is an error rather than `false`, since it is a bug
+in the caller and not an answer about availability.
 
-That restriction is the point. Cross-type satisfaction is discovered by
-`resolve` (§6.1), which *mints* — so a general presence test would either mint
-a grant it discards, or need a second pure query path whose answers must agree
-with `resolve`'s forever. Two oracles for one question is the failure mode
-§3.2.3 already rejects.
+**It resolves rather than consulting a table, and that is the whole design.**
+An earlier draft specified a pure lookup — `capability_available?`, answering
+only about selectors the enclosing declaration had itself evaluated — on the
+reasoning that cross-type satisfaction is discovered by `resolve` (§6.1),
+which *mints*, so a general test would either mint a grant it discards or need
+a second pure query path whose answers must agree with `resolve`'s forever.
+Two oracles for one question is the failure mode §3.2.3 rejects.
 
-The useful case needs none of it: an optional selector was declared, so it was
-already resolved at the boundary and the question is whether it produced
-anything. Asking about an undeclared capability is `false`, not an error, and
-never reaches the parent; *using* one still fails at the boundary (§6.1).
-General "could I obtain X?" queries would need a separate pure provider
-operation with a stated consistency guarantee, and are not in version 1.
+The lookup was implemented and then removed, because the restriction that was
+supposed to be its virtue made it answer `false` in three situations where the
+authority is plainly present: a selector reached by entailment (a `ReadDir`
+grant satisfying a `ReadFile` inside it), a selector supplied by a projection
+(`fs/*` or `*`), and any selector the boundary did not itself name. A caller
+holding `^capabilities *` got `false` for everything. That is not a
+conservative answer; it is a wrong one, and the only question it answered
+correctly — "was the optional selector I declared admitted?" — this form
+answers correctly too.
+
+So the trade-off is resolved the other way: **mint and discard**, never a
+second query path. Resolution runs through exactly the path `^capabilities`
+and the operation itself use, so **there is one oracle, not two** — §3.2.3's
+failure mode is avoided by construction rather than by a consistency guarantee
+someone has to maintain. Derivation is
+memoized in the provider's bounded grant cache, so a check returns the same
+grant the subsequent operation would, and repeating one costs nothing.
+
+Two consequences follow from resolving against the live context, and both are
+§7.5's path rule rather than anything specific to this form:
+
+- a *relative* path lands inside the active root, so under `(fs/WriteDir "tmp")`
+  the check `(fs/WriteDir "other")` is `true` — it means `tmp/other`. Only an
+  absolute path outside the root, or one escaping via `..`, is unavailable;
+- more than one matching grant raises `AmbiguousCapability` (§6.3), exactly as
+  the operation would. Neither verdict is honest there: `true` promises an
+  admission that is really a failure, and `false` blames missing authority for
+  what is in fact too much of it.
+
+`check_capabilities` answers about authority, never about outcome. A `true`
+means the boundary would admit the operation, not that the operation will
+succeed — the target may still be missing, revoked, or fail for host reasons
+(§15).
 
 `^^optional` appears only in declaration rows, never in this expression: it
 says whether a boundary may start without a grant, which is meaningless once
@@ -2461,7 +2490,7 @@ Static analysis may also warn when:
   but is the pass-through, not a contract;
 - a function declares `fs/WriteFile` but its arguments permit a more precise
   selector;
-- an optional selector is never tested with `capability_available?`;
+- an optional selector is never tested with `check_capabilities`;
 - a component declares grants it never resolves or passes onward;
 - a **private** helper's inferred effective requirement exceeds what its
   module's exported surface declares — the inference that used to substitute
@@ -2878,9 +2907,13 @@ The implementation is ready when tests demonstrate all of the following:
 - An exact mandatory selector fails before the body runs when absent.
 - An optional exact selector contributes no grant when absent, and the
   boundary still starts.
-- `(capability_available? spec)` answers `false` for an absent optional
-  selector and for an undeclared one, mints nothing, and never reaches the
-  parent context.
+- `(check_capabilities spec ...)` answers `true` only when every specification
+  resolves in the active context, tracks attenuation by `with_capabilities`,
+  and agrees with the operation: a `false` is always followed by a refusal at
+  the boundary, a `true` is never refused for want of authority, and an
+  ambiguous selector raises where the operation would. It finds authority
+  reached by entailment and by projection, not only selectors the boundary
+  declared. An empty argument list and a non-specification argument are errors.
 - `^^optional` in an expression position is rejected, not treated as a
   presence check.
 - A parameter-dependent `fs/WriteFile` selector rejects path escape.

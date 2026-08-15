@@ -111,8 +111,13 @@ type
     available*: bool
 
   CapabilityPresence* = ref object
-    ## Exact selectors evaluated at one declaration boundary. Presence queries
-    ## consult this record and never resolve against a parent context.
+    ## Vestigial. This recorded the exact selectors evaluated at one
+    ## declaration boundary, for `capability_available?` to look up. That
+    ## builtin is gone — `check_capabilities` resolves against the live context
+    ## instead — so nothing populates or reads `entries` any more, and the
+    ## remaining field is threaded through calls and fibers as a permanent
+    ## `nil`. Removing that plumbing touches call dispatch and fiber switching,
+    ## so it is left as a separate change with its own benchmark run.
     entries*: seq[CapabilityPresenceEntry]
 
   CapabilityTransition* = object

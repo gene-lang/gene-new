@@ -521,7 +521,7 @@ suite "capability specifications in Gene":
       (fn inspect [path]
         ^capabilities [(app/WriteArea path)]
         (let info (capability_type_info WriteArea))
-        [(capability_available? (WriteArea path))
+        [(check_capabilities (WriteArea path))
          info/provider])
       (inspect "/WORKSPACE/TMP")
     """
@@ -937,7 +937,12 @@ suite "capability call boundaries":
       check resource.kind == vkNode
     check resourceAuthorityRecordCount() == baseline
 
-  test "capability_available reports only exact selectors from this boundary":
+  test "check_capabilities resolves selectors against the live context":
+    # Availability is a question about the *context*, not about what this
+    # boundary happened to declare: `"other"` was never named in the row, but a
+    # relative path resolves against the active root and lands inside `tmp/`
+    # (§7.5), so it is genuinely available. Only a path outside the root — here
+    # an absolute one — is not.
     let app = newApplication()
     let scope = newGlobalScope(app)
     app.setRootCapabilities(newCapabilityContext([
@@ -945,27 +950,101 @@ suite "capability call boundaries":
     ]))
     let value = run(compileSource("""
       (fn inspect []
-        ^capabilities [
-          (fs/WriteDir "tmp")
-          (fs/ReadFile "tmp/missing.txt" ^^optional)
-        ]
+        ^capabilities [(fs/WriteDir "tmp")]
         [
-          (capability_available? (fs/WriteDir "tmp"))
-          (capability_available? (fs/ReadFile "tmp/missing.txt"))
-          (capability_available? (fs/WriteDir "other"))
+          (check_capabilities (fs/WriteDir "tmp"))
+          (check_capabilities (fs/WriteDir "other"))
+          (check_capabilities (fs/WriteDir "/etc"))
         ])
       (inspect)
     """), scope)
-    check value.listItems.len == 3
-    check value.listItems[0].boolVal
-    check not value.listItems[1].boolVal
-    check not value.listItems[2].boolVal
+    check value.print == "[true true false]"
 
-  test "an absent optional selector starts with no grant and records absence":
+  test "check_capabilities discovers entailment across capability types":
+    # A `ReadDir` grant satisfies a `ReadFile` selector inside it. Cross-type
+    # satisfaction like this is discovered by `resolve`, which is why the check
+    # resolves rather than consulting a table — and it agrees with the
+    # operation, which succeeds.
+    let root = getTempDir() / "gene-check-entailment"
+    if dirExists(root): removeDir(root)
+    createDir(root)
+    defer: removeDir(root)
+    writeFile(root / "note.txt", "hello")
+    let app = newApplication()
+    app.setRootCapabilities(newCapabilityContext([
+      app.filesystemCapabilities.grantReadDir(root)
+    ]))
+    let value = run(compileSource("""
+      [(check_capabilities (fs/ReadFile "note.txt"))
+       (try (do ($fs/read_text "note.txt") "read")
+         catch (MissingCapability) "denied")]
+    """), newGlobalScope(app))
+    check value.print == "[true \"read\"]"
+
+  test "check_capabilities reports ambiguity as the operation does":
+    # Overlapping grants are a configuration fault, not an availability answer.
+    # The operation raises `AmbiguousCapability`, so the check raises it too
+    # rather than promising an admission that would then fail.
+    let root = getTempDir() / "gene-check-ambiguous"
+    if dirExists(root): removeDir(root)
+    createDir(root)
+    defer: removeDir(root)
+    writeFile(root / "note.txt", "hello")
+    expect GeneError:
+      discard run(compileSource("""
+        (check_capabilities (fs/ReadFile "note.txt"))
+      """), newGlobalScope(newApplicationRootedAt(root)))
+
+  test "check_capabilities takes several selectors and answers for all of them":
+    let app = newApplication()
+    let scope = newGlobalScope(app)
+    app.setRootCapabilities(newCapabilityContext([
+      app.filesystemCapabilities.grantWriteDir(getCurrentDir())
+    ]))
+    let value = run(compileSource("""
+      (fn inspect []
+        ^capabilities [(fs/WriteDir "tmp")]
+        [
+          (check_capabilities (fs/WriteDir "tmp") (fs/WriteDir "nested"))
+          (check_capabilities (fs/WriteDir "tmp") (fs/WriteDir "/etc"))
+        ])
+      (inspect)
+    """), scope)
+    check value.print == "[true false]"
+
+  test "check_capabilities tracks attenuation and agrees with the operation":
+    # The property that makes it worth having: a `true` must mean the operation
+    # would be admitted, and a `false` that it would be refused. If these ever
+    # disagree the check is worse than no check at all.
+    #
+    # The row is `^^optional` because a mandatory one is enforced at the
+    # declaration, so under `with_capabilities []` the body would never run to
+    # be asked.
+    let value = run(compileSource("""
+      (fn probe [path]
+        ^capabilities [(fs/WriteFile path ^^optional)]
+        [(check_capabilities (fs/WriteFile path))
+         (try (do ($fs/write_text path "x") "wrote")
+           catch (MissingCapability) "denied")])
+      (with_capabilities [] (probe "missing.txt"))
+    """), newGlobalScope(newApplication()))
+    check value.print == "[false \"denied\"]"
+
+  test "check_capabilities rejects an empty row and a non-selector argument":
+    expect GeneError:
+      discard run(compileSource("(check_capabilities)"),
+                  newGlobalScope(newApplication()))
+    expect GeneError:
+      discard run(compileSource("(check_capabilities 42)"),
+                  newGlobalScope(newApplication()))
+
+  test "an absent optional selector starts with no grant and reports absence":
+    # The boundary still starts — that is what `^^optional` buys — and the body
+    # can see the authority is missing before it tries to use it.
     let value = run(compileSource("""
       (fn optional_write [path]
         ^capabilities [(fs/WriteFile path ^^optional)]
-        [(capability_available? (fs/WriteFile path))
+        [(check_capabilities (fs/WriteFile path))
          (try ($fs/write_text path "no")
            catch (MissingCapability) "denied")])
       (with_capabilities [] (optional_write "missing.txt"))

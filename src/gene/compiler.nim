@@ -254,7 +254,7 @@ const bareCoreNames* = [
   # unrecoverable-failure mechanism §9 reserves, and `not`/`same?` are spelled
   # forms of primitive operations (`!` and identity). Deliberately short: every
   # entry here is a name a program can no longer use freely.
-  "panic", "not", "same?", "capability_available?", "capabilities_of",
+  "panic", "not", "same?", "check_capabilities", "capabilities_of",
   "capability_type_info",
 ]
 

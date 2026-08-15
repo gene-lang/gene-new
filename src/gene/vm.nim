@@ -1657,20 +1657,6 @@ proc biSame(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError, "same? expects 2 arguments, got " & $args.len)
   newBool(same(args[0], args[1]))
 
-proc biCapabilityAvailable(args: openArray[Value],
-                           call: ptr NativeCall): Value {.nimcall.} =
-  if args.len != 1:
-    raise newException(GeneError,
-      "capability_available? expects one admitted capability specification")
-  let scope = if call == nil: nil else: call[].dispatchScope
-  let requested = capabilitySpecFromValue(args[0], scope)
-  if activeCapabilityPresence == nil:
-    return FALSE
-  for entry in activeCapabilityPresence.entries:
-    if entry.spec == requested:
-      return newBool(entry.available)
-  FALSE
-
 proc tryFastNativeKind2(kind: NativeFastKind, a, b: Value): tuple[handled: bool, value: Value] {.inline.} =
   case kind
   of nfkAdd:
@@ -5693,6 +5679,44 @@ proc requireRetainedCapabilities(name: string, call: ptr NativeCall,
     raiseCapabilityGeneError(scope, capabilityErrorKind(error.msg),
       name & ": " & error.msg, operation = name)
 
+proc biCheckCapabilities(args: openArray[Value],
+                         call: ptr NativeCall): Value {.nimcall.} =
+  ## `(check_capabilities sel ...)` — `true` when *every* selector resolves to
+  ## at least one grant in the active context.
+  ##
+  ## Resolution runs through the same path `^capabilities` and the operation
+  ## itself use, so a `true` here and admission at the boundary cannot
+  ## disagree. It reports authority, not outcome: the target may still be
+  ## missing or fail for host reasons.
+  if args.len == 0:
+    raise newException(GeneError,
+      "check_capabilities expects at least one capability specification")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let active = activeCapabilitiesForCall(call)
+  for arg in args:
+    let spec = capabilitySpecFromValue(arg, scope)
+    try:
+      # Mirror `requireActiveCapability` exactly, so the check and the operation
+      # cannot disagree: no grant is `false`, one grant is `true`, and several
+      # is the same `AmbiguousCapability` the operation would raise. Answering
+      # `true` there would promise an admission that is really a failure, and
+      # `false` would blame missing authority for what is too much of it.
+      let grants = active.app.capabilityRegistry.resolveSelector(
+        active.context, spec)
+      if grants.len == 0:
+        return FALSE
+      if grants.len > 1:
+        raiseCapabilityGeneError(scope, "AmbiguousCapability",
+          "check_capabilities matched multiple grants for " &
+            spec.capabilityType.name,
+          spec.capabilityType.name, "check_capabilities")
+    except CapabilityError as error:
+      # A malformed or unregistered capability type is a bug in the caller, not
+      # an answer about availability, so it stays an error rather than `false`.
+      raiseCapabilityGeneError(scope, capabilityErrorKind(error.msg),
+        "check_capabilities: " & error.msg, operation = "check_capabilities")
+  TRUE
+
 proc retainResourceCapabilities(scope: Scope, resource: Value,
                                 context: CapabilityContext) =
   let app = scope.application()
@@ -6933,8 +6957,8 @@ proc buildBuiltins(app: Application): Scope =
   result.define("contains?",
                 sharedBuiltinNative("contains?", newNativeFn("contains?", biContains)))
   result.define("same?", newNativeFn("same?", biSame))
-  result.define("capability_available?",
-                newNativeCallFn("capability_available?", biCapabilityAvailable,
+  result.define("check_capabilities",
+                newNativeCallFn("check_capabilities", biCheckCapabilities,
                                 acceptsNamed = false))
   result.define("capabilities_of",
                 newNativeFn("capabilities_of", biCapabilitiesOf))
@@ -7849,13 +7873,6 @@ proc resolveCapabilityTransition(app: Application, row: CapabilityRow,
     raise newException(GeneError,
       "capability declaration requires an application runtime")
   var selected: seq[CapabilityGrant]
-  # Allocated only if an exact selector actually records an entry. Allocating
-  # unconditionally made every declared-capability call produce a presence ref
-  # distinct from its parent's, which in turn forced `installCapabilityTransition`
-  # to allocate a `FrameExtra` on each such call. An empty presence and a nil
-  # one answer `capability_available?` identically (both `FALSE`), so the only
-  # difference was the garbage.
-  var presence: CapabilityPresence = nil
   try:
     for selector in row.selectors:
       case selector.kind
@@ -7879,18 +7896,13 @@ proc resolveCapabilityTransition(app: Application, row: CapabilityRow,
         let spec = app.canonicalCapabilitySpec(capabilityType,
                                                positional, named)
         let grants = app.capabilityRegistry.resolveSelector(parent, spec)
-        if presence == nil:
-          presence = CapabilityPresence()
-        presence.entries.add CapabilityPresenceEntry(
-          spec: spec, available: grants.len > 0)
         if grants.len == 0 and not selector.optional:
           raiseCapabilityGeneError(boundScope, "MissingCapability",
             "declaration requires " & selector.typeName,
             selector.typeName, "capability declaration")
         for grant in grants:
           selected.add grant
-    CapabilityTransition(context: newCapabilityContext(selected),
-                         presence: presence)
+    CapabilityTransition(context: newCapabilityContext(selected))
   except CapabilityError as error:
     raiseCapabilityGeneError(boundScope, capabilityErrorKind(error.msg),
       error.msg, operation = "capability declaration")
