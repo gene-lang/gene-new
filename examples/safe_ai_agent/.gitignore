@@ -1,3 +1,6 @@
-# Nothing here yet. `workspace/` is a committed fixture, not scratch space:
-# generated code is granted read authority over it and nothing may write to it,
-# so it never accumulates output. See docs/design.md.
+# `workspace/` is both a committed fixture and the agent's scratch space.
+# `notes.txt` is the fixture generated code reads; everything else here is
+# output from a run — the model has write authority over this directory and
+# nowhere else, so this is exactly where its work lands. See docs/design.md.
+workspace/*
+!workspace/notes.txt

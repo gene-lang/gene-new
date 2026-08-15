@@ -107,6 +107,30 @@ xs/~size        # 2
 **`#(…)` is an immutable literal, not a quote.** In code position its head still
 evaluates. Quote for data.
 
+**A quoted literal is shared across calls — mutating it accumulates.** This
+returns `(do (var x 1))` the first call and `(do (var x 1) (+ 5 5))` the second:
+
+```gene
+(fn build [forms]
+  (var b (quote (do)))          # same node every call
+  (for f in forms (b ~ push_body f))
+  b)
+```
+
+Build a fresh node with quasiquote instead: `` `(do %forms...) ``.
+
+**A splice needs a bare symbol.** `` `(do %forms...) `` works;
+`` `(do %(envelope/code)...) `` fails with `value is not callable: vkList`.
+Bind the expression first.
+
+**`elif` is a clause, not an else-position form.** Once you use `elif`, every
+branch must be a clause — a compact `if` cannot take one as its third argument:
+
+```gene
+(if a (then x) (elif b y) (else z))   # right
+(if a x (elif b y))                    # Error: undefined symbol: elif
+```
+
 **A missing map key is `void`, not an error.** `m/b` on `{^a 1}` yields `void`,
 which then fails at the point of *use* rather than the point of the typo. When a
 value surprises you, print it before chasing the call that consumed it.
@@ -132,3 +156,15 @@ The transformations `fmt` will *not* make for you:
 
 So write those correctly the first time; `fmt` then makes the layout canonical.
 Run it on anything you produce — a clean `gene fmt` is also a parse check.
+
+Two places where `fmt` currently fights the style guide rather than serving it,
+so review its output before adopting it wholesale:
+
+- A **triple-quoted interpolated** string `$"""…${x}…"""` is collapsed to a
+  single-quoted one, and when the content has newlines it is desugared into the
+  `($ …)` concat head — the opposite of this project's preference for
+  interpolation. Behavior is preserved (embedded quotes get escaped); only
+  readability suffers.
+- A **nested map inside a list** gets its entries aligned far to the right,
+  which `docs/style.md` itself rules out ("do not vertically align arguments
+  with arbitrary spaces").

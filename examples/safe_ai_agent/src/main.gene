@@ -2,7 +2,7 @@
 #
 # The loop is: prompt -> LLM -> {^status ... ^code [...]} -> evaluate the code
 # with no ambient authority and a fixed set of handed-in tools -> show the
-# results -> repeat while the model says it is still working.
+# result -> repeat while the model says it is still working.
 #
 # The capability rows below are the whole safety story. Model-emitted code
 # holds *nothing* by default: a raw ($fs/write_text ...) in generated code is
@@ -12,19 +12,24 @@
 # See docs/design.md in this directory.
 
 # The module ceiling bounds everything in this file and everything it calls:
-# talk to the model (net/*), read the API key (os/Env), read `workspace/`.
+# talk to the model (net/*), read the API key (os/Env), read and write
+# `workspace/`.
 #
-# `(fs/ReadDir "workspace")` also re-roots this module's filesystem authority:
-# inside it a relative path resolves against `workspace/`, not the launch
-# directory. That is why the tool rows below say "." and generated code says
-# "notes.txt" (capabilities.md §7.5).
+# `(fs/ReadWriteDir "workspace")` also re-roots this module's filesystem
+# authority: inside it a relative path resolves against `workspace/`, not the
+# launch directory. That is why the tool rows below say "." and generated code
+# says "notes.txt" (capabilities.md §7.5).
 (mod safe_ai_agent
-  ^capabilities [net/* os/Env (fs/ReadDir "workspace")])
+  ^capabilities [net/* os/Env (fs/ReadWriteDir "workspace")])
 
 (import $net/http_client [request])
 (import $os [get_env env? read_line])
-(import $str [trim starts_with?])
+(import $str [trim starts_with? contains?])
 (import $parse [read_all])
+
+(type AgentError ^props {^message Str} ^impl [Error])
+
+(impl Error for AgentError)
 
 # ---------------------------------------------------------------------------
 # The tools generated code may call.
@@ -38,6 +43,7 @@
 # and still cannot be walked out of `workspace/`: `(fs/ReadFile name)` is a
 # parameter-dependent row, so the check resolves `name` against the module root
 # and refuses `../package.gene` *at the declaration*, before the body runs.
+# `write_note` and `delete_note` are confined the same way, by the same rule.
 # ---------------------------------------------------------------------------
 
 (fn list_notes [] : Any
@@ -48,42 +54,101 @@
   ^capabilities [(fs/ReadFile name)]
   ($fs/read_text name))
 
+(fn write_note [name : Str, content : Str] : Str
+  ^capabilities [(fs/WriteFile name)]
+  ($fs/write_text name content)
+  $"wrote ${name}")
+
+(fn delete_note [name : Str] : Str
+  ^capabilities [(fs/WriteFile name)]
+  ($fs/remove name)
+  $"deleted ${name}")
+
+(fn note_exists [name : Str] : Bool
+  ^capabilities [(fs/ReadDir ".")]
+  ($fs/exists? name))
+
+(var eval_depth ($cell 0))
+
+(fn run_note [name : Str] : Str
+  ^capabilities [(fs/ReadFile name)]
+  # Lets the model test what it just wrote. This adds no authority: the note's
+  # forms run through `run_program`, in the same sealed env with the same five
+  # tools. Without it the agent writes code it cannot execute, and a file full
+  # of runtime errors looks exactly like a file that works.
+  #
+  # Nesting is refused because the tool is reachable *from* generated code, so
+  # a note that runs itself would recurse until the stack goes.
+  (if_yes (>= (eval_depth ~ get) 1)
+    (fail (AgentError ^message "run_note may not be nested")))
+  (eval_depth ~ set (+ (eval_depth ~ get) 1))
+  (try
+    (run_program ((read_all ($fs/read_text name)) ~ into []))
+    ensure
+    (eval_depth ~ set (- (eval_depth ~ get) 1))))
+
 (fn agent_tools [] : Any
   # Handed to `eval` as `^capabilities`. Despite the name, this map is a
-  # *binding overlay* — it decides which names generated code can see. The
-  # authority behind each name comes from that function's own row above.
-  {^list_notes list_notes ^read_note read_note})
+  # *binding overlay*: it is how a name generated code writes gets bound to a
+  # value at all. The authority behind each name comes from that function's own
+  # row above.
+  #
+  # What makes it the *whole* surface is that the env below deliberately has no
+  # `^module`. An env built with `^module this_mod` also resolves every
+  # module-level `fn` — including ones never handed over, which then run under
+  # the module ceiling rather than a tool row. Omitting it leaves generated code
+  # with these names plus pure `$` stdlib, and nothing else.
+  {^list_notes list_notes
+   ^read_note read_note
+   ^write_note write_note
+   ^delete_note delete_note
+   ^note_exists note_exists
+   ^run_note run_note})
 
 (fn tool_summary [] : Str
-  "(list_notes) -> the file names in the workspace; (read_note \"name\") -> that file's contents. Nothing else is available: there is no filesystem, network, or environment access outside these two.")
+  """(list_notes) -> file names in the workspace
+(read_note "name") -> that file's contents
+(write_note "name" "text") -> create or overwrite it
+(delete_note "name") -> remove it
+(note_exists "name") -> true or false
+(run_note "name") -> evaluate that note's Gene source and return its result,
+  so you can test what you wrote. Cannot be nested.
+Nothing else is available: no filesystem, network, or environment access
+outside these six.""")
 
 # ---------------------------------------------------------------------------
 # Evaluating what the model sent back
 # ---------------------------------------------------------------------------
 
-(fn render_form [form] : Str
-  # One model-emitted form.
+(fn refusal? [message : Str] : Bool
+  # A denial raised at a declared row — a tool call — arrives as a typed
+  # `MissingCapability`. One raised by a raw native operation *inside* the
+  # evaluated form arrives untyped, carrying the capability name only in its
+  # message. This recognizes the second kind so both render as refusals, and so
+  # an ordinary mistake does not. See docs/design.md, "Open problems".
+  (contains? message " requires "))
+
+(fn run_program [forms] : Str
+  # The model's action is *a program*, not a list of independent statements, so
+  # the forms are evaluated as one `do` block. That is what lets a reply define
+  # something and then use it: a separate `eval` per form gets a fresh
+  # environment and loses every binding the previous form introduced.
   #
-  # A denial is a *value* here, not a crash: the agent renders it, the model
-  # sees it in the next turn's history, and it gets to try something else. That
-  # is why the refusal names the capability that was missing.
+  # The cost is that one bad form abandons the rest of the reply, and only the
+  # final value is returned. Generated code that wants to report more than its
+  # last expression can call `($println ...)`.
+  (var program `(do %forms...))
   (try
-    $"${(eval form ^in (env ^module this_mod ^capabilities (agent_tools)))}"
+    $"${(eval program ^in (env ^capabilities (agent_tools)))}"
     catch (MissingCapability ^capability wanted ^operation operation)
+    # A denial is a *value* here, not a crash: the agent renders it, the model
+    # sees it in the next turn's history, and it gets to try something else.
+    # That is why the refusal names the capability that was missing.
     $"refused: ${operation} needs ${wanted}"
     catch e
-    # A denial raised at a declared row — a tool call — arrives as a typed
-    # `MissingCapability` and is caught above. One raised by a raw native
-    # operation *inside* the evaluated form arrives untyped, carrying the
-    # capability name only in its message. Both are refusals; only one is
-    # destructurable. See docs/design.md, "Open problems".
-    $"refused: ${e/message}"))
-
-(fn run_forms [forms] : Any
-  (var results ($cell []))
-  (for form in forms
-    ((results ~ get) ~ push (render_form form)))
-  (results ~ get))
+    (if (refusal? e/message)
+      $"refused: ${e/message}"
+      $"error: ${e/message}")))
 
 # ---------------------------------------------------------------------------
 # Model transport
@@ -93,41 +158,80 @@
   # Offline mode, so the example runs and can be tested without a key.
   # Returns the same shape a real model is asked for.
   #
-  # The four branches are the four things worth seeing: a refused raw effect,
-  # a granted tool call, a refused attempt to walk out of the workspace, and
-  # plain computation that needs no authority at all.
-  (if (starts_with? task "write")
-    "{^status \"done\" ^response \"Saving that to the workspace.\" ^code [($fs/write_text \"scratch.txt\" \"generated\")]}"
-    (if (starts_with? task "read")
-      "{^status \"done\" ^response \"Reading the workspace.\" ^code [(list_notes) (read_note \"notes.txt\")]}"
-      (if (starts_with? task "escape")
-        "{^status \"done\" ^response \"Peeking outside the workspace.\" ^code [(read_note \"../package.gene\")]}"
-        "{^status \"done\" ^response \"No tools needed for that.\" ^code [(+ 1 2)]}"))))
+  # The five branches are the five things worth seeing: a refused raw effect, a
+  # granted read, a granted write, a refused attempt to walk out of the
+  # workspace, and a program that defines something and then uses it.
+  (if (starts_with? task "raw")
+    (then
+      """{^status "done" ^response "Writing without a tool." ^code [($fs/write_text "scratch.txt" "generated")]}""")
+    (elif (starts_with? task "read")
+      """{^status "done" ^response "Reading the workspace." ^code [(list_notes) (read_note "notes.txt")]}""")
+    (elif (starts_with? task "write")
+      """{^status "done" ^response "Saving that to the workspace." ^code [(write_note "todo.txt" "buy milk") (read_note "todo.txt")]}""")
+    (elif (starts_with? task "escape")
+      """{^status "done" ^response "Peeking outside the workspace." ^code [(read_note "../package.gene")]}""")
+    (else
+      """{^status "done" ^response "Defining and using in one program." ^code [(var xs [1 2 3]) (var total 0) (for x in xs (set total (+ total x))) total]}""")))
+
+(fn gene_primer [] : Str
+  # Without this the model writes Lisp or JavaScript: `(def ...)`, `xs.push(v)`,
+  # a chained send with no continuation marker. Every rule here is one an actual
+  # model got wrong on an actual turn.
+  """Gene is not Lisp and not JavaScript. The rules you need:
+- Every operator is PREFIX: (+ a 1), (== a b), (!= a b), (< a b). Never (a + 1)
+  or (a == b) — that reads as calling `a` with two arguments.
+- Comments start with "# " — one hash then a space. "##" is a read error.
+- Bind with (var x value). Define with (fn name [a b] body). There is no `def`.
+- Call a method by sending: (xs ~ push v), (m ~ get "k"). Never xs.push(v).
+  With no arguments the shortcut is xs/~size, but only on a named binding.
+- Standard library names need a $ sigil: ($println x), ($str/join xs ", "),
+  ($str/trim s). A bare (println ...) is an undefined symbol. Types stay bare:
+  Int, Str, List, Map.
+- map/filter work on streams, and continuation lines start with `; ~`:
+  ((xs ~ to_stream) ~ filter (fn [t] t/done) ; ~ into [])
+- Lists are [1 2 3]; (xs ~ push v) appends. Maps are {^key value}; read m/key,
+  write (m ~ put "key" v), or (m ~ assoc "key" v) for a new map.
+- Only nil, false and void are falsy. "" and 0 and [] are all truthy.
+- Strings interpolate with $"text ${expr}". Multi-line strings use triple quotes.
+- Conditionals: (if c a b), (if_not c body...), (if_yes c body...),
+  (match v (when pat body) (else nil)). Loops: (for x in xs ...), (while c ...).
+- A list has no persistent append. (xs ~ push v) mutates xs in place; there is
+  no `append` message.
+- Your whole ^code list is evaluated as ONE program, so a form may use what an
+  earlier form defined. The value of the last form is what you get back.
+- After writing a .gene note, call (run_note "name") to check it actually runs.
+  Do not report success for code you have not run.""")
 
 (fn system_prompt [] : Str
-  $"You are an agent whose only way to act is to emit a Gene program.
+  $"""You are an agent whose only way to act is to emit a Gene program.
 Reply with Gene data and nothing else, in exactly this shape:
-{^status \"done\"|\"in-progress\" ^code [form1 form2 ...] ^response \"...\"}
-^code holds forms to evaluate. Use ^status \"in-progress\" when you need
-to see their results before continuing.
+{^status "done"|"in-progress" ^code [form1 form2 ...] ^response "..."}
+^code holds the forms of one program. Use ^status "in-progress" when you need
+to see the result before continuing.
 The forms may use ordinary pure Gene plus exactly these tools:
-$(tool_summary)
+${(tool_summary)}
 A form that reaches past that is refused, and you will see the refusal.
-")
+Anything you want to survive to the next turn must be written to the workspace
+with (write_note ...); bindings do not outlive one reply.
+
+${(gene_primer)}
+""")
 
 (fn call_model [task history] : Str
   (if (env? "GENE_AGENT_STUB")
     (stub_reply task)
     (do
       (var key (get_env "OPENAI_AUTH_TOKEN"))
+      (var model
+        (if (env? "GENE_AGENT_MODEL")
+          (get_env "GENE_AGENT_MODEL")
+          "openai/gpt-5.6-terra"))
       (var body
         ($json/stringify
-          {^model (if (env? "GENE_AGENT_MODEL")
-                    (get_env "GENE_AGENT_MODEL")
-                    "openai/gpt-5.6-terra")
+          {^model model
            ^messages [
              {^role "system" ^content (system_prompt)}
-             {^role "user" ^content $"${task}\n\nPrior results:\n${history}"}
+             {^role "user" ^content $"${task}\n\nPrior turns:\n${history}"}
            ]}))
       (var r
         (await (request ^url "https://openrouter.ai/api/v1/chat/completions"
@@ -137,16 +241,13 @@ A form that reaches past that is refused, and you will see the refusal.
                         ^body body
                         ^timeout_ms 60000)))
       (if_not (== r/status 200)
-        (throw $"model returned status ${r/status}"))
+        (fail (AgentError ^message $"model returned status ${r/status}: ${r/body}")))
       (var parsed ($json/parse r/body))
       parsed/choices/0/message/content)))
 
 # ---------------------------------------------------------------------------
 # The two areas: output above, prompt below.
 # ---------------------------------------------------------------------------
-
-(fn show [lines] : Void
-  (for line in lines ($println "  " line)))
 
 (fn parse_envelope [reply] : Any
   # `read_all` yields a Stream over the forms in the reply; the envelope is the
@@ -171,10 +272,15 @@ A form that reaches past that is refused, and you will see the refusal.
         (var response envelope/response)
         (if (!= response nil)
           ($println "  " response))
-        (var results (run_forms envelope/code))
-        (show results)
+        (var forms envelope/code)
+        (var program `(do %forms...))
+        (var result (run_program forms))
+        ($println "  " result)
+        # The model sees the code it wrote next to what that code did. Feeding
+        # back results alone leaves it unable to tell which form drew which
+        # complaint, so it repeats the mistake.
         (var prior (history ~ get))
-        (history ~ set $"${prior}\n${results}")
+        (history ~ set $"${prior}\nturn: ${program}\nresult: ${result}")
         (if_not (== envelope/status "in-progress")
           (running ~ set false))
         (if_yes (>= (turn ~ get) 6)
@@ -184,7 +290,8 @@ A form that reaches past that is refused, and you will see the refusal.
 (fn main [args]
   ^capabilities *
   ($println "safe_ai_agent — the model's only action is a Gene program")
-  ($println "generated code may call: " (tool_summary))
+  ($println "generated code may call:")
+  ($println (tool_summary))
   (if (env? "GENE_AGENT_STUB")
     ($println "offline stub mode (GENE_AGENT_STUB set)"))
   ($println "")

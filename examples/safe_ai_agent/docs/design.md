@@ -20,33 +20,42 @@ GENE_AGENT_STUB=1 ../../bin/gene run src/main.gene
 ```
 
 `GENE_AGENT_STUB=1` returns canned replies, so the example runs and is testable
-with no API key. Four prompts show the four things worth seeing:
+with no API key. Five prompts show the five things worth seeing:
 
 | prompt | what the model emits | outcome |
 | --- | --- | --- |
-| `write a file` | `($fs/write_text "scratch.txt" …)` | refused — needs `fs/WriteFile` |
 | `read the notes` | `(list_notes)`, `(read_note "notes.txt")` | both succeed |
+| `write something` | `(write_note "todo.txt" …)`, then reads it back | succeeds — the grant is real |
+| `raw effect` | `($fs/write_text "scratch.txt" …)` | refused — needs `fs/WriteFile` |
 | `escape the sandbox` | `(read_note "../package.gene")` | refused at the declaration |
-| anything else | `(+ 1 2)` | `3` — no authority needed |
+| anything else | defines `xs`, sums it, returns `6` | a program, not a statement list |
 
 The whole session, end to end:
 
 ```
-> write a file
-   Saving that to the workspace.
-   refused: fs/write_text requires fs/WriteFile
 > read the notes
    Reading the workspace.
-   ["notes.txt"]
    hello from the workspace
+> write something
+   Saving that to the workspace.
+   buy milk
+> raw effect
+   Writing without a tool.
+   refused: fs/write_text requires fs/WriteFile
 > escape the sandbox
    Peeking outside the workspace.
    refused: capability declaration needs fs/ReadFile
 > say hi
-   No tools needed for that.
-   3
+   Defining and using in one program.
+   6
 > /quit
 ```
+
+The third row is the one to look at twice. The module now *holds*
+`fs/ReadWriteDir "workspace"`, and a raw `$fs/write_text` from generated code is
+still refused — because the evaluation env carries no ambient authority at all,
+only the six handed-in tools. Widening the module ceiling did not widen what the
+model can do.
 
 Live mode uses OpenRouter, with the key in `OPENAI_AUTH_TOKEN` and the model
 overridable via `GENE_AGENT_MODEL`. A stale shell `OPENAI_API_KEY` export beats
@@ -60,11 +69,26 @@ The model is asked to reply with Gene data and nothing else:
 {^status "done"|"in-progress" ^code [form1 form2 ...] ^response "..."}
 ```
 
-`^code` holds forms to evaluate; `^status "in-progress"` means the model wants
-to see their results before continuing, so the loop feeds the rendered results
-back as history and asks again (bounded at six turns). This envelope is a demo
-shape, not a commitment — it is the smallest thing that exercises emit,
+`^code` holds the forms of **one program**: they are spliced into a single
+`(do …)` and evaluated together, so a form may use what an earlier form defined.
+Evaluating them separately — which this example did originally — gives each form
+a fresh environment and silently discards every binding, which makes "define a
+function, then call it" impossible and is exactly the shape a model reaches for
+first. The cost of the fix is that one bad form abandons the rest of the reply,
+and only the last value comes back; generated code that wants to say more can
+call `($println …)`.
+
+`^status "in-progress"` means the model wants to see the result before
+continuing, so the loop feeds the emitted program *and* its result back as
+history and asks again (bounded at six turns). Feeding back results alone leaves
+the model unable to tell which form drew which complaint. This envelope is a
+demo shape, not a commitment — it is the smallest thing that exercises emit,
 evaluate, observe, retry.
+
+Bindings do not outlive a reply, so anything the model wants to keep goes into
+the workspace with `(write_note …)`. The filesystem is the agent's memory, and
+`(run_note …)` lets it execute what it saved — a write/run/fix loop inside the
+same sealed environment, adding no authority.
 
 The immediate win over tool calls is composition. A tool call is a single
 invocation; composing several means round-tripping through the model's context
@@ -140,12 +164,13 @@ Three layers, in the order they stop things.
 
 ```gene
 (mod safe_ai_agent
-  ^capabilities [net/* os/Env (fs/ReadDir "workspace")])
+  ^capabilities [net/* os/Env (fs/ReadWriteDir "workspace")])
 ```
 
-The agent may talk to the model, read its API key, and read `workspace/`. It
-holds no write authority anywhere, so no bug in the loop below can write a file
-— not because the loop is careful, but because the authority is absent.
+The agent may talk to the model, read its API key, and read and write
+`workspace/`. It holds no authority of any kind outside that directory, so no
+bug in the loop below can touch a file elsewhere — not because the loop is
+careful, but because the authority is absent.
 
 This row also re-roots the module's filesystem authority: inside it, a relative
 path resolves against `workspace/`, not the launch directory. That is why the
@@ -153,14 +178,14 @@ tool rows say `"."` and generated code says `"notes.txt"`. It is the single most
 surprising rule in the capability system (`capabilities.md` §7.5), and it is the
 same rule `examples/capabilities/README.md` calls rule 2.
 
-**2. Model-emitted code holds nothing.** Forms are evaluated with:
+**2. Model-emitted code holds nothing.** The program is evaluated with:
 
 ```gene
-(eval form ^in (env ^module this_mod ^capabilities (agent_tools)))
+(eval program ^in (env ^capabilities (agent_tools)))
 ```
 
-Evaluated code gets **no ambient authority at all**. A raw `($fs/read_text …)`
-in generated code is refused even though the enclosing module *does* hold read
+Evaluated code gets **no ambient authority at all**. A raw `($fs/write_text …)`
+in generated code is refused even though the enclosing module *does* hold write
 authority over `workspace/`. Pure computation is all that works by default.
 
 Despite its name, `env ^capabilities` is not an authority row — the runtime
@@ -169,7 +194,11 @@ the evaluated code can see. It is the object-capability half of the design: the
 agent hands over specific callables rather than widening a context. (This is a
 divergence from the spec; see Open problems.)
 
-**3. Each handed tool carries its own row.** The overlay supplies two names:
+Note what is *absent* from that call: `^module`. Adding it would also publish
+every module-level `fn` to the evaluated code, which is a privilege leak rather
+than a convenience — see Open problems.
+
+**3. Each handed tool carries its own row.** The overlay supplies six names:
 
 ```gene
 (fn list_notes [] : Any
@@ -179,6 +208,11 @@ divergence from the spec; see Open problems.)
 (fn read_note [name : Str] : Str
   ^capabilities [(fs/ReadFile name)]
   ($fs/read_text name))
+
+(fn write_note [name : Str, content : Str] : Str
+  ^capabilities [(fs/WriteFile name)]
+  ($fs/write_text name content)
+  $"wrote ${name}")
 ```
 
 `read_note` forwards its argument to the filesystem without inspecting it, and
@@ -186,6 +220,11 @@ still cannot be walked out of `workspace/`. `(fs/ReadFile name)` is a
 parameter-dependent row, so the check resolves `name` against the module root
 and refuses `../package.gene` *at the declaration*, before the body runs. The
 refusal reads `capability declaration needs fs/ReadFile`.
+
+`write_note` is confined by the same rule, and a live model asked to write
+`../../ESCAPED.txt` gets `refused: capability declaration needs fs/WriteFile`
+with nothing written. That is the row doing the work: the write tool is as
+undefensive as the read tool.
 
 That is the property worth dwelling on: **the tool is not written defensively
 and does not need to be.** There is no path validation in `read_note`. A
@@ -200,10 +239,28 @@ Two further observations from building it:
 - Evaluated code can locally shadow a tool name (`(var read_note 1)`). This
   costs it access and grants it nothing; binding overlays are not authority.
 
-**A denial is a value, not a crash.** `render_form` catches the refusal and
-renders it into the results, so the model sees `refused: …` in the next turn's
+**A denial is a value, not a crash.** `run_program` catches the refusal and
+renders it into the result, so the model sees `refused: …` in the next turn's
 history and can try something else. An agent that dies on its first denial
 cannot adapt, and adaptation is most of what makes the loop worth running.
+
+**A refusal and a mistake are different words.** An earlier version rendered
+every failure as `refused: …`, so `undefined symbol: def` was indistinguishable
+from a capability denial. That is bad for the model, which cannot tell "you lack
+authority, try another approach" from "you made a typo, fix it" — and worse for
+this example, whose whole argument is that a denial is a distinct, legible
+thing. Ordinary errors now render as `error: …`, and only denials say
+`refused:`.
+
+**Model competence is a real cost, and a primer is most of the remedy.** Asked
+to write a todo app with no syntax guidance, a current model produced `(def …)`,
+`todos.push(t)`, and chained sends with no `;` continuation — none of which are
+Gene. `system_prompt` now carries a short primer, and every rule in it is one an
+actual model got wrong on an actual turn. With it, and with `(run_note …)` to
+execute what it saved, the same model wrote a working todo app, ran it, hit
+`error: no message 'get' on List`, diagnosed it, and rewrote that function as a
+stream transformation — a self-correcting loop that produced a file which parses
+and runs standalone.
 
 ## What this direction does not require
 
@@ -259,11 +316,29 @@ inherited from the original proposal.
   it lacked cannot do so uniformly. `render_form` carries both arms for this
   reason.
 
+- **`env ^module` is a hole, and the fix is to omit it.** An env built as
+  `(env ^module this_mod ^capabilities tools)` resolves the overlay names *and
+  every module-level `fn`*. Generated code could therefore call any function in
+  this file — including ones never handed to it, which then run under the module
+  ceiling rather than a tool row, so a helper with no declared row hands out the
+  module's whole authority. It was reachable here: a probe module with an
+  `os/Env` ceiling and a rowless `read_the_key` helper had that helper called
+  successfully from evaluated code.
+
+  Omitting `^module` closes it — evaluated code then sees the overlay plus the
+  `$` stdlib and nothing else — and that is what `run_program` now does. It is
+  listed as an open problem rather than a fixed bug because the safe
+  construction is the non-obvious one: `^module` reads like "which module is
+  this code part of", not "publish every binding in that module to it".
+
 - **Partial execution.** A malformed tool call is rejected whole. A program can
   fail halfway with some effects already applied. Capability bounds limit *what*
   can happen, not *how much of it* happened before the failure. Transactional or
-  compensating semantics are an open question. This example dodges the problem
-  by granting no write authority at all — there is nothing to half-apply.
+  compensating semantics are an open question, and this example now has real
+  exposure to it: `write_note` is a granted effect, and a program that writes
+  two notes and fails between them leaves the first one written. Evaluating
+  `^code` as a single `do` makes this sharper, not softer — the abandoned
+  remainder is larger.
 
 - **Adaptation.** Tool calls let a model observe a result and change course. A
   program is fire-and-forget unless it can suspend and resume. The
@@ -283,6 +358,14 @@ inherited from the original proposal.
   costs. It probably is — it is a safety property unobtainable from a Python
   sandbox at any model scale — but this is the assumption the whole direction
   rests on and should be stated before building, not after.
+
+  Measured here, the gap is narrower than it first looks but does not close on
+  its own: a prompt primer plus the ability to run what it wrote took the same
+  model from "emits `def` and `.push`" to a working, self-corrected program. The
+  remaining errors were the shapes with no analogue in another language — the
+  `; ~` chain continuation above all. That suggests the durable part of the gap
+  is Gene's *distinctive* syntax rather than its unfamiliarity in general, which
+  is the part a primer can address and pretraining cannot.
 
 ## What would make this concrete
 
