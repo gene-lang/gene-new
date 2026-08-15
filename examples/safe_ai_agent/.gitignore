@@ -1,0 +1,3 @@
+# Nothing here yet. `workspace/` is a committed fixture, not scratch space:
+# generated code is granted read authority over it and nothing may write to it,
+# so it never accumulates output. See docs/design.md.
