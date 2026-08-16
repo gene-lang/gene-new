@@ -191,11 +191,11 @@ a value — Gene wants the second.
 | Typed events | `docs/proposals/events.md` | proposal |
 | Session log | serde, event logs (`examples/ai_agent/home/events.gene`) | shipped |
 | `cordis.yml` | a Gene data manifest seeding the live table | pattern exists |
-| Plugin uninstall | provider removal yes; module unload no (`scoped-impls.md` §6) | partial |
+| Plugin uninstall | provider removal via `Map/delete`; module unload no (`scoped-impls.md` §6) | partial |
 
 More is already shipped than the earlier draft credited. The gap list is:
-reversible effects as a registration primitive, `Map` key removal, module
-unload, the event bus, and the harness assembly itself.
+reversible effects as a registration primitive, module unload, the event bus,
+and the harness assembly itself.
 
 ## 3. Design: Gene Harness
 
@@ -283,90 +283,132 @@ behave — and a filesystem seam a plugin *cannot* exceed. It needs no new langu
 feature: the protocol and impl above run as written today, and the refusals
 quoted are real output, not illustrations.
 
-### 3.3 The registry: a living seam table
+### 3.3 The kernel, written as code
 
-The harness is a **running application, not a configuration**. A seam table is an
-ordinary value holding one provider per seam, and installing, replacing, or
-removing a provider is an operation on it while the app runs:
+The harness is a **running application, not a configuration**, and the plugin
+system is a subsystem with its own types and lifecycle — not a mapping onto
+packages, `try`, and scoped impls. Those are how Gene *distributes* and
+*compiles* code; a plugin architecture is about what happens at runtime, and it
+wants objects of its own.
 
-```gene
-(var registry ($cell {}))
-
-(fn provide [seam : Str, value] ((registry ~ get) ~ put seam value))
-(fn resolve [seam : Str]        ((registry ~ get) ~ get seam))
-```
-
-A consumer asks the table rather than naming a provider:
+A working prototype is in `tmp/harness-repro/kernel_prototype.gene`; the
+transcript below is its real output. Three types:
 
 ```gene
-(fn read_via [path : Str] : Str
-  ((resolve "HarnessFs") ~ HarnessFs:read_text path))
+(type Plugin  ^props {^id Str ^provides (List Str)
+                      ^activate Any ^deactivate Any?})
+(type Harness ^props {^seams Any ^plugins Any ^effects Any})
+(type HarnessError ^props {^message Str} ^impl [Error])
 ```
 
-**Swapping is live, and the seam contract survives it.** Measured — three
-providers through one table, no reload and no restart:
+A plugin is a **value**, not a module: an id, the seams it claims, and two entry
+points. That is what makes it installable from anywhere — a file loaded at
+runtime, a package dependency, or a literal built in memory for a test.
 
-```
-local : ws file
-upper : ws file
-rogue : rogue refused: os/get_env requires os/Env
-escape: refused: declaration requires fs/ReadFile
-```
+### 3.3.1 The effect ledger
 
-The third line is the point. A provider installed at runtime, whose own module
-holds `net/*` and `os/Env`, is still bounded by the protocol's row (§3.2). The
-authority contract belongs to the seam, so it holds for providers the harness
-had never seen when it started.
-
-This is why the dynamic design needs no impl reload. `docs/scoped-impls.md` does
-support transactional reload, but **swapping a provider is a value assignment,
-not a recompilation** — the impls stay fixed and the *choice* moves. Reload
-remains the tool for changing what an impl does; the registry is the tool for
-changing which one answers.
-
-One provider per seam key at a time. Installing a second replaces the first
-rather than layering over it, so there is never a stack whose order decides
-behaviour — the property §2.2 wanted, kept without giving up dynamism.
-
-### 3.3.1 Installing a plugin at runtime, bounded
-
-`$runtime/load_sandboxed` loads a module *while the application runs*, with only
-the standard-library namespaces named in its grants, and the restriction covers
-everything that module imports:
+The kernel owns the tables. A plugin never touches them; it contributes through
+`provide`, and every contribution is recorded against the plugin id:
 
 ```gene
-(var p ($runtime/load_sandboxed "plugins" "pure.gene" [] []))
-(p/describe)                       ; "pure plugin: computation only"
+(fn provide [h : Harness, id : Str, seam : Str, value] : Any
+  (var seams (h/seams ~ get))
+  (if_yes (!= (seams ~ get seam) void)
+    (fail (HarnessError ^message $"seam ${seam} already bound; replace it explicitly")))
+  (seams ~ put seam value)
+  (record_effect h id {^kind "seam" ^seam seam})
+  seam)
 ```
 
-Measured, a plugin loaded with no grants that reaches for the filesystem cannot
+**The ledger holds effect records, not disposer closures.** Cordis returns a
+disposer from `ctx.effect()`; this design stores data and keeps one function
+that knows how to reverse each kind:
+
+```gene
+(fn reverse_effect [h : Harness, e]
+  (if (== ($to_str e/kind) "seam")
+    ((h/seams ~ get) ~ delete e/seam)))
+```
+
+Three reasons to prefer data over closures here, in increasing order of weight:
+an effect record is **inspectable**, so `what has this plugin registered?` is a
+query rather than an opaque list of functions; it is **serializable**, which
+matters because §3.6 wants everything model-visible reconstructible from a log,
+and a closure is not; and it does not depend on a captured environment surviving
+the frame that created it — which, in this codebase, it did not reliably do (see
+§5).
+
+Unwinding is LIFO, mirroring the generator close order in `docs/spec/streams.md`.
+
+### 3.3.2 Activation is all-or-nothing
+
+The property worth building the kernel for: a plugin that fails halfway through
+`activate` leaves nothing behind.
+
+```gene
+(fn install [h : Harness, p : Plugin] : Str
+  (var plugins (h/plugins ~ get))
+  (if_yes (!= (plugins ~ get p/id) void)
+    (fail (HarnessError ^message $"plugin ${p/id} already installed")))
+  (try
+    ((p/activate) h p/id)
+    (plugins ~ put p/id p)
+    $"installed ${p/id}"
+    catch e
+    (unwind h p/id)
+    (fail (HarnessError ^message $"activate ${p/id} failed: ${e/message}"))))
+```
+
+This is not "reuse `try`". `try` is the local mechanism; the *architecture* is
+that the kernel knows what the plugin registered and can reverse it without the
+plugin's cooperation. A plugin cannot forget to clean up, because cleanup was
+never its job.
+
+Measured, from the prototype — a plugin that registers one seam and then fails:
+
+```
+install good  : installed fs_local
+resolve Fs    : LOCAL-FS
+install combo : installed combo
+installed     : ["fs_local" "combo"]
+install bad   : refused: activate broken failed: boom during activate
+Log rolled back? yes — no provider left behind
+installed     : ["fs_local" "combo"]
+double install: refused: plugin fs_local already installed
+uninstall combo: uninstalled combo
+Llm gone?      : yes
+Fs still there : LOCAL-FS
+installed      : ["fs_local"]
+```
+
+Every line is a property the design claims: atomic activation, no partial
+registration, one provider per seam, uninstall that removes exactly one
+plugin's contributions and leaves its neighbour's intact.
+
+### 3.3.3 Binding is explicit; there is no last-wins
+
+`provide` **refuses** a seam that is already bound. Replacement is a separate,
+named operation rather than a second registration that silently shadows the
+first. That is the §2.2 rule — order must not decide — expressed as kernel
+behaviour instead of a convention, and it costs one line.
+
+### 3.3.4 Installing a plugin at runtime, bounded
+
+A plugin value can come from anywhere, including a module loaded while the
+application runs. `$runtime/load_sandboxed` does that with only the standard-
+library namespaces named in its grants, transitively across everything that
+module imports:
+
+```gene
+(var p ($runtime/load_sandboxed "plugins" "fs_local.gene" ["fs"] []))
+(install h (p/plugin))
+```
+
+Measured: a plugin loaded with no grants that reaches for the filesystem cannot
 find one — a denied namespace is *absent*, not merely refused, and `gene` is a
-reserved root it cannot rebind to fetch the real one back.
-
-So plugin installation is already capability-bounded at runtime, which is
-precisely when it matters most: the harness admits code it did not compile
-against, and decides what that code may reach at the moment it admits it. The
-`grants` list is the honest place to put that decision, because it is the thing
-an operator can read.
-
-### 3.3.2 Uninstall, and what is missing
-
-Removing a provider is removing it from the table. Two gaps, both real:
-
-- **`Map` has no key removal.** Its message surface is `assoc get put to_stream
-  to_pairs_stream`; there is no `delete`. Removing a seam today means rebuilding
-  the table without that key. A `Map/delete` (or a persistent `dissoc`) is the
-  smallest missing piece for a clean uninstall path.
-- **There is no module unload.** `docs/scoped-impls.md` §6 is explicit: "MVP has
-  no individual module unload. Loaded modules persist until reload or whole-
-  application teardown." So uninstall drops the *provider*, and the plugin's code
-  stays resident. For a long-lived harness cycling many plugins that is a leak,
-  not a correctness bug — but it is the difference between "uninstall" and
-  "stop using".
-
-Neither blocks the design. A harness can install, replace, and stop using
-plugins today; reclaiming their code needs the removal-symmetric form of reload
-that §6 already anticipates.
+reserved root it cannot rebind to fetch the real one back. So the kernel decides
+what admitted code may reach at the moment it admits it, and `grants` is the
+operator-readable record of that decision.
 
 ### 3.4 The boundary is core, and plugins are bounded twice
 
@@ -421,21 +463,18 @@ first. A plugin that reaches around the log is the one bug class this invariant
 is designed to make impossible, and it is checkable — the assembler's capability
 row need not include anything else.
 
-### 3.7 Reversible effects — the remaining gap
+### 3.7 Reversible effects — closed by the ledger
 
-`dsh` gets unload correctness from `ctx.effect()` returning a disposer. Gene has
-the pieces (`ensure`, scoped-impl transactional activation and reload) but no
-single registration primitive that guarantees the reverse path — and with a live
-registry this stops being theoretical. A provider that registered a tool, opened
-a database handle, and subscribed to an event has three things to undo, and
-today each plugin is trusted to remember.
+An earlier draft listed this as the one language gap, wanting a Gene equivalent
+of `ctx.effect()`. Writing the kernel closed it without a language change: the
+ledger *is* the reverse path, and because it holds records rather than closures
+it needs nothing from the language beyond a map and a list.
 
-The smallest thing that would close it: `provide` returns a disposer, and the
-seam table runs it when that provider is replaced or removed — LIFO within a
-plugin, mirroring the generator close semantics already specified in
-`docs/spec/streams.md`. This does not need to be a language change; it needs the
-registry to be the one door everything registers through, so "did you clean up?"
-stops being per-plugin diligence and becomes a property of replacement.
+What remains is breadth, not mechanism. `reverse_effect` knows one kind today
+(`seam`); a real harness adds `tool`, `event-subscription`, `route`, and each is
+a new arm in one function the kernel owns. That is the right place for the
+knowledge — a plugin that invents an effect the kernel cannot reverse should not
+be able to register it.
 
 ## 4. Recommendation
 
@@ -444,9 +483,11 @@ modifiable from then on. Adopt, in this order:
 
 1. **Seams as protocols carrying the authority contract** (§3.2). This is the
    piece that makes every later step safe, and it works today.
-2. **The seam table as a value** (§3.3) — one provider per seam, replacement
-   explicit and singular, swappable at runtime. Dynamism without letting order
-   decide.
+2. **The kernel as code** (§3.3) — `Plugin` and `Harness` as types, an effect
+   ledger the kernel owns, atomic activation, explicit binding. Not a mapping
+   onto packages or scoped impls: those distribute and compile code, while this
+   is about what happens at runtime. A prototype exists and passes the
+   properties it claims.
 3. **Model-visible ⟺ logged**, with `request/assemble` bounded so it cannot read
    around the log. A live system that can be recomposed at 3am needs replay more
    than a static one does, not less.
@@ -455,9 +496,12 @@ modifiable from then on. Adopt, in this order:
 5. **Disposers on `provide`** (§3.7), once enough plugins exist that replacement
    leaks something.
 
-Two small language gaps this design would like closed, neither blocking:
-`Map` key removal, and the removal-symmetric form of reload that
-`docs/scoped-impls.md` §6 already anticipates as module unload.
+One language gap this design would like closed, not blocking: the
+removal-symmetric form of reload that `docs/scoped-impls.md` §6 already
+anticipates as module unload — which reclaims a removed plugin's *code*, where
+the ledger only reclaims its *contributions*. (`Map` key removal, the other gap
+this document originally named, is now implemented; the two runtime defects in
+§5 are separate and worth fixing on their own.)
 
 Do not adopt: ordered profile/bundle patch layers, a general waterfall
 middleware mechanism, or an *ambient* DI container. The first two make order
@@ -471,6 +515,37 @@ without seams. Re-expressing its model adapter as one seam — and swapping the
 provider at runtime, mid-session, with the session log intact across the
 swap — would test the design at its narrowest and most interesting point before
 anything is committed to.
+
+## 5. Defects found while prototyping this
+
+Recorded because they were found by writing the kernel rather than reasoning
+about it, and because two of them shaped the design above.
+
+- **SIGSEGV in the VM, cross-module.** The two-file version of the prototype
+  crashes in `acquireSimpleCallScope` / `nimIncRefCyclic`, reproducibly (2/2).
+  The same code in a single file runs fine, so it is the module boundary, not
+  the logic. Minimal cases — a closure in a type prop called across modules, and
+  cross-module `fail`/`try` with an imported error type — do *not* reproduce it,
+  so the trigger is narrower than either. Repro preserved at
+  `tmp/harness-repro/` (`h.gene` + `main.gene` crash; `single.gene` does not).
+
+- **A closure stored beyond its frame lost its capture.** A disposer built as
+  `(fn [] (seams ~ delete seam))` and stored in the ledger saw `seams` as `Nil`
+  when it was finally run, while a sibling capture in the same closure resolved.
+  Rewriting it to reach through the harness value gave
+  `invalid local slot for symbol: h` instead. Simple capture-and-defer works in
+  isolation, so this is not "closures do not capture"; it is something narrower
+  and unidentified. It is the direct reason §3.3.1 stores effect *records*
+  rather than disposer closures — which is a better design anyway, but it was
+  chosen under duress and that is worth knowing.
+
+- **An omitted optional prop reads as `void`, not `nil`.** `(!= p/deactivate nil)`
+  is therefore true for a plugin that declared no `deactivate`, and the kernel
+  called `void`. `($absent? …)` is the test that covers both.
+
+The first two are runtime defects worth fixing independently of the harness. The
+third is documented behaviour that is easy to get wrong, and is now in the
+skill's pitfalls.
 
 ## Sources
 
