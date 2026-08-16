@@ -7928,7 +7928,12 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: Scope,
   var ceiling: CapabilityContext
   if crossesModule:
     var module: Value
-    if calleeRoot.lookupOptional("this_mod", module) and
+    if calleeRoot.evalCapabilityCeiling != nil:
+      # An eval overlay root has no `this_mod`, so without this the boundary
+      # below would resolve its ceiling to nothing and strip the authority the
+      # Env was minted with on the very first call evaluated code makes.
+      ceiling = calleeRoot.evalCapabilityCeiling
+    elif calleeRoot.lookupOptional("this_mod", module) and
         module.kind == vkModule:
       ceiling = module.moduleCapabilityCeiling
       # §5.3.1: the effective bound is
@@ -11462,10 +11467,16 @@ proc importNamespaceBindings(target: Scope, source: Value) =
     if value.kind != vkVoid:
       target.define(name, value)
 
-proc materializeEvalParent(env: Value): Scope =
+proc materializeEvalParent(env: Value, app: Application = nil): Scope =
   let chain = envChain(env)
   let module = nearestEnvModule(chain)
-  var current = builtinsScope()
+  # Root the overlay in the *creating* application's built-ins, not whatever
+  # `currentApplication()` happens to return. They can differ, and when they do
+  # every capability grant reaching evaluated code is minted by one
+  # application's provider and checked against another's, so `isOwnedBy` fails
+  # and the authority silently evaporates. That was invisible while evaluated
+  # code held no authority at all; granting it any makes it load-bearing.
+  var current = if app != nil: builtinsScope(app) else: builtinsScope()
   if module.kind != vkNil:
     let moduleScope = newScope(current)
     moduleScope.importNamespaceBindings(module)
@@ -13335,9 +13346,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let app = scope.application()
           for item in importsValue.listItems:
             imports.add normalizeEnvImport(app, item)
-          spush newEnv(bindingsFromMap("env ^bindings", bindingMap), parent,
-                           imports, module, capabilities, policy,
-                           bindingScope = scope)
+          let envValue = newEnv(bindingsFromMap("env ^bindings", bindingMap),
+                                parent, imports, module, capabilities, policy,
+                                bindingScope = scope)
+          if inst[].intArg >= 0:
+            # §14: a selector row is resolved **here**, against the creating
+            # context, not deferred to `eval`. Resolving late would let an Env
+            # minted under a narrow context be evaluated later under a wider
+            # one and pick up authority its creator never held.
+            let capBlock = chunk.capabilityBlocks[inst[].intArg]
+            envValue.setEnvCapabilityContext(
+              resolveCapabilityRow(app, capBlock.row, capabilityContext, scope))
+          spush envValue
         of opEval:
           let env = spop()
           let node = spop()
@@ -13348,7 +13368,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if env.kind == vkCallerEnv:
               materializeCallerEvalParent(env)
             else:
-              materializeEvalParent(env)
+              materializeEvalParent(env, scope.application())
           let evalScope = newScope(evalParent)
           evalScope.implOverlayRoot = true
           evalScope.evalBudget =
@@ -13362,7 +13382,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             except GeneError as e:
               raiseCompileError(scope, e.msg)
               newChunk()
+          # Evaluated code runs with the authority its Env was minted with, and
+          # with **nothing** when the Env declared no row. The empty case is
+          # installed explicitly rather than inherited: evaluated source is the
+          # least trusted thing the runtime handles, so it must not pick up the
+          # evaluator's ambient context by omission. `newCapabilityContext()` is
+          # an empty context, which is not the same as `nil` — nil would mean
+          # "no opinion" and fall through to the caller's.
+          let granted =
+            if env.kind == vkEnv and env.envCapabilityContext != nil:
+              env.envCapabilityContext
+            else:
+              newCapabilityContext()
           pushFrame()
+          installCapabilityTransition(
+            CapabilityTransition(context: granted, presence: nil))
+          evalScope.evalCapabilityCeiling = granted
           enterFrame(evalChunk, evalScope, true)
           continue
         of opMakeAlias:

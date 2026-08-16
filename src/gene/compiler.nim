@@ -6257,7 +6257,22 @@ proc compileEnv(c: var Compiler, node: Value) =
     compileExpr(c, node.props["module"])
   else:
     c.emitConst NIL
-  if node.props.hasKey("capabilities"):
+  # `^capabilities` carries two different things, told apart by shape
+  # (capabilities.md §14). A **list** is a selector row — the ambient authority
+  # evaluated code runs under — and is compiled like any other row rather than
+  # as an expression, because `(fs/ReadDir "x")` in expression position would
+  # be a call to something that is not a function. A **map** stays the lexical
+  # binding overlay it has always been: it says which names exist, not what
+  # they may do. `^bindings` remains the plainer spelling for that.
+  var capabilityRowIndex = -1
+  if node.props.hasKey("capabilities") and
+      node.props["capabilities"].kind == vkList:
+    let row = c.compileCapabilityRow(node.props["capabilities"],
+                                     allowLexical = true)
+    capabilityRowIndex = c.chunk.addCapabilityBlock(
+      CapabilityBlockProto(row: row, body: nil))
+    c.emitConst NIL
+  elif node.props.hasKey("capabilities"):
     compileExpr(c, node.props["capabilities"])
   else:
     c.emitConst NIL
@@ -6265,7 +6280,7 @@ proc compileEnv(c: var Compiler, node: Value) =
     compileExpr(c, node.props["policy"])
   else:
     c.emitConst NIL
-  discard c.emit(opMakeEnv)
+  discard c.emit(opMakeEnv, capabilityRowIndex)
 
 proc compileEval(c: var Compiler, node: Value) =
   if node.body.len != 1:

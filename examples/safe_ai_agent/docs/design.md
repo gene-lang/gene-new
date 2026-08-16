@@ -27,10 +27,10 @@ with no API key. Five prompts show the five things worth seeing:
 
 | prompt | what the model emits | outcome |
 | --- | --- | --- |
-| `read the notes` | `(list_notes)`, `(read_note "notes.txt")` | both succeed |
-| `write something` | `(write_note "todo.txt" …)`, then reads it back | succeeds — the grant is real |
-| `raw effect` | `($fs/write_text "scratch.txt" …)` | refused — needs `fs/WriteFile` |
-| `escape the sandbox` | `(read_note "../package.gene")` | refused at the declaration |
+| `read the notes` | `($fs/list_dir ".")`, `($fs/read_text "notes.txt")` | both succeed |
+| `write something` | `($fs/write_text "todo.txt" …)`, then reads it back | succeeds — the grant is real |
+| `raw effect` | `($os/get_env "HOME")` | refused — needs `os/Env` |
+| `escape the sandbox` | `($fs/read_text "../package.gene")` | refused |
 | anything else | defines `xs`, sums it, returns `6` | a program, not a statement list |
 
 The whole session, end to end:
@@ -43,22 +43,22 @@ The whole session, end to end:
    Saving that to the workspace.
    buy milk
 > raw effect
-   Writing without a tool.
-   refused: fs/write_text requires fs/WriteFile
+   Reading an environment variable.
+   refused: os/get_env needs os/Env
 > escape the sandbox
    Peeking outside the workspace.
-   refused: capability declaration needs fs/ReadFile
+   refused: fs/read_text needs fs/ReadFile
 > say hi
    Defining and using in one program.
    6
 > /quit
 ```
 
-The third row is the one to look at twice. The module now *holds*
-`fs/ReadWriteDir "workspace"`, and a raw `$fs/write_text` from generated code is
-still refused — because the evaluation env carries no ambient authority at all,
-only the six handed-in tools. Widening the module ceiling did not widen what the
-model can do.
+The third row is the one to look at twice. Generated code calls the ordinary
+standard library, and the module *does* hold `os/Env` — it needs it to read the
+API key. The call is still refused, because that authority is not in the row the
+evaluated program was granted. What the module holds and what the model may use
+are separate questions.
 
 Live mode uses OpenRouter, with the key in `OPENAI_AUTH_TOKEN` and the model
 overridable via `GENE_AGENT_MODEL`. A stale shell `OPENAI_API_KEY` export beats
@@ -89,7 +89,7 @@ demo shape, not a commitment — it is the smallest thing that exercises emit,
 evaluate, observe, retry.
 
 Bindings do not outlive a reply, so anything the model wants to keep goes into
-the workspace with `(write_note …)`. The filesystem is the agent's memory, and
+the workspace with `($fs/write_text …)`. The filesystem is the agent's memory, and
 `(run_note …)` lets it execute what it saved — a write/run/fix loop inside the
 same sealed environment, adding no authority.
 
@@ -119,29 +119,29 @@ how it was launched, not of a config file it could rewrite.**
 
 Two roots make a *relative* path ambiguous — `"notes.txt"` could name either
 root, which is two different host targets, so the runtime refuses to guess
-(`capabilities.md` §6.3). Each tool narrows to its own root first and then calls
-a helper carrying the row:
+(`capabilities.md` §6.3). That is why only the writable root is ambient, and the
+skill is reached through one narrowing reader:
 
 ```gene
-(fn read_note [name : Str] : Str
-  (with_capabilities [(fs/ReadWriteDir WORKSPACE)]
+(fn read_skill [name : Str] : Str
+  (with_capabilities [(fs/ReadDir SKILL_ROOT)]
     (read_file_at name)))
 ```
 
 The narrowing selector is written `../workspace`, not `workspace`: a selector
 path resolves *inside* the active root, so the bare name would mean
 `workspace/workspace`. The `../` form canonicalizes back onto the root itself
-from any root that could be active, which is what makes it unambiguous.
+from any root that could be active, which is what makes it unambiguous. A `fn`
+declaration row is stricter still — it admits only literals, parameters, or
+`this`, so a `const` cannot appear there and the path is spelled out.
 
 The narrowing confines *rights*, not just location. The skill root carries
 `fs/ReadDir` only, so a write attempted under it is refused even though the
-module holds write authority over the other root — the same undefensive tools,
-bounded differently by which row is active.
+module holds write authority over the other root.
 
-A live model with the skill loaded found `reference/pitfalls.md` through
-`(skill_files)`, read it with `(read_skill …)`, and answered a question about
-`//` being remainder rather than floor division — a fact that appears nowhere in
-its prompt, only in the file it chose to open.
+A live model with the skill loaded found `reference/pitfalls.md`, read it, and
+answered a question about `//` being remainder rather than floor division — a
+fact that appears nowhere in its prompt, only in the file it chose to open.
 
 The immediate win over tool calls is composition. A tool call is a single
 invocation; composing several means round-tripping through the model's context
@@ -206,8 +206,8 @@ track authority through data flow, not just call structure.
 Parameter-dependent selectors matter here more than anywhere else.
 `fs/WriteFile` narrowed by an argument is what lets a grant say "this program
 may write exactly the file it was given", which is the tool-call guarantee
-recovered inside a program. `read_note` in this example is precisely that, and
-§"What the example enforces" shows it holding.
+recovered inside a program. The workspace row in this example is precisely that,
+and §"What the example enforces" shows it holding.
 
 ## What the example enforces
 
@@ -231,65 +231,65 @@ tool rows say `"."` and generated code says `"notes.txt"`. It is the single most
 surprising rule in the capability system (`capabilities.md` §7.5), and it is the
 same rule `examples/capabilities/README.md` calls rule 2.
 
-**2. Model-emitted code holds nothing.** The program is evaluated with:
+**2. Model-emitted code holds exactly one directory.** The program is evaluated
+with:
 
 ```gene
-(eval program ^in (env ^capabilities (agent_tools)))
+(env ^bindings (agent_tools)
+     ^capabilities [(fs/ReadWriteDir WORKSPACE)])
 ```
 
-Evaluated code gets **no ambient authority at all**. A raw `($fs/write_text …)`
-in generated code is refused even though the enclosing module *does* hold write
-authority over `workspace/`. Pure computation is all that works by default.
+`^capabilities` is the **ambient authority row** (`capabilities.md` §14): a
+selector list, resolved against *this* module's context at the moment the Env is
+minted, so it can never name more than the module already holds. `^bindings`
+carries the name overlay. An Env with no row grants nothing at all, which stays
+the default everywhere else in the runtime.
 
-Despite its name, `env ^capabilities` is not an authority row — the runtime
-requires a **map** and installs it as a *binding overlay*, deciding which names
-the evaluated code can see. It is the object-capability half of the design: the
-agent hands over specific callables rather than widening a context. (This is a
-divergence from the spec; see Open problems.)
+That is what lets generated code call the **ordinary standard library** —
+`($fs/read_text "notes.txt")`, `($fs/write_text "todo.gene" src)` — instead of a
+bespoke tool surface someone has to invent, document, and keep in sync. There is
+no `read_note`. The confinement is the row, not the wrapper.
+
+The boundary is still sharp. `($os/get_env "HOME")` from generated code is
+refused with `os/get_env needs os/Env` even though the enclosing module holds
+`os/Env` to reach the API key, because that authority is not in the row. So is
+any path outside the workspace.
 
 Note what is *absent* from that call: `^module`. Adding it would also publish
 every module-level `fn` to the evaluated code, which is a privilege leak rather
 than a convenience — see Open problems.
 
-**3. Each handed tool carries its own row.** The overlay supplies six names:
+Only the writable root is ambient. Two ambient roots would make a relative name
+like `"todo.gene"` mean two different host targets, which §6.3 rightly refuses
+to resolve, so the read-only skill directory is reached through a single
+narrowing reader instead.
 
-```gene
-(fn list_notes [] : Any
-  ^capabilities [(fs/ReadDir ".")]
-  ($fs/list_dir "."))
+**3. Paths are confined by the row, not by the caller.** The workspace root is
+re-rooted, so `"todo.gene"` from generated code means `workspace/todo.gene`, and
+`"../package.gene"` is refused rather than escaping. A live model asked to write
+`../../ESCAPED.txt` gets a refusal with nothing written.
 
-(fn read_note [name : Str] : Str
-  ^capabilities [(fs/ReadFile name)]
-  ($fs/read_text name))
+The property worth dwelling on is that **nothing here is written defensively**.
+There is no path validation anywhere in this file — no prefix check, no
+`realpath` comparison, no allow-list. A reviewer asking whether this agent can
+read `/etc/passwd` reads one row and stops; they do not have to audit a tool
+body, or every caller of it, or trust that a future edit keeps the check.
 
-(fn write_note [name : Str, content : Str] : Str
-  ^capabilities [(fs/WriteFile name)]
-  ($fs/write_text name content)
-  $"wrote ${name}")
-```
-
-`read_note` forwards its argument to the filesystem without inspecting it, and
-still cannot be walked out of `workspace/`. `(fs/ReadFile name)` is a
-parameter-dependent row, so the check resolves `name` against the module root
-and refuses `../package.gene` *at the declaration*, before the body runs. The
-refusal reads `capability declaration needs fs/ReadFile`.
-
-`write_note` is confined by the same rule, and a live model asked to write
-`../../ESCAPED.txt` gets `refused: capability declaration needs fs/WriteFile`
-with nothing written. That is the row doing the work: the write tool is as
-undefensive as the read tool.
-
-That is the property worth dwelling on: **the tool is not written defensively
-and does not need to be.** There is no path validation in `read_note`. A
-reviewer checking whether this agent can read `/etc/passwd` reads one row, not
-the body, and not every caller of the body.
+The one function still handed over by name is `run_note`, and it is not a
+filesystem primitive — it evaluates a saved note through the same
+`run_program`, in an Env minted with the same row, so it adds no authority. It
+refuses to nest, because it is reachable *from* generated code and a note that
+ran itself would recurse until the stack goes. Its own row keeps the whole
+workspace rather than one file, because the Env it mints is resolved against
+whatever context is active at that point; narrowing to a single file first would
+leave nothing for the evaluated program to run under.
 
 Two further observations from building it:
 
-- `with_capabilities []` around the `eval` revokes even the handed tools — the
-  tools' authority is `ambient ∩ declared`, so emptying the ambient context
-  empties them. There is a working "revoke everything" lever.
-- Evaluated code can locally shadow a tool name (`(var read_note 1)`). This
+- `with_capabilities []` around the `eval` revokes everything — authority is
+  `ambient ∩ declared`, so emptying the ambient context empties the row too.
+  There is a working "revoke everything" lever.
+- Evaluated code can locally shadow a handed name (`(var run_note 1)`). This
   costs it access and grants it nothing; binding overlays are not authority.
 
 **A denial is a value, not a crash.** `run_program` catches the refusal and
@@ -339,35 +339,24 @@ These are the reasons "completely replace tool calls" is a goal rather than a
 conclusion. The first two were found by building this example; the rest are
 inherited from the original proposal.
 
-- **`env ^capabilities` diverges from `capabilities.md` §14.** The spec says the
-  value "must be a validated `CapabilityContext` or a selector list resolved
-  against the creator's current context", and that evaluated code runs under
-  "an explicit capability context no broader than the evaluator's active
-  context", defaulting to **the intersection of those contexts**. The
-  implementation instead requires a map, treats it as a lexical binding overlay,
-  and gives evaluated code an **empty** ambient context. A selector list is
-  rejected outright (`env ^capabilities must be a map`).
+- **`env ^capabilities` now implements §14** (was an open problem; kept here
+  because the shape is worth knowing). The spec says the value is "a validated
+  `CapabilityContext` or a selector list resolved against the creator's current
+  context". A **list** is now exactly that: the row is resolved when the Env is
+  minted, against the creating context, so an Env can never carry more than its
+  creator held, and evaluating it later under a wider context cannot widen it. A
+  **map** keeps its older meaning as a lexical binding overlay — one decides
+  which names exist, the other what they may do — and `^bindings` remains the
+  plainer spelling for the former.
 
-  The empty default is the safe direction to diverge in, and the overlay is a
-  legitimate object-capability mechanism — this example is built on it — but the
-  two are not the same feature, and there is currently no way to hand evaluated
-  code a *narrowed ambient context*. Either the spec or the implementation
-  should move.
-
-- **Denials are inconsistently typed.** A denial raised at a declared row
-  arrives as a typed `MissingCapability` carrying `^capability` and
-  `^operation`, and destructures cleanly:
-
-  ```gene
-  catch (MissingCapability ^capability wanted ^operation operation)
-  ```
-
-  A denial raised by a raw native operation *inside* an evaluated form arrives
-  untyped, with the capability name only in its message text, and must be caught
-  by a bare `catch e`. Both are refusals and both are recoverable, but only one
-  is machine-readable — so an agent that wants to reason about *which* authority
-  it lacked cannot do so uniformly. `render_form` carries both arms for this
-  reason.
+  The default did not move: an Env with no row grants evaluated code nothing,
+  and that emptiness is now installed *explicitly* rather than inherited.
+  Getting there also exposed a second bug worth stating, because it made the
+  first one invisible: `eval` rooted its overlay in `currentApplication()`
+  rather than the creating scope's application, and when those differ every
+  grant reaching evaluated code is minted by one application's provider and
+  checked against another's. `isOwnedBy` then fails and the authority silently
+  evaporates. Nothing noticed while evaluated code held no authority at all.
 
 - **`env ^module` is a hole, and the fix is to omit it.** An env built as
   `(env ^module this_mod ^capabilities tools)` resolves the overlay names *and
@@ -385,7 +374,7 @@ inherited from the original proposal.
   this code part of", not "publish every binding in that module to it".
 
 - **A bounded destructive tool is still a destructive tool.** Adding
-  `delete_note` gave the agent authority to remove anything in the workspace,
+  write authority gave the agent the power to remove anything in the workspace,
   and while testing, the word `clear` — typed at the running agent by mistake —
   was read as a task and deleted the workspace fixture. The capability model
   did exactly its job: the deletion could not have landed anywhere else. But
@@ -398,7 +387,7 @@ inherited from the original proposal.
   fail halfway with some effects already applied. Capability bounds limit *what*
   can happen, not *how much of it* happened before the failure. Transactional or
   compensating semantics are an open question, and this example now has real
-  exposure to it: `write_note` is a granted effect, and a program that writes
+  exposure to it: writing is a granted effect, and a program that writes
   two notes and fails between them leaves the first one written. Evaluating
   `^code` as a single `do` makes this sharper, not softer — the abandoned
   remainder is larger.
@@ -442,10 +431,10 @@ In rough dependency order:
    test: `training/corpus/generated/` holds 1002 programs that are pure
    computation by construction, so every one should enumerate to the empty set.
    Anything else is a verifier bug or a genuine surprise.
-4. Reconciling `env ^capabilities` with §14, so that "evaluate this under a
-   narrower ambient context" is expressible at all.
-5. A Gene skill, so the model's output is good enough that verification failures
-   are about authority rather than syntax.
+Two items that were on this list are done: `env ^capabilities` now implements
+§14, so "evaluate this under a narrower ambient context" is expressible; and a
+Gene skill is loadable, which moved the model's failures from syntax to
+substance.
 
 ## Where to read more
 

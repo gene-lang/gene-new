@@ -1187,7 +1187,10 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
     for i, capBlock in chunk.capabilityBlocks:
       lines.add indent & "  [" & $i & "] selectors=" &
         $capBlock.row.selectors.len
-      addDisassembly(lines, capBlock.body, indent & "    ")
+      # `env ^capabilities [...]` stores a row with no body — it grants
+      # authority to a later `eval` rather than wrapping a block here.
+      if capBlock.body != nil:
+        addDisassembly(lines, capBlock.body, indent & "    ")
 
   if chunk.imports.len > 0:
     lines.add indent & "imports:"

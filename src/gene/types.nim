@@ -397,6 +397,13 @@ type
     varTypes*: Table[string, TypeBinding]
     impls*: seq[ProtocolImpl]
     implOverlayRoot*: bool  # eval-local impls register here, never application-wide
+    ## Ambient authority for an eval overlay root (capabilities.md §14). An
+    ## eval scope is its own module root with no `this_mod`, so a call made from
+    ## evaluated code crosses a module boundary and would resolve its ceiling to
+    ## nothing. This carries the Env's granted context so the boundary intersects
+    ## against what the program actually handed over. Nil keeps the default of
+    ## no ambient authority.
+    evalCapabilityCeiling*: CapabilityContext
     implStageRoot*: bool    # module impls remain pending until atomic activation
     forceOverlayImpls*: bool # compiler-owned derive execution for overlay types
     moduleRoot*: bool       # program/file-module base scope
@@ -716,6 +723,11 @@ type
     imports: seq[Value]
     module: Value
     capabilities: Value
+    ## The ambient authority evaluated code runs under (capabilities.md §14).
+    ## Distinct from `capabilities` above, which is the *binding* overlay: one
+    ## decides which names exist, this one decides what they are allowed to do.
+    ## Nil means the historical default — evaluated code gets nothing.
+    capabilityContext: CapabilityContext
     policy: Value
     borrowed: bool
     borrowedActive: bool
@@ -2904,6 +2916,16 @@ proc envCapabilities*(v: Value): Value =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).capabilities
+
+proc envCapabilityContext*(v: Value): CapabilityContext =
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).capabilityContext
+
+proc setEnvCapabilityContext*(v: Value, context: CapabilityContext) =
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).capabilityContext = context
 
 proc envPolicy*(v: Value): Value =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
