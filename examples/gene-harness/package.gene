@@ -1,0 +1,8 @@
+{^format 1
+ ^name "gene/harness"
+ ^description "A living plugin harness: seams, an effect ledger, and atomic activation"
+ ^version "0.1.0"
+ ^applications [
+   (application "harness" ^entry "src/main.gene")
+ ]
+ ^dependencies {}}

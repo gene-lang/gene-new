@@ -521,13 +521,23 @@ anything is committed to.
 Recorded because they were found by writing the kernel rather than reasoning
 about it, and because two of them shaped the design above.
 
-- **SIGSEGV in the VM, cross-module.** The two-file version of the prototype
-  crashes in `acquireSimpleCallScope` / `nimIncRefCyclic`, reproducibly (2/2).
-  The same code in a single file runs fine, so it is the module boundary, not
-  the logic. Minimal cases — a closure in a type prop called across modules, and
-  cross-module `fail`/`try` with an imported error type — do *not* reproduce it,
-  so the trigger is narrower than either. Repro preserved at
-  `tmp/harness-repro/` (`h.gene` + `main.gene` crash; `single.gene` does not).
+- **SIGSEGV in the VM, cross-module — and it is a closure-lifetime bug.** The
+  first two-file prototype crashed in `acquireSimpleCallScope` /
+  `nimIncRefCyclic`, reproducibly (2/2), while the same code in one file ran
+  fine. Minimal cases — a closure in a type prop called across modules,
+  cross-module `fail`/`try` with an imported error type — did not reproduce it.
+
+  The diagnosis arrived by accident. `src/kernel.gene` and `src/main.gene` are
+  the same design split across the same module boundary, and they **do not
+  crash** — the one thing that changed is that the ledger stores effect records
+  instead of disposer closures. So the trigger is a closure outliving the frame
+  that built it and being called across a module boundary, which is also what
+  produced the capture failure below. The two entries are almost certainly one
+  bug seen from two distances.
+
+  Repro preserved at `tmp/harness-repro/` (`h.gene` + `main.gene` crash;
+  `single.gene` does not; `examples/gene-harness/src/` is the closure-free
+  version that does not).
 
 - **A closure stored beyond its frame lost its capture.** A disposer built as
   `(fn [] (seams ~ delete seam))` and stored in the ledger saw `seams` as `Nil`

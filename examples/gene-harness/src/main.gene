@@ -1,0 +1,61 @@
+# A runnable tour of the harness kernel.
+#
+#   gene run examples/gene-harness/src/main.gene
+#
+# Every line it prints is a property docs/design.md claims: atomic activation,
+# no partial registration, one provider per seam, and an uninstall that removes
+# exactly one plugin's contributions.
+
+(import [new_harness install uninstall resolve provide installed bound_seams
+         Plugin HarnessError]
+  from "./kernel")
+
+(fn fs_plugin [] : Plugin
+  (Plugin ^id "fs_local" ^provides ["Fs"]
+    ^activate (fn [] (fn [h, id] (provide h id "Fs" "LOCAL-FS")))))
+
+(fn combo_plugin [] : Plugin
+  # Two seams from one plugin, so uninstall has more than one effect to reverse.
+  (Plugin ^id "combo" ^provides ["Llm" "Tools"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "Llm" "LLM-A")
+      (provide h id "Tools" "TOOLS-A")))))
+
+(fn broken_plugin [] : Plugin
+  # Registers one seam, then fails. The seam must not survive.
+  (Plugin ^id "broken" ^provides ["Log"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "Log" "LOG-X")
+      (fail (HarnessError ^message "boom during activate"))))))
+
+(fn show [label, thunk]
+  ($println "  " label ($to_str (thunk))))
+
+(fn main [args]
+  (var h (new_harness))
+
+  ($println "-- install --")
+  ($println "  " (install h (fs_plugin)))
+  ($println "  " (install h (combo_plugin)))
+  ($println "  seams:     " (bound_seams h))
+  ($println "  installed: " (installed h))
+
+  ($println "-- resolve --")
+  ($println "  Fs -> " (resolve h "Fs"))
+
+  ($println "-- activation is all-or-nothing --")
+  ($println "  " (try (install h (broken_plugin)) catch e $"refused: ${e/message}"))
+  ($println "  Log rolled back? "
+    (try (resolve h "Log") catch e "yes — no provider left behind"))
+  ($println "  installed: " (installed h))
+
+  ($println "-- binding is explicit, not last-wins --")
+  ($println "  " (try (install h (fs_plugin)) catch e $"refused: ${e/message}"))
+
+  ($println "-- uninstall reverses exactly one plugin --")
+  ($println "  " (uninstall h "combo"))
+  ($println "  Llm gone?  " (try (resolve h "Llm") catch e "yes"))
+  ($println "  Fs intact: " (resolve h "Fs"))
+  ($println "  seams:     " (bound_seams h))
+  ($println "  installed: " (installed h))
+  nil)

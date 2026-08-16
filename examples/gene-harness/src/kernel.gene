@@ -1,0 +1,118 @@
+# The harness kernel: plugin lifecycle and the effect ledger.
+#
+# The kernel owns three tables. A plugin never touches them — it contributes
+# through `provide`, and every contribution is recorded against the plugin id so
+# the kernel can reverse it without the plugin's cooperation. That is what makes
+# activation all-or-nothing and uninstall complete: cleanup was never the
+# plugin's job.
+#
+# See docs/design.md for why this is a subsystem rather than a mapping onto
+# packages, `try`, and scoped impls.
+
+(mod kernel)
+
+(type HarnessError ^props {^message Str} ^impl [Error])
+
+(impl Error for HarnessError)
+
+# A plugin is a *value*, not a module: an id, the seams it claims, and two entry
+# points. That is what lets it come from a runtime-loaded file, a package
+# dependency, or a literal built in memory for a test.
+(type Plugin ^props {^id Str
+                     ^provides (List Str)
+                     ^activate Any
+                     ^deactivate Any?})
+
+(type Harness ^props {^seams Any ^plugins Any ^effects Any})
+
+(fn new_harness [] : Harness
+  (Harness ^seams ($cell {}) ^plugins ($cell {}) ^effects ($cell {})))
+
+# --- the effect ledger -----------------------------------------------------
+#
+# The ledger holds effect *records*, not disposer closures. Records are
+# inspectable ("what has this plugin registered?" is a query), serializable, and
+# do not depend on a captured environment surviving the frame that built it.
+
+(fn record_effect [h : Harness, id : Str, effect]
+  (var table (h/effects ~ get))
+  (var prior (?? (table ~ get id) []))
+  (prior ~ push effect)
+  (table ~ put id prior))
+
+(fn effects_of [h : Harness, id : Str] : Any
+  (?? ((h/effects ~ get) ~ get id) []))
+
+(fn reverse_effect [h : Harness, e]
+  # One place that knows how to undo each registration kind. A plugin that
+  # invents an effect the kernel cannot reverse should not be able to register
+  # it, so this function is the closed set.
+  (if (== ($to_str e/kind) "seam")
+    ((h/seams ~ get) ~ delete e/seam)))
+
+(fn unwind [h : Harness, id : Str]
+  # LIFO, mirroring the generator close order in docs/spec/streams.md.
+  (var table (h/effects ~ get))
+  (var effects (?? (table ~ get id) []))
+  (var i (- effects/~size 1))
+  (while (>= i 0)
+    (reverse_effect h effects/%i)
+    (set i (- i 1)))
+  (table ~ delete id))
+
+# --- seams -----------------------------------------------------------------
+
+(fn provide [h : Harness, id : Str, seam : Str, value] : Str
+  # Binding is explicit: a seam already bound is refused rather than shadowed.
+  # There is no last-wins, so no registration order decides behaviour.
+  (var seams (h/seams ~ get))
+  (if_yes (!= (seams ~ get seam) void)
+    (fail (HarnessError ^message $"seam ${seam} already bound; replace it explicitly")))
+  (seams ~ put seam value)
+  (record_effect h id {^kind "seam" ^seam seam})
+  seam)
+
+(fn resolve [h : Harness, seam : Str] : Any
+  (var found ((h/seams ~ get) ~ get seam))
+  (if_yes (== found void)
+    (fail (HarnessError ^message $"no provider for seam ${seam}")))
+  found)
+
+(fn bound_seams [h : Harness] : Any
+  (var out [])
+  (for [k v] in (h/seams ~ get) (out ~ push ($to_str k)))
+  out)
+
+# --- lifecycle -------------------------------------------------------------
+
+(fn install [h : Harness, p : Plugin] : Str
+  (var plugins (h/plugins ~ get))
+  (if_yes (!= (plugins ~ get p/id) void)
+    (fail (HarnessError ^message $"plugin ${p/id} already installed")))
+  # All-or-nothing: a failure part-way through `activate` unwinds whatever it
+  # already registered, so a half-activated plugin can never be left behind.
+  (try
+    ((p/activate) h p/id)
+    (plugins ~ put p/id p)
+    $"installed ${p/id}"
+    catch e
+    (unwind h p/id)
+    (fail (HarnessError ^message $"activate ${p/id} failed: ${e/message}"))))
+
+(fn uninstall [h : Harness, id : Str] : Str
+  (var plugins (h/plugins ~ get))
+  (var p (plugins ~ get id))
+  (if_yes (== p void)
+    (fail (HarnessError ^message $"plugin ${id} not installed")))
+  # An omitted optional prop reads as `void`, not `nil`, so `(!= … nil)` would
+  # be true for a plugin that declared no deactivate.
+  (if_not ($absent? p/deactivate)
+    ((p/deactivate)))
+  (unwind h id)
+  (plugins ~ delete id)
+  $"uninstalled ${id}")
+
+(fn installed [h : Harness] : Any
+  (var out [])
+  (for [k v] in (h/plugins ~ get) (out ~ push ($to_str k)))
+  out)
