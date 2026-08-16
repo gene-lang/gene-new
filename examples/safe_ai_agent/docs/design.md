@@ -26,22 +26,24 @@ what the model may use are separate questions.
 The model is asked to reply with Gene data and nothing else:
 
 ```gene
-{^status "done"|"in-progress" ^code [form1 form2 ...] ^response "..."}
+{^status "done"|"in-progress" ^code (do form1 form2 ...) ^response "..."}
 ```
 
-`^code` holds the forms of **one program**: they are spliced into a single
-`(do …)` and evaluated together, so a form may use what an earlier form defined.
-Evaluating them separately — which this example did originally — gives each form
-a fresh environment and silently discards every binding, which makes "define a
-function, then call it" impossible and is exactly the shape a model reaches for
-first. The cost of the fix is that one bad form abandons the rest of the reply,
-and only the last value comes back; generated code that wants to say more can
-call `($println …)`.
+`^code` is **one `(do …)` block**, emitted as such: the shape the model writes
+is the shape that runs, with nothing for the agent to reassemble. A form may
+therefore use what an earlier form defined. Evaluating forms separately — which
+this example did originally — gives each one a fresh environment and silently
+discards every binding, which makes "define a function, then call it"
+impossible and is exactly the shape a model reaches for first. The cost is that
+one bad form abandons the rest of the block, and only the last value comes back;
+generated code that wants to say more can call `($println …)`.
 
 `^status "in-progress"` means the model wants to see the result before
-continuing, so the loop feeds the emitted program *and* its result back as
-history and asks again (bounded at six turns). Feeding back results alone leaves
-the model unable to tell which form drew which complaint. This envelope is a
+continuing, so the loop feeds the whole reply *and* its output back as history
+and asks again (bounded at sixteen turns). Feeding back results alone leaves
+the model unable to tell which form drew which complaint. The agent also prints
+the program between the response and the result, so a reader can check the
+model's claim against what actually ran. This envelope is a
 demo shape, not a commitment — it is the smallest thing that exercises emit,
 evaluate, observe, retry.
 

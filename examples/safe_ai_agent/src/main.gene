@@ -1,6 +1,6 @@
 # An agent whose only way to act is to emit a Gene program.
 #
-# The loop is: prompt -> LLM -> {^status ... ^code [...]} -> evaluate the code
+# The loop is: prompt -> LLM -> {^status ... ^code (do ...)} -> evaluate the code
 # under an explicit ambient grant -> show the result -> repeat while the model
 # says it is still working.
 #
@@ -121,7 +121,8 @@
     # `run_program` mints a fresh Env whose ambient row is resolved against
     # whatever context is active here — narrowing to one file first would leave
     # nothing for the evaluated program to run under.
-    (run_program ((read_all ($fs/read_text name)) ~ into []))
+    (var forms ((read_all ($fs/read_text name)) ~ into []))
+    (run_program `(do %forms...))
     ensure
     (eval_depth ~ set (- (eval_depth ~ get) 1))))
 
@@ -174,13 +175,13 @@ Any other path, and every other kind of authority, is refused.""")
   # an ordinary mistake does not. See docs/design.md, "Open problems".
   (contains? message " requires "))
 
-(fn run_program [forms] : Str
-  # The model's action is *a program*, not a list of independent statements, so
-  # the forms are evaluated as one `do` block. That is what lets a reply define
-  # something and then use it: a separate `eval` per form gets a fresh
-  # environment and loses every binding the previous form introduced.
+(fn run_program [program] : Str
+  # The model's action is *a program* — one `(do ...)` block, emitted as such.
+  # Asking for the block rather than a list of forms the agent staples together
+  # means the shape the model writes is the shape that runs, so a reply can
+  # define something and then use it without the agent reassembling anything.
   #
-  # The cost is that one bad form abandons the rest of the reply, and only the
+  # The cost is that one bad form abandons the rest of the block, and only the
   # final value is returned. Generated code that wants to report more than its
   # last expression can call `($println ...)`.
   #
@@ -189,7 +190,6 @@ Any other path, and every other kind of authority, is refused.""")
   # can never name more than this module already holds (capabilities.md §14).
   # An Env with no row grants nothing at all, which stays the default everywhere
   # else in the runtime.
-  (var program `(do %forms...))
   (var sandbox
     (env ^bindings (agent_tools)
          ^capabilities [(fs/ReadWriteDir WORKSPACE)]))
@@ -218,15 +218,15 @@ Any other path, and every other kind of authority, is refused.""")
   # workspace, and a program that defines something and then uses it.
   (if (starts_with? task "raw")
     (then
-      """{^status "done" ^response "Reading an environment variable." ^code [($os/get_env "HOME")]}""")
+      """{^status "done" ^response "Reading an environment variable." ^code (do ($os/get_env "HOME"))}""")
     (elif (starts_with? task "read")
-      """{^status "done" ^response "Reading the workspace." ^code [($fs/list_dir ".") ($fs/read_text "notes.txt")]}""")
+      """{^status "done" ^response "Reading the workspace." ^code (do ($fs/list_dir ".") ($fs/read_text "notes.txt"))}""")
     (elif (starts_with? task "write")
-      """{^status "done" ^response "Saving that to the workspace." ^code [($fs/write_text "todo.txt" "buy milk") ($fs/read_text "todo.txt")]}""")
+      """{^status "done" ^response "Saving that to the workspace." ^code (do ($fs/write_text "todo.txt" "buy milk") ($fs/read_text "todo.txt"))}""")
     (elif (starts_with? task "escape")
-      """{^status "done" ^response "Peeking outside the workspace." ^code [($fs/read_text "../package.gene")]}""")
+      """{^status "done" ^response "Peeking outside the workspace." ^code (do ($fs/read_text "../package.gene"))}""")
     (else
-      """{^status "done" ^response "Defining and using in one program." ^code [(var xs [1 2 3]) (var total 0) (for x in xs (set total (+ total x))) total]}""")))
+      """{^status "done" ^response "Defining and using in one program." ^code (do (var xs [1 2 3]) (var total 0) (for x in xs (set total (+ total x))) total)}""")))
 
 (fn loaded_skill [] : Str
   # The always-loaded half of a skill. `SKILL.md` goes in the prompt; the files
@@ -283,16 +283,16 @@ Files you can (read_skill "...") on demand:
   (match v (when pat body) (else nil)). Loops: (for x in xs ...), (while c ...).
 - A list has no persistent append. (xs ~ push v) mutates xs in place; there is
   no `append` message.
-- Your whole ^code list is evaluated as ONE program, so a form may use what an
-  earlier form defined. The value of the last form is what you get back.
+- ^code is ONE (do ...) block, so a form may use what an earlier form defined.
+  The value of its last form is what you get back.
 - After writing a .gene note, call (run_note "name") to check it actually runs.
   Do not report success for code you have not run.""")
 
 (fn system_prompt [] : Str
   $"""You are an agent whose only way to act is to emit a Gene program.
 Reply with Gene data and nothing else, in exactly this shape:
-{^status "done"|"in-progress" ^code [form1 form2 ...] ^response "..."}
-^code holds the forms of one program. Use ^status "in-progress" when you need
+{^status "done"|"in-progress" ^code (do form1 form2 ...) ^response "..."}
+^code is one (do ...) block — the whole program, not a list of forms. Use ^status "in-progress" when you need
 to see the result before continuing.
 The forms may use ordinary pure Gene plus exactly these tools:
 ${(tool_summary)}
@@ -359,21 +359,26 @@ ${(loaded_skill)}
         (var response envelope/response)
         (if (!= response nil)
           ($println "  " response))
-        (var forms envelope/code)
-        (var program `(do %forms...))
-        (var result (run_program forms))
+        # The code is shown before it runs. `^response` is the model's *claim*
+        # about what it is doing, composed before it could know the outcome;
+        # printing the program next to it lets a reader check the claim against
+        # what will actually execute rather than trusting the prose.
+        ($println "  " envelope/code)
+        (var result (run_program envelope/code))
         ($println "  " result)
-        # The model sees the code it wrote next to what that code did. Feeding
-        # back results alone leaves it unable to tell which form drew which
-        # complaint, so it repeats the mistake.
+        # The whole reply goes back, not just the result: the model needs to see
+        # the code it wrote next to what that code did, or it cannot tell which
+        # form drew which complaint and simply repeats the mistake. The task
+        # itself is re-sent every turn by `call_model`, so it is not repeated
+        # here.
         (var prior (history ~ get))
-        (history ~ set $"${prior}\nturn: ${program}\nresult: ${result}")
+        (history ~ set $"${prior}\nreply: ${envelope}\noutput: ${result}")
         (if_not (== envelope/status "in-progress")
           (running ~ set false))
         # Only a model that still wants another turn can be cut off by the
         # limit. Announcing it after a reply that already said "done" would
         # blame the ceiling for a loop that ended on its own.
-        (if_yes (&& (running ~ get) (>= (turn ~ get) 6))
+        (if_yes (&& (running ~ get) (>= (turn ~ get) 16))
           ($println "  (turn limit reached)")
           (running ~ set false))))))
 

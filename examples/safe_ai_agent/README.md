@@ -34,22 +34,23 @@ Type `exit`, `quit`, `/quit`, or Ctrl-D to leave.
         │
         ▼
   ┌─────────────────────────────────────────────────────────────┐
-  │  agent → LLM:  system prompt + history + your task           │
-  │                                                              │
-  │  LLM  → agent: one Gene map, and nothing else:               │
-  │        {^status "in-progress"|"done"                         │
-  │         ^response "what I'm doing / my answer"               │
-  │         ^code    [form1 form2 ...]}                          │
-  │                                                              │
-  │  agent prints ^response                                      │
-  │  agent evaluates ^code as ONE program, under its grant        │
-  │  agent prints the result (a value, an error, or a refusal)   │
-  │                                                              │
-  │  history += the program it ran + what that produced          │
+  │  agent → LLM:  system prompt + history + your task          │
+  │                                                             │
+  │  LLM  → agent: one Gene map, and nothing else:              │
+  │        {^status "in-progress"|"done"                        │
+  │         ^response "what I'm doing / my answer"              │
+  │         ^code    (do ...)}                                  │
+  │                                                             │
+  │  agent prints ^response                                     │
+  │  agent prints ^code                                         │
+  │  agent evaluates ^code as ONE program, under its grant      │
+  │  agent prints the result (a value, an error, or a refusal)  │
+  │                                                             │
+  │  history += the reply map + the output of running it        │
   └─────────────────────────────────────────────────────────────┘
         │                                    ▲
         │  ^status "in-progress"             │
-        └────────────────────────────────────┘   (max 6 turns)
+        └────────────────────────────────────┘   (max 16 turns)
         │
         │  ^status "done"
         ▼
@@ -68,28 +69,36 @@ Step by step:
    with *the model did not return Gene data*.
 4. **The agent prints `^response`** — the model's own account of what it is
    about to do, or its final answer.
-5. **The agent evaluates `^code`.** The forms are spliced into a single
-   `(do …)` and run together, so a form may use what an earlier form defined.
+5. **The agent evaluates `^code`.** It is already one `(do …)` block, so the
+   shape the model wrote is the shape that runs — a form may use what an
+   earlier form defined, with nothing reassembled in between.
 6. **The agent prints the result** — the last form's value, or `error: …` for an
    ordinary mistake, or `refused: …` for a capability denial. A denial is a
    *value* here, not a crash, so the model can see it and try something else.
-7. **The turn is appended to history** as the program that ran *and* what it
-   produced, so the next turn can tell which form drew which complaint.
+7. **The turn is appended to history** as the whole reply map *and* the output
+   of running it, so the next turn can tell which form drew which complaint.
+   (Your task text is re-sent every turn, so history does not repeat it.)
 8. **If `^status` is `"in-progress"`, loop** back to step 2 with the updated
    history. Otherwise the task is finished and control returns to the prompt.
 
-The loop is bounded at **6 turns** per task; hitting the ceiling prints
+The loop is bounded at **16 turns** per task; hitting the ceiling prints
 `(turn limit reached)`.
+
+The printed `^code` is the **canonical** form of the program, so `$fs/list_dir`
+appears as `(path gene fs list_dir)`. That is what will actually execute, which
+is the point of showing it, but it is not the model's spelling — Gene exposes no
+sugar-restoring printer to Gene code today, only `gene fmt` at the CLI.
 
 ### Two things about the ordering
 
 **`^response` is printed before `^code` runs.** Both arrive in the same message,
 so the model's summary is composed *before* it can know what the code did. A
 confident "ran it successfully" can therefore sit directly above a result that
-disagrees. Read the result, not the prose — see `docs/design.md`, "Open
-problems".
+disagrees. This is why the program is printed between them: check the claim
+against the code and the result, not against the prose. See `docs/design.md`,
+"Open problems".
 
-**History is not truncated.** Every turn's program and result accumulate for the
+**History is not truncated.** Every turn's reply and output accumulate for the
 duration of one task, and a turn that reads a large file puts the whole file in
 there. The task-level history is discarded when you return to the prompt, so it
 cannot grow across tasks, but a single long task can outgrow the context window.
@@ -144,7 +153,7 @@ with no API key. Five prompts show the five things worth seeing:
 | `write something` | `($fs/write_text "todo.txt" …)`, then reads it back | succeeds — the grant is real |
 | `raw effect` | `($os/get_env "HOME")` | refused — needs `os/Env` |
 | `escape the sandbox` | `($fs/read_text "../package.gene")` | refused |
-| anything else | defines `xs`, sums it, returns `6` | a program, not a statement list |
+| anything else | defines `xs`, sums it, returns `6` | one block, not a statement list |
 
 ## Layout
 
