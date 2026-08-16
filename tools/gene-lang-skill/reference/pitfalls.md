@@ -162,6 +162,20 @@ way is never truthy:
 
 The same applies to `if_yes`. Both are guards; `(if c a b)` is the conditional.
 
+**Map iteration yields `Sym` keys, but `get`/`put` take `Str`.** Comparing an
+iterated key against a string is silently always false, so a filter written that
+way copies everything:
+
+```gene
+(for [k v] in {^a 1}
+  (== k "a")          # false — k is the symbol a
+  (== k (quote a))    # true
+  (== ($to_str k) "a"))  # true, and the usual fix
+```
+
+**`Map` has no key removal** — its messages are `assoc get put to_stream
+to_pairs_stream`. Dropping a key means rebuilding the map without it.
+
 **`match` without `else` is not a nil default** — unlike `if`, it needs the arm.
 Writing `(else nil)` there is idiomatic.
 

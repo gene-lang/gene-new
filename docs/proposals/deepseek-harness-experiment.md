@@ -8,11 +8,17 @@ log, and the agent loop itself are all replaceable at the configuration layer.
 This document records what that architecture actually is, judges which parts fit
 Gene, and designs a Gene Harness from the parts that do.
 
-The short version: **the seam idea is excellent and Gene can express it better
-than TypeScript can. The "no privileged core" claim is the part to reject** —
-Gene has a security boundary that must not be a plugin, and Gene has already
-decided that load order must never resolve ambiguity, which is exactly how
-`dsh` composes.
+The short version: **the seam idea and the dynamism are both right, and Gene can
+express both better than TypeScript can. The "no privileged core" claim is the
+part to reject** — Gene has a security boundary that must not be a plugin.
+
+A correction to an earlier draft of this document, which argued for static
+composition: that conflated two separate things. **Dynamic install and uninstall
+is not the same as letting load order resolve ambiguity.** A harness can be fully
+live — plugins arriving, being replaced, and leaving while it runs — and still
+refuse to guess when two providers claim one seam, because replacement is an
+explicit named operation rather than a layer. Gene already has the primitives for
+the live version, and §3 is now built on them.
 
 Sources are listed at the end. Everything attributed to `dsh` below comes from
 its own `AGENTS.md` and `docs/architecture.md`.
@@ -136,33 +142,38 @@ where a provider holding `net/*` and `os/Env` is refused both while satisfying a
 seam whose contract is one file read. This is the thing Gene brings that a
 TypeScript harness cannot.
 
-**Ordered patch layers conflict with a decision Gene has already made.**
-`dsh` resolves competing contributions by layering: bundle, then profile, then
-home, then CLI. Gene's protocol rule is the opposite and deliberate — from
-`docs/spec/protocols.md`:
+**Ordered patch layers conflict with a decision Gene has already made — but
+dynamism does not.** `dsh` resolves competing contributions by layering: bundle,
+then profile, then home, then CLI. Gene's protocol rule is the opposite and
+deliberate — from `docs/spec/protocols.md`:
 
 > "Zero applicable visible impls is missing behavior; multiple applicable impls
 > is ambiguity. Import order does not choose a winner."
 
 Adopting profile layering would import "position in a list decides semantics"
-into a language that rejected it. A Gene harness should make provider selection
-**explicit and singular**: ambiguity is an error the author resolves by naming
-the provider, not by ordering.
+into a language that rejected it. Keep the rule, drop the layering: a seam holds
+**one** provider, and installing a second is an explicit replacement, not a
+stack. That is entirely compatible with swapping providers at runtime, which is
+what §3 does — the objection is to *order deciding*, not to *change happening*.
 
 **Waterfall middleware is a weaker tool than Gene's alternatives, for most of
-these cases.** A `next()` chain is a dynamic, order-dependent structure whose
-behaviour depends on who registered first. Gene has two better-typed options
+these cases.** A `next()` chain's behaviour depends on who registered first —
+again the ordering objection, not a dynamism one. Gene has two better-typed options
 already: protocols for *substitution*, and the event bus in
 `docs/proposals/events.md` for *observation*. Middleware earns its place only
 where a listener must genuinely intercept and transform a value in a
 chain — realistically `tools/pre-execute` gating and `agent/request` assembly —
 and those should be explicitly modelled, not a general mechanism.
 
-**`ctx` as a mutable shared service registry is a poor match.** Gene resolves
-names lexically and statically; sends have no lexical callable fallback, and
-`gene/genex/geney/genez` are reserved so the standard library cannot be shadowed.
-A dynamic DI container fights all of that. Gene's equivalent of `ctx.fs` is an
-imported protocol plus the impl the application chose.
+**`ctx` as an *ambient, implicitly-injected* registry is the poor match — an
+explicit one is not.** Gene resolves names lexically and statically; sends have
+no lexical callable fallback, and `gene/genex/geney/genez` are reserved so the
+standard library cannot be shadowed. What fights Gene is the ambient part: code
+reaching into a global container for whatever happens to be mounted. A registry
+that is an ordinary value, passed or held explicitly and asked by name, has none
+of that problem and is what §3.3 uses. The distinction is between dependency
+*injection* as a language-level ambient mechanism, and a dependency *registry* as
+a value — Gene wants the second.
 
 ### 2.3 What Gene already has that maps
 
@@ -170,16 +181,21 @@ imported protocol plus the impl the application chose.
 |---|---|---|
 | Service Definition | `protocol` | shipped |
 | Service Provider | `impl P for T` | shipped |
-| Provider swap | scoped impls, `import_impl`, transactional reload (`docs/scoped-impls.md`) | shipped |
+| Seam authority contract | `^capabilities` on a protocol message; impls may not broaden it | shipped |
+| Provider swap, live | a seam table of values (§3.3) — no reload needed | shipped |
+| Changing what an impl *does* | scoped impls, `import_impl`, transactional reload (`docs/scoped-impls.md`) | shipped |
+| Runtime plugin install, bounded | `$runtime/load_sandboxed dir entry grants shared` | shipped |
 | Plugin distribution | packages, `package.gene`, dependency resolution | shipped (Stage 3) |
-| Bounding an untrusted plugin | import-site capability ceilings | shipped |
+| Bounding an untrusted plugin | protocol row + import-site ceilings | shipped |
 | Reversible effects | `ensure`, scoped-impl activation/reload | partial |
 | Typed events | `docs/proposals/events.md` | proposal |
 | Session log | serde, event logs (`examples/ai_agent/home/events.gene`) | shipped |
-| `cordis.yml` | a Gene data manifest, read as data and never executed | pattern exists |
+| `cordis.yml` | a Gene data manifest seeding the live table | pattern exists |
+| Plugin uninstall | provider removal yes; module unload no (`scoped-impls.md` §6) | partial |
 
-The gap list is short: reversible effects as a first-class registration
-primitive, the event bus, and the harness assembly itself.
+More is already shipped than the earlier draft credited. The gap list is:
+reversible effects as a registration primitive, `Map` key removal, module
+unload, the event bus, and the harness assembly itself.
 
 ## 3. Design: Gene Harness
 
@@ -191,14 +207,19 @@ harness/
   core/            the unswappable part: capability boundary, session log,
                    provider resolution
   plugin/          providers and consumers, each its own package
-  profile/         a Gene data manifest naming which provider satisfies which
-                   seam
+  profile/         a Gene data manifest naming the *initial* seam table —
+                   a seed for boot, not the configuration of record
 ```
 
 `core/` is deliberately small. It owns three things a plugin may not replace:
-the capability boundary, the session log, and the rule by which a provider is
-selected. Everything else — model adapter, tools, shell, filesystem, the agent
-loop — is a plugin.
+the capability boundary, the session log, and the seam table itself. Everything
+else — model adapter, tools, shell, filesystem, the agent loop — is a plugin,
+and every one of them can be replaced while the application runs.
+
+The profile seeds the table at boot. It is not the configuration of record,
+because the running table is: an operator who swaps a provider at 3am has changed
+the system, and a `--dump-config` that printed the file rather than the live
+table would be lying.
 
 ### 3.2 A seam is a protocol, and the protocol carries the authority contract
 
@@ -262,23 +283,90 @@ behave — and a filesystem seam a plugin *cannot* exceed. It needs no new langu
 feature: the protocol and impl above run as written today, and the refusals
 quoted are real output, not illustrations.
 
-### 3.3 Selection is explicit; ambiguity is an error
+### 3.3 The registry: a living seam table
 
-The profile is Gene data, read as data and never executed — the same rule
-`package.gene` already follows:
+The harness is a **running application, not a configuration**. A seam table is an
+ordinary value holding one provider per seam, and installing, replacing, or
+removing a provider is an operation on it while the app runs:
 
 ```gene
-{^name "web"
- ^seams {^HarnessFs      (provider "gene/harness_fs_local" ^root "workspace")
-         ^HarnessShell   (provider "gene/harness_shell_pty")
-         ^HarnessLlm     (provider "gene/harness_llm_openai" ^model "…")
-         ^HarnessAgentLoop (provider "gene/harness_loop_default")}}
+(var registry ($cell {}))
+
+(fn provide [seam : Str, value] ((registry ~ get) ~ put seam value))
+(fn resolve [seam : Str]        ((registry ~ get) ~ get seam))
 ```
 
-One provider per seam, named. There is no layering and no "last wins": a second
-profile that wants a different filesystem states it, and two profiles that
-disagree do not silently merge. This is the same stance
-`docs/spec/protocols.md` takes on impls, applied one level up.
+A consumer asks the table rather than naming a provider:
+
+```gene
+(fn read_via [path : Str] : Str
+  ((resolve "HarnessFs") ~ HarnessFs:read_text path))
+```
+
+**Swapping is live, and the seam contract survives it.** Measured — three
+providers through one table, no reload and no restart:
+
+```
+local : ws file
+upper : ws file
+rogue : rogue refused: os/get_env requires os/Env
+escape: refused: declaration requires fs/ReadFile
+```
+
+The third line is the point. A provider installed at runtime, whose own module
+holds `net/*` and `os/Env`, is still bounded by the protocol's row (§3.2). The
+authority contract belongs to the seam, so it holds for providers the harness
+had never seen when it started.
+
+This is why the dynamic design needs no impl reload. `docs/scoped-impls.md` does
+support transactional reload, but **swapping a provider is a value assignment,
+not a recompilation** — the impls stay fixed and the *choice* moves. Reload
+remains the tool for changing what an impl does; the registry is the tool for
+changing which one answers.
+
+One provider per seam key at a time. Installing a second replaces the first
+rather than layering over it, so there is never a stack whose order decides
+behaviour — the property §2.2 wanted, kept without giving up dynamism.
+
+### 3.3.1 Installing a plugin at runtime, bounded
+
+`$runtime/load_sandboxed` loads a module *while the application runs*, with only
+the standard-library namespaces named in its grants, and the restriction covers
+everything that module imports:
+
+```gene
+(var p ($runtime/load_sandboxed "plugins" "pure.gene" [] []))
+(p/describe)                       ; "pure plugin: computation only"
+```
+
+Measured, a plugin loaded with no grants that reaches for the filesystem cannot
+find one — a denied namespace is *absent*, not merely refused, and `gene` is a
+reserved root it cannot rebind to fetch the real one back.
+
+So plugin installation is already capability-bounded at runtime, which is
+precisely when it matters most: the harness admits code it did not compile
+against, and decides what that code may reach at the moment it admits it. The
+`grants` list is the honest place to put that decision, because it is the thing
+an operator can read.
+
+### 3.3.2 Uninstall, and what is missing
+
+Removing a provider is removing it from the table. Two gaps, both real:
+
+- **`Map` has no key removal.** Its message surface is `assoc get put to_stream
+  to_pairs_stream`; there is no `delete`. Removing a seam today means rebuilding
+  the table without that key. A `Map/delete` (or a persistent `dissoc`) is the
+  smallest missing piece for a clean uninstall path.
+- **There is no module unload.** `docs/scoped-impls.md` §6 is explicit: "MVP has
+  no individual module unload. Loaded modules persist until reload or whole-
+  application teardown." So uninstall drops the *provider*, and the plugin's code
+  stays resident. For a long-lived harness cycling many plugins that is a leak,
+  not a correctness bug — but it is the difference between "uninstall" and
+  "stop using".
+
+Neither blocks the design. A harness can install, replace, and stop using
+plugins today; reclaiming their code needs the removal-symmetric form of reload
+that §6 already anticipates.
 
 ### 3.4 The boundary is core, and plugins are bounded twice
 
@@ -333,45 +421,56 @@ first. A plugin that reaches around the log is the one bug class this invariant
 is designed to make impossible, and it is checkable — the assembler's capability
 row need not include anything else.
 
-### 3.7 Reversible effects — the one language gap
+### 3.7 Reversible effects — the remaining gap
 
 `dsh` gets unload correctness from `ctx.effect()` returning a disposer. Gene has
 the pieces (`ensure`, scoped-impl transactional activation and reload) but no
-single registration primitive that guarantees the reverse path.
+single registration primitive that guarantees the reverse path — and with a live
+registry this stops being theoretical. A provider that registered a tool, opened
+a database handle, and subscribed to an event has three things to undo, and
+today each plugin is trusted to remember.
 
-The smallest thing that would close it: a harness-level `registry` whose
-`register` returns a disposer and whose scope-exit runs disposers in LIFO order,
-mirroring generator close semantics already specified in
-`docs/spec/streams.md`. This does not need to be a language change; it needs to
-be one library that everything else registers through, so "did you clean up?"
-stops being per-plugin diligence.
+The smallest thing that would close it: `provide` returns a disposer, and the
+seam table runs it when that provider is replaced or removed — LIFO within a
+plugin, mirroring the generator close semantics already specified in
+`docs/spec/streams.md`. This does not need to be a language change; it needs the
+registry to be the one door everything registers through, so "did you clean up?"
+stops being per-plugin diligence and becomes a property of replacement.
 
 ## 4. Recommendation
 
-Adopt, in this order:
+Build the harness as a **living application**: it boots from a profile and is
+modifiable from then on. Adopt, in this order:
 
-1. **The three-role seam rule**, as documentation policy for any capability the
-   harness gains. Cheap, and it is the difference between an extension point and
-   a real seam.
-2. **Model-visible ⟺ logged**, as an invariant on the session log, with
-   `request/assemble` bounded so it cannot read around it.
-3. **Seams as protocols, providers selected by name in a data profile** — no
-   layering, ambiguity is an error.
-4. **Plugins as capability-bounded packages**, with the boundary in core. This is
-   the part worth building the harness for.
-5. **A registration primitive with a guaranteed reverse path**, once there are
-   enough plugins for unload to matter.
+1. **Seams as protocols carrying the authority contract** (§3.2). This is the
+   piece that makes every later step safe, and it works today.
+2. **The seam table as a value** (§3.3) — one provider per seam, replacement
+   explicit and singular, swappable at runtime. Dynamism without letting order
+   decide.
+3. **Model-visible ⟺ logged**, with `request/assemble` bounded so it cannot read
+   around the log. A live system that can be recomposed at 3am needs replay more
+   than a static one does, not less.
+4. **Runtime plugin install via `$runtime/load_sandboxed`**, with `grants` as the
+   operator-readable statement of what the new code may reach.
+5. **Disposers on `provide`** (§3.7), once enough plugins exist that replacement
+   leaks something.
+
+Two small language gaps this design would like closed, neither blocking:
+`Map` key removal, and the removal-symmetric form of reload that
+`docs/scoped-impls.md` §6 already anticipates as module unload.
 
 Do not adopt: ordered profile/bundle patch layers, a general waterfall
-middleware mechanism, or a mutable `ctx` service registry. Each conflicts with a
-decision Gene has already made deliberately, and the reasons Gene made those
-decisions have not changed.
+middleware mechanism, or an *ambient* DI container. The first two make order
+decide semantics; the third makes dependencies invisible at the point of use.
+None of the three is required for the system to be dynamic, which was the
+confusion in the earlier draft of this document.
 
 `examples/ai_agent` is the natural first subject: it already has tools, an event
 log, persistence, gateway surfaces, and multiple model backends, assembled
-without seams. Re-expressing its model adapter and tool registry as two seams —
-and nothing else — would test the design at its narrowest point before anything
-is committed to.
+without seams. Re-expressing its model adapter as one seam — and swapping the
+provider at runtime, mid-session, with the session log intact across the
+swap — would test the design at its narrowest and most interesting point before
+anything is committed to.
 
 ## Sources
 
