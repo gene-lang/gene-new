@@ -8914,6 +8914,327 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
     check "animation-name: fade__" & digest & ";" in cssText
     check "color: fade;" in cssText
 
+suite "spec — application event bus (docs/proposals/events.md)":
+  const orderFamily =
+    "(ns order " &
+    "  (type Event ^is $event/Event) " &
+    "  (type Placed ^is Event ^props {^order_id Str}) " &
+    "  (type Shipped ^is Event ^props {^order_id Str})) "
+
+  test "a typed event is subscribed and published through a bus":
+    check_eval(
+      "(import gene/event [Bus]) " &
+      "(type PaymentReceived ^is $event/Event " &
+      "  ^props {^payment_id Str ^amount F64}) " &
+      "(var seen ($cell nil)) " &
+      "(fn record [e : PaymentReceived] (seen ~ set e/payment_id)) " &
+      "(var bus (Bus)) " &
+      "(bus ~ subscribe PaymentReceived record) " &
+      "(var r (bus ~ publish (PaymentReceived ^payment_id \"p_1\" " &
+      "                                       ^amount 50.0))) " &
+      "[r/matched r/delivered r/failed (seen ~ get)]",
+      "[1 1 0 \"p_1\"]")
+
+  test "only event/Event descendants can be published":
+    check_eval(
+      "(type NotAnEvent ^props {^x Int}) " &
+      "(var bus ($event/Bus)) " &
+      "(try (bus ~ publish (NotAnEvent ^x 1)) " &
+      "  catch (EventTypeError ^message m) m)",
+      "\"publish expects an event/Event descendant, got type NotAnEvent; " &
+      "declare the event type with ^is $event/Event\"")
+
+  test "a family base type recursively matches its nominal descendants":
+    check_eval(orderFamily &
+      "(var hits ($cell [])) " &
+      "(fn note [e] ((hits ~ get) ~ push \"x\")) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe order/Event note) " &
+      "(bus ~ subscribe $event/Event note) " &
+      "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
+      "(bus ~ publish (order/Shipped ^order_id \"o1\")) " &
+      "((hits ~ get) ~ size)",
+      "4")
+
+  test "event/exact excludes descendants":
+    check_eval(orderFamily &
+      "(type Rush ^is order/Placed) " &
+      "(var hits ($cell 0)) " &
+      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe ($event/exact order/Placed) note) " &
+      "(bus ~ publish (Rush ^order_id \"o1\")) " &
+      "(var after_descendant (hits ~ get)) " &
+      "(bus ~ publish (order/Placed ^order_id \"o2\")) " &
+      "[after_descendant (hits ~ get)]",
+      "[0 1]")
+
+  test "a concrete type selector still matches its own descendants":
+    check_eval(orderFamily &
+      "(type Rush ^is order/Placed) " &
+      "(var hits ($cell 0)) " &
+      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe order/Placed note) " &
+      "(bus ~ publish (Rush ^order_id \"o1\")) " &
+      "(hits ~ get)",
+      "1")
+
+  test "matching preserves subscription order across exact and family buckets":
+    check_eval(orderFamily &
+      "(var log ($cell [])) " &
+      "(fn note [tag] ((log ~ get) ~ push tag)) " &
+      "(fn family [e] (note \"family\")) " &
+      "(fn concrete [e] (note \"concrete\")) " &
+      "(fn exact [e] (note \"exact\")) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe order/Placed concrete) " &
+      "(bus ~ subscribe ($event/exact order/Placed) exact) " &
+      "(bus ~ subscribe order/Event family) " &
+      "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
+      "(log ~ get)",
+      "[\"concrete\" \"exact\" \"family\"]")
+
+  test "event matching uses declaration identity, not printed names":
+    # Two separately declared types with the same printed path are different
+    # events, so a subscription to one never sees the other (§6.4).
+    check_eval(
+      "(ns a (type Ping ^is $event/Event)) " &
+      "(ns b (type Ping ^is $event/Event)) " &
+      "(var hits ($cell 0)) " &
+      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe a/Ping note) " &
+      "(bus ~ publish (b/Ping)) " &
+      "(var after_other (hits ~ get)) " &
+      "(bus ~ publish (a/Ping)) " &
+      "[after_other (hits ~ get)]",
+      "[0 1]")
+
+  test "separate overlapping subscriptions invoke the handler separately":
+    check_eval(orderFamily &
+      "(var hits ($cell 0)) " &
+      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe order/Event note) " &
+      "(bus ~ subscribe order/Placed note) " &
+      "(var r (bus ~ publish (order/Placed ^order_id \"o1\"))) " &
+      "[r/matched (hits ~ get)]",
+      "[2 2]")
+
+  test "subscribe rejects a handler too narrow for its selector":
+    check_eval(orderFamily &
+      "(fn narrow [e : order/Placed] e) " &
+      "(var bus ($event/Bus)) " &
+      "(try (bus ~ subscribe order/Event narrow) " &
+      "  catch (EventTypeError ^message m) m)",
+      "\"handler parameter type Placed cannot accept every event Event " &
+      "matches; widen the parameter to Event or subscribe to Placed instead\"")
+
+  test "an unannotated handler parameter accepts any event":
+    check_eval(orderFamily &
+      "(fn wide [e] 1) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe order/Event wide) " &
+      "(var r (bus ~ publish (order/Placed ^order_id \"o1\"))) " &
+      "r/delivered",
+      "1")
+
+  test "subscribe rejects a selector that is not an event type":
+    check_eval(
+      "(type NotAnEvent) " &
+      "(fn h [e] e) " &
+      "(var bus ($event/Bus)) " &
+      "(try (bus ~ subscribe NotAnEvent h) " &
+      "  catch (EventTypeError ^message m) m)",
+      "\"subscribe expects an event/Event descendant type or an " &
+      "event/Matcher from event/exact\"")
+
+  test "publish delivers a frozen copy, leaving the publisher's value mutable":
+    check_eval(orderFamily &
+      "(var seen ($cell nil)) " &
+      "(fn capture [e] (seen ~ set e)) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe order/Placed capture) " &
+      "(var e (order/Placed ^order_id \"o_1\")) " &
+      "(bus ~ publish e) " &
+      "(set e/order_id \"o_2\") " &
+      "(var delivered (seen ~ get)) " &
+      "[e/order_id delivered/order_id]",
+      "[\"o_2\" \"o_1\"]")
+
+  test "every subscriber receives the same frozen value":
+    check_eval(orderFamily &
+      "(var first ($cell nil)) (var second ($cell nil)) " &
+      "(fn a [e] (first ~ set e)) " &
+      "(fn b [e] (second ~ set e)) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe order/Placed a) " &
+      "(bus ~ subscribe order/Placed b) " &
+      "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
+      "(same? (first ~ get) (second ~ get))",
+      "true")
+
+  test "cancellation is explicit and idempotent":
+    check_eval(orderFamily &
+      "(fn h [e] e) " &
+      "(var bus ($event/Bus)) " &
+      "(var s (bus ~ subscribe order/Placed h)) " &
+      "(var first (s ~ cancel)) " &
+      "(var second (s ~ cancel)) " &
+      "(var r (bus ~ publish (order/Placed ^order_id \"o1\"))) " &
+      "[first second (s ~ active?) r/matched]",
+      "[true false false 0]")
+
+  test "a subscription added during publication starts with the next event":
+    check_eval(orderFamily &
+      "(var hits ($cell 0)) " &
+      "(fn late [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(var bus ($event/Bus)) " &
+      "(fn adder [e] (bus ~ subscribe order/Placed late)) " &
+      "(bus ~ subscribe order/Placed adder) " &
+      "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
+      "(var during (hits ~ get)) " &
+      "(bus ~ publish (order/Placed ^order_id \"o2\")) " &
+      "[during (hits ~ get)]",
+      "[0 1]")
+
+  test "a one-shot subscription is consumed before its handler runs":
+    # §14.2: nested publication of the same event must not invoke it twice.
+    check_eval(orderFamily &
+      "(var hits ($cell 0)) " &
+      "(var bus ($event/Bus)) " &
+      "(fn warm [e] " &
+      "  (hits ~ set (+ (hits ~ get) 1)) " &
+      "  (if (< (hits ~ get) 3) " &
+      "    (bus ~ publish (order/Placed ^order_id \"nested\")))) " &
+      "(bus ~ subscribe order/Placed warm ^once true) " &
+      "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
+      "[(hits ~ get) (bus ~ subscription_count)]",
+      "[1 0]")
+
+  test "nested publication is depth-first":
+    check_eval(
+      "(type Outer ^is $event/Event) (type Inner ^is $event/Event) " &
+      "(var log ($cell [])) " &
+      "(fn note [tag] ((log ~ get) ~ push tag)) " &
+      "(var bus ($event/Bus)) " &
+      "(fn inner [e] (note \"inner\")) " &
+      "(fn outer_a [e] (note \"a-start\") (bus ~ publish (Inner)) " &
+      "  (note \"a-end\")) " &
+      "(fn outer_b [e] (note \"b\")) " &
+      "(bus ~ subscribe Inner inner) " &
+      "(bus ~ subscribe Outer outer_a) " &
+      "(bus ~ subscribe Outer outer_b) " &
+      "(bus ~ publish (Outer)) " &
+      "(log ~ get)",
+      "[\"a-start\" \"inner\" \"a-end\" \"b\"]")
+
+  test "nested publication past the bus limit raises EventRecursionError":
+    # The guard fires at the innermost publish, before dispatching the nested
+    # event; under the default policy the outer publications then report it as
+    # the handler failure it is.
+    check_eval(
+      "(type Ping ^is $event/Event) " &
+      "(var bus ($event/Bus ^nesting_limit 2)) " &
+      "(fn recurse [e] (bus ~ publish (Ping))) " &
+      "(bus ~ subscribe Ping recurse) " &
+      "(try (bus ~ publish (Ping)) " &
+      "  catch (EventPublishError ^errors errs) " &
+      "    (var inner (errs ~ first)) " &
+      "    (var innermost (inner/errors ~ first)) " &
+      "    [(errs ~ size) innermost/limit])",
+      "[1 2]")
+
+  test "handler failures do not prevent later handlers from running":
+    check_eval(
+      "(type Ping ^is $event/Event) " &
+      "(var ran ($cell false)) " &
+      "(fn boom [e] (fail (Error ^message \"nope\"))) " &
+      "(fn ok [e] (ran ~ set true)) " &
+      "(var bus ($event/Bus ^error_policy $event/collect)) " &
+      "(bus ~ subscribe Ping boom) " &
+      "(bus ~ subscribe Ping ok) " &
+      "(var r (bus ~ publish (Ping))) " &
+      "[r/matched r/delivered r/failed (ran ~ get) (r/errors ~ size)]",
+      "[2 1 1 true 1]")
+
+  test "raise_after is the default and reports the ordered failures":
+    check_eval(
+      "(type Ping ^is $event/Event) " &
+      "(fn boom [e] (fail (Error ^message \"nope\"))) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe Ping boom) " &
+      "(try (bus ~ publish (Ping)) " &
+      "  catch (EventPublishError ^failed f ^errors errs) " &
+      "    [f (errs ~ size)])",
+      "[1 1]")
+
+  test "EventSink:emit reports handler failures under collect too":
+    # §7.2: choosing `collect` for an attached observation bus must not hide
+    # handler failures at the sink boundary.
+    check_eval(
+      "(type Ping ^is $event/Event) " &
+      "(fn boom [e] (fail (Error ^message \"nope\"))) " &
+      "(var bus ($event/Bus ^error_policy $event/collect)) " &
+      "(bus ~ subscribe Ping boom) " &
+      "(var collected (bus ~ publish (Ping))) " &
+      "(var emitted (try (bus ~ EventSink:emit (Ping)) " &
+      "  catch (EventPublishError ^failed f) f)) " &
+      "[collected/failed emitted]",
+      "[1 1]")
+
+  test "close is idempotent, releases handlers, and rejects later use":
+    check_eval(orderFamily &
+      "(fn h [e] e) " &
+      "(var bus ($event/Bus)) " &
+      "(var s (bus ~ subscribe order/Placed h)) " &
+      "(var first (bus ~ close)) " &
+      "(var second (bus ~ close)) " &
+      "[first second (bus ~ closed?) (bus ~ subscription_count) " &
+      " (s ~ cancel) " &
+      " (try (bus ~ publish (order/Placed ^order_id \"o1\")) " &
+      "   catch (EventBusClosedError) \"closed\") " &
+      " (try (bus ~ subscribe order/Placed h) " &
+      "   catch (EventBusClosedError) \"closed\")]",
+      "[true false true 0 false \"closed\" \"closed\"]")
+
+  test "a recording sink collects the events emitted to it":
+    check_eval(
+      "(type Ping ^is $event/Event ^props {^n Int}) " &
+      "(var rec ($event/RecordingSink)) " &
+      "(rec ~ EventSink:emit (Ping ^n 1)) " &
+      "(rec ~ EventSink:emit (Ping ^n 2)) " &
+      "(var before ((rec ~ events) ~ size)) " &
+      "(rec ~ clear) " &
+      "[before ((rec ~ events) ~ size)]",
+      "[2 0]")
+
+  test "a composite sink fans out in order and the null sink discards":
+    check_eval(
+      "(type Ping ^is $event/Event ^props {^n Int}) " &
+      "(var rec ($event/RecordingSink)) " &
+      "(var bus ($event/Bus)) " &
+      "(var hits ($cell 0)) " &
+      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(bus ~ subscribe Ping note) " &
+      "(var sink ($event/CompositeSink [rec bus ($event/NullSink)])) " &
+      "(sink ~ EventSink:emit (Ping ^n 1)) " &
+      "[((rec ~ events) ~ size) (hits ~ get) ((sink ~ sinks) ~ size)]",
+      "[1 1 3]")
+
+  test "a bus cannot be frozen, sent, or published as an event":
+    check_eval(
+      "(try ($freeze ($event/Bus)) catch (Error ^message m) m)",
+      "\"freeze cannot freeze event/Bus\"")
+
+  test "event is a namespace under gene, never a bare root":
+    # `event` is not in `bareCapabilityNamespaces`, so `$event/Bus` and
+    # `(import gene/event [Bus])` work and bare `event/Bus` does not (§7).
+    check_eval("(($event/Bus) ~ closed?)", "false")
+    check_eval("(import gene/event [Bus]) ((Bus) ~ closed?)", "false")
+    check_eval_error("(event/Bus)", "event")
+
 suite "spec — naming convention":
   test "registered names use underscores and reserve trailing bang":
     # The stdlib naming convention is snake_case. Walk every binding reachable

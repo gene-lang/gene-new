@@ -121,6 +121,12 @@ type
     vkFfiLibrary ## loaded native library handle
     vkFfiCallable ## dynamically bound foreign callable
     vkLogger    ## immutable structured diagnostic logger handle
+    vkEventBus  ## application event bus (docs/proposals/events.md §7)
+    vkEventSubscription ## opaque handle returned by `Bus/subscribe` (§7.1)
+    vkEventMatcher ## `event/exact T` selector value (§6.3)
+    vkRecordingSink ## `event/RecordingSink` — test sink recording every event
+    vkNullSink  ## `event/NullSink` — accepts and discards
+    vkCompositeSink ## `event/CompositeSink` — ordered fan-out to other sinks
     vkType      ## a declared nominal type (design Section 7)
     vkProtocol  ## a declared protocol (design Section 10)
     vkProtocolMessage ## callable protocol message dispatcher
@@ -274,12 +280,14 @@ type
     refCount: int
     shared: int
     immutable: bool
+    deepFrozen: bool
     items: seq[Value]
 
   GeneMap = object
     refCount: int
     shared: int
     immutable: bool
+    deepFrozen: bool
     entries: PropTable
 
   HashMapEntry* = object
@@ -290,6 +298,12 @@ type
     refCount: int
     shared: int
     immutable: bool
+    ## Deep immutability, distinct from `immutable` (events.md §6.5).
+    ## `immutable` says "this container's own head/props/body cannot change";
+    ## `deepFrozen` says "nothing reachable from here can change". Only deep
+    ## `freeze` sets it — `freeze_shallow` must not, or the O(1)
+    ## already-frozen check would accept a node still holding a mutable child.
+    deepFrozen: bool
     constructing: bool
     resourceAuthorityId: uint64
     head: Value
@@ -619,6 +633,12 @@ type
     okFfiLibrary
     okFfiCallable
     okLogger
+    okEventBus
+    okEventSubscription
+    okEventMatcher
+    okRecordingSink
+    okNullSink
+    okCompositeSink
     okType
     okEnum
     okProtocol
@@ -910,6 +930,76 @@ type
     payload: Value
     capabilityContext: CapabilityContext
 
+  EventErrorPolicy* = enum
+    ## docs/proposals/events.md §8. `eepRaiseAfter` is the default: every
+    ## matching handler is attempted and one `EventPublishError` carries the
+    ## ordered failures afterwards. `eepCollect` always returns a
+    ## `PublishResult` from `publish` and leaves the failures to the publisher.
+    eepRaiseAfter
+    eepCollect
+
+  EventSubscriptionEntry* = object
+    ## One subscription in a bus, in subscription order (events.md §7.1/§7.5).
+    ##
+    ## Entries are appended and never removed while the bus is open: cancel
+    ## clears `active` and drops the handler reference, so the sequence index
+    ## doubles as the stable subscription identity the buckets and the resolved
+    ## -match cache point at.
+    seqNo*: int64            # subscription sequence number = dispatch order
+    handler*: Value
+    selectorTypeId*: int32   # compact event type id the selector names
+    exact*: bool             # `event/exact T` — descendants excluded
+    once*: bool              # `^once true`
+    active*: bool
+    consumed*: bool          # one-shot already delivered (marked before the call)
+
+  EventMatchCacheEntry* = object
+    ## The merged, subscription-ordered match list for one concrete event type,
+    ## stamped with the bus generation it was built at (events.md §6.4). The
+    ## cache is copy-on-write: a stale entry is *replaced* by a freshly built
+    ## one, never mutated, so a publication that already read the old entry
+    ## keeps running against an unchanged list.
+    generation*: int64
+    subs*: seq[int32]        # indices into EventBusData.subs, ascending
+
+  EventBusData* = ref object of GeneObjectData
+    ## Fields are exported for `events.nim`, which is included into the VM and
+    ## is the only writer. Everything outside it goes through the accessors
+    ## below.
+    cycleRefs: int
+    closed*: bool
+    errorPolicy*: EventErrorPolicy
+    nestingLimit*: int
+    nestingDepth*: int
+    nextSeqNo*: int64
+    generation*: int64
+    subs*: seq[EventSubscriptionEntry]
+    descendantBuckets*: Table[int32, seq[int32]]
+    exactBuckets*: Table[int32, seq[int32]]
+    matchCache*: Table[int32, EventMatchCacheEntry]
+    laneId*: int             # owning lane (events.md §9.1)
+
+  EventSubscriptionData* = ref object of GeneObjectData
+    ## A subscription handle. The bus edge is **non-owning**: a subscription
+    ## keeps its handler reachable through the bus (§7.3), and an owning edge
+    ## back would make every handle retain the whole bus.
+    busBits*: uint64
+    index*: int32            # index into EventBusData.subs
+    seqNo*: int64
+
+  EventMatcherData* = ref object of GeneObjectData
+    ## `event/exact T`. Opaque, immutable, and deliberately not called
+    ## `Selector` — that name is taken by reader selector literals (§6.3).
+    target*: Value           # the Type it names
+    typeId*: int32
+
+  EventSinkData* = ref object of GeneObjectData
+    ## Backs `RecordingSink`, `NullSink`, and `CompositeSink` — one Nim shape,
+    ## three `ObjKind`s, so each keeps its own nominal type identity while the
+    ## storage stays in one place.
+    recorded*: seq[Value]    # RecordingSink
+    sinks*: seq[Value]       # CompositeSink
+
   TypeRepr* = enum
     ## How instances of a nominal type are represented and created.
     ##
@@ -957,6 +1047,20 @@ type
                           # expression, or NIL for an ordinary nominal type. An
                           # alias is not constructible; it expands in annotation
                           # position against the use-site scope.
+    nativeCtor: Value     # native constructor for a built-in surface type
+                          # (`($event/Bus ^error_policy …)`), or NIL. Distinct
+                          # from `ctorFn`, which is a Gene `(ctor …)` reached
+                          # through `new`: this one answers `(T …)` for a type
+                          # whose instances are a native value kind rather than
+                          # a schema of props.
+    eventTypeId: int32    # compact event type id, or 0 for a non-event type
+                          # (docs/proposals/events.md §6.4). Assigned eagerly at
+                          # `newType`, so ID allocation is a declaration-phase
+                          # property and no publish site races for a counter.
+    eventMatchIds: seq[int32]
+                          # this type's id followed by every event ancestor's,
+                          # most-derived first. Immutable once assigned: `^is`
+                          # is single and fixed, so the list is stable.
 
   EnumData = ref object of GeneObjectData
     name: string
@@ -1250,6 +1354,12 @@ proc boxObject(data: GeneObjectData): Value =
     tag = CYCLE_OBJECT_TAG
   of okCell, okAtomicCell:
     CellData(data).cycleRefs = 1
+    tag = CYCLE_OBJECT_TAG
+  of okEventBus:
+    # A bus retains its handlers, and a handler routinely closes over the scope
+    # that holds the bus. That is the same self-cycle Cell and Env have, so it
+    # takes the same collector.
+    EventBusData(data).cycleRefs = 1
     tag = CYCLE_OBJECT_TAG
   else:
     discard
@@ -1570,7 +1680,7 @@ proc objectPayload(data: GeneObjectData): uint64 {.inline.} =
   cast[uint64](cast[pointer](data)) and PAYLOAD_MASK
 
 proc tracksObjectCycles(data: GeneObjectData): bool {.inline.} =
-  data.objKind in {okCell, okAtomicCell, okEnv}
+  data.objKind in {okCell, okAtomicCell, okEnv, okEventBus}
 
 proc objectCycleRefs(data: GeneObjectData): int {.inline.} =
   case data.objKind
@@ -1578,6 +1688,8 @@ proc objectCycleRefs(data: GeneObjectData): int {.inline.} =
     EnvData(data).cycleRefs
   of okCell, okAtomicCell:
     CellData(data).cycleRefs
+  of okEventBus:
+    EventBusData(data).cycleRefs
   else:
     0
 
@@ -1686,6 +1798,21 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     emit(d.returnType)
   of okLogger:
     emit(LoggerData(data).payload)
+  of okEventBus:
+    for sub in EventBusData(data).subs:
+      emit(sub.handler)
+  of okEventSubscription:
+    # `busBits` is deliberately non-owning (see EventSubscriptionData), so the
+    # handle contributes no edge and cannot keep a closed bus alive.
+    discard
+  of okEventMatcher:
+    emit(EventMatcherData(data).target)
+  of okRecordingSink, okNullSink, okCompositeSink:
+    let d = EventSinkData(data)
+    for val in d.recorded:
+      emit(val)
+    for val in d.sinks:
+      emit(val)
   of okType:
     let d = TypeData(data)
     emit(d.parent)
@@ -1702,6 +1829,7 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     for _, val in d.messages:
       emit(val)
     emit(d.ctorFn)
+    emit(d.nativeCtor)
     emit(d.aliasExpr)
   of okEnum:
     let d = EnumData(data)
@@ -1855,6 +1983,26 @@ proc clearObjectEdges(data: GeneObjectData) =
     clearValueSlot(d.returnType)
   of okLogger:
     clearValueSlot(LoggerData(data).payload)
+  of okEventBus:
+    let d = EventBusData(data)
+    for i in 0 ..< d.subs.len:
+      clearValueSlot(d.subs[i].handler)
+    d.subs.setLen(0)
+    d.descendantBuckets.clear()
+    d.exactBuckets.clear()
+    d.matchCache.clear()
+  of okEventSubscription:
+    EventSubscriptionData(data).busBits = 0
+  of okEventMatcher:
+    clearValueSlot(EventMatcherData(data).target)
+  of okRecordingSink, okNullSink, okCompositeSink:
+    let d = EventSinkData(data)
+    for i in 0 ..< d.recorded.len:
+      clearValueSlot(d.recorded[i])
+    d.recorded.setLen(0)
+    for i in 0 ..< d.sinks.len:
+      clearValueSlot(d.sinks[i])
+    d.sinks.setLen(0)
   of okType:
     let d = TypeData(data)
     clearValueSlot(d.parent)
@@ -1866,6 +2014,7 @@ proc clearObjectEdges(data: GeneObjectData) =
     d.derivedProtocols.setLen(0)
     d.deriveRequests.setLen(0)
     d.messages = initTable[string, Value]()
+    clearValueSlot(d.nativeCtor)
     clearValueSlot(d.aliasExpr)
   of okEnum:
     let d = EnumData(data)
@@ -2230,6 +2379,66 @@ let
 proc isHeapBacked*(v: Value): bool {.inline.} =
   v.isManaged
 
+const objKindValueKinds: array[ObjKind, ValueKind] = [
+  ## `ObjKind` -> `ValueKind`, as a table rather than a `case`.
+  ##
+  ## `kind` is `{.inline.}` and is the hottest read in the VM, so its *body
+  ## size* is part of the interface: a switch here grew with every heap kind
+  ## added, and once it grew past what the C compiler would inline, every
+  ## `kind` call in the interpreter became a real call. Adding the six event
+  ## value kinds crossed that line and cost ~7% across the VM benchmarks —
+  ## uniformly, which is the signature of a lost inline rather than of new
+  ## work. A table is O(1) in code size, so the next kind is free.
+  ##
+  ## Two entries are not identities and must stay in sync with their arms:
+  ## `okEnum` is a `vkType` (an enum *is* a type value), and `okBoundMessage`
+  ## is a `vkProtocolMessage`. `okEnv` is the one kind the table cannot answer
+  ## — a borrowed Env is a `vkCallerEnv` — so `kind` special-cases it below.
+  okNamespace: vkNamespace,
+  okModule: vkModule,
+  okBigInt: vkInt,
+  okBytes: vkBytes,
+  okRegex: vkRegex,
+  okRange: vkRange,
+  okDate: vkDate,
+  okTime: vkTime,
+  okDateTime: vkDateTime,
+  okTimezone: vkTimezone,
+  okDuration: vkDuration,
+  okSet: vkSet,
+  okHashMap: vkHashMap,
+  okEnv: vkEnv,
+  okCell: vkCell,
+  okAtomicCell: vkAtomicCell,
+  okStream: vkStream,
+  okTask: vkTask,
+  okChannel: vkChannel,
+  okActorRef: vkActorRef,
+  okActorContext: vkActorContext,
+  okActorStep: vkActorStep,
+  okReplyTo: vkReplyTo,
+  okCPtr: vkCPtr,
+  okCSlice: vkCSlice,
+  okBuffer: vkBuffer,
+  okDeviceBuffer: vkDeviceBuffer,
+  okCapability: vkCapability,
+  okFfiLibrary: vkFfiLibrary,
+  okFfiCallable: vkFfiCallable,
+  okLogger: vkLogger,
+  okEventBus: vkEventBus,
+  okEventSubscription: vkEventSubscription,
+  okEventMatcher: vkEventMatcher,
+  okRecordingSink: vkRecordingSink,
+  okNullSink: vkNullSink,
+  okCompositeSink: vkCompositeSink,
+  okType: vkType,
+  okEnum: vkType,
+  okProtocol: vkProtocol,
+  okProtocolMessage: vkProtocolMessage,
+  okBoundMessage: vkProtocolMessage,
+  okEnumVariant: vkEnumVariant,
+]
+
 proc kind*(v: Value): ValueKind {.inline, raises: [].} =
   if v.bits == 0: return vkNil
   let tag = v.bits shr TAG_SHIFT
@@ -2249,52 +2458,18 @@ proc kind*(v: Value): ValueKind {.inline, raises: [].} =
   of FUNCTION_TAG: vkFunction
   of NATIVE_FN_TAG: vkNativeFn
   of CYCLE_OBJECT_TAG, OBJECT_TAG:
-    case objData(v).objKind
-    of okNamespace: vkNamespace
-    of okModule: vkModule
-    of okBigInt: vkInt
-    of okBytes: vkBytes
-    of okRegex: vkRegex
-    of okRange: vkRange
-    of okDate: vkDate
-    of okTime: vkTime
-    of okDateTime: vkDateTime
-    of okTimezone: vkTimezone
-    of okDuration: vkDuration
-    of okSet: vkSet
-    of okHashMap: vkHashMap
-    of okEnv:
+    let objKind = objData(v).objKind
+    if objKind == okEnv:
       # `cast`, not `EnvData(...)`. The checked downcast emits an
       # `isObjDisplayCheck` that can `raiseObjectConversionError`, and one
       # possible raise anywhere in this proc compiles *every* `kind` call — the
       # hottest read in the VM — with the goto-exception preamble: a
       # thread-local `nimErrorFlag()` load on entry plus a branch after each
-      # inner call. The `of okEnv` arm has already established the dynamic
-      # type, so the check can only ever succeed.
+      # inner call. The test above has already established the dynamic type, so
+      # the check can only ever succeed.
       if cast[EnvData](objData(v)).borrowed: vkCallerEnv else: vkEnv
-    of okCell: vkCell
-    of okAtomicCell: vkAtomicCell
-    of okStream: vkStream
-    of okTask: vkTask
-    of okChannel: vkChannel
-    of okActorRef: vkActorRef
-    of okActorContext: vkActorContext
-    of okActorStep: vkActorStep
-    of okReplyTo: vkReplyTo
-    of okCPtr: vkCPtr
-    of okCSlice: vkCSlice
-    of okBuffer: vkBuffer
-    of okDeviceBuffer: vkDeviceBuffer
-    of okCapability: vkCapability
-    of okFfiLibrary: vkFfiLibrary
-    of okFfiCallable: vkFfiCallable
-    of okLogger: vkLogger
-    of okType: vkType
-    of okEnum: vkType
-    of okProtocol: vkProtocol
-    of okProtocolMessage: vkProtocolMessage
-    of okBoundMessage: vkProtocolMessage
-    of okEnumVariant: vkEnumVariant
+    else:
+      objKindValueKinds[objKind]
   else: vkNil
 
 proc isNil*(v: Value): bool {.inline.} =
@@ -4203,6 +4378,20 @@ proc typeCtor*(v: Value): Value =
     return NIL
   TypeData(objData(v)).ctorFn
 
+proc typeNativeCtor*(v: Value): Value =
+  ## The native `(T …)` constructor for a built-in surface type, or NIL.
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    return NIL
+  TypeData(objData(v)).nativeCtor
+
+proc setTypeNativeCtor*(v: Value, ctor: Value) =
+  ## Install-once, at built-in registration. A built-in surface type is
+  ## immutable after construction (the process shares one identity across
+  ## Applications), so this must run before the type is published.
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    raise newException(FieldDefect, "value is not a Type")
+  TypeData(objData(v)).nativeCtor = ctor
+
 proc typeConstructor*(v: Value): Value =
   ## The nearest constructor in the type's ancestry, including the type
   ## itself. A child constructor overrides an inherited one; constructors do
@@ -4725,10 +4914,12 @@ proc newSym*(v: string): Value =
 proc newBool*(v: bool): Value {.inline.} =
   if v: TRUE else: FALSE
 
-proc newList*(items: sink seq[Value] = @[], immutable = false): Value =
+proc newList*(items: sink seq[Value] = @[], immutable = false,
+              deepFrozen = false): Value =
   let p = createObj(GeneList)
   p.refCount = 1
   p.immutable = immutable
+  p.deepFrozen = deepFrozen
   p.items = items
   boxPtr(LIST_TAG, p)
 
@@ -4746,10 +4937,11 @@ proc withoutVoidEntries(entries: sink PropTable): PropTable =
       result[key] = val
 
 proc newMap*(entries: sink PropTable = initPropTable(),
-             immutable = false): Value =
+             immutable = false, deepFrozen = false): Value =
   let p = createObj(GeneMap)
   p.refCount = 1
   p.immutable = immutable
+  p.deepFrozen = deepFrozen
   p.entries = withoutVoidEntries(entries)
   boxPtr(MAP_TAG, p)
 
@@ -4847,10 +5039,12 @@ proc newNode*(head: Value,
               body: sink seq[Value] = @[],
               meta: sink PropTable = initPropTable(),
               immutable = false,
-              constructing = false): Value =
+              constructing = false,
+              deepFrozen = false): Value =
   let p = createObj(GeneNode)
   p.refCount = 1
   p.immutable = immutable
+  p.deepFrozen = deepFrozen
   p.constructing = constructing
   p.head = head
   p.props = withoutVoidEntries(props)
@@ -5768,6 +5962,124 @@ proc loggerCapabilityContext*(v: Value): CapabilityContext =
     raise newException(FieldDefect, "value is not a Logger")
   LoggerData(objData(v)).capabilityContext
 
+# ---------------------------------------------------------------------------
+# Application event bus storage (docs/proposals/events.md §6-§8)
+# ---------------------------------------------------------------------------
+#
+# Only the storage lives here. Matching, dispatch, freezing, and error policy
+# are in `events.nim`, which is included into the VM where `applyCall` and the
+# error types it raises are available.
+
+const defaultEventNestingLimit* = 16
+  ## §7.6's "conservative default" nesting limit. Deep-first nested publication
+  ## is legal; unbounded recursion through it is not.
+
+proc newEventBus*(errorPolicy: EventErrorPolicy = eepRaiseAfter,
+                  nestingLimit = defaultEventNestingLimit,
+                  laneId = 0): Value =
+  boxObject(EventBusData(objKind: okEventBus, errorPolicy: errorPolicy,
+                         nestingLimit: nestingLimit, laneId: laneId,
+                         descendantBuckets: initTable[int32, seq[int32]](),
+                         exactBuckets: initTable[int32, seq[int32]](),
+                         matchCache: initTable[int32, EventMatchCacheEntry]()))
+
+template busData*(v: Value): EventBusData =
+  ## The bus payload. Never outlive `v` — see the `objData` contract.
+  EventBusData(objData(v))
+
+proc requireEventBus*(v: Value) {.inline.} =
+  if v.kind != vkEventBus:
+    raise newException(FieldDefect, "value is not an event/Bus")
+
+proc eventBusClosed*(v: Value): bool =
+  requireEventBus(v)
+  busData(v).closed
+
+proc eventBusErrorPolicy*(v: Value): EventErrorPolicy =
+  requireEventBus(v)
+  busData(v).errorPolicy
+
+proc eventBusNestingLimit*(v: Value): int =
+  requireEventBus(v)
+  busData(v).nestingLimit
+
+proc eventBusLaneId*(v: Value): int =
+  requireEventBus(v)
+  busData(v).laneId
+
+proc newEventSubscription*(bus: Value, index: int32, seqNo: int64): Value =
+  requireEventBus(bus)
+  boxObject(EventSubscriptionData(objKind: okEventSubscription,
+                                  busBits: bus.bits, index: index,
+                                  seqNo: seqNo))
+
+template subscriptionData*(v: Value): EventSubscriptionData =
+  EventSubscriptionData(objData(v))
+
+proc subscriptionBus*(v: Value): Value =
+  ## The bus this handle points at, retained for the caller. The stored edge is
+  ## non-owning, so a handle never keeps a bus alive; reconstituting it here is
+  ## the one place that turns those bits back into a counted reference.
+  if v.kind != vkEventSubscription:
+    raise newException(FieldDefect, "value is not an event/Subscription")
+  result.bits = subscriptionData(v).busBits
+  if (result.bits shr TAG_SHIFT) >= MANAGED_MIN:
+    rcRetain(result.bits)
+
+proc newEventMatcher*(target: Value, typeId: int32): Value =
+  boxObject(EventMatcherData(objKind: okEventMatcher, target: target,
+                             typeId: typeId))
+
+proc eventMatcherTarget*(v: Value): Value =
+  if v.kind != vkEventMatcher:
+    raise newException(FieldDefect, "value is not an event/Matcher")
+  EventMatcherData(objData(v)).target
+
+proc eventMatcherTypeId*(v: Value): int32 =
+  if v.kind != vkEventMatcher:
+    raise newException(FieldDefect, "value is not an event/Matcher")
+  EventMatcherData(objData(v)).typeId
+
+proc newRecordingSink*(): Value =
+  boxObject(EventSinkData(objKind: okRecordingSink))
+
+proc newNullSink*(): Value =
+  boxObject(EventSinkData(objKind: okNullSink))
+
+proc newCompositeSink*(sinks: sink seq[Value]): Value =
+  boxObject(EventSinkData(objKind: okCompositeSink, sinks: sinks))
+
+template sinkData*(v: Value): EventSinkData =
+  EventSinkData(objData(v))
+
+proc recordedEvents*(v: Value): lent seq[Value] =
+  if v.kind != vkRecordingSink:
+    raise newException(FieldDefect, "value is not an event/RecordingSink")
+  EventSinkData(objData(v)).recorded
+
+proc recordEvent*(v: Value, event: Value) =
+  if v.kind != vkRecordingSink:
+    raise newException(FieldDefect, "value is not an event/RecordingSink")
+  EventSinkData(objData(v)).recorded.add event
+
+proc clearRecordedEvents*(v: Value) =
+  if v.kind != vkRecordingSink:
+    raise newException(FieldDefect, "value is not an event/RecordingSink")
+  EventSinkData(objData(v)).recorded.setLen(0)
+
+proc compositeSinks*(v: Value): lent seq[Value] =
+  if v.kind != vkCompositeSink:
+    raise newException(FieldDefect, "value is not an event/CompositeSink")
+  EventSinkData(objData(v)).sinks
+
+const EventSinkKinds* = {vkEventBus, vkRecordingSink, vkNullSink,
+                         vkCompositeSink}
+  ## The value kinds the built-in `EventSink` impls cover. A Gene type may
+  ## implement the protocol too; this set is only the native shortcut.
+
+const EventValueKinds* = {vkEventBus, vkEventSubscription, vkEventMatcher,
+                          vkRecordingSink, vkNullSink, vkCompositeSink}
+
 proc newFfiCallable*(name, symbol: string, address: pointer, library: Value,
                      paramTypes: seq[Value], returnType: Value,
                      releaseName = "", releaseAddress: pointer = nil): Value =
@@ -5908,6 +6220,47 @@ proc newGeneratorStream*(code: FunctionCode, scope: Scope,
                        generatorCode: code, generatorScope: scope,
                        generatorStack: @[], generatorIp: 0))
 
+# ---------------------------------------------------------------------------
+# Compact event type identity (docs/proposals/events.md §6.4)
+# ---------------------------------------------------------------------------
+
+var
+  eventTypeIdCounter: int32
+  eventTypeIdLock: Lock
+initLock(eventTypeIdLock)
+
+proc nextEventTypeId(): int32 =
+  ## Ids identify *type declarations*, not names: two modules declaring the
+  ## same printed path get different ids.
+  ##
+  ## The counter is process-wide rather than per-application, which the
+  ## proposal writes as "application-owned". Nothing is registered in it and
+  ## nothing can be looked up from it — it hands out an opaque monotonic
+  ## number and keeps no table — so the property §6.4 is protecting (no global
+  ## topic namespace, nothing to collide in or observe) holds either way, and a
+  ## process-wide counter is what lets the `event/Event` root be the same
+  ## built-in singleton every Application shares.
+  acquire(eventTypeIdLock)
+  try:
+    inc eventTypeIdCounter
+    result = eventTypeIdCounter
+  finally:
+    release(eventTypeIdLock)
+
+proc eventTypeId*(v: Value): int32 =
+  ## 0 when `v` is not a nominal Type or not an `event/Event` descendant. An
+  ## alias never carries one: only `newType` assigns, and it builds no aliases.
+  ## `vkType` also covers enums, whose payload is an `EnumData`, so the test is
+  ## on the object kind rather than the value kind.
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    return 0
+  TypeData(objData(v)).eventTypeId
+
+proc eventMatchIds*(v: Value): lent seq[int32] =
+  ## This type's id first, then each event ancestor's, up to `event/Event`.
+  ## Only meaningful when `eventTypeId(v)` is nonzero.
+  TypeData(objData(v)).eventMatchIds
+
 proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               requiredProtocols: sink seq[Value], scope: Scope,
               derivedProtocols: sink seq[Value] = @[],
@@ -5919,7 +6272,8 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
               nativeIdentity = "",
               nativeAbiIdentity = "",
               nativeAbiFingerprint = "",
-              nativeContractFingerprint = ""): Value =
+              nativeContractFingerprint = "",
+              eventRoot = false): Value =
   ## A nominal type. Single inheritance is merged eagerly: the parent's fields
   ## come first, then this type's own fields (design Section 7.3).
   var fields: seq[TypeField]
@@ -5955,6 +6309,22 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
     if owned.scope == nil and owned.weakScope == nil:
       owned.weakScope = cast[pointer](scope)
     bodyFields.add owned
+  # Event identity is assigned here — eagerly, at declaration — so no lane bumps
+  # a shared counter at first publish (events.md §6.4). A type is an event type
+  # exactly when it is the `event/Event` root or descends from one through `^is`,
+  # which is a single field read on the parent.
+  var eventId: int32 = 0
+  var matchIds: seq[int32]
+  if eventRoot:
+    eventId = nextEventTypeId()
+    matchIds = @[eventId]
+  elif parent.eventTypeId != 0:
+    eventId = nextEventTypeId()
+    let inherited = parent.eventMatchIds
+    matchIds = newSeqOfCap[int32](inherited.len + 1)
+    matchIds.add eventId
+    for id in inherited:
+      matchIds.add id
   boxObject(TypeData(objKind: okType, name: name, parent: parent,
                      repr: repr, nativeIdentity: nativeIdentity,
                      nativeAbiIdentity: nativeAbiIdentity,
@@ -5967,7 +6337,9 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
                      derivedProtocols: derivedProtocols,
                      deriveRequests: deriveRequests,
                      messages: messages,
-                     ctorFn: ctorFn))
+                     ctorFn: ctorFn,
+                     eventTypeId: eventId,
+                     eventMatchIds: matchIds))
 
 proc newTypeAlias*(name: string, expr: Value): Value =
   ## A transparent type alias (design §7.4.1): a Type value carrying only the
@@ -6180,3 +6552,38 @@ proc isImmutable*(v: Value): bool =
   of vkMap: v.mapImmutable
   of vkNode: v.nodeImmutable
   else: false
+
+proc isDeepFrozen*(v: Value): bool =
+  ## "Nothing reachable from here can change" — the O(1) answer
+  ## `event/Bus publish` needs to skip a redundant freeze traversal
+  ## (docs/proposals/events.md §6.5/§17.3).
+  ##
+  ## Distinct from `isImmutable`, which `freeze_shallow` can set on a container
+  ## whose children are untouched. Only the deep `freeze` builder and a
+  ## construction path that assembles from already-deep-frozen parts may set the
+  ## bit, so a true answer composes by construction rather than by re-derivation.
+  case v.kind
+  of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex,
+     vkRange, vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar,
+     vkSymbol, vkLogger, vkType, vkProtocol, vkProtocolMessage, vkEnumVariant,
+     vkEventMatcher:
+    # Scalars and the immutable object kinds `freeze` returns unchanged.
+    true
+  of vkList:
+    cast[ptr GeneList](v.bits and PAYLOAD_MASK).deepFrozen
+  of vkMap:
+    cast[ptr GeneMap](v.bits and PAYLOAD_MASK).deepFrozen
+  of vkNode:
+    cast[ptr GeneNode](v.bits and PAYLOAD_MASK).deepFrozen
+  of vkSet:
+    for item in v.setItems:
+      if not item.isDeepFrozen:
+        return false
+    true
+  of vkHashMap:
+    for entry in v.hashMapEntries:
+      if not entry.key.isDeepFrozen or not entry.val.isDeepFrozen:
+        return false
+    true
+  else:
+    false

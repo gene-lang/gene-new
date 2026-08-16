@@ -744,6 +744,62 @@ proc main() =
     let v = run(matchMissChunk, matchScope)
     checksum = checksum + v.intVal + 1
 
+  # Application event bus (docs/proposals/events.md §17.3). Freeze and dispatch
+  # are reported separately and deliberately: deep-freezing a freshly
+  # constructed event is O(payload) and dominates publishing a small event to
+  # few handlers, so a payload-size regression must not read as a dispatch
+  # regression. `publish_frozen` isolates dispatch by republishing one
+  # already-deep-frozen value; `publish_small` is the whole documented path.
+  let eventScope = newGlobalScope()
+  discard run(compileSource(
+    "(ns bench " &
+    "  (type Event ^is $event/Event) " &
+    "  (type Placed ^is Event ^props {^order_id Str ^total F64})) " &
+    "(var sink ($cell 0)) " &
+    "(fn note [e] (sink ~ set (+ (sink ~ get) 1))) " &
+    "(var bus ($event/Bus)) " &
+    "(bus ~ subscribe bench/Placed note) " &
+    "(var one (bench/Placed ^order_id \"o1\" ^total 1.5)) " &
+    "(var frozen ($freeze one)) " &
+    "(var wide ($event/Bus)) " &
+    "(fn a [e] 1) (fn b [e] 2) (fn c [e] 3) (fn d [e] 4) " &
+    "(wide ~ subscribe bench/Event a) (wide ~ subscribe bench/Placed b) " &
+    "(wide ~ subscribe ($event/exact bench/Placed) c) " &
+    "(wide ~ subscribe $event/Event d) " &
+    # Declared in the same setup chunk: a slot-compiled chunk owns its scope's
+    # local layout, so a second chunk that declares new locals cannot share it.
+    "(type Unrelated ^is $event/Event) " &
+    "(var miss ($freeze (Unrelated)))"), eventScope)
+
+  let publishSmallChunk = compileSource(
+    "(bus ~ publish (bench/Placed ^order_id \"o1\" ^total 1.5))")
+  bench("event.publish_small.one_subscriber", 200_000, i):
+    let r = run(publishSmallChunk, eventScope)
+    checksum = checksum + r.props["delivered"].intVal
+
+  let publishFrozenChunk = compileSource("(bus ~ publish frozen)")
+  bench("event.publish_frozen.one_subscriber", 200_000, i):
+    let r = run(publishFrozenChunk, eventScope)
+    checksum = checksum + r.props["delivered"].intVal
+
+  let publishFanoutChunk = compileSource("(wide ~ publish frozen)")
+  bench("event.publish_frozen.four_subscribers", 200_000, i):
+    let r = run(publishFanoutChunk, eventScope)
+    checksum = checksum + r.props["delivered"].intVal
+
+  # An unmatched publication is what "scans no unrelated subscriptions" costs:
+  # the bus holds four subscriptions and none of them can match.
+  let publishMissChunk = compileSource("(wide ~ publish miss)")
+  bench("event.publish_frozen.no_match", 200_000, i):
+    let r = run(publishMissChunk, eventScope)
+    checksum = checksum + r.props["matched"].intVal + 1
+
+  let subscribeChunk = compileSource(
+    "((bus ~ subscribe bench/Placed a) ~ cancel)")
+  bench("event.subscribe_cancel", 100_000, i):
+    let v = run(subscribeChunk, eventScope)
+    checksum = checksum + (if v.isTruthy: 1 else: 0)
+
   let left = read("(user ^name \"Ada\" 1 2 3)")
   let right = read("(user ^name \"Ada\" 1 2 3)")
   bench("equality.structural_node", 500_000, i):

@@ -110,7 +110,9 @@ proc equal*(a, b: Value): bool =
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
      vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
-     vkFfiLibrary, vkFfiCallable, vkLogger, vkType, vkProtocol, vkProtocolMessage,
+     vkFfiLibrary, vkFfiCallable, vkLogger, vkEventBus, vkEventSubscription,
+     vkEventMatcher, vkRecordingSink, vkNullSink, vkCompositeSink,
+     vkType, vkProtocol, vkProtocolMessage,
      vkEnumVariant:
     # callable and opaque runtime values have identity equality
     a.bits == b.bits
@@ -129,6 +131,8 @@ proc same*(a, b: Value): bool =
      vkEnv, vkCallerEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
      vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability, vkFfiLibrary, vkFfiCallable, vkLogger,
+     vkEventBus, vkEventSubscription, vkEventMatcher, vkRecordingSink,
+     vkNullSink, vkCompositeSink,
      vkType, vkProtocol,
      vkProtocolMessage, vkEnumVariant:
     a.bits == b.bits
@@ -213,7 +217,9 @@ proc hash*(v: Value): Hash =
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
      vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
-     vkFfiLibrary, vkFfiCallable, vkLogger, vkType, vkProtocol, vkProtocolMessage,
+     vkFfiLibrary, vkFfiCallable, vkLogger, vkEventBus, vkEventSubscription,
+     vkEventMatcher, vkRecordingSink, vkNullSink, vkCompositeSink,
+     vkType, vkProtocol, vkProtocolMessage,
      vkEnumVariant:
     h = h !& hash(v.bits)
   !$h
@@ -233,11 +239,15 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
      vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkStream, vkTask,
      vkChannel, vkActorRef, vkActorContext, vkActorStep, vkReplyTo, vkType,
-     vkProtocol, vkProtocolMessage, vkEnumVariant, vkLogger:
+     vkProtocol, vkProtocolMessage, vkEnumVariant, vkLogger,
+     vkEventSubscription, vkEventMatcher:
     true
   of vkCallerEnv, vkCell, vkAtomicCell, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability,
-     vkFfiLibrary, vkFfiCallable:
+     vkFfiLibrary, vkFfiCallable,
+     # A bus and the mutable sinks change under an unchanged identity, exactly
+     # like a Cell, so they cannot be stable keys.
+     vkEventBus, vkRecordingSink, vkNullSink, vkCompositeSink:
     false
   of vkList:
     if not v.listImmutable:

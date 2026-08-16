@@ -322,6 +322,18 @@ proc print*(v: Value): string =
     "(ffi-callable " & v.ffiCallableName & ")"
   of vkLogger:
     "(logger " & escapeStr(v.loggerName) & ")"
+  of vkEventBus:
+    if v.eventBusClosed: "(event/Bus closed)" else: "(event/Bus)"
+  of vkEventSubscription:
+    "(event/Subscription)"
+  of vkEventMatcher:
+    "(event/exact " & v.eventMatcherTarget.typeName & ")"
+  of vkRecordingSink:
+    "(event/RecordingSink " & $v.recordedEvents.len & ")"
+  of vkNullSink:
+    "(event/NullSink)"
+  of vkCompositeSink:
+    "(event/CompositeSink " & $v.compositeSinks.len & ")"
   of vkType:
     "(type " & v.typeName & ")"
   of vkProtocol:

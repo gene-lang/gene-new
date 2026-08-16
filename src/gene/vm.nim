@@ -608,6 +608,7 @@ proc matchesDeviceBufferType(args: openArray[Value], value: Value,
 proc valueImplementsCallable(value: Value, scope: Scope): bool
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool
 proc builtinBinding(scope: Scope, name: string): Value
+proc isBuiltinCallable(value: Value): bool
 proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value
 proc isSendableValue(value: Value, scope: Scope,
                      seen: var HashSet[uint64],
@@ -3812,21 +3813,31 @@ proc freezeRejectName(value: Value): string =
   of vkCapability: "Capability"
   of vkFfiLibrary: "ffi/Library"
   of vkFfiCallable: "ffi/Callable"
+  of vkEventBus: "event/Bus"
+  of vkEventSubscription: "event/Subscription"
+  of vkRecordingSink: "event/RecordingSink"
+  of vkNullSink: "event/NullSink"
+  of vkCompositeSink: "event/CompositeSink"
   else: $value.kind
 
 proc freezeValue(value: Value): Value =
   case value.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol,
-     vkLogger, vkType, vkProtocol, vkProtocolMessage, vkEnumVariant:
+     vkLogger, vkEventMatcher, vkType, vkProtocol, vkProtocolMessage,
+     vkEnumVariant:
     value
   of vkList:
     var items = newSeq[Value](value.listItems.len)
     for i, item in value.listItems:
       items[i] = freezeValue(item)
-    newList(items, immutable = true)
+    # `deepFrozen` composes by construction: every child came out of a
+    # recursive `freezeValue`, so it is already deep-frozen and the invariant
+    # holds without re-deriving it (docs/proposals/events.md §6.5).
+    newList(items, immutable = true, deepFrozen = true)
   of vkMap:
-    newMap(freezeEntries(value.mapEntries), immutable = true)
+    newMap(freezeEntries(value.mapEntries), immutable = true,
+           deepFrozen = true)
   of vkSet:
     var items = newSeq[Value](value.setItems.len)
     for i, item in value.setItems:
@@ -3860,11 +3871,18 @@ proc freezeValue(value: Value): Value =
             props = freezeEntries(value.props),
             body = body,
             meta = freezeEntries(value.meta),
-            immutable = true)
+            immutable = true,
+            deepFrozen = true)
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
      vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
-     vkFfiLibrary, vkFfiCallable:
+     vkFfiLibrary, vkFfiCallable,
+     # A bus, a subscription handle, and the mutable sinks are live runtime
+     # objects, not data: an event that reached one would carry publication
+     # state into every subscriber (events.md §6.5). `event/Matcher` is
+     # immutable and already returns unchanged, above.
+     vkEventBus, vkEventSubscription, vkRecordingSink, vkNullSink,
+     vkCompositeSink:
     raise newException(GeneError, "freeze cannot freeze " & freezeRejectName(value))
 
 proc thawValue(value: Value): Value =
@@ -4007,6 +4025,12 @@ proc declarationKind*(value: Value): string =
   of vkFfiLibrary: "FfiLibrary"
   of vkFfiCallable: "FfiCallable"
   of vkLogger: "Logger"
+  of vkEventBus: "EventBus"
+  of vkEventSubscription: "EventSubscription"
+  of vkEventMatcher: "EventMatcher"
+  of vkRecordingSink: "RecordingSink"
+  of vkNullSink: "NullSink"
+  of vkCompositeSink: "CompositeSink"
   of vkType: "Type"
   of vkProtocol: "Protocol"
   of vkProtocolMessage: "ProtocolMessage"
@@ -6726,7 +6750,8 @@ proc typeReflectionMessage(name: string): Value =
   else: NIL
 
 proc defineBuiltinType(scope: Scope, kind: ValueKind, name: string,
-                       messages: openArray[(string, Value)]): Value {.discardable.} =
+                       messages: openArray[(string, Value)],
+                       ctor: Value = NIL): Value {.discardable.} =
   ## A built-in surface as a real type rather than a namespace of natives
   ## (design §12). Its operations go into the type's own message table, so one
   ## resolution path serves all three spellings: `(x ~ op)` goes through
@@ -6752,10 +6777,19 @@ proc defineBuiltinType(scope: Scope, kind: ValueKind, name: string,
       # fields, and `staticHomeRoot` already answered nil for the builtins
       # scope, so impl classification is unchanged.
       result = newType(name, NIL, @[], @[], nil, messages = table)
+      # Installed before the type is published, which is what keeps a shared
+      # built-in surface type immutable after construction. A later Application
+      # reuses the singleton above and its ctor with it.
+      if ctor.kind != vkNil:
+        result.setTypeNativeCtor(ctor)
       gBuiltinTypeSingletons[name] = result
     gScalarTypes[kind] = result
     gBuiltinSurfaceTypes.incl result.bits
   scope.define(name, result)
+
+# The application event bus. Included here rather than beside `stdlib` because
+# it registers built-in surface types, so it must follow `defineBuiltinType`.
+include ./events
 
 proc buildBuiltins(app: Application): Scope =
   ## Construct a fresh built-ins root scope holding all standard bindings and the
@@ -7429,6 +7463,7 @@ proc buildBuiltins(app: Application): Scope =
     "into": intoFn,
     "each": exportedBinding(streamNs, "each"),
     "to_pairs_stream": toPairsStreamFn})
+  registerEventNamespace(result)
   # The standard library lives under the unshadowable `gene` root and is reached
   # as `gene/x` or its `$x` sugar (design §2.1). Nothing else is pre-bound: a
   # bare name means whatever the program binds it to, so reading a name tells
@@ -10635,9 +10670,18 @@ proc isSendableValue(value: Value, scope: Scope,
       if scope == nil: builtinsScope()
       else: scope.application().builtinsScope()
     value.nsScope != nil and value.nsScope.parent == root
+  of vkEventMatcher:
+    # Immutable, and its only edge is a Type — which is itself sendable.
+    isSendableValue(value.eventMatcherTarget, scope, seen, mode)
   of vkModule, vkEnv, vkCallerEnv, vkCell, vkStream, vkActorContext,
      vkActorStep, vkCPtr, vkCSlice, vkBuffer,
-     vkDeviceBuffer, vkCapability, vkFfiLibrary, vkFfiCallable:
+     vkDeviceBuffer, vkCapability, vkFfiLibrary, vkFfiCallable,
+     # A version 1 bus is lane-owned and synchronous (events.md §9.1): using
+     # one from another lane is a task-boundary error, so it never crosses.
+     # Cross-lane delivery is an explicit adapter (§9.2), which transfers the
+     # frozen event and publishes it on the destination bus's own lane.
+     vkEventBus, vkEventSubscription, vkRecordingSink, vkNullSink,
+     vkCompositeSink:
     false
 
 proc isSendableValue(value: Value, scope: Scope): bool =
@@ -17660,6 +17704,11 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkFfiLibrary: newSym("ffi/Library")
   of vkFfiCallable: newSym("ffi/Callable")
   of vkLogger: newSym("Logger")
+  of vkEventBus, vkEventSubscription, vkEventMatcher, vkRecordingSink,
+     vkNullSink, vkCompositeSink:
+    # These live under `event`, so there is no bare symbol that names them.
+    # The registered type identity is the annotation.
+    gScalarTypes[value.kind]
   of vkType: newSym("Type")
   of vkProtocol: newSym("Protocol")
   of vkProtocolMessage: newSym("ProtocolMessage")
@@ -24934,6 +24983,13 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
     if callee.isEnumType:
       raise newException(GeneError,
         "enum " & callee.typeName & " is not directly constructible; use a variant")
+    # A built-in surface type whose instances are a native value kind rather
+    # than a schema of props — `($event/Bus ^error_policy …)`. This is not the
+    # design §7.1.1 ctor path: there is no instance to pre-create and no field
+    # schema to validate, so the native *is* the construction.
+    let nativeCtor = callee.typeNativeCtor
+    if nativeCtor.kind != vkNil:
+      return applyCall(nativeCtor, args, named, dispatchScope, site, loc)
     # Direct typed-data construction: `(T ...)` never calls a ctor, even when
     # the type defines one (design §7.1.1). Constructor logic runs through
     # `new` only.

@@ -82,6 +82,7 @@ Initial modules should be available through namespace imports:
 (import gene/stream [to_stream to_pairs_stream map filter take each into])
 (import gene/node [head props body meta declarations])
 (import gene/parse [parse_int read_all ParseError])
+(import gene/event [Bus Event EventSink exact])
 (import str [join split starts_with? ends_with? trim byte_size slice_bytes])
 (import html [escape attr_escape render])
 (import css [css rule decl media keyframes frame scoped class_name render])
@@ -154,6 +155,84 @@ logger. It defaults to one reader-valid Gene data map per line. Pass
 `^format "json"` or `^format "jsonl"` only when JSON interoperability is
 required; `^format "text"` remains available for concise human lines. It does
 not mutate process routing and is unavailable under wasm.
+
+### `event`
+
+Application pub/sub (docs/proposals/events.md). An event is an ordinary typed
+value whose `^is` ancestry reaches `event/Event`; its concrete nominal type is
+its identity, and that ancestry is its matching hierarchy. There is no topic
+string, no topic registry, and no global bus.
+
+```gene
+(import gene/event [Bus])
+
+(type UserCreated
+  ^is $event/Event
+  ^props {^user_id Str})
+
+(var bus
+  (Bus))
+
+(var subscription
+  (bus ~ subscribe UserCreated on_user_created))
+
+(bus ~ publish
+  (UserCreated ^user_id "u_123"))
+
+(subscription ~ cancel)
+```
+
+Members: the `Event` root type; `Bus`, `Subscription`, `PublishResult`, and
+`Matcher`; `exact`, a `Type -> Matcher` function; the `ErrorPolicy` enum with
+its `raise_after` and `collect` variants bound directly in the namespace; the
+`EventSink` protocol; and the `RecordingSink`, `NullSink`, and `CompositeSink`
+implementations of it.
+
+Subscribing to a type matches that type and its `^is` descendants, so a family
+base type observes the whole family and `event/Event` observes everything.
+`(event/exact T)` excludes descendants. That is the entire selector grammar:
+there is no wildcard spelling, because `X/*` already means the import wildcard
+and the capability projection, and a namespace that declared a `*` member would
+shadow multiplication inside its own body.
+
+`subscribe` validates the handler against the selector — a handler whose
+declared parameter type cannot accept everything the selector matches is
+rejected at the declaration site instead of failing once per non-matching event
+at the publisher. `^once true` removes the subscription after its first
+attempted delivery, whether the handler returns or raises, and it is marked
+consumed *before* the handler runs so nested publication cannot invoke it twice.
+
+`publish` deep-freezes a **copy** of the event before dispatching, so the
+publisher may keep mutating its own value afterwards and nothing it does is
+observable through the event already delivered. It returns a `PublishResult`
+(`^matched`, `^delivered`, `^failed`, `^errors`) under both error policies;
+`raise_after`, the default, additionally raises one `EventPublishError` when
+any handler failed, while `collect` leaves the failures to the publisher. A
+handler error never stops the handlers after it.
+
+Dispatch uses a snapshot: subscribing, cancelling, or closing during a
+publication affects the next one, never the one executing. Nested publication
+is allowed and depth-first, bounded by `^nesting_limit` (default 16) —
+`EventRecursionError` past it. `close` cancels every subscription, releases the
+handlers, is idempotent, and makes later `subscribe`/`publish` raise
+`EventBusClosedError`; nothing else releases a bus's handlers, since collection
+does not cancel subscriptions.
+
+`EventSink` has exactly one message, `emit`. A bus implements it by publishing
+and reporting a nonzero `failed` count as a sink failure **under either error
+policy**, so an observation bus configured with `collect` cannot be
+misconfigured into silence at the sink boundary. Filtering, buffering, retries,
+fan-out, and error policy belong behind sink implementations rather than in the
+protocol.
+
+A version 1 bus is lane-owned and synchronous: subscribe, cancel, publish, and
+the handlers all run on the owning lane, and a bus is not `Send`. Cross-lane
+delivery is an explicit adapter that validates the frozen event and publishes
+it on the destination bus's lane.
+
+The runtime instrumentation half of the proposal — `runtime/EventStream` and
+the `runtime/...` event families — is not implemented yet; see
+docs/implementation-status.md.
 
 ### `os`
 
