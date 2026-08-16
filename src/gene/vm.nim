@@ -15401,10 +15401,27 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let nextTransition = resolveCapabilityTransition(
             scope.application(), capBlock.row, capabilityContext,
             capabilityPresence, scope)
+          # The body is an independently compiled chunk, so its locals are
+          # numbered from zero. Running it directly in the caller's scope — as
+          # this did — made the body's slot 0 alias the caller's slot 0. At the
+          # entry frame the layouts happened not to collide, which is why the
+          # only shipped use (`examples/capabilities/04`, block in `main`) never
+          # showed it; inside any function holding locals they did, and a
+          # parameter read back as `undefined symbol` *after* the block:
+          #
+          #   (fn f [x] (with_capabilities [row] 1) x)   ; x was undefined
+          #
+          # A child scope gives the chunk its own layout while leaving lexical
+          # lookup intact, so the body still sees the caller's bindings by name.
+          # `prepareChunkScope` then guards the invariant instead of letting a
+          # mismatch corrupt slots silently.
+          let bodyScope = newScope(scope)
           pushFrame()
           installCapabilityTransition(nextTransition)
-          scope = frames[^1].scope
+          scope = bodyScope
           chunk = capBlock.body
+          recycleScope = false
+          scope.prepareChunkScope(chunk)
           curStackBase = sp
           ip = 0
           validateImplRequirements = false

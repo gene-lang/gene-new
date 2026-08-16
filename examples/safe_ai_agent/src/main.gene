@@ -19,8 +19,20 @@
 # authority: inside it a relative path resolves against `workspace/`, not the
 # launch directory. That is why the tool rows below say "." and generated code
 # says "notes.txt" (capabilities.md §7.5).
+# The second filesystem root is the skill directory. It is `^^optional`, so the
+# agent starts with or without it, and it is *outside* this package — a module
+# row may narrow within what the launcher granted but never widen past it, so
+# reading it at all requires the host to say so:
+#
+#   gene run --allow_read_dir ../../tools/gene-lang-skill src/main.gene
+#
+# Without that flag the row admits nothing, `skills_available` is false, and the
+# two skill tools report that rather than failing. Loading a skill is a grant,
+# not a configuration setting.
 (mod safe_ai_agent
-  ^capabilities [net/* os/Env (fs/ReadWriteDir "workspace")])
+  ^capabilities [net/* os/Env
+                 (fs/ReadWriteDir "workspace")
+                 (fs/ReadDir "../../tools/gene-lang-skill" ^^optional)])
 
 (import $net/http_client [request])
 (import $os [get_env env? read_line])
@@ -46,27 +58,100 @@
 # `write_note` and `delete_note` are confined the same way, by the same rule.
 # ---------------------------------------------------------------------------
 
-(fn list_notes [] : Any
-  ^capabilities [(fs/ReadDir ".")]
-  ($fs/list_dir "."))
+# Holding two roots makes a *relative* path ambiguous — "notes.txt" could mean
+# either root, which is two different host targets, so the runtime refuses to
+# guess (capabilities.md §6.3). Each tool therefore narrows to its own root
+# first and then calls a helper that carries the row.
+#
+# The narrowing selector has to be written `../<name>`, not `<name>`: a selector
+# path is resolved *inside* the active root, so "workspace" under the workspace
+# root would mean `workspace/workspace`. `../workspace` canonicalizes back onto
+# the root itself from any root that could be active, which is what makes it
+# unambiguous.
+#
+# The narrowing is what confines the *rights*, not just the location: the skill
+# root is granted `fs/ReadDir` only, so a write attempted under it is refused
+# even though this module holds write authority over the other root.
 
-(fn read_note [name : Str] : Str
+(const WORKSPACE "../workspace")
+
+(const SKILL_ROOT "../../tools/gene-lang-skill")
+
+(fn list_dir_at [dir : Str] : Any
+  ^capabilities [(fs/ReadDir dir)]
+  ($fs/list_dir dir))
+
+(fn read_file_at [name : Str] : Str
   ^capabilities [(fs/ReadFile name)]
   ($fs/read_text name))
 
-(fn write_note [name : Str, content : Str] : Str
+(fn write_file_at [name : Str, content : Str] : Void
   ^capabilities [(fs/WriteFile name)]
-  ($fs/write_text name content)
+  ($fs/write_text name content))
+
+(fn remove_file_at [name : Str] : Void
+  ^capabilities [(fs/WriteFile name)]
+  ($fs/remove name))
+
+(fn exists_at [name : Str] : Bool
+  ^capabilities [(fs/ReadDir ".")]
+  ($fs/exists? name))
+
+(fn list_notes [] : Any
+  (with_capabilities [(fs/ReadWriteDir WORKSPACE)]
+    (list_dir_at ".")))
+
+(fn read_note [name : Str] : Str
+  (with_capabilities [(fs/ReadWriteDir WORKSPACE)]
+    (read_file_at name)))
+
+(fn write_note [name : Str, content : Str] : Str
+  (with_capabilities [(fs/ReadWriteDir WORKSPACE)]
+    (write_file_at name content))
   $"wrote ${name}")
 
 (fn delete_note [name : Str] : Str
-  ^capabilities [(fs/WriteFile name)]
-  ($fs/remove name)
+  (with_capabilities [(fs/ReadWriteDir WORKSPACE)]
+    (remove_file_at name))
   $"deleted ${name}")
 
 (fn note_exists [name : Str] : Bool
-  ^capabilities [(fs/ReadDir ".")]
-  ($fs/exists? name))
+  (with_capabilities [(fs/ReadWriteDir WORKSPACE)]
+    (exists_at name)))
+
+# ---------------------------------------------------------------------------
+# Skills
+#
+# A skill is a directory of Markdown: `SKILL.md` is the always-loaded part, and
+# the files it points at are read on demand. That shape is why it fits here —
+# the whole skill does not have to sit in the prompt, so the model spends
+# context only on the reference it actually reaches for.
+# ---------------------------------------------------------------------------
+
+(fn skills_available [] : Bool
+  ($check_capabilities (fs/ReadDir SKILL_ROOT)))
+
+(fn skill_files [] : Any
+  # `SKILL.md` plus everything one level down, so the model can see what it may
+  # read without being handed the contents.
+  (if_not (skills_available) (return []))
+  (with_capabilities [(fs/ReadDir SKILL_ROOT)]
+    (var found ($cell []))
+    (for entry in (list_dir_at ".")
+      (if (== entry "SKILL.md")
+        (then ((found ~ get) ~ push entry))
+        (else
+          (try
+            (for nested in (list_dir_at entry)
+              ((found ~ get) ~ push $"${entry}/${nested}"))
+            catch _
+            nil))))
+    (found ~ get)))
+
+(fn read_skill [name : Str] : Str
+  (if_not (skills_available) (return "no skill directory was granted"))
+  (with_capabilities [(fs/ReadDir SKILL_ROOT)]
+    (read_file_at name)))
 
 (var eval_depth ($cell 0))
 
@@ -103,7 +188,9 @@
    ^write_note write_note
    ^delete_note delete_note
    ^note_exists note_exists
-   ^run_note run_note})
+   ^run_note run_note
+   ^skill_files skill_files
+   ^read_skill read_skill})
 
 (fn tool_summary [] : Str
   """(list_notes) -> file names in the workspace
@@ -113,8 +200,11 @@
 (note_exists "name") -> true or false
 (run_note "name") -> evaluate that note's Gene source and return its result,
   so you can test what you wrote. Cannot be nested.
+(skill_files) -> reference files you may read from the loaded skill
+(read_skill "reference/pitfalls.md") -> that file's contents
 Nothing else is available: no filesystem, network, or environment access
-outside these six.""")
+outside these eight. The skill directory is read-only; the workspace is the
+only place you can write.""")
 
 # ---------------------------------------------------------------------------
 # Evaluating what the model sent back
@@ -173,10 +263,41 @@ outside these six.""")
     (else
       """{^status "done" ^response "Defining and using in one program." ^code [(var xs [1 2 3]) (var total 0) (for x in xs (set total (+ total x))) total]}""")))
 
+(fn loaded_skill [] : Str
+  # The always-loaded half of a skill. `SKILL.md` goes in the prompt; the files
+  # it points at stay on disk until the model asks for one, which is the whole
+  # point of the format — a skill can be far larger than a prompt budget as long
+  # as its entry page says what the rest holds.
+  #
+  # The skill is written for a coding agent with a shell, so the one thing it
+  # cannot carry is how *this* agent runs code. That mapping is stated here
+  # rather than by editing the skill, which has its own life outside this file.
+  (if_not (skills_available) (return ""))
+  (try
+    (var body (read_skill "SKILL.md"))
+    (var index ($str/join (skill_files) "\n  "))
+    $"""
+A Gene skill is loaded. Its entry page follows verbatim.
+
+Where it says to check code by running `gene eval` or `gene run`, you instead
+write the code to a note and call (run_note "name") — same idea, same purpose:
+never report code you have not executed.
+
+--- SKILL.md ---
+${body}
+--- end SKILL.md ---
+
+Files you can (read_skill "...") on demand:
+  ${index}
+"""
+    catch e
+    $"\n(a skill directory was granted but could not be read: ${e/message})\n"))
+
 (fn gene_primer [] : Str
-  # Without this the model writes Lisp or JavaScript: `(def ...)`, `xs.push(v)`,
-  # a chained send with no continuation marker. Every rule here is one an actual
-  # model got wrong on an actual turn.
+  # The fallback when no skill is granted, and the floor when one is: these are
+  # the rules a live model actually got wrong, kept short enough to always
+  # afford. Without them it writes Lisp or JavaScript — `(def ...)`,
+  # `xs.push(v)`, a chained send with no continuation marker.
   """Gene is not Lisp and not JavaScript. The rules you need:
 - Every operator is PREFIX: (+ a 1), (== a b), (!= a b), (< a b). Never (a + 1)
   or (a == b) — that reads as calling `a` with two arguments.
@@ -215,6 +336,7 @@ Anything you want to survive to the next turn must be written to the workspace
 with (write_note ...); bindings do not outlive one reply.
 
 ${(gene_primer)}
+${(loaded_skill)}
 """)
 
 (fn call_model [task history] : Str

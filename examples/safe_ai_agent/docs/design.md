@@ -17,6 +17,9 @@ model.
 nimble build                     # produces bin/gene
 cd examples/safe_ai_agent
 GENE_AGENT_STUB=1 ../../bin/gene run src/main.gene
+
+# with the Gene skill loaded
+../../bin/gene run --allow_read_dir ../../tools/gene-lang-skill src/main.gene
 ```
 
 `GENE_AGENT_STUB=1` returns canned replies, so the example runs and is testable
@@ -89,6 +92,56 @@ Bindings do not outlive a reply, so anything the model wants to keep goes into
 the workspace with `(write_note …)`. The filesystem is the agent's memory, and
 `(run_note …)` lets it execute what it saved — a write/run/fix loop inside the
 same sealed environment, adding no authority.
+
+## Skills are a grant, not a setting
+
+A skill is a directory of Markdown: `SKILL.md` is the entry page, and the files
+it points at are read on demand. That shape is what makes it fit an agent whose
+context is the scarce resource — the whole skill never has to sit in the prompt,
+only the page that says what the rest holds.
+
+Here the skill directory is a **second filesystem root**, read-only, alongside
+the writable workspace:
+
+```gene
+(mod safe_ai_agent
+  ^capabilities [net/* os/Env
+                 (fs/ReadWriteDir "workspace")
+                 (fs/ReadDir "../../tools/gene-lang-skill" ^^optional)])
+```
+
+It sits outside this package, and a module row may narrow within what the
+launcher granted but never widen past it — so without `--allow_read_dir` the
+row admits nothing. `^^optional` is what lets the agent start anyway:
+`skills_available` goes false, `read_skill` says so, and the built-in primer
+carries the load alone. **Which skills an agent has is therefore a property of
+how it was launched, not of a config file it could rewrite.**
+
+Two roots make a *relative* path ambiguous — `"notes.txt"` could name either
+root, which is two different host targets, so the runtime refuses to guess
+(`capabilities.md` §6.3). Each tool narrows to its own root first and then calls
+a helper carrying the row:
+
+```gene
+(fn read_note [name : Str] : Str
+  (with_capabilities [(fs/ReadWriteDir WORKSPACE)]
+    (read_file_at name)))
+```
+
+The narrowing selector is written `../workspace`, not `workspace`: a selector
+path resolves *inside* the active root, so the bare name would mean
+`workspace/workspace`. The `../` form canonicalizes back onto the root itself
+from any root that could be active, which is what makes it unambiguous.
+
+The narrowing confines *rights*, not just location. The skill root carries
+`fs/ReadDir` only, so a write attempted under it is refused even though the
+module holds write authority over the other root — the same undefensive tools,
+bounded differently by which row is active.
+
+A live model with the skill loaded found `reference/pitfalls.md` through
+`(skill_files)`, read it with `(read_skill …)`, and answered a question about
+`//` being remainder rather than floor division — a fact that appears nowhere in
+its prompt, only in the file it chose to open.
 
 The immediate win over tool calls is composition. A tool call is a single
 invocation; composing several means round-tripping through the model's context
@@ -330,6 +383,16 @@ inherited from the original proposal.
   listed as an open problem rather than a fixed bug because the safe
   construction is the non-obvious one: `^module` reads like "which module is
   this code part of", not "publish every binding in that module to it".
+
+- **A bounded destructive tool is still a destructive tool.** Adding
+  `delete_note` gave the agent authority to remove anything in the workspace,
+  and while testing, the word `clear` — typed at the running agent by mistake —
+  was read as a task and deleted the workspace fixture. The capability model
+  did exactly its job: the deletion could not have landed anywhere else. But
+  *where* is the only question it answers, and "should this happen at all" is
+  the Reviewability problem above, arriving in practice rather than in theory.
+  An agent holding delete authority wants a confirmation step or a trash
+  directory, and neither is a capability question.
 
 - **Partial execution.** A malformed tool call is rejected whole. A program can
   fail halfway with some effects already applied. Capability bounds limit *what*
