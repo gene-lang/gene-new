@@ -1506,10 +1506,24 @@ suite "vm — env and eval":
   test "eval compiles and executes a quoted node inside env bindings":
     ck "(var e (env ^bindings {^x 10})) (eval (quote (+ x 5)) ^in e)", "15"
 
-  test "eval sees explicit env bindings, not caller locals":
-    ck "(var secret \"hidden\") (var e (env ^bindings {^x 1})) " &
-       "(try (eval (quote secret) ^in e) catch {^message m} m)",
-       "\"undefined symbol: secret\""
+  test "eval inherits the scope it is written in, and Env bindings add to it":
+    # capabilities.md §14: evaluated code runs under the target environment's
+    # lexical bindings *and* the evaluator's. This reversed an earlier contract
+    # in which an Env hid the surrounding scope; sealing is now something a
+    # program states rather than a default it receives.
+    ck "(var visible \"seen\") (var e (env ^bindings {^x 1})) " &
+       "[(eval (quote visible) ^in e) (eval (quote x) ^in e)]",
+       "[\"seen\" 1]"
+
+  test "a caller_env snapshot stays closed over the evaluating scope":
+    # The one Env that does *not* inherit: a snapshot promises exactly the names
+    # it captured, so a window onto the live scope would defeat naming them.
+    ck "(var x 1) (var secret 9) " &
+       "(fn capture! [] (caller_env ~ snapshot [\"x\"])) " &
+       "(var saved (capture!)) " &
+       "[(eval (quote x) ^in saved) " &
+       " (try (eval (quote secret) ^in saved) catch _ \"absent\")]",
+       "[1 \"absent\"]"
 
   test "env parent bindings are visible to eval":
     ck "(var base (env ^bindings {^x 10})) " &

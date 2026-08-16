@@ -4215,7 +4215,8 @@ proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
         "Env/snapshot undefined binding: " & name)
     rejectCallerEnvEscape("Env/snapshot binding '" & name & "'", value)
     bindings[name] = escapeWeakFunctions(value)
-  newEnv(bindings)
+  result = newEnv(bindings)
+  result.setEnvClosedScope(true)
 
 proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
   let source = stream.streamSource
@@ -11467,7 +11468,8 @@ proc importNamespaceBindings(target: Scope, source: Value) =
     if value.kind != vkVoid:
       target.define(name, value)
 
-proc materializeEvalParent(env: Value, app: Application = nil): Scope =
+proc materializeEvalParent(env: Value, app: Application = nil,
+                           lexicalBase: Scope = nil): Scope =
   let chain = envChain(env)
   let module = nearestEnvModule(chain)
   # Root the overlay in the *creating* application's built-ins, not whatever
@@ -11476,7 +11478,17 @@ proc materializeEvalParent(env: Value, app: Application = nil): Scope =
   # application's provider and checked against another's, so `isOwnedBy` fails
   # and the authority silently evaporates. That was invisible while evaluated
   # code held no authority at all; granting it any makes it load-bearing.
-  var current = if app != nil: builtinsScope(app) else: builtinsScope()
+  #
+  # `lexicalBase` is the scope the `eval` was written in. Rooting the overlay
+  # there rather than at bare built-ins is what makes evaluated code see the
+  # bindings around it, which is what an `eval` reads as doing. It also keeps
+  # evaluated code inside the *same module root*, so a function it names is an
+  # ordinary same-module call that inherits the evaluated context — rather than
+  # a module crossing that would re-apply that module's whole ceiling.
+  var current =
+    if lexicalBase != nil: lexicalBase
+    elif app != nil: builtinsScope(app)
+    else: builtinsScope()
   if module.kind != vkNil:
     let moduleScope = newScope(current)
     moduleScope.importNamespaceBindings(module)
@@ -13368,7 +13380,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if env.kind == vkCallerEnv:
               materializeCallerEvalParent(env)
             else:
-              materializeEvalParent(env, scope.application())
+              materializeEvalParent(env, scope.application(),
+                                    if env.envClosedScope: nil else: scope)
           let evalScope = newScope(evalParent)
           evalScope.implOverlayRoot = true
           evalScope.evalBudget =
@@ -13382,16 +13395,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             except GeneError as e:
               raiseCompileError(scope, e.msg)
               newChunk()
-          # Evaluated code runs with the authority its Env was minted with, and
-          # with **nothing** when the Env declared no row. The empty case is
-          # installed explicitly rather than inherited: evaluated source is the
-          # least trusted thing the runtime handles, so it must not pick up the
-          # evaluator's ambient context by omission. `newCapabilityContext()` is
-          # an empty context, which is not the same as `nil` — nil would mean
-          # "no opinion" and fall through to the caller's.
+          # §14: "the default should be the intersection of those contexts."
+          # With no row, evaluated code inherits the evaluator's active context;
+          # with one, it gets that row — already resolved against the creating
+          # context when the Env was minted, so it can only ever be narrower.
+          # Either way it is never broader than the evaluator, which is the
+          # property §14 actually requires.
+          #
+          # Sealing is still expressible, and is now something a program says
+          # rather than something it gets by omission: `^capabilities []`
+          # resolves to the empty context and hands evaluated code nothing.
           let granted =
             if env.kind == vkEnv and env.envCapabilityContext != nil:
               env.envCapabilityContext
+            elif capabilityContext != nil:
+              capabilityContext
             else:
               newCapabilityContext()
           pushFrame()

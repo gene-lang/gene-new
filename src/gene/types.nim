@@ -728,6 +728,11 @@ type
     ## decides which names exist, this one decides what they are allowed to do.
     ## Nil means the historical default — evaluated code gets nothing.
     capabilityContext: CapabilityContext
+    ## A closed capture: evaluating in it must NOT see the scope the `eval` is
+    ## written in. `caller_env ~ snapshot [...]` sets it, because a snapshot
+    ## promises exactly the names it lists and nothing else — a window onto the
+    ## live scope would defeat the point of naming them.
+    closedScope: bool
     policy: Value
     borrowed: bool
     borrowedActive: bool
@@ -2916,6 +2921,16 @@ proc envCapabilities*(v: Value): Value =
   if not v.isObjectTagged or objData(v).objKind != okEnv:
     raise newException(FieldDefect, "value is not an Env")
   EnvData(objData(v)).capabilities
+
+proc envClosedScope*(v: Value): bool =
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).closedScope
+
+proc setEnvClosedScope*(v: Value, closed: bool) =
+  if not v.isObjectTagged or objData(v).objKind != okEnv:
+    raise newException(FieldDefect, "value is not an Env")
+  EnvData(objData(v)).closedScope = closed
 
 proc envCapabilityContext*(v: Value): CapabilityContext =
   if not v.isObjectTagged or objData(v).objKind != okEnv:

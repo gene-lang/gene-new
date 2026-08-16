@@ -194,3 +194,20 @@ The pre-entry grant options are `--allow_read_dir`, `--allow_write_dir`, and
 `--allow_read_write_dir`. `with_capabilities` narrows the active set inside a
 block, and `$check_capabilities` asserts one is held. `examples/capabilities/`
 holds six worked cases; `docs/proposals/capabilities.md` is the full model.
+
+## Eval
+
+`eval` runs a form under the scope and the authority it is written in. An `Env`
+narrows from there:
+
+```gene
+(eval form ^in (env))                                   # inherits scope + authority
+(eval form ^in (env ^bindings {^x 1}))                  # plus extra names
+(eval form ^in (env ^capabilities [(fs/ReadDir ".")]))  # narrowed authority
+(eval form ^in (env ^capabilities []))                  # no authority at all
+```
+
+`^capabilities` takes a **list** for the authority row and a **map** for a
+binding overlay — the list is resolved against the creating context, so an `Env`
+can never carry more than its creator held. A `(caller_env ~ snapshot ["x"])`
+stays closed: it sees exactly the names it captured, never the evaluating scope.

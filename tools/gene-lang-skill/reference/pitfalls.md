@@ -148,6 +148,20 @@ branch must be a clause — a compact `if` cannot take one as its third argument
 which then fails at the point of *use* rather than the point of the typo. When a
 value surprises you, print it before chasing the call that consumed it.
 
+**`if_not` has no else arm — its tail is a sequence.** Used as a two-branch
+conditional it silently yields the *last* body value, so a predicate written this
+way is never truthy:
+
+```gene
+(if_not false true false)   # false — not `true`
+(if_not true  true false)   # nil
+
+((xs ~ to_stream) ~ filter (fn [t] (if_not t/done true false)) ; ~ into [])
+# => [] always. Write (fn [t] (! t/done)) or (if t/done false true).
+```
+
+The same applies to `if_yes`. Both are guards; `(if c a b)` is the conditional.
+
 **`match` without `else` is not a nil default** — unlike `if`, it needs the arm.
 Writing `(else nil)` there is idiomatic.
 

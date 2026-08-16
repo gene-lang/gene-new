@@ -255,9 +255,16 @@ refused with `os/get_env needs os/Env` even though the enclosing module holds
 `os/Env` to reach the API key, because that authority is not in the row. So is
 any path outside the workspace.
 
-Note what is *absent* from that call: `^module`. Adding it would also publish
-every module-level `fn` to the evaluated code, which is a privilege leak rather
-than a convenience — see Open problems.
+Evaluated code also sees the scope the `eval` is written in, and inherits the
+evaluator's context when no row is given (§14: "the default should be the
+intersection of those contexts"). Neither is the hole it first looks like. A
+function it names is an ordinary *same-module* call, so it inherits the
+evaluated context — the narrow row above — instead of re-applying this module's
+ceiling. Naming `call_model` gets a program no closer to the API key than
+`($os/get_env …)` does, and both are refused.
+
+That is a stronger property than hiding the names would be, and it arrived by
+making authority the only boundary rather than adding a second one.
 
 Only the writable root is ambient. Two ambient roots would make a relative name
 like `"todo.gene"` mean two different host targets, which §6.3 rightly refuses
@@ -349,8 +356,12 @@ inherited from the original proposal.
   which names exist, the other what they may do — and `^bindings` remains the
   plainer spelling for the former.
 
-  The default did not move: an Env with no row grants evaluated code nothing,
-  and that emptiness is now installed *explicitly* rather than inherited.
+  The default is §14's: with no row, evaluated code inherits the evaluator's
+  active context, and with one it gets that row — resolved when the Env was
+  minted, so never broader. Sealing is now something a program *says* rather
+  than something it gets by omission: `^capabilities []` resolves to the empty
+  context. A `caller_env ~ snapshot [...]` stays closed regardless, because a
+  snapshot promises exactly the names it lists.
   Getting there also exposed a second bug worth stating, because it made the
   first one invisible: `eval` rooted its overlay in `currentApplication()`
   rather than the creating scope's application, and when those differ every
@@ -358,20 +369,19 @@ inherited from the original proposal.
   checked against another's. `isOwnedBy` then fails and the authority silently
   evaporates. Nothing noticed while evaluated code held no authority at all.
 
-- **`env ^module` is a hole, and the fix is to omit it.** An env built as
-  `(env ^module this_mod ^capabilities tools)` resolves the overlay names *and
-  every module-level `fn`*. Generated code could therefore call any function in
-  this file — including ones never handed to it, which then run under the module
-  ceiling rather than a tool row, so a helper with no declared row hands out the
-  module's whole authority. It was reachable here: a probe module with an
-  `os/Env` ceiling and a rowless `read_the_key` helper had that helper called
-  successfully from evaluated code.
+- **Module-crossing used to turn visibility into authority** (fixed, kept
+  because the shape recurs). An env built as `(env ^module this_mod …)` resolved
+  every module-level `fn`, and because evaluated code was its own module root,
+  calling one *crossed a module boundary* and re-applied that module's ceiling.
+  A helper with no declared row therefore handed out the module's whole
+  authority: a probe module with an `os/Env` ceiling had its rowless
+  `read_the_key` called successfully from evaluated code.
 
-  Omitting `^module` closes it — evaluated code then sees the overlay plus the
-  `$` stdlib and nothing else — and that is what `run_program` now does. It is
-  listed as an open problem rather than a fixed bug because the safe
-  construction is the non-obvious one: `^module` reads like "which module is
-  this code part of", not "publish every binding in that module to it".
+  The first fix was to hide the names by omitting `^module`. The better one, now
+  in place, is that evaluated code shares the evaluator's scope and module root,
+  so those calls no longer cross a boundary and inherit the evaluated context
+  instead. Visibility stopped implying authority, which is the property that
+  should have held all along.
 
 - **A bounded destructive tool is still a destructive tool.** Adding
   write authority gave the agent the power to remove anything in the workspace,

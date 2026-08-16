@@ -131,10 +131,12 @@
   # Env below. `run_note` is, because evaluating a note is this agent's own
   # facility rather than something the standard library offers.
   #
-  # The env also deliberately has no `^module`. An env built with
-  # `^module this_mod` resolves every module-level `fn` — including ones never
-  # handed over, which then run under the module ceiling. Omitting it leaves
-  # generated code with this one name, the `$` stdlib, and its granted roots.
+  # Evaluated code also sees the scope this `eval` is written in, so it can name
+  # any function in this file. That is not the hole it looks like: those calls
+  # are ordinary same-module calls, so they inherit the *evaluated* context — the
+  # narrow row below — rather than re-applying this module's ceiling. Naming
+  # `call_model` gets a program no closer to the API key than calling
+  # `($os/get_env ...)` directly does, and both are refused.
   {^run_note run_note ^read_skill read_skill})
 
 (fn read_skill [name : Str] : Str
