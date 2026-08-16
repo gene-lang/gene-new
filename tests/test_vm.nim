@@ -1420,6 +1420,30 @@ suite "vm — container update built-ins":
     ck "(var m {^a 1}) [(m ~ put \"a\" void) (m ~ /a)]", "[void void]"
     expect GeneError:
       discard runStr("(#{^a 1} ~ put \"a\" 2)")
+  test "Map/delete removes an entry and returns what was there":
+    ck "(var m {^a 1 ^b 2}) [(m ~ delete \"a\") m]", "[1 {^b 2}]"
+    # Absent key is `void`, so a caller can tell "removed something" from
+    # "there was nothing" without a second lookup.
+    ck "(var m {^a 1}) [(m ~ delete \"zz\") m]", "[void {^a 1}]"
+    # Symbol and string keys both work: the key is converted before comparing,
+    # the same normalization `get` and `put` use. Map iteration yields symbols,
+    # so an iterated key can be deleted directly.
+    ck "(var m {^a 1 ^b 2}) (m ~ delete (quote a)) m", "{^b 2}"
+    ck "(var m {^a 1 ^b 2}) (for [k v] in {^a 1} (m ~ delete k)) m", "{^b 2}"
+    expect GeneError:
+      discard runStr("(#{^a 1} ~ delete \"a\")")
+    expect GeneError:
+      discard runStr("([1] ~ delete \"a\")")
+
+  test "to_sym is the inverse of to_str for names":
+    ck "[($to_sym \"a\") ($to_str ($to_sym \"a\")) ($to_sym ($to_sym \"a\"))]",
+       "[a \"a\" a]"
+    ck "(== ($to_sym \"a\") (quote a))", "true"
+    # `==` stays type-respecting — it does not coerce Sym to Str any more than
+    # it coerces Int to Float — so conversion is explicit.
+    ck "[(== (quote a) \"a\") (== 1 1.0)]", "[false false]"
+    expect GeneError: discard runStr("($to_sym 1)")
+
   test "Map/assoc returns an updated copy":
     ck "(var m #{^a 1}) (var n (m ~ assoc \"b\" 2)) [m n]",
        "[#{^a 1} #{^a 1 ^b 2}]"

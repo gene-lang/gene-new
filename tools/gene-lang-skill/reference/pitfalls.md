@@ -162,7 +162,7 @@ way is never truthy:
 
 The same applies to `if_yes`. Both are guards; `(if c a b)` is the conditional.
 
-**Map iteration yields `Sym` keys, but `get`/`put` take `Str`.** Comparing an
+**Map iteration yields `Sym` keys, and `==` does not convert.** Comparing an
 iterated key against a string is silently always false, so a filter written that
 way copies everything:
 
@@ -173,8 +173,9 @@ way copies everything:
   (== ($to_str k) "a"))  # true, and the usual fix
 ```
 
-**`Map` has no key removal** — its messages are `assoc get put to_stream
-to_pairs_stream`. Dropping a key means rebuilding the map without it.
+`$to_sym` converts the other way, so `($to_sym "a")` equals `` (quote a) ``.
+`==` stays type-respecting — it no more coerces `Sym` to `Str` than it coerces
+`1` to `1.0` — so convert explicitly. `Map` `get`/`put`/`delete` take either.
 
 **`match` without `else` is not a nil default** — unlike `if`, it needs the arm.
 Writing `(else nil)` there is idiomatic.

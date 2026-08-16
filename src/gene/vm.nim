@@ -4805,6 +4805,41 @@ proc biMapPutBang(args: openArray[Value]): Value {.nimcall.} =
   args[0].putMapEntry(keySegment("Map/put", args[1]), args[2])
   args[2]
 
+proc biToSym(args: openArray[Value]): Value {.nimcall.} =
+  ## The inverse of `to_str` for names, so `Str` and `Sym` convert both ways.
+  ## Map iteration yields symbols while `get`/`put`/`delete` accept either, and
+  ## `==` does not convert — so code that compares an iterated key against a
+  ## string needs one of these two conversions to be available.
+  requireOne("to_sym", args)
+  case args[0].kind
+  of vkSymbol:
+    args[0]
+  of vkString:
+    newSym(args[0].strVal)
+  else:
+    raise newException(GeneError,
+      "to_sym expects a Str or Sym, got " & $args[0].kind)
+
+proc biMapDeleteBang(args: openArray[Value]): Value {.nimcall.} =
+  ## `(m ~ delete key)` removes the entry and returns what was there, or `void`
+  ## when the key was absent — so a caller can tell "removed something" from
+  ## "there was nothing" without a second lookup.
+  ##
+  ## The key may be a symbol or a string: `keySegment` converts before
+  ## comparing, which is the same normalization `get` and `put` already use.
+  ## Map iteration yields symbols while these take either, so
+  ## `(m ~ delete k)` works directly on an iterated key.
+  ##
+  ## Mutating, like `put`, and `putMapEntry` refuses an immutable Map. `assoc`
+  ## with `void` remains the persistent form.
+  if args.len != 2:
+    raise newException(GeneError,
+      "Map/delete expects 2 arguments, got " & $args.len)
+  requirePropMap("Map/delete", args[0])
+  let key = keySegment("Map/delete", args[1])
+  result = args[0].mapEntries.getOrDefault(key, VOID)
+  args[0].putMapEntry(key, VOID)
+
 proc biMapAssoc(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 3:
     raise newException(GeneError, "Map/assoc expects 3 arguments, got " & $args.len)
@@ -6983,6 +7018,7 @@ proc buildBuiltins(app: Application): Scope =
                 newNativeFn("construct_type", biConstructType))
   result.define("to_str", newNativeCallFn("to_str", biToStr,
                                           acceptsNamed = false))
+  result.define("to_sym", newNativeFn("to_sym", biToSym))
   result.define("to_int", newNativeFn("to_int", biToInt))
   result.define("to_float", newNativeFn("to_float", biToFloat))
   result.define("chars", newNativeFn("chars", biChars))
@@ -7090,6 +7126,7 @@ proc buildBuiltins(app: Application): Scope =
     "assoc": newNativeFn("Map/assoc", biMapAssoc),
     "get": newNativeFn("Map/get", biMapGet),
     "put": newNativeFn("Map/put", biMapPutBang),
+    "delete": newNativeFn("Map/delete", biMapDeleteBang),
     "to_stream": toStreamFn,
     "to_pairs_stream": toPairsStreamFn})
   gScalarTypes[vkHashMap] = mapType

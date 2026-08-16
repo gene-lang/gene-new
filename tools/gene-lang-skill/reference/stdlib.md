@@ -22,7 +22,7 @@ absent? nil? present? void? empty? leaf? contains? size first last
 head props body meta declarations construct_type
 map filter take into to_stream to_pairs_stream
 freeze freeze_shallow thaw assoc_in update_in key range
-to_str to_int to_float hash chars graphemes
+to_str to_sym to_int to_float hash chars graphemes
 cell atomic_cell channel buffer bytes Set set_has? set_size Regex
 date datetime time duration timezone now today sleep
 read_all read_one lex_all print println
@@ -109,7 +109,7 @@ Sent bare on the receiver: `xs/~size`, `(xs ~ push v)`.
 | Type | Messages |
 |---|---|
 | `List` | `assoc` `set` `push` `size` `empty?` `first` `last` `contains?` `to_stream` |
-| `Map` | `assoc` `get` `put` `to_stream` `to_pairs_stream` |
+| `Map` | `assoc` `get` `put` `delete` `to_stream` `to_pairs_stream` |
 | `Node` | `set_prop` `set_body` `push_body` `head` `props` `body` `meta` |
 | `Stream` | `has_next` `peek` `next` `try_next` `close` `map` `filter` `take` `into` `each` `to_pairs_stream` |
 | `Buffer` | `len` `get` `set` `fill` `copy_from` `to_list` `to_bytes` `elem_type` |
