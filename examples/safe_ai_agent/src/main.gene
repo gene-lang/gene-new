@@ -370,7 +370,10 @@ ${(loaded_skill)}
         (history ~ set $"${prior}\nturn: ${program}\nresult: ${result}")
         (if_not (== envelope/status "in-progress")
           (running ~ set false))
-        (if_yes (>= (turn ~ get) 6)
+        # Only a model that still wants another turn can be cut off by the
+        # limit. Announcing it after a reply that already said "done" would
+        # blame the ceiling for a loop that ended on its own.
+        (if_yes (&& (running ~ get) (>= (turn ~ get) 6))
           ($println "  (turn limit reached)")
           (running ~ set false))))))
 
@@ -390,7 +393,7 @@ ${(loaded_skill)}
       (going ~ set false)
       (do
         (var task (trim line))
-        (if (== task "/quit")
+        (if (|| (== task "exit") (== task "quit") (== task "/quit"))
           (going ~ set false)
           (if (!= task "")
             (handle_task task))))))

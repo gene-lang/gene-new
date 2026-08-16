@@ -13,56 +13,13 @@ model.
 
 ## Running it
 
-```bash
-nimble build                     # produces bin/gene
-cd examples/safe_ai_agent
-GENE_AGENT_STUB=1 ../../bin/gene run src/main.gene
-
-# with the Gene skill loaded
-../../bin/gene run --allow_read_dir ../../tools/gene-lang-skill src/main.gene
-```
-
-`GENE_AGENT_STUB=1` returns canned replies, so the example runs and is testable
-with no API key. Five prompts show the five things worth seeing:
-
-| prompt | what the model emits | outcome |
-| --- | --- | --- |
-| `read the notes` | `($fs/list_dir ".")`, `($fs/read_text "notes.txt")` | both succeed |
-| `write something` | `($fs/write_text "todo.txt" …)`, then reads it back | succeeds — the grant is real |
-| `raw effect` | `($os/get_env "HOME")` | refused — needs `os/Env` |
-| `escape the sandbox` | `($fs/read_text "../package.gene")` | refused |
-| anything else | defines `xs`, sums it, returns `6` | a program, not a statement list |
-
-The whole session, end to end:
-
-```
-> read the notes
-   Reading the workspace.
-   hello from the workspace
-> write something
-   Saving that to the workspace.
-   buy milk
-> raw effect
-   Reading an environment variable.
-   refused: os/get_env needs os/Env
-> escape the sandbox
-   Peeking outside the workspace.
-   refused: fs/read_text needs fs/ReadFile
-> say hi
-   Defining and using in one program.
-   6
-> /quit
-```
-
-The third row is the one to look at twice. Generated code calls the ordinary
-standard library, and the module *does* hold `os/Env` — it needs it to read the
-API key. The call is still refused, because that authority is not in the row the
-evaluated program was granted. What the module holds and what the model may use
-are separate questions.
-
-Live mode uses OpenRouter, with the key in `OPENAI_AUTH_TOKEN` and the model
-overridable via `GENE_AGENT_MODEL`. A stale shell `OPENAI_API_KEY` export beats
-`OPENAI_AUTH_TOKEN` and yields 401 — set `OPENAI_AUTH_TOKEN`.
+See [`../README.md`](../README.md) for how to launch it, the turn-by-turn flow,
+and the offline stub session. The one line worth repeating here is the third
+stub row: generated code calls the ordinary standard library, and the module
+*does* hold `os/Env` — it needs it to read the API key — yet
+`($os/get_env "HOME")` from evaluated code is still refused, because that
+authority is not in the row the program was granted. What the module holds and
+what the model may use are separate questions.
 
 ## The shape
 
