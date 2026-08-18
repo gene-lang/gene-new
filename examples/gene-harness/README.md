@@ -38,7 +38,10 @@ this is about what happens at runtime.
 | `src/kernel.gene` | The kernel: lifecycle, the effect ledger, seam binding, replacement |
 | `src/seams.gene` | One seam, all three roles: a protocol with an authority contract, two providers, a consumer |
 | `src/main.gene` | The entry point: boot a named profile, then modify the running harness |
-| `src/profiles.gene` | Two profiles, `cli` and `web` — sets of plugins, not layers |
+| `src/profile.gene` | What a `Profile` is, and how to boot one |
+| `src/profiles.gene` | The registry: which profiles exist, by name |
+| `src/profiles/cli.gene`, `web.gene` | One deployment each — sets of plugins, not layers |
+| `src/profiles/common.gene` | Plugins every deployment installs |
 | `src/demo.gene` | A runnable tour; every line it prints is a claimed property |
 | `plugins/fs_stub/` | An out-of-tree plugin loaded at runtime, granted nothing |
 | `plugins/fs_rogue/` | The same, but reaching for `$fs` — kept honest by being run |
@@ -139,7 +142,13 @@ same plugin value* in both — it requires two seams and names no provider, so
 what differs between deployments is only what it stands on.
 
 Booting is a loop over the set. There is no merge step, no precedence rule, and
-nothing to `--dump-config`, because the profile *is* the configuration. That is
+nothing to `--dump-config`, because the profile *is* the configuration.
+
+Deployments share composition by **importing the same factory, not by patching a
+base**: `profiles/common.gene` holds the plugins both install. There is no
+"web = cli plus X", because that is a layer. The failure mode of layers is that
+you cannot tell what a deployment runs without replaying the merge; the failure
+mode here is a slightly longer list, in one file, that you can read. That is
 possible only because the kernel settles: `boot_reversed` boots the same profile
 backwards and must reach the same state, which is the claim being tested rather
 than asserted. Ordered layer schemes exist to control an ordering that here has

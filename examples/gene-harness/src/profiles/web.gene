@@ -1,0 +1,31 @@
+# The `web` deployment: no filesystem authority, escaped HTML output.
+#
+#   gene run examples/gene-harness/src/main.gene web
+#
+# The mirror of `cli`. Same three plugin ids, same `reporter_plugin` value, two
+# different providers — and because the in-memory filesystem provider declares
+# `^capabilities []`, this profile boots under no grants at all. A web
+# deployment has no business reading the operator's disk, and here that is a
+# fact about the binding rather than a rule someone has to remember.
+
+(mod web)
+
+(import [Plugin provide] from "../kernel")
+(import [MemFs HtmlRender fs_provider render_provider] from "../seams")
+(import [Profile] from "../profile")
+(import [reporter_plugin] from "./common")
+
+(fn web_fs_plugin [] : Plugin
+  (Plugin ^id "fs" ^provides ["HarnessFs"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "HarnessFs"
+        (fs_provider (MemFs ^files {^notes "hello from memory"})))))))
+
+(fn web_render_plugin [] : Plugin
+  (Plugin ^id "render" ^provides ["HarnessRender"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "HarnessRender" (render_provider (HtmlRender)))))))
+
+(fn web_profile [] : Profile
+  (Profile ^name "web"
+           ^plugins [(web_fs_plugin) (web_render_plugin) (reporter_plugin)]))

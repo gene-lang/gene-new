@@ -1,0 +1,39 @@
+# Plugins every deployment installs.
+#
+# This file is the answer to the question a growing set of profiles asks: how do
+# two deployments share composition without one patching the other?
+#
+# By importing the same factory. `cli` and `web` both install `reporter_plugin`,
+# and it is the *same value* in both sets — not a base profile with an overlay
+# on top, and not a variant. There is deliberately no "web = cli plus X": that
+# is a layer, and design §2.2 rules it out because it makes arrival order decide
+# semantics. Sharing by import is ordinary Gene code with no patch semantics to
+# reason about, and it scales the way ordinary code does — a third deployment
+# imports what it wants and states the rest.
+
+(mod common)
+
+(import [Plugin provide resolve status_of Harness] from "../kernel")
+(import [report_tool] from "../seams")
+
+(fn reporter_plugin [] : Plugin
+  # The part that is identical across deployments. It requires two seams and
+  # names no provider, so what changes between deployments is only what it is
+  # standing on.
+  (Plugin ^id "reporter" ^provides ["Report"]
+                         ^requires ["HarnessFs" "HarnessRender"]
+    ^activate (fn [] (fn [h, id]
+      # No defensive check, and none needed: the kernel does not run `activate`
+      # until every seam in `requires` is bound.
+      (var fs (resolve h "HarnessFs"))
+      (var r (resolve h "HarnessRender"))
+      (provide h id "Report" (report_tool fs r "notes"))))))
+
+(fn report_of [h : Harness] : Str
+  # The product of the composition, or why there isn't one. A profile whose
+  # authority is not granted does not crash the boot — the plugin that needed
+  # the authority lands in `error` and the rest of the system is fine, which is
+  # the more useful failure mode and one the lifecycle gives for free.
+  (if (== (status_of h "reporter") "ready")
+    ($to_str (resolve h "Report"))
+    $"<no report: reporter is $(status_of h \"reporter\")>"))

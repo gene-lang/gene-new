@@ -18,8 +18,10 @@
          Plugin HarnessError]
   from "./kernel")
 (import [HarnessFs LocalFs MemFs head_tool fs_provider] from "./seams")
-(import [cli_profile web_profile boot boot_reversed plugin_names report_of
-         cli_render_plugin] from "./profiles")
+(import [boot boot_reversed plugin_names] from "./profile")
+(import [report_of] from "./profiles/common")
+(import [cli_profile cli_render_plugin] from "./profiles/cli")
+(import [web_profile] from "./profiles/web")
 
 (fn fs_plugin [] : Plugin
   (Plugin ^id "fs_local" ^provides ["Fs"]

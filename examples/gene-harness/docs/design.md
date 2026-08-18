@@ -664,7 +664,17 @@ home patch, then CLI overlays, over a base config, with `--dump-config` to print
 what you actually got. §2.2 says not to copy it. This is the alternative that
 falls out of the rest of the design.
 
-**A profile is a named set of plugin values.** `src/profiles.gene` defines two:
+**A profile is a named set of plugin values.** Four files, split so that a
+growing set of deployments stays legible:
+
+| file | holds |
+|---|---|
+| `src/profile.gene` | what a `Profile` is, and `boot` / `boot_reversed` |
+| `src/profiles.gene` | the registry — which profiles exist, by name |
+| `src/profiles/cli.gene`, `web.gene` | one deployment each |
+| `src/profiles/common.gene` | plugins every deployment installs |
+
+The two defined today:
 
 | | `cli` | `web` |
 |---|---|---|
@@ -722,12 +732,21 @@ provider, and the report changes shape without a reboot and without anything
 patching anything.
 
 Two things this deliberately does not provide. There is no "profile B is profile
-A plus X" — that is a layer, and it is the thing §2.2 rules out. A deployment
-that wants shared composition builds the set in Gene code, by ordinary list
-manipulation, which has no patch semantics to reason about. And there is no
+A plus X" — that is a layer, and it is the thing §2.2 rules out. And there is no
 precedence rule between profiles, because two profiles are alternatives rather
-than a stack; the two here even reuse the plugin ids `fs` and `render`
-precisely so they cannot be layered.
+than a stack; the two here even reuse the plugin ids `fs` and `render` precisely
+so they cannot be layered.
+
+That constraint is exactly the one a growing set of profiles pushes against, so
+it is worth saying what replaces it. **Deployments share composition by
+importing the same factory, not by patching a base.** `src/profiles/common.gene`
+holds `reporter_plugin`, and `cli` and `web` each install it — the same value in
+both sets, not a base profile with an overlay on top. Sharing by import is
+ordinary Gene code with no patch semantics to reason about, and it scales the
+way ordinary code scales: a third deployment imports what it wants and states
+the rest. The failure mode of layers is that you cannot tell what a deployment
+runs without replaying the merge; the failure mode here is a slightly longer
+list, in one file, that you can read.
 
 ## 4. Recommendation
 
@@ -774,8 +793,10 @@ modifiable from then on. Adopt, in this order:
    configuration with extra steps; one where removing a provider correctly
    parks its dependents, and putting it back revives them, is a system you can
    actually modify while it runs.
-7. **Profiles as sets, not layers** (§3.8). **Built** — `src/profiles.gene`
-   defines `cli` and `web`, and `src/main.gene` runs either. The ordered
+7. **Profiles as sets, not layers** (§3.8). **Built** — `src/profiles/` defines
+   `cli` and `web` over shared plugins in `common.gene`, `src/profile.gene` is
+   the `Profile` type and `boot`, `src/profiles.gene` is the registry, and
+   `src/main.gene` runs either. The ordered
    bundle/profile/home/CLI patch stack of §1.5 is not adopted and is not
    needed: order-independence comes from the lifecycle, so composition needs no
    precedence rules and no `--dump-config`.

@@ -1,0 +1,56 @@
+# What a profile *is*, and how to boot one.
+#
+# This file knows nothing about any particular deployment. `src/profiles.gene`
+# is the registry of the ones that exist, and `src/profiles/` holds them.
+#
+# **A profile is a set, not a stack.** It names the plugins a deployment starts
+# with, and nothing about the order they appear in changes what you get.
+#
+# That is not a style preference. `dsh` assembles a running instance from
+# ordered layers — bundle patches, then profile, then home, then CLI overlays,
+# over a base config — and needs `--dump-config` to tell you what you actually
+# got (design §1.5). Ordered layers exist because when activation is a
+# *sequence*, order decides which provider wins and which dependency is visible;
+# once order is load-bearing, composition has to be expressed as a stack and the
+# stack has to be printable to be understood. Make unmet dependencies a *state*
+# instead (§3.3.5) and the problem the layers were solving stops existing.
+# `boot_reversed` is here to keep that claim honest.
+#
+# What a profile does *not* do is patch another profile. Modifying a running
+# harness is `install`, `uninstall`, and `replace` — named operations an
+# operator asked for, at runtime, on a live system (§4, "living application").
+# A layer that wins by arriving later is the thing we are avoiding.
+
+(mod profile)
+
+(import [Harness new_harness install] from "./kernel")
+
+(type Profile ^props {^name Str ^plugins Any})
+
+(fn boot [p : Profile] : Harness
+  # The whole of it. There is no merge step, no overlay resolution, and nothing
+  # to dump: the profile *is* the configuration, and the kernel works out the
+  # rest.
+  (var h (new_harness))
+  (for plugin in p/plugins
+    (install h plugin))
+  h)
+
+(fn reversed [xs] : Any
+  (var out [])
+  (var i (- xs/~size 1))
+  (while (>= i 0)
+    (out ~ push xs/%i)
+    (set i (- i 1)))
+  out)
+
+(fn boot_reversed [p : Profile] : Harness
+  # Exists to keep the claim in this file's header honest. Booting a profile
+  # backwards must reach the same state as booting it forwards; if it ever does
+  # not, "a profile is a set" was wrong and the layers were right.
+  (boot (Profile ^name p/name ^plugins (reversed p/plugins))))
+
+(fn plugin_names [p : Profile] : Any
+  (var out [])
+  (for plugin in p/plugins (out ~ push plugin/id))
+  out)

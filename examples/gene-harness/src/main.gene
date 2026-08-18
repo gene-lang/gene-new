@@ -16,7 +16,9 @@
 # demo.gene is the tour — it walks the kernel's properties one at a time,
 # profiles included.
 
-(import [profile_named boot plugin_names report_of] from "./profiles")
+(import [profile_named] from "./profiles")
+(import [boot plugin_names] from "./profile")
+(import [report_of] from "./profiles/common")
 (import [plugin_states bound_seams lifecycle_log status_of] from "./kernel")
 
 (fn arg_list [args] : Any
