@@ -198,6 +198,12 @@
     (fail (HarnessError ^message $"no provider for seam ${seam}")))
   found)
 
+(fn seam_bound [h : Harness, seam : Str] : Bool
+  # Asking without committing. `resolve` raises, which is right for a consumer
+  # that cannot proceed without the seam and wrong for a caller deciding whether
+  # a deployment offers something at all.
+  (!= ((h/seams ~ get) ~ get seam) void))
+
 (fn bound_seams [h : Harness] : Any
   (var out [])
   (for [k v] in (h/seams ~ get) (out ~ push ($to_str k)))

@@ -1,47 +1,50 @@
 # The harness entry point: boot a deployment from a named profile.
 #
 #   gene run examples/gene-harness/src/main.gene web
-#   gene run --allow_read_dir /tmp examples/gene-harness/src/main.gene cli
-#   gene run examples/gene-harness/src/main.gene cli      # same profile, no grant
+#   gene run examples/gene-harness/src/main.gene cli          # interactive
+#   gene run examples/gene-harness/src/main.gene web status   # one-shot prompt
+#
+# For the interactive shell and for `build`, run it from the package directory
+# so that a capability row naming `plugins/generated` means this one:
+#
+#   cd examples/gene-harness && gene run --allow_read_dir /tmp src/main.gene cli
 #
 # This is what `package.gene` names as the application entry, and it is the
-# whole of what an entry point has to do here: pick a profile and hand it to
-# `boot`. There is no merge step and no overlay resolution to run first — the
-# profile *is* the configuration, and the kernel settles the rest (design §3.8).
+# whole of what an entry point has to do here: pick a profile, hand it to
+# `boot`, and run whatever driver the profile bound. There is no merge step and
+# no overlay resolution — the profile *is* the configuration, and the kernel
+# settles the rest (design §3.8).
 #
-# The third command is the interesting one. The boot succeeds: a missing grant
-# costs one plugin, not the process, and the plugin that needed authority it was
-# not given sits in `error` with the reason in the log.
-#
-# demo.gene is the tour — it walks the kernel's properties one at a time,
-# profiles included.
+# demo.gene is the tour — it walks the kernel's properties one at a time.
 
 (import [profile_named] from "./profiles")
 (import [boot plugin_names] from "./profile")
 (import [report_of] from "./profiles/common")
-(import [plugin_states bound_seams lifecycle_log status_of] from "./kernel")
+(import [ask] from "./agent")
+(import [plugin_states bound_seams lifecycle_log status_of seam_bound resolve]
+  from "./kernel")
 
 (fn arg_list [args] : Any
   (var out [])
   (for c in args (out ~ push ($to_str c)))
   out)
 
-(fn main [args]
-  (var names (arg_list args))
-  (var name (if (> names/~size 0) names/0 "cli"))
-  (var p (profile_named name))
-  (var h (boot p))
+(fn joined_from [parts, i : Int] : Str
+  (var out [])
+  (var j i)
+  (while (< j parts/~size)
+    (out ~ push ($to_str parts/%j))
+    (set j (+ j 1)))
+  ($str/join out " "))
 
-  ($println "profile:   " name)
+(fn print_summary [h, p]
   ($println "plugins:   " (plugin_names p))
   ($println "states:    " (plugin_states h))
   ($println "seams:     " (bound_seams h))
   ($println "report:    " (report_of h))
-
   ($println "")
   ($println "lifecycle:")
   (for l in (lifecycle_log h) ($println "  " l))
-
   (if_yes (!= (status_of h "reporter") "ready")
     ($println "")
     ($println "No report: a plugin did not reach `ready`, and the lifecycle")
@@ -49,3 +52,22 @@
     ($println "the missing --allow_read_dir /tmp grant — the provider it binds")
     ($println "declares `(fs/ReadDir \"/tmp\")`, so the consumer that calls")
     ($println "through it cannot run without one. Nothing else was affected.")))
+
+(fn main [args]
+  (var names (arg_list args))
+  (var name (if (> names/~size 0) names/0 "cli"))
+  (var p (profile_named name))
+  (var h (boot p))
+  (var prompt (joined_from names 1))
+
+  # Three ways in, one system underneath. A prompt on the command line is
+  # answered by the same seam the interactive loop sends to, which is what
+  # makes the shell testable without a terminal.
+  (if_yes (!= prompt "")
+    ($println (ask h prompt)))
+  (if_yes (== prompt "")
+    (if (seam_bound h "Driver")
+      # Whatever the profile bound. `cli` binds a terminal loop; `web` binds
+      # nothing and prints what came up instead.
+      ((resolve h "Driver") h)
+      (print_summary h p))))

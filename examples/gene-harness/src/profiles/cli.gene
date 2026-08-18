@@ -14,6 +14,8 @@
 (import [LocalFs TextRender fs_provider render_provider] from "../seams")
 (import [Profile] from "../profile")
 (import [reporter_plugin] from "./common")
+(import [agent_plugin] from "../agent")
+(import [driver_plugin] from "../repl")
 
 # Each factory is nullary and references only module-level names, so the stored
 # activation captures nothing from the frame that built it — see the note on the
@@ -32,5 +34,9 @@
       (provide h id "HarnessRender" (render_provider (TextRender)))))))
 
 (fn cli_profile [] : Profile
+  # The driver is what makes this deployment interactive, and it is a plugin
+  # like any other — `main.gene` runs whatever is bound to `Driver` and has no
+  # idea which profile supplied it.
   (Profile ^name "cli"
-           ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)]))
+           ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)
+                     (agent_plugin) (driver_plugin)]))

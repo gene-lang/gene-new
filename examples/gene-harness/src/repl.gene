@@ -1,0 +1,47 @@
+# The terminal driver: read a prompt, hand it to the agent, print the answer.
+#
+# It knows nothing about what any prompt means. That is the `HarnessPrompt`
+# seam's job, and the reason this file is thirty lines: swapping the agent for a
+# model-backed one changes everything the harness can do and none of this.
+#
+# The driver is itself a plugin providing a `Driver` seam, so "is this
+# deployment interactive?" is answered by what the profile binds rather than by
+# a flag main.gene checks.
+
+(mod repl)
+
+(import [Plugin Harness provide] from "./kernel")
+(import [ask] from "./agent")
+
+(fn quitting? [line : Str] : Bool
+  (if (== line "quit") true (== line "exit")))
+
+(fn run_repl [h : Harness] : Int
+  ($println "harness — type `help`, or `quit` / Ctrl-D to leave")
+  (var running true)
+  (while running
+    # The prompt goes out with a newline rather than as `harness> `. stdout is
+    # line-buffered on a terminal and Gene exposes no flush, so a prompt without
+    # a newline would sit in the buffer until after the answer it was asking
+    # for — invisible exactly when it matters.
+    ($println "")
+    ($println "harness>")
+    (var line ($os/read_line))
+    (if_yes (== line nil)
+      # Ctrl-D. `os/read_line` returns nil at EOF and needs no capability:
+      # reading your own stdin is not host authority.
+      ($println "bye")
+      (set running false))
+    (if_not (== line nil)
+      (var text ($str/trim line))
+      (if_yes (quitting? text)
+        ($println "bye")
+        (set running false))
+      (if_not (quitting? text)
+        (if_yes (!= text "")
+          ($println (ask h text))))))
+  0)
+
+(fn driver_plugin [] : Plugin
+  (Plugin ^id "driver" ^provides ["Driver"] ^requires ["HarnessPrompt"]
+    ^activate (fn [] (fn [h, id] (provide h id "Driver" run_repl)))))

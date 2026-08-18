@@ -1,0 +1,7 @@
+# Plugins the harness writes for itself at runtime, in response to a prompt.
+#
+# The directory is committed and its contents are not: a generated plugin is
+# session state, not source. It lives inside the package because
+# `load_sandboxed` refuses a sandbox directory that escapes the package root,
+# so the harness cannot load code it wrote anywhere else.
+*.gene

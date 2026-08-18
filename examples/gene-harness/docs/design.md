@@ -748,6 +748,80 @@ the rest. The failure mode of layers is that you cannot tell what a deployment
 runs without replaying the merge; the failure mode here is a slightly longer
 list, in one file, that you can read.
 
+### 3.9 The agent seam, and a harness that extends itself
+
+Three seams now. `HarnessFs` varies in authority, `HarnessRender` varies in
+behaviour, and `HarnessPrompt` is the one a real harness cares about: what turns
+a prompt into a response. A production deployment binds a model here; this repo
+binds a command interpreter, and the consumers — a terminal loop, a one-shot
+command-line prompt, a test — cannot tell which.
+
+**The driver is a plugin, not a flag.** `src/repl.gene` provides a `Driver` seam
+whose value is the read-handle-print loop, and `cli` installs it while `web`
+does not. So "is this deployment interactive?" is answered by what the profile
+bound, and `main.gene` runs whatever is there without knowing which profile
+supplied it. The loop itself is thirty lines and knows nothing about what any
+prompt means, which is the test of whether the seam is in the right place.
+
+**`HarnessPrompt` deliberately declares no `^capabilities` row.** That looks
+inconsistent next to the other two seams until you try the alternative: a
+declared row is *transitive*, so a `^capabilities []` function cannot call an
+impl that declares `(fs/ReadDir "/tmp")` **even when the process holds the
+grant** (§5). A row on a dispatcher would therefore forbid it from delegating to
+the very seams it exists to delegate to. Authority still lands somewhere
+specific — the narrow operations the agent performs *itself* declare their own
+rows at their own definitions, so `build` is bounded to one directory while
+`help` and `status` need nothing.
+
+**`build` writes a plugin and loads it into the running system.** The generated
+module is plain Gene with no imports; it provides a `Tool:<name>` seam whose
+value is a function, and it is loaded through the same `install_sandboxed` path
+as any out-of-tree plugin — sandboxed, granted nothing, sharing nothing. Driven
+through tmux, the whole loop:
+
+```
+harness>
+build greet a plugin written from a prompt
+installed greet (ready)
+
+harness>
+tools
+["Tool:greet"]
+
+harness>
+tool greet world
+greet(world) -> a plugin written from a prompt
+
+harness>
+unload greet
+uninstalled greet
+
+harness>
+tools
+[]
+```
+
+The last two lines are the ledger doing its job on code that did not exist when
+the process started: the tool seam went with the plugin, without the plugin's
+cooperation and without anyone writing an unload path for it.
+
+Three things bound self-extension, and only one of them is a grant:
+
+- **The package root.** `load_sandboxed` refuses a sandbox directory that
+  escapes it, so a harness cannot load code it wrote to `/tmp`. Generated
+  plugins live in `plugins/generated/` because that is the only place they can
+  live, not because it is tidy.
+- **`grants []` on the generated module.** It cannot name `$fs`, `$net`, or
+  `$os`. A harness that writes its own plugins is not thereby writing plugins
+  with its own authority.
+- **The ledger.** Whatever the new plugin registers is reversible by the kernel,
+  which is what makes loading it a decision you can take back.
+
+Notably *not* on that list: a capability grant for the write itself. A path
+inside the entry's own package is ambiently authorized, so a package extending
+itself is not an authority question — see §5, because the opposite was asserted
+here before it was run.
+
 ## 4. Recommendation
 
 Build the harness as a **living application**: it boots from a profile and is
@@ -888,6 +962,37 @@ about it, and because two of them shaped the design above.
 - **An omitted optional prop reads as `void`, not `nil`.** `(!= p/deactivate nil)`
   is therefore true for a plugin that declared no `deactivate`, and the kernel
   called `void`. `($absent? …)` is the test that covers both.
+
+- **A declared `^capabilities` row is transitive, and `[]` means "and nothing
+  you call, either".** A function declaring `^capabilities []` cannot call an
+  impl that declares `(fs/ReadDir "/tmp")` *even when the process holds the
+  grant* — the refusal is `declaration requires fs/ReadDir` and it is identical
+  with and without the flag, which makes it easy to misread as a missing grant.
+  A row that *matches* the callee's succeeds. This is defensible and arguably
+  the point of a ceiling, but the consequence is worth stating plainly:
+  **declaring a row on a dispatcher is a mistake**, because it bounds everything
+  the dispatcher delegates to for all time. `HarnessPrompt` declares none for
+  exactly this reason (§3.9). The distinction that makes it work is that *no row
+  at all* inherits the process policy while `[]` grants nothing — two very
+  different meanings for what reads like the same "declares nothing".
+
+- **A capability row's relative path resolves against the process working
+  directory, not the package root.** `^capabilities [(fs/WriteDir
+  "plugins/generated")]` in a module under `examples/gene-harness/src/` names
+  `<cwd>/plugins/generated`, so the same source declares different authority
+  depending on where it is invoked from — and the harness's `build` command
+  works only when run from its own package directory. Nothing in the source says
+  so. Resolving a row's relative path against the declaring module's package
+  root would make a committed row mean one thing everywhere.
+
+- **Writing inside the entry's own package needs no grant.** The `build` command
+  was designed assuming `--allow_write_dir plugins/generated` would be required,
+  and said so in a comment before it was run; it is not. A path inside the
+  package is ambiently authorized, and the same row pointed at `/tmp` *is*
+  refused without a flag. So the package is the fence. This is a coherent model
+  — a package may modify itself, and reaching beyond it is authority — but it is
+  not what "capabilities" suggests at first reading, and it means a plugin
+  system that writes plugins gets that ability for free.
 
 The first two are runtime defects worth fixing independently of the harness. The
 third is documented behaviour that is easy to get wrong, and is now in the

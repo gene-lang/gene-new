@@ -3,14 +3,22 @@
 A living plugin harness: seams, an effect ledger, and atomic activation.
 
 ```bash
-# the entry point: boot a deployment from a named profile
-gene run examples/gene-harness/src/main.gene web
-gene run --allow_read_dir /tmp examples/gene-harness/src/main.gene cli
-gene run examples/gene-harness/src/main.gene cli      # same profile, no grant
+# an interactive harness. `help` lists the commands; `quit`, `exit` or Ctrl-D
+# leaves. Run it from the package directory so a capability row naming
+# `plugins/generated` means this one.
+cd examples/gene-harness
+gene run --allow_read_dir /tmp src/main.gene cli
+
+# one-shot: anything after the profile name is a prompt
+gene run src/main.gene web status
+
+# boot a deployment and print what came up
+gene run src/main.gene web
+gene run src/main.gene cli            # same profile, no grant
 
 # the tour: every line it prints is a claimed property
-gene run examples/gene-harness/src/demo.gene
-gene run --allow_read_dir /tmp examples/gene-harness/src/demo.gene
+gene run src/demo.gene
+gene run --allow_read_dir /tmp src/demo.gene
 ```
 
 Run the entry point three ways. `web` and `cli` differ in their providers; the
@@ -42,6 +50,9 @@ this is about what happens at runtime.
 | `src/profiles.gene` | The registry: which profiles exist, by name |
 | `src/profiles/cli.gene`, `web.gene` | One deployment each — sets of plugins, not layers |
 | `src/profiles/common.gene` | Plugins every deployment installs |
+| `src/agent.gene` | The `HarnessPrompt` provider: what a prompt means |
+| `src/repl.gene` | The terminal driver, bound as a `Driver` seam by `cli` |
+| `plugins/generated/` | Plugins the harness writes for itself, at runtime |
 | `src/demo.gene` | A runnable tour; every line it prints is a claimed property |
 | `plugins/fs_stub/` | An out-of-tree plugin loaded at runtime, granted nothing |
 | `plugins/fs_rogue/` | The same, but reaching for `$fs` — kept honest by being run |
@@ -158,6 +169,42 @@ Modifying a booted harness is `install`, `uninstall`, and `replace` — named
 operations on a live system, not a layer that wins by arriving later. Swap the
 `render` plugin for the other profile's and the reporter re-derives itself
 against the new provider, report and all, without a reboot.
+
+**A prompt is a seam, and the harness can extend itself through it.** `cli` is an
+interactive shell: it reads a line, hands it to whatever is bound to
+`HarnessPrompt`, and prints the answer. The loop is thirty lines and knows
+nothing about what any prompt means — a real deployment binds a model there;
+this repo binds a command interpreter. The driver is itself a plugin providing a
+`Driver` seam, so "is this deployment interactive?" is a binding rather than a
+flag: `web` installs the same agent and no driver.
+
+The interesting command is `build`, which writes a new plugin and loads it into
+the running process:
+
+```
+harness>
+build greet a plugin written from a prompt
+installed greet (ready)
+
+harness>
+tool greet world
+greet(world) -> a plugin written from a prompt
+
+harness>
+unload greet
+
+harness>
+tools
+[]
+```
+
+The last part is the ledger doing its job on code that did not exist when the
+process started. Three things bound this and only one is a grant: the generated
+plugin must live inside the package (`load_sandboxed` refuses a sandbox
+directory that escapes the package root), it is loaded with `grants []` so it
+cannot name `$fs`, `$net`, or `$os`, and everything it registers is reversible
+by the kernel. Writing inside the package needs no flag — a package may modify
+itself; reaching outside it is authority.
 
 **Model-visible ⟺ logged.** The invariant worth taking verbatim from `dsh`.
 Anything that reaches a model request must be reconstructible from the session

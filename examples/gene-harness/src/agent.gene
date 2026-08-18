@@ -1,0 +1,164 @@
+# The agent: what turns a prompt into a response.
+#
+# This is the `HarnessPrompt` provider, and it is deliberately deployment-
+# agnostic — the terminal loop in repl.gene, a future HTTP handler, and a test
+# all send it the same way. A real harness binds a model here; this one
+# interprets commands, which is enough to show that the seam is the boundary.
+#
+# The commands are the harness talking about itself: what is installed, what is
+# bound, what happened, and — the interesting one — `build`, which writes a new
+# plugin and loads it into the running system.
+
+(mod agent)
+
+(import [Plugin Harness provide resolve seam_bound plugin_states bound_seams
+         lifecycle_log install_sandboxed uninstall retry status_of module_dir
+         installed HarnessError] from "./kernel")
+(import [HarnessPrompt HarnessFs HarnessRender head_tool prompt_provider]
+  from "./seams")
+
+# --- word handling ---------------------------------------------------------
+
+(fn words [text : Str] : Any
+  # `$str/split` yields empty strings for repeated separators, so drop them.
+  (var out [])
+  (for w in ($str/split ($str/trim text) " ")
+    (if_yes (!= w "") (out ~ push w)))
+  out)
+
+(fn word [parts, i : Int] : Str
+  (var v parts/%i)
+  (if (== v void) "" ($to_str v)))
+
+(fn words_from [parts, i : Int] : Str
+  (var out [])
+  (var j i)
+  (while (< j parts/~size)
+    (out ~ push ($to_str parts/%j))
+    (set j (+ j 1)))
+  ($str/join out " "))
+
+# --- generated plugins -----------------------------------------------------
+
+(fn generated_dir [] : Str
+  # Inside the package, and not by preference: `load_sandboxed` refuses a
+  # sandbox directory that escapes the package root, so a harness cannot load
+  # code it wrote to /tmp. Self-extension is confined to the package by the
+  # module system before any capability is consulted.
+  $"$(module_dir (module_dir this_mod/~path))/plugins/generated")
+
+(fn plugin_source [name : Str, text : Str] : Str
+  # Plain strings do not interpolate, so this emits `${arg}` literally into the
+  # generated module rather than expanding it here.
+  ($str/join [
+    "# Written by the harness at runtime, in response to a prompt.\n"
+    "#\n"
+    "# It is loaded with `grants []`, so it cannot name $fs, $net or $os. What\n"
+    "# it can do is compute and answer, which is what a tool is.\n"
+    "\n"
+    "(mod plugin)\n"
+    "\n"
+    "(fn run [arg] : Str\n"
+    "  $\"" name "(${arg}) -> " text "\")\n"
+    "\n"
+    "(var plugin_id \"" name "\")\n"
+    "(var plugin_seam \"Tool:" name "\")\n"
+    "(fn plugin_build [] run)\n"] ""))
+
+(fn write_plugin_source [path : Str, source : Str] : Str
+  # The one authority the agent holds, declared at the one function that uses
+  # it rather than on the seam, so `status` and `help` need nothing.
+  #
+  # Measured, and not what was assumed here first: **this needs no grant.** A
+  # path inside the entry's own package is ambiently authorized, so a package
+  # extending *itself* is not an authority question. Point the same row outside
+  # the package and it is refused without `--allow_write_dir`, verified — so
+  # the package is the fence, not the flag. `load_sandboxed` draws the same line
+  # independently: it refuses a sandbox directory that escapes the package root,
+  # which is why generated plugins live here and not in /tmp.
+  #
+  # The row's path is resolved against the process working directory, not the
+  # package root, so it only names this directory when the harness is run from
+  # its own package. Run from elsewhere the row points somewhere else and the
+  # write is refused — see docs/design.md §5.
+  ^capabilities [(fs/WriteDir "plugins/generated")]
+  ($fs/write_text path source)
+  path)
+
+(fn build_tool [h : Harness, name : Str, text : Str] : Str
+  (if_yes (== name "")
+    (fail (HarnessError ^message "usage: build <name> <text...>")))
+  (var dir (generated_dir))
+  (write_plugin_source $"${dir}/${name}.gene" (plugin_source name text))
+  # Loaded like any other out-of-tree plugin: sandboxed, granted nothing, and
+  # sharing nothing. It needs no seam definition because it provides a plain
+  # value seam rather than implementing a protocol.
+  (install_sandboxed h dir $"${name}.gene" [] []))
+
+(fn tool_seams [h : Harness] : Any
+  (var out [])
+  (for s in (bound_seams h)
+    (if_yes ($str/starts_with? s "Tool:") (out ~ push s)))
+  out)
+
+# --- the command surface ---------------------------------------------------
+
+(fn help_text [] : Str
+  ($str/join [
+    "commands:"
+    "  help                  this list"
+    "  status                every plugin and its state"
+    "  seams                 what is bound right now"
+    "  log                   the kernel's lifecycle record"
+    "  read <path>           read through the HarnessFs seam"
+    "  tools                 tools this harness has gained"
+    "  tool <name> [arg]     call one"
+    "  build <name> <text>   write a new plugin and load it, live"
+    "  unload <id>           uninstall a plugin"
+    "  retry <id>            retry one that failed to activate"
+    "  quit | exit | Ctrl-D  leave"] "\n"))
+
+(fn dispatch [h : Harness, prompt : Str] : Str
+  (var parts (words prompt))
+  (var cmd (word parts 0))
+  (if (== cmd "help")
+    (then (help_text))
+    (elif (== cmd "status") ($to_str (plugin_states h)))
+    (elif (== cmd "seams") ($to_str (bound_seams h)))
+    (elif (== cmd "log") ($str/join (lifecycle_log h) "\n"))
+    (elif (== cmd "tools") ($to_str (tool_seams h)))
+    (elif (== cmd "read")
+      (head_tool (resolve h "HarnessFs") (word parts 1)))
+    (elif (== cmd "tool")
+      (do
+        (var name (word parts 1))
+        (if_yes (if_not (seam_bound h $"Tool:${name}") true)
+          (fail (HarnessError ^message $"no tool ${name}; `build` one or see `tools`")))
+        ((resolve h $"Tool:${name}") (words_from parts 2))))
+    (elif (== cmd "build")
+      (build_tool h (word parts 1) (words_from parts 2)))
+    (elif (== cmd "unload") (uninstall h (word parts 1)))
+    (elif (== cmd "retry") (retry h (word parts 1)))
+    (else
+      $"I don't know \"${cmd}\". Try `help`.")))
+
+# --- the provider, and the plugin that binds it ----------------------------
+
+(type CommandAgent)
+
+(impl HarnessPrompt for CommandAgent
+  (message handle [h, prompt : Str] : Str
+    (dispatch h prompt)))
+
+(fn agent_plugin [] : Plugin
+  (Plugin ^id "agent" ^provides ["HarnessPrompt"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "HarnessPrompt" (prompt_provider (CommandAgent)))))))
+
+(fn ask [h : Harness, prompt : Str] : Str
+  # The one call a driver makes. Errors are answers too: a CLI that dies
+  # because a command failed is not one you can explore a system with.
+  (try
+    ((resolve h "HarnessPrompt") ~ HarnessPrompt:handle h prompt)
+    catch e
+    $"error: ${e/message}"))

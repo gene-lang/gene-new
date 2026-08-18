@@ -101,6 +101,31 @@
 
 (fn render_provider [r : HarnessRender] : HarnessRender r)
 
+# --- A third seam: what handles a prompt -----------------------------------
+#
+# The agent seam. A real deployment binds a model-backed provider here; the one
+# in this repo interprets commands, and the point of the seam is that the
+# consumer — the terminal loop, an HTTP handler, a test — cannot tell.
+#
+# **This protocol deliberately declares no `^capabilities` row**, and that is
+# not an oversight. The other two seams declare one because a provider of them
+# does a specific, boundable thing: read a file, render text. A prompt handler
+# dispatches — what it may reach is whatever the *deployment* allows, and a row
+# here would be a ceiling on every provider forever. Since a declared row is
+# transitive (a `[]` function cannot call a capability-declaring impl even when
+# the process holds the grant), declaring one on a dispatcher would forbid it
+# from delegating to the very seams it exists to delegate to.
+#
+# Authority still lands where it belongs: the narrow operations the handler
+# performs *itself* declare their own rows at their own definitions, so
+# `build` — which writes a plugin into the package — is bounded to one
+# directory while `status` and `help` need nothing.
+
+(protocol HarnessPrompt
+  (message handle [h, prompt : Str] : Str))
+
+(fn prompt_provider [p : HarnessPrompt] : HarnessPrompt p)
+
 # --- Consumers -------------------------------------------------------------
 #
 # Written against the seams. They name `HarnessFs` and `HarnessRender`, never
