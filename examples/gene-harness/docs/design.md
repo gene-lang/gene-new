@@ -1,6 +1,9 @@
 # DeepSeek Harness, and what a Gene Harness should take from it
 
-Status: proposal; §4 items 1 and 2 are built and runnable in `../src/`.
+Status: **all five §4 items are built and runnable in `../src/`.** The design
+below is unchanged in its argument; where running it corrected a claim, the
+correction is inline and §5 records what changed. Two things remain open and
+are named in §4.
 
 DeepSeek open-sourced an agent harness (`dsh`) in 2026 whose organising claim is
 **"everything is a plugin"** — the model adapter, the tool registry, the session
@@ -518,11 +521,19 @@ of `ctx.effect()`. Writing the kernel closed it without a language change: the
 ledger *is* the reverse path, and because it holds records rather than closures
 it needs nothing from the language beyond a map and a list.
 
-What remains is breadth, not mechanism. `reverse_effect` knows one kind today
-(`seam`); a real harness adds `tool`, `event-subscription`, `route`, and each is
-a new arm in one function the kernel owns. That is the right place for the
-knowledge — a plugin that invents an effect the kernel cannot reverse should not
-be able to register it.
+What remains is breadth, not mechanism. `reverse_effect` knows two kinds now —
+`seam` and `subscription` — and a real harness adds `tool`, `route`, and the
+rest, each a new arm in one function the kernel owns. That is the right place
+for the knowledge: a plugin that invents an effect the kernel cannot reverse
+should not be able to register it.
+
+`subscription` is worth having as the second kind rather than a placeholder.
+An observer plugin contributes no seam at all — it subscribes to the harness
+event bus — and uninstalling it cancels the subscription without its
+cooperation. A listener outliving its plugin is the classic plugin-system leak,
+and the ledger makes it structurally impossible. It also settles the division
+in §2.2 by demonstration: the bus is for *observation*, the seams for
+*substitution*, and neither is doing the other's job.
 
 ## 4. Recommendation
 
@@ -555,14 +566,19 @@ modifiable from then on. Adopt, in this order:
    consumer sends to. Sharing a single definition file is narrower than granting
    a namespace, and it is what keeps the seam a seam across the boundary.
 5. **Disposers on `provide`** (§3.7), once enough plugins exist that replacement
-   leaks something.
+   leaks something. **Built** in the form §3.7 concluded was right — not
+   disposer closures, but a second effect *kind* in the ledger. `subscription`
+   is that kind, and an observer plugin demonstrates it.
 
-One language gap this design would like closed, not blocking: the
-removal-symmetric form of reload that `docs/scoped-impls.md` §6 already
-anticipates as module unload — which reclaims a removed plugin's *code*, where
-the ledger only reclaims its *contributions*. (`Map` key removal, the other gap
-this document originally named, is now implemented; the two runtime defects in
-§5 are separate and worth fixing on their own.)
+Two things remain open:
+
+- **The seam table is keyed by a plain string**, so the kernel does not check
+  that the value bound to `"HarnessFs"` implements `HarnessFs`. The contract
+  still holds — it is enforced at the impl and at the call — but a mis-binding
+  surfaces at first use rather than at `provide`.
+- **Module unload**, the removal-symmetric form of reload that
+  `docs/scoped-impls.md` §6 anticipates. Uninstall reclaims a plugin's
+  *contributions*; its *code* stays resident.
 
 Do not adopt: ordered profile/bundle patch layers, a general waterfall
 middleware mechanism, or an *ambient* DI container. The first two make order

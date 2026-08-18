@@ -23,11 +23,18 @@
                      ^activate Any
                      ^deactivate Any?})
 
-(type Harness ^props {^seams Any ^plugins Any ^effects Any ^log Any})
+(type Harness ^props {^seams Any ^plugins Any ^effects Any ^log Any ^bus Any})
+
+# Harness events. A plugin observes the harness through the event bus rather
+# than by being called back, because observation is what the bus is for and
+# substitution is what the seams are for (design §2.2).
+(type HarnessEvent ^is $event/Event)
+(type ToolInvoked ^is HarnessEvent ^props {^tool Str ^arg Str})
+(type PluginInstalled ^is HarnessEvent ^props {^plugin Str})
 
 (fn new_harness [] : Harness
   (Harness ^seams ($cell {}) ^plugins ($cell {}) ^effects ($cell {})
-           ^log ($cell [])))
+           ^log ($cell []) ^bus ($event/Bus ^error_policy $event/collect)))
 
 # --- the effect ledger -----------------------------------------------------
 #
@@ -48,8 +55,15 @@
   # One place that knows how to undo each registration kind. A plugin that
   # invents an effect the kernel cannot reverse should not be able to register
   # it, so this function is the closed set.
-  (if (== ($to_str e/kind) "seam")
-    ((h/seams ~ get) ~ delete e/seam)))
+  #
+  # §3.7: the mechanism was closed by the ledger; what it needed was breadth.
+  # `subscription` is the second kind, and it is the shape the rest will take —
+  # the record carries whatever the undo needs, and the kernel knows the undo.
+  (var kind ($to_str e/kind))
+  (if_yes (== kind "seam")
+    ((h/seams ~ get) ~ delete e/seam))
+  (if_yes (== kind "subscription")
+    (e/sub ~ cancel)))
 
 (fn unwind [h : Harness, id : Str]
   # LIFO, mirroring the generator close order in docs/spec/streams.md.
@@ -149,6 +163,20 @@
   (var out [])
   (for [k v] in (h/seams ~ get) (out ~ push ($to_str k)))
   out)
+
+# --- observation (design §2.2: the bus is for observing, seams for swapping) -
+
+(fn subscribe [h : Harness, id : Str, selector, handler] : Any
+  # A plugin's subscription is an effect like any other: recorded against the
+  # plugin id, and cancelled by `unwind` without the plugin's cooperation. A
+  # listener that outlived its plugin is the classic plugin-system leak, and
+  # the ledger is what makes it structurally impossible here.
+  (var sub (h/bus ~ subscribe selector handler))
+  (record_effect h id {^kind "subscription" ^sub sub})
+  sub)
+
+(fn publish [h : Harness, event] : Any
+  (h/bus ~ publish event))
 
 # --- lifecycle -------------------------------------------------------------
 

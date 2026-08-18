@@ -8,7 +8,8 @@
 
 (import [new_harness install uninstall resolve provide replace installed
          bound_seams install_sandboxed module_dir log_append log_events
-         assemble_request Plugin HarnessError]
+         assemble_request subscribe publish HarnessEvent ToolInvoked
+         Plugin HarnessError]
   from "./kernel")
 (import [HarnessFs LocalFs MemFs head_tool] from "./seams")
 
@@ -41,6 +42,17 @@
   (Plugin ^id "fs_local_real" ^provides ["HarnessFs"]
     ^activate (fn [] (fn [h, id]
       (replace h id "HarnessFs" (LocalFs ^root "/tmp"))))))
+
+# An observer plugin. It contributes no seam at all — it subscribes, which is
+# an effect the ledger reverses like any other.
+(var audit_seen ($cell []))
+
+(fn note_tool [e : ToolInvoked]
+  ((audit_seen ~ get) ~ push $"${e/tool}(${e/arg})"))
+
+(fn audit_plugin [] : Plugin
+  (Plugin ^id "audit" ^provides []
+    ^activate (fn [] (fn [h, id] (subscribe h id ToolInvoked note_tool)))))
 
 (fn show [label, thunk]
   ($println "  " label ($to_str (thunk))))
@@ -171,4 +183,20 @@
   ($println "  after uninstalling the provider:")
   ($println "  request:     " (assemble_request (log_events h)))
   ($println "  seams:       " (bound_seams h))
+
+  # --- an effect the ledger reverses that is not a seam ---------------------
+  #
+  # §3.7 said the ledger closed the mechanism and what remained was breadth.
+  # `subscription` is the second kind. An observer plugin contributes no seam;
+  # it subscribes, and uninstalling it cancels the subscription without the
+  # plugin's cooperation. A listener outliving its plugin is the classic
+  # plugin-system leak, and the ledger is what makes it impossible here.
+  ($println "-- the ledger reverses subscriptions too --")
+  ($println "  " (install h (audit_plugin)))
+  (publish h (ToolInvoked ^tool "head_tool" ^arg "notes"))
+  ($println "  audit saw:   " (audit_seen ~ get))
+  ($println "  " (uninstall h "audit"))
+  (publish h (ToolInvoked ^tool "head_tool" ^arg "after-uninstall"))
+  ($println "  audit saw:   " (audit_seen ~ get))
+  ($println "  ^ unchanged: the subscription went with the plugin.")
   nil)

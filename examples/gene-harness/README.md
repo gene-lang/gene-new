@@ -78,6 +78,13 @@ fails at the first call with `value is not callable: vkVoid`, because a denied
 namespace is absent and the name fails where it is used. Timing and diagnostic,
 recorded in [`docs/design.md`](docs/design.md) §5.
 
+**The ledger reverses more than seams.** An observer plugin contributes no seam
+— it subscribes to the harness event bus — and uninstalling it cancels the
+subscription without its cooperation. A listener outliving its plugin is the
+classic plugin-system leak; here it cannot happen, because registering the
+subscription *is* recording it. The bus is for observation and the seams are
+for substitution, and neither does the other's job.
+
 **Model-visible ⟺ logged.** The invariant worth taking verbatim from `dsh`.
 Anything that reaches a model request must be reconstructible from the session
 log, and `assemble_request` makes that structural: it takes the log and nothing
@@ -92,10 +99,6 @@ The seam *table* is still keyed by a plain string, so the kernel does not check
 that a value bound to `"HarnessFs"` actually implements `HarnessFs`. The
 contract holds anyway — it is enforced at the impl and at the call — but a
 mis-bound seam fails at first use rather than at `provide`.
-
-Disposers on `provide` (`docs/design.md` §3.7): the ledger reverses seam
-bindings, and a plugin that allocates something else has no way to register its
-undo yet.
 
 Module unload is deferred: uninstall removes a plugin's contributions, and its
 code stays resident (`docs/scoped-impls.md` §6).
