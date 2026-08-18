@@ -29,21 +29,29 @@ this is about what happens at runtime.
 | `plugins/fs_rogue/` | The same, but reaching for `$fs` — kept honest by being run |
 | `docs/design.md` | Why it is shaped this way, and what is still missing |
 
-## The three ideas
+## The ideas
 
-**A plugin is a value.** An id, the seams it claims, and two entry points — not a
-module. So it can come from a runtime-loaded file, a package dependency, or a
-literal built in memory for a test.
+**A plugin is a value.** An id, the seams it claims, the seams it needs, and two
+entry points — not a module. So it can come from a runtime-loaded file, a
+package dependency, or a literal built in memory for a test.
 
 **The kernel owns an effect ledger.** Plugins never touch the tables; they
 contribute through `provide`, and every contribution is recorded against the
 plugin id. The ledger holds *records*, not disposer closures, which makes "what
 has this plugin registered?" a query and the ledger serializable.
 
-**Activation is all-or-nothing.** A plugin that fails part-way through `activate`
-leaves nothing behind, because the kernel knows what it registered and reverses
-it without the plugin's cooperation. A plugin cannot forget to clean up, because
-cleanup was never its job.
+**Activation is all-or-nothing, and a failure is a state.** A plugin that fails
+part-way through `activate` leaves nothing behind, because the kernel knows what
+it registered and reverses it without the plugin's cooperation. A plugin cannot
+forget to clean up, because cleanup was never its job. What it does leave behind
+is *itself*, in `error`, next to the log line explaining why — a failure that
+erases its own subject is one you cannot investigate. Nothing retries it on its
+own, because an `activate` that raised will raise again until something outside
+it changes; `retry` is the operator saying it did.
+
+The mirror image: `deactivate` is advisory. If it raises, the failure is logged
+and the removal proceeds as planned, because the kernel does not depend on the
+hook — the ledger reverses every registration either way.
 
 Binding is explicit: a seam already bound is refused rather than shadowed, so no
 registration order decides behaviour. Changing a provider is `replace` — a named
@@ -84,6 +92,29 @@ subscription without its cooperation. A listener outliving its plugin is the
 classic plugin-system leak; here it cannot happen, because registering the
 subscription *is* recording it. The bus is for observation and the seams are
 for substitution, and neither does the other's job.
+
+**A plugin declares what it needs, and the kernel settles.** `requires` names
+*seams*, never plugin ids, so a dependency survives the provider being swapped —
+which is the whole reason to have seams. From there the kernel is a state
+machine rather than a sequence: a plugin is `pending` until the seams it needs
+are bound, then `ready`. `settle` runs after every change and drives the table
+to a fixpoint, demoting before promoting so a cascade cannot churn.
+
+Three things fall out. **Install order stops mattering** — three plugins
+installed in reverse dependency order settle exactly as three installed in
+order, which is what an ordered bundle-layer scheme tries to buy with
+configuration. **Withdrawal cascades reversibly** — remove a provider and its
+dependents return to `pending`, not to uninstalled, because what went away was
+their dependency and not the operator's intent; put it back and the chain comes
+back. **A dependency cycle is `pending`**, not a hang and not an error: neither
+plugin can go first, so neither does, and both say so.
+
+`activate` gets the one guarantee that matters at the call site — every seam in
+`requires` is bound before it runs — so plugin code resolves what it needs
+without a defensive check. Every transition goes out on the event bus
+(`PluginActivated`, `PluginDeactivated`, `PluginFailed`, …) and into the session
+log under `^kind "lifecycle"`, so a plugin can watch its own dependencies come
+and go and the kernel need know nothing about it.
 
 **Model-visible ⟺ logged.** The invariant worth taking verbatim from `dsh`.
 Anything that reaches a model request must be reconstructible from the session

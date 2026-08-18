@@ -1,6 +1,6 @@
 # The harness kernel: plugin lifecycle and the effect ledger.
 #
-# The kernel owns three tables. A plugin never touches them — it contributes
+# The kernel owns four tables. A plugin never touches them — it contributes
 # through `provide`, and every contribution is recorded against the plugin id so
 # the kernel can reverse it without the plugin's cooperation. That is what makes
 # activation all-or-nothing and uninstall complete: cleanup was never the
@@ -15,26 +15,39 @@
 
 (impl Error for HarnessError)
 
-# A plugin is a *value*, not a module: an id, the seams it claims, and two entry
-# points. That is what lets it come from a runtime-loaded file, a package
-# dependency, or a literal built in memory for a test.
+# A plugin is a *value*, not a module: an id, the seams it claims, the seams it
+# needs, and two entry points. That is what lets it come from a runtime-loaded
+# file, a package dependency, or a literal built in memory for a test.
+#
+# `requires` names seams, not plugins. A dependency on a *capability* survives
+# the provider being swapped, which is the whole point of having seams; a
+# dependency on a plugin id would not.
 (type Plugin ^props {^id Str
                      ^provides (List Str)
+                     ^requires Any?
                      ^activate Any
                      ^deactivate Any?})
 
-(type Harness ^props {^seams Any ^plugins Any ^effects Any ^log Any ^bus Any})
+(type Harness ^props {^seams Any ^plugins Any ^status Any ^effects Any
+                      ^log Any ^bus Any})
 
 # Harness events. A plugin observes the harness through the event bus rather
 # than by being called back, because observation is what the bus is for and
-# substitution is what the seams are for (design §2.2).
+# substitution is what the seams are for (design §2.2). The lifecycle is the
+# first thing worth observing: a plugin can watch its own dependencies come and
+# go without the kernel knowing anything about it.
 (type HarnessEvent ^is $event/Event)
 (type ToolInvoked ^is HarnessEvent ^props {^tool Str ^arg Str})
 (type PluginInstalled ^is HarnessEvent ^props {^plugin Str})
+(type PluginActivated ^is HarnessEvent ^props {^plugin Str})
+(type PluginDeactivated ^is HarnessEvent ^props {^plugin Str ^reason Str})
+(type PluginFailed ^is HarnessEvent ^props {^plugin Str ^message Str})
+(type PluginUninstalled ^is HarnessEvent ^props {^plugin Str})
 
 (fn new_harness [] : Harness
-  (Harness ^seams ($cell {}) ^plugins ($cell {}) ^effects ($cell {})
-           ^log ($cell []) ^bus ($event/Bus ^error_policy $event/collect)))
+  (Harness ^seams ($cell {}) ^plugins ($cell {}) ^status ($cell {})
+           ^effects ($cell {}) ^log ($cell [])
+           ^bus ($event/Bus ^error_policy $event/collect)))
 
 # --- the effect ledger -----------------------------------------------------
 #
@@ -81,6 +94,11 @@
 # reconstructible from the log. The log belongs to core, not to a plugin: a
 # plugin appends to it and reads nothing else, so replay fidelity is structural
 # rather than something someone remembered to maintain.
+#
+# The kernel writes its own lifecycle record here under `^kind "lifecycle"`.
+# That is the same log and deliberately not a second one: `assemble_request`
+# selects `message` events, so a lifecycle entry is durable, inspectable, and
+# structurally incapable of reaching a model request.
 
 (fn log_append [h : Harness, kind : Str, text : Str] : Any
   (var events (h/log ~ get))
@@ -89,6 +107,13 @@
 
 (fn log_events [h : Harness] : Any
   (h/log ~ get))
+
+(fn lifecycle_log [h : Harness] : Any
+  (var out [])
+  (for e in (h/log ~ get)
+    (if_yes (== ($to_str e/kind) "lifecycle")
+      (out ~ push ($to_str e/text))))
+  out)
 
 (fn assemble_request [events] : (List Str)
   # The whole invariant is this signature plus the empty capability row.
@@ -145,6 +170,10 @@
   # The ledger moves with the binding. Without that, uninstalling the *previous*
   # owner would unbind a seam it no longer provides, and the new provider would
   # vanish for a reason nothing in the log explains.
+  #
+  # Note this is also why a dependent does not churn across a provider swap:
+  # the seam stays bound throughout, so `requires` never goes unmet and no
+  # dependent is deactivated for a substitution it was never meant to notice.
   (var seams (h/seams ~ get))
   (if_yes (== (seams ~ get seam) void)
     (fail (HarnessError ^message $"seam ${seam} is not bound; provide it first")))
@@ -178,34 +207,214 @@
 (fn publish [h : Harness, event] : Any
   (h/bus ~ publish event))
 
+(fn notify [h : Harness, event] : Any
+  # Lifecycle events go out through the same bus, with one difference: a
+  # subscriber must not be able to stall the state machine. The kernel's bus is
+  # `event/collect` (docs/events.md §8), so one raising observer cannot abort a
+  # publication and `publish` returns a `PublishResult` instead of raising. A
+  # plugin system whose dependency resolution can be halted by an unrelated
+  # observer is not one you can recompose at 3am.
+  #
+  # `collect` leaves reporting to the publisher, which makes the kernel the
+  # reporter. Not doing this is the other way the design goes wrong: an
+  # observer that fails silently is worse than one that stops the world,
+  # because nothing anywhere records that it happened.
+  (var r (publish h event))
+  (if_yes (> r/failed 0)
+    (for err in r/errors
+      (log_append h "lifecycle" $"observer failed: ${err/message}")))
+  nil)
+
 # --- lifecycle -------------------------------------------------------------
+#
+# A plugin is in exactly one of three states:
+#
+#   pending  installed, but at least one seam it `requires` is unbound.
+#   ready    activated; its contributions are in the tables.
+#   error    its `activate` raised. Effects unwound, plugin still installed,
+#            and *not* retried — see `retry`.
+#
+# `pending` is a state, not a failure. A dependency cycle therefore does not
+# hang or raise: the plugins involved simply stay pending and say so in
+# `plugin_states`, which is a far better 3am outcome than either alternative.
+
+(fn status_of [h : Harness, id : Str] : Str
+  (var s ((h/status ~ get) ~ get id))
+  (if (== s void) "absent" ($to_str s)))
+
+(fn plugin_ids [h : Harness] : Any
+  # Keys are collected before any pass that may write the table. Gene maps keep
+  # insertion order, so a settle pass visits plugins in install order and the
+  # whole lifecycle is deterministic.
+  (var out [])
+  (for [k v] in (h/plugins ~ get) (out ~ push ($to_str k)))
+  out)
+
+(fn plugin_states [h : Harness] : Any
+  (var out [])
+  (for id in (plugin_ids h) (out ~ push $"${id}:$(status_of h id)"))
+  out)
+
+(fn requirements_of [p : Plugin] : Any
+  (?? p/requires []))
+
+(fn requires_met [h : Harness, p : Plugin] : Bool
+  (var seams (h/seams ~ get))
+  (var met true)
+  (for s in (requirements_of p)
+    (if_yes (== (seams ~ get ($to_str s)) void) (set met false)))
+  met)
+
+(fn missing_requirements [h : Harness, p : Plugin] : Any
+  (var seams (h/seams ~ get))
+  (var out [])
+  (for s in (requirements_of p)
+    (if_yes (== (seams ~ get ($to_str s)) void) (out ~ push ($to_str s))))
+  out)
+
+(fn run_deactivate [h : Harness, p : Plugin] : Bool
+  # "If deactivate fails, the plugin is removed as planned; the failure is
+  # logged." The kernel can afford that because it does not *depend* on the
+  # hook: the ledger reverses every registration either way. A deactivate hook
+  # is for a plugin's own private state — a flushed buffer, a closed handle —
+  # and losing it degrades that plugin, not the harness.
+  #
+  # An omitted optional prop reads as `void`, not `nil`, so `(!= … nil)` would
+  # be true for a plugin that declared no deactivate.
+  (if ($absent? p/deactivate)
+    true
+    (try
+      ((p/deactivate))
+      true
+      catch e
+      (log_append h "lifecycle" $"deactivate ${p/id} failed: ${e/message}")
+      false)))
+
+(fn promote [h : Harness, id : Str]
+  # pending -> ready, or pending -> error.
+  (var p ((h/plugins ~ get) ~ get id))
+  (try
+    ((p/activate) h id)
+    ((h/status ~ get) ~ put id "ready")
+    (log_append h "lifecycle" $"activated ${id}")
+    (notify h (PluginActivated ^plugin id))
+    catch e
+    # §3.3.2 is unchanged: a failure part-way through `activate` unwinds
+    # whatever it already registered, so a half-activated plugin is never left
+    # behind. What is new is where the plugin lands — installed and in `error`,
+    # rather than gone. A failure that erases its own subject is a failure you
+    # cannot investigate.
+    (unwind h id)
+    ((h/status ~ get) ~ put id "error")
+    (log_append h "lifecycle" $"activate ${id} failed: ${e/message}")
+    (notify h (PluginFailed ^plugin id ^message ($to_str e/message)))))
+
+(fn demote [h : Harness, id : Str, why : Str]
+  # ready -> pending. The plugin stays installed, because the thing that went
+  # away was its dependency, not the operator's intent. If the seam comes back,
+  # so does the plugin, and that reversibility is what makes a cascade safe
+  # enough to allow at all.
+  (var p ((h/plugins ~ get) ~ get id))
+  # Deactivation runs before the ledger is reversed, so the hook still sees the
+  # seams its own plugin provided.
+  (run_deactivate h p)
+  (unwind h id)
+  ((h/status ~ get) ~ put id "pending")
+  (log_append h "lifecycle" $"deactivated ${id}: ${why}")
+  (notify h (PluginDeactivated ^plugin id ^reason why)))
+
+(fn settle [h : Harness] : Any
+  # Drive the table to a fixpoint. Two phases, and the order matters.
+  #
+  # Demote first: a demotion unbinds seams, which can starve a dependent, which
+  # can starve *its* dependents. Promote second: a promotion only ever *binds*
+  # seams, so it can satisfy another plugin but can never starve one — which is
+  # why phase 2 can never send us back to phase 1.
+  #
+  # Running demotions first also avoids activating a plugin whose provider is
+  # about to disappear in the same settle. Interleaving the two phases would
+  # still converge, but it would churn: a plugin would be activated and then
+  # immediately deactivated, and its `activate` would have run for nothing.
+  (var changed true)
+  (while changed
+    (set changed false)
+    (for id in (plugin_ids h)
+      (if_yes (== (status_of h id) "ready")
+        (var p ((h/plugins ~ get) ~ get id))
+        (if_not (requires_met h p)
+          (demote h id $"missing $(missing_requirements h p)")
+          (set changed true)))))
+  (set changed true)
+  (while changed
+    (set changed false)
+    (for id in (plugin_ids h)
+      (if_yes (== (status_of h id) "pending")
+        (var p ((h/plugins ~ get) ~ get id))
+        (if_yes (requires_met h p)
+          (promote h id)
+          (set changed true)))))
+  nil)
 
 (fn install [h : Harness, p : Plugin] : Str
+  # Installing is *registering*, not activating. Whether the plugin activates
+  # is a question about the world — are its seams bound? — and the answer can
+  # change later, so it is a state the plugin carries rather than a verdict
+  # thrown at the caller.
+  #
+  # This is why install no longer raises when `activate` fails: one install can
+  # promote a whole chain of waiting plugins, so there is no single failure to
+  # raise, and the plugin has to survive its own failure in order to be in
+  # `error`. Check the returned status, `status_of`, or subscribe to
+  # `PluginFailed`.
   (var plugins (h/plugins ~ get))
   (if_yes (!= (plugins ~ get p/id) void)
     (fail (HarnessError ^message $"plugin ${p/id} already installed")))
-  # All-or-nothing: a failure part-way through `activate` unwinds whatever it
-  # already registered, so a half-activated plugin can never be left behind.
-  (try
-    ((p/activate) h p/id)
-    (plugins ~ put p/id p)
-    $"installed ${p/id}"
-    catch e
-    (unwind h p/id)
-    (fail (HarnessError ^message $"activate ${p/id} failed: ${e/message}"))))
+  (for s in (requirements_of p)
+    (for provided in p/provides
+      (if_yes (== ($to_str s) ($to_str provided))
+        (fail (HarnessError
+          ^message $"plugin ${p/id} requires seam ${s}, which it provides itself")))))
+  (plugins ~ put p/id p)
+  ((h/status ~ get) ~ put p/id "pending")
+  (log_append h "lifecycle" $"installed ${p/id}")
+  (notify h (PluginInstalled ^plugin p/id))
+  (settle h)
+  $"installed ${p/id} (${(status_of h p/id)})")
 
 (fn uninstall [h : Harness, id : Str] : Str
   (var plugins (h/plugins ~ get))
   (var p (plugins ~ get id))
   (if_yes (== p void)
     (fail (HarnessError ^message $"plugin ${id} not installed")))
-  # An omitted optional prop reads as `void`, not `nil`, so `(!= … nil)` would
-  # be true for a plugin that declared no deactivate.
-  (if_not ($absent? p/deactivate)
-    ((p/deactivate)))
+  # Only a `ready` plugin has anything to deactivate. A `pending` one never
+  # activated, and an `error` one was unwound when it failed.
+  (if_yes (== (status_of h id) "ready")
+    (run_deactivate h p))
   (unwind h id)
   (plugins ~ delete id)
+  ((h/status ~ get) ~ delete id)
+  (log_append h "lifecycle" $"uninstalled ${id}")
+  (notify h (PluginUninstalled ^plugin id))
+  # Removing this plugin's seams can starve a dependent, which can starve its
+  # dependents in turn.
+  (settle h)
   $"uninstalled ${id}")
+
+(fn retry [h : Harness, id : Str] : Str
+  # A failed plugin is not retried automatically, because an activate that
+  # raised will raise again until something outside it changes, and a kernel
+  # that retries on its own turns one bad plugin into a loop. `retry` is the
+  # operator saying the something changed.
+  (var p ((h/plugins ~ get) ~ get id))
+  (if_yes (== p void)
+    (fail (HarnessError ^message $"plugin ${id} not installed")))
+  (if_yes (!= (status_of h id) "error")
+    (fail (HarnessError
+      ^message $"plugin ${id} is $(status_of h id), not error; nothing to retry")))
+  ((h/status ~ get) ~ put id "pending")
+  (log_append h "lifecycle" $"retrying ${id}")
+  (settle h)
+  $"retried ${id} (${(status_of h id)})")
 
 # --- runtime install (design §4 item 4) ------------------------------------
 
@@ -232,14 +441,15 @@
   # impl would satisfy a different identity than the consumer sends to. Sharing
   # the one definition file is narrower than granting a namespace and is what
   # keeps the seam a seam across the boundary.
+  #
+  # `plugin_requires` is optional, so a plugin loaded at runtime joins the same
+  # dependency lifecycle as a compiled-in one without having to know it exists.
   (var m ($runtime/load_sandboxed dir entry grants shared))
   (var id ($to_str m/plugin_id))
   (var seam ($to_str m/plugin_seam))
   (var provider (m/plugin_build))
-  (install h (Plugin ^id id ^provides [seam]
+  (install h (Plugin ^id id ^provides [seam] ^requires (?? m/plugin_requires [])
     ^activate (fn [] (fn [h2, pid] (provide h2 pid seam provider))))))
 
 (fn installed [h : Harness] : Any
-  (var out [])
-  (for [k v] in (h/plugins ~ get) (out ~ push ($to_str k)))
-  out)
+  (plugin_ids h))

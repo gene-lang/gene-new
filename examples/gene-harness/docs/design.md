@@ -332,15 +332,22 @@ A working prototype is in `tmp/harness-repro/kernel_prototype.gene`; the
 transcript below is its real output. Three types:
 
 ```gene
-(type Plugin  ^props {^id Str ^provides (List Str)
+(type Plugin  ^props {^id Str ^provides (List Str) ^requires Any?
                       ^activate Any ^deactivate Any?})
-(type Harness ^props {^seams Any ^plugins Any ^effects Any})
+(type Harness ^props {^seams Any ^plugins Any ^status Any ^effects Any
+                      ^log Any ^bus Any})
 (type HarnessError ^props {^message Str} ^impl [Error])
 ```
 
-A plugin is a **value**, not a module: an id, the seams it claims, and two entry
-points. That is what makes it installable from anywhere — a file loaded at
-runtime, a package dependency, or a literal built in memory for a test.
+A plugin is a **value**, not a module: an id, the seams it claims, the seams it
+needs, and two entry points. That is what makes it installable from anywhere — a
+file loaded at runtime, a package dependency, or a literal built in memory for a
+test.
+
+`requires` names **seams, not plugins**. A dependency on a capability survives
+the provider being swapped, which is the whole reason to have seams at all; a
+dependency on a plugin id would reintroduce exactly the coupling the seam was
+there to remove. §3.3.5 is what the kernel does with it.
 
 ### 3.3.1 The effect ledger
 
@@ -383,17 +390,16 @@ The property worth building the kernel for: a plugin that fails halfway through
 `activate` leaves nothing behind.
 
 ```gene
-(fn install [h : Harness, p : Plugin] : Str
-  (var plugins (h/plugins ~ get))
-  (if_yes (!= (plugins ~ get p/id) void)
-    (fail (HarnessError ^message $"plugin ${p/id} already installed")))
+(fn promote [h : Harness, id : Str]
+  (var p ((h/plugins ~ get) ~ get id))
   (try
-    ((p/activate) h p/id)
-    (plugins ~ put p/id p)
-    $"installed ${p/id}"
+    ((p/activate) h id)
+    ((h/status ~ get) ~ put id "ready")
     catch e
-    (unwind h p/id)
-    (fail (HarnessError ^message $"activate ${p/id} failed: ${e/message}"))))
+    (unwind h id)                                # nothing partial survives
+    ((h/status ~ get) ~ put id "error")          # but the plugin itself does
+    (log_append h "lifecycle" $"activate ${id} failed: ${e/message}")
+    (notify h (PluginFailed ^plugin id ^message ($to_str e/message)))))
 ```
 
 This is not "reuse `try`". `try` is the local mechanism; the *architecture* is
@@ -401,16 +407,31 @@ that the kernel knows what the plugin registered and can reverse it without the
 plugin's cooperation. A plugin cannot forget to clean up, because cleanup was
 never its job.
 
+**A failure leaves the plugin behind, in `error`.** The rollback is unchanged —
+the seam the plugin bound before it raised is gone — but the plugin stays
+installed and says why. A failure that erases its own subject is one you cannot
+investigate, and at 3am the useful artifact is a plugin sitting there in `error`
+next to the log line that explains it. It is not retried: an `activate` that
+raised will raise again until something outside it changes, and a kernel that
+retried on its own turns one bad plugin into a loop. `retry` is the operator
+saying the something changed.
+
+This is also why `install` no longer *raises* on a failed activate. Once
+dependencies exist (§3.3.5) one install can promote a whole waiting chain, so
+there is no single failure to raise — and the plugin has to survive its own
+failure in order to be in `error` at all. `install` returns the resulting
+status; `PluginFailed` goes out on the bus for anyone watching.
+
 Measured, from the prototype — a plugin that registers one seam and then fails:
 
 ```
-install good  : installed fs_local
+install good  : installed fs_local (ready)
 resolve Fs    : LOCAL-FS
-install combo : installed combo
+install combo : installed combo (ready)
 installed     : ["fs_local" "combo"]
-install bad   : refused: activate broken failed: boom during activate
+install bad   : installed broken (error)
 Log rolled back? yes — no provider left behind
-installed     : ["fs_local" "combo"]
+states        : ["fs_local:ready" "combo:ready" "broken:error"]
 double install: refused: plugin fs_local already installed
 uninstall combo: uninstalled combo
 Llm gone?      : yes
@@ -419,8 +440,9 @@ installed      : ["fs_local"]
 ```
 
 Every line is a property the design claims: atomic activation, no partial
-registration, one provider per seam, uninstall that removes exactly one
-plugin's contributions and leaves its neighbour's intact.
+registration, a failure that is a *state* rather than a disappearance, one
+provider per seam, and an uninstall that removes exactly one plugin's
+contributions and leaves its neighbour's intact.
 
 ### 3.3.3 Binding is explicit; there is no last-wins
 
@@ -446,6 +468,106 @@ find one — a denied namespace is *absent*, not merely refused, and `gene` is a
 reserved root it cannot rebind to fetch the real one back. So the kernel decides
 what admitted code may reach at the moment it admits it, and `grants` is the
 operator-readable record of that decision.
+
+### 3.3.5 Dependencies, and a lifecycle that settles
+
+The kernel is a **state machine, not a sequence**. `install` registers a plugin;
+whether it activates is a question about the world, and the answer can change
+after the install returns. A plugin is therefore in exactly one of three states:
+
+| state | meaning |
+|---|---|
+| `pending` | installed, but at least one seam it `requires` is unbound |
+| `ready` | activated; its contributions are in the tables |
+| `error` | its `activate` raised. Unwound, still installed, not retried |
+
+`settle` drives the table to a fixpoint after anything that could change the
+answer — an install, an uninstall, a `retry`. It runs in two phases, and the
+order is not arbitrary:
+
+```gene
+(fn settle [h : Harness] : Any
+  ;; phase 1: demote every ready plugin whose requirements went away
+  ;; phase 2: promote every pending plugin whose requirements are now met
+```
+
+Demote first, because a demotion **unbinds** seams and can starve a dependent,
+which can starve *its* dependents — the cascade needs its own fixpoint. Promote
+second, because a promotion only ever **binds** seams: it can satisfy another
+plugin but can never starve one, so phase 2 can never send control back to phase
+1. That asymmetry is what makes the loop provably terminate. Interleaving the
+two would still converge, but it would churn — activating a plugin whose
+provider is about to vanish in the same settle, running its `activate` for
+nothing.
+
+Three consequences worth stating, because each is a design decision rather than
+a fallout:
+
+**Install order stops mattering.** Three plugins installed in reverse dependency
+order end up in the same state as three installed in dependency order. This is
+the property an ordered profile/bundle-layer scheme (§2.2, "do not adopt") tries
+to buy with configuration — and it comes for free here, because unmet
+dependencies are a *state* rather than an error at a point in time. Nothing is
+ordered, so no ordering can be wrong.
+
+**Withdrawal cascades, and the cascade is reversible.** Removing a provider
+returns its dependents to `pending`, not to uninstalled: what went away was
+their dependency, not the operator's intent. Put the provider back and the chain
+comes back with it. Reversibility is what makes a cascade safe enough to allow
+at all — an irreversible one would mean a single uninstall could quietly
+dismantle half the system.
+
+**A dependency cycle is `pending`, not a hang and not an error.** Two plugins
+each waiting on the other's seam simply never settle, and both say so in
+`plugin_states`. That is a better 3am outcome than either alternative: a hang
+tells you nothing, and an error implies someone did something wrong when the
+truth is that the configuration is merely incomplete. A *self*-dependency is
+different — a plugin requiring a seam it provides can never be satisfiable by
+anything — so it is refused at install.
+
+Because `requires` names seams, `replace` does not disturb anything: the seam
+stays bound across a provider swap, so no dependent is ever deactivated for a
+substitution it was never meant to notice.
+
+`activate` gets one guarantee out of all this, and it is the one that matters at
+the call site: **every seam in `requires` is bound before it runs.** So a plugin
+resolves what it needs without a defensive check —
+
+```gene
+(Plugin ^id "indexer" ^provides ["Index"] ^requires ["HarnessFs"]
+  ^activate (fn [] (fn [h, id]
+    (var fs (resolve h "HarnessFs"))            ;; cannot fail
+    (provide h id "Index" (head_tool fs "notes")))))
+```
+
+**`deactivate` is advisory; the ledger is not.** A plugin's `deactivate` runs
+before its effects are reversed, so the hook still sees the seams its own plugin
+provided. If it raises, the failure is logged and the removal proceeds exactly
+as planned — the kernel can afford that because it does not *depend* on the
+hook. The ledger reverses every registration either way. A `deactivate` is for a
+plugin's own private state, a flushed buffer or a closed handle, and losing it
+degrades that plugin rather than the harness. That is the same argument as
+§3.3.1 arriving at a second door: cleanup was never the plugin's job, so the
+plugin failing at cleanup cannot be the harness's problem.
+
+The lifecycle is **observable and recorded**, through machinery that already
+existed. `PluginActivated`, `PluginDeactivated`, `PluginFailed`,
+`PluginInstalled` and `PluginUninstalled` go out on the ordinary event bus, so a
+plugin can watch its own dependencies come and go without the kernel knowing
+anything about it — §2.2's division holding up under load: the bus observes, the
+seams substitute. And every transition is appended to the session log under
+`^kind "lifecycle"`, which is deliberately the *same* log as the model-visible
+one: `assemble_request` selects `message` events, so a lifecycle record is
+durable and inspectable and structurally incapable of reaching a model request.
+
+One inversion is worth calling out, because it is the kind of thing that is
+obvious only after it bites. The bus is configured `event/collect`
+(`docs/events.md` §8), so a raising observer cannot abort a publication — a
+plugin system whose dependency resolution can be halted by an unrelated observer
+is not one you can recompose at 3am. But `collect` returns a `PublishResult`
+rather than raising, which means **the kernel has to be the reporter**: it reads
+`failed` and logs each error. An observer that fails silently is worse than one
+that stops the world, because nothing anywhere records that it happened.
 
 ### 3.4 The boundary is core, and plugins are bounded twice
 
@@ -569,6 +691,17 @@ modifiable from then on. Adopt, in this order:
    leaks something. **Built** in the form §3.7 concluded was right — not
    disposer closures, but a second effect *kind* in the ledger. `subscription`
    is that kind, and an observer plugin demonstrates it.
+6. **A dependency lifecycle that settles** (§3.3.5). **Built** — `requires`
+   names seams, `settle` drives the table to a fixpoint, and a plugin is
+   `pending`, `ready`, or `error`. This is the item that turns the kernel from a
+   registry into a living system: install order stops mattering, withdrawal
+   cascades reversibly, and every transition is on the bus and in the log.
+
+   It is also where the "living application" claim in §4's opening sentence
+   stops being an aspiration. A harness you can only compose at boot is a
+   configuration with extra steps; one where removing a provider correctly
+   parks its dependents, and putting it back revives them, is a system you can
+   actually modify while it runs.
 
 Two things remain open:
 
