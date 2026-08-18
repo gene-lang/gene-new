@@ -609,6 +609,8 @@ proc valueImplementsCallable(value: Value, scope: Scope): bool
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool
 proc builtinBinding(scope: Scope, name: string): Value
 proc isBuiltinCallable(value: Value): bool
+proc receiverType(value: Value): Value
+proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value
 proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value
 proc isSendableValue(value: Value, scope: Scope,
                      seen: var HashSet[uint64],
@@ -6749,6 +6751,35 @@ proc typeReflectionMessage(name: string): Value =
   of "name": newNativeFn("Type/name", biTypeName)
   else: NIL
 
+proc biRespondTo(args: openArray[Value], call: ptr NativeCall): Value
+                {.nimcall.} =
+  ## `($respond_to? value msg)` — would a bare `(value ~ msg)` resolve?
+  ##
+  ## Deliberately answers *that* question rather than "does this type declare
+  ## msg": it reuses the two steps a bare send takes, so the predicate cannot
+  ## drift from dispatch. A caller guarding an optional hook wants to know
+  ## whether the send will work, not where the message came from.
+  ##
+  ## It is not `?~`, which guards the *receiver* — an absent receiver
+  ## short-circuits, but a present one with an unknown message still raises.
+  ## The two compose: `?~` for "maybe no receiver", this for "maybe no message".
+  if args.len != 2:
+    raise newException(GeneError,
+      "respond_to? expects a value and a message name, got " & $args.len &
+      " argument(s)")
+  let name =
+    case args[1].kind
+    of vkSymbol: args[1].symVal
+    of vkString: args[1].strVal
+    else:
+      raise newException(GeneError,
+        "respond_to? expects a Sym or Str message name, got " & $args[1].kind)
+  let scope = if call == nil: nil else: call.dispatchScope
+  let typ = args[0].receiverType
+  if typ.kind == vkType and typeDirectMessage(typ, name).kind != vkNil:
+    return TRUE
+  newBool(builtinReceiverMessage(scope, args[0], name).kind != vkNil)
+
 proc biUnionType(args: openArray[Value]): Value {.nimcall.} =
   ## `(| A B ...)` in *expression* position.
   ##
@@ -7460,6 +7491,9 @@ proc buildBuiltins(app: Application): Scope =
   # things in different positions. A program may still shadow it, as with any
   # other operator.
   result.define("|", sharedBuiltinNative("|", newNativeFn("|", biUnionType)))
+  result.define("respond_to?",
+                newNativeCallFn("respond_to?", biRespondTo,
+                                acceptsNamed = false))
   result.define("declarations", newNativeFn("declarations", biDeclarations))
   result.defineBuiltinType(vkNamespace, "Namespace", {
     "bindings": newNativeFn("Namespace/bindings", biNamespaceBindings),

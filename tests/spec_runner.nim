@@ -5192,6 +5192,41 @@ suite "spec — implicit self in message bodies from design §10":
                "(try (nil ~ P:m) catch (MessageError ^protocol pr) pr)",
                "\"P\"")
 
+suite "spec — respond_to? (design §3)":
+  const shapes =
+    "(type X ^props {^n Int} (message init [] : Str \"i\")) " &
+    "(type Y ^props {^n Int}) "
+
+  test "respond_to? answers whether a bare send would resolve":
+    check_eval(shapes & "[($respond_to? (X ^n 1) \"init\") " &
+               " ($respond_to? (X ^n 1) \"deinit\") " &
+               " ($respond_to? (Y ^n 1) \"init\")]",
+               "[true false false]")
+    # A Sym names the message as readily as a Str.
+    check_eval(shapes & "($respond_to? (X ^n 1) `init)", "true")
+    # It reuses the resolution a send uses, so built-in receivers answer too
+    # rather than being a separate table that can drift.
+    check_eval("[($respond_to? [1 2] \"size\") ($respond_to? [1 2] \"nope\") " &
+               " ($respond_to? 5 \"nope\") ($respond_to? nil \"init\")]",
+               "[true false false false]")
+
+  test "respond_to? is the guard ?~ is not":
+    # `?~` guards the *receiver*: an absent one short-circuits, but a present
+    # one with an unknown message still raises. The two compose.
+    check_eval(shapes &
+               "(try ((X ^n 1) ?~ deinit) catch (MessageError) \"raised\")",
+               "\"raised\"")
+    check_eval(shapes &
+               "(if ($respond_to? (X ^n 1) \"deinit\") \"sent\" \"skipped\")",
+               "\"skipped\"")
+    check_eval(shapes & "(if ($respond_to? (X ^n 1) \"init\") " &
+               "  ((X ^n 1) ~ init) \"skipped\")",
+               "\"i\"")
+
+  test "respond_to? rejects a bad arity or a non-name":
+    check_eval_error("($respond_to? 1)", "expects a value and a message name")
+    check_eval_error("($respond_to? 1 2)", "expects a Sym or Str message name")
+
 suite "spec — absence-guarded sends (design §3)":
   # `?~` guards on the *receiver* only. It is a call-site choice, not a rule
   # about nil: `~` on an absent receiver is still an error, and `impl P for Nil`

@@ -156,6 +156,26 @@ logger. It defaults to one reader-valid Gene data map per line. Pass
 required; `^format "text"` remains available for concise human lines. It does
 not mutate process routing and is unavailable under wasm.
 
+### `respond_to?`
+
+`($respond_to? value msg)` answers whether a bare `(value ~ msg)` would
+resolve. `msg` is a `Sym` or a `Str`.
+
+```gene
+(if ($respond_to? plugin "init")
+  (plugin ~ init))
+```
+
+It reuses the two steps a bare send takes — the receiver's type-direct message
+table, then the built-in receiver surface — so the predicate cannot drift from
+dispatch, and built-in receivers answer it too (`($respond_to? [1 2] "size")`
+is `true`).
+
+It is the guard `?~` is not. `?~` guards the *receiver*: an absent receiver
+short-circuits, but a present receiver with an unknown message still raises
+`MessageError`. Use `?~` for "there may be no receiver" and `respond_to?` for
+"there may be no message"; they compose.
+
 ### `event`
 
 Application pub/sub (docs/events.md). An event is an ordinary typed
