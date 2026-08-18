@@ -572,10 +572,13 @@ modifiable from then on. Adopt, in this order:
 
 Two things remain open:
 
-- **The seam table is keyed by a plain string**, so the kernel does not check
-  that the value bound to `"HarnessFs"` implements `HarnessFs`. The contract
-  still holds — it is enforced at the impl and at the call — but a mis-binding
-  surfaces at first use rather than at `provide`.
+- **The seam table is keyed by a plain string** and holds `Any`, so the kernel
+  itself cannot check that the value bound to `"HarnessFs"` implements
+  `HarnessFs`. It does not have to — a protocol works as an annotation, so the
+  Service Definition supplies the gate (`fs_provider` in `src/seams.gene`) and a
+  non-conforming provider is refused at bind time rather than at first use.
+  Holding the protocol in the table would move that check into the kernel and is
+  the tidier end state.
 - **Module unload**, the removal-symmetric form of reload that
   `docs/scoped-impls.md` §6 anticipates. Uninstall reclaims a plugin's
   *contributions*; its *code* stays resident.

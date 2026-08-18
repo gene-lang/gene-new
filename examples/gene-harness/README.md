@@ -95,10 +95,12 @@ request is unchanged.
 
 ## Not done yet
 
-The seam *table* is still keyed by a plain string, so the kernel does not check
-that a value bound to `"HarnessFs"` actually implements `HarnessFs`. The
-contract holds anyway — it is enforced at the impl and at the call — but a
-mis-bound seam fails at first use rather than at `provide`.
+The seam *table* is keyed by a plain string and holds `Any`, so the kernel
+itself cannot check conformance. It does not need to: a protocol works as an
+annotation, so the seam definition supplies its own gate (`fs_provider`) and a
+non-conforming provider is refused where it is bound. Making the table hold the
+protocol instead would move that check into the kernel and is the tidier end
+state.
 
 Module unload is deferred: uninstall removes a plugin's contributions, and its
 code stays resident (`docs/scoped-impls.md` §6).

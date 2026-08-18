@@ -11,7 +11,7 @@
          assemble_request subscribe publish HarnessEvent ToolInvoked
          Plugin HarnessError]
   from "./kernel")
-(import [HarnessFs LocalFs MemFs head_tool] from "./seams")
+(import [HarnessFs LocalFs MemFs head_tool fs_provider] from "./seams")
 
 (fn fs_plugin [] : Plugin
   (Plugin ^id "fs_local" ^provides ["Fs"]
@@ -36,12 +36,13 @@
 (fn mem_fs_plugin [] : Plugin
   (Plugin ^id "fs_mem" ^provides ["HarnessFs"]
     ^activate (fn [] (fn [h, id]
-      (provide h id "HarnessFs" (MemFs ^files {^notes "mem:hello"}))))))
+      (provide h id "HarnessFs"
+        (fs_provider (MemFs ^files {^notes "mem:hello"})))))))
 
 (fn local_fs_plugin [] : Plugin
   (Plugin ^id "fs_local_real" ^provides ["HarnessFs"]
     ^activate (fn [] (fn [h, id]
-      (replace h id "HarnessFs" (LocalFs ^root "/tmp"))))))
+      (replace h id "HarnessFs" (fs_provider (LocalFs ^root "/tmp")))))))
 
 # An observer plugin. It contributes no seam at all — it subscribes, which is
 # an effect the ledger reverses like any other.
@@ -125,6 +126,11 @@
   # implement the seam — because the harness shares the one file holding the
   # protocol. Grants are the operator-readable statement of reach: `[]` here
   # means this code cannot name $fs, $net, or $os at all.
+  # A value that does not implement the seam is refused where it is bound,
+  # not where it is first used.
+  ($println "  non-conforming provider: "
+    (try (fs_provider "just-a-string") catch e "refused at bind"))
+
   ($println "-- a plugin loaded at runtime, granted nothing --")
   (var here (module_dir this_mod/~path))
   (fn load_stub []

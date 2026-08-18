@@ -58,6 +58,18 @@
     ^capabilities []
     (?? (self/files ~ get path) $"mem:<no ${path}>")))
 
+# --- The seam's own conformance gate ---------------------------------------
+#
+# The kernel's seam table is keyed by a plain string and holds `Any`, so the
+# kernel cannot know that the value bound to "HarnessFs" implements HarnessFs.
+# It does not have to: a protocol works as an annotation, so the Service
+# Definition can supply the gate, which is its job anyway.
+#
+# Route a provider through this on the way into `provide` and a non-conforming
+# value is refused at bind time instead of at first use.
+
+(fn fs_provider [p : HarnessFs] : HarnessFs p)
+
 # --- Consumer --------------------------------------------------------------
 #
 # Written against the seam. It names `HarnessFs`, never `LocalFs` or `MemFs`,
