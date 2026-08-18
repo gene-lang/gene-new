@@ -12,7 +12,7 @@
 #   Service Provider    LocalFs / MemFs     two implementations
 #   Consumer            head_tool           written against the protocol
 #
-# See main.gene for the payoff: swapping the provider changes what the consumer
+# See demo.gene for the payoff: swapping the provider changes what the consumer
 # does *and* what authority the whole product needs, without the consumer being
 # touched.
 

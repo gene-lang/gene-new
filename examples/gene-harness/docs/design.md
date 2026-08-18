@@ -293,7 +293,7 @@ declaring `(fs/ReadDir "/tmp")` cannot be called without that grant —
 provider of the same seam runs anywhere. So swapping the provider changes what
 authority the *product* needs, which is `dsh`'s "one provider swap moves the
 whole product" with an enforcement story TypeScript has no way to tell.
-`examples/gene-harness/src/` demonstrates exactly this: run `src/main.gene`
+`examples/gene-harness/src/` demonstrates exactly this: run `src/demo.gene`
 with and without `--allow_read_dir /tmp` and only the local provider's line
 changes.
 
@@ -629,7 +629,7 @@ an assembler that reached for a file or the environment would be refused at its
 own declaration. The log belongs to core, so a plugin appends and reads nothing
 else.
 
-The payoff shows up in `src/main.gene` as two lines. A `trace` event is in the
+The payoff shows up in `src/demo.gene` as two lines. A `trace` event is in the
 log and absent from the request, because the request contains only what the log
 marks model-visible. And uninstalling the provider that produced a message
 leaves the assembled request unchanged — replay is a fold over the log, so it
@@ -736,7 +736,7 @@ modifiable from then on. Adopt, in this order:
 
 1. **Seams as protocols carrying the authority contract** (§3.2). This is the
    piece that makes every later step safe. **Built** — `src/seams.gene` is the
-   three-role seam (definition, two providers, one consumer) and `src/main.gene`
+   three-role seam (definition, two providers, one consumer) and `src/demo.gene`
    swaps the provider live and shows the authority change that comes with it.
 2. **The kernel as code** (§3.3) — `Plugin` and `Harness` as types, an effect
    ledger the kernel owns, atomic activation, explicit binding. Not a mapping
@@ -775,7 +775,7 @@ modifiable from then on. Adopt, in this order:
    parks its dependents, and putting it back revives them, is a system you can
    actually modify while it runs.
 7. **Profiles as sets, not layers** (§3.8). **Built** — `src/profiles.gene`
-   defines `cli` and `web`, and `src/boot.gene` runs either. The ordered
+   defines `cli` and `web`, and `src/main.gene` runs either. The ordered
    bundle/profile/home/CLI patch stack of §1.5 is not adopted and is not
    needed: order-independence comes from the lifecycle, so composition needs no
    precedence rules and no `--dump-config`.
@@ -828,7 +828,7 @@ anything is committed to.
   namespace member fail as "namespace `fs` is not granted here" rather than
   decaying to `void`.
 
-  Verified by `plugins/fs_rogue/`, which `src/main.gene` loads and calls; the
+  Verified by `plugins/fs_rogue/`, which `src/demo.gene` loads and calls; the
   transcript above is its real output. This entry exists because the claim was
   asserted in the design before it was run, and running it changed it.
 
@@ -842,7 +842,7 @@ about it, and because two of them shaped the design above.
   fine. Minimal cases — a closure in a type prop called across modules,
   cross-module `fail`/`try` with an imported error type — did not reproduce it.
 
-  The diagnosis arrived by accident. `src/kernel.gene` and `src/main.gene` are
+  The diagnosis arrived by accident. `src/kernel.gene` and `src/demo.gene` are
   the same design split across the same module boundary, and they **do not
   crash** — the one thing that changed is that the ledger stores effect records
   instead of disposer closures. So the trigger is a closure outliving the frame

@@ -1,7 +1,7 @@
 # An out-of-tree plugin, loaded at runtime and never compiled into the harness.
 #
 # It lives outside `src/`, is loaded by path, and is granted **nothing**: the
-# `grants` list at the call site in `src/main.gene` is `[]`, so this module
+# `grants` list at the call site in `src/demo.gene` is `[]`, so this module
 # cannot name `$fs`, `$net`, `$os`, or any other namespace that reaches outside
 # the process. A denied namespace is absent rather than empty, so naming one
 # fails to resolve rather than failing a check.

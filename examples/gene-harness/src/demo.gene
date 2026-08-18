@@ -1,0 +1,390 @@
+# A runnable tour of the harness kernel.
+#
+#   gene run examples/gene-harness/src/demo.gene
+#   gene run --allow_read_dir /tmp examples/gene-harness/src/demo.gene
+#
+# This is the demonstration, not the entry point: it walks the kernel's
+# properties one at a time and prints each one. `main.gene` is the entry point,
+# and it boots a real deployment from a profile.
+#
+# Every line it prints is a property docs/design.md claims: atomic activation,
+# no partial registration, one provider per seam, an uninstall that removes
+# exactly one plugin's contributions, and a dependency lifecycle that settles.
+
+(import [new_harness install uninstall retry resolve provide replace installed
+         plugin_states status_of bound_seams install_sandboxed module_dir
+         log_append log_events lifecycle_log assemble_request subscribe publish
+         HarnessEvent ToolInvoked PluginActivated PluginDeactivated
+         Plugin HarnessError]
+  from "./kernel")
+(import [HarnessFs LocalFs MemFs head_tool fs_provider] from "./seams")
+(import [cli_profile web_profile boot boot_reversed plugin_names report_of
+         cli_render_plugin] from "./profiles")
+
+(fn fs_plugin [] : Plugin
+  (Plugin ^id "fs_local" ^provides ["Fs"]
+    ^activate (fn [] (fn [h, id] (provide h id "Fs" "LOCAL-FS")))))
+
+(fn combo_plugin [] : Plugin
+  # Two seams from one plugin, so uninstall has more than one effect to reverse.
+  (Plugin ^id "combo" ^provides ["Llm" "Tools"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "Llm" "LLM-A")
+      (provide h id "Tools" "TOOLS-A")))))
+
+(fn broken_plugin [] : Plugin
+  # Registers one seam, then fails. The seam must not survive.
+  (Plugin ^id "broken" ^provides ["Log"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "Log" "LOG-X")
+      (fail (HarnessError ^message "boom during activate"))))))
+
+# Two providers of one seam. Each is a plugin; neither is the consumer's
+# business.
+(fn mem_fs_plugin [] : Plugin
+  (Plugin ^id "fs_mem" ^provides ["HarnessFs"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "HarnessFs"
+        (fs_provider (MemFs ^files {^notes "mem:hello"})))))))
+
+(fn local_fs_plugin [] : Plugin
+  (Plugin ^id "fs_local_real" ^provides ["HarnessFs"]
+    ^activate (fn [] (fn [h, id]
+      (replace h id "HarnessFs" (fs_provider (LocalFs ^root "/tmp")))))))
+
+# An observer plugin. It contributes no seam at all — it subscribes, which is
+# an effect the ledger reverses like any other.
+(var audit_seen ($cell []))
+
+(fn note_tool [e : ToolInvoked]
+  ((audit_seen ~ get) ~ push $"${e/tool}(${e/arg})"))
+
+(fn audit_plugin [] : Plugin
+  (Plugin ^id "audit" ^provides []
+    ^activate (fn [] (fn [h, id] (subscribe h id ToolInvoked note_tool)))))
+
+# --- a dependency chain ----------------------------------------------------
+#
+# Each of these names the *seam* it needs, never a plugin id. A dependency on a
+# capability survives the provider being swapped, which is the whole reason to
+# have seams; a dependency on a plugin id would not.
+
+(fn indexer_plugin [] : Plugin
+  (Plugin ^id "indexer" ^provides ["Index"] ^requires ["HarnessFs"]
+    ^activate (fn [] (fn [h, id]
+      # No defensive check, and none needed: the kernel does not run `activate`
+      # until every seam in `requires` is bound. That guarantee is what the
+      # declaration buys.
+      (var fs (resolve h "HarnessFs"))
+      (provide h id "Index" (head_tool fs "notes"))))))
+
+(fn search_plugin [] : Plugin
+  # One level further out: it needs the indexer's seam, and knows nothing about
+  # the filesystem underneath it.
+  (Plugin ^id "search" ^provides ["Search"] ^requires ["Index"]
+    ^activate (fn [] (fn [h, id]
+      (var idx (resolve h "Index"))
+      (provide h id "Search" $"search-over:${idx}")))))
+
+(var lifecycle_seen ($cell []))
+
+(fn note_up [e : PluginActivated]
+  ((lifecycle_seen ~ get) ~ push $"+${e/plugin}"))
+
+(fn note_down [e : PluginDeactivated]
+  ((lifecycle_seen ~ get) ~ push $"-${e/plugin} (${e/reason})"))
+
+(fn watcher_plugin [] : Plugin
+  # A plugin watching the lifecycle itself, through the ordinary event bus. The
+  # kernel knows nothing about it.
+  (Plugin ^id "watcher" ^provides []
+    ^activate (fn [] (fn [h, id]
+      (subscribe h id PluginActivated note_up)
+      (subscribe h id PluginDeactivated note_down)))))
+
+(fn main [args]
+  (var h (new_harness))
+
+  ($println "-- install --")
+  ($println "  " (install h (fs_plugin)))
+  ($println "  " (install h (combo_plugin)))
+  ($println "  seams:     " (bound_seams h))
+  ($println "  installed: " (installed h))
+
+  ($println "-- resolve --")
+  ($println "  Fs -> " (resolve h "Fs"))
+
+  ($println "-- activation is all-or-nothing, and a failure is a state --")
+  ($println "  " (install h (broken_plugin)))
+  ($println "  Log rolled back? "
+    (try (resolve h "Log") catch e "yes — no provider left behind"))
+  ($println "  states:    " (plugin_states h))
+  ($println "  ^ `broken` is still installed, in `error`. Install *registers* a")
+  ($println "    plugin; whether it activates is a fact about the world, so it")
+  ($println "    is a status the plugin carries rather than a verdict thrown at")
+  ($println "    the caller — and a failure that erased its own subject would")
+  ($println "    be one you cannot investigate. Nothing retries it on its own.")
+  # An `error` plugin was already unwound, so removing it removes only a record.
+  ($println "  " (uninstall h "broken"))
+
+  ($println "-- binding is explicit, not last-wins --")
+  ($println "  " (try (install h (fs_plugin)) catch e $"refused: ${e/message}"))
+
+  ($println "-- uninstall reverses exactly one plugin --")
+  ($println "  " (uninstall h "combo"))
+  ($println "  Llm gone?  " (try (resolve h "Llm") catch e "yes"))
+  ($println "  Fs intact: " (resolve h "Fs"))
+  ($println "  seams:     " (bound_seams h))
+  ($println "  installed: " (installed h))
+
+  # --- the seam payoff ------------------------------------------------------
+  #
+  # One consumer, two providers, and a swap that the consumer never sees. The
+  # authority contract rides along: the in-memory provider declared
+  # `^capabilities []` and runs anywhere, while the local one declared
+  # `(fs/ReadDir "/tmp")` and is refused without that grant. Swapping the
+  # provider therefore changes what the *product* is allowed to do, which is
+  # the property a plugin system built on good manners cannot offer.
+  ($println "-- a seam is a protocol carrying an authority contract --")
+  (install h (mem_fs_plugin))
+  ($println "  provider:  in-memory")
+  ($println "  head_tool: "
+    (try (head_tool (resolve h "HarnessFs") "notes")
+      catch e $"refused: ${e/message}"))
+
+  (install h (local_fs_plugin))
+  ($println "  provider:  local (replaced, live)")
+  ($println "  head_tool: "
+    (try (head_tool (resolve h "HarnessFs") "notes")
+      catch e $"refused: ${e/message}"))
+  ($println "  ^ same consumer, untouched. The provider changed, and with it")
+  ($println "    the authority the product needs: the local provider is")
+  ($println "    refused without --allow_read_dir /tmp and")
+  ($println "    serves the file with it. Run it both ways.")
+
+  # Replacement moved the ledger entry too. Uninstalling the plugin that
+  # *used* to own the seam must not unbind a seam it no longer provides —
+  # otherwise the live provider would vanish for a reason nothing explains.
+  ($println "  " (uninstall h "fs_mem"))
+  ($println "  seam survives its former owner: "
+    (try (head_tool (resolve h "HarnessFs") "notes")
+      catch e $"refused: ${e/message}"))
+  ($println "  installed: " (installed h))
+
+  # --- a plugin that was never compiled in ----------------------------------
+  #
+  # Loaded from outside src/ at runtime, granted nothing, and still able to
+  # implement the seam — because the harness shares the one file holding the
+  # protocol. Grants are the operator-readable statement of reach: `[]` here
+  # means this code cannot name $fs, $net, or $os at all.
+  # A value that does not implement the seam is refused where it is bound,
+  # not where it is first used.
+  ($println "  non-conforming provider: "
+    (try (fs_provider "just-a-string") catch e "refused at bind"))
+
+  ($println "-- a plugin loaded at runtime, granted nothing --")
+  (var here (module_dir this_mod/~path))
+  (fn load_stub []
+    (install_sandboxed h $"${here}/../plugins/fs_stub" "plugin.gene"
+      []                              # grants: nothing that reaches the world
+      [$"${here}/seams.gene"]))       # shared: the seam definition, so the
+                                      # plugin implements *this* HarnessFs
+  # The rules do not soften for code that arrived late: a bound seam is still
+  # refused rather than shadowed. What is new is where that leaves the plugin —
+  # installed, in `error`, and inert.
+  ($println "  " (load_stub))
+  ($println "  states:    " (plugin_states h))
+  ($println "  " (uninstall h "fs_local_real"))
+  ($println "  fs_stub after the seam frees up: " (status_of h "fs_stub"))
+  ($println "  ^ still `error`, deliberately. A kernel that retried a failed")
+  ($println "    activate on its own would turn one bad plugin into a loop —")
+  ($println "    and here that restraint is load-bearing, because it leaves")
+  ($println "    the seam free for the next demonstration.")
+  # With the seam free, the outcome below can only come from the sandbox — and
+  # it is not what the design doc assumed. The rogue plugin reaches for $fs,
+  # and it *loads*: a denied namespace is absent, so the name fails where it is
+  # resolved, which for a name used only inside a message body is the first
+  # call. The boundary holds — the read never happens — but it arrives late and
+  # the diagnostic does not mention the sandbox.
+  ($println "  rogue load: "
+    (try (install_sandboxed h $"${here}/../plugins/fs_rogue" "plugin.gene"
+           [] [$"${here}/seams.gene"])
+      catch e $"refused: ${e/message}"))
+  ($println "  rogue call: "
+    (try (head_tool (resolve h "HarnessFs") "notes")
+      catch e $"refused: ${e/message}"))
+  ($println "  ^ the boundary holds and the file is never read, but the")
+  ($println "    refusal is at first call, not at load, and the message")
+  ($println "    does not say \"sandbox\". See docs/design.md §5.")
+  ($println "  " (uninstall h "fs_rogue"))
+  # The world changed, so the operator says so. `retry` is the only way out of
+  # `error`, and it activates the same plugin that failed a moment ago.
+  ($println "  " (retry h "fs_stub"))
+  ($println "  head_tool: "
+    (try (head_tool (resolve h "HarnessFs") "notes")
+      catch e $"refused: ${e/message}"))
+  ($println "  ^ never compiled in, cannot name $fs at all, and still")
+  ($println "    satisfies the seam the consumer sends to.")
+  ($println "  installed: " (installed h))
+
+  # --- model-visible <=> logged ---------------------------------------------
+  #
+  # The invariant worth stealing verbatim from dsh. A plugin that wants
+  # something in front of the model appends a log event; the assembler reads
+  # the log and nothing else, so the request is reconstructible by
+  # construction rather than by discipline.
+  ($println "-- model-visible <=> logged --")
+  (log_append h "message" "user: read notes")
+  (log_append h "trace" "tool selected: head_tool")
+  (log_append h "message" (head_tool (resolve h "HarnessFs") "notes"))
+  ($println "  request:     " (assemble_request (log_events h)))
+  ($println "  ^ the trace line is in the log and not in the request; the")
+  ($println "    request contains only what the log says is model-visible.")
+  ($println "    The kernel's own lifecycle records are in the same log under")
+  ($println "    `^kind \"lifecycle\"`, so they are durable and inspectable and")
+  ($println "    structurally incapable of reaching a model request.")
+
+  # Replay is a fold over the log, so it does not depend on the live system.
+  # Tear the provider out and the same request still assembles.
+  (uninstall h "fs_stub")
+  ($println "  after uninstalling the provider:")
+  ($println "  request:     " (assemble_request (log_events h)))
+  ($println "  seams:       " (bound_seams h))
+
+  # --- an effect the ledger reverses that is not a seam ---------------------
+  #
+  # §3.7 said the ledger closed the mechanism and what remained was breadth.
+  # `subscription` is the second kind. An observer plugin contributes no seam;
+  # it subscribes, and uninstalling it cancels the subscription without the
+  # plugin's cooperation. A listener outliving its plugin is the classic
+  # plugin-system leak, and the ledger is what makes it impossible here.
+  ($println "-- the ledger reverses subscriptions too --")
+  ($println "  " (install h (audit_plugin)))
+  (publish h (ToolInvoked ^tool "head_tool" ^arg "notes"))
+  ($println "  audit saw:   " (audit_seen ~ get))
+  ($println "  " (uninstall h "audit"))
+  (publish h (ToolInvoked ^tool "head_tool" ^arg "after-uninstall"))
+  ($println "  audit saw:   " (audit_seen ~ get))
+  ($println "  ^ unchanged: the subscription went with the plugin.")
+
+  # --- dependencies, and a lifecycle that settles ---------------------------
+  #
+  # From here the kernel is a state machine rather than a sequence. `install`
+  # registers; activation happens when the world can support it. That is what
+  # makes install order stop mattering — the property an ordered profile/bundle
+  # layer scheme (§2.2, "do not adopt") tries to buy with configuration, bought
+  # instead by making unmet dependencies a *state*.
+  #
+  # A second harness, because a harness is a value rather than a global: this
+  # one starts empty, so the demonstration reads on its own.
+  ($println "-- dependencies: install order stops mattering --")
+  (var h2 (new_harness))
+  (install h2 (watcher_plugin))
+  (install h2 (search_plugin))     # needs Index
+  (install h2 (indexer_plugin))    # needs HarnessFs, provides Index
+  ($println "  installed leaf-first, with nothing to stand on:")
+  ($println "    states:  " (plugin_states h2))
+  ($println "    seams:   " (bound_seams h2))
+  (install h2 (mem_fs_plugin))
+  ($println "  the provider arrives, and the chain settles in dependency order:")
+  ($println "    states:  " (plugin_states h2))
+  ($println "    seams:   " (bound_seams h2))
+  ($println "    Search:  " (resolve h2 "Search"))
+  ($println "  ^ three plugins installed in reverse dependency order, each")
+  ($println "    `activate` resolving what it needed without a defensive")
+  ($println "    check. One `install` promoted a whole chain, which is also")
+  ($println "    why install no longer raises on a failed activate: there")
+  ($println "    would be no single failure to raise.")
+
+  ($println "-- withdrawal cascades, and it is reversible --")
+  ($println "  " (uninstall h2 "fs_mem"))
+  ($println "    states:  " (plugin_states h2))
+  ($println "    seams:   " (bound_seams h2))
+  ($println "  ^ `indexer` lost its seam and went back to `pending`; its own")
+  ($println "    seam went with it, which starved `search` in turn. Both are")
+  ($println "    still installed: what went away was their dependency, not the")
+  ($println "    operator's intent. So the cascade reverses —")
+  (install h2 (mem_fs_plugin))
+  ($println "    states:  " (plugin_states h2))
+  ($println "    Search:  " (resolve h2 "Search"))
+
+  ($println "-- a dependency cycle is pending, not a hang --")
+  (install h2 (Plugin ^id "cyc_a" ^provides ["CA"] ^requires ["CB"]
+    ^activate (fn [] (fn [h3, id] (provide h3 id "CA" "a")))))
+  (install h2 (Plugin ^id "cyc_b" ^provides ["CB"] ^requires ["CA"]
+    ^activate (fn [] (fn [h3, id] (provide h3 id "CB" "b")))))
+  ($println "    states:  " (plugin_states h2))
+  ($println "  ^ neither can go first, so neither does, and both say so. A")
+  ($println "    self-dependency is refused outright instead:")
+  ($println "    "
+    (try (install h2 (Plugin ^id "ouroboros" ^provides ["O"] ^requires ["O"]
+           ^activate (fn [] (fn [h3, id] (provide h3 id "O" "o")))))
+      catch e $"refused: ${e/message}"))
+
+  ($println "-- the lifecycle is observable, and recorded --")
+  ($println "  watcher saw: " (lifecycle_seen ~ get))
+  ($println "  ^ an ordinary plugin subscribed to ordinary events; the kernel")
+  ($println "    knows nothing about it. It sees its own activation — `+watcher`")
+  ($println "    is the first line — because the subscription is registered")
+  ($println "    before the activation is announced. It would not see its own")
+  ($println "    removal: the ledger cancels a plugin's subscriptions before")
+  ($println "    the kernel announces it, the same way `audit` went quiet.")
+  ($println "  kernel log:")
+  (for l in (lifecycle_log h2) ($println "    " l))
+  ($println "  request:     " (assemble_request (log_events h2)))
+  ($println "  ^ every line above is in the session log, and none of it is")
+  ($println "    model-visible.")
+
+  # --- profiles: composition as a set, not a stack of layers ----------------
+  #
+  # `dsh` assembles a running instance from ordered layers — bundle patches,
+  # then profile, then home, then CLI overlays — and needs `--dump-config` to
+  # tell you what you actually got (§1.5). A profile here is a named *set* of
+  # plugin values, with no merge step, no precedence rule, and nothing to dump.
+  #
+  # That is a consequence of the lifecycle rather than a preference. Ordered
+  # layers exist because when activation is a sequence, order decides which
+  # provider wins; make unmet dependencies a state and the problem the layers
+  # were solving stops existing.
+  ($println "-- a profile is a set, not an ordered stack of patches --")
+  (var wp (web_profile))
+  ($println "  web plugins:  " (plugin_names wp))
+  (var hw (boot wp))
+  ($println "    states:     " (plugin_states hw))
+  ($println "    report:     " (report_of hw))
+  (var hr (boot_reversed wp))
+  ($println "  the same set, booted backwards:")
+  ($println "    states:     " (plugin_states hr))
+  ($println "    identical?  " (== (report_of hw) (report_of hr)))
+  ($println "  ^ reversed, `reporter` is installed first and waits as")
+  ($println "    `pending` until its two seams arrive. Nothing merged")
+  ($println "    anything; the kernel settled, and the end state is the same.")
+  ($println "    That is the claim being tested rather than asserted — if it")
+  ($println "    ever fails, a profile is not a set and the layers were right.")
+
+  ($println "-- the cli profile differs in providers, and in authority --")
+  (var cp (cli_profile))
+  (var hc (boot cp))
+  ($println "  cli plugins:  " (plugin_names cp))
+  ($println "    states:     " (plugin_states hc))
+  ($println "    report:     " (report_of hc))
+  ($println "  ^ the same three plugin ids and the same `reporter` *value* as")
+  ($println "    the web set — only the two providers differ. One of them")
+  ($println "    declares `(fs/ReadDir \"/tmp\")`, so this profile needs a")
+  ($println "    grant the web one does not. Run this file both ways: without")
+  ($println "    it the reporter is the only casualty, and the log says so.")
+
+  ($println "-- a booted harness is still modifiable --")
+  ($println "  " (uninstall hw "render"))
+  ($println "    states:     " (plugin_states hw))
+  ($println "  ^ the renderer left, so the reporter parked.")
+  ($println "  " (install hw (cli_render_plugin)))
+  ($println "    states:     " (plugin_states hw))
+  ($println "    report:     " (report_of hw))
+  ($println "  ^ swapping in the *other* profile's renderer re-derived the")
+  ($println "    reporter against it, and its report changed shape — same")
+  ($println "    plugin value, no reboot, and nothing patching a layer.")
+  ($println "    Modifying a live harness is install/uninstall/replace, which")
+  ($println "    is what makes this a living application rather than a")
+  ($println "    configuration with extra steps.")
+  nil)

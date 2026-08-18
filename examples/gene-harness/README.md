@@ -3,24 +3,25 @@
 A living plugin harness: seams, an effect ledger, and atomic activation.
 
 ```bash
-# the tour: every line it prints is a claimed property
-gene run examples/gene-harness/src/main.gene
-gene run --allow_read_dir /tmp examples/gene-harness/src/main.gene
+# the entry point: boot a deployment from a named profile
+gene run examples/gene-harness/src/main.gene web
+gene run --allow_read_dir /tmp examples/gene-harness/src/main.gene cli
+gene run examples/gene-harness/src/main.gene cli      # same profile, no grant
 
-# boot a deployment from a profile
-gene run examples/gene-harness/src/boot.gene web
-gene run --allow_read_dir /tmp examples/gene-harness/src/boot.gene cli
-gene run examples/gene-harness/src/boot.gene cli      # same profile, no grant
+# the tour: every line it prints is a claimed property
+gene run examples/gene-harness/src/demo.gene
+gene run --allow_read_dir /tmp examples/gene-harness/src/demo.gene
 ```
 
-Run the tour both ways. The only line that changes is the one where the local
-filesystem provider is asked to do its job — which is the point.
+Run the entry point three ways. `web` and `cli` differ in their providers; the
+third command boots `cli` without the authority it needs, and the interesting
+thing is what happens: the boot succeeds, two plugins are `ready`, and the one
+that wanted the grant sits in `error` with `declaration requires fs/ReadDir` in
+the log. A missing grant costs one plugin, not the process.
 
-Run the boot three ways. `web` and `cli` differ in their providers; the third
-command boots `cli` without the authority it needs, and the interesting thing is
-what happens: the boot succeeds, two plugins are `ready`, and the one that
-wanted the grant sits in `error` with `declaration requires fs/ReadDir` in the
-log. A missing grant costs one plugin, not the process.
+Run the tour both ways too. The only lines that change — four of them — are the
+ones where the local filesystem provider is asked to do its job, which is the
+point.
 
 The design and the argument behind it are in [`docs/design.md`](docs/design.md),
 which also compares this to DeepSeek's `dsh` and says which of its ideas are
@@ -36,9 +37,9 @@ this is about what happens at runtime.
 |---|---|
 | `src/kernel.gene` | The kernel: lifecycle, the effect ledger, seam binding, replacement |
 | `src/seams.gene` | One seam, all three roles: a protocol with an authority contract, two providers, a consumer |
-| `src/main.gene` | A runnable tour; every line it prints is a claimed property |
+| `src/main.gene` | The entry point: boot a named profile, then modify the running harness |
 | `src/profiles.gene` | Two profiles, `cli` and `web` — sets of plugins, not layers |
-| `src/boot.gene` | Boot a named profile, then modify the running harness |
+| `src/demo.gene` | A runnable tour; every line it prints is a claimed property |
 | `plugins/fs_stub/` | An out-of-tree plugin loaded at runtime, granted nothing |
 | `plugins/fs_rogue/` | The same, but reaching for `$fs` — kept honest by being run |
 | `docs/design.md` | Why it is shaped this way, and what is still missing |
