@@ -657,6 +657,78 @@ and the ledger makes it structurally impossible. It also settles the division
 in §2.2 by demonstration: the bus is for *observation*, the seams for
 *substitution*, and neither is doing the other's job.
 
+### 3.8 Profiles, and why they can be sets
+
+§1.5 is dsh's composition story: bundle patches, then the profile patch, then a
+home patch, then CLI overlays, over a base config, with `--dump-config` to print
+what you actually got. §2.2 says not to copy it. This is the alternative that
+falls out of the rest of the design.
+
+**A profile is a named set of plugin values.** `src/profiles.gene` defines two:
+
+| | `cli` | `web` |
+|---|---|---|
+| `HarnessFs` | `LocalFs "/tmp"` — declares `(fs/ReadDir "/tmp")` | `MemFs` — declares `^capabilities []` |
+| `HarnessRender` | `TextRender` — plain text | `HtmlRender` — escaped HTML |
+| consumer | `reporter` | **the same `reporter` value** |
+
+The consumer is not a variant and not a patched copy. It requires two seams,
+names no provider, and is the identical plugin in both sets; what changes
+between deployments is what it is standing on. Booting is the whole of it:
+
+```gene
+(fn boot [p : Profile] : Harness
+  (var h (new_harness))
+  (for plugin in p/plugins
+    (install h plugin))
+  h)
+```
+
+There is no merge step, no overlay resolution, and nothing to dump — the
+profile *is* the configuration, so `--dump-config` has no question to answer.
+
+**That this works at all is a consequence of §3.3.5, not a stylistic choice.**
+Ordered layers exist because in a system where activation is a sequence, order
+decides which provider wins and which dependency is visible; once order is
+load-bearing, composition has to be expressed as an ordered stack, and the stack
+has to be printable to be understood. Make unmet dependencies a *state* and the
+problem the layers were solving stops existing. `boot_reversed` keeps that claim
+honest: booting a profile backwards must reach the same state as booting it
+forwards, and when the set is reversed `reporter` is installed first and simply
+waits as `pending` until its seams arrive.
+
+**A missing grant costs one plugin, not the process.** Booting `cli` without
+`--allow_read_dir /tmp` is the most informative of the three runs:
+
+```
+states:     ["fs:ready" "render:ready" "reporter:error"]
+report:     <no report: reporter is error>
+...
+activate reporter failed: declaration requires fs/ReadDir
+```
+
+The boot succeeds. Two plugins are `ready`, the one that needed authority it was
+not given is in `error`, and the lifecycle log names the capability. This is the
+capability system, the seam contract, and the plugin lifecycle arriving at the
+same place: authority is declared at the seam, checked at the boundary, and the
+failure is reported as plugin state rather than as a dead process.
+
+**A profile is a starting point, not a description of the system for all time.**
+Modifying a booted harness is `install`, `uninstall`, and `replace` — named
+operations on a live system, not another layer that wins by arriving later.
+Uninstalling the `render` plugin parks the reporter; installing the *other*
+profile's renderer promotes it again, re-running its activation against the new
+provider, and the report changes shape without a reboot and without anything
+patching anything.
+
+Two things this deliberately does not provide. There is no "profile B is profile
+A plus X" — that is a layer, and it is the thing §2.2 rules out. A deployment
+that wants shared composition builds the set in Gene code, by ordinary list
+manipulation, which has no patch semantics to reason about. And there is no
+precedence rule between profiles, because two profiles are alternatives rather
+than a stack; the two here even reuse the plugin ids `fs` and `render`
+precisely so they cannot be layered.
+
 ## 4. Recommendation
 
 Build the harness as a **living application**: it boots from a profile and is
@@ -702,6 +774,11 @@ modifiable from then on. Adopt, in this order:
    configuration with extra steps; one where removing a provider correctly
    parks its dependents, and putting it back revives them, is a system you can
    actually modify while it runs.
+7. **Profiles as sets, not layers** (§3.8). **Built** — `src/profiles.gene`
+   defines `cli` and `web`, and `src/boot.gene` runs either. The ordered
+   bundle/profile/home/CLI patch stack of §1.5 is not adopted and is not
+   needed: order-independence comes from the lifecycle, so composition needs no
+   precedence rules and no `--dump-config`.
 
 Two things remain open:
 

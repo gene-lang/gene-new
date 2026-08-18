@@ -1,0 +1,75 @@
+# Boot the harness from a named profile.
+#
+#   gene run examples/gene-harness/src/boot.gene web
+#   gene run --allow_read_dir /tmp examples/gene-harness/src/boot.gene cli
+#   gene run examples/gene-harness/src/boot.gene cli      # same profile, no grant
+#
+# The third command is the interesting one: the boot succeeds, and the plugin
+# that needed authority it was not given sits in `error` saying so.
+
+(import [profile_named cli_render_plugin web_render_plugin boot boot_reversed
+         plugin_names report_of Profile] from "./profiles")
+(import [install uninstall plugin_states bound_seams lifecycle_log status_of]
+  from "./kernel")
+
+(fn arg_list [args] : Any
+  (var out [])
+  (for c in args (out ~ push ($to_str c)))
+  out)
+
+(fn main [args]
+  (var names (arg_list args))
+  (var name (if (> names/~size 0) names/0 "cli"))
+  (var p (profile_named name))
+
+  ($println $"-- profile ${name} --")
+  ($println "  plugins:   " (plugin_names p))
+  (var h (boot p))
+  ($println "  states:    " (plugin_states h))
+  ($println "  seams:     " (bound_seams h))
+  ($println "  report:    " (report_of h))
+  ($println "  ^ if there is no report, the lifecycle log at the bottom says")
+  ($println "    why. For `cli` without --allow_read_dir /tmp it reads")
+  ($println "    \"activate reporter failed: declaration requires fs/ReadDir\",")
+  ($println "    and the rest of the system boots anyway: `fs` and `render`")
+  ($println "    are `ready`, and only the plugin that needed authority it was")
+  ($println "    not given is in `error`. A missing grant costs you one")
+  ($println "    plugin, not the process.")
+
+  # A profile is a set. If that is true, the order the plugins happen to sit in
+  # cannot matter, and the cheapest way to say so is to do it backwards.
+  ($println "-- the same profile, booted backwards --")
+  (var h2 (boot_reversed p))
+  ($println "  states:    " (plugin_states h2))
+  ($println "  report:    " (report_of h2))
+  ($println "  identical? " (== (report_of h) (report_of h2)))
+  ($println "  ^ `reporter` requires two seams and is installed *first* when")
+  ($println "    the set is reversed, so it waits as `pending` until they")
+  ($println "    arrive. Nothing merges layers; the kernel settles, and the end")
+  ($println "    state is the same one. That is what lets a profile be a set")
+  ($println "    rather than an ordered stack of patches (design §1.5, §3.8).")
+
+  # --- the living part ------------------------------------------------------
+  #
+  # A profile is a starting point, not a description of the system for all
+  # time. Changing it afterwards is a named operation on the running harness,
+  # not another layer that wins by arriving later.
+  ($println "-- a booted harness is still modifiable --")
+  (var other (if (== name "cli") (web_render_plugin) (cli_render_plugin)))
+  ($println "  " (uninstall h "render"))
+  ($println "  states:    " (plugin_states h))
+  ($println "  ^ anything that was `ready` and required the renderer parked.")
+  ($println "  " (install h other))
+  ($println "  states:    " (plugin_states h))
+  ($println "  report:    " (report_of h))
+  ($println "  ^ swapping one provider plugin re-derives every dependent that")
+  ($println "    was waiting on it: the reporter re-ran against the renderer")
+  ($println "    from the *other* profile and its report changed shape, from")
+  ($println "    the same plugin value, with no reboot and nothing patching a")
+  ($println "    layer. A dependent already in `error` is the exception — it")
+  ($println "    is never retried on its own, which is what the third command")
+  ($println "    at the top of this file shows.")
+
+  ($println "-- lifecycle log --")
+  (for l in (lifecycle_log h) ($println "    " l))
+  nil)

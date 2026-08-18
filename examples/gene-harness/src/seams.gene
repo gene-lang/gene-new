@@ -70,10 +70,49 @@
 
 (fn fs_provider [p : HarnessFs] : HarnessFs p)
 
-# --- Consumer --------------------------------------------------------------
+# --- A second seam, varying in behaviour rather than authority -------------
 #
-# Written against the seam. It names `HarnessFs`, never `LocalFs` or `MemFs`,
-# which is what makes one provider swap move every consumer at once.
+# `HarnessFs` providers differ in what *authority* they need. This one does
+# not: rendering text needs nothing from outside the process, so the contract
+# is `^capabilities []` and every provider of it is equally harmless.
+#
+# The pair is deliberate. A seam is worth having when providers differ in
+# behaviour *or* in authority, and a system with only the second kind would
+# suggest capabilities are the only reason to draw a seam. They are not — they
+# are the reason a seam can be trusted once drawn.
+
+(protocol HarnessRender
+  (message render [text : Str] : Str
+    ^capabilities []))
+
+(type TextRender)
+
+(impl HarnessRender for TextRender
+  (message render [text : Str] : Str
+    ^capabilities []
+    text))
+
+(type HtmlRender)
+
+(impl HarnessRender for HtmlRender
+  (message render [text : Str] : Str
+    ^capabilities []
+    $"<p>$($html/escape text)</p>"))
+
+(fn render_provider [r : HarnessRender] : HarnessRender r)
+
+# --- Consumers -------------------------------------------------------------
+#
+# Written against the seams. They name `HarnessFs` and `HarnessRender`, never
+# `LocalFs`, `MemFs`, `TextRender` or `HtmlRender`, which is what makes one
+# provider swap move every consumer at once.
 
 (fn head_tool [fs, path : Str] : Str
   (fs ~ HarnessFs:read_text path))
+
+(fn report_tool [fs, r, path : Str] : Str
+  # Two seams, one consumer, and no knowledge of which providers are bound.
+  # Under the `cli` profile this reads a real file and returns plain text;
+  # under `web` it reads memory and returns escaped HTML. This function is
+  # identical in both, and so is its source.
+  (r ~ HarnessRender:render (head_tool fs path)))

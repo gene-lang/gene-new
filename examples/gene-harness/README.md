@@ -3,12 +3,24 @@
 A living plugin harness: seams, an effect ledger, and atomic activation.
 
 ```bash
+# the tour: every line it prints is a claimed property
 gene run examples/gene-harness/src/main.gene
 gene run --allow_read_dir /tmp examples/gene-harness/src/main.gene
+
+# boot a deployment from a profile
+gene run examples/gene-harness/src/boot.gene web
+gene run --allow_read_dir /tmp examples/gene-harness/src/boot.gene cli
+gene run examples/gene-harness/src/boot.gene cli      # same profile, no grant
 ```
 
-Run it both ways. The only line that changes is the one where the local
+Run the tour both ways. The only line that changes is the one where the local
 filesystem provider is asked to do its job — which is the point.
+
+Run the boot three ways. `web` and `cli` differ in their providers; the third
+command boots `cli` without the authority it needs, and the interesting thing is
+what happens: the boot succeeds, two plugins are `ready`, and the one that
+wanted the grant sits in `error` with `declaration requires fs/ReadDir` in the
+log. A missing grant costs one plugin, not the process.
 
 The design and the argument behind it are in [`docs/design.md`](docs/design.md),
 which also compares this to DeepSeek's `dsh` and says which of its ideas are
@@ -25,6 +37,8 @@ this is about what happens at runtime.
 | `src/kernel.gene` | The kernel: lifecycle, the effect ledger, seam binding, replacement |
 | `src/seams.gene` | One seam, all three roles: a protocol with an authority contract, two providers, a consumer |
 | `src/main.gene` | A runnable tour; every line it prints is a claimed property |
+| `src/profiles.gene` | Two profiles, `cli` and `web` — sets of plugins, not layers |
+| `src/boot.gene` | Boot a named profile, then modify the running harness |
 | `plugins/fs_stub/` | An out-of-tree plugin loaded at runtime, granted nothing |
 | `plugins/fs_rogue/` | The same, but reaching for `$fs` — kept honest by being run |
 | `docs/design.md` | Why it is shaped this way, and what is still missing |
@@ -115,6 +129,25 @@ without a defensive check. Every transition goes out on the event bus
 (`PluginActivated`, `PluginDeactivated`, `PluginFailed`, …) and into the session
 log under `^kind "lifecycle"`, so a plugin can watch its own dependencies come
 and go and the kernel need know nothing about it.
+
+**A profile is a set, not a stack of patches.** `cli` and `web` name the plugins
+a deployment starts with: `cli` binds a real filesystem provider that declares
+`(fs/ReadDir "/tmp")` and renders plain text, `web` binds an in-memory provider
+that declares `^capabilities []` and renders escaped HTML. The consumer is *the
+same plugin value* in both — it requires two seams and names no provider, so
+what differs between deployments is only what it stands on.
+
+Booting is a loop over the set. There is no merge step, no precedence rule, and
+nothing to `--dump-config`, because the profile *is* the configuration. That is
+possible only because the kernel settles: `boot_reversed` boots the same profile
+backwards and must reach the same state, which is the claim being tested rather
+than asserted. Ordered layer schemes exist to control an ordering that here has
+no effect.
+
+Modifying a booted harness is `install`, `uninstall`, and `replace` — named
+operations on a live system, not a layer that wins by arriving later. Swap the
+`render` plugin for the other profile's and the reporter re-derives itself
+against the new provider, report and all, without a reboot.
 
 **Model-visible ⟺ logged.** The invariant worth taking verbatim from `dsh`.
 Anything that reaches a model request must be reconstructible from the session

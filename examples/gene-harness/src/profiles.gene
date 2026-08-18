@@ -1,0 +1,131 @@
+# Two profiles, and what a profile is allowed to be.
+#
+# `dsh` assembles a running instance from **ordered layers**: bundle patches,
+# then the profile patch, then a home patch, then CLI overlays, over a base
+# config file (design §1.5). docs/design.md §2.2 says not to copy that, and this
+# file is the alternative it implies.
+#
+# **A profile is a set, not a stack.** It names the plugins a deployment starts
+# with, and nothing about the order they appear in changes what you get. That is
+# not a style preference — it is only *true* because the kernel settles (§3.3.5).
+# In a system where activation is a sequence, order decides which provider wins
+# and which dependency is visible, so composition has to be expressed as an
+# ordered patch stack and the stack has to be dumpable to be understood. Make
+# unmet dependencies a state instead, and the ordering problem the layers were
+# solving stops existing. `boot_reversed` is here to keep that claim honest.
+#
+# What a profile does *not* do is patch another profile. Modifying a running
+# harness is `install`, `uninstall`, and `replace` — named operations an
+# operator asked for, at runtime, on a live system (§4, "living application").
+# A layer that wins by arriving later is the thing we are avoiding.
+
+(mod profiles)
+
+(import [Harness Plugin HarnessError new_harness install provide resolve
+         status_of] from "./kernel")
+(import [HarnessFs HarnessRender LocalFs MemFs TextRender HtmlRender
+         fs_provider render_provider report_tool] from "./seams")
+
+(type Profile ^props {^name Str ^plugins Any})
+
+# --- the plugins the two profiles draw from --------------------------------
+#
+# Each is a nullary factory referencing only module-level names, so the stored
+# activation captures nothing from the frame that built it (see the note on the
+# thunk convention in kernel.gene).
+
+(fn cli_fs_plugin [] : Plugin
+  # Reads the real filesystem, and says so in the only place that counts: the
+  # provider's `^capabilities` row. A harness wired to this one needs
+  # `--allow_read_dir /tmp` to work.
+  (Plugin ^id "fs" ^provides ["HarnessFs"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "HarnessFs" (fs_provider (LocalFs ^root "/tmp")))))))
+
+(fn web_fs_plugin [] : Plugin
+  # Serves from memory and declares `^capabilities []`. A web deployment has no
+  # business reading the operator's disk, and here that is a fact about the
+  # binding rather than a rule someone has to remember.
+  (Plugin ^id "fs" ^provides ["HarnessFs"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "HarnessFs"
+        (fs_provider (MemFs ^files {^notes "hello from memory"})))))))
+
+(fn cli_render_plugin [] : Plugin
+  (Plugin ^id "render" ^provides ["HarnessRender"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "HarnessRender" (render_provider (TextRender)))))))
+
+(fn web_render_plugin [] : Plugin
+  (Plugin ^id "render" ^provides ["HarnessRender"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "HarnessRender" (render_provider (HtmlRender)))))))
+
+(fn reporter_plugin [] : Plugin
+  # The part that is *identical* in both profiles. It requires two seams and
+  # names no provider, so it is the same value in the `cli` set and the `web`
+  # set — not a variant, not a patched copy. What changes between deployments
+  # is what it is standing on.
+  (Plugin ^id "reporter" ^provides ["Report"]
+                         ^requires ["HarnessFs" "HarnessRender"]
+    ^activate (fn [] (fn [h, id]
+      (var fs (resolve h "HarnessFs"))
+      (var r (resolve h "HarnessRender"))
+      (provide h id "Report" (report_tool fs r "notes"))))))
+
+# --- the profiles ----------------------------------------------------------
+
+(fn cli_profile [] : Profile
+  (Profile ^name "cli"
+           ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)]))
+
+(fn web_profile [] : Profile
+  (Profile ^name "web"
+           ^plugins [(web_fs_plugin) (web_render_plugin) (reporter_plugin)]))
+
+(fn profile_named [name : Str] : Profile
+  (if (== name "cli")
+    (cli_profile)
+    (if (== name "web")
+      (web_profile)
+      (fail (HarnessError
+        ^message $"unknown profile ${name}; expected cli or web")))))
+
+# --- booting ---------------------------------------------------------------
+
+(fn boot [p : Profile] : Harness
+  # The whole of it. There is no merge step, no overlay resolution, and nothing
+  # to dump: the profile *is* the configuration, and the kernel works out the
+  # rest.
+  (var h (new_harness))
+  (for plugin in p/plugins
+    (install h plugin))
+  h)
+
+(fn reversed [xs] : Any
+  (var out [])
+  (var i (- xs/~size 1))
+  (while (>= i 0)
+    (out ~ push xs/%i)
+    (set i (- i 1)))
+  out)
+
+(fn boot_reversed [p : Profile] : Harness
+  # Exists to keep the claim at the top of this file honest. Booting a profile
+  # backwards must reach the same state as booting it forwards; if it ever does
+  # not, "a profile is a set" was wrong and the layers were right.
+  (boot (Profile ^name p/name ^plugins (reversed p/plugins))))
+
+(fn plugin_names [p : Profile] : Any
+  (var out [])
+  (for plugin in p/plugins (out ~ push plugin/id))
+  out)
+
+(fn report_of [h : Harness] : Str
+  # The product of the composition, or why there isn't one. A profile whose
+  # authority is not granted does not crash the boot — the plugin that needed
+  # the authority lands in `error` and the rest of the system is fine, which is
+  # the more useful failure mode and one the lifecycle gives for free.
+  (if (== (status_of h "reporter") "ready")
+    ($to_str (resolve h "Report"))
+    $"<no report: reporter is $(status_of h \"reporter\")>"))
