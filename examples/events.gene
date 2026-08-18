@@ -16,6 +16,8 @@
 #   bus/~close                cancel every subscription, release handlers
 #   sub/~cancel               explicit, idempotent
 #   ($event/exact T)          selector matching T but not its descendants
+#   (| A B)                   selector matching either family, as one
+#                             subscription
 #   (sink ~ EventSink:emit e) the one-message sink protocol a bus implements
 #
 # Everything here is exercised by the "spec — application event bus" suite in
@@ -127,6 +129,30 @@
 (ship_bus ~ publish (PriorityDispatched ^order_id "o_1003" ^carrier "air"))
 ($println "   ^ the exact handler did not run for the descendant")
 (ship_bus ~ publish (shipping/Dispatched ^order_id "o_1004" ^carrier "van"))
+($println "")
+
+# A union selects several unrelated families at once. `(| A B)` is the same
+# type expression an annotation takes, so the selector and the handler
+# signature that receives it name one thing.
+#
+# It stays **one** subscription: an event matching two alternatives invokes the
+# handler once, and cancelling unhooks it from both families. Subscribing the
+# two separately would be two subscriptions, and a value matching both would
+# run the handler twice.
+($println "   (| A B) selects either family, as one subscription")
+
+(fn on_either [event : shipping/Event]
+  ($println $"   union handler saw ${event/order_id}"))
+
+(var union_bus ($event/Bus))
+(var union_sub
+  (union_bus ~ subscribe (| shipping/Dispatched shipping/Delivered) on_either))
+
+(union_bus ~ publish (shipping/Dispatched ^order_id "o_2001" ^carrier "rail"))
+(union_bus ~ publish (shipping/Delivered ^order_id "o_2001" ^signed_by "bo"))
+($println $"   one subscription covers both: ${union_bus/~subscription_count}")
+union_sub/~cancel
+($println $"   cancel unhooked every family: ${union_bus/~subscription_count}")
 ($println "")
 
 # -----------------------------------------------------------------------------

@@ -4160,6 +4160,44 @@ suite "spec — type aliases from design §7.4.1":
       discard run(compileSource("(alias A B) (alias B A) (var v : A 1)"),
                   newGlobalScope())
 
+  test "(| A B) is a value, not only annotation syntax":
+    # The union type expression already worked in every annotation position and
+    # `alias` already named one; what was missing was writing one where a value
+    # is expected. `|` is bound as the constructor, so the reader node the
+    # checker already understands now also evaluates.
+    check_eval("(var u (| Int Str)) (fn f [x : u] x) [(f 1) (f \"a\")]",
+               "[1 \"a\"]")
+    check_eval("(var u (| Int Str)) " &
+               "(try (do (fn f [x : u] x) (f 1.5)) catch (TypeError) \"no\")",
+               "\"no\"")
+    # Flattened and deduplicated; a one-member union is that member.
+    check_eval("($to_str (| Int (| Str Bool)))",
+               "\"(| (type Int) (type Str) (type Bool))\"")
+    check_eval("(same? (| Int Int) Int)", "true")
+    check_eval_error("(| Int)", "at least two alternatives")
+    check_eval_error("(| Int 5)", "types or protocols")
+    # An anonymous union prints as what it expands to; `(type )` would not read
+    # back and says nothing.
+    check_eval("($to_str (| Int Str))", "\"(| (type Int) (type Str))\"")
+
+  test "pattern and annotation uses of | are untouched by the binding":
+    check_eval("(match 3 (when (| (Str _) (Int _)) \"alt\") (else \"no\"))",
+               "\"alt\"")
+    check_eval("(fn f [x : (| Int Str)] x) [(f 1) (f \"a\")]", "[1 \"a\"]")
+    # `|` is an operator, so a program may still shadow it.
+    check_eval("(fn | [a b] (+ a b)) (| 1 2)", "3")
+
+  test "a namespaced stdlib type resolves in annotation position":
+    # A lowercase stdlib namespace is not bare, so `$log/LogLevel` reaches
+    # `closeTypeExpr` as the symbol `log/LogLevel` whose first segment nothing
+    # lexical binds. It has to fall back to the `gene` root, which is what the
+    # `$` sugar means; without that every such annotation failed with
+    # "unknown type annotation".
+    check_eval("(fn f [x : $log/LogLevel] x) ($to_str (f $log/LogLevel/info))",
+               "\"LogLevel/info\"")
+    check_eval("(type A ^is $event/Event) " &
+               "(fn f [e : $event/Event] 1) (f (A))", "1")
+
 suite "spec — checked errors from design":
   test "Never contributes no errors and rows deduplicate":
     check_eval("(fn quiet ^errors [Never] [] 1) (quiet)", "1")
@@ -9047,8 +9085,8 @@ suite "spec — application event bus (docs/events.md)":
       "(var bus ($event/Bus)) " &
       "(try (bus ~ subscribe NotAnEvent h) " &
       "  catch (EventTypeError ^message m) m)",
-      "\"subscribe expects an event/Event descendant type or an " &
-      "event/Matcher from event/exact\"")
+      "\"subscribe expects an event/Event descendant type, a union of them, " &
+      "or an event/Matcher from event/exact\"")
 
   test "publish delivers a frozen copy, leaving the publisher's value mutable":
     check_eval(orderFamily &
@@ -9223,10 +9261,134 @@ suite "spec — application event bus (docs/events.md)":
       "[rec/~events/~size hits/~get sink/~sinks/~size]",
       "[1 1 3]")
 
+  test "a union selector matches every alternative and nothing else":
+    check_eval(orderFamily &
+      "(type Other ^is $event/Event) " &
+      "(var hits ($cell [])) " &
+      "(fn note [e] ((hits ~ get) ~ push \"x\")) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe (| order/Placed order/Shipped) note) " &
+      "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
+      "(bus ~ publish (order/Shipped ^order_id \"o1\")) " &
+      "(bus ~ publish (Other)) " &
+      "(var got (hits ~ get)) got/~size",
+      "2")
+
+  test "a union subscription is one subscription, invoked once":
+    # §6.3 makes *separate* overlapping subscriptions fire separately and
+    # forbids deduplication, so a union must not be N subscriptions: an event
+    # matching two alternatives would then invoke the handler twice.
+    check_eval(orderFamily &
+      "(type Rush ^is order/Placed) " &
+      "(var hits ($cell 0)) " &
+      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(var bus ($event/Bus)) " &
+      "(var s (bus ~ subscribe (| order/Placed Rush) note)) " &
+      "(var r (bus ~ publish (Rush ^order_id \"o1\"))) " &
+      "[bus/~subscription_count r/matched (hits ~ get)]",
+      "[1 1 1]")
+
+  test "cancelling a union subscription unhooks every alternative":
+    check_eval(orderFamily &
+      "(var hits ($cell 0)) " &
+      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(var bus ($event/Bus)) " &
+      "(var s (bus ~ subscribe (| order/Placed order/Shipped) note)) " &
+      "s/~cancel " &
+      "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
+      "(bus ~ publish (order/Shipped ^order_id \"o1\")) " &
+      "[(hits ~ get) bus/~subscription_count]",
+      "[0 0]")
+
+  test "an alias naming a union selects the same way":
+    # `(| A B)` holds evaluated types; `(alias U (| A B))` holds the syntax, so
+    # its members arrive as symbols. Both spellings have to name one thing.
+    check_eval(orderFamily &
+      "(alias Interesting (| order/Placed order/Shipped)) " &
+      "(var hits ($cell 0)) " &
+      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe Interesting note) " &
+      "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
+      "(bus ~ publish (order/Shipped ^order_id \"o1\")) " &
+      "(hits ~ get)",
+      "2")
+
+  test "a nested union selector flattens":
+    check_eval(orderFamily &
+      "(type Other ^is $event/Event) " &
+      "(alias Two (| order/Placed order/Shipped)) " &
+      "(var hits ($cell 0)) " &
+      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe (| Two Other) note) " &
+      "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
+      "(bus ~ publish (order/Shipped ^order_id \"o1\")) " &
+      "(bus ~ publish (Other)) " &
+      "(hits ~ get)",
+      "3")
+
+  test "a union selector survives a cyclic or duplicated alias":
+    check_eval(orderFamily &
+      "(alias Cyclic (| order/Placed Cyclic)) " &
+      "(fn h [e] 1) " &
+      "(var bus ($event/Bus)) " &
+      "(try (bus ~ subscribe Cyclic h) catch _ \"raised\")",
+      "\"raised\"")
+    # A repeated alternative is still one subscription matched once.
+    check_eval(orderFamily &
+      "(alias Twice (| order/Placed order/Placed)) " &
+      "(fn h [e] 1) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe Twice h) " &
+      "(var r (bus ~ publish (order/Placed ^order_id \"o1\"))) " &
+      "[bus/~subscription_count r/matched r/delivered]",
+      "[1 1 1]")
+
+  test "a union selector rejects a non-event alternative":
+    check_eval(orderFamily &
+      "(fn h [e] 1) " &
+      "(var bus ($event/Bus)) " &
+      "(try (bus ~ subscribe (| order/Placed Str) h) " &
+      "  catch (EventTypeError) \"rejected\")",
+      "\"rejected\"")
+
+  test "a handler must accept every alternative of a union selector":
+    check_eval(orderFamily &
+      "(fn narrow [e : order/Placed] e) " &
+      "(var bus ($event/Bus)) " &
+      "(try (bus ~ subscribe (| order/Placed order/Shipped) narrow) " &
+      "  catch (EventTypeError ^message m) m)",
+      "\"handler parameter type Placed cannot accept every event Shipped " &
+      "matches; widen the parameter to Shipped or subscribe to Placed " &
+      "instead\"")
+    check_eval(orderFamily &
+      "(fn wide [e : order/Event] e) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe (| order/Placed order/Shipped) wide) " &
+      "bus/~subscription_count",
+      "1")
+
   test "a bus cannot be frozen, sent, or published as an event":
     check_eval(
       "(try ($freeze ($event/Bus)) catch (Error ^message m) m)",
       "\"freeze cannot freeze event/Bus\"")
+
+  test "a bus is lane-owned and usable from any fiber on that lane":
+    # §9.1. Root-lane fibers are one lane, so a bus is usable across them; the
+    # cross-lane refusal needs a real second thread and is pinned by
+    # tests/test_native_api_threads.nim.
+    check_eval(
+      "(type Ping ^is $event/Event) " &
+      "(var hits ($cell 0)) " &
+      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe Ping note) " &
+      "(await (spawn (bus ~ publish (Ping)))) " &
+      "(scope (var t (spawn (bus ~ publish (Ping)))) (await t)) " &
+      "(bus ~ publish (Ping)) " &
+      "(hits ~ get)",
+      "3")
 
   test "event is a namespace under gene, never a bare root":
     # `event` is not in `bareCapabilityNamespaces`, so `$event/Bus` and

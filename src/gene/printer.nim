@@ -335,7 +335,13 @@ proc print*(v: Value): string =
   of vkCompositeSink:
     "(event/CompositeSink " & $v.compositeSinks.len & ")"
   of vkType:
-    "(type " & v.typeName & ")"
+    if v.typeName.len == 0 and v.isTypeAlias:
+      # An anonymous alias — `(| A B)` written as a value — has no name to
+      # print, and `(type )` says nothing. Print what it expands to, which is
+      # also the form that reads back.
+      v.typeAliasExpr.print()
+    else:
+      "(type " & v.typeName & ")"
   of vkProtocol:
     "(protocol " & v.protocolName & ")"
   of vkProtocolMessage:

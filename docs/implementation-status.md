@@ -94,12 +94,18 @@ recording/null/composite sinks, with nominal `^is` matching over compact type
 ids, copy-based deep-freeze on publish, snapshot dispatch, and both error
 policies. The runtime instrumentation half — phases 2-4, `runtime/EventStream`
 and the `runtime/...` event families, category configuration, emission sites,
-and safe-point draining — is **not** implemented; a draft producer is parked at
-`tmp/runtime_events_draft.nim`. Two phase-1 gaps are known and recorded in the
-code: lane ownership (§9.1) is enforced only by the bus not being `Send` rather
-than by a check, and `EventSink:emit` implements but cannot declare its
-`^errors [EventPublishError]` row because natively registered protocols have no
-per-message error types.
+and safe-point draining — is **not** implemented. An unfinished producer was
+committed to `src/gene/` in 0eb4989 without ever being included or compiled and
+has been withdrawn; recover it with
+`git show 0eb4989:src/gene/runtime_events.nim` before restarting that work.
+
+Lane ownership (§9.1) *is* enforced: a bus records the lane that created it and
+refuses operations from another with `SubscriptionError`. That is not redundant
+with the bus not being `Send` — sendability stops a bus being transferred, but
+an embedding host thread calling in through `native_api` transfers nothing. The
+remaining phase-1 gap is that `EventSink:emit` implements but cannot *declare*
+its `^errors [EventPublishError]` row, because natively registered protocols
+have no per-message error types.
 
 Deferred work is explicitly non-normative. Major deferred areas include package
 registries and lockfiles, static effect rows, full hygienic compile-time

@@ -246,7 +246,11 @@ const bareOperatorNames* = [
   # would be noise. (Binding one is still accepted today and shadows it, as for
   # any other name.) `//` is the remainder (§7.4), `$` the concat/interpolation
   # head.
-  "+", "-", "*", "/", "//", "<", "<=", ">", ">=", "==", "!=", "$",
+  # `|` builds a union type expression (design §7.4.1). It is already language
+  # syntax in annotation and pattern position, so pre-binding it is what makes
+  # `(| A B)` mean one thing everywhere rather than only where a type is
+  # expected.
+  "+", "-", "*", "/", "//", "<", "<=", ">", ">=", "==", "!=", "$", "|",
 ]
 
 const bareCoreNames* = [

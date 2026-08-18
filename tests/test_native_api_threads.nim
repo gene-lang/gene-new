@@ -1,5 +1,5 @@
 import gene/ext/logging
-import gene/[compiler, native_api, types, vm]
+import gene/[compiler, gir, native_api, types, vm]
 import std/[os, strutils, tables]
 import std/unittest
 
@@ -36,6 +36,26 @@ proc cancelTaskOnWorker(args: AsyncCancelArgs) {.thread.} =
     let result = geneTaskCancel(geneRootGet(args.taskRoot), args.scope)
     args.status = result.status
     args.cancelled = result.value == TRUE
+    geneDetachThread(attachment)
+
+type EventLaneArgs = ref object
+  scope: Scope
+  chunk: Chunk
+  lane: int
+  raised: bool
+  message: string
+
+proc publishOnWorker(args: EventLaneArgs) {.thread.} =
+  ## An embedding host thread reaching a bus the way `geneCall` lets it: no
+  ## sendability check stands between them, because no value is transferred.
+  {.cast(gcsafe).}:
+    let attachment = geneAttachThread()
+    args.lane = currentEventLane()
+    try:
+      discard run(args.chunk, args.scope)
+    except CatchableError as e:
+      args.raised = true
+      args.message = e.msg
     geneDetachThread(attachment)
 
 proc emitLogsOnWorker(id: int) {.thread.} =
@@ -116,6 +136,33 @@ suite "native api threaded attachment":
     check args.completed
     geneRootRelease(args.valueRoot)
     geneRootRelease(args.taskRoot)
+
+  test "a foreign thread cannot publish on a bus owned by another lane":
+    # events.md §9.1. Every *transfer* of a bus is already refused because it
+    # is not `Send` — channel, actor message, worker-safe spawn capture. This
+    # is the path that transfers nothing: a host thread calling in through
+    # native_api reaches the same scope directly, and would otherwise mutate
+    # `subs` and the bucket tables concurrently with the owning lane.
+    let scope = newGlobalScope()
+    discard run(compileSource(
+      "(type Ping ^is $event/Event) " &
+      "(fn note [e] 1) " &
+      "(var bus ($event/Bus)) " &
+      "(bus ~ subscribe Ping note)"), scope)
+    let args = EventLaneArgs(scope: scope,
+                             chunk: compileSource("(bus ~ publish (Ping))"))
+
+    var worker: Thread[EventLaneArgs]
+    createThread(worker, publishOnWorker, args)
+    joinThread(worker)
+
+    check args.lane != currentEventLane()
+    check args.raised
+    check "owned by another lane" in args.message
+    # The owning lane is unaffected: the bus still works, and the refusal left
+    # no partial state behind.
+    check run(compileSource("(bus ~ publish (Ping))"), scope)
+             .props["delivered"].intVal == 1
 
   test "foreign thread can cancel a native async task awaited at root":
     let scope = newGlobalScope()

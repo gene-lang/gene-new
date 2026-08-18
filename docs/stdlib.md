@@ -190,10 +190,14 @@ implementations of it.
 
 Subscribing to a type matches that type and its `^is` descendants, so a family
 base type observes the whole family and `event/Event` observes everything.
-`(event/exact T)` excludes descendants. That is the entire selector grammar:
-there is no wildcard spelling, because `X/*` already means the import wildcard
-and the capability projection, and a namespace that declared a `*` member would
-shadow multiplication inside its own body.
+`(event/exact T)` excludes descendants, and `(| A B)` — the same union type
+expression annotations take — selects several unrelated families at once. A
+union is **one** subscription: an event matching two alternatives invokes the
+handler once, and cancelling unhooks every family it was registered under.
+That is the entire selector grammar: there is no wildcard spelling, because
+`X/*` already means the import wildcard and the capability projection, and a
+namespace that declared a `*` member would shadow multiplication inside its own
+body.
 
 `subscribe` validates the handler against the selector — a handler whose
 declared parameter type cannot accept everything the selector matches is
@@ -226,11 +230,15 @@ fan-out, and error policy belong behind sink implementations rather than in the
 protocol.
 
 A version 1 bus is lane-owned and synchronous: subscribe, cancel, publish, and
-the handlers all run on the owning lane. That ownership is enforced by a bus
-not being `Send` — there is no lane check on the operations themselves, so what
-stops cross-lane use is that the bus cannot be transferred in the first place.
-Cross-lane delivery is an explicit adapter that validates the frozen event and
-publishes it on the destination bus's lane.
+the handlers all run on the owning lane. A bus records the lane that created it
+and refuses every operation from another one with `SubscriptionError`. That
+check is not redundant with the bus not being `Send`: sendability stops a bus
+being *transferred* through a channel, an actor message, or a worker-safe spawn
+capture, but an embedding host thread calling in through `native_api` transfers
+nothing and would otherwise mutate the bus concurrently with its owner. Every
+fiber on one lane shares that lane, so ordinary `spawn`/`await` code is
+unaffected. Cross-lane delivery is an explicit adapter that validates the frozen
+event and publishes it on the destination bus's lane.
 
 The runtime instrumentation half of the proposal — `runtime/EventStream` and
 the `runtime/...` event families — is not implemented yet; see

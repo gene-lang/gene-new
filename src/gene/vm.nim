@@ -6749,6 +6749,60 @@ proc typeReflectionMessage(name: string): Value =
   of "name": newNativeFn("Type/name", biTypeName)
   else: NIL
 
+proc biUnionType(args: openArray[Value]): Value {.nimcall.} =
+  ## `(| A B ...)` in *expression* position.
+  ##
+  ## The union type expression is not new — it works in every annotation
+  ## position, `alias` names it, and `Type/fields` already hands one back to
+  ## Gene. What was missing was the literal: `|` had no binding, so a `|`-headed
+  ## node outside an annotation resolved its head as a callable and failed. This
+  ## is that binding, which is why no compiler change is needed: the reader
+  ## already produces the node, and evaluating it now yields the value the
+  ## checker already understands.
+  ##
+  ## Members are flattened and deduplicated, so `(| A (| B C))` is `(| A B C)`
+  ## and `(| A A)` is `A`. Order is preserved for printing but is not semantic.
+  if args.len < 2:
+    raise newException(GeneError,
+      "| expects at least two alternatives, got " & $args.len)
+  var members: seq[Value]
+  proc addOne(v: Value) =
+    for existing in members:
+      if existing.bits == v.bits:
+        return
+    members.add v
+  proc addMember(v: Value) =
+    if v.isUnionType:
+      # Flatten only a union whose members are already values — the shape
+      # `(| A B)` produces. An `alias`-declared union stores *syntax*, so its
+      # members are symbols that only a scope can resolve, and this native has
+      # none. Keeping such a union as a single alternative is not a
+      # compromise: every consumer already expands aliases against the use
+      # site, so `(| AB C)` means what `(| A B C)` means.
+      var resolvable = true
+      for inner in v.unionTypeMembers:
+        if inner.kind notin {vkType, vkProtocol}:
+          resolvable = false
+          break
+      if resolvable:
+        for inner in v.unionTypeMembers:
+          addMember(inner)
+        return
+      addOne(v)
+      return
+    if v.kind notin {vkType, vkProtocol}:
+      raise newException(GeneError,
+        "| expects types or protocols as alternatives, got " & $v.kind)
+    addOne(v)
+  for arg in args:
+    addMember(arg)
+  # `(| A A)` collapsed to one alternative is that alternative, not a union of
+  # one — a one-member `|` node would print and match the same but would be a
+  # second spelling for a name the language already has.
+  if members.len == 1:
+    return members[0]
+  unionTypeExpr(members)
+
 proc defineBuiltinType(scope: Scope, kind: ValueKind, name: string,
                        messages: openArray[(string, Value)],
                        ctor: Value = NIL): Value {.discardable.} =
@@ -7399,6 +7453,13 @@ proc buildBuiltins(app: Application): Scope =
   result.defineBuiltinType(vkReplyTo, "ReplyTo", {
     "send": newNativeCallFn("ReplyTo/send", biReplyToSend,
                                              acceptsNamed = false)})
+  # `|` builds a union type expression as a value (design §7.4.1). It joins the
+  # operators rather than the library: it is language syntax everywhere else —
+  # annotation position, `match` alternation, pattern `|` — so leaving it the
+  # one spelling that is *not* pre-bound made the same form mean different
+  # things in different positions. A program may still shadow it, as with any
+  # other operator.
+  result.define("|", sharedBuiltinNative("|", newNativeFn("|", biUnionType)))
   result.define("declarations", newNativeFn("declarations", biDeclarations))
   result.defineBuiltinType(vkNamespace, "Namespace", {
     "bindings": newNativeFn("Namespace/bindings", biNamespaceBindings),
@@ -18328,7 +18389,22 @@ proc closeTypeExpr(expr: Value, scope: Scope): Value =
         if not (builtin.known and resolved.isBuiltinSurfaceType):
           return resolved
       let segments = expr.symVal.split('/')
-      if segments.len > 1 and scope.lookupOptional(segments[0], resolved):
+      var qualifiedRoot = false
+      if segments.len > 1:
+        qualifiedRoot = scope.lookupOptional(segments[0], resolved)
+        if not qualifiedRoot:
+          # A lowercase stdlib namespace is not bare (design §2.1), so
+          # `$log/LogLevel` and `$event/Event` arrive here as the symbol
+          # `log/LogLevel` with a first segment nothing lexical binds. Reach it
+          # through the `gene` root, which is what the `$` sugar means.
+          #
+          # Without this an annotation naming any namespaced stdlib type failed
+          # with "unknown type annotation". The `C`/`ffi`/`device` arms below
+          # are the same bug patched one namespace at a time; this is the
+          # general case they were standing in for.
+          resolved = builtinBinding(scope, segments[0])
+          qualifiedRoot = resolved.kind != vkNil
+      if qualifiedRoot:
         for i in 1 ..< segments.len:
           if resolved.kind == vkModule:
             resolved = resolved.moduleRootNamespace

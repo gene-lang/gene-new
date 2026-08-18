@@ -938,6 +938,13 @@ type
     eepRaiseAfter
     eepCollect
 
+  EventSubscriptionSelector* = object
+    ## One alternative a subscription matches on. A plain type or
+    ## `event/exact T` yields one; a union selector `(| A B)` yields one per
+    ## member (events.md §6.3).
+    typeId*: int32           # compact event type id the alternative names
+    exact*: bool             # `event/exact T` — descendants excluded
+
   EventSubscriptionEntry* = object
     ## One subscription in a bus, in subscription order (events.md §7.1/§7.5).
     ##
@@ -945,9 +952,13 @@ type
     ## clears `active` and drops the handler reference, so the sequence index
     ## doubles as the stable subscription identity the buckets and the resolved
     ## -match cache point at.
+    ##
+    ## A union subscription is **one** entry listed in several buckets, not
+    ## several entries. §6.3 makes overlapping subscriptions fire separately and
+    ## forbids deduplication, so registering `(| A B)` as two subscriptions
+    ## would invoke the handler twice for a value matching both.
     handler*: Value
-    selectorTypeId*: int32   # compact event type id the selector names
-    exact*: bool             # `event/exact T` — descendants excluded
+    selectors*: seq[EventSubscriptionSelector]
     once*: bool              # `^once true`
     active*: bool
     consumed*: bool          # one-shot already delivered (marked before the call)
@@ -971,6 +982,7 @@ type
     nestingLimit*: int
     nestingDepth*: int
     generation*: int64
+    ownerLane*: int          # the lane that created it (events.md §9.1)
     subs*: seq[EventSubscriptionEntry]
     descendantBuckets*: Table[int32, seq[int32]]
     exactBuckets*: Table[int32, seq[int32]]
@@ -5966,6 +5978,27 @@ proc loggerCapabilityContext*(v: Value): CapabilityContext =
 # are in `events.nim`, which is included into the VM where `applyCall` and the
 # error types it raises are available.
 
+when compileOption("threads"):
+  var cachedEventLane {.threadvar.}: int
+
+proc currentEventLane*(): int {.inline.} =
+  ## Lane identity for bus ownership (events.md §9.1).
+  ##
+  ## Threads are the lane boundary in this runtime: every root-lane fiber runs
+  ## on one thread, and the atomicArc worker lane is another, so a thread id
+  ## separates exactly the cases §9.1 separates. Cached in a threadvar because
+  ## `publish` reads it — `getThreadId` is a libc call on some platforms and
+  ## this must not show up next to dispatch.
+  ##
+  ## Under `--threads:off` (the wasm profile) there is one lane by
+  ## construction, so the check is a constant.
+  when compileOption("threads"):
+    if cachedEventLane == 0:
+      cachedEventLane = getThreadId()
+    cachedEventLane
+  else:
+    0
+
 const defaultEventNestingLimit* = 16
   ## §7.6's "conservative default" nesting limit. Deep-first nested publication
   ## is legal; unbounded recursion through it is not.
@@ -5974,6 +6007,7 @@ proc newEventBus*(errorPolicy: EventErrorPolicy = eepRaiseAfter,
                   nestingLimit = defaultEventNestingLimit): Value =
   boxObject(EventBusData(objKind: okEventBus, errorPolicy: errorPolicy,
                          nestingLimit: nestingLimit,
+                         ownerLane: currentEventLane(),
                          descendantBuckets: initTable[int32, seq[int32]](),
                          exactBuckets: initTable[int32, seq[int32]](),
                          matchCache: initTable[int32, EventMatchCacheEntry]()))
@@ -5997,6 +6031,10 @@ proc eventBusErrorPolicy*(v: Value): EventErrorPolicy =
 proc eventBusNestingLimit*(v: Value): int =
   requireEventBus(v)
   busData(v).nestingLimit
+
+proc eventBusOwnerLane*(v: Value): int =
+  requireEventBus(v)
+  busData(v).ownerLane
 
 proc newEventSubscription*(bus: Value, index: int32): Value =
   requireEventBus(bus)
@@ -6352,6 +6390,33 @@ proc isTypeAlias*(v: Value): bool {.inline.} =
 
 proc typeAliasExpr*(v: Value): Value {.inline.} =
   TypeData(objData(v)).aliasExpr
+
+proc unionTypeExpr*(members: sink seq[Value]): Value =
+  ## `(| A B ...)` as a value: an *anonymous* transparent alias over the same
+  ## `|` node the annotation form already uses (design §7.4.1).
+  ##
+  ## Reusing the alias representation is the point. `(alias U (| A B))` already
+  ## produces exactly this with a name attached, `matchesTypeExpr` already
+  ## expands it, and `constructTypedInstance` already refuses to construct it —
+  ## so a union value is not a new kind of thing, it is the thing `alias` makes
+  ## with the name left off. A dedicated `vkUnion` would add a value kind for
+  ## something the type checker already handles structurally, and `kind` is
+  ## `{.inline.}` and size-sensitive.
+  newTypeAlias("", newNode(newSym("|"), body = members))
+
+proc isUnionType*(v: Value): bool =
+  ## True for a type value whose expansion is a `|` node — whether it was
+  ## written `(| A B)` or named with `alias`.
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okType:
+    return false
+  let expr = TypeData(objData(v)).aliasExpr
+  expr.kind == vkNode and expr.head.kind == vkSymbol and
+    expr.head.symVal == "|"
+
+proc unionTypeMembers*(v: Value): lent seq[Value] =
+  ## The alternatives of a union type value. Only meaningful when
+  ## `isUnionType(v)`.
+  TypeData(objData(v)).aliasExpr.body
 
 proc newEnum*(name: string, typeParams: sink seq[string],
               variants: openArray[tuple[name: string, payloadTypes: seq[Value],

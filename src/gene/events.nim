@@ -99,15 +99,69 @@ proc requireEventValue(scope: Scope, event: Value): Value =
       {"actual_value": event})
   typ
 
-proc selectorTypeId(selector: Value): tuple[id: int32, exact: bool] =
-  ## `(| Type event/Matcher)` — the entire selector grammar (§6.3).
+proc unionSelectorMember(scope: Scope, member: Value): Value =
+  ## One alternative of a union selector, resolved to a Type.
+  ##
+  ## `(| A B)` written as a value already holds evaluated Types, but
+  ## `(alias U (| A B))` stores the *syntax*, so `U`'s members arrive as
+  ## symbols. Both spellings have to name the same subscription, so an
+  ## unresolved member is closed against the caller's scope — the same scope
+  ## and the same `closeTypeExpr` the annotation path uses for an alias.
+  if member.kind == vkType:
+    return member
+  let closed = closeTypeExpr(member, scope)
+  if closed.kind == vkType: closed else: NIL
+
+proc selectorAlternatives(scope: Scope, selector: Value,
+                          into: var seq[EventSubscriptionSelector]): bool =
+  ## Expand a selector into the alternatives it matches on. `false` means the
+  ## selector is not one the grammar accepts.
+  ##
+  ## The grammar is a type, `(event/exact T)`, or a union of types — the third
+  ## being the same `(| A B)` a parameter annotation takes, so a subscription
+  ## and a handler signature can name one thing. A union member must itself be
+  ## an event type: `(| OrderPlaced Str)` is rejected rather than silently
+  ## matching only the half that makes sense.
   case selector.kind
   of vkEventMatcher:
-    (selector.eventMatcherTypeId, true)
+    into.add EventSubscriptionSelector(typeId: selector.eventMatcherTypeId,
+                                       exact: true)
+    true
   of vkType:
-    (selector.eventTypeId, false)
+    if selector.isUnionType:
+      for rawMember in selector.unionTypeMembers:
+        let member = unionSelectorMember(scope, rawMember)
+        if member.kind != vkType:
+          return false
+        # A union of unions flattens: `(| A U)` where `U` is itself one.
+        if not selectorAlternatives(scope, member, into):
+          return false
+      return into.len > 0
+    if selector.eventTypeId == 0:
+      return false
+    into.add EventSubscriptionSelector(typeId: selector.eventTypeId,
+                                       exact: false)
+    true
   else:
-    (0'i32, false)
+    false
+
+proc collectSelectorTypes(scope: Scope, selector: Value,
+                          into: var seq[Value]) =
+  if selector.kind == vkEventMatcher:
+    into.add selector.eventMatcherTarget
+    return
+  if selector.kind == vkType and selector.isUnionType:
+    for rawMember in selector.unionTypeMembers:
+      let member = unionSelectorMember(scope, rawMember)
+      if member.kind == vkType:
+        collectSelectorTypes(scope, member, into)
+    return
+  into.add selector
+
+proc selectorTypes(scope: Scope, selector: Value): seq[Value] =
+  ## The declared types a selector can deliver, for handler validation (§7.1).
+  ## Flattened, so a nested union checks every leaf.
+  collectSelectorTypes(scope, selector, result)
 
 proc typeIsDescendantOf(child, ancestor: Value): bool =
   ## Nominal `^is` ancestry, inclusive of `child == ancestor`.
@@ -238,8 +292,17 @@ proc resolveMatches(data: EventBusData, eventType: Value,
   # while the bus is open, so sorting the merged indices *is* ordering by
   # subscription sequence number, across the exact and family buckets alike.
   merged.sort()
+  # Deduplicate. One entry can reach this list through several buckets — a
+  # union subscription whose event matches two alternatives, or a family and an
+  # exact bucket naming the same id — and §6.3 makes *separate* subscriptions
+  # fire separately, not one subscription fire twice. Sorting has already put
+  # any duplicates adjacent.
+  var deduped: seq[int32]
+  for index in merged:
+    if deduped.len == 0 or deduped[^1] != index:
+      deduped.add index
   data.matchCache[id] = EventMatchCacheEntry(generation: data.generation,
-                                             subs: merged)
+                                             subs: deduped)
   data.matchCache[id].subs
 
 proc cancelEntry(data: EventBusData, index: int32): bool =
@@ -250,11 +313,13 @@ proc cancelEntry(data: EventBusData, index: int32): bool =
   if not data.subs[index].active:
     return false
   data.subs[index].active = false
-  if data.subs[index].exact:
-    removeFromBucket(data.exactBuckets, data.subs[index].selectorTypeId, index)
-  else:
-    removeFromBucket(data.descendantBuckets, data.subs[index].selectorTypeId,
-                     index)
+  # Every bucket it was listed in, not just one: a union subscription is one
+  # entry reachable from several.
+  for selector in data.subs[index].selectors:
+    if selector.exact:
+      removeFromBucket(data.exactBuckets, selector.typeId, index)
+    else:
+      removeFromBucket(data.descendantBuckets, selector.typeId, index)
   # The handler reference goes now rather than at collection time: §7.3 rules
   # out collection-driven cancellation precisely so release is deterministic.
   data.subs[index].handler = NIL
@@ -264,6 +329,23 @@ proc cancelEntry(data: EventBusData, index: int32): bool =
 # ---------------------------------------------------------------------------
 # Bus operations
 # ---------------------------------------------------------------------------
+
+proc requireOwningLane(scope: Scope, data: EventBusData, op: string) =
+  ## §9.1: a version 1 bus is lane-owned, and using one from another lane is a
+  ## task-boundary error.
+  ##
+  ## Every *transfer* is already refused — a bus is not `Send`, so a channel,
+  ## an actor message, and a worker-safe spawn capture all reject it. What that
+  ## does not cover is a lane that reaches a bus without transferring a value:
+  ## an embedding host thread calling in through `native_api`'s `geneCall` runs
+  ## no sendability check at all, and would mutate `subs` and the bucket tables
+  ## concurrently with the owning lane. This is the check for that, and it is
+  ## the same thread-id ownership pattern `geneAttachThread` already uses.
+  if data.ownerLane != currentEventLane():
+    raiseEventError(scope, "SubscriptionError",
+      op & " on an event/Bus owned by another lane; a version 1 bus is " &
+      "lane-owned, and cross-lane delivery is an explicit adapter that " &
+      "publishes on the destination bus's own lane")
 
 proc requireOpenBus(scope: Scope, data: EventBusData, op: string) =
   if data.closed:
@@ -326,26 +408,27 @@ proc biEventBusSubscribe(args: openArray[Value], call: ptr NativeCall): Value
       $(args.len - 1) & " argument(s)")
   requireEventBus(args[0])
   let data = busData(args[0])
+  requireOwningLane(scope, data, "subscribe")
   requireOpenBus(scope, data, "subscribe")
   let selector = args[1]
   let handler = args[2]
-  let resolved = selectorTypeId(selector)
-  if resolved.id == 0:
+  var selectors: seq[EventSubscriptionSelector]
+  if not selectorAlternatives(scope, selector, selectors):
     raiseEventError(scope, "EventTypeError",
-      "subscribe expects an event/Event descendant type or an " &
-      "event/Matcher from event/exact",
+      "subscribe expects an event/Event descendant type, a union of them, " &
+      "or an event/Matcher from event/exact",
       {"actual_value": selector})
-  let selectorType =
-    if selector.kind == vkEventMatcher: selector.eventMatcherTarget
-    else: selector
   if not handler.isBuiltinCallable:
     raiseEventError(scope, "EventTypeError",
       "subscribe expects a callable handler", {"actual_value": handler})
   rejectCallerEnvEscape("Bus/subscribe handler", handler)
-  validateHandler(scope, handler, selectorType,
-                  (if resolved.exact: "(event/exact " & selectorType.typeName &
-                                      ")"
-                   else: selectorType.typeName))
+  # Every alternative must satisfy the handler, not just the first: a union
+  # selector delivers all of them to the same parameter.
+  for selectorType in selectorTypes(scope, selector):
+    validateHandler(scope, handler, selectorType,
+                    (if selector.kind == vkEventMatcher:
+                       "(event/exact " & selectorType.typeName & ")"
+                     else: selectorType.typeName))
   var once = false
   if call != nil:
     for i, name in call.namedNames:
@@ -360,14 +443,14 @@ proc biEventBusSubscribe(args: openArray[Value], call: ptr NativeCall): Value
           "subscribe does not accept ^" & name)
   let index = int32(data.subs.len)
   data.subs.add EventSubscriptionEntry(handler: handler,
-                                       selectorTypeId: resolved.id,
-                                       exact: resolved.exact,
+                                       selectors: selectors,
                                        once: once,
                                        active: true)
-  if resolved.exact:
-    addToBucket(data.exactBuckets, resolved.id, index)
-  else:
-    addToBucket(data.descendantBuckets, resolved.id, index)
+  for selector in selectors:
+    if selector.exact:
+      addToBucket(data.exactBuckets, selector.typeId, index)
+    else:
+      addToBucket(data.descendantBuckets, selector.typeId, index)
   inc data.generation
   newEventSubscription(args[0], index)
 
@@ -466,6 +549,7 @@ proc raisePublishError(scope: Scope, publishResult: Value) {.noreturn.} =
 proc eventBusPublish(scope: Scope, bus: Value, event: Value): Value =
   requireEventBus(bus)
   let data = busData(bus)
+  requireOwningLane(scope, data, "publish")
   requireOpenBus(scope, data, "publish")
   let eventType = requireEventValue(scope, event)
   let frozen = freezeEventValue(scope, event)
@@ -493,6 +577,7 @@ proc biEventBusClose(args: openArray[Value], call: ptr NativeCall): Value
     raise newException(GeneError, "Bus/close takes no arguments")
   requireEventBus(args[0])
   let data = busData(args[0])
+  requireOwningLane(scope, data, "close")
   if data.closed:
     return FALSE
   for index in 0 ..< data.subs.len:
@@ -507,6 +592,7 @@ proc biEventBusClosed(args: openArray[Value], call: ptr NativeCall): Value
   if args.len != 1:
     raise newException(GeneError, "Bus/closed? takes no arguments")
   requireEventBus(args[0])
+  requireOwningLane(scope, busData(args[0]), "closed?")
   newBool(busData(args[0]).closed)
 
 proc biEventBusSubscriptionCount(args: openArray[Value], call: ptr NativeCall): Value
@@ -517,6 +603,7 @@ proc biEventBusSubscriptionCount(args: openArray[Value], call: ptr NativeCall): 
     raise newException(GeneError, "Bus/subscription_count takes no arguments")
   requireEventBus(args[0])
   let data = busData(args[0])
+  requireOwningLane(scope, data, "subscription_count")
   var count = 0
   for entry in data.subs:
     if entry.active:
@@ -538,6 +625,7 @@ proc biEventSubscriptionCancel(args: openArray[Value], call: ptr NativeCall): Va
   let bus = subscriptionBus(args[0])
   if bus.kind != vkEventBus:
     return FALSE
+  requireOwningLane(scope, busData(bus), "cancel")
   newBool(cancelEntry(busData(bus), subscriptionData(args[0]).index))
 
 proc biEventSubscriptionActive(args: openArray[Value], call: ptr NativeCall): Value
@@ -552,6 +640,7 @@ proc biEventSubscriptionActive(args: openArray[Value], call: ptr NativeCall): Va
   if bus.kind != vkEventBus:
     return FALSE
   let data = busData(bus)
+  requireOwningLane(scope, data, "active?")
   let index = subscriptionData(args[0]).index
   newBool(index >= 0 and index < int32(data.subs.len) and
           data.subs[index].active)
@@ -719,14 +808,9 @@ proc registerEventNamespace(root: Scope) =
   let eventFrozenError = defineEventError("EventFrozenError", NIL)
   let eventPublishError = defineEventError("EventPublishError", NIL)
   let eventRecursionError = defineEventError("EventRecursionError", NIL)
-  # §18 also lists `SubscriptionError` ("invalid bus/subscription ownership
-  # operation"). It is deliberately *not* registered: the only ownership
-  # operation v1 could reject is cross-lane use, and that is enforced by the
-  # bus not being `Send` rather than by a check that raises — so there is no
-  # trigger. §18 makes exactly this argument itself when it rules out
-  # `RuntimeEventSinkError`: "Introducing an error type with no raise site
-  # would be dead interface surface." It lands with the lane check that needs
-  # it, and that change should name the specific trigger.
+  # §18's "invalid bus/subscription ownership operation" — raised by the lane
+  # check below when a bus is touched from a lane that does not own it.
+  let subscriptionError = defineEventError("SubscriptionError", NIL)
   let eventBusClosedError = defineEventError("EventBusClosedError", NIL)
 
   let eventScope = newScope(root)
@@ -855,6 +939,7 @@ proc registerEventNamespace(root: Scope) =
   eventScope.define("EventFrozenError", eventFrozenError)
   eventScope.define("EventPublishError", eventPublishError)
   eventScope.define("EventRecursionError", eventRecursionError)
+  eventScope.define("SubscriptionError", subscriptionError)
   eventScope.define("EventBusClosedError", eventBusClosedError)
 
   root.define("event", newNamespace("event", eventScope))

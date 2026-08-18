@@ -429,20 +429,44 @@ needed:
   record_everything)
 ```
 
+A union selects several unrelated families at once:
+
+```gene
+(bus ~ subscribe
+  (| UserCreated UserUpdated)
+  on_user_change)
+```
+
 That is the entire selector grammar:
 
 | Selector | Matches |
 | --- | --- |
 | `T` (any `event/Event` descendant type) | `T` and its `^is` descendants |
 | `(event/exact T)` | `T` only |
+| `(\| A B ...)` | the union of what each alternative matches |
 
 `event/exact` returns an opaque `event/Matcher`. It is deliberately not called
 `Selector`: `Selector` is already a registered type for reader selector
 literals, and `capabilities.md` uses "capability selector" for a third thing.
 "Selector" stays a prose term here; the value type is `Matcher`.
 
-`subscribe` takes `(| Type event/Matcher)` and raises `EventTypeError` for
-anything else, including a `Type` that is not an `event/Event` descendant.
+The union row is not a new spelling invented for the bus. `(| A B)` is the type
+expression the language already takes in every annotation position, so a
+selector and the handler signature that receives it name one thing. Each
+alternative must itself be an `event/Event` descendant; `(| OrderPlaced Str)`
+raises rather than matching the half that makes sense. An `alias` naming a
+union selects identically, and unions flatten, so `(| (| A B) C)` is `(| A B C)`.
+
+**A union is one subscription, not several.** An event matching two
+alternatives invokes the handler once, and cancelling removes it from every
+family it was registered under. This is the one case the two-subscription
+workaround gets wrong rather than merely writes at length: subscribing `A` and
+`B` separately is two subscriptions by the rule below, and a value that is both
+would invoke the handler twice.
+
+`subscribe` takes a `Type`, a union of them, or an `event/Matcher`, and raises
+`EventTypeError` for anything else, including a `Type` that is not an
+`event/Event` descendant.
 
 Every subscription is independent. If the same handler is separately
 subscribed to both `runtime/Event` and `runtime/task/Event`, a task event
@@ -1829,6 +1853,9 @@ The application library is ready when:
   import-wildcard and capability-projection meanings;
 - a concrete type selector matches the type and its descendants;
 - `event/exact` excludes descendants;
+- a union selector matches every alternative, stays one subscription (so an
+  event matching two alternatives invokes the handler once), and cancels out of
+  every family it was registered under;
 - event matching uses declaration identity rather than printed names;
 - the common cached match path scans no unrelated subscriptions and compares
   no path strings;
