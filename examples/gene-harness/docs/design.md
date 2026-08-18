@@ -497,6 +497,20 @@ first. A plugin that reaches around the log is the one bug class this invariant
 is designed to make impossible, and it is checkable — the assembler's capability
 row need not include anything else.
 
+**Built.** `assemble_request` in `src/kernel.gene` takes the log and nothing
+else — not the harness, not the seam table — and declares `^capabilities []`,
+which is what makes "reads only the log" enforceable rather than a convention:
+an assembler that reached for a file or the environment would be refused at its
+own declaration. The log belongs to core, so a plugin appends and reads nothing
+else.
+
+The payoff shows up in `src/main.gene` as two lines. A `trace` event is in the
+log and absent from the request, because the request contains only what the log
+marks model-visible. And uninstalling the provider that produced a message
+leaves the assembled request unchanged — replay is a fold over the log, so it
+does not depend on the live system, which is exactly the property a harness
+recomposable at 3am needs.
+
 ### 3.7 Reversible effects — closed by the ledger
 
 An earlier draft listed this as the one language gap, wanting a Gene equivalent
@@ -527,7 +541,7 @@ modifiable from then on. Adopt, in this order:
    the binding so uninstalling a seam's *former* owner cannot unbind it.
 3. **Model-visible ⟺ logged**, with `request/assemble` bounded so it cannot read
    around the log. A live system that can be recomposed at 3am needs replay more
-   than a static one does, not less.
+   than a static one does, not less. **Built** — see §3.6.
 4. **Runtime plugin install via `$runtime/load_sandboxed`**, with `grants` as the
    operator-readable statement of what the new code may reach. **Built** —
    `install_sandboxed` in `src/kernel.gene`, exercised by `plugins/fs_stub/`

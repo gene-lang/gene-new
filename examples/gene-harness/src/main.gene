@@ -7,7 +7,8 @@
 # exactly one plugin's contributions.
 
 (import [new_harness install uninstall resolve provide replace installed
-         bound_seams install_sandboxed module_dir Plugin HarnessError]
+         bound_seams install_sandboxed module_dir log_append log_events
+         assemble_request Plugin HarnessError]
   from "./kernel")
 (import [HarnessFs LocalFs MemFs head_tool] from "./seams")
 
@@ -147,4 +148,27 @@
   ($println "  ^ never compiled in, cannot name $fs at all, and still")
   ($println "    satisfies the seam the consumer sends to.")
   ($println "  installed: " (installed h))
+
+  # --- model-visible <=> logged ---------------------------------------------
+  #
+  # The invariant worth stealing verbatim from dsh. A plugin that wants
+  # something in front of the model appends a log event; the assembler reads
+  # the log and nothing else, so the request is reconstructible by
+  # construction rather than by discipline.
+  ($println "-- model-visible <=> logged --")
+  (log_append h "message" "user: read notes")
+  (log_append h "trace" "tool selected: head_tool")
+  (log_append h "message" (head_tool (resolve h "HarnessFs") "notes"))
+  (var events (log_events h))
+  ($println "  log events:  " events/~size)
+  ($println "  request:     " (assemble_request (log_events h)))
+  ($println "  ^ the trace line is in the log and not in the request; the")
+  ($println "    request contains only what the log says is model-visible.")
+
+  # Replay is a fold over the log, so it does not depend on the live system.
+  # Tear the provider out and the same request still assembles.
+  (uninstall h "fs_stub")
+  ($println "  after uninstalling the provider:")
+  ($println "  request:     " (assemble_request (log_events h)))
+  ($println "  seams:       " (bound_seams h))
   nil)

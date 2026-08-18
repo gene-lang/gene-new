@@ -23,10 +23,11 @@
                      ^activate Any
                      ^deactivate Any?})
 
-(type Harness ^props {^seams Any ^plugins Any ^effects Any})
+(type Harness ^props {^seams Any ^plugins Any ^effects Any ^log Any})
 
 (fn new_harness [] : Harness
-  (Harness ^seams ($cell {}) ^plugins ($cell {}) ^effects ($cell {})))
+  (Harness ^seams ($cell {}) ^plugins ($cell {}) ^effects ($cell {})
+           ^log ($cell [])))
 
 # --- the effect ledger -----------------------------------------------------
 #
@@ -59,6 +60,40 @@
     (reverse_effect h effects/%i)
     (set i (- i 1)))
   (table ~ delete id))
+
+# --- the session log (design §3.6) -----------------------------------------
+#
+# **Model-visible <=> logged.** Anything that reaches a model request must be
+# reconstructible from the log. The log belongs to core, not to a plugin: a
+# plugin appends to it and reads nothing else, so replay fidelity is structural
+# rather than something someone remembered to maintain.
+
+(fn log_append [h : Harness, kind : Str, text : Str] : Any
+  (var events (h/log ~ get))
+  (events ~ push {^kind kind ^text text})
+  events)
+
+(fn log_events [h : Harness] : Any
+  (h/log ~ get))
+
+(fn assemble_request [events] : (List Str)
+  # The whole invariant is this signature plus the empty capability row.
+  #
+  # It takes the log and nothing else — not the harness, not the seam table,
+  # not the filesystem. `^capabilities []` makes "reads only the log"
+  # enforceable rather than a convention: an assembler that tried to read a
+  # file or the environment would be refused at the declaration, so a plugin
+  # cannot smuggle model-visible content in around the log.
+  #
+  # Replay is then an ordinary fold over the log rather than a bespoke
+  # deserializer, which is the part Gene gets more cheaply than TypeScript:
+  # the log is Gene data.
+  ^capabilities []
+  (var out [])
+  (for e in events
+    (if_yes (== ($to_str e/kind) "message")
+      (out ~ push ($to_str e/text))))
+  out)
 
 # --- seams -----------------------------------------------------------------
 
