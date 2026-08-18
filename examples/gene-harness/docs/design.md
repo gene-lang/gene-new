@@ -1,6 +1,6 @@
 # DeepSeek Harness, and what a Gene Harness should take from it
 
-Status: proposal
+Status: proposal; §4 items 1 and 2 are built and runnable in `../src/`.
 
 DeepSeek open-sourced an agent harness (`dsh`) in 2026 whose organising claim is
 **"everything is a plugin"** — the model adapter, the tool registry, the session
@@ -188,14 +188,16 @@ a value — Gene wants the second.
 | Plugin distribution | packages, `package.gene`, dependency resolution | shipped (Stage 3) |
 | Bounding an untrusted plugin | protocol row + import-site ceilings | shipped |
 | Reversible effects | `ensure`, scoped-impl activation/reload | partial |
-| Typed events | `docs/events.md` | proposal |
+| Typed events | `docs/events.md` — `gene/event` | shipped (application bus; runtime events deferred) |
 | Session log | serde, event logs (`examples/ai_agent/home/events.gene`) | shipped |
 | `cordis.yml` | a Gene data manifest seeding the live table | pattern exists |
 | Plugin uninstall | provider removal via `Map/delete`; module unload no (`scoped-impls.md` §6) | partial |
 
-More is already shipped than the earlier draft credited. The gap list is:
-reversible effects as a registration primitive, module unload, the event bus,
-and the harness assembly itself.
+More is already shipped than the earlier draft credited. The event bus has
+since landed — `gene/event` gives typed events with nominal `^is` matching,
+frozen snapshots, and the `EventSink` seam — so the gap list is now: reversible
+effects as a registration primitive, module unload, and the harness assembly
+itself.
 
 ## 3. Design: Gene Harness
 
@@ -264,6 +266,38 @@ A consumer takes the provider as a value and never names a concrete type:
 
 The seam is incomplete until a consumer exists that could accept a different
 provider. That rule is worth keeping verbatim from `dsh`.
+
+**A provider must state its row; omitting it is rejected.** An earlier draft of
+this section implied a provider could simply implement the message and inherit
+the definition's envelope. Measured, that is not what happens:
+
+| Provider declares | Result |
+|---|---|
+| the same row as the definition | accepted |
+| a narrower row, including `^capabilities []` | accepted |
+| nothing | **rejected** — "broadens its `^capabilities` contract" |
+| a wider row | rejected |
+
+An absent row means *unchecked* authority, which is wider than any declared
+one, so the compiler is right to refuse it. The consequence is better than the
+draft assumed: reading a provider tells you its authority without
+cross-referencing the protocol, and a test double that needs nothing says
+`^capabilities []` where a reviewer can see it.
+
+**The contract is enforced at the call, not only at the impl.** A provider
+declaring `(fs/ReadDir "/tmp")` cannot be called without that grant —
+`refused: declaration requires fs/ReadDir` — while a `^capabilities []`
+provider of the same seam runs anywhere. So swapping the provider changes what
+authority the *product* needs, which is `dsh`'s "one provider swap moves the
+whole product" with an enforcement story TypeScript has no way to tell.
+`examples/gene-harness/src/` demonstrates exactly this: run `src/main.gene`
+with and without `--allow_read_dir /tmp` and only the local provider's line
+changes.
+
+One caveat worth knowing before writing a demo: a capability path *inside the
+entry's own package* is ambiently granted, so a contract naming a relative path
+under the project succeeds without any flag and proves nothing. The example
+uses `/tmp` for that reason.
 
 **What this buys, measured rather than asserted.** A provider whose own module
 holds `net/*`, `os/Env`, and read-write access to the workspace, implementing a
@@ -482,12 +516,15 @@ Build the harness as a **living application**: it boots from a profile and is
 modifiable from then on. Adopt, in this order:
 
 1. **Seams as protocols carrying the authority contract** (§3.2). This is the
-   piece that makes every later step safe, and it works today.
+   piece that makes every later step safe. **Built** — `src/seams.gene` is the
+   three-role seam (definition, two providers, one consumer) and `src/main.gene`
+   swaps the provider live and shows the authority change that comes with it.
 2. **The kernel as code** (§3.3) — `Plugin` and `Harness` as types, an effect
    ledger the kernel owns, atomic activation, explicit binding. Not a mapping
    onto packages or scoped impls: those distribute and compile code, while this
-   is about what happens at runtime. A prototype exists and passes the
-   properties it claims.
+   is about what happens at runtime. **Built** — `src/kernel.gene`, including
+   the `replace` operation §3.3.3 calls for, which moves the ledger entry with
+   the binding so uninstalling a seam's *former* owner cannot unbind it.
 3. **Model-visible ⟺ logged**, with `request/assemble` bounded so it cannot read
    around the log. A live system that can be recomposed at 3am needs replay more
    than a static one does, not less.

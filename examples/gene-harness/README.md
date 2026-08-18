@@ -4,7 +4,11 @@ A living plugin harness: seams, an effect ledger, and atomic activation.
 
 ```bash
 gene run examples/gene-harness/src/main.gene
+gene run --allow_read_dir /tmp examples/gene-harness/src/main.gene
 ```
+
+Run it both ways. The only line that changes is the one where the local
+filesystem provider is asked to do its job — which is the point.
 
 The design and the argument behind it are in [`docs/design.md`](docs/design.md),
 which also compares this to DeepSeek's `dsh` and says which of its ideas are
@@ -18,7 +22,8 @@ this is about what happens at runtime.
 
 | File | Role |
 |---|---|
-| `src/kernel.gene` | The kernel: lifecycle, the effect ledger, seam binding |
+| `src/kernel.gene` | The kernel: lifecycle, the effect ledger, seam binding, replacement |
+| `src/seams.gene` | One seam, all three roles: a protocol with an authority contract, two providers, a consumer |
 | `src/main.gene` | A runnable tour; every line it prints is a claimed property |
 | `docs/design.md` | Why it is shaped this way, and what is still missing |
 
@@ -39,15 +44,35 @@ it without the plugin's cooperation. A plugin cannot forget to clean up, because
 cleanup was never its job.
 
 Binding is explicit: a seam already bound is refused rather than shadowed, so no
-registration order decides behaviour.
+registration order decides behaviour. Changing a provider is `replace` — a named
+operation an operator asked for, not a layer that wins by arriving later. The
+ledger entry moves with the binding, so uninstalling a seam's former owner
+cannot unbind a seam it no longer provides.
+
+**A seam is a protocol, and the protocol carries the authority contract.** This
+is the part TypeScript cannot copy. `HarnessFs` declares
+`^capabilities [(fs/ReadDir "/tmp")]` once; a provider may restate it or declare
+less, and the compiler rejects an impl that declares more — or that declares
+nothing, since an absent row means unchecked authority. So a provider is bounded
+by the interface it implements rather than by its own good manners, and the
+in-memory test double advertises `^capabilities []` where a reviewer can see it.
+
+The consumer names only the protocol. Swapping the provider therefore changes
+what the consumer does *and* what authority the whole product needs, without the
+consumer being touched — which is why the two commands above differ on exactly
+one line.
 
 ## Not done yet
 
-Seams here are plain string keys holding plain values. `docs/design.md` §3.2
-describes the version that matters — a seam as a *protocol* whose `^capabilities`
-row bounds every provider, so a plugin cannot exceed the interface it implements
-regardless of what its own module holds. That property is verified in the design
-doc and is the reason to build this; wiring it into the kernel is the next step.
+The seam *table* is still keyed by a plain string, so the kernel does not check
+that a value bound to `"HarnessFs"` actually implements `HarnessFs`. The
+contract holds anyway — it is enforced at the impl and at the call — but a
+mis-bound seam fails at first use rather than at `provide`.
+
+Model-visible ⟺ logged (`docs/design.md` §3.6) is designed and not built; a
+system recomposable at 3am needs replay more than a static one, not less.
+
+Runtime plugin install via `$runtime/load_sandboxed` is designed and not built.
 
 Module unload is deferred: uninstall removes a plugin's contributions, and its
 code stays resident (`docs/scoped-impls.md` §6).

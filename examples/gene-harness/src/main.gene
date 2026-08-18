@@ -6,9 +6,10 @@
 # no partial registration, one provider per seam, and an uninstall that removes
 # exactly one plugin's contributions.
 
-(import [new_harness install uninstall resolve provide installed bound_seams
-         Plugin HarnessError]
+(import [new_harness install uninstall resolve provide replace installed
+         bound_seams Plugin HarnessError]
   from "./kernel")
+(import [HarnessFs LocalFs MemFs head_tool] from "./seams")
 
 (fn fs_plugin [] : Plugin
   (Plugin ^id "fs_local" ^provides ["Fs"]
@@ -27,6 +28,18 @@
     ^activate (fn [] (fn [h, id]
       (provide h id "Log" "LOG-X")
       (fail (HarnessError ^message "boom during activate"))))))
+
+# Two providers of one seam. Each is a plugin; neither is the consumer's
+# business.
+(fn mem_fs_plugin [] : Plugin
+  (Plugin ^id "fs_mem" ^provides ["HarnessFs"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "HarnessFs" (MemFs ^files {^notes "mem:hello"}))))))
+
+(fn local_fs_plugin [] : Plugin
+  (Plugin ^id "fs_local_real" ^provides ["HarnessFs"]
+    ^activate (fn [] (fn [h, id]
+      (replace h id "HarnessFs" (LocalFs ^root "/tmp"))))))
 
 (fn show [label, thunk]
   ($println "  " label ($to_str (thunk))))
@@ -57,5 +70,39 @@
   ($println "  Llm gone?  " (try (resolve h "Llm") catch e "yes"))
   ($println "  Fs intact: " (resolve h "Fs"))
   ($println "  seams:     " (bound_seams h))
+  ($println "  installed: " (installed h))
+
+  # --- the seam payoff ------------------------------------------------------
+  #
+  # One consumer, two providers, and a swap that the consumer never sees. The
+  # authority contract rides along: the in-memory provider declared
+  # `^capabilities []` and runs anywhere, while the local one declared
+  # `(fs/ReadDir "/tmp")` and is refused without that grant. Swapping the
+  # provider therefore changes what the *product* is allowed to do, which is
+  # the property a plugin system built on good manners cannot offer.
+  ($println "-- a seam is a protocol carrying an authority contract --")
+  (install h (mem_fs_plugin))
+  ($println "  provider:  in-memory")
+  ($println "  head_tool: "
+    (try (head_tool (resolve h "HarnessFs") "notes")
+      catch e $"refused: ${e/message}"))
+
+  (install h (local_fs_plugin))
+  ($println "  provider:  local (replaced, live)")
+  ($println "  head_tool: "
+    (try (head_tool (resolve h "HarnessFs") "notes")
+      catch e $"refused: ${e/message}"))
+  ($println "  ^ same consumer, untouched. The provider changed, and with it")
+  ($println "    the authority the product needs: the local provider is")
+  ($println "    refused without --allow_read_dir /tmp and")
+  ($println "    serves the file with it. Run it both ways.")
+
+  # Replacement moved the ledger entry too. Uninstalling the plugin that
+  # *used* to own the seam must not unbind a seam it no longer provides —
+  # otherwise the live provider would vanish for a reason nothing explains.
+  ($println "  " (uninstall h "fs_mem"))
+  ($println "  seam survives its former owner: "
+    (try (head_tool (resolve h "HarnessFs") "notes")
+      catch e $"refused: ${e/message}"))
   ($println "  installed: " (installed h))
   nil)

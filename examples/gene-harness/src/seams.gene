@@ -1,0 +1,67 @@
+# Seam definitions, providers, and a consumer.
+#
+# This is the part docs/design.md §3.2 calls the reason to build the harness at
+# all: a seam is a `protocol`, and the protocol carries the *authority
+# contract*. A provider is bounded by the interface it implements rather than
+# by its own good manners, which is the thing a TypeScript harness cannot do.
+#
+# The three roles of a seam (design §1.1) are all here, deliberately — one role
+# alone is not a seam:
+#
+#   Service Definition  HarnessFs           the protocol, and the contract
+#   Service Provider    LocalFs / MemFs     two implementations
+#   Consumer            head_tool           written against the protocol
+#
+# See main.gene for the payoff: swapping the provider changes what the consumer
+# does *and* what authority the whole product needs, without the consumer being
+# touched.
+
+(mod seams)
+
+# --- Service Definition ----------------------------------------------------
+#
+# The `^capabilities` row is the authority envelope for every provider of this
+# seam. An impl may restate it or declare less; it may not declare more.
+#
+# **A provider must state its row explicitly.** Omitting `^capabilities`
+# entirely is rejected as *broadening* — an absent row means unchecked
+# authority, which is wider than any declared one. So reading a provider tells
+# you its authority without cross-referencing the protocol, which is the more
+# useful arrangement even though it costs a line.
+
+(protocol HarnessFs
+  (message read_text [path : Str] : Str
+    ^capabilities [(fs/ReadDir "/tmp")]))
+
+# --- Service Provider: the real one ----------------------------------------
+
+(type LocalFs ^props {^root Str})
+
+(impl HarnessFs for LocalFs
+  (message read_text [path : Str] : Str
+    ^capabilities [(fs/ReadDir "/tmp")]
+    # A real provider would read the file. What matters for the demo is the
+    # declared row: this message cannot be called without the grant, so a
+    # harness wired to this provider needs `--allow_read_dir /tmp` to run.
+    $"local:${self/root}/${path}"))
+
+# --- Service Provider: the test double -------------------------------------
+#
+# `^capabilities []` is narrower than the contract and therefore accepted. It
+# is also honest: an in-memory provider needs no filesystem authority, and
+# says so where anyone reading it can see.
+
+(type MemFs ^props {^files Any})
+
+(impl HarnessFs for MemFs
+  (message read_text [path : Str] : Str
+    ^capabilities []
+    (?? (self/files ~ get path) $"mem:<no ${path}>")))
+
+# --- Consumer --------------------------------------------------------------
+#
+# Written against the seam. It names `HarnessFs`, never `LocalFs` or `MemFs`,
+# which is what makes one provider swap move every consumer at once.
+
+(fn head_tool [fs, path : Str] : Str
+  (fs ~ HarnessFs:read_text path))

@@ -72,6 +72,38 @@
   (record_effect h id {^kind "seam" ^seam seam})
   seam)
 
+(fn forget_seam_effect [h : Harness, seam : Str]
+  # Drop the seam record from whichever plugin currently owns it. Keys are
+  # collected before the table is written so the update never runs against a
+  # map being iterated.
+  (var table (h/effects ~ get))
+  (var owners [])
+  (for [owner effects] in table (owners ~ push owner))
+  (for owner in owners
+    (var kept [])
+    (for e in (table ~ get owner)
+      (var drop false)
+      (if_yes (== ($to_str e/kind) "seam")
+        (if_yes (== ($to_str e/seam) seam) (set drop true)))
+      (if_not drop (kept ~ push e)))
+    (table ~ put owner kept)))
+
+(fn replace [h : Harness, id : Str, seam : Str, value] : Str
+  # §3.3.3: a bound seam is never shadowed by a second `provide`, because then
+  # registration order would decide behaviour. Replacement is this — a named
+  # operation the operator asked for.
+  #
+  # The ledger moves with the binding. Without that, uninstalling the *previous*
+  # owner would unbind a seam it no longer provides, and the new provider would
+  # vanish for a reason nothing in the log explains.
+  (var seams (h/seams ~ get))
+  (if_yes (== (seams ~ get seam) void)
+    (fail (HarnessError ^message $"seam ${seam} is not bound; provide it first")))
+  (forget_seam_effect h seam)
+  (seams ~ put seam value)
+  (record_effect h id {^kind "seam" ^seam seam})
+  seam)
+
 (fn resolve [h : Harness, seam : Str] : Any
   (var found ((h/seams ~ get) ~ get seam))
   (if_yes (== found void)
