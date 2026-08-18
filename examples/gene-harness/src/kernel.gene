@@ -28,6 +28,16 @@
                      ^activate Any
                      ^deactivate Any?})
 
+# `activate` is a thunk *returning* the activation function, called as
+# `((p/activate) h id)`. A prop can hold a callable directly and `(p/activate h
+# id)` works, so this looks like a layer worth deleting — it is not. docs/
+# design.md §5 records a closure-lifetime SIGSEGV for a closure that outlives
+# the frame that built it and is then called across a module boundary, which is
+# exactly the shape of an activation stored in a plugin value in one module and
+# run by the kernel in another. The thunk builds the inner closure fresh at each
+# activation instead, which also happens to be what re-activation after a
+# cascade (§3.3.5) wants.
+
 (type Harness ^props {^seams Any ^plugins Any ^status Any ^effects Any
                       ^log Any ^bus Any})
 
