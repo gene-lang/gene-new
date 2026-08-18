@@ -158,7 +158,7 @@ not mutate process routing and is unavailable under wasm.
 
 ### `event`
 
-Application pub/sub (docs/proposals/events.md). An event is an ordinary typed
+Application pub/sub (docs/events.md). An event is an ordinary typed
 value whose `^is` ancestry reaches `event/Event`; its concrete nominal type is
 its identity, and that ancestry is its matching hierarchy. There is no topic
 string, no topic registry, and no global bus.
@@ -179,7 +179,7 @@ string, no topic registry, and no global bus.
 (bus ~ publish
   (UserCreated ^user_id "u_123"))
 
-(subscription ~ cancel)
+subscription/~cancel
 ```
 
 Members: the `Event` root type; `Bus`, `Subscription`, `PublishResult`, and
@@ -226,9 +226,11 @@ fan-out, and error policy belong behind sink implementations rather than in the
 protocol.
 
 A version 1 bus is lane-owned and synchronous: subscribe, cancel, publish, and
-the handlers all run on the owning lane, and a bus is not `Send`. Cross-lane
-delivery is an explicit adapter that validates the frozen event and publishes
-it on the destination bus's lane.
+the handlers all run on the owning lane. That ownership is enforced by a bus
+not being `Send` — there is no lane check on the operations themselves, so what
+stops cross-lane use is that the bus cannot be transferred in the first place.
+Cross-lane delivery is an explicit adapter that validates the frozen event and
+publishes it on the destination bus's lane.
 
 The runtime instrumentation half of the proposal — `runtime/EventStream` and
 the `runtime/...` event families — is not implemented yet; see

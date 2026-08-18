@@ -160,7 +160,7 @@ what §3 does — the objection is to *order deciding*, not to *change happening
 these cases.** A `next()` chain's behaviour depends on who registered first —
 again the ordering objection, not a dynamism one. Gene has two better-typed options
 already: protocols for *substitution*, and the event bus in
-`docs/proposals/events.md` for *observation*. Middleware earns its place only
+`docs/events.md` for *observation*. Middleware earns its place only
 where a listener must genuinely intercept and transform a value in a
 chain — realistically `tools/pre-execute` gating and `agent/request` assembly —
 and those should be explicitly modelled, not a general mechanism.
@@ -188,7 +188,7 @@ a value — Gene wants the second.
 | Plugin distribution | packages, `package.gene`, dependency resolution | shipped (Stage 3) |
 | Bounding an untrusted plugin | protocol row + import-site ceilings | shipped |
 | Reversible effects | `ensure`, scoped-impl activation/reload | partial |
-| Typed events | `docs/proposals/events.md` | proposal |
+| Typed events | `docs/events.md` | proposal |
 | Session log | serde, event logs (`examples/ai_agent/home/events.gene`) | shipped |
 | `cordis.yml` | a Gene data manifest seeding the live table | pattern exists |
 | Plugin uninstall | provider removal via `Map/delete`; module unload no (`scoped-impls.md` §6) | partial |
@@ -434,7 +434,7 @@ Two mechanisms, chosen by what the extension does:
 
 - **Substitution** — replace behaviour: a seam, resolved as above.
 - **Observation** — watch behaviour: the event bus from
-  `docs/proposals/events.md`. Handlers cannot alter the value, which is the
+  `docs/events.md`. Handlers cannot alter the value, which is the
   point; a tracing plugin should not be able to change a model request.
 
 Interception — genuinely transforming a value in a chain — is restricted to a

@@ -1,4 +1,4 @@
-## The application event bus — `gene/event` (docs/proposals/events.md §4.1-§8).
+## The application event bus — `gene/event` (docs/events.md §4.1-§8).
 ##
 ## Included into `vm.nim` after `defineBuiltinType`, so the four things this
 ## needs from the VM — `applyCall`, `freezeValue`, `builtinBinding`, and the
@@ -359,9 +359,7 @@ proc biEventBusSubscribe(args: openArray[Value], call: ptr NativeCall): Value
         raiseEventError(scope, "EventTypeError",
           "subscribe does not accept ^" & name)
   let index = int32(data.subs.len)
-  inc data.nextSeqNo
-  data.subs.add EventSubscriptionEntry(seqNo: data.nextSeqNo,
-                                       handler: handler,
+  data.subs.add EventSubscriptionEntry(handler: handler,
                                        selectorTypeId: resolved.id,
                                        exact: resolved.exact,
                                        once: once,
@@ -371,7 +369,7 @@ proc biEventBusSubscribe(args: openArray[Value], call: ptr NativeCall): Value
   else:
     addToBucket(data.descendantBuckets, resolved.id, index)
   inc data.generation
-  newEventSubscription(args[0], index, data.nextSeqNo)
+  newEventSubscription(args[0], index)
 
 proc publishResultValue(scope: Scope, matched, delivered, failed: int,
                         errors: sink seq[Value]): Value =
@@ -721,7 +719,14 @@ proc registerEventNamespace(root: Scope) =
   let eventFrozenError = defineEventError("EventFrozenError", NIL)
   let eventPublishError = defineEventError("EventPublishError", NIL)
   let eventRecursionError = defineEventError("EventRecursionError", NIL)
-  let subscriptionError = defineEventError("SubscriptionError", NIL)
+  # §18 also lists `SubscriptionError` ("invalid bus/subscription ownership
+  # operation"). It is deliberately *not* registered: the only ownership
+  # operation v1 could reject is cross-lane use, and that is enforced by the
+  # bus not being `Send` rather than by a check that raises — so there is no
+  # trigger. §18 makes exactly this argument itself when it rules out
+  # `RuntimeEventSinkError`: "Introducing an error type with no raise site
+  # would be dead interface surface." It lands with the lane check that needs
+  # it, and that change should name the specific trigger.
   let eventBusClosedError = defineEventError("EventBusClosedError", NIL)
 
   let eventScope = newScope(root)
@@ -765,9 +770,15 @@ proc registerEventNamespace(root: Scope) =
   # serialization, and error policy belong behind sink implementations instead
   # of expanding the common interface.
   #
-  # `emit` declares its error rather than leaving it dynamic: §7.2 and §12.3
-  # make `EventPublishError` the entire mechanism by which an attached
-  # `event/collect` bus cannot silently swallow observer failures.
+  # §5 spells the message `^errors [EventPublishError]`, and this declaration
+  # does **not** carry that: `newProtocol` has no errors parameter, so a
+  # natively registered protocol cannot state a checked error row the way a
+  # Gene `(protocol ...)` declaration can. The *guarantee* is implemented —
+  # `emit` raises `EventPublishError` on a nonzero `failed` count under either
+  # policy (§7.2), which is the entire mechanism by which an attached
+  # `event/collect` bus cannot silently swallow observer failures, and the
+  # spec suite pins it — but it is unchecked here rather than declared.
+  # Declaring it needs `newProtocol` to accept per-message error types.
   let eventSinkProtocol = newProtocol("EventSink", ["emit"],
                                       scope = eventScope)
   eventScope.define("EventSink", eventSinkProtocol)
@@ -844,7 +855,6 @@ proc registerEventNamespace(root: Scope) =
   eventScope.define("EventFrozenError", eventFrozenError)
   eventScope.define("EventPublishError", eventPublishError)
   eventScope.define("EventRecursionError", eventRecursionError)
-  eventScope.define("SubscriptionError", subscriptionError)
   eventScope.define("EventBusClosedError", eventBusClosedError)
 
   root.define("event", newNamespace("event", eventScope))

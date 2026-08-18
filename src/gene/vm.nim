@@ -3833,7 +3833,7 @@ proc freezeValue(value: Value): Value =
       items[i] = freezeValue(item)
     # `deepFrozen` composes by construction: every child came out of a
     # recursive `freezeValue`, so it is already deep-frozen and the invariant
-    # holds without re-deriving it (docs/proposals/events.md §6.5).
+    # holds without re-deriving it (docs/events.md §6.5).
     newList(items, immutable = true, deepFrozen = true)
   of vkMap:
     newMap(freezeEntries(value.mapEntries), immutable = true,

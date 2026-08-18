@@ -4239,7 +4239,7 @@ suite "spec — pattern destructuring from design":
                "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
                "(var first-hits 0) " &
                "(for x in source " &
-               "  (if (== x 1) (set first-hits (hits ~ get)))) " &
+               "  (if (== x 1) (set first-hits hits/~get))) " &
                "first-hits",
                "1")
     check_eval("(var hits ($cell 0)) " &
@@ -4247,7 +4247,7 @@ suite "spec — pattern destructuring from design":
                "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
                "(try (for [a b] in source nil) " &
                " catch (MatchError ^message m) nil) " &
-               "[(hits ~ get) (source ~ has_next)]",
+               "[hits/~get (source ~ has_next)]",
                "[1 false]")
 
   test "for treats strings as char streams":
@@ -4314,7 +4314,7 @@ suite "spec — pattern destructuring from design":
                "(var source ($map ($to_stream [1 2 3]) " &
                "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
                "(for x in source (break)) " &
-               "[(hits ~ get) (source ~ has_next)]",
+               "[hits/~get (source ~ has_next)]",
                "[1 false]")
     expect GeneError:
       discard compileSource("(break)")
@@ -5186,12 +5186,12 @@ suite "spec — absence-guarded sends (design §3)":
                "(fn bump [] (hits ~ update (fn [n] (+ n 1))) 1) " &
                "(var a (nil ?~ add (bump))) " &
                "(var b ((X ^n 1) ?~ add (bump))) " &
-               "[a b (hits ~ get)]",
+               "[a b hits/~get]",
                "[nil 2 1]")
     check_eval(guarded &
                "(var seen ($cell 0)) " &
                "(fn recv [] (seen ~ update (fn [n] (+ n 1))) nil) " &
-               "[((recv) ?~ msg) (seen ~ get)]",
+               "[((recv) ?~ msg) seen/~get]",
                "[nil 1]")
 
   test "?~ does not change what plain ~ means for nil":
@@ -5234,7 +5234,7 @@ suite "spec — absence-guarded sends (design §3)":
                "(type Y ^props {} (message k [a, ^b : Int = 0] : Int (+ a b))) " &
                "(var hits ($cell 0)) " &
                "(fn bump [] (hits ~ update (fn [n] (+ n 1))) 5) " &
-               "[((Y) ?~ k 1 ^b (bump)) (nil ?~ k 1 ^b (bump)) (hits ~ get)]",
+               "[((Y) ?~ k 1 ^b (bump)) (nil ?~ k 1 ^b (bump)) hits/~get]",
                "[6 nil 1]")
     check_eval(guarded &
                "(type Z ^props {} (message sum [xs...] : Int ($size xs))) " &
@@ -5710,11 +5710,11 @@ suite "spec — binding forms from design §12.1":
 suite "spec — cells from design":
   test "Cell get, set, swap, and update are explicit mutation":
     check_eval("(var count ($cell 0)) " &
-               "[(count ~ get) " &
+               "[count/~get " &
                " (count ~ set 10) " &
                " (count ~ swap 20) " &
                " (count ~ update (fn [x] (+ x 1))) " &
-               " (count ~ get)]",
+               " count/~get]",
                "[0 10 10 21 21]")
 
   test "typed cells retain and enforce their value type":
@@ -5724,7 +5724,7 @@ suite "spec — cells from design":
                "  catch (TypeError ^where where) where) " &
                " (try (count ~ update (fn [n] \"bad\")) " &
                "  catch (TypeError ^where where) where) " &
-               " (count ~ get)]",
+               " count/~get]",
                "[2 \"Cell/swap value\" \"Cell/update result\" 2]")
     check_eval("(try (do (var count : (Cell Int) ($cell \"bad\")) count) " &
                " catch (TypeError ^expected expected) expected)",
@@ -5746,7 +5746,7 @@ suite "spec — cells from design":
     check_eval("(alias IntCell (Cell Int)) " &
                "(var count : IntCell ($cell 1)) " &
                "[(try (count ~ set \"bad\") " &
-               "  catch (TypeError ^where where) where) (count ~ get)]",
+               "  catch (TypeError ^where where) where) count/~get]",
                "[\"Cell/set value\" 1]")
 
   test "typed cells retain their invariant inside container boundaries":
@@ -5928,7 +5928,7 @@ suite "spec — streams from design":
                "(var s ($take source 1)) " &
                "[(s ~ next) " &
                " (s ~ has_next) " &
-               " (hits ~ get) " &
+               " hits/~get " &
                " (source ~ has_next)]",
                "[1 false 1 true]")
 
@@ -5948,9 +5948,9 @@ suite "spec — streams from design":
     check_eval("(var hits ($cell 0)) " &
                "(var s ($map ($to_stream [1 2]) " &
                "            (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
-               "[(hits ~ get) " &
+               "[hits/~get " &
                " (s ~ next) " &
-               " (hits ~ get)]",
+               " hits/~get]",
                "[0 1 1]")
 
   test "yield functions return lazy streams":
@@ -5961,11 +5961,11 @@ suite "spec — streams from design":
                "  (hits ~ set 2) " &
                "  (yield 20)) " &
                "(var s (gen)) " &
-               "[(hits ~ get) " &
+               "[hits/~get " &
                " (s ~ next) " &
-               " (hits ~ get) " &
+               " hits/~get " &
                " (s ~ next) " &
-               " (hits ~ get) " &
+               " hits/~get " &
                " (s ~ has_next)]",
                "[0 10 1 20 2 false]")
 
@@ -5988,11 +5988,11 @@ suite "spec — streams from design":
                "(fn copy [s] : (Stream Int Never) " &
                "  (for x in s (yield x))) " &
                "(var out (copy source)) " &
-               "[(hits ~ get) " &
+               "[hits/~get " &
                " (out ~ next) " &
-               " (hits ~ get) " &
+               " hits/~get " &
                " (out ~ next) " &
-               " (hits ~ get)]",
+               " hits/~get]",
                "[0 1 1 2 2]")
     check_eval("(var hits ($cell 0)) " &
                "(var source ($map ($to_stream [1 2 3]) " &
@@ -6004,7 +6004,7 @@ suite "spec — streams from design":
                "(var out (take-one source)) " &
                "[(out ~ next) " &
                " (out ~ has_next) " &
-               " (hits ~ get) " &
+               " hits/~get " &
                " (source ~ has_next)]",
                "[1 false 2 false]")
 
@@ -6082,7 +6082,7 @@ suite "spec — streams from design":
                "(var closed (gen)) " &
                "(closed ~ next) " &
                "(closed ~ close) " &
-               "[done (log ~ get)]",
+               "[done log/~get]",
                "[false [inner outer inner outer]]")
     expect GeneError:
       discard compileSource("(fn bad [] : (Stream Int Never) " &
@@ -6601,7 +6601,7 @@ suite "spec — actors from design":
                "    (gate ~ recv) " &
                "    (seen ~ set msg) " &
                "    ($actor/continue msg)))) " &
-               "(var before [(a ~ try_send 7) (seen ~ get)]) " &
+               "(var before [(a ~ try_send 7) seen/~get]) " &
                "(gate ~ send 1) " &
                "($sleep 0) " &
                "before",
@@ -6872,7 +6872,7 @@ suite "spec — actors from design":
                "  ($sleep 80) " &          # window expires; budget refills
                "  (a ~ send 1) " &
                "  (a ~ send 5) " &
-               "  (seen ~ get))",
+               "  seen/~get)",
                "10")
 
   test "supervisor owns actors and restarts after recoverable handler errors":
@@ -6889,7 +6889,7 @@ suite "spec — actors from design":
                "          ($actor/continue (+ state msg))))))) " &
                "  (a ~ send 1) " &
                "  (a ~ send 5) " &
-               "  (seen ~ get))",
+               "  seen/~get)",
                "10")
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &
@@ -6909,10 +6909,10 @@ suite "spec — actors from design":
                "  (var event (events ~ recv)) " &
                "  (var tries 0) " &
                "  (while (< tries 100) " &
-               "    (if (== (seen ~ get) 0) " &
+               "    (if (== seen/~get 0) " &
                "      (do ($sleep 1) (set tries (+ tries 1))) " &
                "      (set tries 100))) " &
-               "  [(seen ~ get) " &
+               "  [seen/~get " &
                "   (match event " &
                "     (when (ActorFailure ^failed_message failed " &
                "                         ^error (Boom ^message m) " &
@@ -7014,7 +7014,7 @@ suite "spec — actors from design":
                "  (a ~ send 1) " &
                "  (a ~ send 5) " &
                "  ($sleep 1) " &
-               "  (seen ~ get))",
+               "  seen/~get)",
                "10")
     check_eval("(var a (supervisor ^strategy stop " &
                "  ($actor/spawn ^init (fn [] 0) " &
@@ -7984,8 +7984,8 @@ suite "spec — os and json from ai-agent plan":
                "(var seen ($cell [])) " &
                "(var r (exec_stream ^cmd \"printf\" ^args [\"a\\nb\\n\"] " &
                "                    ^stdout_line (fn [line] " &
-               "                      (seen ~ set ((to_stream [line]) ~ into (seen ~ get)))))) " &
-               "[r/status r/stdout (seen ~ get)]",
+               "                      (seen ~ set ((to_stream [line]) ~ into seen/~get))))) " &
+               "[r/status r/stdout seen/~get]",
                "[0 \"a\\nb\\n\" [\"a\" \"b\"]]")
 
   test "os/exec_stdio runs with parent streams and returns status":
@@ -8045,10 +8045,10 @@ suite "spec — os and json from ai-agent plan":
                "         ^args [\"a\\nb\\n\"] ^stdout_chan ch)) " &
                "(var seen ($cell [])) (var line nil) " &
                "(try (loop (set line (ch ~ recv)) " &
-               "  (seen ~ set ((to_stream [line]) ~ into (seen ~ get)))) " &
+               "  (seen ~ set ((to_stream [line]) ~ into seen/~get))) " &
                "catch (ChannelClosed) nil) " &
                "(var r (await t)) " &
-               "[(seen ~ get) r/stdout r/status]",
+               "[seen/~get r/stdout r/status]",
                "[[\"a\" \"b\"] \"a\\nb\\n\" 0]")
 
   test "os turn interrupt polling is scoped and consumptive":
@@ -8914,7 +8914,7 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
     check "animation-name: fade__" & digest & ";" in cssText
     check "color: fade;" in cssText
 
-suite "spec — application event bus (docs/proposals/events.md)":
+suite "spec — application event bus (docs/events.md)":
   const orderFamily =
     "(ns order " &
     "  (type Event ^is $event/Event) " &
@@ -8932,7 +8932,7 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(bus ~ subscribe PaymentReceived record) " &
       "(var r (bus ~ publish (PaymentReceived ^payment_id \"p_1\" " &
       "                                       ^amount 50.0))) " &
-      "[r/matched r/delivered r/failed (seen ~ get)]",
+      "[r/matched r/delivered r/failed seen/~get]",
       "[1 1 0 \"p_1\"]")
 
   test "only event/Event descendants can be published":
@@ -8947,43 +8947,43 @@ suite "spec — application event bus (docs/proposals/events.md)":
   test "a family base type recursively matches its nominal descendants":
     check_eval(orderFamily &
       "(var hits ($cell [])) " &
-      "(fn note [e] ((hits ~ get) ~ push \"x\")) " &
+      "(fn note [e] (hits/~get ~ push \"x\")) " &
       "(var bus ($event/Bus)) " &
       "(bus ~ subscribe order/Event note) " &
       "(bus ~ subscribe $event/Event note) " &
       "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
       "(bus ~ publish (order/Shipped ^order_id \"o1\")) " &
-      "((hits ~ get) ~ size)",
+      "(hits/~get ~ size)",
       "4")
 
   test "event/exact excludes descendants":
     check_eval(orderFamily &
       "(type Rush ^is order/Placed) " &
       "(var hits ($cell 0)) " &
-      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(fn note [e] (hits ~ set (+ hits/~get 1))) " &
       "(var bus ($event/Bus)) " &
       "(bus ~ subscribe ($event/exact order/Placed) note) " &
       "(bus ~ publish (Rush ^order_id \"o1\")) " &
-      "(var after_descendant (hits ~ get)) " &
+      "(var after_descendant hits/~get) " &
       "(bus ~ publish (order/Placed ^order_id \"o2\")) " &
-      "[after_descendant (hits ~ get)]",
+      "[after_descendant hits/~get]",
       "[0 1]")
 
   test "a concrete type selector still matches its own descendants":
     check_eval(orderFamily &
       "(type Rush ^is order/Placed) " &
       "(var hits ($cell 0)) " &
-      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(fn note [e] (hits ~ set (+ hits/~get 1))) " &
       "(var bus ($event/Bus)) " &
       "(bus ~ subscribe order/Placed note) " &
       "(bus ~ publish (Rush ^order_id \"o1\")) " &
-      "(hits ~ get)",
+      "hits/~get",
       "1")
 
   test "matching preserves subscription order across exact and family buckets":
     check_eval(orderFamily &
       "(var log ($cell [])) " &
-      "(fn note [tag] ((log ~ get) ~ push tag)) " &
+      "(fn note [tag] (log/~get ~ push tag)) " &
       "(fn family [e] (note \"family\")) " &
       "(fn concrete [e] (note \"concrete\")) " &
       "(fn exact [e] (note \"exact\")) " &
@@ -8992,7 +8992,7 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(bus ~ subscribe ($event/exact order/Placed) exact) " &
       "(bus ~ subscribe order/Event family) " &
       "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
-      "(log ~ get)",
+      "log/~get",
       "[\"concrete\" \"exact\" \"family\"]")
 
   test "event matching uses declaration identity, not printed names":
@@ -9002,24 +9002,24 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(ns a (type Ping ^is $event/Event)) " &
       "(ns b (type Ping ^is $event/Event)) " &
       "(var hits ($cell 0)) " &
-      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(fn note [e] (hits ~ set (+ hits/~get 1))) " &
       "(var bus ($event/Bus)) " &
       "(bus ~ subscribe a/Ping note) " &
       "(bus ~ publish (b/Ping)) " &
-      "(var after_other (hits ~ get)) " &
+      "(var after_other hits/~get) " &
       "(bus ~ publish (a/Ping)) " &
-      "[after_other (hits ~ get)]",
+      "[after_other hits/~get]",
       "[0 1]")
 
   test "separate overlapping subscriptions invoke the handler separately":
     check_eval(orderFamily &
       "(var hits ($cell 0)) " &
-      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(fn note [e] (hits ~ set (+ hits/~get 1))) " &
       "(var bus ($event/Bus)) " &
       "(bus ~ subscribe order/Event note) " &
       "(bus ~ subscribe order/Placed note) " &
       "(var r (bus ~ publish (order/Placed ^order_id \"o1\"))) " &
-      "[r/matched (hits ~ get)]",
+      "[r/matched hits/~get]",
       "[2 2]")
 
   test "subscribe rejects a handler too narrow for its selector":
@@ -9059,7 +9059,7 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(var e (order/Placed ^order_id \"o_1\")) " &
       "(bus ~ publish e) " &
       "(set e/order_id \"o_2\") " &
-      "(var delivered (seen ~ get)) " &
+      "(var delivered seen/~get) " &
       "[e/order_id delivered/order_id]",
       "[\"o_2\" \"o_1\"]")
 
@@ -9072,7 +9072,7 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(bus ~ subscribe order/Placed a) " &
       "(bus ~ subscribe order/Placed b) " &
       "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
-      "(same? (first ~ get) (second ~ get))",
+      "(same? first/~get second/~get)",
       "true")
 
   test "cancellation is explicit and idempotent":
@@ -9080,23 +9080,23 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(fn h [e] e) " &
       "(var bus ($event/Bus)) " &
       "(var s (bus ~ subscribe order/Placed h)) " &
-      "(var first (s ~ cancel)) " &
-      "(var second (s ~ cancel)) " &
+      "(var first s/~cancel) " &
+      "(var second s/~cancel) " &
       "(var r (bus ~ publish (order/Placed ^order_id \"o1\"))) " &
-      "[first second (s ~ active?) r/matched]",
+      "[first second s/~active? r/matched]",
       "[true false false 0]")
 
   test "a subscription added during publication starts with the next event":
     check_eval(orderFamily &
       "(var hits ($cell 0)) " &
-      "(fn late [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(fn late [e] (hits ~ set (+ hits/~get 1))) " &
       "(var bus ($event/Bus)) " &
       "(fn adder [e] (bus ~ subscribe order/Placed late)) " &
       "(bus ~ subscribe order/Placed adder) " &
       "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
-      "(var during (hits ~ get)) " &
+      "(var during hits/~get) " &
       "(bus ~ publish (order/Placed ^order_id \"o2\")) " &
-      "[during (hits ~ get)]",
+      "[during hits/~get]",
       "[0 1]")
 
   test "a one-shot subscription is consumed before its handler runs":
@@ -9105,19 +9105,19 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(var hits ($cell 0)) " &
       "(var bus ($event/Bus)) " &
       "(fn warm [e] " &
-      "  (hits ~ set (+ (hits ~ get) 1)) " &
-      "  (if (< (hits ~ get) 3) " &
+      "  (hits ~ set (+ hits/~get 1)) " &
+      "  (if (< hits/~get 3) " &
       "    (bus ~ publish (order/Placed ^order_id \"nested\")))) " &
       "(bus ~ subscribe order/Placed warm ^once true) " &
       "(bus ~ publish (order/Placed ^order_id \"o1\")) " &
-      "[(hits ~ get) (bus ~ subscription_count)]",
+      "[hits/~get bus/~subscription_count]",
       "[1 0]")
 
   test "nested publication is depth-first":
     check_eval(
       "(type Outer ^is $event/Event) (type Inner ^is $event/Event) " &
       "(var log ($cell [])) " &
-      "(fn note [tag] ((log ~ get) ~ push tag)) " &
+      "(fn note [tag] (log/~get ~ push tag)) " &
       "(var bus ($event/Bus)) " &
       "(fn inner [e] (note \"inner\")) " &
       "(fn outer_a [e] (note \"a-start\") (bus ~ publish (Inner)) " &
@@ -9127,7 +9127,7 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(bus ~ subscribe Outer outer_a) " &
       "(bus ~ subscribe Outer outer_b) " &
       "(bus ~ publish (Outer)) " &
-      "(log ~ get)",
+      "log/~get",
       "[\"a-start\" \"inner\" \"a-end\" \"b\"]")
 
   test "nested publication past the bus limit raises EventRecursionError":
@@ -9141,9 +9141,9 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(bus ~ subscribe Ping recurse) " &
       "(try (bus ~ publish (Ping)) " &
       "  catch (EventPublishError ^errors errs) " &
-      "    (var inner (errs ~ first)) " &
-      "    (var innermost (inner/errors ~ first)) " &
-      "    [(errs ~ size) innermost/limit])",
+      "    (var inner errs/~first) " &
+      "    (var innermost inner/errors/~first) " &
+      "    [errs/~size innermost/limit])",
       "[1 2]")
 
   test "handler failures do not prevent later handlers from running":
@@ -9156,7 +9156,7 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(bus ~ subscribe Ping boom) " &
       "(bus ~ subscribe Ping ok) " &
       "(var r (bus ~ publish (Ping))) " &
-      "[r/matched r/delivered r/failed (ran ~ get) (r/errors ~ size)]",
+      "[r/matched r/delivered r/failed ran/~get r/errors/~size]",
       "[2 1 1 true 1]")
 
   test "raise_after is the default and reports the ordered failures":
@@ -9167,7 +9167,7 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(bus ~ subscribe Ping boom) " &
       "(try (bus ~ publish (Ping)) " &
       "  catch (EventPublishError ^failed f ^errors errs) " &
-      "    [f (errs ~ size)])",
+      "    [f errs/~size])",
       "[1 1]")
 
   test "EventSink:emit reports handler failures under collect too":
@@ -9189,10 +9189,10 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(fn h [e] e) " &
       "(var bus ($event/Bus)) " &
       "(var s (bus ~ subscribe order/Placed h)) " &
-      "(var first (bus ~ close)) " &
-      "(var second (bus ~ close)) " &
-      "[first second (bus ~ closed?) (bus ~ subscription_count) " &
-      " (s ~ cancel) " &
+      "(var first bus/~close) " &
+      "(var second bus/~close) " &
+      "[first second bus/~closed? bus/~subscription_count " &
+      " s/~cancel " &
       " (try (bus ~ publish (order/Placed ^order_id \"o1\")) " &
       "   catch (EventBusClosedError) \"closed\") " &
       " (try (bus ~ subscribe order/Placed h) " &
@@ -9205,9 +9205,9 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(var rec ($event/RecordingSink)) " &
       "(rec ~ EventSink:emit (Ping ^n 1)) " &
       "(rec ~ EventSink:emit (Ping ^n 2)) " &
-      "(var before ((rec ~ events) ~ size)) " &
-      "(rec ~ clear) " &
-      "[before ((rec ~ events) ~ size)]",
+      "(var before rec/~events/~size) " &
+      "rec/~clear " &
+      "[before rec/~events/~size]",
       "[2 0]")
 
   test "a composite sink fans out in order and the null sink discards":
@@ -9216,11 +9216,11 @@ suite "spec — application event bus (docs/proposals/events.md)":
       "(var rec ($event/RecordingSink)) " &
       "(var bus ($event/Bus)) " &
       "(var hits ($cell 0)) " &
-      "(fn note [e] (hits ~ set (+ (hits ~ get) 1))) " &
+      "(fn note [e] (hits ~ set (+ hits/~get 1))) " &
       "(bus ~ subscribe Ping note) " &
       "(var sink ($event/CompositeSink [rec bus ($event/NullSink)])) " &
       "(sink ~ EventSink:emit (Ping ^n 1)) " &
-      "[((rec ~ events) ~ size) (hits ~ get) ((sink ~ sinks) ~ size)]",
+      "[rec/~events/~size hits/~get sink/~sinks/~size]",
       "[1 1 3]")
 
   test "a bus cannot be frozen, sent, or published as an event":

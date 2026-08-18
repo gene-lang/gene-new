@@ -121,7 +121,7 @@ type
     vkFfiLibrary ## loaded native library handle
     vkFfiCallable ## dynamically bound foreign callable
     vkLogger    ## immutable structured diagnostic logger handle
-    vkEventBus  ## application event bus (docs/proposals/events.md §7)
+    vkEventBus  ## application event bus (docs/events.md §7)
     vkEventSubscription ## opaque handle returned by `Bus/subscribe` (§7.1)
     vkEventMatcher ## `event/exact T` selector value (§6.3)
     vkRecordingSink ## `event/RecordingSink` — test sink recording every event
@@ -931,7 +931,7 @@ type
     capabilityContext: CapabilityContext
 
   EventErrorPolicy* = enum
-    ## docs/proposals/events.md §8. `eepRaiseAfter` is the default: every
+    ## docs/events.md §8. `eepRaiseAfter` is the default: every
     ## matching handler is attempted and one `EventPublishError` carries the
     ## ordered failures afterwards. `eepCollect` always returns a
     ## `PublishResult` from `publish` and leaves the failures to the publisher.
@@ -945,7 +945,6 @@ type
     ## clears `active` and drops the handler reference, so the sequence index
     ## doubles as the stable subscription identity the buckets and the resolved
     ## -match cache point at.
-    seqNo*: int64            # subscription sequence number = dispatch order
     handler*: Value
     selectorTypeId*: int32   # compact event type id the selector names
     exact*: bool             # `event/exact T` — descendants excluded
@@ -971,13 +970,11 @@ type
     errorPolicy*: EventErrorPolicy
     nestingLimit*: int
     nestingDepth*: int
-    nextSeqNo*: int64
     generation*: int64
     subs*: seq[EventSubscriptionEntry]
     descendantBuckets*: Table[int32, seq[int32]]
     exactBuckets*: Table[int32, seq[int32]]
     matchCache*: Table[int32, EventMatchCacheEntry]
-    laneId*: int             # owning lane (events.md §9.1)
 
   EventSubscriptionData* = ref object of GeneObjectData
     ## A subscription handle. The bus edge is **non-owning**: a subscription
@@ -985,7 +982,6 @@ type
     ## back would make every handle retain the whole bus.
     busBits*: uint64
     index*: int32            # index into EventBusData.subs
-    seqNo*: int64
 
   EventMatcherData* = ref object of GeneObjectData
     ## `event/exact T`. Opaque, immutable, and deliberately not called
@@ -1054,7 +1050,7 @@ type
                           # whose instances are a native value kind rather than
                           # a schema of props.
     eventTypeId: int32    # compact event type id, or 0 for a non-event type
-                          # (docs/proposals/events.md §6.4). Assigned eagerly at
+                          # (docs/events.md §6.4). Assigned eagerly at
                           # `newType`, so ID allocation is a declaration-phase
                           # property and no publish site races for a counter.
     eventMatchIds: seq[int32]
@@ -5963,7 +5959,7 @@ proc loggerCapabilityContext*(v: Value): CapabilityContext =
   LoggerData(objData(v)).capabilityContext
 
 # ---------------------------------------------------------------------------
-# Application event bus storage (docs/proposals/events.md §6-§8)
+# Application event bus storage (docs/events.md §6-§8)
 # ---------------------------------------------------------------------------
 #
 # Only the storage lives here. Matching, dispatch, freezing, and error policy
@@ -5975,10 +5971,9 @@ const defaultEventNestingLimit* = 16
   ## is legal; unbounded recursion through it is not.
 
 proc newEventBus*(errorPolicy: EventErrorPolicy = eepRaiseAfter,
-                  nestingLimit = defaultEventNestingLimit,
-                  laneId = 0): Value =
+                  nestingLimit = defaultEventNestingLimit): Value =
   boxObject(EventBusData(objKind: okEventBus, errorPolicy: errorPolicy,
-                         nestingLimit: nestingLimit, laneId: laneId,
+                         nestingLimit: nestingLimit,
                          descendantBuckets: initTable[int32, seq[int32]](),
                          exactBuckets: initTable[int32, seq[int32]](),
                          matchCache: initTable[int32, EventMatchCacheEntry]()))
@@ -6003,15 +5998,10 @@ proc eventBusNestingLimit*(v: Value): int =
   requireEventBus(v)
   busData(v).nestingLimit
 
-proc eventBusLaneId*(v: Value): int =
-  requireEventBus(v)
-  busData(v).laneId
-
-proc newEventSubscription*(bus: Value, index: int32, seqNo: int64): Value =
+proc newEventSubscription*(bus: Value, index: int32): Value =
   requireEventBus(bus)
   boxObject(EventSubscriptionData(objKind: okEventSubscription,
-                                  busBits: bus.bits, index: index,
-                                  seqNo: seqNo))
+                                  busBits: bus.bits, index: index))
 
 template subscriptionData*(v: Value): EventSubscriptionData =
   EventSubscriptionData(objData(v))
@@ -6221,7 +6211,7 @@ proc newGeneratorStream*(code: FunctionCode, scope: Scope,
                        generatorStack: @[], generatorIp: 0))
 
 # ---------------------------------------------------------------------------
-# Compact event type identity (docs/proposals/events.md §6.4)
+# Compact event type identity (docs/events.md §6.4)
 # ---------------------------------------------------------------------------
 
 var
@@ -6233,13 +6223,21 @@ proc nextEventTypeId(): int32 =
   ## Ids identify *type declarations*, not names: two modules declaring the
   ## same printed path get different ids.
   ##
-  ## The counter is process-wide rather than per-application, which the
-  ## proposal writes as "application-owned". Nothing is registered in it and
-  ## nothing can be looked up from it — it hands out an opaque monotonic
-  ## number and keeps no table — so the property §6.4 is protecting (no global
-  ## topic namespace, nothing to collide in or observe) holds either way, and a
-  ## process-wide counter is what lets the `event/Event` root be the same
-  ## built-in singleton every Application shares.
+  ## **The counter is process-wide, where §6.4 says "the application owns the
+  ## counter". That is a real deviation, not a reading of the spec.** What §6.4
+  ## is protecting still holds: nothing is registered here and nothing can be
+  ## looked up from it — it hands out an opaque monotonic number and keeps no
+  ## table — so there is still no global topic namespace, nothing to collide
+  ## in, and nothing a module can observe. What is lost is only that two
+  ## Applications in one process draw from one sequence instead of two, which
+  ## no interface exposes.
+  ##
+  ## Note this is *not* justified by shared type identity: `event/Event` is
+  ## built per Application in `registerEventNamespace`, so each Application
+  ## already has its own root with its own id. Making the counter per
+  ## Application is therefore possible; it needs `newType` to reach an
+  ## Application, and `newType` takes a `Scope` that is nil on the builtins
+  ## path.
   acquire(eventTypeIdLock)
   try:
     inc eventTypeIdCounter
@@ -6554,14 +6552,22 @@ proc isImmutable*(v: Value): bool =
   else: false
 
 proc isDeepFrozen*(v: Value): bool =
-  ## "Nothing reachable from here can change" — the O(1) answer
-  ## `event/Bus publish` needs to skip a redundant freeze traversal
-  ## (docs/proposals/events.md §6.5/§17.3).
+  ## "Nothing reachable from here can change" — the answer `event/Bus publish`
+  ## needs to skip a redundant freeze traversal (docs/events.md §6.5/§17.3).
   ##
   ## Distinct from `isImmutable`, which `freeze_shallow` can set on a container
   ## whose children are untouched. Only the deep `freeze` builder and a
   ## construction path that assembles from already-deep-frozen parts may set the
   ## bit, so a true answer composes by construction rather than by re-derivation.
+  ##
+  ## **It is O(1) on the node/list/map spine, and not on `Set`/`HashMap`.**
+  ## §17.3 asks for O(1); those two kinds carry no deep bit of their own —
+  ## `freeze` rebuilds them through `buildSet`/`buildHashMap`, which take no
+  ## flag — so they are walked. The walk terminates fast in practice because
+  ## set elements and hash-map keys must be hash-stable, which already excludes
+  ## most deep structure, but an event whose payload is a large set pays a scan
+  ## per publish rather than a bit read. Closing the gap means threading the
+  ## flag through both builders.
   case v.kind
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex,
      vkRange, vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar,

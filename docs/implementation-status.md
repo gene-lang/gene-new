@@ -1,6 +1,6 @@
 # Implementation status
 
-**Status date:** 2026-07-29
+**Status date:** 2026-08-17
 
 The current VM implements the reader/value/printer pipeline, callable-first
 bytecode execution, runtime fexprs and template macros, selectors and streams,
@@ -86,6 +86,20 @@ with per-package module boundaries, package/module identity as the module-cache
 key, and `gene pkg show|locate|graph|install`. Hosted registries, semver
 solving, lockfiles, content addressing, publishing, and multiple installed
 versions of one name are not.
+
+The application event bus (`docs/events.md` phase 1) is implemented:
+`gene/event` supplies the `Event` root, `Bus`, `Subscription`, `PublishResult`,
+`Matcher`, `exact`, the `ErrorPolicy` enum, the `EventSink` protocol, and the
+recording/null/composite sinks, with nominal `^is` matching over compact type
+ids, copy-based deep-freeze on publish, snapshot dispatch, and both error
+policies. The runtime instrumentation half — phases 2-4, `runtime/EventStream`
+and the `runtime/...` event families, category configuration, emission sites,
+and safe-point draining — is **not** implemented; a draft producer is parked at
+`tmp/runtime_events_draft.nim`. Two phase-1 gaps are known and recorded in the
+code: lane ownership (§9.1) is enforced only by the bus not being `Send` rather
+than by a check, and `EventSink:emit` implements but cannot declare its
+`^errors [EventPublishError]` row because natively registered protocols have no
+per-message error types.
 
 Deferred work is explicitly non-normative. Major deferred areas include package
 registries and lockfiles, static effect rows, full hygienic compile-time

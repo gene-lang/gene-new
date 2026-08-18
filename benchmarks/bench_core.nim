@@ -744,7 +744,7 @@ proc main() =
     let v = run(matchMissChunk, matchScope)
     checksum = checksum + v.intVal + 1
 
-  # Application event bus (docs/proposals/events.md §17.3). Freeze and dispatch
+  # Application event bus (docs/events.md §17.3). Freeze and dispatch
   # are reported separately and deliberately: deep-freezing a freshly
   # constructed event is O(payload) and dominates publishing a small event to
   # few handlers, so a payload-size regression must not read as a dispatch
@@ -756,7 +756,7 @@ proc main() =
     "  (type Event ^is $event/Event) " &
     "  (type Placed ^is Event ^props {^order_id Str ^total F64})) " &
     "(var sink ($cell 0)) " &
-    "(fn note [e] (sink ~ set (+ (sink ~ get) 1))) " &
+    "(fn note [e] (sink ~ set (+ sink/~get 1))) " &
     "(var bus ($event/Bus)) " &
     "(bus ~ subscribe bench/Placed note) " &
     "(var one (bench/Placed ^order_id \"o1\" ^total 1.5)) " &

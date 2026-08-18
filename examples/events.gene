@@ -1,6 +1,6 @@
 #!/usr/bin/env gene run
 # =============================================================================
-# Gene event bus tour (docs/proposals/events.md, docs/stdlib.md `event`)
+# Gene event bus tour (docs/events.md, docs/stdlib.md `event`)
 #
 # Application pub/sub. An event is an ordinary typed value whose `^is`
 # ancestry reaches `event/Event`: its concrete nominal type *is* its identity,
@@ -13,8 +13,8 @@
 #   ($event/Bus)              a new bus; ^error_policy and ^nesting_limit
 #   (bus ~ subscribe sel h)   returns an event/Subscription; ^once true
 #   (bus ~ publish event)     returns event/PublishResult
-#   (bus ~ close)             cancel every subscription, release handlers
-#   (sub ~ cancel)            explicit, idempotent
+#   bus/~close                cancel every subscription, release handlers
+#   sub/~cancel               explicit, idempotent
 #   ($event/exact T)          selector matching T but not its descendants
 #   (sink ~ EventSink:emit e) the one-message sink protocol a bus implements
 #
@@ -139,8 +139,8 @@
 # -----------------------------------------------------------------------------
 ($println "4. cancel and one-shot subscriptions")
 
-($println $"   cancel returned ${(confirm_sub ~ cancel)}")
-($println $"   cancel again returned ${(confirm_sub ~ cancel)}   # idempotent")
+($println $"   cancel returned ${confirm_sub/~cancel}")
+($println $"   cancel again returned ${confirm_sub/~cancel}   # idempotent")
 
 (type ApplicationReady ^is $event/Event)
 
@@ -151,7 +151,7 @@
 (ready_bus ~ subscribe ApplicationReady warm_cache ^once true)
 (ready_bus ~ publish (ApplicationReady))
 (ready_bus ~ publish (ApplicationReady))
-($println $"   after two publishes, subscriptions left: ${(ready_bus ~ subscription_count)}")
+($println $"   after two publishes, subscriptions left: ${ready_bus/~subscription_count}")
 ($println "")
 
 # -----------------------------------------------------------------------------
@@ -176,7 +176,7 @@
 (snap_bus ~ publish draft)
 (set draft/order_id "o_2001_revised")
 
-(var seen (delivered_event ~ get))
+(var seen delivered_event/~get)
 ($println $"   publisher now holds ${draft/order_id}")
 ($println $"   subscriber still sees ${seen/order_id}")
 ($println "")
@@ -236,7 +236,7 @@
 (var recorder ($event/RecordingSink))
 (recorder ~ EventSink:emit (PaymentReceived ^payment_id "p_10"))
 (recorder ~ EventSink:emit (PaymentReceived ^payment_id "p_11"))
-($println $"   recorder holds ${((recorder ~ events) ~ size)} event(s)")
+($println $"   recorder holds ${recorder/~events/~size} event(s)")
 
 # A composite fans one emission out to several sinks in order. The bus below is
 # a sink like any other, so an event reaching the composite also reaches every
@@ -248,7 +248,7 @@
 
 (var sink ($event/CompositeSink [recorder metrics_bus ($event/NullSink)]))
 (sink ~ EventSink:emit (PaymentReceived ^payment_id "p_12"))
-($println $"   recorder now holds ${((recorder ~ events) ~ size)} event(s)")
+($println $"   recorder now holds ${recorder/~events/~size} event(s)")
 ($println "")
 
 # -----------------------------------------------------------------------------
@@ -291,9 +291,9 @@
 # -----------------------------------------------------------------------------
 ($println "9. close releases the handlers")
 
-($println $"   before close: ${(bus ~ subscription_count)} subscription(s)")
-(bus ~ close)
-($println $"   after close:  ${(bus ~ subscription_count)} subscription(s)")
+($println $"   before close: ${bus/~subscription_count} subscription(s)")
+bus/~close
+($println $"   after close:  ${bus/~subscription_count} subscription(s)")
 ($println
   (try (bus ~ publish (OrderPlaced ^order_id "o_9" ^total 1.0))
     catch (EventBusClosedError ^message m) $"   publish refused: ${m}"))
