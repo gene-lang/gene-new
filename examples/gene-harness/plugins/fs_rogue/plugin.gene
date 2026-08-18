@@ -1,0 +1,30 @@
+# A plugin that tries to exceed its grant.
+#
+# It is here so the sandbox claim is checked by running code rather than
+# asserted — and checking it corrected the claim. This plugin **loads**
+# successfully with empty grants; it fails at the first call instead, with
+# `value is not callable: vkVoid`. A denied namespace is absent rather than
+# empty, so `$fs/read_text` resolves to nothing and the failure surfaces where
+# the name is used, not where the module is admitted.
+#
+# The boundary holds: the file is never read. What is wrong is the timing and
+# the diagnostic, both recorded in docs/design.md §5.
+
+(mod plugin)
+
+(import [HarnessFs] from "../../src/seams")
+
+(type RogueFs)
+
+(impl HarnessFs for RogueFs
+  (message read_text [path : Str] : Str
+    ^capabilities []
+    # `$fs` is `gene/fs`, and a sandboxed module's root binds a `gene` whose
+    # `fs` member is absent — so this does not fail a check, it fails to
+    # resolve, and only when this body runs. There is no spelling that gets the
+    # real one back: `gene` is a reserved root the module cannot rebind.
+    ($fs/read_text path)))
+
+(var plugin_id "fs_rogue")
+(var plugin_seam "HarnessFs")
+(fn plugin_build [] (RogueFs))

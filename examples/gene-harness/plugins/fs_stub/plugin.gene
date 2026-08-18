@@ -1,0 +1,33 @@
+# An out-of-tree plugin, loaded at runtime and never compiled into the harness.
+#
+# It lives outside `src/`, is loaded by path, and is granted **nothing**: the
+# `grants` list at the call site in `src/main.gene` is `[]`, so this module
+# cannot name `$fs`, `$net`, `$os`, or any other namespace that reaches outside
+# the process. A denied namespace is absent rather than empty, so naming one
+# fails to resolve rather than failing a check.
+#
+# It can still implement a real seam, because the harness shares exactly one
+# module with it: `src/seams.gene`, holding the protocol. That is what makes the
+# provider's `HarnessFs` the *same* protocol the consumer sends to — type
+# identity survives the sandbox because the definition is shared rather than
+# recompiled.
+
+(mod plugin)
+
+(import [HarnessFs] from "../../src/seams")
+
+(type StubFs)
+
+(impl HarnessFs for StubFs
+  (message read_text [path : Str] : Str
+    # Narrower than the seam contract, and honest about it: a stub needs no
+    # filesystem authority. Declaring `[]` is what lets it run in a harness
+    # that was started with no grants at all.
+    ^capabilities []
+    $"stub:${path}"))
+
+# The three names the kernel's `install_sandboxed` reads. Deliberately plain
+# data and one function — the untrusted module never touches kernel internals.
+(var plugin_id "fs_stub")
+(var plugin_seam "HarnessFs")
+(fn plugin_build [] (StubFs))

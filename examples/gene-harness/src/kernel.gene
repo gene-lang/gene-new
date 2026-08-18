@@ -144,6 +144,38 @@
   (plugins ~ delete id)
   $"uninstalled ${id}")
 
+# --- runtime install (design §4 item 4) ------------------------------------
+
+(fn module_dir [path : Str] : Str
+  # The directory holding a module, from its own `this_mod/~path`. Plugin paths
+  # are resolved against the harness rather than the working directory, so
+  # `gene run` works from anywhere.
+  (var parts ($str/split path "/"))
+  (var out [])
+  (var i 0)
+  (while (< i (- parts/~size 1))
+    (out ~ push parts/%i)
+    (set i (+ i 1)))
+  ($str/join out "/"))
+
+(fn install_sandboxed [h : Harness, dir : Str, entry : Str, grants, shared] : Str
+  # A plugin that was never compiled in. `grants` is the operator-readable
+  # statement of what the new code may reach: `[]` means it gets computation
+  # and nothing that touches the world outside the process.
+  #
+  # `shared` is how a sandboxed plugin can still implement a *typed* seam. The
+  # sandbox covers everything the module imports, so without sharing the seam
+  # definition the plugin would compile its own copy of the protocol and its
+  # impl would satisfy a different identity than the consumer sends to. Sharing
+  # the one definition file is narrower than granting a namespace and is what
+  # keeps the seam a seam across the boundary.
+  (var m ($runtime/load_sandboxed dir entry grants shared))
+  (var id ($to_str m/plugin_id))
+  (var seam ($to_str m/plugin_seam))
+  (var provider (m/plugin_build))
+  (install h (Plugin ^id id ^provides [seam]
+    ^activate (fn [] (fn [h2, pid] (provide h2 pid seam provider))))))
+
 (fn installed [h : Harness] : Any
   (var out [])
   (for [k v] in (h/plugins ~ get) (out ~ push ($to_str k)))

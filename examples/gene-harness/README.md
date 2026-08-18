@@ -25,6 +25,8 @@ this is about what happens at runtime.
 | `src/kernel.gene` | The kernel: lifecycle, the effect ledger, seam binding, replacement |
 | `src/seams.gene` | One seam, all three roles: a protocol with an authority contract, two providers, a consumer |
 | `src/main.gene` | A runnable tour; every line it prints is a claimed property |
+| `plugins/fs_stub/` | An out-of-tree plugin loaded at runtime, granted nothing |
+| `plugins/fs_rogue/` | The same, but reaching for `$fs` — kept honest by being run |
 | `docs/design.md` | Why it is shaped this way, and what is still missing |
 
 ## The three ideas
@@ -61,6 +63,20 @@ The consumer names only the protocol. Swapping the provider therefore changes
 what the consumer does *and* what authority the whole product needs, without the
 consumer being touched — which is why the two commands above differ on exactly
 one line.
+
+**A plugin can arrive at runtime, bounded by grants.** `install_sandboxed` loads
+a module from outside `src/` with `$runtime/load_sandboxed`. `grants` is the
+operator-readable statement of reach — `[]` means the code cannot name `$fs`,
+`$net`, or `$os` at all — and `shared` names the one file holding the seam
+protocol, so the plugin implements *this* `HarnessFs` rather than a recompiled
+copy of it. The same binding rules apply to code that arrived late: a bound seam
+is refused, not shadowed.
+
+`plugins/fs_rogue/` exists to keep that claim honest, and running it corrected
+it. The boundary holds — the file is never read — but the plugin *loads* and
+fails at the first call with `value is not callable: vkVoid`, because a denied
+namespace is absent and the name fails where it is used. Timing and diagnostic,
+recorded in [`docs/design.md`](docs/design.md) §5.
 
 ## Not done yet
 

@@ -529,7 +529,17 @@ modifiable from then on. Adopt, in this order:
    around the log. A live system that can be recomposed at 3am needs replay more
    than a static one does, not less.
 4. **Runtime plugin install via `$runtime/load_sandboxed`**, with `grants` as the
-   operator-readable statement of what the new code may reach.
+   operator-readable statement of what the new code may reach. **Built** —
+   `install_sandboxed` in `src/kernel.gene`, exercised by `plugins/fs_stub/`
+   (granted nothing, implements the seam) and `plugins/fs_rogue/` (reaches for
+   `$fs`, and is stopped — see §5 for the caveat on *when*).
+
+   The `shared` argument is what makes a sandboxed plugin able to implement a
+   *typed* seam at all. The sandbox covers everything the module imports, so
+   without sharing the one file holding the protocol the plugin would compile
+   its own copy and its impl would satisfy a different identity than the
+   consumer sends to. Sharing a single definition file is narrower than granting
+   a namespace, and it is what keeps the seam a seam across the boundary.
 5. **Disposers on `provide`** (§3.7), once enough plugins exist that replacement
    leaks something.
 
@@ -554,6 +564,31 @@ swap — would test the design at its narrowest and most interesting point befor
 anything is committed to.
 
 ## 5. Defects found while prototyping this
+
+- **A sandboxed module's denied namespace is refused at first *use*, not at
+  load, and the diagnostic does not mention the sandbox.** §3.4 and
+  `docs/design.md` §15.10 both say a denied namespace is *absent*, so naming it
+  fails — which is true, and the boundary holds. What neither says is *when*.
+  A plugin whose only reference to `$fs` sits inside a message body loads
+  cleanly, installs, binds its seam, and fails on the first call with:
+
+  ```
+  value is not callable: vkVoid
+  ```
+
+  because `gene/fs` resolved to nothing and the result was then applied. The
+  file is never read, so this is a diagnostic and timing defect rather than a
+  hole. But an operator installing a plugin at 3am gets "it installed fine" from
+  a plugin that cannot work, and then a message naming neither the sandbox nor
+  the namespace. Two things would fix it independently: resolving a sandboxed
+  module's free names against its own root at admission, and making an absent
+  namespace member fail as "namespace `fs` is not granted here" rather than
+  decaying to `void`.
+
+  Verified by `plugins/fs_rogue/`, which `src/main.gene` loads and calls; the
+  transcript above is its real output. This entry exists because the claim was
+  asserted in the design before it was run, and running it changed it.
+
 
 Recorded because they were found by writing the kernel rather than reasoning
 about it, and because two of them shaped the design above.

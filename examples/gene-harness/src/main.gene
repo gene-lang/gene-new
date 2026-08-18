@@ -7,7 +7,7 @@
 # exactly one plugin's contributions.
 
 (import [new_harness install uninstall resolve provide replace installed
-         bound_seams Plugin HarnessError]
+         bound_seams install_sandboxed module_dir Plugin HarnessError]
   from "./kernel")
 (import [HarnessFs LocalFs MemFs head_tool] from "./seams")
 
@@ -104,5 +104,47 @@
   ($println "  seam survives its former owner: "
     (try (head_tool (resolve h "HarnessFs") "notes")
       catch e $"refused: ${e/message}"))
+  ($println "  installed: " (installed h))
+
+  # --- a plugin that was never compiled in ----------------------------------
+  #
+  # Loaded from outside src/ at runtime, granted nothing, and still able to
+  # implement the seam — because the harness shares the one file holding the
+  # protocol. Grants are the operator-readable statement of reach: `[]` here
+  # means this code cannot name $fs, $net, or $os at all.
+  ($println "-- a plugin loaded at runtime, granted nothing --")
+  (var here (module_dir this_mod/~path))
+  (fn load_stub []
+    (install_sandboxed h $"${here}/../plugins/fs_stub" "plugin.gene"
+      []                              # grants: nothing that reaches the world
+      [$"${here}/seams.gene"]))       # shared: the seam definition, so the
+                                      # plugin implements *this* HarnessFs
+  # The rules do not soften for code that arrived late: a bound seam is still
+  # refused rather than shadowed.
+  ($println "  " (try (load_stub) catch e $"refused: ${e/message}"))
+  ($println "  " (uninstall h "fs_local_real"))
+  # With the seam free, the outcome below can only come from the sandbox — and
+  # it is not what the design doc assumed. The rogue plugin reaches for $fs,
+  # and it *loads*: a denied namespace is absent, so the name fails where it is
+  # resolved, which for a name used only inside a message body is the first
+  # call. The boundary holds — the read never happens — but it arrives late and
+  # the diagnostic does not mention the sandbox.
+  ($println "  rogue load: "
+    (try (install_sandboxed h $"${here}/../plugins/fs_rogue" "plugin.gene"
+           [] [$"${here}/seams.gene"])
+      catch e $"refused: ${e/message}"))
+  ($println "  rogue call: "
+    (try (head_tool (resolve h "HarnessFs") "notes")
+      catch e $"refused: ${e/message}"))
+  ($println "  ^ the boundary holds and the file is never read, but the")
+  ($println "    refusal is at first call, not at load, and the message")
+  ($println "    does not say \"sandbox\". See docs/design.md §5.")
+  ($println "  " (uninstall h "fs_rogue"))
+  ($println "  " (load_stub))
+  ($println "  head_tool: "
+    (try (head_tool (resolve h "HarnessFs") "notes")
+      catch e $"refused: ${e/message}"))
+  ($println "  ^ never compiled in, cannot name $fs at all, and still")
+  ($println "    satisfies the seam the consumer sends to.")
   ($println "  installed: " (installed h))
   nil)
