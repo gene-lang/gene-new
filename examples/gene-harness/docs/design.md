@@ -833,78 +833,135 @@ here before it was run.
 | `HarnessPrompt` | offline interpreter | `deepseek/deepseek-v4-flash-0731` |
 
 Nothing else is told. The terminal loop still reads a line and prints an answer;
-`cli` still works with no network and no key. This is the seam argument tested
-on the case that actually matters in an agent harness — the part that varies
-between a demo and a product — and the diff is one line in one profile.
+`cli` still works with no network and no key.
 
-**The model can act, through the narrowest surface that is still useful.** It is
-told to answer `RUN: <command>` when a question is about the harness's state
-rather than about ideas, and the agent prints the command before running it. The
-model cannot invent an operation, only name one the interpreter already
-implements. In a real session:
+**The model's only way to act is to emit a Gene program.** The shape is
+`examples/safe_ai_agent`'s, pointed at a different subject — there the evaluated
+program's world is a workspace directory, here it is the running harness:
 
 ```
-harness>
-build me a plugin called greeter that says hello from deepseek
-model> RUN: build greeter says hello from deepseek
-installed greeter (ready)
-
-harness>
-what tools do I have now?
-model> RUN: tools
-["Tool:greeter"]
-
-harness>
-now get rid of the greeter plugin
-model> RUN: unload greeter
-uninstalled greeter
+prompt -> LLM -> {^status "done"|"in-progress"
+                  ^response "one sentence"
+                  ^code (do ...)}
+       -> print ^response, print ^code, evaluate ^code, print the result
+       -> repeat while ^status is "in-progress"   (bounded at 6 turns)
 ```
 
-That is a sentence in English becoming a plugin written to disk, sandboxed,
-loaded, bound to a seam, and later reversed by the ledger — with every step
-visible.
+There is **no tool list**. An earlier version had one — the model replied
+`RUN: <command>` and the harness matched it against ten verbs — and its ceiling
+showed the moment the model wanted something the verbs did not name. A harness
+whose whole thesis is that it can be recomposed at runtime should not hand a
+model a menu of ten recompositions.
 
-**Deciding what not to send to the model is harder than it looks, and the first
-rule was wrong.** The obvious one — "if the first word names a command, treat it
-as a command" — sent `build me a plugin called greeter…` to the interpreter,
-which read it literally and created a tool named `me`. A prefix of a sentence is
-not a command and no amount of tuning that heuristic fixes it. What replaced it
-is three rules that are each individually unambiguous:
+What it gets instead is the kernel's own vocabulary as `Env` bindings: `h`
+itself, plus `install`, `uninstall`, `retry`, `provide`, `replace`, `resolve`,
+`subscribe`, `publish`, `install_sandboxed`, the inspection functions, the
+session log, and the types — `Plugin`, the event types, the seams and their
+providers. The same names `src/profiles/` uses to compose a deployment, because
+there is no reason the model should be working with a smaller language than the
+profiles are.
 
-- a `/` prefix is an explicit command, the way it is in every chat client;
-- a bare one-word query (`status`, `seams`, `tools`, `log`, `help`) cannot be an
-  English sentence;
-- `tool <name> …` where `<name>` is *actually a bound seam* — checkable rather
-  than guessed, so `tool greeter everyone` runs and `tool me something` does not.
+Real sessions, unedited:
 
-Everything else goes to the model. The first two keep the shell fast and
-offline-capable for the things typed most; the third removes the friction that
-would otherwise push a user toward `/` for the one multi-word command they use
-constantly.
+```
+install a plugin named echo whose Tool:echo seam is a function returning
+whatever string it is given, then call it with hi
+   Echo plugin installed and tested.
+   (do (install h (Plugin ^id "echo" ^provides ["Tool:echo"]
+         ^activate (fn [] (fn [hh id] (provide hh id "Tool:echo" (fn [s] s))))))
+       ((resolve h "Tool:echo") "hi"))
+hi
 
-**Model output is untrusted input to a code generator.** `build` writes Gene
-source, and the answer text now goes into a *plain* string literal — never an
-interpolated one — with backslashes and quotes escaped and newlines flattened.
-The first version interpolated it directly, and the first thing the model wrote
-contained JSON: the quotes closed the literal, the remainder parsed as code, and
-the load failed on an apostrophe being read as a character literal. The plugin
-*name* is guarded separately, because it becomes both a filename and a seam key
-and the model chooses it: one short word, no path characters, so `build
-../../evil` is refused before anything is written.
+now remove it and prove the seam is gone
+   Uninstalled the plugin and proved Tool:echo is gone.
+   (do (uninstall h "echo") (var gp (seam_bound h "Tool:echo")) (plugin_states h))
+["fs:ready" "render:ready" "reporter:ready" "agent:ready" "driver:ready"]
 
-Three smaller things the model surfaced that the design would not have:
+swap the HarnessRender provider for the HTML one, then render hello through it
+   (do (replace h "fonts" "HarnessRender" (render_provider (HtmlRender)))
+       ((resolve h "HarnessRender") ~ (msg HarnessRender render) "hello"))
+<p>hello</p>
+```
+
+The printed `^code` is the **canonical** form, so `$fs/write_text` appears as
+`(path gene fs write_text)` and a protocol send as `(msg HarnessRender render)`.
+That is what actually executes, which is the point of showing it.
+
+**Structural authority is total; host authority is narrow.** Every binding above
+is an ordinary Gene call needing no grant, so the model may rebuild the harness
+freely. What it may reach *outside* the process is the Env's capability row, and
+that row is resolved against this module's context when the Env is minted, so it
+can never name more than the harness already holds. Measured, from inside a
+generated program:
+
+```
+($os/get_env "HOME")                      refused: os/get_env needs os/Env
+($fs/read_text "/etc/passwd")             refused: fs/read_text needs fs/ReadFile
+(head_tool (resolve h "HarnessFs") "n")   refused: capability declaration needs fs/ReadDir
+(bound_seams h)                           ["HarnessFs" "HarnessRender"]
+(install h (Plugin ...))                  ["HarnessFs" "HarnessRender" "Tool:x"]
+```
+
+The third line is the interesting one: the *process* held `fs/ReadDir /tmp`, and
+the program was still refused, because the Env's row is a ceiling and does not
+include it. A refusal is a **value**, not a crash — it is printed, it goes into
+the next turn's history, and the model gets to try something else.
+
+**The Env re-roots relative paths**, the way `safe_ai_agent`'s workspace does.
+Its row is `(fs/WriteDir "plugins/generated")`, so a generated
+`($fs/write_text "clock.gene" …)` lands there and nowhere else. This is how the
+harness grows code that did not exist at boot: write a module with
+`plugin_source`, then `install_sandboxed` it — sandboxed, granted nothing.
+
+That re-rooting cost a wrong turn worth recording. The agent originally exposed
+`write_plugin_source`, a helper carrying its own
+`^capabilities [(fs/WriteDir "plugins/generated")]` row, and calling it from
+inside the Env was refused. A declaration row inside a re-rooted context
+resolves *against that context*, so the inner row named
+`plugins/generated/plugins/generated`. The fix was to stop wrapping: generated
+code calls `$fs/write_text` directly, which is `safe_ai_agent`'s rule arrived at
+the hard way — **generated code should use the standard library, and the row,
+not a bespoke helper, should decide where it lands.**
+
+**Session memory is a deliberate divergence.** `safe_ai_agent` discards history
+when a task finishes, which is right for a task runner and wrong for a shell:
+the second thing anyone types is "now remove it". Without a carry-over the model
+guessed a plugin name out of the system prompt's own example and uninstalled
+something that never existed. A bounded window of the last four exchanges rides
+along — bounded because a session is open-ended, and this is the one place where
+unbounded growth would stay invisible until a context limit became a 400.
+
+**Prompting notes, all of them things a live model got wrong.** The envelope
+format has to lead *and* close the system prompt with a filled-in example
+between; stating it once in the middle produced a sentence followed by a bare
+`(do …)`, which is not readable as an envelope and loses the turn. And the Gene
+primer needs four rules beyond the obvious ones, each added after watching it
+fail:
+
+- a protocol message must be qualified — `(p ~ HarnessRender:render "hi")`, not
+  `(p ~ render "hi")`;
+- a map literal is `{^key v}`; `{"key" v}` is a read error that discards the
+  *entire* reply, code included;
+- a seam holding a function is called `((resolve h "Tool:x") "arg")`, not
+  `(f ~ "arg")`;
+- `try` takes a `catch` clause, not a nested `(catch …)` form.
+
+Two smaller things the API surfaced:
 
 - **`deepseek-v4-flash-0731` is a reasoning model.** At `max_tokens 60` it spent
   the entire budget thinking and returned the three characters `har`. The client
-  sends `reasoning {^enabled false}`, because a shell wants an answer.
-- **`$os/get_env` raises when the variable is unset**; `$os/env?` is the
-  optional read. The first version used `get_env` for an optional override, and
-  the agent plugin landed in `error` at boot with
-  `os/get_env: environment variable not set: OPENROUTER_MODEL` in the lifecycle
-  log — the §3.3.5 design working on a real mistake rather than a hypothetical
-  one. The rest of the harness booted fine.
-- **A non-2xx HTTP status is ordinary response data**, not a failed task, so it
-  has to be checked rather than caught.
+  sends `reasoning {^enabled false}`.
+- **`$os/get_env` raises when unset**; `$os/env?` is the optional read. The first
+  version used `get_env` for an optional override and the agent plugin landed in
+  `error` at boot with the reason in the lifecycle log — §3.3.5 working against
+  a real mistake, with the rest of the harness booting fine.
+
+**What is still unsolved** is what `safe_ai_agent` records too: `^response` is
+composed before `^code` runs, so a confident summary can sit directly above a
+result that contradicts it. One of the transcripts above had the model announce
+nine installed plugins by name before its own program printed the five real
+ones. Printing the program between the claim and the result is the mitigation,
+not a fix.
 
 ## 4. Recommendation
 

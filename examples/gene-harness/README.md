@@ -211,34 +211,49 @@ cannot name `$fs`, `$net`, or `$os`, and everything it registers is reversible
 by the kernel. Writing inside the package needs no flag — a package may modify
 itself; reaching outside it is authority.
 
-**And a real model is one plugin away.** The `chat` profile is `cli` with the
-offline interpreter swapped for an OpenRouter client — four of five plugins
-identical, nothing else told, and `cli` still works with no network and no key.
-The model is given one way to act: reply `RUN: <command>` and the harness prints
-the command before running it, so it can name an operation the interpreter
-already implements and nothing else.
+**And a real model is one plugin away — with no tool list.** The `chat` profile
+is `cli` with the offline interpreter swapped for an OpenRouter client. The
+model's only way to act is to emit a Gene program, in the shape
+`examples/safe_ai_agent` uses:
 
 ```
-harness>
-build me a plugin called greeter that says hello from deepseek
-model> RUN: build greeter says hello from deepseek
-installed greeter (ready)
-
-harness>
-now get rid of the greeter plugin
-model> RUN: unload greeter
-uninstalled greeter
+{^status "done"|"in-progress" ^response "one sentence" ^code (do ...)}
 ```
 
-A sentence in English becomes a plugin written to disk, sandboxed, loaded, bound
-to a seam, and reversed by the ledger. Two things this forced, both recorded in
-[`docs/design.md`](docs/design.md) §3.10: model output is untrusted input to a
-code generator, so generated text goes into a plain string literal with quotes
-escaped and the plugin name is guarded against path characters; and deciding
-what *not* to send to the model needs rules that are individually unambiguous
-(`/` prefix, a bare one-word query, or a tool name that is actually bound) —
-the obvious "first word is a command" heuristic read `build me a plugin called
-greeter` as a request for a tool named `me`.
+`^code` is evaluated against the **running harness**. The bindings are the
+kernel's own vocabulary — `h` itself, `install`, `uninstall`, `provide`,
+`replace`, `resolve`, `subscribe`, `install_sandboxed`, the `Plugin` type, the
+seams and their providers — the same names `src/profiles/` uses to compose a
+deployment. So there is nothing to select from:
+
+```
+install a plugin named echo whose Tool:echo seam is a function returning
+whatever string it is given, then call it with hi
+   Echo plugin installed and tested.
+   (do (install h (Plugin ^id "echo" ^provides ["Tool:echo"]
+         ^activate (fn [] (fn [hh id] (provide hh id "Tool:echo" (fn [s] s))))))
+       ((resolve h "Tool:echo") "hi"))
+hi
+
+now remove it and prove the seam is gone
+   (do (uninstall h "echo") (var gp (seam_bound h "Tool:echo")) (plugin_states h))
+["fs:ready" "render:ready" "reporter:ready" "agent:ready" "driver:ready"]
+```
+
+**Structural authority is total; host authority is narrow.** Rebuilding the
+harness needs no grant — that is what the model is for. Reaching outside the
+process is the Env's capability row, which is resolved against this module's
+context and can never name more than the harness already holds:
+
+```
+($os/get_env "HOME")            refused: os/get_env needs os/Env
+($fs/read_text "/etc/passwd")   refused: fs/read_text needs fs/ReadFile
+(install h (Plugin ...))        ["HarnessFs" "HarnessRender" "Tool:x"]
+```
+
+A refusal is a *value*, so the model sees it and tries something else. The row
+also re-roots relative paths at `plugins/generated/`, which is how the harness
+writes and loads code that did not exist at boot.
 
 **Model-visible ⟺ logged.** The invariant worth taking verbatim from `dsh`.
 Anything that reaches a model request must be reconstructible from the session
