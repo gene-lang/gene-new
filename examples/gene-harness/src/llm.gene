@@ -65,6 +65,32 @@
 # What the generated program may reach
 # ---------------------------------------------------------------------------
 
+# --- the shapes Gene's path syntax cannot express ---------------------------
+#
+# `xs/~size` and `xs/%i` work only on a *named binding*, so there is no way to
+# write the size of an expression: `((c ~ get) ~size)` is a syntax error and a
+# model reaches for it constantly, because binding first is the one thing it
+# forgets under pressure. These four are the shapes it kept needing, and they
+# are ordinary functions rather than a tool layer — the model can still do
+# anything, it just no longer has to route a list operation through a temporary.
+
+(fn size [xs] : Int xs/~size)
+
+(fn at [xs, i : Int] xs/%i)
+
+(fn drop_first [xs, n : Int] : Any
+  (var out [])
+  (var i n)
+  (while (< i xs/~size)
+    (out ~ push xs/%i)
+    (set i (+ i 1)))
+  out)
+
+(fn without [xs, v] : Any
+  (var out [])
+  (for x in xs (if_not (== x v) (out ~ push x)))
+  out)
+
 (fn harness_bindings [h : Harness] : Any
   # The whole surface, and deliberately not a curated subset: this is the
   # kernel's own vocabulary handed to the model unchanged. Code that runs here
@@ -109,6 +135,8 @@
    # row. There is no bespoke writer to learn, which is the point: generated
    # code uses the standard library and the row decides where it may land.
    ^generated_dir generated_dir ^plugin_source plugin_source
+   # list shapes the path syntax cannot express on an expression
+   ^size size ^at at ^drop_first drop_first ^without without
    # the offline interpreter, still available as one call
    ^dispatch dispatch})
 
@@ -215,7 +243,41 @@ need them: everything they do is in the list above.""")
 - Only nil, false and void are falsy.
 - Strings interpolate with $"text ${expr}".
 - (if c a b), (if_not c body...), (if_yes c body...), (for x in xs ...).
-- ^code is ONE (do ...) block; the value of its last form is the result.""")
+- ^code is ONE (do ...) block; the value of its last form is the result.
+
+These do NOT exist. Every one has been tried here and failed:
+- No let / let*. Bind with (var x v) inside the (do ...) you are already in.
+- No `and` / `or` / `not`. They are (&& a b), (|| a b), (! a).
+- No `str`, `int`, `drop`, `take`, `first`, `rest`, `nth`, `count`, `len`.
+- No (xs ~ get 0) on a LIST, no (xs ~ removeAt i), no (xs ~ slice a b), no
+  `range`. Lists are indexed xs/0 with a literal, xs/%i with a variable, and
+  sized xs/~size. (xs ~ get "k") is for MAPS only. A sub-range is a loop:
+    (var out []) (var i 1) (while (< i n) (out ~ push xs/%i) (set i (+ i 1)))
+- Rebind with (set x v), never a second (var x v).
+- PROPS USE ^ AND NOT ~. It is (Plugin ^id "x" ^provides [...] ^activate f).
+  (Plugin ~id "x") is a message send and fails with "undefined symbol: ~id".
+
+The pieces you actually need:
+  ($str/split s " ") -> list        ($str/join xs " ") -> string
+  ($str/trim s)  ($str/starts_with? s "p")  ($str/contains? s "x")
+  ($parse/parse_int "12") -> 12, and raises on a non-number
+  ($to_str v) for anything -> string
+  (xs ~ push v) appends in place. To DROP an element, rebuild:
+    (var kept []) (for x in xs (if_not (== x drop_me) (kept ~ push x)))
+  Mutable state that survives between calls is a cell:
+    (var c ($cell []))   ((c ~ get) ~ push v)   (c ~ get)   (c ~ set v)
+  Skip the first n words of a split: index with a while loop and xs/%i.
+- xs/~size and xs/0 work only on a NAMED binding, never on a parenthesized
+  expression: ((c ~ get) ~size) is a syntax error. For expressions use the
+  helpers below instead of binding a temporary.
+
+Four helpers are bound for exactly the shapes the path syntax cannot express:
+  (size xs)              length of any list expression
+  (at xs i)              element i of any list expression
+  (drop_first xs n)      a new list without the first n elements
+  (without xs v)         a new list with every occurrence of v removed
+So a cell-backed list is (size (c ~ get)), and "the words after the first" is
+(drop_first ($str/split cmd " ") 1).""")
 
 (fn system_prompt [] : Str
   # The format instruction leads *and* closes the prompt, with a filled-in
@@ -251,16 +313,23 @@ needs no authority at all — that is what you are for.
 Remember: reply with the map and nothing else. Start your reply with {^status
 and end it with }.""")
 
+(fn api_key [] : Any
+  # Both spellings, because both are in use: OPENROUTER_API_KEY is what the
+  # service's own docs call it, OPENROUTER_KEY is what this example started
+  # with. Reading one and failing on the other is a bad first five minutes.
+  (var primary ($os/env? "OPENROUTER_API_KEY"))
+  (if (== primary nil) ($os/env? "OPENROUTER_KEY") primary))
+
 (fn call_model [prompt : Str, history : Str] : Str
-  (var key ($os/env? "OPENROUTER_KEY"))
+  (var key (api_key))
   (if_yes (== key nil)
     (fail (HarnessError
-      ^message "OPENROUTER_KEY is not set — the chat profile needs it")))
+      ^message "no API key — set OPENROUTER_API_KEY (or OPENROUTER_KEY)")))
   (var body ($json/stringify
     {^model (model_name)
      ^messages [{^role "system" ^content (system_prompt)}
                 {^role "user" ^content $"${prompt}\n\nPrior turns:\n${history}"}]
-     ^max_tokens 1500
+     ^max_tokens 3000
      # This model reasons by default and will spend the whole budget thinking
      # before emitting a token of content — measured: at max_tokens 60 it
      # returned the three characters "har".
@@ -323,7 +392,7 @@ and end it with }.""")
 
 (fn preview [text : Str] : Str
   (if (> ($str/byte_size text) 400)
-    ($str/join [($str/slice_bytes text 400) " ..."] "")
+    ($str/join [($str/slice_bytes text 0 400) " ..."] "")
     text))
 
 (fn run_task [h : Harness, prompt : Str, session] : Str
@@ -342,11 +411,19 @@ and end it with }.""")
     (var envelope (parse_envelope raw))
     (if (== envelope nil)
       (then
-        # Say what arrived, not just that it was wrong. "the model did not
-        # return Gene data" with nothing attached is the least useful thing a
-        # loop like this can print, because the fix is always in the reply.
+        # An unreadable reply is a mistake the model can fix, and it is the one
+        # mistake it cannot see: the harness is the only party that knows the
+        # text did not read as Gene. Ending the task here wasted a turn that
+        # the loop already exists to spend, so tell it what happened and let it
+        # try again. Say what arrived, too — "the model did not return Gene
+        # data" with nothing attached is the least useful thing this loop can
+        # print, because the fix is always in the reply.
+        ($println "  (reply was not readable Gene data; asking again)")
         (last ~ set $"the model did not return Gene data. It said:\n  $(preview raw)")
-        (running ~ set false))
+        (var prior (history ~ get))
+        (history ~ set $"${prior}\nYOUR LAST REPLY WAS DISCARDED. It did not read as Gene data.\nIt began: $(preview raw)\nReply with ONLY the map: {^status ... ^response ... ^code (do ...)}. No prose, no fence.\nRemember: there is no def, defn, let, let*, and, or, str, int, first, rest, nth, count.\nOnly (var x v), (fn [a] ...), (&& a b), ($str/join xs s), xs/~size on a named binding.")
+        (if_yes (>= (turn ~ get) turn_limit)
+          (running ~ set false)))
       (else
         (var response envelope/response)
         (if_yes (!= response nil)

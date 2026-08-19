@@ -255,6 +255,26 @@ A refusal is a *value*, so the model sees it and tries something else. The row
 also re-roots relative paths at `plugins/generated/`, which is how the harness
 writes and loads code that did not exist at boot.
 
+Set `OPENROUTER_API_KEY` (or `OPENROUTER_KEY`), and `OPENROUTER_MODEL` to pick
+the model. Writing a whole application is where the model becomes the limit:
+`deepseek-v4-flash-0731` handles small programs and degrades on larger ones,
+while `deepseek-v4-pro-0813` wrote a working stateful todo plugin —
+
+```
+write me a todo app: install a plugin that keeps todo items in a cell and
+binds Tool:todo to a function taking a command string like "add buy milk"
+   installed todo (ready)
+
+/tool todo add buy milk        added
+/tool todo list                buy milk
+/unload todo                   uninstalled todo
+```
+
+See [`docs/design.md`](docs/design.md) §3.10 for what that took: a retry when
+the reply does not read as Gene, four list helpers for shapes the path syntax
+cannot express on an expression, and a primer section listing what does *not*
+exist in the language.
+
 **Model-visible ⟺ logged.** The invariant worth taking verbatim from `dsh`.
 Anything that reaches a model request must be reconstructible from the session
 log, and `assemble_request` makes that structural: it takes the log and nothing

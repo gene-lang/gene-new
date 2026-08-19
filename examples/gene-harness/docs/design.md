@@ -956,6 +956,66 @@ Two smaller things the API surfaced:
   `error` at boot with the reason in the lifecycle log — §3.3.5 working against
   a real mistake, with the rest of the harness booting fine.
 
+**Writing a whole application is where the model, not the design, became the
+limit.** "Write me a todo app: a plugin keeping items in a cell, bound to
+`Tool:todo`" is roughly forty lines of a language the model has never seen, and
+`deepseek-v4-flash-0731` could not do it. It got small programs right — install
+a plugin, swap a provider, call a seam — and degraded on the larger one,
+inventing `def`, `defn`, `let*`, `subseq`, `drop`, and writing `(parts ~size)`
+for `parts/~size`. Several attempts installed a plugin that reported `ready` and
+then failed on its first call, which is §5's "refused at first *use*" pattern
+arriving from a new direction: activation succeeded because the closure was
+never run.
+
+`deepseek-v4-pro-0813` writes markedly better Gene and got there, but only after
+three things were added, and each was earned by watching a specific failure:
+
+- **A retry when the reply does not read as Gene.** A parse failure used to end
+  the task, which wasted the loop that exists precisely to spend a turn on a
+  fixable mistake — and it is the one mistake the model cannot see, since only
+  the harness knows the text did not read. It now gets told, with the first 400
+  bytes of what it sent, and asked again. It recovered on the next turn in the
+  session transcript below.
+- **Four list helpers in the bindings**: `size`, `at`, `drop_first`, `without`.
+  `xs/~size` and `xs/%i` work only on a *named binding*, so there is no way to
+  write the size of an expression — `((c ~ get) ~size)` is a syntax error, and
+  it is what a model reaches for every time. This is not a tool layer creeping
+  back: they add no authority and remove no freedom, they just spell four shapes
+  the path syntax cannot.
+- **A primer section listing what does not exist.** `let`, `let*`, `and`, `or`,
+  `str`, `int`, `drop`, `take`, `first`, `nth`, `count`, `range`,
+  `(xs ~ slice a b)`, `(xs ~ get 0)` on a list, and — the one that cost the most
+  — `^` versus `~` for props: `(Plugin ~id "x")` fails with
+  `undefined symbol: ~id`. Every entry was added after seeing it.
+
+The result, in one session:
+
+```
+write me a todo app: install a plugin that keeps todo items in a cell and
+binds Tool:todo to a function taking a command string like "add buy milk"
+   installed todo (ready)
+
+/tool todo add buy milk        added
+/tool todo add call mum        added
+/tool todo list                buy milk
+                               call mum
+
+add "write the report" to my todos and then show me the list
+  (reply was not readable Gene data; asking again)
+   (do ((resolve h "Tool:todo") "add write the report")
+       ((resolve h "Tool:todo") "list"))
+buy milk
+call mum
+write the report
+
+/unload todo                   uninstalled todo
+/tools                         []
+```
+
+A stateful application written by a model, installed into a running process,
+used from both the shell and the model, and then removed by the ledger — which
+had no idea any of it was coming.
+
 **What is still unsolved** is what `safe_ai_agent` records too: `^response` is
 composed before `^code` runs, so a confident summary can sit directly above a
 result that contradicts it. One of the transcripts above had the model announce
