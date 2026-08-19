@@ -1016,12 +1016,58 @@ A stateful application written by a model, installed into a running process,
 used from both the shell and the model, and then removed by the ledger — which
 had no idea any of it was coming.
 
-**What is still unsolved** is what `safe_ai_agent` records too: `^response` is
-composed before `^code` runs, so a confident summary can sit directly above a
-result that contradicts it. One of the transcripts above had the model announce
-nine installed plugins by name before its own program printed the five real
-ones. Printing the program between the claim and the result is the mitigation,
-not a fix.
+**A reply that runs code is never the last one.** `^status` and `^code` arrive in
+the same message, so a model claiming "done" wrote that before its program had
+produced anything: the claim is about intent, not outcome. The harness therefore
+decides rather than the model — running code always earns another round, and
+only a reply whose own `^code` is `(do nil)` may finish. A normal task is two
+replies: one that acts, and one that answers having *seen* what the first did.
+
+```
+count how many plugins are in the ready state and tell me the number
+Gene>
+I'll check the plugin states now.
+(do (plugin_states h))
+-- Result  --
+["fs:ready" "render:ready" "reporter:ready" "agent:ready" "driver:ready"]
+== Round 2 ==
+5 plugins are in the ready state.
+```
+
+This is the fix for the failure `safe_ai_agent` records and does not solve: a
+confident summary sitting above a result that contradicts it. Earlier here, one
+reply announced nine installed plugins by name while its own program printed the
+five real ones, and worse, a reply whose program *errored* still said "done" and
+ended the task — the agent wrote broken code and never came back to it. Neither
+is now possible: the count above is read off the actual output, and a failure
+keeps the task open with the error and an explicit instruction to fix it in the
+next turn's history. Measured, on a call to a tool that does not exist:
+
+```
+(do (var hw (resolve h "Tool:todo")) (if hw ((hw) "buy milk") "tool not installed"))
+-- Result  --
+error: no provider for seam Tool:todo
+== Round 2 ==
+(reply was not readable Gene data; asking again)
+== Round 3 ==
+Checking which plugins provide tools, since Tool:todo is not bound.
+(do (plugin_states h))
+-- Result  --
+["fs:ready" "render:ready" "reporter:ready" "agent:ready" "driver:ready"]
+== Round 4 ==
+There is no todo tool installed, so it could not be called.
+```
+
+Four rounds, one of them spent recovering from an unreadable reply, ending in a
+true answer rather than a claimed one. The cost is a round per task and a turn
+limit raised to eight; what it buys is that no answer is ever given by something
+that has not looked at what it did.
+
+**What remains unsolved** is the narrower half of the same problem: `^response`
+is still composed before `^code` runs, so the sentence *within* a code-running
+turn can still misdescribe what that turn is about to do. Printing the program
+under it is the mitigation. What no longer happens is that sentence being the
+last word.
 
 ## 4. Recommendation
 

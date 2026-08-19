@@ -44,7 +44,7 @@
 
 (var endpoint "https://openrouter.ai/api/v1/chat/completions")
 (var default_model "deepseek/deepseek-v4-flash-0731")
-(var turn_limit 6)
+(var turn_limit 8)
 
 # Where a program's relative filenames land. An Env's filesystem row re-roots
 # relative paths inside it, so `"clock.gene"` written by generated code resolves
@@ -299,6 +299,21 @@ Three props, always all three:
   ^code      ONE (do ...) block — the program to run. Use (do nil) if the task
              needs no action.
 
+**A reply that runs code is never the last one.** You write ^status before your
+program has run, so you cannot know yet whether it worked — and the harness
+ignores "done" on any reply whose ^code does something. You will be shown the
+result and asked again. That next reply is where you finish: give your answer in
+^response with ^code (do nil) and ^status "done", or run more code if the result
+was not what you needed.
+
+So a normal task is two replies. First: ^status "in-progress", ^code that does
+the work. Then, having seen the output: ^status "done", ^code (do nil), and the
+answer in ^response.
+
+If a program fails, fix it — do not resend the same call and never report
+success over an error. "undefined symbol: x" means x does not exist in Gene;
+find the real name in the rules below instead of inventing another one.
+
 You are the agent inside a Gene plugin harness, and ^code runs against it live.
 
 ${(harness_primer)}
@@ -395,6 +410,14 @@ and end it with }.""")
     ($str/join [($str/slice_bytes text 0 400) " ..."] "")
     text))
 
+(fn failed? [result : Str] : Bool
+  # `run_program` renders an ordinary mistake as "error: ..." and a capability
+  # denial as "refused: ...". Only the first is the model's to fix: an error is
+  # a bug in the code it just wrote, while a refusal is a fact about authority
+  # that writing different code will not change. So errors force another turn
+  # and refusals leave the decision to the model.
+  ($str/starts_with? result "error:"))
+
 (fn no_op? [code] : Bool
   # A program that does nothing has nothing worth showing. The model emits
   # `(do nil)` when a turn is pure answer — printing the code and a result of
@@ -443,25 +466,41 @@ and end it with }.""")
         # The program is shown before it runs. `^response` is a claim composed
         # before the model could know the outcome; printing the code next to it
         # lets a reader check the claim against what actually executes.
+        (var ran_code (== (no_op? envelope/code) false))
         (var result
-          (if (no_op? envelope/code)
-            (then "(no action)")
-            (else
+          (if ran_code
+            (then
               ($println ($to_str envelope/code))
               (var value (run_program h envelope/code))
               ($println "-- Result  --")
               ($println value)
-              value)))
+              value)
+            (else "(no action)")))
         (last ~ set result)
         # The whole reply goes back, not just the result: the model needs to see
         # the code it wrote next to what that code did, or it cannot tell which
         # form drew which complaint.
         (var prior (history ~ get))
         (history ~ set $"${prior}\nreply: ${envelope}\noutput: ${result}")
-        (if_not (== envelope/status "in-progress")
+        # **A reply that ran code is never done.** `^status` and `^code` arrive
+        # in the same message, so the model wrote "done" before its program had
+        # produced anything — the claim is about intent, not outcome. Believing
+        # it is how a task ends with a broken program and a confident sentence
+        # above it, which is precisely what happened before this rule existed.
+        #
+        # So the harness decides, not the model: running code always earns
+        # another round, and only a reply that *acted on* a result — one whose
+        # own code is `(do nil)` — may finish. The cost is one extra round per
+        # task; what it buys is that no answer is ever given by something that
+        # has not seen what it did.
+        (if_yes ran_code
+          (history ~ set $"$(history ~ get)\nYou ran code, so the task is NOT finished and any \"done\" in that reply was ignored.\nThe output above is what your program actually returned - you are seeing it now for\nthe first time. Decide from it: if it answers the task, reply with ^status \"done\",\nyour answer in ^response, and ^code (do nil). If it does not, run more code."))
+        (if_yes (failed? result)
+          (history ~ set $"$(history ~ get)\nThat program FAILED. The mistake is in the code you just sent - find it and emit a\ncorrected program. Do not send the same call again, and do not report success.\n\"undefined symbol: x\" means x does not exist in Gene; use a real name from the\nrules rather than inventing another one."))
+        (if_yes (&& (== ran_code false) (!= envelope/status "in-progress"))
           (running ~ set false))
         (if_yes (&& (running ~ get) (>= (turn ~ get) turn_limit))
-          ($println $"(turn limit ${turn_limit} reached)")
+          ($println $"(gave up after ${turn_limit} rounds; the last program still fails)")
           (running ~ set false)))))
   # Everything has been printed as it happened, so there is nothing left for
   # the driver to echo. Remembering happens here rather than in `answer`
