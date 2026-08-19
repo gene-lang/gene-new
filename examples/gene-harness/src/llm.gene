@@ -1,0 +1,160 @@
+# A real model behind the prompt seam: OpenRouter, chat completions.
+#
+#   OPENROUTER_KEY=$(cat ~/.secrets/openrouter) \
+#     gene run --allow_read_dir /tmp src/main.gene chat
+#
+# This is the provider the `HarnessPrompt` seam existed for. Nothing else in the
+# harness changes to accommodate it: the terminal loop still reads a line and
+# prints an answer, and the `cli` profile still binds the offline interpreter.
+# Swapping a model in is a different plugin in a different profile, which is the
+# claim §3.2 makes about seams, tested on the case that actually matters.
+
+(mod llm)
+
+(import $net/http_client [request])
+(import [Plugin Harness HarnessError provide seam_bound] from "./kernel")
+(import [HarnessPrompt prompt_provider] from "./seams")
+(import [dispatch bare_query? words words_from word] from "./agent")
+
+(var endpoint "https://openrouter.ai/api/v1/chat/completions")
+(var default_model "deepseek/deepseek-v4-flash-0731")
+
+(fn model_name [] : Str
+  # `$os/get_env` *raises* when the variable is unset; `$os/env?` is the
+  # optional read and returns nil. The first version of this used `get_env` and
+  # the whole agent plugin landed in `error` at boot — correctly, and with the
+  # reason in the lifecycle log, which is the argument for that design made
+  # against a real mistake rather than a hypothetical one.
+  (var configured ($os/env? "OPENROUTER_MODEL"))
+  (if (== configured nil) default_model ($to_str configured)))
+
+(fn system_prompt [] : Str
+  # The model is told what the harness is and given one way to act on it. The
+  # `RUN:` convention is deliberately the narrowest tool surface that is still
+  # useful: the model cannot invent an operation, only name one the interpreter
+  # already implements, and the harness prints the command before running it.
+  ($str/join [
+    "You are the agent inside a Gene plugin harness."
+    "The harness is a living application: plugins provide seams, seams are"
+    "swapped at runtime, and a plugin can be written and loaded while it runs."
+    ""
+    "You can act on it. If the answer to the user requires knowing or changing"
+    "the harness's actual state, do NOT guess and do NOT describe what they"
+    "could type. Reply with exactly one line and nothing else:"
+    "  RUN: <command>"
+    ""
+    "Commands:"
+    "  status                   every plugin and its state"
+    "  seams                    what is bound right now"
+    "  log                      the lifecycle record"
+    "  tools                    tools this harness has gained"
+    "  read <path>              read through the filesystem seam"
+    "  tool <name> [arg]        call a tool"
+    "  build <name> <text>      write a new plugin and load it, live"
+    "  unload <id>              remove a plugin"
+    ""
+    "For `build`, <name> is one lowercase word with no punctuation, and <text>"
+    "is the plain sentence the tool should answer with — not code, not JSON."
+    ""
+    "Examples:"
+    "  what plugins are installed?      -> RUN: status"
+    "  which seams are bound?           -> RUN: seams"
+    "  what tools do I have?            -> RUN: tools"
+    "  make a tool called hi that waves -> RUN: build hi waves at you"
+    "  get rid of the hi plugin         -> RUN: unload hi"
+    ""
+    "Only for questions about ideas rather than state, answer in one or two"
+    "plain sentences."] "\n"))
+
+(fn body_for [model : Str, prompt : Str] : Str
+  ($json/stringify
+    {^model model
+     ^messages [{^role "system" ^content (system_prompt)}
+                {^role "user" ^content prompt}]
+     ^max_tokens 600
+     # This model reasons by default and will spend the whole budget thinking
+     # before it emits a token of content — measured: `max_tokens 60` returned
+     # the three characters "har". A shell wants an answer, not a monologue.
+     ^reasoning {^enabled false}}))
+
+(fn chat [model : Str, prompt : Str] : Str
+  (var key ($os/env? "OPENROUTER_KEY"))
+  (if_yes (== key nil)
+    (fail (HarnessError
+      ^message "OPENROUTER_KEY is not set — the chat profile needs it")))
+  (var resp
+    (await (request ^method "POST" ^url endpoint
+                    ^headers {^content-type "application/json"
+                              ^authorization $"Bearer ${key}"}
+                    ^body (body_for model prompt)
+                    ^timeout_ms 60000 ^max_bytes 2000000)))
+  # A non-2xx status is ordinary response data for this client, not a failure,
+  # so it has to be checked rather than caught.
+  (if_yes (!= resp/status 200)
+    (fail (HarnessError ^message $"openrouter ${resp/status}: ${resp/body}")))
+  (var parsed ($json/parse resp/body))
+  (var choices (parsed ~ get "choices"))
+  (if_yes (== choices/~size 0)
+    (fail (HarnessError ^message "openrouter returned no choices")))
+  (var top choices/0)
+  # Not `msg`: that is a reserved compiler form, and naming a local `msg` makes
+  # `(msg ~ get "content")` fail with "a message name must be a symbol".
+  (var reply (top ~ get "message"))
+  (var text (reply ~ get "content"))
+  (if (== text nil) "" ($str/trim ($to_str text))))
+
+(fn run_suggested [h : Harness, text : Str] : Str
+  # The model named a command. Print what it chose before running it — an agent
+  # that acts without showing its hand is not one you can supervise.
+  (var cmd (words_from (words text) 1))
+  ($str/join [$"model> RUN: ${cmd}" (dispatch h cmd)] "\n"))
+
+(fn strip_slash [prompt : Str] : Str
+  # Drop one leading `/` and keep every other one: `/read a/b` is `read a/b`,
+  # because a path argument has slashes in it and they are not the prefix.
+  (var parts ($str/split prompt "/"))
+  (var out [])
+  (var i 1)
+  (while (< i parts/~size)
+    (out ~ push parts/%i)
+    (set i (+ i 1)))
+  ($str/trim ($str/join out "/")))
+
+(fn calling_a_real_tool? [h : Harness, prompt : Str] : Bool
+  # `tool greeter everyone` is the one multi-word command a user types often
+  # enough that requiring `/` for it is friction. It can be admitted without
+  # guessing, because it is checkable: this matches only when the named tool is
+  # actually bound. "tool me something" resolves to no seam and goes to the
+  # model, which is the right answer for a sentence that begins with a noun.
+  (var parts (words prompt))
+  (if (== (word parts 0) "tool")
+    (seam_bound h $"Tool:$(word parts 1)")
+    false))
+
+(fn answer [h : Harness, model : Str, prompt : Str] : Str
+  # Two ways to reach the interpreter without a round trip, and both have to be
+  # unambiguous — the shell must not get slower, less reliable, or dependent on
+  # a network because a model is bound, but it also must not mistake a sentence
+  # for a command. `/` is explicit; a bare one-word query cannot be anything
+  # else. Everything in between belongs to the model.
+  (if ($str/starts_with? prompt "/")
+    (then (dispatch h (strip_slash prompt)))
+    (elif (bare_query? prompt) (dispatch h prompt))
+    (elif (calling_a_real_tool? h prompt) (dispatch h prompt))
+    (else
+      (var text (chat model prompt))
+      (if ($str/starts_with? text "RUN:")
+        (run_suggested h text)
+        text))))
+
+(type LlmAgent ^props {^model Str})
+
+(impl HarnessPrompt for LlmAgent
+  (message handle [h, prompt : Str] : Str
+    (answer h self/model prompt)))
+
+(fn llm_agent_plugin [] : Plugin
+  (Plugin ^id "agent" ^provides ["HarnessPrompt"]
+    ^activate (fn [] (fn [h, id]
+      (provide h id "HarnessPrompt"
+        (prompt_provider (LlmAgent ^model (model_name))))))))

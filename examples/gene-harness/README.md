@@ -9,6 +9,10 @@ A living plugin harness: seams, an effect ledger, and atomic activation.
 cd examples/gene-harness
 gene run --allow_read_dir /tmp src/main.gene cli
 
+# the same shell with a real model behind the prompt (OpenRouter)
+OPENROUTER_KEY=$(cat ~/.secrets/openrouter) \
+  gene run --allow_read_dir /tmp src/main.gene chat
+
 # one-shot: anything after the profile name is a prompt
 gene run src/main.gene web status
 
@@ -50,7 +54,8 @@ this is about what happens at runtime.
 | `src/profiles.gene` | The registry: which profiles exist, by name |
 | `src/profiles/cli.gene`, `web.gene` | One deployment each — sets of plugins, not layers |
 | `src/profiles/common.gene` | Plugins every deployment installs |
-| `src/agent.gene` | The `HarnessPrompt` provider: what a prompt means |
+| `src/agent.gene` | The offline `HarnessPrompt` provider: what a prompt means |
+| `src/llm.gene` | The other one: OpenRouter, `deepseek/deepseek-v4-flash-0731` |
 | `src/repl.gene` | The terminal driver, bound as a `Driver` seam by `cli` |
 | `plugins/generated/` | Plugins the harness writes for itself, at runtime |
 | `src/demo.gene` | A runnable tour; every line it prints is a claimed property |
@@ -205,6 +210,35 @@ directory that escapes the package root), it is loaded with `grants []` so it
 cannot name `$fs`, `$net`, or `$os`, and everything it registers is reversible
 by the kernel. Writing inside the package needs no flag — a package may modify
 itself; reaching outside it is authority.
+
+**And a real model is one plugin away.** The `chat` profile is `cli` with the
+offline interpreter swapped for an OpenRouter client — four of five plugins
+identical, nothing else told, and `cli` still works with no network and no key.
+The model is given one way to act: reply `RUN: <command>` and the harness prints
+the command before running it, so it can name an operation the interpreter
+already implements and nothing else.
+
+```
+harness>
+build me a plugin called greeter that says hello from deepseek
+model> RUN: build greeter says hello from deepseek
+installed greeter (ready)
+
+harness>
+now get rid of the greeter plugin
+model> RUN: unload greeter
+uninstalled greeter
+```
+
+A sentence in English becomes a plugin written to disk, sandboxed, loaded, bound
+to a seam, and reversed by the ledger. Two things this forced, both recorded in
+[`docs/design.md`](docs/design.md) §3.10: model output is untrusted input to a
+code generator, so generated text goes into a plain string literal with quotes
+escaped and the plugin name is guarded against path characters; and deciding
+what *not* to send to the model needs rules that are individually unambiguous
+(`/` prefix, a bare one-word query, or a tool name that is actually bound) —
+the obvious "first word is a command" heuristic read `build me a plugin called
+greeter` as a request for a tool named `me`.
 
 **Model-visible ⟺ logged.** The invariant worth taking verbatim from `dsh`.
 Anything that reaches a model request must be reconstructible from the session

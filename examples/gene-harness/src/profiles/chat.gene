@@ -1,0 +1,23 @@
+# The `chat` deployment: the cli shell with a real model behind the prompt.
+#
+#   OPENROUTER_KEY=$(cat ~/.secrets/openrouter) \
+#     gene run --allow_read_dir /tmp src/main.gene chat
+#
+# Identical to `cli` in four of its five plugins. The one that differs is the
+# `HarnessPrompt` provider — the offline interpreter becomes an OpenRouter
+# client — and nothing else in the deployment is told about it. That is the
+# seam argument (§3.2) applied to the part of an agent harness that actually
+# varies between a demo and a product.
+
+(mod chat)
+
+(import [Profile] from "../profile")
+(import [reporter_plugin] from "./common")
+(import [cli_fs_plugin cli_render_plugin] from "./cli")
+(import [llm_agent_plugin] from "../llm")
+(import [driver_plugin] from "../repl")
+
+(fn chat_profile [] : Profile
+  (Profile ^name "chat"
+           ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)
+                     (llm_agent_plugin) (driver_plugin)]))

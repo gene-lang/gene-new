@@ -47,9 +47,38 @@
   # module system before any capability is consulted.
   $"$(module_dir (module_dir this_mod/~path))/plugins/generated")
 
+(fn escape_for_gene [text : Str] : Str
+  # The answer text becomes a string literal in generated source, and once a
+  # model is bound to the prompt seam that text is untrusted input to a code
+  # generator. Escape the backslash first, then the quote, then flatten
+  # newlines — a one-line literal cannot survive one.
+  #
+  # This is not hypothetical. The first version interpolated the text straight
+  # into a `$"..."` literal, and the first thing a model wrote contained JSON:
+  # the quotes closed the string, the rest parsed as code, and the load failed
+  # on an apostrophe being read as a character literal.
+  (var a ($str/join ($str/split text "\\") "\\\\"))
+  (var b ($str/join ($str/split a "\"") "\\\""))
+  ($str/join ($str/split b "\n") " "))
+
+(fn safe_name? [name : Str] : Bool
+  # The name becomes a filename *and* a seam key, and a model chose it. A
+  # generator that assumes its input is well behaved is a generator with a
+  # path-traversal bug in it.
+  (var bad false)
+  (if_yes (== name "") (set bad true))
+  (for c in ["/" "\\" ".." "\"" "'" "$" "~" ":" ";" "*" "?" "<" ">" "|"]
+    (if_yes ($str/contains? name c) (set bad true)))
+  (if_yes (> ($str/byte_size name) 40) (set bad true))
+  (== bad false))
+
 (fn plugin_source [name : Str, text : Str] : Str
   # Plain strings do not interpolate, so this emits `${arg}` literally into the
   # generated module rather than expanding it here.
+  #
+  # The answer is a *plain* literal in the generated module, never an
+  # interpolated one: interpolation would turn `${...}` in someone else's text
+  # into code running inside the plugin.
   ($str/join [
     "# Written by the harness at runtime, in response to a prompt.\n"
     "#\n"
@@ -58,8 +87,10 @@
     "\n"
     "(mod plugin)\n"
     "\n"
+    "(var answer \"" (escape_for_gene text) "\")\n"
+    "\n"
     "(fn run [arg] : Str\n"
-    "  $\"" name "(${arg}) -> " text "\")\n"
+    "  ($str/join [\"" name "(\" arg \") -> \" answer] \"\"))\n"
     "\n"
     "(var plugin_id \"" name "\")\n"
     "(var plugin_seam \"Tool:" name "\")\n"
@@ -88,6 +119,9 @@
 (fn build_tool [h : Harness, name : Str, text : Str] : Str
   (if_yes (== name "")
     (fail (HarnessError ^message "usage: build <name> <text...>")))
+  (if_not (safe_name? name)
+    (fail (HarnessError
+      ^message $"unsafe tool name ${name}: one plain word, no path characters")))
   (var dir (generated_dir))
   (write_plugin_source $"${dir}/${name}.gene" (plugin_source name text))
   # Loaded like any other out-of-tree plugin: sandboxed, granted nothing, and
@@ -103,6 +137,22 @@
 
 # --- the command surface ---------------------------------------------------
 
+(fn bare_query? [prompt : Str] : Bool
+  # A one-word query that could not be anything but a command. `status` is
+  # `status`; no English sentence is one of these words on its own.
+  #
+  # The wider test this replaces — "does the first word name a command?" — was
+  # wrong once a model was bound, and wrong in the way that matters: "build me
+  # a plugin called greeter" begins with `build`, so the interpreter took it
+  # literally and created a tool named `me`. A prefix of a sentence is not a
+  # command, and guessing which is which from the first word cannot be made to
+  # work. Everything ambiguous goes to the model; `/` forces the interpreter.
+  (var known ["help" "status" "seams" "log" "tools"])
+  (var found false)
+  (for k in known
+    (if_yes (== k ($str/trim prompt)) (set found true)))
+  found)
+
 (fn help_text [] : Str
   ($str/join [
     "commands:"
@@ -116,7 +166,10 @@
     "  build <name> <text>   write a new plugin and load it, live"
     "  unload <id>           uninstall a plugin"
     "  retry <id>            retry one that failed to activate"
-    "  quit | exit | Ctrl-D  leave"] "\n"))
+    "  quit | exit | Ctrl-D  leave"
+    ""
+    "Under the `chat` profile a prompt goes to the model unless you prefix it"
+    "with `/` — `/status` is this list, `status` is a question about it."] "\n"))
 
 (fn dispatch [h : Harness, prompt : Str] : Str
   (var parts (words prompt))

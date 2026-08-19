@@ -822,6 +822,90 @@ inside the entry's own package is ambiently authorized, so a package extending
 itself is not an authority question — see §5, because the opposite was asserted
 here before it was run.
 
+### 3.10 A real model behind the seam
+
+`src/llm.gene` binds OpenRouter to `HarnessPrompt`, and the `chat` profile is
+`cli` with that one plugin swapped:
+
+| | `cli` | `chat` |
+|---|---|---|
+| `HarnessFs`, `HarnessRender`, `Report`, `Driver` | same four plugins | same four plugins |
+| `HarnessPrompt` | offline interpreter | `deepseek/deepseek-v4-flash-0731` |
+
+Nothing else is told. The terminal loop still reads a line and prints an answer;
+`cli` still works with no network and no key. This is the seam argument tested
+on the case that actually matters in an agent harness — the part that varies
+between a demo and a product — and the diff is one line in one profile.
+
+**The model can act, through the narrowest surface that is still useful.** It is
+told to answer `RUN: <command>` when a question is about the harness's state
+rather than about ideas, and the agent prints the command before running it. The
+model cannot invent an operation, only name one the interpreter already
+implements. In a real session:
+
+```
+harness>
+build me a plugin called greeter that says hello from deepseek
+model> RUN: build greeter says hello from deepseek
+installed greeter (ready)
+
+harness>
+what tools do I have now?
+model> RUN: tools
+["Tool:greeter"]
+
+harness>
+now get rid of the greeter plugin
+model> RUN: unload greeter
+uninstalled greeter
+```
+
+That is a sentence in English becoming a plugin written to disk, sandboxed,
+loaded, bound to a seam, and later reversed by the ledger — with every step
+visible.
+
+**Deciding what not to send to the model is harder than it looks, and the first
+rule was wrong.** The obvious one — "if the first word names a command, treat it
+as a command" — sent `build me a plugin called greeter…` to the interpreter,
+which read it literally and created a tool named `me`. A prefix of a sentence is
+not a command and no amount of tuning that heuristic fixes it. What replaced it
+is three rules that are each individually unambiguous:
+
+- a `/` prefix is an explicit command, the way it is in every chat client;
+- a bare one-word query (`status`, `seams`, `tools`, `log`, `help`) cannot be an
+  English sentence;
+- `tool <name> …` where `<name>` is *actually a bound seam* — checkable rather
+  than guessed, so `tool greeter everyone` runs and `tool me something` does not.
+
+Everything else goes to the model. The first two keep the shell fast and
+offline-capable for the things typed most; the third removes the friction that
+would otherwise push a user toward `/` for the one multi-word command they use
+constantly.
+
+**Model output is untrusted input to a code generator.** `build` writes Gene
+source, and the answer text now goes into a *plain* string literal — never an
+interpolated one — with backslashes and quotes escaped and newlines flattened.
+The first version interpolated it directly, and the first thing the model wrote
+contained JSON: the quotes closed the literal, the remainder parsed as code, and
+the load failed on an apostrophe being read as a character literal. The plugin
+*name* is guarded separately, because it becomes both a filename and a seam key
+and the model chooses it: one short word, no path characters, so `build
+../../evil` is refused before anything is written.
+
+Three smaller things the model surfaced that the design would not have:
+
+- **`deepseek-v4-flash-0731` is a reasoning model.** At `max_tokens 60` it spent
+  the entire budget thinking and returned the three characters `har`. The client
+  sends `reasoning {^enabled false}`, because a shell wants an answer.
+- **`$os/get_env` raises when the variable is unset**; `$os/env?` is the
+  optional read. The first version used `get_env` for an optional override, and
+  the agent plugin landed in `error` at boot with
+  `os/get_env: environment variable not set: OPENROUTER_MODEL` in the lifecycle
+  log — the §3.3.5 design working on a real mistake rather than a hypothetical
+  one. The rest of the harness booted fine.
+- **A non-2xx HTTP status is ordinary response data**, not a failed task, so it
+  has to be checked rather than caught.
+
 ## 4. Recommendation
 
 Build the harness as a **living application**: it boots from a profile and is
@@ -984,6 +1068,22 @@ about it, and because two of them shaped the design above.
   works only when run from its own package directory. Nothing in the source says
   so. Resolving a row's relative path against the declaring module's package
   root would make a committed row mean one thing everywhere.
+
+- **`msg` is a reserved compiler form, and using it as a local gives a
+  misleading error.** `(var msg (top ~ get "message"))` followed by
+  `(msg ~ get "content")` fails with `a message name must be a symbol` — the
+  compiler parses `(msg …)` as the dynamic-message form (`compiler.nim:186`,
+  and the `isSymbol("msg")` arms around 2740/6645). Nothing says `msg` is taken;
+  the diagnostic points at the send rather than at the name. Rejecting the
+  binding at `(var msg …)` with "msg is a reserved form" would cost one check
+  and save the bisect this took.
+
+- **The documented import form for the HTTP client does not work.**
+  `docs/stdlib.md` line 90 shows `(import net/http_client [request stream
+  HttpClientError])`; that raises `undefined symbol: net`. `$net/http_client`
+  and `gene/net/http_client` both work. This is the same shape as the
+  `$event/Event` annotation bug fixed earlier — a lowercase stdlib namespace is
+  not a bare root — and the docs were written against the intended surface.
 
 - **Writing inside the entry's own package needs no grant.** The `build` command
   was designed assuming `--allow_write_dir plugins/generated` would be required,

@@ -14,14 +14,17 @@
 (import [HarnessError] from "./kernel")
 (import [cli_profile] from "./profiles/cli")
 (import [web_profile] from "./profiles/web")
+(import [chat_profile] from "./profiles/chat")
 
 (fn profile_names [] : Any
-  ["cli" "web"])
+  ["cli" "web" "chat"])
 
 (fn profile_named [name : Str] : Profile
   (if (== name "cli")
     (cli_profile)
     (if (== name "web")
       (web_profile)
-      (fail (HarnessError
-        ^message $"unknown profile ${name}; expected one of $(profile_names)")))))
+      (if (== name "chat")
+        (chat_profile)
+        (fail (HarnessError
+          ^message $"unknown profile ${name}; expected one of $(profile_names)"))))))
