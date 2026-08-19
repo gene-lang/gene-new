@@ -395,6 +395,13 @@ and end it with }.""")
     ($str/join [($str/slice_bytes text 0 400) " ..."] "")
     text))
 
+(fn no_op? [code] : Bool
+  # A program that does nothing has nothing worth showing. The model emits
+  # `(do nil)` when a turn is pure answer — printing the code and a result of
+  # `nil` under it is three lines saying "no".
+  (var text ($str/trim ($to_str code)))
+  (|| (== text "(do nil)") (== text "(do)")))
+
 (fn run_task [h : Harness, prompt : Str, session] : Str
   # Prints each turn as it happens rather than returning one block at the end:
   # a task may take several model round trips, and a shell that goes silent for
@@ -407,6 +414,11 @@ and end it with }.""")
   (var last ($cell ""))
   (while (running ~ get)
     (turn ~ set (+ (turn ~ get) 1))
+    # Turn one needs no marker — the `Gene>` label above it is the marker. Every
+    # turn after it is the agent going round again without being asked, which is
+    # the thing a reader wants delimited.
+    (if_yes (> (turn ~ get) 1)
+      ($println $"== Round $(turn ~ get) =="))
     (var raw (call_model prompt (history ~ get)))
     (var envelope (parse_envelope raw))
     (if (== envelope nil)
@@ -418,7 +430,7 @@ and end it with }.""")
         # try again. Say what arrived, too — "the model did not return Gene
         # data" with nothing attached is the least useful thing this loop can
         # print, because the fix is always in the reply.
-        ($println "  (reply was not readable Gene data; asking again)")
+        ($println "(reply was not readable Gene data; asking again)")
         (last ~ set $"the model did not return Gene data. It said:\n  $(preview raw)")
         (var prior (history ~ get))
         (history ~ set $"${prior}\nYOUR LAST REPLY WAS DISCARDED. It did not read as Gene data.\nIt began: $(preview raw)\nReply with ONLY the map: {^status ... ^response ... ^code (do ...)}. No prose, no fence.\nRemember: there is no def, defn, let, let*, and, or, str, int, first, rest, nth, count.\nOnly (var x v), (fn [a] ...), (&& a b), ($str/join xs s), xs/~size on a named binding.")
@@ -427,15 +439,20 @@ and end it with }.""")
       (else
         (var response envelope/response)
         (if_yes (!= response nil)
-          ($println "  " ($to_str response)))
+          ($println ($to_str response)))
         # The program is shown before it runs. `^response` is a claim composed
         # before the model could know the outcome; printing the code next to it
         # lets a reader check the claim against what actually executes.
-        ($println "  " ($to_str envelope/code))
-        (var result (run_program h envelope/code))
+        (var result
+          (if (no_op? envelope/code)
+            (then "(no action)")
+            (else
+              ($println ($to_str envelope/code))
+              (var value (run_program h envelope/code))
+              ($println "-- Result  --")
+              ($println value)
+              value)))
         (last ~ set result)
-        (if_yes (== envelope/status "in-progress")
-          ($println "  " result))
         # The whole reply goes back, not just the result: the model needs to see
         # the code it wrote next to what that code did, or it cannot tell which
         # form drew which complaint.
@@ -444,9 +461,13 @@ and end it with }.""")
         (if_not (== envelope/status "in-progress")
           (running ~ set false))
         (if_yes (&& (running ~ get) (>= (turn ~ get) turn_limit))
-          ($println $"  (turn limit ${turn_limit} reached)")
+          ($println $"(turn limit ${turn_limit} reached)")
           (running ~ set false)))))
-  (last ~ get))
+  # Everything has been printed as it happened, so there is nothing left for
+  # the driver to echo. Remembering happens here rather than in `answer`
+  # because this is where the real last result is known.
+  (remember session prompt (last ~ get))
+  "")
 
 (fn strip_slash [prompt : Str] : Str
   # Drop one leading `/` and keep every other one: `/read a/b` is `read a/b`,
@@ -471,10 +492,7 @@ and end it with }.""")
   (if ($str/starts_with? prompt "/")
     (then (dispatch h (strip_slash prompt)))
     (elif (bare_query? prompt) (dispatch h prompt))
-    (else
-      (var result (run_task h prompt session))
-      (remember session prompt result)
-      result)))
+    (else (run_task h prompt session))))
 
 # ---------------------------------------------------------------------------
 # Session memory
