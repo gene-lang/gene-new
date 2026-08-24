@@ -1,0 +1,64 @@
+(mod registry_smoke)
+
+(import [new_harness registry registry_exists? contribute rows row remove_owner]
+  from "../src/kernel")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(var removed ($cell []))
+
+(fn validate_named_row [candidate]
+  (if (== candidate/name void)
+    ($panic "registry row requires ^name")
+    candidate))
+
+(fn record_removal [context, candidate]
+  ((removed ~ get) ~ push $"${context}:${candidate/name}"))
+
+(fn row_names [h]
+  (var out ($thaw #[]))
+  (for candidate in (rows h "test_prompt")
+    (out ~ push candidate/name))
+  out)
+
+(var h (new_harness))
+(registry h "test_prompt"
+  ^unique false ^ordered true
+  ^schema validate_named_row ^on_remove record_removal)
+
+(var late
+  (contribute h "plugin_b" "test_prompt" {^name "late" ^text "B"}
+    ^priority 20 ^config_order 0))
+(var first
+  (contribute h "plugin_a" "test_prompt" {^name "first" ^text "A"}
+    ^priority 10 ^config_order 1))
+(var early
+  (contribute h "plugin_a" "test_prompt" {^name "early" ^text "A0"}
+    ^priority 10 ^config_order 0))
+
+(assert (!= late first) "each contribution needs a unique row_id")
+(assert (!= first early) "one owner may contribute multiple rows")
+(var ordered_names (row_names h))
+(assert (== ordered_names ["early" "first" "late"])
+  "rows must use deterministic registry order")
+(var first_row (row h "test_prompt" "first"))
+(assert (== first_row/text "A")
+  "logical-key lookup must return the row payload")
+
+(remove_owner h "plugin_a")
+(assert (== (row_names h) ["late"])
+  "removing an owner must remove every row it contributed")
+(assert (== (removed ~ get) ["plugin_a:early" "plugin_a:first"])
+  "cleanup must run in reverse acquisition order")
+
+(registry h "owned" ^owner "registry_plugin" ^on_remove record_removal)
+(contribute h "row_plugin" "owned" {^name "child" ^text "x"})
+(remove_owner h "registry_plugin")
+(assert (! (registry_exists? h "owned"))
+  "unloading a registry owner must remove the registry itself")
+(assert (== (removed ~ get)
+            ["plugin_a:early" "plugin_a:first" "row_plugin:child"])
+  "registry removal must clean rows owned by other plugins")
+
+($println "registry_smoke: ok")

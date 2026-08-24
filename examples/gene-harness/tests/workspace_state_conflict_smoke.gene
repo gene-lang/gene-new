@@ -1,0 +1,59 @@
+(mod workspace_state_conflict_smoke)
+
+(import [new_harness resolve] from "../src/kernel")
+(import [HarnessStateConflict open_event_store close_event_store]
+  from "../src/state")
+(import [open_workspace register_module restore_workspace close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var source
+    (quote
+      (mod plugin
+        (import [Plugin DescriptorContext PluginContext PluginHost]
+          from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx : DescriptorContext] : Plugin
+          ^capabilities []
+          (Plugin ^id "shared" ^provides ["Shared"] ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (fn increment []
+                (var current (host ~ PluginHost:state))
+                (var next (if (== current nil) 1 (+ current 1)))
+                (host ~ PluginHost:update_state next)
+                next)
+              (host ~ PluginHost:provide "Shared" increment))))))))
+
+  (var left_workspace (open_workspace args/0))
+  (var left_events (open_event_store args/1))
+  (var left
+    (new_harness ^workspace left_workspace ^event_store left_events
+      ^event_scope "session" ^event_stream "s1"))
+  (register_module left_workspace left "shared" source
+    ^scope "workspace" ^selectors [])
+
+  (var right_workspace (open_workspace args/0))
+  (var right_events (open_event_store args/1))
+  (var right
+    (new_harness ^workspace right_workspace ^event_store right_events
+      ^event_scope "session" ^event_stream "s2"))
+  (restore_workspace right_workspace right ^session "s2")
+
+  ((resolve left "Shared"))
+  (var conflicted false)
+  (try
+    ((resolve right "Shared"))
+  catch (HarnessStateConflict ^scope scope ^stream stream)
+    (set conflicted (&& (== scope "workspace") (== stream "workspace"))))
+  (assert conflicted
+    "stale workspace state must conflict at the plugin callback boundary")
+
+  (close_workspace left_workspace)
+  (close_workspace right_workspace)
+  (close_event_store left_events)
+  (close_event_store right_events)
+  ($println "workspace_state_conflict_smoke: ok"))

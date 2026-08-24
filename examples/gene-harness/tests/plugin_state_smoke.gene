@@ -1,0 +1,102 @@
+(mod plugin_state_smoke)
+
+(import [open_event_store flush_event_store close_event_store]
+  from "../src/state")
+(import [new_harness resolve] from "../src/kernel")
+(import [open_workspace register_module restore_workspace close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var composition_root args/0)
+  (var event_root args/1)
+  (var source
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "counter" ^provides ["Counter"] ^requires []
+            ^contextual true
+            ^activate
+              (fn []
+                (fn [host]
+                  (var increment
+                    (fn []
+                      (var current (host ~ PluginHost:state))
+                      (var count (if (== current nil) 0 current/count))
+                      (var next {^count (+ count 1)})
+                      (host ~ PluginHost:update_state next)
+                      next/count))
+                  (host ~ PluginHost:provide "Counter" increment))))))))
+  (var shared_source
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "shared_counter" ^provides ["SharedCounter"] ^requires []
+            ^contextual true
+            ^activate
+              (fn []
+                (fn [host]
+                  (var increment
+                    (fn []
+                      (var current (host ~ PluginHost:state))
+                      (var count (if (== current nil) 0 current/count))
+                      (var next {^count (+ count 1)})
+                      (host ~ PluginHost:update_state next)
+                      next/count))
+                  (host ~ PluginHost:provide "SharedCounter" increment))))))))
+
+  (var events (open_event_store event_root))
+  (var workspace (open_workspace composition_root))
+  (var h
+    (new_harness ^event_store events ^event_scope "session"
+                 ^event_stream "s1"))
+  (register_module workspace h "counter" source
+    ^scope "session" ^selectors [])
+  (register_module workspace h "shared_counter" shared_source
+    ^scope "workspace" ^selectors [])
+  (var counter (resolve h "Counter"))
+  (var shared_counter (resolve h "SharedCounter"))
+  (assert (== (counter) 1) "first session mutation must start at one")
+  (assert (== (shared_counter) 1) "workspace mutation must start at one")
+  (flush_event_store events)
+  (close_workspace workspace)
+  (close_event_store events)
+
+  (set events (open_event_store event_root))
+  (set workspace (open_workspace composition_root))
+  (set h
+    (new_harness ^event_store events ^event_scope "session"
+                 ^event_stream "s1"))
+  (restore_workspace workspace h ^session "s1")
+  (set counter (resolve h "Counter"))
+  (set shared_counter (resolve h "SharedCounter"))
+  (assert (== (counter) 2)
+    "the same session must resume from its full-state projection")
+  (assert (== (shared_counter) 2)
+    "workspace-scoped state must resume independently of session state")
+  (flush_event_store events)
+
+  # The same desired entry creates a distinct session-scoped instance and
+  # reads only that session's stream.
+  (var other
+    (new_harness ^event_store events ^event_scope "session"
+                 ^event_stream "s2"))
+  (restore_workspace workspace other ^session "s2")
+  (var other_counter (resolve other "Counter"))
+  (var other_shared_counter (resolve other "SharedCounter"))
+  (assert (== (other_counter) 1)
+    "session-scoped plugin state must not leak between sessions")
+  (assert (== (other_shared_counter) 3)
+    "workspace-scoped plugin state must be shared across sessions")
+
+  (close_workspace workspace)
+  (close_event_store events)
+  ($println "plugin_state_smoke: ok"))

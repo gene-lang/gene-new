@@ -1,0 +1,54 @@
+(mod attenuation_smoke)
+
+(import [new_harness resolve status_of] from "../src/kernel")
+(import [open_workspace register_module close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var root args/0)
+  (var denied_source
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (import $fs [read_text])
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "denied" ^provides ["Denied"] ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (var text (read_text "README.md"))
+              (host ~ PluginHost:provide "Denied" text))))))))
+  (var allowed_source
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (import $fs [read_text])
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "allowed" ^provides ["Allowed"] ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (var text (read_text "README.md"))
+              (host ~ PluginHost:provide "Allowed" text))))))))
+
+  (var workspace (open_workspace root))
+  (var h (new_harness))
+  (register_module workspace h "denied" denied_source
+    ^selectors [{^type "fs/ReadDir" ^root "state" ^path "."}])
+  (assert (== (status_of h "denied") "error")
+    "a state-root selector must not authorize a workspace read")
+
+  (register_module workspace h "allowed" allowed_source
+    ^selectors [{^type "fs/ReadDir" ^root "workspace" ^path "."}])
+  (assert (== (status_of h "allowed") "ready")
+    "a workspace-root selector must authorize a confined workspace read")
+  (assert (> ($str/byte_size (resolve h "Allowed")) 0)
+    "the allowed plugin must publish the read result")
+  (close_workspace workspace)
+
+  ($println "attenuation_smoke: ok"))

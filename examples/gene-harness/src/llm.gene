@@ -6,7 +6,8 @@
 #
 # The shape is `examples/safe_ai_agent`'s, pointed at a different subject. There
 # the evaluated program's world is a workspace directory; here it is the running
-# harness — the model gets `h` and the kernel's own operations as bindings, so
+# harness — the model gets transaction-aware operations bound to the current
+# Harness, never the mutable Harness record itself, so
 # "install a plugin", "swap that provider", "subscribe to activations" are
 # things it *writes*, not things it selects from a menu.
 #
@@ -28,30 +29,27 @@
 
 (import $net/http_client [request])
 (import $parse [read_all])
-(import [Plugin Harness HarnessError HarnessEvent ToolInvoked
+(import $fs [read_text])
+(import [Plugin PluginContext PluginHost Harness HarnessError HarnessEvent ToolInvoked
          PluginActivated PluginDeactivated PluginFailed PluginInstalled
          PluginUninstalled
-         new_harness install uninstall retry provide replace resolve
-         seam_bound bound_seams plugin_states plugin_ids status_of installed
+         new_harness install_with_policy uninstall retry resolve
+         seam_bound bound_seams registry_row_keys invoke_registry_row
+         plugin_states plugin_ids status_of installed
          lifecycle_log log_append log_events assemble_request
-         subscribe publish install_sandboxed module_dir effects_of]
+         publish render_prompt doc transaction_diff
+         module_dir]
   from "./kernel")
+(import_impl PluginHost for PluginContext from "./kernel")
 (import [HarnessFs HarnessRender HarnessPrompt LocalFs MemFs TextRender
          HtmlRender fs_provider render_provider prompt_provider
          head_tool report_tool] from "./seams")
-(import [dispatch bare_query? words words_from word generated_dir
-         plugin_source] from "./agent")
+(import [dispatch bare_query? words words_from word plugin_source] from "./agent")
+(import [register_module run_workspace_turn] from "./workspace")
 
 (var endpoint "https://openrouter.ai/api/v1/chat/completions")
 (var default_model "deepseek/deepseek-v4-flash-0731")
 (var turn_limit 8)
-
-# Where a program's relative filenames land. An Env's filesystem row re-roots
-# relative paths inside it, so `"clock.gene"` written by generated code resolves
-# here and nowhere else — the same arrangement `safe_ai_agent` uses for its
-# workspace. The path is relative to the launch directory, which is why the
-# chat profile is documented as "run from the package root".
-(const GENERATED "plugins/generated")
 
 (fn model_name [] : Str
   # `$os/get_env` *raises* when the variable is unset; `$os/env?` is the
@@ -92,31 +90,49 @@
   out)
 
 (fn harness_bindings [h : Harness] : Any
-  # The whole surface, and deliberately not a curated subset: this is the
-  # kernel's own vocabulary handed to the model unchanged. Code that runs here
-  # can install a plugin, unbind a seam, replace a provider, subscribe to the
-  # lifecycle, or write and load a new plugin from source — the same operations
-  # `src/profiles/` uses to compose a deployment, because there is no reason the
-  # model should be working with a smaller language than the profiles are.
-  #
-  # `h` is the harness itself. Handing over the object rather than a set of
-  # pre-bound verbs is what makes this open-ended: a program can hold it, pass
-  # it to something it defines, and store it in a plugin it installs.
-  {^h h
+  # The model gets the complete structural operation vocabulary, bound to this
+  # Harness, but never the public Harness record itself. Every mutation must
+  # therefore pass through the ledger/transaction-aware functions below.
+  {
    # lifecycle
-   ^install install ^uninstall uninstall ^retry retry
-   ^install_sandboxed install_sandboxed
-   # seams
-   ^provide provide ^replace replace ^resolve resolve ^seam_bound seam_bound
+   ^install (fn [plugin] (install_with_policy h plugin []))
+   ^uninstall (fn [id] (uninstall h id))
+   ^retry (fn [id] (retry h id))
+   ^register_module
+     (fn [id, source,
+          ^scope scope : Str = "session",
+          ^selectors selectors = nil,
+          ^limits limits = nil,
+          ^dependencies dependencies = nil,
+          ^by by : Str = "",
+          ^model model : Str = "",
+          ^at at_value : Str = "",
+          ^replace replace_value : Bool = false]
+       (register_module h/workspace h id source ^scope scope
+         ^selectors selectors ^limits limits ^dependencies dependencies
+         ^by by ^model model ^at at_value ^replace replace_value))
+   # seams and registries. Mutations happen through a PluginContext acquired by
+   # `install`; registry reads return keys, not mutable row payloads.
+   ^resolve (fn [seam] (resolve h seam))
+   ^seam_bound (fn [seam] (seam_bound h seam))
+   ^row_keys (fn [registry_name] (registry_row_keys h registry_name))
+   ^invoke_registry
+     (fn [registry_name, key, args]
+       (invoke_registry_row h registry_name key args))
    # inspection
-   ^bound_seams bound_seams ^plugin_states plugin_states ^plugin_ids plugin_ids
-   ^status_of status_of ^installed installed ^effects_of effects_of
-   ^lifecycle_log lifecycle_log
+   ^bound_seams (fn [] (bound_seams h))
+   ^plugin_states (fn [] (plugin_states h))
+   ^plugin_ids (fn [] (plugin_ids h))
+   ^status_of (fn [id] (status_of h id))
+   ^installed (fn [] (installed h))
+   ^transaction_diff (fn [] (transaction_diff h))
+   ^lifecycle_log (fn [] (lifecycle_log h))
+   ^doc (fn [name] (doc h name))
    # the session log, and the §3.6 invariant
-   ^log_append log_append ^log_events log_events
+   ^record_message (fn [text] (log_append h "message" text))
    ^assemble_request assemble_request
    # observation
-   ^subscribe subscribe ^publish publish
+   ^publish (fn [event] (publish h event))
    # types a program needs to construct things
    ^Plugin Plugin ^HarnessError HarnessError
    ^HarnessEvent HarnessEvent ^ToolInvoked ToolInvoked
@@ -129,16 +145,14 @@
    ^fs_provider fs_provider ^render_provider render_provider
    ^prompt_provider prompt_provider
    ^head_tool head_tool ^report_tool report_tool
-   # growing code that did not exist at boot. `plugin_source` is pure — it
-   # renders a module, escaping the answer text into a plain string literal —
-   # and writing it is an ordinary `($fs/write_text ...)` call under the Env's
-   # row. There is no bespoke writer to learn, which is the point: generated
-   # code uses the standard library and the row decides where it may land.
-   ^generated_dir generated_dir ^plugin_source plugin_source
+   # growing code that did not exist at boot. `plugin_source` returns an inert
+   # quoted module node; `register_module` validates, content-addresses and
+   # commits it before activation.
+   ^plugin_source plugin_source
    # list shapes the path syntax cannot express on an expression
    ^size size ^at at ^drop_first drop_first ^without without
    # the offline interpreter, still available as one call
-   ^dispatch dispatch})
+   ^dispatch (fn [prompt] (dispatch h prompt))})
 
 (fn run_program [h : Harness, program] : Str
   # One `(do ...)` block, evaluated as written. The shape the model emits is the
@@ -152,134 +166,41 @@
   # harness and still not read your home directory.
   (var sandbox
     (env ^bindings (harness_bindings h)
-         ^capabilities [(fs/WriteDir GENERATED)]))
-  (try
-    $"${(eval program ^in sandbox)}"
-    catch (MissingCapability ^capability wanted ^operation operation)
-    # A denial is a *value*, not a crash: it is printed, it goes into the next
-    # turn's history, and the model gets to try something else.
-    $"refused: ${operation} needs ${wanted}"
-    catch e
-    (if ($str/contains? e/message " requires ")
-      $"refused: ${e/message}"
-      $"error: ${e/message}")))
+         ^capabilities []))
+  (var existing_events (log_events h))
+  (var turn_id $"model-${(+ existing_events/~size 1)}")
+  (var outcome
+    (run_workspace_turn h/workspace h turn_id
+      (fn [ignored]
+        (try
+          $"${(eval program ^in sandbox)}"
+        catch (MissingCapability ^capability wanted ^operation operation)
+          # A denial is a value shown to the next model round.
+          $"refused: ${operation} needs ${wanted}"
+        catch e
+          (if ($str/contains? e/message " requires ")
+            $"refused: ${e/message}"
+            (fail e))))))
+  (if (== outcome/status "aborted")
+    $"error: ${outcome/error/message}"
+    ($to_str outcome/result)))
 
 # ---------------------------------------------------------------------------
 # Talking to the model
 # ---------------------------------------------------------------------------
 
-(fn harness_primer [] : Str
-  """You are inside a running Gene plugin harness, and your program runs against
-it live. These names are bound:
+(fn harness_primer [h : Harness] : Str
+  # Plugin-authored prompt sections and pull introspection share the same rows;
+  # there is no second hand-maintained command/tool inventory here.
+  (render_prompt h))
 
-h                      the harness itself
-(install h p)          install a Plugin value; returns "installed <id> (<state>)"
-(uninstall h "id")     remove one, reversing everything it registered
-(retry h "id")         re-activate one that is in `error`
-(provide h "id" "Seam" value)   bind a seam, recorded against that plugin id
-(replace h "id" "Seam" value)   rebind a seam that is already bound
-(resolve h "Seam")     the value bound to a seam; raises if unbound
-(seam_bound h "Seam")  true or false
-(bound_seams h)        every bound seam name
-(plugin_states h)      ["fs:ready" "agent:ready" ...]
-(status_of h "id")     "pending" | "ready" | "error" | "absent"
-(lifecycle_log h)      what the kernel has done, in order
-(subscribe h "id" EventType handler)   observe the lifecycle
-(publish h event)
-(log_append h "message"|"trace" "text")   the session log
-(assemble_request (log_events h))         what a model would be sent
+(fn repository_root [] : Str
+  (module_dir (module_dir (module_dir (module_dir this_mod/~path)))))
 
-A Plugin is a value:
-  (Plugin ^id "greeter" ^provides ["Tool:greeter"] ^requires ["HarnessFs"]
-          ^activate (fn [] (fn [hh id] (provide hh id "Tool:greeter" some_fn))))
-^activate is a thunk RETURNING the activation function — note the two (fn ...).
-^requires names seams that must be bound before it activates; omit it if none.
-^deactivate is optional and takes no arguments.
+(fn gene_skill_file [relative : Str] : Str
+  (read_text $"${(repository_root)}/tools/gene-lang-skill/${relative}"))
 
-Seams and providers: HarnessFs (read_text), HarnessRender (render),
-HarnessPrompt (handle). Wrap a provider in its gate before binding it:
-(provide h "id" "HarnessRender" (render_provider (HtmlRender)))
-(head_tool (resolve h "HarnessFs") "notes")     read through the fs seam
-((resolve h "HarnessRender") ~ HarnessRender:render "hi")   render through it
-Protocol sends are always qualified `~ Protocol:message` — see the Gene rules.
-
-To grow code that did not exist at boot, write a file and load it:
-  ($fs/write_text "clock.gene" (plugin_source "clock" "tick"))
-  (install_sandboxed h (generated_dir) "clock.gene" [] [])
-  -> the new plugin provides the seam "Tool:clock", bound to a function
-(plugin_source "name" "text") renders a plugin module that answers with `text`.
-Relative filenames in ($fs/write_text ...) land in the generated-plugins
-directory and nowhere else. The loaded module is sandboxed and granted nothing.
-
-For anything more interesting than a canned answer, skip the file and install a
-Plugin value directly — you can put a real function in the seam that way.
-
-You also have (dispatch h "status") and the other shell commands, but you rarely
-need them: everything they do is in the list above.""")
-
-(fn gene_primer [] : Str
-  # The rules a live model actually gets wrong. Without them it writes Lisp or
-  # JavaScript.
-  """Gene is not Lisp and not JavaScript:
-- Every operator is PREFIX: (+ a 1), (== a b), (!= a b). Never (a + 1).
-- Comments start with "# ". Bind with (var x v). Define with (fn f [a] body).
-- Send a message: (xs ~ push v), (m ~ get "k"). Never xs.push(v).
-  Zero-argument shortcut on a named binding only: xs/~size.
-- A PROTOCOL message must be qualified with its protocol, or it is not found:
-  (provider ~ HarnessRender:render "hi")   correct
-  (provider ~ render "hi")                 error: no message 'render'
-  Bare sends only reach messages a type declares itself. This is the single
-  most common mistake here.
-- Standard library needs a $ sigil: ($println x), ($str/join xs ", ").
-  The harness names above are already bound — do NOT prefix those with $.
-- Lists are [1 2 3]. Map literals use ^ keys: {^name "x" ^count 2}, read as
-  m/name. NEVER {"name" "x"} — that is a read error and your ENTIRE reply is
-  discarded, including the code. To key by a runtime string, build the map:
-  (var m {}) (m ~ put "name" v). Do not write JSON.
-- A seam often holds a plain FUNCTION. Call it directly: ((resolve h "Tool:x")
-  "arg"). Never (f ~ "arg") — `~` sends a message, and a string is not one.
-- try is (try expr1 expr2 catch e handler) — `catch` is a clause inside the
-  try, not a nested (catch ...) form. There is no try/except.
-- Only nil, false and void are falsy.
-- Strings interpolate with $"text ${expr}".
-- (if c a b), (if_not c body...), (if_yes c body...), (for x in xs ...).
-- ^code is ONE (do ...) block; the value of its last form is the result.
-
-These do NOT exist. Every one has been tried here and failed:
-- No let / let*. Bind with (var x v) inside the (do ...) you are already in.
-- No `and` / `or` / `not`. They are (&& a b), (|| a b), (! a).
-- No `str`, `int`, `drop`, `take`, `first`, `rest`, `nth`, `count`, `len`.
-- No (xs ~ get 0) on a LIST, no (xs ~ removeAt i), no (xs ~ slice a b), no
-  `range`. Lists are indexed xs/0 with a literal, xs/%i with a variable, and
-  sized xs/~size. (xs ~ get "k") is for MAPS only. A sub-range is a loop:
-    (var out []) (var i 1) (while (< i n) (out ~ push xs/%i) (set i (+ i 1)))
-- Rebind with (set x v), never a second (var x v).
-- PROPS USE ^ AND NOT ~. It is (Plugin ^id "x" ^provides [...] ^activate f).
-  (Plugin ~id "x") is a message send and fails with "undefined symbol: ~id".
-
-The pieces you actually need:
-  ($str/split s " ") -> list        ($str/join xs " ") -> string
-  ($str/trim s)  ($str/starts_with? s "p")  ($str/contains? s "x")
-  ($parse/parse_int "12") -> 12, and raises on a non-number
-  ($to_str v) for anything -> string
-  (xs ~ push v) appends in place. To DROP an element, rebuild:
-    (var kept []) (for x in xs (if_not (== x drop_me) (kept ~ push x)))
-  Mutable state that survives between calls is a cell:
-    (var c ($cell []))   ((c ~ get) ~ push v)   (c ~ get)   (c ~ set v)
-  Skip the first n words of a split: index with a while loop and xs/%i.
-- xs/~size and xs/0 work only on a NAMED binding, never on a parenthesized
-  expression: ((c ~ get) ~size) is a syntax error. For expressions use the
-  helpers below instead of binding a temporary.
-
-Four helpers are bound for exactly the shapes the path syntax cannot express:
-  (size xs)              length of any list expression
-  (at xs i)              element i of any list expression
-  (drop_first xs n)      a new list without the first n elements
-  (without xs v)         a new list with every occurrence of v removed
-So a cell-backed list is (size (c ~ get)), and "the words after the first" is
-(drop_first ($str/split cmd " ") 1).""")
-
-(fn system_prompt [] : Str
+(fn system_prompt [h : Harness] : Str
   # The format instruction leads *and* closes the prompt, with a filled-in
   # example between them. Stating it once in the middle was not enough: the
   # model replied with a sentence followed by a bare `(do ...)`, which is not
@@ -290,7 +211,7 @@ no explanation before or after. It looks exactly like this:
 
 {^status "done"
  ^response "Nine plugins are installed."
- ^code (do (plugin_states h))}
+ ^code (do (plugin_states))}
 
 Three props, always all three:
   ^status    "done" if this reply finishes the task, "in-progress" if you need
@@ -316,9 +237,7 @@ find the real name in the rules below instead of inventing another one.
 
 You are the agent inside a Gene plugin harness, and ^code runs against it live.
 
-${(harness_primer)}
-
-${(gene_primer)}
+${(harness_primer h)}
 
 Host authority is narrow: the program may write into the generated-plugins
 directory and nothing else. Reading arbitrary files or the environment is
@@ -335,14 +254,14 @@ and end it with }.""")
   (var primary ($os/env? "OPENROUTER_API_KEY"))
   (if (== primary nil) ($os/env? "OPENROUTER_KEY") primary))
 
-(fn call_model [prompt : Str, history : Str] : Str
+(fn call_model [h : Harness, prompt : Str, history : Str] : Str
   (var key (api_key))
   (if_yes (== key nil)
     (fail (HarnessError
       ^message "no API key — set OPENROUTER_API_KEY (or OPENROUTER_KEY)")))
   (var body ($json/stringify
     {^model (model_name)
-     ^messages [{^role "system" ^content (system_prompt)}
+     ^messages [{^role "system" ^content (system_prompt h)}
                 {^role "user" ^content $"${prompt}\n\nPrior turns:\n${history}"}]
      ^max_tokens 3000
      # This model reasons by default and will spend the whole budget thinking
@@ -418,6 +337,9 @@ and end it with }.""")
   # and refusals leave the decision to the model.
   ($str/starts_with? result "error:"))
 
+(fn emit_output [h : Harness, text : Str]
+  (log_append h "output" text))
+
 (fn no_op? [code] : Bool
   # A program that does nothing has nothing worth showing. The model emits
   # `(do nil)` when a turn is pure answer — printing the code and a result of
@@ -425,7 +347,7 @@ and end it with }.""")
   (var text ($str/trim ($to_str code)))
   (|| (== text "(do nil)") (== text "(do)")))
 
-(fn run_task [h : Harness, prompt : Str, session] : Str
+(fn run_task [h : Harness, prompt : Str, session, state_host] : Str
   # Prints each turn as it happens rather than returning one block at the end:
   # a task may take several model round trips, and a shell that goes silent for
   # thirty seconds looks hung. The value returned is the last thing said, which
@@ -441,8 +363,8 @@ and end it with }.""")
     # turn after it is the agent going round again without being asked, which is
     # the thing a reader wants delimited.
     (if_yes (> (turn ~ get) 1)
-      ($println $"== Round $(turn ~ get) =="))
-    (var raw (call_model prompt (history ~ get)))
+      (emit_output h $"== Round $(turn ~ get) =="))
+    (var raw (call_model h prompt (history ~ get)))
     (var envelope (parse_envelope raw))
     (if (== envelope nil)
       (then
@@ -453,7 +375,7 @@ and end it with }.""")
         # try again. Say what arrived, too — "the model did not return Gene
         # data" with nothing attached is the least useful thing this loop can
         # print, because the fix is always in the reply.
-        ($println "(reply was not readable Gene data; asking again)")
+        (emit_output h "(reply was not readable Gene data; asking again)")
         (last ~ set $"the model did not return Gene data. It said:\n  $(preview raw)")
         (var prior (history ~ get))
         (history ~ set $"${prior}\nYOUR LAST REPLY WAS DISCARDED. It did not read as Gene data.\nIt began: $(preview raw)\nReply with ONLY the map: {^status ... ^response ... ^code (do ...)}. No prose, no fence.\nRemember: there is no def, defn, let, let*, and, or, str, int, first, rest, nth, count.\nOnly (var x v), (fn [a] ...), (&& a b), ($str/join xs s), xs/~size on a named binding.")
@@ -462,7 +384,7 @@ and end it with }.""")
       (else
         (var response envelope/response)
         (if_yes (!= response nil)
-          ($println ($to_str response)))
+          (emit_output h ($to_str response)))
         # The program is shown before it runs. `^response` is a claim composed
         # before the model could know the outcome; printing the code next to it
         # lets a reader check the claim against what actually executes.
@@ -470,10 +392,10 @@ and end it with }.""")
         (var result
           (if ran_code
             (then
-              ($println ($to_str envelope/code))
+              (emit_output h ($to_str envelope/code))
               (var value (run_program h envelope/code))
-              ($println "-- Result  --")
-              ($println value)
+              (emit_output h "-- Result  --")
+              (emit_output h value)
               value)
             (else "(no action)")))
         (last ~ set result)
@@ -500,12 +422,13 @@ and end it with }.""")
         (if_yes (&& (== ran_code false) (!= envelope/status "in-progress"))
           (running ~ set false))
         (if_yes (&& (running ~ get) (>= (turn ~ get) turn_limit))
-          ($println $"(gave up after ${turn_limit} rounds; the last program still fails)")
+          (emit_output h
+            $"(gave up after ${turn_limit} rounds; the last program still fails)")
           (running ~ set false)))))
   # Everything has been printed as it happened, so there is nothing left for
   # the driver to echo. Remembering happens here rather than in `answer`
   # because this is where the real last result is known.
-  (remember session prompt (last ~ get))
+  (remember session state_host prompt (last ~ get))
   "")
 
 (fn strip_slash [prompt : Str] : Str
@@ -519,7 +442,7 @@ and end it with }.""")
     (set i (+ i 1)))
   ($str/trim ($str/join out "/")))
 
-(fn answer [h : Harness, prompt : Str, session] : Str
+(fn answer [h : Harness, prompt : Str, session, state_host] : Str
   # Two ways to reach the offline interpreter without a round trip, and both
   # have to be unambiguous — the shell should not get slower or need a network
   # for the things typed most, but it also must not mistake a sentence for a
@@ -530,8 +453,8 @@ and end it with }.""")
   # `me`. A prefix of a sentence is not a command.
   (if ($str/starts_with? prompt "/")
     (then (dispatch h (strip_slash prompt)))
-    (elif (bare_query? prompt) (dispatch h prompt))
-    (else (run_task h prompt session))))
+    (elif (bare_query? h prompt) (dispatch h prompt))
+    (else (run_task h prompt session state_host))))
 
 # ---------------------------------------------------------------------------
 # Session memory
@@ -553,7 +476,7 @@ and end it with }.""")
   (var lines (session ~ get))
   ($str/join lines "\n"))
 
-(fn remember [session, prompt : Str, result : Str]
+(fn remember [session, state_host, prompt : Str, result : Str]
   (var lines (session ~ get))
   (lines ~ push $"you: ${prompt}\nharness: $(preview result)")
   (var kept [])
@@ -562,16 +485,51 @@ and end it with }.""")
   (while (< i lines/~size)
     (kept ~ push lines/%i)
     (set i (+ i 1)))
-  (session ~ set kept))
+  (session ~ set kept)
+  (state_host ~ PluginHost:update_state {^history kept}))
 
-(type LlmAgent ^props {^model Str ^session Any})
+(type LlmAgent ^props {^model Str ^session Any ^state_host PluginContext})
 
 (impl HarnessPrompt for LlmAgent
   (message handle [h, prompt : Str] : Str
-    (answer h prompt self/session)))
+    (answer h prompt self/session self/state_host)))
+
+(fn llm_prompt_text [] : Str
+  "Use register_module for durable authored plugins. Harness operations are already bound and take no h argument. Entries are content-addressed, capability selectors only attenuate named roots, and code-running replies must observe their result before claiming completion. Pull detailed Gene references with (doc \"gene/pitfalls\"), gene/syntax, gene/declarations, gene/control_flow, or gene/stdlib.")
 
 (fn llm_agent_plugin [] : Plugin
-  (Plugin ^id "agent" ^provides ["HarnessPrompt"]
-    ^activate (fn [] (fn [h, id]
-      (provide h id "HarnessPrompt"
-        (prompt_provider (LlmAgent ^model (model_name) ^session ($cell []))))))))
+  (Plugin ^id "agent"
+    ^provides [["seams" "HarnessPrompt"] ["prompt" "llm_agent"]
+               ["prompt" "gene/language"] ["prompt" "gene/pitfalls"]
+               ["prompt" "gene/syntax"] ["prompt" "gene/declarations"]
+               ["prompt" "gene/control_flow"] ["prompt" "gene/stdlib"]]
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (var restored (host ~ PluginHost:state))
+      (var history ($thaw (if (== restored nil) #[] (?? restored/history #[]))))
+      (host ~ PluginHost:provide "HarnessPrompt"
+        (prompt_provider
+          (LlmAgent ^model (model_name) ^session ($cell history)
+                    ^state_host host)))
+      (host ~ PluginHost:contribute "prompt"
+        {^name "llm_agent" ^text (llm_prompt_text)})
+      # The checked-in Gene language skill is the one source for both pushed
+      # guidance and pull introspection. References stay out of every request
+      # until the model asks for one through `doc`.
+      (host ~ PluginHost:contribute "prompt"
+        {^name "gene/language" ^text (gene_skill_file "SKILL.md")})
+      (host ~ PluginHost:contribute "prompt"
+        {^name "gene/pitfalls"
+         ^text (gene_skill_file "reference/pitfalls.md") ^pull_only true})
+      (host ~ PluginHost:contribute "prompt"
+        {^name "gene/syntax"
+         ^text (gene_skill_file "reference/syntax.md") ^pull_only true})
+      (host ~ PluginHost:contribute "prompt"
+        {^name "gene/declarations"
+         ^text (gene_skill_file "reference/declarations.md") ^pull_only true})
+      (host ~ PluginHost:contribute "prompt"
+        {^name "gene/control_flow"
+         ^text (gene_skill_file "reference/control-flow.md") ^pull_only true})
+      (host ~ PluginHost:contribute "prompt"
+        {^name "gene/stdlib"
+         ^text (gene_skill_file "reference/stdlib.md") ^pull_only true})))))

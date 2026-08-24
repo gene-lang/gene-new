@@ -1,0 +1,43 @@
+(mod llm_session_resume_smoke)
+
+(import [new_harness install resolve status_of assemble_request log_events
+         hydrate_harness_log shutdown_harness]
+  from "../src/kernel")
+(import [open_event_store append_event record_plugin_state flush_event_store
+         validate_event_catalog close_event_store]
+  from "../src/state")
+(import [core_event_types] from "../src/generated_event_catalog")
+(import [llm_agent_plugin] from "../src/llm")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var events (open_event_store args/0))
+  (append_event events "session" "s1"
+    {^type "message" ^text "prior request"})
+  (record_plugin_state events "session" "s1" "agent"
+    {^history ["remembered exchange"]})
+  (flush_event_store events)
+  (close_event_store events)
+
+  (set events (open_event_store args/0))
+  (var h
+    (new_harness ^event_store events ^event_scope "session"
+      ^event_stream "s1"))
+  (var known ($thaw #{}))
+  (for event in core_event_types (known ~ put event/name event))
+  (validate_event_catalog events known)
+  (hydrate_harness_log h)
+  (assert (== (assemble_request (log_events h)) ["prior request"])
+    "new_harness must hydrate the retained model-visible session log")
+  (install h (llm_agent_plugin))
+  (assert (== (status_of h "agent") "ready")
+    "the real LLM plugin must restore without calling the model")
+  (var provider (resolve h "HarnessPrompt"))
+  (var remembered (provider/session ~ get))
+  (assert (== remembered ["remembered exchange"])
+    "the real LLM provider must restore its scoped conversation window")
+  (shutdown_harness h)
+  (close_event_store events)
+  ($println "llm_session_resume_smoke: ok"))

@@ -2,7 +2,7 @@
 #
 #   gene run examples/gene-harness/src/main.gene web
 #
-# The mirror of `cli`. Same three plugin ids, same `reporter_plugin` value, two
+# The mirror of `cli`. Same provider/reporter/agent plugins, two
 # different providers — and because the in-memory filesystem provider declares
 # `^capabilities []`, this profile boots under no grants at all. A web
 # deployment has no business reading the operator's disk, and here that is a
@@ -10,22 +10,26 @@
 
 (mod web)
 
-(import [Plugin provide] from "../kernel")
+(import [Plugin PluginContext PluginHost] from "../kernel")
+(import_impl PluginHost for PluginContext from "../kernel")
 (import [MemFs HtmlRender fs_provider render_provider] from "../seams")
 (import [Profile] from "../profile")
 (import [reporter_plugin] from "./common")
-(import [agent_plugin] from "../agent")
+(import [agent_plugin command_plugin] from "../agent")
 
 (fn web_fs_plugin [] : Plugin
   (Plugin ^id "fs" ^provides ["HarnessFs"]
-    ^activate (fn [] (fn [h, id]
-      (provide h id "HarnessFs"
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "HarnessFs"
         (fs_provider (MemFs ^files {^notes "hello from memory"})))))))
 
 (fn web_render_plugin [] : Plugin
   (Plugin ^id "render" ^provides ["HarnessRender"]
-    ^activate (fn [] (fn [h, id]
-      (provide h id "HarnessRender" (render_provider (HtmlRender)))))))
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "HarnessRender"
+        (render_provider (HtmlRender)))))))
 
 (fn web_profile [] : Profile
   # The same agent as `cli`, and no driver: this deployment is driven by
@@ -34,4 +38,4 @@
   # does at the command line.
   (Profile ^name "web"
            ^plugins [(web_fs_plugin) (web_render_plugin) (reporter_plugin)
-                     (agent_plugin)]))
+                     (command_plugin) (agent_plugin)]))

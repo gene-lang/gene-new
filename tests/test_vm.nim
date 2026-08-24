@@ -1576,7 +1576,7 @@ suite "vm — env and eval":
     expect GeneError:
       discard runStr("(env ^capabilities [1])")
 
-  test "eval policy max_steps limits execution":
+  test "eval policy limits execution by steps, time, and memory":
     ck "(eval (quote (+ 1 2)) ^in (env ^policy {^max_steps 20}))",
        "3"
     ck "(type EvalPolicy ^props {^max_steps Int " &
@@ -1595,6 +1595,30 @@ suite "vm — env and eval":
        "           ^in (env ^policy {^max_steps 40})) " &
        "catch {^message m} m)",
        "\"eval max steps exceeded\""
+    # A step budget is transitive across an ordinary call. The callee's bound
+    # scope descends from its own lexical scope, so without this the first call
+    # out of the evaluated form silently left the limit behind.
+    ck "(fn spin [n : Int] (while true (set n (+ n 1))) n) " &
+       "(try (eval (quote (spin 1)) ^in (env ^policy {^max_steps 200})) " &
+       "catch {^message m} m)",
+       "\"eval max steps exceeded\""
+    # A wall clock and a process-memory ceiling are the two limits a step count
+    # cannot express: an allocating loop can exhaust memory in few steps, and a
+    # step is not a unit of time. Both are sampled on the budgeted dispatch
+    # path, so a runaway form is stopped rather than the process.
+    ck "(try (eval (quote (while true nil)) " &
+       "           ^in (env ^policy {^timeout_ms 50})) " &
+       "catch {^message m} m)",
+       "\"eval timeout exceeded\""
+    ck "(try (eval (quote (do (var xs ($thaw #[])) " &
+       "                      (while true (xs ~ push ($str/join [\"x\"] \"\"))))) " &
+       "           ^in (env ^policy {^max_memory_mb 1})) " &
+       "catch {^message m} m)",
+       "\"eval memory limit exceeded\""
+    ck "(eval (quote (+ 1 2)) " &
+       "      ^in (env ^policy {^max_steps 200 ^timeout_ms 5000 " &
+       "                        ^max_memory_mb 128}))",
+       "3"
     expect GeneError:
       discard runStr("(env ^policy [1])")
     expect GeneError:
@@ -1602,9 +1626,13 @@ suite "vm — env and eval":
     expect GeneError:
       discard runStr("(env ^policy {^max_steps -1})")
     expect GeneError:
-      discard runStr("(env ^policy {^max_memory_mb 128})")
+      discard runStr("(env ^policy {^max_memory_mb \"bad\"})")
     expect GeneError:
-      discard runStr("(env ^policy {^timeout_ms 5000})")
+      discard runStr("(env ^policy {^max_memory_mb -1})")
+    expect GeneError:
+      discard runStr("(env ^policy {^timeout_ms \"bad\"})")
+    expect GeneError:
+      discard runStr("(env ^policy {^timeout_ms -1})")
     expect GeneError:
       discard runStr("(env ^policy {^allow_ffi true})")
     expect GeneError:

@@ -11,17 +11,20 @@
 
 (mod agent)
 
-(import [Plugin Harness provide resolve seam_bound plugin_states bound_seams
-         lifecycle_log install_sandboxed uninstall retry status_of module_dir
-         installed HarnessError] from "./kernel")
+(import [Plugin PluginContext PluginHost Harness provide resolve seam_bound
+         row rows invoke_registry_row plugin_states bound_seams
+         lifecycle_log log_append uninstall retry status_of
+         installed transaction_diff flush_harness HarnessError] from "./kernel")
+(import_impl PluginHost for PluginContext from "./kernel")
 (import [HarnessPrompt HarnessFs HarnessRender head_tool prompt_provider]
   from "./seams")
+(import [register_module] from "./workspace")
 
 # --- word handling ---------------------------------------------------------
 
 (fn words [text : Str] : Any
   # `$str/split` yields empty strings for repeated separators, so drop them.
-  (var out [])
+  (var out ($thaw #[]))
   (for w in ($str/split ($str/trim text) " ")
     (if_yes (!= w "") (out ~ push w)))
   out)
@@ -31,7 +34,7 @@
   (if (== v void) "" ($to_str v)))
 
 (fn words_from [parts, i : Int] : Str
-  (var out [])
+  (var out ($thaw #[]))
   (var j i)
   (while (< j parts/~size)
     (out ~ push ($to_str parts/%j))
@@ -40,31 +43,7 @@
 
 # --- generated plugins -----------------------------------------------------
 
-(fn generated_dir [] : Str
-  # Inside the package, and not by preference: `load_sandboxed` refuses a
-  # sandbox directory that escapes the package root, so a harness cannot load
-  # code it wrote to /tmp. Self-extension is confined to the package by the
-  # module system before any capability is consulted.
-  $"$(module_dir (module_dir this_mod/~path))/plugins/generated")
-
-(fn escape_for_gene [text : Str] : Str
-  # The answer text becomes a string literal in generated source, and once a
-  # model is bound to the prompt seam that text is untrusted input to a code
-  # generator. Escape the backslash first, then the quote, then flatten
-  # newlines — a one-line literal cannot survive one.
-  #
-  # This is not hypothetical. The first version interpolated the text straight
-  # into a `$"..."` literal, and the first thing a model wrote contained JSON:
-  # the quotes closed the string, the rest parsed as code, and the load failed
-  # on an apostrophe being read as a character literal.
-  (var a ($str/join ($str/split text "\\") "\\\\"))
-  (var b ($str/join ($str/split a "\"") "\\\""))
-  ($str/join ($str/split b "\n") " "))
-
 (fn safe_name? [name : Str] : Bool
-  # The name becomes a filename *and* a seam key, and a model chose it. A
-  # generator that assumes its input is well behaved is a generator with a
-  # path-traversal bug in it.
   (var bad false)
   (if_yes (== name "") (set bad true))
   (for c in ["/" "\\" ".." "\"" "'" "$" "~" ":" ";" "*" "?" "<" ">" "|"]
@@ -72,49 +51,24 @@
   (if_yes (> ($str/byte_size name) 40) (set bad true))
   (== bad false))
 
-(fn plugin_source [name : Str, text : Str] : Str
-  # Plain strings do not interpolate, so this emits `${arg}` literally into the
-  # generated module rather than expanding it here.
-  #
-  # The answer is a *plain* literal in the generated module, never an
-  # interpolated one: interpolation would turn `${...}` in someone else's text
-  # into code running inside the plugin.
-  ($str/join [
-    "# Written by the harness at runtime, in response to a prompt.\n"
-    "#\n"
-    "# It is loaded with `grants []`, so it cannot name $fs, $net or $os. What\n"
-    "# it can do is compute and answer, which is what a tool is.\n"
-    "\n"
-    "(mod plugin)\n"
-    "\n"
-    "(var answer \"" (escape_for_gene text) "\")\n"
-    "\n"
-    "(fn run [arg] : Str\n"
-    "  ($str/join [\"" name "(\" arg \") -> \" answer] \"\"))\n"
-    "\n"
-    "(var plugin_id \"" name "\")\n"
-    "(var plugin_seam \"Tool:" name "\")\n"
-    "(fn plugin_build [] run)\n"] ""))
-
-(fn write_plugin_source [path : Str, source : Str] : Str
-  # The one authority the agent holds, declared at the one function that uses
-  # it rather than on the seam, so `status` and `help` need nothing.
-  #
-  # Measured, and not what was assumed here first: **this needs no grant.** A
-  # path inside the entry's own package is ambiently authorized, so a package
-  # extending *itself* is not an authority question. Point the same row outside
-  # the package and it is refused without `--allow_write_dir`, verified — so
-  # the package is the fence, not the flag. `load_sandboxed` draws the same line
-  # independently: it refuses a sandbox directory that escapes the package root,
-  # which is why generated plugins live here and not in /tmp.
-  #
-  # The row's path is resolved against the process working directory, not the
-  # package root, so it only names this directory when the harness is run from
-  # its own package. Run from elsewhere the row points somewhere else and the
-  # write is refused — see docs/design.md §5.
-  ^capabilities [(fs/WriteDir "plugins/generated")]
-  ($fs/write_text path source)
-  path)
+(fn plugin_source [name : Str, text : Str]
+  # Source is data, not a string template. Quasiquote inserts the untrusted
+  # strings as Str values, so quotes, interpolation markers, and newlines can
+  # never close a literal and become code.
+  `(mod plugin
+     (import [Plugin DescriptorContext PluginContext PluginHost]
+       from "../../../src/plugin_api")
+     (import_impl PluginHost for PluginContext from "../../../src/kernel")
+     (fn run [arg] : Str
+       ($str/join [(unquote name) "(" arg ") -> " (unquote text)] ""))
+     (fn init [ctx : DescriptorContext] : Plugin
+       ^capabilities []
+       (Plugin ^id %name
+         ^provides [["tools" (unquote name)]] ^requires []
+         ^contextual true
+         ^activate (fn [] (fn [host]
+           (host ~ PluginHost:contribute "tools"
+             {^name %name ^doc %text ^run run})))))))
 
 (fn build_tool [h : Harness, name : Str, text : Str] : Str
   (if_yes (== name "")
@@ -122,22 +76,22 @@
   (if_not (safe_name? name)
     (fail (HarnessError
       ^message $"unsafe tool name ${name}: one plain word, no path characters")))
-  (var dir (generated_dir))
-  (write_plugin_source $"${dir}/${name}.gene" (plugin_source name text))
-  # Loaded like any other out-of-tree plugin: sandboxed, granted nothing, and
-  # sharing nothing. It needs no seam definition because it provides a plain
-  # value seam rather than implementing a protocol.
-  (install_sandboxed h dir $"${name}.gene" [] []))
+  (if (== h/workspace nil)
+    (fail (HarnessError
+      ^message "durable build requires a harness workspace")))
+  (var registered
+    (register_module h/workspace h name (plugin_source name text)
+      ^scope "session" ^selectors []))
+  $"registered ${name} at revision ${registered/revision} (${registered/status})")
 
-(fn tool_seams [h : Harness] : Any
-  (var out [])
-  (for s in (bound_seams h)
-    (if_yes ($str/starts_with? s "Tool:") (out ~ push s)))
+(fn tool_names [h : Harness] : Any
+  (var out ($thaw #[]))
+  (for tool in (rows h "tools") (out ~ push tool/name))
   out)
 
 # --- the command surface ---------------------------------------------------
 
-(fn bare_query? [prompt : Str] : Bool
+(fn bare_query? [h : Harness, prompt : Str] : Bool
   # A one-word query that could not be anything but a command. `status` is
   # `status`; no English sentence is one of these words on its own.
   #
@@ -147,53 +101,44 @@
   # literally and created a tool named `me`. A prefix of a sentence is not a
   # command, and guessing which is which from the first word cannot be made to
   # work. Everything ambiguous goes to the model; `/` forces the interpreter.
-  (var known ["help" "status" "seams" "log" "tools"])
   (var found false)
-  (for k in known
-    (if_yes (== k ($str/trim prompt)) (set found true)))
+  (for command in (rows h "commands")
+    (if_yes (== command/name ($str/trim prompt)) (set found true)))
   found)
 
-(fn help_text [] : Str
-  ($str/join [
-    "commands:"
-    "  help                  this list"
-    "  status                every plugin and its state"
-    "  seams                 what is bound right now"
-    "  log                   the kernel's lifecycle record"
-    "  read <path>           read through the HarnessFs seam"
-    "  tools                 tools this harness has gained"
-    "  tool <name> [arg]     call one"
-    "  build <name> <text>   write a new plugin and load it, live"
-    "  unload <id>           uninstall a plugin"
-    "  retry <id>            retry one that failed to activate"
-    "  quit | exit | Ctrl-D  leave"
-    ""
-    "Under the `chat` profile a prompt goes to the model unless you prefix it"
-    "with `/` — `/status` is this list, `status` is a question about it."] "\n"))
+(fn help_text [h : Harness] : Str
+  (var lines ($thaw #["commands:"]))
+  (for command in (rows h "commands")
+    (lines ~ push $"  ${command/name}  ${command/doc}"))
+  (lines ~ push "  quit | exit | Ctrl-D  leave")
+  ($str/join lines "\n"))
+
+(fn command_help [h, parts] (help_text h))
+(fn command_status [h, parts] ($to_str (plugin_states h)))
+(fn command_seams [h, parts] ($to_str (bound_seams h)))
+(fn command_log [h, parts] ($str/join (lifecycle_log h) "\n"))
+(fn command_tools [h, parts] ($to_str (tool_names h)))
+(fn command_read [h, parts]
+  (head_tool (resolve h "HarnessFs") (word parts 1)))
+(fn command_tool [h, parts]
+  (var name (word parts 1))
+  (var tool (row h "tools" name))
+  (if (== tool void)
+    (fail (HarnessError ^message $"no tool ${name}; `build` one or see `tools`")))
+  (invoke_registry_row h "tools" name [(words_from parts 2)]))
+(fn command_build [h, parts]
+  (build_tool h (word parts 1) (words_from parts 2)))
+(fn command_unload [h, parts] (uninstall h (word parts 1)))
+(fn command_retry [h, parts] (retry h (word parts 1)))
+(fn command_diff [h, parts] ($to_str (transaction_diff h)))
 
 (fn dispatch [h : Harness, prompt : Str] : Str
   (var parts (words prompt))
   (var cmd (word parts 0))
-  (if (== cmd "help")
-    (then (help_text))
-    (elif (== cmd "status") ($to_str (plugin_states h)))
-    (elif (== cmd "seams") ($to_str (bound_seams h)))
-    (elif (== cmd "log") ($str/join (lifecycle_log h) "\n"))
-    (elif (== cmd "tools") ($to_str (tool_seams h)))
-    (elif (== cmd "read")
-      (head_tool (resolve h "HarnessFs") (word parts 1)))
-    (elif (== cmd "tool")
-      (do
-        (var name (word parts 1))
-        (if_yes (if_not (seam_bound h $"Tool:${name}") true)
-          (fail (HarnessError ^message $"no tool ${name}; `build` one or see `tools`")))
-        ((resolve h $"Tool:${name}") (words_from parts 2))))
-    (elif (== cmd "build")
-      (build_tool h (word parts 1) (words_from parts 2)))
-    (elif (== cmd "unload") (uninstall h (word parts 1)))
-    (elif (== cmd "retry") (retry h (word parts 1)))
-    (else
-      $"I don't know \"${cmd}\". Try `help`.")))
+  (var command (row h "commands" cmd))
+  (if (== command void)
+    $"I don't know \"${cmd}\". Try `help`."
+    (invoke_registry_row h "commands" cmd [h parts])))
 
 # --- the provider, and the plugin that binds it ----------------------------
 
@@ -203,15 +148,61 @@
   (message handle [h, prompt : Str] : Str
     (dispatch h prompt)))
 
+(fn agent_prompt_text [] : Str
+  "Commands and tools are registry rows. Query `commands` and `tools` through introspection; use `build <name> <text>` to register a durable generated tool.")
+
+(fn command_plugin [] : Plugin
+  (Plugin ^id "commands"
+    ^provides [["commands" "help"] ["commands" "status"]
+               ["commands" "seams"] ["commands" "log"]
+               ["commands" "read"] ["commands" "tools"]
+               ["commands" "tool"] ["commands" "build"]
+               ["commands" "unload"] ["commands" "retry"]
+               ["commands" "diff"]
+               ["prompt" "agent_commands"]]
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:contribute "commands"
+        {^name "help" ^doc "show registry-derived help" ^run command_help})
+      (host ~ PluginHost:contribute "commands"
+        {^name "status" ^doc "show plugin lifecycle states" ^run command_status})
+      (host ~ PluginHost:contribute "commands"
+        {^name "seams" ^doc "show bound seams" ^run command_seams})
+      (host ~ PluginHost:contribute "commands"
+        {^name "log" ^doc "show lifecycle history" ^run command_log})
+      (host ~ PluginHost:contribute "commands"
+        {^name "read" ^doc "read through HarnessFs" ^run command_read})
+      (host ~ PluginHost:contribute "commands"
+        {^name "tools" ^doc "list registered tools" ^run command_tools})
+      (host ~ PluginHost:contribute "commands"
+        {^name "tool" ^doc "invoke a registered tool" ^run command_tool})
+      (host ~ PluginHost:contribute "commands"
+        {^name "build" ^doc "register a durable generated plugin" ^run command_build})
+      (host ~ PluginHost:contribute "commands"
+        {^name "unload" ^doc "uninstall a plugin for this run" ^run command_unload})
+      (host ~ PluginHost:contribute "commands"
+        {^name "retry" ^doc "retry a failed plugin" ^run command_retry})
+      (host ~ PluginHost:contribute "commands"
+        {^name "diff" ^doc "show the active turn's staged changes"
+         ^run command_diff})
+      (host ~ PluginHost:contribute "prompt"
+        {^name "agent_commands" ^text (agent_prompt_text)})))))
+
 (fn agent_plugin [] : Plugin
   (Plugin ^id "agent" ^provides ["HarnessPrompt"]
-    ^activate (fn [] (fn [h, id]
-      (provide h id "HarnessPrompt" (prompt_provider (CommandAgent)))))))
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "HarnessPrompt"
+        (prompt_provider (CommandAgent)))))))
 
 (fn ask [h : Harness, prompt : Str] : Str
   # The one call a driver makes. Errors are answers too: a CLI that dies
   # because a command failed is not one you can explore a system with.
-  (try
-    ((resolve h "HarnessPrompt") ~ HarnessPrompt:handle h prompt)
+  (var out
+    (try
+      ((resolve h "HarnessPrompt") ~ HarnessPrompt:handle h prompt)
     catch e
-    $"error: ${e/message}"))
+      $"error: ${e/message}"))
+  (if_yes (!= out "") (log_append h "output" out))
+  (flush_harness h)
+  out)

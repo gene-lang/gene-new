@@ -426,6 +426,8 @@ suite "filesystem capability provider":
     when defined(posix):
       createSymlink(outside, root / "escape")
       expect FilesystemCapabilityError:
+        discard fs.pathExists(context, "escape")
+      expect FilesystemCapabilityError:
         fs.writeText(context, "escape/escaped.txt", "escape")
       check not fileExists(outside / "escaped.txt")
 

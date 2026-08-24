@@ -349,6 +349,17 @@ type
   EvalBudget* = ref object
     remaining*: int64
     parent*: EvalBudget
+    hasDeadline*: bool
+    deadline*: MonoTime
+    hasMemoryLimit*: bool
+    memoryBaseline*: int64
+    memoryLimitBytes*: int64
+    sampleCountdown*: int
+
+  ModuleExecutionPolicy* = ref object
+    maxSteps*: int64
+    maxMemoryMb*: int64
+    timeoutMs*: int64
 
   TypeBoundaryToken* = ref object
     ## Stable identity shared by a transient scope and detached conformance
@@ -427,6 +438,11 @@ type
     borrowedCallerEnv*: bool # scope or ancestor is inside a live syntax call
     requiredImplTypes*: seq[Value]
     evalBudget*: EvalBudget
+    ## Immutable policy installed by the trusted sandbox host after a
+    ## declaration-only module load. A fresh budget is created whenever an
+    ## external call enters this module, so escaped functions and protocol
+    ## methods cannot bypass the loader's supervision boundary.
+    moduleExecutionPolicy*: ModuleExecutionPolicy
     ownsTasks*: bool
     ownedTasks*: seq[Value]
     ownsActors*: bool

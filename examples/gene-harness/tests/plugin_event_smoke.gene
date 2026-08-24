@@ -1,0 +1,66 @@
+(mod plugin_event_smoke)
+
+(import [new_harness resolve] from "../src/kernel")
+(import [open_event_store events_for validate_event_catalog close_event_store]
+  from "../src/state")
+(import [open_workspace register_module restore_workspace known_event_types
+         close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var source
+    (quote
+      (mod plugin
+        (import [Plugin DescriptorContext PluginContext PluginHost]
+          from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn validate_tick [payload]
+          (if (== payload/value void) ($panic "tick requires value") payload))
+        (fn init [ctx : DescriptorContext] : Plugin
+          ^capabilities []
+          (Plugin ^id "ticker" ^provides ["EmitTick"] ^requires []
+            ^events [{^name "ticker/tick" ^version 1 ^ignorable false
+                      ^schema validate_tick}]
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (fn emit [payload]
+                (host ~ PluginHost:emit_event "ticker/tick" payload))
+              (host ~ PluginHost:provide "EmitTick" emit))))))))
+  (var workspace (open_workspace args/0))
+  (var events (open_event_store args/1))
+  (var h
+    (new_harness ^workspace workspace ^event_store events
+      ^event_scope "session" ^event_stream "s1"))
+  (register_module workspace h "ticker" source ^selectors [])
+  (var emit (resolve h "EmitTick"))
+  (var refused false)
+  (try (emit {}) catch e (set refused true))
+  (assert refused "plugin event payloads must pass the declared bounded schema")
+  (emit {^value 7})
+  (var history (events_for events "session" "s1"))
+  (var found nil)
+  (for envelope in history
+    (if_yes (== envelope/type "ticker/tick") (set found envelope)))
+  (assert (!= found nil) "a valid plugin event must be durable")
+  (assert (&& (== found/origin "plugin") (== found/owner "ticker")
+              (== found/projection "ticker"))
+    "core must stamp plugin event recovery routing")
+  (assert (== (validate_event_catalog events (known_event_types h)) [])
+    "the descriptor catalog must validate its persisted event")
+  (close_workspace workspace)
+  (close_event_store events)
+
+  (set workspace (open_workspace args/0))
+  (set events (open_event_store args/1))
+  (set h
+    (new_harness ^workspace workspace ^event_store events
+      ^event_scope "session" ^event_stream "s1"))
+  (var restored (restore_workspace workspace h ^session "s1"))
+  (assert (== restored/errors {})
+    "phased restore must load plugin event schemas before folding history")
+  (close_workspace workspace)
+  (close_event_store events)
+  ($println "plugin_event_smoke: ok"))

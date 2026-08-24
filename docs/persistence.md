@@ -1,10 +1,12 @@
 # Gene Persistence & Reload — Design
 
-Status: **controlled-stop MVP plus atomic checkpoint generations implemented**
-(stages 1-4 and the checkpoint portion of stage 5). Point filesystem `put`
-also uses durable atomic replacement and all store-created state is owner-only.
-General WAL/replay and full multi-process arbitration remain deferred. Date:
-2026-07-16.
+Status: **controlled-stop MVP plus atomic, exclusively claimed checkpoint
+generations implemented** (stages 1-4 and the checkpoint portion of stage 5).
+Point filesystem `put` also uses durable atomic replacement and all
+store-created state is owner-only. Filesystem publication uses a short-lived
+crash-recoverable process lock; SQLite uses an immediate transaction. General
+WAL/replay and concurrent transactions over point records remain deferred.
+Date: 2026-08-24.
 
 Goal: let a Gene application **save its durable state to a store and reload it
 on the next run**, so a controlled stop-and-restart resumes where it left off.
@@ -166,12 +168,14 @@ envelope. Flat, **not** a directory tree (the prior repo's removed model):
   `store/fs/audit` for surfacing unrecognized files can follow.
 - **Point writes** serialize to a unique owner-only temporary file, `fsync`
   it, rename over the record, and `fsync` the parent directory.
-- **Checkpoint publication** writes owner-only record and manifest files into
-  a temporary generation directory, `fsync`s them and the directory, renames
-  it to `generations/<20-digit-generation>`, then durably replaces `CURRENT`.
-  Restore scans generations newest-first and accepts only a complete manifest
-  whose record hashes match; `CURRENT` is a publication hint, never permission
-  to load an invalid generation.
+- **Checkpoint publication** takes a short-lived crash-recoverable process
+  lock, exclusively claims `generations/<20-digit-generation>`, writes
+  owner-only records followed by the manifest, then durably replaces
+  `CURRENT`. Restore considers only complete, hash-valid generations at or
+  below `CURRENT`; a corrupt current generation falls back, while a complete
+  directory above `CURRENT` is unpublished crash debris and is never promoted.
+  The next writer may reclaim that debris under the lock. SQLite performs the
+  generation claim and `CURRENT` update in one immediate transaction.
 - Store roots, generation directories, records, SQLite database files, and
   SQLite sidecars are owner-only. The store never exposes a serving route.
 
@@ -295,7 +299,8 @@ existing databases keep loading, and bespoke persistence code retires.
 - Arbitrary transactions over point keys; checkpoint generations provide the
   application snapshot boundary without a general transaction callback.
 - Automatic checkpoint-on-mutation — save timing is the app's call (§5.1).
-- Concurrent multi-process access, file locking, replication.
+- General concurrent transactions over point records and replication.
+  Checkpoint generation publication itself is cross-process exclusive.
 - Automatic schema migration of arbitrary records. Checkpoint records carry
   explicit application schema versions and the application supplies pure
   migrations.

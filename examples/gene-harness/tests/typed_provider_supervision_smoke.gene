@@ -1,0 +1,57 @@
+(mod typed_provider_supervision_smoke)
+
+(import [new_harness resolve] from "../src/kernel")
+(import [HarnessFs HarnessRender] from "../src/seams")
+(import [open_workspace register_module close_workspace] from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var source
+    (quote
+      (mod plugin
+        (import [Plugin DescriptorContext PluginContext PluginHost]
+          from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (import [HarnessFs HarnessRender] from "../../../src/seams")
+        (type SlowRender)
+        (impl HarnessRender for SlowRender
+          (message render [text : Str] : Str
+            ^capabilities []
+            (while true nil)))
+        (type LimitedFs)
+        (impl HarnessFs for LimitedFs
+          (message read_text [path : Str] : Str
+            ^capabilities [(fs/ReadDir "/tmp")]
+            ($fs/read_text path)))
+        (fn init [ctx : DescriptorContext] : Plugin
+          ^capabilities []
+          (Plugin ^id "typed_slow" ^provides ["TypedSlow" "TypedFs"]
+            ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (host ~ PluginHost:provide "TypedSlow" (SlowRender))
+              (host ~ PluginHost:provide "TypedFs" (LimitedFs)))))))))
+  (var workspace (open_workspace args/0))
+  (var h (new_harness ^workspace workspace))
+  (register_module workspace h "typed_slow" source
+    ^selectors [{^type "fs/ReadDir" ^root "state" ^path "."}]
+    ^limits {^max_steps 5000 ^max_memory_mb 64 ^timeout_ms 100})
+  (var failed false)
+  (try
+    ((resolve h "TypedSlow") ~ HarnessRender:render "probe")
+  catch e
+    (set failed ($str/contains? e/message "max steps exceeded")))
+  (assert failed
+    "direct typed protocol methods must retain the sandbox module budget")
+  (var refused false)
+  (try
+    ((resolve h "TypedFs") ~ HarnessFs:read_text
+      "examples/gene-harness/README.md")
+  catch e
+    (set refused true))
+  (assert refused
+    "direct typed protocol methods must retain the module capability ceiling")
+  (close_workspace workspace)
+  ($println "typed_provider_supervision_smoke: ok"))

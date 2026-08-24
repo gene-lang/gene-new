@@ -13,7 +13,9 @@
 
 (mod common)
 
-(import [Plugin provide resolve status_of Harness] from "../kernel")
+(import [Plugin PluginContext PluginHost resolve status_of Harness]
+  from "../kernel")
+(import_impl PluginHost for PluginContext from "../kernel")
 (import [report_tool] from "../seams")
 
 (fn reporter_plugin [] : Plugin
@@ -22,12 +24,13 @@
   # standing on.
   (Plugin ^id "reporter" ^provides ["Report"]
                          ^requires ["HarnessFs" "HarnessRender"]
-    ^activate (fn [] (fn [h, id]
+    ^contextual true
+    ^activate (fn [] (fn [host]
       # No defensive check, and none needed: the kernel does not run `activate`
       # until every seam in `requires` is bound.
-      (var fs (resolve h "HarnessFs"))
-      (var r (resolve h "HarnessRender"))
-      (provide h id "Report" (report_tool fs r "notes"))))))
+      (var fs (host ~ PluginHost:resolve "HarnessFs"))
+      (var r (host ~ PluginHost:resolve "HarnessRender"))
+      (host ~ PluginHost:provide "Report" (report_tool fs r "notes"))))))
 
 (fn report_of [h : Harness] : Str
   # The product of the composition, or why there isn't one. A profile whose

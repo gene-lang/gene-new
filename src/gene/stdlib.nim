@@ -3651,6 +3651,22 @@ proc biFsWriteTextSync(args: openArray[Value], call: ptr NativeCall): Value {.ni
                                   scope)
   NIL
 
+proc biFsWriteTextAtomicSync(args: openArray[Value],
+                             call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "fs/write_text_atomic expects (path, text)")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  requireStr("fs/write_text_atomic path", args[0])
+  requireStr("fs/write_text_atomic text", args[1])
+  try:
+    let fs = activeFilesystem(call)
+    fs.provider.writeTextAtomic(fs.context, args[0].strVal, args[1].strVal)
+  except CatchableError as e:
+    raiseFilesystemOperationError("fs/write_text_atomic", "fs/WriteFile",
+                                  e.msg, scope)
+  NIL
+
 proc biFsExists(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "fs/exists? expects (path)")
@@ -6857,19 +6873,65 @@ proc storeFilesystemCheckpoint(scope: Scope, store: Value, generation: int64,
   let generations = root / "generations"
   let generationName = storeGenerationName(generation)
   let finalDir = generations / generationName
-  var generationExists = false
+  when not defined(emscripten) and not defined(geneWasm):
+    var publicationLock: ProcessFileLock
+    try:
+      publicationLock = acquireProcessFileLock(root / ".checkpoint.lock")
+    except CatchableError as e:
+      raiseStoreError(scope, "io", "Store/checkpoint: " & e.msg)
+    defer:
+      try:
+        publicationLock.release()
+      except CatchableError:
+        discard
+
+  var generationComplete = false
+  var generationIncomplete = false
+  var publishedGeneration = int64(0)
   try:
     fs.provider.makeDir(fs.context, generations)
-    generationExists = fs.provider.pathExists(fs.context, finalDir)
+    let currentPath = root / "CURRENT"
+    if fs.provider.pathExists(fs.context, currentPath):
+      let currentName = fs.provider.readText(fs.context, currentPath).strip()
+      if currentName.len != 20 or
+          not currentName.allCharsInSet({'0'..'9'}):
+        raiseStoreError(scope, "corrupt",
+          "checkpoint CURRENT is not a generation")
+      try:
+        publishedGeneration = parseBiggestInt(currentName)
+      except ValueError:
+        raiseStoreError(scope, "corrupt",
+          "checkpoint CURRENT is not a generation")
+    if fs.provider.pathExists(fs.context, finalDir):
+      generationComplete = fs.provider.pathExists(fs.context,
+        finalDir / "MANIFEST.gene")
+      generationIncomplete = not generationComplete
+  except GeneError:
+    raise
   except CatchableError as e:
     raiseStoreError(scope, "io", "Store/checkpoint: " & e.msg)
-  if generationExists:
+  if generation != publishedGeneration + 1:
     raiseStoreError(scope, "conflict",
-      "checkpoint generation already exists: " & $generation)
+      "checkpoint generation must follow CURRENT: " & $generation)
+  if generationComplete:
+    # A complete directory above CURRENT was never published. The process lock
+    # proves its writer is gone; reclaim it exactly like an incomplete one.
+    generationIncomplete = true
+  if generationIncomplete:
+    # The short-lived publication lock proves no live writer owns this
+    # directory. An incomplete generation can only be crash debris, so reclaim
+    # it before retrying the same CAS generation.
+    try:
+      for entry in fs.provider.listDir(fs.context, finalDir):
+        fs.provider.removeFile(fs.context, finalDir / entry)
+      fs.provider.removeDir(fs.context, finalDir)
+    except CatchableError as e:
+      raiseStoreError(scope, "io", "Store/checkpoint: " & e.msg)
   try:
-    # A generation becomes readable only when MANIFEST.gene is published.
-    # Building directly in the final, generation-unique directory avoids a
-    # path-level directory rename while keeping interrupted writes invisible.
+    # A generation becomes complete when MANIFEST.gene is written and becomes
+    # authoritative only when CURRENT advances. Building directly in the
+    # generation-unique directory keeps interrupted writes recoverable without
+    # a path-level directory rename.
     fs.provider.makeDir(fs.context, finalDir)
     for (name, data) in encoded:
       fs.provider.writeTextAtomic(fs.context,
@@ -6911,14 +6973,37 @@ proc storeSqliteCheckpoint(scope: Scope, store: Value, generation: int64,
   let names = storeSqliteTable(store)
   discard sqliteExecScript(db, "BEGIN IMMEDIATE", "Store/checkpoint", scope)
   try:
+    let currentRows = sqliteRunStmt(db, "select " & names.dataColumn & " from " &
+      names.tableName & " where " & names.keyColumn & " = ?",
+      [newStr("checkpoint/CURRENT")], "Store/checkpoint", scope).rows
+    if currentRows.len > 0:
+      try:
+        let current = parseBiggestInt(
+          currentRows[0].mapEntries[names.dataColumn].strVal)
+        if generation != current + 1:
+          raiseStoreError(scope, "conflict",
+            "checkpoint generation must follow CURRENT: " & $generation)
+      except ValueError:
+        raiseStoreError(scope, "corrupt",
+          "checkpoint CURRENT is not a generation")
+    elif generation != 1:
+      raiseStoreError(scope, "conflict",
+        "first checkpoint generation must be 1")
+    let manifestKey = storeCheckpointKey(generation, "manifest")
+    let existing = sqliteRunStmt(db, "select " & names.keyColumn & " from " &
+      names.tableName & " where " & names.keyColumn & " = ?",
+      [newStr(manifestKey)], "Store/checkpoint", scope).rows
+    if existing.len > 0:
+      raiseStoreError(scope, "conflict",
+        "checkpoint generation already exists: " & $generation)
     for (name, data) in encoded:
-      discard sqliteRunStmt(db, "insert or replace into " & names.tableName &
+      discard sqliteRunStmt(db, "insert into " & names.tableName &
         "(" & names.keyColumn & ", " & names.dataColumn & ") values (?, ?)",
         [newStr(storeCheckpointKey(generation, "record/" & name)), newStr(data)],
         "Store/checkpoint", scope)
-    discard sqliteRunStmt(db, "insert or replace into " & names.tableName &
+    discard sqliteRunStmt(db, "insert into " & names.tableName &
       "(" & names.keyColumn & ", " & names.dataColumn & ") values (?, ?)",
-      [newStr(storeCheckpointKey(generation, "manifest")), newStr(manifestText)],
+      [newStr(manifestKey), newStr(manifestText)],
       "Store/checkpoint", scope)
     discard sqliteRunStmt(db, "insert or replace into " & names.tableName &
       "(" & names.keyColumn & ", " & names.dataColumn & ") values (?, ?)",
@@ -6974,14 +7059,35 @@ proc biStoreCheckpoint(args: openArray[Value], call: ptr NativeCall): Value {.ni
 proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value,
                                    call: ptr NativeCall): Value =
   let fs = storeFilesystemAccess(store, call)
-  let generations = store.props["root"].strVal / "generations"
+  let root = store.props["root"].strVal
+  let generations = root / "generations"
   var candidates: seq[string]
+  var publishedGeneration = int64(0)
   try:
     if not fs.provider.pathExists(fs.context, generations):
       return NIL
+    let currentPath = root / "CURRENT"
+    if not fs.provider.pathExists(fs.context, currentPath):
+      return NIL
+    let currentName = fs.provider.readText(fs.context, currentPath).strip()
+    if currentName.len != 20 or
+        not currentName.allCharsInSet({'0'..'9'}):
+      raiseStoreError(scope, "corrupt",
+        "Store/load_checkpoint: CURRENT is not a generation")
+    try:
+      publishedGeneration = parseBiggestInt(currentName)
+    except ValueError:
+      raiseStoreError(scope, "corrupt",
+        "Store/load_checkpoint: CURRENT is not a generation")
     for name in fs.provider.listDir(fs.context, generations):
       if name.len == 20 and name.allCharsInSet({'0'..'9'}):
-        candidates.add name
+        try:
+          if parseBiggestInt(name) <= publishedGeneration:
+            candidates.add name
+        except ValueError:
+          discard
+  except GeneError:
+    raise
   except CatchableError as e:
     raiseStoreError(scope, "io", "Store/load_checkpoint: " & e.msg)
   candidates.sort(SortOrder.Descending)
@@ -7021,6 +7127,18 @@ proc storeLoadFilesystemCheckpoint(scope: Scope, store: Value,
 proc storeLoadSqliteCheckpoint(scope: Scope, store: Value): Value =
   let db = storeSqliteDb(store, scope)
   let names = storeSqliteTable(store)
+  let currentRows = sqliteRunStmt(db, "select " & names.dataColumn & " from " &
+    names.tableName & " where " & names.keyColumn & " = ?",
+    [newStr("checkpoint/CURRENT")], "Store/load_checkpoint", scope).rows
+  if currentRows.len == 0:
+    return NIL
+  var publishedGeneration: int64
+  try:
+    publishedGeneration = parseBiggestInt(
+      currentRows[0].mapEntries[names.dataColumn].strVal)
+  except ValueError:
+    raiseStoreError(scope, "corrupt",
+      "Store/load_checkpoint: CURRENT is not a generation")
   let manifests = sqliteRunStmt(db, "select " & names.keyColumn & ", " &
     names.dataColumn & " from " & names.tableName & " where " &
     names.keyColumn & " like ? order by " & names.keyColumn & " desc",
@@ -7033,6 +7151,8 @@ proc storeLoadSqliteCheckpoint(scope: Scope, store: Value): Value =
     var generation: int64
     try: generation = parseBiggestInt(parts[1])
     except ValueError: continue
+    if generation > publishedGeneration:
+      continue
     let manifestText = row.mapEntries[names.dataColumn].strVal
     try:
       let manifest = storeDecode(scope, "data", manifestText, NIL, "manifest")
@@ -8036,6 +8156,9 @@ proc registerStdlibNamespaces(root: Scope) =
       newNativeCallFn("fs/read_text", biFsReadTextSync, acceptsNamed = false))
     fsNs.nsScope.define("write_text",
       newNativeCallFn("fs/write_text", biFsWriteTextSync, acceptsNamed = false))
+    fsNs.nsScope.define("write_text_atomic",
+      newNativeCallFn("fs/write_text_atomic", biFsWriteTextAtomicSync,
+                      acceptsNamed = false))
     fsNs.nsScope.define("write_bytes",
       newNativeCallFn("fs/write_bytes", biFsWriteBytesSync, acceptsNamed = false))
     fsNs.nsScope.define("read_bytes",

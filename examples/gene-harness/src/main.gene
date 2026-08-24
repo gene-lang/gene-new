@@ -21,8 +21,16 @@
 (import [boot plugin_names] from "./profile")
 (import [report_of] from "./profiles/common")
 (import [ask] from "./agent")
-(import [plugin_states bound_seams lifecycle_log status_of seam_bound resolve]
+(import [new_harness plugin_states bound_seams lifecycle_log status_of
+         seam_bound resolve row module_dir shutdown_harness]
   from "./kernel")
+(import [open_event_store close_event_store] from "./state")
+(import [open_workspace prepare_workspace activate_workspace_plan
+         doctor disable_entry enable_entry close_workspace]
+  from "./workspace")
+(import [HarnessView] from "./view_api")
+(import $os [get_env])
+(import $fs [make_dir real_path])
 
 (fn arg_list [args] : Any
   (var out [])
@@ -36,6 +44,14 @@
     (out ~ push ($to_str parts/%j))
     (set j (+ j 1)))
   ($str/join out " "))
+
+(fn print_output_since [h, start : Int]
+  (var events (h/log ~ get))
+  (var i start)
+  (while (< i events/~size)
+    (var event events/%i)
+    (if_yes (== event/kind "output") ($println event/text))
+    (set i (+ i 1))))
 
 (fn print_summary [h, p]
   ($println "plugins:   " (plugin_names p))
@@ -53,21 +69,69 @@
     ($println "declares `(fs/ReadDir \"/tmp\")`, so the consumer that calls")
     ($println "through it cannot run without one. Nothing else was affected.")))
 
+(fn default_harness_home [] : Str
+  $"${(module_dir (module_dir this_mod/~path))}/tmp/workspace")
+
+(fn prepare_harness_home []
+  (var home (get_env "GENE_HARNESS_HOME" (default_harness_home)))
+  (make_dir home)
+  (make_dir $"${home}/composition")
+  (make_dir $"${home}/modules")
+  (make_dir $"${home}/events")
+  (real_path home))
+
 (fn main [args]
   (var names (arg_list args))
   (var name (if (> names/~size 0) names/0 "cli"))
   (var p (profile_named name))
-  (var h (boot p))
+  (var home (prepare_harness_home))
+  (var event_store (open_event_store $"${home}/events"))
+  (var workspace
+    (open_workspace $"${home}/composition" ^blob_root $"${home}/modules"
+      ^state_root home))
+  (var session (get_env "GENE_HARNESS_SESSION" "default"))
+  (var h
+    (new_harness ^event_store event_store ^event_scope "session"
+                 ^event_stream session ^workspace workspace))
   (var prompt (joined_from names 1))
+  (var recovery_command (if (> names/~size 1) names/1 ""))
+  (var recovery_target (if (> names/~size 2) names/2 ""))
 
-  # Three ways in, one system underneath. A prompt on the command line is
-  # answered by the same seam the interactive loop sends to, which is what
-  # makes the shell testable without a terminal.
-  (if_yes (!= prompt "")
-    ($println (ask h prompt)))
-  (if_yes (== prompt "")
-    (if (seam_bound h "Driver")
-      # Whatever the profile bound. `cli` binds a terminal loop; `web` binds
-      # nothing and prints what came up instead.
-      ((resolve h "Driver") h)
-      (print_summary h p))))
+  (try
+    # Irreducible recovery commands run before descriptor or profile
+    # activation. In particular, `disable` never gives the entry one more
+    # effectful activation before taking it out of desired state.
+    (if (== recovery_command "disable")
+      (then
+        ($println $"composition revision ${(disable_entry workspace recovery_target ^h h)}"))
+      (elif (== recovery_command "enable")
+        ($println $"composition revision ${(enable_entry workspace recovery_target ^h h)}"))
+      (elif (== recovery_command "doctor")
+        (prepare_workspace workspace h ^session session)
+        (for finding in (doctor workspace) ($println finding)))
+      (else
+        # Generated descriptors and event vocabulary validate before any
+        # effectful profile plugin. Baseline authority comes up only after that
+        # read-only phase, then the prepared desired state reconciles.
+        (var prepared (prepare_workspace workspace h ^session session))
+        (boot p ^h h)
+        (activate_workspace_plan prepared h)
+        (for finding in (doctor workspace)
+          ($println $"quarantined: ${finding}"))
+        # Three ways in, one system underneath. A one-shot prompt reaches the
+        # same seam as the interactive view.
+        (if (!= prompt "")
+          (then
+            (var current_log (h/log ~ get))
+            (var output_start current_log/~size)
+            (ask h prompt)
+            (print_output_since h output_start))
+          (else
+            (var view (row h "views" "active"))
+            (if (!= view void)
+              (view/value ~ HarnessView:run h)
+              (print_summary h p))))))
+  ensure
+    (shutdown_harness h)
+    (close_workspace workspace)
+    (close_event_store event_store)))

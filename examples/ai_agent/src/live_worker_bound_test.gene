@@ -1,0 +1,10 @@
+(import [make_application_with_task application_new_worker
+         application_spawn_agent]
+  from "./core.gene")
+(var app
+  (make_application_with_task ($cell []) ($cell "") ($cell [])
+    (fn [_type, _props] nil) ($cell nil)))
+(var worker (application_new_worker app "output" "extra" ($cell "") nil))
+(var agent
+  (application_spawn_agent app "extra" "task" ($cell []) ($cell "")))
+($println $"worker=${(== worker nil)} agent=${(== agent nil)} max_workers=${app/max_workers} max_agents=${app/max_agents}")

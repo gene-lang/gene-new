@@ -126,6 +126,263 @@ suite "cli — gene run":
     let ran = runGene(["run", rawMain, "a", "b,", "c"])
     check ran.exitCode == 0
 
+  test "gene harness registry and turn transaction seams":
+    for (fixture, marker) in [
+      ("examples/gene-harness/tests/registry_smoke.gene",
+       "registry_smoke: ok"),
+      ("examples/gene-harness/tests/seam_registry_smoke.gene",
+       "seam_registry_smoke: ok"),
+      ("examples/gene-harness/tests/turn_transaction_smoke.gene",
+       "turn_transaction_smoke: ok"),
+      ("examples/gene-harness/tests/recording_view_smoke.gene",
+       "recording_view_smoke: ok"),
+      ("examples/gene-harness/tests/prompt_skill_smoke.gene",
+       "prompt_skill_smoke: ok"),
+      ("examples/gene-harness/tests/callback_supervision_smoke.gene",
+       "callback_supervision_smoke: ok"),
+      ("examples/gene-harness/tests/view_output_smoke.gene",
+       "view_output_smoke: ok"),
+      ("examples/gene-harness/tests/view_swap_smoke.gene",
+       "view_swap_smoke: ok")
+    ]:
+      let ran = runGene(["run", fixture])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      check marker in ran.output
+
+  test "gene harness recovery nucleus has no plugin imports":
+    for path in [
+      "examples/gene-harness/src/kernel.gene",
+      "examples/gene-harness/src/plugin_api.gene",
+      "examples/gene-harness/src/state.gene",
+      "examples/gene-harness/src/view_api.gene",
+      "examples/gene-harness/src/workspace.gene"
+    ]:
+      for line in readFile(path).splitLines:
+        let stripped = line.strip
+        if stripped.startsWith("(import"):
+          check "plugins/" notin stripped
+
+  test "filesystem checkpoint generation claims are cross-process exclusive":
+    let root = cliDir / "harness_store_process_cas"
+    if dirExists(root): removeDir(root)
+    createDir(root)
+    let contender = writeCliProgram("harness_store_contender.gene", """
+(import $store/fs [open : store_open Store StoreError])
+(import $fs [write_text exists?])
+(fn main [args]
+  (var root args/0)
+  (var id args/1)
+  (write_text $"${root}/ready-${id}" "ready")
+  (while (! (&& (exists? $"${root}/ready-a")
+                (exists? $"${root}/ready-b"))) nil)
+  (var store (store_open ^root root))
+  (try
+    (store ~ Store:checkpoint 1 {^state {^winner id}})
+    ($println $"committed ${id}")
+  catch (StoreError ^kind kind)
+    ($println $"${kind} ${id}")))
+""")
+    let first = startProcess(geneExe,
+      args = ["run", "--allow_read_write_dir", root, contender, root, "a"],
+      options = {poStdErrToStdOut})
+    let second = startProcess(geneExe,
+      args = ["run", "--allow_read_write_dir", root, contender, root, "b"],
+      options = {poStdErrToStdOut})
+    let firstCode = first.waitForExit(10000)
+    let secondCode = second.waitForExit(10000)
+    let firstOutput = first.outputStream.readAll()
+    let secondOutput = second.outputStream.readAll()
+    first.close()
+    second.close()
+    check firstCode == 0
+    check secondCode == 0
+    let combined = firstOutput & secondOutput
+    check combined.count("committed ") == 1
+    check combined.count("conflict ") == 1
+
+    let reader = writeCliProgram("harness_store_reader.gene", """
+(import $store/fs [open : store_open Store])
+(fn main [args]
+  (var store (store_open ^root args/0))
+  (var loaded (store ~ Store:load_checkpoint))
+  ($println loaded/generation loaded/records/state/winner))
+""")
+    let loaded = runGene(["run", "--allow_read_write_dir", root,
+                          reader, root])
+    if loaded.exitCode != 0: checkpoint loaded.output
+    check loaded.exitCode == 0
+    check loaded.output.strip in ["1 a", "1 b"]
+
+  test "gene harness durable composition restore and scoped state":
+    proc resetHarnessDir(name: string): string =
+      result = cliDir / name
+      if dirExists(result): removeDir(result)
+      createDir(result)
+
+    var root = resetHarnessDir("harness_event_store")
+    var ran = runGene(["run", "--allow_read_write_dir", root,
+      "examples/gene-harness/tests/event_store_smoke.gene", root])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "event_store_smoke: ok" in ran.output
+
+    root = resetHarnessDir("harness_event_concurrency")
+    ran = runGene(["run", "--allow_read_write_dir", root,
+      "examples/gene-harness/tests/event_concurrency_smoke.gene", root])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "event_concurrency_smoke: ok" in ran.output
+
+    root = resetHarnessDir("harness_interrupted_turn")
+    ran = runGene(["run", "--allow_read_write_dir", root,
+      "examples/gene-harness/tests/interrupted_turn_smoke.gene", root])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "interrupted_turn_smoke: ok" in ran.output
+
+    root = resetHarnessDir("harness_event_catalog")
+    ran = runGene(["run", "--allow_read_write_dir", root,
+      "examples/gene-harness/tests/event_catalog_smoke.gene", root])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "event_catalog_smoke: ok" in ran.output
+
+    root = resetHarnessDir("harness_workspace_cas")
+    ran = runGene(["run", "--allow_read_write_dir", root,
+      "examples/gene-harness/tests/workspace_cas_smoke.gene", root])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "workspace_cas_smoke: ok" in ran.output
+
+    for (name, fixture, marker) in [
+      ("harness_register", "register_module_smoke.gene",
+       "register_module_smoke: ok"),
+      ("harness_quarantine", "quarantine_smoke.gene",
+       "quarantine_smoke: ok"),
+      ("harness_attenuation", "attenuation_smoke.gene",
+       "attenuation_smoke: ok"),
+      ("harness_bounded_preflight", "bounded_preflight_smoke.gene",
+       "bounded_preflight_smoke: ok"),
+      ("harness_dependency_closure", "dependency_closure_smoke.gene",
+       "dependency_closure_smoke: ok"),
+      ("harness_blob_repair", "blob_repair_smoke.gene",
+       "blob_repair_smoke: ok"),
+      ("harness_descriptor_context", "descriptor_context_smoke.gene",
+       "descriptor_context_smoke: ok"),
+      ("harness_phased_boot", "phased_boot_smoke.gene",
+       "phased_boot_smoke: ok"),
+      ("harness_typed_provider", "typed_provider_supervision_smoke.gene",
+       "typed_provider_supervision_smoke: ok"),
+      ("harness_llm_session_resume", "llm_session_resume_smoke.gene",
+       "llm_session_resume_smoke: ok"),
+      ("harness_workspace_turn", "workspace_turn_smoke.gene",
+       "workspace_turn_smoke: ok")
+    ]:
+      root = resetHarnessDir(name)
+      ran = runGene(["run", "--allow_read_write_dir", root,
+        "examples/gene-harness/tests/" & fixture, root])
+      if ran.exitCode != 0: checkpoint ran.output
+      check ran.exitCode == 0
+      check marker in ran.output
+
+    let compositionRoot = resetHarnessDir("harness_plugin_state_composition")
+    let eventRoot = resetHarnessDir("harness_plugin_state_events")
+    ran = runGene(["run",
+      "--allow_read_write_dir", compositionRoot,
+      "--allow_read_write_dir", eventRoot,
+      "examples/gene-harness/tests/plugin_state_smoke.gene",
+      compositionRoot, eventRoot])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "plugin_state_smoke: ok" in ran.output
+
+    let auditComposition = resetHarnessDir("harness_audit_composition")
+    let auditEvents = resetHarnessDir("harness_audit_events")
+    ran = runGene(["run",
+      "--allow_read_write_dir", auditComposition,
+      "--allow_read_write_dir", auditEvents,
+      "examples/gene-harness/tests/composition_audit_smoke.gene",
+      auditComposition, auditEvents])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "composition_audit_smoke: ok" in ran.output
+
+    let stateConflictComposition =
+      resetHarnessDir("harness_state_conflict_composition")
+    let stateConflictEvents = resetHarnessDir("harness_state_conflict_events")
+    ran = runGene(["run",
+      "--allow_read_write_dir", stateConflictComposition,
+      "--allow_read_write_dir", stateConflictEvents,
+      "examples/gene-harness/tests/workspace_state_conflict_smoke.gene",
+      stateConflictComposition, stateConflictEvents])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "workspace_state_conflict_smoke: ok" in ran.output
+
+    let pluginEventComposition =
+      resetHarnessDir("harness_plugin_event_composition")
+    let pluginEventEvents = resetHarnessDir("harness_plugin_event_events")
+    ran = runGene(["run",
+      "--allow_read_write_dir", pluginEventComposition,
+      "--allow_read_write_dir", pluginEventEvents,
+      "examples/gene-harness/tests/plugin_event_smoke.gene",
+      pluginEventComposition, pluginEventEvents])
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "plugin_event_smoke: ok" in ran.output
+
+    let home = resetHarnessDir("harness_main_resume")
+    let envPrefix = "GENE_HARNESS_HOME=" & shellQuote(home) & " "
+    var command = envPrefix & shellQuote(geneExe) &
+      " run --allow_read_write_dir " & shellQuote(home) &
+      " examples/gene-harness/src/main.gene web build greet hello"
+    ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "registered greet at revision 1 (ready)" in ran.output
+    command = envPrefix & shellQuote(geneExe) &
+      " run --allow_read_write_dir " & shellQuote(home) &
+      " examples/gene-harness/src/main.gene web tool greet world"
+    ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "greet(world) -> hello" in ran.output
+    command = envPrefix & shellQuote(geneExe) &
+      " run --allow_read_write_dir " & shellQuote(home) &
+      " examples/gene-harness/src/main.gene web disable greet"
+    ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "composition revision 2" in ran.output
+    command = envPrefix & shellQuote(geneExe) &
+      " run --allow_read_write_dir " & shellQuote(home) &
+      " examples/gene-harness/src/main.gene web tool greet world"
+    ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "no tool greet" in ran.output
+    command = envPrefix & shellQuote(geneExe) &
+      " run --allow_read_write_dir " & shellQuote(home) &
+      " examples/gene-harness/src/main.gene web enable greet"
+    ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "composition revision 3" in ran.output
+    command = envPrefix & shellQuote(geneExe) &
+      " run --allow_read_write_dir " & shellQuote(home) &
+      " examples/gene-harness/src/main.gene web tool greet world"
+    ran = execCmdOnce(command)
+    if ran.exitCode != 0: checkpoint ran.output
+    check ran.exitCode == 0
+    check "greet(world) -> hello" in ran.output
+
+    let catalog = execCmdOnce(
+      "python3 tools/generate_harness_event_catalog.py --check")
+    if catalog.exitCode != 0: checkpoint catalog.output
+    check catalog.exitCode == 0
+    check "harness event catalog: current" in catalog.output
+
   test "general-intelligence repair lab enumerates and pilots exactly":
     var ran = runGene([
       "run",

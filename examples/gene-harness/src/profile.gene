@@ -27,11 +27,11 @@
 
 (type Profile ^props {^name Str ^plugins Any})
 
-(fn boot [p : Profile] : Harness
+(fn boot [p : Profile, ^h supplied = nil] : Harness
   # The whole of it. There is no merge step, no overlay resolution, and nothing
   # to dump: the profile *is* the configuration, and the kernel works out the
   # rest.
-  (var h (new_harness))
+  (var h (if (== supplied nil) (new_harness) supplied))
   (for plugin in p/plugins
     (install h plugin))
   h)

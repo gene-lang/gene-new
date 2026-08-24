@@ -1,0 +1,43 @@
+(mod event_store_smoke)
+
+(import [open_event_store append_event record_plugin_state
+         events_for plugin_state flush_event_store close_event_store]
+  from "../src/state")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var root args/0)
+  (var first
+    (open_event_store root ^segment_events 2 ^retained_segments 2
+      ^max_event_bytes 4096 ^max_state_bytes 4096))
+
+  (append_event first "session" "s1" {^type "turn/start" ^turn 1})
+  (append_event first "session" "s1" {^type "message" ^text "one"})
+  (record_plugin_state first "session" "s1" "todo" {^items ["a"]})
+  (append_event first "session" "s1" {^type "message" ^text "two"})
+  (record_plugin_state first "session" "s1" "todo" {^items ["a" "b"]})
+  (var flushed (flush_event_store first))
+  (assert (== flushed/generation 1) "first flush must publish generation 1")
+  (close_event_store first)
+
+  (var reopened
+    (open_event_store root ^segment_events 2 ^retained_segments 2
+      ^max_event_bytes 4096 ^max_state_bytes 4096))
+  (var retained (events_for reopened "session" "s1"))
+  (assert (== retained/~size 3)
+    "reopen must load only the configured retained segments")
+  (assert (== retained/0/seq 3)
+    "retained event sequence numbers must not be renumbered")
+  (var todo (plugin_state reopened "session" "s1" "todo"))
+  (assert (== todo/items ["a" "b"])
+    "projection checkpoint must retain the latest full plugin state")
+
+  (append_event reopened "session" "s1" {^type "turn/end" ^turn 1})
+  (set flushed (flush_event_store reopened))
+  (assert (== flushed/generation 2)
+    "a second flush must advance the committed generation")
+  (close_event_store reopened)
+
+  ($println "event_store_smoke: ok"))

@@ -1,0 +1,9 @@
+# name version required|ignorable schema
+lifecycle 1 required text
+message 1 required text
+output 1 required text
+trace 1 ignorable text
+turn/start 1 required turn_start
+turn/end 1 required turn_end
+composition/changed 1 required composition_changed
+plugin/state 1 required plugin_state

@@ -1,0 +1,61 @@
+(mod dependency_closure_smoke)
+
+(import [new_harness resolve] from "../src/kernel")
+(import [open_workspace module_digest register_module close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var dependency
+    (quote (mod helper (fn answer [] "from-dependency"))))
+  (var digest (module_digest dependency))
+  (var path $"./${($str/slice_bytes digest 7 64)}.gene")
+  (var root
+    `(mod plugin
+       (import [answer] from %path)
+       (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
+       (import_impl PluginHost for PluginContext from "../../../src/kernel")
+       (fn init [ctx] : Plugin
+         ^capabilities []
+         (Plugin ^id "dependent" ^provides ["Dependent"] ^requires []
+           ^contextual true
+           ^activate (fn [] (fn [host]
+             (host ~ PluginHost:provide "Dependent" (answer))))))))
+
+  (var workspace (open_workspace args/0))
+  (var h (new_harness))
+  (var refused false)
+  (try
+    (register_module workspace h "dependent" root ^selectors [])
+  catch {^message message}
+    (set refused ($str/contains? message "dependency closure")))
+  (assert refused "an unpinned relative import must be refused")
+
+  (var kernel_escape
+    (quote
+      (mod plugin
+        (import [Plugin] from "../../../src/plugin_api")
+        (import [install] from "../../../src/kernel")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "kernel_escape" ^provides [] ^requires []
+            ^contextual true ^activate (fn [] (fn [host] nil)))))))
+  (set refused false)
+  (try
+    (register_module workspace h "kernel_escape" kernel_escape ^selectors [])
+  catch {^message message}
+    (set refused ($str/contains? message "only PluginHost impl identity")))
+  (assert refused
+    "generated modules must not bind the recovery kernel as a utility library")
+
+  (var registered
+    (register_module workspace h "dependent" root
+      ^selectors [] ^dependencies [dependency]))
+  (assert (== registered/entry/closure/~size 2)
+    "the committed closure must include root and dependency digests")
+  (assert (== (resolve h "Dependent") "from-dependency")
+    "the loader must execute against the committed dependency blob")
+  (close_workspace workspace)
+  ($println "dependency_closure_smoke: ok"))

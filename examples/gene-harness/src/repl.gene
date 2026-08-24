@@ -4,14 +4,16 @@
 # seam's job, and the reason this file is short: swapping the agent for a
 # model-backed one changes everything the harness can do and none of this.
 #
-# The driver is itself a plugin providing a `Driver` seam, so "is this
-# deployment interactive?" is answered by what the profile binds rather than by
-# a flag main.gene checks.
+# The driver is itself a plugin contributing a `views` row, so "is this
+# deployment interactive?" is answered by profile composition rather than by a
+# flag in main.gene.
 
 (mod repl)
 
-(import [Plugin Harness provide] from "./kernel")
+(import [Plugin PluginContext PluginHost Harness HarnessLog row] from "./kernel")
+(import_impl PluginHost for PluginContext from "./kernel")
 (import [ask] from "./agent")
+(import [HarnessView view_provider] from "./view_api")
 
 # A literal escape byte, because Gene has no string escape that produces one:
 # `\e`, `\x1b` and `\u001b` are all read errors, `$str/from_utf8` wants a
@@ -31,10 +33,26 @@
 (fn quitting? [line : Str] : Bool
   (if (== line "quit") true (== line "exit")))
 
-(fn run_repl [h : Harness] : Int
+(type TerminalOutput)
+
+(impl Callable for TerminalOutput
+  (message apply [self call]
+    (var event (call ~ /0))
+    (if_yes (== event/kind "output") ($println event/text))))
+
+(fn run_repl [h : Harness, implementation : Str] : Int
   ($println "Gene Agent — type `help`, or `quit` / Ctrl-D to leave")
   (var running true)
   (while running
+    # A replacement becomes visible only here, between prompts. The old view
+    # always finishes the turn that was already in progress, then hands control
+    # to the newly committed active row.
+    (var active (row h "views" "active"))
+    (if_yes (|| (== active void)
+                (!= active/implementation implementation))
+      (if (== active void)
+        (return 0)
+        (return (active/value ~ HarnessView:run h))))
     # The prompt goes out with a newline rather than as `User> `. stdout is
     # line-buffered on a terminal and Gene exposes no flush, so a prompt
     # without a newline would sit in the buffer until after the answer it was
@@ -58,10 +76,19 @@
           # after this, and those are marked as rounds rather than repeating
           # the label — the harness is still the one talking.
           ($println "Gene>")
-          (var out (ask h text))
-          (if_yes (!= out "") ($println out))))))
+          (ask h text)))))
   0)
 
+(type TerminalView ^props {^implementation Str})
+(impl HarnessView for TerminalView
+  (message run [h] : Any (run_repl h self/implementation)))
+
 (fn driver_plugin [] : Plugin
-  (Plugin ^id "driver" ^provides ["Driver"] ^requires ["HarnessPrompt"]
-    ^activate (fn [] (fn [h, id] (provide h id "Driver" run_repl)))))
+  (Plugin ^id "driver" ^provides [["views" "active"]]
+    ^requires ["HarnessPrompt"] ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:subscribe HarnessLog (TerminalOutput))
+      (host ~ PluginHost:contribute "views"
+        {^name "active" ^implementation "terminal"
+         ^value (view_provider
+           (TerminalView ^implementation "terminal"))})))))

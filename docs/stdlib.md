@@ -46,7 +46,9 @@ Implementation status:
 - `store` (durable serde-backed persistence) — implemented with the shared
   `Store` protocol, `StoreError`, `store/sqlite`, `store/fs`, atomic
   hash-validated checkpoint generations (`checkpoint`/`load_checkpoint`),
-  owner-only storage, and `$fs/make_dir`/`$fs/remove`, per
+  exclusive cross-process generation claims, authoritative `CURRENT`,
+  owner-only storage, and `$fs/make_dir`/`$fs/remove`/
+  `$fs/write_text_atomic`, per
   docs/persistence.md. The `crypto/sha256` helper used by manifests
   and content-addressed artifacts, `crypto/random_hex` for opaque credentials
   and tickets, `crypto/secure_equal?` for credential comparison without an

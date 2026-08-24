@@ -1,0 +1,53 @@
+(mod register_module_smoke)
+
+(import [new_harness resolve status_of] from "../src/kernel")
+(import [open_workspace register_module restore_workspace
+         composition_revision doctor close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var root args/0)
+  (var source
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "echo" ^provides ["Echo"] ^requires []
+            ^contextual true
+            ^activate
+              (fn []
+                (fn [host]
+                  (host ~ PluginHost:provide "Echo" "hello"))))))))
+
+  (var workspace (open_workspace root))
+  (var h (new_harness))
+  (var registered
+    (register_module workspace h "echo" source
+      ^scope "session" ^selectors []))
+  (assert (== registered/revision 1)
+    "register_module must commit one desired-state generation")
+  (assert (== (composition_revision workspace) 1)
+    "workspace revision must advance only after the manifest commit")
+  (assert (== (status_of h "echo") "ready")
+    "the committed plugin must activate exactly once")
+  (assert (== (resolve h "Echo") "hello")
+    "the generated plugin must contribute through PluginContext")
+  (close_workspace workspace)
+
+  (set workspace (open_workspace root))
+  (set h (new_harness))
+  (var restored (restore_workspace workspace h ^session "s1"))
+  (assert (== restored/ready ["echo"])
+    "restore must load descriptors before activating committed entries")
+  (assert (== (resolve h "Echo") "hello")
+    "restore must activate the exact committed blob")
+  (assert (== (doctor workspace) [])
+    "a healthy restore must have no quarantined entries")
+  (close_workspace workspace)
+
+  ($println "register_module_smoke: ok"))

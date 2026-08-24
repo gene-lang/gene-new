@@ -1,0 +1,42 @@
+(mod view_swap_smoke)
+
+(import [Plugin PluginContext PluginHost new_harness install row uninstall]
+  from "../src/kernel")
+(import_impl PluginHost for PluginContext from "../src/kernel")
+(import [HarnessView view_provider] from "../src/view_api")
+(import [RecordingView] from "../src/recording_view")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn initial_plugin []
+  (Plugin ^id "initial_view" ^provides [["views" "active"]]
+    ^requires [] ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:contribute "views"
+        {^name "active" ^implementation "initial"
+         ^value (view_provider (RecordingView ^lines ($cell [])))})))))
+
+(fn replacement_plugin []
+  (Plugin ^id "replacement_view" ^provides [["views" "active"]]
+    ^requires [] ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:replace_contribution "views"
+        {^name "active" ^implementation "replacement"
+         ^value (view_provider (RecordingView ^lines ($cell [])))})))))
+
+(var h (new_harness))
+(install h (initial_plugin))
+(var active (row h "views" "active"))
+(assert (== (active/value ~ HarnessView:run h) 0)
+  "the initial active view must be selected by the stable logical key")
+(install h (replacement_plugin))
+(set active (row h "views" "active"))
+(assert (== active/implementation "replacement")
+  "view replacement must publish one new active row")
+(assert (== (active/value ~ HarnessView:run h) 0)
+  "the next view boundary must dispatch to the replacement")
+(uninstall h "replacement_view")
+(assert (== (row h "views" "active") void)
+  "unloading a replacement must not reveal the superseded view")
+($println "view_swap_smoke: ok")

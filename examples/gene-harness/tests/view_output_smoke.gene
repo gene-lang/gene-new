@@ -1,0 +1,23 @@
+(mod view_output_smoke)
+
+(import [new_harness install] from "../src/kernel")
+(import [command_plugin agent_plugin ask] from "../src/agent")
+(import [recording_view_plugin] from "../src/recording_view")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(var h (new_harness))
+(var captured ($cell ($thaw #[])))
+(install h (recording_view_plugin captured))
+(install h (command_plugin))
+(install h (agent_plugin))
+(ask h "status")
+(var records (captured ~ get))
+(var last_index (- records/~size 1))
+(var last records/%last_index)
+(assert (== last/kind "output")
+  "agent output must reach views through the typed core event feed")
+(assert ($str/contains? last/text "agent:ready")
+  "recording and terminal views must observe the same user-visible content")
+($println "view_output_smoke: ok")

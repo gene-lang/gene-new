@@ -1,0 +1,36 @@
+(mod interrupted_turn_smoke)
+
+(import [open_event_store append_event events_for flush_event_store
+         repair_interrupted_turns
+         close_event_store]
+  from "../src/state")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var root args/0)
+  (var first (open_event_store root))
+  (append_event first "session" "s1"
+    {^type "turn/start" ^turn "crashed"})
+  (flush_event_store first)
+  (close_event_store first)
+
+  # Opening is the cold-recovery boundary. It appends and flushes, never
+  # truncates, an end marker no live loop is allowed to emit.
+  (var recovered (open_event_store root))
+  (repair_interrupted_turns recovered)
+  (var history (events_for recovered "session" "s1"))
+  (assert (== history/~size 2)
+    "cold recovery must preserve start and append one end marker")
+  (assert (== history/1/type "turn/end")
+    "cold recovery must close the unmatched turn")
+  (assert (== history/1/payload/reason "interrupted")
+    "cold repair must use the reserved interrupted reason")
+  (assert (== history/1/payload/synthetic true)
+    "cold repair must be distinguishable from a live turn ending")
+  (var current (flush_event_store recovered))
+  (assert (== current/generation 2)
+    "cold repair must already be durable when open returns")
+  (close_event_store recovered)
+  ($println "interrupted_turn_smoke: ok"))

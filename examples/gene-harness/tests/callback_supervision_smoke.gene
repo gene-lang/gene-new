@@ -1,0 +1,103 @@
+(mod callback_supervision_smoke)
+
+(import [Plugin PluginContext PluginHost ExecutionLimits HarnessLog
+         new_harness install_with_policy invoke_registry_row contribute row
+         publish uninstall status_of resolve]
+  from "../src/kernel")
+(import_impl PluginHost for PluginContext from "../src/kernel")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn diverge [argument]
+  (while true nil))
+
+(fn accept [candidate] candidate)
+
+(fn inspect_context [host]
+  (host ~ PluginHost:registry_names))
+
+(fn cleanup_loop [host, candidate]
+  (host ~ PluginHost:registry_names)
+  (while true nil))
+
+(fn replace_core_event [host]
+  (host ~ PluginHost:replace_contribution "event_types"
+    {^name "turn/start" ^version 1 ^ignorable false
+     ^origin "plugin" ^owner "callbacks" ^schema accept}))
+
+(var limits
+  (ExecutionLimits ^max_steps 5000 ^max_memory_mb 64 ^timeout_ms 100))
+(var h (new_harness))
+
+(var callbacks
+  (Plugin ^id "callbacks" ^provides [] ^requires [] ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "LoopSeam" diverge)
+      (host ~ PluginHost:contribute "commands"
+        {^name "loop" ^doc "must be bounded" ^run diverge})
+      (host ~ PluginHost:contribute "commands"
+        {^name "context" ^doc "must receive PluginContext"
+         ^run inspect_context})
+      (host ~ PluginHost:contribute "commands"
+        {^name "replace_core_event" ^doc "must be refused"
+         ^run replace_core_event})
+      (host ~ PluginHost:subscribe HarnessLog diverge)
+      (host ~ PluginHost:create_registry
+        {^name "checked" ^schema diverge})))))
+(install_with_policy h callbacks [] ^limits limits)
+(assert (== (status_of h "callbacks") "ready")
+  "registering guarded callbacks must not run them")
+
+(var command_failed false)
+(try
+  (invoke_registry_row h "commands" "loop" [])
+catch e
+  (set command_failed true))
+(assert command_failed
+  "command callbacks must execute under their owner's transitive budget")
+(var context_names (invoke_registry_row h "commands" "context" [h]))
+(assert (context_names ~ contains? "seams")
+  "generated command callbacks must receive PluginContext, not raw Harness")
+(var core_replace_refused false)
+(try
+  (invoke_registry_row h "commands" "replace_core_event" [h])
+catch e
+  (set core_replace_refused true))
+(assert core_replace_refused
+  "plugins must not replace the irreducible core event vocabulary")
+
+(var seam_failed false)
+(try
+  ((resolve h "LoopSeam") "value")
+catch e
+  (set seam_failed true))
+(assert seam_failed
+  "callable seam values must retain their owner's supervision boundary")
+
+(var schema_failed false)
+(try
+  (contribute h "client" "checked" {^name "x"})
+catch e
+  (set schema_failed true))
+(assert schema_failed
+  "plugin-owned registry schemas must execute under the registry owner's budget")
+
+(var publication (publish h (HarnessLog ^kind "message" ^text "probe")))
+(assert (== publication/failed 1)
+  "event handlers must fail as one collected typed observer error, not stall")
+
+(var cleanup
+  (Plugin ^id "cleanup" ^provides [] ^requires [] ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:create_registry
+        {^name "owned_callbacks" ^schema accept ^on_remove cleanup_loop})
+      (host ~ PluginHost:contribute "owned_callbacks" {^name "resource"})))))
+(install_with_policy h cleanup [] ^limits limits)
+(var removed (uninstall h "cleanup"))
+(assert ($str/contains? removed "recovery_required")
+  "divergent cleanup must be bounded, fully unwound, and surfaced as dirty")
+(assert (== (status_of h "cleanup") "absent")
+  "cleanup failure must not leave the plugin half-installed")
+
+($println "callback_supervision_smoke: ok")

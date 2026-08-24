@@ -5,6 +5,9 @@ import std/[algorithm, atomics, base64, dynlib, json, locks, math, monotimes, ne
 import ./[capabilities, compiler, diagnostics, equality, fs_capabilities, gir,
           host_capabilities, package, printer, reader, types]
 import ./ext/logging
+
+when not defined(emscripten) and not defined(geneWasm):
+  import ./process_lock
 export package.Package, package.PackageKind, package.PackageOrigin,
        package.PackageError, package.PackageErrorClass, package.DependencyDecl,
        package.packageIdentity, package.userStoreDir,
@@ -4168,12 +4171,6 @@ proc evalPolicyNonNegativeInt(policy: Value, name: string): int64 =
       "env ^policy ^" & name & " must be a non-negative Int")
   value.intVal
 
-proc rejectUnsupportedEvalLimit(policy: Value, name: string) =
-  if evalPolicyProp(policy, name).kind notin {vkNil, vkVoid}:
-    discard evalPolicyNonNegativeInt(policy, name)
-    raise newException(GeneError,
-      "env ^policy ^" & name & " is not supported yet")
-
 proc validateEvalPolicyFlag(policy: Value, name: string) =
   let value = evalPolicyProp(policy, name)
   if value.kind in {vkNil, vkVoid}:
@@ -4185,24 +4182,49 @@ proc validateEvalPolicyFlag(policy: Value, name: string) =
     raise newException(GeneError,
       "env ^policy ^" & name & " true is not supported yet")
 
-proc evalPolicyMaxSteps(policy: Value): int64 =
+proc validateEvalPolicy(policy: Value): tuple[maxSteps, maxMemoryMb,
+                                              timeoutMs: int64] =
   if policy.kind in {vkNil, vkVoid}:
-    return -1
+    return (-1'i64, -1'i64, -1'i64)
   if policy.kind notin {vkMap, vkNode}:
     raise newException(GeneError, "env ^policy must be a map or node")
   validateEvalPolicyPropNames(policy)
-  rejectUnsupportedEvalLimit(policy, "max_memory_mb")
-  rejectUnsupportedEvalLimit(policy, "timeout_ms")
   validateEvalPolicyFlag(policy, "allow_ffi")
   validateEvalPolicyFlag(policy, "allow_native_compile")
-  evalPolicyNonNegativeInt(policy, "max_steps")
+  result.maxSteps = evalPolicyNonNegativeInt(policy, "max_steps")
+  result.maxMemoryMb = evalPolicyNonNegativeInt(policy, "max_memory_mb")
+  result.timeoutMs = evalPolicyNonNegativeInt(policy, "timeout_ms")
+
+proc evalPolicyMaxSteps(policy: Value): int64 =
+  validateEvalPolicy(policy).maxSteps
+
+proc evalBudgetForLimits(maxSteps, maxMemoryMb, timeoutMs: int64,
+                         parent: EvalBudget): EvalBudget
 
 proc evalBudgetForPolicy(policy: Value, parent: EvalBudget): EvalBudget =
-  let maxSteps = evalPolicyMaxSteps(policy)
-  if maxSteps < 0:
-    parent
+  let limits = validateEvalPolicy(policy)
+  evalBudgetForLimits(limits.maxSteps, limits.maxMemoryMb, limits.timeoutMs,
+                      parent)
+
+proc evalBudgetForLimits(maxSteps, maxMemoryMb, timeoutMs: int64,
+                         parent: EvalBudget): EvalBudget =
+  if maxSteps < 0 and maxMemoryMb < 0 and timeoutMs < 0:
+    return parent
   else:
-    EvalBudget(remaining: maxSteps, parent: parent)
+    result = EvalBudget(
+      remaining: if maxSteps < 0: high(int64) else: maxSteps,
+      parent: parent)
+    if timeoutMs >= 0:
+      result.hasDeadline = true
+      result.deadline = getMonoTime() +
+        initDuration(milliseconds = timeoutMs)
+    if maxMemoryMb >= 0:
+      if maxMemoryMb > high(int64) div (1024 * 1024):
+        raise newException(GeneError,
+          "env ^policy ^max_memory_mb is too large")
+      result.hasMemoryLimit = true
+      result.memoryBaseline = getOccupiedMem().int64
+      result.memoryLimitBytes = maxMemoryMb * 1024 * 1024
 
 proc biEnvExtend(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
@@ -6487,6 +6509,12 @@ proc biNetTcpWriteTextAsync(args: openArray[Value],
 # machinery thousands of lines below.
 proc biRuntimeLoadSandboxed(args: openArray[Value],
                             call: ptr NativeCall): Value {.nimcall.}
+proc biRuntimeGuardCall(args: openArray[Value],
+                        call: ptr NativeCall): Value {.nimcall.}
+proc biRuntimeCallable(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.}
+proc biRuntimeConfigureModule(args: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.}
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -7342,6 +7370,18 @@ proc buildBuiltins(app: Application): Scope =
   let runtimeScope = newScope(result)
   runtimeScope.define("gc_stats",
                       newNativeFn("runtime/gc_stats", biRuntimeGcStats))
+  runtimeScope.define("guard_call",
+                      newNativeCallFn("runtime/guard_call",
+                                      biRuntimeGuardCall,
+                                      acceptsNamed = false))
+  runtimeScope.define("callable?",
+                      newNativeCallFn("runtime/callable?",
+                                      biRuntimeCallable,
+                                      acceptsNamed = false))
+  runtimeScope.define("configure_module",
+                      newNativeCallFn("runtime/configure_module",
+                                      biRuntimeConfigureModule,
+                                      acceptsNamed = false))
   # design §D5's loader. It lives under `runtime`, which is itself in
   # `sandboxableNamespaces` and is not granted by default — so a sandboxed
   # module cannot reach the thing that would load another one, and the refusal
@@ -8083,11 +8123,31 @@ proc resolveCapabilityRow(app: Application, row: CapabilityRow,
 proc functionCapabilityTransition(proto: FunctionProto, boundScope: Scope,
                                   callerScope: Scope,
                                   parent: CapabilityContext,
-                                  parentPresence: CapabilityPresence):
+                                  parentPresence: CapabilityPresence,
+                                  calleeRootHint: Scope = nil,
+                                  callerRootHint: Scope = nil,
+                                  rootsKnown = false):
                                   CapabilityTransition =
-  let calleeRoot = boundScope.moduleRootScope()
-  let callerRoot = callerScope.moduleRootScope()
+  # Policy-limited eval is transitive across calls. A call scope normally
+  # inherits from the callee's lexical scope, which is correct for bindings but
+  # used to drop the caller's EvalBudget when evaluated code invoked an
+  # imported/module-defined function. That let `(eval ... ^policy
+  # {^max_steps N})` escape its limit through one ordinary call. Only mutate a
+  # per-call scope; scopeless functions execute in the caller scope already and
+  # an escaped lexical scope must not retain a depleted caller budget forever.
+  if proto != nil and proto.needsCallScope and callerScope != nil and
+      callerScope.evalBudget != nil:
+    boundScope.evalBudget = callerScope.evalBudget
+  let calleeRoot =
+    if rootsKnown: calleeRootHint else: boundScope.moduleRootScope()
+  let callerRoot =
+    if rootsKnown: callerRootHint else: callerScope.moduleRootScope()
   let crossesModule = calleeRoot != nil and calleeRoot != callerRoot
+  if crossesModule and calleeRoot.moduleExecutionPolicy != nil:
+    let policy = calleeRoot.moduleExecutionPolicy
+    boundScope.evalBudget = evalBudgetForLimits(
+      policy.maxSteps, policy.maxMemoryMb, policy.timeoutMs,
+      if callerScope == nil: nil else: callerScope.evalBudget)
   if not crossesModule and
       (proto == nil or proto.capabilityRow.inheritsCapabilities):
     return CapabilityTransition(context: parent, presence: parentPresence)
@@ -8344,6 +8404,67 @@ proc packageValue*(pkg: Package): Value =
     deps.add newMap(entry)
   entries["dependencies"] = newList(deps)
   newMap(entries)
+
+proc biRuntimeGuardCall(args: openArray[Value],
+                        call: ptr NativeCall): Value {.nimcall.} =
+  ## Invoke one callable while converting an unrecoverable Gene `panic` into a
+  ## data result at this explicit supervision boundary. Ordinary `try/catch`
+  ## deliberately does not catch panics; loaders and recovery kernels still
+  ## need a way to quarantine one untrusted module without terminating the
+  ## workspace. Cancellation remains a control signal and is not contained.
+  if args.len != 2:
+    raise newException(GeneError,
+      "runtime/guard_call expects a callable and one argument")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  try:
+    let value = applyCall(args[0], [args[1]], NamedArgs(), scope)
+    var entries = initPropTable()
+    entries["ok"] = TRUE
+    entries["value"] = value
+    newMap(entries)
+  except GenePanic as error:
+    let message =
+      if error.hasErrVal: error.errVal.print()
+      elif error.msg.len > 0: error.msg
+      else: "panic"
+    var entries = initPropTable()
+    entries["ok"] = FALSE
+    entries["kind"] = newSym("panic")
+    entries["message"] = newStr(message)
+    newMap(entries)
+
+proc biRuntimeCallable(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("runtime/callable?", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  newBool(args[0].valueImplementsCallable(scope))
+
+proc biRuntimeConfigureModule(args: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2 or args[0].kind != vkModule:
+    raise newException(GeneError,
+      "runtime/configure_module expects a Module and an eval policy")
+  let limits = validateEvalPolicy(args[1])
+  let root = args[0].moduleRootNamespace.nsScope
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let ceiling =
+    if activeCapabilityContext != nil: activeCapabilityContext
+    elif scope != nil: scope.executionCapabilities()
+    else: newCapabilityContext()
+  if root.moduleExecutionPolicy != nil:
+    let existing = root.moduleExecutionPolicy
+    if existing.maxSteps != limits.maxSteps or
+        existing.maxMemoryMb != limits.maxMemoryMb or
+        existing.timeoutMs != limits.timeoutMs or
+        args[0].moduleCapabilityCeiling != ceiling:
+      raise newException(GeneError,
+        "sandbox module execution policy is immutable")
+    return args[0]
+  root.moduleExecutionPolicy = ModuleExecutionPolicy(
+    maxSteps: limits.maxSteps, maxMemoryMb: limits.maxMemoryMb,
+    timeoutMs: limits.timeoutMs)
+  args[0].setModuleCapabilityCeiling(ceiling)
+  args[0]
 
 proc bindThisModule*(scope: Scope, name: string, path = "",
                      pkg: Package = nil): Value =
@@ -9248,6 +9369,7 @@ proc acquireSimpleCallScope(pools: var VmPools, parent: Scope,
   result.evalBudget =
     if parent != nil: parent.evalBudget
     else: nil
+  result.moduleExecutionPolicy = nil
   if resetSlots:
     result.resetCallScopeSlots(names, keepSlotNames)
   else:
@@ -9520,6 +9642,7 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     scope.moduleBase = nil
     scope.application = nil
     scope.evalBudget = nil
+    scope.moduleExecutionPolicy = nil
     scope.borrowedCallerEnv = false
     scope.moduleRoot = false
     scope.moduleStatic = false
@@ -12533,6 +12656,20 @@ proc consumeEvalStep(budget: EvalBudget) =
   while current != nil:
     if current.remaining <= 0:
       raise newException(GeneError, "eval max steps exceeded")
+    if current.hasDeadline or current.hasMemoryLimit:
+      if current.sampleCountdown <= 0:
+        # Time/allocator queries are much more expensive than the integer step
+        # decrement. Sample on entry and then every 64 dispatches: bounded eval
+        # remains responsive without putting two host calls on every VM opcode.
+        current.sampleCountdown = 64
+        if current.hasDeadline and getMonoTime() >= current.deadline:
+          raise newException(GeneError, "eval timeout exceeded")
+        if current.hasMemoryLimit and
+            getOccupiedMem().int64 - current.memoryBaseline >
+              current.memoryLimitBytes:
+          raise newException(GeneError, "eval memory limit exceeded")
+      else:
+        dec current.sampleCountdown
     dec current.remaining
     current = current.parent
 
@@ -24538,10 +24675,20 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
         "function '" & callee.fnName & "' expects " & $proto.requiredPositional &
         ".." & $positional.len &
         " argument(s), got " & $args.len)
+    # Keep the ordinary call path at its old cost. Module roots are cached on
+    # every lexical scope; only configured sandbox functions need the caller
+    # root and the extra call-scope decision.
+    let policyRoot = callee.fnScope.moduleBase
+    let hasModulePolicy = policyRoot != nil and
+                          policyRoot.moduleExecutionPolicy != nil
+    let callerRoot =
+      if hasModulePolicy: callerScope.moduleRootScope() else: nil
+    let needsPolicyScope = hasModulePolicy and policyRoot != callerRoot
+    let policyPooledScope = needsPolicyScope and not proto.needsCallScope
     let callScope =
-      if proto.needsCallScope:
+      if proto.needsCallScope or needsPolicyScope:
         let created =
-          if proto.poolCallScope:
+          if proto.poolCallScope or policyPooledScope:
             acquireSimpleCallScope(callee.fnScope, proto.localNames,
               proto.callScopeNeedsSlotNames,
               proto.callScopeNeedsSlotReset)
@@ -24555,9 +24702,15 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     else:
       callee.fnScope
     callScope.seedFunctionProtocolEntry(callee)
-    let callTransition = functionCapabilityTransition(
-      proto, callScope, callerScope, callScope.executionCapabilities(),
-      activeCapabilityPresence)
+    let callTransition =
+      if hasModulePolicy:
+        functionCapabilityTransition(
+          proto, callScope, callerScope, callScope.executionCapabilities(),
+          activeCapabilityPresence, policyRoot, callerRoot, rootsKnown = true)
+      else:
+        functionCapabilityTransition(
+          proto, callScope, callerScope, callScope.executionCapabilities(),
+          activeCapabilityPresence)
     let savedCapabilities = activeCapabilityContext
     let savedPresence = activeCapabilityPresence
     activeCapabilityContext = callTransition.context
@@ -24568,7 +24721,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     finally:
       activeCapabilityContext = savedCapabilities
       activeCapabilityPresence = savedPresence
-      if proto.poolCallScope:
+      if proto.poolCallScope or policyPooledScope:
         releaseCallScope(callScope)
   var callScope: Scope
   var returnType: Value
@@ -25825,7 +25978,8 @@ proc loadFileModule*(app: Application, path: string): Value =
   app.materializeApplicationCapabilities(result)
 
 proc loadSandboxedModule*(app: Application, dir, entry: string,
-                          grants: seq[string], shared: seq[string]): Value =
+                          grants: seq[string], shared: seq[string],
+                          isolationKey = ""): Value =
   ## Load `dir/entry` with only the standard-library namespaces in `grants` — the
   ## capability boundary design §D5 promised and §D5.1 found missing.
   ##
@@ -25910,7 +26064,7 @@ proc loadSandboxedModule*(app: Application, dir, entry: string,
     sharedSet.incl withExt
   let root = app.sandboxedBuiltins(grants)
   app.sandboxRoot = root
-  app.sandboxKey = grants.sorted().join(",")
+  app.sandboxKey = grants.sorted().join(",") & "\x1e" & isolationKey
   app.sandboxDir = sandboxDir
   app.sandboxShared = sharedSet
   try:
@@ -25946,10 +26100,10 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
   ## when it is called.
   ## `shared` is the fourth argument and the only way out of `dir`: the module
   ## paths a mod may import from outside its own directory. The host writes it.
-  if args.len != 4:
+  if args.len notin {4, 5}:
     raise newException(GeneError,
       "runtime/load_sandboxed expects a directory, an entry, a list of " &
-      "grants, and a list of shared modules")
+      "grants, a list of shared modules, and optional isolation key")
   if args[0].kind != vkString:
     raise newException(GeneError,
       "runtime/load_sandboxed directory must be a Str")
@@ -25961,6 +26115,9 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
   if args[3].kind != vkList:
     raise newException(GeneError,
       "runtime/load_sandboxed shared must be a list of module paths")
+  if args.len == 5 and args[4].kind != vkString:
+    raise newException(GeneError,
+      "runtime/load_sandboxed isolation key must be a Str")
   var shared: seq[string]
   for item in args[3].listItems:
     if item.kind != vkString:
@@ -26002,7 +26159,8 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
         raise newException(GeneError,
           "a sandboxed module cannot load another sandboxed module")
     walk = walk.parent
-  app.loadSandboxedModule(args[0].strVal, args[1].strVal, grants, shared)
+  app.loadSandboxedModule(args[0].strVal, args[1].strVal, grants, shared,
+    if args.len == 5: args[4].strVal else: "")
 
 proc loadCompiledFileModule*(app: Application, path: string,
                              chunk: Chunk): Value =

@@ -1,0 +1,25 @@
+(mod recording_view_smoke)
+
+(import [new_harness install log_append row] from "../src/kernel")
+(import [HarnessView] from "../src/view_api")
+(import [recording_view_plugin] from "../src/recording_view")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(var h (new_harness))
+(var captured ($cell ($thaw #[])))
+(install h (recording_view_plugin captured))
+(log_append h "message" "hello")
+(var view (row h "views" "active"))
+(view/value ~ HarnessView:run h)
+(var records (captured ~ get))
+
+(assert (== records/~size 2)
+  "recording view must observe the core event feed without a terminal")
+(assert (== records/0/text "activated recording_view")
+  "recording view must preserve event order")
+(assert (== records/1/text "hello")
+  "recording view must preserve model-visible content")
+
+($println "recording_view_smoke: ok")

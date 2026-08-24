@@ -1,0 +1,83 @@
+(mod workspace_turn_smoke)
+
+(import [HarnessError ExecutionLimits new_harness resolve status_of
+         transaction_diff]
+  from "../src/kernel")
+(import [open_workspace register_module run_workspace_turn
+         composition_revision close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var source
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "atomic" ^provides ["Atomic"] ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (host ~ PluginHost:provide "Atomic" "committed"))))))))
+  (var final_source
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost]
+          from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "atomic" ^provides ["Atomic"] ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (host ~ PluginHost:provide "Atomic" "final"))))))))
+  (var workspace (open_workspace args/0))
+  (var h (new_harness ^workspace workspace))
+  (var aborted_diff ($cell nil))
+
+  (var aborted
+    (run_workspace_turn workspace h "failed"
+      (fn [ignored]
+        (register_module workspace h "atomic" source ^selectors [])
+        (aborted_diff ~ set (transaction_diff h))
+        (fail (HarnessError ^message "later form failed")))))
+  (assert (== aborted/status "aborted")
+    "a later program failure must abort staged composition")
+  (assert (== (composition_revision workspace) 0)
+    "aborted turn must not publish a composition generation")
+  (assert (== (status_of h "atomic") "absent")
+    "aborted turn must not activate its generated plugin")
+  (var staged_diff (aborted_diff ~ get))
+  (assert (== staged_diff/composition/0/change "added")
+    "transaction diff must expose staged composition before an abort")
+
+  (var bounded_abort
+    (run_workspace_turn workspace h "bounded"
+      (fn [ignored] (while true nil))
+      ^limits (ExecutionLimits
+        ^max_steps 500 ^max_memory_mb 64 ^timeout_ms 100)))
+  (assert (== bounded_abort/status "aborted")
+    "a divergent user turn must terminate at the transaction boundary")
+  (assert (== (composition_revision workspace) 0)
+    "a bounded turn failure must leave desired state unchanged")
+
+  (var committed
+    (run_workspace_turn workspace h "successful"
+      (fn [ignored]
+        (register_module workspace h "atomic" source ^selectors [])
+        (register_module workspace h "atomic" final_source
+          ^selectors [] ^replace true)
+        (transaction_diff h))))
+  (assert (== committed/status "committed")
+    "successful turn must commit registry and composition state")
+  (assert (== committed/revision 1)
+    "successful turn must publish one generation")
+  (assert (== committed/result/composition/0/id "atomic")
+    "committed turn result must preserve the pre-commit composition diff")
+  (assert (== (resolve h "Atomic") "final")
+    "only the final coalesced descriptor may activate after commit")
+  (close_workspace workspace)
+  ($println "workspace_turn_smoke: ok"))

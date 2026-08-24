@@ -1,0 +1,49 @@
+(mod event_concurrency_smoke)
+
+(import [HarnessStateConflict open_event_store append_event events_for
+         flush_event_store close_event_store]
+  from "../src/state")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var root args/0)
+  (var first (open_event_store root))
+  (var stale (open_event_store root))
+
+  (append_event first "session" "s1" {^type "message" ^text "one"})
+  (append_event stale "session" "s2" {^type "message" ^text "two"})
+  (var first_flush (flush_event_store first))
+  (assert (== first_flush/generation 1)
+    "first event writer must claim generation 1")
+  (var stale_flush (flush_event_store stale))
+  (assert (== stale_flush/generation 2)
+    "a stale disjoint-stream writer must merge and retry")
+  (close_event_store first)
+  (close_event_store stale)
+
+  (var merged (open_event_store root))
+  (var stream_one (events_for merged "session" "s1"))
+  (var stream_two (events_for merged "session" "s2"))
+  (assert (== stream_one/0/payload/text "one")
+    "merge must preserve the winning stream")
+  (assert (== stream_two/0/payload/text "two")
+    "merge must preserve the stale writer's disjoint stream")
+  (close_event_store merged)
+
+  (var left (open_event_store root))
+  (var right (open_event_store root))
+  (append_event left "session" "same" {^type "message" ^text "left"})
+  (append_event right "session" "same" {^type "message" ^text "right"})
+  (flush_event_store left)
+  (var conflicted false)
+  (try
+    (flush_event_store right)
+  catch (HarnessStateConflict ^scope scope ^stream stream)
+    (set conflicted (&& (== scope "session") (== stream "same"))))
+  (assert conflicted
+    "a stale writer to the same ordered stream must receive a typed conflict")
+  (close_event_store left)
+  (close_event_store right)
+  ($println "event_concurrency_smoke: ok"))

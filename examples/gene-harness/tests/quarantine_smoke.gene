@@ -1,0 +1,71 @@
+(mod quarantine_smoke)
+
+(import $fs [write_text])
+(import $str [contains?])
+(import [new_harness resolve status_of] from "../src/kernel")
+(import [open_workspace module_digest register_module restore_workspace module_path
+         doctor close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var root args/0)
+  (var broken_source
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "broken" ^provides ["Broken"] ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (host ~ PluginHost:provide "Broken" "bad"))))))))
+  (var healthy_source
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "healthy" ^provides ["Healthy"] ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (host ~ PluginHost:provide "Healthy" "good"))))))))
+
+  (var workspace (open_workspace root))
+  (var h (new_harness))
+  (var anticipated_path
+    (module_path workspace (module_digest broken_source)))
+  (write_text anticipated_path ($to_str broken_source))
+  (var broken
+    (register_module workspace h "broken" broken_source
+      ^scope "session" ^selectors []))
+  (register_module workspace h "healthy" healthy_source
+    ^scope "session" ^selectors [])
+  (var broken_path (module_path workspace broken/digest))
+  (close_workspace workspace)
+
+  # Simulate a damaged generated artifact. The composition generation remains
+  # valid and the sibling entry must still restore.
+  (write_text broken_path "(mod corrupt")
+  (set workspace (open_workspace root))
+  (set h (new_harness))
+  (var restored (restore_workspace workspace h ^session "s1"))
+  (assert (== restored/ready ["healthy"])
+    "one damaged entry must not refuse the workspace")
+  (assert (== (status_of h "broken") "absent")
+    "a quarantined descriptor must not enter the live plugin table")
+  (assert (== (resolve h "Healthy") "good")
+    "healthy siblings must still activate")
+  (var findings (doctor workspace))
+  (assert (&& (== findings/~size 1)
+              (contains? findings/0 "blob digest mismatch"))
+    "doctor must explain the quarantined entry")
+  # Keep the content-addressed fixture repeatable for later runs.
+  (write_text broken_path ($to_str broken_source))
+  (close_workspace workspace)
+
+  ($println "quarantine_smoke: ok"))

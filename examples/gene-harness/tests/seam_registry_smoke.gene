@@ -1,0 +1,38 @@
+(mod seam_registry_smoke)
+
+(import [new_harness provide replace resolve seam_bound bound_seams
+         row remove_owner effects_of]
+  from "../src/kernel")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(var h (new_harness))
+(provide h "first" "Answer" 41)
+
+(var first_row (row h "seams" "Answer"))
+(assert (== first_row/value 41)
+  "provide must contribute a row to the seams registry")
+(assert (== (resolve h "Answer") 41)
+  "resolve must read the registry-backed seam")
+(var first_effects (effects_of h "first"))
+(assert (== first_effects/~size 1)
+  "the ledger must expose the owner's registry row")
+
+(replace h "second" "Answer" 42)
+(assert (== (resolve h "Answer") 42)
+  "replace must supersede the old row explicitly")
+(set first_effects (effects_of h "first"))
+(assert (== first_effects/~size 0)
+  "supersede must remove ownership from the former provider")
+(var second_effects (effects_of h "second"))
+(assert (== second_effects/~size 1)
+  "supersede must move ownership to the replacement")
+
+(remove_owner h "second")
+(assert (! (seam_bound h "Answer"))
+  "removing the replacement must not reveal the superseded row")
+(assert (== (bound_seams h) [])
+  "the registry must be the source of seam reflection")
+
+($println "seam_registry_smoke: ok")

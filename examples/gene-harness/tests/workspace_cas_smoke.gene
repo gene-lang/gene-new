@@ -1,0 +1,55 @@
+(mod workspace_cas_smoke)
+
+(import [CompositionConflict open_workspace refresh_workspace
+         composition_revision composition_entries commit_composition
+         close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var root args/0)
+  (var first (open_workspace root))
+  (var stale (open_workspace root))
+
+  (var revision
+    (commit_composition first 0
+      [{^id "echo" ^scope "session" ^module_digest "sha256:a"
+        ^closure ["sha256:a"] ^interfaces {} ^selectors []}]))
+  (assert (== revision 1) "first composition commit must publish revision 1")
+
+  (var conflicted false)
+  (try
+    (commit_composition stale 0
+      [{^id "lost" ^scope "session" ^module_digest "sha256:b"
+        ^closure ["sha256:b"] ^interfaces {} ^selectors []}])
+  catch (CompositionConflict ^expected expected ^actual actual)
+    (set conflicted (&& (== expected 0) (== actual 1))))
+  (assert conflicted "a stale writer must receive a typed revision conflict")
+
+  (refresh_workspace stale)
+  (assert (== (composition_revision stale) 1)
+    "refresh must observe the winning generation")
+  (var refreshed_entries (composition_entries stale))
+  (assert (== refreshed_entries/0/id "echo")
+    "the losing writer must not clobber the committed entry")
+
+  (set revision
+    (commit_composition stale 1
+      [refreshed_entries...
+       {^id "todo" ^scope "workspace" ^module_digest "sha256:c"
+        ^closure ["sha256:c"] ^interfaces {} ^selectors []}]))
+  (assert (== revision 2) "fresh CAS must advance to revision 2")
+  (close_workspace first)
+  (close_workspace stale)
+
+  (var reopened (open_workspace root))
+  (assert (== (composition_revision reopened) 2)
+    "reopen must restore the current committed generation")
+  (var reopened_entries (composition_entries reopened))
+  (assert (== reopened_entries/~size 2)
+    "reopen must restore the complete desired-state entry set")
+  (close_workspace reopened)
+
+  ($println "workspace_cas_smoke: ok"))

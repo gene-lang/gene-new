@@ -1,0 +1,36 @@
+(mod descriptor_context_smoke)
+
+(import [open_workspace register_module composition_revision close_workspace]
+  from "../src/workspace")
+(import [new_harness] from "../src/kernel")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var workspace (open_workspace args/0))
+  (var h (new_harness ^workspace workspace))
+  (var source
+    (quote
+      (mod plugin
+        (import [Plugin DescriptorContext PluginContext PluginHost]
+          from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx : DescriptorContext] : Plugin
+          ^capabilities []
+          # Descriptor construction must not inspect the live registry.
+          (ctx ~ PluginHost:registry_names)
+          (Plugin ^id "impure" ^provides [] ^requires []
+            ^contextual true ^activate (fn [] (fn [host] nil)))))))
+
+  (var refused false)
+  (try
+    (register_module workspace h "impure" source ^selectors [])
+  catch e
+    (set refused true))
+  (assert refused
+    "init must receive an inert descriptor context, not PluginHost authority")
+  (assert (== (composition_revision workspace) 0)
+    "failed descriptor construction must not commit composition")
+  (close_workspace workspace)
+  ($println "descriptor_context_smoke: ok"))

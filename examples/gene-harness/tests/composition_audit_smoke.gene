@@ -1,0 +1,66 @@
+(mod composition_audit_smoke)
+
+(import [new_harness] from "../src/kernel")
+(import [open_event_store events_for close_event_store] from "../src/state")
+(import [open_workspace register_module run_workspace_turn
+         composition_entries close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn source [value : Str]
+  `(mod plugin
+     (import [Plugin DescriptorContext PluginContext PluginHost]
+       from "../../../src/plugin_api")
+     (import_impl PluginHost for PluginContext from "../../../src/kernel")
+     (fn init [ctx : DescriptorContext] : Plugin
+       ^capabilities []
+       (Plugin ^id "audit" ^provides ["Audit"] ^requires []
+         ^contextual true
+         ^activate (fn [] (fn [host]
+           (host ~ PluginHost:provide "Audit" %value)))))))
+
+(fn audit_events [history]
+  (var out ($thaw #[]))
+  (for envelope in history
+    (if_yes (== envelope/type "composition/changed")
+      (out ~ push envelope)))
+  out)
+
+(fn main [args]
+  (var workspace (open_workspace args/0))
+  (var events (open_event_store args/1))
+  (var h
+    (new_harness ^workspace workspace ^event_store events
+      ^event_scope "session" ^event_stream "s9"))
+
+  (var first
+    (register_module workspace h "audit" (source "one")
+      ^selectors [] ^by "display only" ^model "claimed model"))
+  (run_workspace_turn workspace h "turn-7"
+    (fn [ignored]
+      (register_module workspace h "audit" (source "two")
+        ^selectors [] ^replace true ^by "replacement")
+      "done"))
+
+  (var entries (composition_entries workspace))
+  (assert (== entries/0/session "s9")
+    "composition must stamp the authenticated Harness session")
+  (assert (== entries/0/turn "turn-7")
+    "composition must stamp the active turn rather than agent display data")
+  (var audits (audit_events (events_for events "session" "s9")))
+  (assert (== audits/~size 2)
+    "every committed module composition change must emit one audit event")
+  (assert (== audits/0/origin "core")
+    "composition audit origin must be stamped by core")
+  (assert (== audits/0/payload/session "s9")
+    "audit session must come from the Harness")
+  (assert (== audits/1/payload/turn "turn-7")
+    "transactional audit must carry the authenticated turn id")
+  (assert (== audits/1/payload/previous_digest first/digest)
+    "replacement audit must link the previous immutable digest")
+
+  (close_workspace workspace)
+  (close_event_store events)
+  ($println "composition_audit_smoke: ok"))

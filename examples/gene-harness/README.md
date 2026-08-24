@@ -1,296 +1,242 @@
-# gene-harness
+# Gene Harness
 
-A living plugin harness: seams, an effect ledger, and atomic activation.
+A durable, capability-bounded plugin harness for a general-purpose Gene agent.
+It can add code while running, stop, and restore the same composition and
+plugin state at the last committed turn boundary.
+
+The implementation follows [docs/design.md](docs/design.md); the normative
+design is [`tmp/harness.md`](../../tmp/harness.md).
+
+## Quick start
+
+From the repository root:
 
 ```bash
-# an interactive harness. `help` lists the commands; `quit`, `exit` or Ctrl-D
-# leaves. Run it from the package directory so a capability row naming
-# `plugins/generated` means this one.
-cd examples/gene-harness
-gene run --allow_read_dir /tmp src/main.gene cli
-
-# the same shell with a real model behind the prompt (OpenRouter)
-OPENROUTER_KEY=$(cat ~/.secrets/openrouter) \
-  gene run --allow_read_dir /tmp src/main.gene chat
-
-# one-shot: anything after the profile name is a prompt
-gene run src/main.gene web status
-
-# boot a deployment and print what came up
-gene run src/main.gene web
-gene run src/main.gene cli            # same profile, no grant
-
-# the tour: every line it prints is a claimed property
-gene run src/demo.gene
-gene run --allow_read_dir /tmp src/demo.gene
+bin/gene run examples/gene-harness/src/main.gene web status
 ```
 
-Run the entry point three ways. `web` and `cli` differ in their providers; the
-third command boots `cli` without the authority it needs, and the interesting
-thing is what happens: the boot succeeds, two plugins are `ready`, and the one
-that wanted the grant sits in `error` with `declaration requires fs/ReadDir` in
-the log. A missing grant costs one plugin, not the process.
+The default state home is `examples/gene-harness/tmp/workspace` and is ignored
+by git. Choose another existing directory with `GENE_HARNESS_HOME`; an external
+home needs an explicit host grant:
 
-Run the tour both ways too. The only lines that change — four of them — are the
-ones where the local filesystem provider is asked to do its job, which is the
-point.
+```bash
+mkdir -p /tmp/my-gene-harness
+GENE_HARNESS_HOME=/tmp/my-gene-harness \
+  bin/gene run --allow_read_write_dir /tmp/my-gene-harness \
+  examples/gene-harness/src/main.gene web status
+```
 
-The design and the argument behind it are in [`docs/design.md`](docs/design.md),
-which also compares this to DeepSeek's `dsh` and says which of its ideas are
-worth taking.
+The `cli` profile installs the terminal view:
 
-## What it is
+```bash
+bin/gene run examples/gene-harness/src/main.gene cli
+```
 
-A plugin architecture written as a subsystem — `Plugin` and `Harness` are types,
-not a mapping onto packages and scoped impls. Those distribute and compile code;
-this is about what happens at runtime.
+The `chat` profile swaps in the OpenRouter model provider:
 
-| File | Role |
+```bash
+OPENROUTER_API_KEY=... \
+  bin/gene run examples/gene-harness/src/main.gene chat
+```
+
+## Durable self-extension
+
+The offline command provider demonstrates the complete path:
+
+```bash
+GENE_HARNESS_HOME=examples/gene-harness/tmp/demo \
+  bin/gene run examples/gene-harness/src/main.gene web \
+  build greet "hello from a generated plugin"
+```
+
+This returns a committed revision and activates the plugin once:
+
+```text
+registered greet at revision 1 (ready)
+```
+
+Run a separate process with the same home:
+
+```bash
+GENE_HARNESS_HOME=examples/gene-harness/tmp/demo \
+  bin/gene run examples/gene-harness/src/main.gene web tool greet world
+```
+
+```text
+greet(world) -> hello from a generated plugin
+```
+
+The source was never assembled by string concatenation. `plugin_source`
+produces a quoted AST; `register_module` validates and canonicalizes it, writes
+a SHA-256 module blob with atomic replacement, commits a composition generation
+by an exclusive revision claim, and only then activates it.
+
+## What is durable
+
+```text
+<GENE_HARNESS_HOME>/
+  composition/   desired-state generations and CURRENT
+  modules/       immutable module Store records
+  events/        scoped event segments, projections and CURRENT
+
+plugins/generated/
+  <workspace-sha256>/<module-sha256>.gene  verified loader cache (git-ignored)
+```
+
+Composition, code, and history are separate stores. Past programs are never
+replayed. Session-scoped plugins restore from that session's event stream;
+workspace-scoped plugins use the shared workspace stream.
+
+Live fibers, tasks, sockets, subprocesses, and partial model responses are not
+serialized. A cold recovery appends an interrupted boundary and resumes from
+the last flushed commit. `CURRENT` is authoritative; even a complete generation
+above it is unpublished crash debris and is never selected by restore.
+The retained core log and the LLM provider's bounded conversation window are
+both restored before activation; a completed `ask` flushes them together.
+
+## Extension model
+
+Everything dynamic is a registry row:
+
+- seams
+- commands
+- tools
+- prompt sections
+- views
+- event types
+- subscriptions
+
+Rows have immutable IDs and owners. The ledger removes an owner's rows in
+reverse acquisition order, invoking registry-specific cleanup. Plugin-created
+registries are owned too; unloading their owner cascades through their rows.
+
+`provide`, `replace`, and `resolve` remain readable seam helpers, but they now
+operate on the `seams` registry. Commands and tools do not use hard-coded branch
+chains or `Tool:*` prefixes. Help and model introspection render from the same
+rows the dispatcher uses. `transaction_diff` (and `diff` within an active turn)
+shows staged registry and composition changes before commit.
+
+## Generated plugin contract
+
+Generated code imports the data-only stable API and returns a descriptor from
+capability-empty `init`. Kernel sharing is allowed only for the `PluginHost`
+impl identity:
+
+```gene
+(mod plugin
+  (import [Plugin DescriptorContext PluginContext PluginHost]
+    from "../../../src/plugin_api")
+  (import_impl PluginHost for PluginContext from "../../../src/kernel")
+
+  (fn init [ctx : DescriptorContext] : Plugin
+    ^capabilities []
+    (Plugin
+      ^id "echo"
+      ^provides [["tools" "echo"]]
+      ^requires []
+      ^contextual true
+      ^activate
+        (fn []
+          (fn [host]
+            (host ~ PluginHost:contribute "tools"
+              {^name "echo" ^doc "echo text" ^run (fn [text] text)}))))))
+```
+
+`DescriptorContext` is inert: no discovery, contribution API, or authority.
+`PluginContext` is the later unforgeable token-backed host interface, not the
+raw harness. It supports discovery, owned registries/contributions, seam
+operations, subscriptions, schema-validated event emission, and core-owned
+durable state. The context expires on demotion or uninstall.
+
+Generated command and view callbacks receive that retained context, not the
+Harness. Model code likewise receives Harness operations already bound to the
+current transaction and has no mutable `h` record to edit around the ledger.
+Deactivation and registry cleanup receive the still-valid owner context.
+Repeated module replacements in one turn coalesce, so only the final committed
+descriptor activates.
+
+## Capability selectors
+
+Composition stores inert selector data. It never stores or restores grants:
+
+```gene
+{^type "fs/ReadDir" ^root "workspace" ^path "docs"}
+{^type "fs/ReadWriteDir" ^root "state" ^path "cache"}
+```
+
+`workspace` and `state` are fixed host-provided roots. Absolute paths and `..`
+are rejected. Activation expands selectors and runs under `with_capabilities`,
+resolved only by attenuation from the host ceiling. A namespace exposed in the
+module sandbox is still not authority; native adapters check the active exact
+grant.
+
+Plugin `init`, activation, schemas, and cleanup run under transitive step,
+timeout, and memory limits. The recovery boundary converts plugin panic into a
+quarantine error. The policy is attached immutably to the sandbox module, so
+escaped functions and direct typed protocol methods retain the same capability
+ceiling and fresh execution budget. FFI and native compilation remain disabled.
+
+Workspace-scoped plugins have one live replica per Harness process and one
+shared durable projection. They are not implicit cross-process singletons; a
+globally singular resource must come from a provider offering an explicit
+lease. Disjoint event streams merge on stale flush, while same-stream writes
+raise a typed conflict instead of guessing at sequence order.
+
+## Recovery commands
+
+These commands belong to core and remain available even when command/view/model
+plugins are broken:
+
+```bash
+bin/gene run examples/gene-harness/src/main.gene web doctor
+bin/gene run examples/gene-harness/src/main.gene web disable <id>
+bin/gene run examples/gene-harness/src/main.gene web enable <id>
+```
+
+A bad entry is quarantined with its reason; healthy siblings still activate.
+Failure never silently rewrites desired state to disabled.
+
+Generated descriptors and their event schemas are bounded-loaded before any
+effectful baseline profile plugin activates. `disable`/`enable` run even earlier
+and never activate the target on their recovery invocation. Cold turn repair
+occurs only after catalog validation succeeds. Shutdown reverses live plugins
+before stores are flushed and closed.
+
+## Files
+
+| Path | Responsibility |
 |---|---|
-| `src/kernel.gene` | The kernel: lifecycle, the effect ledger, seam binding, replacement |
-| `src/seams.gene` | One seam, all three roles: a protocol with an authority contract, two providers, a consumer |
-| `src/main.gene` | The entry point: boot a named profile, then modify the running harness |
-| `src/profile.gene` | What a `Profile` is, and how to boot one |
-| `src/profiles.gene` | The registry: which profiles exist, by name |
-| `src/profiles/cli.gene`, `web.gene` | One deployment each — sets of plugins, not layers |
-| `src/profiles/common.gene` | Plugins every deployment installs |
-| `src/agent.gene` | The offline `HarnessPrompt` provider: what a prompt means |
-| `src/llm.gene` | The other one: OpenRouter, `deepseek/deepseek-v4-flash-0731` |
-| `src/repl.gene` | The terminal driver, bound as a `Driver` seam by `cli` |
-| `plugins/generated/` | Plugins the harness writes for itself, at runtime |
-| `src/demo.gene` | A runnable tour; every line it prints is a claimed property |
-| `plugins/fs_stub/` | An out-of-tree plugin loaded at runtime, granted nothing |
-| `plugins/fs_rogue/` | The same, but reaching for `$fs` — kept honest by being run |
-| `docs/design.md` | Why it is shaped this way, and what is still missing |
+| `src/kernel.gene` | registry, ledger, lifecycle, transaction/diff, PluginContext, output events |
+| `src/plugin_api.gene` | stable generated-plugin types/protocol |
+| `src/state.gene` | scoped segmented event store and state projections |
+| `src/workspace.gene` | composition CAS, blobs, register/restore, quarantine |
+| `src/agent.gene` | command/tool registries and offline prompt provider |
+| `src/llm.gene` | OpenRouter provider and registry-rendered prompt |
+| `src/repl.gene` | terminal subscriber and active-view handoff |
+| `src/view_api.gene`, `src/recording_view.gene` | typed view contract and recording view |
+| `src/profile.gene`, `src/profiles/` | checked-in baseline profiles |
+| `src/main.gene` | durable boot and irreducible recovery surface |
+| `events.catalog` | core persisted-event vocabulary source |
+| `tests/` | public-seam smoke programs |
 
-## The ideas
+## Verification
 
-**A plugin is a value.** An id, the seams it claims, the seams it needs, and two
-entry points — not a module. So it can come from a runtime-loaded file, a
-package dependency, or a literal built in memory for a test.
+Harness tests are part of `tests/test_cli.nim`. They cover registry ownership,
+transaction diff/commit/abort, event retention/catalog/concurrency/cold repair,
+cross-process Store publication, content-addressed registration, dependency
+closure and cache repair, quarantine, named-root attenuation, callback and
+typed-provider supervision, plugin events, provenance, active views/output,
+prompt-skill loading, and session/workspace state conflicts.
 
-**The kernel owns an effect ledger.** Plugins never touch the tables; they
-contribute through `provide`, and every contribution is recorded against the
-plugin id. The ledger holds *records*, not disposer closures, which makes "what
-has this plugin registered?" a query and the ledger serializable.
+Run the focused programs directly while developing, then the repository gates:
 
-**Activation is all-or-nothing, and a failure is a state.** A plugin that fails
-part-way through `activate` leaves nothing behind, because the kernel knows what
-it registered and reverses it without the plugin's cooperation. A plugin cannot
-forget to clean up, because cleanup was never its job. What it does leave behind
-is *itself*, in `error`, next to the log line explaining why — a failure that
-erases its own subject is one you cannot investigate. Nothing retries it on its
-own, because an `activate` that raised will raise again until something outside
-it changes; `retry` is the operator saying it did.
-
-The mirror image: `deactivate` is advisory. If it raises, the failure is logged
-and the removal proceeds as planned, because the kernel does not depend on the
-hook — the ledger reverses every registration either way.
-
-Binding is explicit: a seam already bound is refused rather than shadowed, so no
-registration order decides behaviour. Changing a provider is `replace` — a named
-operation an operator asked for, not a layer that wins by arriving later. The
-ledger entry moves with the binding, so uninstalling a seam's former owner
-cannot unbind a seam it no longer provides.
-
-**A seam is a protocol, and the protocol carries the authority contract.** This
-is the part TypeScript cannot copy. `HarnessFs` declares
-`^capabilities [(fs/ReadDir "/tmp")]` once; a provider may restate it or declare
-less, and the compiler rejects an impl that declares more — or that declares
-nothing, since an absent row means unchecked authority. So a provider is bounded
-by the interface it implements rather than by its own good manners, and the
-in-memory test double advertises `^capabilities []` where a reviewer can see it.
-
-The consumer names only the protocol. Swapping the provider therefore changes
-what the consumer does *and* what authority the whole product needs, without the
-consumer being touched — which is why the two commands above differ on exactly
-one line.
-
-**A plugin can arrive at runtime, bounded by grants.** `install_sandboxed` loads
-a module from outside `src/` with `$runtime/load_sandboxed`. `grants` is the
-operator-readable statement of reach — `[]` means the code cannot name `$fs`,
-`$net`, or `$os` at all — and `shared` names the one file holding the seam
-protocol, so the plugin implements *this* `HarnessFs` rather than a recompiled
-copy of it. The same binding rules apply to code that arrived late: a bound seam
-is refused, not shadowed.
-
-`plugins/fs_rogue/` exists to keep that claim honest, and running it corrected
-it. The boundary holds — the file is never read — but the plugin *loads* and
-fails at the first call with `value is not callable: vkVoid`, because a denied
-namespace is absent and the name fails where it is used. Timing and diagnostic,
-recorded in [`docs/design.md`](docs/design.md) §5.
-
-**The ledger reverses more than seams.** An observer plugin contributes no seam
-— it subscribes to the harness event bus — and uninstalling it cancels the
-subscription without its cooperation. A listener outliving its plugin is the
-classic plugin-system leak; here it cannot happen, because registering the
-subscription *is* recording it. The bus is for observation and the seams are
-for substitution, and neither does the other's job.
-
-**A plugin declares what it needs, and the kernel settles.** `requires` names
-*seams*, never plugin ids, so a dependency survives the provider being swapped —
-which is the whole reason to have seams. From there the kernel is a state
-machine rather than a sequence: a plugin is `pending` until the seams it needs
-are bound, then `ready`. `settle` runs after every change and drives the table
-to a fixpoint, demoting before promoting so a cascade cannot churn.
-
-Three things fall out. **Install order stops mattering** — three plugins
-installed in reverse dependency order settle exactly as three installed in
-order, which is what an ordered bundle-layer scheme tries to buy with
-configuration. **Withdrawal cascades reversibly** — remove a provider and its
-dependents return to `pending`, not to uninstalled, because what went away was
-their dependency and not the operator's intent; put it back and the chain comes
-back. **A dependency cycle is `pending`**, not a hang and not an error: neither
-plugin can go first, so neither does, and both say so.
-
-`activate` gets the one guarantee that matters at the call site — every seam in
-`requires` is bound before it runs — so plugin code resolves what it needs
-without a defensive check. Every transition goes out on the event bus
-(`PluginActivated`, `PluginDeactivated`, `PluginFailed`, …) and into the session
-log under `^kind "lifecycle"`, so a plugin can watch its own dependencies come
-and go and the kernel need know nothing about it.
-
-**A profile is a set, not a stack of patches.** `cli` and `web` name the plugins
-a deployment starts with: `cli` binds a real filesystem provider that declares
-`(fs/ReadDir "/tmp")` and renders plain text, `web` binds an in-memory provider
-that declares `^capabilities []` and renders escaped HTML. The consumer is *the
-same plugin value* in both — it requires two seams and names no provider, so
-what differs between deployments is only what it stands on.
-
-Booting is a loop over the set. There is no merge step, no precedence rule, and
-nothing to `--dump-config`, because the profile *is* the configuration.
-
-Deployments share composition by **importing the same factory, not by patching a
-base**: `profiles/common.gene` holds the plugins both install. There is no
-"web = cli plus X", because that is a layer. The failure mode of layers is that
-you cannot tell what a deployment runs without replaying the merge; the failure
-mode here is a slightly longer list, in one file, that you can read. That is
-possible only because the kernel settles: `boot_reversed` boots the same profile
-backwards and must reach the same state, which is the claim being tested rather
-than asserted. Ordered layer schemes exist to control an ordering that here has
-no effect.
-
-Modifying a booted harness is `install`, `uninstall`, and `replace` — named
-operations on a live system, not a layer that wins by arriving later. Swap the
-`render` plugin for the other profile's and the reporter re-derives itself
-against the new provider, report and all, without a reboot.
-
-**A prompt is a seam, and the harness can extend itself through it.** `cli` is an
-interactive shell: it reads a line, hands it to whatever is bound to
-`HarnessPrompt`, and prints the answer. The loop is thirty lines and knows
-nothing about what any prompt means — a real deployment binds a model there;
-this repo binds a command interpreter. The driver is itself a plugin providing a
-`Driver` seam, so "is this deployment interactive?" is a binding rather than a
-flag: `web` installs the same agent and no driver.
-
-The interesting command is `build`, which writes a new plugin and loads it into
-the running process:
-
-```
-harness>
-build greet a plugin written from a prompt
-installed greet (ready)
-
-harness>
-tool greet world
-greet(world) -> a plugin written from a prompt
-
-harness>
-unload greet
-
-harness>
-tools
-[]
+```bash
+python3 tools/generate_harness_event_catalog.py --check
+nimble test
+nimble spec
+nimble perf
+nimble wasm
 ```
 
-The last part is the ledger doing its job on code that did not exist when the
-process started. Three things bound this and only one is a grant: the generated
-plugin must live inside the package (`load_sandboxed` refuses a sandbox
-directory that escapes the package root), it is loaded with `grants []` so it
-cannot name `$fs`, `$net`, or `$os`, and everything it registers is reversible
-by the kernel. Writing inside the package needs no flag — a package may modify
-itself; reaching outside it is authority.
-
-**And a real model is one plugin away — with no tool list.** The `chat` profile
-is `cli` with the offline interpreter swapped for an OpenRouter client. The
-model's only way to act is to emit a Gene program, in the shape
-`examples/safe_ai_agent` uses:
-
-```
-{^status "done"|"in-progress" ^response "one sentence" ^code (do ...)}
-```
-
-`^code` is evaluated against the **running harness**. The bindings are the
-kernel's own vocabulary — `h` itself, `install`, `uninstall`, `provide`,
-`replace`, `resolve`, `subscribe`, `install_sandboxed`, the `Plugin` type, the
-seams and their providers — the same names `src/profiles/` uses to compose a
-deployment. So there is nothing to select from:
-
-```
-install a plugin named echo whose Tool:echo seam is a function returning
-whatever string it is given, then call it with hi
-   Echo plugin installed and tested.
-   (do (install h (Plugin ^id "echo" ^provides ["Tool:echo"]
-         ^activate (fn [] (fn [hh id] (provide hh id "Tool:echo" (fn [s] s))))))
-       ((resolve h "Tool:echo") "hi"))
-hi
-
-now remove it and prove the seam is gone
-   (do (uninstall h "echo") (var gp (seam_bound h "Tool:echo")) (plugin_states h))
-["fs:ready" "render:ready" "reporter:ready" "agent:ready" "driver:ready"]
-```
-
-**Structural authority is total; host authority is narrow.** Rebuilding the
-harness needs no grant — that is what the model is for. Reaching outside the
-process is the Env's capability row, which is resolved against this module's
-context and can never name more than the harness already holds:
-
-```
-($os/get_env "HOME")            refused: os/get_env needs os/Env
-($fs/read_text "/etc/passwd")   refused: fs/read_text needs fs/ReadFile
-(install h (Plugin ...))        ["HarnessFs" "HarnessRender" "Tool:x"]
-```
-
-A refusal is a *value*, so the model sees it and tries something else. The row
-also re-roots relative paths at `plugins/generated/`, which is how the harness
-writes and loads code that did not exist at boot.
-
-Set `OPENROUTER_API_KEY` (or `OPENROUTER_KEY`), and `OPENROUTER_MODEL` to pick
-the model. Writing a whole application is where the model becomes the limit:
-`deepseek-v4-flash-0731` handles small programs and degrades on larger ones,
-while `deepseek-v4-pro-0813` wrote a working stateful todo plugin —
-
-```
-write me a todo app: install a plugin that keeps todo items in a cell and
-binds Tool:todo to a function taking a command string like "add buy milk"
-   installed todo (ready)
-
-/tool todo add buy milk        added
-/tool todo list                buy milk
-/unload todo                   uninstalled todo
-```
-
-See [`docs/design.md`](docs/design.md) §3.10 for what that took: a retry when
-the reply does not read as Gene, four list helpers for shapes the path syntax
-cannot express on an expression, and a primer section listing what does *not*
-exist in the language.
-
-**Model-visible ⟺ logged.** The invariant worth taking verbatim from `dsh`.
-Anything that reaches a model request must be reconstructible from the session
-log, and `assemble_request` makes that structural: it takes the log and nothing
-else, and declares `^capabilities []`, so an assembler that reached for a file
-or the environment would be refused at its own declaration. Replay is a fold
-over the log — uninstall the provider that produced a message and the assembled
-request is unchanged.
-
-## Not done yet
-
-The seam *table* is keyed by a plain string and holds `Any`, so the kernel
-itself cannot check conformance. It does not need to: a protocol works as an
-annotation, so the seam definition supplies its own gate (`fs_provider`) and a
-non-conforming provider is refused where it is bound. Making the table hold the
-protocol instead would move that check into the kernel and is the tidier end
-state.
-
-Module unload is deferred: uninstall removes a plugin's contributions, and its
-code stays resident (`docs/scoped-impls.md` §6).
+Human-reviewed promotion into checked-in profiles, protocol migrations beyond
+fingerprint refusal, and cross-workspace blob sharing remain deferred.

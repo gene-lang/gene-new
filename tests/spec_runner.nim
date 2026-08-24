@@ -7229,12 +7229,33 @@ suite "spec — Env and eval from design":
                "           ^in (env ^policy {^max_steps 20})) " &
                "catch {^message m} m)",
                "\"eval max steps exceeded\"")
-    expect GeneError:
-      discard run(compileSource("(env ^policy {^max_memory_mb 128})"),
-                  newGlobalScope())
+    check_eval("(eval (quote 1) " &
+               " ^in (env ^policy {^max_memory_mb 1}))", "1")
+    check_eval("(try (eval (quote 1) " &
+               "           ^in (env ^policy {^timeout_ms 0})) " &
+               "catch {^message m} m)",
+               "\"eval timeout exceeded\"")
+    check_eval("(try (eval (quote [1 2 3]) " &
+               "           ^in (env ^policy {^max_memory_mb 0})) " &
+               "catch {^message m} m)",
+               "\"eval memory limit exceeded\"")
     expect GeneError:
       discard run(compileSource("(env ^policy {^allow_ffi true})"),
                   newGlobalScope())
+
+  test "eval step limits remain active across imported callable boundaries":
+    check_eval("(fn spin [] (while true nil)) " &
+               "(try (eval (quote (callable)) " &
+               "           ^in (env ^bindings {^callable spin} " &
+               "                    ^policy {^max_steps 20})) " &
+               "catch {^message m} m)",
+               "\"eval max steps exceeded\"")
+
+  test "runtime guard_call contains panic only at an explicit boundary":
+    check_eval("(var guarded " &
+               "  ($runtime/guard_call (fn [value] ($panic value)) \"boom\")) " &
+               "[guarded/ok guarded/kind guarded/message]",
+               "[false panic \"\\\"boom\\\"\"]")
 
 suite "spec — parser helpers from design":
   test "read_one feeds eval and read_all returns a stream":
@@ -7939,6 +7960,18 @@ suite "spec — store persistence protocol":
                " (try (s ~ Store:put \"\" 1) catch (StoreError ^kind k) k)]",
                "[{^x 1} [\"session:tg/42\"] invalid_key]", dir)
 
+  test "filesystem atomic text replacement is capability-gated":
+    let dir = getTempDir() / "gene-fs-atomic-text-spec"
+    if dirExists(dir):
+      removeDir(dir)
+    createDir(dir)
+    let path = dir / "module.gene"
+    check_eval_at("(import $fs [write_text_atomic read_text]) " &
+               "(write_text_atomic " & geneString(path) & " \"first\") " &
+               "(write_text_atomic " & geneString(path) & " \"second\") " &
+               "(read_text " & geneString(path) & ")",
+               "\"second\"", dir)
+
   test "sqlite checkpoints publish one hash-validated generation atomically":
     check_eval("(import $db/sqlite [open]) " &
                "(import $store/sqlite [open : store-open Store]) " &
@@ -7951,6 +7984,67 @@ suite "spec — store persistence protocol":
                "[loaded/generation loaded/schema " &
                " loaded/records/session/data/x loaded/records/events/data]",
                "[2 1 2 [\"ok\"]]")
+
+  test "checkpoint generations are exclusive CAS claims":
+    check_eval("(import $db/sqlite [open]) " &
+               "(import $store/sqlite [open : store_open Store StoreError]) " &
+               "(var db (open \":memory:\")) " &
+               "(var s (store_open db)) " &
+               "(s ~ Store:checkpoint 1 {^state {^winner 1}}) " &
+               "(var conflict " &
+               "  (try (s ~ Store:checkpoint 1 {^state {^winner 2}}) " &
+               "   catch (StoreError ^kind kind) kind)) " &
+               "(var loaded (s ~ Store:load_checkpoint)) " &
+               "[conflict loaded/records/state/winner]",
+               "[conflict 1]")
+
+    let dir = getTempDir() / "gene-store-fs-exclusive-checkpoint-spec"
+    if dirExists(dir):
+      removeDir(dir)
+    createDir(dir)
+    check_eval_at("(import $store/fs [open : store_open Store StoreError]) " &
+               "(var first (store_open ^root " & geneString(dir) & ")) " &
+               "(var stale (store_open ^root " & geneString(dir) & ")) " &
+               "(first ~ Store:checkpoint 1 {^state {^winner 1}}) " &
+               "(var conflict " &
+               "  (try (stale ~ Store:checkpoint 1 {^state {^winner 2}}) " &
+               "   catch (StoreError ^kind kind) kind)) " &
+               "(var loaded (stale ~ Store:load_checkpoint)) " &
+               "[conflict loaded/records/state/winner]",
+               "[conflict 1]", dir)
+
+  test "a retained-out stale generation cannot roll CURRENT backward":
+    check_eval("(import $db/sqlite [open]) " &
+               "(import $store/sqlite [open : store_open Store StoreError]) " &
+               "(var db (open \":memory:\")) " &
+               "(var s (store_open db)) " &
+               "(var n 1) " &
+               "(while (<= n 5) " &
+               "  (s ~ Store:checkpoint n {^state {^winner n}}) " &
+               "  (set n (+ n 1))) " &
+               "(var conflict " &
+               "  (try (s ~ Store:checkpoint 1 {^state {^winner 99}}) " &
+               "   catch (StoreError ^kind kind) kind)) " &
+               "(var loaded (s ~ Store:load_checkpoint)) " &
+               "[conflict loaded/generation loaded/records/state/winner]",
+               "[conflict 5 5]")
+
+    let staleDir = getTempDir() / "gene-store-fs-stale-generation-spec"
+    if dirExists(staleDir):
+      removeDir(staleDir)
+    createDir(staleDir)
+    check_eval_at("(import $store/fs [open : store_open Store StoreError]) " &
+               "(var s (store_open ^root " & geneString(staleDir) & ")) " &
+               "(var n 1) " &
+               "(while (<= n 5) " &
+               "  (s ~ Store:checkpoint n {^state {^winner n}}) " &
+               "  (set n (+ n 1))) " &
+               "(var conflict " &
+               "  (try (s ~ Store:checkpoint 1 {^state {^winner 99}}) " &
+               "   catch (StoreError ^kind kind) kind)) " &
+               "(var loaded (s ~ Store:load_checkpoint)) " &
+               "[conflict loaded/generation loaded/records/state/winner]",
+               "[conflict 5 5]", staleDir)
 
   test "sqlite store files are owner-only":
     when defined(posix):
@@ -8011,6 +8105,66 @@ suite "spec — store persistence protocol":
     when defined(posix):
       check getFilePermissions(dir) ==
         {fpUserRead, fpUserWrite, fpUserExec}
+
+  test "filesystem checkpoint load never promotes above CURRENT":
+    let dir = getTempDir() / "gene-store-fs-current-spec"
+    if dirExists(dir):
+      removeDir(dir)
+    createDir(dir)
+    check_eval_at("(import $store/fs [open : store_open Store]) " &
+               "(var s (store_open ^root " & geneString(dir) & ")) " &
+               "(s ~ Store:checkpoint 1 {^state {^value 1}}) true",
+               "true", dir)
+    let generations = dir / "generations"
+    let first = generations / "00000000000000000001"
+    let unpublished = generations / "00000000000000000002"
+    copyDir(first, unpublished)
+    let unpublishedManifest = unpublished / "MANIFEST.gene"
+    writeFile(unpublishedManifest,
+      readFile(unpublishedManifest).replace("^generation 1", "^generation 2"))
+    check_eval_at("(import $store/fs [open : store_open Store]) " &
+               "(var s (store_open ^root " & geneString(dir) & ")) " &
+               "(var loaded (s ~ Store:load_checkpoint)) " &
+               "[loaded/generation loaded/records/state/value]",
+               "[1 1]", dir)
+    # The publication lock may reclaim the complete-but-unpublished directory
+    # and reuse generation 2; it must not strand the store after a crash.
+    check_eval_at("(import $store/fs [open : store_open Store]) " &
+               "(var s (store_open ^root " & geneString(dir) & ")) " &
+               "(s ~ Store:checkpoint 2 {^state {^value 2}}) " &
+               "(var loaded (s ~ Store:load_checkpoint)) " &
+               "[loaded/generation loaded/records/state/value]",
+               "[2 2]", dir)
+
+  test "malformed checkpoint CURRENT is corruption, never an empty store":
+    check_eval("(import $db/sqlite [open]) " &
+               "(import $store/sqlite [open : store_open Store StoreError]) " &
+               "(var db (open \":memory:\")) " &
+               "(var s (store_open db)) " &
+               "(s ~ Store:checkpoint 1 {^state 1}) " &
+               "(s ~ Store:put \"checkpoint/CURRENT\" \"broken\") " &
+               "[(try (s ~ Store:load_checkpoint) " &
+               "  catch (StoreError ^kind kind) kind) " &
+               " (try (s ~ Store:checkpoint 2 {^state 2}) " &
+               "  catch (StoreError ^kind kind) kind)]",
+               "[corrupt corrupt]")
+
+    let dir = getTempDir() / "gene-store-fs-corrupt-current-spec"
+    if dirExists(dir):
+      removeDir(dir)
+    createDir(dir)
+    check_eval_at("(import $store/fs [open : store_open Store]) " &
+               "(var s (store_open ^root " & geneString(dir) & ")) " &
+               "(s ~ Store:checkpoint 1 {^state 1}) true",
+               "true", dir)
+    writeFile(dir / "CURRENT", "broken\n")
+    check_eval_at("(import $store/fs [open : store_open Store StoreError]) " &
+               "(var s (store_open ^root " & geneString(dir) & ")) " &
+               "[(try (s ~ Store:load_checkpoint) " &
+               "  catch (StoreError ^kind kind) kind) " &
+               " (try (s ~ Store:checkpoint 2 {^state 2}) " &
+               "  catch (StoreError ^kind kind) kind)]",
+               "[corrupt corrupt]", dir)
 
 suite "spec — os and json from ai-agent plan":
   test "os/get_env reads, defaults, and errors under ambient os/Env":

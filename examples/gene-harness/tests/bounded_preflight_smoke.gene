@@ -1,0 +1,86 @@
+(mod bounded_preflight_smoke)
+
+(import [new_harness status_of] from "../src/kernel")
+(import [open_workspace register_module composition_revision doctor close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var root args/0)
+  (var init_loop
+    (quote
+      (mod plugin
+        (import [Plugin] from "../../../src/plugin_api")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (while true nil)))))
+  (var activation_loop
+    (quote
+      (mod plugin
+        (import [Plugin PluginContext PluginHost] from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "activation_loop" ^provides [] ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host] (while true nil))))))))
+  (var init_panic
+    (quote
+      (mod plugin
+        (import [Plugin] from "../../../src/plugin_api")
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          ($panic "broken descriptor")))))
+  (var top_level_const
+    (quote
+      (mod plugin
+        (import [Plugin] from "../../../src/plugin_api")
+        (const surprise (while true nil))
+        (fn init [ctx] : Plugin
+          ^capabilities []
+          (Plugin ^id "top_level_const" ^provides [] ^requires []
+            ^contextual true ^activate (fn [] (fn [host] nil)))))))
+
+  (var workspace (open_workspace root))
+  (var h (new_harness))
+  (var refused false)
+  (try
+    (register_module workspace h "init_loop" init_loop ^selectors [])
+  catch {^message message}
+    (set refused ($str/contains? message "eval max steps exceeded")))
+  (assert refused "descriptor init must be terminated by its step budget")
+  (assert (== (composition_revision workspace) 0)
+    "failed preflight must not commit desired state")
+
+  (set refused false)
+  (try
+    (register_module workspace h "init_panic" init_panic ^selectors [])
+  catch {^message message}
+    (set refused ($str/contains? message "plugin panic")))
+  (assert refused "descriptor panic must be contained by the loader boundary")
+  (assert (== (composition_revision workspace) 0)
+    "panicking preflight must not commit desired state")
+
+  (set refused false)
+  (try
+    (register_module workspace h "top_level_const" top_level_const
+      ^selectors [])
+  catch {^message message}
+    (set refused ($str/contains? message "top level may not contain const")))
+  (assert refused
+    "declaration-only top level must reject executable constant initializers")
+
+  (var registered
+    (register_module workspace h "activation_loop" activation_loop
+      ^selectors []))
+  (assert (== registered/revision 1)
+    "descriptor-only preflight may commit a valid activation descriptor")
+  (assert (== (status_of h "activation_loop") "error")
+    "effectful activation must run under the same bounded evaluator")
+  (var findings (doctor workspace))
+  (assert (== findings/~size 1)
+    "activation failure must be visible through the irreducible doctor surface")
+  (close_workspace workspace)
+  ($println "bounded_preflight_smoke: ok"))

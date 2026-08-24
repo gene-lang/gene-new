@@ -1,0 +1,118 @@
+(mod turn_transaction_smoke)
+
+(import [Plugin PluginContext PluginHost HarnessError new_harness registry
+         contribute row resolve install uninstall status_of transaction_diff
+         run_turn_transaction]
+  from "../src/kernel")
+(import_impl PluginHost for PluginContext from "../src/kernel")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(var removed ($cell ($thaw #[])))
+(fn removed_row [context, candidate]
+  ((removed ~ get) ~ push $"${candidate/name}:${candidate/value}"))
+
+(var h (new_harness))
+(var observed_diff ($cell nil))
+(var deactivated ($cell ($thaw #[])))
+(var reserved_refused false)
+(try
+  (install h
+    (Plugin ^id "core" ^provides [] ^requires [] ^contextual true
+      ^activate (fn [] (fn [host] nil))))
+catch e
+  (set reserved_refused true))
+(assert reserved_refused "plugins must not forge the core ledger owner id")
+(var baseline_plugin
+  (Plugin ^id "baseline" ^provides ["baseline"] ^requires []
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "baseline" "kept")))
+    ^deactivate (fn [] (fn [host]
+      (var names (host ~ PluginHost:registry_names))
+      (if_yes (names ~ contains? "seams")
+        ((deactivated ~ get) ~ push "baseline"))))))
+(var scratch_plugin
+  (Plugin ^id "scratch" ^provides ["scratch"] ^requires []
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "scratch" "temporary")))))
+(install h baseline_plugin)
+
+(var lifecycle_abort
+  (run_turn_transaction h "lifecycle-abort"
+    (fn []
+      (uninstall h "baseline")
+      (install h scratch_plugin)
+      (fail (HarnessError ^message "roll lifecycle back")))))
+(assert (== lifecycle_abort/status "aborted")
+  "failed lifecycle mutations must abort with the turn")
+(assert (== (status_of h "baseline") "ready")
+  "aborted uninstall must preserve the committed plugin table")
+(assert (== (resolve h "baseline") "kept")
+  "aborted uninstall must preserve committed registry rows")
+(assert (== (status_of h "scratch") "absent")
+  "aborted install must not leave a live plugin behind")
+(assert (== (row h "seams" "scratch") void)
+  "aborted install must reverse its acquired rows")
+(assert (== (deactivated ~ get) [])
+  "aborted uninstall must not run committed-plugin deactivation")
+
+(var lifecycle_commit
+  (run_turn_transaction h "lifecycle-commit"
+    (fn []
+      (uninstall h "baseline")
+      (install h scratch_plugin)
+      "committed")))
+(assert (== lifecycle_commit/status "committed")
+  "successful lifecycle mutations must commit with the turn")
+(assert (== (status_of h "baseline") "absent")
+  "committed uninstall must update the plugin table")
+(assert (== (status_of h "scratch") "ready")
+  "committed install must publish its plugin and rows")
+(assert (== (deactivated ~ get) ["baseline"])
+  "committed uninstall must defer deactivation until commit")
+(registry h "resources" ^unique true ^on_remove removed_row)
+(contribute h "base" "resources" {^name "stable" ^value 1})
+
+(var aborted
+  (run_turn_transaction h "turn-abort"
+    (fn []
+      (contribute h "candidate" "resources" {^name "temporary" ^value 2})
+      (contribute h "candidate" "resources" {^name "stable" ^value 3}
+        ^replace true)
+      (observed_diff ~ set (transaction_diff h))
+      (fail (HarnessError ^message "reject this turn")))))
+
+(assert (== aborted/status "aborted")
+  "a failing program must abort its staged registry changes")
+(var stable_after_abort (row h "resources" "stable"))
+(assert (== stable_after_abort/value 1)
+  "an aborted replacement must preserve the committed row")
+(assert (== (row h "resources" "temporary") void)
+  "an aborted contribution must remain invisible")
+(assert (== (removed ~ get) ["stable:3" "temporary:2"])
+  "abort must clean up newly acquired rows but not committed rows")
+(var staged_diff (observed_diff ~ get))
+(assert (== staged_diff/rows/added/~size 2)
+  "transaction diff must expose staged registry additions before commit")
+(assert (== staged_diff/rows/removed/~size 1)
+  "transaction diff must expose the superseded baseline row")
+
+(var committed
+  (run_turn_transaction h "turn-commit"
+    (fn []
+      (contribute h "candidate" "resources" {^name "stable" ^value 4}
+        ^replace true)
+      "done")))
+
+(assert (== committed/status "committed")
+  "a successful program must commit staged rows")
+(assert (== committed/result "done")
+  "the transaction must preserve the program result")
+(var stable_after_commit (row h "resources" "stable"))
+(assert (== stable_after_commit/value 4)
+  "the committed replacement must become visible")
+(assert (== (removed ~ get) ["stable:3" "temporary:2" "stable:1"])
+  "the superseded committed row must be cleaned only after commit")
+
+($println "turn_transaction_smoke: ok")

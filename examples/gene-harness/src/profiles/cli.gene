@@ -10,11 +10,12 @@
 
 (mod cli)
 
-(import [Plugin provide] from "../kernel")
+(import [Plugin PluginContext PluginHost] from "../kernel")
+(import_impl PluginHost for PluginContext from "../kernel")
 (import [LocalFs TextRender fs_provider render_provider] from "../seams")
 (import [Profile] from "../profile")
 (import [reporter_plugin] from "./common")
-(import [agent_plugin] from "../agent")
+(import [agent_plugin command_plugin] from "../agent")
 (import [driver_plugin] from "../repl")
 
 # Each factory is nullary and references only module-level names, so the stored
@@ -25,18 +26,21 @@
   # Reads the real filesystem, and says so in the only place that counts: the
   # provider's `^capabilities` row.
   (Plugin ^id "fs" ^provides ["HarnessFs"]
-    ^activate (fn [] (fn [h, id]
-      (provide h id "HarnessFs" (fs_provider (LocalFs ^root "/tmp")))))))
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "HarnessFs"
+        (fs_provider (LocalFs ^root "/tmp")))))))
 
 (fn cli_render_plugin [] : Plugin
   (Plugin ^id "render" ^provides ["HarnessRender"]
-    ^activate (fn [] (fn [h, id]
-      (provide h id "HarnessRender" (render_provider (TextRender)))))))
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "HarnessRender"
+        (render_provider (TextRender)))))))
 
 (fn cli_profile [] : Profile
-  # The driver is what makes this deployment interactive, and it is a plugin
-  # like any other — `main.gene` runs whatever is bound to `Driver` and has no
-  # idea which profile supplied it.
+  # The driver is what makes this deployment interactive. It contributes a
+  # view row; main runs the selected view and knows no profile-specific driver.
   (Profile ^name "cli"
            ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)
-                     (agent_plugin) (driver_plugin)]))
+                     (command_plugin) (agent_plugin) (driver_plugin)]))

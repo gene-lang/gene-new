@@ -1,0 +1,49 @@
+(mod event_catalog_smoke)
+
+(import [HarnessStateError open_event_store append_event flush_event_store
+         events_for validate_event_catalog close_event_store]
+  from "../src/state")
+(import [core_event_types] from "../src/generated_event_catalog")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var events (open_event_store args/0))
+  (append_event events "session" "s1"
+    {^type "plugin/custom" ^plugin "missing" ^value 1})
+  (append_event events "session" "s1"
+    {^type "plugin/optional" ^plugin "optional" ^ignorable true})
+  (flush_event_store events)
+  (var history (events_for events "session" "s1"))
+  (assert (== history/0/origin "plugin")
+    "durable envelopes must carry origin without consulting a catalog")
+  (assert (== history/0/owner "missing")
+    "core must stamp the authenticated plugin owner")
+  (assert (== history/0/projection "missing")
+    "recovery routing must survive a missing plugin descriptor")
+  (var unknown (validate_event_catalog events {}))
+  (assert (== unknown ["missing"])
+    "unknown required plugin events must quarantine only that projection")
+
+  (append_event events "session" "s1" {^type "core/unknown"})
+  (var refused false)
+  (try
+    (validate_event_catalog events {})
+  catch (HarnessStateError)
+    (set refused true))
+  (assert refused "an unknown required core event must refuse reconstruction")
+  (var known ($thaw #{}))
+  (for event in core_event_types (known ~ put event/name event))
+  (var malformed (open_event_store $"${args/0}/malformed"))
+  (append_event malformed "session" "s1" {^type "message"})
+  (set refused false)
+  (try
+    (validate_event_catalog malformed known)
+  catch (HarnessStateError)
+    (set refused true))
+  (assert refused
+    "known persisted events must be rejected when their payload schema fails")
+  (close_event_store malformed)
+  (close_event_store events)
+  ($println "event_catalog_smoke: ok"))

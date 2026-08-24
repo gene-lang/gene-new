@@ -4926,7 +4926,8 @@ libcurl binding as `net/http_client`. Design decisions:
 ### 15.10 Sandboxed module loading
 
 ```gene
-($runtime/load_sandboxed dir entry grants shared)   # -> the module's namespace
+($runtime/load_sandboxed dir entry grants shared [isolation_key])
+                                                    # -> module namespace
 ```
 
 Load `dir/entry` at runtime with **only** the standard-library namespaces named
@@ -4937,6 +4938,14 @@ the process (`fs`, `net`, `os`, `ffi`, `db`, `store`, `terminal`, `curses`,
 `json` and the rest are computation over values the module already has and are
 never withheld. An unknown grant name is an error, not a silently tighter
 sandbox.
+
+The optional `isolation_key` separates module-cache identity for two trusted
+host entries that load the same bytes under different immutable policies. After
+the declaration-only load, a trusted host may call
+`$runtime/configure_module` under an attenuated capability context with an eval
+policy. Configuration is immutable. Every later external function or protocol
+method entry receives that module ceiling and a fresh transitive budget, so an
+escaped value cannot outlive its sandbox policy.
 
 What makes it a boundary rather than a convention is that `$fs` is sugar for
 `gene/fs` and `gene` is resolved by a **scope-chain lookup**, so a module root

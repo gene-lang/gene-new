@@ -418,7 +418,7 @@ proc biEventBusSubscribe(args: openArray[Value], call: ptr NativeCall): Value
       "subscribe expects an event/Event descendant type, a union of them, " &
       "or an event/Matcher from event/exact",
       {"actual_value": selector})
-  if not handler.isBuiltinCallable:
+  if not valueImplementsCallable(handler, scope):
     raiseEventError(scope, "EventTypeError",
       "subscribe expects a callable handler", {"actual_value": handler})
   rejectCallerEnvEscape("Bus/subscribe handler", handler)
@@ -522,7 +522,7 @@ proc dispatchEvent(scope: Scope, bus: Value, data: EventBusData,
     for handler in snapshot:
       var callArgs = [frozen]
       try:
-        discard applyCall(handler, callArgs, NamedArgs())
+        discard applyCall(handler, callArgs, NamedArgs(), scope)
         inc delivered
       except GeneError as e:
         # A subscriber error must not stop unrelated subscribers (§8).

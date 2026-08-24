@@ -1,0 +1,28 @@
+# Deterministic no-terminal view used by tests and embeddings.
+
+(mod recording_view)
+
+(import [Plugin PluginContext PluginHost HarnessLog] from "./kernel")
+(import_impl PluginHost for PluginContext from "./kernel")
+(import [HarnessView view_provider] from "./view_api")
+
+(type RecordingView ^props {^lines Any})
+
+(type RecordingSink ^props {^lines Any})
+
+(impl Callable for RecordingSink
+  (message apply [self call]
+    ((self/lines ~ get) ~ push (call ~ /0))))
+
+(impl HarnessView for RecordingView
+  (message run [h] : Any
+    0))
+
+(fn recording_view_plugin [lines] : Plugin
+  (Plugin ^id "recording_view" ^provides [["views" "active"]]
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:subscribe HarnessLog (RecordingSink ^lines lines))
+      (host ~ PluginHost:contribute "views"
+        {^name "active" ^implementation "recording" ^value
+          (view_provider (RecordingView ^lines lines))})))))

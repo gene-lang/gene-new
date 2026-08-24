@@ -15,9 +15,10 @@
 (import [reporter_plugin] from "./common")
 (import [cli_fs_plugin cli_render_plugin] from "./cli")
 (import [llm_agent_plugin] from "../llm")
+(import [command_plugin] from "../agent")
 (import [driver_plugin] from "../repl")
 
 (fn chat_profile [] : Profile
   (Profile ^name "chat"
            ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)
-                     (llm_agent_plugin) (driver_plugin)]))
+                     (command_plugin) (llm_agent_plugin) (driver_plugin)]))

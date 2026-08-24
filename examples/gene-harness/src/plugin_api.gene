@@ -1,0 +1,38 @@
+# Stable, shared contract between the harness kernel and generated plugins.
+
+(mod plugin_api)
+
+(type Plugin
+  ^props {^id Str ^provides Any ^requires Any?
+          ^activate Any ^deactivate Any? ^contextual Any? ^events Any?})
+
+# Inert input to descriptor construction. It deliberately implements no host
+# protocol: preflight and boot see only immutable identity, never live registry
+# state or a contribution surface.
+(type DescriptorContext
+  ^props {^module_id Str ^core_interface Str})
+
+# The token is a Cell identity. Generated code can retain or reveal it, but it
+# cannot construct another Cell with the same identity and therefore cannot
+# address another plugin's host context.
+(type PluginContext ^props {^token Any})
+
+(type ExecutionLimits
+  ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
+
+(fn default_execution_limits [] : ExecutionLimits
+  (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64 ^timeout_ms 2000))
+
+(protocol PluginHost
+  (message registry_names [] : Any)
+  (message row_keys [registry : Str] : Any)
+  (message create_registry [spec] : Any)
+  (message resolve [seam : Str] : Any)
+  (message provide [seam : Str, value] : Str)
+  (message replace [seam : Str, value] : Str)
+  (message contribute [registry : Str, payload] : Str)
+  (message replace_contribution [registry : Str, payload] : Str)
+  (message subscribe [selector, handler] : Any)
+  (message emit_event [name : Str, payload] : Any)
+  (message state [] : Any)
+  (message update_state [value] : Any))

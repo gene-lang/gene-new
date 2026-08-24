@@ -1,0 +1,43 @@
+(mod blob_repair_smoke)
+
+(import $fs [remove exists?])
+(import [new_harness resolve] from "../src/kernel")
+(import [open_workspace register_module restore_workspace module_path
+         close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var source
+    (quote
+      (mod plugin
+        (import [Plugin DescriptorContext PluginContext PluginHost]
+          from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx : DescriptorContext] : Plugin
+          ^capabilities []
+          (Plugin ^id "repair" ^provides ["Repair"] ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (host ~ PluginHost:provide "Repair" "restored"))))))))
+  (var workspace (open_workspace args/0))
+  (var first (new_harness ^workspace workspace))
+  (var registered
+    (register_module workspace first "repair" source ^selectors []))
+  (var materialized (module_path workspace registered/digest))
+  (remove materialized)
+  (assert (! (exists? materialized))
+    "test must remove only the loader materialization")
+  (close_workspace workspace)
+
+  (set workspace (open_workspace args/0))
+  (var restored (new_harness ^workspace workspace))
+  (restore_workspace workspace restored ^session "s1")
+  (assert (exists? materialized)
+    "restore must rematerialize an authoritative Store blob atomically")
+  (assert (== (resolve restored "Repair") "restored")
+    "rematerialized immutable code must activate normally")
+  (close_workspace workspace)
+  ($println "blob_repair_smoke: ok"))

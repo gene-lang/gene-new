@@ -1,0 +1,28 @@
+(mod prompt_skill_smoke)
+
+(import [new_harness install render_prompt doc status_of] from "../src/kernel")
+(import [llm_agent_plugin harness_bindings] from "../src/llm")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(var h (new_harness))
+(var bindings (harness_bindings h))
+(assert (== bindings/h void)
+  "model programs must not receive the mutable Harness record")
+(assert (== bindings/log_append void)
+  "model programs must not author arbitrary core event type names")
+(assert (== (bindings/plugin_states) [])
+  "model control operations must remain fully available as bound functions")
+(install h (llm_agent_plugin))
+(assert (== (status_of h "agent") "ready")
+  "LLM plugin must load the checked-in Gene skill during activation")
+(var pushed (render_prompt h))
+(assert ($str/contains? pushed "# Writing Gene")
+  "the pushed prompt must come from tools/gene-lang-skill/SKILL.md")
+(assert (! ($str/contains? pushed "# Pitfalls"))
+  "large reference chapters must remain pull-only")
+(var pitfalls (doc h "gene/pitfalls"))
+(assert ($str/contains? pitfalls "# Pitfalls")
+  "doc introspection must return the same registry row used by prompting")
+($println "prompt_skill_smoke: ok")

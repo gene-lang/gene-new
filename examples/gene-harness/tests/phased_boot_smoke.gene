@@ -1,0 +1,38 @@
+(mod phased_boot_smoke)
+
+(import [new_harness status_of resolve] from "../src/kernel")
+(import [open_workspace register_module prepare_workspace
+         activate_workspace_plan close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var workspace (open_workspace args/0))
+  (var source
+    (quote
+      (mod plugin
+        (import [Plugin DescriptorContext PluginContext PluginHost]
+          from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+        (fn init [ctx : DescriptorContext] : Plugin
+          ^capabilities []
+          (Plugin ^id "phase_probe" ^provides ["PhaseProbe"] ^requires []
+            ^contextual true
+            ^activate (fn [] (fn [host]
+              (host ~ PluginHost:provide "PhaseProbe" "ready"))))))))
+  (var initial (new_harness ^workspace workspace))
+  (register_module workspace initial "phase_probe" source ^selectors [])
+
+  (var restored (new_harness ^workspace workspace))
+  (var plan (prepare_workspace workspace restored ^session "s1"))
+  (assert (== (status_of restored "phase_probe") "absent")
+    "descriptor and event validation must not activate generated code")
+  (activate_workspace_plan plan restored)
+  (assert (== (status_of restored "phase_probe") "ready")
+    "activation must happen only after the prepared boot phase")
+  (assert (== (resolve restored "PhaseProbe") "ready")
+    "post-validation reconciliation must publish generated rows")
+  (close_workspace workspace)
+  ($println "phased_boot_smoke: ok"))

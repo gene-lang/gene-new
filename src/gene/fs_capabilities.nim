@@ -814,18 +814,45 @@ proc pathExists*(provider: FilesystemProvider, context: CapabilityContext,
       let fd = grant.openDirectory
       discard posix.close(fd)
       return true
-    let parent = grant.openParent
+    let parts = grant.operationParts
+    var current = grant.openAnchor
+    if current < 0:
+      raise newException(FilesystemCapabilityError,
+        "filesystem capability root is unavailable")
     try:
       if not grant.isValid:
         raise newException(FilesystemCapabilityError,
           "filesystem capability was revoked")
-      let found = existsAt(parent.fd, parent.leaf.cstring)
+      # `openParent` deliberately treats a missing intermediate component and
+      # an existing symlink alike: both are invalid for an operation. An
+      # existence query has one extra legitimate outcome, though — a path whose
+      # parent has not been created yet simply does not exist. Check each
+      # component before opening it so ENOENT/ENOTDIR returns false while an
+      # existing component that cannot be opened with O_NOFOLLOW still fails
+      # closed as a symlink/inaccessible path.
+      for i in 0 ..< parts.high:
+        let present = existsAt(current, parts[i].cstring)
+        if present == 0:
+          return false
+        if present < 0:
+          raise newException(FilesystemCapabilityError,
+            "filesystem path component could not be inspected")
+        let next = openDirAt(current, parts[i].cstring)
+        if next < 0:
+          raise newException(FilesystemCapabilityError,
+            "filesystem path component is unavailable or is a symlink")
+        discard posix.close(current)
+        current = next
+      let found = existsAt(current, parts[^1].cstring)
       if found < 0:
         raise newException(FilesystemCapabilityError,
           "filesystem target could not be inspected")
+      if found == 1 and isSymlinkAt(current, parts[^1].cstring) == 1:
+        raise newException(FilesystemCapabilityError,
+          "filesystem target is a symlink")
       result = found == 1
     finally:
-      discard posix.close(parent.fd)
+      discard posix.close(current)
   else:
     result = fileExists(grant.scope) or dirExists(grant.scope) or
       symlinkExists(grant.scope)

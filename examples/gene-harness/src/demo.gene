@@ -11,12 +11,13 @@
 # no partial registration, one provider per seam, an uninstall that removes
 # exactly one plugin's contributions, and a dependency lifecycle that settles.
 
-(import [new_harness install uninstall retry resolve provide replace installed
+(import [new_harness install uninstall retry resolve installed
          plugin_states status_of bound_seams install_sandboxed module_dir
-         log_append log_events lifecycle_log assemble_request subscribe publish
+         log_append log_events lifecycle_log assemble_request publish
          HarnessEvent ToolInvoked PluginActivated PluginDeactivated
-         Plugin HarnessError]
+         Plugin PluginContext PluginHost HarnessError]
   from "./kernel")
+(import_impl PluginHost for PluginContext from "./kernel")
 (import [HarnessFs LocalFs MemFs head_tool fs_provider] from "./seams")
 (import [boot boot_reversed plugin_names] from "./profile")
 (import [report_of] from "./profiles/common")
@@ -25,34 +26,36 @@
 
 (fn fs_plugin [] : Plugin
   (Plugin ^id "fs_local" ^provides ["Fs"]
-    ^activate (fn [] (fn [h, id] (provide h id "Fs" "LOCAL-FS")))))
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "Fs" "LOCAL-FS")))))
 
 (fn combo_plugin [] : Plugin
   # Two seams from one plugin, so uninstall has more than one effect to reverse.
   (Plugin ^id "combo" ^provides ["Llm" "Tools"]
-    ^activate (fn [] (fn [h, id]
-      (provide h id "Llm" "LLM-A")
-      (provide h id "Tools" "TOOLS-A")))))
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "Llm" "LLM-A")
+      (host ~ PluginHost:provide "Tools" "TOOLS-A")))))
 
 (fn broken_plugin [] : Plugin
   # Registers one seam, then fails. The seam must not survive.
   (Plugin ^id "broken" ^provides ["Log"]
-    ^activate (fn [] (fn [h, id]
-      (provide h id "Log" "LOG-X")
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "Log" "LOG-X")
       (fail (HarnessError ^message "boom during activate"))))))
 
 # Two providers of one seam. Each is a plugin; neither is the consumer's
 # business.
 (fn mem_fs_plugin [] : Plugin
   (Plugin ^id "fs_mem" ^provides ["HarnessFs"]
-    ^activate (fn [] (fn [h, id]
-      (provide h id "HarnessFs"
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "HarnessFs"
         (fs_provider (MemFs ^files {^notes "mem:hello"})))))))
 
 (fn local_fs_plugin [] : Plugin
   (Plugin ^id "fs_local_real" ^provides ["HarnessFs"]
-    ^activate (fn [] (fn [h, id]
-      (replace h id "HarnessFs" (fs_provider (LocalFs ^root "/tmp")))))))
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:replace "HarnessFs"
+        (fs_provider (LocalFs ^root "/tmp")))))))
 
 # An observer plugin. It contributes no seam at all — it subscribes, which is
 # an effect the ledger reverses like any other.
@@ -63,7 +66,8 @@
 
 (fn audit_plugin [] : Plugin
   (Plugin ^id "audit" ^provides []
-    ^activate (fn [] (fn [h, id] (subscribe h id ToolInvoked note_tool)))))
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:subscribe ToolInvoked note_tool)))))
 
 # --- a dependency chain ----------------------------------------------------
 #
@@ -73,20 +77,20 @@
 
 (fn indexer_plugin [] : Plugin
   (Plugin ^id "indexer" ^provides ["Index"] ^requires ["HarnessFs"]
-    ^activate (fn [] (fn [h, id]
+    ^contextual true ^activate (fn [] (fn [host]
       # No defensive check, and none needed: the kernel does not run `activate`
       # until every seam in `requires` is bound. That guarantee is what the
       # declaration buys.
-      (var fs (resolve h "HarnessFs"))
-      (provide h id "Index" (head_tool fs "notes"))))))
+      (var fs (host ~ PluginHost:resolve "HarnessFs"))
+      (host ~ PluginHost:provide "Index" (head_tool fs "notes"))))))
 
 (fn search_plugin [] : Plugin
   # One level further out: it needs the indexer's seam, and knows nothing about
   # the filesystem underneath it.
   (Plugin ^id "search" ^provides ["Search"] ^requires ["Index"]
-    ^activate (fn [] (fn [h, id]
-      (var idx (resolve h "Index"))
-      (provide h id "Search" $"search-over:${idx}")))))
+    ^contextual true ^activate (fn [] (fn [host]
+      (var idx (host ~ PluginHost:resolve "Index"))
+      (host ~ PluginHost:provide "Search" $"search-over:${idx}")))))
 
 (var lifecycle_seen ($cell []))
 
@@ -100,9 +104,9 @@
   # A plugin watching the lifecycle itself, through the ordinary event bus. The
   # kernel knows nothing about it.
   (Plugin ^id "watcher" ^provides []
-    ^activate (fn [] (fn [h, id]
-      (subscribe h id PluginActivated note_up)
-      (subscribe h id PluginDeactivated note_down)))))
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:subscribe PluginActivated note_up)
+      (host ~ PluginHost:subscribe PluginDeactivated note_down)))))
 
 (fn main [args]
   (var h (new_harness))
@@ -312,15 +316,18 @@
 
   ($println "-- a dependency cycle is pending, not a hang --")
   (install h2 (Plugin ^id "cyc_a" ^provides ["CA"] ^requires ["CB"]
-    ^activate (fn [] (fn [h3, id] (provide h3 id "CA" "a")))))
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "CA" "a")))))
   (install h2 (Plugin ^id "cyc_b" ^provides ["CB"] ^requires ["CA"]
-    ^activate (fn [] (fn [h3, id] (provide h3 id "CB" "b")))))
+    ^contextual true ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "CB" "b")))))
   ($println "    states:  " (plugin_states h2))
   ($println "  ^ neither can go first, so neither does, and both say so. A")
   ($println "    self-dependency is refused outright instead:")
   ($println "    "
     (try (install h2 (Plugin ^id "ouroboros" ^provides ["O"] ^requires ["O"]
-           ^activate (fn [] (fn [h3, id] (provide h3 id "O" "o")))))
+           ^contextual true ^activate (fn [] (fn [host]
+             (host ~ PluginHost:provide "O" "o")))))
       catch e $"refused: ${e/message}"))
 
   ($println "-- the lifecycle is observable, and recorded --")
@@ -370,7 +377,7 @@
   ($println "  cli plugins:  " (plugin_names cp))
   ($println "    states:     " (plugin_states hc))
   ($println "    report:     " (report_of hc))
-  ($println "  ^ the same three plugin ids and the same `reporter` *value* as")
+  ($println "  ^ the same provider/reporter/agent values as")
   ($println "    the web set — only the two providers differ. One of them")
   ($println "    declares `(fs/ReadDir \"/tmp\")`, so this profile needs a")
   ($println "    grant the web one does not. Run this file both ways: without")
