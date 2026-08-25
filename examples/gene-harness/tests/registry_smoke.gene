@@ -7,6 +7,7 @@
   (if_not condition ($panic message)))
 
 (var removed ($cell []))
+(var cleanup_receivers ($cell []))
 
 (fn validate_named_row [candidate]
   (if (== candidate/name void)
@@ -14,7 +15,8 @@
     candidate))
 
 (fn record_removal [context, candidate]
-  ((removed ~ get) ~ push $"${context}:${candidate/name}"))
+  ((cleanup_receivers ~ get) ~ push context)
+  ((removed ~ get) ~ push candidate/name))
 
 (fn row_names [h]
   (var out ($thaw #[]))
@@ -49,8 +51,11 @@
 (remove_owner h "plugin_a")
 (assert (== (row_names h) ["late"])
   "removing an owner must remove every row it contributed")
-(assert (== (removed ~ get) ["plugin_a:early" "plugin_a:first"])
+(assert (== (removed ~ get) ["early" "first"])
   "cleanup must run in reverse acquisition order")
+(for context in (cleanup_receivers ~ get)
+  (assert (same? context h)
+    "trusted cleanup hooks must receive their Harness context"))
 
 (registry h "owned" ^owner "registry_plugin" ^on_remove record_removal)
 (contribute h "row_plugin" "owned" {^name "child" ^text "x"})
@@ -58,7 +63,10 @@
 (assert (! (registry_exists? h "owned"))
   "unloading a registry owner must remove the registry itself")
 (assert (== (removed ~ get)
-            ["plugin_a:early" "plugin_a:first" "row_plugin:child"])
+            ["early" "first" "child"])
   "registry removal must clean rows owned by other plugins")
+(for context in (cleanup_receivers ~ get)
+  (assert (same? context h)
+    "registry cleanup must use the hook owner's context"))
 
 ($println "registry_smoke: ok")
