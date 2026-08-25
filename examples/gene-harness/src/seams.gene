@@ -125,6 +125,33 @@
 
 (fn prompt_provider [p : HarnessPrompt] : HarnessPrompt p)
 
+# --- A fourth seam: where a plugin's source comes from ----------------------
+#
+# `build <name> <text>` used to call one hard-coded function that filled in a
+# template, which made the interesting half of self-extension a constant: the
+# harness could install code at runtime but could only ever install *that* code.
+# Authoring is a seam for the same reason handling a prompt is one — it is the
+# part that differs between a demo and a product, and the consumer (`build`)
+# must not be able to tell which provider answered.
+#
+# A provider returns an inert quoted module node, never a string and never a
+# live function. Whatever produced it — a template, a model, a file on disk —
+# the result is data until `register_module` validates, canonicalizes and
+# content-addresses it, and the sandbox loader executes it under the module
+# ceiling. That is what makes an untrusted author safe to have: nothing it
+# returns is code yet.
+#
+# **No `^capabilities` row here**, and for `HarnessPrompt`'s reason: the
+# template provider needs no authority at all, while a model-backed one needs
+# to reach the network. A row on the protocol would be a ceiling on every
+# provider forever, and because a declared row is transitive it would forbid
+# exactly the provider that makes the seam worth having.
+
+(protocol HarnessCodegen
+  (message generate [name : Str, request : Str] : Any))
+
+(fn codegen_provider [c : HarnessCodegen] : HarnessCodegen c)
+
 # --- Consumers -------------------------------------------------------------
 #
 # Written against the seams. They name `HarnessFs` and `HarnessRender`, never

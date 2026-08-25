@@ -1483,13 +1483,20 @@
 (fn install_with_policy
   [h : Harness, p : Plugin, selectors,
    ^scope scope : Str = "session",
-   ^limits limits = nil] : Str
+   ^limits limits = nil,
+   ^inherit inherit : Bool = false] : Str
+  # `^inherit true` keeps the caller's capability context — the baseline
+  # arrangement — while still pinning an explicit budget. The two are separate
+  # questions and were only ever answered together because the first caller
+  # needed both: a generated plugin gets attenuated authority *and* a ceiling.
+  # A checked-in plugin whose callbacks wait on a network author needs the
+  # second alone.
   (var policies ((active_plugin_policies_cell h) ~ get))
   (var bounded
     (if ($absent? limits) (default_execution_limits) limits))
   (policies ~ put p/id
     {^selectors (copy_list selectors) ^scope scope
-     ^limits bounded ^inherit false ^context nil})
+     ^limits bounded ^inherit inherit ^context nil})
   ((active_plugin_policies_cell h) ~ set policies)
   (try
     (install h p)

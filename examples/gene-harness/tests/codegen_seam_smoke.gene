@@ -1,0 +1,87 @@
+# `build` does not write plugins. It resolves `HarnessCodegen` and registers
+# whatever the bound provider returns, so the same command means three
+# different things here: a stub author, the checked-in template, and — with no
+# provider at all — a refusal. The model provider in src/llm.gene is the fourth
+# and needs a network, which is why the seam is what this tests.
+
+(mod codegen_seam_smoke)
+
+(import [Plugin PluginContext PluginHost new_harness install
+         invoke_registry_row status_of]
+  from "../src/kernel")
+(import_impl PluginHost for PluginContext from "../src/kernel")
+(import [HarnessCodegen codegen_provider] from "../src/seams")
+(import [command_plugin template_codegen_plugin build_tool] from "../src/agent")
+(import [open_workspace close_workspace] from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(type StubCodegen)
+
+(impl HarnessCodegen for StubCodegen
+  (message generate [name : Str, request : Str] : Any
+    # Nothing about the request reaches the module: a provider owes `build`
+    # a legal module, not a faithful one, and the consumer cannot tell.
+    `(mod plugin
+       (import [Plugin DescriptorContext PluginContext PluginHost]
+         from "../../../src/plugin_api")
+       (import_impl PluginHost for PluginContext from "../../../src/kernel")
+       (fn run [arg] : Str "written by the stub")
+       (fn init [ctx : DescriptorContext] : Plugin
+         ^capabilities []
+         (Plugin ^id %name ^provides [["tools" (unquote name)]] ^requires []
+           ^contextual true
+           ^activate (fn [] (fn [host]
+             (host ~ PluginHost:contribute "tools"
+               {^name %name ^doc "stub" ^run run}))))))))
+
+(fn stub_codegen_plugin [] : Plugin
+  (Plugin ^id "codegen" ^provides ["HarnessCodegen"]
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "HarnessCodegen"
+        (codegen_provider (StubCodegen)))))))
+
+(fn main [args]
+  (var workspace (open_workspace args/0))
+
+  # 1. A stub author. `build` registers what it returned, unexamined.
+  (var stubbed (new_harness ^workspace workspace))
+  (install stubbed (command_plugin))
+  (install stubbed (stub_codegen_plugin))
+  (var first (build_tool stubbed "alpha" "ignored by this provider"))
+  (assert ($str/contains? first "registered alpha at revision 1")
+    "build must commit whatever the bound codegen provider authored")
+  (assert (== (status_of stubbed "alpha") "ready")
+    "a provider-authored module must activate like any other entry")
+  (assert (== (invoke_registry_row stubbed "tools" "alpha" ["x"])
+              "written by the stub")
+    "the registered tool must be the provider's module, not a template")
+
+  # 2. The checked-in template, same command, same harness shape.
+  (var templated (new_harness ^workspace workspace))
+  (install templated (command_plugin))
+  (install templated (template_codegen_plugin))
+  (var second (build_tool templated "beta" "hello"))
+  (assert ($str/contains? second "registered beta at revision 2")
+    "a second author must commit the next composition generation")
+  (assert (== (invoke_registry_row templated "tools" "beta" ["world"])
+              "beta(world) -> hello")
+    "the template provider must still produce the documented tool")
+
+  # 3. No author bound. `build` refuses rather than falling back to a default,
+  #    because a silent fallback would make the seam unobservable.
+  (var bare (new_harness ^workspace workspace))
+  (install bare (command_plugin))
+  (var refused
+    (try
+      (build_tool bare "gamma" "hello")
+      ""
+    catch e
+      ($to_str e/message)))
+  (assert ($str/contains? refused "HarnessCodegen")
+    "build without a codegen provider must name the seam it could not resolve")
+
+  (close_workspace workspace)
+  ($println "codegen_seam_smoke: ok"))

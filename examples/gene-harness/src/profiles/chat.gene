@@ -1,24 +1,40 @@
-# The `chat` deployment: the cli shell with a real model behind the prompt.
+# The `chat` deployment: the cli shell with a real model behind the prompt, and
+# behind `build`.
 #
 #   OPENROUTER_KEY=$(cat ~/.secrets/openrouter) \
-#     gene run --allow_read_dir /tmp src/main.gene chat
+#     gene run --allow_read_dir "$PWD/../../tools/gene-lang-skill" \
+#     src/main.gene chat
 #
-# Identical to `cli` in four of its five plugins. The one that differs is the
-# `HarnessPrompt` provider — the offline interpreter becomes an OpenRouter
-# client — and nothing else in the deployment is told about it. That is the
-# seam argument (§3.2) applied to the part of an agent harness that actually
-# varies between a demo and a product.
+# Identical to `cli` in five of its seven plugins. The two that differ are both
+# providers: `HarnessPrompt` — the offline interpreter becomes an OpenRouter
+# client — and `HarnessCodegen`, where filling a template becomes asking that
+# same model to write the module. Nothing else in the deployment is told about
+# either, and `dispatch`, `build_tool` and `register_module` are the identical
+# code they were under `web`. That is the seam argument (§3.2) applied to the
+# two parts of an agent harness that actually vary between a demo and a
+# product: what answers a prompt, and what writes the code.
 
 (mod chat)
 
 (import [Profile] from "../profile")
+(import [ExecutionLimits] from "../plugin_api")
 (import [reporter_plugin] from "./common")
 (import [cli_fs_plugin cli_render_plugin] from "./cli")
-(import [llm_agent_plugin] from "../llm")
+(import [llm_agent_plugin model_codegen_plugin] from "../llm")
 (import [command_plugin] from "../agent")
 (import [driver_plugin] from "../repl")
 
 (fn chat_profile [] : Profile
+  # The one place this deployment differs from `cli` beyond its two providers.
+  # `build` here reaches OpenRouter through the `HarnessCodegen` seam, and a
+  # command that waits on a model cannot finish inside the 2 000 ms budget that
+  # suits a local callback — the request alone takes tens of seconds. Steps and
+  # memory stay exactly where they were: those are the guards against code that
+  # runs away, and neither of them is loosened by admitting that a network
+  # round trip takes time.
   (Profile ^name "chat"
+           ^limits (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64
+                                    ^timeout_ms 120000)
            ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)
-                     (command_plugin) (llm_agent_plugin) (driver_plugin)]))
+                     (command_plugin) (llm_agent_plugin) (driver_plugin)
+                     (model_codegen_plugin)]))

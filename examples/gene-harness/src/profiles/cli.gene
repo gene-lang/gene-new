@@ -15,7 +15,7 @@
 (import [LocalFs TextRender fs_provider render_provider] from "../seams")
 (import [Profile] from "../profile")
 (import [reporter_plugin] from "./common")
-(import [agent_plugin command_plugin] from "../agent")
+(import [agent_plugin command_plugin template_codegen_plugin] from "../agent")
 (import [driver_plugin] from "../repl")
 
 # Each factory is nullary and references only module-level names, so the stored
@@ -43,4 +43,5 @@
   # view row; main runs the selected view and knows no profile-specific driver.
   (Profile ^name "cli"
            ^plugins [(cli_fs_plugin) (cli_render_plugin) (reporter_plugin)
-                     (command_plugin) (agent_plugin) (driver_plugin)]))
+                     (command_plugin) (agent_plugin) (driver_plugin)
+                     (template_codegen_plugin)]))

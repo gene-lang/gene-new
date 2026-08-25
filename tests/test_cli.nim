@@ -277,7 +277,9 @@ suite "cli — gene run":
       ("harness_llm_session_resume", "llm_session_resume_smoke.gene",
        "llm_session_resume_smoke: ok"),
       ("harness_workspace_turn", "workspace_turn_smoke.gene",
-       "workspace_turn_smoke: ok")
+       "workspace_turn_smoke: ok"),
+      ("harness_codegen_seam", "codegen_seam_smoke.gene",
+       "codegen_seam_smoke: ok")
     ]:
       root = resetHarnessDir(name)
       ran = runGene(["run", "--allow_read_write_dir", root,

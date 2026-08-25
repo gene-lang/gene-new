@@ -16,7 +16,8 @@
          lifecycle_log log_append uninstall retry status_of
          installed transaction_diff flush_harness HarnessError] from "./kernel")
 (import_impl PluginHost for PluginContext from "./kernel")
-(import [HarnessPrompt HarnessFs HarnessRender head_tool prompt_provider]
+(import [HarnessPrompt HarnessFs HarnessRender HarnessCodegen head_tool
+         prompt_provider codegen_provider]
   from "./seams")
 (import [register_module] from "./workspace")
 
@@ -70,6 +71,27 @@
            (host ~ PluginHost:contribute "tools"
              {^name %name ^doc %text ^run run})))))))
 
+# --- the default author ----------------------------------------------------
+#
+# One provider of `HarnessCodegen`, and the only one that needs no authority:
+# it fills the template above. `web` and `cli` bind it, which is why `build`
+# works offline, in a test, and with no key — and why the tour is reproducible.
+# `chat` binds a model instead and `build` means something else entirely,
+# without this file or `build_tool` knowing that happened.
+
+(type TemplateCodegen)
+
+(impl HarnessCodegen for TemplateCodegen
+  (message generate [name : Str, request : Str] : Any
+    (plugin_source name request)))
+
+(fn template_codegen_plugin [] : Plugin
+  (Plugin ^id "codegen" ^provides ["HarnessCodegen"]
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "HarnessCodegen"
+        (codegen_provider (TemplateCodegen)))))))
+
 (fn build_tool [h : Harness, name : Str, text : Str] : Str
   (if_yes (== name "")
     (fail (HarnessError ^message "usage: build <name> <text...>")))
@@ -79,10 +101,51 @@
   (if (== h/workspace nil)
     (fail (HarnessError
       ^message "durable build requires a harness workspace")))
+  # The author is a seam, so `build` cannot tell a template from a model — and
+  # neither can what it registers. Whatever comes back is an inert quoted node;
+  # `register_module` is what decides whether it is a legal module at all
+  # (`canonical_module_source`: a `(mod plugin ...)` root, an inert top level,
+  # a defined `init`, imports inside the declared closure). A provider is
+  # therefore untrusted by construction, which is the only way an authored-by-
+  # model plugin can be safe to accept.
+  (var source
+    ((resolve h "HarnessCodegen") ~ HarnessCodegen:generate name text))
   (var registered
-    (register_module h/workspace h name (plugin_source name text)
+    (register_module h/workspace h name source
       ^scope "session" ^selectors []))
-  $"registered ${name} at revision ${registered/revision} (${registered/status})")
+  $"registered ${name} at revision ${registered/revision} ($(build_status h name text registered/status))")
+
+(fn build_status [h : Harness, name : Str, request : Str, status : Str] : Str
+  # Registration proves the module is *shaped* like a plugin and that its
+  # `init` runs. It proves nothing about the body of `run`, which nothing
+  # touches until someone invokes the tool — so an author that guesses a
+  # stdlib name ships a plugin that installs cleanly and then fails in the
+  # user's hands, several commands later, with an error that names neither the
+  # tool nor the build that produced it.
+  #
+  # Two calls close most of that gap. They are safe to make because a generated
+  # tool holds `^capabilities []` and runs under the module ceiling: it cannot
+  # touch the world, and it cannot run away. They are *advisory* rather than
+  # fatal because the arguments are guesses — a tool that legitimately rejects
+  # one is not a broken tool — so the build stands either way and the caller is
+  # told what happened.
+  #
+  # Two rather than one because a single short probe proves less than it looks
+  # like it does. A `shorten` tool built here passed on its own name, nine
+  # bytes long, and failed on anything over twenty: the branch the request was
+  # actually about had never run. The request text is the second probe for that
+  # reason — it is the longest string the build has, and the one describing
+  # what the tool is supposed to handle.
+  (if_not (== status "ready")
+    (return status))
+  (var problem "")
+  (for probe in [name request]
+    (if_yes (== problem "")
+      (try
+        (invoke_registry_row h "tools" name [probe])
+      catch e
+        (set problem ($to_str e/message)))))
+  (if (== problem "") status $"${status}; first call raised: ${problem}"))
 
 (fn tool_names [h : Harness] : Any
   (var out ($thaw #[]))

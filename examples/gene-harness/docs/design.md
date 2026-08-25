@@ -262,6 +262,40 @@ the authoritative blob Store and verified.
 Activation failure does not roll desired state backward. The entry remains
 committed and appears in `doctor` as quarantined.
 
+### 7.1 Where the source comes from
+
+`register_module` takes a quoted module; it does not care who wrote one.
+`build <name> <request>` resolves the `HarnessCodegen` seam and registers
+whatever it returns, so authorship is a deployment choice rather than a
+constant:
+
+| Profile | Provider | `build` means |
+|---|---|---|
+| `web`, `cli` | `TemplateCodegen` | fill the checked-in template; no authority, no network |
+| `chat` | `ModelCodegen` | ask the bound model to write the module |
+
+A provider returns an inert quoted node, never a string and never a live
+function, and the consumer trusts none of it. Every check in the sequence above
+already applied to the template and applies unchanged to a model: a
+`(mod plugin ...)` root, an inert top level, a defined `init`, imports inside
+the declared closure, capability-empty `init` under the module ceiling. An
+author is therefore untrusted by construction, which is what makes a remote one
+admissible at all.
+
+The model provider sends the checked-in Gene skill (`SKILL.md`, the pitfalls
+and stdlib chapters) as its system prompt alongside the module contract, and
+reads the reply as data — `read_all`, never `eval` on text. One recovery is
+attempted for a reply that opens with prose, and none for a reply that is not
+readable Gene; a build is one turn.
+
+Registration proves shape and `init`, never the body of `run`. `build`
+therefore invokes the new tool with its own name and with the request text, and
+reports a raised error alongside the revision (`ready; first call raised: ...`).
+The calls are safe because a generated tool holds no capabilities and runs under
+the module ceiling, and advisory because the arguments are guesses. Two probes
+rather than one because a short one exercises a single branch: a length-
+conditional tool passed on its nine-byte name while its long path was broken.
+
 ## 8. Execution supervision and attenuation
 
 Gene `Env ^policy` now enforces:
@@ -292,6 +326,13 @@ selector and evaluates the activation under `with_capabilities`. Resolution is
 against the application's immutable host ceiling and therefore fails rather
 than widens. Namespace visibility in the module sandbox is not authority; the
 active capability context remains the native enforcement boundary.
+
+A profile may carry `^limits`, applied to every plugin it installs with the
+capability context left inherited. The default budget suits a callback doing
+local computation; a deployment whose author is a remote model has commands
+that legitimately block on a network round trip, and there the default is not a
+guard against runaway code but a guarantee that the deployment cannot work.
+Steps and memory are unchanged by that choice — only the deadline moves.
 
 Generic command/tool/seam callbacks, schemas, cleanup hooks, subscribers, and
 views additionally pass through owner-aware wrappers. The core boundary flushes
@@ -335,7 +376,9 @@ The command interpreter no longer contains a command-name branch chain.
 
 Generated tools contribute `tools` rows rather than `Tool:*` seams. A durable
 build therefore extends `tools`, help/introspection, and behavior without core
-knowing the tool name.
+knowing the tool name — or, under `chat`, without anyone having written the
+tool: `build` resolves `HarnessCodegen` (§7.1) and the row comes from whatever
+that provider authored.
 
 Prompt sections are ordered `prompt` rows. `render_prompt` combines pushed rows
 with live registry key introspection; `doc` returns pull-only rows from the same

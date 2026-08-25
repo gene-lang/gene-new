@@ -23,9 +23,9 @@
 
 (mod profile)
 
-(import [Harness new_harness install] from "./kernel")
+(import [Harness new_harness install install_with_policy] from "./kernel")
 
-(type Profile ^props {^name Str ^plugins Any})
+(type Profile ^props {^name Str ^plugins Any ^limits Any?})
 
 (fn boot [p : Profile, ^h supplied = nil] : Harness
   # The whole of it. There is no merge step, no overlay resolution, and nothing
@@ -33,7 +33,17 @@
   # rest.
   (var h (if (== supplied nil) (new_harness) supplied))
   (for plugin in p/plugins
-    (install h plugin))
+    # `^limits` is the one deployment-wide knob a profile carries, and it exists
+    # because a callback budget is a statement about *what a callback does here*
+    # rather than about the code that registered it. The default suits local
+    # computation. A deployment whose author is a remote model has commands that
+    # legitimately wait on a network round trip, and 2 000 ms is then not a
+    # guard against runaway code but a guarantee the deployment cannot work.
+    # Authority is untouched: `^inherit true` leaves the capability context
+    # exactly where the baseline puts it.
+    (if ($absent? p/limits)
+      (install h plugin)
+      (install_with_policy h plugin [] ^limits p/limits ^inherit true)))
   h)
 
 (fn reversed [xs] : Any
@@ -48,7 +58,7 @@
   # Exists to keep the claim in this file's header honest. Booting a profile
   # backwards must reach the same state as booting it forwards; if it ever does
   # not, "a profile is a set" was wrong and the layers were right.
-  (boot (Profile ^name p/name ^plugins (reversed p/plugins))))
+  (boot (Profile ^name p/name ^plugins (reversed p/plugins) ^limits p/limits)))
 
 (fn plugin_names [p : Profile] : Any
   (var out [])

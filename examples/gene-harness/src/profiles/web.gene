@@ -15,7 +15,7 @@
 (import [MemFs HtmlRender fs_provider render_provider] from "../seams")
 (import [Profile] from "../profile")
 (import [reporter_plugin] from "./common")
-(import [agent_plugin command_plugin] from "../agent")
+(import [agent_plugin command_plugin template_codegen_plugin] from "../agent")
 
 (fn web_fs_plugin [] : Plugin
   (Plugin ^id "fs" ^provides ["HarnessFs"]
@@ -38,4 +38,5 @@
   # does at the command line.
   (Profile ^name "web"
            ^plugins [(web_fs_plugin) (web_render_plugin) (reporter_plugin)
-                     (command_plugin) (agent_plugin)]))
+                     (command_plugin) (agent_plugin)
+                     (template_codegen_plugin)]))

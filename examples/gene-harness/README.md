@@ -32,12 +32,18 @@ The `cli` profile installs the terminal view:
 bin/gene run examples/gene-harness/src/main.gene cli
 ```
 
-The `chat` profile swaps in the OpenRouter model provider:
+The `chat` profile swaps in the OpenRouter model provider, and with it the
+provider that writes plugins:
 
 ```bash
 OPENROUTER_API_KEY=... \
-  bin/gene run examples/gene-harness/src/main.gene chat
+  bin/gene run --allow_read_dir "$PWD/tools/gene-lang-skill" \
+  examples/gene-harness/src/main.gene chat
 ```
+
+The grant is for the checked-in Gene skill, which both the agent and the plugin
+author send to the model. Note that a home inside the repository is covered by
+two grants at once and is refused as ambiguous; give `chat` a home outside it.
 
 ## Durable self-extension
 
@@ -55,6 +61,44 @@ This returns a committed revision and activates the plugin once:
 registered greet at revision 1 (ready)
 ```
 
+`build` does not know how to write a plugin. It resolves the `HarnessCodegen`
+seam and registers whatever comes back, so what the command *means* is a
+property of the deployment: `web` and `cli` bind a template provider, and `chat`
+binds one that asks the model to write the module.
+
+```bash
+GENE_HARNESS_HOME=/tmp/harness-chat OPENROUTER_API_KEY=... \
+  bin/gene run --allow_read_write_dir /tmp/harness-chat \
+  --allow_read_dir "$PWD/tools/gene-lang-skill" \
+  examples/gene-harness/src/main.gene chat \
+  /build wordcount "count the words in the argument and report the total"
+```
+
+```text
+registered wordcount at revision 1 (ready)
+```
+
+```text
+$ ... web tool wordcount "the quick brown fox jumps over the lazy dog"
+word count: 9
+```
+
+The `/` prefix forces the command interpreter; without it a sentence goes to the
+model as a task, which is the same distinction `bare_query?` draws everywhere
+else. Registration proves the module's shape and that its `init` runs, but
+nothing exercises `run` until it is invoked — so `build` calls the new tool twice,
+with its own name and with the request text, and appends what it raised:
+
+```text
+registered shout at revision 7 (ready; first call raised: undefined symbol: and)
+```
+
+Those calls are safe to make because a generated tool holds `^capabilities []`
+and runs under the module ceiling, and advisory because the arguments are
+guesses. Two rather than one because a short probe proves less than it looks
+like it does: a `shorten` tool passed on its own name and failed on anything
+over twenty bytes, so the branch the request was about had never run.
+
 Run a separate process with the same home:
 
 ```bash
@@ -66,10 +110,15 @@ GENE_HARNESS_HOME=examples/gene-harness/tmp/demo \
 greet(world) -> hello from a generated plugin
 ```
 
-The source was never assembled by string concatenation. `plugin_source`
-produces a quoted AST; `register_module` validates and canonicalizes it, writes
-a SHA-256 module blob with atomic replacement, commits a composition generation
-by an exclusive revision claim, and only then activates it.
+The source was never assembled by string concatenation. A provider returns a
+quoted AST — the template builds one with quasiquote, the model provider parses
+its reply with `read_all` and never evaluates text — and `register_module`
+validates and canonicalizes it, writes a SHA-256 module blob with atomic
+replacement, commits a composition generation by an exclusive revision claim,
+and only then activates it. Every check that made the template safe applies
+unchanged to a model: a `(mod plugin ...)` root, an inert top level, a defined
+`init`, imports inside the declared closure, and capability-empty `init` run
+under the module ceiling. An author is untrusted by construction.
 
 ## What is durable
 
@@ -98,7 +147,7 @@ both restored before activation; a completed `ask` flushes them together.
 
 Everything dynamic is a registry row:
 
-- seams
+- seams (`HarnessFs`, `HarnessRender`, `HarnessPrompt`, `HarnessCodegen`)
 - commands
 - tools
 - prompt sections

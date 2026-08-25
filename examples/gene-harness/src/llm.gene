@@ -41,9 +41,9 @@
          module_dir]
   from "./kernel")
 (import_impl PluginHost for PluginContext from "./kernel")
-(import [HarnessFs HarnessRender HarnessPrompt LocalFs MemFs TextRender
-         HtmlRender fs_provider render_provider prompt_provider
-         head_tool report_tool] from "./seams")
+(import [HarnessFs HarnessRender HarnessPrompt HarnessCodegen LocalFs MemFs
+         TextRender HtmlRender fs_provider render_provider prompt_provider
+         codegen_provider head_tool report_tool] from "./seams")
 (import [dispatch bare_query? words words_from word plugin_source] from "./agent")
 (import [register_module run_workspace_turn] from "./workspace")
 
@@ -254,16 +254,21 @@ and end it with }.""")
   (var primary ($os/env? "OPENROUTER_API_KEY"))
   (if (== primary nil) ($os/env? "OPENROUTER_KEY") primary))
 
-(fn call_model [h : Harness, prompt : Str, history : Str] : Str
+(fn chat_completion [system : Str, user : Str,
+                     ^max_tokens max_tokens : Int = 3000] : Str
+  # One HTTP path for every kind of request this harness makes of a model.
+  # `call_model` answers a prompt; `model_plugin_source` writes a plugin. They
+  # differ only in what they put in the two messages, which is the whole reason
+  # a second use did not need a second client.
   (var key (api_key))
   (if_yes (== key nil)
     (fail (HarnessError
       ^message "no API key — set OPENROUTER_API_KEY (or OPENROUTER_KEY)")))
   (var body ($json/stringify
     {^model (model_name)
-     ^messages [{^role "system" ^content (system_prompt h)}
-                {^role "user" ^content $"${prompt}\n\nPrior turns:\n${history}"}]
-     ^max_tokens 3000
+     ^messages [{^role "system" ^content system}
+                {^role "user" ^content user}]
+     ^max_tokens max_tokens
      # This model reasons by default and will spend the whole budget thinking
      # before emitting a token of content — measured: at max_tokens 60 it
      # returned the three characters "har".
@@ -280,6 +285,10 @@ and end it with }.""")
   (var parsed ($json/parse resp/body))
   (var text parsed/choices/0/message/content)
   (if (== text nil) "" ($str/trim ($to_str text))))
+
+(fn call_model [h : Harness, prompt : Str, history : Str] : Str
+  (chat_completion (system_prompt h)
+    $"${prompt}\n\nPrior turns:\n${history}"))
 
 (fn strip_fence [reply : Str] : Str
   # Models wrap code in ``` even when told not to. The envelope is Gene data, so
@@ -323,6 +332,15 @@ and end it with }.""")
 # ---------------------------------------------------------------------------
 # One task, however many turns it takes
 # ---------------------------------------------------------------------------
+
+(fn tail_preview [text : Str] : Str
+  # The *end* of the reply, because that is where a truncated or unbalanced
+  # module goes wrong. The opening lines of a module are always the same two
+  # imports and tell you nothing.
+  (var size ($str/byte_size text))
+  (if (> size 300)
+    ($str/join ["... " ($str/slice_bytes text (- size 300) size)] "")
+    text))
 
 (fn preview [text : Str] : Str
   (if (> ($str/byte_size text) 400)
@@ -487,6 +505,195 @@ and end it with }.""")
     (set i (+ i 1)))
   (session ~ set kept)
   (state_host ~ PluginHost:update_state {^history kept}))
+
+# ---------------------------------------------------------------------------
+# The model as the author of a plugin
+# ---------------------------------------------------------------------------
+#
+# `build <name> <what it should do>` used to fill a template, so the harness
+# could install code at runtime but only ever *that* code — the dummy tool that
+# echoes its own description back. Behind the `HarnessCodegen` seam the same
+# command asks a model to write the module instead, and nothing else about
+# `build` changes: `build_tool` still resolves a seam, still hands the result
+# to `register_module`, and still cannot tell which provider answered.
+#
+# The safety argument is unchanged too, and it is the reason this is allowed to
+# be a model at all. The reply is *text*, parsed into an inert quoted node and
+# never evaluated as text. Everything that decides whether it is a legal module
+# already existed for the template: `canonical_module_source` requires a
+# `(mod plugin ...)` root, an inert top level, a defined `init`, and imports
+# inside the declared closure; `describe_plugin_module` runs that `init` under
+# `^capabilities []` and the step/time/memory ceiling; the loader pins an
+# immutable policy to the sandbox module. A model that writes something hostile
+# is refused by the same code that refuses a typo.
+
+(fn from_first_mod [reply : Str] : Str
+  # `from_first_brace`'s argument, for a module: a model that prefixes a
+  # sentence still emitted a readable module after it, and starting at the
+  # first `(mod ` recovers the build instead of losing it. Trailing prose costs
+  # nothing — `read_all` yields the forms in order and only the first is taken.
+  (var parts ($str/split reply "(mod "))
+  (if (< parts/~size 2)
+    (then reply)
+    (else ($str/join ["(mod " ($str/join (drop_first parts 1) "(mod ")] ""))))
+
+(fn codegen_skill_text [] : Str
+  # The same checked-in skill the agent plugin pushes and pulls from, and an
+  # author needs it more than a dispatcher does. The module contract in the
+  # prompt is what the *loader* checks; this is what makes the body between the
+  # parens actually run when someone invokes the tool.
+  ($str/join [(gene_skill_file "SKILL.md")
+              (gene_skill_file "reference/pitfalls.md")
+              (gene_skill_file "reference/stdlib.md")]
+    "\n\n"))
+
+(fn codegen_system_prompt [skill : Str] : Str
+  # A plain triple-quoted string, not a `$"""` one: the prompt is full of
+  # `${...}`, `$(...)` and `$str/...` sequences that an interpolated literal
+  # would try to evaluate. Nothing here is computed, so nothing here should be.
+  ($str/join [
+  """Your entire reply is ONE Gene module and nothing else: no prose, no
+markdown fence, no explanation before or after it.
+
+It looks exactly like this. Copy the shape; change the name, the doc and the
+body of `run`:
+
+(mod plugin
+  (import [Plugin DescriptorContext PluginContext PluginHost]
+    from "../../../src/plugin_api")
+  (import_impl PluginHost for PluginContext from "../../../src/kernel")
+
+  (fn run [arg : Str] : Str
+    ($str/join ["you said: " arg] ""))
+
+  (fn init [ctx : DescriptorContext] : Plugin
+    ^capabilities []
+    (Plugin
+      ^id "echo"
+      ^provides [["tools" "echo"]]
+      ^requires []
+      ^contextual true
+      ^activate
+        (fn []
+          (fn [host]
+            (host ~ PluginHost:contribute "tools"
+              {^name "echo" ^doc "repeat the argument" ^run run}))))))
+
+The loader rejects a module that breaks any of these:
+  - the root form is `(mod plugin ...)` — never another module name
+  - the top level holds only `import`, `import_impl`, `fn`, `type`, `impl`,
+    `protocol`, `alias`, `enum`; no top-level expressions of any kind
+  - `init` is defined and carries `^capabilities []`
+  - the two import lines are copied *exactly*, character for character:
+        (import [Plugin DescriptorContext PluginContext PluginHost]
+          from "../../../src/plugin_api")
+        (import_impl PluginHost for PluginContext from "../../../src/kernel")
+    "../../../plugin_api" without `src/` is the mistake to avoid, and no other
+    import of any kind is permitted
+  - `^contextual true`, and `^activate` is a thunk returning `(fn [host] ...)`
+
+`run` takes one Str and returns a Str. It holds no capabilities at all — no
+filesystem, no network, no clock, no environment, no randomness. Computation on
+its argument and on literals is the whole of what it can do. If the request
+cannot be met that way, write the closest pure-text version of it rather than
+reaching for authority you do not have.
+
+Gene is not the Lisp you are thinking of, and the reference below is
+authoritative — read it before you write the body of `run`. The ones that have
+actually cost a build here:
+  - stdlib names carry a `$`: ($str/join [a b] ""), ($to_str n), ($println x).
+    A bare `str`, `join`, `filter` or `println` is an undefined symbol.
+  - `map` and `filter` are *stream* operations, not list ones. On a list, loop:
+    (var out []) (for x in xs (if_yes (test x) (out ~ push x))) — or count with
+    a (var n 0) and (set n (+ n 1)).
+  - there is no `let`. (var x expr) declares, (set x expr) assigns, and both are
+    statements in the enclosing body.
+  - length is xs/~size on a *named binding*; ($str/byte_size s) for a string.
+    You cannot write the size of an expression, so bind it first.
+  - index with a *literal* as xs/0 and with a *variable* as xs/%i. Writing
+    xs/i where i is a variable is a property lookup that quietly yields void,
+    and you find out several lines later when something else rejects it.
+  - ($str/split s sep) needs a non-empty sep; splitting on "" to reach the
+    characters of a string is an error, not a trick.
+  - ($str/join xs sep) requires every item of xs to already be a Str. Map
+    ($to_str x) over anything else first.
+  - $regex has replace, replace_all and split if you need them; $str does not.
+  - (if cond a b) takes exactly ONE expression per arm. Two forms in a branch
+    need (if cond (then x y) (else z)) — and a `var` declared inside an arm is
+    gone after it, so bind above the `if` and (set ...) inside.
+  - the $str namespace is exactly: byte_size contains? ends_with? from_utf8
+    join lower slice_bytes split starts_with? to_utf8 trim. There is no
+    `upper`, no `replace`, no `pad`, no `index_of`. Never call a function that
+    is not there: nothing checks the body of `run` until someone invokes the
+    tool, so a guessed name is a plugin that installs cleanly and then fails in
+    the user's hands. Build what you need from the list, or make the tool do
+    the part you can and say so in its output.
+
+Reply with the module and nothing else, starting at `(mod plugin` and ending at
+its closing paren. The two import paths are "../../../src/plugin_api" and
+"../../../src/kernel".
+
+# Gene reference
+
+"""
+  skill] ""))
+
+(fn codegen_request [name : Str, request : Str] : Str
+  $"""Tool name: ${name}
+It should: ${request}
+
+Reply with the module for that tool and nothing else.""")
+
+(fn read_module_form [text : Str] : Any
+  # `read_first_form` swallows the reader's complaint, which is right for an
+  # envelope — a model answering in prose has nothing to report. A module is
+  # different: "not readable Gene" on its own leaves you re-running a build to
+  # find out whether the reply was truncated, unbalanced, or never code at all.
+  (try
+    {^form ((read_all text) ~ next) ^problem ""}
+  catch e
+    {^form nil ^problem ($to_str e/message)}))
+
+(fn model_plugin_source [name : Str, request : Str, skill : Str] : Any
+  # Text in, inert node out. Two recoveries, both cheap: drop a markdown fence,
+  # and start at the first `(mod ` if the model wrote a sentence first. What is
+  # deliberately *not* here is a retry loop — `build` is one turn, and a model
+  # that answered with prose should say so in the error rather than quietly
+  # cost three more requests.
+  (var reply
+    (chat_completion (codegen_system_prompt skill) (codegen_request name request)))
+  (if_yes (== ($str/trim reply) "")
+    (fail (HarnessError ^message $"model returned nothing for ${name}")))
+  (var clean (strip_fence reply))
+  (var read (read_module_form clean))
+  (if_yes (== read/form nil)
+    (set read (read_module_form (from_first_mod clean))))
+  (var form read/form)
+  (if_yes (== form nil)
+    (fail (HarnessError
+      ^message $"model reply for ${name} is not readable Gene (${read/problem}); the reply ended: $(tail_preview reply)")))
+  (if_not (== ($head form) (quote mod))
+    (fail (HarnessError
+      ^message $"model reply for ${name} is not a module: $(preview reply)")))
+  form)
+
+(type ModelCodegen ^props {^model Str ^skill Str})
+
+(impl HarnessCodegen for ModelCodegen
+  (message generate [name : Str, request : Str] : Any
+    (model_plugin_source name request self/skill)))
+
+(fn model_codegen_plugin [] : Plugin
+  # Same id and same seam as the template provider in agent.gene. A deployment
+  # binds one or the other, never both — which is the `fs` provider argument
+  # (§3.8) applied to authorship: `chat` and `web` differ in what `build` can
+  # write, and in nothing else.
+  (Plugin ^id "codegen" ^provides ["HarnessCodegen"]
+    ^contextual true
+    ^activate (fn [] (fn [host]
+      (host ~ PluginHost:provide "HarnessCodegen"
+        (codegen_provider
+          (ModelCodegen ^model (model_name) ^skill (codegen_skill_text))))))))
 
 (type LlmAgent ^props {^model Str ^session Any ^state_host PluginContext})
 
