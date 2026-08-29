@@ -1804,7 +1804,11 @@ const LeafValueKinds* = {vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString,
   ## enumerating kinds.
 
 proc isLeafValue*(v: Value): bool {.inline.} =
-  v.kind in LeafValueKinds
+  # A Cell is a leaf too: its canonical body holds the current value, but that
+  # content is state, not structure — a structural walk stops at the cell, and
+  # one that wants cell contents reads `get` explicitly. Walking into mutable
+  # state would also make rebuilders flatten cells into plain nodes.
+  v.kind in LeafValueKinds or v.kind == vkCell
 
 proc biIsLeaf(args: openArray[Value]): Value {.nimcall.} =
   requireOne("leaf?", args)
@@ -1844,10 +1848,18 @@ proc requireStr(name: string, value: Value) =
 #
 # These live here rather than in `types.nim` because `head` needs the built-in
 # type identities, and `gScalarTypes` is what holds them.
-const NodeShapedKinds = LeafValueKinds + {vkList, vkMap, vkHashMap}
-  ## The kinds with a source form. Cells, channels, streams, and functions are
-  ## values a program makes, not shapes it writes, so they have no node reading
-  ## and stay their own `head`.
+const NodeShapedKinds = LeafValueKinds + {vkList, vkMap, vkHashMap, vkCell,
+  vkAtomicCell, vkRange, vkDate, vkTime, vkDateTime, vkTimezone, vkDuration,
+  vkBuffer, vkCapability, vkStream, vkTask, vkChannel, vkActorRef, vkReplyTo,
+  vkNamespace, vkModule, vkEnv, vkCallerEnv}
+  ## The kinds that project a canonical head — every kind the runtime gives a
+  ## built-in type identity (design §1.3). Cells, channels, streams, and
+  ## functions are values a program makes rather than shapes it writes, but
+  ## their canonical Node representation is still defined: `head` is the
+  ## value's runtime type, and the body holds whatever observable content the
+  ## kind exposes (a cell's current value; nothing for the contentless kinds).
+  ## Kinds without a registered identity — functions today — stay their own
+  ## `head`, which is why they match no node pattern.
 
 proc isDataNode*(v: Value): bool {.inline.} =
   ## An instance of the concrete `Node` type: node-shaped, with nothing else
@@ -1882,6 +1894,7 @@ proc projectBody(v: Value): seq[Value] =
   case v.kind
   of vkNode: v.body
   of vkList: v.listItems
+  of vkCell: @[v.cellValue]
   of LeafValueKinds: @[v]
   else: @[]
 
@@ -9118,9 +9131,10 @@ proc matchProjectedNode(pat, target: Value, scope: Scope,
   # Kind tests first, and without materializing a `Value`. A failed arm is the
   # common case — every arm before the matching one lands here — and calling
   # `projectHead` up front returns a *managed* `Value` whose refcount traffic
-  # alone cost 27% on `vm.match_fallthrough`. Only shapes with a source form
-  # project a type, so this test is also what stops a cell or a function from
-  # quietly matching a node pattern.
+  # alone cost 27% on `vm.match_fallthrough`. `NodeShapedKinds` is the set of
+  # kinds whose canonical head is a type (design §1.3); a kind outside it — a
+  # function, with no registered type identity — keeps its own head and so
+  # matches no node pattern.
   if target.kind notin NodeShapedKinds or pat.head.kind != vkSymbol:
     return false
   var resolved: Value

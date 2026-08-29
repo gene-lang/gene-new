@@ -4755,10 +4755,39 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("(type P ^props {^a Int}) " &
                "[($head (quote (f 1 2))) (== ($head (P ^a 1)) P)]",
                "[f true]")
-    # Values with no source form are not node-shaped, so they stay their own
-    # head rather than projecting a type they could not be written as.
-    check_eval("(var c ($cell 1)) [(same? ($head c) c) ($body c)]",
-               "[true []]")
+    # Every value projects a canonical Node representation (design §1.3): a
+    # cell's `head` is its runtime type and its `body` holds the current value
+    # as a snapshot; contentless kinds project head-only.
+    check_eval("(var c ($cell 1)) [(== ($head c) Cell) ($body c) ($props c)]",
+               "[true [1] {}]")
+    check_eval("[(== ($head ($to_stream [])) Stream) " &
+               " (== ($head ($channel ^capacity 1)) Channel)]",
+               "[true true]")
+
+  test "the canonical representation is what the pattern engine matches":
+    # design §1.3/§8: a cell `c` holding `v` matches `(Cell p)` and binds `p`
+    # to the current value; the bind is a read-only snapshot.
+    check_eval("(match ($cell 5) (when (Cell v) (* v 2)))", "10")
+    check_eval("(match ($cell 5) (when (Cell 5) \"five\") (else \"no\"))",
+               "\"five\"")
+    check_eval("(try (match ($cell 5) (when (Cell) x)) " &
+               "  catch MatchError \"arity\")",
+               "\"arity\"")
+    check_eval("(var c ($cell 1)) " &
+               "(var v (match c (when (Cell x) x))) " &
+               "(c ~ set 2) " &
+               "[v (c ~ get)]",
+               "[1 2]")
+    check_eval("(var cs [($cell 1) ($cell 2)]) " &
+               "(match cs (when [(Cell a) (Cell b)] (+ a b)))",
+               "3")
+    # Head-only canonical nodes match arity-zero patterns; a function has no
+    # registered type identity and matches no node pattern at all.
+    check_eval("(match ($to_stream [1]) (when (Stream) \"s\") (else \"no\"))",
+               "\"s\"")
+    check_eval("(match (fn [x] x) (when (Fn) \"fn\") (else \"no\"))", "\"no\"")
+    # A Cell is a leaf: content is state, not structure, so walks stop there.
+    check_eval("[($leaf? ($cell 1)) ($leaf? [($cell 1)])]", "[true false]")
 
   test "a rest pattern binds in node-body position, not only in a list":
     # The reader gives `xs...` two shapes: the symbol `xs...` inside a list
@@ -4807,9 +4836,11 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("[(match 42 (when (Int) \"none\") (else \"no\")) " &
                " (match 42 (when (Int _) \"wild\") (else \"no\"))]",
                "[\"no\" \"wild\"]")
-    # Values with no source form are not node-shaped, so nothing starts
-    # matching one by accident.
-    check_eval("(match ($cell 1) (when (Cell c) c) (else \"no\"))", "\"no\"")
+    # A cell matches through its canonical representation (design §1.3/§8):
+    # `(Cell c)` binds the current value. Nothing matches a cell *by accident* —
+    # the pattern head still has to resolve to the cell's type.
+    check_eval("(match ($cell 1) (when (Cell c) c) (else \"no\"))", "1")
+    check_eval("(match ($cell 1) (when (Str s) s) (else \"no\"))", "\"no\"")
     # A typed instance is unchanged — it was always read this way.
     check_eval("(type P ^props {^a Int}) " &
                "(match (P ^a 7) (when (P ^a x) x) (else \"no\"))",
@@ -4869,9 +4900,11 @@ suite "spec — implicit self in message bodies from design §10":
     check_eval("[($leaf? 42) ($leaf? 1.5) ($leaf? \"s\") ($leaf? (quote a)) " &
                " ($leaf? true) ($leaf? nil) ($leaf? void) ($leaf? 'c')]",
                "[true true true true true true true true]")
-    check_eval("[($leaf? [1 2]) ($leaf? {^a 1}) ($leaf? (quote (f 1))) " &
-               " ($leaf? ($cell 1))]",
-               "[false false false false]")
+    check_eval("[($leaf? [1 2]) ($leaf? {^a 1}) ($leaf? (quote (f 1)))]",
+               "[false false false]")
+    # A Cell is a leaf: its canonical body holds the current value, but that
+    # content is state, not structure — a structural walk stops at the cell.
+    check_eval("($leaf? ($cell 1))", "true")
     # The guarded idiom terminates on every shape.
     check_eval("(fn walk [n] " &
                "  (if ($leaf? n) 1 (do ((($body n) ~ to_stream) ~ each walk) 1))) " &

@@ -180,8 +180,20 @@ is how a program names it without enumerating kinds:
     ((($body n) ~ to_stream) ~ each walk)))
 ```
 
-Values with no source form — cells, channels, streams, functions — are not
-node-shaped. They stay their own `head` and project empty props/body/meta.
+A `Cell` is a leaf: its canonical body holds the current value, but that
+content is state rather than structure, so a structural walk stops at the cell.
+A walk that wants cell contents reads `get` explicitly — walking into mutable
+state would also let a rebuilder flatten a cell into a plain node.
+
+The projection is total: **every value has a canonical Node representation**.
+For the shapes above it is the shape itself, and `head` is the value's runtime
+type wherever the runtime defines one. A value whose observable state is a
+single Gene value exposes it as its body: a cell `c` holding `v` projects as
+`(Cell v)` — `($head c)` is `Cell`, `($body c)` is `[v]`, a snapshot of the
+current value. Kinds whose state is not reachable as Gene data — streams,
+channels, buffers, tasks, environments — project their type as a head-only
+canonical node. A function has no registered type identity, keeps its own
+`head`, and matches no node pattern.
 
 `props`, `body`, and `meta` return detached, shallow snapshots. Mutating the
 returned map/list never changes the projected node, but values inside the
@@ -2563,8 +2575,22 @@ representation, so one pattern shape reaches every value:
 The head must still match, so arms stay discriminating: `(Str s)` does not
 match `42`. Body arity is the ordinary node rule applied to a body that now
 holds the literal — `(Int n)` matches `42` and bare `(Int)` does not, because
-`42` projects one body item. Values with no source form — cells, channels,
-streams, functions — are not node-shaped and match no node pattern.
+`42` projects one body item.
+
+The match is against the target's canonical Node representation (§1.3),
+uniformly across every kind that projects one. A cell `c` holding `v` matches
+`(Cell p)`, binding `p` to the current value:
+
+```gene
+(match ($cell 5)
+  (when (Cell v) (* v 2)))   # => 10
+```
+
+The bind is read-only — `v` is the value at match time, so setting the cell
+afterwards does not move it. Head-only canonical nodes match arity-zero
+patterns: `(Stream)` matches a stream, and bare `(Cell)` does not match a
+cell, whose body holds one item. A function, with no registered type identity,
+matches no node pattern at all.
 
 Alternation patterns must bind the same set of names with compatible types in every branch. Negative patterns must not introduce new bindings.
 
@@ -5820,6 +5846,7 @@ Deferred until after the first implementation slice:
 - `Any` is the MVP top gradual type. A separate static root such as `Value` is deferred.
 - `Never` is the bottom type and has no runtime values. `Nil` and `Void` are singleton types under `Any`, not bottom types.
 - `nil` is explicit absence, not the default uninitialized value for typed lists, maps, or variables. Use `T?` or `(? T)` when `nil` is allowed.
+- Every value has a canonical Node representation: `head` is its runtime type and `body` its observable content — a cell `c` holding `v` projects `(Cell v)` — and the pattern engine matches that representation uniformly. A cell's pattern bind is a read-only snapshot, and `leaf?` stops walks at cells.
 - `^is` supports single nominal inheritance only. Children inherit and preserve parent schema in MVP; multiple behaviors use protocols.
 - Plain lists, maps, and nodes may be mutable; `#[]`, `#{}`, and `#()` create shallow immutable values. Strings are immutable.
 - `Cell T` is local/non-thread-safe mutable state; `AtomicCell T` is the explicit linearizable shared-memory escape hatch.
