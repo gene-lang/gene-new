@@ -677,11 +677,14 @@ chain, compose pipes with `~` message sends (Section 3):
 
 Each `~` here is a receiver-first message send, **not** a reader rewrite to a
 flipped call `(f x)` (§3). `~` dispatches and only dispatches: `filter`, `map`,
-and `take` are **type-direct messages on `Stream`**, and `to_stream` is a
-message on iterable receivers such as `List` — there is no lexical fallback to a
-plain function. Sending a name the receiver's type does not define is a
-recoverable `MessageError`, so a raw `List` must reach the stream operations via
-`to_stream` first.
+`take`, and `to_stream` are **generic functions** (§6.2) — one name each,
+dispatching on the receiver's runtime type, with no lexical fallback to a plain
+function. A generic function's methods are the type-direct messages of the
+types that serve it, so `(xs ~ map f)` and `($map xs f)` are the same dispatch,
+and sending a name the receiver's type does not define is still a recoverable
+`MessageError`. The eager kinds answer in their own kind — a `List` maps to a
+`List` — so `to_stream` is how a pipeline enters the lazy stream tier when it
+wants laziness, not a gate the operations hide behind.
 
 A segment containing `_` is a slot form: the folded previous segment lands at
 `_` instead of head position.
@@ -920,16 +923,19 @@ raises `CallKindError` with `^expected "Protocol"`. A program may not declare
 names are not lexical bindings:
 
 ```gene
-(map xs P:show)      # each element's impl of P
-(map xs Self:show)   # each element's own type-direct show
+($map xs P:show)      # each element's impl of P
+($map xs Self:show)   # each element's own type-direct show
 ```
 
 In any other position `P:msg` or `Self:msg` is a **message value**, not a
 function: it prints as `(message msg)`, satisfies `Callable` but *not* `Fn`, and
 is accepted as a held send callee `(x ~ %m)` — which a function is not. A
 higher-order callable consumer applies one to its first argument, so
-`(map xs P:msg)` dispatches per element and needs no lambda; the callable shape
-is `(receiver, ...send args)`. Direct source syntax `(P:msg x)` remains rejected
+`($map xs P:msg)` dispatches per element and needs no lambda; the callable shape
+is `(receiver, ...send args)`. The standard collection operations are this
+shape at stdlib scale: `$map` and friends are message identities shared across
+the built-in collection types (§6.2), so `($map xs f)` and `(xs ~ map f)` are
+one dispatch. Direct source syntax `(P:msg x)` remains rejected
 as described above.
 
 The value carries the scope it was **written** in. Higher-order application has
@@ -1115,7 +1121,8 @@ would read as a three-argument `!=` whose second argument is the index
 expression — a wrong program that raises nothing.
 
 `%props`, `%body`, `%meta`, `%declarations`, `%to_stream`, and `%to_pairs_stream`
-are not magic selector tokens. They are ordinary functions used as stages, and the
+are not magic selector tokens. They are ordinary functions used as stages — the
+collection operations among them are generic functions (§6.2) — and the
 `%` escape resolves them the way any name resolves: a standard-library stage is
 reached as `%$props`, a stage you defined yourself as `%my_stage`.
 
@@ -1337,16 +1344,61 @@ These rules combine into a simple consumer idiom:
     (when (Err e)  (if (== e (EndOfStream)) (break) (handle e)))))
 ```
 
-Standard stream helpers are ordinary functions/stages:
+### 6.2 Generic collection operations
+
+`to_stream`, `to_pairs_stream`, `map`, `filter`, `take`, `into`, and `each` are
+**generic functions**: one exported name per operation, reached as `$map` and
+friends through the `gene` root and selected from `gene/stream` (§15.6),
+dispatching on the runtime type of its receiver (its first argument). The
+mechanism is the message system, not a second dispatch layer: the operation's
+name is one message identity shared by every type that serves it, the type's
+type-direct message is the method, and the exported function is that message
+identity in value position — the same dispatch a `Self:map` value performs
+(§3):
 
 ```gene
-to_stream        : (List T) -> (Stream T Never)
-to_pairs_stream  : (Map K V) -> (Stream [K V] Never)
+(xs ~ map f)     # bare send: resolves map in xs's message table
+($map xs f)      # the exported function: applies to its first argument
+(var m Self:map) # the message value; (m xs f) dispatches identically
+```
+
+The dispatch is the ordinary receiver-first rule (§3), so there is no lexical
+fallback: a type without the method raises `MessageError`, and a user type
+joins the generic by declaring the message — after which `$map` dispatches to
+it like any other receiver. The function spelling is an ordinary callable; it
+is the `Self:map` message-value spelling that is `Callable` rather than `Fn`
+(§3), and a direct head application `(Self:map xs f)` is rejected like any
+`(P:msg x)` — bind the value first. This kind of generic function is
+receiver-dispatched; the type-parameterized functions of §7.4, whose type
+parameters are inferred at call sites, are a different mechanism.
+
+The `Stream` methods keep the lazy contract of §6 and the close/detach rules
+of §6.1:
+
+```gene
 map              : (Stream A E, Fn [A] B) -> (Stream B E)
 filter           : (Stream A E, Fn [A] Bool) -> (Stream A E)
 take             : (Stream A E, Int) -> (Stream A E)
 into             : (Stream A E, target) -> target
 ```
+
+The eager kinds answer in their own kind:
+
+| call       | List        | Map                        | Set | Stream       |
+| ---------- | ----------- | -------------------------- | --- | ------------ |
+| `map f`    | List, eager | Map over values, keys kept | Set | Stream, lazy |
+| `filter p` | List, eager | Map over values, keys kept | Set | Stream, lazy |
+| `take n`   | List        | —                          | —   | Stream       |
+
+`to_stream` converts an eager kind to the lazy tier — `List`, `Set`, and
+`Range` yield item streams (§8.1) — and `to_pairs_stream` turns a `Map` into a
+stream of `[K V]` pairs. `into` collects an iterable receiver into the target
+kind named by its argument: `($into s [])` builds a `List`, `($into s {})`
+builds a `PropMap` from `[K V]` pairs. `each f` runs `f` on every item and
+returns `nil`. Void results follow §1.6: `nil` keeps its `List` position, a
+void value removes its `Map` entry, and a void result is skipped in a `Set`.
+A `Map`'s `map`/`filter`/`each` callback sees the value; pair-wise work goes
+through `to_pairs_stream` or `for`.
 
 The reader/parser pipeline should be stream-shaped:
 
@@ -5775,6 +5827,7 @@ Deferred until after the first implementation slice:
 - Actor and channel boundaries require `Send`; shallow immutability alone is not sufficient.
 - Actors process one message at a time without reentrancy, use bounded mailboxes, and are owned by scopes or supervisors.
 - Standard selector-stage names are `props`, `body`, `meta`, `declarations`, `to_stream`, and `to_pairs_stream`. These are ordinary callable stages, not selector magic.
+- The collection operations — `map`, `filter`, `take`, `to_stream`, `to_pairs_stream`, `into`, `each` — are generic functions (§6.2): one message identity per operation shared by the types that serve it, with the `$name` function spelling under the `gene` root. A bare send and the `$` call are the same receiver-first dispatch; there is no lexical fallback.
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
 - `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x ~ P:f a)` names protocol `P`'s message `f`; type-direct message values use `Self:f`, not `T:f`. `(x ~ %m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so `~` never invokes an arbitrary function. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
 - Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope. `(super ~ f a)` delegates to the implementation above the enclosing type on the `^is` chain.

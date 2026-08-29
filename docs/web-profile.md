@@ -223,6 +223,21 @@ and `on_*` event listeners. `examples/web_component.gene` and
 `tests/transpile_dom_runner.nim` exercise a checked Gene event handler against a
 DOM-shaped host.
 
+### Generic collection operations (design §6.2)
+
+The VM treats `map`, `filter`, `take`, `into`, and `each` as generic functions
+whose eager `List`/`Map` methods answer in the receiver's own kind (design
+§6.2). The profile keeps its stream-shaped surface: `map`/`filter`/`into`
+accept a `Stream` receiver, `to_stream` converts a `List` into one, and
+`take`/`each` are not portable builtins. An eager receiver reaching these
+operations is a compile-time rejection naming the missing message — never a
+lowering that only looks equivalent. The portable pipeline is therefore the
+§2.6 spelling, `(xs ~ to_stream; ~ map f; ~ filter p; ~ into [])`, which both
+backends run. Closing the gap means giving the profile eager `List` lowers
+with their representations decided first — bigint-to-number conversion for a
+`take` count, `undefined`-to-`null` for a void map result, truthiness for a
+`filter` predicate — and each decision pinned by a conformance fixture.
+
 ## Deliberate exclusions
 
 The compiler gives dedicated diagnostics for explicit fexprs/`caller_env`, runtime

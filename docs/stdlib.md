@@ -437,7 +437,9 @@ Acceptance:
 
 - `examples/todo_app/src/main.gene` imports `gene/stream` successfully.
 - Stream helpers remain lazy where they are lazy today.
-- `each` consumes a stream for side effects and returns `nil`.
+- The collection operations are generic (design §6.2): a `List`/`Map` receiver
+  answers eagerly in its own kind, a `Stream` receiver stays lazy.
+- `each` consumes a stream or eager iterable for side effects and returns `nil`.
 
 ### `gene/node`
 

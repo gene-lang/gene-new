@@ -3185,12 +3185,17 @@ suite "vm — streams":
     expect GeneError: discard runStr("([1] ~ next)")
     expect GeneError: discard runStr("($to_stream {^a 1})")
     expect GeneError: discard runStr("($to_pairs_stream [1])")
-    expect GeneError: discard runStr("($map [1] (fn [x] x))")
-    expect GeneError: discard runStr("($filter [1] (fn [x] true))")
-    expect GeneError: discard runStr("($take [1] 1)")
     expect GeneError: discard runStr("($take ($to_stream [1]) -1)")
-    expect GeneError: discard runStr("($into [1] [])")
     expect GeneError: discard runStr("($into ($to_stream [1]) {})")
+    # The generic collection operations dispatch on the receiver (design §6.2):
+    # eager kinds answer in their own kind, and a receiver whose type declares
+    # no such method raises the send path's MessageError (§9) from both the
+    # send and the function spelling.
+    expect GeneError: discard runStr("($map 42 (fn [x] x))")
+    expect GeneError: discard runStr("(42 ~ filter (fn [x] true))")
+    ck "($map [1 2] (fn [x] (* x 10)))", "[10 20]"
+    ck "($take [1 2 3] 2)", "[1 2]"
+    ck "($into [1] [])", "[1]"
 
 suite "vm — printer view of callables":
   test "functions print a display form":

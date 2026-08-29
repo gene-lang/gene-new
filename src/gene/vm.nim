@@ -4307,56 +4307,191 @@ proc newSelectorCallStage(callee: Value, args: openArray[Value]): Value =
     body.add arg
   newNode(newSym("call_stage"), body = body)
 
-proc biStreamMap(args: openArray[Value]): Value {.nimcall.} =
+proc dispatchGenericForward(name: string, receiver: Value,
+                            rest: openArray[Value], scope: Scope): Value =
+  ## A user type joins the generic by declaring the message (design §6.2):
+  ## forward to its own implementation with the send convention — the
+  ## resolved impl is called with the receiver as its first argument, exactly
+  ## as the send opcode does after `resolveQualifiedSend`. A receiver whose
+  ## type declares no such message raises the same recoverable MessageError
+  ## the send path raises (§3), so `$map x f` and `(x ~ map f)` can never
+  ## disagree about a missing method.
+  let recvType = receiver.receiverType
+  if recvType.kind == vkType:
+    let impl = typeDirectMessage(recvType, name)
+    if impl.kind != vkNil:
+      var callArgs = newSeqOfCap[Value](rest.len + 1)
+      callArgs.add receiver
+      for arg in rest:
+        callArgs.add arg
+      return applyCall(impl, callArgs, NamedArgs(), scope)
+  let recvTypeName =
+    if recvType.kind == vkType: recvType.typeName
+    else: declarationKind(receiver)
+  raiseMessageError(name, recvTypeName, scope, false)
+
+proc biMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  var scope: Scope = nil
+  if call != nil: scope = call.dispatchScope
   if args.len == 1:
-    return newSelectorCallStage(newNativeFn("map", biStreamMap), args)
+    return newSelectorCallStage(
+      newNativeCallFn("map", biMap, acceptsNamed = false), args)
   if args.len != 2:
     raise newException(GeneError, "map expects 1 or 2 arguments, got " & $args.len)
-  requireStream("map", args[0])
-  newLazyStream(args[0], pullMapStream, callable = args[1])
+  let receiver = args[0]
+  case receiver.kind
+  of vkStream:
+    result = newLazyStream(receiver, pullMapStream, callable = args[1])
+  of vkList:
+    # Eager kinds answer in their own kind (§6.2). A void result keeps its
+    # position as nil (§1.6).
+    var items = newSeq[Value](receiver.listItems.len)
+    for i, item in receiver.listItems:
+      var callArgs = [item]
+      let mapped = applyCall(args[1], callArgs, NamedArgs(), scope)
+      items[i] = if mapped.kind == vkVoid: NIL else: mapped
+    result = newList(items, receiver.listImmutable)
+  of vkMap:
+    # Values are mapped, keys kept. `newMap` strips void results, which is
+    # the map-entry removal rule (§1.6).
+    var entries = initPropTable()
+    for key, val in receiver.mapEntries:
+      var callArgs = [val]
+      entries[key] = applyCall(args[1], callArgs, NamedArgs(), scope)
+    result = newMap(entries, receiver.mapImmutable)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in receiver.hashMapEntries:
+      var callArgs = [entry.val]
+      let mapped = applyCall(args[1], callArgs, NamedArgs(), scope)
+      if mapped.kind != vkVoid:
+        entries.add HashMapEntry(key: entry.key, val: mapped)
+    result = newHashMap(entries)
+  of vkSet:
+    var items: seq[Value]
+    for item in receiver.setItems:
+      var callArgs = [item]
+      let mapped = applyCall(args[1], callArgs, NamedArgs(), scope)
+      if mapped.kind != vkVoid:
+        items.add mapped
+    result = newSet(items)
+  else:
+    result = dispatchGenericForward("map", receiver, args[1 .. args.high], scope)
 
-proc biStreamFilter(args: openArray[Value]): Value {.nimcall.} =
+proc biFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  var scope: Scope = nil
+  if call != nil: scope = call.dispatchScope
   if args.len == 1:
-    return newSelectorCallStage(newNativeFn("filter", biStreamFilter), args)
+    return newSelectorCallStage(
+      newNativeCallFn("filter", biFilter, acceptsNamed = false), args)
   if args.len != 2:
-    raise newException(GeneError, "filter expects 1 or 2 arguments, got " & $args.len)
-  requireStream("filter", args[0])
-  newLazyStream(args[0], pullFilterStream, callable = args[1])
+    raise newException(GeneError,
+      "filter expects 1 or 2 arguments, got " & $args.len)
+  let receiver = args[0]
+  case receiver.kind
+  of vkStream:
+    result = newLazyStream(receiver, pullFilterStream, callable = args[1])
+  of vkList:
+    var items: seq[Value]
+    for item in receiver.listItems:
+      var callArgs = [item]
+      if applyCall(args[1], callArgs, NamedArgs(), scope).isTruthy:
+        items.add item
+    result = newList(items, receiver.listImmutable)
+  of vkMap:
+    var entries = initPropTable()
+    for key, val in receiver.mapEntries:
+      var callArgs = [val]
+      if applyCall(args[1], callArgs, NamedArgs(), scope).isTruthy:
+        entries[key] = val
+    result = newMap(entries, receiver.mapImmutable)
+  of vkHashMap:
+    var entries: seq[HashMapEntry]
+    for entry in receiver.hashMapEntries:
+      var callArgs = [entry.val]
+      if applyCall(args[1], callArgs, NamedArgs(), scope).isTruthy:
+        entries.add entry
+    result = newHashMap(entries)
+  of vkSet:
+    var items: seq[Value]
+    for item in receiver.setItems:
+      var callArgs = [item]
+      if applyCall(args[1], callArgs, NamedArgs(), scope).isTruthy:
+        items.add item
+    result = newSet(items)
+  else:
+    result = dispatchGenericForward("filter", receiver, args[1 .. args.high], scope)
 
-proc biStreamTake(args: openArray[Value]): Value {.nimcall.} =
+proc biTake(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  var scope: Scope = nil
+  if call != nil: scope = call.dispatchScope
   if args.len == 1:
     let remaining = requireInt64("take count", args[0])
     if remaining < 0:
       raise newException(GeneError, "take count must be non-negative")
-    return newSelectorCallStage(newNativeFn("take", biStreamTake), args)
+    return newSelectorCallStage(
+      newNativeCallFn("take", biTake, acceptsNamed = false), args)
   if args.len != 2:
     raise newException(GeneError, "take expects 1 or 2 arguments, got " & $args.len)
-  requireStream("take", args[0])
-  var remaining = requireInt64("take count", args[1])
-  if remaining < 0:
-    raise newException(GeneError, "take count must be non-negative")
-  result = newLazyStream(args[0], pullTakeStream, remaining = remaining)
-  if remaining == 0:
-    result.detachStreamSource()
+  let receiver = args[0]
+  case receiver.kind
+  of vkStream:
+    var remaining = requireInt64("take count", args[1])
+    if remaining < 0:
+      raise newException(GeneError, "take count must be non-negative")
+    result = newLazyStream(receiver, pullTakeStream, remaining = remaining)
+    if remaining == 0:
+      result.detachStreamSource()
+  of vkList:
+    let n = requireInt64("take count", args[1])
+    if n < 0:
+      raise newException(GeneError, "take count must be non-negative")
+    let count = min(n, int64(receiver.listItems.len))
+    var items = newSeq[Value](count)
+    for i in 0 ..< count:
+      items[int(i)] = receiver.listItems[int(i)]
+    result = newList(items, receiver.listImmutable)
+  else:
+    result = dispatchGenericForward("take", receiver, args[1 .. args.high], scope)
 
-proc biStreamInto(args: openArray[Value]): Value {.nimcall.} =
+proc biInto(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  var scope: Scope = nil
+  if call != nil: scope = call.dispatchScope
   if args.len == 1:
     if args[0].kind notin {vkList, vkMap}:
       raise newException(GeneError, "into expects a List or Map target")
-    return newSelectorCallStage(newNativeFn("into", biStreamInto), args)
+    return newSelectorCallStage(
+      newNativeCallFn("into", biInto, acceptsNamed = false), args)
   if args.len != 2:
     raise newException(GeneError, "into expects 1 or 2 arguments, got " & $args.len)
-  requireStream("into", args[0])
+  let receiver = args[0]
+  # `into` collects an iterable receiver (§6.2): the lazy Stream, the eager
+  # List/Set, or a Range — each drained once, then projected into the target.
+  var source: seq[Value]
+  case receiver.kind
+  of vkStream:
+    while receiver.streamHasNext:
+      source.add checkedStreamNext(receiver, "into item")
+  of vkList:
+    source = copyItems(receiver.listItems)
+  of vkSet:
+    for item in receiver.setItems:
+      source.add item
+  of vkRange:
+    let s = rangeStream(receiver)
+    while s.streamHasNext:
+      source.add checkedStreamNext(s, "into item")
+  else:
+    return dispatchGenericForward("into", receiver, args[1 .. args.high], scope)
   case args[1].kind
   of vkList:
     var items = copyItems(args[1].listItems)
-    while args[0].streamHasNext:
-      items.add checkedStreamNext(args[0], "into item")
-    newList(items, args[1].listImmutable)
+    for item in source:
+      items.add item
+    result = newList(items, args[1].listImmutable)
   of vkMap:
     var entries = copyEntries(args[1].mapEntries)
-    while args[0].streamHasNext:
-      let pair = checkedStreamNext(args[0], "into item")
+    for pair in source:
       if pair.kind != vkList or pair.listItems.len != 2:
         raise newException(GeneError, "into Map expects [key value] stream items")
       let key = keySegment("into", pair.listItems[0])
@@ -4365,7 +4500,7 @@ proc biStreamInto(args: openArray[Value]): Value {.nimcall.} =
         entries.del(key)
       else:
         entries[key] = val
-    newMap(entries, args[1].mapImmutable)
+    result = newMap(entries, args[1].mapImmutable)
   else:
     raise newException(GeneError, "into expects a List or Map target")
 
@@ -7259,6 +7394,22 @@ proc buildBuiltins(app: Application): Scope =
   let toStreamFn = sharedBuiltinNative("to_stream", newNativeFn("to_stream", biToStream))
   let toPairsStreamFn = sharedBuiltinNative("to_pairs_stream",
                                             newNativeFn("to_pairs_stream", biToPairsStream))
+  # The generic collection operations (design §6.2) are call-fns so the
+  # dispatcher can reach the send's scope: a receiver whose type declares no
+  # such method raises the send path's recoverable MessageError, never a kind
+  # error, and a user type declaring the message is forwarded to. One
+  # process-wide instance per op serves the root binding, the List/Map/Stream
+  # message tables, and the stream namespace at once.
+  let mapFn = sharedBuiltinNative("map",
+    newNativeCallFn("map", biMap, acceptsNamed = false))
+  let filterFn = sharedBuiltinNative("filter",
+    newNativeCallFn("filter", biFilter, acceptsNamed = false))
+  let takeFn = sharedBuiltinNative("take",
+    newNativeCallFn("take", biTake, acceptsNamed = false))
+  let intoFn = sharedBuiltinNative("into",
+    newNativeCallFn("into", biInto, acceptsNamed = false))
+  let eachFn = sharedBuiltinNative("each",
+    newNativeCallFn("each", biEach, acceptsNamed = false))
   var containsFn: Value
   discard result.lookupOptional("contains?", containsFn)
   result.define("size", sizeFn)
@@ -7279,16 +7430,25 @@ proc buildBuiltins(app: Application): Scope =
     "first": firstFn,
     "last": lastFn,
     "contains?": containsFn,
+    "map": mapFn,
+    "filter": filterFn,
+    "take": takeFn,
+    "each": eachFn,
+    "into": intoFn,
     "to_stream": toStreamFn})
   # `Map` is the message surface for both map representations. `PropMap` and
   # `HashMap` name the representations in annotations; neither carries messages
-  # of its own, so both kinds dispatch as `Map`.
+  # of its own, so both kinds dispatch as `Map`. There is deliberately no
+  # `to_stream` here: the pair stream is `to_pairs_stream` (§6.2), and a
+  # message that always raises a kind error must not sit in the table.
   let mapType = result.defineBuiltinType(vkMap, "Map", {
     "assoc": newNativeFn("Map/assoc", biMapAssoc),
     "get": newNativeFn("Map/get", biMapGet),
     "put": newNativeFn("Map/put", biMapPutBang),
     "delete": newNativeFn("Map/delete", biMapDeleteBang),
-    "to_stream": toStreamFn,
+    "map": mapFn,
+    "filter": filterFn,
+    "each": eachFn,
     "to_pairs_stream": toPairsStreamFn})
   gScalarTypes[vkHashMap] = mapType
   # `Node` carries the mutators and the four anatomy projections. The
@@ -7575,10 +7735,6 @@ proc buildBuiltins(app: Application): Scope =
                                             acceptsNamed = false))
   result.define("lex_all", newNativeCallFn("lex_all", biLexAll,
                                            acceptsNamed = false))
-  let mapFn = sharedBuiltinNative("map", newNativeFn("map", biStreamMap))
-  let filterFn = sharedBuiltinNative("filter", newNativeFn("filter", biStreamFilter))
-  let takeFn = sharedBuiltinNative("take", newNativeFn("take", biStreamTake))
-  let intoFn = sharedBuiltinNative("into", newNativeFn("into", biStreamInto))
   result.define("to_stream", toStreamFn)
   result.define("to_pairs_stream", toPairsStreamFn)
   result.define("map", mapFn)
@@ -10670,11 +10826,17 @@ proc builtinReceiverMessage(scope: Scope, receiver: Value, name: string): Value 
     of "contains?":
       builtinBinding(scope, name)
     else:
-      convertMessage(scope, name, ["to_stream"])
+      # `Set` has no type table of its own (§3 keeps it on the narrow built-in
+      # fallback), so its generic collection operations (§6.2) resolve to the
+      # same process-wide dispatchers the root and the type tables bind. `take`
+      # is not offered: the doc's Set column covers map/filter only.
+      convertMessage(scope, name,
+                     ["to_stream", "map", "filter", "each", "into"])
   of vkRange:
-    # `Range`'s own messages moved into its type table; `to_stream` is the
-    # shared pipeline entry and still comes from the stdlib, as it does for Set.
-    convertMessage(scope, name, ["to_stream"])
+    # `Range`'s own messages moved into its type table; `to_stream` and the
+    # generic `into` are the shared pipeline entries and still come from the
+    # stdlib, as they do for Set.
+    convertMessage(scope, name, ["to_stream", "into"])
   of vkNode:
     # Only a *typed* instance reaches here: a data node's dispatch face is
     # already the `Node` type, so `receiverType` resolved it. An instance is

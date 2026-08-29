@@ -1,10 +1,15 @@
 # Implementation status
 
-**Status date:** 2026-08-17
+**Status date:** 2026-08-29
 
 The current VM implements the reader/value/printer pipeline, callable-first
 bytecode execution, runtime fexprs and template macros, selectors and streams,
-gradual nominal types, protocols/derivation with scoped impl visibility
+the generic collection operations (design §6.2: `$map`/`$filter`/`$take`/
+`$into`/`$each` and their bare sends dispatch on the receiver's type; the
+eager `List`/`Map`/`Set` methods answer in their own kind, a user type joins
+the generic by declaring the message, and a missing method is the send path's
+`MessageError` for every spelling), gradual nominal types,
+protocols/derivation with scoped impl visibility
 (canonical/scoped/overlay, `import_impl`, transactional reload —
 `docs/scoped-impls.md`), structured tasks/channels/actors, module/eval
 overlays, explicit capability values, native roots/calls, typed FFI
@@ -32,6 +37,9 @@ acyclic module graph. Exact `Int` uses `bigint`. The profile covers macros,
 state/control flow, matching, paths/selectors, structural maps and nodes,
 nominal types/enums/protocols, checked errors, streams, portable stdlib calls,
 structured tasks/cancellation, static namespaces, and generated DOM bindings.
+The eager collection methods of design §6.2 remain VM-only: the profile
+compiles the stream-shaped pipeline (`to_stream` then the stream operations)
+and rejects an eager receiver at compile time (`docs/web-profile.md`).
 Checked JS exports/imports, callbacks, method edges, and an interactive Gene
 component exercise the ABI. `derive` deliberately remains VM-only; fexprs,
 runtime eval, actors/channels, native FFI, capabilities, scoped impl imports,

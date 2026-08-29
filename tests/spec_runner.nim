@@ -6360,6 +6360,89 @@ suite "spec — streams from design":
                             "[(/value decl) (this_mod ~ path)]"),
               scope).print() == "[9 nil]"
 
+suite "spec — generic collection operations from design (§6.2)":
+  test "the three spellings are one dispatch":
+    check_eval("($map [1 2 3] (fn [x] (* x 10)))", "[10 20 30]")
+    check_eval("([1 2 3] ~ map (fn [x] (* x 10)))", "[10 20 30]")
+    check_eval("(var m Self:map) (m [1 2 3] (fn [x] (* x 10)))", "[10 20 30]")
+
+  test "eager kinds answer in their own kind":
+    check_eval("([1 2 3] ~ map (fn [x] (* x x)))", "[1 4 9]")
+    check_eval("((Set 1 2 3) ~ map (fn [x] (* x x)))", "(Set 1 4 9)")
+    check_eval("({^a 1 ^b 2} ~ map (fn [v] (* v 10)))", "{^a 10 ^b 20}")
+
+  test "filter keeps truthy items in the receiver's kind":
+    check_eval("([1 2 3 4] ~ filter (fn [x] (> x 2)))", "[3 4]")
+    check_eval("((Set 1 2 3 4) ~ filter (fn [x] (> x 2)))", "(Set 3 4)")
+    check_eval("({^a 1 ^b 2 ^c 3} ~ filter (fn [v] (> v 1)))", "{^b 2 ^c 3}")
+
+  test "a Map callback sees the value, not the pair":
+    check_eval("(var pairs (($to_pairs_stream {^a 1 ^b 2}) ~ into [])) pairs",
+               "[[a 1] [b 2]]")
+
+  test "take slices a List and bounds a Stream":
+    check_eval("([1 2 3 4] ~ take 2)", "[1 2]")
+    check_eval("([1 2] ~ take 5)", "[1 2]")
+    check_eval("([1 2 3] ~ take 0)", "[]")
+    check_eval("(try ([1 2] ~ take -1) catch Any $ex/message)",
+               "\"take count must be non-negative\"")
+
+  test "into collects an iterable receiver into the target":
+    check_eval("([1 2 3] ~ into [0])", "[0 1 2 3]")
+    check_eval("((Set 1 2) ~ into [])", "[1 2]")
+    check_eval("(($range 0 3) ~ into [])", "[0 1 2]")
+    check_eval("([[\"a\" 1] [\"b\" 2]] ~ into {})", "{^a 1 ^b 2}")
+
+  test "each runs the callback on every item and yields nil":
+    check_eval("(var hits ($cell 0)) " &
+               "([1 2 3] ~ each (fn [x] (hits ~ update (fn [n] (+ n 1))))) " &
+               "hits/~get",
+               "3")
+    check_eval("(var hits ($cell 0)) " &
+               "({^a 1 ^b 2} ~ each (fn [v] (hits ~ set v))) " &
+               "hits/~get",
+               "2")
+    check_eval("([1 2] ~ each (fn [x] x))", "nil")
+
+  test "void results follow the container rules":
+    check_eval("([1 2] ~ map (fn [x] (if (== x 1) x void)))", "[1 nil]")
+    check_eval("({^a 1 ^b 2} ~ map (fn [v] (if (== v 1) v void)))", "{^a 1}")
+
+  test "a receiver with no method raises the send's MessageError":
+    check_eval("(try (42 ~ map (fn [x] x)) catch MessageError $ex/receiver_type)",
+               "\"Int\"")
+    check_eval("(try ($map 42 (fn [x] x)) catch MessageError $ex/receiver_type)",
+               "\"Int\"")
+    check_eval("(try (($cell 1) ~ map (fn [x] x)) catch MessageError $ex/receiver_type)",
+               "\"Cell\"")
+
+  test "a user type joins the generic by declaring the message":
+    check_eval("(type Box ^props {^v Int} " &
+               "  (message map [f] : Int (f self/v))) " &
+               "(var b (Box ^v 2)) " &
+               "[(b ~ map (fn [x] (* x 10))) ($map b (fn [x] (* x 10)))]",
+               "[20 20]")
+    check_eval("(type Plain ^props {^v Int}) " &
+               "(try ($map (Plain ^v 1) (fn [x] x)) " &
+               "  catch MessageError $ex/receiver_type)",
+               "\"Plain\"")
+
+  test "a pipeline runs eagerly on a raw List without to_stream":
+    check_eval("([1 2 3 4 5] ~ filter (fn [x] (> x 1)); " &
+               "~ map (fn [x] (* x 10)); ~ take 2)",
+               "[20 30]")
+
+  test "stream methods keep the lazy contract":
+    check_eval("(var s (($to_stream [1 2 3 4]) ~ filter (fn [x] (> x 1)))) " &
+               "(var t (s ~ map (fn [x] (* x 10)))) " &
+               "(t ~ into [])",
+               "[20 30 40]")
+
+  test "immutability class is preserved through eager map":
+    check_eval("(try ((#[1 2 3] ~ map (fn [x] x)) ~ push 4) catch Any \"frozen\")",
+               "\"frozen\"")
+    check_eval("((#[1 2] ~ map (fn [x] (* x 10))) ~ into [])", "[10 20]")
+
 suite "spec — structured tasks from design":
   test "scope owns spawned tasks and await returns the result":
     check_eval("(scope " &

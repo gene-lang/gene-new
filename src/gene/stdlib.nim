@@ -1354,13 +1354,38 @@ proc biUrlFormatQuery(args: openArray[Value]): Value {.nimcall.} =
     parts.add urlEncodeComponent(key) & "=" & urlEncodeComponent(val.strVal)
   newStr(parts.join("&"))
 
-proc biStreamEach(args: openArray[Value]): Value {.nimcall.} =
+proc biEach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  ## The generic `each` (design §6.2): runs `f` on every item and returns
+  ## `nil`. Streams pull lazily; the eager kinds iterate their own items —
+  ## a Map's callback sees the value, like its `map`/`filter`.
+  var scope: Scope = nil
+  if call != nil: scope = call.dispatchScope
   if args.len != 2:
     raise newException(GeneError, "each expects 2 arguments, got " & $args.len)
-  requireStream("each", args[0])
-  while args[0].streamHasNext:
-    var callArgs = [checkedStreamNext(args[0], "each item")]
-    discard applyCall(args[1], callArgs, NamedArgs())
+  let receiver = args[0]
+  case receiver.kind
+  of vkStream:
+    while receiver.streamHasNext:
+      var callArgs = [checkedStreamNext(receiver, "each item")]
+      discard applyCall(args[1], callArgs, NamedArgs(), scope)
+  of vkList:
+    for item in receiver.listItems:
+      var callArgs = [item]
+      discard applyCall(args[1], callArgs, NamedArgs(), scope)
+  of vkMap:
+    for _, val in receiver.mapEntries:
+      var callArgs = [val]
+      discard applyCall(args[1], callArgs, NamedArgs(), scope)
+  of vkHashMap:
+    for entry in receiver.hashMapEntries:
+      var callArgs = [entry.val]
+      discard applyCall(args[1], callArgs, NamedArgs(), scope)
+  of vkSet:
+    for item in receiver.setItems:
+      var callArgs = [item]
+      discard applyCall(args[1], callArgs, NamedArgs(), scope)
+  else:
+    return dispatchGenericForward("each", receiver, args[1 .. args.high], scope)
   NIL
 
 
@@ -7525,15 +7550,22 @@ proc registerStdlibNamespaces(root: Scope) =
   stdStreamScope.define("to_stream", newNativeFn("to_stream", biToStream))
   stdStreamScope.define("to_pairs_stream",
                         newNativeFn("to_pairs_stream", biToPairsStream))
-  stdStreamScope.define("map", newNativeFn("map", biStreamMap))
-  stdStreamScope.define("filter", newNativeFn("filter", biStreamFilter))
-  stdStreamScope.define("take", newNativeFn("take", biStreamTake))
-  stdStreamScope.define("into", newNativeFn("into", biStreamInto))
+  # The generic collection operations (§6.2) must bind the same process-wide
+  # dispatchers the root and the type tables hold — `sharedBuiltinNative`
+  # returns those instances; the fresh values built here are discarded.
+  stdStreamScope.define("map",
+    sharedBuiltinNative("map", newNativeCallFn("map", biMap, acceptsNamed = false)))
+  stdStreamScope.define("filter",
+    sharedBuiltinNative("filter", newNativeCallFn("filter", biFilter, acceptsNamed = false)))
+  stdStreamScope.define("take",
+    sharedBuiltinNative("take", newNativeCallFn("take", biTake, acceptsNamed = false)))
+  stdStreamScope.define("into",
+    sharedBuiltinNative("into", newNativeCallFn("into", biInto, acceptsNamed = false)))
   # `each` has no bare root binding, so the `Stream` type takes it from this
   # namespace. It must be the process-wide instance or the type singleton
   # would hold the first application's copy.
   stdStreamScope.define("each",
-                        sharedBuiltinNative("each", newNativeFn("each", biStreamEach)))
+    sharedBuiltinNative("each", newNativeCallFn("each", biEach, acceptsNamed = false)))
   let stdNodeScope = newScope(root)
   stdNodeScope.define("head", newNativeFn("head", biHead))
   stdNodeScope.define("props", newNativeFn("props", biProps))
