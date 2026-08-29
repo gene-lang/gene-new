@@ -83,7 +83,11 @@
 
 (impl HarnessCodegen for TemplateCodegen
   (message generate [name : Str, request : Str] : Any
-    (plugin_source name request)))
+    (plugin_source name request))
+  (message author [] : Any
+    # No model wrote this one, and the durable entry should say so rather than
+    # carry the name of whichever model happened to be configured.
+    {^by "template" ^model ""}))
 
 (fn template_codegen_plugin [] : Plugin
   (Plugin ^id "codegen" ^provides ["HarnessCodegen"]
@@ -108,11 +112,25 @@
   # a defined `init`, imports inside the declared closure). A provider is
   # therefore untrusted by construction, which is the only way an authored-by-
   # model plugin can be safe to accept.
-  (var source
-    ((resolve h "HarnessCodegen") ~ HarnessCodegen:generate name text))
+  (var codegen (resolve h "HarnessCodegen"))
+  (var source (codegen ~ HarnessCodegen:generate name text))
+  # Provenance is provider knowledge, so `build` asks for it rather than
+  # guessing. Until it did, every entry this command committed carried
+  # ^by "" ^model "" ^at "" — a durable record that could not say who wrote a
+  # module, while the thing that wrote it stood right there.
+  (var author (codegen ~ HarnessCodegen:author))
   (var registered
     (register_module h/workspace h name source
-      ^scope "session" ^selectors []))
+      ^scope "session" ^selectors []
+      ^by author/by ^model author/model ^at ($to_str (gene/now))
+      # `build` is the only verb that claims a durable name and there is no
+      # verb that releases one — `disable` takes an entry out of desired state
+      # but the name stays taken. Create-only therefore made iterating on a
+      # generated tool mean inventing a new name per attempt (slugify, slug,
+      # slug2). Replacement is already a first-class recorded outcome:
+      # `record_composition_change` writes "replaced", the previous blob stays
+      # in the store, and each one is a new revision you can read back.
+      ^replace true))
   $"registered ${name} at revision ${registered/revision} ($(build_status h name text registered/status))")
 
 (fn build_status [h : Harness, name : Str, request : Str, status : Str] : Str
@@ -143,8 +161,8 @@
     (if_yes (== problem "")
       (try
         (invoke_registry_row h "tools" name [probe])
-      catch e
-        (set problem ($to_str e/message)))))
+      catch Any
+        (set problem ($to_str $ex/message)))))
   (if (== problem "") status $"${status}; first call raised: ${problem}"))
 
 (fn tool_names [h : Harness] : Any
@@ -264,8 +282,8 @@
   (var out
     (try
       ((resolve h "HarnessPrompt") ~ HarnessPrompt:handle h prompt)
-    catch e
-      $"error: ${e/message}"))
+    catch Any
+      $"error: ${$ex/message}"))
   (if_yes (!= out "") (log_append h "output" out))
   (flush_harness h)
   out)

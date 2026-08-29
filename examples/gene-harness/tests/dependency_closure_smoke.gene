@@ -29,8 +29,8 @@
   (var refused false)
   (try
     (register_module workspace h "dependent" root ^selectors [])
-  catch {^message message}
-    (set refused ($str/contains? message "dependency closure")))
+  catch Any
+    (set refused ($str/contains? $ex/message "dependency closure")))
   (assert refused "an unpinned relative import must be refused")
 
   (var kernel_escape
@@ -45,8 +45,8 @@
   (set refused false)
   (try
     (register_module workspace h "kernel_escape" kernel_escape ^selectors [])
-  catch {^message message}
-    (set refused ($str/contains? message "only PluginHost impl identity")))
+  catch Any
+    (set refused ($str/contains? $ex/message "only PluginHost impl identity")))
   (assert refused
     "generated modules must not bind the recovery kernel as a utility library")
 

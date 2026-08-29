@@ -89,7 +89,7 @@ suite "protocols — declarations and dispatch":
        "[\"Ada\" \"hello Ada\" \"hi Ada\"]"
     ck "(type Bad ^props {}) " &
        "(impl ToStr for Bad (message to_str [self] 1)) " &
-       "(try ($to_str (Bad)) catch (TypeError ^where w) w)",
+       "(try ($to_str (Bad)) catch TypeError $ex/where)",
        "\"ToStr/to_str\""
 
   test "namespace protocol messages find receiver-scope impls":
@@ -309,7 +309,7 @@ suite "protocols — declarations and dispatch":
        "(type User ^props {^name Str}) " &
        "(impl ToName for User (message to_name [self] : Str 1)) " &
        "((User ^name \"Ada\") ~ ToName:to_name) " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"return from 'to_name'\""
 
   test "missing impl is a recoverable runtime error":
@@ -778,7 +778,7 @@ suite "protocols — dispatch inline cache soundness (item D1)":
        "  (if add_overlay (impl P for T (message m [self] : Int 2))) " &
        "  (fn inner [] (t ~ P:m))) " &
        "(var a (outer true)) (var b (outer false)) " &
-       "[(a) (try (b) catch e -1) (a)]",
+       "[(a) (try (b) catch Any -1) (a)]",
        "[2 -1 2]"
 
   test "qualified sends of two messages at one call site stay distinct":

@@ -52,7 +52,7 @@
 (var command_failed false)
 (try
   (invoke_registry_row h "commands" "loop" [])
-catch e
+catch Any
   (set command_failed true))
 (assert command_failed
   "command callbacks must execute under their owner's transitive budget")
@@ -62,7 +62,7 @@ catch e
 (var core_replace_refused false)
 (try
   (invoke_registry_row h "commands" "replace_core_event" [h])
-catch e
+catch Any
   (set core_replace_refused true))
 (assert core_replace_refused
   "plugins must not replace the irreducible core event vocabulary")
@@ -70,7 +70,7 @@ catch e
 (var seam_failed false)
 (try
   ((resolve h "LoopSeam") "value")
-catch e
+catch Any
   (set seam_failed true))
 (assert seam_failed
   "callable seam values must retain their owner's supervision boundary")
@@ -78,7 +78,7 @@ catch e
 (var schema_failed false)
 (try
   (contribute h "client" "checked" {^name "x"})
-catch e
+catch Any
   (set schema_failed true))
 (assert schema_failed
   "plugin-owned registry schemas must execute under the registry owner's budget")

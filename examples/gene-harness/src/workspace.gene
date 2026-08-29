@@ -189,10 +189,10 @@
   (try
     (try
       (workspace/store ~ Store:checkpoint next {^composition manifest})
-    catch (StoreError ^kind kind ^message message)
-      (if (== ($to_str kind) "conflict")
+    catch StoreError
+      (if (== ($to_str $ex/kind) "conflict")
         (revision_conflict workspace expected)
-        (fail (CompositionError ^message message))))
+        (fail (CompositionError ^message $ex/message))))
     (workspace/revision ~ set next)
     (workspace/entries ~ set checked)
     next
@@ -478,6 +478,22 @@
     (fail (CompositionError ^message $"unsafe module id ${id}")))
   (if_not (["workspace" "session"] ~ contains? scope)
     (fail (CompositionError ^message $"invalid plugin scope ${scope}")))
+  # Refuse a claimed id before anything is written. `entries_with` below also
+  # refuses, but only after every dependency blob and the module itself have
+  # been materialized and the descriptor loaded — so a refused rebuild left an
+  # unreferenced blob in the generated directory and in the loader cache, and
+  # the caller had no way to tell it apart from a blob a live entry needs.
+  # That check stays where it is: it is the invariant on the entry list, and
+  # this one is the early answer to a question already decided.
+  (if_not replace
+    (var pending (active_transaction h))
+    (var claimed
+      (if ($absent? pending)
+        (composition_entries workspace)
+        (?? (pending/workspace_entries ~ get) (composition_entries workspace))))
+    (if_not (== (find_entry_index claimed id) -1)
+      (fail (CompositionError
+        ^message $"composition entry ${id} already exists"))))
   (var selected (if ($absent? selectors) (fresh_list) (data_copy selectors)))
   (var bounded
     (if ($absent? limits)
@@ -590,17 +606,17 @@
         (if_yes (== activation_status "error")
           (record_quarantine workspace pending/entry/id
             (plugin_error h pending/entry/id)))
-      catch e
-        (record_quarantine workspace pending/entry/id ($to_str e/message))))
+      catch Any
+        (record_quarantine workspace pending/entry/id ($to_str $ex/message))))
     (record_turn_end h id "committed")
     (flush_harness h)
     {^status registry_result/status ^result result ^revision revision
      ^composition_changed composition_changed}
-  catch e
+  catch Any
     (var aborted (abort_turn h tx))
     (record_turn_end h id "aborted")
     (flush_harness h)
-    (aborted ~ put "error" e)
+    (aborted ~ put "error" $ex)
     aborted
   ensure
     (if_yes (== (active_transaction h) tx)
@@ -653,8 +669,8 @@
           (var descriptor (load_entry_descriptor workspace h entry))
           (descriptors ~ put entry/id descriptor)
           (register_descriptor_events h descriptor)
-        catch e
-          (record_quarantine workspace ($to_str entry/id) ($to_str e/message))))))
+        catch Any
+          (record_quarantine workspace ($to_str entry/id) ($to_str $ex/message))))))
 
   # Phase 2: validate the already-decoded generic envelopes against the core +
   # descriptor catalog. Missing plugin vocabulary quarantines that projection;
@@ -689,8 +705,8 @@
             (record_quarantine workspace ($to_str entry/id)
               (plugin_error h ($to_str entry/id))))
           (else (pending ~ push entry/id)))
-      catch e
-        (record_quarantine workspace ($to_str entry/id) ($to_str e/message)))))
+      catch Any
+        (record_quarantine workspace ($to_str entry/id) ($to_str $ex/message)))))
   {^ready ready ^pending pending ^errors (data_copy (workspace/errors ~ get))
    ^session plan/session})
 

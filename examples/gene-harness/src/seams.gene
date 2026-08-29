@@ -146,9 +146,16 @@
 # to reach the network. A row on the protocol would be a ceiling on every
 # provider forever, and because a declared row is transitive it would forbid
 # exactly the provider that makes the seam worth having.
+#
+# `author` is the seam's second message because provenance is knowledge only
+# the provider has. `build` records who wrote a module on the durable entry,
+# and it cannot tell a template from a model — so it has to ask. The answer is
+# a map with two Str props: `by`, a non-empty identity for the author, and
+# `model`, the model that wrote it, or "" when authorship needs no model.
 
 (protocol HarnessCodegen
-  (message generate [name : Str, request : Str] : Any))
+  (message generate [name : Str, request : Str] : Any)
+  (message author [] : Any))
 
 (fn codegen_provider [c : HarnessCodegen] : HarnessCodegen c)
 

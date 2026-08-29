@@ -119,7 +119,7 @@ when defined(geneRcStats):
                           "  (await t))") == 0
       check leakedManaged("(scope " &
                           "  (fn use [t : (Task Int Never)] " &
-                          "    (try (await t) catch (TypeError) nil)) " &
+                          "    (try (await t) catch TypeError nil)) " &
                           "  (use (spawn \"bad\")))") == 0
       check leakedManaged("(var ch ($channel)) " &
                           "(ch ~ send 1) " &

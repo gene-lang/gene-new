@@ -2,7 +2,21 @@
 
 (mod view_api)
 
+# A turn is two calls with the blocking read between them, and the split is the
+# whole point of this contract. Both messages share one return convention:
+# `nil` means "call me again", and a value means "this view is finished, and
+# that value is its result".
+#
+# `show_prompt` renders whatever asks for the next line. `handle_line` is given
+# that line — `nil` at EOF — and decides what it means. The caller owns the
+# loop *and* owns the read: reading the user's own stdin is host authority, not
+# the plugin's, so it happens between the two calls and under no budget at all.
+# A view that read its own line spent its `^timeout_ms` waiting for a human and
+# expired at the keyboard; the `chat` shell died on the prompt after a 150 s
+# pause, with the whole budget consumed inside `$os/read_line`. Neither message
+# can block on a person, so bounding both is honest.
 (protocol HarnessView
-  (message run [h] : Any))
+  (message show_prompt [h] : Any)
+  (message handle_line [h, line] : Any))
 
 (fn view_provider [view : HarnessView] : HarnessView view)

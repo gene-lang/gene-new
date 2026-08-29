@@ -85,7 +85,7 @@
   (try
     (load_mod_at (new_game) probe_dir)
     (set reached true)
-  catch _
+  catch Any
     (set reached false))
   (check "a mod naming $fs with no grants is refused" (! reached)
          "the sandbox is on, not merely declared")

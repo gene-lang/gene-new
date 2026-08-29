@@ -123,7 +123,7 @@
   ($println "-- activation is all-or-nothing, and a failure is a state --")
   ($println "  " (install h (broken_plugin)))
   ($println "  Log rolled back? "
-    (try (resolve h "Log") catch e "yes — no provider left behind"))
+    (try (resolve h "Log") catch Any "yes — no provider left behind"))
   ($println "  states:    " (plugin_states h))
   ($println "  ^ `broken` is still installed, in `error`. Install *registers* a")
   ($println "    plugin; whether it activates is a fact about the world, so it")
@@ -134,11 +134,11 @@
   ($println "  " (uninstall h "broken"))
 
   ($println "-- binding is explicit, not last-wins --")
-  ($println "  " (try (install h (fs_plugin)) catch e $"refused: ${e/message}"))
+  ($println "  " (try (install h (fs_plugin)) catch Any $"refused: ${$ex/message}"))
 
   ($println "-- uninstall reverses exactly one plugin --")
   ($println "  " (uninstall h "combo"))
-  ($println "  Llm gone?  " (try (resolve h "Llm") catch e "yes"))
+  ($println "  Llm gone?  " (try (resolve h "Llm") catch Any "yes"))
   ($println "  Fs intact: " (resolve h "Fs"))
   ($println "  seams:     " (bound_seams h))
   ($println "  installed: " (installed h))
@@ -156,13 +156,13 @@
   ($println "  provider:  in-memory")
   ($println "  head_tool: "
     (try (head_tool (resolve h "HarnessFs") "notes")
-      catch e $"refused: ${e/message}"))
+      catch Any $"refused: ${$ex/message}"))
 
   (install h (local_fs_plugin))
   ($println "  provider:  local (replaced, live)")
   ($println "  head_tool: "
     (try (head_tool (resolve h "HarnessFs") "notes")
-      catch e $"refused: ${e/message}"))
+      catch Any $"refused: ${$ex/message}"))
   ($println "  ^ same consumer, untouched. The provider changed, and with it")
   ($println "    the authority the product needs: the local provider is")
   ($println "    refused without --allow_read_dir /tmp and")
@@ -174,7 +174,7 @@
   ($println "  " (uninstall h "fs_mem"))
   ($println "  seam survives its former owner: "
     (try (head_tool (resolve h "HarnessFs") "notes")
-      catch e $"refused: ${e/message}"))
+      catch Any $"refused: ${$ex/message}"))
   ($println "  installed: " (installed h))
 
   # --- a plugin that was never compiled in ----------------------------------
@@ -186,7 +186,7 @@
   # A value that does not implement the seam is refused where it is bound,
   # not where it is first used.
   ($println "  non-conforming provider: "
-    (try (fs_provider "just-a-string") catch e "refused at bind"))
+    (try (fs_provider "just-a-string") catch Any "refused at bind"))
 
   ($println "-- a plugin loaded at runtime, granted nothing --")
   (var here (module_dir this_mod/~path))
@@ -215,10 +215,10 @@
   ($println "  rogue load: "
     (try (install_sandboxed h $"${here}/../plugins/fs_rogue" "plugin.gene"
            [] [$"${here}/seams.gene"])
-      catch e $"refused: ${e/message}"))
+      catch Any $"refused: ${$ex/message}"))
   ($println "  rogue call: "
     (try (head_tool (resolve h "HarnessFs") "notes")
-      catch e $"refused: ${e/message}"))
+      catch Any $"refused: ${$ex/message}"))
   ($println "  ^ the boundary holds and the file is never read, but the")
   ($println "    refusal is at first call, not at load, and the message")
   ($println "    does not say \"sandbox\". See docs/design.md §5.")
@@ -228,7 +228,7 @@
   ($println "  " (retry h "fs_stub"))
   ($println "  head_tool: "
     (try (head_tool (resolve h "HarnessFs") "notes")
-      catch e $"refused: ${e/message}"))
+      catch Any $"refused: ${$ex/message}"))
   ($println "  ^ never compiled in, cannot name $fs at all, and still")
   ($println "    satisfies the seam the consumer sends to.")
   ($println "  installed: " (installed h))
@@ -328,7 +328,7 @@
     (try (install h2 (Plugin ^id "ouroboros" ^provides ["O"] ^requires ["O"]
            ^contextual true ^activate (fn [] (fn [host]
              (host ~ PluginHost:provide "O" "o")))))
-      catch e $"refused: ${e/message}"))
+      catch Any $"refused: ${$ex/message}"))
 
   ($println "-- the lifecycle is observable, and recorded --")
   ($println "  watcher saw: " (lifecycle_seen ~ get))

@@ -236,19 +236,29 @@ build ships no upgrade path. Corruption remains a separate error.
 The registration sequence is:
 
 1. validate a filename-safe ID and an inert quoted `mod` node;
-2. reject executable top-level forms and source over 256 KiB;
-3. canonicalize source and compute SHA-256;
-4. validate every relative import against a supplied dependency blob;
-5. atomically materialize unreferenced validation cache files;
-6. sandbox-load with only namespaces implied by selectors and an entry-policy
+2. unless `^replace` is set, refuse an ID the effective entry list already
+   claims — the staged entries of an active transaction, otherwise the
+   committed ones;
+3. reject executable top-level forms and source over 256 KiB;
+4. canonicalize source and compute SHA-256;
+5. validate every relative import against a supplied dependency blob;
+6. atomically materialize unreferenced validation cache files;
+7. sandbox-load with only namespaces implied by selectors and an entry-policy
    isolation key;
-7. attach the immutable module capability/budget policy, then execute
+8. attach the immutable module capability/budget policy, then execute
    capability-empty `init` under step/time/memory budgets and panic
    containment;
-8. validate the returned descriptor without installing it;
-9. atomically persist the validated root/dependency blobs;
-10. commit the new composition generation by CAS;
-11. register descriptor event vocabulary and activate once, after commit.
+9. validate the returned descriptor without installing it;
+10. atomically persist the validated root/dependency blobs;
+11. commit the new composition generation by CAS;
+12. register descriptor event vocabulary and activate once, after commit.
+
+Step 2 is early because the entry list is the only thing that can answer it and
+nothing before it is written. The same refusal still guards the entry list at
+step 11, but reaching it there meant a name collision had already materialized
+every dependency blob and the module itself, leaving cache files no entry
+references and no way to tell them from ones a live entry needs. So an
+unreferenced cache file now only ever comes from a preflight failure.
 
 Dependencies are also quoted modules. `module_digest` lets a caller construct a
 relative digest import, and `^dependencies` supplies the exact closure. Shared
@@ -282,6 +292,20 @@ the declared closure, capability-empty `init` under the module ceiling. An
 author is therefore untrusted by construction, which is what makes a remote one
 admissible at all.
 
+`HarnessCodegen` has a second message for the same reason it has the first:
+authorship is provider knowledge. `build` asks the resolved provider who it is
+and records the answer on the durable entry as `^by`/`^model`, with `^at` from
+the clock. Validation still does not care who wrote a module — that is what
+makes a remote author admissible — but the record does, and until it asked,
+every model-authored entry read `^by "" ^model "" ^at ""` while the thing that
+wrote it stood right there.
+
+`build` passes `^replace true`. It is the only verb that claims a durable name
+and there is no verb that releases one, so create-only made iterating on a
+generated tool mean inventing a name per attempt. Replacement is already a
+recorded outcome: the change is logged as `replaced` rather than `registered`,
+the superseded blob stays in the store, and each attempt is a revision.
+
 The model provider sends the checked-in Gene skill (`SKILL.md`, the pitfalls
 and stdlib chapters) as its system prompt alongside the module contract, and
 reads the reply as data — `read_all`, never `eval` on text. One recovery is
@@ -295,6 +319,36 @@ The calls are safe because a generated tool holds no capabilities and runs under
 the module ceiling, and advisory because the arguments are guesses. Two probes
 rather than one because a short one exercises a single branch: a length-
 conditional tool passed on its nine-byte name while its long path was broken.
+
+### 7.2 What the model's own program may reach
+
+A reply's `^code` is evaluated in an `Env` minted with the structural harness
+bindings and `^capabilities []`. The two authorities are deliberately opposite:
+structural authority over the harness is total, because every binding is an
+ordinary Gene call needing no grant and rebuilding the harness is the whole
+point; host authority is nil, so reading a file or the environment comes back
+as a `refused: ...` value the next round is shown.
+
+`register_module` is the one operation that needs both, and a grant only ever
+attenuates (§8) — nothing called from inside an empty context can recover the
+authority that hashing source, writing a blob, loading the module and running
+`init` require. Calling straight through refused at `fs/exists?` and lost the
+turn, which made the durable path the prompt advertises unreachable.
+
+So the binding queues instead. It validates that the id is a non-empty `Str`
+and the source an inert `mod` node, appends the request to the turn's queue,
+and says so. After the program returns, still inside the same
+`run_workspace_turn` body but back under the harness's own capability context,
+the queue is drained through the ordinary `register_module` path and the result
+string reports each committed revision. A registration that fails to load
+raises like any other error in the body, so it never becomes a revision.
+
+The consequence is part of the contract and is stated in the prompt: a tool
+registered this way is callable from the *next* program, not the one that
+queued it. The turn body also carries an explicit budget rather than the 2 000
+ms callback default, because a body that may hash a module, write a blob, load
+it and run its `init` is not a local computation. Steps and memory are
+unchanged.
 
 ## 8. Execution supervision and attenuation
 
@@ -338,6 +392,21 @@ Generic command/tool/seam callbacks, schemas, cleanup hooks, subscribers, and
 views additionally pass through owner-aware wrappers. The core boundary flushes
 state only after the attenuated callback scope unwinds, so opaque retained Store
 authority is never lent to plugin code.
+
+A budget bounds a unit of work, so the unit has to be chosen where the work is,
+and it must not contain a wait. `HarnessView` therefore has two messages —
+render the prompt, handle the line — each returning `nil` to be called again,
+and the owner-aware wrapper enters each once, so both draw a fresh deadline and
+a fresh step/memory allowance. The caller owns the loop and the blocking read
+that sits between them; the read is under no budget, because reading the
+process's own stdin is host authority rather than plugin work.
+
+Both properties were learned the same way. A view that owned its loop drew one
+budget for the whole conversation and an interactive shell died two minutes in.
+Moving the loop out but leaving the read inside only moved the failure: the
+turn that printed the prompt was the one that expired, and the diagnostic
+surfaced at the first budget check after the keystroke — a line with nothing to
+do with the cause.
 
 ## 9. Phased boot and recovery
 
@@ -385,11 +454,14 @@ with live registry key introspection; `doc` returns pull-only rows from the same
 registry. The checked-in `tools/gene-lang-skill/SKILL.md` is pushed and its
 reference chapters are pull-only. The old handwritten Gene primer is gone.
 
-Views replace the one `views/active` row. The terminal view checks that row only
-between prompts and hands off then, never in the middle of a turn. User-visible
-agent output is a typed durable core event; terminal and recording views consume
-the same feed. A recording view plus the command-agent stub provides
-deterministic tests with no terminal or network.
+Views replace the one `views/active` row. The loop over a view's turns belongs
+to `main.gene`, which re-reads that row between turns — which is the whole of
+handoff: a replacement committed during a turn takes effect at the next prompt,
+an absent row ends the session, and no view has to check for its own successor.
+
+User-visible agent output is a typed durable core event; terminal and recording
+views consume the same feed. A recording view plus the command-agent stub
+provides deterministic tests with no terminal or network.
 
 ## 11. Entry point and filesystem layout
 
@@ -446,8 +518,10 @@ transaction diff/abort/commit, event retention/catalog/concurrency and cold
 repair, cross-process Store claims, workspace CAS, module registration/reopen
 and cache rematerialization, dependency closure/shared-contract confinement,
 quarantine, named-root attenuation, callback and typed-provider supervision,
-plugin events, active-view output/swap, prompt-skill loading, provenance audit,
-and session/workspace state conflicts.
+plugin events, active-view output/swap, prompt-skill loading, provenance audit
+and recorded build provenance, queued registration draining at the turn
+boundary, build replacement, duplicate-id refusal writing no blob, and
+session/workspace state conflicts.
 
 Still deferred:
 

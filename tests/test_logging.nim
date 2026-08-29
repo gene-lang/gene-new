@@ -449,7 +449,7 @@ suite "structured logging":
     let result = run(compileSource(
       "(import $log [new_file_logger]) " &
       "(try (new_file_logger \"app/direct\" \"ignored.jsonl\") " &
-      "  false catch _ true)"), newGlobalScope(app))
+      "  false catch Any true)"), newGlobalScope(app))
     check result == TRUE
     removeDir(dir)
 
@@ -457,5 +457,5 @@ suite "structured logging":
     let result = runLoggingSource(
       "(import $log [new_logger]) " &
       "(try (new_logger \"app/reserved\" ^payload {^level \"fake\"}) " &
-      "  false catch _ true)")
+      "  false catch Any true)")
     check result == TRUE

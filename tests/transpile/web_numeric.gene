@@ -20,7 +20,7 @@
 (fn quotient_or_reason [a : Int b : Int] : Str
   (try
     (do (/ a b) "ok")
-    catch (Error ^message message) message))
+    catch Error $ex/message))
 
 # ES modules are always strict, so these two names cannot be emitted verbatim.
 (fn arguments [value : Int] : Int

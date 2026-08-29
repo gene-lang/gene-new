@@ -343,11 +343,11 @@ suite "compiler — GIR emission":
     let loopBody = loopChunk.forLoops[0].body
     check loopBody.localNames == @["a", "b"]
 
-    let tryChunk = compileSource("(try 1 catch {^message m} m)")
+    let tryChunk = compileSource("(try 1 catch Any $ex/message)")
     let catchBody = tryChunk.tries[0].catches[0].body
-    check catchBody.localNames == @["m"]
+    check catchBody.localNames == @["$ex"]
     check catchBody.instructions[0].op == opLoadLocal
-    check catchBody.instructions[0].name == "m"
+    check catchBody.instructions[0].name == "$ex"
 
   test "normalizes checked error rows":
     let neverChunk = compileSource("(fn f ^errors [Never Never] [] 1)")
@@ -552,7 +552,7 @@ suite "module references":
     ck "#Ref shared [1 2] (fn get_shared [] #Deref shared) " &
        "(same? (get_shared) ($deref shared))", "true"
     ck "(fn get_missing [] " &
-       "  (try #Deref missing catch (UnknownRef ^name n) n)) " &
+       "  (try #Deref missing catch UnknownRef $ex/name)) " &
        "(get_missing)", "\"missing\""
 
   test "reference namespace is separate from lexical bindings":
@@ -592,22 +592,22 @@ suite "module references":
 
   test "runtime errors are typed and initializers can retry after failure":
     ck "(try ($deref missing) " &
-       " catch (UnknownRef ^name n) n)", "\"missing\""
+       " catch UnknownRef $ex/name)", "\"missing\""
     ck "(var pending #Deref later) " &
-       "(try pending catch (RefNotResolved ^name n) n) " &
+       "(try pending catch RefNotResolved $ex/name) " &
        "#Ref later 1", "1"
     ck "(var holder {^value #Deref later}) " &
        "(var observed (try holder/value " &
-       " catch (RefNotResolved ^name n) n)) " &
+       " catch RefNotResolved $ex/name)) " &
        "#Ref later 1 observed", "\"later\""
     ck "#Ref once 1 " &
-       "(try ($ref once 2) catch (RefAlreadyResolved ^name n) n)",
+       "(try ($ref once 2) catch RefAlreadyResolved $ex/name)",
        "\"once\""
     ck "(var caught (try ($ref circular ($deref circular)) " &
-       " catch (CircularRefResolution ^name n) n)) " &
+       " catch CircularRefResolution $ex/name)) " &
        "($ref circular 1) caught", "\"circular\""
     ck "(try ($ref retry (fail (MatchError ^message \"no\"))) " &
-       " catch (MatchError) nil) ($ref retry 9) ($deref retry)", "9"
+       " catch MatchError nil) ($ref retry 9) ($deref retry)", "9"
 
   test "invalid definitions and unresolved completed units fail":
     expect GeneError:
@@ -624,7 +624,7 @@ suite "module references":
       discard runStr("(var values (Set #Deref item)) " &
                      "#Ref item [1] values")
     ck "(var caught (try #Ref cycle [#Deref cycle] " &
-       " catch (InvalidRefDefinition ^name n) n)) " &
+       " catch InvalidRefDefinition $ex/name)) " &
        "($ref cycle 1) caught", "\"cycle\""
 
 suite "gir — disassembly":
@@ -772,15 +772,15 @@ suite "vm — strings and interpolation":
 
   test "strings iterate explicitly by chars and bytes":
     ck "[($chars \"Aé\") ($bytes \"Aé\")]", "[['A' 'é'] [65 195 169]]"
-    ck "(try ($chars 1) catch {^message m} m)", "\"chars expects a Str\""
-    ck "(try ($bytes) catch {^message m} m)",
+    ck "(try ($chars 1) catch Any $ex/message)", "\"chars expects a Str\""
+    ck "(try ($bytes) catch Any $ex/message)",
        "\"bytes expects 1 argument, got 0\""
 
   test "graphemes group combining scalars":
     let s = "e\u0301x"
     ck "(var s \"" & s & "\") [($chars s) ($graphemes s) ($bytes s)]",
        "[['e' '\u0301' 'x'] [\"e\u0301\" \"x\"] [101 204 129 120]]"
-    ck "(try ($graphemes 1) catch {^message m} m)",
+    ck "(try ($graphemes 1) catch Any $ex/message)",
        "\"graphemes expects a Str\""
 
   test "dollar concatenates display text":
@@ -976,9 +976,9 @@ suite "vm — comparison and logic":
     ck "(== ($hash #[1 2]) ($hash ($freeze [1 2])))", "true"
     ck "(== ($hash (quote #(x @line 1 ^a 2))) " &
        "   ($hash (quote #(x @line 99 ^a 2))))", "true"
-    ck "(try ($hash [1 2]) catch {^message m} m)",
+    ck "(try ($hash [1 2]) catch Any $ex/message)",
        "\"hash expects a hash-stable value\""
-    ck "(try ($hash #[($cell 1)]) catch {^message m} m)",
+    ck "(try ($hash #[($cell 1)]) catch Any $ex/message)",
        "\"hash expects a hash-stable value\""
     expect GeneError: discard runStr("($hash)")
   test "same compares scalar values and heap identity":
@@ -991,7 +991,7 @@ suite "vm — comparison and logic":
     ck "($freeze_shallow [1 [2]])", "#[1 [2]]"
     ck "($freeze [1 {^a [2]}])", "#[1 #{^a #[2]}]"
     ck "($thaw ($freeze [1 {^a [2]}]))", "[1 {^a [2]}]"
-    ck "(try ($freeze [($cell 1)]) catch {^message m} m)",
+    ck "(try ($freeze [($cell 1)]) catch Any $ex/message)",
        "\"freeze cannot freeze Cell\""
     expect GeneError: discard runStr("($freeze)")
   test "not":
@@ -1026,7 +1026,7 @@ suite "vm — special forms":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(scope (var t (spawn (fail (Boom ^message \"x\")))) " &
-       "  (try (await t) catch (Boom ^message m) m))",
+       "  (try (await t) catch Boom $ex/message))",
        "\"x\""
 
   test "do returns last":
@@ -1049,7 +1049,7 @@ suite "vm — special forms":
   test "typed var checks gradual boundaries":
     ck "(var x : Int 5) (+ x 1)", "6"
     ck "(var maybe : (? Int)) maybe", "nil"
-    ck "(try (var x : Int \"no\") x catch (TypeError ^where w) w)",
+    ck "(try (var x : Int \"no\") x catch TypeError $ex/where)",
        "\"var 'x'\""
     ck "(type Request ^props {^path Str}) " &
        "(fn app [raw] (var req : Request raw) req/path) " &
@@ -1057,27 +1057,27 @@ suite "vm — special forms":
        "\"/\""
     ck "(try (var s : (Stream Int Never) ($to_stream [\"bad\"])) " &
        "     (s ~ next) " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"Stream/next item\""
   test "set reassigns an existing binding":
     ck "(var x 1) (set x 99) x", "99"
   test "set checks typed binding boundaries":
     ck "(var x : Int 1) (set x 2) x", "2"
     ck "(try (var x : Int 1) (set x \"bad\") x " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"set 'x'\""
     ck "(try (fn f [x : Int] (set x \"bad\") x) (f 1) " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"set 'x'\""
     ck "(try (fn f [^x : Int] (set x \"bad\") x) (f ^x 1) " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"set 'x'\""
     ck "(try (fn (f item) [x : item] (set x \"bad\") x) (f 1) " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"set 'x'\""
     ck "(try (fn outer [] (var x : Int 1) (fn [] (set x \"bad\"))) " &
        "     ((outer)) " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"set 'x'\""
   test "slotted conditional locals remain undefined when not executed":
     ck "((fn [flag] (if flag (var x 1) nil) x) true)", "1"
@@ -1136,8 +1136,9 @@ suite "vm — functions and closures":
   test "recoverable errors expose bytecode frame traces":
     ck "(fn outer [] (inner)) " &
        "(fn inner [] (var x : Int \"bad\") x) " &
-       "(try (outer) catch (TypeError ^trace t) " &
-       "  [t/0/name t/0/kind t/1/name t/1/kind])",
+       "(try (outer) catch TypeError " &
+       "  [$ex/trace/0/name $ex/trace/0/kind " &
+       "   $ex/trace/1/name $ex/trace/1/kind])",
        "[\"inner\" \"bytecode\" \"outer\" \"bytecode\"]"
   test "native-compiled typed Int arithmetic uses dynamic boundary adapters":
     ck "(fn add [x : Int y : Int] : Int (+ x y)) (add 20 22)", "42"
@@ -1146,19 +1147,20 @@ suite "vm — functions and closures":
     ck "(fn add64 [x : I64 y : I64] : I64 (+ x y)) (add64 20 22)", "42"
     ck "(fn mul64 [x : F64 y : F64] : F64 (* x y)) (mul64 3.5 2.0)", "7.0"
     ck "(fn add [x : Int y : Int] : Int (+ x y)) " &
-       "(try (add \"bad\" 1) catch (TypeError ^where w) w)",
+       "(try (add \"bad\" 1) catch TypeError $ex/where)",
        "\"parameter 'x'\""
     ck "(fn pick [a : Int b : Int c : Int] : Int b) " &
-       "(try (pick 1 2 \"bad\") catch (TypeError ^where w) w)",
+       "(try (pick 1 2 \"bad\") catch TypeError $ex/where)",
        "\"parameter 'c'\""
     ck "(fn outer [] (add \"bad\" 1)) " &
        "(fn add [x : Int y : Int] : Int (+ x y)) " &
-       "(try (outer) catch (TypeError ^trace t) " &
-       "  [t/0/name t/0/kind t/1/name t/1/kind])",
+       "(try (outer) catch TypeError " &
+       "  [$ex/trace/0/name $ex/trace/0/kind " &
+       "   $ex/trace/1/name $ex/trace/1/kind])",
        "[\"add\" \"typed_native\" \"outer\" \"bytecode\"]"
     ck "(fn add64 [x : I64 y : I64] : I64 (+ x y)) " &
        "(try (add64 9223372036854775807 1) " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"return from 'add64'\""
   test "calling a non-callable raises":
     expect GeneError: discard runStr("(1 2 3)")
@@ -1238,10 +1240,10 @@ suite "vm — selectors":
        "((select ^default fallback name) {^age 37})",
        "\"unknown\""
     ck "((select ^default \"unknown\" name) {^name nil})", "nil"
-    ck "(try ((select ^strict true name) {^age 37}) catch {^message m} m)",
+    ck "(try ((select ^strict true name) {^age 37}) catch Any $ex/message)",
        "\"selector lookup failed at segment: name\""
     ck "(try ((select ^strict true ^default \"unknown\" name) {^age 37}) " &
-       "catch {^message m} m)",
+       "catch Any $ex/message)",
        "\"selector lookup failed at segment: name\""
     expect GeneError:
       discard runStr("((select ^strict 1 name) {^age 37})")
@@ -1546,7 +1548,7 @@ suite "vm — env and eval":
        "(fn capture! [] (caller_env ~ snapshot [\"x\"])) " &
        "(var saved (capture!)) " &
        "[(eval (quote x) ^in saved) " &
-       " (try (eval (quote secret) ^in saved) catch _ \"absent\")]",
+       " (try (eval (quote secret) ^in saved) catch Any \"absent\")]",
        "[1 \"absent\"]"
 
   test "env parent bindings are visible to eval":
@@ -1589,18 +1591,18 @@ suite "vm — env and eval":
        "3"
     ck "(try (eval (quote (while true nil)) " &
        "           ^in (env ^policy {^max_steps 20})) " &
-       "catch {^message m} m)",
+       "catch Any $ex/message)",
        "\"eval max steps exceeded\""
     ck "(try (eval (quote (eval (quote (while true nil)) ^in (env))) " &
        "           ^in (env ^policy {^max_steps 40})) " &
-       "catch {^message m} m)",
+       "catch Any $ex/message)",
        "\"eval max steps exceeded\""
     # A step budget is transitive across an ordinary call. The callee's bound
     # scope descends from its own lexical scope, so without this the first call
     # out of the evaluated form silently left the limit behind.
     ck "(fn spin [n : Int] (while true (set n (+ n 1))) n) " &
        "(try (eval (quote (spin 1)) ^in (env ^policy {^max_steps 200})) " &
-       "catch {^message m} m)",
+       "catch Any $ex/message)",
        "\"eval max steps exceeded\""
     # A wall clock and a process-memory ceiling are the two limits a step count
     # cannot express: an allocating loop can exhaust memory in few steps, and a
@@ -1608,12 +1610,12 @@ suite "vm — env and eval":
     # path, so a runaway form is stopped rather than the process.
     ck "(try (eval (quote (while true nil)) " &
        "           ^in (env ^policy {^timeout_ms 50})) " &
-       "catch {^message m} m)",
+       "catch Any $ex/message)",
        "\"eval timeout exceeded\""
     ck "(try (eval (quote (do (var xs ($thaw #[])) " &
        "                      (while true (xs ~ push ($str/join [\"x\"] \"\"))))) " &
        "           ^in (env ^policy {^max_memory_mb 1})) " &
-       "catch {^message m} m)",
+       "catch Any $ex/message)",
        "\"eval memory limit exceeded\""
     ck "(eval (quote (+ 1 2)) " &
        "      ^in (env ^policy {^max_steps 200 ^timeout_ms 5000 " &
@@ -1644,7 +1646,7 @@ suite "vm — env and eval":
 
   test "eval compile failures are typed CompileError values":
     ck "(try (eval (quote (var)) ^in (env)) " &
-       "catch (CompileError ^message m) m)",
+       "catch CompileError $ex/message)",
        "\"var requires a name or pattern\""
 
   test "Env annotations accept env values":
@@ -1781,16 +1783,16 @@ suite "vm — channels":
        "(ch ~ send 9) " &
        "(ch ~ close) " &
        "[(ch ~ recv) " &
-       " (try (ch ~ recv) catch (ChannelClosed ^message m) m)]",
+       " (try (ch ~ recv) catch ChannelClosed $ex/message)]",
        "[9 \"channel is closed\"]"
     ck "(var ch ($channel)) " &
        "(ch ~ close) " &
-       "(try (ch ~ send 1) catch (ChannelClosed ^message m) m)",
+       "(try (ch ~ send 1) catch ChannelClosed $ex/message)",
        "\"channel is closed\""
 
   test "typed channels check items on send":
     ck "(var ch : (Channel Int) ($channel)) " &
-       "(try (ch ~ send \"bad\") catch (TypeError ^where w) w)",
+       "(try (ch ~ send \"bad\") catch TypeError $ex/where)",
        "\"Channel/send item\""
     ck "(var ch : (Channel Int) ($channel)) " &
        "(ch ~ send 7) " &
@@ -1799,7 +1801,7 @@ suite "vm — channels":
     ck "(var raw ($channel)) " &
        "(raw ~ send \"bad\") " &
        "(var ch : (Channel Int) raw) " &
-       "(try (ch ~ recv) catch (TypeError ^where w) w)",
+       "(try (ch ~ recv) catch TypeError $ex/where)",
        "\"Channel/recv item\""
 
   test "channel sends require Send values":
@@ -1837,20 +1839,20 @@ suite "vm — channels":
        "((ch ~ recv) ~ load)",
        "7"
     ck "(var ch ($channel)) " &
-       "(try (ch ~ send [1]) catch (TypeError ^expected e) e)",
+       "(try (ch ~ send [1]) catch TypeError $ex/expected)",
        "\"Send\""
     ck "(var ch ($channel)) " &
-       "(try (ch ~ send #[($cell 1)]) catch (TypeError ^where w) w)",
+       "(try (ch ~ send #[($cell 1)]) catch TypeError $ex/where)",
        "\"Channel/send item\""
     ck "(var ch ($channel)) " &
        "(var captured ($cell 1)) " &
        "(var f (fn [] (captured ~ get))) " &
-       "(try (ch ~ send f) catch (TypeError ^expected e) e)",
+       "(try (ch ~ send f) catch TypeError $ex/expected)",
        "\"Send\""
     ck "(var ch ($channel)) " &
        "(var captured 1) " &
        "(var f (fn [] (set captured (+ captured 1)))) " &
-       "(try (ch ~ send f) catch (TypeError ^expected e) e)",
+       "(try (ch ~ send f) catch TypeError $ex/expected)",
        "\"Send\""
     ck "(type Msg ^props {^x Int} ^impl [Send]) " &
        "(impl Send for Msg) " &
@@ -1908,7 +1910,7 @@ suite "vm — cooperative scheduler":
        "  (out ~ get))", "8"
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var t (spawn (try (fail (Error ^message \"x\")) " &
-       "                  catch _ (ch ~ recv)))) " &
+       "                  catch Any (ch ~ recv)))) " &
        "  (spawn (ch ~ send 9)) " &
        "  (await t))", "9"
   test "suspension preserves scope, supervisor, eval, and namespace sub-bodies":
@@ -2136,31 +2138,31 @@ suite "vm — cooperative scheduler":
   test "closing a channel wakes parked receivers and senders":
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var t (spawn (try (ch ~ recv) " &
-       "                  catch (ChannelClosed ^message m) m))) " &
+       "                  catch ChannelClosed $ex/message))) " &
        "  (spawn (ch ~ close)) " &
        "  (await t))",
        "\"channel is closed\""
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (ch ~ send 1) " &
        "  (var t (spawn (try (ch ~ send 2) " &
-       "                  catch (ChannelClosed ^message m) m))) " &
+       "                  catch ChannelClosed $ex/message))) " &
        "  (spawn (ch ~ close)) " &
        "  (await t))",
        "\"channel is closed\""
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var a (spawn (try (ch ~ recv) " &
-       "                  catch (ChannelClosed ^message m) m))) " &
+       "                  catch ChannelClosed $ex/message))) " &
        "  (var b (spawn (try (ch ~ recv) " &
-       "                  catch (ChannelClosed ^message m) m))) " &
+       "                  catch ChannelClosed $ex/message))) " &
        "  (spawn (ch ~ close)) " &
        "  [(await a) (await b)])",
        "[\"channel is closed\" \"channel is closed\"]"
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (ch ~ send 1) " &
        "  (var a (spawn (try (ch ~ send 2) " &
-       "                  catch (ChannelClosed ^message m) m))) " &
+       "                  catch ChannelClosed $ex/message))) " &
        "  (var b (spawn (try (ch ~ send 3) " &
-       "                  catch (ChannelClosed ^message m) m))) " &
+       "                  catch ChannelClosed $ex/message))) " &
        "  (spawn (ch ~ close)) " &
        "  [(await a) (await b)])",
        "[\"channel is closed\" \"channel is closed\"]"
@@ -2207,7 +2209,7 @@ suite "vm — cooperative scheduler":
        "(try (scope " &
        "       (spawn (do (ch ~ recv) (out ~ set 1))) " &
        "       nil) " &
-       "  catch {^message m} m) " &
+       "  catch Any $ex/message) " &
        "(ch ~ send 1) " &
        "($sleep 1) " &
        "(out ~ get)", "0"
@@ -2220,7 +2222,7 @@ suite "vm — cooperative scheduler":
        "  (scope " &
        "    (spawn (do (ch ~ recv) (out ~ set 1))) " &
        "    (fail (Boom ^message \"stop\"))) " &
-       "  catch (Boom) nil) " &
+       "  catch Boom nil) " &
        "(ch ~ send 1) " &
        "(scope nil) " &
        "(out ~ get)", "0"
@@ -2235,7 +2237,7 @@ suite "vm — cooperative scheduler":
        "                ensure (out ~ set 9))) " &
        "    ($sleep 1) " &
        "    (fail (Boom ^message \"stop\"))) " &
-       "  catch (Boom) nil) " &
+       "  catch Boom nil) " &
        "(out ~ get)", "9"
 
   test "task cancellation cleanup can suspend before await observes cancellation":
@@ -2272,7 +2274,7 @@ suite "vm — cooperative scheduler":
        "    (var t (spawn (do ($sleep 5) (out ~ set 9)))) " &
        "    (t ~ detach) " &
        "    (fail (Boom ^message \"stop\"))) " &
-       "  catch (Boom) nil) " &
+       "  catch Boom nil) " &
        "[(out ~ get) ($sleep 10) (out ~ get)]",
        "[0 nil 9]"
 
@@ -2339,7 +2341,7 @@ suite "vm — cooperative scheduler":
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
        "(var pending (a ~ ask ^timeout_ms 5 (fn [reply] (Get ^reply reply)))) " &
-       "(var err (try (await pending) catch (ActorError ^message m) m)) " &
+       "(var err (try (await pending) catch ActorError $ex/message)) " &
        "(ch ~ send 7) " &
        "[err ($sleep 1) (out ~ get)]",
        "[\"actor/ask timed out\" nil 7]"
@@ -2351,16 +2353,16 @@ suite "vm — cooperative scheduler":
        "(fn handle [ctx state msg] " &
        "  (var (Get ^reply reply) msg) " &
        "  (var got (ch ~ recv)) " &
-       "  (try (reply ~ send got) catch {^message m} m) " &
+       "  (try (reply ~ send got) catch Any $ex/message) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
        "(var pending (a ~ ask ^timeout_ms 5 " &
        "  (fn [reply] (saved ~ set reply) (Get ^reply reply)))) " &
-       "(var err (try (await pending) catch (ActorError ^message m) m)) " &
+       "(var err (try (await pending) catch ActorError $ex/message)) " &
        "(var first-late (try ((saved ~ get) ~ send 9) " &
-       "                  catch {^message m} m)) " &
+       "                  catch Any $ex/message)) " &
        "(var second-late (try ((saved ~ get) ~ send 10) " &
-       "                   catch {^message m} m)) " &
+       "                   catch Any $ex/message)) " &
        "[err first-late second-late])",
        "[\"actor/ask timed out\" nil \"reply has already been sent\"]"
 
@@ -2392,16 +2394,16 @@ suite "vm — cooperative scheduler":
        "(fn handle [ctx state msg] " &
        "  (var (Get ^reply reply) msg) " &
        "  (var got (ch ~ recv)) " &
-       "  (try (reply ~ send got) catch {^message m} m) " &
+       "  (try (reply ~ send got) catch Any $ex/message) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
        "(var pending (a ~ ask " &
        "  (fn [reply] (saved ~ set reply) (Get ^reply reply)))) " &
        "(pending ~ cancel) " &
        "(var first-late (try ((saved ~ get) ~ send 9) " &
-       "                  catch {^message m} m)) " &
+       "                  catch Any $ex/message)) " &
        "(var second-late (try ((saved ~ get) ~ send 10) " &
-       "                   catch {^message m} m)) " &
+       "                   catch Any $ex/message)) " &
        "[first-late second-late])",
        "[nil \"reply has already been sent\"]"
 
@@ -2512,7 +2514,7 @@ suite "vm — actors":
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/stop)))) " &
        "(a ~ send 1) " &
-       "(try (a ~ send 2) catch (ActorClosed ^message m) m)",
+       "(try (a ~ send 2) catch ActorClosed $ex/message)",
        "\"actor is closed\""
     ck "(var a : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) " &
@@ -2525,11 +2527,11 @@ suite "vm — actors":
     ck "(var a : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/continue state)))) " &
-       "(try (a ~ send \"bad\") catch (TypeError ^where w) w)",
+       "(try (a ~ send \"bad\") catch TypeError $ex/where)",
        "\"actor/send message\""
     ck "(var a ($actor/spawn ^init (fn [] 0) " &
        "  ^handle (fn [ctx state msg] ($actor/continue state)))) " &
-       "(try (a ~ send [1]) catch (TypeError ^expected e) e)",
+       "(try (a ~ send [1]) catch TypeError $ex/expected)",
        "\"Send\""
 
   test "actor message type is explicit inferred or Any":
@@ -2585,7 +2587,7 @@ suite "vm — actors":
        "  (fn (choose result err) [t : (Task result err) fallback : result] " &
        "    fallback) " &
        "  (try (choose (a ~ ask (fn [reply] (Get ^reply reply))) \"bad\") " &
-       "       catch (TypeError ^expected e) e))",
+       "       catch TypeError $ex/expected))",
        "\"Int\""
 
   test "actor ask enforces ReplyTo result type and reports missing replies":
@@ -2599,7 +2601,7 @@ suite "vm — actors":
        "          (reply ~ send \"bad\") " &
        "          ($actor/continue state)))))) " &
        "(try (await (a ~ ask (fn [reply] (Get ^reply reply)))) " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"ReplyTo/send value\""
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
        "(impl Send for Get) " &
@@ -2607,7 +2609,7 @@ suite "vm — actors":
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/continue state)))) " &
        "(try (await (a ~ ask (fn [reply] (Get ^reply reply)))) " &
-       "catch (ActorError ^message m) m)",
+       "catch ActorError $ex/message)",
        "\"actor/ask did not receive a reply\""
 
   test "task scopes close owned actors on exit":
@@ -2624,7 +2626,7 @@ suite "vm — actors":
        "    (set a ($actor/spawn ^init (fn [] 0) " &
        "      ^handle (fn [ctx state msg] ($actor/continue state)))) " &
        "    (fail (Boom ^message \"x\"))) " &
-       "catch (Boom ^message m) m) " &
+       "catch Boom $ex/message) " &
        "(a ~ try_send 1)",
        "false"
 
@@ -2830,7 +2832,7 @@ suite "vm — actors":
        "       ^handle (fn [ctx state msg] " &
        "         (fail (Boom ^message \"bad\"))))) " &
        "     (a ~ send 1)) " &
-       "   catch (Boom ^message m) m) " &
+       "   catch Boom $ex/message) " &
        " (a ~ try_send 2)]",
        "[\"bad\" false]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
@@ -2845,7 +2847,7 @@ suite "vm — actors":
        "    (var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
        "    ($sleep 1) " &
        "    \"after\") " &
-       "  catch (Boom ^message m) m)",
+       "  catch Boom $ex/message)",
        "\"bad\""
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
@@ -2858,7 +2860,7 @@ suite "vm — actors":
        "          ^handle (fn [ctx state msg] " &
        "            (fail (Boom ^message \"bad\"))))) " &
        "        (a ~ send 7))) " &
-       "    catch (Boom ^message m) m)) " &
+       "    catch Boom $ex/message)) " &
        "(var event (parent-events ~ recv)) " &
        "[outcome " &
        " (match event " &
@@ -2903,7 +2905,7 @@ suite "vm — actors":
     ck "(var a : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] 99))) " &
-       "(try (a ~ send 1) catch (TypeError ^where w) w)",
+       "(try (a ~ send 1) catch TypeError $ex/where)",
        "\"actor handler return\""
 
   test "actor operations require actors":
@@ -2920,9 +2922,9 @@ suite "vm — streams":
     ck "(var s ($read_all \"(a) #_ (ignored) (b 2)\")) " &
        "[(s ~ next) (s ~ next) (s ~ has_next)]",
        "[(a) (b 2) false]"
-    ck "(try ($read_one \"(a\") catch {^message m} m)",
+    ck "(try ($read_one \"(a\") catch Any $ex/message)",
        "\"read_one: unexpected EOF: unclosed '('\\n  while reading '(' opened at 1:1; expected ')'\""
-    ck "(try ($read_one \"(a\") catch (ParseError ^message m) m)",
+    ck "(try ($read_one \"(a\") catch ParseError $ex/message)",
        "\"read_one: unexpected EOF: unclosed '('\\n  while reading '(' opened at 1:1; expected ')'\""
     expect GeneError: discard runStr("($read_one 1)")
     expect GeneError: discard runStr("($read_all 1)")
@@ -2938,7 +2940,7 @@ suite "vm — streams":
        "(var t (first-token ($lex_all \"name\"))) " &
        "(var k t/kind) (var x t/lexeme) [k x]",
        "[symbol \"name\"]"
-    ck "(try ($lex_all \"\\\"\") catch (LexError ^message m) m)",
+    ck "(try ($lex_all \"\\\"\") catch LexError $ex/message)",
        "\"lex_all: unterminated string literal\""
     expect GeneError: discard runStr("($lex_all 1)")
 
@@ -3038,10 +3040,10 @@ suite "vm — streams":
        "  (fn [x] (calls ~ update (fn [n] (+ n 1))) " &
        "          (fail (Boom ^message \"boom\"))))) " &
        "(var first (try (s ~ has_next) " &
-       "  catch (Boom ^message m) m)) " &
+       "  catch Boom $ex/message)) " &
        "(var after (s ~ has_next)) " &
        "(var terminal (try (s ~ next) " &
-       "  catch (EndOfStream ^message m) m)) " &
+       "  catch EndOfStream $ex/message)) " &
        "[first after terminal (calls ~ get) (closes ~ get)]",
        "[\"boom\" false \"end of stream\" 1 1]"
     ck "(type PredBoom ^props {^message Str} ^impl [Error]) " &
@@ -3051,7 +3053,7 @@ suite "vm — streams":
        "  (fn [x] (calls ~ update (fn [n] (+ n 1))) " &
        "          (fail (PredBoom ^message \"predicate\"))))) " &
        "(var first (try (s ~ next) " &
-       "  catch (PredBoom ^message m) m)) " &
+       "  catch PredBoom $ex/message)) " &
        "[first (s ~ has_next) (calls ~ get)]",
        "[\"predicate\" false 1]"
 
@@ -3083,7 +3085,7 @@ suite "vm — streams":
        "(var s (gen)) " &
        "(s ~ next) " &
        "(var message (try (s ~ close) " &
-       "  catch (Cleanup ^message m) m)) " &
+       "  catch Cleanup $ex/message)) " &
        "[message (outer-ran ~ get) (s ~ has_next)]",
        "[\"first\" true false]"
 
@@ -3142,7 +3144,7 @@ suite "vm — streams":
        "  (yield 1) (return) (yield 2)) " &
        "(var s (gen)) " &
        "[(s ~ next) (s ~ has_next) " &
-       " (try (s ~ peek) catch (EndOfStream ^message m) m)]",
+       " (try (s ~ peek) catch EndOfStream $ex/message)]",
        "[1 false \"end of stream\"]"
     expect GeneError:
       discard compileSource("(fn bad [] : (Stream Int Never) " &
@@ -3155,10 +3157,10 @@ suite "vm — streams":
 
   test "stream next and peek raise EndOfStream shape":
     ck "(try (var s ($to_stream [])) (s ~ next) " &
-       "catch (EndOfStream ^message m) m)",
+       "catch EndOfStream $ex/message)",
        "\"end of stream\""
     ck "(try (var s ($to_stream [])) (s ~ peek) " &
-       "catch (EndOfStream ^message m) m)",
+       "catch EndOfStream $ex/message)",
        "\"end of stream\""
 
   test "Stream annotations accept streams only":
@@ -3169,12 +3171,12 @@ suite "vm — streams":
        "(accept ($to_stream [\"bad\"]))", "7"
     ck "(try (fn first [s : (Stream Int Never)] (s ~ next)) " &
        "     (first ($to_stream [\"bad\"])) " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"Stream/next item\""
     ck "(try (fn typed [s] : (Stream Int Never) s) " &
        "     (var s (typed ($to_stream [\"bad\"]))) " &
        "     (s ~ next) " &
-       "catch (TypeError ^expected e) e)",
+       "catch TypeError $ex/expected)",
        "\"Int\""
     expect GeneError:
       discard runStr("(fn first [s : Stream] s) (first [1])")

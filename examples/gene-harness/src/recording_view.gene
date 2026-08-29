@@ -15,7 +15,12 @@
     ((self/lines ~ get) ~ push (call ~ /0))))
 
 (impl HarnessView for RecordingView
-  (message run [h] : Any
+  # Stops from the prompt, which is what makes this view usable with no
+  # terminal: the caller never reaches its read, so nothing ever waits on
+  # stdin. `handle_line` exists to satisfy the protocol and is unreachable.
+  (message show_prompt [h] : Any
+    0)
+  (message handle_line [h, line] : Any
     0))
 
 (fn recording_view_plugin [lines] : Plugin

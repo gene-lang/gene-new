@@ -244,7 +244,7 @@ union_sub/~cancel
 
 (var caught
   (try (strict_bus ~ publish (PaymentReceived ^payment_id "p_2"))
-    catch (EventPublishError ^failed f) f))
+    catch EventPublishError $ex/failed))
 ($println $"   raise_after reported ${caught} failure(s), after running both")
 ($println "")
 
@@ -322,7 +322,7 @@ bus/~close
 ($println $"   after close:  ${bus/~subscription_count} subscription(s)")
 ($println
   (try (bus ~ publish (OrderPlaced ^order_id "o_9" ^total 1.0))
-    catch (EventBusClosedError ^message m) $"   publish refused: ${m}"))
+    catch EventBusClosedError $"   publish refused: ${$ex/message}"))
 
 ($println "")
 ($println "== done ==")

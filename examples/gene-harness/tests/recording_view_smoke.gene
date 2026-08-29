@@ -12,7 +12,10 @@
 (install h (recording_view_plugin captured))
 (log_append h "message" "hello")
 (var view (row h "views" "active"))
-(view/value ~ HarnessView:run h)
+# Stopping from the prompt is the no-terminal guarantee: a non-nil result tells
+# the caller not to read, so this program never blocks on stdin.
+(assert (== (view/value ~ HarnessView:show_prompt h) 0)
+  "a headless view must stop from the prompt rather than ask for a line")
 (var records (captured ~ get))
 
 (assert (== records/~size 2)

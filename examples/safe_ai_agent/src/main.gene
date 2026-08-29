@@ -96,7 +96,7 @@
           (try
             (for nested in (list_skill_dir entry)
               ((found ~ get) ~ push $"${entry}/${nested}"))
-            catch _
+            catch Any
             nil))))
     (found ~ get)))
 
@@ -195,15 +195,15 @@ Any other path, and every other kind of authority, is refused.""")
          ^capabilities [(fs/ReadWriteDir WORKSPACE)]))
   (try
     $"${(eval program ^in sandbox)}"
-    catch (MissingCapability ^capability wanted ^operation operation)
+    catch MissingCapability
     # A denial is a *value* here, not a crash: the agent renders it, the model
     # sees it in the next turn's history, and it gets to try something else.
     # That is why the refusal names the capability that was missing.
-    $"refused: ${operation} needs ${wanted}"
-    catch e
-    (if (refusal? e/message)
-      $"refused: ${e/message}"
-      $"error: ${e/message}")))
+    $"refused: ${$ex/operation} needs ${$ex/capability}"
+    catch Any
+    (if (refusal? $ex/message)
+      $"refused: ${$ex/message}"
+      $"error: ${$ex/message}")))
 
 # ---------------------------------------------------------------------------
 # Model transport
@@ -255,8 +255,8 @@ ${body}
 Files you can (read_skill "...") on demand:
   ${index}
 """
-    catch e
-    $"\n(a skill directory was granted but could not be read: ${e/message})\n"))
+    catch Any
+    $"\n(a skill directory was granted but could not be read: ${$ex/message})\n"))
 
 (fn gene_primer [] : Str
   # The fallback when no skill is granted, and the floor when one is: these are
@@ -341,7 +341,7 @@ ${(loaded_skill)}
   # first. A model that answers in prose instead lands in the catch arm.
   (try
     ((read_all reply) ~ next)
-    catch _
+    catch Any
     nil))
 
 (fn handle_task [task] : Void

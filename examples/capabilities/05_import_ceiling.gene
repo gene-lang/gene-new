@@ -18,6 +18,6 @@
 
   (try
     (write_where "../escaped.txt")
-    catch _
+    catch Any
     ($println "denied: the import ceiling confines the plugin to out/plugin"))
   0)

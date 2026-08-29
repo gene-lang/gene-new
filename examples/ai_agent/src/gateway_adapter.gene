@@ -48,7 +48,7 @@
   (try
     (var parsed (parse_int (get_env name $"${fallback}")))
     (if (> parsed 0) parsed fallback)
-  catch _ fallback))
+  catch Any fallback))
 
 (var gw_event_max
   (positive_env_int "GENE_GATEWAY_EVENT_MAX_COUNT" 4096))
@@ -125,7 +125,7 @@
          ^dropped_before (dropped_before ~ get)
          ^application
            (agent_api/redact_any (agent_api/application_snapshot app))})
-    catch _ (gw_notice $"persist failed for session ${id}"))))
+    catch Any (gw_notice $"persist failed for session ${id}"))))
 
 # on_event: nil, or (fn [event] ...) called after each event is logged — how
 # push surfaces (Telegram) mirror the log without polling it. It runs inside
@@ -246,7 +246,7 @@
                 (stringify {^type "event" ^event stored}))
         (ws_outbox_overflow ~ set true)))
     (if on_event
-      (try (on_event stored) catch _ nil))
+      (try (on_event stored) catch Any nil))
     stored)
   (fn push_event [type : Str, text : Str]
     (if shared
@@ -355,7 +355,7 @@
       (try
         (await task)
         (outcome ~ set "done")
-      catch _
+      catch Any
         (outcome ~ set "failed"))
     ensure
       (if (== (outcome ~ get) "running")
@@ -533,7 +533,8 @@
                       ^body body ^timeout_ms 30000 ^max_bytes 400000)))
     {^status 0 ^stdout response/body ^stderr ""
      ^http_status response/status ^truncated response/truncated}
-  catch (HttpClientError ^kind "unavailable")
+  catch HttpClientError
+    (if_not (== $ex/kind "unavailable") (fail $ex))
     (await (exec_async ^cmd "curl"
               ^args ["-sS" "-X" "POST" url
                      "-H" "Content-Type: application/json" "-d" body]
@@ -546,13 +547,13 @@
       (var r (tg_call "sendMessage" {^chat_id chat_id ^text text}))
       (var resp (parse r/stdout))
       (if (== resp/ok true) resp/result/message_id)
-    catch _ nil)))
+    catch Any nil)))
 
 (fn tg_edit_message [chat_id, message_id, text : Str]
   (if_not (|| (== message_id nil) (== text ""))
     (try (tg_call "editMessageText"
                   {^chat_id chat_id ^message_id message_id ^text text})
-    catch _ nil)
+    catch Any nil)
     nil))
 
 # Outbound path. Session events are mirrored to Telegram through a queue: the
@@ -638,7 +639,7 @@
     (set entry (tg_outbox ~ recv))
     (try
       (tg_dispatch entry)
-    catch _ nil)))
+    catch Any nil)))
 
 (fn tg_chat_allowed? [chat_id] : Bool
   (if (== tg_allowed "*")
@@ -713,7 +714,7 @@
   (var worker_ref parts/1)
   (var args {})
   (if (&& (== op "tail") (>= parts/~size 3))
-    (try (args ~ put "n" (parse_int parts/2)) catch _ nil))
+    (try (args ~ put "n" (parse_int parts/2)) catch Any nil))
   (var response
     (agent_api/application_call_worker s/application worker_ref op args
       (tg_channel_invocation)))
@@ -737,11 +738,9 @@
             # remaining updates in this poll batch.
             (try
               (tg_channel_command chat_id s text)
-            catch {^message message}
+            catch Any
               (telegram_notice chat_id
-                $"channel_command_failed: ${message}")
-            catch _
-              (telegram_notice chat_id "channel_command_failed"))
+                $"channel_command_failed: ${$ex/message}"))
             (if_not (s/submit_input text "telegram" nil)
               (telegram_notice chat_id
                 $"worker_busy: session ${s/id} already has a turn in flight")
@@ -773,11 +772,8 @@
   (loop
     (try
       (telegram_poll_once offset)
-    catch {^message message}
-      (gw_notice $"telegram: update handling failed: ${message}")
-      ($sleep 2000)
-    catch _
-      (gw_notice "telegram: update handling failed")
+    catch Any
+      (gw_notice $"telegram: update handling failed: ${$ex/message}")
       ($sleep 2000))))
 
 # -----------------------------------------------------------------------------
@@ -894,8 +890,8 @@
         (json_response 400
           {^error "invalid_display_label"
            ^message "display_label must be a string"})))
-  catch (JsonError ^message message)
-    (json_response 400 {^error "invalid_json" ^message message})))
+  catch JsonError
+    (json_response 400 {^error "invalid_json" ^message $ex/message})))
 
 (fn resume_attachment [session_id : Str, attachment_id : Str, req]
   (var attachment (gateway_attachment attachment_id))
@@ -912,8 +908,8 @@
         (json_response 401 {^error "resume_credential_invalid"})))
     (touch_gateway_attachment attachment)
     (json_response 200 (attachment_response attachment))
-  catch (JsonError ^message message)
-    (json_response 400 {^error "invalid_json" ^message message})))
+  catch JsonError
+    (json_response 400 {^error "invalid_json" ^message $ex/message})))
 
 (fn require_attachment [session_id : Str, req]
   (var id (request_header req "x-gene-attachment"))
@@ -978,8 +974,8 @@
     (json_response 200
       {^ok true ^confirmation_id confirmation_id
        ^decision body/decision})
-  catch (JsonError ^message message)
-    (json_response 400 {^error "invalid_json" ^message message})))
+  catch JsonError
+    (json_response 400 {^error "invalid_json" ^message $ex/message})))
 
 (fn acknowledge_attachment
   [session_id : Str, attachment_id : Str, attachment, req]
@@ -1006,8 +1002,8 @@
         (json_response 400
           {^error "invalid_cursor"
            ^message "cursor must be an integer"})))
-  catch (JsonError ^message message)
-    (json_response 400 {^error "invalid_json" ^message message})))
+  catch JsonError
+    (json_response 400 {^error "invalid_json" ^message $ex/message})))
 
 (fn prune_idempotency_records []
   (var now (monotonic_ms))
@@ -1106,8 +1102,8 @@
                ^task_id (if operation operation/task_id)
                ^reserved
                  (s/application/main_agent/input_reserved ~ get)}))))
-      catch (JsonError ^message m)
-        (json_response 400 {^error m}))))
+      catch JsonError
+        (json_response 400 {^error $ex/message}))))
 
 (fn cancel_turn [id : Str, attachment]
   (var s (sessions ~ get id))
@@ -1191,10 +1187,10 @@
             (else
               (persist_gateway_session s)
               (json_response 201 {^worker_id worker/id})))))
-    catch (JsonError ^message m)
-      (json_response 400 {^error m})
-    catch {^message m}
-      (json_response 400 {^error m}))))
+    catch JsonError
+      (json_response 400 {^error $ex/message})
+    catch Any
+      (json_response 400 {^error $ex/message}))))
 
 # Agent routes are explicit aliases over the agent subset of the canonical
 # worker registry. They never maintain a second task, id, or lifecycle.
@@ -1235,10 +1231,10 @@
               (persist_gateway_session s)
               (json_response 201
                 {^agent_id agent/id ^worker_id agent/id})))))
-    catch (JsonError ^message m)
-      (json_response 400 {^error m})
-    catch {^message m}
-      (json_response 400 {^error m}))))
+    catch JsonError
+      (json_response 400 {^error $ex/message})
+    catch Any
+      (json_response 400 {^error $ex/message}))))
 
 (fn get_agent_result [id : Str, agent_id : Str, attachment]
   (var s (sessions ~ get id))
@@ -1314,10 +1310,10 @@
           current/agent_ids current/worker_ids current/evidence_v))
       (persist_gateway_session s)
       (json_response 200 {^progress updated})
-    catch (JsonError ^message m)
-      (json_response 400 {^error "invalid_json" ^message m})
-    catch {^message m}
-      (json_response 400 {^error "invalid_progress" ^message m}))))
+    catch JsonError
+      (json_response 400 {^error "invalid_json" ^message $ex/message})
+    catch Any
+      (json_response 400 {^error "invalid_progress" ^message $ex/message}))))
 
 (fn agent_input [id : Str, agent_id : Str, req, attachment]
   (var s (sessions ~ get id))
@@ -1385,10 +1381,10 @@
     (if response/ok
       (worker_operation_success_response s response operation 200)
       (worker_operation_failure_response response))
-  catch (JsonError ^message m)
-    (json_response 400 {^error "invalid_json" ^message m})
-  catch {^message m}
-    (json_response 400 {^error "invalid_operation" ^message m})))
+  catch JsonError
+    (json_response 400 {^error "invalid_json" ^message $ex/message})
+  catch Any
+    (json_response 400 {^error "invalid_operation" ^message $ex/message})))
 
 (fn worker_observation
   [id : Str, worker_id : Str, operation : Str, req, attachment]
@@ -1405,8 +1401,8 @@
     (if response/ok
       (worker_operation_success_response s response operation 200)
       (worker_operation_failure_response response))
-  catch {^message m}
-    (json_response 400 {^error "invalid_arguments" ^message m})))
+  catch Any
+    (json_response 400 {^error "invalid_arguments" ^message $ex/message})))
 
 (fn list_artifacts [id : Str]
   (var s (sessions ~ get id))
@@ -1463,10 +1459,10 @@
       (else
         (json_response 400 {^error "invalid_source"
                             ^message "source must be result or tail"})))
-  catch (JsonError ^message m)
-    (json_response 400 {^error "invalid_json" ^message m})
-  catch {^message m}
-    (json_response 400 {^error "invalid_pin" ^message m})))
+  catch JsonError
+    (json_response 400 {^error "invalid_json" ^message $ex/message})
+  catch Any
+    (json_response 400 {^error "invalid_pin" ^message $ex/message})))
 
 (fn worker_input [id : Str, worker_id : Str, req, attachment]
   (var s (sessions ~ get id))
@@ -1510,8 +1506,9 @@
                       (else
                         (persist_gateway_session s)
                         (json_response 202 {^ok true ^result result})))))
-              catch (JsonError ^message m)
-                (json_response 400 {^error "invalid_json" ^message m})))))))))
+              catch JsonError
+                (json_response 400
+                  {^error "invalid_json" ^message $ex/message})))))))))
 
 (fn cancel_worker [id : Str, worker_id : Str, attachment]
   (var s (sessions ~ get id))
@@ -1581,7 +1578,7 @@
       (if_not (== req/params/cursor void)
         (try
           (set cursor (parse_int req/params/cursor))
-        catch _ nil))
+        catch Any nil))
       (if (< cursor (s/dropped_before ~ get))
         (then
           (json_response 409
@@ -2180,7 +2177,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
       (var n (parse_int (join (split id "s") "")))
       (if (> n (session_seq ~ get))
         (session_seq ~ set n))
-    catch _ nil)))
+    catch Any nil)))
 
 (fn restore_sessions []
   (var count ($cell 0))
@@ -2196,7 +2193,7 @@ document.getElementById('f').addEventListener('submit', function (e) {
         (make_session id hook (agent_api/redact_any saved) nil))
       (restore_session_id_seq id)
       (count ~ set (+ (count ~ get) 1))
-    catch _ (gw_notice $"failed to restore session ${id}")))
+    catch Any (gw_notice $"failed to restore session ${id}")))
   (count ~ get))
 
 (fn finish_gateway_store [label : Str]

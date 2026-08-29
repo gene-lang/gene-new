@@ -21,7 +21,7 @@
   (install h
     (Plugin ^id "core" ^provides [] ^requires [] ^contextual true
       ^activate (fn [] (fn [host] nil))))
-catch e
+catch Any
   (set reserved_refused true))
 (assert reserved_refused "plugins must not forge the core ledger owner id")
 (var baseline_plugin

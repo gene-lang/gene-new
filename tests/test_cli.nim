@@ -180,8 +180,8 @@ suite "cli — gene run":
   (try
     (store ~ Store:checkpoint 1 {^state {^winner id}})
     ($println $"committed ${id}")
-  catch (StoreError ^kind kind)
-    ($println $"${kind} ${id}")))
+  catch StoreError
+    ($println $"${$ex/kind} ${id}")))
 """)
     let first = startProcess(geneExe,
       args = ["run", "--allow_read_write_dir", root, contender, root, "a"],
@@ -279,7 +279,15 @@ suite "cli — gene run":
       ("harness_workspace_turn", "workspace_turn_smoke.gene",
        "workspace_turn_smoke: ok"),
       ("harness_codegen_seam", "codegen_seam_smoke.gene",
-       "codegen_seam_smoke: ok")
+       "codegen_seam_smoke: ok"),
+      ("harness_queued_registration", "queued_registration_smoke.gene",
+       "queued_registration_smoke: ok"),
+      ("harness_build_replace", "build_replace_smoke.gene",
+       "build_replace_smoke: ok"),
+      ("harness_duplicate_blob", "duplicate_blob_smoke.gene",
+       "duplicate_blob_smoke: ok"),
+      ("harness_build_provenance", "build_provenance_smoke.gene",
+       "build_provenance_smoke: ok")
     ]:
       root = resetHarnessDir(name)
       ran = runGene(["run", "--allow_read_write_dir", root,
@@ -1202,7 +1210,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
 (var duplicate "")
 (try
   (application_create_worker_from_config app "output" {^name "build-shell"})
-catch {^message message} (set duplicate message))
+catch Any (set duplicate $ex/message))
 ($println "named" (== addressed/id shell/id)
   "changed" changed/ok "env" env_set/ok "run" ran/ok
   "escape" escaped/error/kind
@@ -1924,7 +1932,7 @@ catch {^message message} (set duplicate message))
 (var waiting (spawn (application_acquire_workspace b "main" "edit")))
 ($sleep 25)
 (waiting ~ cancel)
-# Cancellation is a control signal and deliberately bypasses `catch _`.
+# Cancellation is a control signal and deliberately bypasses `catch Any`.
 # Give the task's `ensure` cleanup a scheduler turn instead of awaiting it.
 ($sleep 25)
 ($println $"owner=${(a/workspace_coordinator/owner ~ get)} foreign=${foreign_release} preserved=${(== owner_after_foreign (a/workspace_coordinator/owner ~ get))} waiters=${((a/workspace_coordinator/waiters ~ get) ~ size)}")
@@ -3955,8 +3963,8 @@ catch {^message message} (set duplicate message))
 ($println (safe_path "tmp/agent-v1..v2.txt"))
 (try
   ($println (safe_path "tmp/../outside"))
-catch {^message message}
-  ($println message))
+catch Any
+  ($println $ex/message))
 """)
     let ran = runGene(["run", fixture])
     if ran.exitCode != 0: checkpoint ran.output
@@ -4645,7 +4653,7 @@ catch {^message message}
 (var unsafe
   (try
     (list_handler {^path "../outside" ^_emit sink})
-  catch {^message message} message))
+  catch Any $ex/message))
 
 (var compact_events ($cell []))
 (fn compact_emit [type, props]
@@ -5752,7 +5760,7 @@ catch {^message message}
           (cancelled ~ set true)
           (task ~ cancel))
         nil))))
-(try (done ~ recv) catch (ChannelClosed) nil)
+(try (done ~ recv) catch ChannelClosed nil)
 (running ~ set false)
 (watcher ~ cancel)
 (if armed (end_interrupt) nil)
@@ -8416,7 +8424,7 @@ suite "cli — gene parse/fmt/compile":
 (check "ref-shape" (&& (contains? t "serde_type_ref") (contains? t "Point")))
 (check "no-exec"
   (try (do (read "(serde_v1 (serde_type_ref ^module \"serde-sidefx\" ^path \"Widget\"))") false)
-       catch (SerdeError ^message m) (contains? m "not loaded")))
+       catch SerdeError (contains? $ex/message "not loaded")))
 # stage 4: typed instances via direct construction
 (var p (Point ^x 3 ^y 4))
 (check "inst" (== p (read (write p))))
@@ -8425,10 +8433,10 @@ suite "cli — gene parse/fmt/compile":
      (read (write (Line ^a (Point ^x 1 ^y 2) ^b (Point ^x 5 ^y 6))))))
 (check "inst-variant-payload" (== (Result/ok 42) (read (write (Result/ok 42)))))
 (check "inst-wd-reject"
-  (try (do (write_data p) false) catch (SerdeError ^message m) (contains? m "not data")))
+  (try (do (write_data p) false) catch SerdeError (contains? $ex/message "not data")))
 (check "inst-unknown-field"
   (try (do (read "(serde_v1 (serde_inst (serde_type_ref ^module \"serde_geometry\" ^path \"Point\") (serde_map false [\"x\" 1 \"y\" 2 \"z\" 9]) []))") false)
-       catch (SerdeError ^message m) (contains? m "no field")))
+       catch SerdeError (contains? $ex/message "no field")))
 # ctor must NOT run on read-back (`new` runs it once, printing the marker)
 (var c (new Counter 7))
 (var c2 (read (write c)))
@@ -8438,7 +8446,7 @@ suite "cli — gene parse/fmt/compile":
 (var ht (write conn))
 (check "hooked-form" (&& (contains? ht "serde_hooked") (! (contains? ht "live"))))
 (check "hooked-no-allow"
-  (try (do (read ht) false) catch (SerdeError ^message m) (contains? m "allow_restore")))
+  (try (do (read ht) false) catch SerdeError (contains? $ex/message "allow_restore")))
 (var conn2 (read ht ^policy (SerdePolicy ^allow_restore true)))
 (check "hooked-restore" (&& (== "db" conn2/host) (== true conn2/live)))
 # native wrappers (design §16.6): reopened by their own restore hook, never
@@ -8450,10 +8458,10 @@ suite "cli — gene parse/fmt/compile":
 (check "wrapper-hooked-restore" (== "db" handle2/host))
 (check "wrapper-no-hook-reject"
   (try (do (write (new Opaque "db")) false)
-       catch (SerdeError ^message m) (contains? m "native wrapper")))
+       catch SerdeError (contains? $ex/message "native wrapper")))
 (check "wrapper-inst-blob-reject"
   (try (do (read "(serde_v1 (serde_inst (serde_type_ref ^module \"serde_geometry\" ^path \"Opaque\") (serde_map false [\"host\" \"forged\"]) []))") false)
-       catch (SerdeError ^message m) (contains? m "native wrapper")))
+       catch SerdeError (contains? $ex/message "native wrapper")))
 # stage 6: SerdeRef module singleton -> identity value_ref
 (check "value-ref-form" (contains? (write REGISTRY) "serde_value_ref"))
 (var reg2 (read (write REGISTRY)))

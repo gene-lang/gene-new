@@ -112,7 +112,7 @@
 (fn parse_job_ms [req default]
   (var parsed
     (try (parse_int (|| req/params/ms (stringify default)))
-      catch (ParseError ^message _) default))
+      catch ParseError default))
   (if (< parsed 0) 0 parsed))
 
 (fn run_job [id ms]
@@ -205,7 +205,7 @@
   @route (route ^method "POST" ^path "/counter")
   (var delta
     (try (parse_int (|| req/body "0"))
-      catch (ParseError ^message _) 0))
+      catch ParseError 0))
   (counter ~ set (+ (counter ~ get) delta))
   (json (stringify {^hits (counter ~ get)})))
 

@@ -183,9 +183,9 @@ line two"""
 (fn recover_value [load, close]
   (try
     (checked_value (load))
-  catch (ExampleError ^message message)
-    $"error: ${message}"
-  catch _
+  catch ExampleError
+    $"error: ${$ex/message}"
+  catch Any
     "unknown error"
   ensure
     (close)))

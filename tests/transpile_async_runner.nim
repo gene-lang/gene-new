@@ -23,7 +23,7 @@ writeFile(sourcePath, """
     (task ~ cancel)
     (try
       (await task)
-      catch _ 99
+      catch Any 99
       ensure (mark))))
 """)
 # The producer holds the `scope`/`spawn`; the consumer holds only the Gene
@@ -46,7 +46,7 @@ writeFile(consumerPath, """
 (fn guarded [] : Int
   (try
     (cancelled_work)
-    catch _ 99
+    catch Any 99
     ensure (mark2)))
 """)
 # A Gene error type may declare its own `^kind Str`. A structural check on that
@@ -59,7 +59,7 @@ writeFile(collisionPath, """
 (fn boom [] : Never
   (fail (AppError ^kind "gene_cancellation")))
 (fn caught [] : Str
-  (try (boom) catch (AppError ^kind kind) kind))
+  (try (boom) catch AppError $ex/kind))
 """)
 writeFile(workDir / "async_host.mjs", """
 export let marks = 0;
@@ -103,7 +103,7 @@ try {
 }
 if (!crossModule) {
   throw new Error(
-    `imported cancellation was swallowed by catch _ (returned ${swallowed})`);
+    `imported cancellation was swallowed by catch Any (returned ${swallowed})`);
 }
 if (marks2 !== 1) throw new Error(`ensure ran ${marks2} times instead of once`);
 

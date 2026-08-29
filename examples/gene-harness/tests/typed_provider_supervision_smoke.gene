@@ -41,15 +41,15 @@
   (var failed false)
   (try
     ((resolve h "TypedSlow") ~ HarnessRender:render "probe")
-  catch e
-    (set failed ($str/contains? e/message "max steps exceeded")))
+  catch Any
+    (set failed ($str/contains? $ex/message "max steps exceeded")))
   (assert failed
     "direct typed protocol methods must retain the sandbox module budget")
   (var refused false)
   (try
     ((resolve h "TypedFs") ~ HarnessFs:read_text
       "examples/gene-harness/README.md")
-  catch e
+  catch Any
     (set refused true))
   (assert refused
     "direct typed protocol methods must retain the module capability ceiling")

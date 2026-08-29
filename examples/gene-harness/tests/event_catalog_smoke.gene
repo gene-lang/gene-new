@@ -30,7 +30,7 @@
   (var refused false)
   (try
     (validate_event_catalog events {})
-  catch (HarnessStateError)
+  catch HarnessStateError
     (set refused true))
   (assert refused "an unknown required core event must refuse reconstruction")
   (var known ($thaw #{}))
@@ -40,7 +40,7 @@
   (set refused false)
   (try
     (validate_event_catalog malformed known)
-  catch (HarnessStateError)
+  catch HarnessStateError
     (set refused true))
   (assert refused
     "known persisted events must be rejected when their payload schema fails")

@@ -61,13 +61,17 @@ proc raiseEventError(scope: Scope, typeName, message: string,
   e.hasErrVal = true
   raise e
 
-proc eventErrorValue(e: ref GeneError): Value =
+proc eventErrorValue(scope: Scope, e: ref GeneError): Value =
   if e.hasErrVal:
     e.errVal
   else:
     var props = initPropTable()
     props["message"] = newStr(e.msg)
-    newNode(newSym("Error"), props = props)
+    var head = newSym("RuntimeError")
+    let declared = builtinBinding(scope, "RuntimeError")
+    if declared.kind == vkType:
+      head = declared
+    newNode(head, props = props)
 
 # ---------------------------------------------------------------------------
 # Event identity
@@ -527,7 +531,7 @@ proc dispatchEvent(scope: Scope, bus: Value, data: EventBusData,
       except GeneError as e:
         # A subscriber error must not stop unrelated subscribers (§8).
         inc failed
-        errors.add eventErrorValue(e)
+        errors.add eventErrorValue(scope, e)
   finally:
     dec data.nestingDepth
   publishResultValue(scope, snapshot.len, delivered, failed, errors)
@@ -675,7 +679,7 @@ proc compositeEmit(scope: Scope, sink: Value, event: Value): Value =
       discard emitToSink(scope, child, event)
     except GeneError as e:
       inc failed
-      errors.add eventErrorValue(e)
+      errors.add eventErrorValue(scope, e)
   if failed > 0:
     raiseEventError(scope, "EventPublishError",
       $failed & " composite sink(s) failed",

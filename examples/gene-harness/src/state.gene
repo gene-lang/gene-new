@@ -208,8 +208,8 @@
           envelope/payload/data envelope/payload))
       (var guarded ($runtime/guard_call known/schema schema_payload))
       (if_not guarded/ok (set schema_error guarded/message))
-    catch e
-      (set schema_error ($to_str e/message))))
+    catch Any
+      (set schema_error ($to_str $ex/message))))
   (if_not (== schema_error nil)
     (if (== envelope/origin "core")
       (fail (HarnessStateError
@@ -434,12 +434,12 @@
           (events/gc_countdown ~ set events/gc_interval))
         (else (events/gc_countdown ~ set countdown)))
       (return {^generation generation ^manifest manifest})
-    catch (StoreError ^kind kind ^message message)
-      (if (== ($to_str kind) "conflict")
+    catch StoreError
+      (if (== ($to_str $ex/kind) "conflict")
         (then
           (set attempts (+ attempts 1))
           (merge_after_conflict events))
-        (else (fail (HarnessStateError ^message message))))))
+        (else (fail (HarnessStateError ^message $ex/message))))))
   (fail (HarnessStateError
     ^message "event checkpoint remained contended after 16 retries")))
 

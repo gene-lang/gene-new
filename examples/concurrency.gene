@@ -101,9 +101,9 @@
 
   (spawn (do
     (try (box ~ recv)
-      catch (ChannelClosed ^message m)
+      catch ChannelClosed
         (done ~ set true)
-        ($println "     receiver saw:" m))))
+        ($println "     receiver saw:" $ex/message))))
 
   ($sleep 1)                           # let receiver settle into recv
   (box ~ close)
@@ -130,10 +130,10 @@
 ($println "")
 
 # -----------------------------------------------------------------------------
-# 4. cancellation contract — ensure runs, catch _ does not catch it
+# 4. cancellation contract — ensure runs, catch Any does not catch it
 #
 # Cancellation is a control signal, not an Error (§13.1.1). `try/catch`
-# with a wildcard `catch _` form does NOT catch it; only `ensure` runs
+# with a wildcard `catch Any` form does NOT catch it; only `ensure` runs
 # during the unwind. Cancellation is observed at safepoints (await,
 # channel ops, sleep).
 # -----------------------------------------------------------------------------
@@ -150,9 +150,9 @@
   ($sleep 1)                             # give ensure a chance to run
   ($println "     cleanup ran:" (cleanup_count ~ get)))
 
-($println "   - cancellation propagates past typed `catch` and `catch _`")
-($println "     (live demo: a `try/catch _ \"caught\"` does not catch cancel;")
-($println "      see tests/spec_runner.nim 'wildcard catch does not intercept")
+($println "   - cancellation propagates past typed `catch` and `catch Any`")
+($println "     (live demo: a `try/catch Any \"caught\"` does not catch cancel;")
+($println "      see tests/spec_runner.nim 'catch Any does not intercept")
 ($println "      task cancellation' for the negative-case covered by tests.)")
 ($println "     In a cancellation-aware API (a future Task/await_cancellable),")
 ($println "     the receiving code would observe the signal directly; today's")
@@ -167,7 +167,7 @@
           ensure (cleanup2 ~ set (+ (cleanup2 ~ get) 1))))
   ($sleep 1)
   (try (fail (Boom ^message "abandon"))
-    catch (Boom) nil))
+    catch Boom nil))
 ($sleep 1)
 ($println "     sibling ensure ran:" (cleanup2 ~ get))
 
@@ -267,13 +267,13 @@
     (try
       (stoptest ~ send 0)
       "first_send"
-      catch (Boom ^message m) m))
+      catch Boom $ex/message))
   ($sleep 1)                                           # let failure propagate
   (var post_failure
     (try
       (stoptest ~ send 99)
       "second-send"
-      catch (ActorClosed ^message m) m))
+      catch ActorClosed $ex/message))
   ($println "   - first send (failure trapped):" first_send)
   ($println "   - post_failure send:" post_failure))
 

@@ -53,6 +53,29 @@
     (if_yes (== event/kind "output") ($println event/text))
     (set i (+ i 1))))
 
+# The loop over a view's turns lives out here, and so does the read. A view
+# that owned its loop drew one supervision budget for the whole conversation; a
+# view that owned the read drew one for the human's thinking time and expired at
+# the keyboard. Splitting the turn puts `$os/read_line` between two bounded
+# calls and under neither of them — reading the process's own stdin is host
+# authority, not something a plugin should be doing on a deadline. Re-reading
+# the active row between turns is also the whole of view replacement: a row
+# committed during a turn takes effect at the next prompt, and an absent row
+# ends the session.
+(fn run_view_turns [h, view] : Any
+  (var current view)
+  (while (!= current void)
+    (var stopped (current/value ~ HarnessView:show_prompt h))
+    (if_not (== stopped nil) (return stopped))
+    # Unbounded on purpose. A view that never reaches a prompt — the recording
+    # view, for one — stops above and this never runs, so a headless deployment
+    # still never touches stdin.
+    (var line ($os/read_line))
+    (var result (current/value ~ HarnessView:handle_line h line))
+    (if_not (== result nil) (return result))
+    (set current (row h "views" "active")))
+  0)
+
 (fn print_summary [h, p]
   ($println "plugins:   " (plugin_names p))
   ($println "states:    " (plugin_states h))
@@ -129,7 +152,7 @@
           (else
             (var view (row h "views" "active"))
             (if (!= view void)
-              (view/value ~ HarnessView:run h)
+              (run_view_turns h view)
               (print_summary h p))))))
   ensure
     (shutdown_harness h)

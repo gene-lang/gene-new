@@ -22,6 +22,6 @@
   (save_report "ok.txt" "inside the ceiling")
   (try
     (save_report args/0 "outside the ceiling")
-    catch _
+    catch Any
     ($println "denied: " args/0 " is outside (fs/WriteDir \"reports\")"))
   0)

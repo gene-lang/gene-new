@@ -232,6 +232,13 @@ proc enableLocalSlots(c: var Compiler) =
 
 const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
 
+# `$ex` reads as `(path gene ex)`, so it cannot collide with an ordinary
+# lexical binding. Catch bodies reserve this otherwise-unspellable slot and
+# `compilePath` lowers the special path to that slot. Nested bodies capture it
+# through the ordinary parent-slot machinery; outside a catch it remains an
+# invalid use rather than a mutable global exception cell.
+const CatchErrorBindingName = "$ex"
+
 # `~` is the send operator and is reserved in executable position (design §3).
 # The reader still tokenizes it (so quoted data like `(quote (a ~ b))`
 # round-trips), but it may not be bound, set, or declared as a name.
@@ -6463,6 +6470,26 @@ proc compilePath(c: var Compiler, node: Value) =
   if parts.len == 0:
     c.emitConst VOID
     return
+  if parts.len >= 2 and parts[0].isSymbol("gene") and
+      parts[1].isSymbol("ex"):
+    if c.localSlot(CatchErrorBindingName) < 0 and
+        c.parentSlot(CatchErrorBindingName).slot < 0:
+      raise newException(GeneError,
+        "$ex is only available inside a catch body")
+    c.emitLoadBinding(CatchErrorBindingName)
+    var i = 2
+    while i < parts.len:
+      if parts[i].isPathSendSegment:
+        discard c.emit(opResolveMessage, name = parts[i].pathSendName)
+        c.chunk.callSites[c.emitPlainCall(1)] = node
+        inc i
+      else:
+        let start = i
+        while i < parts.len and not parts[i].isPathSendSegment:
+          inc i
+        compileSelectorParts(c, parts.toOpenArray(start, i - 1))
+        discard c.emit(opApplySelectorTop)
+    return
   if parts.len == 1:
     compileExpr(c, parts[0])
     return
@@ -7282,7 +7309,7 @@ proc compileReturn(c: var Compiler, node: Value) =
   discard c.emit(opExplicitReturn)
 
 proc compileTry(c: var Compiler, node: Value) =
-  ## (try body... catch pat recovery... [catch ...] [ensure cleanup...]) — the
+  ## (try body... catch ErrorType recovery... [catch ...] [ensure cleanup...]) — the
   ## `catch`/`ensure` markers are bare symbols in the flat body.
   let body = node.body
   var i = 0
@@ -7294,14 +7321,22 @@ proc compileTry(c: var Compiler, node: Value) =
   while i < body.len and body[i].isSymbol("catch"):
     inc i
     if i >= body.len:
-      raise newException(GeneError, "catch requires a pattern")
-    let pattern = body[i]
+      raise newException(GeneError, "catch requires an error type")
+    let errorType = body[i]
+    if errorType.kind in {vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString,
+                          vkChar, vkList, vkMap, vkSet, vkHashMap} or
+        errorType.isSymbol("_") or
+        (errorType.kind == vkNode and errorType.props.len > 0):
+      raise newException(GeneError,
+        "catch requires an error type; use Any to catch every recoverable error")
+    let pattern = newNode(newSym(CatchErrorBindingName),
+      body = @[newSym(":"), errorType])
     inc i
     var recovery: seq[Value]
     while i < body.len and not (body[i].isSymbol("catch") or body[i].isSymbol("ensure")):
       recovery.add body[i]
       inc i
-    tp.catches.add CatchClause(pattern: pattern,
+    tp.catches.add CatchClause(errorType: errorType, pattern: pattern,
                                body: c.compileSubBody(recovery, pattern,
                                                       scoped = true))
   if i < body.len and body[i].isSymbol("ensure"):

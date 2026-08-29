@@ -7,7 +7,10 @@
   (if_not condition ($panic message)))
 
 (var h (new_harness))
-(var bindings (harness_bindings h))
+# The second argument is the turn's registration queue, which `run_program`
+# owns and drains; asking what a program may reach needs no turn, so this one
+# is never read.
+(var bindings (harness_bindings h ($thaw #[])))
 (assert (== bindings/h void)
   "model programs must not receive the mutable Harness record")
 (assert (== bindings/log_append void)

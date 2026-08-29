@@ -5,7 +5,7 @@
 (var captured
   (try
     ($fs/read_text "tests/fixtures/capability_import_init_dep.gene")
-    catch _
+    catch Any
     "denied"))
 
 (fn what_happened [] : Str

@@ -21,4 +21,4 @@
 (fn guarded [] : Int
   (try
     (relay)
-    catch (RelayError ^kind kind) ($size kind)))
+    catch RelayError ($size $ex/kind)))

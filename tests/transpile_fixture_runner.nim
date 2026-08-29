@@ -29,6 +29,12 @@ proc envelope(value: Value): JsonNode =
   of vkSymbol:
     result["kind"] = %"sym"
     result["value"] = %value.symVal
+  of vkType:
+    # Typed node heads carry nominal identity in the VM while the web profile
+    # serializes that same identity as its source name. The conformance
+    # envelope compares the portable name, not backend representation.
+    result["kind"] = %"sym"
+    result["value"] = %value.typeName
   of vkList:
     result["kind"] = %"list"
     result["items"] = newJArray()

@@ -79,14 +79,28 @@
       (args ~ set 0 (callback_receiver self/h self/owner)))
     (invoke_owned_callable self/h self/owner self/callable args)))
 
-(fn run_guarded_view [bundle]
-  (bundle/view ~ HarnessView:run bundle/receiver))
+# One `invoke_owned_callable` per message, so both halves of a turn get a fresh
+# deadline and a fresh step/memory budget under the owner's policy. A view that
+# owned its own loop drew one budget for the whole conversation; a view that
+# also owned the read drew one for the human's thinking time. Neither of these
+# two calls can block on a person, so a wall-clock deadline finally measures
+# something the plugin controls.
+(fn guarded_view_prompt [bundle]
+  (bundle/view ~ HarnessView:show_prompt bundle/receiver))
+
+(fn guarded_view_line [bundle]
+  (bundle/view ~ HarnessView:handle_line bundle/receiver bundle/line))
 
 (impl HarnessView for GuardedView
-  (message run [h] : Any
-    (invoke_owned_callable self/h self/owner run_guarded_view
+  (message show_prompt [h] : Any
+    (invoke_owned_callable self/h self/owner guarded_view_prompt
       [{^view self/view
-        ^receiver (callback_receiver self/h self/owner)}])))
+        ^receiver (callback_receiver self/h self/owner)}]))
+  (message handle_line [h, line] : Any
+    (invoke_owned_callable self/h self/owner guarded_view_line
+      [{^view self/view
+        ^receiver (callback_receiver self/h self/owner)
+        ^line line}])))
 
 # --- registry kernel -------------------------------------------------------
 
@@ -372,8 +386,8 @@
   (while (>= i 0)
     (try
       (remove_registry_row h owned/%i)
-    catch e
-      (errors ~ push ($to_str e/message)))
+    catch Any
+      (errors ~ push ($to_str $ex/message)))
     (set i (- i 1)))
   (var owned_registries (fresh_list))
   (for [name r] in ((active_registries_cell h) ~ get)
@@ -397,8 +411,8 @@
   (while (>= i 0)
     (try
       (remove_registry_row h records/%i/row_id)
-    catch e
-      (errors ~ push ($to_str e/message)))
+    catch Any
+      (errors ~ push ($to_str $ex/message)))
     (set i (- i 1)))
   (var registries_cell (active_registries_cell h))
   (var registries (registries_cell ~ get))
@@ -581,8 +595,8 @@
     (if (== (new_rows ~ get row_id) true)
       (try
         (cleanup_transaction_row h tx row_id)
-      catch e
-        (errors ~ push e/message)))
+      catch Any
+        (errors ~ push $ex/message)))
     (set i (- i 1)))
   (for context in contexts_to_release (release_plugin_context context))
   (h/transaction ~ set nil)
@@ -617,8 +631,8 @@
         (invoke_owned_callable h deferred/hook_owner deferred/on_remove
           [(callback_receiver h deferred/hook_owner)
            deferred/record/payload])
-      catch e
-        (errors ~ push e/message))))
+      catch Any
+        (errors ~ push $ex/message))))
   # Cleanup ran with baseline owner policies/contexts. Publish the staged
   # policy table only now, then expire contexts belonging to removed plugins.
   (h/plugin_policies ~ set (tx/plugin_policies ~ get))
@@ -645,9 +659,9 @@
     (record_turn_end h id "committed")
     (flush_harness h)
     committed
-  catch e
+  catch Any
     (var aborted (abort_turn h tx))
-    (aborted ~ put "error" e)
+    (aborted ~ put "error" $ex)
     (record_turn_end h id "aborted")
     (flush_harness h)
     aborted
@@ -1329,8 +1343,8 @@
         (invoke_owned_callable h p/id p/deactivate (fresh_list)))
       (invoke_owned_callable h p/id deactivation [policy/context])
       true
-      catch e
-      (log_append h "lifecycle" $"deactivate ${p/id} failed: ${e/message}")
+      catch Any
+      (log_append h "lifecycle" $"deactivate ${p/id} failed: ${$ex/message}")
       false)))
 
 (fn promote [h : Harness, id : Str]
@@ -1368,7 +1382,7 @@
       ((tx/activated_plugins ~ get) ~ push id))
     (log_append h "lifecycle" $"activated ${id}")
     (notify h (PluginActivated ^plugin id))
-    catch e
+    catch Any
     # §3.3.2 is unchanged: a failure part-way through `activate` unwinds
     # whatever it already registered, so a half-activated plugin is never left
     # behind. What is new is where the plugin lands — installed and in `error`,
@@ -1376,9 +1390,9 @@
     # cannot investigate.
     (unwind h id)
     (((active_status_cell h) ~ get) ~ put id "error")
-    (((active_plugin_errors_cell h) ~ get) ~ put id ($to_str e/message))
-    (log_append h "lifecycle" $"activate ${id} failed: ${e/message}")
-    (notify h (PluginFailed ^plugin id ^message ($to_str e/message)))
+    (((active_plugin_errors_cell h) ~ get) ~ put id ($to_str $ex/message))
+    (log_append h "lifecycle" $"activate ${id} failed: ${$ex/message}")
+    (notify h (PluginFailed ^plugin id ^message ($to_str $ex/message)))
   ensure
     (if_yes (&& (!= context nil) (! activated))
       (release_plugin_context context))))
@@ -1500,10 +1514,10 @@
   ((active_plugin_policies_cell h) ~ set policies)
   (try
     (install h p)
-  catch e
+  catch Any
     (policies ~ delete p/id)
     ((active_plugin_policies_cell h) ~ set policies)
-    (fail e)))
+    (fail $ex)))
 
 (fn uninstall [h : Harness, id : Str] : Str
   (var plugins ((active_plugins_cell h) ~ get))
@@ -1567,8 +1581,8 @@
       (var result (uninstall h ids/%i))
       (if_yes ($str/contains? result "recovery_required")
         (errors ~ push result))
-    catch e
-      (errors ~ push ($to_str e/message)))
+    catch Any
+      (errors ~ push ($to_str $ex/message)))
     (set i (- i 1)))
   (flush_harness h)
   {^status (if (== errors/~size 0) "closed" "recovery_required")

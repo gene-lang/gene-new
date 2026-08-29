@@ -1,0 +1,57 @@
+# Every entry `build` committed before this carried ^by "" ^model "" ^at "":
+# `register_module` accepted all three and `build_tool` passed none, so the
+# durable record could not say who wrote a module even though the seam that
+# wrote it was standing right there.
+#
+# Provenance is provider knowledge, so `HarnessCodegen` reports it and `build`
+# records what it is told. That is also why the two providers answer
+# differently and why this can check the model-backed one with no network: the
+# author's identity is not something it has to ask a model for.
+
+(mod build_provenance_smoke)
+
+(import [new_harness install] from "../src/kernel")
+(import [HarnessCodegen] from "../src/seams")
+(import [command_plugin template_codegen_plugin build_tool] from "../src/agent")
+(import [ModelCodegen] from "../src/llm")
+(import [open_workspace composition_entries close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn entry_named [entries, id : Str]
+  (var found nil)
+  (for entry in entries
+    (if_yes (== entry/id id) (set found entry)))
+  found)
+
+(fn main [args]
+  (var workspace (open_workspace args/0))
+  (var h (new_harness ^workspace workspace))
+  (install h (command_plugin))
+  (install h (template_codegen_plugin))
+
+  (build_tool h "greet" "hello")
+  (var entry (entry_named (composition_entries workspace) "greet"))
+  (assert (== entry/by "template")
+    "the committed entry must name the author that wrote it")
+  (assert (== entry/model "")
+    "a template author must not claim whichever model happens to be configured")
+  (assert (!= entry/at "")
+    "the committed entry must carry when it was written")
+  (assert ($str/contains? entry/at "T")
+    "the recorded timestamp must be the ordinary datetime rendering")
+
+  # The model-backed provider, asked the same question offline. Its answer is
+  # the model that was configured when the provider was bound — the one that
+  # would have answered — and not a second read of the environment.
+  (var reported ((ModelCodegen ^model "vendor/model-1" ^skill "")
+                 ~ HarnessCodegen:author))
+  (assert (== reported/by "codegen/model")
+    "the model-backed author must identify the provider")
+  (assert (== reported/model "vendor/model-1")
+    "the model-backed author must report the model bound to it")
+
+  (close_workspace workspace)
+  ($println "build_provenance_smoke: ok"))

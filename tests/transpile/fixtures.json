@@ -216,14 +216,14 @@
     },
     {
       "id": "numeric.int_division_by_zero",
-      "source": "(try (/ 7 0) catch e e)",
-      "web_source": "(mod numeric_int_div_zero ^profile web) (fn run [] : Any (try (/ 7 0) catch e e))",
+      "source": "(try (/ 7 0) catch Any $ex)",
+      "web_source": "(mod numeric_int_div_zero ^profile web) (fn run [] : Any (try (/ 7 0) catch Any $ex))",
       "web_export": "run",
       "expected_value": {
         "kind": "node",
         "head": {
           "kind": "sym",
-          "value": "Error"
+          "value": "RuntimeError"
         },
         "props": [
           {
@@ -244,14 +244,14 @@
     },
     {
       "id": "numeric.f64_division_by_zero",
-      "source": "(try (/ 7.0 0.0) catch e e)",
-      "web_source": "(mod numeric_f64_div_zero ^profile web) (fn run [] : Any (try (/ 7.0 0.0) catch e e))",
+      "source": "(try (/ 7.0 0.0) catch Any $ex)",
+      "web_source": "(mod numeric_f64_div_zero ^profile web) (fn run [] : Any (try (/ 7.0 0.0) catch Any $ex))",
       "web_export": "run",
       "expected_value": {
         "kind": "node",
         "head": {
           "kind": "sym",
-          "value": "Error"
+          "value": "RuntimeError"
         },
         "props": [
           {
@@ -272,14 +272,14 @@
     },
     {
       "id": "numeric.remainder_by_zero",
-      "source": "(try (// 7 0) catch e e)",
-      "web_source": "(mod numeric_rem_zero ^profile web) (fn run [] : Any (try (// 7 0) catch e e))",
+      "source": "(try (// 7 0) catch Any $ex)",
+      "web_source": "(mod numeric_rem_zero ^profile web) (fn run [] : Any (try (// 7 0) catch Any $ex))",
       "web_export": "run",
       "expected_value": {
         "kind": "node",
         "head": {
           "kind": "sym",
-          "value": "Error"
+          "value": "RuntimeError"
         },
         "props": [
           {
@@ -300,8 +300,8 @@
     },
     {
       "id": "errors.builtin_typed_catch",
-      "source": "(fn div_msg [a : Int b : Int] : Str (try (do (/ a b) \"ok\") catch (Error ^message m) m)) [(div_msg 7 0) (div_msg 7 2)]",
-      "web_source": "(mod errors_builtin_catch ^profile web) (fn div_msg [a : Int b : Int] : Str (try (do (/ a b) \"ok\") catch (Error ^message m) m)) (fn run [] : (List Str) [(div_msg 7 0) (div_msg 7 2)])",
+      "source": "(fn div_msg [a : Int b : Int] : Str (try (do (/ a b) \"ok\") catch Error $ex/message)) [(div_msg 7 0) (div_msg 7 2)]",
+      "web_source": "(mod errors_builtin_catch ^profile web) (fn div_msg [a : Int b : Int] : Str (try (do (/ a b) \"ok\") catch Error $ex/message)) (fn run [] : (List Str) [(div_msg 7 0) (div_msg 7 2)])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -384,8 +384,8 @@
     },
     {
       "id": "errors.imported_builtin_typed_catch",
-      "source": "(fn q [a : Int b : Int] : Int (/ a b)) (fn reason [] : Str (try (do (q 7 0) \"ok\") catch (Error ^message m) m)) (reason)",
-      "web_source": "(mod errors_imported_builtin ^profile web) (import [q] from \"./fixture_div_dep.gene\") (fn reason [] : Str (try (do (q 7 0) \"ok\") catch (Error ^message m) m))",
+      "source": "(fn q [a : Int b : Int] : Int (/ a b)) (fn reason [] : Str (try (do (q 7 0) \"ok\") catch Error $ex/message)) (reason)",
+      "web_source": "(mod errors_imported_builtin ^profile web) (import [q] from \"./fixture_div_dep.gene\") (fn reason [] : Str (try (do (q 7 0) \"ok\") catch Error $ex/message))",
       "web_files": {
         "fixture_div_dep.gene": "(mod fixture_div_dep ^profile web)\n(fn q [a : Int b : Int] : Int (/ a b))\n"
       },
@@ -426,8 +426,8 @@
     },
     {
       "id": "pattern.declared_error_type_does_not_shadow",
-      "source": "(type Error ^props {^m Str}) (try (/ 7 0) catch (Error ^message x) x)",
-      "web_source": "(mod pattern_error_shadow ^profile web) (type Error ^props {^m Str}) (fn run [] : Str (try (do (/ 7 0) \"ok\") catch (Error ^message x) x))",
+      "source": "(type Error ^props {^m Str}) (try (/ 7 0) catch Any $ex/message)",
+      "web_source": "(mod pattern_error_shadow ^profile web) (type Error ^props {^m Str}) (fn run [] : Str (try (do (/ 7 0) \"ok\") catch Any $ex/message))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -756,8 +756,8 @@
     },
     {
       "id": "data.selector_default_and_strict",
-      "source": "(let fallback (select ^default \"unknown\" name)) (let strict (select ^strict true name)) [(fallback {^age 1}) (try (strict {^age 1}) catch _ \"missing\")]",
-      "web_source": "(mod data_selector_options ^profile web) (fn run [] : (List Str) (let fallback (select ^default \"unknown\" name)) (let strict (select ^strict true name)) [(fallback {^age 1}) (try (strict {^age 1}) catch _ \"missing\")])",
+      "source": "(let fallback (select ^default \"unknown\" name)) (let strict (select ^strict true name)) [(fallback {^age 1}) (try (strict {^age 1}) catch Any \"missing\")]",
+      "web_source": "(mod data_selector_options ^profile web) (fn run [] : (List Str) (let fallback (select ^default \"unknown\" name)) (let strict (select ^strict true name)) [(fallback {^age 1}) (try (strict {^age 1}) catch Any \"missing\")])",
       "web_export": "run",
       "expected_value": {
         "kind": "list",
@@ -780,8 +780,8 @@
     },
     {
       "id": "data.immutable_node",
-      "source": "(type Item ^props {^label Str}) (let node #(Item ^label \"fixed\")) (try (set node/label \"changed\") catch _ node/label)",
-      "web_source": "(mod data_immutable_node ^profile web) (type Item ^props {^label Str}) (fn run [] : Str (let node #(Item ^label \"fixed\")) (try (set node/label \"changed\") catch _ node/label))",
+      "source": "(type Item ^props {^label Str}) (let node #(Item ^label \"fixed\")) (try (set node/label \"changed\") catch Any node/label)",
+      "web_source": "(mod data_immutable_node ^profile web) (type Item ^props {^label Str}) (fn run [] : Str (let node #(Item ^label \"fixed\")) (try (set node/label \"changed\") catch Any node/label))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -909,8 +909,8 @@
     },
     {
       "id": "errors.typed_catch_and_ensure",
-      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (try (fail (AppError ^message \"boom\")) catch (AppError ^message message) message ensure nil)",
-      "web_source": "(mod errors_typed_catch ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn run [] : Str (try (fail (AppError ^message \"boom\")) catch (AppError ^message message) message ensure nil))",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (try (fail (AppError ^message \"boom\")) catch AppError $ex/message ensure nil)",
+      "web_source": "(mod errors_typed_catch ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn run [] : Str (try (fail (AppError ^message \"boom\")) catch AppError $ex/message ensure nil))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -924,8 +924,8 @@
     },
     {
       "id": "errors.checked_row",
-      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"checked\"))) (try (raise_app) catch (AppError ^message message) message)",
-      "web_source": "(mod errors_checked_row ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"checked\"))) (fn run [] : Str (try (raise_app) catch (AppError ^message message) message))",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"checked\"))) (try (raise_app) catch AppError $ex/message)",
+      "web_source": "(mod errors_checked_row ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"checked\"))) (fn run [] : Str (try (raise_app) catch AppError $ex/message))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -939,8 +939,8 @@
     },
     {
       "id": "errors.imported_checked_row",
-      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (try (raise_app) catch (AppError ^message message) message)",
-      "web_source": "(mod errors_imported_checked_row ^profile web) (import [AppError] from \"./fixture_error_dep.gene\") (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (fn run [] : Str (try (raise_app) catch (AppError ^message message) message))",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (try (raise_app) catch AppError $ex/message)",
+      "web_source": "(mod errors_imported_checked_row ^profile web) (import [AppError] from \"./fixture_error_dep.gene\") (fn raise_app ^errors [AppError] [] : Never (fail (AppError ^message \"imported\"))) (fn run [] : Str (try (raise_app) catch AppError $ex/message))",
       "web_files": {
         "fixture_error_dep.gene": "(mod fixture_error_dep ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError)"
       },
@@ -1158,8 +1158,8 @@
     },
     {
       "id": "async.child_failure_join",
-      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (try (scope (spawn (fail (AppError ^message \"child\"))) (let other (spawn 1)) (await other) \"lost\") catch (AppError ^message message) message)",
-      "web_source": "(mod async_child_failure ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn run [] : Str (try (scope (spawn (fail (AppError ^message \"child\"))) (let other (spawn 1)) (await other) \"lost\") catch (AppError ^message message) message))",
+      "source": "(type AppError ^props {^message Str}) (impl Error for AppError) (try (scope (spawn (fail (AppError ^message \"child\"))) (let other (spawn 1)) (await other) \"lost\") catch AppError $ex/message)",
+      "web_source": "(mod async_child_failure ^profile web) (type AppError ^props {^message Str}) (impl Error for AppError) (fn run [] : Str (try (scope (spawn (fail (AppError ^message \"child\"))) (let other (spawn 1)) (await other) \"lost\") catch AppError $ex/message))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -1206,8 +1206,8 @@
     },
     {
       "id": "async.cancellation_brand_does_not_collide",
-      "source": "(type AppError ^props {^kind Str}) (impl Error for AppError) (fn boom [] : Never (fail (AppError ^kind \"gene_cancellation\"))) (fn run [] : Str (try (boom) catch (AppError ^kind kind) kind)) (run)",
-      "web_source": "(mod cancel_brand_collision ^profile web) (type AppError ^props {^kind Str}) (impl Error for AppError) (fn boom [] : Never (fail (AppError ^kind \"gene_cancellation\"))) (fn run [] : Str (try (boom) catch (AppError ^kind kind) kind))",
+      "source": "(type AppError ^props {^kind Str}) (impl Error for AppError) (fn boom [] : Never (fail (AppError ^kind \"gene_cancellation\"))) (fn run [] : Str (try (boom) catch AppError $ex/kind)) (run)",
+      "web_source": "(mod cancel_brand_collision ^profile web) (type AppError ^props {^kind Str}) (impl Error for AppError) (fn boom [] : Never (fail (AppError ^kind \"gene_cancellation\"))) (fn run [] : Str (try (boom) catch AppError $ex/kind))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",

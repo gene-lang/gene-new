@@ -24,7 +24,7 @@
     (render "inside.txt")
     (try
       (render "../private_again.txt")
-      catch _
+      catch Any
       ($println "denied under with_capabilities: ../private_again.txt")))
 
   (render "after.txt")

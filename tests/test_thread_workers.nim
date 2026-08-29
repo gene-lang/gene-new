@@ -519,7 +519,7 @@ suite "threaded scheduler workers":
       withGeneAsyncIoQueueSetting "0":
         check run(compileSource(
           "(try (await ($fs/read_text_async path)) " &
-          " catch {^message m} m)"), scope).print() ==
+          " catch Any $ex/message)"), scope).print() ==
           "\"fs/read_text_async failed: async I/O queue full\""
 
   test "root await drives worker-backed async file write":
@@ -636,7 +636,7 @@ suite "threaded scheduler workers":
           "  (var cancelled ($fs/write_text_async cancelledPath \"cancelled\")) " &
           "  (cancelled ~ cancel) " &
           "  (var next ($fs/write_text_async nextPath \"next\")) " &
-          "  [(await blocker) (try (await next) catch {^message m} m)])"),
+          "  [(await blocker) (try (await next) catch Any $ex/message)])"),
           scope).print() == "[\"worker release\" nil]"
     joinThread(serverThread)
     check not fileExists(cancelledPath)
@@ -653,7 +653,7 @@ suite "threaded scheduler workers":
          "  (var t (spawn (fail (Boom ^message \"worker\")))) " &
          "  (var i 0) " &
          "  (while (< i 200000) (set i (+ i 1))) " &
-         "  (try (await t) catch (Boom ^message m) m))",
+         "  (try (await t) catch Boom $ex/message))",
          "\"worker\""
 
   test "worker-candidate non-Send results are rejected before publication":
@@ -692,7 +692,7 @@ suite "threaded scheduler workers":
          "    ^handle (fn [ctx state msg] " &
          "      (var (Get ^reply reply) msg) " &
          "      (var value (gate ~ recv)) " &
-         "      (try (reply ~ send value) catch _ nil) " &
+         "      (try (reply ~ send value) catch Any nil) " &
          "      ($actor/continue state)))) " &
          "  (var pending (a ~ ask " &
          "    (fn [reply] " &
@@ -707,7 +707,7 @@ suite "threaded scheduler workers":
          "  (fn send_once [value] " &
          "    (try (do ((reply_cell ~ load) ~ send value) " &
          "             (mark_success)) " &
-         "      catch _ nil)) " &
+         "      catch Any nil)) " &
          "  (var a1 (spawn (send_once 1))) " &
          "  (var a2 (spawn (send_once 2))) " &
          "  (var a3 (spawn (send_once 3))) " &
@@ -815,5 +815,5 @@ suite "threaded scheduler workers":
          "      ($actor/continue state)))) " &
          "  (var pending (a ~ ask ^timeout_ms 5 " &
          "    (fn [reply] (Get ^reply reply)))) " &
-         "  (try (await pending) catch (ActorError ^message m) m))",
+         "  (try (await pending) catch ActorError $ex/message))",
          "\"actor/ask timed out\""

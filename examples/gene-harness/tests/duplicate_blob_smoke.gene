@@ -1,0 +1,75 @@
+# `register_module` used to materialize every blob, load the descriptor and run
+# its `init` *before* `entries_with` refused a duplicate id. So a refused
+# rebuild of `slugify` left an unreferenced module in the generated directory
+# and in the loader cache, indistinguishable from one a live entry needs.
+#
+# The duplicate-id answer is already decided at that point, so it is given
+# first. `entries_with` keeps its check — it is the invariant on the entry list,
+# and it also covers the paths that do not come through here.
+
+(mod duplicate_blob_smoke)
+
+(import [new_harness] from "../src/kernel")
+(import [plugin_source] from "../src/agent")
+(import [open_workspace register_module run_workspace_turn module_digest
+         module_path composition_revision close_workspace]
+  from "../src/workspace")
+(import $store/fs [Store])
+(import $fs [list_dir exists?])
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn blob_count [workspace] : Int
+  (var keys (workspace/blob_store ~ Store:keys))
+  keys/~size)
+
+(fn file_count [workspace] : Int
+  (var names (list_dir workspace/generated_dir))
+  names/~size)
+
+(fn main [args]
+  (var workspace (open_workspace args/0))
+  (var h (new_harness ^workspace workspace))
+  (var claimed (plugin_source "claim" "one"))
+  (var rebuilt (plugin_source "claim" "two"))
+
+  (register_module workspace h "claim" claimed ^selectors [])
+  (assert (== (composition_revision workspace) 1)
+    "the first registration must commit a generation")
+  (var blobs (blob_count workspace))
+  (var files (file_count workspace))
+
+  # A different source under a claimed name, outside any turn.
+  (var refused "")
+  (try
+    (register_module workspace h "claim" rebuilt ^selectors [])
+  catch Any
+    (set refused ($to_str $ex/message)))
+  (assert ($str/contains? refused "already exists")
+    "a duplicate id with replace false must be refused")
+  (assert (== (blob_count workspace) blobs)
+    "a refused registration must put no key in the module store")
+  (assert (== (file_count workspace) files)
+    "a refused registration must write no module into the generated directory")
+  (assert (! (exists? (module_path workspace (module_digest rebuilt))))
+    "the refused source must not be materialized under its own digest")
+
+  # And inside a turn, where the claimed name lives in the transaction's staged
+  # entries rather than the committed ones.
+  (var outcome
+    (run_workspace_turn workspace h "turn-dup"
+      (fn [ignored]
+        (register_module workspace h "claim" rebuilt ^selectors [])
+        "unreachable")))
+  (assert (== outcome/status "aborted")
+    "a duplicate id inside a turn must abort it")
+  (assert ($str/contains? ($to_str outcome/error/message) "already exists")
+    "the aborted turn must carry the duplicate-id reason")
+  (assert (== (blob_count workspace) blobs)
+    "a refusal against staged entries must put no key in the module store")
+  (assert (== (file_count workspace) files)
+    "a refusal against staged entries must write no module blob")
+
+  (close_workspace workspace)
+  ($println "duplicate_blob_smoke: ok"))

@@ -129,9 +129,9 @@ their owner, and their bodies indent once:
 
 (try
   (read_value)
-catch (ParseError ^message message)
-  (report message)
-catch _
+catch ParseError
+  (report $ex/message)
+catch Any
   nil
 ensure
   (close_input))

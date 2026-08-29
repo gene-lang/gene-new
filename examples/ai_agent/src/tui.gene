@@ -289,7 +289,7 @@
     (try
       (undo_with_workspace_lease app worker_id
         (parse_int (trim (after_prefix line "/undo "))))
-    catch _
+    catch Any
       "usage: /undo [change-id]")))
 
 # -----------------------------------------------------------------------------
@@ -370,7 +370,7 @@
             (try
               (set retained (slice_bytes combined start (- total start)))
               (sliced ~ set true)
-            catch _ (set start (+ start 1))))
+            catch Any (set start (+ start 1))))
           (transcript ~ set $"${marker}${retained}"))))))
 
 (fn input_route_label []
@@ -795,11 +795,11 @@
           (list_dir (safe_path candidate))
           (set candidate $"${candidate}/")
           (set detail "workspace directory")
-        catch _ nil)
+        catch Any nil)
         (var value (shell_completion_render context candidate))
         (if_yes value
           (out ~ push (completion_item value candidate detail)))))
-  catch _ nil)
+  catch Any nil)
   out)
 
 (fn shell_route_completion_items [worker, text : Str]
@@ -1444,11 +1444,11 @@
                   (editor_set_text editor
                     (external_editor_draft
                       (editor_text (editor/values ~ get))))
-                catch {^message message}
+                catch Any
                   (var app (active_application ~ get))
                   (if app
                     (app/local_surface/help_notice ~ set
-                      $"external editor failed: ${message}"))))
+                      $"external editor failed: ${$ex/message}"))))
               (when "scroll_up"
                 (application_scroll_target
                   (active_application ~ get) editor/output_scroll 1 3))
@@ -1768,7 +1768,7 @@
         (application_append_projection_output
           app worker (read_text path) "file_view")
         (application_attach_worker_pane app worker nil "detach")))
-    catch _ nil))
+    catch Any nil))
 
 (fn open_terminal_pane [command, args]
   (var app (active_application ~ get))
@@ -1895,7 +1895,7 @@
   (if (&& (starts_with? selector "/") (> (byte_size selector) 1))
     (try
       (parse_int (after_prefix selector "/"))
-    catch _ nil)))
+    catch Any nil)))
 
 (fn pane_export_text [pane] : Str
   # Text projection of a pane's retained content. A live terminal captures
@@ -1936,8 +1936,8 @@
           (if (== pane nil)
             $"exported main transcript (${(byte_size text)} bytes) to ${path}"
             $"exported pane ${pane/id} ${pane/kind} (${(byte_size text)} bytes) to ${path}")))
-    catch {^message message}
-      $"export failed: ${message}")))
+    catch Any
+      $"export failed: ${$ex/message}")))
 
 (fn handle_extension_command [line : Str, transcript, memory, streaming]
   (var parts (split line " "))
@@ -2213,7 +2213,7 @@
       true)))
 
 (fn pane_command_id [text : Str]
-  (try (parse_int (trim text)) catch _ nil))
+  (try (parse_int (trim text)) catch Any nil))
 
 (fn handle_pane_command [line : Str, items, transcript, memory, streaming]
   (var app (active_application ~ get))
@@ -2414,9 +2414,9 @@
                  ^surface_id (app/local_surface/instance_id ~ get)}))
             (render_agent_text transcript streaming
               (worker_operation_cli_text worker operation_name response))
-          catch {^message message}
+          catch Any
             (render_agent_text transcript streaming
-              $"usage: /worker ${worker_ref} ${operation/usage}\n${message}")))))))
+              $"usage: /worker ${worker_ref} ${operation/usage}\n${$ex/message}")))))))
 
 (fn handle_agent_command [line : Str, transcript, memory, streaming]
   (var app (active_application ~ get))
@@ -3229,7 +3229,7 @@
   (if_not (== rest "")
     (var parts (split rest " "))
     (var first parts/0)
-    (var selector (try (parse_int first) catch _ nil))
+    (var selector (try (parse_int first) catch Any nil))
     (if_not (== selector nil)
       (set pane_id selector)
       (set requested (trim (after_prefix rest first)))
@@ -3361,9 +3361,9 @@
           (if (== status 0)
             "returned from gene view"
             $"gene view exited with status ${status}"))
-      catch {^message message}
+      catch Any
         (render_agent_text transcript streaming
-          $"cannot run gene view: ${message}"))
+          $"cannot run gene view: ${$ex/message}"))
       true)
     (elif (|| (== line "/edit") (starts_with? line "/edit "))
       (var draft (surface_route_draft app))
@@ -3375,9 +3375,9 @@
         (draft ~ set (external_editor_draft initial))
         (render_agent_text transcript streaming
           "external editor draft loaded; Enter submits it")
-      catch {^message message}
+      catch Any
         (render_agent_text transcript streaming
-          $"external editor failed: ${message}"))
+          $"external editor failed: ${$ex/message}"))
       true)
     (elif (== line "/tty")
       (var acquired
@@ -3715,7 +3715,7 @@
       ^message $"${op} takes JSON args here: /worker <id> ${op} {...}")))
   (var value
     (if placeholder/optional
-      (try (parse_int (trim rest)) catch _ (trim rest))
+      (try (parse_int (trim rest)) catch Any (trim rest))
       (trim rest)))
   (var args {})
   (args ~ put placeholder/field value)
@@ -3742,7 +3742,7 @@
   (if_not (== rest "")
     (var parts (split rest " "))
     (var first parts/0)
-    (var selector (try (parse_int first) catch _ nil))
+    (var selector (try (parse_int first) catch Any nil))
     (if_not (== selector nil)
       (if (!= selector 0)
         (return
@@ -3860,12 +3860,12 @@
                 (remote_pin_command client line)
                 (if_not (== line "")
                   (run_remote_turn client line true)))))))
-      catch (ClientTransportError ^kind kind ^message message)
-        ($println $"remote ${kind}: ${message}")))
-  catch (ClientTransportError ^kind kind ^message message)
-    ($println $"remote ${kind}: ${message}")
+      catch ClientTransportError
+        ($println $"remote ${$ex/kind}: ${$ex/message}")))
+  catch ClientTransportError
+    ($println $"remote ${$ex/kind}: ${$ex/message}")
   ensure
-    (try (client/detach) catch _ nil)))
+    (try (client/detach) catch Any nil)))
 
 (fn run_local_entry [launch, task : Str]
   (if (blank_line? task)
@@ -3923,7 +3923,7 @@
                   (stop_gateway (gateway_server ~ get)))))
             ((gateway_task ~ get) ~ detach)
             (serve_gateway (gateway_server ~ get))
-            (try (await (gateway_task ~ get)) catch _ nil)
+            (try (await (gateway_task ~ get)) catch Any nil)
             # The local task requested and completed gateway shutdown. Clear
             # both handles so the outer failure-cleanup path does not stop the
             # already-dropped native listener a second time.
@@ -3935,10 +3935,10 @@
       (var task (gateway_task ~ get))
       (if_yes task
         (task ~ cancel)
-        (try (await task) catch _ nil))
+        (try (await task) catch Any nil))
       # An interrupted local task normally stops the server in its own
       # ensure. The fallback is intentionally idempotent at this boundary.
-      (try (stop_gateway (gateway_server ~ get)) catch _ nil))
+      (try (stop_gateway (gateway_server ~ get)) catch Any nil))
     (var app (active_application ~ get))
     (if_yes app
       (application_shutdown app)
@@ -4006,7 +4006,7 @@
       (try
         (store ~ Store:put "surface"
           {^schema 1 ^kind "surface" ^data (surface_snapshot app)})
-      catch _ nil))))
+      catch Any nil))))
 
 (client_surface_record_loader ~ set
   (fn []
@@ -4016,4 +4016,4 @@
         (var record (store ~ Store:get "surface" ^default nil))
         (if_yes (present? record)
           (if (present? record/data) (redact_any record/data)))
-      catch _ nil))))
+      catch Any nil))))

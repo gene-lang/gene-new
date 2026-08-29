@@ -40,9 +40,9 @@
     (if (== (trim response/body) "") {}
       (try
         (parse response/body)
-      catch (JsonError ^message message)
+      catch JsonError
         (transport_error "invalid_response"
-          $"gateway returned invalid JSON: ${message}"
+          $"gateway returned invalid JSON: ${$ex/message}"
           response/status response/body))))
   {^ok (&& (>= response/status 200) (< response/status 300))
    ^status response/status ^value value ^headers response/headers})
@@ -94,8 +94,8 @@
           (request ^method method ^url $"${origin}${path}"
             ^headers headers ^body encoded ^timeout_ms 30000
             ^max_bytes 4194304)))
-    catch (HttpClientError ^kind kind ^message message)
-      (transport_error kind message nil nil)))
+    catch HttpClientError
+      (transport_error $ex/kind $ex/message nil nil)))
 
   (fn create_session []
     (var created (require_success

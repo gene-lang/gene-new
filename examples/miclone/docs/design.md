@@ -2384,10 +2384,9 @@ A mod declares a form and the client walks one it has never seen the shape of;
 the smoke test asserts the rendered text contains a word that appears nowhere in
 the client. That is the composability claim, checked.
 
-*One open cross-backend divergence sits here:* the VM did not match
-`catch (Error ^message m)` against a custom error type that implements `Error`.
-The raise happens and is correct on both backends; only the catch was not
-verified, and it is not a §D7 item because it was never narrowed down.
+Catch headers name an error type and the body reads the value through `$ex`.
+`catch Error` matches custom error types implementing the marker protocol on
+both backends.
 
 ### 13.4 Input, and the chest
 

@@ -1,0 +1,70 @@
+# A program the model emits holds no host authority, and capability grants only
+# attenuate — so `register_module` called from inside the sandbox could never do
+# anything but refuse. It did: one recorded session watched a model emit the
+# right call four times and read "refused: fs/exists? needs fs/ReadDir" each
+# time, with the prompt telling it the call would work.
+#
+# The call queues now. `run_program` drains the queue after the program returns
+# but still inside the turn, where the harness's own authority applies, so the
+# module commits and activates at the turn boundary. That makes a registered
+# tool callable from the *next* program, which is what this checks.
+
+(mod queued_registration_smoke)
+
+(import [new_harness install invoke_registry_row status_of] from "../src/kernel")
+(import [command_plugin] from "../src/agent")
+(import [run_program] from "../src/llm")
+(import [open_workspace composition_revision composition_entries
+         close_workspace]
+  from "../src/workspace")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var workspace (open_workspace args/0))
+  (var h (new_harness ^workspace workspace))
+  (install h (command_plugin))
+
+  # 1. The program the model actually wrote, verbatim.
+  (var first
+    (run_program h
+      (quote (do (register_module "probe" (plugin_source "probe" "probe text"))))))
+  (assert (! ($str/contains? first "refused"))
+    "a registration from a ^capabilities [] program must not need a grant")
+  (assert ($str/contains? first "queued probe")
+    "the program's own value must say the module is queued, not registered")
+  (assert ($str/contains? first "registered probe at revision 1")
+    "the rendered result must report what the turn boundary committed, since the program cannot observe it")
+  (assert (== (composition_revision workspace) 1)
+    "a queued registration must commit one desired-state generation")
+  (assert (== (status_of h "probe") "ready")
+    "the turn boundary must activate what it committed")
+
+  # 2. Callable from the next program — the claim the prompt now makes.
+  (var second
+    (run_program h (quote (do (invoke_registry "tools" "probe" ["world"])))))
+  (assert ($str/contains? second "probe(world) -> probe text")
+    "the next program must reach the tool the previous one queued")
+  (assert (== (invoke_registry_row h "tools" "probe" ["x"])
+              "probe(x) -> probe text")
+    "the committed entry must be an ordinary tool row afterwards")
+
+  # 3. A drained registration that fails is an error in the turn body like any
+  #    other: the turn aborts and nothing about the composition moved.
+  (var before (composition_revision workspace))
+  (var refused
+    (run_program h
+      (quote (do (register_module "probe" (plugin_source "probe" "again"))))))
+  (assert ($str/contains? refused "error:")
+    "a refused registration must abort the turn rather than be swallowed")
+  (assert ($str/contains? refused "already exists")
+    "the aborted turn must carry the reason the registration was refused")
+  (assert (== (composition_revision workspace) before)
+    "an aborted turn must not advance the composition revision")
+  (var entries (composition_entries workspace))
+  (assert (== entries/~size 1)
+    "an aborted turn must leave the entry list alone")
+
+  (close_workspace workspace)
+  ($println "queued_registration_smoke: ok"))

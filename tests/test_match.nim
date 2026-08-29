@@ -56,11 +56,11 @@ suite "match — typed patterns":
   test "typed patterns adapt streams lazily":
     ck "(try (match ($to_stream [\"bad\"]) " &
        "       (when (s : (Stream Int Never)) (s ~ next))) " &
-       "catch (TypeError ^where w) w)",
+       "catch TypeError $ex/where)",
        "\"Stream/next item\""
-  test "typed catch patterns match error types":
+  test "catch clauses match error types":
     ck "(try (fn f [x : Int] x) (f \"bad\") " &
-       "catch (e : TypeError) e/where)",
+       "catch TypeError $ex/where)",
        "\"parameter 'x'\""
   test "typed patterns require exactly one type":
     expect GeneError: discard runStr("(match 1 (when (x :) x))")
@@ -182,14 +182,14 @@ suite "loops — for":
     ck "(var hits ($cell 0)) " &
        "(var source ($map ($to_stream [1 2 3]) " &
        "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
-       "(try (for [a b] in source nil) catch (MatchError ^message m) nil) " &
+       "(try (for [a b] in source nil) catch MatchError nil) " &
        "[(hits ~ get) (source ~ has_next)]",
        "[1 false]"
   test "for closes stream on body error":
     ck "(var hits ($cell 0)) " &
        "(var source ($map ($to_stream [1 2 3]) " &
        "  (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
-       "(try (for x in source (/ 1 0)) catch {^message m} nil) " &
+       "(try (for x in source (/ 1 0)) catch Any nil) " &
        "[(hits ~ get) (source ~ has_next)]",
        "[1 false]"
   test "for supports break and continue":

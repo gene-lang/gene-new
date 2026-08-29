@@ -3120,16 +3120,6 @@ proc scopeCarriesConstruction(scope: Scope): bool {.noinline.} =
   var seenScopes = initHashSet[pointer]()
   scopeCarriesConstruction(scope, seenValues, seenScopes)
 
-proc raiseEndOfStream() =
-  var props = initPropTable()
-  props["message"] = newStr("end of stream")
-  var e: ref GeneError
-  new(e)
-  e.msg = "end of stream"
-  e.errVal = newNode(newSym("EndOfStream"), props = props)
-  e.hasErrVal = true
-  raise e
-
 proc builtInTypeHead(scope: Scope, name: string): Value =
   var root = scope
   while root != nil and root.parent != nil:
@@ -3139,6 +3129,16 @@ proc builtInTypeHead(scope: Scope, name: string): Value =
     if root.lookupOptional(name, typ) and typ.kind == vkType:
       return typ
   newSym(name)
+
+proc raiseEndOfStream(scope: Scope) =
+  var props = initPropTable()
+  props["message"] = newStr("end of stream")
+  var e: ref GeneError
+  new(e)
+  e.msg = "end of stream"
+  e.errVal = newNode(builtInTypeHead(scope, "EndOfStream"), props = props)
+  e.hasErrVal = true
+  raise e
 
 proc raiseModuleRefError(scope: Scope, typeName, name, message: string) =
   var props = initPropTable()
@@ -3724,18 +3724,18 @@ proc biStreamHasNext(args: openArray[Value]): Value {.nimcall.} =
   requireStream("Stream/has_next", args[0])
   newBool(args[0].streamHasNext)
 
-proc biStreamPeek(args: openArray[Value]): Value {.nimcall.} =
+proc biStreamPeek(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Stream/peek", args)
   requireStream("Stream/peek", args[0])
   if not args[0].streamHasNext:
-    raiseEndOfStream()
+    raiseEndOfStream(if call == nil: nil else: call[].dispatchScope)
   checkedStreamPeek(args[0], "Stream/peek item")
 
-proc biStreamNext(args: openArray[Value]): Value {.nimcall.} =
+proc biStreamNext(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("Stream/next", args)
   requireStream("Stream/next", args[0])
   if not args[0].streamHasNext:
-    raiseEndOfStream()
+    raiseEndOfStream(if call == nil: nil else: call[].dispatchScope)
   checkedStreamNext(args[0], "Stream/next item")
 
 proc biStreamClose(args: openArray[Value]): Value {.nimcall.} =
@@ -3758,7 +3758,7 @@ proc biStreamTryNext(args: openArray[Value], call: ptr NativeCall): Value {.nimc
       else:
         var props = initPropTable()
         props["message"] = newStr(e.msg)
-        newNode(newSym("Error"), props = props)
+        newNode(builtInTypeHead(scope, "RuntimeError"), props = props)
     return tryNextError(scope, errVal)
   try:
     let item = checkedStreamNext(args[0], "Stream/try_next item")
@@ -3769,7 +3769,7 @@ proc biStreamTryNext(args: openArray[Value], call: ptr NativeCall): Value {.nimc
       else:
         var props = initPropTable()
         props["message"] = newStr(e.msg)
-        newNode(newSym("Error"), props = props)
+        newNode(builtInTypeHead(scope, "RuntimeError"), props = props)
     tryNextError(scope, errVal)
 
 proc copyItems(items: openArray[Value]): seq[Value] =
@@ -6962,6 +6962,13 @@ proc buildBuiltins(app: Application): Scope =
   result.define("Callable", callableProtocol)
   let toStrProtocol = newProtocol("ToStr", ["to_str"])
   result.define("ToStr", toStrProtocol)
+  let runtimeError = newType("RuntimeError", NIL,
+    @[TypeField(name: "message", optional: false,
+                typeExpr: newSym("Str"), scope: result)],
+    @[errorProtocol], result)
+  result.define("RuntimeError", runtimeError)
+  result.impls.add ProtocolImpl(protocol: errorProtocol,
+                                receiver: runtimeError)
   var typeErrorFields: seq[TypeField]
   for name in ["message", "where", "expected", "actual"]:
     typeErrorFields.add TypeField(name: name, optional: false,
@@ -6993,7 +7000,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("CallKindError", callKindError)
   # A `~` send whose message resolves to no type-direct message or visible
   # protocol impl on the receiver is a recoverable MessageError (design §3/§9,
-  # design §3/§9). It inherits TypeError so `catch (TypeError ...)` still
+  # design §3/§9). It inherits TypeError so `catch TypeError` still
   # matches, and carries where/receiver_type/message diagnostics.
   let messageError = newType("MessageError", typeError, @[], @[], result)
   result.define("MessageError", messageError)
@@ -7088,6 +7095,13 @@ proc buildBuiltins(app: Application): Scope =
   result.define("ChannelClosed", channelClosed)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: channelClosed)
+  let endOfStream = newType("EndOfStream", NIL,
+                            @[TypeField(name: "message", optional: false,
+                                        typeExpr: newSym("Str"), scope: result)],
+                            @[errorProtocol], result)
+  result.define("EndOfStream", endOfStream)
+  result.impls.add ProtocolImpl(protocol: errorProtocol,
+                                receiver: endOfStream)
   let actorError = newType("ActorError", NIL,
                             @[TypeField(name: "message", optional: false,
                                         typeExpr: newSym("Str"), scope: result)],
@@ -7587,8 +7601,10 @@ proc buildBuiltins(app: Application): Scope =
   discard result.lookupOptional("stream", streamNs)
   result.defineBuiltinType(vkStream, "Stream", {
     "has_next": newNativeFn("Stream/has_next", biStreamHasNext),
-    "peek": newNativeFn("Stream/peek", biStreamPeek),
-    "next": newNativeFn("Stream/next", biStreamNext),
+    "peek": newNativeCallFn("Stream/peek", biStreamPeek,
+                            acceptsNamed = false),
+    "next": newNativeCallFn("Stream/next", biStreamNext,
+                            acceptsNamed = false),
     "try_next": newNativeCallFn("Stream/try_next", biStreamTryNext,
                                 acceptsNamed = false),
     "close": newNativeFn("Stream/close", biStreamClose),
@@ -11532,13 +11548,20 @@ proc validateRequiredImpls(scope: Scope) =
     scope.validateRequiredImplType(typ)
 
 proc isErrorValue(scope: Scope, value: Value): bool =
-  if value.kind != vkNode or value.head.kind != vkType:
+  if value.kind != vkNode:
+    return false
+  # `$ex` is the whole caught Error value, so `(fail $ex)` is the re-raise
+  # idiom. Runtime diagnostics without a more specific value are synthesized
+  # as `RuntimeError`; accept the old symbol-headed shape too while persisted
+  # values and external producers migrate.
+  let synthesized = value.head.isSymbol("Error")
+  if not synthesized and value.head.kind != vkType:
     return false
   var errorProtocol: Value
   if not builtinTypeBinding(scope, "Error", errorProtocol) or
       errorProtocol.kind != vkProtocol:
     return false
-  scope.typeImplementsProtocol(value.head, errorProtocol)
+  synthesized or scope.typeImplementsProtocol(value.head, errorProtocol)
 
 proc isErrorType(scope: Scope, typ: Value): bool =
   if typ.kind != vkType:
@@ -12512,13 +12535,18 @@ proc cancelOwnedActor(actor: Value) =
 proc spawnFiber(chunk: Chunk, scope: Scope, workerSafe = false): Value
 
 proc translateErrorBoundary(checks: bool, errorTypes: seq[Value], fnName: string,
-                            e: ref GeneError): ref GeneError =
+                            scope: Scope, e: ref GeneError): ref GeneError =
   ## Apply one ^errors boundary as an exception unwinds the frame stack: declared
   ## (allowed) errors pass through unchanged; an undeclared error escaping an
   ## ^errors function is replaced with the generic "raised an undeclared error".
   ## Mirrors applyCall's per-call try/except for the frame-push (trampoline) path.
   if not checks:
     return e
+  if not e.hasErrVal:
+    var props = initPropTable()
+    props["message"] = newStr(e.msg)
+    e.errVal = newNode(builtInTypeHead(scope, "RuntimeError"), props = props)
+    e.hasErrVal = true
   if e.hasErrVal and errorAllowed(errorTypes, e.errVal):
     return e
   newException(GeneError,
@@ -15720,7 +15748,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let stream = spop()
           requireStream("for iterator", stream)
           if not stream.streamHasNext:
-            raiseEndOfStream()
+            raiseEndOfStream(scope)
           spush checkedStreamNext(stream, "for item")
         of opIteratorClose:
           let stream = spop()
@@ -16163,7 +16191,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         if preservingFirstCleanupError:
           curPendingError
         else:
-          translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, e)
+          translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName,
+                                 scope, e)
       if not preservingFirstCleanupError:
         annotateTopLevelUndefined(err, chunk, errorLoc)
         attachSourceLoc(err, errorLoc)
@@ -16204,7 +16233,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             else:
               var props = initPropTable()
               props["message"] = newStr(err.msg)
-              newNode(newSym("Error"), props = props)
+              newNode(builtInTypeHead(h.scope, "RuntimeError"), props = props)
           var caught = false
           for cl in h.tp.catches:
             var binds = initTable[string, Value]()
@@ -16229,7 +16258,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             strunc(curStackBase)
             loadFrameRegs(f)
             closeCurrentForStream()
-            err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
+            err = translateErrorBoundary(curChecksErrors, curErrorTypes,
+                                         curFnName, scope, err)
             releaseCurrentCallScope()
         elif frames.len == 0:
           releaseFrameStack(gVmPools, frames)
@@ -16239,7 +16269,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var f = frames.pop()
           loadFrameRegs(f)
           closeCurrentForStream()
-          err = translateErrorBoundary(curChecksErrors, curErrorTypes, curFnName, err)
+          err = translateErrorBoundary(curChecksErrors, curErrorTypes,
+                                       curFnName, scope, err)
           releaseCurrentCallScope()
       # Reached only via `break` (a catch fired): fall through to the outer
       # `while true`, re-entering dispatch with the catch result on the stack.

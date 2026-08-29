@@ -129,4 +129,4 @@
             (== passed (== tests_passed tests_total))
             (== digest (receipt_digest receipt))))
       (else false))
-  catch _ false))
+  catch Any false))

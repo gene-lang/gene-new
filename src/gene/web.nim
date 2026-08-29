@@ -3,7 +3,7 @@
 ## This module owns a web-only semantic IR. It deliberately does not consume or
 ## mutate GIR; unsupported forms fail while building the IR, before emission.
 
-import std/[json, os, sets, strutils, tables]
+import std/[algorithm, json, os, sets, strutils, tables]
 import ./[compiler, printer, reader, types]
 
 type
@@ -319,9 +319,12 @@ type
     currentLoc: SourceLoc
     scopeStack: seq[string]
     nominalTypes: HashSet[string] # decides node-vs-class patterns
+    errorTypes: HashSet[string]   # nominal types implementing Error
     # Enclosing function's declared return type, so `wekReturn` can yield the
     # declared unit under a `Nil`/`Void` signature instead of the given value.
     currentReturnType: WebType
+
+const WebCatchErrorBindingName = "__gene_catch_error"
 
 const jsReserved = [
   # `arguments` and `eval` are not keywords, but ES modules are always strict
@@ -2530,6 +2533,17 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   if name == "path":
     if value.body.len < 2:
       raise webError(loc, "web path requires a base and member")
+    if value.body[0].isSym("gene") and value.body[1].isSym("ex"):
+      if not bindings.hasKey(WebCatchErrorBindingName):
+        raise webError(loc, "$ex is only available inside a catch body")
+      if value.body.len == 2:
+        return analysis.analyzeExpr(newSym(WebCatchErrorBindingName),
+                                    bindings, expected)
+      var rewritten = @[newSym(WebCatchErrorBindingName)]
+      for i in 2 ..< value.body.len:
+        rewritten.add value.body[i]
+      return analysis.analyzeExpr(newNode(newSym("path"), body = rewritten),
+                                  bindings, expected)
     # `recv/~msg` is the zero-argument send `(recv ~ msg)` — docs/style.md
     # prefers it, and the reader turns a trailing `~name` segment into exactly
     # this shape. Desugared here rather than given its own analysis so the two
@@ -2665,8 +2679,14 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     while i < value.body.len and value.body[i].isSym("catch"):
       inc i
       if i >= value.body.len:
-        raise webError(loc, "web catch requires a pattern")
-      let pattern = value.body[i]
+        raise webError(loc, "web catch requires an error type")
+      let errorType = value.body[i]
+      if errorType.kind in {vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString,
+                            vkChar, vkList, vkMap, vkSet, vkHashMap} or
+          errorType.isSym("_") or
+          (errorType.kind == vkNode and errorType.props.len > 0):
+        raise webError(loc,
+          "web catch requires an error type; use Any to catch every recoverable error")
       inc i
       var catchForms: seq[Value]
       while i < value.body.len and not (value.body[i].isSym("catch") or
@@ -2674,10 +2694,11 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         catchForms.add value.body[i]
         inc i
       var catchBindings = copyBindings(bindings)
-      bindPattern(analysis, pattern, webType(wtkAny), catchBindings)
+      catchBindings[WebCatchErrorBindingName] =
+        WebBinding(typ: webType(wtkAny))
       let catchBody = analysis.analyzeSequence(catchForms, catchBindings,
                                                expected, loc)
-      result.patterns.add pattern
+      result.patterns.add errorType
       result.keys.add "catch"
       result.children.add catchBody
       result.typ = unionType(result.typ, catchBody.typ)
@@ -3935,7 +3956,7 @@ proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
       # One pattern form over two representations, as in the VM: a plain symbol
       # head matches a type instance *and* Gene node data carrying that head.
       # Gene node data is the shape the VM raises builtin errors as, which is
-      # what lets `catch (Error ^message m)` read the same value here. Listed
+      # what lets `$ex/message` read the same value here. Listed
       # props must be present (extra props in the data are ignored) and the body
       # must match exactly.
       let nodeTest = "($gene_is_node(" & target & ") && " & target &
@@ -3958,6 +3979,46 @@ proc emitPattern(emitter: var WebEmitter, pattern: Value, target: string,
   else:
     raise newException(WebProfileError,
       "unsupported emitted web pattern kind: " & $pattern.kind)
+
+proc emitCatchType(emitter: var WebEmitter, errorType: Value,
+                   target: string): string =
+  ## Catch syntax names a type, not a destructuring pattern. JavaScript errors
+  ## use native classes for the built-in boundaries and generated classes for
+  ## user nominal Error types; `Any` is the explicit recoverable catch-all.
+  if errorType.kind == vkSymbol:
+    let name = errorType.symVal
+    if name == "Any":
+      return "true"
+    if name == "Error":
+      let value = if emitter.typescript: "(" & target & " as any)" else: target
+      var alternatives = @[
+        target & " instanceof Error",
+        value & "?.head === Symbol.for(\"RuntimeError\")"]
+      var nominalErrors: seq[string]
+      for nominal in emitter.errorTypes:
+        nominalErrors.add nominal
+      nominalErrors.sort()
+      for nominal in nominalErrors:
+        alternatives.add target & " instanceof " & mangleWebName(nominal)
+      return "(" & alternatives.join(" || ") & ")"
+    if name == "RuntimeError":
+      let value = if emitter.typescript: "(" & target & " as any)" else: target
+      return value & "?.head === Symbol.for(\"RuntimeError\")"
+    let emitted =
+      case name
+      of "MatchError": "GeneMatchError"
+      of "SelectorMissing": "GeneSelectorMissing"
+      of "EndOfStream": "GeneEndOfStream"
+      else: mangleWebName(name)
+    return target & " instanceof " & emitted
+  if errorType.kind == vkNode and errorType.head.isSym("|") and
+      errorType.body.len >= 2:
+    var alternatives: seq[string]
+    for item in errorType.body:
+      alternatives.add emitter.emitCatchType(item, target)
+    return "(" & alternatives.join(" || ") & ")"
+  raise newException(WebProfileError,
+    "unsupported web catch error type: " & errorType.print())
 
 proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   case expr.kind
@@ -4726,12 +4787,12 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       emitter.line("catch (" & caught & ") {")
       inc emitter.indent
       emitter.line("if ($gene_cancelled(" & caught & ")) throw " & caught & ";")
-      for i, pattern in expr.patterns:
-        var declarations: seq[string]
-        let condition = emitter.emitPattern(pattern, caught, declarations)
+      for i, errorType in expr.patterns:
+        let condition = emitter.emitCatchType(errorType, caught)
         emitter.line((if i == 0: "if" else: "else if") & " (" & condition & ") {")
         inc emitter.indent
-        for declaration in declarations: emitter.line(declaration)
+        emitter.line("const " & mangleWebName(WebCatchErrorBindingName) &
+          " = " & caught & ";")
         emitter.line(target & " = " & emitter.emitExpr(expr.children[i + 1]) & ";")
         dec emitter.indent
         emitter.line("}")
@@ -4971,6 +5032,14 @@ proc usesSymbolHeadPattern(expr: WebExpr): bool =
 proc nominalTypeNames(module: WebModule): HashSet[string] =
   for declaration in module.types: result.incl declaration.sourceName
   for declaration in module.visibleTypes: result.incl declaration.sourceName
+
+proc errorTypeNames(module: WebModule): HashSet[string] =
+  for declaration in module.types:
+    if declaration.implementsError:
+      result.incl declaration.sourceName
+  for declaration in module.visibleTypes:
+    if declaration.implementsError:
+      result.incl declaration.sourceName
 
 proc moduleUsesSymbolHeadPattern(module: WebModule): bool =
   module.moduleAny(usesSymbolHeadPattern)
@@ -5590,7 +5659,9 @@ proc emitImplDeclaration(emitter: var WebEmitter,
 proc emitModule(module: WebModule, typescript: bool,
                 lineLocs: var seq[SourceLoc]): string =
   let nominalTypes = nominalTypeNames(module)
-  var emitter = WebEmitter(typescript: typescript, nominalTypes: nominalTypes)
+  let errorTypes = errorTypeNames(module)
+  var emitter = WebEmitter(typescript: typescript, nominalTypes: nominalTypes,
+                           errorTypes: errorTypes)
   emitter.line("// Generated from " & module.sourcePath & "; target es2022.")
   for imported in module.imports:
     emitter.currentLoc = imported.loc
@@ -5677,7 +5748,7 @@ proc emitModule(module: WebModule, typescript: bool,
   if needsNodeBrand:
     # Same reasoning for node identity. `instanceof GeneNode` is false for a node
     # built in another module, which silently turned an imported node's prop read
-    # into `undefined` and would keep node catch patterns from ever matching.
+    # into `undefined` and would keep catch type tests from ever matching.
     emitter.line("const $gene_node = Symbol.for(\"gene.node\");")
     # A type predicate, not a `boolean`: a Gene catch variable is `unknown` under
     # strict TypeScript, and the pattern tests that follow read `.head`/`.props`.
@@ -5764,7 +5835,7 @@ proc emitModule(module: WebModule, typescript: bool,
     # A zero divisor is a catchable Gene error in the VM for both numeric types
     # (`vm.nim` `biDiv`/`biRem`), so raise the VM's own value rather than
     # letting JS return Infinity or throw a RangeError.
-    let divisionByZero = "throw new GeneNode(Symbol.for(\"Error\"), " &
+    let divisionByZero = "throw new GeneNode(Symbol.for(\"RuntimeError\"), " &
       "{ message: \"division by zero\" }, [], true);"
     if needsIntDivisor:
       let intType = if typescript: ": bigint" else: ""
@@ -5952,7 +6023,7 @@ proc emitModule(module: WebModule, typescript: bool,
   if needsGeneCatch:
     # Emitted for every module with a Gene catch, whether or not that module
     # uses async: cancellation can arrive from an imported async function, and
-    # it must never be offered to a Gene catch pattern.
+    # it must never be offered to a Gene catch type.
     emitter.line("function $gene_cancelled(error" &
       (if typescript: ": unknown" else: "") & ")" &
       (if typescript: ": boolean" else: "") &

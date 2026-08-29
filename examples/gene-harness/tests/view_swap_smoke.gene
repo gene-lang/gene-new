@@ -28,14 +28,17 @@
 (var h (new_harness))
 (install h (initial_plugin))
 (var active (row h "views" "active"))
-(assert (== (active/value ~ HarnessView:run h) 0)
+(assert (== (active/value ~ HarnessView:show_prompt h) 0)
   "the initial active view must be selected by the stable logical key")
 (install h (replacement_plugin))
+# Between turns the caller re-reads the row, which is the whole of the handoff:
+# after one turn of the initial view the row names the replacement, and the
+# next turn goes there.
 (set active (row h "views" "active"))
 (assert (== active/implementation "replacement")
   "view replacement must publish one new active row")
-(assert (== (active/value ~ HarnessView:run h) 0)
-  "the next view boundary must dispatch to the replacement")
+(assert (== (active/value ~ HarnessView:show_prompt h) 0)
+  "the turn after a replacement must run the replacement, not its predecessor")
 (uninstall h "replacement_view")
 (assert (== (row h "views" "active") void)
   "unloading a replacement must not reveal the superseded view")

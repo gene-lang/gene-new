@@ -336,7 +336,7 @@ the profile:
 | `List`, nodes, typed instances | Mutation, `void` normalization (prop deleted vs. list slot → `nil`), and closed-schema revalidation on every `set` |
 | `type` → `class` | The class is the easy half; direct `(T …)` vs. `new T` (§7.1.1), required/unknown-field checks, and the in-progress publication marker are runtime |
 | `Any` → `unknown` | **TS `unknown` performs no runtime check.** It is a static discipline; Gene's gradual boundary demands emitted validators, including nested generics and protocol conformance |
-| `try/catch`, `^errors` | TS cannot express a checked error row; typed catch patterns need runtime tests, and cancellation must not be interceptable by an ordinary `catch`. A symbol-head pattern also matches two representations — a class instance and Gene node data — because the VM's builtin errors *are* node data |
+| `try/catch`, `^errors` | TS cannot express a checked error row; catch types need runtime tests, `$ex` needs a branch-local binding, and cancellation must not be interceptable by an ordinary `catch`. Runtime diagnostics also need the same nominal `RuntimeError` identity across the VM and web representations. |
 | `Stream`, `yield` | A generator is not the contract: `peek`, `has_next` vs. `EndOfStream`, terminal producer errors, `yield void` skipping, idempotent `close`, upstream-close, `ensure` unwinding |
 | `Task`/`spawn`/`scope` | §4.8 — deferred |
 
@@ -475,7 +475,7 @@ The implemented P4 contract is normative in `docs/web-profile.md`: a scope waits
 for children on success, cancels and settles them on failure, `await` checks
 cancellation around suspension, cancellation is a non-`Error` control value
 that emitted catches rethrow, and `ensure` still runs. The adversarial runner
-cancels a child before suspension, attempts to swallow it with `catch _`, and
+cancels a child before suspension, attempts to swallow it with `catch Any`, and
 checks that `ensure` ran exactly once.
 
 Two consequences of the emission model, both learned the hard way:

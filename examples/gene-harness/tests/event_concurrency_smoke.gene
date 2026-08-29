@@ -40,8 +40,9 @@
   (var conflicted false)
   (try
     (flush_event_store right)
-  catch (HarnessStateConflict ^scope scope ^stream stream)
-    (set conflicted (&& (== scope "session") (== stream "same"))))
+  catch HarnessStateConflict
+    (set conflicted
+      (&& (== $ex/scope "session") (== $ex/stream "same"))))
   (assert conflicted
     "a stale writer to the same ordered stream must receive a typed conflict")
   (close_event_store left)

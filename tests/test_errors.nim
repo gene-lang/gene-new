@@ -24,76 +24,105 @@ proc markChildCancellationEnsure(args: openArray[Value]): Value {.nimcall.} =
   NIL
 
 suite "errors — fail and catch":
+  test "catch selects by type and exposes the error as $ex":
+    ck "(type Boom ^props {^message Str} ^impl [Error]) " &
+       "(impl Error for Boom) " &
+       "(type Other ^props {^message Str} ^impl [Error]) " &
+       "(impl Error for Other) " &
+       "(try (fail (Boom ^message \"boom\")) " &
+       "  catch Other \"wrong\" " &
+       "  catch Boom $ex/message)", "\"boom\""
+
   test "a typed failed value is caught and bound":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
-       "(try (fail (Boom ^message \"boom\")) catch e e/message)", "\"boom\""
+       "(try (fail (Boom ^message \"boom\")) catch Boom $ex/message)", "\"boom\""
   test "fail only raises values implementing Error":
     expect GeneError: discard runStr("(fail \"boom\")")
   test "the body result is returned when nothing fails":
-    ck "(try (+ 1 2) catch e \"caught\")", "3"
-  test "catch by node-shape error type binds props":
+    ck "(try (+ 1 2) catch Any \"caught\")", "3"
+  test "catch exposes typed error properties through $ex":
     ck "(type ParseError ^props {^line Int} ^impl [Error]) " &
        "(impl Error for ParseError) " &
-       "(try (fail (ParseError ^line 3)) catch (ParseError ^line l) l)", "3"
-  test "catch clauses are tried in order, with a wildcard fallback":
+       "(try (fail (ParseError ^line 3)) catch ParseError $ex/line)", "3"
+  test "catch clauses are tried in order, with an Any fallback":
     ck "(type ParseError ^props {^line Int} ^impl [Error]) " &
        "(impl Error for ParseError) " &
        "(type IoError ^props {^m Str} ^impl [Error]) " &
        "(impl Error for IoError) " &
        "(try (fail (IoError ^m \"x\")) " &
-       "catch (ParseError ^line l) \"parse\" catch _ \"other\")", "\"other\""
+       "catch ParseError \"parse\" catch Any \"other\")", "\"other\""
   test "internal errors are catchable by message shape":
-    ck "(try (/ 1 0) catch {^message m} m)", "\"division by zero\""
+    ck "(try (/ 1 0) catch Any $ex/message)", "\"division by zero\""
+  test "runtime diagnostics carry RuntimeError and satisfy Error":
+    ck "(try undefined_name catch RuntimeError $ex/message)",
+       "\"undefined symbol: undefined_name\""
+    ck "(try (/ 1 0) catch Error $ex/message)", "\"division by zero\""
+  test "$ex is captured by a function created in the catch body":
+    ck "(try (/ 1 0) catch RuntimeError " &
+       "  (var message (fn [] $ex/message)) (message))",
+       "\"division by zero\""
+  test "catch headers reject patterns and wildcard spelling":
+    expect GeneError:
+      discard compileSource("(try (/ 1 0) catch _ 0)")
+    expect GeneError:
+      discard compileSource("(try (/ 1 0) catch (RuntimeError ^message m) m)")
   test "a MatchError from the body is catchable by type":
-    ck "(try (var [a b] [1]) catch (MatchError ^message m) m)",
+    ck "(try (var [a b] [1]) catch MatchError $ex/message)",
        "\"destructuring pattern did not match\""
   test "an unmatched catch re-raises":
     expect GeneError:
       discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
                      "(impl Error for Boom) " &
-                     "(try (fail (Boom ^message \"x\")) catch 99 \"no\")")
+                     "(type Other ^props {^message Str} ^impl [Error]) " &
+                     "(impl Error for Other) " &
+                     "(try (fail (Boom ^message \"x\")) catch Other \"no\")")
   test "the recovery value is returned on a caught error":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
-       "(try (fail (Boom ^message \"x\")) catch _ 7)", "7"
+       "(try (fail (Boom ^message \"x\")) catch Any 7)", "7"
   test "built-in TypeError implements Error":
     ck "(try (fail (TypeError ^message \"m\" ^where \"w\" ^expected \"Int\" ^actual \"Str\")) " &
-       "catch (TypeError ^message m) m)", "\"m\""
+       "catch TypeError $ex/message)", "\"m\""
   test "built-in CompileError implements Error":
     ck "(try (fail (CompileError ^message \"bad syntax\")) " &
-       "catch (CompileError ^message m) m)", "\"bad syntax\""
+       "catch CompileError $ex/message)", "\"bad syntax\""
   test "Error marker impls apply to child error types":
     ck "(type BaseError ^props {^message Str} ^impl [Error]) " &
        "(impl Error for BaseError) " &
        "(type ChildError ^is BaseError ^props {}) " &
-       "(try (fail (ChildError ^message \"child\")) catch (BaseError ^message m) m)",
+       "(try (fail (ChildError ^message \"child\")) catch BaseError $ex/message)",
        "\"child\""
-  test "catch pattern bindings are local to the recovery branch":
+  test "$ex is local to the recovery branch":
     expect GeneError:
       discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
                      "(impl Error for Boom) " &
-                     "(try (fail (Boom ^message \"x\")) catch (Boom ^message m) m) " &
-                     "m")
+                     "(try (fail (Boom ^message \"x\")) catch Boom $ex/message) " &
+                     "$ex")
   test "catch recovery declarations are local":
     expect GeneError:
       discard runStr("(type Boom ^props {^message Str} ^impl [Error]) " &
                      "(impl Error for Boom) " &
-                     "(try (fail (Boom ^message \"x\")) catch _ (var recovered true) recovered) " &
+                     "(try (fail (Boom ^message \"x\")) catch Any (var recovered true) recovered) " &
                      "recovered")
 
 suite "errors — checked rows":
+  test "RuntimeError can be declared in a checked row":
+    ck "(fn missing ^errors [RuntimeError] [] undefined_name) " &
+       "(try (missing) catch RuntimeError $ex/message)",
+       "\"undefined symbol: undefined_name\""
+
   test "functions may raise declared errors":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(fn raise-boom ^errors [Boom] [] (fail (Boom ^message \"x\"))) " &
-       "(try (raise-boom) catch (Boom ^message m) m)", "\"x\""
+       "(try (raise-boom) catch Boom $ex/message)", "\"x\""
 
   test "missing error row remains dynamic":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(fn raise-boom [] (fail (Boom ^message \"x\"))) " &
-       "(try (raise-boom) catch (Boom ^message m) m)", "\"x\""
+       "(try (raise-boom) catch Boom $ex/message)", "\"x\""
 
   test "^errors [] rejects recoverable errors":
     expect GeneError:
@@ -112,7 +141,7 @@ suite "errors — checked rows":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(fn raise-boom ^errors [Never Boom Boom] [] (fail (Boom ^message \"x\"))) " &
-       "(try (raise-boom) catch (Boom ^message m) m)",
+       "(try (raise-boom) catch Boom $ex/message)",
        "\"x\""
 
   test "undeclared recoverable errors are rejected":
@@ -136,16 +165,16 @@ suite "errors — checked rows":
        "(type Job ^props {}) " &
        "(impl Run for Job " &
        "  (message run ^errors [Boom] [self] (fail (Boom ^message \"x\")))) " &
-       "(try ((Job) ~ Run:run) catch (Boom ^message m) m)", "\"x\""
+       "(try ((Job) ~ Run:run) catch Boom $ex/message)", "\"x\""
 
   test "checked rows can declare built-in MatchError":
     ck "(fn first-two ^errors [MatchError] [xs] (var [a b] xs) a) " &
-       "(try (first-two [1]) catch (MatchError ^message m) m)",
+       "(try (first-two [1]) catch MatchError $ex/message)",
        "\"destructuring pattern did not match\""
 
   test "checked rows can declare built-in CompileError":
     ck "(fn bad ^errors [CompileError] [] (fail (CompileError ^message \"compile\"))) " &
-       "(try (bad) catch (CompileError ^message m) m)", "\"compile\""
+       "(try (bad) catch CompileError $ex/message)", "\"compile\""
 
   test "^effects is reserved":
     expect GeneError:
@@ -164,13 +193,13 @@ suite "errors — ensure":
   test "ensure runs on a caught error":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
-       "(var log \"\") (try (fail (Boom ^message \"x\")) catch _ 0 " &
+       "(var log \"\") (try (fail (Boom ^message \"x\")) catch Any 0 " &
        "ensure (set log \"ran\")) log", "\"ran\""
   test "ensure runs even when the error re-raises":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(var log \"\") " &
-       "(try (try (fail (Boom ^message \"x\")) ensure (set log \"ran\")) catch _ 0) log",
+       "(try (try (fail (Boom ^message \"x\")) ensure (set log \"ran\")) catch Any 0) log",
        "\"ran\""
   test "try returns the body value, not the ensure value":
     ck "(try 42 ensure 99)", "42"
@@ -180,11 +209,11 @@ suite "errors — ensure":
        "(var n 0) (var i 0) (var o 0) " &
        "(try (try (try (fail (Boom ^message \"x\")) " &
        "               ensure (do (set n (+ n 1)) (set i n))) " &
-       "          ensure (do (set n (+ n 1)) (set o n))) catch _ 0) [i o]", "[1 2]"
+       "          ensure (do (set n (+ n 1)) (set o n))) catch Any 0) [i o]", "[1 2]"
   test "the catch value survives the ensure that runs after it":
     ck "(type Boom ^props {^message Str} ^impl [Error]) (impl Error for Boom) " &
        "(var ran 0) " &
-       "(var r (try (fail (Boom ^message \"x\")) catch _ 7 ensure (set ran 1))) " &
+       "(var r (try (fail (Boom ^message \"x\")) catch Any 7 ensure (set ran 1))) " &
        "[r ran]", "[7 1]"
   test "cancellation is not caught but still runs ensure":
     cancellationEnsureRan = false
@@ -195,7 +224,7 @@ suite "errors — ensure":
       discard run(compileSource("(scope (var ch ($channel ^capacity 1)) " &
                                 "  (var t (spawn (ch ~ recv))) " &
                                 "  (t ~ cancel) " &
-                                "  (try (await t) catch _ \"caught\" " &
+                                "  (try (await t) catch Any \"caught\" " &
                                 "       ensure (mark-cancellation-ensure)))"),
                   scope)
     check cancellationEnsureRan
@@ -241,13 +270,13 @@ suite "errors — try on the frame stack":
   test "deep recursion through a try-wrapped function does not overflow":
     # Each level used to start a nested runLoop for the try body and overflow the
     # Nim stack in the low hundreds; the try body now runs as a heap Frame.
-    ck "(fn f [n] (try (if (== n 0) 0 (+ 1 (f (- n 1)))) catch _ -1)) (f 200000)",
+    ck "(fn f [n] (try (if (== n 0) 0 (+ 1 (f (- n 1)))) catch Any -1)) (f 200000)",
        "200000"
   test "an inner try catches before the enclosing ^errors boundary applies":
     # The undeclared error is caught by the function's own inner try, so the
     # ^errors row never sees it — the function returns normally.
     ck "(type Boom ^props {^message Str} ^impl [Error]) (impl Error for Boom) " &
-       "(fn quiet ^errors [] [] (try (fail (Boom ^message \"x\")) catch _ 42)) " &
+       "(fn quiet ^errors [] [] (try (fail (Boom ^message \"x\")) catch Any 42)) " &
        "(quiet)", "42"
   test "an error escaping an inner try still hits the ^errors boundary":
     # No catch matches inside quiet, so the undeclared error escapes the function
@@ -259,15 +288,15 @@ suite "errors — try on the frame stack":
   test "an error raised in a catch body unwinds to the enclosing try":
     ck "(type A ^props {^message Str} ^impl [Error]) (impl Error for A) " &
        "(type B ^props {^message Str} ^impl [Error]) (impl Error for B) " &
-       "(try (try (fail (A ^message \"a\")) catch (A) (fail (B ^message \"b\"))) " &
-       "     catch (B ^message m) m)", "\"b\""
+       "(try (try (fail (A ^message \"a\")) catch A (fail (B ^message \"b\"))) " &
+       "     catch B $ex/message)", "\"b\""
   test "an error raised in an ensure body overrides and unwinds outward":
     ck "(type A ^props {^message Str} ^impl [Error]) (impl Error for A) " &
-       "(try (try 5 ensure (fail (A ^message \"e\"))) catch (A ^message m) m)", "\"e\""
+       "(try (try 5 ensure (fail (A ^message \"e\"))) catch A $ex/message)", "\"e\""
 
 suite "errors — panic":
   test "panic is not caught by try":
-    expect GenePanic: discard runStr("(try (panic \"halt\") catch _ \"caught\")")
+    expect GenePanic: discard runStr("(try (panic \"halt\") catch Any \"caught\")")
   test "panic propagates through ensure":
     expect GenePanic: discard runStr("(try (panic \"halt\") ensure 1)")
   test "panic head is a special form":
@@ -278,4 +307,4 @@ suite "errors — panic":
   test "await propagates task panic outside try":
     expect GenePanic:
       discard runStr("(scope (var t (spawn (panic \"halt\"))) " &
-                     "(try (await t) catch _ \"caught\"))")
+                     "(try (await t) catch Any \"caught\"))")

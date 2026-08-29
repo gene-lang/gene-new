@@ -34,7 +34,9 @@
            ^contextual true
            ^activate (fn [] (fn [host]
              (host ~ PluginHost:contribute "tools"
-               {^name %name ^doc "stub" ^run run}))))))))
+               {^name %name ^doc "stub" ^run run})))))))
+  (message author [] : Any
+    {^by "stub" ^model ""}))
 
 (fn stub_codegen_plugin [] : Plugin
   (Plugin ^id "codegen" ^provides ["HarnessCodegen"]
@@ -78,8 +80,8 @@
     (try
       (build_tool bare "gamma" "hello")
       ""
-    catch e
-      ($to_str e/message)))
+    catch Any
+      ($to_str $ex/message)))
   (assert ($str/contains? refused "HarnessCodegen")
     "build without a codegen provider must name the seam it could not resolve")
 

@@ -99,6 +99,29 @@ guesses. Two rather than one because a short probe proves less than it looks
 like it does: a `shorten` tool passed on its own name and failed on anything
 over twenty bytes, so the branch the request was about had never run.
 
+Building the same name again replaces the entry at the next revision rather
+than refusing it. There is no verb that releases a durable name — `disable`
+takes an entry out of desired state and the name stays taken — so create-only
+made iterating on a generated tool mean inventing a new name per attempt. The
+old blob stays in the store and the change is recorded as `replaced`, so a
+revision is still the unit you read back.
+
+```text
+$ ... web build greet "hello again"
+registered greet at revision 2 (ready)
+```
+
+Each committed entry names its author. `build` asks the `HarnessCodegen`
+provider who it is — provenance is provider knowledge, not something the
+command can guess — and records it beside the module digest:
+
+```gene
+^by "codegen/model" ^model "anthropic/claude-sonnet-4.6" ^at "2026-08-26T11:05:45+04:00"
+```
+
+The template provider answers `^by "template" ^model ""`, which is the honest
+answer for a module no model wrote.
+
 Run a separate process with the same home:
 
 ```bash
@@ -204,6 +227,34 @@ Deactivation and registry cleanup receive the still-valid owner context.
 Repeated module replacements in one turn coalesce, so only the final committed
 descriptor activates.
 
+## What a model program may reach
+
+A reply's `^code` runs in an `Env` minted with the structural harness bindings
+and `^capabilities []`. Structural authority is total — every binding is an
+ordinary Gene call needing no grant, and the model may rebuild the harness with
+them — while host authority is nil: reading a file or the environment comes back
+as `refused: ...`, a value the next round is shown.
+
+`register_module` is the one operation that needs both. A grant only ever
+attenuates, so a program can never recover the authority a registration wants
+(hashing source, writing a blob, loading the module, running `init`); calling
+straight through refused at `fs/exists?` and the whole turn was lost. The
+binding therefore *queues* the module. The harness drains the queue after the
+program returns, still inside the same turn but back under its own authority,
+and commits and activates from there:
+
+```text
+(do (register_module "probe" (plugin_source "probe" "probe text")))
+-- Result  --
+queued probe; the harness registers it when this turn ends
+registered probe at revision 1
+```
+
+The consequence is the one thing worth knowing before writing a program: a tool
+registered this way is callable from the *next* program, not the one that
+queued it. A registration that fails to load raises like any other error in the
+turn body, so it never becomes a revision.
+
 ## Capability selectors
 
 Composition stores inert selector data. It never stores or restores grants:
@@ -224,6 +275,18 @@ timeout, and memory limits. The recovery boundary converts plugin panic into a
 quarantine error. The policy is attached immutably to the sandbox module, so
 escaped functions and direct typed protocol methods retain the same capability
 ceiling and fresh execution budget. FFI and native compilation remain disabled.
+
+A view row is called twice per *turn*, never once per session. `HarnessView`
+has two messages — render the prompt, then handle the line — and `nil` from
+either means "call me again". `main.gene` owns the loop, re-reads
+`views/active` between turns (which is the whole of view replacement), and owns
+the blocking read that sits between the two calls under no budget at all:
+reading the process's own stdin is host authority, not a plugin's work.
+
+Both halves of that mattered. A view that owned its loop spent a single
+`^timeout_ms` on the entire conversation; a view that owned the read spent it
+on the human's thinking time and expired at the keyboard. Neither message can
+block on a person now, so bounding both is honest.
 
 Workspace-scoped plugins have one live replica per Harness process and one
 shared durable projection. They are not implicit cross-process singletons; a
@@ -261,7 +324,7 @@ before stores are flushed and closed.
 | `src/workspace.gene` | composition CAS, blobs, register/restore, quarantine |
 | `src/agent.gene` | command/tool registries and offline prompt provider |
 | `src/llm.gene` | OpenRouter provider and registry-rendered prompt |
-| `src/repl.gene` | terminal subscriber and active-view handoff |
+| `src/repl.gene` | terminal subscriber, one prompt and one line |
 | `src/view_api.gene`, `src/recording_view.gene` | typed view contract and recording view |
 | `src/profile.gene`, `src/profiles/` | checked-in baseline profiles |
 | `src/main.gene` | durable boot and irreducible recovery surface |

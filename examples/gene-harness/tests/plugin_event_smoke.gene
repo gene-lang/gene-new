@@ -37,7 +37,7 @@
   (register_module workspace h "ticker" source ^selectors [])
   (var emit (resolve h "EmitTick"))
   (var refused false)
-  (try (emit {}) catch e (set refused true))
+  (try (emit {}) catch Any (set refused true))
   (assert refused "plugin event payloads must pass the declared bounded schema")
   (emit {^value 7})
   (var history (events_for events "session" "s1"))

@@ -96,9 +96,9 @@ integer division truncating toward zero (`bigint` division already is); on two
 `F64`s it is ordinary floating-point division. `//` is the truncated
 **remainder** for both types and lowers to JS `%`. `%` is the unquote prefix and
 never denotes arithmetic. A zero divisor raises the VM's own catchable
-`(Error ^message "division by zero")` for both numeric types, so `F64` division
+`(RuntimeError ^message "division by zero")` for both numeric types, so `F64` division
 does not yield `Infinity` and `Int` division does not surface a JS `RangeError`.
-Because it really is the VM's value, `catch (Error ^message m)` matches it.
+Because it really is the VM's value, `catch Error` matches it.
 
 **Indexing follows the VM's rule, not JavaScript's.** A negative index counts
 from the end (design §1/§2, `users/-1/name`) and an out-of-range *write* raises;
@@ -151,20 +151,17 @@ naming `Fn`. It has to be an explicit refusal because the nominal-type
 fallthrough would otherwise read `(Callback [A] R)` as a nominal type *named*
 `Callback` and emit working code for it.
 
-`fail` accepts only values whose declared type implements `Error`. Typed catch
-patterns and `ensure` lower to `catch`/`finally`. `^errors` rows are validated
+`fail` accepts only values whose declared type implements `Error`. Catch types,
+the branch-local `$ex` binding, and `ensure` lower to runtime type tests plus
+`catch`/`finally`. `^errors` rows are validated
 at compile time and erased; duplicate, non-error, and malformed rows are
 rejected. `^effects` remains reserved and is rejected.
 
-A pattern whose head is a plain symbol is one form over two representations, as
-in the VM: it matches a **type instance** of that name *and* **Gene node data**
-carrying that head symbol. A head naming no declared type simply has no instance
-half. Then the listed props must be **present** — naming an absent optional field
-is a non-match, not a `nil` binding — and the body must match exactly, or through
-a trailing rest pattern. Because Gene node data is the shape the VM raises
-builtin errors as, `catch (Error ^message m)` binds the same message here as in
-the VM, and it keeps doing so in a module that declares its own type named
-`Error`.
+A match pattern whose head is a plain symbol remains one form over the class and
+Gene-node representations. Catch headers are different: they contain a type,
+never a pattern. Runtime diagnostics use the portable `RuntimeError` identity;
+`catch Error` tests protocol conformance, `catch Any` is the catch-all, and the
+body reads the caught value through `$ex`.
 
 Node identity is a `Symbol.for("gene.node")` brand rather than
 `instanceof GeneNode`, which is per-module and so false for any node that crossed
@@ -196,7 +193,7 @@ callback value are each rejected with a source-located reason rather than
 emitting an `await` with nowhere to hang it.
 
 Cancellation is represented by `GeneCancellation`, deliberately not an `Error`;
-emitted ordinary catches rethrow it before testing Gene catch patterns. The test
+emitted ordinary catches rethrow it before testing Gene catch types. The test
 is a `Symbol.for("gene.cancellation")` brand rather than `instanceof` or a `kind`
 string. `instanceof` is wrong because the class is emitted per module, so
 identity does not survive a module boundary and a module holding only a Gene
@@ -206,7 +203,7 @@ may declare its own `^kind Str`, which would make
 collide with any Gene field name.
 
 `tests/transpile_async_runner.nim` adversarially checks that a cancelled child
-cannot be swallowed by `catch _` and that `ensure` runs once, in both a
+cannot be swallowed by `catch Any` and that `ensure` runs once, in both a
 single-module and a two-module shape, and that a Gene error carrying
 `^kind "gene_cancellation"` is still catchable.
 

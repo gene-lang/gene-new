@@ -37,7 +37,7 @@
 (fn form_fields [req] : Map
   (try
     (parse_query req/body)
-  catch (UrlError ^message _)
+  catch UrlError
     {}))
 
 (fn form_str [req, name : Str] : Str
@@ -57,7 +57,7 @@
 # non-integer reaches here, so the catch arm *is* the validation.
 (fn with_int [req, name : Str, action]
   (var raw (form_str req name))
-  (var value (try (parse_int raw) catch (ParseError ^message _) nil))
+  (var value (try (parse_int raw) catch ParseError nil))
   (if (== value nil)
     (bad_request $"${name} must be an integer")
     (action value)))

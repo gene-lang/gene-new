@@ -40,6 +40,7 @@
          publish render_prompt doc transaction_diff
          module_dir]
   from "./kernel")
+(import [ExecutionLimits] from "./plugin_api")
 (import_impl PluginHost for PluginContext from "./kernel")
 (import [HarnessFs HarnessRender HarnessPrompt HarnessCodegen LocalFs MemFs
          TextRender HtmlRender fs_provider render_provider prompt_provider
@@ -89,10 +90,16 @@
   (for x in xs (if_not (== x v) (out ~ push x)))
   out)
 
-(fn harness_bindings [h : Harness] : Any
+(fn harness_bindings [h : Harness, queued] : Any
   # The model gets the complete structural operation vocabulary, bound to this
   # Harness, but never the public Harness record itself. Every mutation must
   # therefore pass through the ledger/transaction-aware functions below.
+  #
+  # `queued` is the current turn's registration queue: `^register_module`
+  # appends to it and `run_program` owns it, drains it at the turn boundary and
+  # never reuses it. It is a parameter rather than a private cell because the
+  # vocabulary outlives no turn — a caller that only wants to read the bindings
+  # (a test asking what a program may reach) passes a list it then ignores.
   {
    # lifecycle
    ^install (fn [plugin] (install_with_policy h plugin []))
@@ -108,9 +115,26 @@
           ^model model : Str = "",
           ^at at_value : Str = "",
           ^replace replace_value : Bool = false]
-       (register_module h/workspace h id source ^scope scope
-         ^selectors selectors ^limits limits ^dependencies dependencies
-         ^by by ^model model ^at at_value ^replace replace_value))
+       # Registration writes a blob, loads the module and runs its `init`, all
+       # of which need host authority the program does not have — and grants
+       # only attenuate, so calling through from in here could never do
+       # anything but refuse. It did, four times in one recorded session, with
+       # "fs/exists? needs fs/ReadDir" and a burnt turn each time. So this
+       # validates what it can cheaply and queues the rest for `run_program`,
+       # which is outside the sandbox and still inside the turn.
+       (if_not (== ($head id) Str)
+         (fail (HarnessError
+           ^message "register_module id must be a string")))
+       (if_yes (== ($to_str id) "")
+         (fail (HarnessError ^message "register_module id is empty")))
+       (if_not (== ($head source) (quote mod))
+         (fail (HarnessError
+           ^message $"register_module source for ${id} must be a quoted mod node")))
+       (queued ~ push
+         {^id ($to_str id) ^source source ^scope scope ^selectors selectors
+          ^limits limits ^dependencies dependencies ^by by ^model model
+          ^at at_value ^replace replace_value})
+       $"queued ${id}; the harness registers it when this turn ends")
    # seams and registries. Mutations happen through a PluginContext acquired by
    # `install`; registry reads return keys, not mutable row payloads.
    ^resolve (fn [seam] (resolve h seam))
@@ -160,27 +184,65 @@
   #
   # `^capabilities` is the *host* authority row and it is resolved against this
   # module's context when the Env is minted, so it can never name more than the
-  # harness already holds. Structural authority over the harness is total —
+  # harness already holds. Here that row is empty, so the program has no host
+  # authority whatsoever. Structural authority over the harness is total —
   # every binding above is an ordinary Gene call needing no grant — while host
-  # authority stays narrow. That split is the point: the model may rebuild the
-  # harness and still not read your home directory.
+  # authority stays with the harness. That split is the point: the model may
+  # rebuild the harness and still not read your home directory. The one
+  # operation that needs both is `register_module`, and the queue below is how
+  # it gets them without the sandbox ever holding a grant.
+  (var queued ($thaw #[]))
   (var sandbox
-    (env ^bindings (harness_bindings h)
+    (env ^bindings (harness_bindings h queued)
          ^capabilities []))
   (var existing_events (log_events h))
   (var turn_id $"model-${(+ existing_events/~size 1)}")
   (var outcome
     (run_workspace_turn h/workspace h turn_id
       (fn [ignored]
-        (try
-          $"${(eval program ^in sandbox)}"
-        catch (MissingCapability ^capability wanted ^operation operation)
-          # A denial is a value shown to the next model round.
-          $"refused: ${operation} needs ${wanted}"
-        catch e
-          (if ($str/contains? e/message " requires ")
-            $"refused: ${e/message}"
-            (fail e))))))
+        (var rendered
+          (try
+            $"${(eval program ^in sandbox)}"
+          catch MissingCapability
+            # A denial is a value shown to the next model round.
+            $"refused: ${$ex/operation} needs ${$ex/capability}"
+          catch Any
+            (if ($str/contains? $ex/message " requires ")
+              $"refused: ${$ex/message}"
+              (fail $ex))))
+        # Drained here and not in the sandbox: this callback runs under the
+        # caller's capability context (`invoke_bounded ^inherit true`), which
+        # is the only point in the round that still holds the authority a
+        # registration needs. A failure raises like any other error in the
+        # body, so a module that will not load never becomes a revision.
+        (for request in queued
+          # A program that queued a module rarely names its own author, and the
+          # harness knows what the caller does not have to say: this turn came
+          # from a model reply. Stamping the blanks is the difference between a
+          # durable entry that says who wrote it and one that says nothing —
+          # the same gap `build` had before it started asking its provider.
+          (var by (if (== request/by "") "program/model" request/by))
+          (var model (if (== request/model "") (model_name) request/model))
+          (var at (if (== request/at "") ($to_str (gene/now)) request/at))
+          (var registered
+            (register_module h/workspace h request/id request/source
+              ^scope request/scope ^selectors request/selectors
+              ^limits request/limits ^dependencies request/dependencies
+              ^by by ^model model ^at at
+              ^replace request/replace))
+          # The program cannot observe its own registration — it committed
+          # after the program returned — so the result has to say it happened.
+          (set rendered
+            $"${rendered}\nregistered ${request/id} at revision ${registered/revision}"))
+        rendered)
+      # `default_execution_limits` is 2 000 ms, which suits a local callback
+      # and not a body that may hash a module, write a blob, load it and run
+      # its `init`. Steps and memory stay where they are — those guard against
+      # code that runs away, and neither is loosened by admitting that writing
+      # to disk takes time. Same trade `profiles/chat.gene` makes for a
+      # command that waits on a model.
+      ^limits (ExecutionLimits ^max_steps 100000 ^max_memory_mb 64
+                               ^timeout_ms 30000)))
   (if (== outcome/status "aborted")
     $"error: ${outcome/error/message}"
     ($to_str outcome/result)))
@@ -239,10 +301,13 @@ You are the agent inside a Gene plugin harness, and ^code runs against it live.
 
 ${(harness_primer h)}
 
-Host authority is narrow: the program may write into the generated-plugins
-directory and nothing else. Reading arbitrary files or the environment is
+Your program has no host authority at all: reading a file or the environment is
 refused, and you will see the refusal as a value. Changing the harness itself
-needs no authority at all — that is what you are for.
+needs no authority — that is what you are for. register_module is the one
+operation the harness performs for you: it queues the module, and the harness
+commits and activates it after your program returns. So a tool you register is
+callable from your NEXT program, never the one that registered it, and the
+result you are shown names the revision it landed at.
 
 Remember: reply with the map and nothing else. Start your reply with {^status
 and end it with }.""")
@@ -318,7 +383,7 @@ and end it with }.""")
 (fn read_first_form [text : Str] : Any
   (try
     ((read_all text) ~ next)
-    catch e
+    catch Any
     nil))
 
 (fn parse_envelope [reply : Str] : Any
@@ -547,16 +612,20 @@ and end it with }.""")
               (gene_skill_file "reference/stdlib.md")]
     "\n\n"))
 
-(fn codegen_system_prompt [skill : Str] : Str
-  # A plain triple-quoted string, not a `$"""` one: the prompt is full of
-  # `${...}`, `$(...)` and `$str/...` sequences that an interpolated literal
-  # would try to evaluate. Nothing here is computed, so nothing here should be.
-  ($str/join [
-  """Your entire reply is ONE Gene module and nothing else: no prose, no
-markdown fence, no explanation before or after it.
-
-It looks exactly like this. Copy the shape; change the name, the doc and the
-body of `run`:
+(fn plugin_module_contract [] : Str
+  # The skeleton and the loader's rules, shared by the two paths that produce a
+  # module: `build`'s codegen provider writes one from scratch, and a model
+  # program queues one through `register_module`. Only the first had a copy, so
+  # the program path produced modules with the imports missing and `init`
+  # mis-typed — the harness advertised a durable path and withheld the one page
+  # needed to use it. Held as data rather than duplicated prose so the two
+  # cannot drift.
+  #
+  # A plain triple-quoted string, not a `$"""` one: it is full of `${...}`,
+  # `$(...)` and `$str/...` sequences that an interpolated literal would try to
+  # evaluate. Nothing here is computed, so nothing here should be.
+  """It looks exactly like this. Copy the shape; change the name, the doc and
+the body of `run`:
 
 (mod plugin
   (import [Plugin DescriptorContext PluginContext PluginHost]
@@ -583,13 +652,15 @@ The loader rejects a module that breaks any of these:
   - the root form is `(mod plugin ...)` — never another module name
   - the top level holds only `import`, `import_impl`, `fn`, `type`, `impl`,
     `protocol`, `alias`, `enum`; no top-level expressions of any kind
-  - `init` is defined and carries `^capabilities []`
+  - `init` is defined, takes one `DescriptorContext`, and carries
+    `^capabilities []`
   - the two import lines are copied *exactly*, character for character:
         (import [Plugin DescriptorContext PluginContext PluginHost]
           from "../../../src/plugin_api")
         (import_impl PluginHost for PluginContext from "../../../src/kernel")
     "../../../plugin_api" without `src/` is the mistake to avoid, and no other
-    import of any kind is permitted
+    import of any kind is permitted. Omitting them is what makes `Plugin` and
+    `DescriptorContext` unknown type annotations.
   - `^contextual true`, and `^activate` is a thunk returning `(fn [host] ...)`
 
 `run` takes one Str and returns a Str. It holds no capabilities at all — no
@@ -597,7 +668,16 @@ filesystem, no network, no clock, no environment, no randomness. Computation on
 its argument and on literals is the whole of what it can do. If the request
 cannot be met that way, write the closest pure-text version of it rather than
 reaching for authority you do not have.
+""")
 
+(fn codegen_system_prompt [skill : Str] : Str
+  ($str/join [
+  """Your entire reply is ONE Gene module and nothing else: no prose, no
+markdown fence, no explanation before or after it.
+
+"""
+  (plugin_module_contract)
+  """
 Gene is not the Lisp you are thinking of, and the reference below is
 authoritative — read it before you write the body of `run`. The ones that have
 actually cost a build here:
@@ -651,8 +731,8 @@ Reply with the module for that tool and nothing else.""")
   # find out whether the reply was truncated, unbalanced, or never code at all.
   (try
     {^form ((read_all text) ~ next) ^problem ""}
-  catch e
-    {^form nil ^problem ($to_str e/message)}))
+  catch Any
+    {^form nil ^problem ($to_str $ex/message)}))
 
 (fn model_plugin_source [name : Str, request : Str, skill : Str] : Any
   # Text in, inert node out. Two recoveries, both cheap: drop a markdown fence,
@@ -681,7 +761,12 @@ Reply with the module for that tool and nothing else.""")
 
 (impl HarnessCodegen for ModelCodegen
   (message generate [name : Str, request : Str] : Any
-    (model_plugin_source name request self/skill)))
+    (model_plugin_source name request self/skill))
+  (message author [] : Any
+    # `self/model` is the model that was configured when this provider was
+    # bound, which is the one that answered — not whatever the environment
+    # says now.
+    {^by "codegen/model" ^model self/model}))
 
 (fn model_codegen_plugin [] : Plugin
   # Same id and same seam as the template provider in agent.gene. A deployment
@@ -702,11 +787,20 @@ Reply with the module for that tool and nothing else.""")
     (answer h prompt self/session self/state_host)))
 
 (fn llm_prompt_text [] : Str
-  "Use register_module for durable authored plugins. Harness operations are already bound and take no h argument. Entries are content-addressed, capability selectors only attenuate named roots, and code-running replies must observe their result before claiming completion. Pull detailed Gene references with (doc \"gene/pitfalls\"), gene/syntax, gene/declarations, gene/control_flow, or gene/stdlib.")
+  # Two call shapes are spelled out because guessing them is the failure that
+  # keeps happening. For `register_module`: two recorded sessions passed
+  # `^name`/`^source` named arguments and one passed the module as a *string*.
+  # For reaching a tool: a session that had just registered one spent five
+  # rounds on `(shout ...)`, `(tool ...)`, `(tools)` and `(active)` and never
+  # found `invoke_registry`. A row is not a binding, and nothing in the primer
+  # said so. The arity error a wrong shape produces names an anonymous
+  # binding, so it does not point at the mistake either.
+  "register_module takes two positional arguments and queues a durable authored plugin: (register_module \"<id>\" (quote (mod plugin ...)) ^replace true). The source is a quoted module node, never a string, and `id` is a plain word. Pull the module the loader will accept with (doc \"plugin/module\") and copy its shape — a queued module that omits the two imports fails on `Plugin` as an unknown type annotation. The harness commits and activates once your program returns, so the tool is callable from your next program and not the one that queued it. Registry rows are not bindings: list one with (row_keys \"tools\") and call a row with (invoke_registry \"tools\" \"<name>\" [argument]). A program holds no host authority at all. Harness operations are already bound and take no h argument. Entries are content-addressed, capability selectors only attenuate named roots, and code-running replies must observe their result before claiming completion. Pull detailed Gene references with (doc \"gene/pitfalls\"), gene/syntax, gene/declarations, gene/control_flow, or gene/stdlib.")
 
 (fn llm_agent_plugin [] : Plugin
   (Plugin ^id "agent"
     ^provides [["seams" "HarnessPrompt"] ["prompt" "llm_agent"]
+               ["prompt" "plugin/module"]
                ["prompt" "gene/language"] ["prompt" "gene/pitfalls"]
                ["prompt" "gene/syntax"] ["prompt" "gene/declarations"]
                ["prompt" "gene/control_flow"] ["prompt" "gene/stdlib"]]
@@ -720,6 +814,12 @@ Reply with the module for that tool and nothing else.""")
                     ^state_host host)))
       (host ~ PluginHost:contribute "prompt"
         {^name "llm_agent" ^text (llm_prompt_text)})
+      # Pull-only: the contract is a page, and only a turn that actually
+      # queues a module needs it. `build`'s author gets the same text pushed,
+      # because writing the module is the whole of its job.
+      (host ~ PluginHost:contribute "prompt"
+        {^name "plugin/module" ^text (plugin_module_contract)
+         ^pull_only true})
       # The checked-in Gene language skill is the one source for both pushed
       # guidance and pull introspection. References stay out of every request
       # until the model asks for one through `doc`.

@@ -626,7 +626,7 @@ suite "capability specifications in Gene":
         ^capabilities [(app/UnlinkedArea path)]
         true)
       (try (use "/workspace/tmp")
-        catch (UnsupportedCapability) "unsupported")
+        catch UnsupportedCapability "unsupported")
     """), newGlobalScope(app))
     check value.strVal == "unsupported"
 
@@ -824,7 +824,7 @@ suite "capability call boundaries":
       (fn succeeds []
         ^capabilities [(fs/WriteDir "tmp")]
         7)
-      (try (fails) catch _ nil)
+      (try (fails) catch Any nil)
       (succeeds)
     """), scope)
     check value.intVal == 7
@@ -839,7 +839,7 @@ suite "capability call boundaries":
       (var denied false)
       (try
         (with_capabilities [] (needs_tmp))
-        catch _
+        catch Any
         (set denied true))
       [denied (needs_tmp)]
     """), scope)
@@ -865,7 +865,7 @@ suite "capability call boundaries":
           (with_capabilities []
             (var task (spawn
               (try (needs_tmp)
-                catch (MissingCapability) 9)))
+                catch MissingCapability 9)))
             (await task))))
       [child_result (needs_tmp)]
     """), newGlobalScope(newApplication()))
@@ -877,9 +877,8 @@ suite "capability call boundaries":
         ^capabilities []
         ($fs/read_text "missing.txt"))
       (try (denied)
-        catch (MissingCapability ^capability capability
-                                 ^operation operation)
-        [capability operation])
+        catch MissingCapability
+        [$ex/capability $ex/operation])
     """), newGlobalScope(newApplication()))
     check value.print == "[\"fs/ReadFile\" \"fs/read_text\"]"
 
@@ -904,12 +903,12 @@ suite "capability call boundaries":
       (try
         (with_capabilities []
           (db ~ Db:exec "create table denied (x integer)"))
-        catch (MissingCapability)
+        catch MissingCapability
         (set write_denied true))
       (try
         (with_capabilities []
           (db ~ Db:query "select x from guarded"))
-        catch (MissingCapability)
+        catch MissingCapability
         (set read_denied true))
       (db ~ Db:close)
       [write_denied read_denied]
@@ -979,7 +978,7 @@ suite "capability call boundaries":
     let value = run(compileSource("""
       [(check_capabilities (fs/ReadFile "note.txt"))
        (try (do ($fs/read_text "note.txt") "read")
-         catch (MissingCapability) "denied")]
+         catch MissingCapability "denied")]
     """), newGlobalScope(app))
     check value.print == "[true \"read\"]"
 
@@ -1027,7 +1026,7 @@ suite "capability call boundaries":
         ^capabilities [(fs/WriteFile path ^^optional)]
         [(check_capabilities (fs/WriteFile path))
          (try (do ($fs/write_text path "x") "wrote")
-           catch (MissingCapability) "denied")])
+           catch MissingCapability "denied")])
       (with_capabilities [] (probe "missing.txt"))
     """), newGlobalScope(newApplication()))
     check value.print == "[false \"denied\"]"
@@ -1048,7 +1047,7 @@ suite "capability call boundaries":
         ^capabilities [(fs/WriteFile path ^^optional)]
         [(check_capabilities (fs/WriteFile path))
          (try ($fs/write_text path "no")
-           catch (MissingCapability) "denied")])
+           catch MissingCapability "denied")])
       (with_capabilities [] (optional_write "missing.txt"))
     """), newGlobalScope(newApplication()))
     check value.print == "[false \"denied\"]"

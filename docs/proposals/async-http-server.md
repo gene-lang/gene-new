@@ -279,7 +279,7 @@ Handler shape:
     (when (http/RequestMsg ^req req ^reply reply)
       (try
         (reply ~ send (route req state))
-      catch e
+      catch Any
         (reply ~ send
           (http/text 500 "internal server error")))
       (actor/continue state))))

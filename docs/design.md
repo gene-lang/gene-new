@@ -121,7 +121,7 @@ non-node is a *conversion*, not a subtyping relation:
 ((fn [n : Node] 1) (quote (f 1 2)))   # 1
 ((fn [x : Any] 1) (Task ^id 1))       # 1
 (try ((fn [n : Node] 1) (Task ^id 1))
-  catch (TypeError ^expected e) e)    # "Node" — a Task is not a Node
+  catch TypeError $ex/expected)    # "Node" — a Task is not a Node
 ```
 
 An uppercase head does not make a node typed: `(quote (Declaration ^name "h"))`
@@ -2561,7 +2561,8 @@ Rules:
 - top-level `else` runs only if no pattern matched;
 - no match and no `else` raises `MatchError`.
 
-The same pattern engine is used by `var`, `for`, and `catch` destructuring.
+The same pattern engine is used by `var` and `for` destructuring. A `catch`
+clause takes an error type, not a pattern (§9).
 
 ```gene
 (var [x, y] point)
@@ -2581,15 +2582,18 @@ lives in:
 | Form                         | Bindings live in                       |
 | ---------------------------- | -------------------------------------- |
 | `(match v (when p body...))`  | the matched branch body                |
-| `(try ... catch (p body...))` | the catch body                         |
 | `(for p in xs body...)`       | the loop body, fresh per iteration     |
 | `(var p v)`                  | the enclosing lexical scope            |
 
-`match`, `catch`, and `for` bindings are **branch-local**: the runtime slot
-table for an arm is a fresh child of the enclosing scope, so a name bound by
-one arm is unreachable from a sibling arm and from anything after the form.
+`match` and `for` bindings are **branch-local**: the runtime slot table for an
+arm is a fresh child of the enclosing scope, so a name bound by one arm is
+unreachable from a sibling arm and from anything after the form.
 `(var pattern value)` binds like any other `var` and extends the current
 scope; its names are visible to subsequent expressions as ordinary locals.
+
+A catch body has one implicit branch-local binding, `$ex`, containing the
+whole caught error value. It is unavailable in the try body, `ensure`, sibling
+catch clauses, and after the `try` form.
 
 ```gene
 (match x
@@ -2775,7 +2779,18 @@ Recoverable errors are typed nodes whose type implements the marker protocol `Er
 (impl Error for ParseError)
 ```
 
-Every type listed in `^errors [...]` must implement `Error`. `fail` raises only `Error` values. `catch` patterns match error values.
+Every type listed in `^errors [...]` must implement `Error`. `fail` raises only
+`Error` values. What follows `catch` is a type expression; clauses are tried in
+order and the first type admitting the error wins. The caught value is `$ex`,
+so fields are read as `$ex/message`, `$ex/path`, and so on. Destructuring does
+not occur in a catch header.
+
+A VM diagnostic without a more specific domain type is raised as
+`RuntimeError`, which implements `Error` and carries `^message`. Therefore
+`catch RuntimeError` selects those diagnostics, `catch Error` selects every
+value implementing the marker protocol, and `catch Any` is the explicit
+recoverable catch-all. `(fail $ex)` re-raises the same value without losing its
+type or fields.
 
 Reader diagnostics preserve structured delimiter contexts (opener, expected
 closer, source, line, and column) through `ParseError`/`LexError`. When a
@@ -2801,22 +2816,24 @@ Static effects/capability rows are not part of MVP. `^effects` is reserved/WIP.
 ```gene
 (try
   body...
-catch (ParseError ^line line msg)
-  recovery...
-catch _
-  fallback...
+catch ParseError
+  ($println $ex/line $ex/message)
+catch Any
+  ($println $ex/message)
 ensure
   cleanup...)
 ```
 
 The `try`, `catch`, and `ensure` bodies accept multiple expressions directly;
-they do not need `do` wrappers. `catch` patterns match error nodes in order.
+they do not need `do` wrappers. Catch types match nominal subtypes and protocol
+conformance in order. `Any` catches every recoverable error.
 `ensure` runs on success or error; its result is ignored unless it
 raises/panics. Unhandled errors propagate.
 
 Built-in error types the runtime raises:
 
 ```text
+RuntimeError         dynamic VM diagnostic without a more specific type
 TypeError            gradual-boundary type failure
 ├── CallKindError    called a non-callable, or the wrong callable kind
 └── MessageError     a ~ send resolving to no message on the receiver's type
@@ -2833,7 +2850,8 @@ ActorFailure         child failure reported to a supervisor
 ```
 
 Only `CallKindError` and `MessageError` have a parent; the other roots are
-independent types, so `catch _` is the only pattern that matches all of them.
+independent nominal types. `catch Error` matches all values implementing the
+marker protocol, and `catch Any` is the explicit catch-all.
 The `ParseError` shown above as a user declaration is an illustration — the
 built-in `ParseError` extends `CompileError`.
 
@@ -2940,7 +2958,7 @@ body where there is no enclosing type to name:
 
 (dog ~ Eq:eq pup)   # true — Self is Dog, and a Pup is a Dog
 (try (pup ~ Eq:eq dog)
-  catch (TypeError ^expected e) e)   # "Self" — a Dog is not a Pup
+  catch TypeError $ex/expected)   # "Self" — a Dog is not a Pup
 ```
 
 That asymmetry is the point of a self type: the constraint follows the receiver
@@ -3849,8 +3867,8 @@ A task may be cancelled explicitly:
 
 Cancellation is represented separately from ordinary domain errors, but may be caught only by APIs that deliberately expose cancellation handling. Code should normally allow it to propagate. Concretely:
 
-- cancellation is a control signal, not an `Error`; `try/catch` — including a
-  wildcard `catch _` — does not catch it, so it propagates through catch clauses;
+- cancellation is a control signal, not an `Error`; `try/catch` — including
+  `catch Any` — does not catch it, so it propagates through catch clauses;
 - `ensure` blocks always run during cancellation cleanup;
 - `await` on a cancelled task propagates the cancellation;
 - an actor observes cancellation after the current message completes or at its

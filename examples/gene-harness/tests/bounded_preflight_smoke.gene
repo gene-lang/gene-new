@@ -48,8 +48,8 @@
   (var refused false)
   (try
     (register_module workspace h "init_loop" init_loop ^selectors [])
-  catch {^message message}
-    (set refused ($str/contains? message "eval max steps exceeded")))
+  catch Any
+    (set refused ($str/contains? $ex/message "eval max steps exceeded")))
   (assert refused "descriptor init must be terminated by its step budget")
   (assert (== (composition_revision workspace) 0)
     "failed preflight must not commit desired state")
@@ -57,8 +57,8 @@
   (set refused false)
   (try
     (register_module workspace h "init_panic" init_panic ^selectors [])
-  catch {^message message}
-    (set refused ($str/contains? message "plugin panic")))
+  catch Any
+    (set refused ($str/contains? $ex/message "plugin panic")))
   (assert refused "descriptor panic must be contained by the loader boundary")
   (assert (== (composition_revision workspace) 0)
     "panicking preflight must not commit desired state")
@@ -67,8 +67,8 @@
   (try
     (register_module workspace h "top_level_const" top_level_const
       ^selectors [])
-  catch {^message message}
-    (set refused ($str/contains? message "top level may not contain const")))
+  catch Any
+    (set refused ($str/contains? $ex/message "top level may not contain const")))
   (assert refused
     "declaration-only top level must reject executable constant initializers")
 

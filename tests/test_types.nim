@@ -1829,14 +1829,14 @@ suite "types — schema validation":
     expect GeneError:
       discard runStr("(type Task ^props {^id Int ^title Str}) (Task ^id \"bad\" ^title \"x\")")
     ck "(try (type Task ^props {^id Int}) (Task ^id \"bad\") " &
-       "catch (TypeError ^expected e) e)", "\"Int\""
+       "catch TypeError $ex/expected)", "\"Int\""
   test "body schemas are checked at construction":
     expect GeneError:
       discard runStr("(type Pair ^body [Int Str]) (Pair 1)")
     expect GeneError:
       discard runStr("(type Pair ^body [Int Str]) (Pair 1 \"ok\" 3)")
     ck "(try (type Values ^body [Int...]) (Values 1 \"bad\") " &
-       "catch (TypeError ^where w) w)", "\"body field 1 for Values\""
+       "catch TypeError $ex/where)", "\"body field 1 for Values\""
 
 suite "types — single inheritance":
   test "a child inherits parent fields":
@@ -1894,17 +1894,17 @@ suite "types — function boundaries":
   test "positional parameter annotations are checked":
     ck "(fn inc [x : Int] (+ x 1)) (inc 4)", "5"
     ck "(try (fn inc [x : Int] (+ x 1)) (inc \"bad\") " &
-       "catch (TypeError ^where w) w)", "\"parameter 'x'\""
+       "catch TypeError $ex/where)", "\"parameter 'x'\""
 
   test "named parameter annotations are checked":
     ck "(fn label [^name : Str] name) (label ^name \"Ada\")", "\"Ada\""
     ck "(try (fn label [^name : Str] name) (label ^name 3) " &
-       "catch (TypeError ^expected e) e)", "\"Str\""
+       "catch TypeError $ex/expected)", "\"Str\""
 
   test "return annotations are checked":
     ck "(fn answer [] : Int 42) (answer)", "42"
     ck "(try (fn answer [] : Int \"no\") (answer) " &
-       "catch (TypeError ^where w) w)", "\"return from 'answer'\""
+       "catch TypeError $ex/where)", "\"return from 'answer'\""
 
   test "generic functions infer scalar parameter and return boundaries":
     ck "(fn (identity item) [x : item] : item x) [(identity 1) (identity \"ok\")]",
@@ -1912,18 +1912,18 @@ suite "types — function boundaries":
     ck "(fn (named-id item) [^x : item] : item x) (named-id ^x \"ok\")",
        "\"ok\""
     ck "(try (fn (bad item) [x : item] : item \"bad\") (bad 1) " &
-       "catch (TypeError ^where w) w)", "\"return from 'bad'\""
+       "catch TypeError $ex/where)", "\"return from 'bad'\""
 
   test "generic functions enforce repeated type parameters":
     ck "(fn (choose item) [a : item b : item] b) (choose 1 2)", "2"
     ck "(try (fn (choose item) [a : item b : item] b) (choose 1 \"bad\") " &
-       "catch (TypeError ^expected e) e)", "\"Int\""
+       "catch TypeError $ex/expected)", "\"Int\""
 
   test "generic functions infer list element types":
     ck "(fn (first item) [xs : (List item)] : item xs/0) (first [1 2])",
        "1"
     ck "(try (fn (first item) [xs : (List item)] : item xs/0) " &
-       "(first [1 \"bad\"]) catch (TypeError ^expected e) e)",
+       "(first [1 \"bad\"]) catch TypeError $ex/expected)",
        "\"(List Int)\""
 
   test "generic functions infer map value types":
@@ -1931,7 +1931,7 @@ suite "types — function boundaries":
        "(get {^a 42})",
        "42"
     ck "(try (fn (choose key value) [m : (Map key value) fallback : value] fallback) " &
-       "(choose {^a 1} \"bad\") catch (TypeError ^expected e) e)",
+       "(choose {^a 1} \"bad\") catch TypeError $ex/expected)",
        "\"Int\""
 
   test "generic functions infer typed stream item types":
@@ -1945,7 +1945,7 @@ suite "types — function boundaries":
        "(first ($buffer [4 5]))",
        "4"
     ck "(try (fn (choose item) [b : (Buffer item) fallback : item] fallback) " &
-       "(choose ($buffer [1]) \"bad\") catch (TypeError ^expected e) e)",
+       "(choose ($buffer [1]) \"bad\") catch TypeError $ex/expected)",
        "\"Int\""
 
   test "task annotations check results and recoverable errors at await":
@@ -1955,7 +1955,7 @@ suite "types — function boundaries":
        "7"
     ck "(scope " &
        "  (fn use [t : (Task Int Never)] " &
-       "    (try (await t) catch (TypeError ^where w) w)) " &
+       "    (try (await t) catch TypeError $ex/where)) " &
        "  (use (spawn \"bad\")))",
        "\"await task result\""
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
@@ -1964,7 +1964,7 @@ suite "types — function boundaries":
        "(impl Error for Other) " &
        "(scope " &
        "  (fn use [t : (Task Int Boom)] " &
-       "    (try (await t) catch (TypeError ^where w) w)) " &
+       "    (try (await t) catch TypeError $ex/where)) " &
        "  (use (spawn (fail (Other ^message \"bad\")))))",
        "\"await task error\""
 
@@ -1987,25 +1987,25 @@ suite "types — function boundaries":
   test "simple container annotations check elements":
     ck "(fn size [xs : (List Int)] xs/~size) (size [1 2 3])", "3"
     ck "(try (fn size [xs : (List Int)] xs/~size) (size [1 \"bad\"]) " &
-       "catch (TypeError ^expected e) e)", "\"(List Int)\""
+       "catch TypeError $ex/expected)", "\"(List Int)\""
     ck "(fn value [m : (Map Sym Int)] m/a) (value {^a 3})", "3"
     ck "(var routes ($into ($to_stream [[\"handler\" (fn [] 7)]]) {})) " &
        "(fn run [m : (Map Str Fn)] ((m ~ /handler))) " &
        "(run routes)",
        "7"
     ck "(try (fn value [m : (Map Sym Int)] m) (value {^a \"bad\"}) " &
-       "catch (TypeError ^expected e) e)", "\"(Map Sym Int)\""
+       "catch TypeError $ex/expected)", "\"(Map Sym Int)\""
     ck "(try (fn value [m : (Map Int Str)] m) (value {^a \"ok\"}) " &
-       "catch (TypeError ^expected e) e)", "\"(Map Int Str)\""
+       "catch TypeError $ex/expected)", "\"(Map Int Str)\""
     ck "(fn value [m : (HashMap Str Int)] (m ~ get \"a\")) " &
        "(value {{\"a\" : 3}})", "3"
     ck "(fn value [m : (Map Str Int)] (m ~ get \"a\")) " &
        "(value {{\"a\" : 3}})", "3"
     ck "(try (fn value [m : (HashMap Str Int)] m) (value {{1 : 2}}) " &
-       "catch (TypeError ^expected e) e)", "\"(HashMap Str Int)\""
+       "catch TypeError $ex/expected)", "\"(HashMap Str Int)\""
     ck "(fn count [s : (Set Int)] ($size s)) (count (Set 1 2 1))", "2"
     ck "(try (fn count [s : (Set Int)] s) (count (Set 1 \"bad\")) " &
-       "catch (TypeError ^expected e) e)", "\"(Set Int)\""
+       "catch TypeError $ex/expected)", "\"(Set Int)\""
     ck "(fn len [b : Bytes] ($size b)) (len #B16#4869)", "2"
 
   test "fixed-width integer annotations range-check boundaries":
@@ -2027,7 +2027,7 @@ suite "types — function boundaries":
     ck "(fn f [x : F32] x) (f 3.5)", "3.5"
     ck "(fn f [x : F64] 1) (f 1e39)", "1"
     ck "(try (fn f [x : F32] x) (f 1e39) " &
-       "catch (TypeError ^expected e) e)", "\"F32\""
+       "catch TypeError $ex/expected)", "\"F32\""
     ck "(type Byte ^props {^value U8}) (var b (Byte ^value 255)) b/value", "255"
     expect GeneError:
       discard runStr("(type Byte ^props {^value U8}) (Byte ^value 256)")
@@ -2040,9 +2040,9 @@ suite "types — function boundaries":
     ck "(fn f [x : C/Bool] x) (f true)", "true"
     ck "(fn f [x : C/CStr] x) (f \"ok\")", "\"ok\""
     ck "(try (fn f [x : C/Int32] x) (f 2147483648) " &
-       "catch (TypeError ^expected e) e)", "\"C/Int32\""
+       "catch TypeError $ex/expected)", "\"C/Int32\""
     ck "(try (fn f [x : C/CStr] x) (f \"bad\\0str\") " &
-       "catch (TypeError ^expected e) e)", "\"C/CStr\""
+       "catch TypeError $ex/expected)", "\"C/CStr\""
     expect GeneError: discard runStr("(fn f [x : C/UInt8] x) (f -1)")
     expect GeneError: discard runStr("(fn f [x : C/Bool] x) (f 1)")
 
@@ -2127,7 +2127,7 @@ suite "types — function boundaries":
        "[255 [1 255] true]"
     ck "((fn [b : (Buffer Int)] true) ($buffer [1 2]))", "true"
     ck "(try ($buffer C/UInt8 [1 256]) " &
-       "catch (TypeError ^expected e) e)", "\"C/UInt8\""
+       "catch TypeError $ex/expected)", "\"C/UInt8\""
     expect GeneError:
       discard runStr("(var b ($buffer C/UInt8 [1])) (b ~ set 0 256)")
     expect GeneError:
@@ -7186,11 +7186,11 @@ suite "types — function boundaries":
     ck "(fn call-it [f : Callable] (f {^name \"Ada\"})) (call-it /name)", "\"Ada\""
     ck "(fn keep-native [f : NativeFn] f) (keep-native +)", "(native-fn +)"
     ck "(try (fn keep-native [f : NativeFn] f) (keep-native (fn [] nil)) " &
-       "catch (TypeError ^expected e) e)", "\"NativeFn\""
+       "catch TypeError $ex/expected)", "\"NativeFn\""
     ck "(try (fn keep-fn [f : Fn] f) (keep-fn +) " &
-       "catch (TypeError ^expected e) e)", "\"Fn\""
+       "catch TypeError $ex/expected)", "\"Fn\""
     ck "(fn keep-selector [s : Selector] s) (keep-selector /name)", "(select name)"
     ck "(try (fn keep-selector [s : Selector] s) (keep-selector (quote (x))) " &
-       "catch (TypeError ^expected e) e)", "\"Selector\""
+       "catch TypeError $ex/expected)", "\"Selector\""
     ck "(try (fn keep [f : Callable] f) (keep (quote (not-callable))) " &
-       "catch (TypeError ^expected e) e)", "\"Callable\""
+       "catch TypeError $ex/expected)", "\"Callable\""

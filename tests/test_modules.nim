@@ -571,9 +571,9 @@ suite "modules — file imports":
       "(var u (User ^name \"Ada\")) " &
       "(var local_box (LocalBox ^item u)) " &
       "[(local_accept u) local_box/item/name " &
-      " (try (accept u) catch _ false) " &
-      " (try (count [u]) catch _ false) " &
-      " (try (Box ^item u) catch _ false)]").print() ==
+      " (try (accept u) catch Any false) " &
+      " (try (count [u]) catch Any false) " &
+      " (try (Box ^item u) catch Any false)]").print() ==
       "[true \"Ada\" false false false]"
 
   test "conflicting explicitly imported scoped impls are rejected":
@@ -709,7 +709,7 @@ suite "modules — file imports":
     var message = ""
     try:
       discard runProgram("(import [T] from \"./candidate_type\") " &
-        "(try (import [Render] from \"./missing_protocol\") catch _ nil) " &
+        "(try (import [Render] from \"./missing_protocol\") catch Any nil) " &
         "((T) ~ render)")
     except GeneError as error:
       message = error.msg
@@ -740,7 +740,7 @@ suite "modules — built-in identity and scope hygiene":
       "(fn boom ^errors [Boom] [] (fail (Boom ^message \"x\")))")
     check runProgram("(import [Boom, boom] from \"./erra\") " &
       "(fn f ^errors [Boom] [] (boom)) " &
-      "(try (f) catch (Boom ^message m) m)").print() == "\"x\""
+      "(try (f) catch Boom $ex/message)").print() == "\"x\""
 
   test "gene exposes builtins and stdlib namespaces without shadowing":
     check runProgram("[(== gene/Error Error) " &

@@ -26,7 +26,7 @@
   (var refused false)
   (try
     (register_module workspace h "impure" source ^selectors [])
-  catch e
+  catch Any
     (set refused true))
   (assert refused
     "init must receive an inert descriptor context, not PluginHost authority")

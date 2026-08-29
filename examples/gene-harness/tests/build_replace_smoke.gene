@@ -1,0 +1,69 @@
+# `build <name>` is the only verb that claims a durable name and nothing
+# releases one — `disable` takes an entry out of desired state but the name
+# stays taken. Create-only therefore made iterating on a generated tool mean
+# inventing a new name per attempt, which is what one recorded session did:
+# slugify, then slug, then slug2, none of them removable.
+#
+# So a rebuild replaces, and replacement is a recorded outcome rather than a
+# quiet overwrite: one entry for the name, a new revision, a new digest, and the
+# live tool running the new source.
+
+(mod build_replace_smoke)
+
+(import [new_harness install invoke_registry_row status_of] from "../src/kernel")
+(import [command_plugin template_codegen_plugin build_tool] from "../src/agent")
+(import [open_workspace composition_revision composition_entries
+         module_path close_workspace]
+  from "../src/workspace")
+(import $fs [exists?])
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn entry_named [entries, id : Str]
+  (var found nil)
+  (for entry in entries
+    (if_yes (== entry/id id) (set found entry)))
+  found)
+
+(fn main [args]
+  (var workspace (open_workspace args/0))
+  (var h (new_harness ^workspace workspace))
+  (install h (command_plugin))
+  (install h (template_codegen_plugin))
+
+  (var first (build_tool h "greet" "hello"))
+  (assert ($str/contains? first "registered greet at revision 1")
+    "the first build must commit the first composition generation")
+  (assert (== (invoke_registry_row h "tools" "greet" ["world"])
+              "greet(world) -> hello")
+    "the first build must produce the tool it described")
+  (var first_entries (composition_entries workspace))
+  (var first_entry (entry_named first_entries "greet"))
+
+  (var second (build_tool h "greet" "hello again"))
+  (assert ($str/contains? second "registered greet at revision 2")
+    "a second build under the same name must replace rather than refuse")
+  (assert (== (composition_revision workspace) 2)
+    "each replacement must be its own revision")
+
+  (var entries (composition_entries workspace))
+  (assert (== entries/~size 1)
+    "replacement must leave one entry for the name, not two")
+  (var second_entry (entry_named entries "greet"))
+  (assert (!= second_entry/module_digest first_entry/module_digest)
+    "the replaced entry must point at the source the rebuild authored")
+  (assert (== (status_of h "greet") "ready")
+    "the replacement must activate in place of what it replaced")
+  (assert (== (invoke_registry_row h "tools" "greet" ["world"])
+              "greet(world) -> hello again")
+    "the live tool must run the rebuilt source, not the one it replaced")
+
+  # The blob the first build wrote is still there. Replacement is a new
+  # revision over a content-addressed store, not a delete — which is what makes
+  # a rebuild recoverable from rather than destructive.
+  (assert (exists? (module_path workspace first_entry/module_digest))
+    "the replaced module blob must survive its entry")
+
+  (close_workspace workspace)
+  ($println "build_replace_smoke: ok"))

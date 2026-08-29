@@ -173,7 +173,7 @@
   (try
     (var parsed (parse_int (get_env name $"${fallback}")))
     (if (> parsed 0) parsed fallback)
-  catch _ fallback))
+  catch Any fallback))
 
 (var configured_terminal_leader
   (env? "GENE_AGENT_TERMINAL_LEADER_CODE"))
@@ -181,7 +181,7 @@
   (if configured_terminal_leader
     (try
       (parse_int configured_terminal_leader)
-    catch _
+    catch Any
       (fail (OsError
         ^message "GENE_AGENT_TERMINAL_LEADER_CODE must be an integer")))
     29))
@@ -278,7 +278,7 @@
           (try
             (set out (slice_bytes text 0 finish))
             (sliced ~ set true)
-          catch _ (set finish (- finish 1))))
+          catch Any (set finish (- finish 1))))
         out))))
 
 (fn utf8_suffix [text : Str, max_bytes : Int] : Str
@@ -296,7 +296,7 @@
           (try
             (set out (slice_bytes text start (- total start)))
             (sliced ~ set true)
-          catch _ (set start (+ start 1))))
+          catch Any (set start (+ start 1))))
         out))))
 
 (fn bounded_list_tail [values, max_count : Int]
@@ -359,7 +359,7 @@
       (try
         (safe_path candidate)
         true
-      catch _ false))
+      catch Any false))
     (else false)))
 
 (fn confined_absolute_path? [p] : Bool
@@ -369,7 +369,7 @@
         (var resolved (real_path candidate))
         (|| (== resolved workspace_real)
             (starts_with? resolved $"${workspace_real}/"))
-      catch _ false))
+      catch Any false))
     (else false)))
 
 # --- raw-command classification: normal | destructive | catastrophic ---------
@@ -1208,7 +1208,7 @@
           (try
             (set retained (slice_bytes combined start (- total start)))
             (sliced ~ set true)
-          catch _ (set start (+ start 1))))
+          catch Any (set start (+ start 1))))
         (set exact (+ previous start))
         (if (== exact dropped)
           (settled ~ set true)
@@ -1567,7 +1567,7 @@
             (var final (terminal_stop worker/controller/session))
             (worker/controller/snapshot ~ set final)
             (terminal_controller_capture worker/controller)
-          catch _ nil))
+          catch Any nil))
         (application_remove_worker_follow_links app worker)
         (application_remove_worker_observers app worker/id)
         (application_emit app "worker_stopped"
@@ -1645,7 +1645,7 @@
       (set snapshot (terminal_snapshot controller/session))
       (controller/restored_text ~ set
         (terminal_capture_projection controller/session))
-    catch _ nil))
+    catch Any nil))
   (controller/snapshot ~ set snapshot)
   snapshot)
 
@@ -1689,7 +1689,7 @@
           (terminal_controller_capture worker/controller)
           (terminal_close worker/controller/session)
           (worker/controller ~ set_prop `session nil)
-        catch _ nil)))
+        catch Any nil)))
     (var owner (app/workspace_coordinator/owner ~ get))
     (if (&& (!= owner nil)
             (starts_with? owner $"${app/coordinator_id}/"))
@@ -2444,7 +2444,7 @@
             (agent_instruction_records ~ set
               (append (agent_instruction_records ~ get) record))
             record))
-      catch (OsError ^message _)
+      catch OsError
         {^scope scope ^source source ^skipped "unreadable"}))))
 
 (fn ensure_agents_for_path [path : Str, include_leaf : Bool]
@@ -2703,9 +2703,7 @@
         (try
           ($construct_type self/args args)
           nil
-        catch (TypeError ^message message) message
-        catch {^message message} message
-        catch _ "arguments do not satisfy the declared Gene type")))
+        catch Any $ex/message)))
     (var problems ($cell []))
     (for p in self/params
       (var v (args ~ get p/name))
@@ -2895,10 +2893,10 @@
     (try
       (read_all content)
       ""
-    catch (ParseError ^message message ^line line ^col col)
-      $"\nwarning: file does not parse at ${line}:${col}: ${message}"
-    catch (ParseError ^message message)
-      $"\nwarning: file does not parse: ${message}")))
+    catch ParseError
+      (if (&& ($present? $ex/line) ($present? $ex/col))
+        $"\nwarning: file does not parse at ${$ex/line}:${$ex/col}: ${$ex/message}"
+        $"\nwarning: file does not parse: ${$ex/message}"))))
 
 (fn read_file_lines [content : Str, start_line : Int, max_lines : Int]
   (var lines (split content "\n"))
@@ -3151,9 +3149,11 @@ When writing Gene code, use the current repo's language, not generic Lisp:
   `(repeat n ...)`, `(repeat i in n ...)`, `(for item in items ...)`, and
   `match` with `(when pattern ...)` and `(else ...)`. Boolean operators are
   `(&& a b ...)`, `(|| a b ...)`, and `(! a)`.
-- Recoverable errors use `(try body... catch (ErrorType ^field name)
-  recovery... ensure cleanup...)`; each section accepts multiple expressions
-  directly. Use `fail` for recoverable errors and `panic` only for fatal bugs.
+- Recoverable errors use `(try body... catch ErrorType
+  recovery... ensure cleanup...)`; the catch body reads the error through
+  `$ex`, and `catch Any` is the catch-all. Each section accepts multiple
+  expressions directly. Use `fail` for recoverable errors and `panic` only for
+  fatal bugs.
 - Data:
   - Lists: `[a b c]`
     Grow a fresh, locally owned list with `(xs ~ push value)`, which is
@@ -3432,7 +3432,7 @@ State that broader behavior is unverified when no matching successful check ran.
     []
     (try
       ((to_stream resp/output) ~ into [])
-    catch _ [])))
+    catch Any [])))
 
 # Joined output_text parts of one assistant message item.
 (fn message_item_text [item] : Str
@@ -3565,7 +3565,7 @@ State that broader behavior is unverified when no matching successful check ran.
   (var parse_err ($cell nil))
   (try
     (args ~ set (parse call/arguments))
-  catch (JsonError ^message m) (parse_err ~ set m))
+  catch JsonError (parse_err ~ set $ex/message))
   (var call_props
     {^id call/call_id ^name name
      ^args (if (present? (parse_err ~ get))
@@ -3612,12 +3612,10 @@ State that broader behavior is unverified when no matching successful check ran.
                 (try
                   (normalize_tool_result
                     (invoke_tool_handler t name m context))
-                catch (OsError ^message em)
-                  {^text $"error: ${em}" ^truncated false}
-                catch {^message em}
-                  {^text $"error: ${em}" ^truncated false}
-                catch _
-                  {^text "error: tool failed" ^truncated false}))))
+                catch OsError
+                  {^text $"error: ${$ex/message}" ^truncated false}
+                catch Any
+                  {^text $"error: ${$ex/message}" ^truncated false}))))
           (else
             {^text "error: tool arguments must be a JSON object" ^truncated false}))))))
   (guard_emit ~ set nil)
@@ -3665,7 +3663,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (loop
         (set line (ch ~ recv))
         (on_line line))
-    catch (ChannelClosed) nil)
+    catch ChannelClosed nil)
     (await t)
   ensure
     (t ~ cancel)))
@@ -3691,7 +3689,7 @@ State that broader behavior is unverified when no matching successful check ran.
     (try
       (loop
         (feed_http_chunk pending (transfer/channel ~ recv) on_line))
-    catch (ChannelClosed) nil)
+    catch ChannelClosed nil)
     (if (!= (pending ~ get) "")
       (on_line (pending ~ get)))
     (var response (await transfer/task))
@@ -3712,7 +3710,8 @@ State that broader behavior is unverified when no matching successful check ran.
                 ^response_bytes (byte_size native_result/stdout)
                 ^truncated (== native_result/truncated true)})
     native_result
-  catch (HttpClientError ^kind "unavailable")
+  catch HttpClientError
+    (if_not (== $ex/kind "unavailable") (fail $ex))
     (log_warn transport_log "native HTTP unavailable; using curl fallback"
       ^payload {^backend "curl"})
     (var curl_result (exec_curl_lines curl_args timeout_ms on_line))
@@ -3749,7 +3748,7 @@ State that broader behavior is unverified when no matching successful check ran.
             body/detail
             "request failed")))
       (redact $"OpenAI API error ${status}: ${message}")
-    catch (JsonError ^message _)
+    catch JsonError
       $"OpenAI API error ${status}: request failed")))
 
 # Strip one leading "data: " prefix. Rejoin the remaining pieces so a payload
@@ -3801,7 +3800,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (final ~ set event/response))
         (when SseEventKind/other_event
           nil))
-    catch (JsonError ^message _) nil)))
+    catch JsonError nil)))
 
 (fn sse_handle_line [line : Str, output, output_text, final, render_stream]
   (var payload (sse_data_payload line))
@@ -3857,8 +3856,9 @@ State that broader behavior is unverified when no matching successful check ran.
               (sse_build_response output output_text final)
               (try
                 (parse r/stdout)
-              catch (JsonError ^message m)
-                {^agent_error (redact $"OpenAI API returned invalid JSON: ${m}")})))
+              catch JsonError
+                {^agent_error
+                  (redact $"OpenAI API returned invalid JSON: ${$ex/message}")})))
           (if (== resp/error void)
             (if (== resp/status "failed")
               {^agent_error (redact (api_error_text resp))}
@@ -3976,7 +3976,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (if (present? delta/tool_calls)
             ((to_stream delta/tool_calls)
               ~ each (fn [frag] (chat_note_call_frag calls_map max_cell frag))))))
-    catch (JsonError ^message _) nil)))
+    catch JsonError nil)))
 
 # Non-streaming (or error) chat body: normalize choices/0/message into items.
 (fn chat_response_from_json [resp]
@@ -4036,8 +4036,9 @@ State that broader behavior is unverified when no matching successful check ran.
             (chat_build_response text calls callmax)
             (try
               (chat_response_from_json (parse r/stdout))
-            catch (JsonError ^message m)
-              {^agent_error (redact $"API returned invalid JSON: ${m}")})))))))
+            catch JsonError
+              {^agent_error
+                (redact $"API returned invalid JSON: ${$ex/message}")})))))))
 
 (var live_transport
   (if (== api_flavor "chat") chat_live_transport responses_live_transport))
@@ -4251,10 +4252,8 @@ State that broader behavior is unverified when no matching successful check ran.
         (run_turn_ready_in transport prepared_items render render_stream
                            budget tracked_emit context))
       (outcome ~ set "done")
-    catch {^message m}
-      (failure_text ~ set m)
-      (outcome ~ set "failed")
-    catch _
+    catch Any
+      (failure_text ~ set $ex/message)
       (outcome ~ set "failed")
     ensure
       (done ~ close))))
@@ -4275,7 +4274,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (interrupted ~ set true)
           (task ~ cancel)))))
   (try
-    (try (done ~ recv) catch (ChannelClosed) nil)
+    (try (done ~ recv) catch ChannelClosed nil)
     (match (outcome ~ get)
       (when "done"
         (log_info turn_log "turn completed"
@@ -4403,11 +4402,11 @@ State that broader behavior is unverified when no matching successful check ran.
   (registration_restore_done ~ set false)
   (var store (agent_store ~ get))
   (if_yes store
-    (try (store ~ Store:close) catch _ nil)
+    (try (store ~ Store:close) catch Any nil)
     (agent_store ~ set nil))
   (var db (agent_state_db ~ get))
   (if_yes db
-    (try (db ~ Db:close) catch _ nil)
+    (try (db ~ Db:close) catch Any nil)
     (agent_state_db ~ set nil)))
 
 (fn open_client_store [name : Str]
@@ -4424,7 +4423,7 @@ State that broader behavior is unverified when no matching successful check ran.
       (else
         (store_fs_open
           ^root $"${(state_fs_path agent_state_spec)}/${name}")))
-  catch _ nil))
+  catch Any nil))
 
 (fn init_agent_state []
   (if_not (|| (! (state_enabled?))
@@ -4453,22 +4452,22 @@ State that broader behavior is unverified when no matching successful check ran.
                   ^state_backend
                     (if (starts_with? agent_state_spec "db:") "db" "fs")
                   ^resume_enabled (resume_enabled?)})
-    catch (StoreError ^message m)
+    catch StoreError
       (close_agent_state)
       (log_warn state_log "agent state disabled"
-        ^payload {^error_kind "store" ^error_detail (redact m)})
-      ($println $"agent state disabled: ${m}")
-    catch (DbError ^message m)
+        ^payload {^error_kind "store" ^error_detail (redact $ex/message)})
+      ($println $"agent state disabled: ${$ex/message}")
+    catch DbError
       (close_agent_state)
       (log_warn state_log "agent state disabled"
-        ^payload {^error_kind "database" ^error_detail (redact m)})
-      ($println $"agent state disabled: ${m}")
-    catch (OsError ^message m)
+        ^payload {^error_kind "database" ^error_detail (redact $ex/message)})
+      ($println $"agent state disabled: ${$ex/message}")
+    catch OsError
       (close_agent_state)
       (log_warn state_log "agent state disabled"
-        ^payload {^error_kind "configuration" ^error_detail (redact m)})
-      ($println $"agent state disabled: ${m}")
-    catch _
+        ^payload {^error_kind "configuration" ^error_detail (redact $ex/message)})
+      ($println $"agent state disabled: ${$ex/message}")
+    catch Any
       (close_agent_state)
       (log_warn state_log "agent state disabled"
         ^payload {^error_kind "unknown"})
@@ -4529,13 +4528,13 @@ State that broader behavior is unverified when no matching successful check ran.
       # Sanitize snapshots written by older versions before they can be
       # rendered, resumed, or sent back to a model.
       (redact_any loaded)
-    catch (StoreError ^message m)
+    catch StoreError
       (log_warn state_log "state record load failed"
         ^payload {^record_key key ^error_kind "store"
-                  ^error_detail (redact m)})
-      ($println $"agent state load failed (${key}): ${m}")
+                  ^error_detail (redact $ex/message)})
+      ($println $"agent state load failed (${key}): ${$ex/message}")
       default
-    catch _
+    catch Any
       (log_warn state_log "state record load failed"
         ^payload {^record_key key ^error_kind "unknown"})
       default)))
@@ -4545,7 +4544,7 @@ State that broader behavior is unverified when no matching successful check ran.
     default
     (try
       ((agent_store ~ get) ~ Store:get key ^default default)
-    catch _ default)))
+    catch Any default)))
 
 (fn write_workspace_heartbeat []
   (if (&& (workspace_advisory_owned ~ get)
@@ -4615,7 +4614,7 @@ State that broader behavior is unverified when no matching successful check ran.
               (var value (parse_int parts/1))
               (if_yes (>= value (next_artifact_id ~ get))
                 (next_artifact_id ~ set (+ value 1)))
-            catch _ nil)))))))
+            catch Any nil)))))))
 
 (fn artifact_total_bytes [] : Int
   (var total 0)
@@ -5095,13 +5094,9 @@ State that broader behavior is unverified when no matching successful check ran.
       (try
         (app/main_agent/result ~ set
           (normalized_agent_result data/result true))
-      catch {^message message}
+      catch Any
         (app/main_agent/result ~ set nil)
-        (emit_restore_rejected app "result" "main" message)
-      catch _
-        (app/main_agent/result ~ set nil)
-        (emit_restore_rejected app "result" "main"
-          "unknown result restore failure"))
+        (emit_restore_rejected app "result" "main" $ex/message))
       (var saved_history
         (if (present? data/history) data/history []))
       (var restored_history
@@ -5138,11 +5133,8 @@ State that broader behavior is unverified when no matching successful check ran.
     (if_yes (present? saved/progress)
       (try
         (app/progress ~ set (normalized_project_progress saved/progress))
-      catch {^message message}
-        (emit_restore_rejected app "progress" "main" message)
-      catch _
-        (emit_restore_rejected app "progress" "main"
-          "unknown progress restore failure")))
+      catch Any
+        (emit_restore_rejected app "progress" "main" $ex/message)))
     (for data in (if (present? saved/agents) saved/agents [])
       (var record_id (persisted_record_id data))
       (try
@@ -5244,11 +5236,8 @@ State that broader behavior is unverified when no matching successful check ran.
         ((app/agents ~ get) ~ push agent)
         ((app/workers ~ get) ~ push agent)
         (emit_restore_normalization app agent data)
-      catch {^message message}
-        (emit_restore_rejected app "agent" record_id message)
-      catch _
-        (emit_restore_rejected app "agent" record_id
-          "unknown agent restore failure")))
+      catch Any
+        (emit_restore_rejected app "agent" record_id $ex/message)))
     (for data in (if (present? saved/workers) saved/workers [])
       (var record_id (persisted_record_id data))
       (try
@@ -5450,11 +5439,8 @@ State that broader behavior is unverified when no matching successful check ran.
                      app worker
                      $"${(format_event_with_filters event (worker/controller/filter ~ get))}\n"
                      "log_tail")))})))
-      catch {^message message}
-        (emit_restore_rejected app "worker" record_id message)
-      catch _
-        (emit_restore_rejected app "worker" record_id
-          "unknown worker restore failure")))
+      catch Any
+        (emit_restore_rejected app "worker" record_id $ex/message)))
     # Rebuild output follow edges only after every worker exists. Adding each
     # edge through the ordinary validator drops stale references and rejects
     # persisted self/transitive cycles before any output can propagate.
@@ -5571,11 +5557,8 @@ State that broader behavior is unverified when no matching successful check ran.
           ((surface/panes ~ get) ~ push pane))
         (if_yes (== worker nil)
           (fail (OsError ^message "pane references a missing worker")))
-      catch {^message message}
-        (emit_restore_rejected app "pane" record_id message)
-      catch _
-        (emit_restore_rejected app "pane" record_id
-          "unknown pane restore failure")))
+      catch Any
+        (emit_restore_rejected app "pane" record_id $ex/message)))
     (if_yes (present? saved/next_agent_id)
       (if (match saved/next_agent_id (when (_id : Int) true) (else false))
         (app/next_agent_id ~ set saved/next_agent_id)
@@ -5595,11 +5578,8 @@ State that broader behavior is unverified when no matching successful check ran.
       (then
         (try
           (restore_surface_record app surface saved/surface)
-        catch {^message message}
-          (emit_restore_rejected app "surface" surface/id message)
-        catch _
-          (emit_restore_rejected app "surface" surface/id
-            "unknown surface restore failure")))
+        catch Any
+          (emit_restore_rejected app "surface" surface/id $ex/message)))
       (else
         (if (&& (!= surface nil) (present? saved/next_pane_id))
           (surface/next_pane_id ~ set saved/next_pane_id))))
@@ -5670,12 +5650,8 @@ State that broader behavior is unverified when no matching successful check ran.
         (if (present? client_record)
           (restore_surface_snapshot app client_record)
           (restore_surface_snapshot app (state_get "surface" nil))))
-    catch {^message message}
-      (emit_restore_rejected app "application" "application" message)
-      (set restored false)
-    catch _
-      (emit_restore_rejected app "application" "application"
-        "unknown restore failure")
+    catch Any
+      (emit_restore_rejected app "application" "application" $ex/message)
       (set restored false))
   ensure
     (agent_checkpoint_suspended ~ set false))
@@ -5872,7 +5848,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (try
             (set retained (slice_bytes combined start (- total start)))
             (sliced ~ set true)
-          catch _ (set start (+ start 1))))
+          catch Any (set start (+ start 1))))
         (set exact (+ previous start))
         (if (== exact dropped)
           (settled ~ set true)
@@ -6046,7 +6022,7 @@ State that broader behavior is unverified when no matching successful check ran.
           (return nil))
         (else
           (if update/changed (request_ui_refresh))))
-    catch {^message message}
+    catch Any
       (worker/lifecycle ~ set "stopped")
       (worker/status ~ set "failed")
       (worker/last_outcome ~ set "failed")
@@ -6134,7 +6110,7 @@ State that broader behavior is unverified when no matching successful check ran.
                         (last_output ~ set
                           $"${(last_output ~ get)}${chunk}")
                         (append_worker_transcript app worker chunk))
-                    catch (ChannelClosed) nil)
+                    catch ChannelClosed nil)
                     (var result (await exec_task))
                     (var duration_ms (- (monotonic_ms) started))
                     (last_output ~ set
@@ -6147,11 +6123,9 @@ State that broader behavior is unverified when no matching successful check ran.
                     (append_worker_transcript app worker
                       "[application is shutting down]\n")
                     (outcome ~ set "failed")))
-              catch {^message message}
-                (append_worker_transcript app worker $"[shell failed: ${message}]\n")
-                (outcome ~ set "failed")
-              catch _
-                (append_worker_transcript app worker "[shell failed]\n")
+              catch Any
+                (append_worker_transcript app worker
+                  $"[shell failed: ${$ex/message}]\n")
                 (outcome ~ set "failed")
               ensure
                 (if (!= (process_task ~ get) nil)
@@ -6248,20 +6222,17 @@ State that broader behavior is unverified when no matching successful check ran.
                     (when "error" "failed")
                     (when "cancelled" "cancelled")
                     (else "completed")))
-              catch {^message message}
+              catch Any
                 (repl_eval_guard_end)
                 (worker/controller/pending ~ set false)
-                (if (== message "interrupted")
+                (if (== $ex/message "interrupted")
                   (then
                     (append_worker_transcript app worker "[cancelled]\n")
                     (outcome ~ set "cancelled"))
                   (else
                     (append_worker_transcript app worker
-                      $"[REPL failed: ${message}]\n")
+                      $"[REPL failed: ${$ex/message}]\n")
                     (outcome ~ set "failed")))
-              catch _
-                (append_worker_transcript app worker "[REPL failed]\n")
-                (outcome ~ set "failed")
               ensure
                 (if_yes (&& (!= worker/controller/items nil)
                         (worker/controller/resume_requested ~ get))
@@ -6455,14 +6426,10 @@ State that broader behavior is unverified when no matching successful check ran.
                           (bounded_worker_append agent delta)))
                       max_tool_rounds emit {^app app ^agent agent}))
                   (outcome ~ set "completed")
-                catch {^message message}
+                catch Any
                   (outcome ~ set "failed")
                   (error_kind ~ set "AgentError")
-                  (error_text ~ set message)
-                catch _
-                  (outcome ~ set "failed")
-                  (error_kind ~ set "AgentError")
-                  (error_text ~ set "agent operation failed")
+                  (error_text ~ set $ex/message)
                 ensure
                   # A failed or cancelled turn can abandon a streamed line
                   # mid-delta; terminate it so later appends start clean.
@@ -7161,10 +7128,8 @@ State that broader behavior is unverified when no matching successful check ran.
   (var validation_error ($cell nil))
   (try
     (set args ($construct_type operation/args raw_args))
-  catch {^message message}
-    (validation_error ~ set message)
-  catch _
-    (validation_error ~ set "invalid operation arguments"))
+  catch Any
+    (validation_error ~ set $ex/message))
   (if (validation_error ~ get)
     (return
       (application_reject_worker_operation app worker worker_ref
@@ -7188,10 +7153,8 @@ State that broader behavior is unverified when no matching successful check ran.
     (set value
       ($construct_type operation/result
         (operation/handler app worker operation args invocation)))
-  catch {^message message}
-    (execution_error ~ set message)
-  catch _
-    (execution_error ~ set "worker operation failed"))
+  catch Any
+    (execution_error ~ set $ex/message))
   (var task_started
     (&& operation/task_managed
         (!= (worker/current_operation ~ get) nil)))

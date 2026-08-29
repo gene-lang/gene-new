@@ -10,7 +10,7 @@
 
 (mod repl)
 
-(import [Plugin PluginContext PluginHost Harness HarnessLog row] from "./kernel")
+(import [Plugin PluginContext PluginHost Harness HarnessLog] from "./kernel")
 (import_impl PluginHost for PluginContext from "./kernel")
 (import [ask] from "./agent")
 (import [HarnessView view_provider] from "./view_api")
@@ -40,48 +40,53 @@
     (var event (call ~ /0))
     (if_yes (== event/kind "output") ($println event/text))))
 
-(fn run_repl [h : Harness, implementation : Str] : Int
-  ($println "Gene Agent — type `help`, or `quit` / Ctrl-D to leave")
-  (var running true)
-  (while running
-    # A replacement becomes visible only here, between prompts. The old view
-    # always finishes the turn that was already in progress, then hands control
-    # to the newly committed active row.
-    (var active (row h "views" "active"))
-    (if_yes (|| (== active void)
-                (!= active/implementation implementation))
-      (if (== active void)
-        (return 0)
-        (return (active/value ~ HarnessView:run h))))
-    # The prompt goes out with a newline rather than as `User> `. stdout is
-    # line-buffered on a terminal and Gene exposes no flush, so a prompt
-    # without a newline would sit in the buffer until after the answer it was
-    # asking for — invisible exactly when it matters.
-    ($println "")
-    ($println (user_prompt))
-    (var line ($os/read_line))
-    (if_yes (== line nil)
-      # Ctrl-D. `os/read_line` returns nil at EOF and needs no capability:
-      # reading your own stdin is not host authority.
-      ($println "bye")
-      (set running false))
-    (if_not (== line nil)
-      (var text ($str/trim line))
-      (if_yes (quitting? text)
-        ($println "bye")
-        (set running false))
-      (if_not (quitting? text)
-        (if_yes (!= text "")
-          # One speaker label per exchange. The agent may take several turns
-          # after this, and those are marked as rounds rather than repeating
-          # the label — the harness is still the one talking.
-          ($println "Gene>")
-          (ask h text)))))
-  0)
+# The driver's half of a turn is two calls with main.gene's `$os/read_line`
+# between them, and neither of them waits for a person. That is what makes a
+# wall-clock budget applicable at all: this file used to own both the loop and
+# the read, so the `chat` profile's 120 000 ms deadline covered the whole
+# conversation *and* the pauses in it, and a shell that answered one prompt and
+# then sat idle expired at the keyboard. Handing the read back to the host also
+# retires the active-row handoff that lived here — main.gene re-reads the row
+# each turn, so a committed replacement takes effect at the next prompt without
+# a hand-rolled check or a tail call into the successor.
 
-(type TerminalView ^props {^implementation Str})
+(fn repl_prompt [greeted] : Any
+  # The greeting is one-shot state on the view rather than something activation
+  # prints, because activation runs in the middle of boot output and this line
+  # has to be the last thing before the first prompt.
+  (if_not (greeted ~ get)
+    (greeted ~ set true)
+    ($println "Gene Agent — type `help`, or `quit` / Ctrl-D to leave"))
+  # The prompt goes out with a newline rather than as `User> `. stdout is
+  # line-buffered on a terminal and Gene exposes no flush, so a prompt
+  # without a newline would sit in the buffer until after the answer it was
+  # asking for — invisible exactly when it matters.
+  ($println "")
+  ($println (user_prompt))
+  nil)
+
+(fn repl_line [h : Harness, line] : Any
+  (if_yes (== line nil)
+    # Ctrl-D. The host reads the line and reports EOF as nil, but what EOF
+    # *means* is the view's call, so the decision to leave stays here.
+    ($println "bye")
+    (return 0))
+  (var text ($str/trim line))
+  (if_yes (quitting? text)
+    ($println "bye")
+    (return 0))
+  (if_yes (!= text "")
+    # One speaker label per exchange. The agent may take several turns
+    # after this, and those are marked as rounds rather than repeating
+    # the label — the harness is still the one talking.
+    ($println "Gene>")
+    (ask h text))
+  nil)
+
+(type TerminalView ^props {^greeted Any})
 (impl HarnessView for TerminalView
-  (message run [h] : Any (run_repl h self/implementation)))
+  (message show_prompt [h] : Any (repl_prompt self/greeted))
+  (message handle_line [h, line] : Any (repl_line h line)))
 
 (fn driver_plugin [] : Plugin
   (Plugin ^id "driver" ^provides [["views" "active"]]
@@ -90,5 +95,4 @@
       (host ~ PluginHost:subscribe HarnessLog (TerminalOutput))
       (host ~ PluginHost:contribute "views"
         {^name "active" ^implementation "terminal"
-         ^value (view_provider
-           (TerminalView ^implementation "terminal"))})))))
+         ^value (view_provider (TerminalView ^greeted ($cell false)))})))))

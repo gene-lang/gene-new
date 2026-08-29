@@ -59,7 +59,7 @@ suite "net/http_client e2e":
   (loop
     (var chunk (transfer/channel ~ recv))
     (seen ~ set $"${(seen ~ get)}${chunk}"))
- catch (ChannelClosed) nil)
+ catch ChannelClosed nil)
 (var r (await transfer/task))
 ($println [r/status r/body (seen ~ get)])
 """)

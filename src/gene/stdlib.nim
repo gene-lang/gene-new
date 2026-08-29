@@ -7773,7 +7773,7 @@ proc registerStdlibNamespaces(root: Scope) =
 
   # db: shared protocol + error type; sqlite/postgres backends implement it.
   # DbError lives at the root so native raise sites resolve the type head and
-  # `catch (DbError ^message m)` matches; the backend impls live on their
+  # `catch DbError` matches and `$ex/message` reads the detail; backend impls live on their
   # namespace scopes so only importing programs pay protocol-dispatch cost.
   let dbError = newType("DbError", NIL,
                         @[TypeField(name: "message", optional: false,

@@ -526,7 +526,8 @@ type
     elseBody*: Chunk             # nil when there is no else branch
 
   CatchClause* = object
-    pattern*: Value              # matched against the error value
+    errorType*: Value            # source-level type following `catch`
+    pattern*: Value              # internal typed `$ex` binding pattern
     body*: Chunk
 
   TryProto* = ref object
@@ -1176,7 +1177,7 @@ proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
       lines.add indent & "  [" & $i & "] body:"
       addDisassembly(lines, tp.body, indent & "    ")
       for j, cl in tp.catches:
-        lines.add indent & "  catch " & cl.pattern.print() & ":"
+        lines.add indent & "  catch " & cl.errorType.print() & ":"
         addDisassembly(lines, cl.body, indent & "    ")
       if tp.ensureBody != nil:
         lines.add indent & "  ensure:"
