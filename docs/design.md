@@ -1247,7 +1247,7 @@ error `err`, but it does not raise `EndOfStream`.
 without throwing. The `TryNext` enum follows the `TryRecv` pattern:
 
 ```gene
-(enum (TryNext T E) exhausted (value T) (error E))
+(enum TryNext [T E] exhausted (value T) (error E))
 ```
 
 ```gene
