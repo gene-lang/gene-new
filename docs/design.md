@@ -2592,6 +2592,12 @@ patterns: `(Stream)` matches a stream, and bare `(Cell)` does not match a
 cell, whose body holds one item. A function, with no registered type identity,
 matches no node pattern at all.
 
+A scalar arm matches the canonical body in place: no projection is
+materialized, so the arm's allocation profile is the ordinary bind's — the
+per-arm cost is head resolution and the bind, nothing structural. The
+`vm.match_scalar` / `vm.match_bind` pair in `benchmarks/bench_core.nim` guards
+this as a same-run delta.
+
 Alternation patterns must bind the same set of names with compatible types in every branch. Negative patterns must not introduce new bindings.
 
 `match` performs structural selection only, and deliberately has no per-arm

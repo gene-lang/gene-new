@@ -9142,6 +9142,16 @@ proc matchProjectedNode(pat, target: Value, scope: Scope,
     return false
   if resolved.kind != vkType or not projectHead(target).isSubtypeOf(resolved):
     return false
+  if target.kind in LeafValueKinds:
+    # The canonical props are empty and the canonical body is the value itself
+    # (design §1.3). Match the pattern body against the value directly instead
+    # of materializing a one-item projection seq: a scalar arm in a hot loop
+    # pays only the ordinary bind, no projection allocation.
+    if pat.props.len > 0:
+      return false
+    if pat.body.len == 1 and not pat.body[0].isRestPattern:
+      return tryMatch(pat.body[0], target, scope, binds)
+    return matchSequence(pat.body, @[target], scope, binds)
   if pat.props.len > 0:
     let props = projectProps(target)
     for key, vpat in pat.props:

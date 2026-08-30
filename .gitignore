@@ -66,3 +66,5 @@ examples/ai_agent/logs/
 examples/ai_agent/home/
 *.vsix
 skills-lock.json
+nimble.develop
+nimble.paths

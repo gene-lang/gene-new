@@ -734,14 +734,35 @@ proc main() =
     let v = run(matchChunk, matchScope)
     checksum = checksum + v.intVal
 
-  # What an added arm costs when it does *not* fire. A cell matches no node
-  # pattern, so every arm is a failed head comparison and the arm count is the
-  # only variable — this is the half of `match` that stays behaviour-identical
-  # across changes to what the arms accept, and so the half a before/after
-  # comparison can actually read.
+  # What an added arm costs when it does *not* fire. A cell's canonical head
+  # (design §1.3) matches none of `pick`'s arms, so every arm is a failed head
+  # comparison and the arm count is the only variable — this is the half of
+  # `match` that stays behaviour-identical across changes to what the arms
+  # accept, and so the half a before/after comparison can actually read.
   let matchMissChunk = compileSource("(pick ($cell 1))")
   bench("vm.match_fallthrough.compiled_chunk", 200_000, i):
     let v = run(matchMissChunk, matchScope)
+    checksum = checksum + v.intVal + 1
+
+  # The scalar hot path (design §1.3/§8): `(Int n)` on a fixnum matches the
+  # canonical body in place. This is the arm a hot numeric loop pays per
+  # iteration; everything above the ordinary bind is projection machinery,
+  # and the projection must not allocate. `vm.match_bind` is the floor — a
+  # plain symbol bind, no node pattern at all — so the *delta* of the two
+  # benches in the same run isolates the projection cost from process noise.
+  let scalarScope = newGlobalScope()
+  discard run(compileSource(
+    "(fn pick_int [v] (match v (when (Int n) n) (else 0)))"), scalarScope)
+  let matchScalarChunk = compileSource("(pick_int 2)")
+  bench("vm.match_scalar.compiled_chunk", 200_000, i):
+    let v = run(matchScalarChunk, scalarScope)
+    checksum = checksum + v.intVal + 1
+  let bindScope = newGlobalScope()
+  discard run(compileSource(
+    "(fn pick_bind [v] (match v (when v2 v2) (else 0)))"), bindScope)
+  let matchBindChunk = compileSource("(pick_bind 2)")
+  bench("vm.match_bind.compiled_chunk", 200_000, i):
+    let v = run(matchBindChunk, bindScope)
     checksum = checksum + v.intVal + 1
 
   # Application event bus (docs/events.md §17.3). Freeze and dispatch

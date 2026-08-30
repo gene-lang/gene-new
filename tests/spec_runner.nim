@@ -4782,10 +4782,14 @@ suite "spec — implicit self in message bodies from design §10":
                "(match cs (when [(Cell a) (Cell b)] (+ a b)))",
                "3")
     # Head-only canonical nodes match arity-zero patterns; a function has no
-    # registered type identity and matches no node pattern at all.
+    # registered type identity and matches no node pattern at all. Rest shapes
+    # fall back to the sequence path and still bind.
     check_eval("(match ($to_stream [1]) (when (Stream) \"s\") (else \"no\"))",
                "\"s\"")
     check_eval("(match (fn [x] x) (when (Fn) \"fn\") (else \"no\"))", "\"no\"")
+    check_eval("(match 42 (when (Int xs...) xs) (else \"no\"))", "[42]")
+    check_eval("(match 42 (when (Int a xs...) (+ a xs/~size)) (else \"no\"))",
+               "42")
     # A Cell is a leaf: content is state, not structure, so walks stop there.
     check_eval("[($leaf? ($cell 1)) ($leaf? [($cell 1)])]", "[true false]")
 
