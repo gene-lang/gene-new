@@ -1,161 +1,257 @@
 # Proper tail calls
 
-A design for Gene. Goal: **every call in tail position runs in constant VM frame
-space** — self-recursive, mutually recursive, through function values, through
-sends — so that the recursive-walker idiom (`match` over nodes, recursing into
-children) is an iteration primitive, not a depth risk.
+A design for Gene.
 
-This is the design answer to the review item *"No tail-call position anywhere …
-that's a contract worth one paragraph."* The answer is not "no TCO, use the
-loop forms": the machinery for proper TCO already exists in this VM, it is
-simply not wired up. This document specifies the language contract and the
-mechanism that delivers it.
+The goal is to make tail-recursive functions and messages a reliable iteration
+tool without changing return adaptation, checked-error, scope, construction, or
+cleanup semantics. The compiler identifies tail position; the VM routes every
+bytecode call through one call-entry module that either replaces the current
+activation or preserves it when observable work remains.
+
+The guarantee is intentionally precise:
+
+> A chain of calls in tail position runs in constant VM frame space when every
+> exited activation is **tail-elidable**. An activation is tail-elidable when it
+> has no observable post-call continuation: no return adaptation, checked-error
+> boundary, implementation validation, structured completion, capability
+> restoration, or caller-owned pooled scope captured by the callee.
+
+Calls that do not meet that condition remain correct normal calls. The proposal
+does not hide an arbitrary continuation chain in `FrameExtra` and call that
+constant space.
+
+This keeps the useful direction of the original design—static tail marks,
+general frame replacement, match-arm support, sends, and bounded diagnostics—
+while matching the continuation and scope ownership that the VM actually has.
 
 ---
 
 ## 1. Current state, measured
 
-Gene already has three partial mechanisms, but none of them adds up to proper
-tail calls. Probes (`tmp/probe*.gene`, measured with `/usr/bin/time -l`, Apple
-Silicon, 2026-08-29):
+Gene already has three partial mechanisms, but they do not add up to a language
+contract. Exploratory probes (`tmp/probe*.gene`, measured with
+`/usr/bin/time -l`, Apple Silicon, 2026-08-29) produced:
 
 | shape | depth | peak RSS | verdict |
 |---|---:|---:|---|
-| A. self tail call in an `if` arm (`(if (< n 1) 0 (spin (- n 1)))`) | 20M | **10.7 MB** | O(1) — compiler peephole, not general TCO |
-| A2. same, called via `(wrap …)` (nested frame) | 20M | 10.7 MB | O(1) — peephole is depth-independent |
-| C. mutual recursion through `if` arms | 20M | **12.5 GB** | pushes ≈ 600 B/level |
-| D. self tail call in a `match` else arm | 20M | **15.2 GB** | pushes ≈ 760 B/level |
-| E. tail call through a function value `(f (- n 1))` | 200k | 321 MB | pushes ≈ 1.5 KB/level |
-| F. tail send `(b ~ down)` on a type instance | 200k | 220 MB | pushes ≈ 1 KB/level |
-| baseline (no recursion) | — | ~10 MB | |
+| self tail call in an `if` arm | 20M | **10.7 MB** | O(1), through a narrow compiler peephole |
+| the same function called through a wrapper | 20M | 10.7 MB | O(1), still the same peephole |
+| mutual recursion through `if` arms | 20M | **12.5 GB** | pushes about 600 B per level |
+| self tail call in a `match` arm | 20M | **15.2 GB** | pushes about 760 B per level |
+| tail call through a function value | 200k | 321 MB | pushes about 1.5 KB per level |
+| tail send on a type instance | 200k | 220 MB | pushes about 1 KB per level |
+| baseline without recursion | — | about 10 MB | — |
 
-Three findings:
+Three implementation facts explain the measurements:
 
-1. **There is no stack-overflow event at all.** Frames live on the heap
-   (`Frame` is an explicit object in a `seq[Frame]`; deep calls never recurse
-   through Nim), so deep non-tail recursion just consumes memory until the
-   machine gives up. Nothing in the language defines what happens, and nothing
-   guarantees iteration-by-recursion is cheap.
-2. **The only O(1) shape is a compiler peephole, not a guarantee.**
-   `rewriteSelfRecursiveCalls` rewrites direct self-calls to `opRecur1` and —
-   when the function has exactly one param, no matches/for/try/subchunks, and
-   the arg is `local - const` — fuses them into
-   `opRecur1LocalIntSubConst(SameScope)`, which restarts the frame in place
-   (`restartRecur1SameScopeFrame`). It fires only when the whole shape matches:
-   unary, simple/typed-Int, and the recursive call sitting in the proto's
-   *top-level* instruction list. `chunk.matches.len == 0` is a hard
-   precondition, so a tail call under `match` — the single most important
-   walker shape in this language — never qualifies (probe D).
-   `rewriteBareIntReturnAdds` similarly special-cases fib-like bodies.
-3. **The VM already contains a real frame-replacement TCO, but it is nearly
-   unreachable.** `canReplaceCurrentTailCall` + `enterTailCallFrame`
-   (vm.nim, used in the `opCall*` and `opCallLocal*` arms) replaces the current
-   frame in place when:
-   - the next instruction is literally `opReturn`/`opReturnBareInt` (a *dynamic*
-     position check — fails for every `if`/`match` arm, because the arm ends in
-     `opJump`, not `opReturn`),
-   - `calleeIndex == 0` (the call's operands sit at the bottom of the *entire*
-     shared operand stack — only the outermost frame qualifies),
-   - the current frame is plain (`fkNormal`, no ensure/for/owned-scope/pending
-     state, no error boundary, no return-type adaptation, no capability
-     transition), and
-     the callee's scope does not capture the caller's call scope.
+1. **Gene call frames are explicit heap records.** Deep non-tail recursion does
+   not normally overflow the Nim stack; `frames: seq[Frame]` grows until memory
+   pressure ends the process. The failure mode is therefore large silent memory
+   consumption rather than a prompt stack-overflow diagnostic.
+2. **The one constant-space shape is a compiler peephole.**
+   `rewriteSelfRecursiveCalls` emits `opRecur1` and, for a still narrower unary
+   integer shape, a fused same-scope restart. The rewrite excludes chunks with
+   matches, loops, try regions, and other subchunks. It cannot cover mutual
+   recursion, function values, or sends.
+3. **A real replacement path already exists but is nearly unreachable.**
+   `canReplaceCurrentTailCall` and `enterTailCallFrame` can overwrite the active
+   registers with a bytecode callee. Current call sites require the next opcode
+   to be a literal return, require operands at the bottom of the shared stack,
+   and reject activations with return/error/finalization state. A call in an
+   `if` or `match` arm normally fails the dynamic next-op test even when the
+   compiler can prove it is in tail position.
 
-So the pieces are all present; what is missing is (a) a *static* notion of tail
-position, (b) the frame replacement on **every** call path, and (c) the
-composition rules that make replacement semantics-exact when the replaced
-activation carries return-type adaptation or an `^errors` boundary.
+The missing pieces are a static position proof, one call-entry seam shared by
+all bytecode call paths, and an exact treatment of expression subframes such as
+`match` arms.
+
+The measurements above are motivation, not durable acceptance tests. Section 6
+replaces RSS-only probes with direct frame and allocation instrumentation.
 
 ---
 
-## 2. The contract
+## 2. Language contract
 
-Gene adopts the Scheme/R7RS contract, phrased for this language:
+### 2.1 Terms
 
-> **Proper tail calls.** A call in *tail position* must reuse the current
-> activation instead of pushing a frame. Self-recursive, mutually recursive,
-> and higher-order tail calls — including through `~` sends — run in constant
-> VM frame space.
+This proposal uses four distinct terms:
 
-### 2.1 What is a tail position
+- **Tail position** is a compiler property: the expression's value is returned
+  directly by its enclosing function or message.
+- A **post-call continuation** is observable work the activation must perform
+  after the callee finishes: adapting a return value, checking `^errors`,
+  validating required implementations, running cleanup, restoring authority,
+  constructing a namespace, or validating a constructed instance.
+- A **tail-elidable activation** is a normal function/message activation with
+  no post-call continuation and no pooled scope that the callee still needs.
+- A **proper tail transfer** is the VM operation that replaces a
+  tail-elidable activation with its bytecode callee instead of pushing a frame.
 
-Tail position flows from the last expression of:
+The compiler mark is necessary but not sufficient. Runtime call resolution and
+active-frame state determine whether the marked call becomes a proper tail
+transfer. The fallback is an ordinary call with unchanged semantics.
 
-| form | tail position |
+### 2.2 Tail positions
+
+Tail position begins at the last expression of a `fn` or message body and
+flows through forms whose selected result is also the enclosing result:
+
+| form | positions receiving the enclosing tail context |
 |---|---|
-| `fn` / `ctor` / message body, `ns` / `mod` body | last expression of the body |
-| `(if c (then …) (elif …) (else …))` | last expr of each `then`/`elif`/`else` clause |
-| `(if c a b)` compact form | `a` and `b` |
-| `(if_yes c body…)` / `(if_not c body…)` | the body tail |
-| `(match t (when p body…) (else body…))` | last expr of **every** arm body |
-| `(do …)` | last expr |
-| `(&& a b tail)` / `(\|\| …)` / `(?? …)` | last operand only |
+| `(if c (then ...) (elif ...) (else ...))` | last expression of every real branch |
+| `(if c a b)` | `a` and `b` |
+| `(if_yes c body...)` / `(if_not c body...)` | last body expression |
+| `(match target (when pattern body...) (else body...))` | last expression of every arm body |
+| `(do body...)` | last body expression |
+| `(&& a b ...)`, `(\|\| a b ...)`, `(?? a b ...)` | last operand only |
+| `(return expr)` | `expr`, subject to the same runtime eligibility rules |
 
-Plus `(return expr)`: `expr` is in tail position of the enclosing function.
-The VM treats it like any marked tail call; the frame-replacement guard
-automatically falls back to a normal call when structured cleanup is pending.
+For a multi-form body, only the last form inherits the body's tail context.
+Earlier forms are statement position and their results are discarded.
 
-### 2.2 What is *not* a tail position (documented exceptions)
+A nested `fn`, message, or fexpr opens a new compiler context; it does not
+inherit tail position from the declaration site.
 
-- Call arguments, `if`/`match` conditions and patterns, binding initializers
-  (`let`/`var`/`const`/`set`).
-- Loop bodies (`while`, `for`, `loop`, `repeat`) — the loop's own value, not
-  the body's, is the form's result. (Plain iteration stays the job of these
-  forms; they already iterate in-place with zero frames.)
-- `try`/`catch`/`ensure` bodies, `with_capabilities` bodies, `spawn`/
-  supervisor/task-scope bodies: a tail call there **pushes a frame** for that
-  level. A `try` must still catch, an `ensure` must still run, a capability
-  transition must still restore — all three are pinned to a frame. The cost is
-  one frame per enclosing dynamic-context level, not per iteration.
-- `new`-construction (opNew) — v1 leaves it a normal call.
-- fexpr invocations are syntax, not calls — no tail contract.
+### 2.3 Positions deliberately excluded in v1
 
-Also true and worth stating: **a call whose callee is a native function or a
-generator never grows the Gene frame stack** (both return without entering a
-body), so tail position is trivially satisfied there; the contract only has to
-do work for `Fn` callees that run VM bytecode.
+The following are not tail positions for this contract:
 
-### 2.3 What proper TCO buys, concretely
+- call arguments, conditions, match targets/patterns, and binding or assignment
+  initializers;
+- loop bodies (`while`, `for`, `loop`, `repeat`), because the loop form owns
+  iteration and result semantics;
+- `try`, `catch`, and `ensure` bodies;
+- `with_capabilities`, task-scope, supervisor, and `spawn` bodies;
+- `ctor`, `ns`, and `mod` bodies;
+- `new` construction and fexpr invocation.
+
+These exclusions are semantic, not merely missing optimizations:
+
+- A namespace body completes as `fkNamespaceBody`: its raw body value is
+  ignored, a namespace is created and defined, and that namespace is returned.
+- A constructor body result is ignored; `new` must validate and publish the
+  pre-created `self` after the constructor returns.
+- Module/scope completion may validate required protocol implementations and
+  publish state.
+- Try, ensure, capability, and task frames own handlers, cleanup, authority, or
+  child lifetime that must survive the call.
+
+The contract may be extended later by representing a specific finalizer as a
+bounded continuation. It must not be extended by silently dropping the work.
+
+The dynamic-context cost must also be stated accurately. A helper called once
+from inside a `try` may recurse in constant space after one protected frame. A
+function that enters a `try` on every recursive iteration still grows one frame
+per iteration:
 
 ```gene
-(fn walk [node]                    # node-walker idiom: O(1) frames after this design
-  (match node
-    (when {^children []} (transform node))
-    (else (walk (first node/children)))))
-
-(fn even? [n] (if (= n 0) true (odd? (- n 1))))   # mutual: O(1)
-(fn odd?  [n] (if (< n 1) false (even? (- n 1)))) # (probe C: 12.5 GB → O(1))
-
-(fn fold [f acc xs]                # tail call through a value
-  (match xs [] acc _ (fold f (f acc (first xs)) (rest xs))))
-
-(message down [] : Int             # tail send on a type (probe F)
-  (if (< self/n 1) 0 ((Box/new (- self/n 1)) ~ down)))
+(fn loop [n]
+  (try
+    (if (== n 0) 0 (loop (- n 1)))
+    catch SomeException ($println $ex/message)))
 ```
 
-Every one of these grows O(depth) today and becomes O(1). The state machine of
-the language — selectors-as-transformation producing recursive walkers — is
-exactly the code shape this protects.
+Here `catch` is followed by an exception type, and the caught exception is
+available through `$ex`.
+
+### 2.4 Runtime eligibility and exact fallback
+
+After resolving and binding a marked bytecode call, the VM may replace the
+current activation only when all of these facts hold:
+
+- the active activation is a plain `fkNormal` function/message frame;
+- it has no pending cleanup, handler, loop, task, namespace, construction, or
+  capability-restoration state;
+- `validateImplRequirements` is false;
+- `returnType` is `NIL`, `returnLabel` is empty, and `checksErrors` is false;
+- the call operands are the only live values in the current expression-frame
+  stack region;
+- the callee introduces no capability transition that must later be restored;
+- replacing a recyclable call scope cannot invalidate a scope captured by the
+  callee.
+
+The callee may install its own return, error, or implementation-validation
+state. That state belongs to the callee and is preserved normally. It may make
+the callee ineligible for a subsequent replacement.
+
+This gives exact, bounded behavior:
+
+- an untyped mutual-recursive chain can remain at one physical frame;
+- a compiler-proven bare-`Int` return can remain eligible because
+  `checkedFrameReturnType` already removes the redundant dynamic boundary;
+- a genuinely adapting return type, `^errors` boundary, or required-impl check
+  keeps one frame per invocation rather than losing semantics or building an
+  equivalent heap list elsewhere.
+
+The fallback is not an error and does not need new syntax. Test-only counters
+make the reason observable to the implementation suite.
+
+### 2.5 Call kinds covered
+
+The proper-transfer path covers every user call that resolves to an ordinary
+bytecode `Fn` while executing a call opcode:
+
+- direct, local, outer, parent, name, value, and splice calls;
+- bare, qualified, optional, and `super` sends after message resolution;
+- application of a bound protocol message;
+- a user-defined `Callable`, after resolving `Callable/apply` and building its
+  `Call` envelope.
+
+Native functions, FFI callables, selectors, enum variants, direct typed-data
+construction, and generators return without pushing a Gene bytecode frame.
+They already have constant Gene-frame cost for the call itself; a tail mark does
+not turn external Nim callbacks into part of the Gene continuation contract.
+
+### 2.6 Executable examples
+
+The examples use the current Gene surface and are intended to become spec
+fixtures.
+
+```gene
+(fn is_even [n]
+  (if (== n 0) true (is_odd (- n 1))))
+
+(fn is_odd [n]
+  (if (== n 0) false (is_even (- n 1))))
+```
+
+The final calls are mutual proper tail transfers when the functions are plain.
+
+```gene
+(fn fold [f acc xs]
+  (match xs
+    (when [] acc)
+    (when [head tail...] (fold f (f acc head) tail))))
+```
+
+The call through `f` is an argument and is not in tail position. The recursive
+`fold` call is in the selected match arm's tail position.
+
+```gene
+(type Box ^props {^n Int}
+  (ctor [n] (self ~ set_prop `n n))
+  (message down []
+    (if (== self/n 0)
+      0
+      ((new Box (- self/n 1)) ~ down))))
+```
+
+`new` is ordinary construction; the final `down` send is a tail send. The
+message is intentionally unannotated so that the example demonstrates the v1
+constant-frame guarantee rather than the typed-return fallback.
 
 ---
 
 ## 3. Design
 
-The whole mechanism rests on one fact about this VM: **calls already push
-explicit heap frames; a tail call is simply *not pushing*.** The current
-registers are overwritten with the callee's, `frames.len` stays constant, and
-the callee's eventual `opReturn` pops straight to the replaced frame's caller.
-Generators already suspend and resume these frames (design §6.1) — frame
-replacement is the same machinery, exercised in the forward direction.
-
-Two halves: the compiler must know statically which calls are in tail position
-(the dynamic "next instruction is `opReturn`" check in
-`canReplaceCurrentTailCall` cannot see through `if`/`match` joins), and the VM
-must be able to replace the frame in every call path, not just the two hottest.
+The VM already uses an explicit frame stack, so no CPS conversion or new
+trampoline is required. The design adds one compiler proof and deepens the
+existing call-entry module: call opcodes resolve and bind their targets, then a
+single internal interface owns the replace-versus-push decision.
 
 ### 3.1 Compiler: tail-position analysis
 
-Thread a tail flag through the expression compiler.
+Thread a tail flag through expression and body compilation:
 
 ```nim
 proc compileExpr(c: var Compiler, node: Value, tail = false)
@@ -164,33 +260,28 @@ proc compileBodyFrom(c: var Compiler, body: openArray[Value], first: int,
                      tail = false)
 ```
 
-`tail == true` means "this expression's value is the value of the enclosing
-tail position; its evaluation may replace the current frame". Rules:
+Rules:
 
-- `compileBody`/`compileBodyFrom` compile the **last** form with the body's own
-  `tail` value, everything else with `false`. (Statement results are popped;
-  only the final element can be in tail position.)
-- Propagating forms pass `tail` down: `compileIf` (each `then`/`elif`/`else`
-  body), `compileIfThen`/`compileIfNot` (bodies), `match` (each clause body),
-  `do` (its body), `&&`/`||`/`??` (last operand), `return` (its expression).
-- All other descents — conditions, patterns, arguments, initializers, loop
-  bodies, try/catch/ensure bodies, `with_capabilities` bodies, quoted
-  material, nested `fn` bodies (they open their own tail context) — compile
-  with `tail = false`.
-- Macro expansion composes for free: expansions are ordinary source lowered
-  through the same compiler, so tails inside expansions are marked by the same
-  rules.
+- `compileBody` and `compileBodyFrom` pass their `tail` value only to the last
+  form; every earlier form receives `false`.
+- `if`, `if_yes`, `if_not`, `match`, `do`, and the last operand of
+  `&&`/`||`/`??` propagate the flag according to section 2.2.
+- `return` passes the flag to its expression only when it is compiling a direct
+  function return, not a return whose structured cleanup owns a continuation.
+- conditions, patterns, arguments, initializers, loops, structured bodies,
+  constructors, namespaces, modules, and quoted material pass `false`.
+- nested callables begin their own tail context at their body tail.
+- macro expansions go through the same compiler and require no separate rule.
 
-Call-emit sites stamp the flag:
+Every call-emitting post-pass must preserve the mark. In particular,
+`rewriteSelfRecursiveCalls`, direct-call specialization, bare-return rewrites,
+and scopeless-call specialization may replace an instruction only by copying
+its tail property or by emitting a stronger in-place recur opcode.
 
-- `emitPlainCall` / the `opCall0/1/2/opCall/opCallSplice` emission,
-- the fast local/outer/parent call ops (`opCallLocal1/N`,
-  `opCallParentLocal0/1`, `opCallOuterLocal0/1`, `opCallName0/1/N`),
-- the call op emitted at the end of every send lowering (`~` bare sends via
-  `opResolveMessage` + call, `opQualifiedSend`, `opSuperSend`, `?~` sends —
-  these all funnel into the same call dispatch arms).
+### 3.2 GIR: carry the proof without assuming one host layout
 
-**Carrier for the mark.** Add `tail*: bool` to `Instruction`:
+Add a distinct `tail` bit to call instructions. The existing `flag` field is
+opcode-specific and cannot be reused.
 
 ```nim
 Instruction* = object
@@ -199,369 +290,548 @@ Instruction* = object
   depth*: int
   name*: string
   names*: seq[string]
-  flag*: bool        # opcode-specific (scopeless int-args known, …)
-  tail*: bool        # this call is in tail position (design §3.5)
+  flag*: bool
+  tail*: bool
 ```
 
-`flag` is already spoken for on the local-call family (it means "args are
-known-Int" for the scopeless fast path), so a distinct field it is. Nim packs
-both bools into one alignment slot: `sizeof(Instruction)` is 64 before and
-after adding `tail` (verified) — gate it with
-`static: doAssert sizeof(Instruction) == 64`. If a future field breaks that,
-fall back to a chunk-level `seq[uint8]` bitset keyed by instruction index,
-mirroring `callSites` — the dispatch sites already index chunk metadata by
-`ip - 1`.
+The size rule is target-relative, not `sizeof(Instruction) == 64` everywhere.
+Tests define a mirror of the pre-tail layout and assert on every supported
+target that adding the bit does not increase `sizeof(Instruction)`. Native and
+wasm builds both run the check. If the bit is not padding-neutral on a target,
+use a chunk-level packed bitset keyed by instruction offset on that target or
+for all targets; do not accept an unmeasured instruction-array expansion.
 
-`gir_codec` serializes `Instruction`, so the bit joins the round-trip along
-with the `MatchProto` field below.
+`MatchProto` gains `tailResult: bool`, which records that the selected arm's
+result is the enclosing activation's result.
 
-### 3.2 Compiler: match arms in tail position
+Both fields change serialized GIR. Increment `GirArtifactFormat` from 2 to 3;
+format-2 artifacts fail closed rather than relying on an absent JSON field to
+default correctly. Round-trip tests cover marked/unmarked calls and matches.
 
-`opMatch` executes the matched arm as its own frame
-(`pushFrame(); enterFrame(cl.body, branchScope, …)`), because arm bodies are
-independent chunks with their own slot layouts. A tail call inside the arm
-would therefore leave the *parent* function frame resident — one frame per
-recursion level even with frame replacement (this is exactly what probe D
-measured).
+The mark belongs on the opcode that actually invokes the resolved callee.
+Message resolver/cache opcodes are not themselves tail calls.
 
-Fix: one flag per match. When the `(match …)` form itself is in tail position,
-every arm body is in the function's tail position (arms are mutually exclusive
-paths), so:
+### 3.3 VM seam: one deep bytecode-call entry module
 
-- gir: `MatchProto` gains `tail: bool`, set at compile time from the tail
-  context at the match site; arm bodies compile with `tail = mp.tail`.
-- VM: `Frame` gains `deadTail: bool` (padding-absorbed). `opMatch` sets
-  `frames[^1].deadTail = mp.tail` after `pushFrame()` and before
-  `enterFrame(cl.body, …)` — the bit means *"this frame's continuation after
-  receiving its single result is dead by the tail-position proof."*
-
-A nested `match`-in-`match` tail pops one frame per level; see 3.3.
-
-Alternatives considered for match and rejected: compiling arms inline with
-jumps (needs cross-chunk slot remapping — invasive); running arms in-frame
-without a return address (no mechanism in the dispatch loop). The flag +
-pop-loop is minimal and preserves the arm-as-chunk model.
-
-### 3.3 VM: one shared tail path
-
-Promote `enterTailCallFrame` + `canReplaceCurrentTailCall` from the two
-fast-path call sites to a shared template used by **every** frame-pushing call
-arm:
-
-- `opCall0/1/2/opCall` (plain, named, splice),
-- `opCallName0/1/N`, `opCallLocal0/1/N`, `opCallParentLocal0/1`,
-  `opCallOuterLocal0/1` (the shared direct-call arm),
-- `opResolveMessage` / `opQualifiedSend` / `opResolveQualifiedMessage` /
-  `opSuperSend` lowering (these resolve a callee + receiver onto the stack and
-  then consume the same call arms; the tail mark rides the final call op),
-- the scopeless-call fast path (tail variant: args already sit at the frame
-  base after the shift-down; replacement is a pure register/chunk swap).
-
-Structural suggestion: extract the tail end of each arm ("bind → decide →
-push") into one `enterFunctionCall(…)` template that internally decides
-replace-vs-push, so the guard logic exists once instead of in six arms.
-
-The generalized eligibility test replaces the dynamic
-"next op is `opReturn`" check with the compiler's mark, and the `calleeIndex
-== 0` gate with region containment:
+All paths that have resolved and bound an ordinary bytecode function use one
+internal interface, conceptually:
 
 ```nim
-template canReplaceCurrentTailCall(calleeScope: Scope): bool =
+type BoundBytecodeCall = object
+  # stack-local description produced by existing specialized binders
+  proto: FunctionProto
+  scope: Scope
+  recycleScope: bool
+  validateImpls: bool
+  returnType: Value
+  returnLabel: string
+  checksErrors: bool
+  errorTypes: seq[Value]
+  fnName: string
+  capabilityTransition: CapabilityTransition
+
+template enterBytecodeCall(call: sink BoundBytecodeCall,
+                           operandBase: int,
+                           tailMarked: bool)
+```
+
+This is an implementation interface, not a required allocation. It should be a
+stack object/template that lets the current simple, Int, scopeless, and named
+binders keep their allocation behavior. The interface earns its depth by
+hiding all of the following from opcode arms:
+
+- compiler-mark validation and operand-region assertions;
+- transparent expression-frame collapse;
+- capability and scope-capture checks;
+- current-activation replacement;
+- ordinary frame push fallback;
+- installation of the callee's return/error/validation state;
+- bounded tail-trace recording.
+
+Opcode arms retain only call-kind resolution and their specialized argument
+binding. No call arm independently reimplements the replacement guard.
+
+The required opcode inventory is explicit:
+
+- `opCall0/1/2/opCall/opCallSplice`;
+- `opCallName0/1/N`, local, parent-local, and outer-local families;
+- scopeless/direct fast paths;
+- final call operations emitted by bare, optional, qualified, and `super`
+  sends;
+- bound protocol-message application and user `Callable/apply` resolution.
+
+Each adapter documents its operand region. Direct/name ops that do not place a
+callee value on the stack still pass the first argument/operand index as
+`operandBase`. A debug assertion at the seam verifies that a marked call has no
+unconsumed compiler temporary below its operands in the current expression
+frame.
+
+### 3.4 Replacement eligibility
+
+After arguments have been bound into a callee scope, the call-entry module may
+discard the operand region. Binding must happen first: match-arm collapse also
+truncates that region.
+
+The centralized predicate is conservative:
+
+```nim
+template currentActivationIsTailElidable(calleeScope: Scope,
+                                         transition: CapabilityTransition): bool =
   curFrameKind == fkNormal and
-  # frame is a plain function activation: no ensure/for/task/ns/capability
-  # state, no pending cleanup
+  not validateImplRequirements and
+  returnType.kind == vkNil and returnLabel.len == 0 and
+  not curChecksErrors and
   curEnsureBody == nil and curForItems.len == 0 and
   curForStream.kind != vkStream and curOwnedScope == nil and
   curPendingError == nil and curPendingPanic == nil and
   curPendingCancel == nil and curPendingReturn == nil and
-  # the call's operands occupy exactly this frame's region (statement
-  # position): everything below belongs to live callers
-  calleeIndex == curStackBase and
-  # recycling the caller's pooled scope would free a scope the callee
-  # captures (e.g. a closure defined in this frame)
+  transition.context == capabilityContext and
+  transition.presence == capabilityPresence and
   (not recycleScope or not scopeChainContains(calleeScope, scope))
 ```
 
-Notes on what changed vs today:
+The actual implementation also checks the marked opcode's operand layout and
+the transparent-frame chain described below.
 
-- `ip < len and next op in {opReturn, opReturnBareInt}` is **dropped** — the
-  compiler mark is the position proof. (This is what unlocks `if`/`match` arms:
-  today's check fails there because `opJump` sits between the call and the
-  shared `opReturn`.)
-- `calleeIndex == 0` becomes `calleeIndex == curStackBase`: statement position
-  inside *any* frame, not just the outermost. (Everything below
-  `curStackBase` belongs to callers and is untouched; `strunc(curStackBase)`
-  in `enterTailCallFrame` is already the right truncation.)
-- `not validateImplRequirements` on the *current* frame can likely be dropped
-  (the replaced frame's remaining instructions are dead, so its pending
-  obligations are moot; the callee installs its own flag) — land conservatively
-  with the check, then remove it behind a benchmark if it ever shows up in a
-  profile. Same treatment for `returnType.kind == vkNil`: see §3.5, which
-  removes the need to bail on typed returns at all.
-- `frames[^1].restoreSlot` frames (the same-scope `recur` restore records) are
-  unaffected: the recur machinery restarts or its frame is restored by the
-  return path; a tail call never executes with a live `restoreSlot` in the
-  *current* registers.
+What changes from the current gate:
 
-The per-site checks already in place stay:
+- the compiler mark replaces the dynamic “next opcode is return” test;
+- `operandBase == curStackBase` replaces the outermost-stack-only check;
+- required-implementation validation remains a hard gate;
+- return adaptation and `^errors` remain hard gates in v1;
+- capability restoration and pooled-scope capture remain hard gates;
+- the callee's own state is installed after the old activation is released.
 
-- callee is `vkFunction` with a `FunctionProto` body — natives return on the
-  Nim stack (no Gene frame to replace), generators return a `Stream` without
-  entering a body (their call sites fall through to `applyCall` untouched), and
-  fexprs never reach here;
-- no capability transition introduced by the callee (`nextTransition` equals
-  current context/presence) — a transition needs its frame for restore-on-exit,
-  so such calls push. This is the same gate the hot paths use today.
+`enterTailCallFrame` then keeps the current physical caller depth, appends one
+bounded diagnostic record, releases the current call scope, truncates to
+`curStackBase`, and installs the bound callee registers. The callee returns
+directly to the replaced activation's caller.
 
-### 3.4 VM: dead-subframe pop for match arms
+### 3.5 Match arms: transparent current activations, not dead saved parents
 
-On a tail-marked call, before replacing, pop trailing *dead* subframes:
+`opMatch` pushes the parent activation and runs the selected arm as the current
+register-owned activation. Therefore a flag on `frames[^1]` describes the saved
+parent, not the arm. Releasing that frame and then loading it would recycle the
+wrong scope.
+
+Use a dedicated current-frame kind instead:
 
 ```nim
-template popDeadTailFrames() =
-  ## The mark proves every frame between this call and the enclosing function
-  ## frame is a sub-expression frame (today: match arms) whose continuation
-  ## after receiving the arm value is dead. Pop them; release their scopes.
-  while frames.len > 0 and frames[^1].deadTail and
-        frames[^1].kind == fkNormal and frames[^1].extra == nil and
-        frames[^1].restoreSlot < 0:
-    var dead = frames.pop()
-    releaseFrameCallScope(dead)
-    loadFrameRegs(dead)   # registers become the surviving function frame's
+FrameKind = enum
+  fkNormal
+  fkTailMatchBody
+  # existing structured kinds...
 ```
 
-Then run the ordinary replacement. `loadFrameRegs` restores the function
-frame's own `returnType`/boundary/`recycleScope` state, which the composition
-step (§3.5) needs anyway. Pop-then-replace is exactly "the arm's value is the
-callee's return value": the arm frame has no record of its own (it *is* the
-current registers), the popped record is the parent function frame whose
-continuation is dead. If any inspection fails, fall back to a normal push —
-correctness before O(1).
+When `MatchProto.tailResult` is true, `opMatch` enters the selected arm as
+`fkTailMatchBody`. This kind means: “if the arm ends in a marked call, the
+arm-to-owner result handoff is transparent.” It is stored automatically when a
+nested match pushes the current arm into `frames`, so nested tail-position
+matches form a chain without another `Frame` field.
 
-Only `match` needs this today (`for` bodies, `try` bodies, capability bodies
-are never tail positions; `if`/`do`/`&&` compile inline in the same chunk).
-
-### 3.5 Exact semantics: composing return adaptation and error boundaries
-
-A frame's registers carry two things that must survive a replacement:
-
-1. **Return-type adaptation.** The current frame's `returnType`/
-   `returnLabel` adapt *its* result to *its* declared type when it returns.
-   Replacing the registers swaps in the callee's adaptation and would silently
-   drop the caller's. Non-tail, the value passes through both boundaries:
-   adapt to the callee's declared type, then to the caller's.
-
-2. **`^errors` boundaries.** An error raised inside the tail callee unwinds
-   through both functions' declared error rows before reaching the outer
-   caller. Dropping the replaced frame's boundary changes which diagnostic the
-   error carries ("'h' raised an undeclared error" vs "…'g'…") and which rows
-   mask it.
-
-Both compose the same way — a two-level *outer* pair applied after the inner
-one. On replacement:
-
-- registers become the callee's (`returnType`, `returnLabel`,
-  `checksErrors`, `errorTypes`, `fnName`);
-- the replaced frame's pair is retained as the *outer* layer;
-- `frameReturn` adapts inner-then-outer (`outer.isStatementReturnType` still
-  coerces to the unit, after the inner adaptation runs — it must be able to
-  raise exactly where non-tail execution would);
-- the unwind handler translates inner-then-outer with each level's
-  `fnName`, reproducing today's per-frame translation order exactly.
-
-Storage: only *both*-sides-typed or both-`^errors` tails need the outer pair.
-That is rare, so put the outer pair in `FrameExtra` (the existing rare-state
-overflow record, `nil` on hot frames) rather than widening `Frame`:
+After the callee is resolved and its arguments are bound, the call-entry module
+collapses that chain in ownership order:
 
 ```nim
-FrameExtra = ref object
-  # … existing fields …
-  outerReturnType: Value      # tail-call composition: the replaced frame's
-  outerReturnLabel: string    #   pending return adaptation, and its
-  outerChecksErrors: bool     #   ^errors boundary, applied after the
-  outerErrorTypes: seq[Value] #   tail callee's own, inner first
+template collapseTailExpressionFrames() =
+  while curFrameKind == fkTailMatchBody:
+    # The arm is current; release/drop it before restoring its saved owner.
+    releaseCurrentCallScope()
+    strunc(curStackBase)
+    doAssert frames.len > 0
+    var owner = frames.pop()
+    loadFrameRegs(owner)
 ```
 
-`frameReturn` / `frameReturnBareInt` / the unwind handler apply the outer level
-when present. The common shapes never populate it:
+For a non-pooled branch scope, replacing the current `scope` reference drops
+the arm's ownership normally; for a pooled scope,
+`releaseCurrentCallScope()` returns it to the pool before it is forgotten. The
+saved owner's scope is never released by this loop.
 
-- untyped callees: `returnType` is `NIL`, single adaptation or none;
-- bare-`Int` returns: `returnKnownBareInt` already collapses the frame type to
-  `NIL` (`checkedFrameReturnType`), so typed `: Int` recursion — the
-  accumulator idiom — stays on the zero-cost path;
-- `isStatementReturnType` (declared `Nil`/`Void`) composes as
-  inner-then-unit.
+Before mutating state, debug builds validate the entire transparent chain and
+the expected empty parent operand regions. GIR format validation and compiler
+tests make those facts trusted in release builds.
 
-If a future shape proves non-composable, the fallback is a frame push —
-correctness first, O(1) second.
+After collapse:
 
-### 3.6 Diagnostics
+- if the restored function activation is tail-elidable, replace it;
+- otherwise push the bound callee normally from the restored function.
 
-- **`tailTraceFrames`** already exists for this: each replacement appends the
-  elided frame's name/loc, `trimTailTraceFrames` pops them on return. In a
-  20M-iteration tail loop the append/trim balance at the same depth, but the
-  seq must be **capped** (e.g. keep the last 64 elided entries, and mark the
-  elision in traces: `… (N tail frames elided) …`) so a long tail loop cannot
-  accumulate. Trace depth for an error inside a tail chain therefore shows the
-  chain head, the capped window, and the throwing frame.
-- The existing `appendVmTrace` already merges `tailTraceFrames`; no change
-  beyond the cap.
-- Recursion that is *not* in tail position keeps growing heap frames with no
-  limit (unchanged behavior; a depth cap/diagnostic is a separate, future
-  concern).
+The second case is important. It removes expression-only match frames while
+retaining a function frame that must still adapt the value, check an error row,
+or validate implementations when the callee returns.
 
-### 3.7 Interaction inventory
+If an arm completes without a bytecode tail call—for example, it returns a
+literal or calls a native—`fkTailMatchBody` performs the ordinary arm-to-owner
+value handoff in `finishFrameReturn`.
 
-| machinery | interaction |
+### 3.6 Return adaptation, checked errors, and completion finalizers
+
+V1 does not compose caller boundaries into an “outer pair.” One pair is not
+enough for:
+
+```text
+f ->tail g ->tail h
+```
+
+Exact non-tail behavior may require `h`, then `g`, then `f` return adaptations
+and checked-error translations. A linked representation preserves the order
+but grows with call depth. It would merely move the leak from `frames` into a
+different heap structure.
+
+The rule is therefore simple:
+
+- a caller with dynamic return adaptation or `^errors` is not tail-elidable;
+- a caller with pending required-implementation validation is not
+  tail-elidable;
+- namespace, module, constructor, cleanup, and restoration continuations are
+  excluded or gated;
+- a compiler-proven redundant scalar boundary may be removed before runtime,
+  as `returnKnownBareInt` already does, after which the activation is plain.
+
+This preserves current error labels, adaptation order, statement return types,
+and validation timing exactly. A future extension may elide two boundaries
+only if it proves a bounded, lossless composition—for example, a formally
+idempotent identical policy. It must not allocate an unbounded continuation
+list.
+
+No new boundary fields belong in `FrameExtra` for v1. Active activation state
+lives in register locals and is copied to `Frame`/`Fiber` on suspension; adding
+rare current state only to `FrameExtra` would not be a complete storage design.
+
+### 3.7 Custom `Callable`
+
+Ordinary VM call opcodes currently send non-built-in callable nodes through
+`applyCall`, which resolves `Callable/apply`, builds a `Call` envelope, and then
+invokes the implementation. A tail mark would be lost if that whole path stayed
+opaque.
+
+At a VM call site, marked or unmarked:
+
+1. test `valueImplementsCallable` as today;
+2. resolve the `Callable/apply` implementation in the dispatch scope;
+3. build the same `Call` envelope and argument pair `[callee, envelope]`;
+4. if the implementation is an ordinary bytecode function, bind it and enter
+   through `enterBytecodeCall` with the call opcode's original tail mark;
+5. otherwise use `applyCall` and its immediate-result behavior.
+
+The envelope allocation is already part of custom `Callable` semantics. The
+ordinary `vkFunction` fast paths do not pay for it. Tests compare the envelope,
+site, named arguments, error location, and protocol dispatch behavior between
+marked and unmarked calls.
+
+### 3.8 Diagnostics
+
+Elided frames cannot all be retained while memory remains bounded. Diagnostics
+are explicitly lossy:
+
+- keep a fixed recent window of tail-transfer locations per physical frame;
+- keep a saturating count of additional elided calls;
+- render the retained entries plus `... (N tail calls elided) ...`;
+- trim/reset the window when its physical frame returns;
+- store the window and count in fiber continuation state so suspension and
+  resumption preserve them.
+
+The existing `tailTraceFrames` machinery supplies locations and physical frame
+depth. Its storage changes from an unbounded append-only sequence at one depth
+to a bounded per-physical-frame window (64 entries is an initial diagnostic
+policy, not a semantic number).
+
+An error trace can name the throwing frame and retained tail frames; it cannot
+promise to name every elided activation.
+
+### 3.9 Interaction inventory
+
+| machinery | v1 interaction |
 |---|---|
-| fibers / generators | Composes. Replacement keeps `frames.len` constant; `captureContinuation` moves the seq unchanged. Generator *calls* return a `Stream` via `applyCall` without entering a frame — the mark is ignored. Tail calls *inside* generator bodies work (replacement within the fiber's frame seq). |
-| `try`/`catch`/`ensure` | Try bodies run as `fkTryBody` frames with a `TryHandler`; the `fkNormal`-only gate means a tail call never replaces a frame that owns a handler. A `try` *around* a tail-recursive helper costs one frame. Catch/ensure bodies are `fkCatch`/`fkEnsure*` kinds — not replaceable. |
-| capabilities | `with_capabilities` bodies are `fkCapabilityBody` frames; a callee introducing a capability transition pushes (restore needs the frame). Same-function tails where `nextTransition == current` replace. |
-| closures | `scopeChainContains` guard: a callee whose scope chain captures the caller's pooled call scope forces a push. Non-pooled scopes survive by refcount and may replace. |
-| scopeless calls | Tail variant mirrors the scopeless push: args already at frame base, no scope, pure register/chunk switch under the same guards. |
-| `opRecur1` peepholes | **Stay.** They are faster than the general path (same-scope restart skips even scope acquire; fused Int arithmetic). The general path covers what the peepholes reject — `matches.len > 0`, non-unary, mutual, values, sends — so `canUseRecur1`'s narrowness stops mattering for correctness. |
-| dispatch caches | Send sites cache impls keyed by receiver type/epoch; the tail bit is orthogonal (cache hit → resolved callee → same tail decision). |
-| AOT / typed-native | Lowered to C; no Gene frames; out of scope for the VM contract. |
-| wasm | Pure VM change, no new deps; `nimble wasm` is a required gate. |
-| repl/eval, fexpr `eval` | Tail marks are compiler-wide; nested `runLoop` invocations are independent continuations and TCO within themselves. |
-| module top level | The module body's last expression is a tail position; the outermost frame is replaced like any other. |
+| fibers | Current registers, frame stack, match-frame kind, and bounded trace state are captured and restored together. |
+| generators | Calling a generator returns a `Stream` without entering its body. Tail calls inside a running generator use the fiber's normal call-entry module. |
+| `try`/`catch`/`ensure` | Their bodies do not receive tail context. Handler and cleanup owners are never replaced. |
+| capabilities | A body/transition that must restore capability state keeps its frame. An ordinary call with no transition can replace a plain activation. |
+| closures | A callee that captures a recyclable caller scope forces fallback. Non-pooled scopes may survive by reference count. |
+| match | Tail arms are transparent expression frames and collapse current-first before the function decision. |
+| scopeless calls | Specialized binders still use the same entry interface; replacement is a register/chunk switch after operand binding. |
+| custom `Callable` | `Callable/apply` bytecode implementations join the same path after envelope construction. |
+| recur peepholes | Stay. Same-scope restart and fused arithmetic remain faster specializations of cases the general contract also covers. |
+| dispatch caches | Resolution/cache lookup remains before call entry; the final call carries the tail mark. |
+| namespace/module top level | Not a v1 tail context because completion and validation are observable. |
+| AOT/typed-native | No Gene VM frame is entered; outside this VM-frame contract. |
+| wasm | Same semantics and layout checks; `nimble wasm` is a required implementation gate. |
 
 ---
 
-## 4. Semantics decisions
+## 4. Semantic decisions
 
-1. **Tail calls to generators** are ordinary calls (they return a `Stream`
-   immediately — no frame is entered). The contract's "constant frame space"
-   is about activations that *run*.
-2. **`(return (f x))`** is a tail position, but a function with a pending
-   `ensure` pushes: cleanup runs, then the call returns. This matches the
-   documented `return` semantics (§9: structured cleanup still runs).
-3. **Error-message composition** across a tail chain is defined as: inner
-   boundary translates first, then outer — identical to the non-tail unwinding
-   order. A test pins the exact message for mutual recursion between two
-   `^errors` functions.
-4. **`&&`/`||`/`??` short-circuit values** do not break the tail path: on the
-   taken-early paths the operand value is kept on the stack and flows to the
-   dead join + return as today; only the last operand can be a marked call, and
-   at that point its operands are the only live values in the frame region
-   (`calleeIndex == curStackBase`).
-5. **No new user-facing syntax.** No `recur` form: with proper tail calls it
-   would be a performance hint for something the compiler already proves, and
-   the review's point stands — the *contract* is what was missing, not syntax.
-   `while`/`loop`/`for` remain the iteration primitives for non-call iteration.
+1. **No new syntax.** There is no `recur` form. The compiler proves position;
+   existing recur opcodes remain implementation specializations.
+2. **Exact fallback beats nominal coverage.** A syntactically tail call may
+   push when the current activation owns observable continuation work. This is
+   part of the contract, not a temporary silent failure.
+3. **Typed and checked-error recursion is conservative.** It becomes constant
+   frame space only when compilation proves the relevant boundary redundant.
+   Otherwise each invocation retains its frame.
+4. **Required implementation validation always runs.** Dead bytecode after a
+   call does not make scope-completion validation dead.
+5. **Constructors and namespaces return their defined result.** A constructor's
+   body value remains ignored in favor of the validated instance; a namespace
+   body's value remains ignored in favor of the Namespace object.
+6. **Custom callables are user calls.** If their `Callable/apply`
+   implementation is bytecode, a tail-marked application participates in the
+   same replacement mechanism.
+7. **Tail traces are bounded summaries.** Exact values/errors are preserved;
+   a diagnostic history of arbitrarily many elided activations is not.
+8. **Non-tail recursion is unchanged.** A separate depth diagnostic may be
+   desirable but is outside this proposal.
 
 ---
 
 ## 5. Implementation plan
 
-Staged so every step lands green (`nimble test`, `nimble spec`, `nimble perf`,
-`nimble wasm`) and independently valuable:
+Every stage lands with `nimble test`, `nimble spec`, `nimble perf`, and
+`nimble wasm`. `nimble verify` runs for the call-entry and match stages because
+they are broad VM changes.
 
-1. **Marks only** — compiler threading (`compileExpr`/`compileBody`/`compileBodyFrom`
-   + the eight propagating special-form compilers), stamp `Instruction.tail`
-   on all call/send emit sites, `MatchProto.tail`, gir_codec round-trip,
-   `sizeof(Instruction)` static assert. No VM change; all gates unchanged.
-2. **General frame replacement** — promote `enterTailCallFrame` to a shared
-   template; wire the mark into all call dispatch arms (drop the
-   `calleeIndex == 0` and next-op gates; keep the boundary/capability/scope
-   guards). Closes probes C and E (mutual + value). `bench_core` call paths
-   must hold (the tail path is push-minus-Frame-add; strictly equal or faster).
-3. **Sends** — marks on the send lowering so `~`/qualified/`super`/`?~` tails
-   replace (probe F). Verify the send-side dispatch-cache guard order is
-   unaffected.
-4. **Match arms** — `MatchProto.tail`, `Frame.deadTail`, the pop loop (probe D).
-5. **Composition pairs** — outer return-type and `^errors`-boundary pair in
-   `FrameExtra`; typed/generic tail recursion becomes O(1).
-6. **Contract + tests + benches** — design.md §3.5/§9 paragraphs (text in §6
-   below), spec_runner suite, benchmark additions.
+### Stage 0: durable baseline and instrumentation
 
-Files and rough size: `compiler.nim` (~250 lines: tail threading + stamps),
-`gir.nim`/`gir_codec.nim` (~30), `vm.nim` (~250: shared template, pop loop,
-composition, guard generalization), `tests/spec_runner.nim` (~15 cases),
-`benchmarks/` (tail loops). No new opcodes, no new dependencies, no
-user-facing syntax.
+- Move the essential exploratory probes into `tests/` and `benchmarks/`.
+- Add test-only counters for current/max physical frame count, proper tail
+  transfers, transparent expression frames collapsed, and fallback reason.
+- Record call/send benchmark numbers before changing dispatch.
 
-### 5.1 Acceptance probes (re-run as the gate)
+### Stage 1: compiler proof and GIR v3
 
-Rerun `tmp/probe*.gene` at 20M depth; acceptance is flat RSS (≤ ~50 MB) for
-C (mutual), D (match), E (value), F (send), and no regression for A. Probe G
-(statement tail, nested) plus a try/ensure-interaction probe pin the guard
-fallbacks.
+- Thread the tail context through expression/body compilation.
+- Mark every call opcode and preserve marks through compiler rewrites.
+- Add `MatchProto.tailResult`.
+- Bump `GirArtifactFormat` to 3 and add round-trip/rejection tests.
+- Add target-relative `Instruction` layout checks in native and wasm builds.
+- No VM behavior changes yet.
 
----
+### Stage 2: deepen bytecode call entry
 
-## 6. Draft contract text for design.md
+- Introduce `BoundBytecodeCall`/`enterBytecodeCall` as the one
+  replace-versus-push seam.
+- Route plain, name, local, outer, parent, value, splice, and scopeless call
+  paths through it without adding hot-path allocation.
+- Replace the dynamic next-op check with the compiler mark and frame-relative
+  operand proof.
+- Keep all semantic gates from section 3.4.
+- Close the mutual-recursion and function-value probes for plain functions.
 
-§3 addition (after the send rules):
+### Stage 3: sends and protocol/custom dispatch
 
-> ### 3.5 Tail calls
->
-> Gene guarantees **proper tail calls**. A call in *tail position* reuses the
-> current activation instead of pushing a frame: self-recursive, mutually
-> recursive, and higher-order tail calls — and tail sends (`~`, qualified,
-> `super`) — run in constant VM frame space. A recursive or mutually recursive
-> walker in tail position is an iteration primitive:
->
-> ```gene
-> (fn walk [node]
->   (match node
->     (when {^children []} (transform node))
->     (else (walk (first node/children)))))
-> ```
->
-> Tail position is the last expression of a `fn`/`ctor`/message body and of
-> `ns`/`mod` bodies; it flows through `then`/`elif`/`else` arms, the tails
-> of `if_yes`/`if_not`, every `match` arm body, `do` bodies, and the last
-> operand of `&&`/`||`/`??`, and through `(return expr)`. It does *not* flow
-> through call arguments, conditions, binding initializers, loop bodies
-> (`while`/`for`/`loop`/`repeat`), `try`/`catch`/`ensure` bodies, or
-> `with_capabilities`/`spawn` bodies — a call there pushes a frame.
->
-> A tail call still means full semantics: return-type adaptation and `^errors`
-> boundaries of the exited function still apply to the tail-called value and
-> to errors raised inside the tail call (applied inner-then-outer), and stack
-> traces name the elided frames. A tail call out of a function with a pending
-> `ensure` block, an active `try` in the same frame, or a capability
-> transition keeps its frame for that level — bounded by the enclosing
-> structured context, never by recursion depth.
+- Carry the mark through bare, optional, qualified, and `super` sends to their
+  final bytecode call.
+- Route bound protocol messages through the shared entry seam.
+- Resolve marked user `Callable` applications to `Callable/apply` before the
+  fallback to `applyCall`.
+- Verify cache hit/miss and capability-transition behavior.
 
-§9 gets a one-line cross-reference under control flow. `docs/spec/calls.md`
-gets the same paragraph; the naming rule is untouched (no new user-facing
-names).
+### Stage 4: transparent match arms
+
+- Enter tail-result arms as `fkTailMatchBody`.
+- Implement current-first transparent-frame preflight and collapse.
+- Add normal-return handling for the new frame kind.
+- Cover nested matches, pooled/non-pooled scopes, captured closures, and
+  fallback after collapse to a typed/error/validation owner.
+
+### Stage 5: bounded traces, contract, and performance gates
+
+- Replace unbounded same-depth trace accumulation with a fixed window and
+  saturating elision count carried by fibers.
+- Add the contract text only for the call kinds whose stages are complete.
+- Add deterministic spec tests and deep benchmark/stress cases.
+- Compare before/after call, send, custom-callable, and recur-peephole results;
+  investigate regressions rather than promising that every marked shallow call
+  is strictly faster.
+
+No stage adds a dependency or opcode solely for user-facing syntax.
 
 ---
 
-## 7. Alternatives considered, rejected
+## 6. Verification and acceptance
 
-- **Keep the status quo and document "use while/for".** Rejected: the walker
-  idiom is structural (match-driven descent), not counter-iteration; measured
-  cost is 600–760 B *per level* with no diagnostic — a silent 12 GB. Also the
-  contract is the point of the review item.
-- **Explicit `(recur …)` form (Clojure-style).** Adds a self-tail-only
-  special form that proper TCO subsumes; mutual and value-recursion would
-  still be unhandled. Not needed once the contract exists; revisit only if
-  someone wants an *assertion* that a call is a self-tail.
-- **Nim-level trampolining in `applyCall`.** The explicit frame stack *is* the
-  trampoline; adding a Nim loop would duplicate it and put non-heap state in
-  the way of fibers.
-- **CPS/thunkification** (compile everything into closures). Maximally
-  general, maximally hostile to every direct-call fast path, scopeless chunks,
-  and dispatch caches in this VM.
-- **Depth-capped "overflow" error only.** Doesn't fix the idiom; still worth
-  adding later as a diagnostic, out of scope here.
+### 6.1 Deterministic semantic tests
 
-## 8. Risks / open questions
+Positive constant-frame tests:
 
-1. **`sizeof(Instruction)`** — resolved: the tail bit is padding-neutral (64
-   before and after, verified). The static assert in §3.1 guards future
-   fields; the chunk-bitset fallback exists if it ever breaks.
-2. **Relaxing `not validateImplRequirements`** — argued safe (dead remaining
-   instructions), landed conservatively; revisit with a targeted test.
-3. **Boundary/return-type pair on `FrameExtra`** — allocates a ref only for
-   both-typed tails; if profiling shows that shape is hot (generic
-   instantiation with real adaptation), consider a small inline pair instead.
-4. **Trace cap size** — 64 is a guess; the spec test pins the *shape*
-   (head + window + thrower), not the count.
-5. **Perf gate** — the marked sites gain one bool check; unmarked paths gain
-   nothing. `nimble perf` before/after on `bench_core` call benchmarks is part
-   of every stage's commit message.
+- self and mutual recursion through compact and clause `if` forms;
+- recursion through a function value;
+- direct/name/local/outer/parent and splice calls;
+- bare, qualified, optional, and `super` sends;
+- bound protocol-message application;
+- a user-defined `Callable/apply` bytecode implementation;
+- one and multiple nested tail-position `match` arms;
+- `do`, `if_yes`, `if_not`, `&&`, `||`, `??`, and direct `return` propagation;
+- execution inside a suspended/resumed fiber.
+
+Exact fallback tests:
+
+- adapting return types and statement return types;
+- declared `^errors`, including the exact existing function-specific message;
+- required implementation validation at scope/module completion;
+- `try ... catch SomeException ...`, `ensure`, capability restoration, task
+  scope, supervisor, constructor, namespace, and module completion;
+- a closure whose callee scope captures a recyclable caller scope;
+- a custom `Callable` whose implementation is native;
+- malformed or old GIR artifacts.
+
+Ownership tests:
+
+- nested match arms with branch-local bindings;
+- pooled call scopes and non-pooled branch scopes;
+- closures capturing an arm binding;
+- frame/fiber capture and restoration after match collapse;
+- no release of the saved owner's scope during transparent-frame collapse.
+
+Every positive case asserts maximum live physical frames, not only its returned
+value. At least one non-tail recursive negative control must show a rising frame
+counter so the instrumentation proves it can detect growth.
+
+### 6.2 Stress and performance tests
+
+- Run plain mutual, value, match, and send chains at increasing depths and
+  assert a flat frame count.
+- Track allocations/live continuation metadata in addition to peak RSS.
+- Keep RSS as a secondary end-to-end smoke measure; allocator retention makes
+  it unsuitable as the sole assertion.
+- Verify the bounded tail-trace window and saturating count at millions of
+  transfers.
+- Benchmark unmarked calls, marked shallow calls, deep tail calls, sends,
+  custom callables, and existing `opRecur1` fast paths.
+
+Acceptance requires no avoidable regression in unmarked/hot scalar paths and a
+large improvement for the deep tail cases. Any measured regression is reported
+with before/after numbers and addressed under the repository performance rules.
+
+### 6.3 Build gates
+
+Every implementation commit runs:
+
+```bash
+nimble test
+nimble spec
+nimble perf
+nimble wasm
+```
+
+Broad call-entry/match changes also run:
+
+```bash
+nimble verify
+```
+
+The wasm gate verifies both behavior and the target-relative instruction/frame
+layout assumptions.
+
+---
+
+## 7. Draft contract text for `docs/design.md`
+
+> ### Tail calls
+>
+> Gene recognizes calls in tail position. Tail position begins at the last
+> expression of a function or message body and flows through selected `if`
+> branches, `if_yes`/`if_not` bodies, `match` arm bodies, `do` bodies, the last
+> operand of `&&`/`||`/`??`, and a direct `return` expression.
+>
+> A tail call reuses the current VM activation when that activation has no
+> observable work left after the call. Self-recursive, mutually recursive,
+> higher-order, message-send, protocol-message, and user-`Callable` chains made
+> entirely of such activations run in constant VM frame space.
+>
+> A call keeps the current activation when it must still adapt a declared
+> return type, check a declared `^errors` row, validate required protocol
+> implementations, run cleanup, restore capabilities, complete construction or
+> namespace/module publication, or preserve a pooled scope captured by the
+> callee. Keeping the activation preserves the same value, error, validation,
+> and cleanup behavior as an ordinary call.
+>
+> Tail position does not flow through call arguments, conditions, patterns,
+> binding initializers, loop bodies, `try`/`catch`/`ensure`, capability/task/
+> supervisor bodies, constructors, namespace/module bodies, `new`, or fexpr
+> invocation. Native and generator calls do not add a Gene bytecode frame.
+>
+> Stack traces retain a bounded recent window of elided tail calls and report
+> how many additional calls were omitted.
+
+The control-flow section gets a short cross-reference. Executable examples and
+the full call-kind matrix belong in `docs/spec/calls.md` and
+`tests/spec_runner.nim` rather than being duplicated as drifting pseudocode.
+
+---
+
+## 8. Alternatives considered
+
+### Keep the current peepholes and tell users to write loops
+
+Rejected. Match-driven tail recursion is a natural structural walker, mutual
+state machines are not always clearer as mutable loops, and the measured
+failure mode is unbounded heap growth without a useful diagnostic.
+
+### Promise Scheme-style replacement for every syntactic tail call
+
+Rejected for v1 because Gene functions may own runtime return adaptation,
+checked-error translation, required-implementation validation, and other
+observable finalizers. Preserving an arbitrary ordered chain requires
+unbounded metadata; dropping it changes semantics. The proposal exposes the
+real condition instead.
+
+### Store one outer return/error pair in `FrameExtra`
+
+Rejected. It works for one replacement and fails for `f ->tail g ->tail h`.
+Turning the pair into a list preserves semantics but not bounded space, and
+`FrameExtra` is not the storage for the current register-owned activation
+anyway.
+
+### Mark saved match parents as dead
+
+Rejected. The current arm owns the scope that must be released; the saved
+record is the parent that will be restored. `fkTailMatchBody` places
+transparency on the activation that actually owns it.
+
+### Compile match arms inline
+
+Viable but too invasive for this feature. It requires cross-chunk slot and
+source-location remapping. Transparent expression frames preserve the existing
+arm-chunk module and concentrate the complexity in call entry.
+
+### Add an explicit `recur` form
+
+Rejected. It covers only a subset of mutual, value, and send recursion and adds
+surface syntax for a property the compiler can prove. Existing recur opcodes
+remain valuable internal fast paths.
+
+### Trampoline through Nim or compile all calls in CPS
+
+Rejected. The explicit Gene frame stack is already the trampoline and is the
+state fibers capture. A second trampoline or wholesale CPS conversion would
+duplicate continuation machinery and disrupt direct/scopeless call paths.
+
+---
+
+## 9. Risks and follow-up opportunities
+
+1. **Compiler propagation coverage.** `compileExpr` is central and compiler
+   rewrites are numerous. The implementation must inventory every call emitter
+   and test that specialization preserves the mark.
+2. **Operand layouts.** Tail position does not by itself prove every opcode's
+   operand base. Each call adapter needs a documented layout and a debug
+   assertion at the shared seam.
+3. **Scope capture.** Falling back for a captured pooled scope is correct but
+   limits some higher-order recursive programs. A future design could promote
+   a pooled scope to durable ownership, provided it does not add hot-path heap
+   reads or invalidate closure references.
+4. **Custom `Callable` dispatch.** Resolving `Callable/apply` inside the VM call
+   path must remain behavior-identical to `applyUserCallable`, including named
+   envelopes, source sites, and errors.
+5. **Trace policy.** A fixed window is deliberately lossy. Its data structure
+   must be bounded per physical frame and must trim correctly across nested
+   physical call depths and fiber suspension.
+6. **Target layout.** Native measurements do not establish wasm layout. Both
+   instruction and frame-size assumptions require per-target checks before
+   merge.
+7. **Possible bounded boundary equivalence.** Identical/idempotent return or
+   error policies may eventually admit safe elision, but only after their
+   composition law and diagnostics are specified and tested. It is not needed
+   for the v1 guarantee.
