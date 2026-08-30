@@ -114,18 +114,19 @@ inherit tail position from the declaration site.
 
 ### 2.3 Positions deliberately excluded in v1
 
-The following are not tail positions for this contract:
+There are two reasons a position is excluded.
+
+Some expressions are not the enclosing callable's result position:
 
 - call arguments, conditions, match targets/patterns, and binding or assignment
   initializers;
 - loop bodies (`while`, `for`, `loop`, `repeat`), because the loop form owns
   iteration and result semantics;
-- `try`, `catch`, and `ensure` bodies;
-- `with_capabilities`, task-scope, supervisor, and `spawn` bodies;
 - `ctor`, `ns`, and `mod` bodies;
 - `new` construction and fexpr invocation.
 
-These exclusions are semantic, not merely missing optimizations:
+Constructor, namespace, and module completion are observably different from
+returning the raw last body value:
 
 - A namespace body completes as `fkNamespaceBody`: its raw body value is
   ignored, a namespace is created and defined, and that namespace is returned.
@@ -133,11 +134,18 @@ These exclusions are semantic, not merely missing optimizations:
   pre-created `self` after the constructor returns.
 - Module/scope completion may validate required protocol implementations and
   publish state.
-- Try, ensure, capability, and task frames own handlers, cleanup, authority, or
-  child lifetime that must survive the call.
 
-The contract may be extended later by representing a specific finalizer as a
-bounded continuation. It must not be extended by silently dropping the work.
+Other positions are excluded in v1 because their current frames own structured
+runtime state:
+
+- `try`, `catch`, and `ensure` bodies;
+- `with_capabilities`, task-scope, supervisor, and `spawn` bodies.
+
+Those frames own handlers, cleanup, authority, or child lifetime that must
+survive the call. A later design may make one of these positions tail-elidable
+by representing its finalizer as a specific bounded continuation. It must not
+do so by silently dropping the work or by accumulating an unbounded finalizer
+chain.
 
 The dynamic-context cost must also be stated accurately. A helper called once
 from inside a `try` may recurse in constant space after one protected frame. A
@@ -164,6 +172,8 @@ current activation only when all of these facts hold:
   capability-restoration state;
 - `validateImplRequirements` is false;
 - `returnType` is `NIL`, `returnLabel` is empty, and `checksErrors` is false;
+- `returnDepth == frames.len`, so the current normal activation owns this
+  physical frame depth;
 - the call operands are the only live values in the current expression-frame
   stack region;
 - the callee introduces no capability transition that must later be restored;
@@ -183,8 +193,21 @@ This gives exact, bounded behavior:
   keeps one frame per invocation rather than losing semantics or building an
   equivalent heap list elsewhere.
 
-The fallback is not an error and does not need new syntax. Test-only counters
-make the reason observable to the implementation suite.
+The current redundant-boundary proof is much narrower than the typed Gene
+surface: it recognizes compiler-proven bare `Int` results. A corpus scan of
+`examples/` and `tests/` found declared return types on about 52% of `fn`
+definitions and 49% of message definitions, while only about 7% of declared
+returns are `Int`. Generalizing safe result-shape proofs is therefore a
+first-class implementation stage, not an optional polish item. Section 3.6
+defines the limit: remove only a boundary proven to be behaviorally redundant.
+
+The fallback is not an error and does not need language syntax. It is visible
+to tests through counters and to developers through an opt-in
+`--report_tail_fallbacks` diagnostic. The diagnostic reports each marked call
+site at most once, with a reason such as `return_type`, `checked_errors`,
+`impl_validation`, `structured_frame`, `capability_restore`, `captured_scope`,
+or `operand_region`; it is disabled by default so ordinary call paths pay no
+diagnostic bookkeeping cost.
 
 ### 2.5 Call kinds covered
 
@@ -294,12 +317,14 @@ Instruction* = object
   tail*: bool
 ```
 
-The size rule is target-relative, not `sizeof(Instruction) == 64` everywhere.
-Tests define a mirror of the pre-tail layout and assert on every supported
-target that adding the bit does not increase `sizeof(Instruction)`. Native and
-wasm builds both run the check. If the bit is not padding-neutral on a target,
-use a chunk-level packed bitset keyed by instruction offset on that target or
-for all targets; do not accept an unmeasured instruction-array expansion.
+On arm64 the additional bit is padding-neutral: `Instruction` remains 64 bytes
+because the bit occupies padding after `flag`. The size rule is nevertheless
+target-relative, not `sizeof(Instruction) == 64` everywhere. Tests define a
+mirror of the pre-tail layout and assert on every supported target that adding
+the bit does not increase `sizeof(Instruction)`; native and wasm builds both run
+the check. V1 has one representation of the proof. If a supported target fails
+the layout check, stop and revisit the field layout before merge rather than
+adding a second chunk-side representation.
 
 `MatchProto` gains `tailResult: bool`, which records that the selected arm's
 result is the enclosing activation's result.
@@ -362,9 +387,13 @@ The required opcode inventory is explicit:
 
 Each adapter documents its operand region. Direct/name ops that do not place a
 callee value on the stack still pass the first argument/operand index as
-`operandBase`. A debug assertion at the seam verifies that a marked call has no
-unconsumed compiler temporary below its operands in the current expression
-frame.
+`operandBase`. For a marked call, `operandBase == curStackBase` is a
+release-build guard evaluated before any truncation or transparent-frame
+collapse. Failure takes the ordinary push path and can report
+`operand_region`; it never truncates speculatively. Debug builds additionally
+assert the opcode-specific stack shape so an adapter bug fails near its source.
+Stage 2 also runs marked-versus-unmarked differential tests across all opcode
+families, because an adapter can still compute a plausible but wrong base.
 
 ### 3.4 Replacement eligibility
 
@@ -378,6 +407,7 @@ The centralized predicate is conservative:
 template currentActivationIsTailElidable(calleeScope: Scope,
                                          transition: CapabilityTransition): bool =
   curFrameKind == fkNormal and
+  returnDepth == frames.len and
   not validateImplRequirements and
   returnType.kind == vkNil and returnLabel.len == 0 and
   not curChecksErrors and
@@ -397,10 +427,16 @@ What changes from the current gate:
 
 - the compiler mark replaces the dynamic “next opcode is return” test;
 - `operandBase == curStackBase` replaces the outermost-stack-only check;
+- `returnDepth == frames.len` makes the physical-activation identity explicit;
 - required-implementation validation remains a hard gate;
 - return adaptation and `^errors` remain hard gates in v1;
 - capability restoration and pooled-scope capture remain hard gates;
 - the callee's own state is installed after the old activation is released.
+
+This consolidation is also slightly stricter than the current template.
+`returnLabel.len == 0` is a defensive invariant even when `returnType` is
+`NIL`, and capability-transition equality moves an existing call-site guard
+inside the shared module so no adapter can omit it.
 
 `enterTailCallFrame` then keeps the current physical caller depth, appends one
 bounded diagnostic record, releases the current call scope, truncates to
@@ -411,8 +447,8 @@ directly to the replaced activation's caller.
 
 `opMatch` pushes the parent activation and runs the selected arm as the current
 register-owned activation. Therefore a flag on `frames[^1]` describes the saved
-parent, not the arm. Releasing that frame and then loading it would recycle the
-wrong scope.
+parent, not the arm. Releasing that saved frame and then loading it would
+recycle the parent's scope rather than release the arm's scope.
 
 Use a dedicated current-frame kind instead:
 
@@ -427,15 +463,34 @@ When `MatchProto.tailResult` is true, `opMatch` enters the selected arm as
 `fkTailMatchBody`. This kind means: “if the arm ends in a marked call, the
 arm-to-owner result handoff is transparent.” It is stored automatically when a
 nested match pushes the current arm into `frames`, so nested tail-position
-matches form a chain without another `Frame` field.
+matches form a chain without another `Frame` field. This relies explicitly on
+`Frame.kind` round-tripping through `pushFrame` and `loadFrameRegs`; any future
+frame save/restore refactor must preserve that interface.
+
+Transparent match bodies are expression frames. They inherit their enclosing
+function's `returnDepth` and never assign a new one. That is why restoring each
+saved owner through `loadFrameRegs` eventually re-establishes
+`returnDepth == frames.len` for the owning normal activation.
 
 After the callee is resolved and its arguments are bound, the call-entry module
-collapses that chain in ownership order:
+performs a release-build preflight over the entire transparent chain. It checks
+the frame kinds, saved-owner availability, empty operand regions, inherited
+`returnDepth`, and scope-capture safety before releasing anything. Failure
+takes the ordinary call path from the still-current arm.
+
+The current `opMatch` implementation creates every arm with `newScope(scope)`,
+so arm scopes are not pooled and `recycleScope` is false. If arm pooling is
+introduced later, preflight must apply the capture check to every arm scope;
+no recyclable arm may be collapsed when the bound callee scope contains it.
+
+After successful preflight, collapse proceeds in ownership order:
 
 ```nim
-template collapseTailExpressionFrames() =
+template collapseTailExpressionFrames(calleeScope: Scope) =
   while curFrameKind == fkTailMatchBody:
     # The arm is current; release/drop it before restoring its saved owner.
+    doAssert not recycleScope or
+      not scopeChainContains(calleeScope, scope)
     releaseCurrentCallScope()
     strunc(curStackBase)
     doAssert frames.len > 0
@@ -443,14 +498,16 @@ template collapseTailExpressionFrames() =
     loadFrameRegs(owner)
 ```
 
-For a non-pooled branch scope, replacing the current `scope` reference drops
-the arm's ownership normally; for a pooled scope,
-`releaseCurrentCallScope()` returns it to the pool before it is forgotten. The
-saved owner's scope is never released by this loop.
+For today's non-pooled branch scope, replacing the current `scope` reference
+drops the arm's ownership normally and `releaseCurrentCallScope()` is a no-op.
+The saved owner's scope is never released by this loop. If a future pooled arm
+passes preflight, `releaseCurrentCallScope()` may recycle it only after the
+per-arm capture check succeeds.
 
-Before mutating state, debug builds validate the entire transparent chain and
-the expected empty parent operand regions. GIR format validation and compiler
-tests make those facts trusted in release builds.
+`loadFrameRegs` moves managed fields out of `owner`; the loop must discard that
+local immediately and must not inspect it after the load. This is part of the
+ORC ownership contract, not merely a pseudocode detail. The ownership suite
+runs this path under ORC with nested arms and early scope release.
 
 After collapse:
 
@@ -486,8 +543,19 @@ The rule is therefore simple:
   tail-elidable;
 - namespace, module, constructor, cleanup, and restoration continuations are
   excluded or gated;
-- a compiler-proven redundant scalar boundary may be removed before runtime,
+- a compiler-proven redundant result boundary may be removed before runtime,
   as `returnKnownBareInt` already does, after which the activation is plain.
+
+The proof should be generalized before expanding to the less common dispatch
+shapes. Refactor `formsKnownBareInt` into a result-shape analysis that can prove
+additional exact result kinds such as `F64`, `Bool`, and `Str`. `Any` may be
+treated as redundant only after tests pin that its adaptation is identity.
+`Nil` and `Void` are not generally identity boundaries—they coerce/discard the
+body result—so they are removable only when the final result is already proven
+to be the exact declared unit. Higher-order or adapting results remain
+conservative fallbacks. The implementation reports typed tail-site coverage
+before and after each new proof rather than inferring reach from a handful of
+deep probes.
 
 This preserves current error labels, adaptation order, statement return types,
 and validation timing exactly. A future extension may elide two boundaries
@@ -498,6 +566,16 @@ list.
 No new boundary fields belong in `FrameExtra` for v1. Active activation state
 lives in register locals and is copied to `Frame`/`Fiber` on suspension; adding
 rare current state only to `FrameExtra` would not be a complete storage design.
+
+`returnDepth` remains the identity of the physical function activation. A
+proper transfer preserves `frames.len`, so it deliberately preserves
+`returnDepth`. Transparent match frames inherit that depth; their collapse may
+change `frames.len` only while restoring saved expression owners, and the final
+`loadFrameRegs` restores the normal owner whose `returnDepth` equals the new
+depth. A non-local `return` from a closure into an activation that has been
+replaced therefore lands at the same physical depth and exits the tail callee
+to the same caller. This is semantics-equivalent precisely because the elided
+activation had no post-call continuation. A deterministic test pins this case.
 
 ### 3.7 Custom `Callable`
 
@@ -535,10 +613,19 @@ are explicitly lossy:
 The existing `tailTraceFrames` machinery supplies locations and physical frame
 depth. Its storage changes from an unbounded append-only sequence at one depth
 to a bounded per-physical-frame window (64 entries is an initial diagnostic
-policy, not a semantic number).
+policy, not a semantic number). The window is keyed by the same
+`returnDepth == frames.len` activation invariant as non-local return; trimming
+on return and after transparent-frame collapse must not invent a separate
+notion of depth.
 
 An error trace can name the throwing frame and retained tail frames; it cannot
 promise to name every elided activation.
+
+The opt-in `--report_tail_fallbacks` developer diagnostic is separate from
+stack traces. When enabled, the call-entry module records the first fallback at
+each marked source call site and prints the source location plus its stable
+reason code. Tests cover de-duplication and every reason; the disabled path does
+not allocate a warning set or increment diagnostic counters.
 
 ### 3.9 Interaction inventory
 
@@ -562,8 +649,9 @@ promise to name every elided activation.
 
 ## 4. Semantic decisions
 
-1. **No new syntax.** There is no `recur` form. The compiler proves position;
-   existing recur opcodes remain implementation specializations.
+1. **No new language syntax.** There is no `recur` form. The compiler proves
+   position; existing recur opcodes remain implementation specializations. The
+   opt-in fallback report is a development CLI diagnostic, not Gene syntax.
 2. **Exact fallback beats nominal coverage.** A syntactically tail call may
    push when the current activation owns observable continuation work. This is
    part of the contract, not a temporary silent failure.
@@ -596,7 +684,11 @@ they are broad VM changes.
 - Move the essential exploratory probes into `tests/` and `benchmarks/`.
 - Add test-only counters for current/max physical frame count, proper tail
   transfers, transparent expression frames collapsed, and fallback reason.
-- Record call/send benchmark numbers before changing dispatch.
+- Re-run the motivating programs with the new frame/allocation counters and
+  replace the RSS-only table in section 1 with the durable baseline. Record
+  call/send benchmark numbers before changing dispatch.
+- Add the opt-in `--report_tail_fallbacks` plumbing with no allocation or
+  counter work while disabled.
 
 ### Stage 1: compiler proof and GIR v3
 
@@ -615,30 +707,52 @@ they are broad VM changes.
   paths through it without adding hot-path allocation.
 - Replace the dynamic next-op check with the compiler mark and frame-relative
   operand proof.
+- Keep operand-region equality and `returnDepth == frames.len` as release-build
+  fallback guards, with debug assertions before replacement.
+- In debug builds, wherever the old immediate-return shape applies, assert that
+  the compiler mark agrees with the old next-op detector. Branch/match shapes
+  that end in jumps are outside this cross-check. Keep this assertion through
+  Stages 3–6 rather than deleting it as soon as Stage 2 passes.
+- Run differential/fuzz fixtures with tail marks honored versus forcibly
+  ignored across every call opcode family.
 - Keep all semantic gates from section 3.4.
 - Close the mutual-recursion and function-value probes for plain functions.
 
-### Stage 3: sends and protocol/custom dispatch
+### Stage 3: generalize redundant return-policy proofs
+
+- Refactor the bare-`Int` body-result proof into a result-shape analysis shared
+  by functions and messages.
+- Add proven-exact `F64`, `Bool`, and `Str` results; add `Any`, `Nil`, or `Void`
+  only under the identity/exact-unit rules in section 3.6.
+- Keep unknown, generic, union, or adapting boundaries as exact fallbacks.
+- Report the percentage of tail-marked sites in `examples/` and `tests/` whose
+  only blocker is a return policy, before and after this stage, and include that
+  coverage in acceptance alongside the deep probes.
+
+### Stage 4: sends and protocol/custom dispatch
 
 - Carry the mark through bare, optional, qualified, and `super` sends to their
   final bytecode call.
 - Route bound protocol messages through the shared entry seam.
-- Resolve marked user `Callable` applications to `Callable/apply` before the
-  fallback to `applyCall`.
+- Resolve VM user `Callable` applications to `Callable/apply` before the
+  fallback to `applyCall`, preserving the opcode's marked/unmarked state.
 - Verify cache hit/miss and capability-transition behavior.
 
-### Stage 4: transparent match arms
+### Stage 5: transparent match arms
 
 - Enter tail-result arms as `fkTailMatchBody`.
 - Implement current-first transparent-frame preflight and collapse.
 - Add normal-return handling for the new frame kind.
-- Cover nested matches, pooled/non-pooled scopes, captured closures, and
-  fallback after collapse to a typed/error/validation owner.
+- Cover nested matches, non-pooled arm scopes, hypothetical pooled-scope
+  preflight, captured closures, ORC move ownership, and fallback after collapse
+  to a typed/error/validation owner.
 
-### Stage 5: bounded traces, contract, and performance gates
+### Stage 6: bounded traces, diagnostics, contract, and performance gates
 
 - Replace unbounded same-depth trace accumulation with a fixed window and
   saturating elision count carried by fibers.
+- Complete and document `--report_tail_fallbacks`, including once-per-site
+  de-duplication and stable reason codes.
 - Add the contract text only for the call kinds whose stages are complete.
 - Add deterministic spec tests and deep benchmark/stress cases.
 - Compare before/after call, send, custom-callable, and recur-peephole results;
@@ -663,6 +777,9 @@ Positive constant-frame tests:
 - a user-defined `Callable/apply` bytecode implementation;
 - one and multiple nested tail-position `match` arms;
 - `do`, `if_yes`, `if_not`, `&&`, `||`, `??`, and direct `return` propagation;
+- compiler-proven redundant `Int`, `F64`, `Bool`, and `Str` return policies;
+- a non-local `return` from a closure after its target activation has been
+  replaced by a tail callee at the same physical depth;
 - execution inside a suspended/resumed fiber.
 
 Exact fallback tests:
@@ -682,7 +799,9 @@ Ownership tests:
 - pooled call scopes and non-pooled branch scopes;
 - closures capturing an arm binding;
 - frame/fiber capture and restoration after match collapse;
-- no release of the saved owner's scope during transparent-frame collapse.
+- no release of the saved owner's scope during transparent-frame collapse;
+- per-arm capture preflight before any future pooled scope can be recycled;
+- `loadFrameRegs` move/discard behavior under ORC with nested collapsed arms.
 
 Every positive case asserts maximum live physical frames, not only its returned
 value. At least one non-tail recursive negative control must show a rising frame
@@ -697,6 +816,14 @@ counter so the instrumentation proves it can detect growth.
   it unsuitable as the sole assertion.
 - Verify the bounded tail-trace window and saturating count at millions of
   transfers.
+- Run every call family differentially with tail marks enabled and forcibly
+  ignored, including randomized argument/splice/named-call shapes.
+- Exercise a deliberately invalid operand region and assert release builds take
+  the ordinary push path without truncating live stack values.
+- Report typed tail-site coverage before and after result-shape proof
+  generalization; deep untyped probes alone are not sufficient acceptance.
+- Verify `--report_tail_fallbacks` emits one stable reason per marked source
+  site and performs no bookkeeping when disabled.
 - Benchmark unmarked calls, marked shallow calls, deep tail calls, sends,
   custom callables, and existing `opRecur1` fast paths.
 
@@ -754,6 +881,9 @@ layout assumptions.
 >
 > Stack traces retain a bounded recent window of elided tail calls and report
 > how many additional calls were omitted.
+>
+> Development runs can enable `--report_tail_fallbacks` to report, once per
+> source call site, why a marked call kept its activation.
 
 The control-flow section gets a short cross-reference. Executable examples and
 the full call-kind matrix belong in `docs/spec/calls.md` and
@@ -814,24 +944,36 @@ duplicate continuation machinery and disrupt direct/scopeless call paths.
 
 1. **Compiler propagation coverage.** `compileExpr` is central and compiler
    rewrites are numerous. The implementation must inventory every call emitter
-   and test that specialization preserves the mark.
+   and test that specialization preserves the mark. During rollout, applicable
+   straight-line shapes are cross-checked against the old next-op detector.
 2. **Operand layouts.** Tail position does not by itself prove every opcode's
-   operand base. Each call adapter needs a documented layout and a debug
-   assertion at the shared seam.
-3. **Scope capture.** Falling back for a captured pooled scope is correct but
+   operand base. Each call adapter needs a documented layout, a release-build
+   equality guard before mutation, debug assertions, and marked/unmarked
+   differential coverage.
+3. **Physical activation identity.** Non-local return and tail-trace trimming
+   both depend on `returnDepth == frames.len` for the normal activation being
+   replaced. The shared seam guards and asserts it, transparent frames may only
+   inherit it, and collapse must restore owners through `loadFrameRegs`.
+4. **Typed-call reach.** About half of callable definitions in the measured
+   corpus declare a return type, while the existing redundant proof mainly
+   helps `Int`. Result-shape proof coverage is measured and developed before
+   expanding to less common call kinds.
+5. **Scope capture.** Falling back for a captured pooled scope is correct but
    limits some higher-order recursive programs. A future design could promote
    a pooled scope to durable ownership, provided it does not add hot-path heap
-   reads or invalidate closure references.
-4. **Custom `Callable` dispatch.** Resolving `Callable/apply` inside the VM call
+   reads or invalidate closure references. Match collapse separately preflights
+   every expression scope before recycling can occur.
+6. **Custom `Callable` dispatch.** Resolving `Callable/apply` inside the VM call
    path must remain behavior-identical to `applyUserCallable`, including named
    envelopes, source sites, and errors.
-5. **Trace policy.** A fixed window is deliberately lossy. Its data structure
+7. **Trace policy.** A fixed window is deliberately lossy. Its data structure
    must be bounded per physical frame and must trim correctly across nested
    physical call depths and fiber suspension.
-6. **Target layout.** Native measurements do not establish wasm layout. Both
-   instruction and frame-size assumptions require per-target checks before
-   merge.
-7. **Possible bounded boundary equivalence.** Identical/idempotent return or
+8. **Target layout.** The extra instruction bit is padding-neutral on arm64,
+   but that does not establish wasm layout. Instruction and frame-size
+   assumptions require per-target checks before merge; failure reopens the
+   field layout rather than creating a second tail-mark representation.
+9. **Possible bounded boundary equivalence.** Identical/idempotent return or
    error policies may eventually admit safe elision, but only after their
    composition law and diagnostics are specified and tested. It is not needed
    for the v1 guarantee.
