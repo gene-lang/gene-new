@@ -163,6 +163,25 @@ proc main() =
     let v = run(simpleChunk, simpleScope)
     checksum = checksum + v.intVal
 
+  let tailMutualChunk = compileSource(
+    "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
+    "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
+    "(is_even 100000)")
+  bench("vm.tail_mutual.100k", 20, i):
+    let value = run(tailMutualChunk, newGlobalScope())
+    if value.kind == vkBool and value.boolVal:
+      checksum = checksum + 1
+
+  let tailMatchChunk = compileSource(
+    "(fn consume [xs n] " &
+    "  (match xs " &
+    "    (when [] (if (== n 0) 0 (consume [n] (- n 1)))) " &
+    "    (else (consume [] n)))) " &
+    "(consume [] 100000)")
+  bench("vm.tail_match.100k", 20, i):
+    let value = run(tailMatchChunk, newGlobalScope())
+    checksum = checksum + value.intVal
+
   var loggingConfig = defaultLoggingConfig()
   loggingConfig.rootLevel = llWarn
   installLoggingConfig(loggingConfig)

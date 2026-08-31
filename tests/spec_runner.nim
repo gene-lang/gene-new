@@ -4040,6 +4040,52 @@ suite "spec — typed variable boundaries from design":
                "(var p (Probe)) (p 1 2)",
                "(p 1 2)")
 
+suite "spec — proper tail calls from design §3.1":
+  test "mutual and higher-order tail calls are iteration-safe":
+    check_eval(
+      "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
+      "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
+      "(fn bounce [f n] (if (== n 0) 0 (f f (- n 1)))) " &
+      "[(is_even 50000) (bounce bounce 50000)]",
+      "[true 0]")
+
+  test "tail-position match arms do not retain expression frames":
+    check_eval(
+      "(fn consume [xs n] " &
+      "  (match xs " &
+      "    (when [] (if (== n 0) 0 (consume [n] (- n 1)))) " &
+      "    (else (consume [] n)))) " &
+      "(consume [] 50000)",
+      "0")
+
+  test "exact typed returns and tail sends remain elidable":
+    check_eval(
+      "(fn count_down [n] : F64 " &
+      "  (if (== n 0) 0.0 (count_down (- n 1)))) " &
+      "(type Box ^props {^n Int} " &
+      "  (ctor [n] (self ~ set_prop `n n)) " &
+      "  (message down [] " &
+      "    (if (== self/n 0) 0 " &
+      "      ((new Box (- self/n 1)) ~ down)))) " &
+      "[(count_down 50000) ((new Box 20000) ~ down)]",
+      "[0.0 0]")
+
+  test "user Callable and held protocol messages tail-dispatch bytecode":
+    check_eval(
+      "(type Bounce ^props {}) " &
+      "(impl Callable for Bounce " &
+      "  (message apply [self call] " &
+      "    (var n (call ~ /0)) " &
+      "    (if (== n 0) 0 (self (- n 1))))) " &
+      "(protocol Step (message step [n])) " &
+      "(type Walker ^props {} " &
+      "  (impl Step " &
+      "    (message step [n] " &
+      "      (if (== n 0) 0 (next self (- n 1)))))) " &
+      "(var next Step:step) " &
+      "[((Bounce) 20000) (next (Walker) 20000)]",
+      "[0 0]")
+
 suite "spec — generic functions from design":
   test "generic function calls infer type parameters locally":
     check_eval("(fn (identity item) [x : item] : item x) " &

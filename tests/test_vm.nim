@@ -1,5 +1,5 @@
-import gene/[capabilities, compiler, fs_capabilities, gir, printer, reader,
-             types, vm]
+import gene/[capabilities, compiler, fs_capabilities, gir, gir_codec, printer,
+             reader, types, vm]
 import std/[os, strutils, tables, unittest]
 
 template ck(src, expected: string) =
@@ -60,7 +60,421 @@ proc nativeEnvelopeEcho(args: openArray[Value], call: ptr NativeCall): Value {.n
     items.add args[0]
   newList(items)
 
+suite "VM — proper tail calls":
+  test "mutual and higher-order tail chains keep physical frames flat":
+    beginTailCallStats()
+    let mutual = runStr(
+      "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
+      "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
+      "(is_even 20000)")
+    let mutualStats = finishTailCallStats()
+    check mutual == TRUE
+    check mutualStats.transfers >= 19_000
+    check mutualStats.maxPhysicalFrames <= 2
+
+    beginTailCallStats()
+    let higherOrder = runStr(
+      "(fn bounce [f n] (if (== n 0) 0 (f f (- n 1)))) " &
+      "(bounce bounce 20000)")
+    let higherOrderStats = finishTailCallStats()
+    check higherOrder == newInt(0)
+    check higherOrderStats.transfers >= 19_000
+    check higherOrderStats.maxPhysicalFrames <= 2
+
+    beginTailCallStats()
+    let spliceValue = runStr(
+      "(fn bounce_splice [f n] " &
+      "  (if (== n 0) 0 (f [f (- n 1)]...))) " &
+      "(bounce_splice bounce_splice 10000)")
+    let spliceStats = finishTailCallStats()
+    check spliceValue == newInt(0)
+    check spliceStats.transfers >= 9_000
+    check spliceStats.maxPhysicalFrames <= 2
+
+    beginTailCallStats()
+    let namedValue = runStr(
+      "(fn bounce_named [n ^step] " &
+      "  (if (== n 0) 0 " &
+      "    (bounce_named ^step step (- n step)))) " &
+      "(bounce_named ^step 1 10000)")
+    let namedStats = finishTailCallStats()
+    check namedValue == newInt(0)
+    check namedStats.transfers >= 9_000
+    check namedStats.maxPhysicalFrames <= 2
+
+  test "tail match arms collapse expression frames":
+    beginTailCallStats()
+    let value = runStr(
+      "(fn consume [xs n] " &
+      "  (match xs " &
+      "    (when [] (if (== n 0) 0 (consume [n] (- n 1)))) " &
+      "    (else (consume [] n)))) " &
+      "(consume [] 10000)")
+    let stats = finishTailCallStats()
+    check value == newInt(0)
+    check stats.transfers >= 19_000
+    check stats.collapsedExpressionFrames >= 19_000
+    check stats.maxPhysicalFrames <= 3
+
+    beginTailCallStats()
+    let nestedValue = runStr(
+      "(fn nested_match [n] " &
+      "  (match n " &
+      "    (when 0 0) " &
+      "    (else (match n " &
+      "      (else (nested_match (- n 1))))))) " &
+      "(nested_match 5000)")
+    let nestedStats = finishTailCallStats()
+    check nestedValue == newInt(0)
+    check nestedStats.transfers >= 4_000
+    check nestedStats.collapsedExpressionFrames >= 8_000
+    check nestedStats.maxPhysicalFrames <= 4
+
+  test "proven exact typed returns remain tail-elidable":
+    beginTailCallStats()
+    let value = runStr(
+      "(fn count_down [n] : F64 " &
+      "  (if (== n 0) 0.0 (count_down (- n 1)))) " &
+      "(count_down 10000)")
+    let stats = finishTailCallStats()
+    check value == newFloat(0.0)
+    check stats.transfers >= 9_000
+    check stats.maxPhysicalFrames <= 2
+
+    beginTailCallStats()
+    let scalars = runStr(
+      "(fn bool_down [n] : Bool " &
+      "  (if (== n 0) true (bool_down (- n 1)))) " &
+      "(fn str_down [n] : Str " &
+      "  (if (== n 0) \"done\" (str_down (- n 1)))) " &
+      "(fn nil_down [n] : Nil " &
+      "  (if (== n 0) nil (nil_down (- n 1)))) " &
+      "[(bool_down 2000) (str_down 2000) (nil_down 2000)]")
+    let scalarStats = finishTailCallStats()
+    check scalars.print() == "[true \"done\" nil]"
+    check scalarStats.transfers >= 5_000
+    check scalarStats.maxPhysicalFrames <= 2
+
+  test "dynamic return policies fall back without changing semantics":
+    beginTailCallStats()
+    let value = runStr(
+      "(fn typed_bounce [f n] : Str " &
+      "  (if (== n 0) \"done\" (f f (- n 1)))) " &
+      "(typed_bounce typed_bounce 100)")
+    let stats = finishTailCallStats()
+    check value.print() == "\"done\""
+    check stats.fallbacks >= 90
+    check stats.fallbackByReason[tfrReturnType] >= 90
+    check stats.maxPhysicalFrames >= 90
+
+    beginTailCallStats()
+    let checked = runStr(
+      "(fn checked_count ^errors [] [n] " &
+      "  (if (== n 0) 0 (checked_count (- n 1)))) " &
+      "(checked_count 100)")
+    let checkedStats = finishTailCallStats()
+    check checked == newInt(0)
+    check checkedStats.fallbacks >= 90
+    check checkedStats.fallbackByReason[tfrCheckedErrors] >= 90
+    check checkedStats.maxPhysicalFrames >= 90
+
+    beginTailCallStats()
+    let structured = runStr(
+      "(fn identity [x] x) " &
+      "(fn guarded [x] " &
+      "  (try (return (identity x)) catch Any 0)) " &
+      "(guarded 7)")
+    let structuredStats = finishTailCallStats()
+    check structured == newInt(7)
+    check structuredStats.fallbackByReason[tfrStructuredFrame] >= 1
+
+  test "a passed closure keeps its captured pooled caller scope alive":
+    beginTailCallStats()
+    let value = runStr(
+      "(var saved nil) " &
+      "(fn retain [f] (set saved f) 0) " &
+      "(fn outer [x] " &
+      "  (var inner (fn [] x)) " &
+      "  (retain inner)) " &
+      "(outer 7) (saved)")
+    let stats = finishTailCallStats()
+    check value == newInt(7)
+    check stats.fallbacks >= 1
+    check stats.fallbackByReason[tfrCapturedScope] >= 1
+
+    beginTailCallStats()
+    let armValue = runStr(
+      "(var saved nil) " &
+      "(fn retain [f] (set saved f) 0) " &
+      "(fn outer [x] " &
+      "  (match true " &
+      "    (when true " &
+      "      (var inner (fn [] x)) " &
+      "      (retain inner)))) " &
+      "(outer 9) (saved)")
+    let armStats = finishTailCallStats()
+    check armValue == newInt(9)
+    check armStats.fallbackByReason[tfrStructuredFrame] >= 1
+    check armStats.collapsedExpressionFrames == 0
+
+  test "defensive eligibility guards preserve malformed internal GIR":
+    let operandChunk = compileSource(
+      "(fn target [] 1) (fn caller [] [0 (target)]) (caller)")
+    for inst in operandChunk.functions[1].chunk.instructions.mitems:
+      if inst.name == "target":
+        inst.tail = true
+    beginTailCallStats()
+    let operandValue = run(operandChunk, newGlobalScope())
+    let operandStats = finishTailCallStats()
+    check operandValue.print() == "[0 1]"
+    check operandStats.fallbackByReason[tfrOperandRegion] >= 1
+
+    let validationChunk = compileSource(
+      "(fn target [] 1) (fn caller [] (target)) (caller)")
+    validationChunk.functions[1].frameNeedsImplValidation = true
+    beginTailCallStats()
+    let validationValue = run(validationChunk, newGlobalScope())
+    let validationStats = finishTailCallStats()
+    check validationValue == newInt(1)
+    check validationStats.fallbackByReason[tfrImplValidation] >= 1
+
+  test "user Callable bytecode participates in tail transfer":
+    beginTailCallStats()
+    let value = runStr(
+      "(type Bounce ^props {}) " &
+      "(impl Callable for Bounce " &
+      "  (message apply [self call] " &
+      "    (var n (call ~ /0)) " &
+      "    (if (== n 0) 0 (self (- n 1))))) " &
+      "(var bounce (Bounce)) (bounce 10000)")
+    let stats = finishTailCallStats()
+    check value == newInt(0)
+    check stats.transfers >= 9_000
+    check stats.maxPhysicalFrames <= 2
+
+  test "tail sends and bound protocol messages share call entry":
+    beginTailCallStats()
+    let sendValue = runStr(
+      "(type Box ^props {^n Int} " &
+      "  (ctor [n] (self ~ set_prop `n n)) " &
+      "  (message down [] " &
+      "    (if (== self/n 0) 0 " &
+      "      ((new Box (- self/n 1)) ~ down)))) " &
+      "((new Box 5000) ~ down)")
+    let sendStats = finishTailCallStats()
+    check sendValue == newInt(0)
+    check sendStats.transfers >= 4_000
+    check sendStats.maxPhysicalFrames <= 3
+
+    beginTailCallStats()
+    let qualifiedValue = runStr(
+      "(protocol Down (message down [n])) " &
+      "(type QualifiedWalker ^props {}) " &
+      "(impl Down for QualifiedWalker " &
+      "  (message down [n] " &
+      "    (if (== n 0) 0 (self ~ Down:down (- n 1))))) " &
+      "((QualifiedWalker) ~ Down:down 5000)")
+    let qualifiedStats = finishTailCallStats()
+    check qualifiedValue == newInt(0)
+    check qualifiedStats.transfers >= 4_000
+    check qualifiedStats.maxPhysicalFrames <= 3
+
+    beginTailCallStats()
+    let superValue = runStr(
+      "(type ParentWalker ^props {} " &
+      "  (message down [n] " &
+      "    (if (== n 0) 0 (self ~ down (- n 1))))) " &
+      "(type ChildWalker ^is ParentWalker ^props {} " &
+      "  (message down [n] (super ~ down n))) " &
+      "((ChildWalker) ~ down 5000)")
+    let superStats = finishTailCallStats()
+    check superValue == newInt(0)
+    check superStats.transfers >= 9_000
+    check superStats.maxPhysicalFrames <= 3
+
+    beginTailCallStats()
+    let optionalValue = runStr(
+      "(type OptionalWalker ^props {} " &
+      "  (message down [n] " &
+      "    (if (== n 0) 0 (self ?~ down (- n 1))))) " &
+      "((OptionalWalker) ~ down 5000)")
+    let optionalStats = finishTailCallStats()
+    check optionalValue == newInt(0)
+    check optionalStats.transfers >= 4_000
+    check optionalStats.maxPhysicalFrames <= 3
+
+    beginTailCallStats()
+    let messageValue = runStr(
+      "(protocol Step (message step [n])) " &
+      "(type Walker ^props {} " &
+      "  (impl Step " &
+      "    (message step [n] " &
+      "      (if (== n 0) 0 (next self (- n 1)))))) " &
+      "(var next Step:step) (next (Walker) 5000)")
+    let messageStats = finishTailCallStats()
+    check messageValue == newInt(0)
+    check messageStats.transfers >= 4_000
+    check messageStats.maxPhysicalFrames <= 3
+
+  test "explicit return tail calls transfer from plain functions":
+    beginTailCallStats()
+    let value = runStr(
+      "(fn finish_a [n] " &
+      "  (if (== n 0) 0 (return (finish_b (- n 1))))) " &
+      "(fn finish_b [n] " &
+      "  (if (== n 0) 0 (return (finish_a (- n 1))))) " &
+      "(finish_a 10000)")
+    let stats = finishTailCallStats()
+    check value == newInt(0)
+    check stats.transfers >= 9_000
+    check stats.maxPhysicalFrames <= 2
+
+  test "tail trace history is bounded and reports elision":
+    var caught: ref GeneError
+    try:
+      discard runStr(
+        "(fn explode [] (var value : Int \"bad\") value) " &
+        "(fn left [n] (if (== n 0) (explode) (right (- n 1)))) " &
+        "(fn right [n] (if (== n 0) (explode) (left (- n 1)))) " &
+        "(left 500)")
+    except GeneError as error:
+      caught = error
+    check caught != nil
+    check caught.hasErrVal
+    check caught.errVal.props.hasKey("trace")
+    let trace = caught.errVal.props["trace"]
+    check trace.kind == vkList
+    check trace.listItems.len <= 67
+    check trace.print().contains("tail calls elided")
+
+  test "fiber suspension preserves bounded tail continuation state":
+    beginTailCallStats()
+    let value = runStr(
+      "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
+      "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
+      "(scope (var task (spawn (is_even 10000))) (await task))")
+    let stats = finishTailCallStats()
+    check value == TRUE
+    check stats.transfers >= 9_000
+    check stats.maxPhysicalFrames <= 4
+
 suite "compiler — GIR emission":
+  test "tail-position proof reaches calls, match arms, and callable bodies":
+    let chunk = compileSource(
+      "(fn g [x] x) (fn h [x] x) (fn k [x] x) " &
+      "(fn f [x] (if x (g x) (h (k x)))) " &
+      "(fn walk [xs] (match xs (when [] 0) (else (walk [])))) " &
+      "(type T ^props {} (ctor [] (g 1)) (message m [] (g 1))) " &
+      "(g 1)")
+    var f: FunctionProto
+    var loopFn: FunctionProto
+    for proto in chunk.functions:
+      if proto.name == "f": f = proto
+      elif proto.name == "walk": loopFn = proto
+    check f != nil
+    var callTail = initTable[string, bool]()
+    for inst in f.chunk.instructions:
+      if inst.name in ["g", "h", "k"]:
+        callTail[inst.name] = inst.tail
+    check callTail["g"]
+    check callTail["h"]
+    check not callTail["k"]
+
+    check loopFn != nil
+    check loopFn.chunk.matches.len == 1
+    check loopFn.chunk.matches[0].tailResult
+    var sawTailLoop = false
+    for inst in loopFn.chunk.matches[0].elseBody.instructions:
+      if inst.name == "walk":
+        sawTailLoop = inst.tail
+    check sawTailLoop
+
+    let typeProto = chunk.typeProtos[0]
+    var ctorTail = false
+    for inst in typeProto.ctorFn.chunk.instructions:
+      if inst.name == "g": ctorTail = inst.tail
+    var messageTail = false
+    for inst in typeProto.messages[0].fn.chunk.instructions:
+      if inst.name == "g": messageTail = inst.tail
+    check not ctorTail
+    check messageTail
+
+    var topLevelTail = false
+    for inst in chunk.instructions:
+      if inst.name == "g": topLevelTail = inst.tail
+    check not topLevelTail
+
+  test "tail context propagates only through the documented control forms":
+    proc findNamedCall(chunk: Chunk, name: string): tuple[found, tail: bool] =
+      if chunk == nil:
+        return
+      for inst in chunk.instructions:
+        if inst.name == name and inst.op in {
+            opCall0, opCall1, opCall2, opCall, opCallSplice,
+            opCallName0, opCallName1, opCallNameN,
+            opCallLocal0, opCallLocal1, opCallLocalN,
+            opCallParentLocal0, opCallParentLocal1,
+            opCallOuterLocal0, opCallOuterLocal1}:
+          return (true, inst.tail)
+      for match in chunk.matches:
+        for clause in match.clauses:
+          let found = findNamedCall(clause.body, name)
+          if found.found: return found
+        let found = findNamedCall(match.elseBody, name)
+        if found.found: return found
+      for attempt in chunk.tries:
+        let bodyFound = findNamedCall(attempt.body, name)
+        if bodyFound.found: return bodyFound
+        for clause in attempt.catches:
+          let catchFound = findNamedCall(clause.body, name)
+          if catchFound.found: return catchFound
+        let ensureFound = findNamedCall(attempt.ensureBody, name)
+        if ensureFound.found: return ensureFound
+
+    for body in [
+      "(do 1 (g))",
+      "(if_yes true (g))",
+      "(if_not false (g))",
+      "(&& true (g))",
+      "(|| false (g))",
+      "(?? nil (g))",
+      "(return (g))"
+    ]:
+      let root = compileSource("(fn g [] 1) (fn f [] " & body & ")")
+      let found = findNamedCall(root.functions[1].chunk, "g")
+      check found.found
+      check found.tail
+
+    let protected = compileSource(
+      "(fn g [] 1) " &
+      "(fn f [] (try (g) catch Any 0)) " &
+      "(fn w [] (while false (g)))")
+    let tryCall = findNamedCall(protected.functions[1].chunk, "g")
+    let loopCall = findNamedCall(protected.functions[2].chunk, "g")
+    check tryCall.found
+    check not tryCall.tail
+    check loopCall.found
+    check not loopCall.tail
+
+  test "GIR v3 round-trips tail metadata":
+    let chunk = compileSource(
+      "(fn walk [xs] (match xs (when [] 0) (else (walk []))))")
+    let iface = CompileNamespaceInterface(
+      entries: initTable[string, CompileInterfaceEntry]())
+    let artifact = ExecutableGir(entryIdentity: "test/module",
+      modules: @[CompiledModule(identity: "test/module", chunk: chunk,
+        macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
+        compileInterface: iface)])
+    let payload = encodeExecutableGir(artifact)
+    check "\"gir_format\":3" in payload
+    let decoded = decodeExecutableGir(payload)
+    let loopFn = decoded.modules[0].chunk.functions[0]
+    check loopFn.chunk.matches[0].tailResult
+    var sawTailCall = false
+    for inst in loopFn.chunk.matches[0].elseBody.instructions:
+      sawTailCall = sawTailCall or inst.tail
+    check sawTailCall
+
   test "emits a callable-first bytecode sequence":
     let chunk = compileSource("(+ 1 2)")
     check chunk.instructions.len == 3

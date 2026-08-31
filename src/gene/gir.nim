@@ -148,6 +148,7 @@ type
     name*: string
     names*: seq[string]
     flag*: bool
+    tail*: bool
 
   ParamDefault* = object
     optional*: bool
@@ -266,6 +267,8 @@ type
     returnType*: Value
     hasReturnType*: bool
     returnKnownBareInt*: bool
+    returnBoundaryRedundant*: bool
+    frameNeedsImplValidation*: bool
     fastBindUnaryInt*: bool
     fastBindPositionalInt*: bool
     fastBindRequiredNamed*: bool
@@ -524,6 +527,7 @@ type
   MatchProto* = ref object
     clauses*: seq[MatchClause]
     elseBody*: Chunk             # nil when there is no else branch
+    tailResult*: bool            # selected arm result is the callable's result
 
   CatchClause* = object
     errorType*: Value            # source-level type following `catch`
@@ -707,6 +711,19 @@ type
   ExecutableGir* = object
     entryIdentity*: string
     modules*: seq[CompiledModule]
+
+type InstructionWithoutTail = object
+  ## Target-relative layout baseline for the pre-TCO instruction shape.
+  op: OpCode
+  intArg: int
+  depth: int
+  name: string
+  names: seq[string]
+  flag: bool
+
+static:
+  doAssert sizeof(Instruction) == sizeof(InstructionWithoutTail),
+    "Instruction.tail must fit existing target padding"
 
 proc newChunk*(sourceName = ""): Chunk =
   Chunk(sourceName: sourceName, constants: @[], instructions: @[],
@@ -1070,6 +1087,8 @@ proc formatInstruction(inst: Instruction): string =
      opIteratorClose, opLoopBreak, opLoopContinue, opAwait, opYield,
      opExplicitReturn, opReturn, opReturnBareInt:
     discard
+  if inst.tail:
+    result.add " tail=true"
 
 proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
   lines.add indent & "constants:"

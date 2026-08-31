@@ -126,6 +126,20 @@ suite "cli — gene run":
     let ran = runGene(["run", rawMain, "a", "b,", "c"])
     check ran.exitCode == 0
 
+  test "run reports tail-call fallback reasons once per source site":
+    let program = writeCliProgram("tail_fallback.gene",
+      "(fn typed_bounce [f n] : Str " &
+      "  (if (== n 0) \"done\" (f f (- n 1)))) " &
+      "(fn main [] (typed_bounce typed_bounce 5) nil)")
+    let quiet = runGene(["run", program])
+    check quiet.exitCode == 0
+    check "Tail-call fallback" notin quiet.output
+
+    let reported = runGene(["run", "--report_tail_fallbacks", program])
+    check reported.exitCode == 0
+    check reported.output.count("Tail-call fallback [return_type]") == 1
+    check "tail_fallback.gene" in reported.output
+
   test "gene harness registry and turn transaction seams":
     for (fixture, marker) in [
       ("examples/gene-harness/tests/registry_smoke.gene",

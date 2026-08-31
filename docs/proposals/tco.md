@@ -2,6 +2,32 @@
 
 A design for Gene.
 
+> **Implementation status (2026-08-31): In progress**
+>
+> - [x] Stage 0 — durable baseline, counters, and fallback diagnostics (focused tests pass)
+> - [x] Stage 1 — compiler tail proof and GIR v3 (focused tests pass)
+> - [x] Stage 2 — shared bytecode call entry (focused tests pass)
+> - [x] Stage 3 — redundant return-policy proofs (focused tests pass)
+> - [x] Stage 4 — sends, protocol messages, and custom `Callable` (focused tests pass)
+> - [x] Stage 5 — transparent match arms (focused and release/ORC probes pass)
+> - [ ] Stage 6 — final verification
+>   - [x] bounded trace window and elision diagnostics
+>   - [x] normative design/spec documentation
+>   - [ ] repository-wide `test` and `verify` gates
+>
+> A box is checked only after its implementation and stage-specific tests pass.
+> The final status becomes **Complete** only after the repository's required
+> `test`, `spec`, `perf`, `wasm`, and broad `verify` gates pass.
+>
+> Current evidence: focused ORC and atomic-ARC TCO suites, GIR round-trip,
+> `nimble spec`, `nimble perf`, and final `nimble wasm` pass. The repository-wide
+> `test`/`verify` status remains open because unrelated, previously documented
+> AI-agent state-store tests fail when the store backend is unavailable;
+> the same test fails identically on pre-TCO commit `7faa2f4` in an isolated
+> clean temp directory. The
+> threaded async-filesystem capability and one legacy RC wildcard fixture also
+> fail independently of TCO.
+
 The goal is to make tail-recursive functions and messages a reliable iteration
 tool without changing return adaptation, checked-error, scope, construction, or
 cleanup semantics. The compiler identifies tail position; the VM routes every
@@ -14,7 +40,7 @@ The guarantee is intentionally precise:
 > exited activation is **tail-elidable**. An activation is tail-elidable when it
 > has no observable post-call continuation: no return adaptation, checked-error
 > boundary, implementation validation, structured completion, capability
-> restoration, or caller-owned pooled scope captured by the callee.
+> restoration, or caller-owned scope retained by the callee or a bound value.
 
 Calls that do not meet that condition remain correct normal calls. The proposal
 does not hide an arbitrary continuation chain in `FrameExtra` and call that
@@ -68,6 +94,20 @@ all bytecode call paths, and an exact treatment of expression subframes such as
 The measurements above are motivation, not durable acceptance tests. Section 6
 replaces RSS-only probes with direct frame and allocation instrumentation.
 
+Implementation probes on the release/ORC VM (Apple Silicon, 2026-08-30) now
+show flat memory at much greater depth. The same shapes are covered durably by
+`TailCallStats` assertions in `tests/test_vm.nim` and timed cases in
+`benchmarks/bench_core.nim`:
+
+| shape | implemented depth | peak RSS | physical-frame evidence |
+|---|---:|---:|---|
+| mutual recursion | 5M | **10.7 MB** | flat, at least 4.9M transfers |
+| tail call through a function value | 5M | **10.7 MB** | flat, at least 4.9M transfers |
+| recursion through alternating `match` arms | 1M | **10.9 MB** | flat; expression frames collapse each transfer |
+| tail send with construction | 200k | **11.0 MB** | flat |
+| compiler-proven `F64` return | 5M | **10.7 MB** | flat |
+| user `Callable/apply` bytecode | 200k | **10.9 MB** | flat |
+
 ---
 
 ## 2. Language contract
@@ -83,7 +123,8 @@ This proposal uses four distinct terms:
   validating required implementations, running cleanup, restoring authority,
   constructing a namespace, or validating a constructed instance.
 - A **tail-elidable activation** is a normal function/message activation with
-  no post-call continuation and no pooled scope that the callee still needs.
+  no post-call continuation and no caller scope whose lifetime still depends
+  on that activation after binding the callee and its arguments.
 - A **proper tail transfer** is the VM operation that replaces a
   tail-elidable activation with its bytecode callee instead of pushing a frame.
 
@@ -177,8 +218,8 @@ current activation only when all of these facts hold:
 - the call operands are the only live values in the current expression-frame
   stack region;
 - the callee introduces no capability transition that must later be restored;
-- replacing a recyclable call scope cannot invalidate a scope captured by the
-  callee.
+- replacement cannot invalidate a scope captured by the callee or by a value
+  bound into it, including a weak scope-owned closure argument.
 
 The callee may install its own return, error, or implementation-validation
 state. That state belongs to the callee and is preserved normally. It may make
@@ -417,11 +458,18 @@ template currentActivationIsTailElidable(calleeScope: Scope,
   curPendingCancel == nil and curPendingReturn == nil and
   transition.context == capabilityContext and
   transition.presence == capabilityPresence and
+  not scopeValuesCaptureScope(calleeScope, scope) and
   (not recycleScope or not scopeChainContains(calleeScope, scope))
 ```
 
 The actual implementation also checks the marked opcode's operand layout and
 the transparent-frame chain described below.
+
+`scopeValuesCaptureScope` walks only values bound into the candidate callee
+scope and detects closures or containers that retain the caller scope. This is
+required even for a non-pooled caller: functions stored in their owning scope
+may carry a weak capture, so merely assigning them into the callee does not
+keep that scope alive after frame replacement. Such a call keeps its frame.
 
 What changes from the current gate:
 
@@ -489,8 +537,8 @@ After successful preflight, collapse proceeds in ownership order:
 template collapseTailExpressionFrames(calleeScope: Scope) =
   while curFrameKind == fkTailMatchBody:
     # The arm is current; release/drop it before restoring its saved owner.
-    doAssert not recycleScope or
-      not scopeChainContains(calleeScope, scope)
+    doAssert not scopeValuesCaptureScope(calleeScope, scope)
+    doAssert not recycleScope or not scopeChainContains(calleeScope, scope)
     releaseCurrentCallScope()
     strunc(curStackBase)
     doAssert frames.len > 0
@@ -635,7 +683,7 @@ not allocate a warning set or increment diagnostic counters.
 | generators | Calling a generator returns a `Stream` without entering its body. Tail calls inside a running generator use the fiber's normal call-entry module. |
 | `try`/`catch`/`ensure` | Their bodies do not receive tail context. Handler and cleanup owners are never replaced. |
 | capabilities | A body/transition that must restore capability state keeps its frame. An ordinary call with no transition can replace a plain activation. |
-| closures | A callee that captures a recyclable caller scope forces fallback. Non-pooled scopes may survive by reference count. |
+| closures | A callee lexical chain or bound value that retains the caller scope forces fallback. This includes weak scope-owned closures passed as arguments. |
 | match | Tail arms are transparent expression frames and collapse current-first before the function decision. |
 | scopeless calls | Specialized binders still use the same entry interface; replacement is a register/chunk switch after operand binding. |
 | custom `Callable` | `Callable/apply` bytecode implementations join the same path after envelope construction. |
@@ -789,7 +837,8 @@ Exact fallback tests:
 - required implementation validation at scope/module completion;
 - `try ... catch SomeException ...`, `ensure`, capability restoration, task
   scope, supervisor, constructor, namespace, and module completion;
-- a closure whose callee scope captures a recyclable caller scope;
+- a callee lexical chain that captures a recyclable caller scope, and a passed
+  weak closure that retains the caller scope through a bound argument;
 - a custom `Callable` whose implementation is native;
 - malformed or old GIR artifacts.
 
@@ -870,8 +919,8 @@ layout assumptions.
 > A call keeps the current activation when it must still adapt a declared
 > return type, check a declared `^errors` row, validate required protocol
 > implementations, run cleanup, restore capabilities, complete construction or
-> namespace/module publication, or preserve a pooled scope captured by the
-> callee. Keeping the activation preserves the same value, error, validation,
+> namespace/module publication, or preserve a caller scope retained by the
+> callee or a bound value. Keeping the activation preserves the same value, error, validation,
 > and cleanup behavior as an ordinary call.
 >
 > Tail position does not flow through call arguments, conditions, patterns,
@@ -958,11 +1007,11 @@ duplicate continuation machinery and disrupt direct/scopeless call paths.
    corpus declare a return type, while the existing redundant proof mainly
    helps `Int`. Result-shape proof coverage is measured and developed before
    expanding to less common call kinds.
-5. **Scope capture.** Falling back for a captured pooled scope is correct but
+5. **Scope capture.** Falling back for a retained caller scope is correct but
    limits some higher-order recursive programs. A future design could promote
-   a pooled scope to durable ownership, provided it does not add hot-path heap
-   reads or invalidate closure references. Match collapse separately preflights
-   every expression scope before recycling can occur.
+   a weak scope-owned closure or pooled scope to durable ownership, provided it
+   does not add hot-path heap reads or invalidate closure references. Match
+   collapse separately preflights every expression scope before release.
 6. **Custom `Callable` dispatch.** Resolving `Callable/apply` inside the VM call
    path must remain behavior-identical to `applyUserCallable`, including named
    envelopes, source sites, and errors.

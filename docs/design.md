@@ -962,6 +962,35 @@ type-direct message value `Self:m`.
 
 If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
 
+### 3.1 Tail calls
+
+Gene recognizes calls in tail position. Tail position begins at the last
+expression of a function or message body and flows through selected `if`
+branches, `if_yes`/`if_not` bodies, `match` arm bodies, `do` bodies, the last
+operand of `&&`/`||`/`??`, and an explicit `return` value.
+
+A tail call reuses the current VM activation when that activation has no
+observable work left after the call. Self-recursive, mutually recursive,
+higher-order, send, held protocol-message, and user-`Callable` chains made
+entirely of such activations run in constant VM frame space. Match-arm chunks
+are expression frames and are removed before the owning function is replaced.
+
+The activation is kept when it must still adapt a return value, check a
+declared `^errors` row, validate required implementations, run structured
+cleanup, restore capabilities, or preserve a caller scope retained by the
+callee or a bound value. A compiler-proven exact `Int`, `F64`, `Bool`, `Str`, `Nil`, `Void`, or
+identity `Any` result has no dynamic return adaptation and may still be
+elided. Keeping an activation is an exact semantic fallback, not an error.
+
+Tail position does not flow through arguments, conditions, patterns, binding
+initializers, loop bodies, `try`/`catch`/`ensure`, capability/task/supervisor
+bodies, constructors, namespace/module bodies, `new`, or fexpr invocation.
+Native and generator calls do not add an ordinary Gene bytecode frame.
+
+Elided calls are represented in diagnostics by a bounded recent window plus an
+elision count. `gene run --report_tail_fallbacks` reports once per source call
+site when a marked call must keep its activation and names the reason.
+
 MVP core special forms:
 
 <!-- compiler-head-dispatch:start -->

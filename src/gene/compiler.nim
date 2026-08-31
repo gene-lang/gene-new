@@ -192,9 +192,9 @@ const CoreSpecialFormNames* = [
 
 proc emit(c: var Compiler, op: OpCode, intArg = 0, name = "",
           depth = 0,
-          names: seq[string] = @[], flag = false): int =
+          names: seq[string] = @[], flag = false, tail = false): int =
   c.chunk.emit(Instruction(op: op, intArg: intArg, depth: depth,
-                           name: name, names: names, flag: flag),
+                           name: name, names: names, flag: flag, tail: tail),
                c.currentLoc)
 
 proc callOpForArity(argCount: int): OpCode =
@@ -204,9 +204,9 @@ proc callOpForArity(argCount: int): OpCode =
   of 2: opCall2
   else: opCall
 
-proc emitPlainCall(c: var Compiler, argCount: int): int =
+proc emitPlainCall(c: var Compiler, argCount: int, tail = false): int =
   let op = callOpForArity(argCount)
-  c.emit(op, argCount)
+  c.emit(op, argCount, tail = tail)
 
 proc hasStableSourceIdentity(v: Value): bool =
   v.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode}
@@ -501,6 +501,106 @@ proc exprKnownBareInt(c: Compiler, v: Value): bool =
   else:
     false
 
+proc hasLexicalBinding(c: Compiler, name: string): bool
+proc exprKnownExactResult(c: Compiler, v: Value, typeName: string): bool
+
+proc formsKnownExactResult(c: Compiler, forms: openArray[Value],
+                           typeName: string, start = 0): bool =
+  forms.len > start and c.exprKnownExactResult(forms[forms.high], typeName)
+
+proc exprKnownExactResult(c: Compiler, v: Value, typeName: string): bool =
+  if typeName == "Any":
+    return true
+  case v.kind
+  of vkInt:
+    typeName == "Int"
+  of vkFloat:
+    typeName == "F64"
+  of vkBool:
+    typeName == "Bool"
+  of vkString:
+    typeName == "Str"
+  of vkNil:
+    typeName == "Nil"
+  of vkVoid:
+    typeName == "Void"
+  of vkSymbol:
+    let local = c.localType(v.symVal)
+    local.kind == vkSymbol and local.symVal == typeName
+  of vkNode:
+    if v.props.len != 0 or v.head.kind != vkSymbol:
+      return false
+    case v.head.symVal
+    of "do":
+      c.formsKnownExactResult(v.body, typeName)
+    of "if":
+      if v.body.len >= 2 and v.body[1].kind == vkNode and
+          v.body[1].head.kind == vkSymbol and
+          v.body[1].head.symVal == "then":
+        var known = c.formsKnownExactResult(v.body[1].body, typeName)
+        var hasDefault = false
+        for i in 2 ..< v.body.len:
+          let clause = v.body[i]
+          if clause.kind != vkNode or clause.head.kind != vkSymbol:
+            continue
+          case clause.head.symVal
+          of "elif":
+            known = known and clause.body.len > 1 and
+              c.formsKnownExactResult(clause.body, typeName, 1)
+          of "else":
+            known = known and
+              c.formsKnownExactResult(clause.body, typeName)
+            hasDefault = true
+            break
+          else:
+            discard
+        known and hasDefault
+      else:
+        v.body.len >= 3 and
+          c.exprKnownExactResult(v.body[1], typeName) and
+          c.exprKnownExactResult(v.body[2], typeName)
+    of "match":
+      var known = v.body.len > 1
+      var hasDefault = false
+      for i in 1 ..< v.body.len:
+        let clause = v.body[i]
+        if clause.kind != vkNode or clause.head.kind != vkSymbol:
+          return false
+        case clause.head.symVal
+        of "when":
+          known = known and clause.body.len > 1 and
+            c.formsKnownExactResult(clause.body, typeName, 1)
+        of "else":
+          known = known and c.formsKnownExactResult(clause.body, typeName)
+          hasDefault = true
+        else:
+          return false
+      known and hasDefault
+    of "&&", "||", "??":
+      if v.body.len == 0:
+        false
+      else:
+        var known = true
+        for item in v.body:
+          known = known and c.exprKnownExactResult(item, typeName)
+        known
+    of "+", "-", "*":
+      typeName in ["Int", "F64"] and v.body.len == 2 and
+        not c.hasLexicalBinding(v.head.symVal) and
+        c.exprKnownExactResult(v.body[0], typeName) and
+        c.exprKnownExactResult(v.body[1], typeName)
+    of "!", "==", "<", ">", "<=", ">=":
+      typeName == "Bool" and not c.hasLexicalBinding(v.head.symVal)
+    of "$":
+      typeName == "Str" and not c.hasLexicalBinding(v.head.symVal)
+    else:
+      let sig = c.lexicalFunctionSig(v.head.symVal)
+      sig.found and sig.sig.arity == v.body.len and
+        sig.sig.returnType.kind == vkSymbol and
+        sig.sig.returnType.symVal == typeName
+  else:
+    false
+
 proc hasLexicalBinding(c: Compiler, name: string): bool =
   if c.localSlot(name) >= 0:
     return true
@@ -731,7 +831,8 @@ proc validModuleRefName(name: string): bool =
       return false
   true
 
-proc compileExpr(c: var Compiler, node: Value, allowModDecl = false)
+proc compileExpr(c: var Compiler, node: Value, allowModDecl = false,
+                 tail = false)
 proc reserveProtocolBindingsFor(c: var Compiler, forms: openArray[Value])
 proc prepareStaticImports(c: var Compiler, forms: openArray[Value], first = 0)
 proc builtinNamespaceMacros(segments: openArray[string]):
@@ -1005,21 +1106,22 @@ proc collectPatternBindingNames(pat: Value, names: var seq[string],
   else:
     discard
 
-proc compileBody(c: var Compiler, body: openArray[Value]) =
+proc compileBody(c: var Compiler, body: openArray[Value], tail = false) =
   if body.len == 0:
     c.emitConst NIL
     return
   for i in 0 ..< body.len:
-    compileExpr(c, body[i])
+    compileExpr(c, body[i], tail = tail and i == body.high)
     if i < body.high:
       discard c.emit(opPop)
 
-proc compileBodyFrom(c: var Compiler, body: openArray[Value], first: int) =
+proc compileBodyFrom(c: var Compiler, body: openArray[Value], first: int,
+                     tail = false) =
   if first > body.high:
     c.emitConst NIL
     return
   for i in first .. body.high:
-    compileExpr(c, body[i])
+    compileExpr(c, body[i], tail = tail and i == body.high)
     if i < body.high:
       discard c.emit(opPop)
 
@@ -1051,6 +1153,37 @@ proc chunkNeedsCallScope(chunk: Chunk): bool =
       return true
     else:
       discard
+  false
+
+proc chunkHasDeferredImplValidation(chunk: Chunk): bool =
+  if chunk == nil:
+    return false
+  for proto in chunk.typeProtos:
+    if proto.staticTopLevel and proto.requiredImplCount > 0:
+      return true
+  for body in chunk.subchunks:
+    if body.chunkHasDeferredImplValidation:
+      return true
+  for loop in chunk.forLoops:
+    if loop.body.chunkHasDeferredImplValidation:
+      return true
+  for match in chunk.matches:
+    for clause in match.clauses:
+      if clause.body.chunkHasDeferredImplValidation:
+        return true
+    if match.elseBody.chunkHasDeferredImplValidation:
+      return true
+  for attempt in chunk.tries:
+    if attempt.body.chunkHasDeferredImplValidation:
+      return true
+    for clause in attempt.catches:
+      if clause.body.chunkHasDeferredImplValidation:
+        return true
+    if attempt.ensureBody.chunkHasDeferredImplValidation:
+      return true
+  for capabilityBlock in chunk.capabilityBlocks:
+    if capabilityBlock.body.chunkHasDeferredImplValidation:
+      return true
   false
 
 proc chunkCanPoolCallScope(chunk: Chunk): bool =
@@ -1335,7 +1468,8 @@ proc functionNameAndTypeParams(form: Value): tuple[name: string, typeParams: seq
   raise newException(GeneError, "function name must be a symbol or (name type...)")
 
 proc compileSubBody(c: var Compiler, forms: openArray[Value],
-                    pattern: Value = NIL, scoped = false): Chunk =
+                    pattern: Value = NIL, scoped = false,
+                    tail = false): Chunk =
   var child = c.childCompiler()
   if scoped:
     child.enableLocalSlots()
@@ -1350,7 +1484,7 @@ proc compileSubBody(c: var Compiler, forms: openArray[Value],
     child.selfAvailable = true
   child.prepareStaticImports(forms)
   child.reserveProtocolBindingsFor(forms)
-  compileBody(child, forms)            # empty -> nil
+  compileBody(child, forms, tail = tail) # empty -> nil
   discard child.emit(opReturn)
   c.sawYield = c.sawYield or child.sawYield
   c.sawNonVoidReturn = c.sawNonVoidReturn or child.sawNonVoidReturn
@@ -2197,12 +2331,13 @@ proc expandMacro(c: var Compiler, def: MacroDef, node: Value): Value =
       "template macros require exactly one body expression")
   macroTemplateValue(def.body[0], env, c)
 
-proc compileMacroCall(c: var Compiler, node: Value, def: MacroDef) =
+proc compileMacroCall(c: var Compiler, node: Value, def: MacroDef,
+                      tail = false) =
   if c.macroExpansionDepth >= MaxMacroExpansionDepth:
     raise newException(GeneError, "macro expansion depth exceeded")
   inc c.macroExpansionDepth
   try:
-    compileExpr(c, c.expandMacro(def, node))
+    compileExpr(c, c.expandMacro(def, node), tail = tail)
   finally:
     dec c.macroExpansionDepth
 
@@ -3363,6 +3498,7 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                         checksErrors = false,
                         errorTypeCount = 0,
                         immutableSelf = false,
+                        tailBody = true,
                         aotSelfRepr = AotRepr()): FunctionProto =
   var start = bodyStart
   var returnType = NIL
@@ -3448,13 +3584,19 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       flowForms.add body[i]
   fnCompiler.prepareStaticImports(flowForms)
   fnCompiler.reserveProtocolBindingsFor(flowForms)
-  compileBodyFrom(fnCompiler, body, start)
+  compileBodyFrom(fnCompiler, body, start, tail = tailBody)
   if fnCompiler.sawYield and fnCompiler.sawNonVoidReturn:
     raise newException(GeneError,
       "generator return value must be void")
   let returnKnownBareInt =
     returnType.isBareIntType and not fnCompiler.sawYield and
+      not fnCompiler.sawNonVoidReturn and
       fnCompiler.formsKnownBareInt(body, start)
+  let returnBoundaryRedundant =
+    returnType.kind == vkSymbol and
+      returnType.symVal in ["Any", "Int", "F64", "Bool", "Str", "Nil", "Void"] and
+      not fnCompiler.sawYield and not fnCompiler.sawNonVoidReturn and
+      fnCompiler.formsKnownExactResult(body, returnType.symVal, start)
   discard fnCompiler.emit(if returnKnownBareInt: opReturnBareInt else: opReturn)
   fnCompiler.chunk.localNames = fnCompiler.localNames
   var positionalSlotMaySet: seq[bool]
@@ -3662,6 +3804,9 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
                          returnType: returnType,
                          hasReturnType: returnType.kind != vkNil,
                          returnKnownBareInt: returnKnownBareInt,
+                         returnBoundaryRedundant: returnBoundaryRedundant,
+                         frameNeedsImplValidation:
+                           fnCompiler.chunk.chunkHasDeferredImplValidation,
                          fastBindUnaryInt: fastBindUnaryInt,
                          fastBindPositionalInt: fastBindPositionalInt,
                          fastBindRequiredNamed: fastBindRequiredNamed,
@@ -4050,7 +4195,7 @@ proc nativeEntryMarker(node: Value, fn: FunctionProto): NativeEntryProto =
           " ^native_entry copies its result but its native Type does not " &
           "declare ^release")
 
-proc compileIfThen(c: var Compiler, node: Value) =
+proc compileIfThen(c: var Compiler, node: Value, tail = false) =
   ## (if_yes cond body...) — everything after the condition is the then
   ## branch (implicit do); the whole form is nil when the condition is falsy.
   let body = node.body
@@ -4059,13 +4204,13 @@ proc compileIfThen(c: var Compiler, node: Value) =
     return
   compileExpr(c, body[0])
   let elseJump = c.emitJump(opJumpIfFalse)
-  compileBodyFrom(c, body, 1)
+  compileBodyFrom(c, body, 1, tail = tail)
   let endJump = c.emitJump(opJump)
   c.patchJump(elseJump)
   c.emitConst NIL
   c.patchJump(endJump)
 
-proc compileIfNot(c: var Compiler, node: Value) =
+proc compileIfNot(c: var Compiler, node: Value, tail = false) =
   ## (if_not cond body...) — everything after the condition is the else
   ## branch (implicit do); the whole form is nil when the condition is truthy.
   let body = node.body
@@ -4077,10 +4222,10 @@ proc compileIfNot(c: var Compiler, node: Value) =
   c.emitConst NIL
   let endJump = c.emitJump(opJump)
   c.patchJump(bodyJump)
-  compileBodyFrom(c, body, 1)
+  compileBodyFrom(c, body, 1, tail = tail)
   c.patchJump(endJump)
 
-proc compileIf(c: var Compiler, node: Value) =
+proc compileIf(c: var Compiler, node: Value, tail = false) =
   let body = node.body
   if body.len == 0:
     c.emitConst NIL
@@ -4089,7 +4234,7 @@ proc compileIf(c: var Compiler, node: Value) =
   if body.len >= 2 and body[1].kind == vkNode and body[1].head.isSymbol("then"):
     compileExpr(c, body[0])
     var nextJump = c.emitJump(opJumpIfFalse)
-    compileBody(c, body[1].body)
+    compileBody(c, body[1].body, tail = tail)
     var endJumps: seq[int]
     endJumps.add c.emitJump(opJump)
     c.patchJump(nextJump)
@@ -4105,11 +4250,11 @@ proc compileIf(c: var Compiler, node: Value) =
           continue
         compileExpr(c, clause.body[0])
         nextJump = c.emitJump(opJumpIfFalse)
-        compileBodyFrom(c, clause.body, 1)
+        compileBodyFrom(c, clause.body, 1, tail = tail)
         endJumps.add c.emitJump(opJump)
         c.patchJump(nextJump)
       of "else":
-        compileBody(c, clause.body)
+        compileBody(c, clause.body, tail = tail)
         hasDefault = true
         break
       else:
@@ -4124,13 +4269,13 @@ proc compileIf(c: var Compiler, node: Value) =
   compileExpr(c, body[0])
   let elseJump = c.emitJump(opJumpIfFalse)
   if body.len >= 2:
-    compileExpr(c, body[1])
+    compileExpr(c, body[1], tail = tail)
   else:
     c.emitConst NIL
   let endJump = c.emitJump(opJump)
   c.patchJump(elseJump)
   if body.len >= 3:
-    compileExpr(c, body[2])
+    compileExpr(c, body[2], tail = tail)
   else:
     c.emitConst NIL
   c.patchJump(endJump)
@@ -4139,14 +4284,14 @@ proc compileIf(c: var Compiler, node: Value) =
 # truthy (||) operand, and yield the last operand evaluated — not a coerced
 # Bool — so `(|| maybe-void "default")` works as a default-value form.
 proc compileShortCircuit(c: var Compiler, node: Value, op: OpCode,
-                         emptyValue: Value) =
+                         emptyValue: Value, tail = false) =
   let body = node.body
   if body.len == 0:
     c.emitConst emptyValue
     return
   var jumps: seq[int] = @[]
   for i in 0 ..< body.len:
-    compileExpr(c, body[i])
+    compileExpr(c, body[i], tail = tail and i == body.high)
     if i < body.len - 1:
       jumps.add c.emitJump(op)
   for at in jumps:
@@ -6657,7 +6802,8 @@ proc compileHashMapValue(c: var Compiler, value: Value) =
     compileExpr(c, entry.val)
   discard c.emit(opMakeHashMap, value.hashMapEntries.len)
 
-proc compileCall(c: var Compiler, node: Value, allowSyntax = true)
+proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
+                 tail = false)
 proc validateMessageName(name: string)
 
 proc sendCalleeName(callee: Value): string =
@@ -6712,7 +6858,7 @@ proc emitOptionalReceiverGuard(c: var Compiler, optional: bool): int =
 
 proc compileSend(c: var Compiler, node: Value, receiver: Value,
                  sendName: string, argsStart: int, messageExpr = NIL,
-                 qualifierExpr = NIL, optional = false) =
+                 qualifierExpr = NIL, optional = false, tail = false) =
   ## Message send (docs/core.md §9.1): the name after `~` resolves
   ## receiver-first at runtime. Stack shape matches ordinary calls:
   ## [callee, named..., receiver, args...]. `messageExpr` carries a qualified or
@@ -6789,21 +6935,23 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
                       hasSplice)
   if hasSplice:
     let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
-    c.chunk.callSites[c.emit(opCallSplice, idx, names = names)] = node
+    c.chunk.callSites[c.emit(opCallSplice, idx, names = names,
+                             tail = tail)] = node
   else:
     let argCount = node.body.len - argsStart + 1
     let callIndex =
       if names.len == 0:
-        c.emitPlainCall(argCount)
+        c.emitPlainCall(argCount, tail = tail)
       else:
-        c.emit(opCall, argCount, names = names)
+        c.emit(opCall, argCount, names = names, tail = tail)
     c.chunk.callSites[callIndex] = node
   if shortCircuit >= 0:
     # Both paths leave exactly one value: the call's result, or the absent
     # receiver the guard preserved.
     c.patchJump(shortCircuit)
 
-proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
+proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
+                 tail = false) =
   if node.head.kind == vkNode and node.head.head.isSymbol("msg"):
     # A message in head position (design §3, decision 3). This used to be a
     # runtime `CallKindError` because `Proto:msg` was indistinguishable from a
@@ -6827,7 +6975,8 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
         not node.props.hasKey("protocol") and
         not node.props.hasKey("receiver") and
         not node.props.hasKey("types"):
-      compileSend(c, node, node.head, node.body[1].symVal, 2, optional = optional)
+      compileSend(c, node, node.head, node.body[1].symVal, 2,
+                  optional = optional, tail = tail)
       return
     # A selector callee (x ~ /name) is a projection of the receiver, not a
     # message; it keeps the flipped-call lowering. Every other non-bare callee —
@@ -6845,7 +6994,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       for i in 2 ..< node.body.len:
         args.add node.body[i]
       compileCall(c, newNode(node.body[1], node.props, args, node.meta),
-                  allowSyntax = false)
+                  allowSyntax = false, tail = tail)
       return
     # `(x ~ Q:msg)` — the qualifier names the message and never selects the
     # impl, so dispatch is on the receiver either way (design §3, decision 5).
@@ -6862,19 +7011,22 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       # `(super ~ Self:m)` names no qualifier at all, so it is exactly the bare
       # super send — same as for an ordinary receiver.
       if qualifier.isSymbol("Self"):
-        compileSend(c, node, node.head, messageName, 2, optional = optional)
+        compileSend(c, node, node.head, messageName, 2,
+                    optional = optional, tail = tail)
       else:
         compileSend(c, node, node.head, messageName, 2,
-                    qualifierExpr = qualifier, optional = optional)
+                    qualifierExpr = qualifier, optional = optional,
+                    tail = tail)
       return
     let resolved = sendMessageExpr(c, node, node.body[1])
     if resolved.kind == vkNode and resolved.head.isSymbol("msg") and
         resolved.body.len == 2 and resolved.body[1].kind == vkSymbol:
       compileSend(c, node, node.head, resolved.body[1].symVal, 2,
-                  qualifierExpr = resolved.body[0], optional = optional)
+                  qualifierExpr = resolved.body[0], optional = optional,
+                  tail = tail)
     else:
       compileSend(c, node, node.head, sendCalleeName(node.body[1]), 2,
-                  messageExpr = resolved, optional = optional)
+                  messageExpr = resolved, optional = optional, tail = tail)
     return
   let explicitSyntaxHead = node.head.kind == vkSymbol and
     node.head.symVal.len > 1 and node.head.symVal.endsWith("!")
@@ -6896,11 +7048,12 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
     if direct.slot >= 0:
       c.chunk.callSites[c.emit(direct.op, direct.slot,
                                name = node.head.symVal,
-                               depth = direct.depth)] = node
+                               depth = direct.depth, tail = tail)] = node
       return
     if not c.hasLexicalBinding(node.head.symVal):
       c.reportBareName(node.head.symVal)
-      c.chunk.callSites[c.emit(opCallName0, name = node.head.symVal)] = node
+      c.chunk.callSites[c.emit(opCallName0, name = node.head.symVal,
+                               tail = tail)] = node
       return
   if knownOrdinary and node.props.len == 0 and
       node.head.kind == vkSymbol and node.body.len == 2:
@@ -6932,14 +7085,14 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       compileExpr(c, node.body[0])
       c.chunk.callSites[c.emit(direct.op, direct.slot, name = node.head.symVal,
                                depth = direct.depth,
-                               flag = argKnownBareInt)] = node
+                               flag = argKnownBareInt, tail = tail)] = node
       return
     if not c.hasLexicalBinding(node.head.symVal):
       let argKnownBareInt = c.exprKnownBareInt(node.body[0])
       compileExpr(c, node.body[0])
       c.reportBareName(node.head.symVal)
       c.chunk.callSites[c.emit(opCallName1, name = node.head.symVal,
-                               flag = argKnownBareInt)] = node
+                               flag = argKnownBareInt, tail = tail)] = node
       return
   if knownOrdinary and node.props.len == 0 and
       node.head.kind == vkSymbol and node.body.len > 1 and
@@ -6952,7 +7105,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
         compileExpr(c, arg)
       c.chunk.callSites[c.emit(opCallLocalN, slot, name = node.head.symVal,
                                depth = node.body.len,
-                               flag = argsKnownBareInt)] = node
+                               flag = argsKnownBareInt, tail = tail)] = node
       return
     if not c.hasLexicalBinding(node.head.symVal):
       var argsKnownBareInt = true
@@ -6962,7 +7115,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       c.reportBareName(node.head.symVal)
       c.chunk.callSites[c.emit(opCallNameN, name = node.head.symVal,
                                depth = node.body.len,
-                               flag = argsKnownBareInt)] = node
+                               flag = argsKnownBareInt, tail = tail)] = node
       return
   if node.props.hasKey("types") and node.head.kind == vkSymbol:
     let types = node.props["types"]
@@ -6981,7 +7134,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
       raise newException(GeneError,
         "direct protocol call metadata requires a receiver argument")
     compileSend(c, node, node.body[0], node.head.symVal, 1,
-                messageExpr = messageExpr)
+                messageExpr = messageExpr, tail = tail)
     return
   compileExpr(c, node.head)
   # Every ordinary call evaluates its arguments. Syntax-preserving calls are
@@ -7000,13 +7153,14 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true) =
   compileSpreadValues(c, node.body, 0, forList = false, splices, hasSplice)
   if hasSplice:
     let idx = c.chunk.addListBuild(ListBuildProto(splices: splices))
-    c.chunk.callSites[c.emit(opCallSplice, idx, names = names)] = node
+    c.chunk.callSites[c.emit(opCallSplice, idx, names = names,
+                             tail = tail)] = node
   else:
     let callIndex =
       if names.len == 0:
-        c.emitPlainCall(node.body.len)
+        c.emitPlainCall(node.body.len, tail = tail)
       else:
-        c.emit(opCall, node.body.len, names = names)
+        c.emit(opCall, node.body.len, names = names, tail = tail)
     c.chunk.callSites[callIndex] = node
 
 proc compileNew(c: var Compiler, node: Value) =
@@ -7031,7 +7185,8 @@ proc compileNew(c: var Compiler, node: Value) =
       c.emit(opNew, node.body.len - 1, names = names)
   c.chunk.callSites[instruction] = node
 
-proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false) =
+proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false,
+                            tail = false) =
   # (~ f a) => (self ~ f a): message send to lexical self (docs/core.md §9.1).
   # `(?~ f a)` is the guarded form, which matters inside an `impl P for Nil`
   # body where lexical self is itself absent.
@@ -7046,7 +7201,7 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false) =
       not node.props.hasKey("receiver") and
       not node.props.hasKey("types"):
     compileSend(c, node, newSym("self"), node.body[0].symVal, 1,
-                optional = optional)
+                optional = optional, tail = tail)
     return
   # A selector callee projects the receiver rather than naming a message, so it
   # keeps the flipped-call lowering; everything else must be a message value and
@@ -7061,7 +7216,7 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false) =
     for i in 1 ..< node.body.len:
       args.add node.body[i]
     compileCall(c, newNode(node.body[0], node.props, args, node.meta),
-                allowSyntax = false)
+                allowSyntax = false, tail = tail)
     return
   let resolved = sendMessageExpr(c, node, node.body[0])
   if resolved.kind == vkNode and resolved.head.isSymbol("msg") and
@@ -7069,20 +7224,21 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false) =
     # `(~ P:m)` is `(self ~ P:m)`: same qualifier path as an explicit receiver.
     if resolved.body[0].isSymbol("Self"):
       compileSend(c, node, newSym("self"), resolved.body[1].symVal, 1,
-                  optional = optional)
+                  optional = optional, tail = tail)
     else:
       compileSend(c, node, newSym("self"), resolved.body[1].symVal, 1,
-                  qualifierExpr = resolved.body[0], optional = optional)
+                  qualifierExpr = resolved.body[0], optional = optional,
+                  tail = tail)
   else:
     compileSend(c, node, newSym("self"), sendCalleeName(node.body[0]), 1,
-                messageExpr = resolved, optional = optional)
+                messageExpr = resolved, optional = optional, tail = tail)
 
-proc compileMatch(c: var Compiler, node: Value) =
+proc compileMatch(c: var Compiler, node: Value, tail = false) =
   let body = node.body
   if body.len == 0:
     raise newException(GeneError, "match requires a value")
   compileExpr(c, body[0])
-  let mp = MatchProto(clauses: @[], elseBody: nil)
+  let mp = MatchProto(clauses: @[], elseBody: nil, tailResult: tail)
   for i in 1 ..< body.len:
     let clause = body[i]
     if clause.kind != vkNode or clause.head.kind != vkSymbol:
@@ -7097,9 +7253,10 @@ proc compileMatch(c: var Compiler, node: Value) =
       mp.clauses.add MatchClause(pattern: clause.body[0],
                                   body: c.compileSubBody(branchBody,
                                                          clause.body[0],
-                                                         scoped = true))
+                                                         scoped = true,
+                                                         tail = tail))
     of "else":
-      mp.elseBody = c.compileSubBody(clause.body, scoped = true)
+      mp.elseBody = c.compileSubBody(clause.body, scoped = true, tail = tail)
       break
     else:
       raise newException(GeneError, "unknown match clause: " & clause.head.symVal)
@@ -7305,7 +7462,7 @@ proc compileReturn(c: var Compiler, node: Value) =
   if node.body.len == 0:
     c.emitConst VOID
   else:
-    compileExpr(c, node.body[0])
+    compileExpr(c, node.body[0], tail = true)
   discard c.emit(opExplicitReturn)
 
 proc compileTry(c: var Compiler, node: Value) =
@@ -7771,7 +7928,8 @@ proc compileType(c: var Compiler, node: Value) =
                                 ctorNode.body, 1,
                                 checksErrors = errorRow.checks,
                                 errorTypeCount = errorRow.count,
-                                immutableSelf = true)
+                                immutableSelf = true,
+                                tailBody = false)
   var messages: seq[ImplMessageProto]
   var seenMessages = initTable[string, bool]()
   # Type-direct message bodies can delegate to `(super ~ m)` (design §10). Store the
@@ -8319,7 +8477,8 @@ proc compileModuleRefGet(c: var Compiler, node: Value, structural: bool) =
                    opRefGetStructural else: opRefGet,
                  name = name)
 
-proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
+proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
+                 tail = false) =
   let h = node.head
   if node.props.hasKey("private"):
     if h.kind != vkSymbol or h.symVal notin
@@ -8370,28 +8529,28 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       compileModuleRefGet(c, node, structural = true)
       return
     of "do":
-      compileBody(c, node.body)
+      compileBody(c, node.body, tail = tail)
       return
     of "if":
-      compileIf(c, node)
+      compileIf(c, node, tail = tail)
       return
     of "if_yes":
-      compileIfThen(c, node)
+      compileIfThen(c, node, tail = tail)
       return
     of "if_not":
-      compileIfNot(c, node)
+      compileIfNot(c, node, tail = tail)
       return
     of "&&":
-      compileShortCircuit(c, node, opJumpIfFalseOrPop, TRUE)
+      compileShortCircuit(c, node, opJumpIfFalseOrPop, TRUE, tail = tail)
       return
     of "||":
-      compileShortCircuit(c, node, opJumpIfTrueOrPop, NIL)
+      compileShortCircuit(c, node, opJumpIfTrueOrPop, NIL, tail = tail)
       return
     of "??":
       # Absence-coalescing: yield the first present (non-nil, non-void)
       # operand, else the last. Short-circuits like ||, but tests absence
       # rather than falsiness, so a stored `false`/`0`/`""` is kept.
-      compileShortCircuit(c, node, opJumpIfPresentOrPop, NIL)
+      compileShortCircuit(c, node, opJumpIfPresentOrPop, NIL, tail = tail)
       return
     of "!":
       compileNot(c, node)
@@ -8415,10 +8574,10 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       compileNew(c, node)
       return
     of "~":
-      compileLeadingSelfCall(c, node)
+      compileLeadingSelfCall(c, node, tail = tail)
       return
     of "?~":
-      compileLeadingSelfCall(c, node, optional = true)
+      compileLeadingSelfCall(c, node, optional = true, tail = tail)
       return
     of "fn":
       if node.body.len > 0 and node.body[0].kind == vkSymbol and
@@ -8464,7 +8623,7 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       compileMod(c, node, allowModDecl)
       return
     of "match":
-      compileMatch(c, node)
+      compileMatch(c, node, tail = tail)
       return
     of "while":
       compileWhile(c, node)
@@ -8540,11 +8699,11 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
         "derive is only valid inside a protocol declaration")
     else:
       if c.hasMacros and c.macros.hasKey(h.symVal):
-        compileMacroCall(c, node, c.macros[h.symVal])
+        compileMacroCall(c, node, c.macros[h.symVal], tail = tail)
         return
   let importedMacro = c.importedMacroForHead(h)
   if importedMacro.found:
-    compileMacroCall(c, node, importedMacro.def)
+    compileMacroCall(c, node, importedMacro.def, tail = tail)
     return
   let builtinPath = h.pathSymbolSegments
   if builtinPath.len > 1:
@@ -8552,11 +8711,12 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool) =
       builtinPath.toOpenArray(0, builtinPath.high - 1))
     let name = builtinPath[^1]
     if definitions.hasKey(name):
-      compileMacroCall(c, node, definitions[name])
+      compileMacroCall(c, node, definitions[name], tail = tail)
       return
-  compileCall(c, node)
+  compileCall(c, node, tail = tail)
 
-proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
+proc compileExpr(c: var Compiler, node: Value, allowModDecl = false,
+                 tail = false) =
   let savedLoc = c.currentLoc
   let exprLoc = c.sourceLocFor(node)
   if exprLoc.hasSourceLoc:
@@ -8567,7 +8727,7 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false) =
   of vkSymbol:
     c.emitLoadBinding(node.symVal)
   of vkNode:
-    compileNode(c, node, allowModDecl)
+    compileNode(c, node, allowModDecl, tail = tail)
   of vkList:
     compileListValue(c, node)
   of vkMap:

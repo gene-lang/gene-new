@@ -49,6 +49,31 @@ when defined(geneRcStats):
       check leakedManaged("(fn make [] (var x 1) (fn [] x)) (make)") == 0
       check leakedManaged("(fn fac [n] (if (== n 0) 1 (* n (fac (- n 1))))) (fac 5)") == 0
 
+    test "proper tail transfers reclaim frames scopes and trace windows":
+      check leakedManaged(
+        "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
+        "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
+        "(is_even 10000)") == 0
+      check leakedManaged(
+        "(fn consume [xs n] " &
+        "  (match xs " &
+        "    (when [] (if (== n 0) 0 (consume [n] (- n 1)))) " &
+        "    (else (consume [] n)))) " &
+        "(consume [] 5000)") == 0
+
+    test "tail fallback retains no more than the equivalent non-tail closure":
+      let nonTailLeak = leakedManaged(
+        "(var saved nil) " &
+        "(fn retain [f] (set saved f) 0) " &
+        "(fn outer [x] (var inner (fn [] x)) (+ 0 (retain inner))) " &
+        "(outer 7) (saved)")
+      let tailLeak = leakedManaged(
+        "(var saved nil) " &
+        "(fn retain [f] (set saved f) 0) " &
+        "(fn outer [x] (var inner (fn [] x)) (retain inner)) " &
+        "(outer 7) (saved)")
+      check tailLeak == nonTailLeak
+
     test "module reference targets and structural fixups are reclaimed":
       check leakedManaged("#Ref shared [1 2] ($deref shared)") == 0
       check leakedManaged(

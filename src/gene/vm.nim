@@ -120,6 +120,7 @@ type
 
   FrameKind = enum
     fkNormal
+    fkTailMatchBody
     fkTryBody
     fkCatchBody
     fkEnsureValueBody
@@ -183,6 +184,11 @@ type
     fnName: string
     frameDepth: int
 
+  TailTraceSummary = object
+    kept: uint8
+    start: uint8
+    omitted: uint64
+
   TryHandler = object
     ## An active `try` region on the VM's handler stack. The try body runs as a
     ## Frame (so deep recursion through try-wrapped code stays on the heap); this
@@ -209,6 +215,7 @@ type
     ip: int
     frames: seq[Frame]
     tailTraceFrames: seq[TailTraceFrame]
+    tailTraceSummaries: seq[TailTraceSummary]
     handlers: seq[TryHandler]
     validateImpls: bool
     returnType: Value
@@ -462,6 +469,7 @@ type
 # force cross-thread seq reallocation in the experimental M:N lane.
 const schedulerSharedQueueInitialCap = 65536
 const supervisorFailureRetryCapacity = 64
+const tailTraceWindow = 64
 
 var gScalarTypes: array[ValueKind, Value]
 
@@ -663,6 +671,39 @@ var activeWorkerThread {.threadvar.}: bool
 var activeConstructionDepth {.threadvar.}: int
 var activeCapabilityContext {.threadvar.}: CapabilityContext
 var activeCapabilityPresence {.threadvar.}: CapabilityPresence
+var reportTailFallbacks {.threadvar.}: bool
+
+type TailFallbackReason* = enum
+  tfrOperandRegion
+  tfrStructuredFrame
+  tfrActivationDepth
+  tfrImplValidation
+  tfrReturnType
+  tfrCheckedErrors
+  tfrCapabilityRestore
+  tfrCapturedScope
+  tfrNotElidable
+
+type TailCallStats* = object
+  maxPhysicalFrames*: int
+  transfers*: uint64
+  collapsedExpressionFrames*: uint64
+  fallbacks*: uint64
+  fallbackByReason*: array[TailFallbackReason, uint64]
+
+var collectTailCallStats {.threadvar.}: bool
+var currentTailCallStats {.threadvar.}: TailCallStats
+
+proc setReportTailFallbacks*(enabled: bool) =
+  reportTailFallbacks = enabled
+
+proc beginTailCallStats*() =
+  currentTailCallStats = TailCallStats()
+  collectTailCallStats = true
+
+proc finishTailCallStats*(): TailCallStats =
+  collectTailCallStats = false
+  currentTailCallStats
 
 var nextResourceAuthorityId {.global.}: Atomic[uint64]
 var resourceAuthorityLock: Lock
@@ -1400,6 +1441,9 @@ proc rejectMessageCall(callee: Value, scope: Scope) {.noreturn.} =
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
                loc = SourceLoc()): Value
+proc resolveUserCallableImpl(callee: Value, dispatchScope: Scope): Value
+proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs,
+                  site: Value = NIL): Value
 proc constructTypedInstance(callee: Value, args: openArray[Value],
                             named: NamedArgs, immutable = false): Value
 proc newNativeWrapper*(wrapperType: Value,
@@ -9620,15 +9664,13 @@ proc canFastBindRequiredNamed(proto: FunctionProto): bool {.inline.} =
   proto.fastBindRequiredNamed
 
 proc checkedFrameReturnType(proto: FunctionProto, returnType: Value): Value {.inline.} =
-  if proto.returnKnownBareInt:
+  if proto.returnBoundaryRedundant:
     NIL
   else:
     returnType
 
 proc frameNeedsImplValidation(proto: FunctionProto): bool {.inline.} =
-  ## Pooled call scopes exclude opMakeType, the only instruction that appends
-  ## required impl checks to a scope. Keep non-pooled scopes conservative.
-  proto.needsCallScope and not proto.poolCallScope
+  proto.frameNeedsImplValidation
 
 proc bindUnaryIntCallScope(callee: Value, proto: FunctionProto,
                            arg: Value): Scope {.inline.} =
@@ -12501,19 +12543,33 @@ proc appendTraceFrames(e: ref GeneError, traceFrames: openArray[Value]) =
 
 proc appendVmTrace(e: ref GeneError, curFnName: string, curLoc: SourceLoc,
                    frames: openArray[Frame],
-                   tailTraceFrames: openArray[TailTraceFrame]) =
+                   tailTraceFrames: openArray[TailTraceFrame],
+                   tailTraceSummaries: openArray[TailTraceSummary]) =
   var traceFrames: seq[Value]
   if curFnName.len > 0:
     traceFrames.add stackFrameValue(curFnName, "bytecode", curLoc)
   var tailIndex = tailTraceFrames.len - 1
   template appendTailTracesAtDepth(depth: int) =
-    while tailIndex >= 0 and tailTraceFrames[tailIndex].frameDepth == depth:
-      let tail = tailTraceFrames[tailIndex]
-      if tail.fnName.len > 0:
-        traceFrames.add stackFrameValue(tail.fnName, "bytecode",
-                                        instructionLocBefore(tail.chunk,
-                                                             tail.ip))
-      dec tailIndex
+    if depth >= 0 and depth < tailTraceSummaries.len:
+      let summary = tailTraceSummaries[depth]
+      let kept = int(summary.kept)
+      if kept > 0:
+        let segmentStart = tailIndex - kept + 1
+        doAssert segmentStart >= 0
+        for offset in 0 ..< kept:
+          let ringIndex =
+            (int(summary.start) + kept - 1 - offset) mod kept
+          let tail = tailTraceFrames[segmentStart + ringIndex]
+          doAssert tail.frameDepth == depth
+          if tail.fnName.len > 0:
+            traceFrames.add stackFrameValue(tail.fnName, "bytecode",
+                                            instructionLocBefore(tail.chunk,
+                                                                 tail.ip))
+        tailIndex = segmentStart - 1
+      if summary.omitted > 0:
+        traceFrames.add stackFrameValue(
+          "... (" & $summary.omitted & " tail calls elided) ...",
+          "tail_elision")
   appendTailTracesAtDepth(frames.len)
   for i in countdown(frames.len - 1, 0):
     if frames[i].fnName.len > 0:
@@ -12975,6 +13031,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curNamespaceName = ""
   var handlers: seq[TryHandler] # active `try` regions, innermost last
   var tailTraceFrames: seq[TailTraceFrame]
+  var tailTraceSummaries: seq[TailTraceSummary]
+  var reportedTailFallbacks: HashSet[(pointer, int)]
+  var reportedTailFallbacksReady = false
   var cancelAtSafepoint = injectCancel
   var remainingBudget = instructionBudget
 
@@ -12989,6 +13048,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ip = fiber.ip
     frames = move fiber.frames
     tailTraceFrames = move fiber.tailTraceFrames
+    tailTraceSummaries = move fiber.tailTraceSummaries
     handlers = move fiber.handlers
     validateImplRequirements = fiber.validateImpls
     returnType = fiber.returnType
@@ -13122,6 +13182,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                      errorTypes: move curErrorTypes, fnName: curFnName,
                      kind: curFrameKind, extra: frameExtra,
                      restoreSlot: -1, restoreValue: NIL)
+    if collectTailCallStats and
+        frames.len > currentTailCallStats.maxPhysicalFrames:
+      currentTailCallStats.maxPhysicalFrames = frames.len
 
   template pushFrameFastNormal() =
     frames.add Frame(chunk: move chunk, scope: move scope,
@@ -13135,6 +13198,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                      errorTypes: move curErrorTypes, fnName: curFnName,
                      kind: fkNormal, extra: nil,
                      restoreSlot: -1, restoreValue: NIL)
+    if collectTailCallStats and
+        frames.len > currentTailCallStats.maxPhysicalFrames:
+      currentTailCallStats.maxPhysicalFrames = frames.len
     returnDepth = frames.len
 
   template pushCallFrame() =
@@ -13227,6 +13293,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     fiber.started = true
     fiber.frames = move frames
     fiber.tailTraceFrames = move tailTraceFrames
+    fiber.tailTraceSummaries = move tailTraceSummaries
     fiber.handlers = move handlers
     setStackLenRaw(stack, sp)   # normalize: live region only escapes runLoop
     fiber.stack = move stack
@@ -13245,10 +13312,88 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       current = current.parent
     false
 
+  proc valueCapturesScope(value: Value, target: Scope,
+                          seen: var HashSet[uint64]): bool =
+    if value.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode, vkModule,
+                      vkEnv, vkCell, vkAtomicCell, vkStream}:
+      if seen.containsOrIncl(value.bits):
+        return false
+    case value.kind
+    of vkFunction:
+      scopeChainContains(value.fnScope, target)
+    of vkList:
+      for item in value.listItems:
+        if valueCapturesScope(item, target, seen): return true
+      false
+    of vkMap:
+      for _, item in value.mapEntries:
+        if valueCapturesScope(item, target, seen): return true
+      false
+    of vkSet:
+      for item in value.setItems:
+        if valueCapturesScope(item, target, seen): return true
+      false
+    of vkHashMap:
+      for entry in value.hashMapEntries:
+        if valueCapturesScope(entry.key, target, seen) or
+            valueCapturesScope(entry.val, target, seen): return true
+      false
+    of vkNode:
+      if valueCapturesScope(value.head, target, seen): return true
+      for _, item in value.props:
+        if valueCapturesScope(item, target, seen): return true
+      for item in value.body:
+        if valueCapturesScope(item, target, seen): return true
+      for _, item in value.meta:
+        if valueCapturesScope(item, target, seen): return true
+      false
+    of vkNamespace:
+      scopeChainContains(value.nsScope, target)
+    of vkModule:
+      valueCapturesScope(value.moduleRootNamespace, target, seen)
+    of vkEnv:
+      if valueCapturesScope(value.envParent, target, seen): return true
+      for _, item in value.envBindings:
+        if valueCapturesScope(item, target, seen): return true
+      for item in value.envImports:
+        if valueCapturesScope(item, target, seen): return true
+      valueCapturesScope(value.envModule, target, seen) or
+        valueCapturesScope(value.envCapabilities, target, seen) or
+        valueCapturesScope(value.envPolicy, target, seen)
+    of vkCell:
+      valueCapturesScope(value.cellValue, target, seen)
+    of vkAtomicCell:
+      valueCapturesScope(value.atomicCellValue, target, seen)
+    of vkStream:
+      scopeChainContains(value.streamGeneratorScope, target) or
+        valueCapturesScope(value.streamSource, target, seen) or
+        valueCapturesScope(value.streamCallable, target, seen)
+    else:
+      false
+
+  proc scopeValuesCaptureScope(candidate, target: Scope): bool =
+    if candidate == nil or target == nil:
+      return false
+    var seen = initHashSet[uint64]()
+    for i, item in candidate.slots:
+      if candidate.slotDefined(i) and valueCapturesScope(item, target, seen):
+        return true
+    for _, item in candidate.vars:
+      if valueCapturesScope(item, target, seen):
+        return true
+    false
+
+  proc valueMayRetainScope(value: Value): bool {.inline.} =
+    value.kind in {vkFunction, vkList, vkMap, vkSet, vkHashMap, vkNode,
+                   vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
+                   vkStream}
+
   template trimTailTraceFrames(returnDepth: int) =
     while tailTraceFrames.len > 0 and
         tailTraceFrames[^1].frameDepth >= returnDepth:
       tailTraceFrames.setLen(tailTraceFrames.len - 1)
+    if tailTraceSummaries.len > returnDepth:
+      tailTraceSummaries.setLen(returnDepth)
 
   template closeCurrentForStream() =
     if curForStream.kind == vkStream:
@@ -13602,34 +13747,116 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     evalBudget = scope.evalBudget
     continue
 
-  template canReplaceCurrentTailCall(calleeScope: Scope): bool =
-    curFrameKind == fkNormal and not validateImplRequirements and
-      returnType.kind == vkNil and not curChecksErrors and
+  template canReplaceCurrentTailCall(calleeScope: Scope, tailMarked: bool,
+                                     operandBase: int,
+                                     boundValuesMayCapture: bool): bool =
+    tailMarked and operandBase == curStackBase and
+      curFrameKind == fkNormal and returnDepth == frames.len and
+      not validateImplRequirements and
+      returnType.kind == vkNil and returnLabel.len == 0 and
+      not curChecksErrors and
       curEnsureBody == nil and curForItems.len == 0 and
       curForStream.kind != vkStream and curOwnedScope == nil and
       curPendingError == nil and curPendingPanic == nil and
       curPendingCancel == nil and curPendingReturn == nil and
-      ip < chunk.instructions.len and
-      chunk.instructions[ip].op in {opReturn, opReturnBareInt} and
+      (not boundValuesMayCapture or
+       not scopeValuesCaptureScope(calleeScope, scope)) and
       (not recycleScope or not scopeChainContains(calleeScope, scope))
 
-  template enterTailCallFrame(nextProto: FunctionProto, nextScope: Scope,
+  template canCollapseTailExpressionFrames(calleeScope: Scope,
+                                            operandBase: int,
+                                            boundValuesMayCapture: bool): bool =
+    block:
+      var safe = curFrameKind == fkTailMatchBody and
+        curStackBase == operandBase and frames.len > 0 and
+        (not boundValuesMayCapture or
+         not scopeValuesCaptureScope(calleeScope, scope)) and
+        (not recycleScope or not scopeChainContains(calleeScope, scope))
+      let inheritedReturnDepth = returnDepth
+      var scan = frames.len - 1
+      while safe and scan >= 0:
+        if frames[scan].stackBase != operandBase:
+          safe = false
+          break
+        if frames[scan].kind == fkTailMatchBody:
+          if frames[scan].returnDepth != inheritedReturnDepth or
+              (boundValuesMayCapture and
+               scopeValuesCaptureScope(calleeScope, frames[scan].scope)) or
+              (frames[scan].recycleScope and
+               scopeChainContains(calleeScope, frames[scan].scope)):
+            safe = false
+          dec scan
+        elif frames[scan].kind == fkNormal:
+          safe = frames[scan].returnDepth == inheritedReturnDepth and
+            frames[scan].returnDepth == scan
+          break
+        else:
+          safe = false
+      safe and scan >= 0
+
+  template collapseTailExpressionFrames(calleeScope: Scope,
+                                         operandBase: int,
+                                         keepOperands: bool,
+                                         boundValuesMayCapture: bool) =
+    ## Preflight has proved every current frame is an expression-only match
+    ## arm. Release the current owner before MOVING the saved owner back into
+    ## registers; the popped local is never inspected after loadFrameRegs.
+    while curFrameKind == fkTailMatchBody:
+      doAssert not boundValuesMayCapture or
+        not scopeValuesCaptureScope(calleeScope, scope)
+      doAssert not recycleScope or not scopeChainContains(calleeScope, scope)
+      releaseCurrentCallScope()
+      if not keepOperands:
+        strunc(curStackBase)
+      else:
+        doAssert curStackBase == operandBase
+      var owner = frames.pop()
+      loadFrameRegs(owner)
+      if collectTailCallStats:
+        inc currentTailCallStats.collapsedExpressionFrames
+
+  template enterTailCallFrame(nextChunk: Chunk, nextScope: Scope,
                               nextRecycleScope: bool,
                               nextValidateImpls: bool,
                               nextReturnType: Value,
                               nextReturnLabel: string,
                               nextChecksErrors: bool,
                               nextErrorTypes: seq[Value],
-                              nextFnName: string) =
+                              nextFnName: string,
+                              operandBase: int,
+                              keepOperands: bool) =
+    if collectTailCallStats:
+      inc currentTailCallStats.transfers
     if curFnName.len > 0:
-      tailTraceFrames.add TailTraceFrame(chunk: chunk, ip: ip,
-                                         fnName: curFnName,
-                                         frameDepth: frames.len)
+      let traceDepth = frames.len
+      if tailTraceSummaries.len <= traceDepth:
+        tailTraceSummaries.setLen(traceDepth + 1)
+      let trace = TailTraceFrame(chunk: chunk, ip: ip,
+                                 fnName: curFnName,
+                                 frameDepth: traceDepth)
+      if int(tailTraceSummaries[traceDepth].kept) < tailTraceWindow:
+        tailTraceFrames.add trace
+        inc tailTraceSummaries[traceDepth].kept
+      else:
+        # No deeper physical frame can remain while this depth is current, so
+        # this depth's fixed window occupies the tail of the flat trace seq.
+        let base = tailTraceFrames.len - tailTraceWindow
+        let replaceAt = base + int(tailTraceSummaries[traceDepth].start)
+        doAssert replaceAt >= 0 and replaceAt < tailTraceFrames.len
+        doAssert tailTraceFrames[replaceAt].frameDepth == traceDepth
+        tailTraceFrames[replaceAt] = trace
+        tailTraceSummaries[traceDepth].start = uint8(
+          (int(tailTraceSummaries[traceDepth].start) + 1) mod tailTraceWindow)
+        if tailTraceSummaries[traceDepth].omitted < high(uint64):
+          inc tailTraceSummaries[traceDepth].omitted
     releaseCurrentCallScope()
-    chunk = nextProto.chunk
+    chunk = nextChunk
     scope = nextScope
     recycleScope = nextRecycleScope
-    strunc(curStackBase)
+    if keepOperands:
+      curStackBase = operandBase
+    else:
+      strunc(curStackBase)
     ip = 0
     validateImplRequirements = nextValidateImpls
     returnType = nextReturnType
@@ -13640,6 +13867,196 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curFrameKind = fkNormal
     evalBudget = nextScope.evalBudget
     continue
+
+  proc tailFallbackReasonCode(reason: TailFallbackReason): string =
+    case reason
+    of tfrOperandRegion: "operand_region"
+    of tfrStructuredFrame: "structured_frame"
+    of tfrActivationDepth: "activation_depth"
+    of tfrImplValidation: "impl_validation"
+    of tfrReturnType: "return_type"
+    of tfrCheckedErrors: "checked_errors"
+    of tfrCapabilityRestore: "capability_restore"
+    of tfrCapturedScope: "captured_scope"
+    of tfrNotElidable: "not_elidable"
+
+  template tailFallbackReason(nextScope: Scope,
+                              nextTransition: CapabilityTransition,
+                              operandBase: int,
+                              boundValuesMayCapture: bool): TailFallbackReason =
+    (if operandBase != curStackBase: tfrOperandRegion
+     elif curFrameKind != fkNormal: tfrStructuredFrame
+     elif returnDepth != frames.len: tfrActivationDepth
+     elif validateImplRequirements: tfrImplValidation
+     elif returnType.kind != vkNil or returnLabel.len != 0: tfrReturnType
+     elif curChecksErrors: tfrCheckedErrors
+     elif curEnsureBody != nil or curForItems.len != 0 or
+          curForStream.kind == vkStream or curOwnedScope != nil or
+          curPendingError != nil or curPendingPanic != nil or
+          curPendingCancel != nil or curPendingReturn != nil:
+       tfrStructuredFrame
+     elif nextTransition.context != capabilityContext or
+          nextTransition.presence != capabilityPresence:
+       tfrCapabilityRestore
+     elif (boundValuesMayCapture and
+           scopeValuesCaptureScope(nextScope, scope)) or
+          (recycleScope and scopeChainContains(nextScope, scope)):
+       tfrCapturedScope
+     else: tfrNotElidable)
+
+  template reportTailFallback(reason: TailFallbackReason) =
+    if reportTailFallbacks:
+      if not reportedTailFallbacksReady:
+        reportedTailFallbacks =
+          initHashSet[(pointer, int)]()
+        reportedTailFallbacksReady = true
+      let siteIp = max(0, ip - 1)
+      let siteKey = (cast[pointer](chunk), siteIp)
+      if not reportedTailFallbacks.containsOrIncl(siteKey):
+        let loc = instructionLocAt(chunk, siteIp)
+        let where =
+          if loc.sourceName.len > 0:
+            loc.sourceName & ":" & $loc.line & ":" & $loc.col
+          else:
+            "<bytecode>:" & $siteIp
+        stderr.writeLine("Tail-call fallback [" &
+                         tailFallbackReasonCode(reason) & "] at " & where)
+
+  template enterBytecodeCall(nextChunk: Chunk, nextScope: Scope,
+                             nextRecycleScope: bool,
+                             nextValidateImpls: bool,
+                             nextReturnType: Value,
+                             nextReturnLabel: string,
+                             nextChecksErrors: bool,
+                             nextErrorTypes: seq[Value],
+                             nextFnName: string,
+                             nextTransition: CapabilityTransition,
+                             operandBase: int,
+                             tailMarked: bool,
+                             keepOperands = false,
+                             boundValuesMayCapture = true) =
+    ## The sole replace-vs-push seam for a resolved, already-bound bytecode
+    ## call. Call adapters own resolution and binding; this module owns
+    ## continuation eligibility and register installation.
+    if tailMarked:
+      if curFrameKind == fkTailMatchBody and
+          (not keepOperands or not boundValuesMayCapture) and
+          canCollapseTailExpressionFrames(nextScope, operandBase,
+                                          boundValuesMayCapture):
+        collapseTailExpressionFrames(nextScope, operandBase, keepOperands,
+                                     boundValuesMayCapture)
+      let replaceCurrent = nextTransition.context == capabilityContext and
+          nextTransition.presence == capabilityPresence and
+          (not keepOperands or not boundValuesMayCapture) and
+          canReplaceCurrentTailCall(nextScope, true, operandBase,
+                                    boundValuesMayCapture)
+      if replaceCurrent:
+        enterTailCallFrame(nextChunk, nextScope, nextRecycleScope,
+          nextValidateImpls, nextReturnType, nextReturnLabel,
+          nextChecksErrors, nextErrorTypes, nextFnName, operandBase,
+          keepOperands)
+      let fallbackReason = tailFallbackReason(nextScope, nextTransition,
+                                              operandBase,
+                                              boundValuesMayCapture)
+      if collectTailCallStats:
+        inc currentTailCallStats.fallbacks
+        inc currentTailCallStats.fallbackByReason[fallbackReason]
+      reportTailFallback(fallbackReason)
+    pushCallFrame()
+    installCapabilityTransition(nextTransition)
+    chunk = nextChunk
+    scope = nextScope
+    recycleScope = nextRecycleScope
+    curStackBase = if keepOperands: operandBase else: sp
+    ip = 0
+    validateImplRequirements = nextValidateImpls
+    returnType = nextReturnType
+    returnLabel = nextReturnLabel
+    curChecksErrors = nextChecksErrors
+    curErrorTypes = nextErrorTypes
+    curFnName = nextFnName
+    curFrameKind = fkNormal
+    evalBudget = nextScope.evalBudget
+    continue
+
+  template maybeEnterUserCallableBytecode(calleeValue: Value,
+                                          originalArgs: untyped,
+                                          originalNamed: NamedArgs,
+                                          callSite: Value,
+                                          operandBase: int,
+                                          tailMarked: bool) =
+    ## A source-level custom call is protocol dispatch to Callable/apply. Keep
+    ## that bytecode implementation on the same explicit VM frame stack rather
+    ## than hiding it inside a nested applyCall/runLoop invocation.
+    if calleeValue.kind == vkNode and not calleeValue.isSelector and
+        calleeValue.valueImplementsCallable(scope):
+      let implFn = resolveUserCallableImpl(calleeValue, scope)
+      if implFn.kind == vkFunction:
+        let implCode = implFn.fnCode
+        if implCode != nil and implCode of FunctionProto:
+          let implProto = FunctionProto(implCode)
+          if not implProto.isGenerator:
+            let envelope = callEnvelope(scope, originalArgs, originalNamed,
+                                        callSite)
+            var implArgs = [calleeValue, envelope]
+            let bound = bindCallScope(implFn, implProto, implArgs,
+                                      NamedArgs())
+            let nextTransition = functionCapabilityTransition(
+              implProto, bound.scope, scope, capabilityContext,
+              capabilityPresence)
+            let frameReturnType =
+              implProto.checkedFrameReturnType(bound.returnType)
+            var lbl = ""
+            if frameReturnType.kind != vkNil:
+              lbl = "return from '" & implFn.fnName & "'"
+            let nextErrorTypes =
+              if implProto.checksErrors: implFn.fnErrorTypes else: @[]
+            strunc(operandBase)
+            enterBytecodeCall(implProto.chunk, bound.scope,
+              implProto.poolCallScope, implProto.frameNeedsImplValidation,
+              frameReturnType, lbl, implProto.checksErrors, nextErrorTypes,
+              implFn.fnName, nextTransition, operandBase, tailMarked)
+
+  template maybeEnterBoundMessageBytecode(calleeValue: Value,
+                                          originalArgs: untyped,
+                                          originalNamed: NamedArgs,
+                                          operandBase: int,
+                                          tailMarked: bool) =
+    if calleeValue.kind == vkProtocolMessage and
+        calleeValue.protocolMessageIsBound and originalArgs.len > 0:
+      let boundDispatch = calleeValue.protocolMessageScope
+      let qualifier =
+        if calleeValue.protocolMessageQualifier.kind != vkNil:
+          calleeValue.protocolMessageQualifier
+        else:
+          calleeValue.protocolMessageProtocol
+      let target = resolveQualifiedSend(
+        boundDispatch, qualifier, calleeValue.protocolMessageName,
+        originalArgs[0])
+      if target.kind == vkFunction:
+        let targetCode = target.fnCode
+        if targetCode != nil and targetCode of FunctionProto:
+          let targetProto = FunctionProto(targetCode)
+          if not targetProto.isGenerator:
+            let bound = bindCallScope(target, targetProto, originalArgs,
+                                      originalNamed)
+            let nextTransition = functionCapabilityTransition(
+              targetProto, bound.scope, boundDispatch,
+              bound.scope.executionCapabilities(),
+              capabilityPresence)
+            let frameReturnType =
+              targetProto.checkedFrameReturnType(bound.returnType)
+            var lbl = ""
+            if frameReturnType.kind != vkNil:
+              lbl = "return from '" & target.fnName & "'"
+            let nextErrorTypes =
+              if targetProto.checksErrors: target.fnErrorTypes else: @[]
+            strunc(operandBase)
+            enterBytecodeCall(targetProto.chunk, bound.scope,
+              targetProto.poolCallScope,
+              targetProto.frameNeedsImplValidation, frameReturnType, lbl,
+              targetProto.checksErrors, nextErrorTypes, target.fnName,
+              nextTransition, operandBase, tailMarked)
 
   while true:
     try:
@@ -14358,20 +14775,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               if proto.scopelessChunk != nil and proto.params.len == 0 and
                   proto.canBypassCapabilityBoundary(callee.fnScope, scope):
                 # Scopeless 0-arg call (see the direct-call site).
-                pushCallFrame()
-                scope = frames[^1].scope
-                chunk = proto.scopelessChunk
-                recycleScope = false
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = false
-                returnType = NIL
-                returnLabel = ""
-                curChecksErrors = false
-                curErrorTypes = @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                continue
+                let callerScope = scope
+                let sameTransition = CapabilityTransition(
+                  context: capabilityContext, presence: capabilityPresence)
+                enterBytecodeCall(proto.scopelessChunk, callerScope, false,
+                  false, NIL, "", false, @[], callee.fnName,
+                  sameTransition, sp, inst[].tail,
+                  boundValuesMayCapture = false)
               if proto.simpleCall:
                 if proto.params.len != 0:
                   raise newException(GeneError,
@@ -14394,22 +14804,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 let nextTransition = functionCapabilityTransition(
                   proto, callScope, scope, capabilityContext,
                   capabilityPresence)
-                pushCallFrame()
-                installCapabilityTransition(nextTransition)
-                chunk = proto.chunk
-                scope = callScope
-                recycleScope = proto.poolCallScope
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = proto.frameNeedsImplValidation
-                returnType = NIL
-                returnLabel = ""
-                curChecksErrors = false
-                curErrorTypes = @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                evalBudget = callScope.evalBudget
-                continue
+                enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
+                  proto.frameNeedsImplValidation, NIL, "", false, @[],
+                  callee.fnName, nextTransition, sp, inst[].tail,
+                  boundValuesMayCapture = false)
               elif not proto.isGenerator:
                 if callee.isSyntaxFn:
                   rejectSyntaxCallWithoutSite(callee, scope)
@@ -14421,28 +14819,21 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
-                pushCallFrame()
-                installCapabilityTransition(nextTransition)
-                chunk = proto.chunk
-                scope = bound.scope
-                recycleScope = proto.poolCallScope
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = proto.frameNeedsImplValidation
-                returnType = frameReturnType
-                returnLabel = lbl
-                curChecksErrors = proto.checksErrors
-                curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                evalBudget = bound.scope.evalBudget
-                continue
+                let nextErrorTypes =
+                  if proto.checksErrors: callee.fnErrorTypes else: @[]
+                enterBytecodeCall(proto.chunk, bound.scope,
+                  proto.poolCallScope, proto.frameNeedsImplValidation,
+                  frameReturnType, lbl, proto.checksErrors, nextErrorTypes,
+                  callee.fnName, nextTransition, sp, inst[].tail,
+                  boundValuesMayCapture = false)
           let site =
             if callee.kind == vkFunction or
                 (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
               NIL
             else:
               chunk.callSites.getOrDefault(ip - 1, NIL)
+          maybeEnterUserCallableBytecode(callee, newSeq[Value](0),
+            NamedArgs(), site, sp, inst[].tail)
           var value: Value
           try:
             value = applyCall(callee, [], NamedArgs(), scope, site,
@@ -14469,6 +14860,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if sp < argCount:
             raise newException(GeneError, "VM stack underflow in direct call")
           let argsStart = sp - argCount
+          var callValuesMayCapture = false
+          for i in argsStart ..< sp:
+            if valueMayRetainScope(stack[i]):
+              callValuesMayCapture = true
+              break
           var callee =
             if inst[].op in {opCallName0, opCallName1, opCallNameN}:
               scope.lookup(inst[].name)
@@ -14532,20 +14928,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 # native-fast fallbacks (scope.application). No scope is
                 # acquired, bound, or released; the normal return truncation
                 # to curStackBase discards the args.
-                pushCallFrame()
-                scope = frames[^1].scope
-                chunk = proto.scopelessChunk
-                recycleScope = false
-                curStackBase = argsStart
-                ip = 0
-                validateImplRequirements = false
-                returnType = NIL
-                returnLabel = ""
-                curChecksErrors = false
-                curErrorTypes = @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                continue
+                let callerScope = scope
+                let sameTransition = CapabilityTransition(
+                  context: capabilityContext, presence: capabilityPresence)
+                enterBytecodeCall(proto.scopelessChunk, callerScope, false,
+                  false, NIL, "", false, @[], callee.fnName,
+                  sameTransition, argsStart, inst[].tail,
+                  keepOperands = true,
+                  boundValuesMayCapture = callValuesMayCapture)
               if proto.simpleCall:
                 let positionalLen = proto.params.len
                 if positionalLen != argCount:
@@ -14575,29 +14965,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 let nextTransition = functionCapabilityTransition(
                   proto, callScope, scope, capabilityContext,
                   capabilityPresence)
-                if argsStart == 0 and
-                    nextTransition.context == capabilityContext and
-                    nextTransition.presence == capabilityPresence and
-                    canReplaceCurrentTailCall(callee.fnScope):
-                  enterTailCallFrame(proto, callScope, proto.poolCallScope,
-                    proto.frameNeedsImplValidation, NIL, "", false, @[],
-                    callee.fnName)
-                pushCallFrame()
-                installCapabilityTransition(nextTransition)
-                chunk = proto.chunk
-                scope = callScope
-                recycleScope = proto.poolCallScope
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = proto.frameNeedsImplValidation
-                returnType = NIL
-                returnLabel = ""
-                curChecksErrors = false
-                curErrorTypes = @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                evalBudget = callScope.evalBudget
-                continue
+                enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
+                  proto.frameNeedsImplValidation, NIL, "", false, @[],
+                  callee.fnName, nextTransition, argsStart, inst[].tail,
+                  boundValuesMayCapture = callValuesMayCapture)
               elif argCount == 1 and proto.canFastBindUnaryInt and
                   proto.returnKnownBareInt and
                   proto.canBypassCapabilityBoundary(callee.fnScope, scope) and
@@ -14605,21 +14976,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 let callScope = bindUnaryIntCallScope(callee, proto,
                                                       stack[argsStart])
                 strunc(argsStart)
-                pushCallFrame()
-                chunk = proto.chunk
-                scope = callScope
-                recycleScope = proto.poolCallScope
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = proto.frameNeedsImplValidation
-                returnType = NIL
-                returnLabel = ""
-                curChecksErrors = false
-                curErrorTypes = @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                evalBudget = callScope.evalBudget
-                continue
+                let sameTransition = CapabilityTransition(
+                  context: capabilityContext, presence: capabilityPresence)
+                enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
+                  proto.frameNeedsImplValidation, NIL, "", false, @[],
+                  callee.fnName, sameTransition, argsStart, inst[].tail,
+                  boundValuesMayCapture = false)
               elif argCount > 1 and proto.canFastBindPositionalInt and
                   proto.returnKnownBareInt and argCount == proto.params.len and
                   proto.canBypassCapabilityBoundary(callee.fnScope, scope) and
@@ -14628,21 +14990,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   stack.toOpenArray(argsStart, (sp - 1)),
                   argsKnownBareInt = true)
                 strunc(argsStart)
-                pushCallFrame()
-                chunk = proto.chunk
-                scope = callScope
-                recycleScope = proto.poolCallScope
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = proto.frameNeedsImplValidation
-                returnType = NIL
-                returnLabel = ""
-                curChecksErrors = false
-                curErrorTypes = @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                evalBudget = callScope.evalBudget
-                continue
+                let sameTransition = CapabilityTransition(
+                  context: capabilityContext, presence: capabilityPresence)
+                enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
+                  proto.frameNeedsImplValidation, NIL, "", false, @[],
+                  callee.fnName, sameTransition, argsStart, inst[].tail,
+                  boundValuesMayCapture = false)
               elif not proto.isGenerator:
                 if callee.isSyntaxFn:
                   rejectSyntaxCallWithoutSite(callee, scope)
@@ -14678,28 +15031,29 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var lbl = ""
                 if boundReturnType.kind != vkNil and not usedUnaryIntFast:
                   lbl = "return from '" & callee.fnName & "'"
-                pushCallFrame()
-                installCapabilityTransition(nextTransition)
-                chunk = proto.chunk
-                scope = boundScope
-                recycleScope = proto.poolCallScope
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = proto.frameNeedsImplValidation
-                returnType = boundReturnType
-                returnLabel = lbl
-                curChecksErrors = proto.checksErrors
-                curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                evalBudget = boundScope.evalBudget
-                continue
+                let nextErrorTypes =
+                  if proto.checksErrors: callee.fnErrorTypes else: @[]
+                enterBytecodeCall(proto.chunk, boundScope,
+                  proto.poolCallScope, proto.frameNeedsImplValidation,
+                  boundReturnType, lbl, proto.checksErrors, nextErrorTypes,
+                  callee.fnName, nextTransition, argsStart, inst[].tail,
+                  boundValuesMayCapture = callValuesMayCapture)
           let site =
             if callee.kind == vkFunction or
                 (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
               NIL
             else:
               chunk.callSites.getOrDefault(ip - 1, NIL)
+          if argCount == 0:
+            maybeEnterUserCallableBytecode(callee, newSeq[Value](0),
+              NamedArgs(), site, argsStart, inst[].tail)
+          else:
+            maybeEnterBoundMessageBytecode(callee,
+              stack.toOpenArray(argsStart, sp - 1), NamedArgs(), argsStart,
+              inst[].tail)
+            maybeEnterUserCallableBytecode(callee,
+              stack.toOpenArray(argsStart, sp - 1), NamedArgs(), site,
+              argsStart, inst[].tail)
           var value: Value
           try:
             value =
@@ -14985,6 +15339,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if argsStart < 0 or argsStart < namedCount + 1:
             raise newException(GeneError, "VM stack underflow in call")
           let calleeIndex = argsStart - namedCount - 1
+          var callValuesMayCapture = false
+          for i in calleeIndex + 1 ..< sp:
+            if valueMayRetainScope(stack[i]):
+              callValuesMayCapture = true
+              break
           var callee = stack[calleeIndex]
           # A message identity is not callable in head position (design §3):
           # qualified sends resolve their impl in opResolveQualifiedMessage, so a
@@ -15032,20 +15391,14 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 for i in calleeIndex ..< sp - 1:
                   stack[i] = stack[i + 1]
                 strunc(sp - 1)
-                pushCallFrame()
-                scope = frames[^1].scope
-                chunk = proto.scopelessChunk
-                recycleScope = false
-                curStackBase = calleeIndex
-                ip = 0
-                validateImplRequirements = false
-                returnType = NIL
-                returnLabel = ""
-                curChecksErrors = false
-                curErrorTypes = @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                continue
+                let callerScope = scope
+                let sameTransition = CapabilityTransition(
+                  context: capabilityContext, presence: capabilityPresence)
+                enterBytecodeCall(proto.scopelessChunk, callerScope, false,
+                  false, NIL, "", false, @[], callee.fnName,
+                  sameTransition, calleeIndex, inst[].tail,
+                  keepOperands = true,
+                  boundValuesMayCapture = callValuesMayCapture)
               if namedCount == 0 and proto.simpleCall:
                 # Hottest path: arity + positional slots only.
                 let positionalLen = proto.params.len
@@ -15076,29 +15429,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 let nextTransition = functionCapabilityTransition(
                   proto, callScope, scope, capabilityContext,
                   capabilityPresence)
-                if calleeIndex == 0 and
-                    nextTransition.context == capabilityContext and
-                    nextTransition.presence == capabilityPresence and
-                    canReplaceCurrentTailCall(callee.fnScope):
-                  enterTailCallFrame(proto, callScope, proto.poolCallScope,
-                    proto.frameNeedsImplValidation, NIL, "", false, @[],
-                    callee.fnName)
-                pushCallFrame()
-                installCapabilityTransition(nextTransition)
-                chunk = proto.chunk
-                scope = callScope
-                recycleScope = proto.poolCallScope
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = proto.frameNeedsImplValidation
-                returnType = NIL
-                returnLabel = ""
-                curChecksErrors = false        # simpleCall never declares ^errors
-                curErrorTypes = @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                evalBudget = callScope.evalBudget
-                continue
+                enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
+                  proto.frameNeedsImplValidation, NIL, "", false, @[],
+                  callee.fnName, nextTransition, calleeIndex, inst[].tail,
+                  boundValuesMayCapture = callValuesMayCapture)
               elif not proto.isGenerator:
                 # General call (named / defaults / rest / typed / generic / ^errors):
                 # bind via the shared helper, then push a frame carrying the return
@@ -15138,22 +15472,13 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
-                pushCallFrame()
-                installCapabilityTransition(nextTransition)
-                chunk = proto.chunk
-                scope = boundScope
-                recycleScope = proto.poolCallScope
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = proto.frameNeedsImplValidation
-                returnType = frameReturnType
-                returnLabel = lbl
-                curChecksErrors = proto.checksErrors
-                curErrorTypes = if proto.checksErrors: callee.fnErrorTypes else: @[]
-                curFnName = callee.fnName
-                curFrameKind = fkNormal
-                evalBudget = boundScope.evalBudget
-                continue
+                let nextErrorTypes =
+                  if proto.checksErrors: callee.fnErrorTypes else: @[]
+                enterBytecodeCall(proto.chunk, boundScope,
+                  proto.poolCallScope, proto.frameNeedsImplValidation,
+                  frameReturnType, lbl, proto.checksErrors, nextErrorTypes,
+                  callee.fnName, nextTransition, calleeIndex, inst[].tail,
+                  boundValuesMayCapture = callValuesMayCapture)
           if namedCount == 0 and argCount == 2 and callee.kind == vkNativeFn:
             let fastNative = tryFastNative2(callee, stack[argsStart], stack[argsStart + 1])
             if fastNative.handled:
@@ -15171,6 +15496,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               NIL
             else:
               chunk.callSites.getOrDefault(ip - 1, NIL)
+          if argCount == 0:
+            maybeEnterUserCallableBytecode(callee, newSeq[Value](0), named,
+              site, calleeIndex, inst[].tail)
+          else:
+            maybeEnterBoundMessageBytecode(callee,
+              stack.toOpenArray(argsStart, sp - 1), named, calleeIndex,
+              inst[].tail)
+            maybeEnterUserCallableBytecode(callee,
+              stack.toOpenArray(argsStart, sp - 1), named, site,
+              calleeIndex, inst[].tail)
           var value: Value
           try:
             value =
@@ -15242,6 +15577,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               appendSplicedBody(args, part)
             else:
               args.add part
+          var callValuesMayCapture = false
+          for arg in args:
+            if valueMayRetainScope(arg):
+              callValuesMayCapture = true
+              break
+          if not callValuesMayCapture:
+            for i in 0 ..< named.len:
+              if valueMayRetainScope(named.valueAt(i)):
+                callValuesMayCapture = true
+                break
           # A message identity is not callable in head position (see opCall).
           if callee.kind == vkProtocolMessage and
               not callee.protocolMessageIsBound:
@@ -15285,22 +15630,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 let nextTransition = functionCapabilityTransition(
                   fnProto, callScope, scope, capabilityContext,
                   capabilityPresence)
-                pushFrame()
-                installCapabilityTransition(nextTransition)
-                chunk = fnProto.chunk
-                scope = callScope
-                recycleScope = fnProto.poolCallScope
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = fnProto.frameNeedsImplValidation
-                returnType = NIL
-                returnLabel = ""
-                curChecksErrors = false        # simpleCall never declares ^errors
-                curErrorTypes = @[]
-                curFnName = ""
-                curFrameKind = fkNormal
-                evalBudget = callScope.evalBudget
-                continue
+                enterBytecodeCall(fnProto.chunk, callScope,
+                  fnProto.poolCallScope, fnProto.frameNeedsImplValidation,
+                  NIL, "", false, @[], callee.fnName, nextTransition,
+                  calleeIndex, inst[].tail,
+                  boundValuesMayCapture = callValuesMayCapture)
               elif not fnProto.isGenerator:
                 if callee.isSyntaxFn:
                   rejectSyntaxCallWithoutSite(callee, scope)
@@ -15323,28 +15657,23 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 var lbl = ""
                 if frameReturnType.kind != vkNil:
                   lbl = "return from '" & callee.fnName & "'"
-                pushFrame()
-                installCapabilityTransition(nextTransition)
-                chunk = fnProto.chunk
-                scope = boundScope
-                recycleScope = fnProto.poolCallScope
-                curStackBase = sp
-                ip = 0
-                validateImplRequirements = fnProto.frameNeedsImplValidation
-                returnType = frameReturnType
-                returnLabel = lbl
-                curChecksErrors = fnProto.checksErrors
-                curErrorTypes = if fnProto.checksErrors: callee.fnErrorTypes else: @[]
-                curFnName = if fnProto.checksErrors: callee.fnName else: ""
-                curFrameKind = fkNormal
-                evalBudget = boundScope.evalBudget
-                continue
+                let nextErrorTypes =
+                  if fnProto.checksErrors: callee.fnErrorTypes else: @[]
+                enterBytecodeCall(fnProto.chunk, boundScope,
+                  fnProto.poolCallScope, fnProto.frameNeedsImplValidation,
+                  frameReturnType, lbl, fnProto.checksErrors, nextErrorTypes,
+                  callee.fnName, nextTransition, calleeIndex, inst[].tail,
+                  boundValuesMayCapture = callValuesMayCapture)
           let site =
             if callee.kind == vkFunction or
                 (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
               NIL
             else:
               chunk.callSites.getOrDefault(ip - 1, NIL)
+          maybeEnterBoundMessageBytecode(callee, args, named, calleeIndex,
+            inst[].tail)
+          maybeEnterUserCallableBytecode(callee, args, named, site,
+            calleeIndex, inst[].tail)
           var value: Value
           try:
             value =
@@ -15841,6 +16170,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         of opMatch:
           let target = spop()
           let mp = chunk.matches[inst[].intArg]
+          let branchKind =
+            if mp.tailResult: fkTailMatchBody else: fkNormal
           var handled = false
           for cl in mp.clauses:
             var binds = initTable[string, Value]()
@@ -15849,7 +16180,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               branchScope.prepareChunkScope(cl.body)
               branchScope.bindMatchedValues(binds, replaceExisting = false)
               pushFrame()
-              enterFrame(cl.body, branchScope, validateImplRequirements)
+              enterFrame(cl.body, branchScope, validateImplRequirements,
+                         branchKind)
               handled = true
               break
           if not handled:
@@ -15857,7 +16189,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               let branchScope = newScope(scope)
               branchScope.prepareChunkScope(mp.elseBody)
               pushFrame()
-              enterFrame(mp.elseBody, branchScope, validateImplRequirements)
+              enterFrame(mp.elseBody, branchScope, validateImplRequirements,
+                         branchKind)
             else:
               raiseMatchError(scope, "no matching pattern")
           if handled or mp.elseBody != nil:
@@ -16382,7 +16715,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       if not preservingFirstCleanupError:
         annotateTopLevelUndefined(err, chunk, errorLoc)
         attachSourceLoc(err, errorLoc)
-        appendVmTrace(err, curFnName, errorLoc, frames, tailTraceFrames)
+        appendVmTrace(err, curFnName, errorLoc, frames, tailTraceFrames,
+                      tailTraceSummaries)
       trimTailTraceFrames(frames.len)
       if curFrameKind == fkForBody and
           not (handlers.len > 0 and handlers[^1].framesLen == frames.len):
@@ -24664,11 +24998,14 @@ proc callEnvelope(scope: Scope, args: openArray[Value], named: NamedArgs,
     body[i] = arg
   newNode(builtinBinding(scope, "Call"), props = props, body = body)
 
-proc applyUserCallable(callee: Value, args: openArray[Value], named: NamedArgs,
-                       dispatchScope: Scope, site: Value = NIL): Value =
+proc resolveUserCallableImpl(callee: Value, dispatchScope: Scope): Value =
   let protocol = builtinBinding(dispatchScope, "Callable")
   let message = protocol.protocolMessages["apply"]
-  let implFn = resolveProtocolMessage(dispatchScope, message, callee)
+  resolveProtocolMessage(dispatchScope, message, callee)
+
+proc applyUserCallable(callee: Value, args: openArray[Value], named: NamedArgs,
+                       dispatchScope: Scope, site: Value = NIL): Value =
+  let implFn = resolveUserCallableImpl(callee, dispatchScope)
   let envelope = callEnvelope(dispatchScope, args, named, site)
   var callArgs = [callee, envelope]
   applyCall(implFn, callArgs, NamedArgs(), dispatchScope)

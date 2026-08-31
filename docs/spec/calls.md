@@ -3,7 +3,9 @@
 **Status:** normative and implemented. Executable coverage:
 `tests/spec_runner.nim`, suites “explicit fexprs”, “selectors”, “pattern
 destructuring”, “checked errors”, “Env and eval”, and “absence-guarded
-sends”.
+sends”, plus “proper tail calls”. Frame-space assertions live in
+`tests/test_vm.nim` because they inspect VM instrumentation rather than only
+surface values.
 
 Ordinary calls are callable-first and always eager: `(foo a)` evaluates `foo`
 and `a` before calling. A bare lexical head ending in `!` is the distinct,
@@ -54,6 +56,32 @@ to the receiver only:
 Clause/declaration heads (`then`, `elif`, `else`, `when`, `catch`, `ensure`,
 `ctor`, and `message`) are meaningful only inside their owner. `new` is a core
 form that invokes the nearest constructor in a type's ancestry.
+
+## Tail-call contract
+
+The last expression of a function or message body is a tail position. The
+position propagates to selected `if` branches, `if_yes`/`if_not` bodies,
+`match` arms, `do`, the last `&&`/`||`/`??` operand, and an explicit `return`
+value. It does not propagate into arguments, conditions, initializers, loops,
+structured cleanup/authority bodies, constructors, namespaces/modules, `new`,
+or fexpr calls.
+
+A bytecode call in tail position replaces its current activation when that
+activation has no remaining return adaptation, checked-error policy,
+implementation validation, cleanup/restoration, or retained caller scope.
+Retention includes weak scope-owned closures passed as arguments: the caller
+activation remains when elision would otherwise invalidate their capture.
+This covers direct and higher-order functions, sends, held protocol messages,
+and user values whose `Callable/apply` implementation is Gene bytecode. Nested
+tail-position match arms are transparent expression frames and do not add one
+frame per recursive iteration.
+
+If observable continuation work remains, the call keeps the activation and
+behaves exactly like an ordinary call. Exact compiler-proven scalar/unit
+returns may remove a redundant return policy; unknown or adapting results do
+not. Stack traces retain a bounded recent tail history and an elision count.
+`gene run --report_tail_fallbacks` exposes once-per-site fallback reasons for
+development diagnostics.
 
 Expression paths resolve their base lexically and select later segments;
 declaration/import/type contexts resolve qualified names statically. Static

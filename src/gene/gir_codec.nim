@@ -7,7 +7,7 @@
 import std/[algorithm, json, jsonutils, sets, tables]
 import ./[gir, printer, reader, types]
 
-const GirArtifactFormat* = 2
+const GirArtifactFormat* = 3
 
 proc toJsonHook(value: Value): JsonNode =
   ## Values reachable from GIR are inert reader data. Canonical Gene text is

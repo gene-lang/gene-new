@@ -62,6 +62,7 @@ proc usage() =
   echo "  gene eval \"<source>\"   evaluate a source string and print the result"
   echo "  gene repl              read/eval/print source lines from stdin"
   echo "  gene run [--log-config path] [--package-root dir] [--debug]"
+  echo "           [--report_tail_fallbacks]"
   echo "           [--allow_read_dir dir] [--allow_write_dir dir]"
   echo "           [--allow_read_write_dir dir] <file.gene>"
   echo "           [--] [args...]     execute a file under the host capability policy"
@@ -153,6 +154,7 @@ type RunCli = object
   logConfig: string
   packageRoot: string
   debugging: bool
+  reportTailFallbacks: bool
   targetTriple: string
   profile: string
   mode: BuildMode
@@ -207,6 +209,8 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
       else: discard
     of "--debug":
       result.debugging = true
+    of "--report_tail_fallbacks":
+      result.reportTailFallbacks = true
     of "--sealed": result.sealed = true
     of "--open": result.open = true
     of "--locked": result.locked = true
@@ -261,6 +265,7 @@ proc parseRunCli(label = "run", pathNoun = "a file path",
   result.args = commandArgs(i)
 
 proc configureRunLogging(options: RunCli) =
+  setReportTailFallbacks(options.reportTailFallbacks)
   var config =
     if options.logConfig.len > 0:
       loadLoggingConfig(options.logConfig)
