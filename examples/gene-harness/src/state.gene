@@ -32,12 +32,12 @@
   $"${scope}:${stream}")
 
 (fn require_open [events : EventStore]
-  (if (events/closed ~ get)
+  (if (events/closed .get)
     (fail (HarnessStateError ^message "event store is closed")))
   events)
 
 (fn validate_scope [scope : Str]
-  (if_not (["workspace" "session"] ~ contains? scope)
+  (if_not (["workspace" "session"] .contains? scope)
     (fail (HarnessStateError
       ^message $"event scope must be workspace or session, got ${scope}")))
   scope)
@@ -49,42 +49,42 @@
   (if (== event/ignorable void) false event/ignorable))
 
 (fn mark_stream_dirty [events : EventStore, key : Str]
-  (var dirty_streams (events/dirty_streams ~ get))
-  (if_yes (== (dirty_streams ~ get key) void)
-    (dirty_streams ~ put key true)
-    (events/dirty_streams ~ set dirty_streams)
-    (var bases (events/dirty_bases ~ get))
-    (bases ~ put key (next_sequence events key))
-    (events/dirty_bases ~ set bases))
-  (events/dirty ~ set true))
+  (var dirty_streams (events/dirty_streams .get))
+  (if_yes (== (dirty_streams .get key) void)
+    (dirty_streams .put key true)
+    (events/dirty_streams .set dirty_streams)
+    (var bases (events/dirty_bases .get))
+    (bases .put key (next_sequence events key))
+    (events/dirty_bases .set bases))
+  (events/dirty .set true))
 
 (fn current_events [events : EventStore, key : Str]
-  (var streams (events/streams ~ get))
-  (var found (streams ~ get key))
+  (var streams (events/streams .get))
+  (var found (streams .get key))
   (if (== found void) (fresh_list) found))
 
 (fn set_current_events [events : EventStore, key : Str, values]
-  (var streams (events/streams ~ get))
-  (streams ~ put key values)
-  (events/streams ~ set streams))
+  (var streams (events/streams .get))
+  (streams .put key values)
+  (events/streams .set streams))
 
 (fn next_sequence [events : EventStore, key : Str] : Int
-  (var sequences (events/next_sequences ~ get))
-  (var found (sequences ~ get key))
+  (var sequences (events/next_sequences .get))
+  (var found (sequences .get key))
   (if (== found void) 1 found))
 
 (fn set_next_sequence [events : EventStore, key : Str, value : Int]
-  (var sequences (events/next_sequences ~ get))
-  (sequences ~ put key value)
-  (events/next_sequences ~ set sequences))
+  (var sequences (events/next_sequences .get))
+  (sequences .put key value)
+  (events/next_sequences .set sequences))
 
 (fn update_projection [events : EventStore, key : Str, plugin : Str, state]
-  (var all (events/projections ~ get))
-  (var stream_states (all ~ get key))
+  (var all (events/projections .get))
+  (var stream_states (all .get key))
   (if (== stream_states void) (set stream_states (fresh_map)))
-  (stream_states ~ put plugin state)
-  (all ~ put key stream_states)
-  (events/projections ~ set all))
+  (stream_states .put plugin state)
+  (all .put key stream_states)
+  (events/projections .set all))
 
 (fn append_stamped_event
   [events : EventStore, scope : Str, stream : Str, event,
@@ -93,7 +93,7 @@
   (validate_scope scope)
   (if (== event/type void)
     (fail (HarnessStateError ^message "event requires ^type")))
-  (if_not (["core" "plugin"] ~ contains? origin)
+  (if_not (["core" "plugin"] .contains? origin)
     (fail (HarnessStateError ^message $"invalid event origin ${origin}")))
   (if (== owner "")
     (fail (HarnessStateError ^message "event owner is empty")))
@@ -110,7 +110,7 @@
     (fail (HarnessStateError
       ^message $"event exceeds ${events/max_event_bytes} bytes")))
   (var values (current_events events key))
-  (values ~ push envelope)
+  (values .push envelope)
   (set_current_events events key values)
   (set_next_sequence events key (+ seq 1))
   (if_yes (== ($to_str event/type) "plugin/state")
@@ -153,16 +153,16 @@
 
 (fn copy_events [source]
   (var out (fresh_list))
-  (for event in source (out ~ push event))
+  (for event in source (out .push event))
   out)
 
 (fn plugin_state
   [events : EventStore, scope : Str, stream : Str, plugin : Str]
   (require_open events)
-  (var all (events/projections ~ get))
-  (var stream_states (all ~ get (stream_key scope stream)))
+  (var all (events/projections .get))
+  (var stream_states (all .get (stream_key scope stream)))
   (if_not (== stream_states void)
-    (var found (stream_states ~ get plugin))
+    (var found (stream_states .get plugin))
     (if_not (== found void) found)))
 
 (fn quarantine_projection [quarantined, seen, envelope]
@@ -170,9 +170,9 @@
   (if (== plugin "")
     (fail (HarnessStateError
       ^message $"plugin event ${envelope/type} has no projection owner")))
-  (if_yes (== (seen ~ get plugin) void)
-    (seen ~ put plugin true)
-    (quarantined ~ push plugin)))
+  (if_yes (== (seen .get plugin) void)
+    (seen .put plugin true)
+    (quarantined .push plugin)))
 
 (fn validate_unknown_event [quarantined, seen, envelope]
   (if_yes (== envelope/ignorable true) (return))
@@ -221,17 +221,17 @@
   (validate_envelope_formats events)
   (var quarantined (fresh_list))
   (var seen (fresh_map))
-  (for [stream values] in (events/streams ~ get)
+  (for [stream values] in (events/streams .get)
     (for envelope in values
-      (var known (known_types ~ get envelope/type))
+      (var known (known_types .get envelope/type))
       (if (== known void)
         (validate_unknown_event quarantined seen envelope)
         (validate_known_event quarantined seen envelope known))))
   quarantined)
 
 (fn validate_envelope_formats [events : EventStore]
-  (if_yes (events/formats_validated ~ get) (return events))
-  (for [stream values] in (events/streams ~ get)
+  (if_yes (events/formats_validated .get) (return events))
+  (for [stream values] in (events/streams .get)
     (for envelope in values
       (if (> envelope/format 2)
         (fail (HarnessStateError
@@ -239,29 +239,29 @@
       (if (< envelope/format 2)
         (fail (HarnessStateError
           ^message "this harness ships no event upgrade path")))))
-  (events/formats_validated ~ set true)
+  (events/formats_validated .set true)
   events)
 
 (fn slice_events [source, start : Int, finish : Int]
   (var out (fresh_list))
   (var i start)
-  (while (&& (< i finish) (< i source/~size))
-    (out ~ push source/%i)
+  (while (&& (< i finish) (< i source/.size))
+    (out .push source/%i)
     (set i (+ i 1)))
   out)
 
 (fn tail_items [source, count : Int]
-  (var start (- source/~size count))
+  (var start (- source/.size count))
   (if (< start 0) (set start 0))
-  (slice_events source start source/~size))
+  (slice_events source start source/.size))
 
 (fn unique_strings [values]
   (var seen (fresh_map))
   (var out (fresh_list))
   (for value in values
-    (if_yes (== (seen ~ get value) void)
-      (seen ~ put value true)
-      (out ~ push value)))
+    (if_yes (== (seen .get value) void)
+      (seen .put value true)
+      (out .push value)))
   out)
 
 (fn segment_stream [events : EventStore, values]
@@ -269,28 +269,28 @@
   (var all_digests (fresh_list))
   (var segments (fresh_list))
   (var start 0)
-  (while (< start values/~size)
+  (while (< start values/.size)
     (var segment
       (slice_events values start (+ start events/segment_events)))
     (var digest (sha256 (write_data segment)))
     (if_not ($absent? backend)
       (var key $"segment/${digest}")
-      (if_not (backend ~ Store:has? key)
-        (backend ~ Store:put key segment)))
-    (all_digests ~ push digest)
-    (segments ~ push segment)
+      (if_not (backend .Store:has? key)
+        (backend .Store:put key segment)))
+    (all_digests .push digest)
+    (segments .push segment)
     (set start (+ start events/segment_events)))
   (var kept_digests (tail_items all_digests events/retained_segments))
   (var kept_segments (tail_items segments events/retained_segments))
   (var retained (fresh_list))
   (for segment in kept_segments
-    (for event in segment (retained ~ push event)))
+    (for event in segment (retained .push event)))
   {^digests kept_digests ^events retained})
 
 (fn all_manifest_digests [manifest]
   (var out (fresh_list))
   (for generation_digests in manifest/history
-    (for digest in generation_digests (out ~ push digest)))
+    (for digest in generation_digests (out .push digest)))
   (unique_strings out))
 
 (fn garbage_collect_segments [events : EventStore, manifest]
@@ -298,43 +298,43 @@
   (if ($absent? backend) (return))
   (var retained (fresh_map))
   (for digest in (all_manifest_digests manifest)
-    (retained ~ put digest true))
-  (for key in (backend ~ Store:keys)
+    (retained .put digest true))
+  (for key in (backend .Store:keys)
     (if_yes (starts_with? key "segment/")
       (var digest (slice_bytes key 8 (- (byte_size key) 8)))
-      (if (== (retained ~ get digest) void)
-        (backend ~ Store:delete key)))))
+      (if (== (retained .get digest) void)
+        (backend .Store:delete key)))))
 
 (fn build_event_manifest [events : EventStore, generation : Int]
   (var descriptors (fresh_map))
-  (var previous (events/last_manifest ~ get))
+  (var previous (events/last_manifest .get))
   (if_not ($absent? previous)
     (for [key descriptor] in previous/streams
-      (descriptors ~ put key descriptor)))
-  (var streams (events/streams ~ get))
-  (for [key ignored] in (events/dirty_streams ~ get)
-    (var values (streams ~ get key))
+      (descriptors .put key descriptor)))
+  (var streams (events/streams .get))
+  (for [key ignored] in (events/dirty_streams .get)
+    (var values (streams .get key))
     (var segmented (segment_stream events values))
-    (descriptors ~ put key
+    (descriptors .put key
       {^segments segmented/digests
        ^next_seq (next_sequence events ($to_str key))})
-    (streams ~ put key segmented/events))
-  (events/streams ~ set streams)
+    (streams .put key segmented/events))
+  (events/streams .set streams)
 
   (var current_digests (fresh_list))
   (for [key descriptor] in descriptors
-    (for digest in descriptor/segments (current_digests ~ push digest)))
+    (for digest in descriptor/segments (current_digests .push digest)))
 
   (var history (fresh_list))
-  (history ~ push (unique_strings current_digests))
+  (history .push (unique_strings current_digests))
   (if_not ($absent? previous)
     (var i 0)
-    (while (&& (< i previous/history/~size) (< history/~size 3))
-      (history ~ push previous/history/%i)
+    (while (&& (< i previous/history/.size) (< history/.size 3))
+      (history .push previous/history/%i)
       (set i (+ i 1))))
   (var manifest
     {^format 1 ^generation generation ^streams descriptors
-     ^projections (events/projections ~ get) ^history history})
+     ^projections (events/projections .get) ^history history})
   manifest)
 
 (fn manifest_data [events : EventStore, manifest]
@@ -344,52 +344,52 @@
     (var values (fresh_list))
     (for digest in descriptor/segments
       (var segment
-        (events/backend ~ Store:get $"segment/${digest}"))
-      (for event in segment (values ~ push event)))
-    (streams ~ put key values)
-    (sequences ~ put key descriptor/next_seq))
+        (events/backend .Store:get $"segment/${digest}"))
+      (for event in segment (values .push event)))
+    (streams .put key values)
+    (sequences .put key descriptor/next_seq))
   (var projections (fresh_map))
   (for [key value] in manifest/projections
-    (projections ~ put key value))
+    (projections .put key value))
   {^streams streams ^sequences sequences ^projections projections})
 
 (fn install_manifest_data [events : EventStore, manifest, data]
-  (events/streams ~ set data/streams)
-  (events/next_sequences ~ set data/sequences)
-  (events/projections ~ set data/projections)
-  (events/generation ~ set manifest/generation)
-  (events/last_manifest ~ set manifest)
-  (events/formats_validated ~ set false))
+  (events/streams .set data/streams)
+  (events/next_sequences .set data/sequences)
+  (events/projections .set data/projections)
+  (events/generation .set manifest/generation)
+  (events/last_manifest .set manifest)
+  (events/formats_validated .set false))
 
 (fn clear_dirty [events : EventStore]
-  (events/dirty ~ set false)
-  (events/dirty_streams ~ set (fresh_map))
-  (events/dirty_bases ~ set (fresh_map)))
+  (events/dirty .set false)
+  (events/dirty_streams .set (fresh_map))
+  (events/dirty_bases .set (fresh_map)))
 
 (fn merge_after_conflict [events : EventStore]
-  (var loaded (events/backend ~ Store:load_checkpoint))
+  (var loaded (events/backend .Store:load_checkpoint))
   (if ($absent? loaded)
     (fail (HarnessStateError
       ^message "event checkpoint conflict has no winning generation")))
-  (var remote (loaded/records ~ get "event_manifest"))
+  (var remote (loaded/records .get "event_manifest"))
   (if (== remote void)
     (fail (HarnessStateError
       ^message "event checkpoint conflict has no event manifest")))
   (var remote_data (manifest_data events remote))
-  (var local_streams (events/streams ~ get))
-  (var local_sequences (events/next_sequences ~ get))
-  (var local_projections (events/projections ~ get))
-  (var dirty_streams (events/dirty_streams ~ get))
-  (var bases (events/dirty_bases ~ get))
+  (var local_streams (events/streams .get))
+  (var local_sequences (events/next_sequences .get))
+  (var local_projections (events/projections .get))
+  (var dirty_streams (events/dirty_streams .get))
+  (var bases (events/dirty_bases .get))
 
   # A stream has one sequence. Disjoint streams merge; the same stream must be
   # retried by its caller from the winning state.
   (for [key ignored] in dirty_streams
-    (var expected (bases ~ get key))
-    (var actual (remote_data/sequences ~ get key))
+    (var expected (bases .get key))
+    (var actual (remote_data/sequences .get key))
     (if (== actual void) (set actual 1))
     (if_not (== expected actual)
-      (var local_values (local_streams ~ get key))
+      (var local_values (local_streams .get key))
       (var first (if_not (== local_values void) local_values/0))
       (install_manifest_data events remote remote_data)
       (validate_envelope_formats events)
@@ -401,38 +401,38 @@
         ^expected expected ^actual actual))))
 
   (for [key ignored] in dirty_streams
-    (remote_data/streams ~ put key (local_streams ~ get key))
-    (remote_data/sequences ~ put key (local_sequences ~ get key))
-    (var projection (local_projections ~ get key))
+    (remote_data/streams .put key (local_streams .get key))
+    (remote_data/sequences .put key (local_sequences .get key))
+    (var projection (local_projections .get key))
     (if (== projection void)
-      (remote_data/projections ~ delete key)
-      (remote_data/projections ~ put key projection)))
+      (remote_data/projections .delete key)
+      (remote_data/projections .put key projection)))
   (install_manifest_data events remote remote_data)
   (validate_envelope_formats events))
 
 (fn flush_event_store [events : EventStore]
   (require_open events)
-  (if_not (events/dirty ~ get)
+  (if_not (events/dirty .get)
     (return
-      {^generation (events/generation ~ get)
-       ^manifest (events/last_manifest ~ get)}))
+      {^generation (events/generation .get)
+       ^manifest (events/last_manifest .get)}))
   (var attempts 0)
   (while (< attempts 16)
-    (var generation (+ (events/generation ~ get) 1))
+    (var generation (+ (events/generation .get) 1))
     (var manifest (build_event_manifest events generation))
     (try
       (if_not ($absent? events/backend)
-        (events/backend ~ Store:checkpoint generation
+        (events/backend .Store:checkpoint generation
           {^event_manifest manifest}))
-      (events/generation ~ set generation)
-      (events/last_manifest ~ set manifest)
+      (events/generation .set generation)
+      (events/last_manifest .set manifest)
       (clear_dirty events)
-      (var countdown (- (events/gc_countdown ~ get) 1))
+      (var countdown (- (events/gc_countdown .get) 1))
       (if (<= countdown 0)
         (then
           (garbage_collect_segments events manifest)
-          (events/gc_countdown ~ set events/gc_interval))
-        (else (events/gc_countdown ~ set countdown)))
+          (events/gc_countdown .set events/gc_interval))
+        (else (events/gc_countdown .set countdown)))
       (return {^generation generation ^manifest manifest})
     catch StoreError
       (if (== ($to_str $ex/kind) "conflict")
@@ -448,22 +448,22 @@
 
 (fn repair_interrupted_turns [events : EventStore] : Int
   (var repairs (fresh_list))
-  (for [key values] in (events/streams ~ get)
+  (for [key values] in (events/streams .get)
     (var open_turns (fresh_map))
     (for envelope in values
       (if (== envelope/type "turn/start")
         (then
-          (open_turns ~ put ($to_str envelope/payload/turn) envelope))
+          (open_turns .put ($to_str envelope/payload/turn) envelope))
         (elif (== envelope/type "turn/end")
-          (open_turns ~ delete ($to_str envelope/payload/turn)))))
+          (open_turns .delete ($to_str envelope/payload/turn)))))
     (for [turn envelope] in open_turns
-      (repairs ~ push envelope)))
+      (repairs .push envelope)))
   (for started in repairs
     (append_core_event events ($to_str started/scope) ($to_str started/stream)
       {^type "turn/end" ^turn started/payload/turn
        ^reason "interrupted" ^synthetic true}))
-  (if (> repairs/~size 0) (flush_event_store events))
-  repairs/~size)
+  (if (> repairs/.size 0) (flush_event_store events))
+  repairs/.size)
 
 (fn open_event_store
   [root : Str,
@@ -495,9 +495,9 @@
                 ^max_event_bytes max_event_bytes
                 ^max_state_bytes max_state_bytes
                 ^gc_interval gc_interval ^gc_countdown ($cell 1)))
-  (var loaded (backend ~ Store:load_checkpoint))
+  (var loaded (backend .Store:load_checkpoint))
   (if_yes (! ($absent? loaded))
-    (var manifest (loaded/records ~ get "event_manifest"))
+    (var manifest (loaded/records .get "event_manifest"))
     (if (== manifest/format 1)
       (restore_manifest events manifest)
       (fail (HarnessStateError
@@ -506,8 +506,8 @@
   events)
 
 (fn close_event_store [events : EventStore]
-  (if (events/closed ~ get) (return))
-  (if (events/dirty ~ get) (flush_event_store events))
-  (events/backend ~ Store:close)
-  (events/closed ~ set true)
+  (if (events/closed .get) (return))
+  (if (events/dirty .get) (flush_event_store events))
+  (events/backend .Store:close)
+  (events/closed .set true)
   nil)

@@ -56,7 +56,7 @@
   (new CraftRegistry))
 
 (fn recipe_count [c : CraftRegistry] : F64
-  (c/n ~ get 0.0))
+  (c/n .get 0.0))
 
 (type CraftRegistryFull
   ^props {^message Str}
@@ -77,23 +77,23 @@
     (fail (new CraftRegistryFull
                $"craft registry is full at ${max_recipes} recipes")))
   (var base (* id max_ingredients))
-  (c/output ~ set id output)
-  (c/yield ~ set id yield_n)
-  (c/item ~ set base i0)        (c/count ~ set base n0)
-  (c/item ~ set (+ base 1.0) i1) (c/count ~ set (+ base 1.0) n1)
-  (c/item ~ set (+ base 2.0) i2) (c/count ~ set (+ base 2.0) n2)
-  (c/item ~ set (+ base 3.0) i3) (c/count ~ set (+ base 3.0) n3)
-  (c/n ~ set 0.0 (+ id 1.0))
+  (c/output .set id output)
+  (c/yield .set id yield_n)
+  (c/item .set base i0)        (c/count .set base n0)
+  (c/item .set (+ base 1.0) i1) (c/count .set (+ base 1.0) n1)
+  (c/item .set (+ base 2.0) i2) (c/count .set (+ base 2.0) n2)
+  (c/item .set (+ base 3.0) i3) (c/count .set (+ base 3.0) n3)
+  (c/n .set 0.0 (+ id 1.0))
   id)
 
-(fn recipe_output [c : CraftRegistry id : F64] : F64 (c/output ~ get id))
-(fn recipe_yield [c : CraftRegistry id : F64] : F64 (c/yield ~ get id))
+(fn recipe_output [c : CraftRegistry id : F64] : F64 (c/output .get id))
+(fn recipe_yield [c : CraftRegistry id : F64] : F64 (c/yield .get id))
 
 (fn recipe_item [c : CraftRegistry id : F64 slot : F64] : F64
-  (c/item ~ get (+ (* id max_ingredients) slot)))
+  (c/item .get (+ (* id max_ingredients) slot)))
 
 (fn recipe_count_at [c : CraftRegistry id : F64 slot : F64] : F64
-  (c/count ~ get (+ (* id max_ingredients) slot)))
+  (c/count .get (+ (* id max_ingredients) slot)))
 
 # --- matching ----------------------------------------------------------------
 #

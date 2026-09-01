@@ -42,7 +42,7 @@ actual lexical surface (src/gene/reader.nim):
 - date, time, and datetime literals, highlighted before numeric fallback;
 - special forms in head position (`fn`, `var`, `type`, `match`, `impl`, …)
   and boolean control (`&&`, `||`, `!`);
-- properties `^name`, meta `@name`, spread `...`, send `~`, quasiquote
+- properties `^name`, meta `@name`, spread `...`, dot sends, quasiquote
   `` ` ``/`%`;
 - decimal numbers, `true`/`false`/`nil`/`void`/`self`;
 - head-position calls as function names, capitalized symbols as types.

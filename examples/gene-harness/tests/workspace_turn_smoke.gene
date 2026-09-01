@@ -21,7 +21,7 @@
           (Plugin ^id "atomic" ^provides ["Atomic"] ^requires []
             ^contextual true
             ^activate (fn [] (fn [host]
-              (host ~ PluginHost:provide "Atomic" "committed"))))))))
+              (host .PluginHost:provide "Atomic" "committed"))))))))
   (var final_source
     (quote
       (mod plugin
@@ -33,7 +33,7 @@
           (Plugin ^id "atomic" ^provides ["Atomic"] ^requires []
             ^contextual true
             ^activate (fn [] (fn [host]
-              (host ~ PluginHost:provide "Atomic" "final"))))))))
+              (host .PluginHost:provide "Atomic" "final"))))))))
   (var workspace (open_workspace args/0))
   (var h (new_harness ^workspace workspace))
   (var aborted_diff ($cell nil))
@@ -42,7 +42,7 @@
     (run_workspace_turn workspace h "failed"
       (fn [ignored]
         (register_module workspace h "atomic" source ^selectors [])
-        (aborted_diff ~ set (transaction_diff h))
+        (aborted_diff .set (transaction_diff h))
         (fail (HarnessError ^message "later form failed")))))
   (assert (== aborted/status "aborted")
     "a later program failure must abort staged composition")
@@ -50,7 +50,7 @@
     "aborted turn must not publish a composition generation")
   (assert (== (status_of h "atomic") "absent")
     "aborted turn must not activate its generated plugin")
-  (var staged_diff (aborted_diff ~ get))
+  (var staged_diff (aborted_diff .get))
   (assert (== staged_diff/composition/0/change "added")
     "transaction diff must expose staged composition before an abort")
 

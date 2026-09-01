@@ -209,7 +209,7 @@ static void gene_turn_interrupt_end(void) {
     KeyCtrlPageDown = -3
     KeyShiftPageUp = -4
     KeyShiftPageDown = -5
-    # ncurses with extended xterm names enabled decodes CSI 5;5~/6;5~ before
+    # ncurses with extended xterm names enabled decodes CSI 5;5~/6;5.before
     # callers can inspect the raw sequence. Keep those common extended codes
     # alongside the raw-sequence fallbacks above.
     KeyCtrlPageUpNcurses = 557

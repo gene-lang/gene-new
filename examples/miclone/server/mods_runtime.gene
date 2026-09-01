@@ -95,7 +95,7 @@
   # A manifest is Gene data, so reading it is `read_all` and a prop lookup —
   # there is no parser here and there should not be one. `read_all` answers a
   # stream of top-level forms and a manifest is exactly one.
-  (var manifest (($parse/read_all text) ~ next))
+  (var manifest (($parse/read_all text) .next))
   (var grants (manifest_grants manifest))
   (var entry (manifest_entry manifest))
   (var name manifest/name)

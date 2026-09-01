@@ -50,14 +50,14 @@
 (fn new_hit [] : (Buffer F64)
   ($buffer F64 r_cells))
 
-(fn hit? [h : (Buffer F64)] : Bool (== (h ~ get r_hit) 1.0))
-(fn hit_x [h : (Buffer F64)] : F64 (h ~ get r_x))
-(fn hit_y [h : (Buffer F64)] : F64 (h ~ get r_y))
-(fn hit_z [h : (Buffer F64)] : F64 (h ~ get r_z))
-(fn before_x [h : (Buffer F64)] : F64 (h ~ get r_before_x))
-(fn before_y [h : (Buffer F64)] : F64 (h ~ get r_before_y))
-(fn before_z [h : (Buffer F64)] : F64 (h ~ get r_before_z))
-(fn hit_distance [h : (Buffer F64)] : F64 (h ~ get r_distance))
+(fn hit? [h : (Buffer F64)] : Bool (== (h .get r_hit) 1.0))
+(fn hit_x [h : (Buffer F64)] : F64 (h .get r_x))
+(fn hit_y [h : (Buffer F64)] : F64 (h .get r_y))
+(fn hit_z [h : (Buffer F64)] : F64 (h .get r_z))
+(fn before_x [h : (Buffer F64)] : F64 (h .get r_before_x))
+(fn before_y [h : (Buffer F64)] : F64 (h .get r_before_y))
+(fn before_z [h : (Buffer F64)] : F64 (h .get r_before_z))
+(fn hit_distance [h : (Buffer F64)] : F64 (h .get r_distance))
 
 # --- the traversal ------------------------------------------------------------
 
@@ -108,8 +108,8 @@
   (var d_y (boundary_step dy))
   (var d_z (boundary_step dz))
 
-  (out ~ set r_hit 0.0)
-  (out ~ set r_distance 0.0)
+  (out .set r_hit 0.0)
+  (out .set r_distance 0.0)
 
   # The node the eye is already in counts, and its "before" is itself: a caller
   # that finds itself inside something pointable has nowhere sensible to place,
@@ -123,14 +123,14 @@
   (while live
     (if (pointable? reg (node_at w x y z))
       (then
-        (out ~ set r_hit 1.0)
-        (out ~ set r_x x)
-        (out ~ set r_y y)
-        (out ~ set r_z z)
-        (out ~ set r_before_x before_x_v)
-        (out ~ set r_before_y before_y_v)
-        (out ~ set r_before_z before_z_v)
-        (out ~ set r_distance travelled)
+        (out .set r_hit 1.0)
+        (out .set r_x x)
+        (out .set r_y y)
+        (out .set r_z z)
+        (out .set r_before_x before_x_v)
+        (out .set r_before_y before_y_v)
+        (out .set r_before_z before_z_v)
+        (out .set r_distance travelled)
         (set live false))
       (else
         # Advance across whichever boundary comes first. The node just left is

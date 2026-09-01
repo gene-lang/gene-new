@@ -13,7 +13,7 @@
   (Plugin ^id "initial_view" ^provides [["views" "active"]]
     ^requires [] ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:contribute "views"
+      (host .PluginHost:contribute "views"
         {^name "active" ^implementation "initial"
          ^value (view_provider (RecordingView ^lines ($cell [])))})))))
 
@@ -21,14 +21,14 @@
   (Plugin ^id "replacement_view" ^provides [["views" "active"]]
     ^requires [] ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:replace_contribution "views"
+      (host .PluginHost:replace_contribution "views"
         {^name "active" ^implementation "replacement"
          ^value (view_provider (RecordingView ^lines ($cell [])))})))))
 
 (var h (new_harness))
 (install h (initial_plugin))
 (var active (row h "views" "active"))
-(assert (== (active/value ~ HarnessView:show_prompt h) 0)
+(assert (== (active/value .HarnessView:show_prompt h) 0)
   "the initial active view must be selected by the stable logical key")
 (install h (replacement_plugin))
 # Between turns the caller re-reads the row, which is the whole of the handoff:
@@ -37,7 +37,7 @@
 (set active (row h "views" "active"))
 (assert (== active/implementation "replacement")
   "view replacement must publish one new active row")
-(assert (== (active/value ~ HarnessView:show_prompt h) 0)
+(assert (== (active/value .HarnessView:show_prompt h) 0)
   "the turn after a replacement must run the replacement, not its predecessor")
 (uninstall h "replacement_view")
 (assert (== (row h "views" "active") void)

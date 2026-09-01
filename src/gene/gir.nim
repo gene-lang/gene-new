@@ -81,7 +81,7 @@ type
     opNew            # constructor keyword: type + named args + body args
     opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
     opSuperSend       # pop enclosing type + self; resolve msg from the type's ^is parent, push callee + self (super delegation, design §10)
-    opSuperQualifiedSend # like opSuperSend, but pops a qualifier too: (super ~ Q:m) selects against the ^is parent, not the receiver
+    opSuperQualifiedSend # like opSuperSend, but pops a qualifier too: (super .Q:m) selects against the ^is parent, not the receiver
     opSetPath         # [base, seg..., value] -> checked in-place write through setMutableChild; pushes the stored value (set, design §12.1)
     opPlaceSendReceiver # move receiver below newly evaluated named args
     opIntAdd2
@@ -136,7 +136,7 @@ type
     opCheckType
     opDeclareType
     opSyntaxCall  # pop raw call node + fexpr callee, apply the syntax call (design §3/§11.1)
-    opRejectSyntaxSend # reject an fexpr at a ~ send before evaluating send arguments
+    opRejectSyntaxSend # reject an fexpr at a .send before evaluating send arguments
     opResolveQualifiedMessage # pop receiver + message value; resolve the impl, push callee + receiver
     opQualifiedSend # pop receiver + protocol (`P` of `P:msg`); dispatch `name` on the receiver
     opBindMessage # pop qualifier; push a message value bound to the current scope
@@ -689,7 +689,7 @@ type
     callSites*: Table[int, Value]   # opCall/opCallSplice index -> source node (design §3 `Call ^site`)
     superType*: Value        # for a type-direct message body (and closures
                              # nested in it): the enclosing type's `^is` parent,
-                             # stamped in by opMakeType. `(super ~ m)` reads it
+                             # stamped in by opMakeType. `(super .m)` reads it
                              # here rather than resolving a user-visible name,
                              # so a body-local cannot redirect delegation. The
                              # one field written after compilation, and write-
@@ -2794,7 +2794,7 @@ proc addCBackend(lines: var seq[string], chunk: Chunk, prefix: string,
     lines.add "static const size_t " & manifestName & "_count GENE_MAYBE_UNUSED = " &
       $taskFrameRows.len & ";"
     lines.add ""
-  ## Only qualified `(recv ~ P:m)` sends are registered. A bare send is
+  ## Only qualified `(recv .P:m)` sends are registered. A bare send is
   ## type-direct and is rejected by analysis; registering a protocol impl under
   ## a bare key here would let emission resolve what analysis refused.
   for implIndex, impl in chunk.implProtos:

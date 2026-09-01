@@ -48,7 +48,7 @@
     "each replacement must be its own revision")
 
   (var entries (composition_entries workspace))
-  (assert (== entries/~size 1)
+  (assert (== entries/.size 1)
     "replacement must leave one entry for the name, not two")
   (var second_entry (entry_named entries "greet"))
   (assert (!= second_entry/module_digest first_entry/module_digest)

@@ -100,9 +100,9 @@
     (var kind (message_kind b))
     (if_yes (== kind msg_hello)
       (decode_hello b c hello)
-      (set world (new_world (hello ~ get hello_bx) (hello ~ get hello_by)
-                            (hello ~ get hello_bz) (hello ~ get hello_span_x)
-                            (hello ~ get hello_span_y) (hello ~ get hello_span_z)))
+      (set world (new_world (hello .get hello_bx) (hello .get hello_by)
+                            (hello .get hello_bz) (hello .get hello_span_x)
+                            (hello .get hello_span_y) (hello .get hello_span_z)))
       (set have_hello true))
     (if_yes (== kind msg_registry) (set reg_count (decode_registry b c reg)))
     # M7's appearance table, and §2's item vocabulary.
@@ -110,16 +110,16 @@
     (if_yes (== kind msg_items) (set item_count (decode_items b c items)))
     (if_yes (== kind msg_entity)
       (decode_entity b c ent)
-      (set last_ent_count (ent ~ get ent_count))
+      (set last_ent_count (ent .get ent_count))
       (set ent_n (+ ent_n 1.0)))
     (if_yes (== kind msg_block)
       (decode_block b c header block_c block_l)
-      (store_block world (header ~ get block_bx) (header ~ get block_by)
-                   (header ~ get block_bz) block_c)
+      (store_block world (header .get block_bx) (header .get block_by)
+                   (header .get block_bz) block_c)
       (var i 0.0)
       (while (< i block_nodes)
-        (if_yes (!= (block_c ~ get i) 0.0) (set solid_nodes (+ solid_nodes 1.0)))
-        (if_yes (!= (block_l ~ get i) 0.0) (set lit_nodes (+ lit_nodes 1.0)))
+        (if_yes (!= (block_c .get i) 0.0) (set solid_nodes (+ solid_nodes 1.0)))
+        (if_yes (!= (block_l .get i) 0.0) (set lit_nodes (+ lit_nodes 1.0)))
         (set i (+ i 1.0)))
       (set blocks_in (+ blocks_in 1.0)))
     (if_yes (== kind msg_inventory)
@@ -131,13 +131,13 @@
       # with these, and the spawn node read below is 15 s old by the time the
       # transfer ends. §12's ambient ABM edits nodes nobody touched, so a
       # snapshot that is never reconciled is a world it has stopped tracking.
-      (set_node world (delta ~ get delta_x) (delta ~ get delta_y)
-                (delta ~ get delta_z) (delta ~ get delta_id))
+      (set_node world (delta .get delta_x) (delta .get delta_y)
+                (delta .get delta_z) (delta .get delta_id))
       (if_yes (< dn max_deltas)
-        (dlog ~ set (* dn 4.0) (delta ~ get delta_x))
-        (dlog ~ set (+ (* dn 4.0) 1.0) (delta ~ get delta_y))
-        (dlog ~ set (+ (* dn 4.0) 2.0) (delta ~ get delta_z))
-        (dlog ~ set (+ (* dn 4.0) 3.0) (delta ~ get delta_id))
+        (dlog .set (* dn 4.0) (delta .get delta_x))
+        (dlog .set (+ (* dn 4.0) 1.0) (delta .get delta_y))
+        (dlog .set (+ (* dn 4.0) 2.0) (delta .get delta_z))
+        (dlog .set (+ (* dn 4.0) 3.0) (delta .get delta_id))
         (set dn (+ dn 1.0))))))
 
   (await ($time/sleep 400.0))
@@ -146,12 +146,12 @@
   ($console/log "")
 
   (say have_hello "the socket opened and the server spoke first" "hello")
-  (say (== (hello ~ get hello_version) protocol_version)
+  (say (== (hello .get hello_version) protocol_version)
        "the handshake names a protocol version"
-       $"v$($to_int (hello ~ get hello_version))")
-  (var span_x (hello ~ get hello_span_x))
-  (var span_y (hello ~ get hello_span_y))
-  (var span_z (hello ~ get hello_span_z))
+       $"v$($to_int (hello .get hello_version))")
+  (var span_x (hello .get hello_span_x))
+  (var span_y (hello .get hello_span_y))
+  (var span_z (hello .get hello_span_z))
   (say (&& (> span_x 0.0) (&& (> span_y 0.0) (> span_z 0.0)))
        "and the world's extent"
        $"$($to_int span_x)x$($to_int span_y)x$($to_int span_z) blocks")
@@ -220,9 +220,9 @@
     (var n 0.0)
     (var i 0.0)
     (while (< i dn)
-      (if_yes (&& (== (dlog ~ get (* i 4.0)) dx)
-                  (&& (== (dlog ~ get (+ (* i 4.0) 1.0)) dy)
-                      (== (dlog ~ get (+ (* i 4.0) 2.0)) dz)))
+      (if_yes (&& (== (dlog .get (* i 4.0)) dx)
+                  (&& (== (dlog .get (+ (* i 4.0) 1.0)) dy)
+                      (== (dlog .get (+ (* i 4.0) 2.0)) dz)))
         (set n (+ n 1.0)))
       (set i (+ i 1.0)))
     n))
@@ -235,20 +235,20 @@
     (var seen 0.0)
     (var i 0.0)
     (while (< i dn)
-      (if_yes (&& (== (dlog ~ get (* i 4.0)) dx)
-                  (&& (== (dlog ~ get (+ (* i 4.0) 1.0)) dy)
-                      (== (dlog ~ get (+ (* i 4.0) 2.0)) dz)))
+      (if_yes (&& (== (dlog .get (* i 4.0)) dx)
+                  (&& (== (dlog .get (+ (* i 4.0) 1.0)) dy)
+                      (== (dlog .get (+ (* i 4.0) 2.0)) dz)))
         (if_yes (== seen nth)
           (set found true)
-          (out ~ set 0.0 (dlog ~ get (+ (* i 4.0) 3.0))))
+          (out .set 0.0 (dlog .get (+ (* i 4.0) 3.0))))
         (set seen (+ seen 1.0)))
       (set i (+ i 1.0)))
     found))
   (var got ($buffer F64 1.0))
 
-  (var sx ($math/floor (hello ~ get hello_spawn_x)))
-  (var sy ($math/round (hello ~ get hello_spawn_y)))
-  (var sz ($math/floor (hello ~ get hello_spawn_z)))
+  (var sx ($math/floor (hello .get hello_spawn_x)))
+  (var sy ($math/round (hello .get hello_spawn_y)))
+  (var sz ($math/floor (hello .get hello_spawn_z)))
   (var dig_y (- sy 1.0))
   (var node_before (node_at world sx dig_y sz))
   (var before_name (name_of reg node_before))
@@ -263,13 +263,13 @@
        "a dig comes back as one node delta at that position"
        $"$($to_int (deltas_at sx dig_y sz)) here, $($to_int dn) in all")
   (var saw_dig (nth_delta_id sx dig_y sz 0.0 got))
-  (say (&& saw_dig (== (got ~ get 0.0) 0.0)) "and the node is now air" "")
+  (say (&& saw_dig (== (got .get 0.0) 0.0)) "and the node is now air" "")
   (say (== inv_n 2.0) "and the inventory is authoritative, not predicted"
        $"$($to_int inv_n) message(s)")
   # Captured now, because the hotbar is overwritten by the next message and the
   # place below has to name the item this dig actually yielded.
-  (var held_item (inv ~ get 0.0))
-  (var held_count (inv ~ get 1.0))
+  (var held_item (inv .get 0.0))
+  (var held_count (inv .get 1.0))
   (say (== held_count 1.0) "with the drop in it" $"x$($to_int held_count)")
   # §2's one drop-table exception, over the wire: grass yields dirt. The id in
   # the hotbar is an *item* id now, so it is named through the item registry.
@@ -294,10 +294,10 @@
   # spaces happened to be the same one.
   (var saw_place (nth_delta_id sx dig_y sz 1.0 got))
   (var placed_name (item_name items held_item))
-  (say (&& saw_place (== (got ~ get 0.0) (item_node items held_item)))
+  (say (&& saw_place (== (got .get 0.0) (item_node items held_item)))
        "restoring the node the held item places" placed_name)
-  (say (&& (== inv_n 3.0) (== (inv ~ get 1.0) 0.0)) "and the stack is spent"
-       $"$($to_int inv_n) message(s), x$($to_int (inv ~ get 1.0))")
+  (say (&& (== inv_n 3.0) (== (inv .get 1.0) 0.0)) "and the stack is spent"
+       $"$($to_int inv_n) message(s), x$($to_int (inv .get 1.0))")
 
   # The authority. A client that lies about its inventory is the one thing a
   # server must not believe.

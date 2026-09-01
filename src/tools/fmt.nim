@@ -109,7 +109,14 @@ proc pathSegment(v: Value): string =
   ## "" when the segment cannot ride in a slash path.
   case v.kind
   of vkSymbol:
-    if '/' in v.symVal or v.symVal.len == 0: "" else: v.symVal
+    if '/' in v.symVal or v.symVal.len == 0:
+      ""
+    elif v.symVal.len > 2 and v.symVal.startsWith("?~"):
+      "?." & v.symVal[2 .. ^1]
+    elif v.symVal.len > 1 and v.symVal[0] == '~':
+      "." & v.symVal[1 .. ^1]
+    else:
+      v.symVal
   of vkInt: print(v)
   of vkNode:
     if v.head.isSym("unquote") and v.body.len == 1 and v.props.len == 0:
@@ -187,8 +194,9 @@ proc headerBodyCount(head: string, body: openArray[Value]): int =
      "enum", "protocol":
     declarationPrefixCount(head, body)
   else:
-    # Message send keeps `x ~ msg` on the head line.
-    if body.len >= 2 and body[0].isSym("~"): 2 else: 0
+    # Message send keeps `x .msg` on the head line.
+    if body.len >= 2 and (body[0].isSym("~") or body[0].isSym("?~")): 2
+    else: 0
 
 proc attributePrefixCount(v: Value, head: string): int =
   result = declarationPrefixCount(head, v.body)
@@ -223,15 +231,77 @@ proc joinItems(items: openArray[Value]): string =
       glueNext = false
   sb
 
+proc sendDescriptor(callee: Value, optional: bool): string =
+  result = if optional: "?." else: "."
+  if callee.kind == vkNode and callee.head.isSym("msg") and
+      callee.body.len == 2 and callee.body[1].kind == vkSymbol:
+    let qualifier =
+      if callee.body[0].kind == vkNode and callee.body[0].head.isSym("path"):
+        let path = resugarPath(callee.body[0])
+        if path.len > 0: path else: oneLine(callee.body[0])
+      else:
+        oneLine(callee.body[0])
+    result.add qualifier & ":" & callee.body[1].symVal
+  elif callee.kind == vkNode and callee.head.isSym("unquote") and
+      callee.body.len == 1:
+    result.add '%'
+    if callee.body[0].kind == vkSymbol:
+      result.add callee.body[0].symVal
+    else:
+      result.add oneLine(callee.body[0])
+  elif callee.kind == vkSymbol:
+    result.add callee.symVal
+  else:
+    result.add '%' & oneLine(callee)
+
+proc sendParts(v: Value): tuple[found, leading, optional: bool,
+                                  receiver, callee: Value, argsStart: int] =
+  if v.kind != vkNode:
+    return
+  if v.head.kind == vkSymbol and v.head.symVal in ["~", "?~"] and
+      v.body.len > 0:
+    return (true, true, v.head.symVal == "?~", NIL, v.body[0], 1)
+  if v.body.len > 1 and v.body[0].kind == vkSymbol and
+      v.body[0].symVal in ["~", "?~"]:
+    return (true, false, v.body[0].symVal == "?~", v.head, v.body[1], 2)
+
+proc sendOneLine(v: Value): string =
+  let send = sendParts(v)
+  if not send.found:
+    return
+  result = if v.nodeImmutable: "#(" else: "("
+  if not send.leading:
+    result.add oneLine(send.receiver)
+    addProps(result, v.meta, "@")
+    addProps(result, v.props, "^")
+    result.add ' '
+  result.add sendDescriptor(send.callee, send.optional)
+  if send.leading:
+    addProps(result, v.meta, "@")
+    addProps(result, v.props, "^")
+  if v.body.len > send.argsStart:
+    result.add ' ' & joinItems(v.body[send.argsStart .. ^1])
+  result.add ')'
+
+proc renderPipelineStage(stage: seq[Value]): string =
+  if stage.len >= 2 and stage[0].kind == vkSymbol and
+      stage[0].symVal in ["~", "?~"]:
+    result = sendDescriptor(stage[1], stage[0].symVal == "?~")
+    if stage.len > 2:
+      result.add ' ' & joinItems(stage[2 .. ^1])
+  else:
+    result = joinItems(stage)
+
 proc pipelineParts(v: Value): tuple[base: Value, stages: seq[seq[Value]]] =
   ## Reader pipe folding and explicitly nested receiver sends have the same
   ## value shape. Canonical human style uses pipe sugar for chains of at least
-  ## two sends; a single receiver send remains `(value ~ message ...)`.
+  ## two sends; a single receiver send remains `(value .message ...)`.
   var current = v
   var reversed: seq[seq[Value]]
   while current.kind == vkNode and not current.nodeImmutable and
       current.props.len == 0 and current.meta.len == 0 and
-      current.body.len >= 2 and current.body[0].isSym("~"):
+      current.body.len >= 2 and
+      (current.body[0].isSym("~") or current.body[0].isSym("?~")):
     reversed.add current.body
     current = current.head
   result.base = current
@@ -246,7 +316,7 @@ proc pipelineOneLine(v: Value): string =
   result = "(" & oneLine(parts.base)
   for i, stage in parts.stages:
     result.add (if i == 0: " " else: "; ")
-    result.add joinItems(stage)
+    result.add renderPipelineStage(stage)
   result.add ')'
 
 proc oneLine(v: Value): string =
@@ -255,6 +325,9 @@ proc oneLine(v: Value): string =
     let pipeline = pipelineOneLine(v)
     if pipeline.len > 0:
       return pipeline
+    let send = sendOneLine(v)
+    if send.len > 0:
+      return send
     if not v.nodeImmutable and v.head.kind == vkSymbol:
       case v.head.symVal
       of "path":
@@ -385,7 +458,22 @@ proc breakNode(v: Value, indent: int): string =
     for index, stage in pipeline.stages:
       sb.add "\n" & pad
       if index > 0: sb.add "; "
-      sb.add joinItems(stage)
+      sb.add renderPipelineStage(stage)
+    return sb & ")"
+  let send = sendParts(v)
+  if send.found:
+    var sb = if v.nodeImmutable: "#(" else: "("
+    if not send.leading:
+      sb.add oneLine(send.receiver)
+      addProps(sb, v.meta, "@")
+      addProps(sb, v.props, "^")
+      sb.add ' '
+    sb.add sendDescriptor(send.callee, send.optional)
+    if send.leading:
+      addProps(sb, v.meta, "@")
+      addProps(sb, v.props, "^")
+    for i in send.argsStart ..< v.body.len:
+      sb.add "\n" & pad & fmtValue(v.body[i], indent + 2)
     return sb & ")"
   var sb = (if v.nodeImmutable: "#(" else: "(") & oneLine(v.head)
   let head = if v.head.kind == vkSymbol: v.head.symVal else: ""
@@ -415,7 +503,7 @@ proc breakNode(v: Value, indent: int): string =
         inc i
   else:
     # A lone remaining string rides the head line — the common
-    # `(db ~ exec "multiline sql")` / `(var css "...")` shape.
+    # `(db .exec "multiline sql")` / `(var css "...")` shape.
     if i == body.len - 1 and body[i].kind == vkString:
       sb.add " " & (if '\n' in body[i].strVal: rawStr(body[i].strVal)
                     else: fmtValue(body[i], indent + 2))

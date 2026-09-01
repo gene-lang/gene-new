@@ -76,12 +76,12 @@
 (fn new_bounds [] : (Buffer F64)
   ($buffer F64 b_cells))
 
-(fn bounds_min_x [b : (Buffer F64)] : F64 (b ~ get b_min_x))
-(fn bounds_min_y [b : (Buffer F64)] : F64 (b ~ get b_min_y))
-(fn bounds_min_z [b : (Buffer F64)] : F64 (b ~ get b_min_z))
-(fn bounds_max_x [b : (Buffer F64)] : F64 (b ~ get b_max_x))
-(fn bounds_max_y [b : (Buffer F64)] : F64 (b ~ get b_max_y))
-(fn bounds_max_z [b : (Buffer F64)] : F64 (b ~ get b_max_z))
+(fn bounds_min_x [b : (Buffer F64)] : F64 (b .get b_min_x))
+(fn bounds_min_y [b : (Buffer F64)] : F64 (b .get b_min_y))
+(fn bounds_min_z [b : (Buffer F64)] : F64 (b .get b_min_z))
+(fn bounds_max_x [b : (Buffer F64)] : F64 (b .get b_max_x))
+(fn bounds_max_y [b : (Buffer F64)] : F64 (b .get b_max_y))
+(fn bounds_max_z [b : (Buffer F64)] : F64 (b .get b_max_z))
 
 # The brightest either channel is at the node or any of its six neighbours. An
 # edit cannot move more light than was already there to move, so this is the
@@ -147,9 +147,9 @@
                 sky q q_seed)
 
   (var deep (open_below w reg nx ny nz))
-  (bounds ~ set b_min_x (- nx reach))
-  (bounds ~ set b_max_x (+ nx reach))
-  (bounds ~ set b_min_z (- nz reach))
-  (bounds ~ set b_max_z (+ nz reach))
-  (bounds ~ set b_max_y (+ ny reach))
-  (bounds ~ set b_min_y (- deep reach)))
+  (bounds .set b_min_x (- nx reach))
+  (bounds .set b_max_x (+ nx reach))
+  (bounds .set b_min_z (- nz reach))
+  (bounds .set b_max_z (+ nz reach))
+  (bounds .set b_max_y (+ ny reach))
+  (bounds .set b_min_y (- deep reach)))

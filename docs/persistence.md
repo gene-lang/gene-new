@@ -81,16 +81,16 @@ their own namespaces, mirroring `db/sqlite/open` (review: no ambiguous
 (import store/fs [open : store_open])
 (var s (store_open fs ^root ".state"))      ; fs : fs/ReadWriteDir capability
 
-(s ~ put key value)          ; ^mode data|full (default data)
-(s ~ get key)                ; raises StoreError ^kind missing on absence
-(s ~ get key ^default v)     ; returns v when the key is absent
-(s ~ has? key)               ; -> Bool
-(s ~ delete key)
-(s ~ keys)                   ; -> [Str]
-(s ~ clear)                  ; drop all records (for a "start fresh" init)
-(s ~ checkpoint generation records) ; atomically publish one Map of records
-(s ~ load_checkpoint)       ; newest complete valid generation, or nil
-(s ~ close)
+(s .put key value)          ; ^mode data|full (default data)
+(s .get key)                ; raises StoreError ^kind missing on absence
+(s .get key ^default v)     ; returns v when the key is absent
+(s .has? key)               ; -> Bool
+(s .delete key)
+(s .keys)                   ; -> [Str]
+(s .clear)                  ; drop all records (for a "start fresh" init)
+(s .checkpoint generation records) ; atomically publish one Map of records
+(s .load_checkpoint)       ; newest complete valid generation, or nil
+(s .close)
 ```
 
 Decisions, several from review:
@@ -121,7 +121,7 @@ Decisions, several from review:
 - **Restore hooks are off by default, even in `full` mode.** `serde_restore`
   executes user code; making that the default for every `get` would turn a
   tampered state file or db row into an implicit execution trigger. Opt in
-  explicitly with `(s ~ get key ^policy (SerdePolicy ^allow_restore true))`,
+  explicitly with `(s .get key ^policy (SerdePolicy ^allow_restore true))`,
   or set a trusted-state policy at `open` — for the app's own state directory
   it controls, never for a store fed external input.
 - **Read `^policy` (a `SerdePolicy`) passes through to `serde/read*`** for
@@ -212,7 +212,7 @@ Reload is an application pattern with three obligations; there is no magic
 2. **Choose load-or-fresh at init, via a flag.** On startup the application
    reads a resume flag (an env var / config / CLI flag it owns). If set, it
    `keys` + `get`s the records it needs and reconstructs. If not, it starts
-   fresh — either ignoring existing records or calling `(s ~ clear)` for a
+   fresh — either ignoring existing records or calling `(s .clear)` for a
    clean slate. The store provides both paths; the *decision* is the app's.
 3. **Reconstruct + re-wire, having loaded modules first.** For each loaded
    record, rebuild the data, then re-`actor/spawn` from saved state, reopen
@@ -242,10 +242,10 @@ an "unprocessed input" marker, so a stop between accepting input and finishing
 its turn reloads sensibly:
 
 ```gene
-(s ~ put ($ "pending:" id) input)        ; 1. record the accepted input
+(s .put ($ "pending:" id) input)        ; 1. record the accepted input
 ;; ... process the turn ...
-(s ~ put ($ "session:" id) new_state)    ; 2. record the result
-(s ~ delete ($ "pending:" id))           ; 3. clear the marker
+(s .put ($ "session:" id) new_state)    ; 2. record the result
+(s .delete ($ "pending:" id))           ; 3. clear the marker
 ```
 
 On reload: a `pending:*` with no matching completed state means a stop

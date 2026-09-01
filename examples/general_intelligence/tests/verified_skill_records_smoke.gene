@@ -45,7 +45,7 @@
   (var receipt (seal_receipt payload))
   (if_not (receipt_well_formed? receipt)
     ($panic "well-formed receipt rejected"))
-  (receipt ~ set_prop `tests_passed 0)
+  (receipt .set_prop `tests_passed 0)
   (if (receipt_well_formed? receipt)
     ($panic "mutated receipt accepted"))
   ($println

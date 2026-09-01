@@ -16,11 +16,11 @@
 (fn sample_fault [prior : (List Float), draw : Float] : Int
   (var cumulative 0.0)
   (var fault 0)
-  (while (< fault (prior ~ size))
+  (while (< fault (prior .size))
     (set cumulative (+ cumulative prior/%fault))
     (if (< draw cumulative) (return fault))
     (set fault (+ fault 1)))
-  (- (prior ~ size) 1))
+  (- (prior .size) 1))
 
 (fn generate_batch [subject : Node, prior : (List Float), episode_seed : Int,
                     random_seed : Int, episode_count : Int] : Node
@@ -43,8 +43,8 @@
     (var random_draws : (List Float) [])
     (repeat _ in 3
       (set random_state (next_random_state random_state))
-      (random_draws ~ push (random_unit random_state)))
-    (episodes ~ push
+      (random_draws .push (random_unit random_state)))
+    (episodes .push
       `(episode
          ^index %episode_index
          ^fault %fault
@@ -99,13 +99,13 @@
 (fn without_test [tests : (List Int), removed : Int] : (List Int)
   (var result : (List Int) [])
   (for test in tests
-    (if_not (== test removed) (result ~ push test)))
+    (if_not (== test removed) (result .push test)))
   result)
 
 (fn execute_random_from [subject : Node, episode : Node,
                          remaining_tests : (List Int), draw_index : Int,
                          inspections : Int] : Node
-  (var choice_count (+ 4 (remaining_tests ~ size)))
+  (var choice_count (+ 4 (remaining_tests .size)))
   (var draw episode/random_draws/%draw_index)
   (var choice
     ($to_int ($math/floor (* draw ($to_float choice_count)))))
@@ -128,7 +128,7 @@
   (var best_policy (quote (defer)))
   (var best_utility subject/defer_utility)
   (var fault 0)
-  (while (< fault (prior ~ size))
+  (while (< fault (prior .size))
     (var probability prior/%fault)
     (var utility
       (+ (* probability subject/correct_repair_utility)
@@ -211,7 +211,7 @@
   `(batch_result
      ^episode_seed %batch/episode_seed
      ^random_seed %batch/random_seed
-     ^episode_count %(batch/episodes ~ size)
+     ^episode_count %(batch/episodes .size)
      ^active_beta %active_beta
      ^planner_elapsed_ms %planner_elapsed_ms
      ^greedy_policy %greedy
@@ -240,7 +240,7 @@
   `(paired_batch_result
      ^episode_seed %batch/episode_seed
      ^random_seed %batch/random_seed
-     ^episode_count %(batch/episodes ~ size)
+     ^episode_count %(batch/episodes .size)
      ^active_beta %active_beta
      ^planner_elapsed_ms %planner_elapsed_ms
      ^reward_policy %reward/policy
@@ -267,7 +267,7 @@
   (repeat batch_index in batch_count
     (var episode_seed (+ episode_seed_base (* 7919 batch_index)))
     (var random_seed (+ random_seed_base (* 7919 batch_index)))
-    (results ~ push
+    (results .push
       (evaluate_batch subject prior episode_seed random_seed episode_count)))
   results)
 
@@ -279,7 +279,7 @@
   (var elapsed_ms (- ($os/monotonic_ms) started))
   `(compute_pilot
      ^valid %(&&
-               (== (batches ~ size) 1)
+               (== (batches .size) 1)
                (== batches/0/episode_count 100)
                (== batches/0/final_episode_state 264756247)
                (== batches/0/final_random_state 2017023388))

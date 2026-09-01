@@ -63,7 +63,7 @@
 (fn zero [b : (Buffer F32)] : Nil
   (var i 0.0)
   (while (< i block_nodes)
-    (b ~ set i 0.0)
+    (b .set i 0.0)
     (set i (+ i 1.0))))
 
 # --- shared setup -------------------------------------------------------------
@@ -88,7 +88,7 @@
         (var x (+ pocket_x dx))
         (var y (+ pocket_y dy))
         (var z (+ pocket_z dz))
-        (content ~ set (region_index x y z block_dim block_dim) air)
+        (content .set (region_index x y z block_dim block_dim) air)
         (relight_node p1 content block_dim block_dim block_dim r x y z
                       sky q q2)
         (set dx (+ dx 1.0)))
@@ -139,11 +139,11 @@
         (dig_pocket content p1 r sky q q2 air)
         (var pocket (region_index pocket_x pocket_y pocket_z
                                   block_dim block_dim))
-        (content ~ set pocket lamp)
+        (content .set pocket lamp)
         (relight_node p1 content block_dim block_dim block_dim r
                       pocket_x pocket_y pocket_z sky q q2)
-        (set edited_node (content ~ get pocket))
-        (set edited_light (night_of (p1 ~ get pocket))))
+        (set edited_node (content .get pocket))
+        (set edited_light (night_of (p1 .get pocket))))
 
       (put_block w r d bx slab_y bz content p1 p2)
       (set bz (+ bz 1)))
@@ -164,7 +164,7 @@
 (fn verify_report [root : Str] : (List Str)
   (var out : (List Str) [])
   (if_not (world_exists? root)
-    (out ~ push $"FAIL no world at ${root} — run `gene run persistence create` first")
+    (out .push $"FAIL no world at ${root} — run `gene run persistence create` first")
     (return out))
 
   (var game (load_mods))
@@ -212,9 +212,9 @@
                         (registered_count r))
           (var i 0.0)
           (while (< i block_nodes)
-            (if_yes (!= (stored_c ~ get i) (fresh_c ~ get i))
+            (if_yes (!= (stored_c .get i) (fresh_c .get i))
               (set differing (+ differing 1)))
-            (if_yes (!= (stored_p1 ~ get i) (fresh_p1 ~ get i))
+            (if_yes (!= (stored_p1 .get i) (fresh_p1 .get i))
               (set light_differing (+ light_differing 1)))
             (set i (+ i 1.0)))
           (if_yes (&& (== bx edit_bx) (== bz edit_bz))
@@ -222,10 +222,10 @@
                                       block_dim block_dim))
             (var beside (region_index (+ pocket_x 1.0) pocket_y pocket_z
                                       block_dim block_dim))
-            (set dig_ok (== (stored_c ~ get beside) air))
-            (set lamp_ok (== (stored_c ~ get pocket) lamp))
-            (set lamp_light (night_of (stored_p1 ~ get pocket)))
-            (set neighbour_light (night_of (stored_p1 ~ get beside)))))
+            (set dig_ok (== (stored_c .get beside) air))
+            (set lamp_ok (== (stored_c .get pocket) lamp))
+            (set lamp_light (night_of (stored_p1 .get pocket)))
+            (set neighbour_light (night_of (stored_p1 .get beside)))))
         (else (set missing (+ missing 1))))
       (set bz (+ bz 1)))
     (set bx (+ bx 1)))
@@ -245,14 +245,14 @@
   (check out "exactly the pocket differs" $"${differing}" "27")
   (check_b out "the lamp lit a neighbourhood that also persisted"
            (> light_differing 20) true)
-  (out ~ push $"     (${differing} nodes and ${light_differing} light values differ from a fresh generate)")
+  (out .push $"     (${differing} nodes and ${light_differing} light values differ from a fresh generate)")
   (close_world w)
   out)
 
 (fn check [out : (List Str) label : Str got : Str want : Str] : Nil
   (if (== got want)
-    (then (out ~ push $"ok   ${label}"))
-    (else (out ~ push $"FAIL ${label}: got ${got}, want ${want}"))))
+    (then (out .push $"ok   ${label}"))
+    (else (out .push $"FAIL ${label}: got ${got}, want ${want}"))))
 
 (fn check_b [out : (List Str) label : Str got : Bool want : Bool] : Nil
   (check out label $"${got}" $"${want}"))

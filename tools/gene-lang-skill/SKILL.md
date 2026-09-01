@@ -6,7 +6,7 @@ description: Write, run, and debug Gene source (.gene files). Use when writing o
 # Writing Gene
 
 Gene is homoiconic and Lisp-shaped, so Lisp priors fire — and most of them are
-wrong here. `(println …)` is an undefined symbol. `(xs ~ map f)` needs a stream.
+wrong here. `(println …)` is an undefined symbol. `(xs .map f)` needs a stream.
 `(foo ^k 1)` in code position is a call, not data. Guessing produces code that
 reads plausibly and does not run.
 
@@ -19,7 +19,7 @@ before it goes into a file.
 no file needed. Build the binary first with `nimble build` if `bin/gene` is absent.
 
 ```console
-$ ./bin/gene eval '($println (([1 2 3] ~ to_stream) ~ into []))'
+$ ./bin/gene eval '($println (([1 2 3] .to_stream) .into []))'
 [1 2 3]
 ```
 
@@ -53,24 +53,24 @@ type annotations resolve structurally.
 (fn f [x : Int] : Str …)            # types stay bare
 ```
 
-**A send with no arguments is `receiver/~message`.** With arguments it is
-`(receiver ~ message args…)`. Chain with a leading `;` on continuation lines.
+**A send with no arguments is `receiver/.message`.** With arguments it is
+`(receiver .message args…)`. Chain with a leading `;` on continuation lines.
 
 ```gene
-(var n xs/~size)
-(xs ~ push value)
+(var n xs/.size)
+(xs .push value)
 (xs
-  ~ to_stream
-  ; ~ filter (fn [x] (> x 1))
-  ; ~ into [])
+  .to_stream
+  ; .filter (fn [x] (> x 1))
+  ; .into [])
 ```
 
-`(a/~b c)` is not a shortcut for `(a ~ b c)` — it means `((a ~ b) c)`, a
+`(a/.b c)` is not a shortcut for `(a .b c)` — it means `((a .b) c)`, a
 zero-argument send whose result is then called.
 
 **Sends dispatch only.** A bare name reaches a type-direct message; `P:msg`
 reaches a protocol impl. There is no lexical callable fallback, so a function
-in scope is invisible to `~`.
+in scope is invisible to a dot send.
 
 **`map`/`filter`/`take`/`into`/`each` are stream operations.** Open a stream
 with `to_stream`, close it with `into`.
@@ -81,7 +81,7 @@ for guards — their tails are implicit sequences, so a `do` wrapper is
 redundant. Reserve `then`/`elif`/`else` for branches that all do real work.
 
 **Only `nil`, `false`, and `void` are falsy.** `""`, `0`, and `[]` are truthy,
-so test emptiness explicitly: `(== s "")`, `xs/~empty?`, `($absent? v)`.
+so test emptiness explicitly: `(== s "")`, `xs/.empty?`, `($absent? v)`.
 
 **Node literals are data only under quote.** In code position `(foo ^k 1 2)`
 is a call. Write `(quote (foo ^k 1 2))` or `` `(foo ^k 1 2) `` for the node.

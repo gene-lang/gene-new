@@ -61,7 +61,7 @@ hidden props contain native state:
 c          ; ((type SqliteDb) ^handle (c_owned_ptr) ^backend "sqlite" ...)
 ($head c)  ; (type SqliteDb)
 c/path     ; ":memory:"
-(c ~ Db:exec "select 1")
+(c .Db:exec "select 1")
 ```
 
 The native-extension interface exposes:

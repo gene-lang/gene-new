@@ -27,20 +27,20 @@
 (fn fs_plugin [] : Plugin
   (Plugin ^id "fs_local" ^provides ["Fs"]
     ^contextual true ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "Fs" "LOCAL-FS")))))
+      (host .PluginHost:provide "Fs" "LOCAL-FS")))))
 
 (fn combo_plugin [] : Plugin
   # Two seams from one plugin, so uninstall has more than one effect to reverse.
   (Plugin ^id "combo" ^provides ["Llm" "Tools"]
     ^contextual true ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "Llm" "LLM-A")
-      (host ~ PluginHost:provide "Tools" "TOOLS-A")))))
+      (host .PluginHost:provide "Llm" "LLM-A")
+      (host .PluginHost:provide "Tools" "TOOLS-A")))))
 
 (fn broken_plugin [] : Plugin
   # Registers one seam, then fails. The seam must not survive.
   (Plugin ^id "broken" ^provides ["Log"]
     ^contextual true ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "Log" "LOG-X")
+      (host .PluginHost:provide "Log" "LOG-X")
       (fail (HarnessError ^message "boom during activate"))))))
 
 # Two providers of one seam. Each is a plugin; neither is the consumer's
@@ -48,13 +48,13 @@
 (fn mem_fs_plugin [] : Plugin
   (Plugin ^id "fs_mem" ^provides ["HarnessFs"]
     ^contextual true ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "HarnessFs"
+      (host .PluginHost:provide "HarnessFs"
         (fs_provider (MemFs ^files {^notes "mem:hello"})))))))
 
 (fn local_fs_plugin [] : Plugin
   (Plugin ^id "fs_local_real" ^provides ["HarnessFs"]
     ^contextual true ^activate (fn [] (fn [host]
-      (host ~ PluginHost:replace "HarnessFs"
+      (host .PluginHost:replace "HarnessFs"
         (fs_provider (LocalFs ^root "/tmp")))))))
 
 # An observer plugin. It contributes no seam at all — it subscribes, which is
@@ -62,12 +62,12 @@
 (var audit_seen ($cell []))
 
 (fn note_tool [e : ToolInvoked]
-  ((audit_seen ~ get) ~ push $"${e/tool}(${e/arg})"))
+  ((audit_seen .get) .push $"${e/tool}(${e/arg})"))
 
 (fn audit_plugin [] : Plugin
   (Plugin ^id "audit" ^provides []
     ^contextual true ^activate (fn [] (fn [host]
-      (host ~ PluginHost:subscribe ToolInvoked note_tool)))))
+      (host .PluginHost:subscribe ToolInvoked note_tool)))))
 
 # --- a dependency chain ----------------------------------------------------
 #
@@ -81,32 +81,32 @@
       # No defensive check, and none needed: the kernel does not run `activate`
       # until every seam in `requires` is bound. That guarantee is what the
       # declaration buys.
-      (var fs (host ~ PluginHost:resolve "HarnessFs"))
-      (host ~ PluginHost:provide "Index" (head_tool fs "notes"))))))
+      (var fs (host .PluginHost:resolve "HarnessFs"))
+      (host .PluginHost:provide "Index" (head_tool fs "notes"))))))
 
 (fn search_plugin [] : Plugin
   # One level further out: it needs the indexer's seam, and knows nothing about
   # the filesystem underneath it.
   (Plugin ^id "search" ^provides ["Search"] ^requires ["Index"]
     ^contextual true ^activate (fn [] (fn [host]
-      (var idx (host ~ PluginHost:resolve "Index"))
-      (host ~ PluginHost:provide "Search" $"search-over:${idx}")))))
+      (var idx (host .PluginHost:resolve "Index"))
+      (host .PluginHost:provide "Search" $"search-over:${idx}")))))
 
 (var lifecycle_seen ($cell []))
 
 (fn note_up [e : PluginActivated]
-  ((lifecycle_seen ~ get) ~ push $"+${e/plugin}"))
+  ((lifecycle_seen .get) .push $"+${e/plugin}"))
 
 (fn note_down [e : PluginDeactivated]
-  ((lifecycle_seen ~ get) ~ push $"-${e/plugin} (${e/reason})"))
+  ((lifecycle_seen .get) .push $"-${e/plugin} (${e/reason})"))
 
 (fn watcher_plugin [] : Plugin
   # A plugin watching the lifecycle itself, through the ordinary event bus. The
   # kernel knows nothing about it.
   (Plugin ^id "watcher" ^provides []
     ^contextual true ^activate (fn [] (fn [host]
-      (host ~ PluginHost:subscribe PluginActivated note_up)
-      (host ~ PluginHost:subscribe PluginDeactivated note_down)))))
+      (host .PluginHost:subscribe PluginActivated note_up)
+      (host .PluginHost:subscribe PluginDeactivated note_down)))))
 
 (fn main [args]
   (var h (new_harness))
@@ -189,7 +189,7 @@
     (try (fs_provider "just-a-string") catch Any "refused at bind"))
 
   ($println "-- a plugin loaded at runtime, granted nothing --")
-  (var here (module_dir this_mod/~path))
+  (var here (module_dir this_mod/.path))
   (fn load_stub []
     (install_sandboxed h $"${here}/../plugins/fs_stub" "plugin.gene"
       []                              # grants: nothing that reaches the world
@@ -267,10 +267,10 @@
   ($println "-- the ledger reverses subscriptions too --")
   ($println "  " (install h (audit_plugin)))
   (publish h (ToolInvoked ^tool "head_tool" ^arg "notes"))
-  ($println "  audit saw:   " (audit_seen ~ get))
+  ($println "  audit saw:   " (audit_seen .get))
   ($println "  " (uninstall h "audit"))
   (publish h (ToolInvoked ^tool "head_tool" ^arg "after-uninstall"))
-  ($println "  audit saw:   " (audit_seen ~ get))
+  ($println "  audit saw:   " (audit_seen .get))
   ($println "  ^ unchanged: the subscription went with the plugin.")
 
   # --- dependencies, and a lifecycle that settles ---------------------------
@@ -317,21 +317,21 @@
   ($println "-- a dependency cycle is pending, not a hang --")
   (install h2 (Plugin ^id "cyc_a" ^provides ["CA"] ^requires ["CB"]
     ^contextual true ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "CA" "a")))))
+      (host .PluginHost:provide "CA" "a")))))
   (install h2 (Plugin ^id "cyc_b" ^provides ["CB"] ^requires ["CA"]
     ^contextual true ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "CB" "b")))))
+      (host .PluginHost:provide "CB" "b")))))
   ($println "    states:  " (plugin_states h2))
   ($println "  ^ neither can go first, so neither does, and both say so. A")
   ($println "    self-dependency is refused outright instead:")
   ($println "    "
     (try (install h2 (Plugin ^id "ouroboros" ^provides ["O"] ^requires ["O"]
            ^contextual true ^activate (fn [] (fn [host]
-             (host ~ PluginHost:provide "O" "o")))))
+             (host .PluginHost:provide "O" "o")))))
       catch Any $"refused: ${$ex/message}"))
 
   ($println "-- the lifecycle is observable, and recorded --")
-  ($println "  watcher saw: " (lifecycle_seen ~ get))
+  ($println "  watcher saw: " (lifecycle_seen .get))
   ($println "  ^ an ordinary plugin subscribed to ordinary events; the kernel")
   ($println "    knows nothing about it. It sees its own activation — `+watcher`")
   ($println "    is the first line — because the subscription is registered")

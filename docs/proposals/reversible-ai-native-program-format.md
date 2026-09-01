@@ -53,11 +53,10 @@ that this verification surfaced. Both reproduce with plain
 affected `gene parse`'s existing canonical printer, so neither was
 introduced here:
 
-- A glued `~word` path segment (e.g. `obj/~method`) was glued into one
-  symbol only during slash-path lexing, and split into two tokens when the
-  same spelling was reread as an ordinary node body element. The reader now
-  lexes `~` glued to a symbol character as one symbol everywhere; a spaced
-  `~` is still the send operator (design §2.1).
+- A path send (for example `obj/.method`) once printed its internal lowering
+  instead of the dot surface. The reader and canonical printer now share one
+  normalization boundary, so the surface form rereads identically while the
+  compiler still consumes one canonical send node (design §2.1).
 - A bare `%` path segment produced an unquoted *empty* symbol, which the
   printer could not write back out, and silently swallowed the following
   form: `(!= xs/%(- i 1) "\n")` read as a three-argument `!=` whose second

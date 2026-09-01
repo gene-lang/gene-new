@@ -31,7 +31,7 @@ This draft reflects the current direction:
 
 - one node model;
 - callable-first evaluation;
-- `~` message sends that dispatch and only dispatch;
+- dot message sends that dispatch and only dispatch;
 - `self` bound by the compiler in message and `ctor` bodies;
 - slash selectors as the general traversal/transformation abstraction;
 - `Stream`/generators for lazy processing;
@@ -102,7 +102,7 @@ answers them:
 
 ```gene
 ($head v) ($props v) ($body v) ($meta v)   # any value
-(n ~ head) (n ~ props) (n ~ body) (n ~ meta)   # node receivers
+(n .head) (n .props) (n .body) (n .meta)   # node receivers
 ```
 
 A data node's dispatch face is the `Node` type, so `(impl P for Node …)` applies
@@ -177,7 +177,7 @@ is how a program names it without enumerating kinds:
 
 (fn walk [n]
   (if_not ($leaf? n)
-    ((($body n) ~ to_stream) ~ each walk)))
+    ((($body n) .to_stream) .each walk)))
 ```
 
 A `Cell` is a leaf: its canonical body holds the current value, but that
@@ -326,7 +326,7 @@ x : T        # annotation
 _            # wildcard / ignore
 name!        # reserved fexpr declaration/invocation marker (§3/§11.1)
 (a; b; c)    # pipe: pure reader head-folding
-(x ~ f a)    # message send; see Section 3 and docs/core.md §9
+(x .f a)    # message send; see Section 3 and docs/core.md §9
 /user/name   # selector literal
 x/user/name  # apply selector to x
 #[a b]       # shallow immutable list
@@ -344,8 +344,8 @@ Canonical forms:
 x...         => (... x)
 $"a ${x}"    => ($ "a " x)
 (a; b c; d)  => (((a) b c) d)
-(x ~ f a)    # preserved as read; resolved receiver-first at compile/dispatch
-             # time (docs/core.md §9) — not a reader rewrite to (f x a)
+(x .f a)    # lowers to a canonical send node; printer restores dot syntax
+x/.f        # lowers to a canonical zero-argument path-send segment
 /user/name   => (select user name)
 x/user/name  => (path x user name) # context-neutral; see §2.1
 /user/%field => (select user %field)
@@ -432,8 +432,9 @@ from particular names or paths to native functions**. `gene/str/join`, a user
 `ns/helper`, and `Color/red` use the same member-selection mechanism.
 
 Resolving a path is separate from invoking the result. A function member is
-applied in call-head position, `(ns/f x)`; a protocol message is sent with `~`,
-`(x ~ P:m)`, which dispatches on the receiver's type (§3, §10). `P:m` on its
+applied in call-head position, `(ns/f x)`; a protocol message is sent with a
+dot descriptor,
+`(x .P:m)`, which dispatches on the receiver's type (§3, §10). `P:m` on its
 own is the first-class message value.
 
 Where the selection is resolved — compile time or runtime — is an implementation
@@ -536,7 +537,8 @@ timezone_name  = "[", timezone_name_char, { timezone_name_char }, "]" ;
 path_form      = selector_literal | access_or_qualified_path ;
 selector_literal = "/", path_segment, { "/", path_segment } ;
 access_or_qualified_path = atom, "/", path_segment, { "/", path_segment } ;
-path_segment   = symbol | integer | "%", symbol | "~", symbol ;
+path_segment   = symbol | integer | "%", symbol | path_send_segment ;
+path_send_segment = [ "?" ], ".", [ "%" ], symbol ;
 
 atom           = float | integer | hex_integer | "true" | "false"
                | "nil" | "void" | symbol ;
@@ -680,19 +682,20 @@ module's bindings, and `^bindings` supplies values that are not module-level
 
 The first segment is preserved as read. A plain pipe folds the previous segment
 into head position; it does not thread it in as an argument. For a data-flow
-chain, compose pipes with `~` message sends (Section 3):
+chain, compose pipes with dot message sends (Section 3):
 
 ```gene
-(xs ~ to_stream; ~ filter p; ~ map f; ~ take 10)
-# reader keeps every send: (((( xs ~ to_stream) ~ filter p) ~ map f) ~ take 10)
+(xs .to_stream; .filter p; .map f; .take 10)
+# reader keeps every send: (((( xs .to_stream) .filter p) .map f) .take 10)
 ```
 
-Each `~` here is a receiver-first message send, **not** a reader rewrite to a
-flipped call `(f x)` (§3). `~` dispatches and only dispatches: `filter`, `map`,
+Each dot descriptor here is a receiver-first message send, **not** a reader
+rewrite to a flipped call `(f x)` (§3). A dot send dispatches and only
+dispatches: `filter`, `map`,
 `take`, and `to_stream` are **generic functions** (§6.2) — one name each,
 dispatching on the receiver's runtime type, with no lexical fallback to a plain
 function. A generic function's methods are the type-direct messages of the
-types that serve it, so `(xs ~ map f)` and `($map xs f)` are the same dispatch,
+types that serve it, so `(xs .map f)` and `($map xs f)` are the same dispatch,
 and sending a name the receiver's type does not define is still a recoverable
 `MessageError`. The eager kinds answer in their own kind — a `List` maps to a
 `List` — so `to_stream` is how a pipeline enters the lazy stream tier when it
@@ -712,8 +715,8 @@ not a bare value: `(a; b _ c)` is `(b (a) c)`, not `(b a c)`.
 > **Future direction (non-MVP):** a real left-to-right data-flow pipeline
 > operator, spelled `->`, is a likely addition — e.g.
 > `(xs -> (filter /odd?) -> times5)`, where each stage receives the previous
-> stage's value. It is distinct from `;` (reader-only head-folding) and from `~`
-> (message send). `->` is reserved for it and unused today.
+> stage's value. It is distinct from `;` (reader-only head-folding) and from a
+> dot message send. `->` is reserved for it and unused today.
 
 ---
 
@@ -791,19 +794,19 @@ Normal calls are callable-first:
 
 There is no implicit subject-call rule.
 
-Message sends use `~`:
+Message sends use a dot-prefixed descriptor:
 
 ```gene
-(x ~ f a b)   # send message f to x; dispatches on x's runtime type
-(x ~ P:f a b) # qualified: P:f names a protocol message, dispatched on x
-(x ~ %m a b)  # send a held message value m (§8)
-(super ~ f a) # delegate to the implementation above this one (§10)
-(~ f a b)     # send to lexical self: (self ~ f a b)
-(x ?~ f a b)  # absence-guarded send: nil/void receiver yields itself (below)
-(?~ f a b)    # guarded send to lexical self
+(x .f a b)   # send message f to x; dispatches on x's runtime type
+(x .P:f a b) # qualified: P:f names a protocol message, dispatched on x
+(x .%m a b)  # send a held message value m (§8)
+(super .f a) # delegate to the implementation above this one (§10)
+(.f a b)     # send to lexical self: (self .f a b)
+(x ?.f a b)  # absence-guarded send: nil/void receiver yields itself (below)
+(?.f a b)    # guarded send to lexical self
 ```
 
-**`?~` is the absence-guarded send.** It is the same send as `~` with one
+**`?.message` is the absence-guarded send.** It is the same send as `.message` with one
 added rule, applied to the *receiver only*: when the receiver is absent the
 send yields that receiver unchanged — `nil` stays `nil`, `void` stays `void` —
 and the message is never resolved, nor is any argument form evaluated. A
@@ -811,38 +814,38 @@ present receiver takes the ordinary path, so a misspelled message is still a
 `MessageError`:
 
 ```gene
-(some ?~ msg)   # dispatches normally
-(nil  ?~ msg)   # => nil    — no lookup, no MessageError
-(void ?~ msg)   # => void
-(nil  ?~ nope)  # => nil    — absence is decided before the name is
-(some ?~ nope)  # MessageError: absence-guarding never hides a typo
+(some ?.msg)   # dispatches normally
+(nil  ?.msg)   # => nil    — no lookup, no MessageError
+(void ?.msg)   # => void
+(nil  ?.nope)  # => nil    — absence is decided before the name is
+(some ?.nope)  # MessageError: absence-guarding never hides a typo
 ```
 
 This is deliberately *not* a global rule about `nil` receivers. `Nil` remains
 an ordinary nominal type with no dispatch carve-out (`docs/core.md` §10), so
-`(nil ~ msg)` is still an error and `(impl P for Nil …)` still works. The two
-spellings stay distinguishable even when that impl exists — `?~` short-circuits
+`(nil .msg)` is still an error and `(impl P for Nil …)` still works. The two
+spellings stay distinguishable even when that impl exists — `?.message` short-circuits
 *before* any lookup, so it does not run it:
 
 ```gene
 (impl P for Nil (message pm [] : Str "—"))
-(nil ~ P:pm)    # => "—"   dispatches to the Nil impl
-(nil ?~ P:pm)   # => nil   guarded: absence decided before lookup
+(nil .P:pm)    # => "—"   dispatches to the Nil impl
+(nil ?.P:pm)   # => nil   guarded: absence decided before lookup
 ```
 
-That is the point of the guard being a call-site choice: `?~` states that
+That is the point of the guard being a call-site choice: `?.message` states that
 *this* send tolerates absence, rather than resolving to whatever an impl
-elsewhere happens to define for `Nil`. Choose `~` when nil's behavior is the
-answer, `?~` when absence should propagate. The guard lives at the call site because that is where the
-decision belongs: `?~` says *this* send tolerates absence, without making every
-send silent about it. `super` is never absent, so `(super ?~ m)` is rejected;
-a selector callee `(x ?~ /name)` is a projection rather than a send, so it is
-rejected too — use `??` for an absent-valued projection. Leading `(?~ m …)`
+elsewhere happens to define for `Nil`. Choose `.message` when nil's behavior is the
+answer, `?.message` when absence should propagate. The guard lives at the call site because that is where the
+decision belongs: `?.message` says *this* send tolerates absence, without making every
+send silent about it. `super` is never absent, so `(super ?.m)` is rejected;
+selectors remain ordinary callables such as `(/name x)` — use `??` for an
+absent-valued projection. Leading `(?.m …)`
 is the guarded self-send, which matters inside an `impl P for Nil` body where
 lexical `self` is itself absent. The normative contract is
 `docs/spec/calls.md`.
 
-**`~` dispatches, and only dispatches — there is no lexical fallback.** A bare
+**A dot send dispatches, and only dispatches — there is no lexical fallback.** A bare
 name in send position resolves receiver-first against the receiver's type; it is
 never resolved as an ordinary lexical binding. A bare call `(f x)` stays purely
 lexical, and message names are not bound in the enclosing scope, so the two
@@ -850,7 +853,7 @@ mechanisms never mix.
 
 An unqualified send resolves `f` against the receiver's **type-direct** messages
 only, walking the `^is` chain. Protocol messages are **always qualified** —
-`(x ~ P:m)` — so a protocol impl is never reached by a bare name. If the
+`(x .P:m)` — so a protocol impl is never reached by a bare name. If the
 receiver's type declares no such message, the send raises a recoverable
 **`MessageError`** (a subtype of `TypeError`) carrying `^where`,
 `^receiver_type`, and `^message`; when the failed name also names a lexical
@@ -858,18 +861,18 @@ callable, the diagnostic says so ("… is a function — did you mean to call it
 not send it?"). Full resolution rules: `docs/core.md §9`.
 
 **Every non-bare callee must be a message value.** A protocol-qualified message
-(`x ~ P:m`), a held value (`x ~ %m`), and a parenthesized expression all have
+(`x .P:m`), a held value (`x .%m`), and a computed descriptor (`x .%(expr)`) all have
 to denote or evaluate to a message; the implementation is then dispatched on
 `x`. A plain function, a slash-selected namespace member, or a held `Fexpr` is
 **rejected, not invoked** — so
-`(xs ~ gene/str/join "-")` and `(x ~ %some_fn)` are errors rather than
+`(xs .%$str/join "-")` and `(x .%some_fn)` are errors rather than
 back-door function calls. This is what makes "dispatches, and only dispatches"
 true of the whole operator and not just of bare names.
 
 Only protocols give messages a qualified spelling. **Bare means type-direct;
 `P:m` means protocol-qualified.** Built-in operations on real built-in types
 follow the same rule: `Cell` owns the type-direct messages `get`, `set`, `swap`,
-and `update`, so `(c ~ get)` dispatches. `Cell:get` is invalid because `Cell` is
+and `update`, so `(c .get)` dispatches. `Cell:get` is invalid because `Cell` is
 a type, not a protocol; `Cell/get` is not a callable path either.
 
 **Case carries meaning in the stdlib: uppercase names denote types, protocols,
@@ -880,15 +883,15 @@ a function. For actors, the type is `gene/Actor` and the creation/control
 functions are under `gene/actor`:
 
 ```gene
-(a ~ send msg)              # Actor/send — acts on an actor reference
-(a ~ ask   f)               # Actor/ask, Actor/try_send, Actor/snapshot, ...
+(a .send msg)              # Actor/send — acts on an actor reference
+(a .ask   f)               # Actor/ask, Actor/try_send, Actor/snapshot, ...
 ($actor/spawn ^init i ^handle h)   # makes one — no receiver, so a function
 ($actor/continue state)            # actor-body control signal — no receiver
 ```
 
 `Module`, `Namespace`, `Capability`, and `Env` likewise expose receiver
-operations as type-direct messages: `(this_mod ~ path)`,
-`(ns ~ lookup "x")`, and `(cap ~ name)`. These messages are sent bare;
+operations as type-direct messages: `(this_mod .path)`,
+`(ns .lookup "x")`, and `(cap .name)`. These messages are sent bare;
 `Actor:send` and `Actor/send` are both invalid spellings.
 
 Most uppercase built-in receiver surfaces are real types, not namespaces of
@@ -907,10 +910,10 @@ listed above.
 
 `snapshot` illustrates the receiver rule: it takes a `CallerEnv`, so
 `CallerEnv` is a real type with a `snapshot` message and the operation is sent
-as `(caller_env ~ snapshot ["x"])`; it is not an `Env` function.
+as `(caller_env .snapshot ["x"])`; it is not an `Env` function.
 
-The one exception is a **selector** callee, `(x ~ /name)`: a selector projects
-the receiver rather than naming a message, and keeps its projection meaning.
+Selectors are not message descriptors. Apply one as an ordinary callable,
+`(/name x)`, when projecting a receiver.
 
 The recoverable error for the wrong kind of non-bare callee or qualifier is
 `CallKindError`, a subtype of `TypeError`, with `^where`, `^expected`, `^actual`,
@@ -922,11 +925,11 @@ call-head position; send syntax is never reinterpreted as a syntax call.
 
 **Head position is rejected; value position dispatches.** `(P:msg x)` is a
 compile-time error — `:` reads as its own node, so the check does not wait for
-the callee to evaluate — and the diagnostic names the fix, `(x ~ P:msg)`. This
+the callee to evaluate — and the diagnostic names the fix, `(x .P:msg)`. This
 only rejects; it never picks between two meanings.
 
 **`Self` is the reserved value spelling for a type-direct message.** It names
-no qualifier, so `(x ~ Self:msg)` is exactly the bare send `(x ~ msg)` and
+no qualifier, so `(x .Self:msg)` is exactly the bare send `(x .msg)` and
 dispatches on `x`'s runtime type. A type cannot qualify a message: `T:msg`
 raises `CallKindError` with `^expected "Protocol"`. A program may not declare
 `Self`.
@@ -941,26 +944,26 @@ names are not lexical bindings:
 
 In any other position `P:msg` or `Self:msg` is a **message value**, not a
 function: it prints as `(message msg)`, satisfies `Callable` but *not* `Fn`, and
-is accepted as a held send callee `(x ~ %m)` — which a function is not. A
+is accepted as a held send callee `(x .%m)` — which a function is not. A
 higher-order callable consumer applies one to its first argument, so
 `($map xs P:msg)` dispatches per element and needs no lambda; the callable shape
 is `(receiver, ...send args)`. The standard collection operations are this
 shape at stdlib scale: `$map` and friends are message identities shared across
-the built-in collection types (§6.2), so `($map xs f)` and `(xs ~ map f)` are
+the built-in collection types (§6.2), so `($map xs f)` and `(xs .map f)` are
 one dispatch. Direct source syntax `(P:msg x)` remains rejected
 as described above.
 
 The value carries the scope it was **written** in. Higher-order application has
-no send site, so it resolves in that authored scope. A held send `(x ~ %m)` is
+no send site, so it resolves in that authored scope. A held send `(x .%m)` is
 different: it does have a send site and resolves the held message in that
 site's scope. This distinction lets a lazy combinator retain and apply only the
 message value without silently adopting the eventual consumer's scope.
 
 `/` never spells a message. `P/m` is an error that names `P:m` as the
-replacement. `T/m` is also invalid; use the bare send `(x ~ m)` or the
+replacement. `T/m` is also invalid; use the bare send `(x .m)` or the
 type-direct message value `Self:m`.
 
-If no `self` binding is in scope, `(~ f a b)` is a compile-time error.
+If no `self` binding is in scope, `(.f a b)` is a compile-time error.
 
 ### 3.1 Tail calls
 
@@ -995,7 +998,7 @@ MVP core special forms:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! let var const set new ~ ?~ fn macro quote quasiquote
+do if if_yes if_not && || ?? ! let var const set new .?.fn macro quote quasiquote
 select path msg ns env eval import mod match while loop repeat for break continue yield
 return try scope supervisor spawn await fail panic type alias enum protocol impl
 derive import_impl with_capabilities web_module
@@ -1036,7 +1039,12 @@ read comments/discards
 → macro expansion and special-form analysis
 ```
 
-`~` is recognized only in call-like forms where it appears as the second token or as a leading send to `self`. The reader preserves send forms as read (they round-trip), and `~` still tokenizes inside quoted data; resolution happens at compile/dispatch time (`docs/core.md §9`). But `~` is **reserved**: it may not be bound, `set`, or declared as a name (`(var ~ …)`, a parameter named `~`, etc. are compile errors), so its only executable meaning is the message-send operator.
+A dot descriptor is recognized only in send position: after a receiver or as
+the leading head of a lexical-`self` send. The reader lowers it to the canonical
+send node used by the compiler and printer. A standalone `.message` descriptor
+is an error, and the removed spaced-tilde spelling is a read error with a
+migration diagnostic. Resolution happens at compile/dispatch time
+(`docs/core.md §9`).
 
 ---
 
@@ -1126,21 +1134,20 @@ Short slash syntax permits only simple static segments, numeric indices, and `%n
 /users/%i/name
 ```
 
-Access paths also permit `~message` send segments. A send segment applies the
+Access paths also permit `.message` send segments. A send segment applies the
 message to the value produced by the previous path segment:
 
 ```gene
-users/~size        # (users ~ size)
-users/%i/~to_html  # ((users/%i) ~ to_html)
+users/.size        # (users .size)
+users/%i/.to_html  # ((users/%i) .to_html)
 ```
 
-A `~message` segment is an ordinary symbol whose name begins with `~`, so a
-`~` glued directly to a symbol character always reads as one symbol, wherever
-it appears. A `~` followed by whitespace or a delimiter is the send operator:
+A path send is introduced by `/.` (or `/?.` for an absence guard). It is a
+zero-argument send applied to the value produced by the preceding segment:
 
 ```gene
-(xs ~ size)   # send: three elements
-(xs ~size)    # two elements; ~size is one symbol
+(xs .size)    # ordinary send
+xs/.size      # the same zero-argument send in a path
 ```
 
 Complex selector stages must use long form:
@@ -1184,7 +1191,7 @@ Static lookup:
 - on `PropMap`/`Map`: read key;
 - on `List`: integer segment indexes the list. Computed list behavior such as
   `size`, `empty?`, `first`, and `last` is reached with sends, including path
-  send segments like `xs/~size`, not selector property lookup;
+  send segments like `xs/.size`, not selector property lookup;
 - on namespace/module values: read exported binding/member;
 - missing lookup returns `void`.
 
@@ -1200,7 +1207,7 @@ If a selector stage receives a `Stream`, static lookup is mapped over each yield
 If an evaluated `%` segment is callable, it is used as a stage. If it is not callable, it is treated as a dynamic key/index. This means a callable value cannot be used as a dynamic key through bare `%x`. Use explicit map access or an explicit key wrapper if that case is needed:
 
 ```gene
-(m ~ get x)            # unambiguous dynamic key lookup
+(m .get x)            # unambiguous dynamic key lookup
 (select m %($key x))    # optional library wrapper: force key/index use
 ```
 
@@ -1280,7 +1287,7 @@ without throwing. The `TryNext` enum follows the `TryRecv` pattern:
 ```
 
 ```gene
-(match (s ~ try_next)
+(match (s .try_next)
   (when TryNext/exhausted void)
   (when (TryNext/value v) v)
   (when (TryNext/error e) (raise e)))
@@ -1291,7 +1298,7 @@ A function containing `yield` is a generator and returns a `Stream`.
 ```gene
 (fn users* [users : (List User)] : (Stream User Never)
   (var i 0)
-  (while (< i users/~size)
+  (while (< i users/.size)
     (yield users/%i)
     (set i (+ i 1))))
 ```
@@ -1322,7 +1329,7 @@ channel, or future — not symmetric yield.
 
 (fn pump [s : (Stream T Never), out : (Channel T)]
   (for x in s                    ; one-way: pull out of s
-    (out ~ send x)))
+    (out .send x)))
 ```
 
 `yield void` and an empty `return` are distinct:
@@ -1380,7 +1387,7 @@ These rules combine into a simple consumer idiom:
 
 ```gene
 (while true
-  (match (try_ok (s ~ next))
+  (match (try_ok (s .next))
     (when (Ok v)   (yield_handler v))
     (when (Err e)  (if (== e (EndOfStream)) (break) (handle e)))))
 ```
@@ -1398,7 +1405,7 @@ identity in value position — the same dispatch a `Self:map` value performs
 (§3):
 
 ```gene
-(xs ~ map f)     # bare send: resolves map in xs's message table
+(xs .map f)     # bare send: resolves map in xs's message table
 ($map xs f)      # the exported function: applies to its first argument
 (var m Self:map) # the message value; (m xs f) dispatches identically
 ```
@@ -1502,8 +1509,8 @@ field map are runtime values. It performs the same closed-schema validation as
 direct `(T ^field value ...)` construction and never invokes `ctor`; registries
 can therefore keep a declared type as their sole argument schema without
 generating syntax or maintaining a parallel validation vocabulary.
-`(T ~ fields)` returns the closed property schema as data records containing
-`^name`, `^type`, and `^optional`; `(T ~ name)` returns its declared name. The
+`(T .fields)` returns the closed property schema as data records containing
+`^name`, `^type`, and `^optional`; `(T .name)` returns its declared name. The
 type expressions are the original Gene values, so schema consumers reflect
 the language vocabulary rather than translating it to a second internal one.
 
@@ -1520,8 +1527,8 @@ A type may additionally define one constructor with `ctor`:
   ^props {^x F64 ^y F64}
 
   (ctor [x : F64, y : F64]
-    (self ~ set_prop `x x)
-    (self ~ set_prop `y y)))
+    (self .set_prop `x x)
+    (self .set_prop `y y)))
 ```
 
 Constructor invocation uses `new`:
@@ -1564,9 +1571,9 @@ A constructor uses normal function-style argument matching:
   ^props {^name Str ^age Int ^active Bool}
 
   (ctor [name : Str, ^age : Int = 0, ^active : Bool = true]
-    (self ~ set_prop `name name)
-    (self ~ set_prop `age age)
-    (self ~ set_prop `active active)))
+    (self .set_prop `name name)
+    (self .set_prop `age age)
+    (self .set_prop `active active)))
 
 (new User "Ada" ^age 37)
 (User ^name "Ada" ^age 37 ^active true) # direct data construction
@@ -1581,7 +1588,7 @@ Constructors may declare checked errors:
   (ctor [n : Int]
     ^errors [ValidationError]
     (if (&& (>= n 0) (<= n 65535))
-      (self ~ set_prop `value n)
+      (self .set_prop `value n)
       (fail (ValidationError ^message "invalid port")))))
 
 (new Port 8080)
@@ -1613,7 +1620,7 @@ inherited schema:
   ^props {^name Str}
 
   (ctor [name : Str]
-    (self ~ set_prop `name name)))
+    (self .set_prop `name name)))
 
 (type Dog
   ^is Animal)
@@ -1782,12 +1789,12 @@ Accessor messages live on the corresponding type namespaces and may be sent
 unqualified through the receiver-message resolver:
 
 ```gene
-(d ~ year)
-(d ~ year)
-(t ~ hour)
-(dt ~ offset)
-(tz ~ name)
-(dur ~ seconds)
+(d .year)
+(d .year)
+(t .hour)
+(dt .offset)
+(tz .name)
+(dur .seconds)
 ```
 
 `Duration` is included with the family because date arithmetic is incomplete
@@ -1853,7 +1860,7 @@ carry behavior and join the protocol system:
 (enum Direction
   north east south west
   (message degrees [self] : Int
-    (* (self ~ ordinal) 90)))   # north 0, east 90, south 180, west 270
+    (* (self .ordinal) 90)))   # north 0, east 90, south 180, west 270
 ```
 
 This `Enum`/`Type` relationship lives at the meta-level of §7.1: `Color` is a
@@ -1881,18 +1888,18 @@ scrutinee falls back to a runtime `MatchError`. A fully covered `match` with an
 exposes the variant descriptor set and reverse lookups for (de)serialization:
 
 ```gene
-(Color ~ variants)           # => [Color/red Color/green Color/blue]
-(Color ~ names)              # => [red green blue]
-(Color/red ~ name)           # => red
-(Color/green ~ ordinal)      # => 1
-(Color ~ from_name `red)     # => Color/red  (symbol arg is quoted)
-(Color ~ from_name "red")    # Str accepted for codec convenience
+(Color .variants)           # => [Color/red Color/green Color/blue]
+(Color .names)              # => [red green blue]
+(Color/red .name)           # => red
+(Color/green .ordinal)      # => 1
+(Color .from_name `red)     # => Color/red  (symbol arg is quoted)
+(Color .from_name "red")    # Str accepted for codec convenience
 ```
 
 For unit-only enums, `variants` returns the interned unit values. For mixed or
 payload enums, `variants` returns variant descriptors; a payload descriptor such
 as `Shape/circle` is a constructor, not an already-constructed enum value.
-`from_name` returns the same descriptor/member, so ``(Shape ~ from_name `circle)``
+`from_name` returns the same descriptor/member, so ``(Shape .from_name `circle)``
 returns the `Shape/circle` constructor descriptor. Unknown `from_name` and
 `from_ordinal` inputs return `void`; raising parse helpers can be added later.
 
@@ -1907,7 +1914,7 @@ value of type `T`, and backing values must be hash-stable:
   (closed "C"))
 ```
 
-`(Status/active ~ backing)` is `"A"`, `(Status ~ from_backing "A")` is
+`(Status/active .backing)` is `"A"`, `(Status .from_backing "A")` is
 `Status/active`, and unknown `from_backing` inputs return `void`.
 Auto-provided enum reflection names — `variants`, `names`, `name`, `ordinal`,
 `from_name`, `from_ordinal`, `backing`, and `from_backing` — are reserved on
@@ -2010,7 +2017,7 @@ Invalid examples:
 A child may add no fields. `(type Dog ^is Animal ^props {})` is valid; an
 instance of that child must still supply every inherited required field.
 
-A message body may delegate to the implementation above it with `(super ~ m)`
+A message body may delegate to the implementation above it with `(super .m)`
 (§10). `super` is not available in a `ctor`: constructors are inherited by
 nearest-ancestor selection, but explicit parent-constructor chaining is
 post-MVP, along with field narrowing, abstract parent types, final/sealed
@@ -2076,7 +2083,7 @@ Generic functions put type parameters on the function name:
 ```gene
 (fn ($first item err) [s : (Stream item err)] : item
   ^errors [EndOfStream err]
-  (s ~ next))
+  (s .next))
 ```
 
 Call-site inference uses local unification. Given:
@@ -2311,11 +2318,11 @@ MVP surface:
 #"\d+"
 #"""^\s*(\w+)\s*$"""
 (Regex "\\d+")
-(re ~ match s)            # => a Match, or void if no match
-(re ~ find_all s)         # => a (Stream Match Never), lazy (§6)
-(re ~ replace s tmpl)     # first match; tmpl backrefs \1, \k<name>
-(re ~ replace_all s tmpl) # every match
-(re ~ split s)            # => (List Str)
+(re .match s)            # => a Match, or void if no match
+(re .find_all s)         # => a (Stream Match Never), lazy (§6)
+(re .replace s tmpl)     # first match; tmpl backrefs \1, \k<name>
+(re .replace_all s tmpl) # every match
+(re .split s)            # => (List Str)
 ```
 
 `Match` is a **typed node** (§7.1) with specified fields: `^text` (whole match),
@@ -2338,7 +2345,7 @@ and template semantics before the core is proven:
 - **Regex as a `match` pattern** — `(when #"..." …)` binding named/numbered
   captures branch-locally, with the failed-match and duplicate-group-name rules.
 - **`^to` rewrite rules** — a regex carrying its replacement template so
-  `(rule ~ apply s)` substitutes without a call-site template.
+  `(rule .apply s)` substitutes without a call-site template.
 
 Implementation note: the first implementation uses Nim's PCRE-backed `std/re`
 API in native builds. Wasm builds preserve the `Regex` value shape but report
@@ -2354,11 +2361,11 @@ trailing value is discarded and the call yields the declared unit — `nil` for
 
 ```gene
 (fn note [entry : Str] : Nil        # no trailing `nil` needed
-  (log ~ push entry))
+  (log .push entry))
 
 (fn reset [cell : (Cell Int)] : Nil
-  (if_yes (< (cell ~ get) 0) (return))   # `return` needs no argument
-  (cell ~ set 0))
+  (if_yes (< (cell .get) 0) (return))   # `return` needs no argument
+  (cell .set 0))
 ```
 
 Three consequences, all deliberate:
@@ -2652,8 +2659,8 @@ in the MVP:
 ```gene runnable
 (fn describe [x : (| Cat Dog)] : Str
   (match x
-    (when (c : Cat) (c ~ say))
-    (when (d : Dog) (d ~ say))))
+    (when (c : Cat) (c .say))
+    (when (d : Dog) (d .say))))
 ```
 
 ```gene
@@ -2949,7 +2956,7 @@ Built-in error types the runtime raises:
 RuntimeError         dynamic VM diagnostic without a more specific type
 TypeError            gradual-boundary type failure
 ├── CallKindError    called a non-callable, or the wrong callable kind
-└── MessageError     a ~ send resolving to no message on the receiver's type
+└── MessageError     a .send resolving to no message on the receiver's type
 MatchError           pattern/destructuring failure
 └── SelectorMissing  a ^strict selector segment missed
 CompileError         compile-time failure
@@ -2994,16 +3001,16 @@ message that takes an argument declares just that argument:
 
 `self` is an immutable, compiler-owned binding (§12.1): `(set self …)` and
 declaring another `self` are compile errors, and it cannot be shadowed, so
-`(~ m)` always denotes the receiver.
+`(.m)` always denotes the receiver.
 
 **Parent delegation uses `super` as a receiver.** Inside a type message body,
-`(super ~ m args…)` invokes the implementation of `m` **above the enclosing
+`(super .m args…)` invokes the implementation of `m` **above the enclosing
 type** on the `^is` chain, called with `self`:
 
 ```gene runnable
 (type Animal ^props {} (message speak [] : Str "…"))
 (type Dog ^is Animal ^props {}
-  (message speak [] : Str ($ "woof; " (super ~ speak))))
+  (message speak [] : Str ($ "woof; " (super .speak))))
 ```
 
 `super` resolves from the *enclosing type's* parent, not the receiver's runtime
@@ -3016,7 +3023,7 @@ message body may use `super`, and it delegates from the same parent. `super` is
 reserved and cannot be bound. Using it outside a type message body with an `^is`
 parent is a compile error.
 
-`super` delegates a **protocol** message the same way. `(super ~ P:m)` resolves
+`super` delegates a **protocol** message the same way. `(super .P:m)` resolves
 `P`'s impl from above the enclosing type; the qualifier names the message and
 the parent selects the impl, which is the ordinary "qualifier constrains, never
 selects" rule with the parent standing in for the receiver's runtime type:
@@ -3027,9 +3034,9 @@ selects" rule with the parent standing in for the receiver's runtime type:
 (impl Speaks for Animal (message speak [] : Str "…"))
 (type Dog ^is Animal ^props {})
 (impl Speaks for Dog
-  (message speak [] : Str ($ "woof; " (super ~ Speaks:speak))))
+  (message speak [] : Str ($ "woof; " (super .Speaks:speak))))
 
-((Dog) ~ Speaks:speak)   # "woof; …"
+((Dog) .Speaks:speak)   # "woof; …"
 ```
 
 This needed no new precedence rule: resolution already keeps only providers at
@@ -3038,10 +3045,10 @@ the walk at the parent *is* "continue from above the enclosing type". A level
 that implements nothing is skipped rather than being an error, and nothing above
 at all is a recoverable `MessageError`. The same works in an inline impl, whose
 receiver is the enclosing type, and in a standalone `(impl P for T …)`, which
-names its receiver. `(super ~ Self:m)` names no qualifier and so is exactly the
+names its receiver. `(super .Self:m)` names no qualifier and so is exactly the
 bare super send.
 
-One form stays unsupported: the dynamic `(super ~ %m)`. `super`'s target is
+One form stays unsupported: the dynamic `(super .%m)`. `super`'s target is
 fixed statically, and an expression yielding a message value cannot be checked
 against the parent at compile time, so it is diagnosed rather than silently
 mis-dispatched.
@@ -3049,7 +3056,7 @@ mis-dispatched.
 **Static impl selection is `super` only.** `T/m` is not a callable path:
 `(Dog/bark p)` used to run `Dog`'s body even when `p` was a `Pup` overriding it,
 and `(map xs Dog/bark)` did that per element. Both are now errors that name the
-replacement — a send `(x ~ bark)`, or the value spelling `Self:bark`, which
+replacement — a send `(x .bark)`, or the value spelling `Self:bark`, which
 dispatches. Enum variants (`Direction/east`) are unaffected: they are not
 messages. Impls were already never exposed as members.
 
@@ -3069,8 +3076,8 @@ body where there is no enclosing type to name:
 (var dog (Dog ^name "rex"))
 (var pup (Pup ^name "rex"))
 
-(dog ~ Eq:eq pup)   # true — Self is Dog, and a Pup is a Dog
-(try (pup ~ Eq:eq dog)
+(dog .Eq:eq pup)   # true — Self is Dog, and a Pup is a Dog
+(try (pup .Eq:eq dog)
   catch TypeError $ex/expected)   # "Self" — a Dog is not a Pup
 ```
 
@@ -3088,8 +3095,8 @@ accepted and discarded, so it builds the same signature as `[self]`.
 Message dispatch is on the first argument's head/type. Messages are ordinary callable values, but their names are **not** bound in the enclosing lexical scope — a message is reached with a send, or as a qualified member of its protocol (`docs/core.md §1/§9`):
 
 ```gene
-(item ~ to_html)          # send: to_html resolves in item's context
-(item ~ ToHtml:to_html)   # qualified send: always unambiguous
+(item .to_html)          # send: to_html resolves in item's context
+(item .ToHtml:to_html)   # qualified send: always unambiguous
 (var render ToHtml:to_html)
 (render item)             # a held message value applies to its first argument
 ```
@@ -3187,7 +3194,7 @@ the use site. Generated implementations follow the same rules, and MVP
 rejects overlapping generic implementations that could both apply to the same
 concrete receiver type.
 
-A protocol message is always sent qualified — `(x ~ P:m)` — so the send names one
+A protocol message is always sent qualified — `(x .P:m)` — so the send names one
 message identity and no compile-time candidate set is involved. Impl selection
 happens at dispatch time and is filtered to impls applicable in the send's own
 module: a library send cannot see a scoped impl imported only by its caller.
@@ -3223,7 +3230,7 @@ MVP restrictions:
 - generated impls are type-checked normally.
 
 Protocol inheritance (`^inherit`), type-direct messages, type/protocol
-inheritance interaction, and `~` message-resolution semantics are designed as
+inheritance interaction, and dot-send resolution semantics are designed as
 an extension of this section in `docs/core.md`.
 
 ### 10.1 Implementation visibility and imports
@@ -3281,8 +3288,8 @@ Manual delegation is just an ordinary `impl`:
 
 (impl Query for LoggedDb
   (message query [self sql]
-    (self/log ~ Logger:info $"query: ${sql}")
-    (self/inner ~ query sql)))
+    (self/log .Logger:info $"query: ${sql}")
+    (self/inner .query sql)))
 ```
 
 This is preferred over broad inheritance for wrappers, adapters, caches, logging, authorization, and resource decorators. Inheritance answers “is a”; delegation answers “has a value that does this behavior.”
@@ -3347,7 +3354,7 @@ syntax is invalid. No other binding or message name may end in `!`.
 - `caller_env` resolves the caller's lexical bindings, imports, module namespace, and core built-ins, in §11.5 resolution order.
 - `caller_env` is a read-only view for name resolution. Code evaluated `^in caller_env` cannot create, rebind, or `set` bindings in the caller's scope; declarations made by an evaluated unit live in that unit's own overlay. Mutable values reachable through caller bindings — `Cell`, buffers, actors — can still be mutated. The view is read-only, not deep-frozen.
 - `CallerEnv` is valid only for the dynamic extent of the syntax call. It is not `Send` or serializable. It cannot be returned, used as an error payload, inserted into a heap container or durable `Env`, stored in an outer/global/module binding, captured by an escaping closure, or captured by a spawned task. These checks also apply to closures and containers that transitively carry the borrowed view.
-- Durable capture is explicit: `(caller_env ~ snapshot ["name" ...])` copies exactly the named visible bindings into a new `Env`. Missing or duplicate names fail. Selected closures and capabilities retain only the authority explicitly reachable from those selected values; unlisted caller bindings are absent.
+- Durable capture is explicit: `(caller_env .snapshot ["name" ...])` copies exactly the named visible bindings into a new `Env`. Missing or duplicate names fail. Selected closures and capabilities retain only the authority explicitly reachable from those selected values; unlisted caller bindings are absent.
 - Calling an explicit fexpr hands it caller authority. A syntax callable
   evaluating untrusted syntax should first create a purpose-built snapshot and
   apply the evaluation policies described in §11.5.
@@ -3356,7 +3363,7 @@ For example, this durable environment contains `config` but not `secret`:
 
 ```gene
 (fn capture_config! []
-  (caller_env ~ snapshot ["config"]))
+  (caller_env .snapshot ["config"]))
 ```
 
 `Fexpr` values may be held for reflection, imported through their declared
@@ -3481,7 +3488,7 @@ An `Env` is an opaque, garbage-collected value. It may be stored, passed, return
     ^imports [std/math]))
 
 (var child
-  (base ~ extend {^y 20}))
+  (base .extend {^y 20}))
 ```
 
 Environments are immutable by default. `extend` (on `Env`) creates a child environment whose parent is the original environment; it does not mutate the parent.
@@ -3524,8 +3531,8 @@ Shared mutation is explicit. Ordinary environment bindings are read-only, but an
 (var e (env ^bindings {^counter counter}))
 
 (eval
-  `(counter ~ set
-     (+ (counter ~ get) 1))
+  `(counter .set
+     (+ (counter .get) 1))
   ^in e)
 ```
 
@@ -3646,7 +3653,7 @@ Immutable containers support persistent functional updates with structural shari
 
 ```gene
 (var xs  #[1 2 3])
-(var xs2 (xs ~ assoc 1 20))
+(var xs2 (xs .assoc 1 20))
 
 (var user2 ($assoc_in user /address/city "Raleigh"))
 (var user3 ($update_in user /score (fn [x] (+ x 1))))
@@ -3657,10 +3664,10 @@ Immutable containers support persistent functional updates with structural shari
 Mutable containers use explicit mutating operations, conventionally named with `!`:
 
 ```gene
-(xs ~ set 1 20)
-(xs ~ push 30)
-(m ~ put key value)
-(n ~ set_prop name value)
+(xs .set 1 20)
+(xs .push 30)
+(m .put key value)
+(n .set_prop name value)
 ```
 
 `List/push` appends to a mutable list in amortized O(1) time and returns the
@@ -3671,10 +3678,10 @@ A `Buffer` additionally has two **bulk** mutations, and they are not sugar over
 a `set` loop — they do strictly less work:
 
 ```gene
-(b ~ fill 0.0)
-(b ~ fill 0.0 start end)
-(dst ~ copy_from src)
-(dst ~ copy_from src source_start source_end dest_start)
+(b .fill 0.0)
+(b .fill 0.0 start end)
+(dst .copy_from src)
+(dst .copy_from src source_start source_end dest_start)
 ```
 
 The bare forms address the whole buffer; the long forms take a half-open
@@ -3766,7 +3773,7 @@ a mutable value:
 
 ```gene
 (let counter ($cell 0))          # the binding never moves; the Cell mutates
-(counter ~ update (fn [x] (+ x 1)))
+(counter .update (fn [x] (+ x 1)))
 ```
 
 A namespace-level `var` is unsynchronized mutable global state — shared across
@@ -3834,18 +3841,18 @@ changes.
 (var enabled ($cell true))
 (var current ($cell nil))
 
-(count ~ get)
-(count ~ set 10)
-(count ~ swap 20)                 # returns the old value
-(count ~ update (fn [x] (+ x 1)))
+(count .get)
+(count .set 10)
+(count .swap 20)                 # returns the old value
+(count .update (fn [x] (+ x 1)))
 ```
 
 `Cell` is a **type**, not a namespace of functions, and `get`/`set`/`swap`/
 `update` are its **type-direct messages** (§3). So they take the bare form:
-`(count ~ get)`, `(count ~ set 10)`, and the path form `count/~get` all resolve
+`(count .get)`, `(count .set 10)`, and the path form `count/.get` all resolve
 the same message, through the same lookup that serves a user-declared type. A
-qualified send names a *protocol* message, so `(count ~ Cell:get)` is an error;
-`Cell/get` is not callable either. Use `(count ~ get)` for a send or `Self:get`
+qualified send names a *protocol* message, so `(count .Cell:get)` is an error;
+`Cell/get` is not callable either. Use `(count .get)` for a send or `Self:get`
 when the type-direct message is needed as a value.
 
 Being a real type is what makes `Cell` nameable as an impl receiver:
@@ -3853,7 +3860,7 @@ Being a real type is what makes `Cell` nameable as an impl receiver:
 ```gene
 (protocol Shown (message show [] : Str))
 (impl Shown for Cell
-  (message show [] : Str ((self ~ get) ~ Shown:show)))
+  (message show [] : Str ((self .get) .Shown:show)))
 ```
 
 `List`, `Map`, `Node`, `Buffer`, `Stream`, `Channel`, `Actor`, `AtomicCell`,
@@ -3884,10 +3891,10 @@ such as `(Cell Any)`, and identifies invariance as the reason.
 ```gene
 (var state ($atomic_cell 0))
 
-(state ~ load)
-(state ~ store 1)
-(state ~ swap 2)
-(state ~ compare_exchange 2 3)
+(state .load)
+(state .store 1)
+(state .swap 2)
+(state .compare_exchange 2 3)
 ```
 
 Operations are linearizable. The runtime may use machine atomics for supported immediate types and a lock-backed representation for general Gene values. `AtomicCell T` may implement `Send` when `T` is sendable and the implementation provides the required GC barriers.
@@ -3975,7 +3982,7 @@ The program entry point runs as a root task, so `await` is meaningful without an
 A task may be cancelled explicitly:
 
 ```gene
-(t ~ cancel)
+(t .cancel)
 ```
 
 Cancellation is represented separately from ordinary domain errors, but may be caught only by APIs that deliberately expose cancellation handling. Code should normally allow it to propagate. Concretely:
@@ -4000,9 +4007,9 @@ Channels are bounded by default to provide backpressure:
 ```gene
 (var ch ($channel ^capacity 64))
 
-(ch ~ send value)       # suspends while full
-(var value (ch ~ recv)) # suspends while empty
-(ch ~ close)
+(ch .send value)       # suspends while full
+(var value (ch .recv)) # suspends while empty
+(ch .close)
 ```
 
 Conceptual operations:
@@ -4103,7 +4110,7 @@ A handler processes one message and returns an actor step:
       ($actor/continue (+ state n)))
 
     (when (Get ^reply reply)
-      (reply ~ send state)
+      (reply .send state)
       ($actor/continue state))
 
     (when Stop
@@ -4134,8 +4141,8 @@ A handler commonly returns immutable replacement state. It may also use actor-pr
 Actor mailboxes are bounded by default.
 
 ```gene
-(counter ~ send (Increment ^amount 5))
-(counter ~ try_send (Increment ^amount 1))
+(counter .send (Increment ^amount 5))
+(counter .try_send (Increment ^amount 1))
 ```
 
 Conceptual behavior:
@@ -4148,7 +4155,7 @@ Request/reply uses an explicit one-shot reply capability:
 
 ```gene
 (var pending
-  (counter ~ ask
+  (counter .ask
     (fn [reply]
       (Get ^reply reply))))
 
@@ -4245,11 +4252,11 @@ finish current message
 The experimental API exposes:
 
 ```gene
-(ref ~ upgrade new_handler
+(ref .upgrade new_handler
   ^migrate migrate_state)
 ```
 
-The MVP may expose an explicit experimental `(ref ~ snapshot)` operation
+The MVP may expose an explicit experimental `(ref .snapshot)` operation
 for migration tooling. It is only valid at an idle actor safe point and returns
 the last committed private state plus mailbox/lifecycle metadata; it must not
 replace the normal message protocol for application-level state access.
@@ -4634,7 +4641,7 @@ this_mod : Module
 
 ```gene
 this_mod/%declarations
-(this_mod ~ path)
+(this_mod .path)
 ```
 
 Top-level execution rules:
@@ -4962,9 +4969,9 @@ Users can filter/map declarations with normal stream functions:
 
 ```gene
 (this_mod/%declarations
-  ~ filter routed?
-  ; ~ map route_entry
-  ; ~ into {})
+  .filter routed?
+  ; .map route_entry
+  ; .into {})
 ```
 
 Declaration records are nodes shaped
@@ -5151,7 +5158,7 @@ A native function is a first-class `NativeFn` value implementing `Callable`. Gen
 
 ```gene
 (strlen text)
-(text ~ strlen)
+(text .strlen)
 ```
 
 The runtime-level native call shape is conceptually:
@@ -5354,7 +5361,7 @@ hold an opaque pointer. It is how every shipped native surface — `db/sqlite`,
 c            # ((type SqliteDb) ^handle (c_owned_ptr) ^backend "sqlite" ...)
 ($head c)    # (type SqliteDb) — a real Type, so annotations and impls apply
 c/backend    # "sqlite"
-(c ~ Db:exec "create table t (a int)")
+(c .Db:exec "create table t (a int)")
 ```
 
 Because the value is just a node whose head is a `Type`, it needs no special
@@ -5375,7 +5382,7 @@ marker changes two things:
   fails only at its first query.
 - **Declared fields are initializer-only.** `(set self/handle …)` works while
   the ctor's in-progress `self` is still constructing (§7.1.1) and is rejected
-  afterwards, so `(c ~ set_prop ^handle "junk")` cannot make the next native
+  afterwards, so `(c .set_prop ^handle "junk")` cannot make the next native
   call read a `Str` as a pointer. `set_body` and `push_body` are rejected on
   a completed wrapper for the same reason.
 
@@ -5811,10 +5818,10 @@ Prop print order should be deterministic. MVP recommendation: preserve source or
 
 ## 19. Implementation order
 
-1. Reader + canonical node model: props, meta, templates, spread, pipe, `~`, slash selectors, qualified-name/path tokens, `/` tokenization, and `#[]`/`#{}`/`#()` literals.
+1. Reader + canonical node model: props, meta, templates, spread, pipe, dot sends, slash selectors, qualified-name/path tokens, `/` tokenization, and `#[]`/`#{}`/`#()` literals.
 2. Runtime values, `nil`/`void`/`Never`, mutable and shallow-immutable containers, equality, hashing, `Cell`, and `AtomicCell` foundations.
 3. Application/module foundation: `Application`, package discovery and manifests, module identity, root namespaces, `ns`, namespace imports, `from` module paths, normalized module identities, module cache, and top-level execution.
-4. Callable-first evaluator: `var`, `set`, `do`, `if`, `fn`, `Call`, `Callable`, and `~`.
+4. Callable-first evaluator: `var`, `set`, `do`, `if`, `fn`, `Call`, `Callable`, and dot sends.
 5. First-class `Env`: immutable binding maps, parent chains, module/import resolution, capability/policy fields, and tracing-GC integration.
 6. Native call foundation: `NativeFn`, opaque runtime API, native registration, rooting contract, and `gene_call`-style VM trampoline.
 7. Selectors and functional updates: `/...`, `(select ...)`, `%` stages, missing/`void`, `assoc_in`, and `update_in`.
@@ -5849,7 +5856,7 @@ The design is close enough to start implementation once the following MVP cuts a
 2. **Core value model:** implement `Any`, `Never`, `Nil`, `Void`, scalar heads, mutable versus shallow-immutable containers, equality, hashing, and deterministic printing.
 3. **Application/module model:** implement `Application` creation, package-root placeholder, file/eval modules, root namespaces, `ns`, namespace imports, `from` module paths, path normalization, module cache behavior, top-level execution, and `main` invocation.
 4. **Minimal type checker:** support nominal types, single inheritance, direct construction, `new`/`ctor`, basic generics, unions, `T?` / `(? T)`, gradual typed-boundary checks, and recoverable boundary `TypeError`.
-5. **Callable evaluator:** implement callable-first evaluation, explicit fexpr dispatch, special forms, lexical bindings, `Call`, `SyntaxCall`, `Callable`, `Fn`, `Fexpr`, `NativeFn`, and `~` message sends.
+5. **Callable evaluator:** implement callable-first evaluation, explicit fexpr dispatch, special forms, lexical bindings, `Call`, `SyntaxCall`, `Callable`, `Fn`, `Fexpr`, `NativeFn`, and dot message sends.
 6. **Selectors:** implement selector literals, static and dynamic `%` stages, `void` propagation, strict/default options, list/map/node/module/namespace lookup, and functional update paths.
 7. **Streams and parser pipeline:** implement `(Stream T E)`, `yield`, `peek`, `next`, `has_next`, `close`, `Never` error normalization, declaration streams, and stream-shaped reader/parser output.
 8. **Errors:** implement `Error` marker protocol, `fail`, `panic`, `try/catch/ensure`, `CompileError`, `MatchError`, `TypeError`, `CallKindError`, and checked/dynamic `^errors` rules.
@@ -5891,8 +5898,8 @@ Deferred until after the first implementation slice:
 - Standard selector-stage names are `props`, `body`, `meta`, `declarations`, `to_stream`, and `to_pairs_stream`. These are ordinary callable stages, not selector magic.
 - The collection operations — `map`, `filter`, `take`, `to_stream`, `to_pairs_stream`, `into`, `each` — are generic functions (§6.2): one message identity per operation shared by the types that serve it, with the `$name` function spelling under the `gene` root. A bare send and the `$` call are the same receiver-first dispatch; there is no lexical fallback.
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
-- `~` is the message-send operator and dispatches only — no lexical fallback. `(x ~ f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x ~ P:f a)` names protocol `P`'s message `f`; type-direct message values use `Self:f`, not `T:f`. `(x ~ %m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so `~` never invokes an arbitrary function. Message names are not bound in the enclosing scope, so `~` and a bare call `(f x)` never mix. See `docs/core.md §9`.
-- Leading sends use lexical `self`: `(~ f a)` means `(self ~ f a)` when `self` is in scope. `(super ~ f a)` delegates to the implementation above the enclosing type on the `^is` chain.
+- Dot message sends dispatch only — no lexical fallback. `(x .f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x .P:f a)` names protocol `P`'s message `f`; type-direct message values use `Self:f`, not `T:f`. `(x .%m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so a dot send never invokes an arbitrary function. Message names are not bound in the enclosing scope, so a dot descriptor and a bare call `(f x)` never mix. See `docs/core.md §9`.
+- Leading sends use lexical `self`: `(.f a)` means `(self .f a)` when `self` is in scope. `(super .f a)` delegates to the implementation above the enclosing type on the `^is` chain.
 - `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes the nearest `ctor` in the type's ancestry with a pre-created in-progress `self`, and fails when the hierarchy has no constructor.
 - `(fn name! ...)` defines a named runtime fexpr that receives raw syntax and a borrowed `CallerEnv`; only `(name! ...)` invokes it. Durable authority requires explicit named `snapshot` (on `CallerEnv`). `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
 - Delegation is explicit protocol forwarding, written manually as `impl`s in MVP; future derive helpers may generate forwarding impls from selector paths.

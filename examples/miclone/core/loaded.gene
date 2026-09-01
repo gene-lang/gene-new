@@ -103,16 +103,16 @@
     (var dy (+ (* span_y block_dim) 2.0))
     (var dz (+ (* span_z block_dim) 2.0))
     (var d ($buffer F32 dim_cells))
-    (d ~ set dim_dx dx)
-    (d ~ set dim_dy dy)
-    (d ~ set dim_dz dz)
-    (d ~ set dim_sz (* dx dy))
-    (d ~ set dim_ox (* bx block_dim))
-    (d ~ set dim_oy (* by block_dim))
-    (d ~ set dim_oz (* bz block_dim))
-    (d ~ set dim_span_x span_x)
-    (d ~ set dim_span_y span_y)
-    (d ~ set dim_span_z span_z)
+    (d .set dim_dx dx)
+    (d .set dim_dy dy)
+    (d .set dim_dz dz)
+    (d .set dim_sz (* dx dy))
+    (d .set dim_ox (* bx block_dim))
+    (d .set dim_oy (* by block_dim))
+    (d .set dim_oz (* bz block_dim))
+    (d .set dim_span_x span_x)
+    (d .set dim_span_y span_y)
+    (d .set dim_span_z span_z)
     (set self/dims d)
     # Zeroed is all air and no light, as §1's fresh block is — so only the shell
     # has to be written, and only the five faces of it that are not air.
@@ -146,7 +146,7 @@
   (while (< z dz)
     (var x 0.0)
     (while (< x dx)
-      (content ~ set (+ x (* z sz)) content_ignore)
+      (content .set (+ x (* z sz)) content_ignore)
       (set x (+ x 1.0)))
     (set z (+ z 1.0)))
 
@@ -155,8 +155,8 @@
   (while (< y dy)
     (var x 0.0)
     (while (< x dx)
-      (content ~ set (+ x (* y dx)) content_ignore)
-      (content ~ set (+ x (+ (* y dx) (* hi_z sz))) content_ignore)
+      (content .set (+ x (* y dx)) content_ignore)
+      (content .set (+ x (+ (* y dx) (* hi_z sz))) content_ignore)
       (set x (+ x 1.0)))
     (set y (+ y 1.0)))
 
@@ -165,8 +165,8 @@
   (while (< y dy)
     (var zz 0.0)
     (while (< zz dz)
-      (content ~ set (+ (* y dx) (* zz sz)) content_ignore)
-      (content ~ set (+ hi_x (+ (* y dx) (* zz sz))) content_ignore)
+      (content .set (+ (* y dx) (* zz sz)) content_ignore)
+      (content .set (+ hi_x (+ (* y dx) (* zz sz))) content_ignore)
       (set zz (+ zz 1.0)))
     (set y (+ y 1.0)))
 
@@ -175,30 +175,30 @@
   (while (< z dz)
     (var x 0.0)
     (while (< x dx)
-      (content ~ set (+ x (+ (* hi_y dx) (* z sz))) content_air)
+      (content .set (+ x (+ (* hi_y dx) (* z sz))) content_air)
       (set x (+ x 1.0)))
     (set z (+ z 1.0))))
 
 # --- shape -------------------------------------------------------------------
 
-(fn world_dx [w : World] : F64 (w/dims ~ get dim_dx))
-(fn world_dy [w : World] : F64 (w/dims ~ get dim_dy))
-(fn world_dz [w : World] : F64 (w/dims ~ get dim_dz))
-(fn world_stride_z [w : World] : F64 (w/dims ~ get dim_sz))
+(fn world_dx [w : World] : F64 (w/dims .get dim_dx))
+(fn world_dy [w : World] : F64 (w/dims .get dim_dy))
+(fn world_dz [w : World] : F64 (w/dims .get dim_dz))
+(fn world_stride_z [w : World] : F64 (w/dims .get dim_sz))
 
 (fn world_nodes [w : World] : F64
   (var d w/dims)
-  (* (d ~ get dim_dx) (* (d ~ get dim_dy) (d ~ get dim_dz))))
+  (* (d .get dim_dx) (* (d .get dim_dy) (d .get dim_dz))))
 
-(fn world_span_x [w : World] : F64 (w/dims ~ get dim_span_x))
-(fn world_span_y [w : World] : F64 (w/dims ~ get dim_span_y))
-(fn world_span_z [w : World] : F64 (w/dims ~ get dim_span_z))
+(fn world_span_x [w : World] : F64 (w/dims .get dim_span_x))
+(fn world_span_y [w : World] : F64 (w/dims .get dim_span_y))
+(fn world_span_z [w : World] : F64 (w/dims .get dim_span_z))
 
 # The lowest world node coordinate inside the world, on each axis. The highest
 # is this plus `span * 16 - 1`; the shell sits one node outside both.
-(fn world_min_x [w : World] : F64 (w/dims ~ get dim_ox))
-(fn world_min_y [w : World] : F64 (w/dims ~ get dim_oy))
-(fn world_min_z [w : World] : F64 (w/dims ~ get dim_oz))
+(fn world_min_x [w : World] : F64 (w/dims .get dim_ox))
+(fn world_min_y [w : World] : F64 (w/dims .get dim_oy))
+(fn world_min_z [w : World] : F64 (w/dims .get dim_oz))
 
 # --- addressing --------------------------------------------------------------
 #
@@ -212,40 +212,40 @@
 # three `floor`s inside every read on the physics hot path to defend against a
 # mistake that belongs at the call site.
 
-(fn array_x [w : World nx : F64] : F64 (+ (- nx (w/dims ~ get dim_ox)) 1.0))
-(fn array_y [w : World ny : F64] : F64 (+ (- ny (w/dims ~ get dim_oy)) 1.0))
-(fn array_z [w : World nz : F64] : F64 (+ (- nz (w/dims ~ get dim_oz)) 1.0))
+(fn array_x [w : World nx : F64] : F64 (+ (- nx (w/dims .get dim_ox)) 1.0))
+(fn array_y [w : World ny : F64] : F64 (+ (- ny (w/dims .get dim_oy)) 1.0))
+(fn array_z [w : World nz : F64] : F64 (+ (- nz (w/dims .get dim_oz)) 1.0))
 
 # True for a node the array can hold, **shell included**. The shell is real
 # storage with real content, and a reader that reaches it is asking a legitimate
 # question — "what is one step outside the world" — whose answer is `ignore`.
 (fn addressable? [w : World nx : F64 ny : F64 nz : F64] : Bool
   (var d w/dims)
-  (var ax (+ (- nx (d ~ get dim_ox)) 1.0))
-  (var ay (+ (- ny (d ~ get dim_oy)) 1.0))
-  (var az (+ (- nz (d ~ get dim_oz)) 1.0))
-  (&& (&& (&& (>= ax 0.0) (< ax (d ~ get dim_dx)))
-          (&& (>= ay 0.0) (< ay (d ~ get dim_dy))))
-      (&& (>= az 0.0) (< az (d ~ get dim_dz)))))
+  (var ax (+ (- nx (d .get dim_ox)) 1.0))
+  (var ay (+ (- ny (d .get dim_oy)) 1.0))
+  (var az (+ (- nz (d .get dim_oz)) 1.0))
+  (&& (&& (&& (>= ax 0.0) (< ax (d .get dim_dx)))
+          (&& (>= ay 0.0) (< ay (d .get dim_dy))))
+      (&& (>= az 0.0) (< az (d .get dim_dz)))))
 
 # True only for a node of the world proper — the shell is outside it. This is
 # the predicate an editor wants: the shell is not a place a player may dig.
 (fn inside? [w : World nx : F64 ny : F64 nz : F64] : Bool
   (var d w/dims)
-  (var x (- nx (d ~ get dim_ox)))
-  (var y (- ny (d ~ get dim_oy)))
-  (var z (- nz (d ~ get dim_oz)))
-  (&& (&& (&& (>= x 0.0) (< x (* (d ~ get dim_span_x) block_dim)))
-          (&& (>= y 0.0) (< y (* (d ~ get dim_span_y) block_dim))))
-      (&& (>= z 0.0) (< z (* (d ~ get dim_span_z) block_dim)))))
+  (var x (- nx (d .get dim_ox)))
+  (var y (- ny (d .get dim_oy)))
+  (var z (- nz (d .get dim_oz)))
+  (&& (&& (&& (>= x 0.0) (< x (* (d .get dim_span_x) block_dim)))
+          (&& (>= y 0.0) (< y (* (d .get dim_span_y) block_dim))))
+      (&& (>= z 0.0) (< z (* (d .get dim_span_z) block_dim)))))
 
 # The array index of a world node. Only meaningful where `addressable?` holds;
 # callers that cannot promise that use `node_at`, which checks.
 (fn world_index [w : World nx : F64 ny : F64 nz : F64] : F64
   (var d w/dims)
-  (+ (+ (- nx (d ~ get dim_ox)) 1.0)
-     (+ (* (+ (- ny (d ~ get dim_oy)) 1.0) (d ~ get dim_dx))
-        (* (+ (- nz (d ~ get dim_oz)) 1.0) (d ~ get dim_sz)))))
+  (+ (+ (- nx (d .get dim_ox)) 1.0)
+     (+ (* (+ (- ny (d .get dim_oy)) 1.0) (d .get dim_dx))
+        (* (+ (- nz (d .get dim_oz)) 1.0) (d .get dim_sz)))))
 
 # --- reading and writing -----------------------------------------------------
 
@@ -256,14 +256,14 @@
 # existing reserved id rather than from a special case.
 (fn node_at [w : World nx : F64 ny : F64 nz : F64] : F64
   (if (addressable? w nx ny nz)
-    (then (w/content ~ get (world_index w nx ny nz)))
+    (then (w/content .get (world_index w nx ny nz)))
     (else content_ignore)))
 
 # The packed day/night byte of §4. Unlit — 0 — outside the array, which is what
 # an unloaded node is: no light, rather than dark-because-shadowed.
 (fn light_at [w : World nx : F64 ny : F64 nz : F64] : F64
   (if (addressable? w nx ny nz)
-    (then (w/light ~ get (world_index w nx ny nz)))
+    (then (w/light .get (world_index w nx ny nz)))
     (else 0.0)))
 
 # Writes are refused outside the world proper. Silently, because every caller
@@ -271,11 +271,11 @@
 # raise here would turn a mis-aimed click at the world's edge into a crash.
 (fn set_node [w : World nx : F64 ny : F64 nz : F64 id : F64] : Nil
   (if_yes (inside? w nx ny nz)
-    (w/content ~ set (world_index w nx ny nz) id)))
+    (w/content .set (world_index w nx ny nz) id)))
 
 (fn set_light [w : World nx : F64 ny : F64 nz : F64 packed : F64] : Nil
   (if_yes (inside? w nx ny nz)
-    (w/light ~ set (world_index w nx ny nz) packed)))
+    (w/light .set (world_index w nx ny nz) packed)))
 
 # --- blocks ------------------------------------------------------------------
 
@@ -283,11 +283,11 @@
 # the index of that block's own `(0, 0, 0)`.
 (fn block_base [w : World bx : F64 by : F64 bz : F64] : F64
   (var d w/dims)
-  (chunk_base (+ (- (* bx block_dim) (d ~ get dim_ox)) 1.0)
-              (+ (- (* by block_dim) (d ~ get dim_oy)) 1.0)
-              (+ (- (* bz block_dim) (d ~ get dim_oz)) 1.0)
-              (d ~ get dim_dx)
-              (d ~ get dim_sz)))
+  (chunk_base (+ (- (* bx block_dim) (d .get dim_ox)) 1.0)
+              (+ (- (* by block_dim) (d .get dim_oy)) 1.0)
+              (+ (- (* bz block_dim) (d .get dim_oz)) 1.0)
+              (d .get dim_dx)
+              (d .get dim_sz)))
 
 # Copy a generated 16³ block (§1's `x + 16y + 256z`) into its place in the array.
 #
@@ -297,8 +297,8 @@
 (fn store_block [w : World bx : F64 by : F64 bz : F64
                  src : (Buffer F32)] : Nil
   (var d w/dims)
-  (var dx (d ~ get dim_dx))
-  (var sz (d ~ get dim_sz))
+  (var dx (d .get dim_dx))
+  (var sz (d .get dim_sz))
   (var content w/content)
   (var base (block_base w bx by bz))
   (var z 0.0)
@@ -309,7 +309,7 @@
       (var from (+ (* y block_dim) (* z (* block_dim block_dim))))
       (var x 0.0)
       (while (< x block_dim)
-        (content ~ set (+ dst x) (src ~ get (+ from x)))
+        (content .set (+ dst x) (src .get (+ from x)))
         (set x (+ x 1.0)))
       (set y (+ y 1.0)))
     (set z (+ z 1.0))))
@@ -324,8 +324,8 @@
 (fn extract_block [w : World bx : F64 by : F64 bz : F64
                    dst : (Buffer F32) src : (Buffer F32)] : Nil
   (var d w/dims)
-  (var dx (d ~ get dim_dx))
-  (var sz (d ~ get dim_sz))
+  (var dx (d .get dim_dx))
+  (var sz (d .get dim_sz))
   (var base (block_base w bx by bz))
   (var z 0.0)
   (while (< z block_dim)
@@ -335,7 +335,7 @@
       (var to (+ (* y block_dim) (* z (* block_dim block_dim))))
       (var x 0.0)
       (while (< x block_dim)
-        (dst ~ set (+ to x) (src ~ get (+ from x)))
+        (dst .set (+ to x) (src .get (+ from x)))
         (set x (+ x 1.0)))
       (set y (+ y 1.0)))
     (set z (+ z 1.0))))
@@ -347,8 +347,8 @@
 (fn store_light [w : World bx : F64 by : F64 bz : F64
                  src : (Buffer F32)] : Nil
   (var d w/dims)
-  (var dx (d ~ get dim_dx))
-  (var sz (d ~ get dim_sz))
+  (var dx (d .get dim_dx))
+  (var sz (d .get dim_sz))
   (var light w/light)
   (var base (block_base w bx by bz))
   (var z 0.0)
@@ -359,7 +359,7 @@
       (var from (+ (* y block_dim) (* z (* block_dim block_dim))))
       (var x 0.0)
       (while (< x block_dim)
-        (light ~ set (+ to x) (src ~ get (+ from x)))
+        (light .set (+ to x) (src .get (+ from x)))
         (set x (+ x 1.0)))
       (set y (+ y 1.0)))
     (set z (+ z 1.0))))
@@ -380,5 +380,5 @@
   (var n (* (world_dx w) (world_dz w)))
   (var i 0.0)
   (while (< i n)
-    (sky ~ set i light_max)
+    (sky .set i light_max)
     (set i (+ i 1.0))))

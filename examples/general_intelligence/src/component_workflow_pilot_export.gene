@@ -32,20 +32,20 @@
 (fn operation_names [program : Node] : (List Str)
   (var names : (List Str) [])
   (for step in (program_steps program)
-    (names ~ push (operation_name step)))
+    (names .push (operation_name step)))
   names)
 
 (fn export_component [component : Node] : Map
   (var demonstrations : List [])
   (for example in component/examples
-    (demonstrations ~ push
+    (demonstrations .push
       {^input example/input ^output example/output}))
   {^workflow_id component/workflow_id
    ^demonstrations demonstrations})
 
 (fn main [args] : Nil
   (var argv ($body args))
-  (if_not (== (argv ~ size) 4)
+  (if_not (== (argv .size) 4)
     ($panic
       "usage: component_workflow_pilot_export <catalog-seed> <order-seed> <count> <composition-arity>"))
   (var catalog_seed (parse_int argv/0))
@@ -64,10 +64,10 @@
     (var task subject/heldout_compositions/%index)
     (var components : List [])
     (for component in task/public/components
-      (components ~ push (export_component component)))
+      (components .push (export_component component)))
     (var component_operations : List [])
     (for program in task/verifier/component_programs
-      (component_operations ~ push (operation_names program)))
+      (component_operations .push (operation_names program)))
     ($println
       (stringify
         {^schema 3

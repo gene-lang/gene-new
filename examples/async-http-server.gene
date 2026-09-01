@@ -38,7 +38,7 @@
 #            capability-shaped listener; (status server) metrics; (stop
 #            server) graceful drain.
 #   Phase 3  ^routes table with :param captures (/job/:id -> req/params/id),
-#            meta-based route discovery over (this_mod ~ declarations),
+#            meta-based route discovery over (this_mod .declarations),
 #            ^on_error mapping typed error values to responses, and
 #            ^access_log / ^error_log with ^redact_headers.
 #   Phase 2  actor_pool dispatch is not shown here (^routes and ^dispatch
@@ -80,34 +80,34 @@
 
 (fn atomic_inc [cell]
   (var done false)
-  (var next (cell ~ load))
+  (var next (cell .load))
   (while (not done)
-    (if (cell ~ compare_exchange next (+ next 1))
+    (if (cell .compare_exchange next (+ next 1))
       (set done true)
-      (set next (cell ~ load)))))
+      (set next (cell .load)))))
 
 (fn atomic_dec [cell]
   (var done false)
-  (var next (cell ~ load))
+  (var next (cell .load))
   (while (not done)
-    (if (cell ~ compare_exchange next (- next 1))
+    (if (cell .compare_exchange next (- next 1))
       (set done true)
-      (set next (cell ~ load)))))
+      (set next (cell .load)))))
 
 (fn new_job_id []
-  (var next (job_counter ~ load))
+  (var next (job_counter .load))
   (while true
-    (if (not (job_counter ~ compare_exchange next (+ next 1)))
-      (set next (job_counter ~ load))
+    (if (not (job_counter .compare_exchange next (+ next 1)))
+      (set next (job_counter .load))
       (break)))
   ($ "job-" next))
 
 (fn set_job_state [id state ms]
   (var done false)
   (while (not done)
-    (var reg (jobs ~ load))
-    (var next (reg ~ assoc id {^id id ^state state ^ms ms}))
-    (set done (jobs ~ compare_exchange reg next))))
+    (var reg (jobs .load))
+    (var next (reg .assoc id {^id id ^state state ^ms ms}))
+    (set done (jobs .compare_exchange reg next))))
 
 (fn parse_job_ms [req default]
   (var parsed
@@ -133,13 +133,13 @@
 # on handler errors/panics before any ^on_error mapping.
 
 (fn note_access [rec]
-  (counter ~ set (+ (counter ~ get) 1))
-  (last_access ~ set
+  (counter .set (+ (counter .get) 1))
+  (last_access .set
     {^method rec/method ^path rec/path ^status rec/status ^ms rec/ms
      ^headers rec/headers}))
 
 (fn note_error [rec]
-  (last_error ~ set
+  (last_error .set
     {^method rec/method ^path rec/path ^message rec/message ^panic rec/panic}))
 
 # --- handlers ----------------------------------------------------------------
@@ -167,24 +167,24 @@
 
 (fn hits [req]
   @route (route ^method "GET" ^path "/hits")
-  (json (stringify {^hits (counter ~ get)})))
+  (json (stringify {^hits (counter .get)})))
 
 (fn now [req]
   @route (route ^method "GET" ^path "/now")
-  (text (stringify (counter ~ get))))
+  (text (stringify (counter .get))))
 
 (fn jobs_index [req]
   @route (route ^method "GET" ^path "/jobs")
   (json (stringify
-    {^running (jobs_running ~ load)
-     ^completed (jobs_completed ~ load)
-     ^jobs (jobs ~ load)})))
+    {^running (jobs_running .load)
+     ^completed (jobs_completed .load)
+     ^jobs (jobs .load)})))
 
 (fn job_show [req]
   # ":id" captures the path segment into req/params/id (query keys still
   # populate req/params; a path capture wins over a same-named query key).
   @route (route ^method "GET" ^path "/job/:id")
-  (var job ((jobs ~ load) ~ get req/params/id))
+  (var job ((jobs .load) .get req/params/id))
   (if job
     (json (stringify job))
     (fail (JobNotFound ^id req/params/id))))
@@ -206,8 +206,8 @@
   (var delta
     (try (parse_int (|| req/body "0"))
       catch ParseError 0))
-  (counter ~ set (+ (counter ~ get) delta))
-  (json (stringify {^hits (counter ~ get)})))
+  (counter .set (+ (counter .get) delta))
+  (json (stringify {^hits (counter .get)})))
 
 (fn slow [req]
   # Baseline for the concurrency proof: the sleep parks this request's fiber;
@@ -234,8 +234,8 @@
 (fn log_tail [req]
   @route (route ^method "GET" ^path "/log")
   (json (stringify
-    {^last_access (last_access ~ get)
-     ^last_error (last_error ~ get)})))
+    {^last_access (last_access .get)
+     ^last_error (last_error .get)})))
 
 (fn shutdown [req]
   @route (route ^method "POST" ^path "/stop")
@@ -265,8 +265,8 @@
   (route ^method r/method ^path r/path ^handler d/value))
 
 (var routes
-  (($map ($filter (this_mod ~ declarations) routed?) route_entry)
-   ~ into [(route ^method "GET" ^path "/" ^handler help)]))
+  (($map ($filter (this_mod .declarations) routed?) route_entry)
+   .into [(route ^method "GET" ^path "/" ^handler help)]))
 
 ($println "async HTTP server listening on http://127.0.0.1:8091")
 ($println ($ "    " ($size routes) " routes (1 manual + discovered @route decls)"))

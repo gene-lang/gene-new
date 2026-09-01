@@ -122,7 +122,7 @@ execution traces. The default route emits `warn` and `error` to stderr.
 (var logger
   (new_logger "app/http" ^payload {^service "api"}))
 
-(logger ~ info "listening" ^payload {^port 8080})  # eager
+(logger .info "listening" ^payload {^port 8080})  # eager
 (log_debug logger (expensive_message)                  # lazy
   ^payload {^request_id id})
 ```
@@ -160,12 +160,12 @@ not mutate process routing and is unavailable under wasm.
 
 ### `respond_to?`
 
-`($respond_to? value msg)` answers whether a bare `(value ~ msg)` would
+`($respond_to? value msg)` answers whether a bare `(value .msg)` would
 resolve. `msg` is a `Sym` or a `Str`.
 
 ```gene
 (if ($respond_to? plugin "init")
-  (plugin ~ init))
+  (plugin .init))
 ```
 
 It reuses the two steps a bare send takes — the receiver's type-direct message
@@ -173,9 +173,9 @@ table, then the built-in receiver surface — so the predicate cannot drift from
 dispatch, and built-in receivers answer it too (`($respond_to? [1 2] "size")`
 is `true`).
 
-It is the guard `?~` is not. `?~` guards the *receiver*: an absent receiver
+It is the guard `?.message` is not. `?.message` guards the *receiver*: an absent receiver
 short-circuits, but a present receiver with an unknown message still raises
-`MessageError`. Use `?~` for "there may be no receiver" and `respond_to?` for
+`MessageError`. Use `?.message` for "there may be no receiver" and `respond_to?` for
 "there may be no message"; they compose.
 
 ### `event`
@@ -196,12 +196,12 @@ string, no topic registry, and no global bus.
   (Bus))
 
 (var subscription
-  (bus ~ subscribe UserCreated on_user_created))
+  (bus .subscribe UserCreated on_user_created))
 
-(bus ~ publish
+(bus .publish
   (UserCreated ^user_id "u_123"))
 
-subscription/~cancel
+subscription/.cancel
 ```
 
 Members: the `Event` root type; `Bus`, `Subscription`, `PublishResult`, and
@@ -496,7 +496,7 @@ String utilities needed by HTML and HTTP:
 Acceptance:
 
 - `join` works as a send or normal callable in render pipelines:
-  `(items ~ join "")`.
+  `(items .join "")`.
 - Functions are allocation-conscious but correctness comes first for MVP.
 
 ## Phase 2: HTML and URL Modules

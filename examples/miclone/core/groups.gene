@@ -61,10 +61,10 @@
   (new GroupRegistry))
 
 (fn group_name_count [g : GroupRegistry] : F64
-  (g/counts ~ get count_names))
+  (g/counts .get count_names))
 
 (fn group_entry_count [g : GroupRegistry] : F64
-  (g/counts ~ get count_entries))
+  (g/counts .get count_entries))
 
 (fn group_name [g : GroupRegistry id : F64] : Str
   (var names g/names)
@@ -106,8 +106,8 @@
       (if_yes (>= id max_group_names)
         (fail (new GroupRegistryFull
                    $"group registry is full at ${max_group_names} names")))
-      (g/names ~ push name)
-      (g/counts ~ set count_names (+ id 1.0))
+      (g/names .push name)
+      (g/counts .set count_names (+ id 1.0))
       id)))
 
 # --- ratings -----------------------------------------------------------------
@@ -120,7 +120,7 @@
   (var at -1.0)
   (var i 0.0)
   (while (< i n)
-    (if_yes (&& (== (g/owner ~ get i) owner) (== (g/group ~ get i) group))
+    (if_yes (&& (== (g/owner .get i) owner) (== (g/group .get i) group))
       (set at i)
       (set i n))
     (set i (+ i 1.0)))
@@ -129,10 +129,10 @@
       (fail (new GroupRegistryFull
                  $"group registry is full at ${max_group_entries} entries")))
     (set at n)
-    (g/counts ~ set count_entries (+ n 1.0)))
-  (g/owner ~ set at owner)
-  (g/group ~ set at group)
-  (g/rating ~ set at rating))
+    (g/counts .set count_entries (+ n 1.0)))
+  (g/owner .set at owner)
+  (g/group .set at group)
+  (g/rating .set at rating))
 
 # 0 when `owner` is not in `group` — see the header for why that is a value
 # rather than an absence.
@@ -141,8 +141,8 @@
   (var n (group_entry_count g))
   (var i 0.0)
   (while (< i n)
-    (if_yes (&& (== (g/owner ~ get i) owner) (== (g/group ~ get i) group))
-      (set found (g/rating ~ get i))
+    (if_yes (&& (== (g/owner .get i) owner) (== (g/group .get i) group))
+      (set found (g/rating .get i))
       (set i n))
     (set i (+ i 1.0)))
   found)
@@ -161,6 +161,6 @@
 # The wire (§10) and the specs walk the triples in order, so the columns are
 # readable one entry at a time rather than only through a lookup.
 
-(fn entry_owner [g : GroupRegistry i : F64] : F64 (g/owner ~ get i))
-(fn entry_group [g : GroupRegistry i : F64] : F64 (g/group ~ get i))
-(fn entry_rating [g : GroupRegistry i : F64] : F64 (g/rating ~ get i))
+(fn entry_owner [g : GroupRegistry i : F64] : F64 (g/owner .get i))
+(fn entry_group [g : GroupRegistry i : F64] : F64 (g/group .get i))
+(fn entry_rating [g : GroupRegistry i : F64] : F64 (g/rating .get i))

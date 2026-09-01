@@ -77,76 +77,76 @@
   (var result : (List Int) [])
   (var index first)
   (while (< index past)
-    (result ~ push items/%index)
+    (result .push items/%index)
     (set index (+ index 1)))
   result)
 
 (fn copy_items [items : (List Int)] : (List Int)
-  (copy_range items 0 (items ~ size)))
+  (copy_range items 0 (items .size)))
 
 (fn apply_primitive [step : Node, input : (List Int)] : (List Int)
   (match step
     (when (tail)
-      (if (<= (input ~ size) 1)
+      (if (<= (input .size) 1)
         []
-        (copy_range input 1 (input ~ size))))
+        (copy_range input 1 (input .size))))
     (when (init)
-      (if (<= (input ~ size) 1)
+      (if (<= (input .size) 1)
         []
-        (copy_range input 0 (- (input ~ size) 1))))
+        (copy_range input 0 (- (input .size) 1))))
     (when (reverse)
       (var result : (List Int) [])
-      (var index (- (input ~ size) 1))
+      (var index (- (input .size) 1))
       (while (>= index 0)
-        (result ~ push input/%index)
+        (result .push input/%index)
         (set index (- index 1)))
       result)
     (when (rotate_left)
-      (if (<= (input ~ size) 1)
+      (if (<= (input .size) 1)
         (then (copy_items input))
         (else
-          (var result (copy_range input 1 (input ~ size)))
-          (result ~ push input/0)
+          (var result (copy_range input 1 (input .size)))
+          (result .push input/0)
           result)))
     (when (rotate_right)
-      (if (<= (input ~ size) 1)
+      (if (<= (input .size) 1)
         (then (copy_items input))
         (else
           (var result : (List Int) [input/-1])
-          (for item in (copy_range input 0 (- (input ~ size) 1))
-            (result ~ push item))
+          (for item in (copy_range input 0 (- (input .size) 1))
+            (result .push item))
           result)))
     (when (map_add_one)
       (var result : (List Int) [])
-      (for item in input (result ~ push (+ item 1)))
+      (for item in input (result .push (+ item 1)))
       result)
     (when (map_sub_one)
       (var result : (List Int) [])
-      (for item in input (result ~ push (- item 1)))
+      (for item in input (result .push (- item 1)))
       result)
     (when (map_double)
       (var result : (List Int) [])
-      (for item in input (result ~ push (* item 2)))
+      (for item in input (result .push (* item 2)))
       result)
     (when (map_negate)
       (var result : (List Int) [])
-      (for item in input (result ~ push (- 0 item)))
+      (for item in input (result .push (- 0 item)))
       result)
     (when (keep_even)
       (var result : (List Int) [])
       (for item in input
-        (if_yes (== (// item 2) 0) (result ~ push item)))
+        (if_yes (== (// item 2) 0) (result .push item)))
       result)
     (when (keep_odd)
       (var result : (List Int) [])
       (for item in input
-        (if_not (== (// item 2) 0) (result ~ push item)))
+        (if_not (== (// item 2) 0) (result .push item)))
       result)
     (when (duplicate_each)
       (var result : (List Int) [])
       (for item in input
-        (result ~ push item)
-        (result ~ push item))
+        (result .push item)
+        (result .push item))
       result)
     (else ($panic "unknown library-induction primitive"))))
 
@@ -182,7 +182,7 @@
                       `(expansion
                          ^valid false ^steps []
                          ^error "abstraction body must contain only primitives")))
-                  (expanded ~ push body_step)))
+                  (expanded .push body_step)))
               (else
                 (return
                   `(expansion
@@ -194,8 +194,8 @@
                 `(expansion
                    ^valid false ^steps []
                    ^error "program contains an unknown primitive")))
-            (expanded ~ push token)))
-        (if (> (expanded ~ size) subject/max_expanded_steps)
+            (expanded .push token)))
+        (if (> (expanded .size) subject/max_expanded_steps)
           (return
             `(expansion
                ^valid false ^steps []
@@ -208,7 +208,7 @@
   `(expansion ^valid true ^steps %expanded ^error nil))
 
 (fn input_valid? [subject : Node, input : (List Int)] : Bool
-  (if (> (input ~ size) subject/max_input_items) (return false))
+  (if (> (input .size) subject/max_input_items) (return false))
   (for item in input
     (if (> ($math/abs item) 1000000) (return false)))
   true)
@@ -229,7 +229,7 @@
   (var result (copy_items input))
   (for step in expansion/steps
     (set result (apply_primitive step result))
-    (if (> (result ~ size) subject/max_output_items)
+    (if (> (result .size) subject/max_output_items)
       (return
         `(program_execution
            ^valid false ^output []
@@ -258,15 +258,15 @@
   (var offset 0)
   (while (< offset length)
     (var position (+ start offset))
-    (pattern ~ push steps/%position)
+    (pattern .push steps/%position)
     (set offset (+ offset 1)))
   pattern)
 
 (fn pattern_at? [steps : (List Node), pattern : (List Node),
                  start : Int] : Bool
-  (if (> (+ start (pattern ~ size)) (steps ~ size)) (return false))
+  (if (> (+ start (pattern .size)) (steps .size)) (return false))
   (var offset 0)
-  (while (< offset (pattern ~ size))
+  (while (< offset (pattern .size))
     (var position (+ start offset))
     (if_not (== steps/%position pattern/%offset)
       (return false))
@@ -276,7 +276,7 @@
 (fn contains_pattern? [program : Node, pattern : (List Node)] : Bool
   (var steps ($body program))
   (var start 0)
-  (while (<= (+ start (pattern ~ size)) (steps ~ size))
+  (while (<= (+ start (pattern .size)) (steps .size))
     (if (pattern_at? steps pattern start) (return true))
     (set start (+ start 1)))
   false)
@@ -291,11 +291,11 @@
   (var steps ($body program))
   (var count 0)
   (var index 0)
-  (while (< index (steps ~ size))
+  (while (< index (steps .size))
     (if (pattern_at? steps pattern index)
       (then
         (set count (+ count 1))
-        (set index (+ index (pattern ~ size))))
+        (set index (+ index (pattern .size))))
       (else (set index (+ index 1)))))
   count)
 
@@ -310,19 +310,19 @@
   (var steps ($body program))
   (var compressed : (List Node) [])
   (var index 0)
-  (while (< index (steps ~ size))
+  (while (< index (steps .size))
     (if (pattern_at? steps pattern index)
       (then
-        (compressed ~ push `(use ^name %name))
-        (set index (+ index (pattern ~ size))))
+        (compressed .push `(use ^name %name))
+        (set index (+ index (pattern .size))))
       (else
-        (compressed ~ push steps/%index)
+        (compressed .push steps/%index)
         (set index (+ index 1)))))
   `(program %compressed...))
 
 (fn programs_mdl [programs : (List Node)] : Int
   (var total 0)
-  (for program in programs (set total (+ total (($body program) ~ size))))
+  (for program in programs (set total (+ total (($body program) .size))))
   total)
 
 (fn induce_library [subject : Node, programs : (List Node)] : Node
@@ -333,10 +333,10 @@
   (for program in programs
     (var steps ($body program))
     (var start 0)
-    (while (< start (steps ~ size))
+    (while (< start (steps .size))
       (var length 2)
       (while (&& (<= length subject/max_abstraction_steps)
-                 (<= (+ start length) (steps ~ size)))
+                 (<= (+ start length) (steps .size)))
         (var pattern (take_pattern steps start length))
         (var support (pattern_support programs pattern))
         (var occurrences (pattern_occurrences programs pattern))
@@ -369,15 +369,15 @@
     `(abstraction
        ^name %name ^body %body ^support %best_support
        ^occurrences %best_occurrences
-       ^definition_mdl %(+ (best_pattern ~ size) 1)))
+       ^definition_mdl %(+ (best_pattern .size) 1)))
   (var library : (List Node) [])
-  (library ~ push abstraction)
+  (library .push abstraction)
   (var compressed_programs : (List Node) [])
   (for program in programs
-    (compressed_programs ~ push
+    (compressed_programs .push
       (compress_program program best_pattern name)))
   (var induced_mdl
-    (+ (+ (best_pattern ~ size) 1)
+    (+ (+ (best_pattern .size) 1)
        (programs_mdl compressed_programs)))
   `(induction_result
      ^accepted true
@@ -412,10 +412,10 @@
   (for program in original_programs
     (var steps ($body program))
     (var start 0)
-    (while (< start (steps ~ size))
+    (while (< start (steps .size))
       (var length 2)
       (while (&& (<= length subject/max_abstraction_steps)
-                 (<= (+ start length) (steps ~ size)))
+                 (<= (+ start length) (steps .size)))
         (var pattern (take_pattern steps start length))
         (if_not (library_has_body? library pattern)
           (var support (pattern_support original_programs pattern))
@@ -450,14 +450,14 @@
   (var library : (List Node) [])
   (var rounds : (List Node) [])
   (var stop_reason (quote no_positive_gain))
-  (while (< (library ~ size) subject/max_library_items)
+  (while (< (library .size) subject/max_library_items)
     (var candidate
       (best_marginal_abstraction
         subject programs compressed_programs library))
     (if_not candidate/accepted
       (set stop_reason (quote no_positive_gain))
       (break))
-    (var library_index (library ~ size))
+    (var library_index (library .size))
     (var name $"${subject/abstraction_name_prefix}${library_index}")
     (var body `(program %candidate/pattern...))
     (var abstraction
@@ -466,17 +466,17 @@
          ^body %body
          ^support %candidate/support
          ^occurrences %candidate/occurrences
-         ^definition_mdl %(+ (candidate/pattern ~ size) 1)))
-    (library ~ push abstraction)
+         ^definition_mdl %(+ (candidate/pattern .size) 1)))
+    (library .push abstraction)
     (var next_programs : (List Node) [])
     (for program in compressed_programs
-      (next_programs ~ push
+      (next_programs .push
         (compress_program program candidate/pattern name)))
     (set compressed_programs next_programs)
     (var current_mdl
       (+ (programs_mdl compressed_programs)
          (library_definition_mdl library)))
-    (rounds ~ push
+    (rounds .push
       `(induction_round
          ^index %library_index
          ^name %name
@@ -485,13 +485,13 @@
          ^occurrences %candidate/occurrences
          ^mdl_gain %candidate/mdl_gain
          ^corpus_mdl %current_mdl)))
-  (if (>= (library ~ size) subject/max_library_items)
+  (if (>= (library .size) subject/max_library_items)
     (set stop_reason (quote library_item_cap)))
   (var induced_mdl
     (+ (programs_mdl compressed_programs)
        (library_definition_mdl library)))
   `(iterative_induction_result
-     ^accepted %(> (library ~ size) 0)
+     ^accepted %(> (library .size) 0)
      ^library %library
      ^rounds %rounds
      ^stop_reason %stop_reason
@@ -510,7 +510,7 @@
   (var bodies : (List (List Node)) [])
   (var unique_bodies true)
   (var index 0)
-  (while (< index (programs ~ size))
+  (while (< index (programs .size))
     (var expanded
       (expand_program subject induction/compressed_programs/%index
                       induction/library))
@@ -526,10 +526,10 @@
     (var body ($body abstraction/body))
     (for seen in bodies
       (if (== seen body) (set unique_bodies false)))
-    (bodies ~ push body))
+    (bodies .push body))
   (var bounds_valid
     (&&
-      (<= (induction/library ~ size) subject/max_library_items)
+      (<= (induction/library .size) subject/max_library_items)
       (<= induction/definition_mdl subject/max_library_definition_mdl)
       (== induction/induced_mdl
           (+ (programs_mdl induction/compressed_programs)
@@ -545,14 +545,14 @@
      ^mdl_monotone %mdl_monotone
      ^unique_bodies %unique_bodies
      ^bounds_valid %bounds_valid
-     ^library_items %(induction/library ~ size)
+     ^library_items %(induction/library .size)
      ^definition_mdl %induction/definition_mdl))
 
 (fn append_token [program : Node, token : Node] : Node
   (var steps ($body program))
   (var result : (List Node) [])
-  (for step in steps (result ~ push step))
-  (result ~ push token)
+  (for step in steps (result .push step))
+  (result .push token)
   `(program %result...))
 
 (fn programs_of_length [tokens : (List Node), length : Int] : (List Node)
@@ -560,7 +560,7 @@
   (var result : (List Node) [])
   (for prefix in (programs_of_length tokens (- length 1))
     (for token in tokens
-      (result ~ push (append_token prefix token))))
+      (result .push (append_token prefix token))))
   result)
 
 # These inputs are part of the structural validity gate, not evaluation data.
@@ -591,8 +591,8 @@
     (for program in (programs_of_length subject/primitive_tokens depth)
       (var signature (program_signature subject program inputs))
       (set candidates (+ candidates 1))
-      (if (== (signatures ~ get signature) void)
-        (signatures ~ put signature depth)))
+      (if (== (signatures .get signature) void)
+        (signatures .put signature depth)))
     (set depth (+ depth 1)))
   `(signature_index
      ^maximum_depth %maximum_depth
@@ -611,7 +611,7 @@
      ^value %(// next_state upper_bound)))
 
 (fn random_primitive [subject : Node, state : Int] : Node
-  (var draw (corpus_draw state (subject/primitive_tokens ~ size)))
+  (var draw (corpus_draw state (subject/primitive_tokens .size)))
   (var token_index draw/value)
   `(primitive_draw
      ^state %draw/state
@@ -626,11 +626,11 @@
   (while (< position 4)
     (if (== position motif_position)
       (then
-        (steps ~ push motif_steps/0)
-        (steps ~ push motif_steps/1)
+        (steps .push motif_steps/0)
+        (steps .push motif_steps/1)
         (set position (+ position 2)))
       (else
-        (steps ~ push filler_steps/%filler_index)
+        (steps .push filler_steps/%filler_index)
         (set filler_index (+ filler_index 1))
         (set position (+ position 1)))))
   `(program %steps...))
@@ -648,16 +648,16 @@
           (program_with_motif motif [first second] motif_position))
         (var signature
           (program_signature subject program signature_index/screen_inputs))
-        (if_yes (&& (== (signature_index/signatures ~ get signature) void)
-                    (== (signatures ~ get signature) void))
-          (signatures ~ put signature true)
+        (if_yes (&& (== (signature_index/signatures .get signature) void)
+                    (== (signatures .get signature) void))
+          (signatures .put signature true)
           (set capacity (+ capacity 1)))))
-    (capacities ~ push capacity)
+    (capacities .push capacity)
     (set motif_position (+ motif_position 1)))
   capacities)
 
 (fn capacities_sufficient? [capacities : (List Int)] : Bool
-  (if (!= (capacities ~ size) 3) (return false))
+  (if (!= (capacities .size) 3) (return false))
   (for capacity in capacities
     (if (< capacity 24) (return false)))
   true)
@@ -669,7 +669,7 @@
   (var used : Map {})
   (var rejected 0)
   (var attempts 0)
-  (while (< (motifs ~ size) 4)
+  (while (< (motifs .size) 4)
     (if (>= attempts 10000)
       ($panic "could not generate four distinct minimal motifs"))
     (set attempts (+ attempts 1))
@@ -680,25 +680,25 @@
     (var body `(program %first/token %second/token))
     (var signature (program_signature subject body
                                       signature_index/screen_inputs))
-    (var minimum_depth (signature_index/signatures ~ get signature))
+    (var minimum_depth (signature_index/signatures .get signature))
     (var capacities : (List Int) [])
     (var eligible
-      (&& (== minimum_depth 2) (== (used ~ get signature) void)))
+      (&& (== minimum_depth 2) (== (used .get signature) void)))
     (if_yes eligible
       (set capacities
         (motif_extension_capacities
           subject `(motif ^body %body) signature_index)))
     (if (&& eligible (capacities_sufficient? capacities))
       (then
-        (var motif_index (motifs ~ size))
-        (motifs ~ push
+        (var motif_index (motifs .size))
+        (motifs .push
           `(motif
              ^index %motif_index
              ^name $"motif_${motif_index}"
              ^body %body
              ^structural_min_depth 2
              ^extension_capacities %capacities))
-        (used ~ put signature true))
+        (used .put signature true))
       (else (set rejected (+ rejected 1)))))
   `(motif_generation
      ^state %state
@@ -712,7 +712,7 @@
   (repeat _ in length
     (var draw (random_primitive subject next_state))
     (set next_state draw/state)
-    (steps ~ push draw/token))
+    (steps .push draw/token))
   `(program_draw
      ^state %next_state
      ^program (program %steps...)))
@@ -732,7 +732,7 @@
   (repeat _ in (+ length_draw/value 1)
     (var value_draw (corpus_draw next_state 11))
     (set next_state value_draw/state)
-    (input ~ push (- value_draw/value 5)))
+    (input .push (- value_draw/value 5)))
   `(input_draw ^state %next_state ^input %input))
 
 (fn generated_cases [subject : Node, program : Node, state : Int,
@@ -742,7 +742,7 @@
   (repeat _ in count
     (var input_draw (generate_input next_state))
     (set next_state input_draw/state)
-    (cases ~ push
+    (cases .push
       `(case
          ^input %input_draw/input
          ^expected %(run_program subject program [] input_draw/input))))
@@ -751,7 +751,7 @@
 (fn structural_cases [subject : Node, program : Node] : (List Node)
   (var cases : (List Node) [])
   (for input in (structural_screen_inputs)
-    (cases ~ push
+    (cases .push
       `(case
          ^input %input
          ^expected %(run_program subject program [] input))))
@@ -765,8 +765,8 @@
   (var motif_bearing (!= (// task_index 5) 4))
   (if motif_bearing
     (then
-      (var motif_index (// task_index (motifs ~ size)))
-      (var motif_position (// (/ task_index (motifs ~ size)) 3))
+      (var motif_index (// task_index (motifs .size)))
+      (var motif_position (// (/ task_index (motifs .size)) 3))
       (var draw
         (motif_program subject motifs/%motif_index state motif_position))
       `(target_draw
@@ -793,23 +793,23 @@
   (var shorter_rejections 0)
   (var duplicate_rejections 0)
   (var attempts 0)
-  (while (< (tasks ~ size) count)
+  (while (< (tasks .size) count)
     (if (>= attempts 100000)
       ($panic "corpus partition generation exhausted its attempt bound"))
     (set attempts (+ attempts 1))
-    (var task_index (+ task_offset (tasks ~ size)))
+    (var task_index (+ task_offset (tasks .size)))
     (var target (generated_target subject motifs state task_index))
     (set state target/state)
     (var signature
       (program_signature subject target/program
                          signature_index/screen_inputs))
-    (var shorter_depth (signature_index/signatures ~ get signature))
+    (var shorter_depth (signature_index/signatures .get signature))
     (if (!= shorter_depth void)
       (then (set shorter_rejections (+ shorter_rejections 1)))
-      (elif (!= (used_signatures ~ get signature) void)
+      (elif (!= (used_signatures .get signature) void)
         (set duplicate_rejections (+ duplicate_rejections 1)))
       (else
-        (used_signatures ~ put signature true)
+        (used_signatures .put signature true)
         (var public_generation
           (generated_cases subject target/program state 4))
         (set state public_generation/state)
@@ -818,10 +818,10 @@
         (set state private_generation/state)
         (var hidden_cases (structural_cases subject target/program))
         (for test_case in private_generation/cases
-          (hidden_cases ~ push test_case))
-        (var local_index (tasks ~ size))
+          (hidden_cases .push test_case))
+        (var local_index (tasks .size))
         (var task_id $"${split}_${local_index}")
-        (tasks ~ push
+        (tasks .push
           `(corpus_task
              ^id %task_id
              ^split %split
@@ -888,7 +888,7 @@
        (structural_screen
          ^candidate_depth_max %signature_index/maximum_depth
          ^candidate_count %signature_index/candidate_count
-         ^input_count %(signature_index/screen_inputs ~ size))
+         ^input_count %(signature_index/screen_inputs .size))
      ^learning %learning/tasks
      ^model_selection %model_selection/tasks
      ^heldout %heldout/tasks
@@ -911,9 +911,9 @@
 
 (fn hidden_screen_valid? [task : Node,
                           screen_inputs : (List (List Int))] : Bool
-  (if (!= (task/verifier/hidden_cases ~ size) 24) (return false))
+  (if (!= (task/verifier/hidden_cases .size) 24) (return false))
   (var index 0)
-  (while (< index (screen_inputs ~ size))
+  (while (< index (screen_inputs .size))
     (if_not (== task/verifier/hidden_cases/%index/input
                 screen_inputs/%index)
       (return false))
@@ -925,7 +925,7 @@
     (return
       (&& (== task/motif_index nil) (== task/motif_position nil))))
   (if (|| (< task/motif_index 0)
-          (>= task/motif_index (corpus/motifs ~ size)))
+          (>= task/motif_index (corpus/motifs .size)))
     (return false))
   (if (|| (< task/motif_position 0) (> task/motif_position 2))
     (return false))
@@ -961,13 +961,13 @@
       (set task_count (+ task_count 1))
       (if_yes task/motif_bearing
         (set motif_task_count (+ motif_task_count 1)))
-      (if (!= (task/public/cases ~ size) corpus/public_case_count)
+      (if (!= (task/public/cases .size) corpus/public_case_count)
         (set public_cases_valid false))
       (if_not (hidden_screen_valid? task screen_inputs)
         (set hidden_cases_valid false))
       (var target task/verifier/target_program)
       (if_not (&&
-                (== (($body target) ~ size) corpus/target_depth)
+                (== (($body target) .size) corpus/target_depth)
                 (== task/verifier/target_depth corpus/target_depth)
                 (== task/verifier/structural_min_depth corpus/target_depth)
                 (verifies_task? subject target [] task/public)
@@ -976,25 +976,25 @@
                   `(task ^cases %task/verifier/hidden_cases)))
         (set targets_valid false))
       (var signature (program_signature subject target screen_inputs))
-      (if (!= (signature_index/signatures ~ get signature) void)
+      (if (!= (signature_index/signatures .get signature) void)
         (set shorter_programs_rejected false))
-      (if (!= (signatures ~ get signature) void)
+      (if (!= (signatures .get signature) void)
         (set unique_targets false)
-        (signatures ~ put signature true))
+        (signatures .put signature true))
       (if_not (motif_placement_valid? corpus task)
         (set motif_placements_valid false))))
   (var counts_valid
     (&&
-      (== (corpus/learning ~ size) corpus/learning_count)
-      (== (corpus/model_selection ~ size) corpus/model_selection_count)
-      (== (corpus/heldout ~ size) corpus/heldout_count)
+      (== (corpus/learning .size) corpus/learning_count)
+      (== (corpus/model_selection .size) corpus/model_selection_count)
+      (== (corpus/heldout .size) corpus/heldout_count)
       (== task_count
           (+ corpus/learning_count
              (+ corpus/model_selection_count corpus/heldout_count)))))
   (var valid
     (&&
       (== corpus/version 1)
-      (== (corpus/motifs ~ size) 4)
+      (== (corpus/motifs .size) 4)
       (== corpus/public_case_count 4)
       (== corpus/hidden_case_count 24)
       (== corpus/structural_screen/candidate_depth_max 3)
@@ -1025,8 +1025,8 @@
                           library : (List Node)] : Node
   (var body_lengths : (List Int) [])
   (for abstraction in library
-    (body_lengths ~ push (($body abstraction/body) ~ size)))
-  (var branching (+ (subject/primitive_tokens ~ size) (library ~ size)))
+    (body_lengths .push (($body abstraction/body) .size)))
+  (var branching (+ (subject/primitive_tokens .size) (library .size)))
   (var candidate_space 0)
   (var depth 0)
   (var at_depth 1)
@@ -1035,12 +1035,12 @@
     (set candidate_space (+ candidate_space at_depth))
     (set depth (+ depth 1)))
   `(library_search_shape
-     ^item_count %(library ~ size)
+     ^item_count %(library .size)
      ^body_lengths %body_lengths
      ^definition_mdl %(library_definition_mdl library)
      ^token_count %branching
      ^library_token_first_position 0
-     ^library_token_past_position %(library ~ size)
+     ^library_token_past_position %(library .size)
      ^search_token_depth %subject/search_token_depth
      ^candidate_space %candidate_space
      ^candidate_ceiling %subject/candidate_budget
@@ -1074,14 +1074,14 @@
 (fn corpus_solution_programs [corpus : Node] : (List Node)
   (var programs : (List Node) [])
   (for task in corpus/learning
-    (programs ~ push task/verifier/target_program))
+    (programs .push task/verifier/target_program))
   programs)
 
 (fn build_unrelated_library_control [subject : Node,
                                      target_seed : Int,
                                      target_library : (List Node),
                                      donor_seeds : (List Int)] : Node
-  (if (> (donor_seeds ~ size) 8)
+  (if (> (donor_seeds .size) 8)
     ($panic "unrelated-library matching accepts at most eight donor seeds"))
   (var target_shape (library_search_shape subject target_library))
   (var attempts 0)
@@ -1090,7 +1090,7 @@
     (set attempts (+ attempts 1))
     (if (== donor_seed target_seed)
       (then
-        (rejections ~ push
+        (rejections .push
           `(donor_rejection
              ^seed %donor_seed ^reason same_seed_as_target)))
       (else
@@ -1129,7 +1129,7 @@
             (elif (! shape_match)
               (quote search_shape_mismatch))
             (else (quote content_overlap))))
-        (rejections ~ push
+        (rejections .push
           `(donor_rejection ^seed %donor_seed ^reason %reason)))))
   `(unrelated_library_control
      ^accepted false
@@ -1147,8 +1147,8 @@
   # Learned abstractions receive the predeclared first position. The unrelated
   # library control must receive the same prior position and token count.
   (for abstraction in library
-    (result ~ push `(use ^name %abstraction/name)))
-  (for primitive in subject/primitive_tokens (result ~ push primitive))
+    (result .push `(use ^name %abstraction/name)))
+  (for primitive in subject/primitive_tokens (result .push primitive))
   result)
 
 (fn integer_power [base : Int, exponent : Int] : Int
@@ -1158,7 +1158,7 @@
 
 (fn program_at_index [tokens : (List Node), length : Int,
                       ordinal : Int] : Node
-  (var token_count (tokens ~ size))
+  (var token_count (tokens .size))
   (var limit (integer_power token_count length))
   (if (|| (< ordinal 0) (>= ordinal limit))
     ($panic "program ordinal is outside its token-depth range"))
@@ -1170,7 +1170,7 @@
       (integer_power token_count (- length (+ position 1))))
     (var token_index (/ remaining divisor))
     (set remaining (// remaining divisor))
-    (steps ~ push tokens/%token_index)
+    (steps .push tokens/%token_index)
     (set position (+ position 1)))
   `(program %steps...))
 
@@ -1181,7 +1181,7 @@
   (var token_depth 0)
   (while (<= token_depth subject/search_token_depth)
     (var candidates_at_depth
-      (integer_power (tokens ~ size) token_depth))
+      (integer_power (tokens .size) token_depth))
     (var ordinal 0)
     (while (< ordinal candidates_at_depth)
       (if (>= candidate_executions subject/candidate_budget)
@@ -1217,7 +1217,7 @@
            ^cases %corpus_task/verifier/hidden_cases))
   (while (<= token_depth subject/search_token_depth)
     (var candidates_at_depth
-      (integer_power (tokens ~ size) token_depth))
+      (integer_power (tokens .size) token_depth))
     (var ordinal 0)
     (while (< ordinal candidates_at_depth)
       (if (>= candidate_executions subject/candidate_budget)
@@ -1274,7 +1274,7 @@
       (if_yes (&& result/solved
                    (program_uses_name? result/program abstraction/name))
         (set solutions (+ solutions 1))))
-    (usage ~ push
+    (usage .push
       `(abstraction_usage
          ^name %abstraction/name
          ^solutions %solutions)))
@@ -1302,7 +1302,7 @@
       (set solved (+ solved 1))
       (if_yes (program_uses_library? result/program)
         (set library_solutions (+ library_solutions 1))))
-    (task_results ~ push
+    (task_results .push
       `(task_search_result
          ^task_id %task/id
          ^solved %result/solved
@@ -1311,7 +1311,7 @@
          ^verifier_calls %result/verifier_calls
          ^verifier_rejections %result/verifier_rejections
          ^budget_exhausted %result/budget_exhausted)))
-  (var task_count (tasks ~ size))
+  (var task_count (tasks .size))
   (var solve_rate
     (if (== task_count 0)
       0.0
@@ -1363,7 +1363,7 @@
   (var programs : (List Node) [])
   (var training_valid true)
   (for solved in subject/training
-    (programs ~ push solved/program)
+    (programs .push solved/program)
     (if_not (verifies_task? subject solved/program [] solved)
       (set training_valid false)))
   (var induction (induce_library subject programs))
@@ -1438,7 +1438,7 @@
     [(quote (tail)) (quote (reverse))])
   (var valid
     (&&
-      (== (subject/primitive_tokens ~ size) 12)
+      (== (subject/primitive_tokens .size) 12)
       training_valid
       induction/accepted
       (== induction/pattern expected_pattern)
@@ -1448,7 +1448,7 @@
       (== induction/induced_mdl 11)
       (== induction/mdl_gain 1)
       iterative_evidence/valid
-      (== (iterative/library ~ size) 1)
+      (== (iterative/library .size) 1)
       (== iterative/mdl_gain 1)
       (== iterative/stop_reason (quote no_positive_gain))
       unrelated_shape_matches
@@ -1468,7 +1468,7 @@
                       subject/transfer_task)))
   `(induction_verification
      ^valid %valid
-     ^primitive_count %(subject/primitive_tokens ~ size)
+     ^primitive_count %(subject/primitive_tokens .size)
      ^training_valid %training_valid
      ^no_gain_rejected %(! no_gain_induction/accepted)
      ^bounds_rejected %bounds_rejected

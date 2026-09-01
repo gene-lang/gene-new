@@ -53,7 +53,7 @@
     (set self/count ($buffer F32 1.0))))
 
 (fn biome_count [b : BiomeRegistry] : F64
-  (b/count ~ get 0.0))
+  (b/count .get 0.0))
 
 (type BiomeRegistryFull
   ^props {^message Str}
@@ -71,18 +71,18 @@
   (if_yes (>= slot max_biomes)
     (fail (new BiomeRegistryFull
                $"biome registry is full at ${max_biomes} entries")))
-  (b/names ~ push name)
-  (b/heat ~ set slot heat)
-  (b/humidity ~ set slot humidity)
-  (b/y_min ~ set slot y_min)
-  (b/y_max ~ set slot y_max)
-  (b/node_top ~ set slot node_top)
-  (b/depth_top ~ set slot depth_top)
-  (b/node_filler ~ set slot node_filler)
-  (b/depth_filler ~ set slot depth_filler)
-  (b/node_stone ~ set slot node_stone)
-  (b/node_underwater ~ set slot node_underwater)
-  (b/count ~ set 0.0 (+ id 1.0))
+  (b/names .push name)
+  (b/heat .set slot heat)
+  (b/humidity .set slot humidity)
+  (b/y_min .set slot y_min)
+  (b/y_max .set slot y_max)
+  (b/node_top .set slot node_top)
+  (b/depth_top .set slot depth_top)
+  (b/node_filler .set slot node_filler)
+  (b/depth_filler .set slot depth_filler)
+  (b/node_stone .set slot node_stone)
+  (b/node_underwater .set slot node_underwater)
+  (b/count .set 0.0 (+ id 1.0))
   id)
 
 (fn biome_name [b : BiomeRegistry id : F64] : Str
@@ -114,9 +114,9 @@
   (var best_d -1.0)
   (var i 0.0)
   (while (< i n)
-    (if_yes (&& (>= y (b/y_min ~ get i)) (<= y (b/y_max ~ get i)))
-      (var dh (- heat (b/heat ~ get i)))
-      (var dm (- humidity (b/humidity ~ get i)))
+    (if_yes (&& (>= y (b/y_min .get i)) (<= y (b/y_max .get i)))
+      (var dh (- heat (b/heat .get i)))
+      (var dm (- humidity (b/humidity .get i)))
       (var d (+ (* dh dh) (* dm dm)))
       (if_yes (|| (< best_d 0.0) (< d best_d))
         (set best_d d)
@@ -137,34 +137,34 @@
 (fn column_node [b : BiomeRegistry id : F64 depth : F64
                  underwater : Bool] : F64
   (var i id)
-  (var top_d (b/depth_top ~ get i))
+  (var top_d (b/depth_top .get i))
   (if (< depth top_d)
-    (then (if underwater (b/node_underwater ~ get i) (b/node_top ~ get i)))
-    (elif (< depth (+ top_d (b/depth_filler ~ get i)))
-      (if underwater (b/node_underwater ~ get i) (b/node_filler ~ get i)))
-    (else (b/node_stone ~ get i))))
+    (then (if underwater (b/node_underwater .get i) (b/node_top .get i)))
+    (elif (< depth (+ top_d (b/depth_filler .get i)))
+      (if underwater (b/node_underwater .get i) (b/node_filler .get i)))
+    (else (b/node_stone .get i))))
 
 # How deep the top and filler bands reach together, so a caller can fill the
 # stone run in one go instead of asking per node.
 (fn cover_depth [b : BiomeRegistry id : F64] : F64
   (var i id)
-  (+ (b/depth_top ~ get i) (b/depth_filler ~ get i)))
+  (+ (b/depth_top .get i) (b/depth_filler .get i)))
 
 # Column accessors, for the run-based filler in `core/mapgen.gene`. It needs the
 # band boundaries and the node of each band once per column, not the node at a
 # depth once per node — which is the whole of §D6.3's "run-length column
 # filling, not per-node writes".
 (fn top_depth [b : BiomeRegistry id : F64] : F64
-  (b/depth_top ~ get id))
+  (b/depth_top .get id))
 
 (fn top_node [b : BiomeRegistry id : F64] : F64
-  (b/node_top ~ get id))
+  (b/node_top .get id))
 
 (fn filler_node [b : BiomeRegistry id : F64] : F64
-  (b/node_filler ~ get id))
+  (b/node_filler .get id))
 
 (fn stone_node [b : BiomeRegistry id : F64] : F64
-  (b/node_stone ~ get id))
+  (b/node_stone .get id))
 
 (fn underwater_node [b : BiomeRegistry id : F64] : F64
-  (b/node_underwater ~ get id))
+  (b/node_underwater .get id))

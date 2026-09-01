@@ -48,7 +48,7 @@
                          positive : Bool] : Float
   (var probability 0.0)
   (var fault 0)
-  (while (< fault (belief ~ size))
+  (while (< fault (belief .size))
     (var likelihood (positive_likelihood subject test fault))
     (var conditional (if positive likelihood (- 1.0 likelihood)))
     (set probability (+ probability (* belief/%fault conditional)))
@@ -62,10 +62,10 @@
     ($panic "inspection outcome has zero probability"))
   (var posterior : (List Float) [])
   (var fault 0)
-  (while (< fault (belief ~ size))
+  (while (< fault (belief .size))
     (var likelihood (positive_likelihood subject test fault))
     (var conditional (if positive likelihood (- 1.0 likelihood)))
-    (posterior ~ push (/ (* belief/%fault conditional) evidence))
+    (posterior .push (/ (* belief/%fault conditional) evidence))
     (set fault (+ fault 1)))
   posterior)
 
@@ -79,7 +79,7 @@
 (fn relative_entropy [posterior : (List Float), prior : (List Float)] : Float
   (var result 0.0)
   (var fault 0)
-  (while (< fault (posterior ~ size))
+  (while (< fault (posterior .size))
     (var probability posterior/%fault)
     (if_yes (> probability 0.0)
       (set result
@@ -96,7 +96,7 @@
 (fn without_test [tests : (List Int), removed : Int] : (List Int)
   (var result : (List Int) [])
   (for test in tests
-    (if_not (== test removed) (result ~ push test)))
+    (if_not (== test removed) (result .push test)))
   result)
 
 (fn enumerate_policies [tests : (List Int)] : (List Node)
@@ -105,7 +105,7 @@
     (var children (enumerate_policies (without_test tests test)))
     (for negative_policy in children
       (for positive_policy in children
-        (result ~ push
+        (result .push
           `(inspect
              ^test %test
              ^negative %negative_policy
@@ -116,7 +116,7 @@
                       repaired_fault : Int] : Float
   (var result 0.0)
   (var fault 0)
-  (while (< fault (belief ~ size))
+  (while (< fault (belief .size))
     (var utility
       (if (== fault repaired_fault)
         subject/correct_repair_utility
@@ -166,7 +166,7 @@
   (var best_policy policies/0)
   (var best_metrics (score_policy subject best_policy belief belief beta))
   (var index 1)
-  (while (< index (policies ~ size))
+  (while (< index (policies .size))
     (var candidate policies/%index)
     (var metrics (score_policy subject candidate belief belief beta))
     # First maximum is the declared deterministic tie-break.
@@ -214,12 +214,12 @@
   result)
 
 (fn likelihoods_valid? [subject : Node] : Bool
-  (if_not (== (subject/tests ~ size) 2) (return false))
+  (if_not (== (subject/tests .size) 2) (return false))
   (var valid true)
   (for test in subject/tests
-    (if_not (== (test/outcomes ~ size) 2) (set valid false))
-    (if_not (== (test/positive_likelihoods ~ size)
-                (subject/faults ~ size))
+    (if_not (== (test/outcomes .size) 2) (set valid false))
+    (if_not (== (test/positive_likelihoods .size)
+                (subject/faults .size))
       (set valid false))
     (for likelihood in test/positive_likelihoods
       (if_not (&& (> likelihood 0.0) (< likelihood 1.0))
@@ -229,7 +229,7 @@
 (fn minimum_one_step_entropy [subject : Node, prior : (List Float)] : Float
   (var result 1000000.0)
   (var test 0)
-  (while (< test (subject/tests ~ size))
+  (while (< test (subject/tests .size))
     (var negative_entropy (entropy (update_belief subject prior test false)))
     (var positive_entropy (entropy (update_belief subject prior test true)))
     (if_yes (< negative_entropy result) (set result negative_entropy))
@@ -244,7 +244,7 @@
   (for policy in policies
     (set branch_count (+ branch_count (policy_branch_count policy)))
     (var fault 0)
-    (while (< fault (subject/faults ~ size))
+    (while (< fault (subject/faults .size))
       (var branch_mass (policy_branch_mass subject policy fault))
       (var error ($math/abs (- branch_mass 1.0)))
       (if_yes (> error maximum_branch_mass_error)
@@ -282,12 +282,12 @@
 
   (var valid
     (&&
-      (== (policies ~ size) subject/expected_policy_count)
+      (== (policies .size) subject/expected_policy_count)
       (== branch_count subject/expected_branch_count)
-      (== (subject/faults ~ size) 3)
-      (== (subject/base_prior ~ size) (subject/faults ~ size))
-      (== (subject/shifted_prior ~ size) (subject/faults ~ size))
-      (== subject/max_inspections (subject/tests ~ size))
+      (== (subject/faults .size) 3)
+      (== (subject/base_prior .size) (subject/faults .size))
+      (== (subject/shifted_prior .size) (subject/faults .size))
+      (== subject/max_inspections (subject/tests .size))
       (== subject/beta 0.25)
       (likelihoods_valid? subject)
       (<= maximum_branch_mass_error subject/branch_mass_tolerance)
@@ -307,7 +307,7 @@
 
   `(subject_verification
      ^valid %valid
-     ^policy_count %(policies ~ size)
+     ^policy_count %(policies .size)
      ^branch_count %branch_count
      ^maximum_branch_mass_error %maximum_branch_mass_error
      ^minimum_one_step_entropy %minimum_entropy

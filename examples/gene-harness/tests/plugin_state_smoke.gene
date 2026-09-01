@@ -26,12 +26,12 @@
                 (fn [host]
                   (var increment
                     (fn []
-                      (var current (host ~ PluginHost:state))
+                      (var current (host .PluginHost:state))
                       (var count (if (== current nil) 0 current/count))
                       (var next {^count (+ count 1)})
-                      (host ~ PluginHost:update_state next)
+                      (host .PluginHost:update_state next)
                       next/count))
-                  (host ~ PluginHost:provide "Counter" increment))))))))
+                  (host .PluginHost:provide "Counter" increment))))))))
   (var shared_source
     (quote
       (mod plugin
@@ -46,12 +46,12 @@
                 (fn [host]
                   (var increment
                     (fn []
-                      (var current (host ~ PluginHost:state))
+                      (var current (host .PluginHost:state))
                       (var count (if (== current nil) 0 current/count))
                       (var next {^count (+ count 1)})
-                      (host ~ PluginHost:update_state next)
+                      (host .PluginHost:update_state next)
                       next/count))
-                  (host ~ PluginHost:provide "SharedCounter" increment))))))))
+                  (host .PluginHost:provide "SharedCounter" increment))))))))
 
   (var events (open_event_store event_root))
   (var workspace (open_workspace composition_root))

@@ -63,7 +63,7 @@
   (assert (== (composition_revision workspace) before)
     "an aborted turn must not advance the composition revision")
   (var entries (composition_entries workspace))
-  (assert (== entries/~size 1)
+  (assert (== entries/.size 1)
     "an aborted turn must leave the entry list alone")
 
   (close_workspace workspace)

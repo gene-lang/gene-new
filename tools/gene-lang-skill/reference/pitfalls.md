@@ -16,7 +16,7 @@ what Gene actually wants.
 | `undefined symbol: this_pkg` | Module bindings absent in `gene eval` | Probe in a file with `gene run` |
 | `undefined symbol: S/a` in a parameter list | Qualified path as a default value | Bind it above the function first |
 | `Read error: unterminated interpolation '{...'` | String literal inside `${…}` | Bind it out, or use `$"""…"""` |
-| `map expects a Stream` | `map`/`filter`/`take`/`into` are stream ops | `(xs ~ to_stream)` first, `~ into []` last |
+| `map expects a Stream` | `map`/`filter`/`take`/`into` are stream ops | `(xs .to_stream)` first, `.into []` last |
 | `size expects a collection` | `$size` rejects strings | `($str/byte_size s)` or `($size ($chars s))` |
 | `no message 'size' on Str` | `Str` carries no messages | `$str/*` functions |
 | `no message 'foo' on T` | Sends dispatch only — no lexical fallback | Declare a `(message …)` in the type, or call the function directly |
@@ -28,9 +28,9 @@ what Gene actually wants.
 | `type field 'a?' may not end in '?'` | Optionality spelled on the key | `^a T?` — it lives on the type |
 | `missing required field 'a' for T` | Non-nil-admitting field omitted | Supply it, or widen the type to `Int?` |
 | `MissingCapability: fs/read_text requires fs/ReadFile` | No host grant | `gene run --allow_read_dir DIR …` |
-| `Env/snapshot expects a CallerEnv and a binding-name list` | Bare `snapshot` | `(caller_env ~ snapshot ["x"])` |
+| `Env/snapshot expects a CallerEnv and a binding-name list` | Bare `snapshot` | `(caller_env .snapshot ["x"])` |
 | `message send expected Protocol, got vkType` | Qualified a type-direct message as `T:msg` | Send it bare; only protocols qualify |
-| `List/push expects 2 arguments, got 1` | Wrote `(xs/~push v)` | `(xs ~ push v)` — the path shortcut takes no arguments |
+| `List/push expects 2 arguments, got 1` | Wrote `(xs/.push v)` | `(xs .push v)` — the path shortcut takes no arguments |
 
 ## Only `nil`, `false`, and `void` are falsy
 
@@ -42,7 +42,7 @@ Ruby silently never fires:
 (if_not (trim title) (fail …))            # wrong — "" is truthy, never fails
 ```
 
-Test emptiness explicitly: `(== s "")`, `xs/~empty?`, `($nil? v)`, `($absent? v)`.
+Test emptiness explicitly: `(== s "")`, `xs/.empty?`, `($nil? v)`, `($absent? v)`.
 
 ## A string literal inside `${…}` is a read error
 
@@ -84,24 +84,24 @@ Bind it above the function, or default to `nil` and fill in the body:
 
 ## Shapes that read right and are wrong
 
-**`(a/~b c)` is not `(a ~ b c)`.** It parses as `((a ~ b) c)` — a zero-argument
+**`(a/.b c)` is not `(a .b c)`.** It parses as `((a .b) c)` — a zero-argument
 send whose *result* is called. The path shortcut carries no arguments:
 
 ```gene
-(buf ~ set i v)      # right
-(buf/~set i v)       # wrong — sends `set` with no arguments, then calls the result
+(buf .set i v)      # right
+(buf/.set i v)       # wrong — sends `set` with no arguments, then calls the result
 ```
 
 **`//` is remainder, not floor division.** `(/ 7 2)` is `3`; `(// 7 2)` is `1`.
 
-**The `/~message` shortcut needs a symbol base.** On a literal it silently reads
+**The `/.message` shortcut needs a symbol base.** On a literal it silently reads
 as two values — a collection and a selector — with no error at all:
 
 ```gene
 (var xs [1 2])
-xs/~size        # 2
-[1 2]/~size     # [1 2] (select ~size)  — two data values, not a send
-([1 2] ~ size)  # 2
+xs/.size        # 2
+[1 2]/.size     # two forms, not a send
+([1 2] .size)  # 2
 ```
 
 **`#(…)` is an immutable literal, not a quote.** In code position its head still
@@ -113,7 +113,7 @@ returns `(do (var x 1))` the first call and `(do (var x 1) (+ 5 5))` the second:
 ```gene
 (fn build [forms]
   (var b (quote (do)))          # same node every call
-  (for f in forms (b ~ push_body f))
+  (for f in forms (b .push_body f))
   b)
 ```
 
@@ -156,7 +156,7 @@ way is never truthy:
 (if_not false true false)   # false — not `true`
 (if_not true  true false)   # nil
 
-((xs ~ to_stream) ~ filter (fn [t] (if_not t/done true false)) ; ~ into [])
+((xs .to_stream) .filter (fn [t] (if_not t/done true false)) ; .into [])
 # => [] always. Write (fn [t] (! t/done)) or (if t/done false true).
 ```
 
@@ -194,7 +194,7 @@ The transformations `fmt` will *not* make for you:
 - Replacing `(if cond (do …))` with `if_yes`, or `(if cond nil …)` with `if_not`.
 - Introducing `elif` instead of a nested `else (if …)`.
 - Dropping an explicit trailing `nil` arm from a one-sided `if`.
-- Choosing `receiver/~message` over `(receiver ~ message)` for a bare send.
+- Choosing `receiver/.message` over `(receiver .message)` for a bare send.
 
 So write those correctly the first time; `fmt` then makes the layout canonical.
 Run it on anything you produce — a clean `gene fmt` is also a parse check.

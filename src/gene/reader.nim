@@ -23,7 +23,7 @@ type
     tkRef, tkDeref,          # #Ref #Deref
     tkCaret, tkCaretCaret,   # ^ ^^
     tkAt, tkAtAt,            # @ @@
-    tkTilde,                 # ~
+    tkTilde,                 # legacy spaced ~ token; parser rejects it
     tkDotDotDot,             # ...
     tkString, tkBytes, tkRegex, tkInt, tkFloat, tkDate, tkTime, tkDateTime,
     tkSymbol, tkChar,
@@ -925,11 +925,9 @@ proc tokenizeImpl(r: var Reader,
     of ':': r.advance(); r.addToken(tkColon, ":", startLine, startCol, startByte)
     of ';': r.advance(); r.addToken(tkSemi, ";", startLine, startCol, startByte)
     of '~':
-      # A path send segment (`xs/~size`, design §2.1) desugars to the ordinary
-      # symbol `~size`, so `~` glued to a symbol char has to lex as one symbol
-      # here too. Otherwise the printer's own output for such a symbol rereads
-      # as two tokens (`~` and `size`) and silently changes the form. A `~`
-      # followed by whitespace or a delimiter is still the send operator.
+      # Canonical/generated trees may contain compact `~name` path markers, and
+      # `~name` remains a legal user symbol. Keep a glued tilde in one token.
+      # A spaced tilde gets the legacy token below and is rejected by parsing.
       if r.pos + 1 < r.src.len and r.src[r.pos + 1].isSymbolChar:
         let lexStart = r.pos
         r.advance()
@@ -1204,6 +1202,8 @@ proc qualifiedMessageSplit*(lexeme: string): int =
     if lexeme[i] == ':' and lexeme[i - 1] != ':' and lexeme[i + 1] != ':':
       return i
 
+proc dotSendPrefix(name: string): tuple[found, optional: bool, rest: string]
+
 proc desugarPath*(lexeme: string, sourceName = "", line = 0, col = 0): Value =
   ## `sourceName`/`line`/`col` locate the diagnostic for a rejected segment;
   ## they are only read on the error path, so callers with no token in hand
@@ -1220,7 +1220,18 @@ proc desugarPath*(lexeme: string, sourceName = "", line = 0, col = 0): Value =
   var body = newSeq[Value]()
   for p in parts:
     if p.len == 0: continue # leading or trailing slash
-    if p.startsWith("%"):
+    if p.startsWith("~") or p.startsWith("?~"):
+      raiseReadErrorAt(sourceName, line, col,
+        "tilde message sends were removed; use '/." &
+        (if p.startsWith("?~"): p[2 .. ^1] else: p[1 .. ^1]) & "'")
+    let dotSend = dotSendPrefix(p)
+    if dotSend.found:
+      if dotSend.rest.len == 0 or dotSend.rest == "%":
+        raiseReadErrorAt(sourceName, line, col,
+          "message path segment requires a message name")
+      body.add newSym((if dotSend.optional: "?~" else: "~") &
+                      dotSend.rest)
+    elif p.startsWith("%"):
       # `%x` escapes to a lexical value; `%$x` escapes to a standard-library
       # one, so `$` means `gene/` wherever a name is legal.
       let inner = p[1..^1]
@@ -1342,12 +1353,189 @@ proc replacePipeSlot(value, replacement: Value): Value =
   else:
     value
 
+type DotSendDescriptor = object
+  found: bool
+  optional: bool
+  computed: bool
+  callee: Value
+
+proc dotSendPrefix(name: string): tuple[found, optional: bool, rest: string] =
+  if name.len > 2 and name.startsWith("?."):
+    return (true, true, name[2 .. ^1])
+  if name.len > 1 and name[0] == '.' and not name.startsWith(".."):
+    return (true, false, name[1 .. ^1])
+
+proc stripDotQualifier(value: Value):
+    tuple[found, optional: bool, qualifier: Value] =
+  if value.kind == vkSymbol:
+    let prefix = dotSendPrefix(value.symVal)
+    if prefix.found and prefix.rest.len > 0 and prefix.rest[0] != '%':
+      return (true, prefix.optional, newSym(prefix.rest))
+    return
+  if value.kind == vkNode and value.head.kind == vkSymbol and
+      value.head.symVal == "path" and
+      value.body.len > 0 and value.body[0].kind == vkSymbol:
+    let name = value.body[0].symVal
+    var prefix: tuple[found, optional: bool, rest: string]
+    if name.len > 2 and name.startsWith("?~"):
+      prefix = (true, true, name[2 .. ^1])
+    elif name.len > 1 and name[0] == '~':
+      prefix = (true, false, name[1 .. ^1])
+    else:
+      prefix = dotSendPrefix(name)
+    if prefix.found and prefix.rest.len > 0 and prefix.rest[0] != '%':
+      var parts = newSeq[Value](value.body.len)
+      for i, part in value.body:
+        parts[i] = if i == 0: newSym(prefix.rest) else: part
+      return (true, prefix.optional,
+              newNode(newSym("path"), body = parts))
+
+proc dotSendDescriptor(value: Value): DotSendDescriptor =
+  if value.kind == vkSymbol:
+    let prefix = dotSendPrefix(value.symVal)
+    if not prefix.found:
+      return
+    result.found = true
+    result.optional = prefix.optional
+    if prefix.rest == "%":
+      result.computed = true
+    elif prefix.rest.len > 1 and prefix.rest[0] == '%':
+      let held = prefix.rest[1 .. ^1]
+      let binding =
+        if held.len > 1 and held[0] == '$':
+          desugarPath("gene/" & held[1 .. ^1])
+        else:
+          newSym(held)
+      result.callee = newNode(newSym("unquote"), body = @[binding])
+    elif prefix.rest.len > 0:
+      result.callee = newSym(prefix.rest)
+    else:
+      result.found = false
+    return
+  if value.kind == vkNode and value.head.kind == vkSymbol and
+      value.head.symVal == "path" and value.body.len > 1 and
+      value.body[0].kind == vkSymbol:
+    let first = value.body[0].symVal
+    var optional = false
+    var rest: string
+    if first.len > 3 and first.startsWith("?~%"):
+      optional = true
+      rest = first[3 .. ^1]
+    elif first.len > 2 and first.startsWith("~%"):
+      rest = first[2 .. ^1]
+    if rest.len > 0:
+      var parts: seq[Value]
+      if rest.len > 1 and rest[0] == '$':
+        parts.add newSym("gene")
+        parts.add newSym(rest[1 .. ^1])
+      else:
+        parts.add newSym(rest)
+      for i in 1 ..< value.body.len:
+        parts.add value.body[i]
+      let binding =
+        if parts.len == 1: parts[0]
+        else: newNode(newSym("path"), body = parts)
+      result.found = true
+      result.optional = optional
+      result.callee = newNode(newSym("unquote"), body = @[binding])
+      return
+  if value.kind == vkNode and value.head.kind == vkSymbol and
+      value.head.symVal == "msg" and
+      value.body.len == 2 and value.body[1].kind == vkSymbol:
+    let qualifier = stripDotQualifier(value.body[0])
+    if qualifier.found:
+      result.found = true
+      result.optional = qualifier.optional
+      result.callee = newNode(newSym("msg"),
+        body = @[qualifier.qualifier, value.body[1]])
+
+proc normalizeDotQualifiedPathMessage(value: Value): Value =
+  ## `x/.Proto:msg` is tokenized as one qualified-message lexeme whose
+  ## qualifier path contains the send marker. Split that path at the marker
+  ## into receiver and protocol, then lower to the canonical send node.
+  if value.kind != vkNode or value.head.kind != vkSymbol or
+      value.head.symVal != "msg" or
+      value.body.len != 2 or value.body[0].kind != vkNode or
+      value.body[0].head.kind != vkSymbol or
+      value.body[0].head.symVal != "path":
+    return NIL
+  let path = value.body[0].body
+  var marker = -1
+  var prefix: tuple[found, optional: bool, rest: string]
+  for i in 1 ..< path.len:
+    if path[i].kind == vkSymbol:
+      let name = path[i].symVal
+      var candidate: tuple[found, optional: bool, rest: string]
+      if name.len > 2 and name.startsWith("?~"):
+        candidate = (true, true, name[2 .. ^1])
+      elif name.len > 1 and name[0] == '~':
+        candidate = (true, false, name[1 .. ^1])
+      else:
+        candidate = dotSendPrefix(name)
+      if candidate.found:
+        marker = i
+        prefix = candidate
+        break
+  if marker < 1 or prefix.rest.len == 0 or prefix.rest[0] == '%':
+    return NIL
+  var receiverParts = newSeq[Value](marker)
+  for i in 0 ..< marker:
+    receiverParts[i] = path[i]
+  let receiver =
+    if receiverParts.len == 1: receiverParts[0]
+    else: newNode(newSym("path"), body = receiverParts)
+  var qualifierParts = newSeq[Value](path.len - marker)
+  qualifierParts[0] = newSym(prefix.rest)
+  for i in marker + 1 ..< path.len:
+    qualifierParts[i - marker] = path[i]
+  let qualifier =
+    if qualifierParts.len == 1: qualifierParts[0]
+    else: newNode(newSym("path"), body = qualifierParts)
+  let callee = newNode(newSym("msg"), body = @[qualifier, value.body[1]])
+  newNode(receiver,
+          body = @[newSym(if prefix.optional: "?~" else: "~"), callee])
+
+proc normalizeDotSend(head: Value, props: PropTable, body: seq[Value],
+                      meta: PropTable, immutable: bool): Value =
+  let leading = dotSendDescriptor(head)
+  if leading.found:
+    var args: seq[Value]
+    var callee = leading.callee
+    if leading.computed:
+      if body.len == 0:
+        raise newException(ReadError,
+          "computed message send .% expects an expression")
+      callee = newNode(newSym("unquote"), body = @[body[0]])
+      if body.len > 1: args = body[1 .. ^1]
+    else:
+      args = body
+    return newNode(newSym(if leading.optional: "?~" else: "~"),
+                   props = props, body = @[callee] & args, meta = meta,
+                   immutable = immutable)
+  if body.len > 0:
+    let infix = dotSendDescriptor(body[0])
+    if infix.found:
+      var args: seq[Value]
+      var callee = infix.callee
+      if infix.computed:
+        if body.len < 2:
+          raise newException(ReadError,
+            "computed message send .% expects an expression")
+        callee = newNode(newSym("unquote"), body = @[body[1]])
+        if body.len > 2: args = body[2 .. ^1]
+      elif body.len > 1:
+        args = body[1 .. ^1]
+      return newNode(head, props = props,
+                     body = @[newSym(if infix.optional: "?~" else: "~"),
+                              callee] & args,
+                     meta = meta, immutable = immutable)
+  newNode(head, props, body, meta, immutable)
+
 proc finishNodeSegment(head: Value, props: PropTable, body: seq[Value],
                        meta: PropTable, immutable: bool): Value =
-  # Message sends (x ~ f a) are preserved as read; the compiler resolves the
-  # message receiver-first (docs/core.md §9), so the reader must not erase
-  # the `~` by desugaring to (f x a).
-  newNode(head, props, body, meta, immutable)
+  # Dot send syntax lowers to the existing canonical send node. Dispatch,
+  # protocol resolution, TCO, and tooling consume one representation.
+  normalizeDotSend(head, props, body, meta, immutable)
 
 proc pipeSegmentExpr(forms: seq[Value], props: PropTable, meta: PropTable,
                      immutable: bool): Value =
@@ -1452,7 +1640,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
   if inPipe:
     result = finishPipeSegment(head, props, body, meta, immutable, inPipe)
   else:
-    result = newNode(head, props, body, meta, immutable)
+    result = finishNodeSegment(head, props, body, meta, immutable)
 
 proc parseMap(r: var Reader, closing: TokenKind, immutable = false): Value =
   var items = initPropTable()
@@ -1595,6 +1783,9 @@ proc parseForm(r: var Reader, inList = false): Value =
     of "void": finish VOID
     else:
       let lex = tok.lexeme
+      if lex == "?~":
+        r.raiseReadErrorAt(tok,
+          "'?~' message sends were removed; use '?.message'")
       let colonAt = qualifiedMessageSplit(lex)
       if colonAt > 0 and '/' notin lex[colonAt + 1 .. ^1]:
         # `Proto:msg` names a message. This is its own node, not `(path P m)`:
@@ -1604,10 +1795,12 @@ proc parseForm(r: var Reader, inList = false): Value =
         # The qualifier may itself be a path: `ns/Proto:msg` names the message
         # `msg` of the protocol reached at `ns/Proto`. Only the last segment is
         # the message name, so `:` still splits exactly once.
-        finish newNode(newSym("msg"),
-                       body = @[desugarPath(lex[0 ..< colonAt], r.sourceName,
-                                            tok.line, tok.col),
-                                newSym(lex[colonAt + 1 .. ^1])])
+        let message = newNode(newSym("msg"),
+          body = @[desugarPath(lex[0 ..< colonAt], r.sourceName,
+                               tok.line, tok.col),
+                   newSym(lex[colonAt + 1 .. ^1])])
+        let pathSend = normalizeDotQualifiedPathMessage(message)
+        finish (if pathSend.kind == vkNil: message else: pathSend)
       if not inList:
         if lex.endsWith("..."):
           finish newNode(newSym("..."),
@@ -1677,7 +1870,9 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkColon: finish newSym(":")
   of tkEqual: finish newSym("=")
   of tkComma: finish newSym(",")
-  of tkTilde: finish newSym("~")
+  of tkTilde:
+    r.raiseReadErrorAt(tok,
+      "'~' message sends were removed; use '.message'")
   of tkDotDotDot: finish newSym("...")
   of tkDollar:
     let nextTok = r.peek()

@@ -19,13 +19,13 @@
        (Plugin ^id "audit" ^provides ["Audit"] ^requires []
          ^contextual true
          ^activate (fn [] (fn [host]
-           (host ~ PluginHost:provide "Audit" %value)))))))
+           (host .PluginHost:provide "Audit" %value)))))))
 
 (fn audit_events [history]
   (var out ($thaw #[]))
   (for envelope in history
     (if_yes (== envelope/type "composition/changed")
-      (out ~ push envelope)))
+      (out .push envelope)))
   out)
 
 (fn main [args]
@@ -50,7 +50,7 @@
   (assert (== entries/0/turn "turn-7")
     "composition must stamp the active turn rather than agent display data")
   (var audits (audit_events (events_for events "session" "s9")))
-  (assert (== audits/~size 2)
+  (assert (== audits/.size 2)
     "every committed module composition change must emit one audit event")
   (assert (== audits/0/origin "core")
     "composition audit origin must be stamped by core")

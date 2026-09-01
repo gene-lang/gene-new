@@ -165,7 +165,7 @@ suite "errors — checked rows":
        "(type Job ^props {}) " &
        "(impl Run for Job " &
        "  (message run ^errors [Boom] [self] (fail (Boom ^message \"x\")))) " &
-       "(try ((Job) ~ Run:run) catch Boom $ex/message)", "\"x\""
+       "(try ((Job) .Run:run) catch Boom $ex/message)", "\"x\""
 
   test "checked rows can declare built-in MatchError":
     ck "(fn first-two ^errors [MatchError] [xs] (var [a b] xs) a) " &
@@ -222,8 +222,8 @@ suite "errors — ensure":
                  newNativeFn("mark-cancellation-ensure", markCancellationEnsure))
     expect GeneCancel:
       discard run(compileSource("(scope (var ch ($channel ^capacity 1)) " &
-                                "  (var t (spawn (ch ~ recv))) " &
-                                "  (t ~ cancel) " &
+                                "  (var t (spawn (ch .recv))) " &
+                                "  (t .cancel) " &
                                 "  (try (await t) catch Any \"caught\" " &
                                 "       ensure (mark-cancellation-ensure)))"),
                   scope)
@@ -238,11 +238,11 @@ suite "errors — ensure":
     expect GeneCancel:
       discard run(compileSource("(scope (var ch ($channel ^capacity 1)) " &
                                 "  (var t (spawn " &
-                                "    (try (ch ~ recv) " &
+                                "    (try (ch .recv) " &
                                 "         ensure " &
                                 "           (mark-child-cancellation-ensure)))) " &
                                 "  ($sleep 1) " &
-                                "  (t ~ cancel) " &
+                                "  (t .cancel) " &
                                 "  (await t))"),
                   scope)
     check childCancellationEnsureRan
@@ -257,11 +257,11 @@ suite "errors — ensure":
       discard run(compileSource("(scope (var ch ($channel ^capacity 1)) " &
                                 "  (var t : (Task Int Never) " &
                                 "    (spawn " &
-                                "      (try (ch ~ recv) " &
+                                "      (try (ch .recv) " &
                                 "           ensure " &
                                 "             (mark-child-cancellation-ensure)))) " &
                                 "  ($sleep 1) " &
-                                "  (t ~ cancel) " &
+                                "  (t .cancel) " &
                                 "  (await t))"),
                   scope)
     check childCancellationEnsureRan

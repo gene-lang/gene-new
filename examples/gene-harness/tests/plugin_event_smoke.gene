@@ -27,8 +27,8 @@
             ^contextual true
             ^activate (fn [] (fn [host]
               (fn emit [payload]
-                (host ~ PluginHost:emit_event "ticker/tick" payload))
-              (host ~ PluginHost:provide "EmitTick" emit))))))))
+                (host .PluginHost:emit_event "ticker/tick" payload))
+              (host .PluginHost:provide "EmitTick" emit))))))))
   (var workspace (open_workspace args/0))
   (var events (open_event_store args/1))
   (var h

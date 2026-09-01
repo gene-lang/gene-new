@@ -30,7 +30,7 @@ Build logging as two APIs over one internal event pipeline:
    have an allocation-free, lock-free disabled path.
 2. A public `log` namespace for applications. A `Logger` is an immutable,
    attenuated handle with a bound name and optional base payload. Ordinary
-   `logger ~ info`-style methods are eager and ergonomic; corresponding
+   `logger .info`-style methods are eager and ergonomic; corresponding
    `log_error`/`log_warn`/`log_info`/`log_debug`/`log_trace` macros defer
    message and payload evaluation until after the level check.
 
@@ -84,7 +84,7 @@ Specific changes:
 - **Do not call arbitrary `to_s` to name a logger.** Names are `Str`. Running
   user code while constructing infrastructure objects complicates failures,
   reentrancy, and reproducibility.
-- **Offer explicit lazy counterparts.** Ordinary `logger ~ info` methods are
+- **Offer explicit lazy counterparts.** Ordinary `logger .info` methods are
   the concise eager default. They cannot prevent interpolation or payload
   construction, so `log_info`/`log_debug`-style macros provide opt-in laziness
   for expensive or hot-path calls; eager `emit` remains the adapter primitive.
@@ -145,7 +145,7 @@ Primary namespace: `log`.
   (new_logger "app/http"
     ^payload {^service "api" ^version build_version}))
 
-(logger ~ info "listening" ^payload {^host host ^port port})
+(logger .info "listening" ^payload {^host host ^port port})
 (log_debug logger $"accepted request ${request/id}"
   ^payload {^request_id request/id ^route route/name})
 ```
@@ -158,8 +158,8 @@ Expansion is conceptually:
 ```gene
 (scope
   (var generated_logger logger)
-  (if (generated_logger ~ enabled? LogLevel/debug)
-    (generated_logger ~ emit LogLevel/debug
+  (if (generated_logger .enabled? LogLevel/debug)
+    (generated_logger .emit LogLevel/debug
       $"accepted request ${request/id}"
       ^payload {^request_id request/id ^route route/name})))
 ```
@@ -190,11 +190,11 @@ Eager level methods are the concise default when their arguments are already
 cheap values. They delegate to the lower-level `emit` primitive:
 
 ```gene
-(logger ~ enabled? LogLevel/info)                  # -> Bool
-(logger ~ info "ready" ^payload {})                # eager -> nil
-(logger ~ emit LogLevel/info "ready" ^payload {})  # eager -> nil
-(logger ~ child "worker" ^payload {^pool 2})  # -> Logger
-(logger ~ with {^request_id id})              # -> Logger
+(logger .enabled? LogLevel/info)                  # -> Bool
+(logger .info "ready" ^payload {})                # eager -> nil
+(logger .emit LogLevel/info "ready" ^payload {})  # eager -> nil
+(logger .child "worker" ^payload {^pool 2})  # -> Logger
+(logger .with {^request_id id})              # -> Logger
 
 # Ambient authority creates an attenuated direct-to-file logger without
 # mutating hierarchical process configuration. The caller may narrow it with
@@ -248,7 +248,7 @@ This expression is already evaluated before an ordinary eager method can
 filter it:
 
 ```gene
-(logger ~ debug (expensive_render value) ^payload (expensive_payload value))
+(logger .debug (expensive_render value) ^payload (expensive_payload value))
 ```
 
 A thunk-based API avoids the work but allocates a closure and is awkward at
@@ -736,7 +736,7 @@ than approximated with a global lock or risking a write to a closed handle.
 
 1. **Default level:** `warn` to stderr. `info` by default makes a language
    runtime unexpectedly noisy and can corrupt protocol/TUI stdout behavior.
-2. **Public ergonomics and laziness:** `(logger ~ info ...)`-style methods are
+2. **Public ergonomics and laziness:** `(logger .info ...)`-style methods are
    eager; `log_*` macro forms provide opt-in lazy evaluation for expensive or
    hot-path expressions; `emit` is the eager adapter primitive.
 3. **Logger identity:** explicit string names only; no arbitrary `to_str`.

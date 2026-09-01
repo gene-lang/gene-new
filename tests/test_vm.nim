@@ -244,7 +244,7 @@ suite "VM — proper tail calls":
       "(type Bounce ^props {}) " &
       "(impl Callable for Bounce " &
       "  (message apply [self call] " &
-      "    (var n (call ~ /0)) " &
+      "    (var n (/0 call)) " &
       "    (if (== n 0) 0 (self (- n 1))))) " &
       "(var bounce (Bounce)) (bounce 10000)")
     let stats = finishTailCallStats()
@@ -256,11 +256,11 @@ suite "VM — proper tail calls":
     beginTailCallStats()
     let sendValue = runStr(
       "(type Box ^props {^n Int} " &
-      "  (ctor [n] (self ~ set_prop `n n)) " &
+      "  (ctor [n] (self .set_prop `n n)) " &
       "  (message down [] " &
       "    (if (== self/n 0) 0 " &
-      "      ((new Box (- self/n 1)) ~ down)))) " &
-      "((new Box 5000) ~ down)")
+      "      ((new Box (- self/n 1)) .down)))) " &
+      "((new Box 5000) .down)")
     let sendStats = finishTailCallStats()
     check sendValue == newInt(0)
     check sendStats.transfers >= 4_000
@@ -272,8 +272,8 @@ suite "VM — proper tail calls":
       "(type QualifiedWalker ^props {}) " &
       "(impl Down for QualifiedWalker " &
       "  (message down [n] " &
-      "    (if (== n 0) 0 (self ~ Down:down (- n 1))))) " &
-      "((QualifiedWalker) ~ Down:down 5000)")
+      "    (if (== n 0) 0 (self .Down:down (- n 1))))) " &
+      "((QualifiedWalker) .Down:down 5000)")
     let qualifiedStats = finishTailCallStats()
     check qualifiedValue == newInt(0)
     check qualifiedStats.transfers >= 4_000
@@ -283,10 +283,10 @@ suite "VM — proper tail calls":
     let superValue = runStr(
       "(type ParentWalker ^props {} " &
       "  (message down [n] " &
-      "    (if (== n 0) 0 (self ~ down (- n 1))))) " &
+      "    (if (== n 0) 0 (self .down (- n 1))))) " &
       "(type ChildWalker ^is ParentWalker ^props {} " &
-      "  (message down [n] (super ~ down n))) " &
-      "((ChildWalker) ~ down 5000)")
+      "  (message down [n] (super .down n))) " &
+      "((ChildWalker) .down 5000)")
     let superStats = finishTailCallStats()
     check superValue == newInt(0)
     check superStats.transfers >= 9_000
@@ -296,8 +296,8 @@ suite "VM — proper tail calls":
     let optionalValue = runStr(
       "(type OptionalWalker ^props {} " &
       "  (message down [n] " &
-      "    (if (== n 0) 0 (self ?~ down (- n 1))))) " &
-      "((OptionalWalker) ~ down 5000)")
+      "    (if (== n 0) 0 (self ?.down (- n 1))))) " &
+      "((OptionalWalker) .down 5000)")
     let optionalStats = finishTailCallStats()
     check optionalValue == newInt(0)
     check optionalStats.transfers >= 4_000
@@ -589,7 +589,7 @@ suite "compiler — GIR emission":
     check "direct-protocol-calls:" in chunk.disassemble()
 
     let flipped = compileSource("(fn f [self] " &
-                                "  (~ ^protocol ToName ^receiver User to_name))")
+                                "  (.to_name ^protocol ToName ^receiver User))")
     check flipped.functions[0].chunk.directProtocolCalls.len == 1
     check flipped.functions[0].chunk.directProtocolCalls[0].messageName == "to_name"
 
@@ -820,7 +820,7 @@ suite "compiler — GIR emission":
     # Message names are not bound in the enclosing scope (docs/core.md §1);
     # a send compiles to opResolveMessage with the message name.
     let chunk = compileSource(
-      "(protocol P (message ping [x])) (fn use [x] (x ~ ping))")
+      "(protocol P (message ping [x])) (fn use [x] (x .ping))")
     check chunk.localNames == @["P", "use"]
 
     let useProto = chunk.functions[0]
@@ -949,11 +949,11 @@ suite "compiler — GIR emission":
     expect GeneError: discard compileSource("(fn (bad t t) [x] x)")
 
   test "leading flipped calls require lexical self":
-    expect GeneError: discard compileSource("(~ + 1)")
-    # D6: `(~ msg)` dispatches on self's type; use a real message, not a
+    expect GeneError: discard compileSource("(.+ 1)")
+    # D6: `(.msg)` dispatches on self's type; use a real message, not a
     # lexical function like `+` (Int has no `+` message).
     ck "(type Box ^props {^n Int} (message plus1 [self] (+ self/n 1))) " &
-       "(fn run [self] (~ plus1)) (run (Box ^n 2))", "3"
+       "(fn run [self] (.plus1)) (run (Box ^n 2))", "3"
 
 suite "module references":
   test "all reader and runtime forms share one module table":
@@ -976,7 +976,7 @@ suite "module references":
   test "identity-bearing values are shared and scalar values compare by value":
     ck "#Ref shared [1] " &
        "(var a #Deref shared) (var b ($deref shared)) " &
-       "(a ~ set 0 9) [(same? a b) (b ~ first)]", "[true 9]"
+       "(a .set 0 9) [(same? a b) (b .first)]", "[true 9]"
     ck "#Ref answer 42 [#Deref answer ($deref answer)]", "[42 42]"
     ck "#Ref flag true [#Deref flag ($deref flag)]", "[true true]"
     ck "#Ref absent nil [#Deref absent ($deref absent)]", "[nil nil]"
@@ -990,7 +990,7 @@ suite "module references":
     ck "(var x #Deref config) ($ref config [3 4]) " &
        "(same? x ($deref config))", "true"
     ck "(var pair [#Deref later #Deref later]) #Ref later [7] " &
-       "(same? (pair ~ first) (pair ~ last))", "true"
+       "(same? (pair .first) (pair .last))", "true"
     ck "(type App ^props {^config (List Int)}) " &
        "(var app (App ^config #Deref config)) #Ref config [1 2] " &
        "[(same? app/config ($deref config)) ($size app/config)]",
@@ -1000,9 +1000,9 @@ suite "module references":
                      "(var app (App ^config #Deref config)) " &
                      "#Ref config [1 \"bad\"]")
     ck "#Ref cycle ($cell #Deref cycle) " &
-       "(same? (($deref cycle) ~ get) ($deref cycle))", "true"
+       "(same? (($deref cycle) .get) ($deref cycle))", "true"
     ck "(macro define_shared [] `#Ref shared [1]) " &
-       "(define_shared) (($deref shared) ~ first)", "1"
+       "(define_shared) (($deref shared) .first)", "1"
 
   test "runtime errors are typed and initializers can retry after failure":
     ck "(try ($deref missing) " &
@@ -1138,7 +1138,7 @@ suite "vm — literals and self-evaluation":
   test "map evaluates its values":
     ck "{^a (+ 1 1) ^b 3}", "{^a 2 ^b 3}"
   test "general map evaluates keys and values":
-    ck "(var k \"a\") ({{k : (+ 1 2)}} ~ get \"a\")", "3"
+    ck "(var k \"a\") ({{k : (+ 1 2)}} .get \"a\")", "3"
     ck "{{\"a\" : 1 \"a\" : 2}}", "{{\"a\" : 2}}"
     ck "{{\"a\" : 1 \"a\" : void}}", "{{}}"
     expect GeneError:
@@ -1158,26 +1158,26 @@ suite "vm — literals and self-evaluation":
        "[#\"\\d+\" #\"\\d+\" #\"abc\"im]"
     ck "((fn [r : Regex] true) #\"x\")", "true"
   test "regex match returns a typed Match node":
-    ck "(var m (#\"(?<word>\\w+)-(\\d+)\" ~ match \"ab-12 zz\")) " &
-       "[m/text m/groups (m/named ~ get \"word\") m/start m/end]",
+    ck "(var m (#\"(?<word>\\w+)-(\\d+)\" .match \"ab-12 zz\")) " &
+       "[m/text m/groups (m/named .get \"word\") m/start m/end]",
        "[\"ab-12\" #[\"ab\" \"12\"] \"ab\" 0 5]"
-    ck "(#\"z+\" ~ match \"abc\")", "void"
+    ck "(#\"z+\" .match \"abc\")", "void"
   test "regex find_all returns a stream":
-    ck "(var xs ($into (#\"\\d+\" ~ find_all \"a12b3\") [])) " &
+    ck "(var xs ($into (#\"\\d+\" .find_all \"a12b3\") [])) " &
        "[xs/0/text xs/0/start xs/0/end xs/1/text xs/1/start xs/1/end]",
        "[\"12\" 1 3 \"3\" 4 5]"
   test "regex replace and split":
-    ck "(#\"(\\w+)=(\\d+)\" ~ replace \"a=1 b=22\" \"\\\\2/\\\\1\")",
+    ck "(#\"(\\w+)=(\\d+)\" .replace \"a=1 b=22\" \"\\\\2/\\\\1\")",
        "\"1/a b=22\""
-    ck "(#\"(\\w+)=(?<n>\\d+)\" ~ replace_all \"a=1 b=22\" \"\\\\k<n>\")",
+    ck "(#\"(\\w+)=(?<n>\\d+)\" .replace_all \"a=1 b=22\" \"\\\\k<n>\")",
        "\"1 22\""
-    ck "(#\"\\s*,\\s*\" ~ split \"a, b,c\")", "[\"a\" \"b\" \"c\"]"
+    ck "(#\"\\s*,\\s*\" .split \"a, b,c\")", "[\"a\" \"b\" \"c\"]"
   test "map and node storage drops void props":
     ck "{^a void ^b 1}", "{^b 1}"
     ck "(quote (x ^a void ^b 1 @m void @n 2))", "(x @n 2 ^b 1)"
   test "quote suppresses evaluation":
     ck "(quote (+ 1 2))", "(+ 1 2)"
-    ck "(quote (~ f a))", "(~ f a)"
+    ck "(quote (.f a))", "(.f a)"
 
 suite "vm — strings and interpolation":
   test "to_str converts values to display text":
@@ -1421,7 +1421,7 @@ suite "vm — special forms":
   test "task scopes, spawn, and await produce completed Task values":
     ck "(scope (var a (spawn (+ 1 2))) (await a))", "3"
     ck "(scope (var t : (Task Int Never) (spawn 1)) t)", "(task)"
-    ck "(scope (var t (spawn 1)) (t ~ cancel))", "nil"
+    ck "(scope (var t (spawn 1)) (t .cancel))", "nil"
 
   test "task scope and spawn bodies are branch-local":
     expect GeneError:
@@ -1470,7 +1470,7 @@ suite "vm — special forms":
        "(app (Request ^path \"/\"))",
        "\"/\""
     ck "(try (var s : (Stream Int Never) ($to_stream [\"bad\"])) " &
-       "     (s ~ next) " &
+       "     (s .next) " &
        "catch TypeError $ex/where)",
        "\"Stream/next item\""
   test "set reassigns an existing binding":
@@ -1665,10 +1665,10 @@ suite "vm — selectors":
     ck "(var xs [10 20 30]) xs/1", "20"
     ck "(var xs [10 20 30]) xs/-1", "30"
     ck "(var xs [10 20 30]) xs/size", "void"
-    ck "(var xs [10 20 30]) [xs/~size xs/~empty? xs/~first xs/~last]",
+    ck "(var xs [10 20 30]) [xs/.size xs/.empty? xs/.first xs/.last]",
        "[3 false 10 30]"
-    ck "(var xs []) [xs/~empty? xs/~first xs/~last]", "[true void void]"
-    ck "(fn size [xs] xs/~size) (size [1 2 3])", "3"
+    ck "(var xs []) [xs/.empty? xs/.first xs/.last]", "[true void void]"
+    ck "(fn size [xs] xs/.size) (size [1 2 3])", "3"
   test "selectors read node props, body indexes, and projections":
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/name", "\"Ada\""
     ck "(var n (quote (user ^name \"Ada\" 10 20))) n/1", "20"
@@ -1681,13 +1681,13 @@ suite "vm — selectors":
   test "static selector lookup maps over streams and skips void":
     ck "(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
        "(var names users/%$to_stream/name) " &
-       "[(names ~ next) (names ~ next) (names ~ has_next)]",
+       "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
 
   test "first-class selectors map over streams":
     ck "(var get-name /name) " &
        "(var names (get-name ($to_stream [{^name \"Ada\"} {^name \"Bob\"}]))) " &
-       "[(names ~ next) (names ~ next) (names ~ has_next)]",
+       "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
 
 suite "vm — dynamic selectors":
@@ -1715,14 +1715,14 @@ suite "vm — dynamic selectors":
     ck "(var field \"name\") " &
        "(var users [{^name \"Ada\"} {^age 37} {^name \"Bob\"}]) " &
        "(var names ((select %$to_stream %($key field)) users)) " &
-       "[(names ~ next) (names ~ next) (names ~ has_next)]",
+       "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
   test "complex selector stages adapt stream helpers":
     ck "(var users [{^name \"Ada\" ^adult true} " &
        "            {^name \"Tim\" ^adult false} " &
        "            {^name \"Bob\" ^adult true}]) " &
        "(var names ((select %$to_stream %($filter /adult) name) users)) " &
-       "[(names ~ next) (names ~ next) (names ~ has_next)]",
+       "[(names .next) (names .next) (names .has_next)]",
        "[\"Ada\" \"Bob\" false]"
     ck "(var users [{^name \"Ada\"} {^name \"Bob\"} {^name \"Cy\"}]) " &
        "((select %$to_stream %($map /name) %($take 2) %($into [])) users)",
@@ -1757,15 +1757,15 @@ suite "vm — node projection built-ins":
     ck "(var child [1]) " &
        "(var n `(user @note %child ^data %child %child)) " &
        "(var ps ($props n)) (var bs ($body n)) (var ms ($meta n)) " &
-       "(ps ~ put `extra 2) " &
-       "(bs ~ set 0 3) " &
-       "(ms ~ put `other 4) " &
+       "(ps .put `extra 2) " &
+       "(bs .set 0 3) " &
+       "(ms .put `other 4) " &
        "[(== n/extra void) n/0 (== n/%$meta/other void)]",
        "[true [1] true]"
     ck "(var child [1]) " &
        "(var n `(user @note %child ^data %child %child)) " &
        "(var projected ($props n)) " &
-       "(projected/data ~ set 0 9) " &
+       "(projected/data .set 0 9) " &
        "[n/data/0 n/0/0 n/%$meta/note/0]",
        "[9 9 9]"
 
@@ -1809,47 +1809,47 @@ suite "vm — functional selector updates":
 
 suite "vm — container update built-ins":
   test "List/assoc returns an updated copy":
-    ck "(var xs #[1 2 3]) (var ys (xs ~ assoc 1 20)) [xs ys]",
+    ck "(var xs #[1 2 3]) (var ys (xs .assoc 1 20)) [xs ys]",
        "[#[1 2 3] #[1 20 3]]"
-    ck "([1 2] ~ assoc 1 void)", "[1 nil]"
+    ck "([1 2] .assoc 1 void)", "[1 nil]"
 
   test "List/set mutates mutable lists":
-    ck "(var xs [1 2]) [(xs ~ set 1 9) xs]", "[9 [1 9]]"
-    ck "(var xs [1 2]) [(xs ~ set 0 void) xs]", "[nil [nil 2]]"
+    ck "(var xs [1 2]) [(xs .set 1 9) xs]", "[9 [1 9]]"
+    ck "(var xs [1 2]) [(xs .set 0 void) xs]", "[nil [nil 2]]"
     expect GeneError:
-      discard runStr("(#[1] ~ set 0 2)")
+      discard runStr("(#[1] .set 0 2)")
 
   test "List/push grows mutable lists in place":
-    ck "(var xs [1]) [(xs ~ push 2) xs]", "[2 [1 2]]"
-    ck "(var xs []) [(xs ~ push void) xs]", "[nil [nil]]"
+    ck "(var xs [1]) [(xs .push 2) xs]", "[2 [1 2]]"
+    ck "(var xs []) [(xs .push void) xs]", "[nil [nil]]"
     expect GeneError:
-      discard runStr("(#[1] ~ push 2)")
+      discard runStr("(#[1] .push 2)")
 
   test "List/push supports linear accumulator growth":
     ck "(var xs []) (var i 0) " &
-       "(while (< i 20000) (xs ~ push i) (set i (+ i 1))) " &
+       "(while (< i 20000) (xs .push i) (set i (+ i 1))) " &
        "[($size xs) ($first xs) ($last xs)]",
        "[20000 0 19999]"
 
   test "Map/put mutates mutable maps":
-    ck "(var m {^a 1}) [(m ~ put \"b\" 2) (m ~ /b)]", "[2 2]"
-    ck "(var m {^a 1}) [(m ~ put \"a\" void) (m ~ /a)]", "[void void]"
+    ck "(var m {^a 1}) [(m .put \"b\" 2) (/b m)]", "[2 2]"
+    ck "(var m {^a 1}) [(m .put \"a\" void) (/a m)]", "[void void]"
     expect GeneError:
-      discard runStr("(#{^a 1} ~ put \"a\" 2)")
+      discard runStr("(#{^a 1} .put \"a\" 2)")
   test "Map/delete removes an entry and returns what was there":
-    ck "(var m {^a 1 ^b 2}) [(m ~ delete \"a\") m]", "[1 {^b 2}]"
+    ck "(var m {^a 1 ^b 2}) [(m .delete \"a\") m]", "[1 {^b 2}]"
     # Absent key is `void`, so a caller can tell "removed something" from
     # "there was nothing" without a second lookup.
-    ck "(var m {^a 1}) [(m ~ delete \"zz\") m]", "[void {^a 1}]"
+    ck "(var m {^a 1}) [(m .delete \"zz\") m]", "[void {^a 1}]"
     # Symbol and string keys both work: the key is converted before comparing,
     # the same normalization `get` and `put` use. Map iteration yields symbols,
     # so an iterated key can be deleted directly.
-    ck "(var m {^a 1 ^b 2}) (m ~ delete (quote a)) m", "{^b 2}"
-    ck "(var m {^a 1 ^b 2}) (for [k v] in {^a 1} (m ~ delete k)) m", "{^b 2}"
+    ck "(var m {^a 1 ^b 2}) (m .delete (quote a)) m", "{^b 2}"
+    ck "(var m {^a 1 ^b 2}) (for [k v] in {^a 1} (m .delete k)) m", "{^b 2}"
     expect GeneError:
-      discard runStr("(#{^a 1} ~ delete \"a\")")
+      discard runStr("(#{^a 1} .delete \"a\")")
     expect GeneError:
-      discard runStr("([1] ~ delete \"a\")")
+      discard runStr("([1] .delete \"a\")")
 
   test "to_sym is the inverse of to_str for names":
     ck "[($to_sym \"a\") ($to_str ($to_sym \"a\")) ($to_sym ($to_sym \"a\"))]",
@@ -1861,25 +1861,25 @@ suite "vm — container update built-ins":
     expect GeneError: discard runStr("($to_sym 1)")
 
   test "Map/assoc returns an updated copy":
-    ck "(var m #{^a 1}) (var n (m ~ assoc \"b\" 2)) [m n]",
+    ck "(var m #{^a 1}) (var n (m .assoc \"b\" 2)) [m n]",
        "[#{^a 1} #{^a 1 ^b 2}]"
-    ck "({^a 1} ~ assoc \"a\" void)", "{}"
-    expect GeneError: discard runStr("([1] ~ assoc \"a\" 2)")
+    ck "({^a 1} .assoc \"a\" void)", "{}"
+    expect GeneError: discard runStr("([1] .assoc \"a\" 2)")
   test "Map/get reads entries without selector staging":
-    ck "(var m {^a 1}) [(m ~ get \"a\") (m ~ get \"missing\")]",
+    ck "(var m {^a 1}) [(m .get \"a\") (m .get \"missing\")]",
        "[1 void]"
-    ck "(var m {^a 1}) (m ~ get (quote a))", "1"
-    expect GeneError: discard runStr("([1] ~ get \"a\")")
+    ck "(var m {^a 1}) (m .get (quote a))", "1"
+    expect GeneError: discard runStr("([1] .get \"a\")")
 
   test "Node/set_prop mutates mutable node props":
     ck "(var n (quote (user ^name \"Ada\"))) " &
-       "[(n ~ set_prop \"name\" \"Bob\") (n ~ /name)]",
+       "[(n .set_prop \"name\" \"Bob\") (/name n)]",
        "[\"Bob\" \"Bob\"]"
     ck "(var n (quote (user ^name \"Ada\"))) " &
-       "[(n ~ set_prop \"name\" void) (n ~ /name)]",
+       "[(n .set_prop \"name\" void) (/name n)]",
        "[void void]"
     expect GeneError:
-      discard runStr("(#(user ^name \"Ada\") ~ set_prop \"name\" \"Bob\")")
+      discard runStr("(#(user ^name \"Ada\") .set_prop \"name\" \"Bob\")")
 
 suite "vm — entrypoint support":
   test "top-level bindings can be looked up and called after run":
@@ -1923,21 +1923,21 @@ suite "vm — namespaces":
   test "namespaces compare by identity":
     ck "(ns m (var a 1)) (== m m)", "true"
   test "namespace reflection exposes bindings and lookup":
-    ck "(ns m (var b 2) (var a 1)) [(m ~ lookup \"a\") (m ~ lookup \"missing\")]",
+    ck "(ns m (var b 2) (var a 1)) [(m .lookup \"a\") (m .lookup \"missing\")]",
        "[1 void]"
-    ck "(ns m (var b 2) (var a 1)) (m ~ bindings)",
+    ck "(ns m (var b 2) (var a 1)) (m .bindings)",
        "{^a 1 ^b 2}"
   test "declarations exposes namespace bindings as a stream":
     ck "(ns m (var b 2) (var a 1)) " &
        "(var names m/%$declarations/name) " &
-       "[(names ~ next) (names ~ next) (names ~ has_next)]",
+       "[(names .next) (names .next) (names .has_next)]",
        "[\"a\" \"b\" false]"
-    ck "(ns m (var a 1)) (var ds (m ~ declarations)) (ds ~ next)",
+    ck "(ns m (var a 1)) (var ds (m .declarations)) (ds .next)",
        "(Declaration ^name \"a\" ^kind \"Int\" ^value 1)"
   test "namespace reflection operations require namespaces":
     expect GeneError: discard runStr("($declarations [1])")
-    expect GeneError: discard runStr("([1] ~ bindings)")
-    expect GeneError: discard runStr("([1] ~ lookup \"a\")")
+    expect GeneError: discard runStr("([1] .bindings)")
+    expect GeneError: discard runStr("([1] .lookup \"a\")")
 
 suite "vm — env and eval":
   test "env values are opaque display values":
@@ -1959,7 +1959,7 @@ suite "vm — env and eval":
     # The one Env that does *not* inherit: a snapshot promises exactly the names
     # it captured, so a window onto the live scope would defeat naming them.
     ck "(var x 1) (var secret 9) " &
-       "(fn capture! [] (caller_env ~ snapshot [\"x\"])) " &
+       "(fn capture! [] (caller_env .snapshot [\"x\"])) " &
        "(var saved (capture!)) " &
        "[(eval (quote x) ^in saved) " &
        " (try (eval (quote secret) ^in saved) catch Any \"absent\")]",
@@ -1986,7 +1986,7 @@ suite "vm — env and eval":
        "(eval (quote fs) ^in e)",
        "\"binding\""
     ck "(var base (env ^capabilities {^fs \"sandbox\"})) " &
-       "(var child (base ~ extend {^x 1})) " &
+       "(var child (base .extend {^x 1})) " &
        "(eval (quote [fs x]) ^in child)",
        "[\"sandbox\" 1]"
     expect GeneError:
@@ -2027,7 +2027,7 @@ suite "vm — env and eval":
        "catch Any $ex/message)",
        "\"eval timeout exceeded\""
     ck "(try (eval (quote (do (var xs ($thaw #[])) " &
-       "                      (while true (xs ~ push ($str/join [\"x\"] \"\"))))) " &
+       "                      (while true (xs .push ($str/join [\"x\"] \"\"))))) " &
        "           ^in (env ^policy {^max_memory_mb 1})) " &
        "catch Any $ex/message)",
        "\"eval memory limit exceeded\""
@@ -2081,28 +2081,28 @@ suite "vm — env and eval":
       "(var f (eval " &
       "  (quote (do " &
       "    (impl P for T (message value [self] : Str \"local\")) " &
-      "    (fn [] ((T) ~ P:value)))) " &
+      "    (fn [] ((T) .P:value)))) " &
       "  ^in e)) " &
       "(f)"), scope).print() == "\"local\""
     # The function retains the eval scope and its impl. The sibling program
     # scope sees the same explicit P/T values but not the overlay registration.
     expect GeneError:
-      discard run(compileSource("((T) ~ P:value)"), scope)
+      discard run(compileSource("((T) .P:value)"), scope)
 
 suite "vm — cells":
   test "cell values are opaque display values":
     ck "($cell 0)", "(cell)"
 
   test "cell get and set mutate the referenced value":
-    ck "(var c ($cell 0)) [(c ~ get) (c ~ set 10) (c ~ get)]",
+    ck "(var c ($cell 0)) [(c .get) (c .set 10) (c .get)]",
        "[0 10 10]"
 
   test "cell swap returns the old value":
-    ck "(var c ($cell \"a\")) [(c ~ swap \"b\") (c ~ get)]",
+    ck "(var c ($cell \"a\")) [(c .swap \"b\") (c .get)]",
        "[\"a\" \"b\"]"
 
   test "cell update applies a callable and stores the result":
-    ck "(var c ($cell 1)) [(c ~ update (fn [x] (+ x 1))) (c ~ get)]",
+    ck "(var c ($cell 1)) [(c .update (fn [x] (+ x 1))) (c .get)]",
        "[2 2]"
 
   test "cells compare by identity":
@@ -2110,18 +2110,18 @@ suite "vm — cells":
        "[true false]"
 
   test "Cell annotations accept cells only":
-    ck "(fn read [c : Cell] (c ~ get)) (read ($cell 3))", "3"
+    ck "(fn read [c : Cell] (c .get)) (read ($cell 3))", "3"
     expect GeneError:
       discard runStr("(fn read [c : Cell] c) (read 3)")
 
   test "env eval can mutate explicitly passed cells":
     ck "(var c ($cell 0)) (var e (env ^bindings {^c c})) " &
-       "(eval (quote (c ~ set 5)) ^in e) (c ~ get)",
+       "(eval (quote (c .set 5)) ^in e) (c .get)",
        "5"
 
   test "cell operations require cells":
-    expect GeneError: discard runStr("(1 ~ get)")
-    expect GeneError: discard runStr("(($cell 1) ~ set)")
+    expect GeneError: discard runStr("(1 .get)")
+    expect GeneError: discard runStr("(($cell 1) .set)")
 
 suite "vm — atomic cells":
   test "atomic cell values are opaque display values":
@@ -2129,16 +2129,16 @@ suite "vm — atomic cells":
 
   test "atomic cell load, store, and swap mutate the referenced value":
     ck "(var a ($atomic_cell 0)) " &
-       "[(a ~ load) (a ~ store 10) " &
-       " (a ~ swap 20) (a ~ load)]",
+       "[(a .load) (a .store 10) " &
+       " (a .swap 20) (a .load)]",
        "[0 10 10 20]"
 
   test "atomic compare_exchange stores when the expected value matches":
     ck "(var a ($atomic_cell 2)) " &
-       "[(a ~ compare_exchange 2 3) " &
-       " (a ~ load) " &
-       " (a ~ compare_exchange 2 4) " &
-       " (a ~ load)]",
+       "[(a .compare_exchange 2 3) " &
+       " (a .load) " &
+       " (a .compare_exchange 2 4) " &
+       " (a .load)]",
        "[true 3 false 3]"
 
   test "atomic cells compare by identity":
@@ -2146,7 +2146,7 @@ suite "vm — atomic cells":
        "[true false]"
 
   test "AtomicCell annotations accept atomic cells only":
-    ck "(fn read [a : AtomicCell] (a ~ load)) (read ($atomic_cell 3))",
+    ck "(fn read [a : AtomicCell] (a .load)) (read ($atomic_cell 3))",
        "3"
     expect GeneError:
       discard runStr("(fn read [a : AtomicCell] a) (read ($cell 3))")
@@ -2156,8 +2156,8 @@ suite "vm — atomic cells":
     # `(AtomicCell/load 1)` no longer reaches the native at all — it is the
     # decision-4 "not a callable path" error — so asserting on it would stop
     # testing what this test is named for.
-    expect GeneError: discard runStr("(1 ~ AtomicCell:load)")
-    expect GeneError: discard runStr("(($atomic_cell 1) ~ store)")
+    expect GeneError: discard runStr("(1 .AtomicCell:load)")
+    expect GeneError: discard runStr("(($atomic_cell 1) .store)")
 
 suite "vm — channels":
   test "channel values are opaque display values":
@@ -2165,212 +2165,212 @@ suite "vm — channels":
 
   test "channels send and receive FIFO values":
     ck "(var ch ($channel ^capacity 2)) " &
-       "(ch ~ send 1) " &
-       "(ch ~ send 2) " &
-       "[(ch ~ recv) (ch ~ recv)]",
+       "(ch .send 1) " &
+       "(ch .send 2) " &
+       "[(ch .recv) (ch .recv)]",
        "[1 2]"
 
   test "try_send and try_recv are non-blocking":
     ck "(var ch ($channel ^capacity 1)) " &
-       "[(ch ~ try_send 1) " &
-       " (ch ~ try_send 2) " &
-       " (ch ~ recv) " &
-       " (match (ch ~ try_recv) " &
+       "[(ch .try_send 1) " &
+       " (ch .try_send 2) " &
+       " (ch .recv) " &
+       " (match (ch .try_recv) " &
        "   (when TryRecv/empty true) " &
        "   (when (TryRecv/value _) false))]",
        "[true false 1 true]"
 
   test "try_recv distinguishes empty, Void, Nil, and ordinary payloads":
     ck "(var ch ($channel ^capacity 3)) " &
-       "(var empty-result (ch ~ try_recv)) " &
-       "(ch ~ send void) " &
-       "(ch ~ send nil) " &
-       "(ch ~ send 7) " &
+       "(var empty-result (ch .try_recv)) " &
+       "(ch .send void) " &
+       "(ch .send nil) " &
+       "(ch .send 7) " &
        "[(match empty-result (when TryRecv/empty `empty)) " &
-       " (match (ch ~ try_recv) (when (TryRecv/value v) v)) " &
-       " (match (ch ~ try_recv) (when (TryRecv/value v) v)) " &
-       " (match (ch ~ try_recv) (when (TryRecv/value v) v))]",
+       " (match (ch .try_recv) (when (TryRecv/value v) v)) " &
+       " (match (ch .try_recv) (when (TryRecv/value v) v)) " &
+       " (match (ch .try_recv) (when (TryRecv/value v) v))]",
        "[empty void nil 7]"
 
   test "closed channels drain buffered values before ChannelClosed":
     ck "(var ch ($channel ^capacity 1)) " &
-       "(ch ~ send 9) " &
-       "(ch ~ close) " &
-       "[(ch ~ recv) " &
-       " (try (ch ~ recv) catch ChannelClosed $ex/message)]",
+       "(ch .send 9) " &
+       "(ch .close) " &
+       "[(ch .recv) " &
+       " (try (ch .recv) catch ChannelClosed $ex/message)]",
        "[9 \"channel is closed\"]"
     ck "(var ch ($channel)) " &
-       "(ch ~ close) " &
-       "(try (ch ~ send 1) catch ChannelClosed $ex/message)",
+       "(ch .close) " &
+       "(try (ch .send 1) catch ChannelClosed $ex/message)",
        "\"channel is closed\""
 
   test "typed channels check items on send":
     ck "(var ch : (Channel Int) ($channel)) " &
-       "(try (ch ~ send \"bad\") catch TypeError $ex/where)",
+       "(try (ch .send \"bad\") catch TypeError $ex/where)",
        "\"Channel/send item\""
     ck "(var ch : (Channel Int) ($channel)) " &
-       "(ch ~ send 7) " &
-       "(ch ~ recv)",
+       "(ch .send 7) " &
+       "(ch .recv)",
        "7"
     ck "(var raw ($channel)) " &
-       "(raw ~ send \"bad\") " &
+       "(raw .send \"bad\") " &
        "(var ch : (Channel Int) raw) " &
-       "(try (ch ~ recv) catch TypeError $ex/where)",
+       "(try (ch .recv) catch TypeError $ex/where)",
        "\"Channel/recv item\""
 
   test "channel sends require Send values":
     ck "(var ch ($channel)) " &
-       "(ch ~ send #[1 #{^a 2}]) " &
-       "(ch ~ recv)",
+       "(ch .send #[1 #{^a 2}]) " &
+       "(ch .recv)",
        "#[1 #{^a 2}]"
     ck "(var ch ($channel)) " &
        "(var captured #[1 #{^a 2}]) " &
        "(var f (fn [] captured)) " &
-       "(ch ~ send f) " &
-       "(var g (ch ~ recv)) " &
+       "(ch .send f) " &
+       "(var g (ch .recv)) " &
        "(g)",
        "#[1 #{^a 2}]"
     ck "(var ch ($channel)) " &
        "(var f (fn [x y = x] y)) " &
-       "(ch ~ send f) " &
-       "(var g (ch ~ recv)) " &
+       "(ch .send f) " &
+       "(var g (ch .recv)) " &
        "(g 7)",
        "7"
     ck "(var ch ($channel ^capacity 1)) " &
        "(var t (spawn 7)) " &
-       "(ch ~ send t) " &
-       "(await (ch ~ recv))",
+       "(ch .send t) " &
+       "(await (ch .recv))",
        "7"
     ck "(var ch ($channel ^capacity 1)) " &
        "(var inner ($channel ^capacity 1)) " &
-       "(inner ~ send 7) " &
-       "(ch ~ send inner) " &
-       "((ch ~ recv) ~ recv)",
+       "(inner .send 7) " &
+       "(ch .send inner) " &
+       "((ch .recv) .recv)",
        "7"
     ck "(var ch ($channel ^capacity 1)) " &
        "(var a ($atomic_cell 7)) " &
-       "(ch ~ send a) " &
-       "((ch ~ recv) ~ load)",
+       "(ch .send a) " &
+       "((ch .recv) .load)",
        "7"
     ck "(var ch ($channel)) " &
-       "(try (ch ~ send [1]) catch TypeError $ex/expected)",
+       "(try (ch .send [1]) catch TypeError $ex/expected)",
        "\"Send\""
     ck "(var ch ($channel)) " &
-       "(try (ch ~ send #[($cell 1)]) catch TypeError $ex/where)",
+       "(try (ch .send #[($cell 1)]) catch TypeError $ex/where)",
        "\"Channel/send item\""
     ck "(var ch ($channel)) " &
        "(var captured ($cell 1)) " &
-       "(var f (fn [] (captured ~ get))) " &
-       "(try (ch ~ send f) catch TypeError $ex/expected)",
+       "(var f (fn [] (captured .get))) " &
+       "(try (ch .send f) catch TypeError $ex/expected)",
        "\"Send\""
     ck "(var ch ($channel)) " &
        "(var captured 1) " &
        "(var f (fn [] (set captured (+ captured 1)))) " &
-       "(try (ch ~ send f) catch TypeError $ex/expected)",
+       "(try (ch .send f) catch TypeError $ex/expected)",
        "\"Send\""
     ck "(type Msg ^props {^x Int} ^impl [Send]) " &
        "(impl Send for Msg) " &
        "(var ch ($channel)) " &
-       "(ch ~ send (Msg ^x 7)) " &
-       "(var msg (ch ~ recv)) " &
+       "(ch .send (Msg ^x 7)) " &
+       "(var msg (ch .recv)) " &
        "msg/x",
        "7"
 
   test "channel operations require channels":
     expect GeneError: discard runStr("($channel ^capacity 0)")
-    expect GeneError: discard runStr("(1 ~ send 2)")
-    expect GeneError: discard runStr("(1 ~ recv)")
+    expect GeneError: discard runStr("(1 .send 2)")
+    expect GeneError: discard runStr("(1 .recv)")
 
 suite "vm — cooperative scheduler":
   test "a task blocked on recv is woken by a sender task":
     # The consumer parks on an empty channel; the producer's send wakes it and the
     # whole task resumes — real cooperative suspension across the frame stack.
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var c (spawn (ch ~ recv))) " &
-       "  (var p (spawn (ch ~ send 7))) " &
+       "  (var c (spawn (ch .recv))) " &
+       "  (var p (spawn (ch .send 7))) " &
        "  (await c))", "7"
   test "a producer that fills the channel parks until the root drains it":
     # send on a full channel parks the producer fiber; each root recv frees space
     # and wakes it to push the next value.
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var p (spawn (do (ch ~ send 1) (ch ~ send 2) 99))) " &
-       "  (var a (ch ~ recv)) (var b (ch ~ recv)) " &
+       "  (var p (spawn (do (ch .send 1) (ch .send 2) 99))) " &
+       "  (var a (ch .recv)) (var b (ch .recv)) " &
        "  [a b (await p)])", "[1 2 99]"
   test "multiple producers blocked on a full channel are all drained":
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var p1 (spawn (ch ~ send 10))) " &
-       "  (var p2 (spawn (ch ~ send 20))) " &
-       "  (+ (ch ~ recv) (ch ~ recv)))", "30"
+       "  (var p1 (spawn (ch .send 10))) " &
+       "  (var p2 (spawn (ch .send 20))) " &
+       "  (+ (ch .recv) (ch .recv)))", "30"
   test "suspension preserves a deep call chain across the channel block":
     # The recv happens inside a nested call; resuming restores the whole frame
     # stack, so the caller continues correctly after the value arrives.
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (fn get-one [c] (+ 1 (c ~ recv))) " &
+       "  (fn get-one [c] (+ 1 (c .recv))) " &
        "  (var t (spawn (get-one ch))) " &
-       "  (var p (spawn (ch ~ send 41))) " &
+       "  (var p (spawn (ch .send 41))) " &
        "  (await t))", "42"
   test "suspension preserves match, for, and catch sub-bodies":
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var t (spawn (match 1 " &
-       "                  (when 1 (ch ~ recv))))) " &
-       "  (spawn (ch ~ send 7)) " &
+       "                  (when 1 (ch .recv))))) " &
+       "  (spawn (ch .send 7)) " &
        "  (await t))", "7"
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var out ($cell 0)) " &
        "  (var t (spawn (for x in [1] " &
-       "                  (out ~ set (ch ~ recv))))) " &
-       "  (spawn (ch ~ send 8)) " &
+       "                  (out .set (ch .recv))))) " &
+       "  (spawn (ch .send 8)) " &
        "  (await t) " &
-       "  (out ~ get))", "8"
+       "  (out .get))", "8"
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var t (spawn (try (fail (Error ^message \"x\")) " &
-       "                  catch Any (ch ~ recv)))) " &
-       "  (spawn (ch ~ send 9)) " &
+       "                  catch Any (ch .recv)))) " &
+       "  (spawn (ch .send 9)) " &
        "  (await t))", "9"
   test "suspension preserves scope, supervisor, eval, and namespace sub-bodies":
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var t (spawn (scope (ch ~ recv)))) " &
-       "  (spawn (ch ~ send 7)) " &
+       "  (var t (spawn (scope (ch .recv)))) " &
+       "  (spawn (ch .send 7)) " &
        "  (await t))", "7"
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var t (spawn (supervisor ^strategy stop " &
-       "                  (ch ~ recv)))) " &
-       "  (spawn (ch ~ send 8)) " &
+       "                  (ch .recv)))) " &
+       "  (spawn (ch .send 8)) " &
        "  (await t))", "8"
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var e (env ^bindings {^ch ch})) " &
-       "  (var t (spawn (eval (quote (ch ~ recv)) ^in e))) " &
-       "  (spawn (ch ~ send 9)) " &
+       "  (var t (spawn (eval (quote (ch .recv)) ^in e))) " &
+       "  (spawn (ch .send 9)) " &
        "  (await t))", "9"
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var t (spawn (ns m (var x (ch ~ recv))))) " &
-       "  (spawn (ch ~ send 10)) " &
-       "  ((await t) ~ lookup (quote x)))", "10"
+       "  (var t (spawn (ns m (var x (ch .recv))))) " &
+       "  (spawn (ch .send 10)) " &
+       "  ((await t) .lookup (quote x)))", "10"
   test "await with no way to make progress is a deadlock error":
     expect GeneError:
       discard runStr("(scope (var ch ($channel ^capacity 1)) " &
-                     "  (var c (spawn (ch ~ recv))) " &
+                     "  (var c (spawn (ch .recv))) " &
                      "  (await c))")
   test "a task awaiting another parks until it settles":
     # `doubler` awaits `producer` while producer is still blocked on recv; it parks
     # on the task (does not busy-pump) and resumes once producer completes.
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var producer (spawn (do (ch ~ recv) 5))) " &
+       "  (var producer (spawn (do (ch .recv) 5))) " &
        "  (var doubler (spawn (* 2 (await producer)))) " &
-       "  (ch ~ send 1) " &
+       "  (ch .send 1) " &
        "  (await doubler))", "10"
   test "a chain of awaiting tasks resolves in order":
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var a (spawn (do (ch ~ recv) 1))) " &
+       "  (var a (spawn (do (ch .recv) 1))) " &
        "  (var b (spawn (+ 10 (await a)))) " &
        "  (var c (spawn (+ 100 (await b)))) " &
-       "  (ch ~ send 0) " &
+       "  (ch .send 0) " &
        "  (await c))", "111"
 
   test "spawn queues child work instead of running inline":
     ck "(scope (var out ($cell 0)) " &
-       "  (var t (spawn (out ~ set 1))) " &
-       "  [(out ~ get) (await t) (out ~ get)])",
+       "  (var t (spawn (out .set 1))) " &
+       "  [(out .get) (await t) (out .get)])",
        "[0 1 1]"
 
   test "worker-candidate spawns snapshot sendable captures":
@@ -2399,8 +2399,8 @@ suite "vm — cooperative scheduler":
 
   test "non-worker-safe spawns keep cooperative shared captures":
     ck "(scope (var c ($cell 0)) " &
-       "  (var t (spawn (c ~ get))) " &
-       "  (c ~ set 2) " &
+       "  (var t (spawn (c .get))) " &
+       "  (c .set 2) " &
        "  (await t))",
        "2"
     ck "(scope (var c ($cell 7)) (var t (spawn c)) " &
@@ -2413,7 +2413,7 @@ suite "vm — cooperative scheduler":
       let scope1 = newGlobalScope(app1)
       let ch = run(compileSource("($channel ^capacity 1)"), scope1)
       scope1.define("ch", ch)
-      let pending = run(compileSource("(spawn (ch ~ send 1))"), scope1)
+      let pending = run(compileSource("(spawn (ch .send 1))"), scope1)
       check pending.kind == vkTask
       check not pending.taskDone
       check ch.channelLen == 0
@@ -2422,7 +2422,7 @@ suite "vm — cooperative scheduler":
       let scope2 = newGlobalScope(app2)
       expect GeneError:
         discard run(compileSource(
-          "(var ch ($channel ^capacity 1)) (ch ~ recv)"), scope2)
+          "(var ch ($channel ^capacity 1)) (ch .recv)"), scope2)
 
       check ch.channelLen == 0
       check not pending.taskDone
@@ -2436,24 +2436,24 @@ suite "vm — cooperative scheduler":
        "  (var slow (spawn (do " &
        "    (var i 0) " &
        "    (while (< i 5000) (set i (+ i 1))) " &
-       "    (out ~ set 1)))) " &
-       "  (var fast (spawn (out ~ set 2))) " &
+       "    (out .set 1)))) " &
+       "  (var fast (spawn (out .set 2))) " &
        "  (await fast) " &
-       "  [(out ~ get) (await slow) (out ~ get)])",
+       "  [(out .get) (await slow) (out .get)])",
        "[2 1 1]"
 
   test "sleep parks only the current task":
     ck "(scope (var out ($cell 0)) " &
-       "  (var slow (spawn (do ($sleep 5) (out ~ set 1)))) " &
-       "  (var fast (spawn (out ~ set 2))) " &
+       "  (var slow (spawn (do ($sleep 5) (out .set 1)))) " &
+       "  (var fast (spawn (out .set 2))) " &
        "  (await fast) " &
-       "  [(out ~ get) (await slow) (out ~ get)])",
+       "  [(out .get) (await slow) (out .get)])",
        "[2 1 1]"
 
   test "sleep zero yields one scheduler turn":
     ck "(var out ($cell 0)) " &
-       "(spawn (out ~ set 1)) " &
-       "[(out ~ get) ($sleep 0) (out ~ get)]",
+       "(spawn (out .set 1)) " &
+       "[(out .get) ($sleep 0) (out .get)]",
        "[0 nil 1]"
 
   test "$fs/read_bytes is the read half fs/write_bytes was missing":
@@ -2547,86 +2547,86 @@ suite "vm — cooperative scheduler":
 
   test "root channel waits can be unblocked by sleeping tasks":
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (spawn (do ($sleep 5) (ch ~ send 7))) " &
-       "  (ch ~ recv))", "7"
+       "  (spawn (do ($sleep 5) (ch .send 7))) " &
+       "  (ch .recv))", "7"
   test "closing a channel wakes parked receivers and senders":
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var t (spawn (try (ch ~ recv) " &
+       "  (var t (spawn (try (ch .recv) " &
        "                  catch ChannelClosed $ex/message))) " &
-       "  (spawn (ch ~ close)) " &
+       "  (spawn (ch .close)) " &
        "  (await t))",
        "\"channel is closed\""
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (ch ~ send 1) " &
-       "  (var t (spawn (try (ch ~ send 2) " &
+       "  (ch .send 1) " &
+       "  (var t (spawn (try (ch .send 2) " &
        "                  catch ChannelClosed $ex/message))) " &
-       "  (spawn (ch ~ close)) " &
+       "  (spawn (ch .close)) " &
        "  (await t))",
        "\"channel is closed\""
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var a (spawn (try (ch ~ recv) " &
+       "  (var a (spawn (try (ch .recv) " &
        "                  catch ChannelClosed $ex/message))) " &
-       "  (var b (spawn (try (ch ~ recv) " &
+       "  (var b (spawn (try (ch .recv) " &
        "                  catch ChannelClosed $ex/message))) " &
-       "  (spawn (ch ~ close)) " &
+       "  (spawn (ch .close)) " &
        "  [(await a) (await b)])",
        "[\"channel is closed\" \"channel is closed\"]"
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (ch ~ send 1) " &
-       "  (var a (spawn (try (ch ~ send 2) " &
+       "  (ch .send 1) " &
+       "  (var a (spawn (try (ch .send 2) " &
        "                  catch ChannelClosed $ex/message))) " &
-       "  (var b (spawn (try (ch ~ send 3) " &
+       "  (var b (spawn (try (ch .send 3) " &
        "                  catch ChannelClosed $ex/message))) " &
-       "  (spawn (ch ~ close)) " &
+       "  (spawn (ch .close)) " &
        "  [(await a) (await b)])",
        "[\"channel is closed\" \"channel is closed\"]"
   test "cancelling a pending task makes await observe cancellation":
     expect GeneCancel:
       discard runStr("(scope (var ch ($channel ^capacity 1)) " &
-                     "  (var t (spawn (ch ~ recv))) " &
-                     "  (t ~ cancel) " &
+                     "  (var t (spawn (ch .recv))) " &
+                     "  (t .cancel) " &
                      "  (await t))")
   test "cancelling a sleeping task wakes it for cleanup":
     expect GeneCancel:
       discard runStr("(scope " &
                      "  (var t (spawn ($sleep 1000))) " &
-                     "  (t ~ cancel) " &
+                     "  (t .cancel) " &
                      "  (await t))")
   test "cancelling a task wakes fibers awaiting it":
     expect GeneCancel:
       discard runStr("(scope (var ch ($channel ^capacity 1)) " &
-                     "  (var t (spawn (ch ~ recv))) " &
+                     "  (var t (spawn (ch .recv))) " &
                      "  (var w (spawn (await t))) " &
-                     "  (t ~ cancel) " &
+                     "  (t .cancel) " &
                      "  (await w))")
   test "cancelled task fibers do not resume when their blocker clears":
     ck "(scope (var ch ($channel ^capacity 1)) " &
        "  (var out ($cell 0)) " &
-       "  (var t (spawn (do (ch ~ recv) (out ~ set 1)))) " &
-       "  (t ~ cancel) " &
-       "  (ch ~ send 99) " &
-       "  (out ~ get))", "0"
+       "  (var t (spawn (do (ch .recv) (out .set 1)))) " &
+       "  (t .cancel) " &
+       "  (ch .send 99) " &
+       "  (out .get))", "0"
   test "task scope normal exit waits for live child tasks":
     ck "(var out ($cell 0)) " &
        "(scope (var ch ($channel ^capacity 1)) " &
-       "  (spawn (do (ch ~ recv) (out ~ set 7))) " &
-       "  (spawn (ch ~ send 1)) " &
+       "  (spawn (do (ch .recv) (out .set 7))) " &
+       "  (spawn (ch .send 1)) " &
        "  nil) " &
-       "(out ~ get)", "7"
+       "(out .get)", "7"
   test "task scope normal exit reports deadlocked child tasks":
     expect GeneError:
       discard runStr("(scope (var ch ($channel ^capacity 1)) " &
-                     "  (spawn (ch ~ recv)) " &
+                     "  (spawn (ch .recv)) " &
                      "  nil)")
     ck "(var ch ($channel ^capacity 1)) " &
        "(var out ($cell 0)) " &
        "(try (scope " &
-       "       (spawn (do (ch ~ recv) (out ~ set 1))) " &
+       "       (spawn (do (ch .recv) (out .set 1))) " &
        "       nil) " &
        "  catch Any $ex/message) " &
-       "(ch ~ send 1) " &
+       "(ch .send 1) " &
        "($sleep 1) " &
-       "(out ~ get)", "0"
+       "(out .get)", "0"
   test "task scope error exit cancels pending child tasks":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
@@ -2634,12 +2634,12 @@ suite "vm — cooperative scheduler":
        "(var out ($cell 0)) " &
        "(try " &
        "  (scope " &
-       "    (spawn (do (ch ~ recv) (out ~ set 1))) " &
+       "    (spawn (do (ch .recv) (out .set 1))) " &
        "    (fail (Boom ^message \"stop\"))) " &
        "  catch Boom nil) " &
-       "(ch ~ send 1) " &
+       "(ch .send 1) " &
        "(scope nil) " &
-       "(out ~ get)", "0"
+       "(out .get)", "0"
   test "task scope error exit waits for child cancellation cleanup":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
@@ -2647,12 +2647,12 @@ suite "vm — cooperative scheduler":
        "(var out ($cell 0)) " &
        "(try " &
        "  (scope " &
-       "    (spawn (try (ch ~ recv) " &
-       "                ensure (out ~ set 9))) " &
+       "    (spawn (try (ch .recv) " &
+       "                ensure (out .set 9))) " &
        "    ($sleep 1) " &
        "    (fail (Boom ^message \"stop\"))) " &
        "  catch Boom nil) " &
-       "(out ~ get)", "9"
+       "(out .get)", "9"
 
   test "task cancellation cleanup can suspend before await observes cancellation":
     let scope = newGlobalScope()
@@ -2660,12 +2660,12 @@ suite "vm — cooperative scheduler":
       discard run(compileSource("(var out ($cell 0)) " &
                                 "(scope (var ch ($channel ^capacity 1)) " &
                                 "  (var t (spawn " &
-                                "    (try (ch ~ recv) " &
+                                "    (try (ch .recv) " &
                                 "         ensure " &
                                 "           (do ($sleep 1) " &
-                                "               (out ~ set 9))))) " &
+                                "               (out .set 9))))) " &
                                 "  ($sleep 1) " &
-                                "  (t ~ cancel) " &
+                                "  (t .cancel) " &
                                 "  (await t))"),
                   scope)
     check scope.lookup("out").cellValue.intVal == 9
@@ -2673,10 +2673,10 @@ suite "vm — cooperative scheduler":
   test "detached tasks are not awaited on normal scope exit":
     ck "(var out ($cell 0)) " &
        "(scope " &
-       "  (var t (spawn (do ($sleep 5) (out ~ set 1)))) " &
-       "  (t ~ detach) " &
+       "  (var t (spawn (do ($sleep 5) (out .set 1)))) " &
+       "  (t .detach) " &
        "  nil) " &
-       "[(out ~ get) ($sleep 10) (out ~ get)]",
+       "[(out .get) ($sleep 10) (out .get)]",
        "[0 nil 1]"
 
   test "detached tasks are not cancelled on scope error exit":
@@ -2685,11 +2685,11 @@ suite "vm — cooperative scheduler":
        "(var out ($cell 0)) " &
        "(try " &
        "  (scope " &
-       "    (var t (spawn (do ($sleep 5) (out ~ set 9)))) " &
-       "    (t ~ detach) " &
+       "    (var t (spawn (do ($sleep 5) (out .set 9)))) " &
+       "    (t .detach) " &
        "    (fail (Boom ^message \"stop\"))) " &
        "  catch Boom nil) " &
-       "[(out ~ get) ($sleep 10) (out ~ get)]",
+       "[(out .get) ($sleep 10) (out .get)]",
        "[0 nil 9]"
 
   test "an actor handler can suspend on a channel mid-message":
@@ -2699,35 +2699,35 @@ suite "vm — cooperative scheduler":
     ck "(var out ($cell 0)) " &
        "(var ch ($channel ^capacity 1)) " &
        "(fn handle [ctx state msg] " &
-       "  (var got (ch ~ recv)) " &
-       "  (out ~ set (+ msg got)) " &
+       "  (var got (ch .recv)) " &
+       "  (out .set (+ msg got)) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(var p (spawn (ch ~ send 100))) " &
-       "(a ~ send 5) " &
-       "(out ~ get)", "105"
+       "(var p (spawn (ch .send 100))) " &
+       "(a .send 5) " &
+       "(out .get)", "105"
   test "an actor handler can suspend on a timer mid-message":
     ck "(var out ($cell 0)) " &
        "(fn handle [ctx state msg] " &
        "  ($sleep 5) " &
-       "  (out ~ set msg) " &
+       "  (out .set msg) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(a ~ send 42) " &
-       "(out ~ get)", "42"
+       "(a .send 42) " &
+       "(out .get)", "42"
   test "actor ask returns a pending task instead of driving synchronously":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
        "(impl Send for Get) " &
        "(var ch ($channel ^capacity 1)) " &
        "(fn handle [ctx state msg] " &
-       "  (var got (ch ~ recv)) " &
+       "  (var got (ch .recv)) " &
        "  (match msg " &
        "    (when (Get ^reply reply) " &
-       "      (reply ~ send (+ state got)) " &
+       "      (reply .send (+ state got)) " &
        "      ($actor/continue state)))) " &
        "(var a ($actor/spawn ^init (fn [] 40) ^handle handle)) " &
-       "(var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
-       "(ch ~ send 2) " &
+       "(var pending (a .ask (fn [reply] (Get ^reply reply)))) " &
+       "(ch .send 2) " &
        "(await pending)", "42"
   test "actor ask awaited inside a fiber parks until the reply is sent":
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
@@ -2737,9 +2737,9 @@ suite "vm — cooperative scheduler":
        "    ^handle (fn [ctx state msg] " &
        "      (match msg " &
        "        (when (Get ^reply reply) " &
-       "          (reply ~ send state) " &
+       "          (reply .send state) " &
        "          ($actor/continue state)))))) " &
-       "  (var t (spawn (await (a ~ ask (fn [reply] (Get ^reply reply)))))) " &
+       "  (var t (spawn (await (a .ask (fn [reply] (Get ^reply reply)))))) " &
        "  (await t))", "41"
 
   test "actor ask timeout fails pending request and ignores late reply":
@@ -2749,15 +2749,15 @@ suite "vm — cooperative scheduler":
        "(var out ($cell 0)) " &
        "(fn handle [ctx state msg] " &
        "  (var (Get ^reply reply) msg) " &
-       "  (var got (ch ~ recv)) " &
-       "  (reply ~ send got) " &
-       "  (out ~ set got) " &
+       "  (var got (ch .recv)) " &
+       "  (reply .send got) " &
+       "  (out .set got) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(var pending (a ~ ask ^timeout_ms 5 (fn [reply] (Get ^reply reply)))) " &
+       "(var pending (a .ask ^timeout_ms 5 (fn [reply] (Get ^reply reply)))) " &
        "(var err (try (await pending) catch ActorError $ex/message)) " &
-       "(ch ~ send 7) " &
-       "[err ($sleep 1) (out ~ get)]",
+       "(ch .send 7) " &
+       "[err ($sleep 1) (out .get)]",
        "[\"actor/ask timed out\" nil 7]"
     ck "(scope " &
        "  (type Get ^props {^reply (ReplyTo Int)}) " &
@@ -2766,16 +2766,16 @@ suite "vm — cooperative scheduler":
        "(var ch ($channel ^capacity 1)) " &
        "(fn handle [ctx state msg] " &
        "  (var (Get ^reply reply) msg) " &
-       "  (var got (ch ~ recv)) " &
-       "  (try (reply ~ send got) catch Any $ex/message) " &
+       "  (var got (ch .recv)) " &
+       "  (try (reply .send got) catch Any $ex/message) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(var pending (a ~ ask ^timeout_ms 5 " &
-       "  (fn [reply] (saved ~ set reply) (Get ^reply reply)))) " &
+       "(var pending (a .ask ^timeout_ms 5 " &
+       "  (fn [reply] (saved .set reply) (Get ^reply reply)))) " &
        "(var err (try (await pending) catch ActorError $ex/message)) " &
-       "(var first-late (try ((saved ~ get) ~ send 9) " &
+       "(var first-late (try ((saved .get) .send 9) " &
        "                  catch Any $ex/message)) " &
-       "(var second-late (try ((saved ~ get) ~ send 10) " &
+       "(var second-late (try ((saved .get) .send 10) " &
        "                   catch Any $ex/message)) " &
        "[err first-late second-late])",
        "[\"actor/ask timed out\" nil \"reply has already been sent\"]"
@@ -2790,15 +2790,15 @@ suite "vm — cooperative scheduler":
                      "(fn handle [ctx state msg] " &
                      "  (match msg " &
                      "    (when (Get ^reply reply) " &
-                     "      (var got (ch ~ recv)) " &
-                     "      (reply ~ send got) " &
+                     "      (var got (ch .recv)) " &
+                     "      (reply .send got) " &
                      "      ($actor/continue state)) " &
                      "    (when (Tick) ($actor/continue state)))) " &
                      "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
-                     "(var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
-                     "(pending ~ cancel) " &
-                     "(ch ~ send 7) " &
-                     "(a ~ send (Tick)) " &
+                     "(var pending (a .ask (fn [reply] (Get ^reply reply)))) " &
+                     "(pending .cancel) " &
+                     "(ch .send 7) " &
+                     "(a .send (Tick)) " &
                      "(await pending)")
     ck "(scope " &
        "  (type Get ^props {^reply (ReplyTo Int)}) " &
@@ -2807,16 +2807,16 @@ suite "vm — cooperative scheduler":
        "(var ch ($channel ^capacity 1)) " &
        "(fn handle [ctx state msg] " &
        "  (var (Get ^reply reply) msg) " &
-       "  (var got (ch ~ recv)) " &
-       "  (try (reply ~ send got) catch Any $ex/message) " &
+       "  (var got (ch .recv)) " &
+       "  (try (reply .send got) catch Any $ex/message) " &
        "  ($actor/continue state)) " &
        "(var a ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(var pending (a ~ ask " &
-       "  (fn [reply] (saved ~ set reply) (Get ^reply reply)))) " &
-       "(pending ~ cancel) " &
-       "(var first-late (try ((saved ~ get) ~ send 9) " &
+       "(var pending (a .ask " &
+       "  (fn [reply] (saved .set reply) (Get ^reply reply)))) " &
+       "(pending .cancel) " &
+       "(var first-late (try ((saved .get) .send 9) " &
        "                  catch Any $ex/message)) " &
-       "(var second-late (try ((saved ~ get) ~ send 10) " &
+       "(var second-late (try ((saved .get) .send 10) " &
        "                   catch Any $ex/message)) " &
        "[first-late second-late])",
        "[nil \"reply has already been sent\"]"
@@ -2831,9 +2831,9 @@ suite "vm — cooperative scheduler":
                      "    ^handle (fn [ctx state msg] " &
                      "      (match msg " &
                      "        (when (Get ^reply reply) " &
-                     "          (reply ~ send state) " &
+                     "          (reply .send state) " &
                      "          ($actor/continue state)))))) " &
-                     "  (set pending (a ~ ask " &
+                     "  (set pending (a .ask " &
                      "    (fn [reply] (Get ^reply reply)))) " &
                      "  nil) " &
                      "(await pending)")
@@ -2844,17 +2844,17 @@ suite "vm — cooperative scheduler":
        "(scope " &
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
-       "      (var got (ch ~ recv)) " &
-       "      (out ~ set got) " &
+       "      (var got (ch .recv)) " &
+       "      (out .set got) " &
        "      ($actor/continue state)))) " &
-       "  (a ~ send 1) " &
+       "  (a .send 1) " &
        "  nil) " &
-       "(ch ~ send 7) " &
+       "(ch .send 7) " &
        "(var gate ($channel ^capacity 1)) " &
-       "(var t (spawn (gate ~ recv))) " &
-       "(gate ~ send 1) " &
+       "(var t (spawn (gate .recv))) " &
+       "(gate .send 1) " &
        "(await t) " &
-       "(out ~ get)", "0"
+       "(out .get)", "0"
 
   test "try_send in a fiber wakes a peer parked in recv":
     # Regression: biChannelTrySend was missing wakeChannelWaiters.
@@ -2862,8 +2862,8 @@ suite "vm — cooperative scheduler":
     # channel, and the try_send fiber runs second. Without the fix, the receiver
     # stays in schedWaiters after try_send and the await deadlocks.
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (var t (spawn (ch ~ recv))) " &
-       "  (spawn (ch ~ try_send 42)) " &
+       "  (var t (spawn (ch .recv))) " &
+       "  (spawn (ch .try_send 42)) " &
        "  (await t))", "42"
 
   test "try_recv in a fiber wakes a peer parked in send":
@@ -2872,11 +2872,11 @@ suite "vm — cooperative scheduler":
     # try_recv (runs second, pops the item). Without the fix, the parked sender
     # stays in schedWaiters after try_recv and the await deadlocks.
     ck "(scope (var ch ($channel ^capacity 1)) " &
-       "  (ch ~ send 1) " &
-       "  (var t (spawn (ch ~ send 2))) " &
-       "  (spawn (ch ~ try_recv)) " &
+       "  (ch .send 1) " &
+       "  (var t (spawn (ch .send 2))) " &
+       "  (spawn (ch .try_recv)) " &
        "  (await t) " &
-       "  (ch ~ recv))", "2"
+       "  (ch .recv))", "2"
 
 suite "vm — actors":
   test "actor values are opaque display values":
@@ -2888,13 +2888,13 @@ suite "vm — actors":
     ck "(var out ($cell 0)) " &
        "(fn handle [ctx state msg] : (ActorStep Int) " &
        "  (var next (+ state msg)) " &
-       "  (out ~ set next) " &
+       "  (out .set next) " &
        "  ($actor/continue next)) " &
        "(var counter : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) ^handle handle)) " &
-       "(counter ~ send 2) " &
-       "(counter ~ send 5) " &
-       "(out ~ get)",
+       "(counter .send 2) " &
+       "(counter .send 5) " &
+       "(out .get)",
        "7"
 
   test "actor try_send returns before running the handler":
@@ -2902,11 +2902,11 @@ suite "vm — actors":
        "(var seen ($cell 0)) " &
        "(var a ($actor/spawn ^init (fn [] 0) " &
        "  ^handle (fn [ctx state msg] " &
-       "    (gate ~ recv) " &
-       "    (seen ~ set msg) " &
+       "    (gate .recv) " &
+       "    (seen .set msg) " &
        "    ($actor/continue msg)))) " &
-       "(var before [(a ~ try_send 7) (seen ~ get)]) " &
-       "(gate ~ send 1) " &
+       "(var before [(a .try_send 7) (seen .get)]) " &
+       "(gate .send 1) " &
        "($sleep 0) " &
        "before",
        "[true 0]"
@@ -2914,38 +2914,38 @@ suite "vm — actors":
        "(var seen ($cell 0)) " &
        "(var a ($actor/spawn ^init (fn [] 0) " &
        "  ^handle (fn [ctx state msg] " &
-       "    (gate ~ recv) " &
-       "    (seen ~ set msg) " &
+       "    (gate .recv) " &
+       "    (seen .set msg) " &
        "    ($actor/continue msg)))) " &
-       "(a ~ try_send 7) " &
-       "(gate ~ send 1) " &
+       "(a .try_send 7) " &
+       "(gate .send 1) " &
        "($sleep 0) " &
-       "(seen ~ get)",
+       "(seen .get)",
        "7"
 
   test "actor stop closes the actor":
     ck "(var a : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/stop)))) " &
-       "(a ~ send 1) " &
-       "(try (a ~ send 2) catch ActorClosed $ex/message)",
+       "(a .send 1) " &
+       "(try (a .send 2) catch ActorClosed $ex/message)",
        "\"actor is closed\""
     ck "(var a : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/stop)))) " &
-       "(a ~ send 1) " &
-       "(a ~ try_send 2)",
+       "(a .send 1) " &
+       "(a .try_send 2)",
        "false"
 
   test "actor sends check message type and Send":
     ck "(var a : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/continue state)))) " &
-       "(try (a ~ send \"bad\") catch TypeError $ex/where)",
+       "(try (a .send \"bad\") catch TypeError $ex/where)",
        "\"actor/send message\""
     ck "(var a ($actor/spawn ^init (fn [] 0) " &
        "  ^handle (fn [ctx state msg] ($actor/continue state)))) " &
-       "(try (a ~ send [1]) catch TypeError $ex/expected)",
+       "(try (a .send [1]) catch TypeError $ex/expected)",
        "\"Send\""
 
   test "actor message type is explicit inferred or Any":
@@ -2972,8 +2972,8 @@ suite "vm — actors":
     ck "(var a ($actor/spawn ^init (fn [] 0) " &
        "  ^handle (fn [ctx state msg] ($actor/continue state)))) " &
        "(var ch ($channel)) " &
-       "(ch ~ send a) " &
-       "(ch ~ recv)",
+       "(ch .send a) " &
+       "(ch .recv)",
        "(actor)"
 
   test "actor ask returns a task with a one-shot reply":
@@ -2982,11 +2982,11 @@ suite "vm — actors":
        "(fn handle [ctx state msg] : (ActorStep Int) " &
        "  (match msg " &
        "    (when (Get ^reply reply) " &
-       "      (reply ~ send state) " &
+       "      (reply .send state) " &
        "      ($actor/continue state)))) " &
        "(var a : (ActorRef Get) " &
        "  ($actor/spawn ^init (fn [] 41) ^handle handle)) " &
-       "(await (a ~ ask (fn [reply] (Get ^reply reply))))",
+       "(await (a .ask (fn [reply] (Get ^reply reply))))",
        "41"
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
        "(impl Send for Get) " &
@@ -2996,11 +2996,11 @@ suite "vm — actors":
        "      ^handle (fn [ctx state msg] " &
        "        (match msg " &
        "          (when (Get ^reply reply) " &
-       "            (reply ~ send state) " &
+       "            (reply .send state) " &
        "            ($actor/continue state)))))) " &
        "  (fn (choose result err) [t : (Task result err) fallback : result] " &
        "    fallback) " &
-       "  (try (choose (a ~ ask (fn [reply] (Get ^reply reply))) \"bad\") " &
+       "  (try (choose (a .ask (fn [reply] (Get ^reply reply))) \"bad\") " &
        "       catch TypeError $ex/expected))",
        "\"Int\""
 
@@ -3012,9 +3012,9 @@ suite "vm — actors":
        "    ^handle (fn [ctx state msg] " &
        "      (match msg " &
        "        (when (Get ^reply reply) " &
-       "          (reply ~ send \"bad\") " &
+       "          (reply .send \"bad\") " &
        "          ($actor/continue state)))))) " &
-       "(try (await (a ~ ask (fn [reply] (Get ^reply reply)))) " &
+       "(try (await (a .ask (fn [reply] (Get ^reply reply)))) " &
        "catch TypeError $ex/where)",
        "\"ReplyTo/send value\""
     ck "(type Get ^props {^reply (ReplyTo Int)}) " &
@@ -3022,7 +3022,7 @@ suite "vm — actors":
        "(var a : (ActorRef Get) " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/continue state)))) " &
-       "(try (await (a ~ ask (fn [reply] (Get ^reply reply)))) " &
+       "(try (await (a .ask (fn [reply] (Get ^reply reply)))) " &
        "catch ActorError $ex/message)",
        "\"actor/ask did not receive a reply\""
 
@@ -3030,7 +3030,7 @@ suite "vm — actors":
     ck "(var a (scope " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/continue state))))) " &
-       "(a ~ try_send 1)",
+       "(a .try_send 1)",
        "false"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
@@ -3041,14 +3041,14 @@ suite "vm — actors":
        "      ^handle (fn [ctx state msg] ($actor/continue state)))) " &
        "    (fail (Boom ^message \"x\"))) " &
        "catch Boom $ex/message) " &
-       "(a ~ try_send 1)",
+       "(a .try_send 1)",
        "false"
 
   test "supervisors own actors and apply failure strategies":
     ck "(var a (supervisor ^strategy stop " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] ($actor/continue state))))) " &
-       "(a ~ try_send 1)",
+       "(a .try_send 1)",
        "false"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
@@ -3059,11 +3059,11 @@ suite "vm — actors":
        "      (if (== msg 1) " &
        "        (fail (Boom ^message \"bad\")) " &
        "        (do " &
-       "          (seen ~ set state) " &
+       "          (seen .set state) " &
        "          ($actor/continue (+ state msg))))))) " &
-       "  (a ~ send 1) " &
-       "  (a ~ send 5) " &
-       "  (seen ~ get))",
+       "  (a .send 1) " &
+       "  (a .send 5) " &
+       "  (seen .get))",
        "10"
 
   test "supervisor failure retries are bounded FIFO with observable drops":
@@ -3076,15 +3076,15 @@ suite "vm — actors":
        "    (set a ($actor/spawn ^init (fn [] 0) " &
        "      ^handle (fn [ctx state msg] " &
        "        (fail (Boom ^message \"bad\"))))) " &
-       "    (spawn (a ~ send i)) " &
+       "    (spawn (a .send i)) " &
        "    (set i (+ i 1))) " &
        "  ($sleep 20) " &
        "  (var stats ($runtime/gc_stats)) " &
-       "  (var first (events ~ recv)) " &
-       "  (var second (events ~ recv)) " &
+       "  (var first (events .recv)) " &
+       "  (var second (events .recv)) " &
        "  (var drained 0) " &
        "  (while (< drained 62) " &
-       "    (events ~ recv) " &
+       "    (events .recv) " &
        "    (set drained (+ drained 1))) " &
        "  [stats/supervisor_retry_pending " &
        "   stats/supervisor_retry_capacity " &
@@ -3104,18 +3104,18 @@ suite "vm — actors":
        "      (if (== msg 1) " &
        "        (fail (Boom ^message \"bad\")) " &
        "        (do " &
-       "          (seen ~ set state) " &
+       "          (seen .set state) " &
        "          ($actor/continue (+ state msg))))))) " &
-       "  (spawn (a ~ send 1)) " &
-       "  (spawn (a ~ send 5)) " &
+       "  (spawn (a .send 1)) " &
+       "  (spawn (a .send 5)) " &
        "  ($sleep 1) " &
-       "  (var event (events ~ recv)) " &
+       "  (var event (events .recv)) " &
        "  (var tries 0) " &
        "  (while (< tries 100) " &
-       "    (if (== (seen ~ get) 0) " &
+       "    (if (== (seen .get) 0) " &
        "      (do ($sleep 1) (set tries (+ tries 1))) " &
        "      (set tries 100))) " &
-       "  [(seen ~ get) " &
+       "  [(seen .get) " &
        "   (match event " &
        "     (when (ActorFailure ^failed_message failed " &
        "                         ^error (Boom ^message m) " &
@@ -3126,15 +3126,15 @@ suite "vm — actors":
        "(impl Error for Boom) " &
        "(var events ($channel ^capacity 1)) " &
        "(var dead ($channel ^capacity 2)) " &
-       "(events ~ send \"busy\") " &
+       "(events .send \"busy\") " &
        "(supervisor ^strategy restart ^events events ^dead_letter dead " &
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (fail (Boom ^message \"bad\"))))) " &
-       "  (a ~ send 1) " &
+       "  (a .send 1) " &
        "  ($sleep 1) " &
-       "  (var event (dead ~ recv)) " &
-       "  (var busy (events ~ recv)) " &
+       "  (var event (dead .recv)) " &
+       "  (var busy (events .recv)) " &
        "  [busy " &
        "   (match event " &
        "     (when (ActorFailure ^failed_message failed " &
@@ -3146,17 +3146,17 @@ suite "vm — actors":
        "(impl Error for Boom) " &
        "(var events ($channel ^capacity 1)) " &
        "(var dead ($channel ^capacity 1)) " &
-       "(events ~ send \"busy\") " &
-       "(dead ~ send \"dead-busy\") " &
+       "(events .send \"busy\") " &
+       "(dead .send \"dead-busy\") " &
        "(supervisor ^strategy restart ^events events ^dead_letter dead " &
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (fail (Boom ^message \"bad\"))))) " &
-       "  (a ~ send 4) " &
+       "  (a .send 4) " &
        "  ($sleep 1) " &
-       "  (var dead-busy (dead ~ recv)) " &
-       "  (var event (dead ~ recv)) " &
-       "  (var busy (events ~ recv)) " &
+       "  (var dead-busy (dead .recv)) " &
+       "  (var event (dead .recv)) " &
+       "  (var busy (events .recv)) " &
        "  [busy dead-busy " &
        "   (match event " &
        "     (when (ActorFailure ^failed_message failed " &
@@ -3167,14 +3167,14 @@ suite "vm — actors":
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
        "(var events ($channel ^capacity 1)) " &
-       "(events ~ send \"busy\") " &
+       "(events .send \"busy\") " &
        "(supervisor ^strategy restart ^events events " &
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (fail (Boom ^message \"bad\"))))) " &
-       "  (a ~ send 3) " &
-       "  (var busy (events ~ recv)) " &
-       "  (var event (events ~ recv)) " &
+       "  (a .send 3) " &
+       "  (var busy (events .recv)) " &
+       "  (var event (events .recv)) " &
        "  [busy " &
        "   (match event " &
        "     (when (ActorFailure ^failed_message failed " &
@@ -3186,14 +3186,14 @@ suite "vm — actors":
        "(impl Error for Boom) " &
        "(var events ($channel ^capacity 1)) " &
        "(var dead ($channel ^capacity 1)) " &
-       "(events ~ close) " &
+       "(events .close) " &
        "(supervisor ^strategy restart ^events events ^dead_letter dead " &
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (fail (Boom ^message \"bad\"))))) " &
-       "  (a ~ send 2) " &
+       "  (a .send 2) " &
        "  ($sleep 1) " &
-       "  (var event (dead ~ recv)) " &
+       "  (var event (dead .recv)) " &
        "  (match event " &
        "    (when (ActorFailure ^failed_message failed " &
        "                        ^error (Boom ^message m) " &
@@ -3208,9 +3208,9 @@ suite "vm — actors":
        "  (var a ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] " &
        "      (fail (Boom ^message \"bad\"))))) " &
-       "  (a ~ send 6) " &
+       "  (a .send 6) " &
        "  ($sleep 1) " &
-       "  (var event (dead ~ recv)) " &
+       "  (var event (dead .recv)) " &
        "  (match event " &
        "    (when (ActorFailure ^failed_message failed " &
        "                        ^error (Boom ^message m) " &
@@ -3221,8 +3221,8 @@ suite "vm — actors":
        "(impl Error for Boom) " &
        "(var events ($channel ^capacity 1)) " &
        "(var dead ($channel ^capacity 1)) " &
-       "(events ~ close) " &
-       "(dead ~ close) " &
+       "(events .close) " &
+       "(dead .close) " &
        "(var seen ($cell 0)) " &
        "(supervisor ^strategy restart ^events events ^dead_letter dead " &
        "  (var a ($actor/spawn ^mailbox 4 ^init (fn [] 10) " &
@@ -3230,12 +3230,12 @@ suite "vm — actors":
        "      (if (== msg 1) " &
        "        (fail (Boom ^message \"bad\")) " &
        "        (do " &
-       "          (seen ~ set state) " &
+       "          (seen .set state) " &
        "          ($actor/continue (+ state msg))))))) " &
-       "  (a ~ send 1) " &
-       "  (a ~ send 5) " &
+       "  (a .send 1) " &
+       "  (a .send 5) " &
        "  ($sleep 1) " &
-       "  (seen ~ get))",
+       "  (seen .get))",
        "10"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
@@ -3245,9 +3245,9 @@ suite "vm — actors":
        "     (set a ($actor/spawn ^init (fn [] 0) " &
        "       ^handle (fn [ctx state msg] " &
        "         (fail (Boom ^message \"bad\"))))) " &
-       "     (a ~ send 1)) " &
+       "     (a .send 1)) " &
        "   catch Boom $ex/message) " &
-       " (a ~ try_send 2)]",
+       " (a .try_send 2)]",
        "[\"bad\" false]"
     ck "(type Boom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for Boom) " &
@@ -3258,7 +3258,7 @@ suite "vm — actors":
        "    (var a ($actor/spawn ^init (fn [] 0) " &
        "      ^handle (fn [ctx state msg] " &
        "        (fail (Boom ^message \"bad\"))))) " &
-       "    (var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
+       "    (var pending (a .ask (fn [reply] (Get ^reply reply)))) " &
        "    ($sleep 1) " &
        "    \"after\") " &
        "  catch Boom $ex/message)",
@@ -3273,9 +3273,9 @@ suite "vm — actors":
        "        (var a ($actor/spawn ^init (fn [] 0) " &
        "          ^handle (fn [ctx state msg] " &
        "            (fail (Boom ^message \"bad\"))))) " &
-       "        (a ~ send 7))) " &
+       "        (a .send 7))) " &
        "    catch Boom $ex/message)) " &
-       "(var event (parent-events ~ recv)) " &
+       "(var event (parent-events .recv)) " &
        "[outcome " &
        " (match event " &
        "   (when (ActorFailure ^failed_message failed " &
@@ -3290,7 +3290,7 @@ suite "vm — actors":
                      "  (var a ($actor/spawn ^init (fn [] 0) " &
                      "    ^handle (fn [ctx state msg] " &
                      "      (panic \"halt\")))) " &
-                     "  (var pending (a ~ ask (fn [reply] (Get ^reply reply)))) " &
+                     "  (var pending (a .ask (fn [reply] (Get ^reply reply)))) " &
                      "  ($sleep 1) " &
                      "  \"after\")")
     expect GeneCancel:
@@ -3302,8 +3302,8 @@ suite "vm — actors":
                      "  (var a ($actor/spawn ^mailbox 4 ^init (fn [] 0) " &
                      "    ^handle (fn [ctx state msg] " &
                      "      (fail (Boom ^message \"bad\"))))) " &
-                     "  (var first (a ~ ask (fn [reply] (Get ^reply reply)))) " &
-                     "  (var second (a ~ ask (fn [reply] (Get ^reply reply)))) " &
+                     "  (var first (a .ask (fn [reply] (Get ^reply reply)))) " &
+                     "  (var second (a .ask (fn [reply] (Get ^reply reply)))) " &
                      "  ($sleep 1) " &
                      "  (await second))")
     expect GeneError:
@@ -3319,14 +3319,14 @@ suite "vm — actors":
     ck "(var a : (ActorRef Int) " &
        "  ($actor/spawn ^init (fn [] 0) " &
        "    ^handle (fn [ctx state msg] 99))) " &
-       "(try (a ~ send 1) catch TypeError $ex/where)",
+       "(try (a .send 1) catch TypeError $ex/where)",
        "\"actor handler return\""
 
   test "actor operations require actors":
     expect GeneError:
       discard runStr("($actor/spawn ^handle (fn [ctx state msg] ($actor/stop)))")
-    expect GeneError: discard runStr("(1 ~ send 2)")
-    expect GeneError: discard runStr("(1 ~ ReplyTo:send 2)")
+    expect GeneError: discard runStr("(1 .send 2)")
+    expect GeneError: discard runStr("(1 .ReplyTo:send 2)")
 
 suite "vm — streams":
   test "read_one and read_all expose parsed forms":
@@ -3334,7 +3334,7 @@ suite "vm — streams":
     ck "(eval ($read_one \"(+ 1 2)\") ^in (env))", "3"
     ck "($read_one \"#_ (ignored)\")", "nil"
     ck "(var s ($read_all \"(a) #_ (ignored) (b 2)\")) " &
-       "[(s ~ next) (s ~ next) (s ~ has_next)]",
+       "[(s .next) (s .next) (s .has_next)]",
        "[(a) (b 2) false]"
     ck "(try ($read_one \"(a\") catch Any $ex/message)",
        "\"read_one: unexpected EOF: unclosed '('\\n  while reading '(' opened at 1:1; expected ')'\""
@@ -3346,11 +3346,11 @@ suite "vm — streams":
 
   test "lex_all exposes typed reader tokens":
     ck "(var s ($lex_all \"(+ 1)\")) " &
-       "(var t (s ~ next)) " &
+       "(var t (s .next)) " &
        "(var k t/kind) (var x t/lexeme) (var l t/line) (var c t/col) " &
        "[k x l c]",
        "[l_paren \"(\" 1 1]"
-    ck "(fn first-token [s : (Stream Token Never)] (s ~ next)) " &
+    ck "(fn first-token [s : (Stream Token Never)] (s .next)) " &
        "(var t (first-token ($lex_all \"name\"))) " &
        "(var k t/kind) (var x t/lexeme) [k x]",
        "[symbol \"name\"]"
@@ -3363,83 +3363,83 @@ suite "vm — streams":
 
   test "stream has_next, peek, next, and close pull values":
     ck "(var s ($to_stream [1 2])) " &
-       "[(s ~ has_next) " &
-       " (s ~ peek) " &
-       " (s ~ next) " &
-       " (s ~ peek) " &
-       " (s ~ next) " &
-       " (s ~ has_next) " &
-       " (s ~ close) " &
-       " (s ~ has_next)]",
+       "[(s .has_next) " &
+       " (s .peek) " &
+       " (s .next) " &
+       " (s .peek) " &
+       " (s .next) " &
+       " (s .has_next) " &
+       " (s .close) " &
+       " (s .has_next)]",
        "[true 1 1 2 2 false nil false]"
 
   test "streams skip void items":
     ck "(var s ($to_stream [1 void 2])) " &
-       "[(s ~ next) (s ~ next) (s ~ has_next)]",
+       "[(s .next) (s .next) (s .has_next)]",
        "[1 2 false]"
 
   test "map pairs can be streamed":
     ck "(var s ($to_pairs_stream {^a 1 ^b 2})) " &
-       "[(s ~ next) (s ~ next) (s ~ has_next)]",
+       "[(s .next) (s .next) (s .has_next)]",
        "[[a 1] [b 2] false]"
     ck "(var s ($to_pairs_stream {^a 1})) " &
-       "(var pair (s ~ next)) " &
+       "(var pair (s .next)) " &
        "(fn key [x : Sym] x) (key pair/0)",
        "a"
 
   test "stream map transforms pulled values":
     ck "(var s ($map ($to_stream [1 2 3]) (fn [x] (* x 2)))) " &
-       "[(s ~ next) (s ~ next) (s ~ next) " &
-       " (s ~ has_next)]",
+       "[(s .next) (s .next) (s .next) " &
+       " (s .has_next)]",
        "[2 4 6 false]"
 
   test "stream map skips void results":
     ck "(var s ($map ($to_stream [1 2]) (fn [x] (if (== x 1) void x)))) " &
-       "[(s ~ next) (s ~ has_next)]",
+       "[(s .next) (s .has_next)]",
        "[2 false]"
 
   test "stream map is lazy":
     ck "(var hits ($cell 0)) " &
        "(var s ($map ($to_stream [1 2 3]) " &
-       "            (fn [x] (hits ~ update (fn [n] (+ n 1))) (* x 2)))) " &
-       "[(hits ~ get) " &
-       " (s ~ next) (hits ~ get) " &
-       " (s ~ next) (hits ~ get)]",
+       "            (fn [x] (hits .update (fn [n] (+ n 1))) (* x 2)))) " &
+       "[(hits .get) " &
+       " (s .next) (hits .get) " &
+       " (s .next) (hits .get)]",
        "[0 2 1 4 2]"
 
   test "stream filter keeps truthy predicate results":
     ck "(var s ($filter ($to_stream [1 2 3]) (fn [x] (> x 1)))) " &
-       "[(s ~ next) (s ~ next) (s ~ has_next)]",
+       "[(s .next) (s .next) (s .has_next)]",
        "[2 3 false]"
 
   test "stream filter is lazy":
     ck "(var hits ($cell 0)) " &
        "(var s ($filter ($to_stream [1 2 3]) " &
-       "               (fn [x] (hits ~ update (fn [n] (+ n 1))) (> x 1)))) " &
-       "[(hits ~ get) " &
-       " (s ~ next) (hits ~ get) " &
-       " (s ~ next) (hits ~ get)]",
+       "               (fn [x] (hits .update (fn [n] (+ n 1))) (> x 1)))) " &
+       "[(hits .get) " &
+       " (s .next) (hits .get) " &
+       " (s .next) (hits .get)]",
        "[0 2 2 3 3]"
 
   test "stream take limits pulled values":
     ck "(var s ($take ($to_stream [1 2 3]) 2)) " &
-       "[(s ~ next) (s ~ next) (s ~ has_next)]",
+       "[(s .next) (s .next) (s .has_next)]",
        "[1 2 false]"
 
   test "stream take does not over-pull upstream":
     ck "(var hits ($cell 0)) " &
        "(var source ($map ($to_stream [1 2 3]) " &
-       "                 (fn [x] (hits ~ update (fn [n] (+ n 1))) x))) " &
+       "                 (fn [x] (hits .update (fn [n] (+ n 1))) x))) " &
        "(var s ($take source 1)) " &
-       "[(hits ~ get) " &
-       " (s ~ next) (hits ~ get) " &
-       " (s ~ has_next) (hits ~ get)]",
+       "[(hits .get) " &
+       " (s .next) (hits .get) " &
+       " (s .has_next) (hits .get)]",
        "[0 1 1 false 1]"
 
   test "naturally exhausted take detaches and leaves upstream resumable":
     ck "(var source ($to_stream [1 2 3])) " &
        "(for x in ($take source 2) x) " &
-       "[(source ~ has_next) (source ~ next)]",
+       "[(source .has_next) (source .next)]",
        "[true 3]"
 
   test "producer errors are terminal and close owned upstream once":
@@ -3449,40 +3449,40 @@ suite "vm — streams":
        "(var closes ($cell 0)) " &
        "(fn source [] : (Stream Int Never) " &
        "  (try (yield 1) (yield 2) " &
-       "   ensure (closes ~ update (fn [n] (+ n 1))))) " &
+       "   ensure (closes .update (fn [n] (+ n 1))))) " &
        "(var s ($map (source) " &
-       "  (fn [x] (calls ~ update (fn [n] (+ n 1))) " &
+       "  (fn [x] (calls .update (fn [n] (+ n 1))) " &
        "          (fail (Boom ^message \"boom\"))))) " &
-       "(var first (try (s ~ has_next) " &
+       "(var first (try (s .has_next) " &
        "  catch Boom $ex/message)) " &
-       "(var after (s ~ has_next)) " &
-       "(var terminal (try (s ~ next) " &
+       "(var after (s .has_next)) " &
+       "(var terminal (try (s .next) " &
        "  catch EndOfStream $ex/message)) " &
-       "[first after terminal (calls ~ get) (closes ~ get)]",
+       "[first after terminal (calls .get) (closes .get)]",
        "[\"boom\" false \"end of stream\" 1 1]"
     ck "(type PredBoom ^props {^message Str} ^impl [Error]) " &
        "(impl Error for PredBoom) " &
        "(var calls ($cell 0)) " &
        "(var s ($filter ($to_stream [1 2]) " &
-       "  (fn [x] (calls ~ update (fn [n] (+ n 1))) " &
+       "  (fn [x] (calls .update (fn [n] (+ n 1))) " &
        "          (fail (PredBoom ^message \"predicate\"))))) " &
-       "(var first (try (s ~ next) " &
+       "(var first (try (s .next) " &
        "  catch PredBoom $ex/message)) " &
-       "[first (s ~ has_next) (calls ~ get)]",
+       "[first (s .has_next) (calls .get)]",
        "[\"predicate\" false 1]"
 
   test "generator close unwinds nested ensures in LIFO order":
     ck "(var log ($cell [])) " &
-       "(fn note [x] (log ~ update (fn [xs] [xs... x]))) " &
+       "(fn note [x] (log .update (fn [xs] [xs... x]))) " &
        "(fn gen [] : (Stream Int Never) " &
        "  (try " &
        "    (try (yield 1) (yield 2) ensure (note `inner)) " &
        "   ensure (note `outer))) " &
        "(var s (gen)) " &
-       "(s ~ next) " &
-       "(s ~ close) " &
-       "(s ~ close) " &
-       "[(log ~ get) (s ~ has_next)]",
+       "(s .next) " &
+       "(s .close) " &
+       "(s .close) " &
+       "[(log .get) (s .has_next)]",
        "[[inner outer] false]"
 
   test "generator close preserves the first cleanup error and finishes ensures":
@@ -3494,13 +3494,13 @@ suite "vm — streams":
        "    (try (yield 1) " &
        "     ensure (fail (Cleanup ^message \"first\"))) " &
        "   ensure " &
-       "     (outer-ran ~ set true) " &
+       "     (outer-ran .set true) " &
        "     (fail (Cleanup ^message \"second\")))) " &
        "(var s (gen)) " &
-       "(s ~ next) " &
-       "(var message (try (s ~ close) " &
+       "(s .next) " &
+       "(var message (try (s .close) " &
        "  catch Cleanup $ex/message)) " &
-       "[message (outer-ran ~ get) (s ~ has_next)]",
+       "[message (outer-ran .get) (s .has_next)]",
        "[\"first\" true false]"
 
   test "task cancellation closes an active generator and runs ensure once":
@@ -3511,11 +3511,11 @@ suite "vm — streams":
         "(var closes ($cell 0)) " &
         "(fn gen [] : (Stream Int Never) " &
         "  (try (while true (yield 1)) " &
-        "   ensure (closes ~ update (fn [n] (+ n 1))))) " &
+        "   ensure (closes .update (fn [n] (+ n 1))))) " &
         "(scope " &
         "  (var t (spawn (for x in (gen) ($sleep 10)))) " &
         "  ($sleep 0) " &
-        "  (t ~ cancel) " &
+        "  (t .cancel) " &
         "  (await t))"), scope)
     except GeneCancel:
       cancelled = true
@@ -3529,8 +3529,8 @@ suite "vm — streams":
     ck "(var cleaned ($cell 0)) " &
        "(fn stop [] " &
        "  (try (return 8) " &
-       "   ensure (cleaned ~ update (fn [n] (+ n 1))))) " &
-       "[(stop) (cleaned ~ get)]",
+       "   ensure (cleaned .update (fn [n] (+ n 1))))) " &
+       "[(stop) (cleaned .get)]",
        "[8 1]"
     ck "(fn outer [] " &
        "  (fn inner [] (return 1) 99) " &
@@ -3541,24 +3541,24 @@ suite "vm — streams":
        "(fn inner [] (return 3) 99) " &
        "(fn outer [] " &
        "  (try (var value (inner)) (+ value 4) " &
-       "   ensure (cleaned ~ update (fn [n] (+ n 1))))) " &
-       "[(outer) (cleaned ~ get)]",
+       "   ensure (cleaned .update (fn [n] (+ n 1))))) " &
+       "[(outer) (cleaned .get)]",
        "[7 1]"
     ck "(var closes ($cell 0)) " &
        "(fn source [] : (Stream Int Never) " &
        "  (try (yield 4) (yield 5) " &
-       "   ensure (closes ~ update (fn [n] (+ n 1))))) " &
+       "   ensure (closes .update (fn [n] (+ n 1))))) " &
        "(fn first [s] " &
        "  (for x in s (return x)) " &
        "  0) " &
        "(var s (source)) " &
-       "[(first s) (closes ~ get) (s ~ has_next)]",
+       "[(first s) (closes .get) (s .has_next)]",
        "[4 1 false]"
     ck "(fn gen [] : (Stream Int Never) " &
        "  (yield 1) (return) (yield 2)) " &
        "(var s (gen)) " &
-       "[(s ~ next) (s ~ has_next) " &
-       " (try (s ~ peek) catch EndOfStream $ex/message)]",
+       "[(s .next) (s .has_next) " &
+       " (try (s .peek) catch EndOfStream $ex/message)]",
        "[1 false \"end of stream\"]"
     expect GeneError:
       discard compileSource("(fn bad [] : (Stream Int Never) " &
@@ -3570,33 +3570,33 @@ suite "vm — streams":
        "[[1 2 3] {^a 1 ^b 2}]"
 
   test "stream next and peek raise EndOfStream shape":
-    ck "(try (var s ($to_stream [])) (s ~ next) " &
+    ck "(try (var s ($to_stream [])) (s .next) " &
        "catch EndOfStream $ex/message)",
        "\"end of stream\""
-    ck "(try (var s ($to_stream [])) (s ~ peek) " &
+    ck "(try (var s ($to_stream [])) (s .peek) " &
        "catch EndOfStream $ex/message)",
        "\"end of stream\""
 
   test "Stream annotations accept streams only":
-    ck "(fn first [s : Stream] (s ~ next)) (first ($to_stream [3]))", "3"
-    ck "(fn first [s : (Stream Int Never)] (s ~ next)) " &
+    ck "(fn first [s : Stream] (s .next)) (first ($to_stream [3]))", "3"
+    ck "(fn first [s : (Stream Int Never)] (s .next)) " &
        "(first ($to_stream [4]))", "4"
     ck "(fn accept [s : (Stream Int Never)] 7) " &
        "(accept ($to_stream [\"bad\"]))", "7"
-    ck "(try (fn first [s : (Stream Int Never)] (s ~ next)) " &
+    ck "(try (fn first [s : (Stream Int Never)] (s .next)) " &
        "     (first ($to_stream [\"bad\"])) " &
        "catch TypeError $ex/where)",
        "\"Stream/next item\""
     ck "(try (fn typed [s] : (Stream Int Never) s) " &
        "     (var s (typed ($to_stream [\"bad\"]))) " &
-       "     (s ~ next) " &
+       "     (s .next) " &
        "catch TypeError $ex/expected)",
        "\"Int\""
     expect GeneError:
       discard runStr("(fn first [s : Stream] s) (first [1])")
 
   test "stream operations require streams":
-    expect GeneError: discard runStr("([1] ~ next)")
+    expect GeneError: discard runStr("([1] .next)")
     expect GeneError: discard runStr("($to_stream {^a 1})")
     expect GeneError: discard runStr("($to_pairs_stream [1])")
     expect GeneError: discard runStr("($take ($to_stream [1]) -1)")
@@ -3606,7 +3606,7 @@ suite "vm — streams":
     # no such method raises the send path's MessageError (§9) from both the
     # send and the function spelling.
     expect GeneError: discard runStr("($map 42 (fn [x] x))")
-    expect GeneError: discard runStr("(42 ~ filter (fn [x] true))")
+    expect GeneError: discard runStr("(42 .filter (fn [x] true))")
     ck "($map [1 2] (fn [x] (* x 10)))", "[10 20]"
     ck "($take [1 2 3] 2)", "[1 2]"
     ck "($into [1] [])", "[1]"

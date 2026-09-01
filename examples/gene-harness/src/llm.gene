@@ -66,28 +66,28 @@
 
 # --- the shapes Gene's path syntax cannot express ---------------------------
 #
-# `xs/~size` and `xs/%i` work only on a *named binding*, so there is no way to
-# write the size of an expression: `((c ~ get) ~size)` is a syntax error and a
-# model reaches for it constantly, because binding first is the one thing it
-# forgets under pressure. These four are the shapes it kept needing, and they
+# `xs/.size` and `xs/%i` work only on a *named binding*, so an expression needs
+# the long form `((c .get) .size)`. A model reaches for path syntax there
+# constantly because the extra grouping is easy to forget under pressure.
+# These four are the shapes it kept needing, and they
 # are ordinary functions rather than a tool layer — the model can still do
 # anything, it just no longer has to route a list operation through a temporary.
 
-(fn size [xs] : Int xs/~size)
+(fn size [xs] : Int xs/.size)
 
 (fn at [xs, i : Int] xs/%i)
 
 (fn drop_first [xs, n : Int] : Any
   (var out [])
   (var i n)
-  (while (< i xs/~size)
-    (out ~ push xs/%i)
+  (while (< i xs/.size)
+    (out .push xs/%i)
     (set i (+ i 1)))
   out)
 
 (fn without [xs, v] : Any
   (var out [])
-  (for x in xs (if_not (== x v) (out ~ push x)))
+  (for x in xs (if_not (== x v) (out .push x)))
   out)
 
 (fn harness_bindings [h : Harness, queued] : Any
@@ -130,7 +130,7 @@
        (if_not (== ($head source) (quote mod))
          (fail (HarnessError
            ^message $"register_module source for ${id} must be a quoted mod node")))
-       (queued ~ push
+       (queued .push
          {^id ($to_str id) ^source source ^scope scope ^selectors selectors
           ^limits limits ^dependencies dependencies ^by by ^model model
           ^at at_value ^replace replace_value})
@@ -196,7 +196,7 @@
     (env ^bindings (harness_bindings h queued)
          ^capabilities []))
   (var existing_events (log_events h))
-  (var turn_id $"model-${(+ existing_events/~size 1)}")
+  (var turn_id $"model-${(+ existing_events/.size 1)}")
   (var outcome
     (run_workspace_turn h/workspace h turn_id
       (fn [ignored]
@@ -257,7 +257,7 @@
   (render_prompt h))
 
 (fn repository_root [] : Str
-  (module_dir (module_dir (module_dir (module_dir this_mod/~path)))))
+  (module_dir (module_dir (module_dir (module_dir this_mod/.path)))))
 
 (fn gene_skill_file [relative : Str] : Str
   (read_text $"${(repository_root)}/tools/gene-lang-skill/${relative}"))
@@ -362,7 +362,7 @@ and end it with }.""")
   (var out [])
   (for line in ($str/split reply "\n")
     (if_not ($str/starts_with? ($str/trim line) "```")
-      (out ~ push line)))
+      (out .push line)))
   ($str/join out "\n"))
 
 (fn from_first_brace [reply : Str] : Str
@@ -370,19 +370,19 @@ and end it with }.""")
   # Starting at the first `{` recovers the turn instead of losing it, and costs
   # nothing when the reply was already clean.
   (var parts ($str/split reply "{"))
-  (if (< parts/~size 2)
+  (if (< parts/.size 2)
     (then reply)
     (else
       (var tail [])
       (var i 1)
-      (while (< i parts/~size)
-        (tail ~ push parts/%i)
+      (while (< i parts/.size)
+        (tail .push parts/%i)
         (set i (+ i 1)))
       ($str/join ["{" ($str/join tail "{")] ""))))
 
 (fn read_first_form [text : Str] : Any
   (try
-    ((read_all text) ~ next)
+    ((read_all text) .next)
     catch Any
     nil))
 
@@ -440,14 +440,14 @@ and end it with }.""")
   (var turn ($cell 0))
   (var running ($cell true))
   (var last ($cell ""))
-  (while (running ~ get)
-    (turn ~ set (+ (turn ~ get) 1))
+  (while (running .get)
+    (turn .set (+ (turn .get) 1))
     # Turn one needs no marker — the `Gene>` label above it is the marker. Every
     # turn after it is the agent going round again without being asked, which is
     # the thing a reader wants delimited.
-    (if_yes (> (turn ~ get) 1)
-      (emit_output h $"== Round $(turn ~ get) =="))
-    (var raw (call_model h prompt (history ~ get)))
+    (if_yes (> (turn .get) 1)
+      (emit_output h $"== Round $(turn .get) =="))
+    (var raw (call_model h prompt (history .get)))
     (var envelope (parse_envelope raw))
     (if (== envelope nil)
       (then
@@ -459,11 +459,11 @@ and end it with }.""")
         # data" with nothing attached is the least useful thing this loop can
         # print, because the fix is always in the reply.
         (emit_output h "(reply was not readable Gene data; asking again)")
-        (last ~ set $"the model did not return Gene data. It said:\n  $(preview raw)")
-        (var prior (history ~ get))
-        (history ~ set $"${prior}\nYOUR LAST REPLY WAS DISCARDED. It did not read as Gene data.\nIt began: $(preview raw)\nReply with ONLY the map: {^status ... ^response ... ^code (do ...)}. No prose, no fence.\nRemember: there is no def, defn, let, let*, and, or, str, int, first, rest, nth, count.\nOnly (var x v), (fn [a] ...), (&& a b), ($str/join xs s), xs/~size on a named binding.")
-        (if_yes (>= (turn ~ get) turn_limit)
-          (running ~ set false)))
+        (last .set $"the model did not return Gene data. It said:\n  $(preview raw)")
+        (var prior (history .get))
+        (history .set $"${prior}\nYOUR LAST REPLY WAS DISCARDED. It did not read as Gene data.\nIt began: $(preview raw)\nReply with ONLY the map: {^status ... ^response ... ^code (do ...)}. No prose, no fence.\nRemember: there is no def, defn, let, let*, and, or, str, int, first, rest, nth, count.\nOnly (var x v), (fn [a] ...), (&& a b), ($str/join xs s), xs/.size on a named binding.")
+        (if_yes (>= (turn .get) turn_limit)
+          (running .set false)))
       (else
         (var response envelope/response)
         (if_yes (!= response nil)
@@ -481,12 +481,12 @@ and end it with }.""")
               (emit_output h value)
               value)
             (else "(no action)")))
-        (last ~ set result)
+        (last .set result)
         # The whole reply goes back, not just the result: the model needs to see
         # the code it wrote next to what that code did, or it cannot tell which
         # form drew which complaint.
-        (var prior (history ~ get))
-        (history ~ set $"${prior}\nreply: ${envelope}\noutput: ${result}")
+        (var prior (history .get))
+        (history .set $"${prior}\nreply: ${envelope}\noutput: ${result}")
         # **A reply that ran code is never done.** `^status` and `^code` arrive
         # in the same message, so the model wrote "done" before its program had
         # produced anything — the claim is about intent, not outcome. Believing
@@ -499,19 +499,19 @@ and end it with }.""")
         # task; what it buys is that no answer is ever given by something that
         # has not seen what it did.
         (if_yes ran_code
-          (history ~ set $"$(history ~ get)\nYou ran code, so the task is NOT finished and any \"done\" in that reply was ignored.\nThe output above is what your program actually returned - you are seeing it now for\nthe first time. Decide from it: if it answers the task, reply with ^status \"done\",\nyour answer in ^response, and ^code (do nil). If it does not, run more code."))
+          (history .set $"$(history .get)\nYou ran code, so the task is NOT finished and any \"done\" in that reply was ignored.\nThe output above is what your program actually returned - you are seeing it now for\nthe first time. Decide from it: if it answers the task, reply with ^status \"done\",\nyour answer in ^response, and ^code (do nil). If it does not, run more code."))
         (if_yes (failed? result)
-          (history ~ set $"$(history ~ get)\nThat program FAILED. The mistake is in the code you just sent - find it and emit a\ncorrected program. Do not send the same call again, and do not report success.\n\"undefined symbol: x\" means x does not exist in Gene; use a real name from the\nrules rather than inventing another one."))
+          (history .set $"$(history .get)\nThat program FAILED. The mistake is in the code you just sent - find it and emit a\ncorrected program. Do not send the same call again, and do not report success.\n\"undefined symbol: x\" means x does not exist in Gene; use a real name from the\nrules rather than inventing another one."))
         (if_yes (&& (== ran_code false) (!= envelope/status "in-progress"))
-          (running ~ set false))
-        (if_yes (&& (running ~ get) (>= (turn ~ get) turn_limit))
+          (running .set false))
+        (if_yes (&& (running .get) (>= (turn .get) turn_limit))
           (emit_output h
             $"(gave up after ${turn_limit} rounds; the last program still fails)")
-          (running ~ set false)))))
+          (running .set false)))))
   # Everything has been printed as it happened, so there is nothing left for
   # the driver to echo. Remembering happens here rather than in `answer`
   # because this is where the real last result is known.
-  (remember session state_host prompt (last ~ get))
+  (remember session state_host prompt (last .get))
   "")
 
 (fn strip_slash [prompt : Str] : Str
@@ -520,8 +520,8 @@ and end it with }.""")
   (var parts ($str/split prompt "/"))
   (var out [])
   (var i 1)
-  (while (< i parts/~size)
-    (out ~ push parts/%i)
+  (while (< i parts/.size)
+    (out .push parts/%i)
     (set i (+ i 1)))
   ($str/trim ($str/join out "/")))
 
@@ -556,20 +556,20 @@ and end it with }.""")
 (var session_window 4)
 
 (fn remembered [session] : Str
-  (var lines (session ~ get))
+  (var lines (session .get))
   ($str/join lines "\n"))
 
 (fn remember [session, state_host, prompt : Str, result : Str]
-  (var lines (session ~ get))
-  (lines ~ push $"you: ${prompt}\nharness: $(preview result)")
+  (var lines (session .get))
+  (lines .push $"you: ${prompt}\nharness: $(preview result)")
   (var kept [])
-  (var start (- lines/~size session_window))
+  (var start (- lines/.size session_window))
   (var i (if (< start 0) 0 start))
-  (while (< i lines/~size)
-    (kept ~ push lines/%i)
+  (while (< i lines/.size)
+    (kept .push lines/%i)
     (set i (+ i 1)))
-  (session ~ set kept)
-  (state_host ~ PluginHost:update_state {^history kept}))
+  (session .set kept)
+  (state_host .PluginHost:update_state {^history kept}))
 
 # ---------------------------------------------------------------------------
 # The model as the author of a plugin
@@ -598,7 +598,7 @@ and end it with }.""")
   # first `(mod ` recovers the build instead of losing it. Trailing prose costs
   # nothing — `read_all` yields the forms in order and only the first is taken.
   (var parts ($str/split reply "(mod "))
-  (if (< parts/~size 2)
+  (if (< parts/.size 2)
     (then reply)
     (else ($str/join ["(mod " ($str/join (drop_first parts 1) "(mod ")] ""))))
 
@@ -645,7 +645,7 @@ the body of `run`:
       ^activate
         (fn []
           (fn [host]
-            (host ~ PluginHost:contribute "tools"
+            (host .PluginHost:contribute "tools"
               {^name "echo" ^doc "repeat the argument" ^run run}))))))
 
 The loader rejects a module that breaks any of these:
@@ -684,11 +684,11 @@ actually cost a build here:
   - stdlib names carry a `$`: ($str/join [a b] ""), ($to_str n), ($println x).
     A bare `str`, `join`, `filter` or `println` is an undefined symbol.
   - `map` and `filter` are *stream* operations, not list ones. On a list, loop:
-    (var out []) (for x in xs (if_yes (test x) (out ~ push x))) — or count with
+    (var out []) (for x in xs (if_yes (test x) (out .push x))) — or count with
     a (var n 0) and (set n (+ n 1)).
   - there is no `let`. (var x expr) declares, (set x expr) assigns, and both are
     statements in the enclosing body.
-  - length is xs/~size on a *named binding*; ($str/byte_size s) for a string.
+  - length is xs/.size on a *named binding*; ($str/byte_size s) for a string.
     You cannot write the size of an expression, so bind it first.
   - index with a *literal* as xs/0 and with a *variable* as xs/%i. Writing
     xs/i where i is a variable is a property lookup that quietly yields void,
@@ -730,7 +730,7 @@ Reply with the module for that tool and nothing else.""")
   # different: "not readable Gene" on its own leaves you re-running a build to
   # find out whether the reply was truncated, unbalanced, or never code at all.
   (try
-    {^form ((read_all text) ~ next) ^problem ""}
+    {^form ((read_all text) .next) ^problem ""}
   catch Any
     {^form nil ^problem ($to_str $ex/message)}))
 
@@ -776,7 +776,7 @@ Reply with the module for that tool and nothing else.""")
   (Plugin ^id "codegen" ^provides ["HarnessCodegen"]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "HarnessCodegen"
+      (host .PluginHost:provide "HarnessCodegen"
         (codegen_provider
           (ModelCodegen ^model (model_name) ^skill (codegen_skill_text))))))))
 
@@ -806,37 +806,37 @@ Reply with the module for that tool and nothing else.""")
                ["prompt" "gene/control_flow"] ["prompt" "gene/stdlib"]]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (var restored (host ~ PluginHost:state))
+      (var restored (host .PluginHost:state))
       (var history ($thaw (if (== restored nil) #[] (?? restored/history #[]))))
-      (host ~ PluginHost:provide "HarnessPrompt"
+      (host .PluginHost:provide "HarnessPrompt"
         (prompt_provider
           (LlmAgent ^model (model_name) ^session ($cell history)
                     ^state_host host)))
-      (host ~ PluginHost:contribute "prompt"
+      (host .PluginHost:contribute "prompt"
         {^name "llm_agent" ^text (llm_prompt_text)})
       # Pull-only: the contract is a page, and only a turn that actually
       # queues a module needs it. `build`'s author gets the same text pushed,
       # because writing the module is the whole of its job.
-      (host ~ PluginHost:contribute "prompt"
+      (host .PluginHost:contribute "prompt"
         {^name "plugin/module" ^text (plugin_module_contract)
          ^pull_only true})
       # The checked-in Gene language skill is the one source for both pushed
       # guidance and pull introspection. References stay out of every request
       # until the model asks for one through `doc`.
-      (host ~ PluginHost:contribute "prompt"
+      (host .PluginHost:contribute "prompt"
         {^name "gene/language" ^text (gene_skill_file "SKILL.md")})
-      (host ~ PluginHost:contribute "prompt"
+      (host .PluginHost:contribute "prompt"
         {^name "gene/pitfalls"
          ^text (gene_skill_file "reference/pitfalls.md") ^pull_only true})
-      (host ~ PluginHost:contribute "prompt"
+      (host .PluginHost:contribute "prompt"
         {^name "gene/syntax"
          ^text (gene_skill_file "reference/syntax.md") ^pull_only true})
-      (host ~ PluginHost:contribute "prompt"
+      (host .PluginHost:contribute "prompt"
         {^name "gene/declarations"
          ^text (gene_skill_file "reference/declarations.md") ^pull_only true})
-      (host ~ PluginHost:contribute "prompt"
+      (host .PluginHost:contribute "prompt"
         {^name "gene/control_flow"
          ^text (gene_skill_file "reference/control-flow.md") ^pull_only true})
-      (host ~ PluginHost:contribute "prompt"
+      (host .PluginHost:contribute "prompt"
         {^name "gene/stdlib"
          ^text (gene_skill_file "reference/stdlib.md") ^pull_only true})))))

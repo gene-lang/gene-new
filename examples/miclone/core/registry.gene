@@ -112,10 +112,10 @@
 # one mutation path instead of two, and `Buffer/set` is already the mutator
 # every other column uses.
 (fn registered_count [r : Registry] : F64
-  (r/count ~ get 0.0))
+  (r/count .get 0.0))
 
 (fn set_registered_count [r : Registry n : F64] : Nil
-  (r/count ~ set 0.0 n))
+  (r/count .set 0.0 n))
 
 (fn bool_byte [v : Bool] : F64
   (if v 1.0 0.0))
@@ -148,17 +148,17 @@
   (if_yes (>= id max_content)
     (fail (new RegistryFull $"node registry is full at ${max_content} entries")))
   (var slot id)
-  (r/names ~ push name)
-  (r/opens_form ~ push opens_form)
-  (r/drawtype ~ set slot drawtype)
-  (r/solid ~ set slot (bool_byte solid))
-  (r/opaque ~ set slot (bool_byte opaque))
-  (r/propagates ~ set slot (bool_byte propagates))
-  (r/merges_same ~ set slot (bool_byte merges_same))
-  (r/light_source ~ set slot light_source)
-  (r/tile_top ~ set slot tile_top)
-  (r/tile_side ~ set slot tile_side)
-  (r/tile_bottom ~ set slot tile_bottom)
+  (r/names .push name)
+  (r/opens_form .push opens_form)
+  (r/drawtype .set slot drawtype)
+  (r/solid .set slot (bool_byte solid))
+  (r/opaque .set slot (bool_byte opaque))
+  (r/propagates .set slot (bool_byte propagates))
+  (r/merges_same .set slot (bool_byte merges_same))
+  (r/light_source .set slot light_source)
+  (r/tile_top .set slot tile_top)
+  (r/tile_side .set slot tile_side)
+  (r/tile_bottom .set slot tile_bottom)
   (set_registered_count r (+ id 1.0))
   id)
 
@@ -203,19 +203,19 @@
   names/%i)
 
 (fn drawtype_of [r : Registry id : F64] : F64
-  (r/drawtype ~ get id))
+  (r/drawtype .get id))
 
 (fn solid? [r : Registry id : F64] : Bool
-  (== (r/solid ~ get id) 1.0))
+  (== (r/solid .get id) 1.0))
 
 (fn opaque? [r : Registry id : F64] : Bool
-  (== (r/opaque ~ get id) 1.0))
+  (== (r/opaque .get id) 1.0))
 
 (fn propagates_light? [r : Registry id : F64] : Bool
-  (== (r/propagates ~ get id) 1.0))
+  (== (r/propagates .get id) 1.0))
 
 (fn merges_same? [r : Registry id : F64] : Bool
-  (== (r/merges_same ~ get id) 1.0))
+  (== (r/merges_same .get id) 1.0))
 
 (fn opens_form_of [r : Registry id : F64] : Str
   (var f r/opens_form)
@@ -223,7 +223,7 @@
   f/%i)
 
 (fn light_source_of [r : Registry id : F64] : F64
-  (r/light_source ~ get id))
+  (r/light_source .get id))
 
 # A node is *drawn* when it has geometry at all, which is a different question
 # from whether it is opaque: glass is drawn and hides nothing, air is neither.
@@ -231,16 +231,16 @@
 # opaque — and collapsing them into one predicate is what makes glass either
 # invisible or solid-looking.
 (fn drawn? [r : Registry id : F64] : Bool
-  (!= (r/drawtype ~ get id) draw_airlike))
+  (!= (r/drawtype .get id) draw_airlike))
 
 (fn tile_top_of [r : Registry id : F64] : F64
-  (r/tile_top ~ get id))
+  (r/tile_top .get id))
 
 (fn tile_side_of [r : Registry id : F64] : F64
-  (r/tile_side ~ get id))
+  (r/tile_side .get id))
 
 (fn tile_bottom_of [r : Registry id : F64] : F64
-  (r/tile_bottom ~ get id))
+  (r/tile_bottom .get id))
 
 # Linear, and deliberately so: this runs once per name at world load to build
 # the `name -> id` mapping, never per node. A hashed index would be a second

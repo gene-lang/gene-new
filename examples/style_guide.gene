@@ -80,14 +80,14 @@ line two"""
 
 (fn append_all [target, values...]
   (for value in values
-    (target ~ push value))
+    (target .push value))
   target)
 
 (fn active_names [users : (List User)] : (List Str)
   ((path users %$to_stream)
-    ~ filter (fn [user] user/active)
-    ; ~ map (fn [user] user/name)
-    ; ~ into []))
+    .filter (fn [user] user/active)
+    ; .map (fn [user] user/name)
+    ; .into []))
 
 # Compact conditions, guard sequences, and full clauses.
 
@@ -107,8 +107,8 @@ line two"""
 
 (fn note_activation [user : User, events]
   (if_yes user/active
-    (events ~ push $"activated ${user/name}")
-    (events ~ push "notification queued"))
+    (events .push $"activated ${user/name}")
+    (events .push "notification queued"))
   events)
 
 (fn load_if_missing [cached, load, save]
@@ -143,7 +143,7 @@ line two"""
 # Destructuring, loops, streams, and control transfer.
 
 (fn indexed_pairs* [items]
-  (repeat index in items/~size
+  (repeat index in items/.size
     (yield [index items/%index])))
 
 (fn first_named [users, wanted]
@@ -209,11 +209,11 @@ line two"""
 
 (fn user_card [user : User]
   `(article ^class "user-card"
-     (h2 %(user ~ label))
-     (ul %((path user roles %$to_stream) ~ map (fn [role] `(li %role)); ~ into []) ...)))
+     (h2 %(user .label))
+     (ul %((path user roles %$to_stream) .map (fn [role] `(li %role)); .into []) ...)))
 
 (fn selector_examples [session, field]
-  [session/user/name session/items/-1 /user/name (session ~ (select user %field))])
+  [session/user/name session/items/-1 /user/name (session .%(select user %field))])
 
 # A small entry point keeps the example coherent without making formatting
 # depend on external capabilities.

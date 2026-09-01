@@ -463,7 +463,104 @@ User-visible agent output is a typed durable core event; terminal and recording
 views consume the same feed. A recording view plus the command-agent stub
 provides deterministic tests with no terminal or network.
 
-## 11. Entry point and filesystem layout
+## 11. Mid-turn interaction
+
+Designed, not yet implemented; §14 lists it with the rest of the deferred work.
+
+An agent that can only answer cannot ask. A turn that needs a choice, a piece
+of text, or a decision about whether to proceed has nowhere to put the
+question: `ask` runs inside `handle_line`, under the calling plugin's budget,
+with the loop's `$os/read_line` already behind it.
+
+The design that suggests itself — a `HarnessInteract` seam whose terminal
+provider blocks on a read — is the one to refuse. It reintroduces exactly the
+defect §10's view contract removed: a bounded call waiting on a person expires
+at the keyboard, and the reason `show_prompt`/`handle_line` are two calls is
+that no plugin message may block on a human. It also makes a turn
+unsuspendable, which puts an ordinary yes/no inside the interrupted-turn
+recovery path.
+
+The shape that fits is the same inversion one level down. A turn step returns
+either its result or a **pending request**. The loop renders the request
+through the active view, performs the read it already owns, and resumes the
+turn with the reply. Every plugin call stays bounded; the only unbounded read
+stays in `main.gene`, where it is today.
+
+### 11.1 The request
+
+One envelope, three kinds:
+
+```gene
+{^kind "select" ^id "..." ^prompt "Which provider?"
+ ^options ["local" "memory"] ^default "local" ^multi false}
+{^kind "text"   ^id "..." ^prompt "Commit message" ^secret false}
+{^kind "confirm" ^id "..." ^prompt "Replace the bound provider?"}
+```
+
+The reply is `{^id ... ^value ...}` or `{^id ... ^cancelled true}`. Both are
+core persisted events, `input/request` and `input/reply`, carrying the
+`input_request` and `input_reply` schemas in `events.catalog`.
+
+The kinds are an `interactions` registry rather than a closed set in core, for
+the reason every other vocabulary here is a registry: rows have owners, the
+ledger removes them with their owner, and a plugin that needs a kind core did
+not anticipate contributes one instead of arguing for a core change.
+
+### 11.2 A deployment may be unable to answer
+
+The recording view has no human; an embedded deployment has no stdin. A
+`views` row therefore declares whether it is interactive and which kinds it
+renders. A kind the active view cannot render degrades to `text` when the
+request supplies a text form, and otherwise fails as a typed error — the same
+arrangement as every other capability question here: what the deployment can
+do is a property of the bound provider, and asking is refused rather than
+faked.
+
+A request may carry `^default`. A non-interactive deployment answers with it
+where one exists and refuses where one does not. Silence is never an answer.
+
+### 11.3 Permission is policy, not authority
+
+"Grant permission" is the kind that will be misread, so state it plainly: a
+runtime answer cannot widen the host ceiling. Composition stores inert
+selectors, grants are re-derived by attenuation at activation (§8), and the
+ceiling is fixed when the process starts. A permission interaction can
+therefore only:
+
+- choose among authority the process already holds;
+- record a policy decision that gates a plugin's own behavior; or
+- record intent that requires a restart under a wider launcher grant.
+
+Policy and authority must not end up looking like one mechanism. A prompt that
+appears to hand out capability is worse than no prompt, because it invites a
+deployment to rely on the user as the last line of defense in front of a
+boundary the capability system already decided.
+
+### 11.4 Where the turn suspends
+
+A question ends the current step; the answer is an input to the next one. That
+keeps the resume boundary of §1 intact — the harness still stops and restores
+at committed turn boundaries, and a pending question is durable state rather
+than a live continuation. The alternative, capturing the in-flight
+continuation, runs straight into the resource that is explicitly outside the
+resume boundary: live fibers are not serialized.
+
+The model path already loops on `^status`, so it gains a third value —
+`"needs-input"` alongside `"done"` and `"in-progress"` — plus a `^request`
+prop. The offline command agent returns the same envelope from a command row.
+
+Request ids are derived from the turn and the asking site, not minted per
+attempt, so a replayed turn matches its recorded reply instead of asking the
+same question twice. Without that rule, cold repair re-prompts.
+
+### 11.5 What this buys the tests
+
+A scripted answer list becomes a view. Interactive flows stay deterministic and
+terminal-free in `tests/`, on the same footing as the recording view, and the
+`input/reply` stream in a restored session is the record of what a human chose
+and when.
+
+## 12. Entry point and filesystem layout
 
 `main.gene` uses `GENE_HARNESS_HOME`, defaulting to
 `examples/gene-harness/tmp/workspace`, and creates:
@@ -488,7 +585,7 @@ Baseline profiles then install checked-in provider/agent/view plugins, and the
 prepared desired entries activate. On exit, core reverses plugins, flushes
 events, and closes all three stores.
 
-## 12. Implementation map
+## 13. Implementation map
 
 | File | Responsibility |
 |---|---|
@@ -510,7 +607,7 @@ module-entry budgets, immutable module ceilings, panic guard),
 (missing intermediate path is a false existence result, while symlinks still
 fail closed).
 
-## 13. Tests and deferred work
+## 14. Tests and deferred work
 
 Public-seam smoke programs live in `examples/gene-harness/tests/` and are run by
 `tests/test_cli.nim`. They cover registries and cleanup, seam migration,
@@ -529,4 +626,11 @@ Still deferred:
 - protocol migration beyond strict interface-fingerprint refusal;
 - cross-workspace sharing/GC of module blobs;
 - restoration of live in-flight resources (explicitly outside the resume
-  boundary).
+  boundary);
+- mid-turn interaction (§11): the request/reply envelope, the `interactions`
+  registry, and view interactivity declarations;
+- a standardized richer output vocabulary. The mechanism is already here —
+  `events.catalog` carries a schema per event and marks each one `required` or
+  `ignorable`, so a view that does not understand a new output kind skips it —
+  and only the vocabulary is missing. Every added kind is `ignorable` and
+  carries a text fallback, or an old view breaks on a new one.

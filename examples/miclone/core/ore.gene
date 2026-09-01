@@ -73,7 +73,7 @@
     (set self/count ($buffer F32 1.0))))
 
 (fn ore_count [o : OreRegistry] : F64
-  (o/count ~ get 0.0))
+  (o/count .get 0.0))
 
 (type OreRegistryFull
   ^props {^message Str}
@@ -88,16 +88,16 @@
   (var slot id)
   (if_yes (>= slot max_ores)
     (fail (new OreRegistryFull $"ore registry is full at ${max_ores} entries")))
-  (o/names ~ push name)
-  (o/node ~ set slot node)
-  (o/wherein ~ set slot wherein)
-  (o/shape ~ set slot shape)
-  (o/y_min ~ set slot y_min)
-  (o/y_max ~ set slot y_max)
-  (o/chance ~ set slot chance)
-  (o/size ~ set slot size)
-  (o/amount ~ set slot amount)
-  (o/count ~ set 0.0 (+ id 1.0))
+  (o/names .push name)
+  (o/node .set slot node)
+  (o/wherein .set slot wherein)
+  (o/shape .set slot shape)
+  (o/y_min .set slot y_min)
+  (o/y_max .set slot y_max)
+  (o/chance .set slot chance)
+  (o/size .set slot size)
+  (o/amount .set slot amount)
+  (o/count .set 0.0 (+ id 1.0))
   id)
 
 (fn ore_name [o : OreRegistry id : F64] : Str
@@ -119,8 +119,8 @@
   (if_yes (&& (&& (&& (>= x 0.0) (< x dim)) (&& (>= y 0.0) (< y dim)))
               (&& (&& (>= z 0.0) (< z dim)) (&& (>= wy y_min) (<= wy y_max))))
     (var i (+ x (+ (* y dim) (* z (* dim dim)))))
-    (if_yes (== (out ~ get i) wherein)
-      (out ~ set i node))))
+    (if_yes (== (out .get i) wherein)
+      (out .set i node))))
 
 # `amount` nodes at hashed positions inside a `size³` cube, which is upstream's
 # `ore_scatter`. The cube is anchored anywhere in the cell, so clusters do not
@@ -234,16 +234,16 @@
   (var i 0.0)
   (while (< i n)
     (set h (mix32 h))
-    (if_yes (< (unit32 h) (o/chance ~ get i))
-      (var node (o/node ~ get i))
-      (var wherein (o/wherein ~ get i))
-      (var y_min (o/y_min ~ get i))
-      (var y_max (o/y_max ~ get i))
-      (var size (o/size ~ get i))
-      (var shape (o/shape ~ get i))
+    (if_yes (< (unit32 h) (o/chance .get i))
+      (var node (o/node .get i))
+      (var wherein (o/wherein .get i))
+      (var y_min (o/y_min .get i))
+      (var y_max (o/y_max .get i))
+      (var size (o/size .get i))
+      (var shape (o/shape .get i))
       (if (== shape shape_scatter)
         (then (place_scatter out dim ox oy oz cox coy coz h node wherein
-                             y_min y_max size (o/amount ~ get i)))
+                             y_min y_max size (o/amount .get i)))
         (elif (== shape shape_blob)
           (place_blob out dim ox oy oz cox coy coz h node wherein
                       y_min y_max size))

@@ -650,7 +650,7 @@ When writing Gene code, use the current repo's language, not generic Lisp:
 - Lists use `[a b]`, maps use `{^key value}`, and nodes use `(tag ^prop value ...)`.
   Grow owned lists with `List/push`; repeated copy-and-append in loops is quadratic.
 - `nil` is absence; `void` is a missing selector or omitted storage.
-- `x/key` is selector access, `xs/~size` sends a message, and `(x ~ msg arg)` is a
+- `x/key` is selector access, `xs/.size` sends a message, and `(x .msg arg)` is a
   message send. User-facing names use snake_case; `-` remains a symbol character.
 - Types, enums, protocols, and implementations use `type`, `enum`, `protocol`, and
   `impl`; single data inheritance is `^is` and behavioral composition is `^inherit`.

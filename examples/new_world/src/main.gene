@@ -39,7 +39,7 @@
   (var out : (List F64) [])
   (var i 0.0)
   (while (< i n)
-    (out ~ push 0.0)
+    (out .push 0.0)
     (set i (+ i 1.0)))
   out)
 
@@ -123,7 +123,7 @@
     (var runs : (List F64) [])
     (var i 0.0)
     (while (< i (* pairs 2.0))
-      (runs ~ push out/%i)
+      (runs .push out/%i)
       (set i (+ i 1.0)))
     ($storage/set (save_key)
       ($json/stringify {^seed seed ^player player ^inventory inventory
@@ -163,8 +163,8 @@
     ($dom/append el label)
     ($dom/append el count)
     ($dom/append bar el)
-    (slot_els ~ push el)
-    (count_els ~ push count)
+    (slot_els .push el)
+    (count_els .push count)
     (set s (+ s 1.0)))
 
   # --- input -----------------------------------------------------------------

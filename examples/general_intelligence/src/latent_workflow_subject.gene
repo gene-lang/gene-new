@@ -14,9 +14,9 @@
 
 (fn latent_interpreter_subject [composition_arity : Int] : Node
   (var subject (default_induction_subject))
-  (subject ~ set_prop `max_expanded_steps (* composition_arity 3))
-  (subject ~ set_prop `max_input_items 64)
-  (subject ~ set_prop `max_output_items 512)
+  (subject .set_prop `max_expanded_steps (* composition_arity 3))
+  (subject .set_prop `max_input_items 64)
+  (subject .set_prop `max_output_items 512)
   subject)
 
 # Packs zero through four are used by the five training presentations. Pack
@@ -56,11 +56,11 @@
   (var steps : (List Node) [])
   (for program in programs
     (for step in (program_steps program)
-      (steps ~ push step)))
+      (steps .push step)))
   `(program %steps...))
 
 (fn program_contains? [program : Node, primitive : Node] : Bool
-  ((program_steps program) ~ contains? primitive))
+  ((program_steps program) .contains? primitive))
 
 (fn teaching_signature [subject : Node, program : Node,
                         inputs : List] : Str
@@ -80,9 +80,9 @@
       (set candidate_count (+ candidate_count 1))
       (var signature
         (program_signature subject program (structural_screen_inputs)))
-      (if_yes (== (seen ~ get signature) void)
-        (seen ~ put signature true)
-        (behaviors ~ push
+      (if_yes (== (seen .get signature) void)
+        (seen .put signature true)
+        (behaviors .push
           `(workflow_behavior
              ^signature %signature
              ^minimum_depth %depth
@@ -100,11 +100,11 @@
     (for behavior in catalog/behaviors
       (var projection
         (teaching_signature subject behavior/canonical_program inputs))
-      (var previous (counts ~ get projection))
+      (var previous (counts .get projection))
       (if (== previous void)
-        (counts ~ put projection 1)
-        (counts ~ put projection (+ previous 1))))
-    (projection_counts ~ push counts))
+        (counts .put projection 1)
+        (counts .put projection (+ previous 1))))
+    (projection_counts .push counts))
 
   (var teachable : (List Node) [])
   (for behavior in catalog/behaviors
@@ -115,19 +115,19 @@
       (for inputs in packs
         (var projection
           (teaching_signature subject behavior/canonical_program inputs))
-        (teaching_signatures ~ push projection)
-        (if_not (== (projection_counts/%pack_index ~ get projection) 1)
+        (teaching_signatures .push projection)
+        (if_not (== (projection_counts/%pack_index .get projection) 1)
           (set valid false))
         (set pack_index (+ pack_index 1)))
       (if_yes valid
-        (teachable ~ push
+        (teachable .push
           `(teachable_behavior
              ^signature %behavior/signature
              ^canonical_program %behavior/canonical_program
              ^teaching_signatures %teaching_signatures)))))
   `(teachable_behavior_catalog
      ^candidate_program_count %catalog/candidate_count
-     ^distinct_behavior_count %(catalog/behaviors ~ size)
+     ^distinct_behavior_count %(catalog/behaviors .size)
      ^teachable_behaviors %teachable))
 
 (fn teaching_pack [subject : Node, program : Node,
@@ -136,7 +136,7 @@
   (var inputs packs/%pack_index)
   (var cases : (List Node) [])
   (for input in inputs
-    (cases ~ push
+    (cases .push
       `(demonstration
          ^input %input
          ^output %(run_program subject program [] input))))
@@ -145,14 +145,14 @@
 (fn all_teaching_packs [subject : Node, program : Node] : List
   (var result : List [])
   (repeat pack_index in 6
-    (result ~ push (teaching_pack subject program pack_index)))
+    (result .push (teaching_pack subject program pack_index)))
   result)
 
 (fn append_family [subject : Node, families : (List Node),
                    behavior : Node] : Nil
-  (var index (families ~ size))
+  (var index (families .size))
   (var family_id $"latent_workflow_${index}")
-  (families ~ push
+  (families .push
     `(latent_workflow_family
        ^index %index
        ^id %family_id
@@ -175,7 +175,7 @@
   (var complete (behavior_catalog subject))
   (var candidates (teachable_behavior_catalog subject complete))
   (var pool candidates/teachable_behaviors)
-  (if (< (pool ~ size) count)
+  (if (< (pool .size) count)
     ($panic "not enough uniquely teachable latent behaviors"))
   (var state initial_state)
   (var families : (List Node) [])
@@ -190,28 +190,28 @@
         (if (>= attempts 100000)
           ($panic "latent workflow coverage generation exhausted its bound"))
         (set attempts (+ attempts 1))
-        (var draw (corpus_draw state (pool ~ size)))
+        (var draw (corpus_draw state (pool .size)))
         (set state draw/state)
         (var pool_index draw/value)
         (var behavior pool/%pool_index)
         (if_yes (&&
-                  (== (used ~ get behavior/signature) void)
+                  (== (used .get behavior/signature) void)
                   (program_contains?
                     behavior/canonical_program primitive))
-          (used ~ put behavior/signature true)
+          (used .put behavior/signature true)
           (append_family subject families behavior)
           (set found true)))))
 
-  (while (< (families ~ size) count)
+  (while (< (families .size) count)
     (if (>= attempts 100000)
       ($panic "latent workflow family generation exhausted its bound"))
     (set attempts (+ attempts 1))
-    (var draw (corpus_draw state (pool ~ size)))
+    (var draw (corpus_draw state (pool .size)))
     (set state draw/state)
     (var pool_index draw/value)
     (var behavior pool/%pool_index)
-    (if_yes (== (used ~ get behavior/signature) void)
-      (used ~ put behavior/signature true)
+    (if_yes (== (used .get behavior/signature) void)
+      (used .put behavior/signature true)
       (append_family subject families behavior)))
   `(family_catalog_generation
      ^state %state
@@ -219,19 +219,19 @@
      ^attempts %attempts
      ^candidate_program_count %candidates/candidate_program_count
      ^distinct_behavior_count %candidates/distinct_behavior_count
-     ^teachable_behavior_count %(pool ~ size)))
+     ^teachable_behavior_count %(pool .size)))
 
 (fn generate_family_order [initial_state : Int, count : Int] : Node
   (var state initial_state)
   (var order : (List Int) [])
   (var selected : Map {})
-  (while (< (order ~ size) count)
+  (while (< (order .size) count)
     (var draw (corpus_draw state count))
     (set state draw/state)
     (var key $"${draw/value}")
-    (if_yes (== (selected ~ get key) void)
-      (selected ~ put key true)
-      (order ~ push draw/value)))
+    (if_yes (== (selected .get key) void)
+      (selected .put key true)
+      (order .push draw/value)))
   `(family_order_generation ^state %state ^order %order))
 
 (fn draw_effective_case [subject : Node, program : Node,
@@ -243,7 +243,7 @@
     (var draw (generate_input state))
     (set state draw/state)
     (var output (run_program subject program [] draw/input))
-    (if (&& (!= output draw/input) (! (output ~ empty?)))
+    (if (&& (!= output draw/input) (! (output .empty?)))
       (return
         `(case_draw
            ^state %state ^input %draw/input ^expected %output
@@ -266,7 +266,7 @@
          ^expected %expected
          ^canonical_target_program %target_program
          ^required_semantic_signatures %signatures
-         ^maximum_primitive_steps %((program_steps target_program) ~ size))))
+         ^maximum_primitive_steps %((program_steps target_program) .size))))
 
 (fn public_component [family : Node, pack_index : Int,
                       position : Int] : Node
@@ -281,14 +281,14 @@
   (var state initial_state)
   (var tasks : (List Node) [])
   (var order_position 0)
-  (while (< order_position (order ~ size))
+  (while (< order_position (order .size))
     (var family_index order/%order_position)
     (var family families/%family_index)
     (repeat variant in variants_per_family
       (var draw
         (draw_effective_case subject family/canonical_program state))
       (set state draw/state)
-      (tasks ~ push
+      (tasks .push
         (task_record
           $"train_${order_position}_${variant}" (quote training)
           draw/input draw/expected
@@ -305,7 +305,7 @@
     (var cases : (List Node) [])
     (var case_index 0)
     (for input in (structural_screen_inputs)
-      (cases ~ push
+      (cases .push
         `(skill_case
            ^id $"${family/id}_structural_${case_index}"
            ^input %input
@@ -315,13 +315,13 @@
     (repeat random_index in 8
       (var draw (generate_input state))
       (set state draw/state)
-      (cases ~ push
+      (cases .push
         `(skill_case
            ^id $"${family/id}_random_${random_index}"
            ^input %draw/input
            ^expected %(run_program
                         subject family/canonical_program [] draw/input))))
-    (suites ~ push
+    (suites .push
       `(skill_replay_suite
          ^family_id %family/id
          ^semantic_signature %family/semantic_signature
@@ -333,14 +333,14 @@
   (var state initial_state)
   (var tasks : (List Node) [])
   (var checkpoint 5)
-  (while (<= checkpoint (order ~ size))
+  (while (<= checkpoint (order .size))
     (repeat introduced_position in checkpoint
       (var family_index order/%introduced_position)
       (var family families/%family_index)
       (var draw
         (draw_effective_case subject family/canonical_program state))
       (set state draw/state)
-      (tasks ~ push
+      (tasks .push
         (task_record
           $"probe_${checkpoint}_${introduced_position}"
           (quote retention_probe) draw/input draw/expected
@@ -356,7 +356,7 @@
   (repeat _ in (+ length_draw/value 8)
     (var value_draw (corpus_draw state 11))
     (set state value_draw/state)
-    (input ~ push (- value_draw/value 5)))
+    (input .push (- value_draw/value 5)))
   `(input_draw ^state %state ^input %input))
 
 (fn draw_composition_case [subject : Node, programs : (List Node),
@@ -376,7 +376,7 @@
         (break))
       (if (== execution/output current) (set valid false))
       (set current execution/output))
-    (if (&& valid (!= current draw/input) (! (current ~ empty?)))
+    (if (&& valid (!= current draw/input) (! (current .empty?)))
       (return
         `(case_draw
            ^valid true ^state %state ^input %draw/input
@@ -390,7 +390,7 @@
   (var tasks : (List Node) [])
   (var used_tuples : Map {})
   (var attempts 0)
-  (while (< (tasks ~ size) count)
+  (while (< (tasks .size) count)
     (if (>= attempts 100000)
       ($panic "latent workflow composition generation exhausted its bound"))
     (set attempts (+ attempts 1))
@@ -399,27 +399,27 @@
     (var signatures : List [])
     (var components : List [])
     (var tuple_parts : (List Str) [])
-    (while (< (programs ~ size) composition_arity)
-      (var family_draw (corpus_draw state (families ~ size)))
+    (while (< (programs .size) composition_arity)
+      (var family_draw (corpus_draw state (families .size)))
       (set state family_draw/state)
       (var key $"${family_draw/value}")
-      (if_yes (== (selected ~ get key) void)
-        (selected ~ put key true)
+      (if_yes (== (selected .get key) void)
+        (selected .put key true)
         (var family_index family_draw/value)
         (var family families/%family_index)
-        (var position (programs ~ size))
-        (programs ~ push family/canonical_program)
-        (signatures ~ push family/semantic_signature)
-        (components ~ push (public_component family 5 position))
-        (tuple_parts ~ push key)))
+        (var position (programs .size))
+        (programs .push family/canonical_program)
+        (signatures .push family/semantic_signature)
+        (components .push (public_component family 5 position))
+        (tuple_parts .push key)))
     (var tuple_key (join tuple_parts "_"))
-    (if_yes (== (used_tuples ~ get tuple_key) void)
+    (if_yes (== (used_tuples .get tuple_key) void)
       (var draw (draw_composition_case subject programs state))
       (set state draw/state)
       (if_yes draw/valid
-        (used_tuples ~ put tuple_key true)
-        (var task_index (tasks ~ size))
-        (tasks ~ push
+        (used_tuples .put tuple_key true)
+        (var task_index (tasks .size))
+        (tasks .push
           (task_record
             $"latent_composition_${task_index}"
             (quote heldout_composition) draw/input draw/expected
@@ -492,8 +492,8 @@
                  expected_component_count : Int] : Bool
   (if_not (&&
             (== task/public/kind expected_kind)
-            (== (task/public/components ~ size) expected_component_count)
-            (== (task/verifier/required_semantic_signatures ~ size)
+            (== (task/public/components .size) expected_component_count)
+            (== (task/verifier/required_semantic_signatures .size)
                 expected_component_count)
             (== task/verifier/maximum_primitive_steps
                 (* expected_component_count 3))
@@ -515,7 +515,7 @@
               (== task/verifier/required_semantic_signatures/%component_index
                   family/semantic_signature))
       (return false))
-    (programs ~ push family/canonical_program)
+    (programs .push family/canonical_program)
     (set component_index (+ component_index 1)))
   (== task/verifier/canonical_target_program (compose_programs programs)))
 
@@ -525,15 +525,15 @@
   (var teachable (teachable_behavior_catalog subject complete))
   (var teachable_by_signature : Map {})
   (for behavior in teachable/teachable_behaviors
-    (teachable_by_signature ~ put behavior/signature behavior))
+    (teachable_by_signature .put behavior/signature behavior))
 
-  (var catalog_valid (== (candidate/catalog ~ size) candidate/family_count))
+  (var catalog_valid (== (candidate/catalog .size) candidate/family_count))
   (var operation_coverage_valid true)
   (var family_ids : Map {})
   (var family_signatures : Map {})
   (var family_index 0)
   (for family in candidate/catalog
-    (var behavior (teachable_by_signature ~ get family/semantic_signature))
+    (var behavior (teachable_by_signature .get family/semantic_signature))
     (if_not (&&
               (!= behavior void)
               (== family/index family_index)
@@ -542,28 +542,28 @@
               (== family/teaching_signatures behavior/teaching_signatures)
               (== family/teaching_packs
                   (all_teaching_packs subject family/canonical_program))
-              (== (family_ids ~ get family/id) void)
-              (== (family_signatures ~ get family/semantic_signature) void))
+              (== (family_ids .get family/id) void)
+              (== (family_signatures .get family/semantic_signature) void))
       (set catalog_valid false))
-    (family_ids ~ put family/id true)
-    (family_signatures ~ put family/semantic_signature true)
+    (family_ids .put family/id true)
+    (family_signatures .put family/semantic_signature true)
     (set family_index (+ family_index 1)))
   (for primitive in subject/primitive_tokens
     (if_not (primitive_covered? candidate/catalog primitive)
       (set operation_coverage_valid false)))
 
-  (var order_valid (== (candidate/family_order ~ size) candidate/family_count))
+  (var order_valid (== (candidate/family_order .size) candidate/family_count))
   (var order_seen : Map {})
   (for index in candidate/family_order
     (var key $"${index}")
     (if_not (&&
               (>= index 0) (< index candidate/family_count)
-              (== (order_seen ~ get key) void))
+              (== (order_seen .get key) void))
       (set order_valid false))
-    (order_seen ~ put key true))
+    (order_seen .put key true))
 
   (var replay_valid
-    (== (candidate/replay_suites ~ size) candidate/family_count))
+    (== (candidate/replay_suites .size) candidate/family_count))
   (var replay_case_count 0)
   (var replay_ids : Map {})
   (for suite in candidate/replay_suites
@@ -571,10 +571,10 @@
     (if_not (&&
               (!= family nil)
               (== suite/semantic_signature family/semantic_signature)
-              (== (suite/cases ~ size) candidate/replay_cases_per_family)
-              (== (replay_ids ~ get suite/family_id) void))
+              (== (suite/cases .size) candidate/replay_cases_per_family)
+              (== (replay_ids .get suite/family_id) void))
       (set replay_valid false))
-    (replay_ids ~ put suite/family_id true)
+    (replay_ids .put suite/family_id true)
     (for test_case in suite/cases
       (set replay_case_count (+ replay_case_count 1))
       (if (== family nil)
@@ -586,7 +586,7 @@
             (set replay_valid false))))))
 
   (var training_valid
-    (== (candidate/training ~ size)
+    (== (candidate/training .size)
         (* candidate/family_count candidate/variants_per_family)))
   (var training_ids : Map {})
   (var training_index 0)
@@ -596,9 +596,9 @@
               subject candidate/catalog task (quote training)
               variant 1)
       (set training_valid false))
-    (if (!= (training_ids ~ get task/public/id) void)
+    (if (!= (training_ids .get task/public/id) void)
       (set training_valid false))
-    (training_ids ~ put task/public/id true)
+    (training_ids .put task/public/id true)
     (set training_index (+ training_index 1)))
 
   (var expected_probe_count 0)
@@ -607,18 +607,18 @@
     (set expected_probe_count (+ expected_probe_count checkpoint))
     (set checkpoint (+ checkpoint candidate/retention_block_size)))
   (var probes_valid
-    (== (candidate/retention_probes ~ size) expected_probe_count))
+    (== (candidate/retention_probes .size) expected_probe_count))
   (var probe_ids : Map {})
   (for task in candidate/retention_probes
     (if_not (verify_task
               subject candidate/catalog task (quote retention_probe) 5 1)
       (set probes_valid false))
-    (if (!= (probe_ids ~ get task/public/id) void)
+    (if (!= (probe_ids .get task/public/id) void)
       (set probes_valid false))
-    (probe_ids ~ put task/public/id true))
+    (probe_ids .put task/public/id true))
 
   (var compositions_valid
-    (== (candidate/heldout_compositions ~ size)
+    (== (candidate/heldout_compositions .size)
         candidate/heldout_composition_count))
   (var composition_ids : Map {})
   (var composition_tuples : Map {})
@@ -639,19 +639,19 @@
             (run_program subject family/canonical_program [] current))
           (if (== next current) (set every_component_effective false))
           (set current next)
-          (tuple_parts ~ push family/id))))
+          (tuple_parts .push family/id))))
     (if_not (&& every_component_effective
               (== current task/verifier/expected)
               (!= current task/public/input)
-              (! (current ~ empty?)))
+              (! (current .empty?)))
       (set compositions_valid false))
     (var tuple_key (join tuple_parts "|"))
-    (if (!= (composition_tuples ~ get tuple_key) void)
+    (if (!= (composition_tuples .get tuple_key) void)
       (set compositions_valid false))
-    (composition_tuples ~ put tuple_key true)
-    (if (!= (composition_ids ~ get task/public/id) void)
+    (composition_tuples .put tuple_key true)
+    (if (!= (composition_ids .get task/public/id) void)
       (set compositions_valid false))
-    (composition_ids ~ put task/public/id true))
+    (composition_ids .put task/public/id true))
 
   (var counts_valid
     (&&
@@ -664,9 +664,9 @@
       (>= candidate/composition_arity 2)
       (<= candidate/composition_arity 4)
       (== candidate/candidate_program_count 1885)
-      (== candidate/distinct_behavior_count (complete/behaviors ~ size))
+      (== candidate/distinct_behavior_count (complete/behaviors .size))
       (== candidate/teachable_behavior_count
-          (teachable/teachable_behaviors ~ size))
+          (teachable/teachable_behaviors .size))
       (== replay_case_count 720)
       (== expected_probe_count 105)))
   (var valid
@@ -674,7 +674,7 @@
         replay_valid training_valid probes_valid compositions_valid))
   `(latent_workflow_subject_verification
      ^valid %valid
-     ^family_count %(candidate/catalog ~ size)
+     ^family_count %(candidate/catalog .size)
      ^candidate_program_count %candidate/candidate_program_count
      ^distinct_behavior_count %candidate/distinct_behavior_count
      ^teachable_behavior_count %candidate/teachable_behavior_count
@@ -684,9 +684,9 @@
      ^replay_valid %replay_valid
      ^replay_case_count %replay_case_count
      ^training_valid %training_valid
-     ^training_task_count %(candidate/training ~ size)
+     ^training_task_count %(candidate/training .size)
      ^probes_valid %probes_valid
-     ^retention_probe_count %(candidate/retention_probes ~ size)
+     ^retention_probe_count %(candidate/retention_probes .size)
      ^compositions_valid %compositions_valid
-     ^heldout_composition_count %(candidate/heldout_compositions ~ size)
+     ^heldout_composition_count %(candidate/heldout_compositions .size)
      ^counts_valid %counts_valid))

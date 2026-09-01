@@ -81,8 +81,8 @@
 
 (fn check [out : (List Str) label : Str got : Str want : Str] : Nil
   (if (== got want)
-    (then (out ~ push $"ok   ${label}"))
-    (else (out ~ push $"FAIL ${label}: got ${got}, want ${want}"))))
+    (then (out .push $"ok   ${label}"))
+    (else (out .push $"FAIL ${label}: got ${got}, want ${want}"))))
 
 (fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
   (check out label $"$($to_int got)" $"$($to_int want)"))
@@ -115,9 +115,9 @@
               msg_input msg_dig msg_place msg_request_blocks msg_craft
               msg_form_action])
   (var i 0.0)
-  (while (< i kinds/~size)
+  (while (< i kinds/.size)
     (var j (+ i 1.0))
-    (while (< j kinds/~size)
+    (while (< j kinds/.size)
       (if_yes (== kinds/%i kinds/%j) (set seen (+ seen 1.0)))
       (set j (+ j 1.0)))
     (set i (+ i 1.0)))
@@ -140,20 +140,20 @@
            (cursor_at c) hello_size)
 
   (decode_hello b c h)
-  (check_f out "hello: version" (h ~ get hello_version) protocol_version)
-  (check_f out "hello: seed" (h ~ get hello_seed) 1337.0)
-  (check_f out "hello: a negative block x" (h ~ get hello_bx) -90.0)
-  (check_f out "hello: block y" (h ~ get hello_by) 0.0)
-  (check_f out "hello: block z" (h ~ get hello_bz) 198.0)
-  (check_f out "hello: span x" (h ~ get hello_span_x) 12.0)
-  (check_f out "hello: span y" (h ~ get hello_span_y) 4.0)
-  (check_f out "hello: span z" (h ~ get hello_span_z) 12.0)
+  (check_f out "hello: version" (h .get hello_version) protocol_version)
+  (check_f out "hello: seed" (h .get hello_seed) 1337.0)
+  (check_f out "hello: a negative block x" (h .get hello_bx) -90.0)
+  (check_f out "hello: block y" (h .get hello_by) 0.0)
+  (check_f out "hello: block z" (h .get hello_bz) 198.0)
+  (check_f out "hello: span x" (h .get hello_span_x) 12.0)
+  (check_f out "hello: span y" (h .get hello_span_y) 4.0)
+  (check_f out "hello: span z" (h .get hello_span_z) 12.0)
   # The spawn travels in thousandths, so a half-node offset must survive.
   (check_f out "hello: spawn x, to the millimetre"
-           ($math/round (* (h ~ get hello_spawn_x) 1000.0)) -1343500.0)
-  (check_f out "hello: spawn y" (h ~ get hello_spawn_y) 21.0)
+           ($math/round (* (h .get hello_spawn_x) 1000.0)) -1343500.0)
+  (check_f out "hello: spawn y" (h .get hello_spawn_y) 21.0)
   (check_f out "hello: spawn z, to the millimetre"
-           ($math/round (* (h ~ get hello_spawn_z) 1000.0)) 3264500.0))
+           ($math/round (* (h .get hello_spawn_z) 1000.0)) 3264500.0))
 
 # --- registry ----------------------------------------------------------------
 #
@@ -432,8 +432,8 @@
   # cost is a number rather than a worry.
   (var i 0.0)
   (while (< i block_nodes)
-    (content ~ set i (- i (* 2.0 ($math/floor (/ i 2.0)))))
-    (light ~ set i 0.0)
+    (content .set i (- i (* 2.0 ($math/floor (/ i 2.0)))))
+    (light .set i 0.0)
     (set i (+ i 1.0)))
   (check_f out "block: an alternating block is one run per node"
            (count_runs content 0.0 block_dim 256.0) block_nodes)
@@ -445,8 +445,8 @@
   (set i 0.0)
   (while (< i block_nodes)
     (var y ($math/floor (/ (- i (* 256.0 ($math/floor (/ i 256.0)))) 16.0)))
-    (content ~ set i (if (< y 8.0) 1.0 0.0))
-    (light ~ set i (if (< y 8.0) 0.0 15.0))
+    (content .set i (if (< y 8.0) 1.0 0.0))
+    (light .set i (if (< y 8.0) 0.0 15.0))
     (set i (+ i 1.0)))
   (roundtrip_block out "layered" content light out_c out_l)
 
@@ -454,13 +454,13 @@
   # which is where a dropped final run shows up and nowhere else.
   (fill content block_nodes 3.0)
   (fill light block_nodes 4.0)
-  (content ~ set (- block_nodes 1.0) 99.0)
-  (light ~ set (- block_nodes 1.0) 1.0)
+  (content .set (- block_nodes 1.0) 99.0)
+  (light .set (- block_nodes 1.0) 1.0)
   (roundtrip_block out "one odd node at the end" content light out_c out_l))
 
 (fn fill [b : (Buffer F32) n : F64 v : F64] : Nil
   (var i 0.0)
-  (while (< i n) (b ~ set i v) (set i (+ i 1.0))))
+  (while (< i n) (b .set i v) (set i (+ i 1.0))))
 
 (fn roundtrip_block [out : (List Str) label : Str
                      content : (Buffer F32) light : (Buffer F32)
@@ -477,13 +477,13 @@
   (fill out_l block_nodes -1.0)
   (decode_block b c header out_c out_l)
   (check_f out $"block: ${label} — a negative block coordinate survives"
-           (header ~ get block_bx) -90.0)
+           (header .get block_bx) -90.0)
 
   (var diff 0.0)
   (var i 0.0)
   (while (< i block_nodes)
-    (if_yes (|| (!= (out_c ~ get i) (content ~ get i))
-                (!= (out_l ~ get i) (light ~ get i)))
+    (if_yes (|| (!= (out_c .get i) (content .get i))
+                (!= (out_l .get i) (light .get i)))
       (set diff (+ diff 1.0)))
     (set i (+ i 1.0)))
   (check_f out $"block: ${label} — every node and light value survives"
@@ -501,19 +501,19 @@
   (check_f out "delta: the encoder wrote exactly node_delta_size bytes"
            (cursor_at c) node_delta_size)
   (decode_node_delta b c d)
-  (check_f out "delta: a negative x" (d ~ get delta_x) -1343.0)
-  (check_f out "delta: y" (d ~ get delta_y) 20.0)
-  (check_f out "delta: z" (d ~ get delta_z) 3264.0)
-  (check_f out "delta: the node id" (d ~ get delta_id) 7.0)
+  (check_f out "delta: a negative x" (d .get delta_x) -1343.0)
+  (check_f out "delta: y" (d .get delta_y) 20.0)
+  (check_f out "delta: z" (d .get delta_z) 3264.0)
+  (check_f out "delta: the node id" (d .get delta_id) 7.0)
   # 255 is both nibbles at 15 — the packed byte at its maximum, which is what a
   # node in full daylight next to a torch holds (§4).
-  (check_f out "delta: the packed light byte" (d ~ get delta_param1) 255.0)
+  (check_f out "delta: the packed light byte" (d .get delta_param1) 255.0)
 
   # And a dig, which is a delta to air with no light.
   (encode_node_delta b c 0.0 0.0 0.0 0.0 0.0)
   (decode_node_delta b c d)
-  (check_f out "delta: a dig is id 0" (d ~ get delta_id) 0.0)
-  (check_f out "delta: with no light" (d ~ get delta_param1) 0.0))
+  (check_f out "delta: a dig is id 0" (d .get delta_id) 0.0)
+  (check_f out "delta: with no light" (d .get delta_param1) 0.0))
 
 # --- input -------------------------------------------------------------------
 
@@ -535,26 +535,26 @@
            (cursor_at c) input_size)
   (decode_input b c in)
   (check_f out "input: wish x, to the thousandth"
-           ($math/round (* (in ~ get in_wish_x) 1000.0)) 707.0)
+           ($math/round (* (in .get in_wish_x) 1000.0)) 707.0)
   (check_f out "input: a negative wish z"
-           ($math/round (* (in ~ get in_wish_z) 1000.0)) -707.0)
+           ($math/round (* (in .get in_wish_z) 1000.0)) -707.0)
   # A full-turn fraction over the u16 range resolves 0.0055 degrees, so a
   # thousandth of a radian survives with room to spare.
   (check_f out "input: yaw, to the thousandth"
-           ($math/round (* (in ~ get in_yaw) 1000.0)) 1571.0)
+           ($math/round (* (in .get in_yaw) 1000.0)) 1571.0)
   (check_f out "input: a negative position, to the thousandth"
-           ($math/round (* (in ~ get in_x) 1000.0)) -1335250.0)
-  (check_f out "input: and a fractional height" (in ~ get in_y) 21.5)
-  (check_f out "input: and a large positive z" (in ~ get in_z) 3265.125)
+           ($math/round (* (in .get in_x) 1000.0)) -1335250.0)
+  (check_f out "input: and a fractional height" (in .get in_y) 21.5)
+  (check_f out "input: and a large positive z" (in .get in_z) 3265.125)
 
   # The flags share a byte, so the check that matters is that each is readable
   # independently of the others rather than that the byte has a value.
   (check_b out "input: jump is set"
-           (input_flag? (in ~ get in_flags) input_jump) true)
+           (input_flag? (in .get in_flags) input_jump) true)
   (check_b out "input: sneak is not"
-           (input_flag? (in ~ get in_flags) input_sneak) false)
+           (input_flag? (in .get in_flags) input_sneak) false)
   (check_b out "input: fly is set"
-           (input_flag? (in ~ get in_flags) input_fly) true)
+           (input_flag? (in .get in_flags) input_fly) true)
 
   # All eight combinations, since a flag decoder that returned the wrong bit
   # would be right for four of them by accident.
@@ -567,7 +567,7 @@
     (var want_fly (>= ($math/floor (/ i 4.0)) 1.0))
     (encode_input b c 0.0 0.0 want_jump want_sneak want_fly 0.0 0.0 0.0 0.0)
     (decode_input b c in)
-    (var flags (in ~ get in_flags))
+    (var flags (in .get in_flags))
     (if_yes (|| (!= (input_flag? flags input_jump) want_jump)
                 (|| (!= (input_flag? flags input_sneak) want_sneak)
                     (!= (input_flag? flags input_fly) want_fly)))
@@ -579,11 +579,11 @@
   (encode_input b c 0.0 0.0 false false false -3.14159 0.0 0.0 0.0)
   (decode_input b c in)
   (check_f out "input: yaw at -pi"
-           ($math/round (* (in ~ get in_yaw) 100.0)) -314.0)
+           ($math/round (* (in .get in_yaw) 100.0)) -314.0)
   (encode_input b c 0.0 0.0 false false false 3.14159 0.0 0.0 0.0)
   (decode_input b c in)
   (check_f out "input: yaw at +pi"
-           ($math/round (* (in ~ get in_yaw) 100.0)) 314.0))
+           ($math/round (* (in .get in_yaw) 100.0)) 314.0))
 
 # --- dig and place -----------------------------------------------------------
 
@@ -597,19 +597,19 @@
   (check_f out "dig: the encoder wrote exactly dig_size bytes"
            (cursor_at c) dig_size)
   (decode_edit b c e)
-  (check_f out "dig: the position" (e ~ get edit_x) -1343.0)
-  (check_f out "dig: and y" (e ~ get edit_y) 19.0)
-  (check_f out "dig: and z" (e ~ get edit_z) 3264.0)
+  (check_f out "dig: the position" (e .get edit_x) -1343.0)
+  (check_f out "dig: and y" (e .get edit_y) 19.0)
+  (check_f out "dig: and z" (e .get edit_z) 3264.0)
   # A dig is a place of air, which is what makes one decoder serve both.
-  (check_f out "dig: carries no id, so reads as air" (e ~ get edit_id) 0.0)
+  (check_f out "dig: carries no id, so reads as air" (e .get edit_id) 0.0)
 
   (encode_place b c -1343.0 21.0 3264.0 12.0 -1343.0 20.0 3264.0)
   (check_f out "place: the kind byte" (message_kind b) msg_place)
   (check_f out "place: the encoder wrote exactly place_size bytes"
            (cursor_at c) place_size)
   (decode_edit b c e)
-  (check_f out "place: the position" (e ~ get edit_x) -1343.0)
-  (check_f out "place: and the id" (e ~ get edit_id) 12.0))
+  (check_f out "place: the position" (e .get edit_x) -1343.0)
+  (check_f out "place: and the id" (e .get edit_id) 12.0))
 
 # --- requesting blocks -------------------------------------------------------
 #
@@ -626,24 +626,24 @@
   (check_f out "request: the encoder wrote exactly request_blocks_size bytes"
            (cursor_at c) request_blocks_size)
   (decode_request_blocks b c r)
-  (check_f out "request: the start index" (r ~ get req_from) 128.0)
-  (check_f out "request: the count" (r ~ get req_count) 64.0)
+  (check_f out "request: the start index" (r .get req_from) 128.0)
+  (check_f out "request: the count" (r .get req_count) 64.0)
 
   (encode_request_blocks b c 0.0 0.0)
   (decode_request_blocks b c r)
-  (check_f out "request: a zero-length request survives" (r ~ get req_count) 0.0)
+  (check_f out "request: a zero-length request survives" (r .get req_count) 0.0)
 
   # The whole world at once, which is what a client would ask for if it did not
   # know about the 256-frame queue — the request itself must still encode.
   (encode_request_blocks b c 0.0 576.0)
   (decode_request_blocks b c r)
   (check_f out "request: the whole world fits in the count field"
-           (r ~ get req_count) 576.0)
+           (r .get req_count) 576.0)
   # And a u16 holds far more than this world has blocks, so the field is not
   # what limits the extent.
   (encode_request_blocks b c 65535.0 65535.0)
   (decode_request_blocks b c r)
-  (check_f out "request: the field is a full u16" (r ~ get req_from) 65535.0))
+  (check_f out "request: the field is a full u16" (r .get req_from) 65535.0))
 
 # --- inventory ---------------------------------------------------------------
 
@@ -657,10 +657,10 @@
   # makes the third field non-zero — without it every wear byte would be 0 and
   # a codec that dropped the field entirely would still pass.
   (var inv ($buffer F64 (* slots 3.0)))
-  (inv ~ set 0.0 3.0)  (inv ~ set 1.0 99.0) (inv ~ set 2.0 0.0)
-  (inv ~ set 3.0 4.0)  (inv ~ set 4.0 99.0) (inv ~ set 5.0 0.0)
-  (inv ~ set 6.0 7.0)  (inv ~ set 7.0 12.0) (inv ~ set 8.0 0.0)
-  (inv ~ set 9.0 15.0) (inv ~ set 10.0 1.0) (inv ~ set 11.0 31207.0)
+  (inv .set 0.0 3.0)  (inv .set 1.0 99.0) (inv .set 2.0 0.0)
+  (inv .set 3.0 4.0)  (inv .set 4.0 99.0) (inv .set 5.0 0.0)
+  (inv .set 6.0 7.0)  (inv .set 7.0 12.0) (inv .set 8.0 0.0)
+  (inv .set 9.0 15.0) (inv .set 10.0 1.0) (inv .set 11.0 31207.0)
 
   (encode_inventory b c inv slots)
   (check_f out "inventory: the kind byte" (message_kind b) msg_inventory)
@@ -670,16 +670,16 @@
   (var back ($buffer F64 (* slots 3.0)))
   (var got (decode_inventory b c back))
   (check_f out "inventory: the slot count round-trips" got slots)
-  (check_f out "inventory: and a tool's wear survives" (back ~ get 11.0) 31207.0)
+  (check_f out "inventory: and a tool's wear survives" (back .get 11.0) 31207.0)
 
   (var diff 0.0)
   (var i 0.0)
   (while (< i (* slots 3.0))
-    (if_yes (!= (back ~ get i) (inv ~ get i)) (set diff (+ diff 1.0)))
+    (if_yes (!= (back .get i) (inv .get i)) (set diff (+ diff 1.0)))
     (set i (+ i 1.0)))
   (check_f out "inventory: every slot survives" diff 0.0)
-  (check_f out "inventory: a full stack is intact" (back ~ get 1.0) 99.0)
-  (check_f out "inventory: and an empty slot stays empty" (back ~ get 15.0) 0.0))
+  (check_f out "inventory: a full stack is intact" (back .get 1.0) 99.0)
+  (check_f out "inventory: and an empty slot stays empty" (back .get 15.0) 0.0))
 
 # --- entities ----------------------------------------------------------------
 #
@@ -697,22 +697,22 @@
   (check_f out "entity: the encoder wrote exactly entity_size bytes"
            (cursor_at c) (size_entity))
   (decode_entity b c m)
-  (check_f out "entity: the id round-trips" (m ~ get ent_id) 4242.0)
-  (check_f out "entity: a negative x survives" (m ~ get ent_x) -1335.5)
-  (check_f out "entity: a fractional y" (m ~ get ent_y) 21.25)
-  (check_f out "entity: and z" (m ~ get ent_z) 3265.75)
-  (check_f out "entity: the item" (m ~ get ent_item) 7.0)
-  (check_f out "entity: and the count" (m ~ get ent_count) 12.0)
+  (check_f out "entity: the id round-trips" (m .get ent_id) 4242.0)
+  (check_f out "entity: a negative x survives" (m .get ent_x) -1335.5)
+  (check_f out "entity: a fractional y" (m .get ent_y) 21.25)
+  (check_f out "entity: and z" (m .get ent_z) 3265.75)
+  (check_f out "entity: the item" (m .get ent_item) 7.0)
+  (check_f out "entity: and the count" (m .get ent_count) 12.0)
 
   # The removal, which is the case a dropped field would hide.
   (encode_entity b c 4242.0 0.0 0.0 0.0 7.0 0.0 entity_player)
   (decode_entity b c m)
   (check_f out "entity: a count of zero is how a despawn travels"
-           (m ~ get ent_count) 0.0)
+           (m .get ent_count) 0.0)
   # §8's kinds on the wire. A client draws a player and a dropped cobble
   # differently and must not have to guess which it has from the item.
   (check_f out "entity: and the kind says a player is a player"
-           (m ~ get ent_kind) entity_player))
+           (m .get ent_kind) entity_player))
 
 # --- the report --------------------------------------------------------------
 
@@ -816,9 +816,9 @@
   (check out "open_form: the form name" got_name "miclone:chest")
   # Negative coordinates on purpose: a u32 would carry -12 as 4,294,967,284 and
   # the chest would open on a position no player can reach.
-  (check_f out "open_form: x survives, negative" (slot ~ get open_x) -12.0)
-  (check_f out "open_form: y survives" (slot ~ get open_y) 34.0)
-  (check_f out "open_form: z survives, negative" (slot ~ get open_z) -56.0)
+  (check_f out "open_form: x survives, negative" (slot .get open_x) -12.0)
+  (check_f out "open_form: y survives" (slot .get open_y) 34.0)
+  (check_f out "open_form: z survives, negative" (slot .get open_z) -56.0)
   (check_f out "open_form: the contents came with it"
            (slot_item got_inv 0.0) 3.0)
   (check_f out "open_form: and the count" (slot_count got_inv 0.0) 5.0)
@@ -834,8 +834,8 @@
   (var act_name (action_of ab c))
   (check out "form_action: the form name" act_form "miclone:chest")
   (check out "form_action: the action" act_name "take")
-  (check_f out "form_action: x survives, negative" (act ~ get act_x) -12.0)
-  (check_f out "form_action: the slot" (act ~ get act_slot) 6.0)
+  (check_f out "form_action: x survives, negative" (act .get act_x) -12.0)
+  (check_f out "form_action: the slot" (act .get act_slot) 6.0)
 
   # The server's own guard, which is §7.1's rule reaching UI: an action the form
   # never declared resolves to nothing, so a client naming one gets no effect
@@ -857,7 +857,7 @@
   (collect out)
   (var bad 0.0)
   (var i 0.0)
-  (var n out/~size)
+  (var n out/.size)
   (while (< i n)
     (if_yes ($str/starts_with? out/%i "FAIL")
       (set bad (+ bad 1.0)))

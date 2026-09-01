@@ -45,8 +45,8 @@
 
 (fn check [out : (List Str) label : Str got : Str want : Str] : Nil
   (if (== got want)
-    (then (out ~ push $"ok   ${label}"))
-    (else (out ~ push $"FAIL ${label}: got ${got}, want ${want}"))))
+    (then (out .push $"ok   ${label}"))
+    (else (out .push $"FAIL ${label}: got ${got}, want ${want}"))))
 
 (fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
   (check out label $"${got}" $"${want}"))
@@ -161,14 +161,14 @@
   (var i 0.0)
   (while (< i total)
     (var idx (sample_index i total stride))
-    (seen ~ set idx (+ (seen ~ get idx) 1.0))
+    (seen .set idx (+ (seen .get idx) 1.0))
     (set i (+ i 1.0)))
 
   (var repeats 0.0)
   (var missed 0.0)
   (var j 0.0)
   (while (< j total)
-    (var c (seen ~ get j))
+    (var c (seen .get j))
     (if_yes (> c 1.0) (set repeats (+ repeats 1.0)))
     (if_yes (== c 0.0) (set missed (+ missed 1.0)))
     (set j (+ j 1.0)))
@@ -289,11 +289,11 @@
   (add_entity_def e "beacon"
     no_step
     (fn [world : World s : F64] : Nil
-      (marked ~ set 0.0 (+ 100.0 s))
+      (marked .set 0.0 (+ 100.0 s))
       nil))
   (var born (entity_def_activate e (entity_def_named e "beacon")))
   (born w 4.0)
-  (check_f out "on_activate runs and is given its slot" (marked ~ get 0.0) 104.0))
+  (check_f out "on_activate runs and is given its slot" (marked .get 0.0) 104.0))
 
 # --- §8's client half ----------------------------------------------------------
 #
@@ -369,7 +369,7 @@
   (seen_checks out)
   (var bad 0.0)
   (var i 0.0)
-  (var n out/~size)
+  (var n out/.size)
   (while (< i n)
     (if_yes ($str/starts_with? out/%i "FAIL")
       (set bad (+ bad 1.0)))

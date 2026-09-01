@@ -1263,9 +1263,9 @@ from timestamps.
 # A market scan the map panel's filters cannot express.
 (fn cheap_and_busy [district : Str] : (List Parcel)
   ((world/for_sale district)
-    ~ to_stream
-    ; ~ filter (fn [p] (< p/price (* 4 (world/footfall p/coord ^periods 4))))
-    ; ~ into []))
+    .to_stream
+    ; .filter (fn [p] (< p/price (* 4 (world/footfall p/coord ^periods 4))))
+    ; .into []))
 ```
 
 ```gene
@@ -1273,9 +1273,9 @@ from timestamps.
 (for p in (world/my_parcels)
   (var coin
     ((ledger/events ^type "dividend" ^parcel p/coord ^periods 8)
-      ~ to_stream
-      ; ~ map (fn [e] e/coin)
-      ; ~ into []))
+      .to_stream
+      ; .map (fn [e] e/coin)
+      ; .into []))
   ($println p/coord " earned " (sum coin) " over 8 periods"))
 ```
 

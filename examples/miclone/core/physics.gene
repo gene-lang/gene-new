@@ -137,26 +137,26 @@
 
 (fn new_player [x : F64 y : F64 z : F64] : (Buffer F64)
   (var st ($buffer F64 p_cells))
-  (st ~ set p_x x)
-  (st ~ set p_y y)
-  (st ~ set p_z z)
+  (st .set p_x x)
+  (st .set p_y y)
+  (st .set p_z z)
   st)
 
-(fn player_x [st : (Buffer F64)] : F64 (st ~ get p_x))
-(fn player_y [st : (Buffer F64)] : F64 (st ~ get p_y))
-(fn player_z [st : (Buffer F64)] : F64 (st ~ get p_z))
-(fn player_vy [st : (Buffer F64)] : F64 (st ~ get p_vy))
-(fn player_eye_y [st : (Buffer F64)] : F64 (+ (st ~ get p_y) eye_height))
-(fn on_ground? [st : (Buffer F64)] : Bool (== (st ~ get p_on_ground) 1.0))
-(fn in_liquid? [st : (Buffer F64)] : Bool (== (st ~ get p_in_liquid) 1.0))
+(fn player_x [st : (Buffer F64)] : F64 (st .get p_x))
+(fn player_y [st : (Buffer F64)] : F64 (st .get p_y))
+(fn player_z [st : (Buffer F64)] : F64 (st .get p_z))
+(fn player_vy [st : (Buffer F64)] : F64 (st .get p_vy))
+(fn player_eye_y [st : (Buffer F64)] : F64 (+ (st .get p_y) eye_height))
+(fn on_ground? [st : (Buffer F64)] : Bool (== (st .get p_on_ground) 1.0))
+(fn in_liquid? [st : (Buffer F64)] : Bool (== (st .get p_in_liquid) 1.0))
 
 (fn set_player_position [st : (Buffer F64) x : F64 y : F64 z : F64] : Nil
-  (st ~ set p_x x)
-  (st ~ set p_y y)
-  (st ~ set p_z z)
-  (st ~ set p_vx 0.0)
-  (st ~ set p_vy 0.0)
-  (st ~ set p_vz 0.0))
+  (st .set p_x x)
+  (st .set p_y y)
+  (st .set p_z z)
+  (st .set p_vx 0.0)
+  (st .set p_vy 0.0)
+  (st .set p_vz 0.0))
 
 # --- what stops a player -----------------------------------------------------
 
@@ -233,16 +233,16 @@
 
 (fn shift [st : (Buffer F64) axis : F64 d : F64] : Nil
   (var cell (if (== axis axis_x) p_x (if (== axis axis_y) p_y p_z)))
-  (st ~ set cell (+ (st ~ get cell) d)))
+  (st .set cell (+ (st .get cell) d)))
 
 # Move along one axis by `d`, stopping at whatever is in the way. Returns how
 # far it actually got, so a caller can tell "arrived" from "hit something"
 # without a second query.
 (fn resolve_axis [st : (Buffer F64) w : World reg : Registry
                   axis : F64 d : F64] : F64
-  (var x (st ~ get p_x))
-  (var y (st ~ get p_y))
-  (var z (st ~ get p_z))
+  (var x (st .get p_x))
+  (var y (st .get p_y))
+  (var z (st .get p_z))
   (if (! (probe_blocked? w reg x y z axis d))
     (then
       (shift st axis d)
@@ -274,36 +274,36 @@
 (fn step [st : (Buffer F64) w : World reg : Registry
           wish_x : F64 wish_z : F64
           jump : Bool sneak : Bool fly : Bool dt : F64] : Nil
-  (var swimming (box_in_liquid? w reg (st ~ get p_x) (st ~ get p_y)
-                                (st ~ get p_z)))
-  (st ~ set p_in_liquid (if swimming 1.0 0.0))
+  (var swimming (box_in_liquid? w reg (st .get p_x) (st .get p_y)
+                                (st .get p_z)))
+  (st .set p_in_liquid (if swimming 1.0 0.0))
 
   # Horizontal velocity is set, not accelerated. Upstream does the same for the
   # player: ground control in this genre is expected to be immediate, and
   # momentum that outlives the key makes a one-node ledge unwalkable.
   (var speed
     (if fly fly_speed (if swimming liquid_speed (if sneak crouch_speed walk_speed))))
-  (st ~ set p_vx (* wish_x speed))
-  (st ~ set p_vz (* wish_z speed))
+  (st .set p_vx (* wish_x speed))
+  (st .set p_vz (* wish_z speed))
 
   (if fly
     (then
-      (st ~ set p_vy
+      (st .set p_vy
         (if jump fly_speed (if sneak (- 0.0 fly_speed) 0.0))))
     (else
       (if swimming
         (then
-          (st ~ set p_vy (if jump liquid_rise (- 0.0 liquid_sink))))
+          (st .set p_vy (if jump liquid_rise (- 0.0 liquid_sink))))
         (else
-          (if_yes (&& jump (== (st ~ get p_on_ground) 1.0))
-            (st ~ set p_vy jump_speed))
-          (var vy (- (st ~ get p_vy) (* gravity dt)))
-          (st ~ set p_vy
+          (if_yes (&& jump (== (st .get p_on_ground) 1.0))
+            (st .set p_vy jump_speed))
+          (var vy (- (st .get p_vy) (* gravity dt)))
+          (st .set p_vy
             (if (< vy (- 0.0 terminal_speed)) (- 0.0 terminal_speed) vy))))))
 
-  (var dx (* (st ~ get p_vx) dt))
-  (var dy (* (st ~ get p_vy) dt))
-  (var dz (* (st ~ get p_vz) dt))
+  (var dx (* (st .get p_vx) dt))
+  (var dy (* (st .get p_vy) dt))
+  (var dz (* (st .get p_vz) dt))
 
   # Enough substeps that none of the three moves further than `max_substep`.
   (var reach ($math/max (abs_f64 dx) ($math/max (abs_f64 dy) (abs_f64 dz))))
@@ -321,10 +321,10 @@
       (if (!= moved sy)
         (then
           (if (< sy 0.0)
-            (then (st ~ set p_on_ground 1.0))
-            (else (st ~ set p_on_ground 0.0)))
-          (st ~ set p_vy 0.0))
-        (else (st ~ set p_on_ground 0.0))))
+            (then (st .set p_on_ground 1.0))
+            (else (st .set p_on_ground 0.0)))
+          (st .set p_vy 0.0))
+        (else (st .set p_on_ground 0.0))))
     # Then X and Z independently, which is the whole of "sliding along a wall":
     # a blocked X leaves Z untouched, so pressing into a corner still moves
     # along whichever face is open.
@@ -339,9 +339,9 @@
 # world — and leaves the player embedded in it. Asked of a cell rather than of
 # the world, because the node in question does not exist yet.
 (fn box_overlaps_node? [st : (Buffer F64) nx : F64 ny : F64 nz : F64] : Bool
-  (var x (st ~ get p_x))
-  (var y (st ~ get p_y))
-  (var z (st ~ get p_z))
+  (var x (st .get p_x))
+  (var y (st .get p_y))
+  (var z (st .get p_z))
   (&& (&& (&& (> (+ x half_width) nx) (< (- x half_width) (+ nx 1.0)))
           (&& (> (+ y player_height) ny) (< y (+ ny 1.0))))
       (&& (> (+ z half_width) nz) (< (- z half_width) (+ nz 1.0)))))
@@ -432,9 +432,9 @@
   (if_not found
     (set x col_x)
     (set y (surface_y w reg x col_z top bottom)))
-  (into ~ set 0.0 (+ x 0.5))
-  (into ~ set 1.0 y)
-  (into ~ set 2.0 (+ col_z 0.5)))
+  (into .set 0.0 (+ x 0.5))
+  (into .set 1.0 y)
+  (into .set 2.0 (+ col_z 0.5)))
 
 # The lowest position at or above `y` where the box fits, or `y` itself if there
 # is none below the world's ceiling. Used to spawn without having to know the

@@ -313,7 +313,7 @@ proc main() =
   let listFnScope = newGlobalScope()
   listFnScope.define("pair", run(compileSource(
     "(fn [x y] [x y])"), listFnScope))
-  let listFnChunk = compileSource("((pair 1 2) ~ size)")
+  let listFnChunk = compileSource("((pair 1 2) .size)")
   bench("vm.list_leaf_fn.compiled_chunk", 500_000, i):
     let v = run(listFnChunk, listFnScope)
     checksum = checksum + v.intVal
@@ -386,7 +386,7 @@ proc main() =
     "(var scan (fn [] " &
     "  (var i 0.0) (var acc 0.0) " &
     "  (while (< i 4096.0) " &
-    "    (do (set acc (+ acc (buf ~ get i))) (set i (+ i 1.0)))) " &
+    "    (do (set acc (+ acc (buf .get i))) (set i (+ i 1.0)))) " &
     "  acc))"), bufferScope)
   let bufferChunk = compileSource("(scan)")
   bench("vm.buffer_scan_4096.compiled_chunk", 200, i):
@@ -403,7 +403,7 @@ proc main() =
     "(var fill (fn [] " &
     "  (var i 0.0) " &
     "  (while (< i 4096.0) " &
-    "    (do (wbuf ~ set i 1.0) (set i (+ i 1.0)))) " &
+    "    (do (wbuf .set i 1.0) (set i (+ i 1.0)))) " &
     "  i))"), bufferWriteScope)
   let bufferWriteChunk = compileSource("(fill)")
   bench("vm.buffer_fill_4096.compiled_chunk", 200, i):
@@ -512,20 +512,20 @@ proc main() =
     # chain, so the send pays parent lookup on top of the impl body.
     "(type Base ^props {} (message tag [] : Int 1)) " &
     "(type Derived ^is Base ^props {} " &
-    "  (message tag [] : Int (super ~ tag))) " &
+    "  (message tag [] : Int (super .tag))) " &
     "(var box (Box ^x 10)) " &
     "(var dog (Dog ^x 10)) " &
     "(var derived (Derived)) " &
-    # A built-in receiver: `(c ~ get)` resolves through the Cell type namespace
+    # A built-in receiver: `(c .get)` resolves through the Cell type namespace
     # rather than a user type's message table.
     "(var c ($cell 10)) " &
     # Reference: a 1-arg Gene function call — the target sends aim to approach.
     "(var identity (fn [x] x))"), protocolScope)
   # Message names are not lexical bindings (docs/core.md §1); the hot dispatch
   # path is the send form, resolved receiver-first (§9.1). Protocol messages are
-  # always qualified (`box ~ Proto:msg`); only type-direct messages take the bare
-  # name (`box ~ get`). The per-call-site inline cache collapses the resolution
-  # walk, so a trivial-body qualified send (`box ~ Triv:triv`) sits right on the
+  # always qualified (`box .Proto:msg`); only type-direct messages take the bare
+  # name (`box .get`). The per-call-site inline cache collapses the resolution
+  # walk, so a trivial-body qualified send (`box .Triv:triv`) sits right on the
   # 1-arg Gene call reference: the extra cost of the other sends is impl-body work
   # (a `self/x` selector plus a `: Int` return-type check), not the dispatch
   # walk. A qualified send pushes the protocol and resolves the name against the
@@ -534,29 +534,29 @@ proc main() =
   bench("vm.call.gene_one_arg.compiled_chunk", 500_000, i):
     let v = run(referenceCallChunk, protocolScope)
     checksum = checksum + int64(v.props["x"].intVal)
-  let trivialSendChunk = compileSource("(box ~ Triv:triv)")
+  let trivialSendChunk = compileSource("(box .Triv:triv)")
   bench("vm.protocol_message.trivial_body.compiled_chunk", 500_000, i):
     let v = run(trivialSendChunk, protocolScope)
     checksum = checksum + int64(v.props["x"].intVal)
-  let protocolChunk = compileSource("(box ~ ToInt:to_int)")
+  let protocolChunk = compileSource("(box .ToInt:to_int)")
   bench("vm.protocol_message.compiled_chunk", 500_000, i):
     let v = run(protocolChunk, protocolScope)
     checksum = checksum + v.intVal
-  let inheritedChunk = compileSource("(dog ~ ToInt:to_int)")
+  let inheritedChunk = compileSource("(dog .ToInt:to_int)")
   bench("vm.protocol_message.inherited.compiled_chunk", 500_000, i):
     let v = run(inheritedChunk, protocolScope)
     checksum = checksum + v.intVal
-  let typeDirectChunk = compileSource("(box ~ get)")
+  let typeDirectChunk = compileSource("(box .get)")
   bench("vm.protocol_message.type_direct.compiled_chunk", 500_000, i):
     let v = run(typeDirectChunk, protocolScope)
     checksum = checksum + v.intVal
-  let sendArgChunk = compileSource("(box ~ Adder:add 5)")
+  let sendArgChunk = compileSource("(box .Adder:add 5)")
   bench("vm.protocol_message.with_arg.compiled_chunk", 500_000, i):
     let v = run(sendArgChunk, protocolScope)
     checksum = checksum + v.intVal
   # `Self:` names no type at all and lowers to the bare send, so it should sit
   # on the type-direct line rather than the qualified one.
-  let colonSelfChunk = compileSource("(box ~ Self:get)")
+  let colonSelfChunk = compileSource("(box .Self:get)")
   bench("vm.type_message.self_colon.compiled_chunk", 500_000, i):
     let v = run(colonSelfChunk, protocolScope)
     checksum = checksum + v.intVal
@@ -567,11 +567,11 @@ proc main() =
   # statically monomorphic (fixed parent, fixed name), so it is cached under an
   # impl-epoch guard. This case runs two dispatches and two bodies (the override
   # plus the parent), so ~0.6x the one-call reference is the expected shape.
-  let builtinSendChunk = compileSource("(c ~ get)")
+  let builtinSendChunk = compileSource("(c .get)")
   bench("vm.builtin_message.compiled_chunk", 500_000, i):
     let v = run(builtinSendChunk, protocolScope)
     checksum = checksum + v.intVal
-  let superSendChunk = compileSource("(derived ~ tag)")
+  let superSendChunk = compileSource("(derived .tag)")
   bench("vm.super_send.compiled_chunk", 500_000, i):
     let v = run(superSendChunk, protocolScope)
     checksum = checksum + v.intVal
@@ -714,7 +714,7 @@ proc main() =
     "(import $db/sqlite [open Db]) " &
     "(var sqlite_conn (open \":memory:\"))"), sqliteScope)
   let sqliteQueryChunk = compileSource(
-    "(sqlite_conn ~ Db:query \"select 1 as value\")")
+    "(sqlite_conn .Db:query \"select 1 as value\")")
   # Named for what it measures: the interpreted managed-wrapper path through
   # $db/sqlite. It exercises none of the typed_native C backend, and the old
   # `typed_native.` prefix implied otherwise — the proposal's §10 question is
@@ -724,7 +724,7 @@ proc main() =
     let rows = run(sqliteQueryChunk, sqliteScope)
     checksum = checksum + rows.listItems[0].mapEntries["value"].intVal +
       int64(i and 1)
-  discard run(compileSource("(sqlite_conn ~ Db:close)"), sqliteScope)
+  discard run(compileSource("(sqlite_conn .Db:close)"), sqliteScope)
 
   let assocScope = newGlobalScope()
   assocScope.define("user", run(compileSource("{^name \"Ada\" ^age 37}"), assocScope))
@@ -796,46 +796,46 @@ proc main() =
     "  (type Event ^is $event/Event) " &
     "  (type Placed ^is Event ^props {^order_id Str ^total F64})) " &
     "(var sink ($cell 0)) " &
-    "(fn note [e] (sink ~ set (+ sink/~get 1))) " &
+    "(fn note [e] (sink .set (+ sink/.get 1))) " &
     "(var bus ($event/Bus)) " &
-    "(bus ~ subscribe bench/Placed note) " &
+    "(bus .subscribe bench/Placed note) " &
     "(var one (bench/Placed ^order_id \"o1\" ^total 1.5)) " &
     "(var frozen ($freeze one)) " &
     "(var wide ($event/Bus)) " &
     "(fn a [e] 1) (fn b [e] 2) (fn c [e] 3) (fn d [e] 4) " &
-    "(wide ~ subscribe bench/Event a) (wide ~ subscribe bench/Placed b) " &
-    "(wide ~ subscribe ($event/exact bench/Placed) c) " &
-    "(wide ~ subscribe $event/Event d) " &
+    "(wide .subscribe bench/Event a) (wide .subscribe bench/Placed b) " &
+    "(wide .subscribe ($event/exact bench/Placed) c) " &
+    "(wide .subscribe $event/Event d) " &
     # Declared in the same setup chunk: a slot-compiled chunk owns its scope's
     # local layout, so a second chunk that declares new locals cannot share it.
     "(type Unrelated ^is $event/Event) " &
     "(var miss ($freeze (Unrelated)))"), eventScope)
 
   let publishSmallChunk = compileSource(
-    "(bus ~ publish (bench/Placed ^order_id \"o1\" ^total 1.5))")
+    "(bus .publish (bench/Placed ^order_id \"o1\" ^total 1.5))")
   bench("event.publish_small.one_subscriber", 200_000, i):
     let r = run(publishSmallChunk, eventScope)
     checksum = checksum + r.props["delivered"].intVal
 
-  let publishFrozenChunk = compileSource("(bus ~ publish frozen)")
+  let publishFrozenChunk = compileSource("(bus .publish frozen)")
   bench("event.publish_frozen.one_subscriber", 200_000, i):
     let r = run(publishFrozenChunk, eventScope)
     checksum = checksum + r.props["delivered"].intVal
 
-  let publishFanoutChunk = compileSource("(wide ~ publish frozen)")
+  let publishFanoutChunk = compileSource("(wide .publish frozen)")
   bench("event.publish_frozen.four_subscribers", 200_000, i):
     let r = run(publishFanoutChunk, eventScope)
     checksum = checksum + r.props["delivered"].intVal
 
   # An unmatched publication is what "scans no unrelated subscriptions" costs:
   # the bus holds four subscriptions and none of them can match.
-  let publishMissChunk = compileSource("(wide ~ publish miss)")
+  let publishMissChunk = compileSource("(wide .publish miss)")
   bench("event.publish_frozen.no_match", 200_000, i):
     let r = run(publishMissChunk, eventScope)
     checksum = checksum + r.props["matched"].intVal + 1
 
   let subscribeChunk = compileSource(
-    "((bus ~ subscribe bench/Placed a) ~ cancel)")
+    "((bus .subscribe bench/Placed a) .cancel)")
   bench("event.subscribe_cancel", 100_000, i):
     let v = run(subscribeChunk, eventScope)
     checksum = checksum + (if v.isTruthy: 1 else: 0)

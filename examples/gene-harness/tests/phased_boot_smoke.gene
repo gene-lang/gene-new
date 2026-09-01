@@ -21,7 +21,7 @@
           (Plugin ^id "phase_probe" ^provides ["PhaseProbe"] ^requires []
             ^contextual true
             ^activate (fn [] (fn [host]
-              (host ~ PluginHost:provide "PhaseProbe" "ready"))))))))
+              (host .PluginHost:provide "PhaseProbe" "ready"))))))))
   (var initial (new_harness ^workspace workspace))
   (register_module workspace initial "phase_probe" source ^selectors [])
 

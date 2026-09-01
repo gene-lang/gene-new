@@ -47,7 +47,7 @@
   # the model that was configured when the provider was bound — the one that
   # would have answered — and not a second read of the environment.
   (var reported ((ModelCodegen ^model "vendor/model-1" ^skill "")
-                 ~ HarnessCodegen:author))
+                 .HarnessCodegen:author))
   (assert (== reported/by "codegen/model")
     "the model-backed author must identify the provider")
   (assert (== reported/model "vendor/model-1")

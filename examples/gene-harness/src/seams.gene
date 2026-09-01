@@ -56,7 +56,7 @@
 (impl HarnessFs for MemFs
   (message read_text [path : Str] : Str
     ^capabilities []
-    (?? (self/files ~ get path) $"mem:<no ${path}>")))
+    (?? (self/files .get path) $"mem:<no ${path}>")))
 
 # --- The seam's own conformance gate ---------------------------------------
 #
@@ -166,11 +166,11 @@
 # provider swap move every consumer at once.
 
 (fn head_tool [fs, path : Str] : Str
-  (fs ~ HarnessFs:read_text path))
+  (fs .HarnessFs:read_text path))
 
 (fn report_tool [fs, r, path : Str] : Str
   # Two seams, one consumer, and no knowledge of which providers are bound.
   # Under the `cli` profile this reads a real file and returns plain text;
   # under `web` it reads memory and returns escaped HTML. This function is
   # identical in both, and so is its source.
-  (r ~ HarnessRender:render (head_tool fs path)))
+  (r .HarnessRender:render (head_tool fs path)))

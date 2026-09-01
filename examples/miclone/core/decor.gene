@@ -72,7 +72,7 @@
   (new DecorRegistry))
 
 (fn decor_count [d : DecorRegistry] : F64
-  (d/count ~ get 0.0))
+  (d/count .get 0.0))
 
 (type DecorRegistryFull
   ^props {^message Str}
@@ -87,14 +87,14 @@
   (if_yes (>= id max_decors)
     (fail (new DecorRegistryFull
                $"decoration registry is full at ${max_decors} entries")))
-  (d/names ~ push name)
-  (d/surface ~ set id surface)
-  (d/trunk ~ set id trunk)
-  (d/leaf ~ set id leaf)
-  (d/min_height ~ set id min_height)
-  (d/max_height ~ set id max_height)
-  (d/chance ~ set id chance)
-  (d/count ~ set 0.0 (+ id 1.0))
+  (d/names .push name)
+  (d/surface .set id surface)
+  (d/trunk .set id trunk)
+  (d/leaf .set id leaf)
+  (d/min_height .set id min_height)
+  (d/max_height .set id max_height)
+  (d/chance .set id chance)
+  (d/count .set 0.0 (+ id 1.0))
   id)
 
 (fn decor_name [d : DecorRegistry id : F64] : Str
@@ -102,10 +102,10 @@
   (var i id)
   n/%i)
 
-(fn decor_surface [d : DecorRegistry id : F64] : F64 (d/surface ~ get id))
-(fn decor_trunk [d : DecorRegistry id : F64] : F64 (d/trunk ~ get id))
-(fn decor_leaf [d : DecorRegistry id : F64] : F64 (d/leaf ~ get id))
-(fn decor_chance [d : DecorRegistry id : F64] : F64 (d/chance ~ get id))
+(fn decor_surface [d : DecorRegistry id : F64] : F64 (d/surface .get id))
+(fn decor_trunk [d : DecorRegistry id : F64] : F64 (d/trunk .get id))
+(fn decor_leaf [d : DecorRegistry id : F64] : F64 (d/leaf .get id))
+(fn decor_chance [d : DecorRegistry id : F64] : F64 (d/chance .get id))
 
 # --- placement ---------------------------------------------------------------
 #
@@ -128,8 +128,8 @@
 # be the tallest one.
 (fn decor_height [d : DecorRegistry id : F64 wx : F64 wz : F64
                   seed : F64] : F64
-  (var lo (d/min_height ~ get id))
-  (var hi (d/max_height ~ get id))
+  (var lo (d/min_height .get id))
+  (var hi (d/max_height .get id))
   (var t (hash_unit3 wx wz (+ id 31.0) (+ seed decor_salt)))
   (+ lo ($math/floor (* t (+ (- hi lo) 1.0)))))
 

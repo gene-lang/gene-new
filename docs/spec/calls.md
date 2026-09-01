@@ -23,34 +23,34 @@ MVP compiler-dispatched heads:
 
 <!-- compiler-head-dispatch:start -->
 ```text
-do if if_yes if_not && || ?? ! let var const set new ~ ?~ fn macro quote quasiquote
+do if if_yes if_not && || ?? ! let var const set new fn macro quote quasiquote
 select path msg ns env eval import import_impl mod match while loop repeat for break
 continue yield return try scope supervisor spawn await fail panic type alias enum
 protocol impl derive with_capabilities web_module
 ```
 <!-- compiler-head-dispatch:end -->
 
-`?~` is the absence-guarded send. It is `~` with one additional rule, applied
-to the receiver only:
+`?.message` is the absence-guarded send. It is `.message` with one additional
+rule, applied to the receiver only:
 
 - the receiver is evaluated exactly once; if it is **absent** (`nil` or `void`)
   the send yields that receiver unchanged and no message is resolved, no
   argument or named-argument form is evaluated, and no impl runs;
-- a present receiver takes the ordinary `~` path in full, so an unresolvable
+- a present receiver takes the ordinary dot-send path in full, so an unresolvable
   message is still a `MessageError` — guarding never suppresses a misspelled
   name;
-- guarding is decided before message resolution, so `(nil ?~ anything)` is
+- guarding is decided before message resolution, so `(nil ?.anything)` is
   `nil` regardless of the name;
-- it does not alter `~`. `Nil` remains an ordinary nominal type with no
-  dispatch carve-out, `(nil ~ msg)` is still an error, and where
-  `(impl P for Nil …)` exists `(nil ~ P:m)` runs it while `(nil ?~ P:m)`
+- it does not alter an ordinary dot send. `Nil` remains an ordinary nominal type with no
+  dispatch carve-out, `(nil .msg)` is still an error, and where
+  `(impl P for Nil …)` exists `(nil .P:m)` runs it while `(nil ?.P:m)`
   short-circuits before lookup;
-- every `~` callee form is accepted — bare, `P:m`, `Self:m`, held `%m`, and a
-  computed message expression — together with named arguments and spreads;
-- leading `(?~ m …)` is the guarded self-send, observable where lexical `self`
+- every dot descriptor is accepted — bare `.m`, qualified `.P:m`/`.Self:m`,
+  held `.%m`, and computed `.%(expr)` — together with named arguments and spreads;
+- leading `(?.m …)` is the guarded self-send, observable where lexical `self`
   is absent, as in an `impl P for Nil` body;
-- two forms are rejected: `super` is never absent, and a selector callee
-  (`x ?~ /name`) is a projection rather than a send — use `??` for an
+- `super` is never absent, so `super ?.m` is rejected. Selectors are ordinary
+  callables (`(/name x)`), not message descriptors; use `??` for an
   absent-valued projection.
 
 Clause/declaration heads (`then`, `elif`, `else`, `when`, `catch`, `ensure`,

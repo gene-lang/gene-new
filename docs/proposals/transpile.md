@@ -319,12 +319,12 @@ independently of JS and lands on JS's two-absence model exactly.
 | `match` | decision tree of `if`/`switch` | none |
 | selector literal `/a/b` | closure | none |
 | `x/a/b` static path | `x.a.b` | none |
-| `(x ~ m a)` static receiver | `x.m(a)` | none |
+| `(x .m a)` static receiver | `x.m(a)` | none |
 | `same?` | `===` | none |
 | `^is` | `extends` | none |
 | `enum` | const singletons + discriminated union | small |
 | node `(h ^p v x)` | a `GeneNode` class | helper |
-| `(x ~ %m a)` dynamic receiver | `send(x, m, a)` | helper |
+| `(x .%m a)` dynamic receiver | `send(x, m, a)` | helper |
 
 **Everything below was mismarked "none"/"small" in an earlier draft.** Each is a
 genuine representation decision that owes a written contract before it enters
@@ -423,18 +423,18 @@ runtime.
 
 ### 4.7 Hazard 3 — protocols and dispatch
 
-`~` is dispatch and only dispatch (§3). Bare = type-direct, qualified `P:m` =
+A dot send is dispatch and only dispatch (§3). Bare = type-direct, qualified `P:m` =
 protocol. Both walk the `^is` chain, and impls have visibility scopes.
 
 In the profile, drop overlay/scoped impls and the picture collapses to something
 JS does natively:
 
-- **Type-direct messages** → prototype methods. `(x ~ m a)` → `x.m(a)`.
-  `^is` → `extends`. `(super ~ m)` → `super.m()`. Free.
+- **Type-direct messages** → prototype methods. `(x .m a)` → `x.m(a)`.
+  `^is` → `extends`. `(super .m)` → `super.m()`. Free.
 - **Protocol impls** → methods installed under a **unique symbol** per protocol
   message, so `P:m` and `Q:m` coexist on one class without collision:
   `x[P$m](a)`. `(impl P for T …)` is `Object.defineProperty` on `T.prototype`
-  at module load. This does **not** make `super ~ P:m` free: `super` resolves
+  at module load. This does **not** make `super .P:m` free: `super` resolves
   from the *enclosing type's* parent, not the receiver's, and an externally
   installed function has no `[[HomeObject]]`, so JS `super` is unavailable
   inside it. Protocol `super` needs an explicit chain walk from a recorded
@@ -448,9 +448,9 @@ JS does natively:
 - **Message values** (`P:msg`, `Self:msg` in value position) → a closure
   `(recv, ...args) => recv[P$m](...args)`. Matches the documented
   `(receiver, ...send args)` callable shape exactly, so `(map xs P:show)` works.
-- **`?~`** → `x == null ? x : x.m(a)` with `x` hoisted to a temp. Note this is
+- **`x ?.m(a)`** → `x == null ? x : x.m(a)` with `x` hoisted to a temp. Note this is
   *not* `x?.m(a)`: JS optional chaining yields `undefined` for a `null`
-  receiver, but Gene's `?~` yields the receiver unchanged — `nil` stays `nil`.
+  receiver, but Gene's guarded dot send yields the receiver unchanged — `nil` stays `nil`.
   Hoist and test.
 
 `MessageError` and `CallKindError` mostly become compile-time errors in the
@@ -613,7 +613,7 @@ containing module:
     void)
 
   (fn main [root : Any] : Void
-    (root ~ add_event_listener "click" on_click)))
+    (root .add_event_listener "click" on_click)))
 ```
 
 `web_module` builds a **synthetic `^profile web` source unit** with a stable
@@ -815,7 +815,7 @@ analyzer registers no Gene-facing event registration, so both spellings fail
 today:
 
 ```
-(root ~ add_event_listener "click" on_click)
+(root .add_event_listener "click" on_click)
   ->  web type Any has no message add_event_listener
 ($dom/add_event_listener root "click" on_click)
   ->  portable web stdlib does not provide dom/add_event_listener

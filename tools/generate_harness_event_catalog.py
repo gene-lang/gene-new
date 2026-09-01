@@ -54,7 +54,7 @@ def render() -> str:
         "",
         "(fn require_event_fields [payload, names, event_name]",
         "  (for name in names",
-        "    (if (== (payload ~ get name) void)",
+        "    (if (== (payload .get name) void)",
         "      ($panic $\"event ${event_name} requires ${name}\")))",
         "  payload)",
         "",

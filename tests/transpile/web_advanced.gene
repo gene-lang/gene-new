@@ -13,7 +13,7 @@
     self/name))
 
 (fn name_of [value : Named] : Str
-  (value ~ Named:name))
+  (value .Named:name))
 
 (enum Choice
   none

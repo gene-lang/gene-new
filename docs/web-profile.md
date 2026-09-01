@@ -108,7 +108,7 @@ an out-of-range *read* yields `void`. This holds for list path segments, dynamic
 none of it — `a[-1]` reads `undefined` and writes an expando the array never
 sees, and a store past the end is silently dropped on a typed array — so reads
 lower through a `$gene_at` helper and writes through `$gene_index`, which is
-what keeps `xs/-1` and `(b ~ set -1 v)` from meaning two different things by
+what keeps `xs/-1` and `(b .set -1 v)` from meaning two different things by
 backend. `tests/transpile/fixtures.json` carries the agreement as `index.*`.
 
 This is not free: it costs roughly 22% on a buffer-indexing hot loop
@@ -232,7 +232,7 @@ accept a `Stream` receiver, `to_stream` converts a `List` into one, and
 `take`/`each` are not portable builtins. An eager receiver reaching these
 operations is a compile-time rejection naming the missing message — never a
 lowering that only looks equivalent. The portable pipeline is therefore the
-§2.6 spelling, `(xs ~ to_stream; ~ map f; ~ filter p; ~ into [])`, which both
+§2.6 spelling, `(xs .to_stream; .map f; .filter p; .into [])`, which both
 backends run. Closing the gap means giving the profile eager `List` lowers
 with their representations decided first — bigint-to-number conversion for a
 `take` count, `undefined`-to-`null` for a void map result, truthiness for a

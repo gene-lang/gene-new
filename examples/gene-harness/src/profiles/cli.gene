@@ -28,14 +28,14 @@
   (Plugin ^id "fs" ^provides ["HarnessFs"]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "HarnessFs"
+      (host .PluginHost:provide "HarnessFs"
         (fs_provider (LocalFs ^root "/tmp")))))))
 
 (fn cli_render_plugin [] : Plugin
   (Plugin ^id "render" ^provides ["HarnessRender"]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "HarnessRender"
+      (host .PluginHost:provide "HarnessRender"
         (render_provider (TextRender)))))))
 
 (fn cli_profile [] : Profile

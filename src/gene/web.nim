@@ -2544,20 +2544,28 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         rewritten.add value.body[i]
       return analysis.analyzeExpr(newNode(newSym("path"), body = rewritten),
                                   bindings, expected)
-    # `recv/~msg` is the zero-argument send `(recv ~ msg)` — docs/style.md
-    # prefers it, and the reader turns a trailing `~name` segment into exactly
-    # this shape. Desugared here rather than given its own analysis so the two
+    # `recv/.msg` is the zero-argument send `(recv .msg)` — docs/style.md
+    # prefers it, and the reader lowers the dot segment to a compact internal
+    # marker. Desugared here rather than given its own analysis so the two
     # spellings are one code path from this point down: same typing, same
     # method lookup, same diagnostics. Without it every segment reads as a
-    # property key and `buf/~len` types as a member that does not exist.
+    # property key and `buf/.len` types as a member that does not exist.
     let last = value.body[^1]
-    if last.kind == vkSymbol and last.symVal.len > 1 and
-        last.symVal.startsWith("~"):
+    if last.kind == vkSymbol and
+        ((last.symVal.len > 1 and last.symVal.startsWith("~")) or
+         (last.symVal.len > 2 and last.symVal.startsWith("?~"))):
+      let optional = last.symVal.startsWith("?~")
+      let rest = last.symVal[(if optional: 2 else: 1) .. ^1]
       let receiver =
         if value.body.len == 2: value.body[0]
         else: newNode(newSym("path"), body = value.body[0 .. ^2])
+      let callee =
+        if rest.len > 1 and rest[0] == '%':
+          newNode(newSym("unquote"), body = @[newSym(rest[1 .. ^1])])
+        else:
+          newSym(rest)
       let desugared = newNode(receiver,
-        body = @[newSym("~"), newSym(last.symVal[1 .. ^1])])
+        body = @[newSym(if optional: "?~" else: "~"), callee])
       return analysis.analyzeExpr(desugared, bindings, expected)
     var qualifiedSegments: seq[string]
     var qualified = true

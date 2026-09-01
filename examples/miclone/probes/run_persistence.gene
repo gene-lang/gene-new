@@ -16,8 +16,8 @@
 (fn main [args] : Nil
   # `args` is a Node: `(args ^raw "create /tmp/w" "create" "/tmp/w")`. The
   # positional arguments are its body; `^raw` is the same line unsplit.
-  (var argv args/~body)
-  (var n argv/~size)
+  (var argv args/.body)
+  (var n argv/.size)
   (var mode (if (> n 0) argv/0 "verify"))
   (var root (if (> n 1) argv/1 default_root))
   ($println "")
@@ -33,7 +33,7 @@
       ($println ($str/join out "\n"))
       (var bad 0)
       (var i 0)
-      (while (< i out/~size)
+      (while (< i out/.size)
         (if_yes ($str/starts_with? out/%i "FAIL") (set bad (+ bad 1)))
         (set i (+ i 1)))
       ($println "")

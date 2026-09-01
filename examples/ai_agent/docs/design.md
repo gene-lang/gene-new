@@ -1531,7 +1531,7 @@ surface the worker has.**
 
 An operation declaration mirrors the §6 `Tool` pattern — one value derives
 everything: argument validation, the `/worker W <op>` slash dispatch, the
-`session ~ call_worker` message, the gateway route, model-tool access, and
+`session .call_worker` message, the gateway route, model-tool access, and
 `/help worker <kind>` documentation, with no second registration to drift.
 The declaration keeps independent concerns as **orthogonal policies** rather
 than one flat risk class, and its argument/result schemas are real Gene type
@@ -1696,7 +1696,7 @@ with typed `worker_name_taken`. Renaming is deferred so saved commands,
 completion candidates, and delegation records cannot silently retarget while
 an operation is running.
 REPL scripts use the message form
-(`session ~ call_worker "build-shell" "run" {^command "nimble test"}`), which
+(`session .call_worker "build-shell" "run" {^command "nimble test"}`), which
 is the §9.1 signature story extended to workers. Every full-audit invocation
 records its caller: the existing `worker_operation_started/finished` events
 gain additive `^origin` (`user|model|worker|remote`) and `^caller_worker_id`
@@ -2118,11 +2118,11 @@ pseudocode.
        ^tools (tool_schemas_now)
        ^tool_choice "auto"
        ^parallel_tool_calls true}))
-  (var effort (reasoning_effort ~ get))
+  (var effort (reasoning_effort .get))
   (if (!= effort "default")
     (if (== api_flavor "chat")
-      (request ~ put "reasoning_effort" effort)
-      (request ~ put "reasoning" {^effort effort})))
+      (request .put "reasoning_effort" effort)
+      (request .put "reasoning" {^effort effort})))
   (transport (stringify request) render_stream))
 
 # Call the model; if it asks for tools, execute them and recur with the model
@@ -2133,7 +2133,7 @@ pseudocode.
   (var resp
     (call_model transport input_items
       (fn [text]
-        (streamed ~ set true)
+        (streamed .set true)
         (emit "text_delta" {^text (redact text)})
         (render_stream (redact text)))))
   (if (!= resp/agent_error void)
@@ -2149,7 +2149,7 @@ pseudocode.
       (if (empty? calls)
         (then
           (emit "agent_text" {^text (response_text resp)})
-          (if (streamed ~ get)
+          (if (streamed .get)
             (render "")
             (render (redact (response_text resp))))
           (emit "turn_done" {^text (response_text resp)})
@@ -2163,11 +2163,11 @@ pseudocode.
           # cannot strand a subprocess in a lazy mapper continuation.
           (var outputs (cell []))
           (for c in calls
-            ((outputs ~ get) ~ push (run_tool_call c emit))
+            ((outputs .get) .push (run_tool_call c emit))
             (render $"  · tool ${c/name} ${c/arguments}"))
           (run_turn
             transport
-            ((to_stream (outputs ~ get)) ~ into
+            ((to_stream (outputs .get)) .into
               (append_all input_items (response_output_items resp)))
             render
             render_stream
@@ -2175,9 +2175,9 @@ pseudocode.
             emit))))))
 
 # The interactive path adds one user item and stores the returned item list.
-(items ~ set
+(items .set
   (run_turn_tracked live_transport
-            (append (items ~ get) (user_item line))
+            (append (items .get) (user_item line))
             (fn [text]
               (render_agent_text transcript streaming text))
             (fn [text]
@@ -2210,12 +2210,12 @@ selectors. Mutations go through messages so the session can keep invariants
 (system-prompt memory refresh, persistence) and append an audit event:
 
 ```gene
-(session ~ add_tool (Tool ^name "check" ^description "..." ^risk 'read
+(session .add_tool (Tool ^name "check" ^description "..." ^risk 'read
                           ^params [...] ^handler my_domain_check))
-(session ~ remember "reader datum comments are spacing")
-(session ~ subscribe "tool_call")     ; echo future events of this type
-(session ~ trace "type=tool_call")    ; same filters as /trace
-(session ~ resume)                    ; continue the current turn on exit
+(session .remember "reader datum comments are spacing")
+(session .subscribe "tool_call")     ; echo future events of this type
+(session .trace "type=tool_call")    ; same filters as /trace
+(session .resume)                    ; continue the current turn on exit
 ```
 
 `add_tool` registers into the same typed registry the turn loop reads, so a tool
@@ -2262,7 +2262,7 @@ Agent, worker, and pane mutations remain message-based (`spawn_agent`,
 `call_worker` over the §7.2 operation tables) so
 supervision, capability checks, events, and persistence cannot be bypassed by
 mutating a list cell. `call_worker` makes the REPL a first-class worker
-scripting surface — `(session ~ call_worker "w3" "run" {^command "nimble
+scripting surface — `(session .call_worker "w3" "run" {^command "nimble
 test"})` drives the same typed operation as `/worker w3 run nimble test` —
 while observe operations (`status`, `tail`, `snapshot`) give scripts bounded,
 event-free reads of any worker. `session/panes` is the shipped projection of the local

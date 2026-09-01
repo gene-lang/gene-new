@@ -56,9 +56,9 @@
   (if_not ($fs/exists? root)
     ($fs/make_dir root))
   (var db (open $"${root}/map.sqlite"))
-  (db ~ Db:exec "pragma journal_mode = wal")
-  (db ~ Db:exec "pragma synchronous = normal")
-  (db ~ Db:exec "create table if not exists blocks (
+  (db .Db:exec "pragma journal_mode = wal")
+  (db .Db:exec "pragma synchronous = normal")
+  (db .Db:exec "create table if not exists blocks (
      x integer not null,
      y integer not null,
      z integer not null,
@@ -68,7 +68,7 @@
 
 (fn close_world [w : WorldStore] : Nil
   (var db w/db)
-  (db ~ Db:close))
+  (db .Db:close))
 
 # --- metadata ----------------------------------------------------------------
 #
@@ -97,7 +97,7 @@
                content : (Buffer F32) param1 : (Buffer F32)
                param2 : (Buffer F32)] : Nil
   (var db w/db)
-  (db ~ Db:execute
+  (db .Db:execute
     "insert or replace into blocks (x, y, z, data) values (?, ?, ?, ?)"
     bx by bz (encode_block r dim content param1 param2)))
 
@@ -109,9 +109,9 @@
                content : (Buffer F32) param1 : (Buffer F32)
                param2 : (Buffer F32)] : Bool
   (var db w/db)
-  (var rows (db ~ Db:query
+  (var rows (db .Db:query
     "select data from blocks where x = ? and y = ? and z = ?" bx by bz))
-  (if (== rows/~size 0)
+  (if (== rows/.size 0)
     (then false)
     (else
       (decode_block r dim rows/0/data content param1 param2)
@@ -119,19 +119,19 @@
 
 (fn has_block? [w : WorldStore bx : Int by : Int bz : Int] : Bool
   (var db w/db)
-  (var rows (db ~ Db:query
+  (var rows (db .Db:query
     "select 1 as present from blocks where x = ? and y = ? and z = ?"
     bx by bz))
-  (> rows/~size 0))
+  (> rows/.size 0))
 
 (fn block_count [w : WorldStore] : Int
   (var db w/db)
-  (var rows (db ~ Db:query "select count(*) as n from blocks"))
+  (var rows (db .Db:query "select count(*) as n from blocks"))
   rows/0/n)
 
 (fn stored_bytes [w : WorldStore] : Int
   (var db w/db)
-  (var rows (db ~ Db:query "select sum(length(data)) as n from blocks"))
+  (var rows (db .Db:query "select sum(length(data)) as n from blocks"))
   (if (== rows/0/n nil) 0 rows/0/n))
 
 # --- batching ----------------------------------------------------------------
@@ -148,8 +148,8 @@
 
 (fn begin_batch [w : WorldStore] : Nil
   (var db w/db)
-  (db ~ Db:exec "begin"))
+  (db .Db:exec "begin"))
 
 (fn commit_batch [w : WorldStore] : Nil
   (var db w/db)
-  (db ~ Db:exec "commit"))
+  (db .Db:exec "commit"))

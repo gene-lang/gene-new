@@ -40,16 +40,16 @@
   (while (<= depth 3)
     (for program in (programs_of_length subject/primitive_tokens depth)
       (var projection (teaching_signature subject program inputs))
-      (var bucket (index ~ get projection))
+      (var bucket (index .get projection))
       (if (== bucket void) (set bucket []))
-      (bucket ~ push program)
-      (index ~ put projection bucket))
+      (bucket .push program)
+      (index .put projection bucket))
     (set depth (+ depth 1)))
   index)
 
 (fn family_admissible_candidates [index : Map, family : Node] : (List Node)
   (var pack_index (public_pack_index))
-  (var bucket (index ~ get family/teaching_signatures/%pack_index))
+  (var bucket (index .get family/teaching_signatures/%pack_index))
   (if (== bucket void)
     ($panic "family has no admissible candidate bucket"))
   bucket)
@@ -89,10 +89,10 @@
                 subject candidate_sets/%position current execution/output)
         (set sound false))
       (set current execution/output)
-      (chain ~ push current)
+      (chain .push current)
       (set position (+ position 1)))
     (if (&& valid (! sound)) (set unsound_draws (+ unsound_draws 1)))
-    (if (&& valid sound (!= current draw/input) (! (current ~ empty?)))
+    (if (&& valid sound (!= current draw/input) (! (current .empty?)))
       (return
         `(case_draw
            ^valid true ^state %state ^input %draw/input ^expected %current
@@ -109,7 +109,7 @@
                            attempts_per_component : Int] : Node
   (var candidate_counts : (List Int) [])
   (for candidates in candidate_sets
-    (candidate_counts ~ push (candidates ~ size)))
+    (candidate_counts .push (candidates .size)))
   `(component_workflow_task
      ^public
        (task
@@ -139,7 +139,7 @@
   (var used_tuples : Map {})
   (var attempts 0)
   (var unsound_draws 0)
-  (while (< (tasks ~ size) count)
+  (while (< (tasks .size) count)
     (if (>= attempts 100000)
       ($panic "component workflow composition generation exhausted its bound"))
     (set attempts (+ attempts 1))
@@ -149,31 +149,31 @@
     (var components : List [])
     (var candidate_sets : List [])
     (var tuple_parts : (List Str) [])
-    (while (< (programs ~ size) composition_arity)
-      (var family_draw (corpus_draw state (families ~ size)))
+    (while (< (programs .size) composition_arity)
+      (var family_draw (corpus_draw state (families .size)))
       (set state family_draw/state)
       (var key $"${family_draw/value}")
-      (if_yes (== (selected ~ get key) void)
-        (selected ~ put key true)
+      (if_yes (== (selected .get key) void)
+        (selected .put key true)
         (var family_index family_draw/value)
         (var family families/%family_index)
-        (var position (programs ~ size))
-        (programs ~ push family/canonical_program)
-        (signatures ~ push family/semantic_signature)
-        (components ~ push (public_component family pack_index position))
-        (candidate_sets ~ push
+        (var position (programs .size))
+        (programs .push family/canonical_program)
+        (signatures .push family/semantic_signature)
+        (components .push (public_component family pack_index position))
+        (candidate_sets .push
           (family_admissible_candidates candidate_index family))
-        (tuple_parts ~ push key)))
+        (tuple_parts .push key)))
     (var tuple_key (join tuple_parts "_"))
-    (if_yes (== (used_tuples ~ get tuple_key) void)
+    (if_yes (== (used_tuples .get tuple_key) void)
       (var draw
         (draw_component_composition_case subject programs candidate_sets state))
       (set state draw/state)
       (set unsound_draws (+ unsound_draws draw/unsound_draws))
       (if_yes draw/valid
-        (used_tuples ~ put tuple_key true)
-        (var task_index (tasks ~ size))
-        (tasks ~ push
+        (used_tuples .put tuple_key true)
+        (var task_index (tasks .size))
+        (tasks .push
           (component_task_record
             $"component_composition_${task_index}"
             (quote heldout_composition) draw/input draw/expected draw/chain
@@ -190,7 +190,7 @@
   (var maximum 0)
   (var first true)
   (for family in families
-    (var size ((family_admissible_candidates index family) ~ size))
+    (var size ((family_admissible_candidates index family) .size))
     (set total (+ total size))
     (if_yes first
       (set minimum size)
@@ -277,13 +277,13 @@
             (== task/public/attempts_per_component attempts_per_component)
             (== task/public/tool_contract
                 "apply_workflow_candidate_then_submit")
-            (== (task/public/components ~ size) composition_arity)
-            (== (task/verifier/component_programs ~ size) composition_arity)
-            (== (task/verifier/required_semantic_signatures ~ size)
+            (== (task/public/components .size) composition_arity)
+            (== (task/verifier/component_programs .size) composition_arity)
+            (== (task/verifier/required_semantic_signatures .size)
                 composition_arity)
-            (== (task/verifier/admissible_candidate_counts ~ size)
+            (== (task/verifier/admissible_candidate_counts .size)
                 composition_arity)
-            (== (task/verifier/chain_values ~ size) (+ composition_arity 1)))
+            (== (task/verifier/chain_values .size) (+ composition_arity 1)))
     (return false))
   (if_not (== task/verifier/chain_values/0 task/public/input)
     (return false))
@@ -308,20 +308,20 @@
               (== task/verifier/component_programs/%component_index
                   family/canonical_program)
               (== task/verifier/admissible_candidate_counts/%component_index
-                  (candidates ~ size))
+                  (candidates .size))
               execution/valid
               (== execution/output next)
               (!= next value)
               (candidates_agree? subject candidates value next))
       (return false))
-    (programs ~ push family/canonical_program)
+    (programs .push family/canonical_program)
     (set component_index (+ component_index 1)))
   (var last task/verifier/chain_values/%composition_arity)
   (&&
     (== task/verifier/canonical_target_program (compose_programs programs))
     (== task/verifier/expected last)
     (!= last task/public/input)
-    (! (last ~ empty?))))
+    (! (last .empty?))))
 
 (fn verify_component_workflow_subject [candidate : Node] : Node
   (var subject (latent_interpreter_subject candidate/composition_arity))
@@ -330,16 +330,16 @@
   (var teachable (teachable_behavior_catalog subject complete))
   (var teachable_by_signature : Map {})
   (for behavior in teachable/teachable_behaviors
-    (teachable_by_signature ~ put behavior/signature behavior))
+    (teachable_by_signature .put behavior/signature behavior))
   (var candidate_index (admissible_candidate_index subject))
 
-  (var catalog_valid (== (candidate/catalog ~ size) candidate/family_count))
+  (var catalog_valid (== (candidate/catalog .size) candidate/family_count))
   (var operation_coverage_valid true)
   (var family_ids : Map {})
   (var family_signatures : Map {})
   (var family_index 0)
   (for family in candidate/catalog
-    (var behavior (teachable_by_signature ~ get family/semantic_signature))
+    (var behavior (teachable_by_signature .get family/semantic_signature))
     (if_not (&&
               (!= behavior void)
               (== family/index family_index)
@@ -348,28 +348,28 @@
               (== family/teaching_signatures behavior/teaching_signatures)
               (== family/teaching_packs
                   (all_teaching_packs subject family/canonical_program))
-              (== (family_ids ~ get family/id) void)
-              (== (family_signatures ~ get family/semantic_signature) void))
+              (== (family_ids .get family/id) void)
+              (== (family_signatures .get family/semantic_signature) void))
       (set catalog_valid false))
-    (family_ids ~ put family/id true)
-    (family_signatures ~ put family/semantic_signature true)
+    (family_ids .put family/id true)
+    (family_signatures .put family/semantic_signature true)
     (set family_index (+ family_index 1)))
   (for primitive in subject/primitive_tokens
     (if_not (primitive_covered? candidate/catalog primitive)
       (set operation_coverage_valid false)))
 
-  (var order_valid (== (candidate/family_order ~ size) candidate/family_count))
+  (var order_valid (== (candidate/family_order .size) candidate/family_count))
   (var order_seen : Map {})
   (for index in candidate/family_order
     (var key $"${index}")
     (if_not (&&
               (>= index 0) (< index candidate/family_count)
-              (== (order_seen ~ get key) void))
+              (== (order_seen .get key) void))
       (set order_valid false))
-    (order_seen ~ put key true))
+    (order_seen .put key true))
 
   (var replay_valid
-    (== (candidate/replay_suites ~ size) candidate/family_count))
+    (== (candidate/replay_suites .size) candidate/family_count))
   (var replay_case_count 0)
   (var replay_ids : Map {})
   (for suite in candidate/replay_suites
@@ -377,10 +377,10 @@
     (if_not (&&
               (!= family nil)
               (== suite/semantic_signature family/semantic_signature)
-              (== (suite/cases ~ size) candidate/replay_cases_per_family)
-              (== (replay_ids ~ get suite/family_id) void))
+              (== (suite/cases .size) candidate/replay_cases_per_family)
+              (== (replay_ids .get suite/family_id) void))
       (set replay_valid false))
-    (replay_ids ~ put suite/family_id true)
+    (replay_ids .put suite/family_id true)
     (for test_case in suite/cases
       (set replay_case_count (+ replay_case_count 1))
       (if (== family nil)
@@ -394,7 +394,7 @@
             (set replay_valid false))))))
 
   (var training_valid
-    (== (candidate/training ~ size)
+    (== (candidate/training .size)
         (* candidate/family_count candidate/variants_per_family)))
   (var training_ids : Map {})
   (var training_index 0)
@@ -403,9 +403,9 @@
     (if_not (verify_task
               subject candidate/catalog task (quote training) variant 1)
       (set training_valid false))
-    (if (!= (training_ids ~ get task/public/id) void)
+    (if (!= (training_ids .get task/public/id) void)
       (set training_valid false))
-    (training_ids ~ put task/public/id true)
+    (training_ids .put task/public/id true)
     (set training_index (+ training_index 1)))
 
   (var expected_probe_count 0)
@@ -414,19 +414,19 @@
     (set expected_probe_count (+ expected_probe_count checkpoint))
     (set checkpoint (+ checkpoint candidate/retention_block_size)))
   (var probes_valid
-    (== (candidate/retention_probes ~ size) expected_probe_count))
+    (== (candidate/retention_probes .size) expected_probe_count))
   (var probe_ids : Map {})
   (for task in candidate/retention_probes
     (if_not (verify_task
               subject candidate/catalog task (quote retention_probe)
               pack_index 1)
       (set probes_valid false))
-    (if (!= (probe_ids ~ get task/public/id) void)
+    (if (!= (probe_ids .get task/public/id) void)
       (set probes_valid false))
-    (probe_ids ~ put task/public/id true))
+    (probe_ids .put task/public/id true))
 
   (var compositions_valid
-    (== (candidate/heldout_compositions ~ size)
+    (== (candidate/heldout_compositions .size)
         candidate/heldout_composition_count))
   (var composition_ids : Map {})
   (var composition_tuples : Map {})
@@ -440,14 +440,14 @@
       (+ sound_component_count candidate/composition_arity))
     (var tuple_parts : (List Str) [])
     (for component in task/public/components
-      (tuple_parts ~ push component/workflow_id))
+      (tuple_parts .push component/workflow_id))
     (var tuple_key (join tuple_parts "|"))
-    (if (!= (composition_tuples ~ get tuple_key) void)
+    (if (!= (composition_tuples .get tuple_key) void)
       (set compositions_valid false))
-    (composition_tuples ~ put tuple_key true)
-    (if (!= (composition_ids ~ get task/public/id) void)
+    (composition_tuples .put tuple_key true)
+    (if (!= (composition_ids .get task/public/id) void)
       (set compositions_valid false))
-    (composition_ids ~ put task/public/id true))
+    (composition_ids .put task/public/id true))
 
   (var recomputed_stats
     (admissible_candidate_stats candidate_index candidate/catalog))
@@ -466,9 +466,9 @@
       (<= candidate/attempts_per_component 4)
       (== candidate/public_pack_index pack_index)
       (== candidate/candidate_program_count 1885)
-      (== candidate/distinct_behavior_count (complete/behaviors ~ size))
+      (== candidate/distinct_behavior_count (complete/behaviors .size))
       (== candidate/teachable_behavior_count
-          (teachable/teachable_behaviors ~ size))
+          (teachable/teachable_behaviors .size))
       (== candidate/admissible_candidate_total recomputed_stats/total)
       (== candidate/minimum_admissible_candidates recomputed_stats/minimum)
       (== candidate/maximum_admissible_candidates recomputed_stats/maximum)
@@ -479,7 +479,7 @@
         replay_valid training_valid probes_valid compositions_valid))
   `(component_workflow_subject_verification
      ^valid %valid
-     ^family_count %(candidate/catalog ~ size)
+     ^family_count %(candidate/catalog .size)
      ^candidate_program_count %candidate/candidate_program_count
      ^distinct_behavior_count %candidate/distinct_behavior_count
      ^teachable_behavior_count %candidate/teachable_behavior_count
@@ -492,10 +492,10 @@
      ^replay_valid %replay_valid
      ^replay_case_count %replay_case_count
      ^training_valid %training_valid
-     ^training_task_count %(candidate/training ~ size)
+     ^training_task_count %(candidate/training .size)
      ^probes_valid %probes_valid
-     ^retention_probe_count %(candidate/retention_probes ~ size)
+     ^retention_probe_count %(candidate/retention_probes .size)
      ^compositions_valid %compositions_valid
-     ^heldout_composition_count %(candidate/heldout_compositions ~ size)
+     ^heldout_composition_count %(candidate/heldout_compositions .size)
      ^sound_component_count %sound_component_count
      ^counts_valid %counts_valid))

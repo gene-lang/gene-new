@@ -26,13 +26,13 @@
 
 (fn main [args] : Nil
   (var argv ($body args))
-  (if_not (== (argv ~ size) 2)
+  (if_not (== (argv .size) 2)
     ($panic
       "usage: skill_verifier_service_kernel <candidate-gene> <suite-json>"))
   (if (> (byte_size argv/0) 16384)
     ($panic "candidate source exceeds 16384 bytes"))
-  (var forms ((read_all argv/0) ~ into []))
-  (if_not (== (forms ~ size) 1)
+  (var forms ((read_all argv/0) .into []))
+  (if_not (== (forms .size) 1)
     ($panic "candidate argument must contain exactly one Gene form"))
   (var candidate forms/0)
   (var suite (parse (read_text argv/1)))
@@ -44,8 +44,8 @@
         (set suite_id id)
         (set cases items)
         (&& (!= id "")
-            (! (items ~ empty?))
-            (<= (items ~ size) 64)))
+            (! (items .empty?))
+            (<= (items .size) 64)))
       (else false)))
   (if_yes suite_valid
     (for test in cases
@@ -62,11 +62,11 @@
       (for test in cases
         (if (== (execute_candidate candidate test/input) test/expected)
           (set passed_count (+ passed_count 1))
-          (failures ~ push test/id))))
+          (failures .push test/id))))
     (else
       (for test in cases
-        (failures ~ push test/id))))
-  (var total (cases ~ size))
+        (failures .push test/id))))
+  (var total (cases .size))
   (var passed (== passed_count total))
   (var candidate_id (candidate_digest candidate))
   (var evidence

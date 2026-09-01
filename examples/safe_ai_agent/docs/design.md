@@ -319,7 +319,7 @@ inherited from the original proposal.
   active context, and with one it gets that row — resolved when the Env was
   minted, so never broader. Sealing is now something a program *says* rather
   than something it gets by omission: `^capabilities []` resolves to the empty
-  context. A `caller_env ~ snapshot [...]` stays closed regardless, because a
+  context. A `caller_env .snapshot [...]` stays closed regardless, because a
   snapshot promises exactly the names it lists.
   Getting there also exposed a second bug worth stating, because it made the
   first one invisible: `eval` rooted its overlay in `currentApplication()`

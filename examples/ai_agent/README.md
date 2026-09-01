@@ -69,7 +69,7 @@ Level policy:
 ## The TUI
 
 Slash commands: `/repl` (live Gene REPL with a stable `session` object —
-add tools, inspect state, `(session ~ resume)` to continue the turn),
+add tools, inspect state, `(session .resume)` to continue the turn),
 `/trace` (query the versioned event log: `type=`, `tool=`, `path=`, `turn=`),
 `/diff` and `/undo [id]` (only attributable file operations), `/sh` (open or
 focus a cancellable foreground shell pane), `/tty` (local user-driven escape

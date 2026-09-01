@@ -41,7 +41,7 @@
     {}))
 
 (fn form_str [req, name : Str] : Str
-  (|| ((form_fields req) ~ get name) ""))
+  (|| ((form_fields req) .get name) ""))
 
 (fn bad_request [message : Str] : Response
   (Response ^status 400 ^body message))

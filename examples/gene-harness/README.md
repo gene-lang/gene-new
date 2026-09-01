@@ -210,7 +210,7 @@ impl identity:
       ^activate
         (fn []
           (fn [host]
-            (host ~ PluginHost:contribute "tools"
+            (host .PluginHost:contribute "tools"
               {^name "echo" ^doc "echo text" ^run (fn [text] text)}))))))
 ```
 

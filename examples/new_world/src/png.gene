@@ -60,7 +60,7 @@
   [(band n 255) (band (shr n 8) 255)])
 
 (fn append_all [target : (List Int) items : (List Int)] : Nil
-  (for i in items (target ~ push i)))
+  (for i in items (target .push i)))
 
 # --- chunks ------------------------------------------------------------------
 
@@ -69,7 +69,7 @@
   (append_all body (to_list (from_str tag)))
   (append_all body payload)
   (var acc : (List Int) [])
-  (append_all acc (u32_be (payload ~ size)))
+  (append_all acc (u32_be (payload .size)))
   (append_all acc body)
   (append_all acc (u32_be (crc32 body)))
   acc)
@@ -95,7 +95,7 @@
   (set bit_count (+ bit_count 1))
   (if_yes (== bit_count 8)
     (do
-      (bit_out ~ push bit_acc)
+      (bit_out .push bit_acc)
       (set bit_acc 0)
       (set bit_count 0))))
 
@@ -116,7 +116,7 @@
 (fn bits_flush [] : Nil
   (if_yes (> bit_count 0)
     (do
-      (bit_out ~ push bit_acc)
+      (bit_out .push bit_acc)
       (set bit_acc 0)
       (set bit_count 0))))
 
@@ -146,7 +146,7 @@
   # a scan is cheaper than the arithmetic that would replace it.
   (var i 0)
   (var found 0)
-  (while (< i (table ~ size))
+  (while (< i (table .size))
     (if_yes (<= table/%i value) (set found i))
     (set i (+ i 1)))
   found)
@@ -182,16 +182,16 @@
   (bits_reset)
   (put_value 1 1)                 # BFINAL
   (put_value 1 2)                 # BTYPE = 01, fixed Huffman
-  (var n (data ~ size))
+  (var n (data .size))
   (var head : (List Int) [])
   (var i 0)
   (while (< i hash_size)
-    (head ~ push -1)
+    (head .push -1)
     (set i (+ i 1)))
   (var prev : (List Int) [])
   (set i 0)
   (while (< i n)
-    (prev ~ push -1)
+    (prev .push -1)
     (set i (+ i 1)))
 
   # A `%` path segment takes a symbol rather than a call, so every index is
@@ -293,12 +293,12 @@
   (var src 0)
   (var stride (* width 4))
   (while (< y height)
-    (raw ~ push 0)
+    (raw .push 0)
     (set x 0)
     (set row_start (* y stride))
     (while (< x stride)
       (set src (+ row_start x))
-      (raw ~ push pixels/%src)
+      (raw .push pixels/%src)
       (set x (+ x 1)))
     (set y (+ y 1)))
 

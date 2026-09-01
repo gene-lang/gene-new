@@ -13,7 +13,7 @@
 #   - (scope ...)         structured-concurrency root; waits for live children
 #   - (spawn expr)        evaluate expr in a child task, return (Task T E)
 #   - (await task)        suspend on the task; returns value or propagates Error
-#   - (task ~ cancel)     request cancellation; cooperative at next safepoint
+#   - (task .cancel)     request cancellation; cooperative at next safepoint
 #   - (channel ^capacity N)
 #                        bounded, typed (Channel T)
 #   - (actor/spawn ^init init-fn ^handle handle-fn)
@@ -77,22 +77,22 @@
   (spawn (do
     (var i 0)
     (while (< i 5)
-      (box ~ send (* i i))    # 0, 1, 4, 9, 16
-      (produced ~ set (+ (produced ~ get) 1))
+      (box .send (* i i))    # 0, 1, 4, 9, 16
+      (produced .set (+ (produced .get) 1))
       (set i (+ i 1)))))
 
   (spawn (do
     (var s 0)
     (var i 0)
     (while (< i 5)
-      (set s (+ s (box ~ recv)))
-      (consumed ~ set (+ (consumed ~ get) 1))
+      (set s (+ s (box .recv)))
+      (consumed .set (+ (consumed .get) 1))
       (set i (+ i 1)))
     ($println "     sum over channel:" s)))
 
   ($sleep 5)                           # let producer drain + consumer finish
-  ($println "     produced count:" (produced ~ get))
-  ($println "     consumed count:" (consumed ~ get)))
+  ($println "     produced count:" (produced .get))
+  ($println "     consumed count:" (consumed .get)))
 
 ($println "   - Channel/close wakes blocked receivers with ChannelClosed")
 (scope
@@ -100,13 +100,13 @@
   (var done ($cell false))
 
   (spawn (do
-    (try (box ~ recv)
+    (try (box .recv)
       catch ChannelClosed
-        (done ~ set true)
+        (done .set true)
         ($println "     receiver saw:" $ex/message))))
 
   ($sleep 1)                           # let receiver settle into recv
-  (box ~ close)
+  (box .close)
   ($sleep 1))                          # let the receiver catch and report
 
 ($println "")
@@ -122,10 +122,10 @@
 
 (var hits ($cell 0))
 (scope
-  (spawn (do (hits ~ set 1) ($sleep 0)))   # short-lived task: hits=1
-  (spawn (do ($sleep 1) (hits ~ set 2)))   # delayed task: hits=2
+  (spawn (do (hits .set 1) ($sleep 0)))   # short-lived task: hits=1
+  (spawn (do ($sleep 1) (hits .set 2)))   # delayed task: hits=2
   (await (spawn ($sleep 3))))                   # drain scope)
-($println "   - final cell value (last writer wins):" (hits ~ get))
+($println "   - final cell value (last writer wins):" (hits .get))
 
 ($println "")
 
@@ -139,16 +139,16 @@
 # -----------------------------------------------------------------------------
 ($println "4. cancellation contract")
 
-($println "   - explicit (t ~ cancel) runs the spawned task's `ensure`")
+($println "   - explicit (t .cancel) runs the spawned task's `ensure`")
 (var cleanup_count ($cell 0))
 (scope
   (var t
     (spawn (try ($sleep 60)
-            ensure (cleanup_count ~ set (+ (cleanup_count ~ get) 1)))))
+            ensure (cleanup_count .set (+ (cleanup_count .get) 1)))))
   ($sleep 1)                             # let the task reach its suspension
-  (t ~ cancel)                    # request cancellation
+  (t .cancel)                    # request cancellation
   ($sleep 1)                             # give ensure a chance to run
-  ($println "     cleanup ran:" (cleanup_count ~ get)))
+  ($println "     cleanup ran:" (cleanup_count .get)))
 
 ($println "   - cancellation propagates past typed `catch` and `catch Any`")
 ($println "     (live demo: a `try/catch Any \"caught\"` does not catch cancel;")
@@ -164,12 +164,12 @@
 (impl Error for Boom)
 (scope
   (spawn (try ($sleep 60)
-          ensure (cleanup2 ~ set (+ (cleanup2 ~ get) 1))))
+          ensure (cleanup2 .set (+ (cleanup2 .get) 1))))
   ($sleep 1)
   (try (fail (Boom ^message "abandon"))
     catch Boom nil))
 ($sleep 1)
-($println "     sibling ensure ran:" (cleanup2 ~ get))
+($println "     sibling ensure ran:" (cleanup2 .get))
 
 ($println "")
 
@@ -191,10 +191,10 @@
   ($actor/spawn ^init (fn [] 0) ^handle counter_handle))
 
 ($println "   - sequential processing — ordering is preserved per-actor")
-(counter ~ send 2)
-(counter ~ send 5)
-(counter ~ send 7)
-(var snap1 (counter ~ snapshot))
+(counter .send 2)
+(counter .send 5)
+(counter .send 7)
+(var snap1 (counter .snapshot))
 ($println "     final state after 2 + 5 + 7:" snap1/state)
 
 ($println "   - actor/ask with explicit ReplyTo capability")
@@ -204,14 +204,14 @@
 (fn ask_handle [ctx : (ActorContext Counter), state : Int, msg : Counter] : (ActorStep Int)
   (match msg
     (when (Counter ^reply reply)
-      (reply ~ send state)
+      (reply .send state)
       ($actor/continue state))))
 
 (var ask_counter : (ActorRef Counter)
   ($actor/spawn ^init (fn [] 41) ^handle ask_handle))
 
 (var reply_task
-  (ask_counter ~ ask (fn [reply] (Counter ^reply reply))))
+  (ask_counter .ask (fn [reply] (Counter ^reply reply))))
 ($println "     actor/ask current state:" (await reply_task))
 
 ($println "")
@@ -237,12 +237,12 @@
           (fail (Boom ^message "bad"))
           ($actor/continue (+ state msg))))))
   ($println "   - feed 1 + 5 + 0 (failure → restart)")
-  (spawn (counter ~ send 1))
-  (spawn (counter ~ send 5))
-  (spawn (counter ~ send 0))
+  (spawn (counter .send 1))
+  (spawn (counter .send 5))
+  (spawn (counter .send 0))
   ($sleep 1)
-  (var event (failure_events ~ recv))
-  (var snap (counter ~ snapshot))
+  (var event (failure_events .recv))
+  (var snap (counter .snapshot))
   ($println "     restarted state (now):" snap/state)
   ($println "     actor failure event received"))
 
@@ -265,13 +265,13 @@
           ($actor/continue (+ state msg))))))
   (var first_send
     (try
-      (stoptest ~ send 0)
+      (stoptest .send 0)
       "first_send"
       catch Boom $ex/message))
   ($sleep 1)                                           # let failure propagate
   (var post_failure
     (try
-      (stoptest ~ send 99)
+      (stoptest .send 99)
       "second-send"
       catch ActorClosed $ex/message))
   ($println "   - first send (failure trapped):" first_send)

@@ -34,7 +34,7 @@
     (set refused true))
   (assert refused "an unknown required core event must refuse reconstruction")
   (var known ($thaw #{}))
-  (for event in core_event_types (known ~ put event/name event))
+  (for event in core_event_types (known .put event/name event))
   (var malformed (open_event_store $"${args/0}/malformed"))
   (append_event malformed "session" "s1" {^type "message"})
   (set refused false)

@@ -21,7 +21,7 @@
   (var recovered (open_event_store root))
   (repair_interrupted_turns recovered)
   (var history (events_for recovered "session" "s1"))
-  (assert (== history/~size 2)
+  (assert (== history/.size 2)
     "cold recovery must preserve start and append one end marker")
   (assert (== history/1/type "turn/end")
     "cold recovery must close the unmatched turn")

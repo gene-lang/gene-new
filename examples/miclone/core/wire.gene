@@ -15,7 +15,7 @@
 # nobody's machine.
 #
 # `(Buffer U8)` is what both have. The VM converts at the socket boundary and
-# nowhere else — `buf/~to_bytes` on the way out, `($binary/to_buffer bytes)`
+# nowhere else — `buf/.to_bytes` on the way out, `($binary/to_buffer bytes)`
 # on the way in — which is two calls per message against a codec that runs
 # thousands of times inside one.
 #
@@ -67,35 +67,35 @@
   ($buffer F64 c_cells))
 
 (fn cursor_at [c : (Buffer F64)] : F64
-  (c ~ get c_pos))
+  (c .get c_pos))
 
 (fn seek [c : (Buffer F64) at : F64] : Nil
-  (c ~ set c_pos at))
+  (c .set c_pos at))
 
 (fn reset [c : (Buffer F64)] : Nil
-  (c ~ set c_pos 0.0))
+  (c .set c_pos 0.0))
 
 # How many bytes are left. A decoder loops on this rather than on a count it
 # was told, so a truncated message stops instead of reading past the end — the
 # buffer would answer `undefined` for an out-of-range index in the web profile,
 # with no error, which is the failure mode this exists to prevent.
 (fn remaining [c : (Buffer F64) b : (Buffer U8)] : F64
-  (- (byte_len b) (c ~ get c_pos)))
+  (- (byte_len b) (c .get c_pos)))
 
 (fn exhausted? [c : (Buffer F64) b : (Buffer U8)] : Bool
-  (>= (c ~ get c_pos) (byte_len b)))
+  (>= (c .get c_pos) (byte_len b)))
 
 # **`Buffer/len` does not have the same type on both backends**, and this is the
 # wrapper that hides it. The VM answers an `Int`; the web profile's underlying
 # `.length` is a `number`, which is `F64`. Arithmetic coerces on both, so using
-# a length as an *operand* — `(- b/~len x)` — works either way. Using it as a
+# a length as an *operand* — `(- b/.len x)` — works either way. Using it as a
 # *value* does not, and fails on whichever backend you did not try.
 #
 # **`$to_float` cannot fix it**, which is the part worth knowing. On the VM it
 # accepts "Int or Float" and is total on numbers; the web profile deliberately
 # rejects a value already of the target kind — its comment says a no-op
 # conversion "would compile here and mean something else on the VM". So
-# `($to_float b/~len)` fails on the *web*, and the bare form fails on the
+# `($to_float b/.len)` fails on the *web*, and the bare form fails on the
 # *VM*, and there is no single spelling of the conversion that works.
 #
 # `(+ 0.0 …)` is the spelling that does: mixed arithmetic promotes to Float on
@@ -104,7 +104,7 @@
 # `Buffer/len` to answer the same type on both sides, and this wrapper is what
 # an example may do meanwhile.
 (fn byte_len [b : (Buffer U8)] : F64
-  (+ 0.0 b/~len))
+  (+ 0.0 b/.len))
 
 # --- reading -----------------------------------------------------------------
 #
@@ -114,23 +114,23 @@
 # mechanism behind M2's 9x, not merely the read cost.
 
 (fn read_u8 [c : (Buffer F64) b : (Buffer U8)] : F64
-  (var at (c ~ get c_pos))
-  (c ~ set c_pos (+ at 1.0))
-  ($to_float (b ~ get at)))
+  (var at (c .get c_pos))
+  (c .set c_pos (+ at 1.0))
+  ($to_float (b .get at)))
 
 (fn read_u16 [c : (Buffer F64) b : (Buffer U8)] : F64
-  (var at (c ~ get c_pos))
-  (c ~ set c_pos (+ at 2.0))
-  (+ (* ($to_float (b ~ get at)) 256.0)
-     ($to_float (b ~ get (+ at 1.0)))))
+  (var at (c .get c_pos))
+  (c .set c_pos (+ at 2.0))
+  (+ (* ($to_float (b .get at)) 256.0)
+     ($to_float (b .get (+ at 1.0)))))
 
 (fn read_u32 [c : (Buffer F64) b : (Buffer U8)] : F64
-  (var at (c ~ get c_pos))
-  (c ~ set c_pos (+ at 4.0))
-  (+ (* ($to_float (b ~ get at)) 16777216.0)
-     (+ (* ($to_float (b ~ get (+ at 1.0))) 65536.0)
-        (+ (* ($to_float (b ~ get (+ at 2.0))) 256.0)
-           ($to_float (b ~ get (+ at 3.0)))))))
+  (var at (c .get c_pos))
+  (c .set c_pos (+ at 4.0))
+  (+ (* ($to_float (b .get at)) 16777216.0)
+     (+ (* ($to_float (b .get (+ at 1.0))) 65536.0)
+        (+ (* ($to_float (b .get (+ at 2.0))) 256.0)
+           ($to_float (b .get (+ at 3.0)))))))
 
 # A signed 32-bit value, for a world coordinate — §1's limit is ±31,000 nodes,
 # which fits, and a block coordinate fits far more easily. Two's complement,
@@ -150,9 +150,9 @@
 # where the one unavoidable bigint conversion per byte happens.
 
 (fn write_u8 [c : (Buffer F64) b : (Buffer U8) v : F64] : Nil
-  (var at (c ~ get c_pos))
-  (b ~ set at ($to_int v))
-  (c ~ set c_pos (+ at 1.0)))
+  (var at (c .get c_pos))
+  (b .set at ($to_int v))
+  (c .set c_pos (+ at 1.0)))
 
 (fn write_u16 [c : (Buffer F64) b : (Buffer U8) v : F64] : Nil
   (var hi ($math/floor (/ v 256.0)))
@@ -193,7 +193,7 @@
   (write_u16 c b n)
   (var i 0.0)
   (while (< i n)
-    (write_u8 c b ($to_float (encoded ~ get i)))
+    (write_u8 c b ($to_float (encoded .get i)))
     (set i (+ i 1.0))))
 
 (fn read_str [c : (Buffer F64) b : (Buffer U8)] : Str
@@ -201,7 +201,7 @@
   (var slice ($buffer U8 n))
   (var i 0.0)
   (while (< i n)
-    (slice ~ set i ($to_int (read_u8 c b)))
+    (slice .set i ($to_int (read_u8 c b)))
     (set i (+ i 1.0)))
   ($str/from_utf8 slice))
 

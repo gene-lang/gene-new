@@ -765,7 +765,7 @@ type
     ## Nil means the historical default — evaluated code gets nothing.
     capabilityContext: CapabilityContext
     ## A closed capture: evaluating in it must NOT see the scope the `eval` is
-    ## written in. `caller_env ~ snapshot [...]` sets it, because a snapshot
+    ## written in. `caller_env .snapshot [...]` sets it, because a snapshot
     ## promises exactly the names it lists and nothing else — a window onto the
     ## live scope would defeat the point of naming them.
     closedScope: bool
@@ -6487,7 +6487,7 @@ proc newBoundMessage*(qualifier: Value, name: string, protocolBits: uint64,
                       scope: Scope): Value =
   ## A message value carrying where it was written. This is a *message*, not a
   ## function: it prints as one, satisfies `Callable`, and is accepted as a held
-  ## send callee `(x ~ %m)` — which a closure cannot be.
+  ## send callee `(x .%m)` — which a closure cannot be.
   boxObject(BoundMessageData(objKind: okBoundMessage,
                              name: name,
                              protocolBits: protocolBits,

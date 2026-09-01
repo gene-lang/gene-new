@@ -21,4 +21,4 @@
     ($panic
       $"library-induction corpus invalid: evidence=${evidence} deterministic=${deterministic} seed_sensitive=${seed_sensitive}"))
   ($println
-    $"library-induction corpus smoke: tasks=${evidence/task_count} motifs=${(first/motifs ~ size)} motif_tasks=${evidence/motif_task_count} shorter_candidates=${first/structural_screen/candidate_count} shorter_rejected=${evidence/shorter_programs_rejected} unique=${evidence/unique_targets} deterministic=${deterministic} seed_sensitive=${seed_sensitive} attempts=${first/generation/learning_attempts},${first/generation/model_selection_attempts},${first/generation/heldout_attempts}"))
+    $"library-induction corpus smoke: tasks=${evidence/task_count} motifs=${(first/motifs .size)} motif_tasks=${evidence/motif_task_count} shorter_candidates=${first/structural_screen/candidate_count} shorter_rejected=${evidence/shorter_programs_rejected} unique=${evidence/unique_targets} deterministic=${deterministic} seed_sensitive=${seed_sensitive} attempts=${first/generation/learning_attempts},${first/generation/model_selection_attempts},${first/generation/heldout_attempts}"))

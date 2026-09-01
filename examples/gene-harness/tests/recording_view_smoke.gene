@@ -14,11 +14,11 @@
 (var view (row h "views" "active"))
 # Stopping from the prompt is the no-terminal guarantee: a non-nil result tells
 # the caller not to read, so this program never blocks on stdin.
-(assert (== (view/value ~ HarnessView:show_prompt h) 0)
+(assert (== (view/value .HarnessView:show_prompt h) 0)
   "a headless view must stop from the prompt rather than ask for a line")
-(var records (captured ~ get))
+(var records (captured .get))
 
-(assert (== records/~size 2)
+(assert (== records/.size 2)
   "recording view must observe the core event feed without a terminal")
 (assert (== records/0/text "activated recording_view")
   "recording view must preserve event order")

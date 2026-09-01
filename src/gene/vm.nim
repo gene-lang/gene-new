@@ -1427,7 +1427,7 @@ proc rejectSyntaxSend(callee: Value, scope: Scope) {.noreturn.} =
                      scope)
 
 proc rejectMessageCall(callee: Value, scope: Scope) {.noreturn.} =
-  ## `~` is the only way to invoke a message (design §3): a message identity is
+  ## A dot send is the only way to invoke a message (design §3): a message identity is
   ## not callable in head position, so `(P:m x)` is a CallKindError. Qualified
   ## sends resolve the impl through `opResolveQualifiedMessage`, so an ordinary
   ## call never legitimately holds a message value here. The diagnostic names
@@ -1435,8 +1435,8 @@ proc rejectMessageCall(callee: Value, scope: Scope) {.noreturn.} =
   let name = callee.protocolMessageName
   let shown = if name.len > 0: name else: "m"
   raiseCallKindError("call", "Callable", "Message", callee, scope,
-                     hint = "a message dispatches only through ~; write " &
-                            "(x ~ P:" & shown & ")")
+                     hint = "a message dispatches only through a dot send; write " &
+                            "(x .P:" & shown & ")")
 
 proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
@@ -1683,7 +1683,7 @@ proc biNe(args: openArray[Value]): Value {.nimcall.} =
   FALSE
 
 proc biContains(args: openArray[Value]): Value {.nimcall.} =
-  ## (xs ~ contains? x) — structural-equality membership for List and Set
+  ## (xs .contains? x) — structural-equality membership for List and Set
   ## receivers (design §1.5: membership follows ==). Maps are deliberately
   ## unsupported: key-vs-value membership would be ambiguous.
   if args.len != 2:
@@ -1843,7 +1843,7 @@ const LeafValueKinds* = {vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString,
   ##
   ## The base case a generic walk needs. Under the projection model a literal's
   ## `body` is itself (`($body 42)` → `[42]`, design §1.3), so
-  ## `(fn walk [n] (($body n) ~ each walk))` does not terminate on its own:
+  ## `(fn walk [n] (($body n) .each walk))` does not terminate on its own:
   ## recursion stops at leaves, and `leaf?` is how a program says so without
   ## enumerating kinds.
 
@@ -4371,7 +4371,7 @@ proc dispatchGenericForward(name: string, receiver: Value,
   ## resolved impl is called with the receiver as its first argument, exactly
   ## as the send opcode does after `resolveQualifiedSend`. A receiver whose
   ## type declares no such message raises the same recoverable MessageError
-  ## the send path raises (§3), so `$map x f` and `(x ~ map f)` can never
+  ## the send path raises (§3), so `$map x f` and `(x .map f)` can never
   ## disagree about a missing method.
   let recvType = receiver.receiverType
   if recvType.kind == vkType:
@@ -5061,14 +5061,14 @@ proc biToSym(args: openArray[Value]): Value {.nimcall.} =
       "to_sym expects a Str or Sym, got " & $args[0].kind)
 
 proc biMapDeleteBang(args: openArray[Value]): Value {.nimcall.} =
-  ## `(m ~ delete key)` removes the entry and returns what was there, or `void`
+  ## `(m .delete key)` removes the entry and returns what was there, or `void`
   ## when the key was absent — so a caller can tell "removed something" from
   ## "there was nothing" without a second lookup.
   ##
   ## The key may be a symbol or a string: `keySegment` converts before
   ## comparing, which is the same normalization `get` and `put` already use.
   ## Map iteration yields symbols while these take either, so
-  ## `(m ~ delete k)` works directly on an iterated key.
+  ## `(m .delete k)` works directly on an iterated key.
   ##
   ## Mutating, like `put`, and `putMapEntry` refuses an immutable Map. `assoc`
   ## with `void` remains the persistent form.
@@ -6973,7 +6973,7 @@ proc typeReflectionMessage(name: string): Value =
 
 proc biRespondTo(args: openArray[Value], call: ptr NativeCall): Value
                 {.nimcall.} =
-  ## `($respond_to? value msg)` — would a bare `(value ~ msg)` resolve?
+  ## `($respond_to? value msg)` — would a bare `(value .msg)` resolve?
   ##
   ## Deliberately answers *that* question rather than "does this type declare
   ## msg": it reuses the two steps a bare send takes, so the predicate cannot
@@ -7059,7 +7059,7 @@ proc defineBuiltinType(scope: Scope, kind: ValueKind, name: string,
                        ctor: Value = NIL): Value {.discardable.} =
   ## A built-in surface as a real type rather than a namespace of natives
   ## (design §12). Its operations go into the type's own message table, so one
-  ## resolution path serves all three spellings: `(x ~ op)` goes through
+  ## resolution path serves all three spellings: `(x .op)` goes through
   ## `receiverType` → `typeDirectMessage` like any user type, `T/op` still
   ## resolves as a member because a type exposes its messages as members, and
   ## `(impl P for T)` works because `T` is now a receiver a protocol can name.
@@ -7357,7 +7357,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("hash", newNativeFn("hash", biHash))
   result.define("not", newNativeFn("not", biNot))
   # The four node projections are both bare wrapper functions and messages on
-  # the `Node` type. Bind one value each so `(head n)` and `(n ~ head)` name the
+  # the `Node` type. Bind one value each so `(head n)` and `(n .head)` name the
   # same function rather than two natives that merely behave alike.
   let headFn = sharedBuiltinNative("head", newNativeFn("head", biHead))
   let propsFn = sharedBuiltinNative("props", newNativeFn("props", biProps))
@@ -7441,7 +7441,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("set_has?", newNativeFn("set_has?", biSetHas))
   result.define("set_size", newNativeFn("set_size", biSetSize))
   # Shared natives, bound once. Each is both a bare library function and a
-  # message on one or more container types, so `($size xs)` and `(xs ~ size)`
+  # message on one or more container types, so `($size xs)` and `(xs .size)`
   # have to name the same function value rather than two natives that merely
   # behave alike. `contains?` is bound further up and captured here.
   let sizeFn = sharedBuiltinNative("size", newNativeFn("size", biListSize))
@@ -7737,7 +7737,7 @@ proc buildBuiltins(app: Application): Scope =
                              acceptsNamed = false)})
   # A lowercase namespace holds functions; an uppercase one is a type's message
   # surface (design §3). So operations that act *on* an actor reference live on
-  # `Actor` and are sent — `(a ~ send v)` — while the ones that take no receiver
+  # `Actor` and are sent — `(a .send v)` — while the ones that take no receiver
   # stay functions under `actor`: `spawn` creates a reference, and `stop` /
   # `continue` are actor-body control signals.
   result.defineBuiltinType(vkActorRef, "Actor", {
@@ -7782,7 +7782,7 @@ proc buildBuiltins(app: Application): Scope =
   # `snapshot` takes a **CallerEnv**, not an `Env`, so it was the one member
   # that made `Env` look like a namespace: as a static factory it had no
   # receiver, and `T/m` is not a callable path. Giving it its real receiver
-  # settles that — `(caller_env ~ snapshot ["x"])` reads as what it does, and
+  # settles that — `(caller_env .snapshot ["x"])` reads as what it does, and
   # `Env` is left holding only the message that genuinely takes an `Env`.
   result.defineBuiltinType(vkCallerEnv, "CallerEnv", {
     "snapshot": newNativeFn("CallerEnv/snapshot", biEnvSnapshot)})
@@ -10853,7 +10853,7 @@ proc convertMessage(scope: Scope, name: string,
                     names: openArray[string]): Value =
   ## The stream/pipeline operations (design §6) and the Node accessors (§1.2)
   ## reachable as type-direct messages on iterable/stream/node receivers, so
-  ## `(xs ~ to_stream)`, `(s ~ map f)`, and `(n ~ head)` dispatch — `~` has no
+  ## `(xs .to_stream)`, `(s .map f)`, and `(n .head)` dispatch — `~` has no
   ## lexical fallback (design §3). `names` restricts which ops are valid for a
   ## given receiver type.
   ##
@@ -12212,7 +12212,7 @@ proc stampSuperTypeInPlace(proto: FunctionProto, parent: Value,
 
 proc stampSuperType(proto: FunctionProto, parent: Value): FunctionProto =
   ## Record a type-direct message body's `^is` parent on its chunk, and on every
-  ## chunk nested inside it, so `(super ~ m)` in the body — or in a closure
+  ## chunk nested inside it, so `(super .m)` in the body — or in a closure
   ## lexically inside it — reads the owner's parent identity instead of
   ## resolving a shadowable name (design §10). Returns the body to instantiate:
   ## the original when the stamp is fresh or already agrees, a private clone when
@@ -12252,7 +12252,7 @@ proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
 
 proc resolveSuperQualifiedSend(scope: Scope, qualifier: Value, name: string,
                                superType: Value): Value =
-  ## `(super ~ P:name)`. The protocol names the message and the enclosing
+  ## `(super .P:name)`. The protocol names the message and the enclosing
   ## type's `^is` parent starts impl selection, while `receiver` remains the
   ## value passed as `self`. Starting the walk at the parent *is* "continue
   ## from above the enclosing type", because selection already keeps only
@@ -14407,7 +14407,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 stack.popCheckedErrorTypes(sp, proto.messages[i].fn.errorTypeCount, scope)
           var messages = initTable[string, Value]()
           for i, message in proto.messages:
-            # `(super ~ m)` in this body delegates to the enclosing type's `^is`
+            # `(super .m)` in this body delegates to the enclosing type's `^is`
             # parent; stamp that identity on the body now that it is known. A
             # declaration site created twice with different parents gets a
             # private copy of the body rather than a re-stamp.
@@ -15161,7 +15161,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           # reaches only the receiver's type-direct messages (walking `^is`),
           # then the built-in type-direct surface. There is no protocol tier and
           # no lexical fallback — protocol messages are always qualified
-          # (`x ~ P:m`). The resolved callee is inserted below any named argument
+          # (`x .P:m`). The resolved callee is inserted below any named argument
           # values already on the stack, then the receiver goes back on top as
           # the first positional argument.
           let receiver = spop()
@@ -15174,7 +15174,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let recvType = receiver.receiverType
           # An unqualified send reaches only type-direct messages, walking the
           # `^is` chain (design §3/§9). Protocol messages are always qualified —
-          # `(x ~ P:m)` — so a protocol impl is never reached by a bare name.
+          # `(x .P:m)` — so a protocol impl is never reached by a bare name.
           if recvType.kind == vkType:
             when dispatchCacheEnabled:
               # site = this instruction's index (ip was advanced at loop top).
@@ -15266,7 +15266,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             spush callee
           spush receiver
         of opSuperQualifiedSend:
-          # `(super ~ P:m)`. Same delegation rule as opSuperSend — resolve from
+          # `(super .P:m)`. Same delegation rule as opSuperSend — resolve from
           # the enclosing type's `^is` parent, call with `self` — but the
           # protocol names the message, so this goes through the ordinary
           # qualified-send rule with the parent standing in as the selecting
@@ -16571,7 +16571,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if stack[sp - 1].isSyntaxFn:
             rejectSyntaxSend(stack[sp - 1], scope)
         of opResolveQualifiedMessage:
-          # Qualified/dynamic send — (x ~ P:m), (x ~ %m), (x ~ (expr)). The
+          # Qualified/dynamic send — (x .P:m), (x .%m), (x .%(expr)). The
           # callee must be a message value; `~` dispatches only and never
           # invokes an arbitrary function or a held fexpr (design §3/§8). The impl
           # is resolved here rather than by lowering the send to a flipped call,
@@ -16622,7 +16622,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush callee
           spush receiver
         of opQualifiedSend:
-          # `(x ~ P:msg)` — P on top, receiver below. The protocol names the
+          # `(x .P:msg)` — P on top, receiver below. The protocol names the
           # message and the receiver selects the impl; `Self:msg` never reaches
           # here because it names no qualifier and compiles to the bare send.
           if sp < 2:
@@ -20145,7 +20145,7 @@ proc staticLookup(target, segment: Value): Value =
     of vkProtocol:
       # `P/m` is not a message spelling. `/` selects a member and `:` names a
       # message, and a protocol's messages are reached only through `:` — so
-      # `(x ~ P:m)` and `P/m` in value position are both errors that name the
+      # `(x .P:m)` and `P/m` in value position are both errors that name the
       # replacement. A protocol has no other members, so a name it does not
       # declare stays VOID rather than becoming a second diagnostic.
       let own = target.protocolMessages.getOrDefault(key, VOID)
@@ -20190,7 +20190,7 @@ proc staticLookup(target, segment: Value): Value =
         else:
           raise newException(GeneError,
             "'" & target.typeName & "/" & key &
-            "' is not a callable path: use the bare send (x ~ " & key &
+            "' is not a callable path: use the bare send (x ." & key &
             ") or the message value Self:" & key & " (design §3)")
     else:
       VOID

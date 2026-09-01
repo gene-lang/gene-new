@@ -50,13 +50,13 @@
   ($buffer F64 (* slots cells_per_slot)))
 
 (fn slots_of [inv : (Buffer F64)] : F64
-  (/ inv/~len cells_per_slot))
+  (/ inv/.len cells_per_slot))
 
 (fn slot_item [inv : (Buffer F64) slot : F64] : F64
-  (inv ~ get (* slot cells_per_slot)))
+  (inv .get (* slot cells_per_slot)))
 
 (fn slot_count [inv : (Buffer F64) slot : F64] : F64
-  (inv ~ get (+ (* slot cells_per_slot) cell_count)))
+  (inv .get (+ (* slot cells_per_slot) cell_count)))
 
 (fn slot_empty? [inv : (Buffer F64) slot : F64] : Bool
   (== (slot_count inv slot) 0.0))
@@ -66,7 +66,7 @@
 (let wear_max 65535.0)
 
 (fn slot_wear [inv : (Buffer F64) slot : F64] : F64
-  (inv ~ get (+ (* slot cells_per_slot) cell_wear)))
+  (inv .get (+ (* slot cells_per_slot) cell_wear)))
 
 # Writing a count of zero clears the item as well, so an empty slot never keeps
 # a stale id that `add` could then stack onto.
@@ -75,13 +75,13 @@
   (var at (* slot cells_per_slot))
   (if (<= count 0.0)
     (then
-      (inv ~ set at 0.0)
-      (inv ~ set (+ at cell_count) 0.0)
-      (inv ~ set (+ at cell_wear) 0.0))
+      (inv .set at 0.0)
+      (inv .set (+ at cell_count) 0.0)
+      (inv .set (+ at cell_wear) 0.0))
     (else
-      (inv ~ set at item)
-      (inv ~ set (+ at cell_count) count)
-      (inv ~ set (+ at cell_wear) wear))))
+      (inv .set at item)
+      (inv .set (+ at cell_count) count)
+      (inv .set (+ at cell_wear) wear))))
 
 (fn set_slot [inv : (Buffer F64) slot : F64 item : F64 count : F64] : Nil
   (set_slot_worn inv slot item count 0.0))

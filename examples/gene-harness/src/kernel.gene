@@ -70,13 +70,13 @@
 
 (impl Callable for GuardedHandler
   (message apply [self call]
-    (invoke_owned_callable self/h self/owner self/handler [(call ~ /0)])))
+    (invoke_owned_callable self/h self/owner self/handler [(/0 call)])))
 
 (impl Callable for GuardedCallable
   (message apply [self call]
     (var args (copy_list call/body))
-    (if_yes (&& self/inject_context (> args/~size 0))
-      (args ~ set 0 (callback_receiver self/h self/owner)))
+    (if_yes (&& self/inject_context (> args/.size 0))
+      (args .set 0 (callback_receiver self/h self/owner)))
     (invoke_owned_callable self/h self/owner self/callable args)))
 
 # One `invoke_owned_callable` per message, so both halves of a turn get a fresh
@@ -86,10 +86,10 @@
 # two calls can block on a person, so a wall-clock deadline finally measures
 # something the plugin controls.
 (fn guarded_view_prompt [bundle]
-  (bundle/view ~ HarnessView:show_prompt bundle/receiver))
+  (bundle/view .HarnessView:show_prompt bundle/receiver))
 
 (fn guarded_view_line [bundle]
-  (bundle/view ~ HarnessView:handle_line bundle/receiver bundle/line))
+  (bundle/view .HarnessView:handle_line bundle/receiver bundle/line))
 
 (impl HarnessView for GuardedView
   (message show_prompt [h] : Any
@@ -114,14 +114,14 @@
 
 (fn copy_list [source]
   (var out (fresh_list))
-  (for item in source (out ~ push item))
+  (for item in source (out .push item))
   out)
 
 (fn active_transaction [h : Harness]
-  (h/transaction ~ get))
+  (h/transaction .get))
 
 (fn transaction_uses_baseline? [tx]
-  (&& (! ($absent? tx)) (tx/use_baseline ~ get)))
+  (&& (! ($absent? tx)) (tx/use_baseline .get)))
 
 (fn active_registries_cell [h : Harness]
   (var tx (active_transaction h))
@@ -159,15 +159,15 @@
     h/plugin_errors tx/plugin_errors))
 
 (fn registry_named [h : Harness, name : Str] : Registry
-  (var registries ((active_registries_cell h) ~ get))
-  (var found (registries ~ get name))
+  (var registries ((active_registries_cell h) .get))
+  (var found (registries .get name))
   (if (== found void)
     (fail (HarnessError ^message $"registry ${name} is not defined"))
     found))
 
 (fn registry_exists? [h : Harness, name : Str] : Bool
-  (var registries ((active_registries_cell h) ~ get))
-  (!= (registries ~ get name) void))
+  (var registries ((active_registries_cell h) .get))
+  (!= (registries .get name) void))
 
 (fn registry
   [h : Harness, name : Str,
@@ -177,37 +177,37 @@
    ^on_remove on_remove = nil,
    ^owner owner : Str = "core"] : Registry
   (var registries_cell (active_registries_cell h))
-  (var registries (registries_cell ~ get))
-  (if_not (== (registries ~ get name) void)
+  (var registries (registries_cell .get))
+  (if_not (== (registries .get name) void)
     (fail (HarnessError ^message $"registry ${name} already defined")))
   (var created
     (Registry ^name name ^unique unique ^ordered ordered
               ^schema schema ^on_remove on_remove ^owner owner
               ^rows ($cell (fresh_list))))
-  (registries ~ put name created)
-  (registries_cell ~ set registries)
+  (registries .put name created)
+  (registries_cell .set registries)
   created)
 
 (fn registry_names [h : Harness]
   (var out (fresh_list))
-  (for [name value] in ((active_registries_cell h) ~ get)
-    (out ~ push ($to_str name)))
+  (for [name value] in ((active_registries_cell h) .get)
+    (out .push ($to_str name)))
   out)
 
 (fn next_registry_row_id [h : Harness, owner : Str, registry_name : Str] : Str
-  (var n (h/next_row_id ~ get))
-  (h/next_row_id ~ set (+ n 1))
+  (var n (h/next_row_id .get))
+  (h/next_row_id .set (+ n 1))
   $"${owner}:${registry_name}:${n}")
 
 (fn string_before? [left : Str, right : Str] : Bool
-  (var a (($str/to_utf8 left) ~ to_list))
-  (var b (($str/to_utf8 right) ~ to_list))
-  (var limit (if (< a/~size b/~size) a/~size b/~size))
+  (var a (($str/to_utf8 left) .to_list))
+  (var b (($str/to_utf8 right) .to_list))
+  (var limit (if (< a/.size b/.size) a/.size b/.size))
   (var i 0)
   (while (< i limit)
     (if_not (== a/%i b/%i) (return (< a/%i b/%i)))
     (set i (+ i 1)))
-  (< a/~size b/~size))
+  (< a/.size b/.size))
 
 (fn registry_row_before? [a : RegistryRow, b : RegistryRow] : Bool
   (if (!= a/priority b/priority)
@@ -220,26 +220,26 @@
 
 (fn insert_registry_row [r : Registry, record : RegistryRow]
   (if_not r/ordered
-    ((r/rows ~ get) ~ push record)
+    ((r/rows .get) .push record)
     (return nil))
   (var next (fresh_list))
   (var inserted false)
-  (for current in (r/rows ~ get)
+  (for current in (r/rows .get)
     (if_yes (&& (! inserted) (registry_row_before? record current))
-      (next ~ push record)
+      (next .push record)
       (set inserted true))
-    (next ~ push current))
-  (if_not inserted (next ~ push record))
-  (r/rows ~ set next))
+    (next .push current))
+  (if_not inserted (next .push record))
+  (r/rows .set next))
 
 (fn registry_row_records [h : Harness, registry_name : Str]
   (var r (registry_named h registry_name))
-  (r/rows ~ get))
+  (r/rows .get))
 
 (fn rows [h : Harness, registry_name : Str]
   (var out (fresh_list))
   (for record in (registry_row_records h registry_name)
-    (out ~ push record/payload))
+    (out .push record/payload))
   out)
 
 (fn row_record [h : Harness, registry_name : Str, key : Str]
@@ -255,41 +255,41 @@
 
 (fn ledger_record [h : Harness, owner : Str, row_id : Str]
   (var ledger_cell (active_ledger_cell h))
-  (var ledger (ledger_cell ~ get))
-  (var owned (?? (ledger ~ get owner) (fresh_list)))
-  (owned ~ push row_id)
-  (ledger ~ put owner owned)
-  (ledger_cell ~ set ledger))
+  (var ledger (ledger_cell .get))
+  (var owned (?? (ledger .get owner) (fresh_list)))
+  (owned .push row_id)
+  (ledger .put owner owned)
+  (ledger_cell .set ledger))
 
 (fn ledger_forget [h : Harness, owner : Str, row_id : Str]
   (var ledger_cell (active_ledger_cell h))
-  (var ledger (ledger_cell ~ get))
+  (var ledger (ledger_cell .get))
   (var kept (fresh_list))
-  (for candidate in (?? (ledger ~ get owner) (fresh_list))
-    (if_not (== candidate row_id) (kept ~ push candidate)))
-  (if (== kept/~size 0)
-    (ledger ~ delete owner)
-    (ledger ~ put owner kept))
-  (ledger_cell ~ set ledger))
+  (for candidate in (?? (ledger .get owner) (fresh_list))
+    (if_not (== candidate row_id) (kept .push candidate)))
+  (if (== kept/.size 0)
+    (ledger .delete owner)
+    (ledger .put owner kept))
+  (ledger_cell .set ledger))
 
 (fn remove_registry_row [h : Harness, row_id : Str, ^cleanup cleanup = true]
   (var row_index_cell (active_row_index_cell h))
-  (var row_index (row_index_cell ~ get))
-  (var record (row_index ~ get row_id))
+  (var row_index (row_index_cell .get))
+  (var record (row_index .get row_id))
   (if (== record void) (return false))
   (var r (registry_named h record/registry))
   (var kept (fresh_list))
-  (for candidate in (r/rows ~ get)
-    (if_not (== candidate/row_id row_id) (kept ~ push candidate)))
-  (r/rows ~ set kept)
-  (row_index ~ delete row_id)
-  (row_index_cell ~ set row_index)
+  (for candidate in (r/rows .get)
+    (if_not (== candidate/row_id row_id) (kept .push candidate)))
+  (r/rows .set kept)
+  (row_index .delete row_id)
+  (row_index_cell .set row_index)
   (ledger_forget h record/owner row_id)
   (if_yes cleanup
     (var tx (active_transaction h))
     (if (&& (! ($absent? tx))
-      (== (tx/baseline ~ get row_id) true))
-      ((tx/deferred ~ get) ~ push
+      (== (tx/baseline .get row_id) true))
+      ((tx/deferred .get) .push
         {^record record ^on_remove r/on_remove ^hook_owner r/owner})
       (if_not ($absent? r/on_remove)
         (invoke_owned_callable h r/owner r/on_remove
@@ -314,12 +314,12 @@
   # test both fails to resolve and could not answer the question. A row that
   # carries a `run` is the row that gets a supervision boundary; whether that
   # value is callable is settled when it is applied.
-  (if_yes (&& (["commands" "tools"] ~ contains? registry_name)
+  (if_yes (&& (["commands" "tools"] .contains? registry_name)
               (!= checked/run void)
               ($runtime/callable? checked/run))
     (var guarded (fresh_map))
-    (for [name value] in checked (guarded ~ put name value))
-    (guarded ~ put "run"
+    (for [name value] in checked (guarded .put name value))
+    (guarded .put "run"
       (GuardedCallable ^h h ^owner owner ^callable checked/run
         ^inject_context (== registry_name "commands")))
     (set checked guarded))
@@ -327,15 +327,15 @@
               (!= checked/value void)
               ($runtime/callable? checked/value))
     (var guarded_seam_row (fresh_map))
-    (for [name value] in checked (guarded_seam_row ~ put name value))
-    (guarded_seam_row ~ put "value"
+    (for [name value] in checked (guarded_seam_row .put name value))
+    (guarded_seam_row .put "value"
       (GuardedCallable ^h h ^owner owner ^callable checked/value
         ^inject_context false))
     (set checked guarded_seam_row))
   (if_yes (== registry_name "views")
     (var guarded_view_row (fresh_map))
-    (for [name value] in checked (guarded_view_row ~ put name value))
-    (guarded_view_row ~ put "value"
+    (for [name value] in checked (guarded_view_row .put name value))
+    (guarded_view_row .put "value"
       (view_provider (GuardedView ^h h ^owner owner ^view checked/value)))
     (set checked guarded_view_row))
   (var logical_key
@@ -346,7 +346,7 @@
     (fail (HarnessError
       ^message $"registry ${registry_name} requires a logical key")))
   (var existing void)
-  (for candidate in (r/rows ~ get)
+  (for candidate in (r/rows .get)
     (if (&& (== existing void) (== candidate/key logical_key))
       (set existing candidate)))
   (if_yes (&& (== registry_name "event_types") (!= existing void)
@@ -359,46 +359,46 @@
   (if_yes (&& r/unique (!= existing void))
     (remove_registry_row h existing/row_id))
   (var row_id (next_registry_row_id h owner registry_name))
-  (var acquired (h/next_row_id ~ get))
+  (var acquired (h/next_row_id .get))
   (var record
     (RegistryRow ^row_id row_id ^owner owner ^registry registry_name
                  ^key logical_key ^payload checked ^priority priority
                  ^config_order config_order ^acquired acquired))
   (insert_registry_row r record)
   (var row_index_cell (active_row_index_cell h))
-  (var row_index (row_index_cell ~ get))
-  (row_index ~ put row_id record)
-  (row_index_cell ~ set row_index)
+  (var row_index (row_index_cell .get))
+  (row_index .put row_id record)
+  (row_index_cell .set row_index)
   (ledger_record h owner row_id)
   (var tx (active_transaction h))
   (if_yes (! ($absent? tx))
-    (var new_rows (tx/new_rows ~ get))
-    (new_rows ~ put row_id true)
-    (tx/new_rows ~ set new_rows)
-    ((tx/new_order ~ get) ~ push row_id))
+    (var new_rows (tx/new_rows .get))
+    (new_rows .put row_id true)
+    (tx/new_rows .set new_rows)
+    ((tx/new_order .get) .push row_id))
   row_id)
 
 (fn remove_owner [h : Harness, owner : Str]
-  (var ledger ((active_ledger_cell h) ~ get))
-  (var owned (?? (ledger ~ get owner) (fresh_list)))
+  (var ledger ((active_ledger_cell h) .get))
+  (var owned (?? (ledger .get owner) (fresh_list)))
   (var errors (fresh_list))
-  (var i (- owned/~size 1))
+  (var i (- owned/.size 1))
   (while (>= i 0)
     (try
       (remove_registry_row h owned/%i)
     catch Any
-      (errors ~ push ($to_str $ex/message)))
+      (errors .push ($to_str $ex/message)))
     (set i (- i 1)))
   (var owned_registries (fresh_list))
-  (for [name r] in ((active_registries_cell h) ~ get)
+  (for [name r] in ((active_registries_cell h) .get)
     (if (&& (== r/owner owner) (!= name "seams")
             (!= name "commands") (!= name "tools")
             (!= name "prompt") (!= name "views")
             (!= name "event_types") (!= name "subscriptions"))
-      (owned_registries ~ push ($to_str name))))
+      (owned_registries .push ($to_str name))))
   (for name in owned_registries
     (var registry_errors (remove_registry h name))
-    (for message in registry_errors (errors ~ push message)))
+    (for message in registry_errors (errors .push message)))
   errors)
 
 (fn remove_registry [h : Harness, name : Str]
@@ -406,65 +406,65 @@
   (if (== r/owner "core")
     (fail (HarnessError ^message $"core registry ${name} cannot be removed")))
   (var errors (fresh_list))
-  (var records (copy_list (r/rows ~ get)))
-  (var i (- records/~size 1))
+  (var records (copy_list (r/rows .get)))
+  (var i (- records/.size 1))
   (while (>= i 0)
     (try
       (remove_registry_row h records/%i/row_id)
     catch Any
-      (errors ~ push ($to_str $ex/message)))
+      (errors .push ($to_str $ex/message)))
     (set i (- i 1)))
   (var registries_cell (active_registries_cell h))
-  (var registries (registries_cell ~ get))
-  (registries ~ delete name)
-  (registries_cell ~ set registries)
+  (var registries (registries_cell .get))
+  (registries .delete name)
+  (registries_cell .set registries)
   errors)
 
 (fn clone_registries [h : Harness]
   (var out (fresh_map))
-  (for [name source] in (h/registries ~ get)
+  (for [name source] in (h/registries .get)
     (var cloned
       (Registry ^name source/name ^unique source/unique
                 ^ordered source/ordered ^schema source/schema
                 ^on_remove source/on_remove ^owner source/owner
-                ^rows ($cell (copy_list (source/rows ~ get)))))
-    (out ~ put name cloned))
+                ^rows ($cell (copy_list (source/rows .get)))))
+    (out .put name cloned))
   out)
 
 (fn clone_ledger [h : Harness]
   (var out (fresh_map))
-  (for [owner row_ids] in (h/ledger ~ get)
-    (out ~ put owner (copy_list row_ids)))
+  (for [owner row_ids] in (h/ledger .get)
+    (out .put owner (copy_list row_ids)))
   out)
 
 (fn clone_row_index [h : Harness]
   (var out (fresh_map))
-  (for [row_id record] in (h/row_index ~ get)
-    (out ~ put row_id record))
+  (for [row_id record] in (h/row_index .get)
+    (out .put row_id record))
   out)
 
 (fn clone_cell_map [cell]
   (var out (fresh_map))
-  (for [key value] in (cell ~ get) (out ~ put key value))
+  (for [key value] in (cell .get) (out .put key value))
   out)
 
 (fn clone_policy_map [h : Harness]
   (var out (fresh_map))
-  (for [owner policy] in (h/plugin_policies ~ get)
+  (for [owner policy] in (h/plugin_policies .get)
     (var cloned (fresh_map))
-    (for [name value] in policy (cloned ~ put name value))
-    (out ~ put owner cloned))
+    (for [name value] in policy (cloned .put name value))
+    (out .put owner cloned))
   out)
 
 (fn begin_turn [h : Harness, id : Str] : TurnTransaction
   (if_not ($absent? (active_transaction h))
     (fail (HarnessError ^message "nested harness transactions are not supported")))
   (var baseline (fresh_map))
-  (for [row_id record] in (h/row_index ~ get)
-    (baseline ~ put row_id true))
+  (for [row_id record] in (h/row_index .get)
+    (baseline .put row_id true))
   (var baseline_plugins (fresh_map))
-  (for [plugin_id plugin] in (h/plugins ~ get)
-    (baseline_plugins ~ put plugin_id true))
+  (for [plugin_id plugin] in (h/plugins .get)
+    (baseline_plugins .put plugin_id true))
   (var tx
     (TurnTransaction ^id id ^registries ($cell (clone_registries h))
                      ^ledger ($cell (clone_ledger h))
@@ -486,7 +486,7 @@
                      ^workspace_baseline ($cell nil)
                      ^workspace_revision ($cell nil)
                      ^pending_plugins ($cell (fresh_list))))
-  (h/transaction ~ set tx)
+  (h/transaction .set tx)
   tx)
 
 (fn row_diff_summary [record : RegistryRow]
@@ -503,15 +503,15 @@
   (for entry in staged
     (var before (entry_by_id baseline ($to_str entry/id)))
     (if (== before nil)
-      (changes ~ push
+      (changes .push
         {^id entry/id ^change "added" ^from nil ^to entry/module_digest})
       (if_not (== ($to_str before) ($to_str entry))
-        (changes ~ push
+        (changes .push
           {^id entry/id ^change "changed" ^from before/module_digest
            ^to entry/module_digest}))))
   (for entry in baseline
     (if (== (entry_by_id staged ($to_str entry/id)) nil)
-      (changes ~ push
+      (changes .push
         {^id entry/id ^change "removed" ^from entry/module_digest ^to nil})))
   changes)
 
@@ -521,15 +521,15 @@
     (fail (HarnessError ^message "no active harness transaction")))
   (var added (fresh_list))
   (var removed (fresh_list))
-  (var active_index (tx/row_index ~ get))
+  (var active_index (tx/row_index .get))
   (for [row_id record] in active_index
-    (if (== (tx/baseline ~ get row_id) void)
-      (added ~ push (row_diff_summary record))))
+    (if (== (tx/baseline .get row_id) void)
+      (added .push (row_diff_summary record))))
   (for [row_id present] in tx/baseline
-    (if (== (active_index ~ get row_id) void)
-      (removed ~ push row_id)))
-  (var baseline_entries (tx/workspace_baseline ~ get))
-  (var staged_entries (tx/workspace_entries ~ get))
+    (if (== (active_index .get row_id) void)
+      (removed .push row_id)))
+  (var baseline_entries (tx/workspace_baseline .get))
+  (var staged_entries (tx/workspace_entries .get))
   {^rows {^added added ^removed removed}
    ^composition
      (if (|| (== baseline_entries nil) (== staged_entries nil))
@@ -537,24 +537,24 @@
        (composition_diff baseline_entries staged_entries))})
 
 (fn cleanup_transaction_row [h : Harness, tx : TurnTransaction, row_id : Str]
-  (var row_index (tx/row_index ~ get))
-  (var record (row_index ~ get row_id))
+  (var row_index (tx/row_index .get))
+  (var record (row_index .get row_id))
   (if (== record void) (return))
-  (var registries (tx/registries ~ get))
-  (var r (registries ~ get record/registry))
+  (var registries (tx/registries .get))
+  (var r (registries .get record/registry))
   (if (&& (!= r void) (! ($absent? r/on_remove)))
     (invoke_owned_callable h r/owner r/on_remove
       [(callback_receiver h r/owner) record/payload])))
 
 (fn baseline_plugin? [tx : TurnTransaction, id : Str]
-  (== (tx/baseline_plugins ~ get id) true))
+  (== (tx/baseline_plugins .get id) true))
 
 (fn defer_plugin_deactivation
   [h : Harness, tx : TurnTransaction, p : Plugin]
-  (for deferred in (tx/deferred_plugins ~ get)
+  (for deferred in (tx/deferred_plugins .get)
     (if_yes (== deferred/id p/id) (return)))
-  (var baseline_policy ((h/plugin_policies ~ get) ~ get p/id))
-  ((tx/deferred_plugins ~ get) ~ push
+  (var baseline_policy ((h/plugin_policies .get) .get p/id))
+  ((tx/deferred_plugins .get) .push
     {^id p/id ^plugin p
      ^context
        (if_not (|| (== baseline_policy void)
@@ -562,7 +562,7 @@
          baseline_policy/context)}))
 
 (fn plugin_deactivation_deferred? [tx : TurnTransaction, id : Str]
-  (for deferred in (tx/deferred_plugins ~ get)
+  (for deferred in (tx/deferred_plugins .get)
     (if_yes (== deferred/id id) (return true)))
   false)
 
@@ -575,32 +575,32 @@
     (fail (HarnessError ^message "turn transaction is not active")))
   (var errors (fresh_list))
   (var contexts_to_release (fresh_list))
-  (var activated (tx/activated_plugins ~ get))
-  (var activated_index (- activated/~size 1))
+  (var activated (tx/activated_plugins .get))
+  (var activated_index (- activated/.size 1))
   (while (>= activated_index 0)
     (var id ($to_str activated/%activated_index))
-    (var p (((active_plugins_cell h) ~ get) ~ get id))
+    (var p (((active_plugins_cell h) .get) .get id))
     (if_yes (&& (!= p void) (== (status_of h id) "ready"))
       (if_not (run_deactivate h p)
-        (errors ~ push $"deactivate ${id} failed during abort"))
-      (var policy (((active_plugin_policies_cell h) ~ get) ~ get id))
+        (errors .push $"deactivate ${id} failed during abort"))
+      (var policy (((active_plugin_policies_cell h) .get) .get id))
       (if_yes (&& (!= policy void) (! ($absent? policy/context)))
-        (contexts_to_release ~ push policy/context)))
+        (contexts_to_release .push policy/context)))
     (set activated_index (- activated_index 1)))
-  (var order (tx/new_order ~ get))
-  (var new_rows (tx/new_rows ~ get))
-  (var i (- order/~size 1))
+  (var order (tx/new_order .get))
+  (var new_rows (tx/new_rows .get))
+  (var i (- order/.size 1))
   (while (>= i 0)
     (var row_id order/%i)
-    (if (== (new_rows ~ get row_id) true)
+    (if (== (new_rows .get row_id) true)
       (try
         (cleanup_transaction_row h tx row_id)
       catch Any
-        (errors ~ push $ex/message)))
+        (errors .push $ex/message)))
     (set i (- i 1)))
   (for context in contexts_to_release (release_plugin_context context))
-  (h/transaction ~ set nil)
-  {^status (if (== errors/~size 0) "aborted" "recovery_required")
+  (h/transaction .set nil)
+  {^status (if (== errors/.size 0) "aborted" "recovery_required")
    ^errors errors})
 
 (fn commit_turn [h : Harness, tx : TurnTransaction]
@@ -609,41 +609,41 @@
   # Baseline plugins being removed/demoted must deactivate while their
   # committed rows and contexts are still visible. Logs remain staged.
   (var errors (fresh_list))
-  (tx/use_baseline ~ set true)
+  (tx/use_baseline .set true)
   (try
-    (for deferred in (tx/deferred_plugins ~ get)
+    (for deferred in (tx/deferred_plugins .get)
       (if_not (run_deactivate h deferred/plugin)
-        (errors ~ push $"deactivate ${deferred/id} failed during commit")))
+        (errors .push $"deactivate ${deferred/id} failed during commit")))
   ensure
-    (tx/use_baseline ~ set false))
-  (h/registries ~ set (tx/registries ~ get))
-  (h/ledger ~ set (tx/ledger ~ get))
-  (h/row_index ~ set (tx/row_index ~ get))
-  (h/plugins ~ set (tx/plugins ~ get))
-  (h/status ~ set (tx/status ~ get))
-  (h/plugin_errors ~ set (tx/plugin_errors ~ get))
+    (tx/use_baseline .set false))
+  (h/registries .set (tx/registries .get))
+  (h/ledger .set (tx/ledger .get))
+  (h/row_index .set (tx/row_index .get))
+  (h/plugins .set (tx/plugins .get))
+  (h/status .set (tx/status .get))
+  (h/plugin_errors .set (tx/plugin_errors .get))
   # Cleanup hooks must observe the committed registry state, not the staging
   # overlay that just superseded them.
-  (h/transaction ~ set nil)
-  (for deferred in (tx/deferred ~ get)
+  (h/transaction .set nil)
+  (for deferred in (tx/deferred .get)
     (if_not ($absent? deferred/on_remove)
       (try
         (invoke_owned_callable h deferred/hook_owner deferred/on_remove
           [(callback_receiver h deferred/hook_owner)
            deferred/record/payload])
       catch Any
-        (errors ~ push $ex/message))))
+        (errors .push $ex/message))))
   # Cleanup ran with baseline owner policies/contexts. Publish the staged
   # policy table only now, then expire contexts belonging to removed plugins.
-  (h/plugin_policies ~ set (tx/plugin_policies ~ get))
-  (for deferred in (tx/deferred_plugins ~ get)
+  (h/plugin_policies .set (tx/plugin_policies .get))
+  (for deferred in (tx/deferred_plugins .get)
     (if_not (== deferred/context nil)
       (release_plugin_context deferred/context)))
-  (for event in (tx/events ~ get)
+  (for event in (tx/events .get)
     (append_committed_log h ($to_str event/kind) ($to_str event/text)))
-  (for event in (tx/notifications ~ get)
+  (for event in (tx/notifications .get)
     (notify h event))
-  {^status (if (== errors/~size 0) "committed" "recovery_required")
+  {^status (if (== errors/.size 0) "committed" "recovery_required")
    ^errors errors})
 
 (fn run_turn_transaction [h : Harness, id : Str, program]
@@ -655,13 +655,13 @@
       (invoke_bounded apply_zero_arguments program (fresh_list)
         (default_execution_limits) ^inherit true))
     (var committed (commit_turn h tx))
-    (committed ~ put "result" result)
+    (committed .put "result" result)
     (record_turn_end h id "committed")
     (flush_harness h)
     committed
   catch Any
     (var aborted (abort_turn h tx))
-    (aborted ~ put "error" $ex)
+    (aborted .put "error" $ex)
     (record_turn_end h id "aborted")
     (flush_harness h)
     aborted
@@ -728,7 +728,7 @@
   candidate)
 
 (fn cancel_subscription_row [context, candidate]
-  (candidate/sub ~ cancel))
+  (candidate/sub .cancel))
 
 # Harness events. A plugin observes the harness through the event bus rather
 # than by being called back, because observation is what the bus is for and
@@ -773,24 +773,24 @@
   h)
 
 (fn hydrate_harness_log [h : Harness]
-  (if_yes (h/log_hydrated ~ get) (return))
+  (if_yes (h/log_hydrated .get) (return))
   (if_not ($absent? h/event_store)
     (for envelope in (events_for h/event_store h/event_scope h/event_stream)
       (if_yes (["lifecycle" "message" "output" "trace"]
-                ~ contains? ($to_str envelope/type))
+                .contains? ($to_str envelope/type))
         (if_not (== envelope/payload/text void)
-          ((h/log ~ get) ~ push
+          ((h/log .get) .push
             {^kind envelope/type ^text envelope/payload/text})))))
-  (h/log_hydrated ~ set true)
-  (h/log ~ get))
+  (h/log_hydrated .set true)
+  (h/log .get))
 
 (fn effects_of [h : Harness, id : Str] : Any
   (var out (fresh_list))
-  (var ledger ((active_ledger_cell h) ~ get))
-  (var row_index ((active_row_index_cell h) ~ get))
-  (for row_id in (?? (ledger ~ get id) (fresh_list))
-    (var record (row_index ~ get row_id))
-    (if_not (== record void) (out ~ push record)))
+  (var ledger ((active_ledger_cell h) .get))
+  (var row_index ((active_row_index_cell h) .get))
+  (for row_id in (?? (ledger .get id) (fresh_list))
+    (var record (row_index .get row_id))
+    (if_not (== record void) (out .push record)))
   out)
 
 (fn unwind [h : Harness, id : Str]
@@ -815,8 +815,8 @@
 # structurally incapable of reaching a model request.
 
 (fn append_log_only [h : Harness, kind : Str, text : Str] : Any
-  (var events (h/log ~ get))
-  (events ~ push {^kind kind ^text text})
+  (var events (h/log .get))
+  (events .push {^kind kind ^text text})
   # Views observe the same typed feed core persists. Publication errors are
   # collected by the bus and intentionally do not recursively append another
   # log record.
@@ -865,21 +865,21 @@
   (if ($absent? tx)
     (then (append_committed_log h kind text))
     (else
-      ((tx/events ~ get) ~ push {^kind kind ^text text})
-      (tx/events ~ get))))
+      ((tx/events .get) .push {^kind kind ^text text})
+      (tx/events .get))))
 
 (fn flush_harness [h : Harness]
   (if_not ($absent? h/event_store)
     (flush_event_store h/event_store)))
 
 (fn log_events [h : Harness] : Any
-  (h/log ~ get))
+  (h/log .get))
 
 (fn lifecycle_log [h : Harness] : Any
   (var out (fresh_list))
-  (for e in (h/log ~ get)
+  (for e in (h/log .get)
     (if_yes (== ($to_str e/kind) "lifecycle")
-      (out ~ push ($to_str e/text))))
+      (out .push ($to_str e/text))))
   out)
 
 (fn assemble_request [events] : (List Str)
@@ -898,7 +898,7 @@
   (var out (fresh_list))
   (for e in events
     (if_yes (== ($to_str e/kind) "message")
-      (out ~ push ($to_str e/text))))
+      (out .push ($to_str e/text))))
   out)
 
 # --- seams -----------------------------------------------------------------
@@ -944,22 +944,22 @@
 (fn bound_seams [h : Harness] : Any
   (var out (fresh_list))
   (for candidate in (rows h "seams")
-    (out ~ push ($to_str candidate/name)))
+    (out .push ($to_str candidate/name)))
   out)
 
 (fn render_registry_introspection [h : Harness] : Str
   (var lines (fresh_list))
   (for registry_name in ["commands" "tools" "seams" "views" "prompt"]
     (var keys (registry_row_keys h registry_name))
-    (lines ~ push $"${registry_name}: ${keys}"))
+    (lines .push $"${registry_name}: ${keys}"))
   ($str/join lines "\n"))
 
 (fn render_prompt [h : Harness] : Str
   (var sections (fresh_list))
   (for section in (rows h "prompt")
     (if_not (== section/pull_only true)
-      (sections ~ push ($to_str section/text))))
-  (sections ~ push (render_registry_introspection h))
+      (sections .push ($to_str section/text))))
+  (sections .push (render_registry_introspection h))
   ($str/join sections "\n\n"))
 
 (fn doc [h : Harness, name : Str] : Str
@@ -979,7 +979,7 @@
   # listener that outlived its plugin is the classic plugin-system leak, and
   # the ledger is what makes it structurally impossible here.
   (var guarded (GuardedHandler ^h h ^owner id ^handler handler))
-  (var sub (h/bus ~ subscribe selector guarded))
+  (var sub (h/bus .subscribe selector guarded))
   (contribute h id "subscriptions" {^name "" ^sub sub})
   sub)
 
@@ -987,13 +987,13 @@
 
 (fn make_plugin_context [h : Harness, owner : Str, writable : Bool]
   (var token ($cell nil))
-  ((plugin_context_records ~ get) ~ push
+  ((plugin_context_records .get) .push
     (ContextRecord ^token token ^h h ^owner owner ^writable writable))
   (PluginContext ^token token))
 
 (fn plugin_context_record [context : PluginContext] : ContextRecord
   (var found nil)
-  (for record in (plugin_context_records ~ get)
+  (for record in (plugin_context_records .get)
     (if_yes (&& (== found nil) (== record/token context/token))
       (set found record)))
   (if (== found nil)
@@ -1002,9 +1002,9 @@
 
 (fn release_plugin_context [context : PluginContext]
   (var kept (fresh_list))
-  (for record in (plugin_context_records ~ get)
-    (if_not (== record/token context/token) (kept ~ push record)))
-  (plugin_context_records ~ set kept)
+  (for record in (plugin_context_records .get)
+    (if_not (== record/token context/token) (kept .push record)))
+  (plugin_context_records .set kept)
   nil)
 
 (fn validate_plugin_descriptor [h : Harness, expected_id : Str, p : Plugin]
@@ -1022,7 +1022,7 @@
     # the row to be present yet; absence is the lifecycle's `pending` state.
     (if (== ($head requirement) List)
       (then
-        (if_not (== requirement/~size 2)
+        (if_not (== requirement/.size 2)
           (fail (HarnessError ^message "plugin requirement pair needs registry and key")))
         (registry_named h ($to_str requirement/0)))
       (else (registry_named h "seams"))))
@@ -1065,7 +1065,7 @@
              ^imports [$runtime])))
 
 (fn policy_for_owner [h : Harness, owner : Str]
-  (var policy (((active_plugin_policies_cell h) ~ get) ~ get owner))
+  (var policy (((active_plugin_policies_cell h) .get) .get owner))
   (if (== policy void)
     {^selectors (fresh_list) ^scope "session"
      ^limits (default_execution_limits) ^inherit true ^context nil}
@@ -1081,11 +1081,11 @@
       policy/context)))
 
 (fn enter_plugin_execution [h : Harness]
-  (h/plugin_depth ~ set (+ (h/plugin_depth ~ get) 1)))
+  (h/plugin_depth .set (+ (h/plugin_depth .get) 1)))
 
 (fn leave_plugin_execution [h : Harness]
-  (var depth (- (h/plugin_depth ~ get) 1))
-  (h/plugin_depth ~ set depth)
+  (var depth (- (h/plugin_depth .get) 1))
+  (h/plugin_depth .set depth)
   (if_yes (&& (== depth 0) (! ($absent? h/event_store)))
     (flush_event_store h/event_store)))
 
@@ -1130,7 +1130,7 @@
 (fn registry_row_keys [h : Harness, registry_name : Str]
   (var out (fresh_list))
   (for record in (registry_row_records h registry_name)
-    (out ~ push record/key))
+    (out .push record/key))
   out)
 
 (impl PluginHost for PluginContext ^export true
@@ -1222,7 +1222,7 @@
     value))
 
 (fn publish [h : Harness, event] : Any
-  (h/bus ~ publish event))
+  (h/bus .publish event))
 
 (fn notify [h : Harness, event] : Any
   # Lifecycle events go out through the same bus, with one difference: a
@@ -1238,7 +1238,7 @@
   # because nothing anywhere records that it happened.
   (var tx (active_transaction h))
   (if_not ($absent? tx)
-    ((tx/notifications ~ get) ~ push event)
+    ((tx/notifications .get) .push event)
     (return nil))
   (var r (publish h event))
   (if_yes (> r/failed 0)
@@ -1260,11 +1260,11 @@
 # `plugin_states`, which is a far better 3am outcome than either alternative.
 
 (fn status_of [h : Harness, id : Str] : Str
-  (var s (((active_status_cell h) ~ get) ~ get id))
+  (var s (((active_status_cell h) .get) .get id))
   (if (== s void) "absent" ($to_str s)))
 
 (fn plugin_error [h : Harness, id : Str]
-  (var found (((active_plugin_errors_cell h) ~ get) ~ get id))
+  (var found (((active_plugin_errors_cell h) .get) .get id))
   (if_not (== found void) ($to_str found)))
 
 (fn plugin_ids [h : Harness] : Any
@@ -1272,13 +1272,13 @@
   # insertion order, so a settle pass visits plugins in install order and the
   # whole lifecycle is deterministic.
   (var out (fresh_list))
-  (for [k v] in ((active_plugins_cell h) ~ get)
-    (out ~ push ($to_str k)))
+  (for [k v] in ((active_plugins_cell h) .get)
+    (out .push ($to_str k)))
   out)
 
 (fn plugin_states [h : Harness] : Any
   (var out (fresh_list))
-  (for id in (plugin_ids h) (out ~ push $"${id}:$(status_of h id)"))
+  (for id in (plugin_ids h) (out .push $"${id}:$(status_of h id)"))
   out)
 
 (fn requirements_of [p : Plugin] : Any
@@ -1320,7 +1320,7 @@
     (var key (requirement_key requirement))
     (if (|| (! (registry_exists? h registry_name))
             (== (row h registry_name key) void))
-      (out ~ push $"${registry_name}/${key}")))
+      (out .push $"${registry_name}/${key}")))
   out)
 
 (fn run_deactivate [h : Harness, p : Plugin] : Bool
@@ -1349,7 +1349,7 @@
 
 (fn promote [h : Harness, id : Str]
   # pending -> ready, or pending -> error.
-  (var p (((active_plugins_cell h) ~ get) ~ get id))
+  (var p (((active_plugins_cell h) .get) .get id))
   (var context nil)
   (var activated false)
   (try
@@ -1362,24 +1362,24 @@
     ensure
       (leave_plugin_execution h))
     (if_not (== context nil)
-      (var policies ((active_plugin_policies_cell h) ~ get))
-      (var committed_policy (policies ~ get id))
+      (var policies ((active_plugin_policies_cell h) .get))
+      (var committed_policy (policies .get id))
       (if (== committed_policy void)
         (set committed_policy
           {^selectors (fresh_list) ^scope "session"
            ^limits (default_execution_limits) ^inherit true ^context nil}))
-      (committed_policy ~ put "context" context)
-      (policies ~ put id committed_policy)
-      ((active_plugin_policies_cell h) ~ set policies))
+      (committed_policy .put "context" context)
+      (policies .put id committed_policy)
+      ((active_plugin_policies_cell h) .set policies))
     (set activated true)
-    (((active_status_cell h) ~ get) ~ put id "ready")
-    (((active_plugin_errors_cell h) ~ get) ~ delete id)
+    (((active_status_cell h) .get) .put id "ready")
+    (((active_plugin_errors_cell h) .get) .delete id)
     (var tx (active_transaction h))
     (if_yes (&& (! ($absent? tx)) (! (transaction_uses_baseline? tx))
-                (|| (!= ((h/status ~ get) ~ get id) "ready")
+                (|| (!= ((h/status .get) .get id) "ready")
                     (plugin_deactivation_deferred? tx id))
-                (! ((tx/activated_plugins ~ get) ~ contains? id)))
-      ((tx/activated_plugins ~ get) ~ push id))
+                (! ((tx/activated_plugins .get) .contains? id)))
+      ((tx/activated_plugins .get) .push id))
     (log_append h "lifecycle" $"activated ${id}")
     (notify h (PluginActivated ^plugin id))
     catch Any
@@ -1389,8 +1389,8 @@
     # rather than gone. A failure that erases its own subject is a failure you
     # cannot investigate.
     (unwind h id)
-    (((active_status_cell h) ~ get) ~ put id "error")
-    (((active_plugin_errors_cell h) ~ get) ~ put id ($to_str $ex/message))
+    (((active_status_cell h) .get) .put id "error")
+    (((active_plugin_errors_cell h) .get) .put id ($to_str $ex/message))
     (log_append h "lifecycle" $"activate ${id} failed: ${$ex/message}")
     (notify h (PluginFailed ^plugin id ^message ($to_str $ex/message)))
   ensure
@@ -1402,27 +1402,27 @@
   # away was its dependency, not the operator's intent. If the seam comes back,
   # so does the plugin, and that reversibility is what makes a cascade safe
   # enough to allow at all.
-  (var p (((active_plugins_cell h) ~ get) ~ get id))
+  (var p (((active_plugins_cell h) .get) .get id))
   # Deactivation runs before the ledger is reversed, so the hook still sees the
   # seams its own plugin provided.
   (var tx (active_transaction h))
   (var deferred false)
   (if (&& (! ($absent? tx)) (! (transaction_uses_baseline? tx))
           (baseline_plugin? tx id)
-          (== ((h/status ~ get) ~ get id) "ready"))
+          (== ((h/status .get) .get id) "ready"))
     (then
       (defer_plugin_deactivation h tx p)
       (set deferred true))
     (else (run_deactivate h p)))
   (unwind h id)
-  (var policies ((active_plugin_policies_cell h) ~ get))
-  (var policy (policies ~ get id))
+  (var policies ((active_plugin_policies_cell h) .get))
+  (var policy (policies .get id))
   (if_yes (&& (!= policy void) (! ($absent? policy/context)))
     (if_not deferred (release_plugin_context policy/context))
-    (policy ~ put "context" nil)
-    (policies ~ put id policy)
-    ((active_plugin_policies_cell h) ~ set policies))
-  (((active_status_cell h) ~ get) ~ put id "pending")
+    (policy .put "context" nil)
+    (policies .put id policy)
+    ((active_plugin_policies_cell h) .set policies))
+  (((active_status_cell h) .get) .put id "pending")
   (log_append h "lifecycle" $"deactivated ${id}: ${why}")
   (notify h (PluginDeactivated ^plugin id ^reason why)))
 
@@ -1443,7 +1443,7 @@
     (set changed false)
     (for id in (plugin_ids h)
       (if_yes (== (status_of h id) "ready")
-        (var p (((active_plugins_cell h) ~ get) ~ get id))
+        (var p (((active_plugins_cell h) .get) .get id))
         (if_not (requires_met h p)
           (demote h id $"missing $(missing_requirements h p)")
           (set changed true)))))
@@ -1452,7 +1452,7 @@
     (set changed false)
     (for id in (plugin_ids h)
       (if_yes (== (status_of h id) "pending")
-        (var p (((active_plugins_cell h) ~ get) ~ get id))
+        (var p (((active_plugins_cell h) .get) .get id))
         (if_yes (requires_met h p)
           (promote h id)
           (set changed true)))))
@@ -1469,14 +1469,14 @@
   # raise, and the plugin has to survive its own failure in order to be in
   # `error`. Check the returned status, `status_of`, or subscribe to
   # `PluginFailed`.
-  (var plugins ((active_plugins_cell h) ~ get))
+  (var plugins ((active_plugins_cell h) .get))
   (if_yes (|| (== p/id "core")
               ($str/starts_with? ($to_str p/id) "descriptor:"))
     (fail (HarnessError ^message $"plugin id ${p/id} is reserved by core")))
   (if_not (== p/contextual true)
     (fail (HarnessError
       ^message $"plugin ${p/id} must use the PluginContext activation API")))
-  (if_yes (!= (plugins ~ get p/id) void)
+  (if_yes (!= (plugins .get p/id) void)
     (fail (HarnessError ^message $"plugin ${p/id} already installed")))
   (for requirement in (requirements_of p)
     (for provided in p/provides
@@ -1486,9 +1486,9 @@
                        (provided_key provided)))
         (fail (HarnessError
           ^message $"plugin ${p/id} requires $(provided_registry provided)/$(provided_key provided), which it provides itself")))))
-  (plugins ~ put p/id p)
-  (((active_status_cell h) ~ get) ~ put p/id "pending")
-  (((active_plugin_errors_cell h) ~ get) ~ delete p/id)
+  (plugins .put p/id p)
+  (((active_status_cell h) .get) .put p/id "pending")
+  (((active_plugin_errors_cell h) .get) .delete p/id)
   (log_append h "lifecycle" $"installed ${p/id}")
   (notify h (PluginInstalled ^plugin p/id))
   (settle h)
@@ -1505,23 +1505,23 @@
   # needed both: a generated plugin gets attenuated authority *and* a ceiling.
   # A checked-in plugin whose callbacks wait on a network author needs the
   # second alone.
-  (var policies ((active_plugin_policies_cell h) ~ get))
+  (var policies ((active_plugin_policies_cell h) .get))
   (var bounded
     (if ($absent? limits) (default_execution_limits) limits))
-  (policies ~ put p/id
+  (policies .put p/id
     {^selectors (copy_list selectors) ^scope scope
      ^limits bounded ^inherit inherit ^context nil})
-  ((active_plugin_policies_cell h) ~ set policies)
+  ((active_plugin_policies_cell h) .set policies)
   (try
     (install h p)
   catch Any
-    (policies ~ delete p/id)
-    ((active_plugin_policies_cell h) ~ set policies)
+    (policies .delete p/id)
+    ((active_plugin_policies_cell h) .set policies)
     (fail $ex)))
 
 (fn uninstall [h : Harness, id : Str] : Str
-  (var plugins ((active_plugins_cell h) ~ get))
-  (var p (plugins ~ get id))
+  (var plugins ((active_plugins_cell h) .get))
+  (var p (plugins .get id))
   (if_yes (== p void)
     (fail (HarnessError ^message $"plugin ${id} not installed")))
   # Only a `ready` plugin has anything to deactivate. A `pending` one never
@@ -1531,27 +1531,27 @@
   (if_yes (== (status_of h id) "ready")
     (if (&& (! ($absent? tx)) (! (transaction_uses_baseline? tx))
             (baseline_plugin? tx id)
-            (== ((h/status ~ get) ~ get id) "ready"))
+            (== ((h/status .get) .get id) "ready"))
       (then
         (defer_plugin_deactivation h tx p)
         (set deferred true))
       (else (run_deactivate h p))))
   (var cleanup_errors (unwind h id))
-  (plugins ~ delete id)
-  (((active_status_cell h) ~ get) ~ delete id)
-  (((active_plugin_errors_cell h) ~ get) ~ delete id)
-  (var policies ((active_plugin_policies_cell h) ~ get))
-  (var policy (policies ~ get id))
+  (plugins .delete id)
+  (((active_status_cell h) .get) .delete id)
+  (((active_plugin_errors_cell h) .get) .delete id)
+  (var policies ((active_plugin_policies_cell h) .get))
+  (var policy (policies .get id))
   (if_yes (&& (!= policy void) (! ($absent? policy/context)))
     (if_not deferred (release_plugin_context policy/context)))
-  (policies ~ delete id)
-  ((active_plugin_policies_cell h) ~ set policies)
+  (policies .delete id)
+  ((active_plugin_policies_cell h) .set policies)
   (log_append h "lifecycle" $"uninstalled ${id}")
   (notify h (PluginUninstalled ^plugin id))
   # Removing this plugin's seams can starve a dependent, which can starve its
   # dependents in turn.
   (settle h)
-  (if (== cleanup_errors/~size 0)
+  (if (== cleanup_errors/.size 0)
     $"uninstalled ${id}"
     $"uninstalled ${id} (recovery_required)"))
 
@@ -1560,14 +1560,14 @@
   # raised will raise again until something outside it changes, and a kernel
   # that retries on its own turns one bad plugin into a loop. `retry` is the
   # operator saying the something changed.
-  (var p (((active_plugins_cell h) ~ get) ~ get id))
+  (var p (((active_plugins_cell h) .get) .get id))
   (if_yes (== p void)
     (fail (HarnessError ^message $"plugin ${id} not installed")))
   (if_yes (!= (status_of h id) "error")
     (fail (HarnessError
       ^message $"plugin ${id} is $(status_of h id), not error; nothing to retry")))
-  (((active_status_cell h) ~ get) ~ put id "pending")
-  (((active_plugin_errors_cell h) ~ get) ~ delete id)
+  (((active_status_cell h) .get) .put id "pending")
+  (((active_plugin_errors_cell h) .get) .delete id)
   (log_append h "lifecycle" $"retrying ${id}")
   (settle h)
   $"retried ${id} (${(status_of h id)})")
@@ -1575,30 +1575,30 @@
 (fn shutdown_harness [h : Harness]
   (var ids (plugin_ids h))
   (var errors (fresh_list))
-  (var i (- ids/~size 1))
+  (var i (- ids/.size 1))
   (while (>= i 0)
     (try
       (var result (uninstall h ids/%i))
       (if_yes ($str/contains? result "recovery_required")
-        (errors ~ push result))
+        (errors .push result))
     catch Any
-      (errors ~ push ($to_str $ex/message)))
+      (errors .push ($to_str $ex/message)))
     (set i (- i 1)))
   (flush_harness h)
-  {^status (if (== errors/~size 0) "closed" "recovery_required")
+  {^status (if (== errors/.size 0) "closed" "recovery_required")
    ^errors errors})
 
 # --- runtime install (design §4 item 4) ------------------------------------
 
 (fn module_dir [path : Str] : Str
-  # The directory holding a module, from its own `this_mod/~path`. Plugin paths
+  # The directory holding a module, from its own `this_mod/.path`. Plugin paths
   # are resolved against the harness rather than the working directory, so
   # `gene run` works from anywhere.
   (var parts ($str/split path "/"))
   (var out (fresh_list))
   (var i 0)
-  (while (< i (- parts/~size 1))
-    (out ~ push parts/%i)
+  (while (< i (- parts/.size 1))
+    (out .push parts/%i)
     (set i (+ i 1)))
   ($str/join out "/"))
 
@@ -1624,7 +1624,7 @@
     ^requires (?? m/plugin_requires (fresh_list))
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide seam provider))))))
+      (host .PluginHost:provide seam provider))))))
 
 (fn installed [h : Harness] : Any
   (plugin_ids h))

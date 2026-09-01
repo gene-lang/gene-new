@@ -12,7 +12,7 @@
 
 (impl Callable for RecordingSink
   (message apply [self call]
-    ((self/lines ~ get) ~ push (call ~ /0))))
+    ((self/lines .get) .push (/0 call))))
 
 (impl HarnessView for RecordingView
   # Stops from the prompt, which is what makes this view usable with no
@@ -27,7 +27,7 @@
   (Plugin ^id "recording_view" ^provides [["views" "active"]]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:subscribe HarnessLog (RecordingSink ^lines lines))
-      (host ~ PluginHost:contribute "views"
+      (host .PluginHost:subscribe HarnessLog (RecordingSink ^lines lines))
+      (host .PluginHost:contribute "views"
         {^name "active" ^implementation "recording" ^value
           (view_provider (RecordingView ^lines lines))})))))

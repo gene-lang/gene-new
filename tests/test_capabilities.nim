@@ -896,21 +896,21 @@ suite "capability call boundaries":
     let value = run(compileSource("""
       (import $db/sqlite [open Db])
       (var db (open """ & newStr(databasePath).print & """))
-      (db ~ Db:exec "create table guarded (x integer)")
-      (db ~ Db:execute "insert into guarded(x) values (?)" 7)
+      (db .Db:exec "create table guarded (x integer)")
+      (db .Db:execute "insert into guarded(x) values (?)" 7)
       (var write_denied false)
       (var read_denied false)
       (try
         (with_capabilities []
-          (db ~ Db:exec "create table denied (x integer)"))
+          (db .Db:exec "create table denied (x integer)"))
         catch MissingCapability
         (set write_denied true))
       (try
         (with_capabilities []
-          (db ~ Db:query "select x from guarded"))
+          (db .Db:query "select x from guarded"))
         catch MissingCapability
         (set read_denied true))
-      (db ~ Db:close)
+      (db .Db:close)
       [write_denied read_denied]
     """), newGlobalScope(newApplicationRootedAt(root)))
     check value.print == "[true true]"
@@ -933,7 +933,7 @@ suite "capability call boundaries":
       discard run(compileSource(
         "(import $store/fs [open Store]) " &
         "(var s (open ^root " & newStr(root).print & ")) " &
-        "(s ~ Store:close) s"), newGlobalScope(app))
+        "(s .Store:close) s"), newGlobalScope(app))
       check resourceAuthorityRecordCount() == baseline + 1
       check resource.kind == vkNode
     check resourceAuthorityRecordCount() == baseline

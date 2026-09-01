@@ -2,4 +2,4 @@
 (protocol Named (message name [self] : Str))
 (type Thing ^props {^label Str})
 (impl Named for Thing (message name [self] : Str self/label))
-(fn name [] : Str ((Thing ^label "gene") ~ Named:name))
+(fn name [] : Str ((Thing ^label "gene") .Named:name))

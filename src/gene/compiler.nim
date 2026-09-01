@@ -119,11 +119,11 @@ type
     # local into a standard-library reference.
     declaredNames: HashSet[string]
     # Inside a message/ctor body the receiver `self` is reserved: no nested
-    # binder may shadow it, so a leading send `(~ m)` always means the original
+    # binder may shadow it, so a leading send `(.m)` always means the original
     # receiver (design §10). Inherited by every descendant compiler.
     selfReserved: bool
     # While compiling a type-direct message body, the enclosing type's name, so
-    # `(super ~ m)` resolves it to the type value then its `^is` parent at send
+    # `(super .m)` resolves it to the type value then its `^is` parent at send
     # time (design §10). NIL outside a message body with an `^is` parent.
     superType: Value
     importedSyntaxFnSets: Table[string, seq[string]]
@@ -182,7 +182,7 @@ const MaxMacroExpansionDepth = 100
 
 const CoreSpecialFormNames* = [
   "do", "if", "if_yes", "if_not", "&&", "||", "??", "!",
-  "let", "var", "const", "set", "new", "~", "?~",
+  "let", "var", "const", "set", "new",
   "fn", "macro", "quote", "quasiquote", "select", "path", "msg", "ns",
   "env", "eval", "import", "mod", "match", "while", "loop", "repeat",
   "for", "break", "continue", "yield", "return", "try", "scope",
@@ -239,9 +239,9 @@ const reservedStdlibRoots = ["gene", "genex", "geney", "genez"]
 # invalid use rather than a mutable global exception cell.
 const CatchErrorBindingName = "$ex"
 
-# `~` is the send operator and is reserved in executable position (design §3).
-# The reader still tokenizes it (so quoted data like `(quote (a ~ b))`
-# round-trips), but it may not be bound, set, or declared as a name.
+# `~` and `?~` are canonical send markers produced by the reader's dot-syntax
+# lowering. Generated AST may contain them, but they may not be bound, set, or
+# declared as names.
 # `Self` is the receiver's own type in annotation position and the reserved
 # value spelling for a type-direct message (`Self:msg`, design §3). Like
 # `super` it denotes rather than binds, so a program may not declare it.
@@ -321,7 +321,7 @@ proc reserveLocal(c: var Compiler, name: string,
   # `self` is the compiler-owned receiver and is reserved throughout a message
   # or ctor body, nested scopes included (design §10/§12.1) — otherwise an inner
   # `(fn f [self] ...)` or pattern binding would retarget every later leading
-  # send `(~ m)`. The injected receiver parameter itself is bound before this
+  # send `(.m)`. The injected receiver parameter itself is bound before this
   # flag is set, so only genuine shadowing is rejected.
   if c.selfReserved and name == "self":
     raise newException(GeneError,
@@ -2872,7 +2872,7 @@ proc typedNativeSend(expr: Value, params: openArray[string],
     return
   let message = expr.body[1]
   if message.kind == vkSymbol:
-    ## Bare `(recv ~ m)` is type-direct; only a qualified `(recv ~ P:m)` names
+    ## Bare `(recv .m)` is type-direct; only a qualified `(recv .P:m)` names
     ## a protocol message (docs/core.md §3.6.1). Resolving a bare send against
     ## protocol impls made the C backend call an impl the VM refuses to
     ## dispatch — the interpreter answers "no message 'm' on T" for the same
@@ -6121,8 +6121,8 @@ proc builtinLogMacro(level: string): MacroDef =
     ],
     body: @[read("`(scope (do " &
       "(var generated_logger %logger) " &
-      "(if (generated_logger ~ enabled? gene/log/LogLevel/" & level & ") " &
-      "  (generated_logger ~ emit gene/log/LogLevel/" & level &
+      "(if (generated_logger .enabled? gene/log/LogLevel/" & level & ") " &
+      "  (generated_logger .emit gene/log/LogLevel/" & level &
       "    %message ^payload %payload) " &
       "  nil)))")]
   )
@@ -6603,11 +6603,57 @@ proc compileSelectorParts(c: var Compiler, parts: openArray[Value]) =
     body[i] = part
   compileSelector(c, newNode(newSym("select"), body = body))
 
-proc isPathSendSegment(part: Value): bool =
-  part.kind == vkSymbol and part.symVal.len > 1 and part.symVal.startsWith("~")
+proc validateMessageName(name: string)
 
-proc pathSendName(part: Value): string =
-  part.symVal[1 .. ^1]
+type PathSendSegment = object
+  found: bool
+  optional: bool
+  dynamic: bool
+  name: string
+
+proc pathSendSegment(part: Value): PathSendSegment =
+  ## The reader lowers `/.name`, `/?.name`, `/.%m`, and `/?.%m` to compact
+  ## internal path markers. Keeping them inside `path` avoids allocating an
+  ## intermediate call tree on this hot reader/compiler seam.
+  if part.kind != vkSymbol:
+    return
+  var rest: string
+  if part.symVal.len > 2 and part.symVal.startsWith("?~"):
+    result.optional = true
+    rest = part.symVal[2 .. ^1]
+  elif part.symVal.len > 1 and part.symVal[0] == '~':
+    rest = part.symVal[1 .. ^1]
+  else:
+    return
+  result.found = true
+  if rest.len > 1 and rest[0] == '%':
+    result.dynamic = true
+    result.name = rest[1 .. ^1]
+  else:
+    result.name = rest
+
+proc isPathSendSegment(part: Value): bool =
+  part.pathSendSegment.found
+
+proc compilePathSend(c: var Compiler, part, site: Value) =
+  let segment = part.pathSendSegment
+  if not segment.found or segment.name.len == 0:
+    raise newException(GeneError, "path message segment requires a name")
+  let shortCircuit =
+    if segment.optional: c.emitJump(opJumpIfAbsent)
+    else: -1
+  if segment.dynamic:
+    if segment.name.len > 1 and segment.name[0] == '$':
+      compileExpr(c, desugarPath("gene/" & segment.name[1 .. ^1]))
+    else:
+      c.emitLoadBinding(segment.name)
+    discard c.emit(opResolveQualifiedMessage, name = "%" & segment.name)
+  else:
+    validateMessageName(segment.name)
+    discard c.emit(opResolveMessage, name = segment.name)
+  c.chunk.callSites[c.emitPlainCall(1)] = site
+  if shortCircuit >= 0:
+    c.patchJump(shortCircuit)
 
 
 proc compilePath(c: var Compiler, node: Value) =
@@ -6625,8 +6671,7 @@ proc compilePath(c: var Compiler, node: Value) =
     var i = 2
     while i < parts.len:
       if parts[i].isPathSendSegment:
-        discard c.emit(opResolveMessage, name = parts[i].pathSendName)
-        c.chunk.callSites[c.emitPlainCall(1)] = node
+        compilePathSend(c, parts[i], node)
         inc i
       else:
         let start = i
@@ -6650,8 +6695,7 @@ proc compilePath(c: var Compiler, node: Value) =
   var i = 1
   while i < parts.len:
     if parts[i].isPathSendSegment:
-      discard c.emit(opResolveMessage, name = parts[i].pathSendName)
-      c.chunk.callSites[c.emitPlainCall(1)] = node
+      compilePathSend(c, parts[i], node)
       inc i
     else:
       let start = i
@@ -6698,6 +6742,21 @@ proc compileSetPath(c: var Compiler, node: Value) =
   compileExpr(c, body[1])
   discard c.emit(opSetPath, parts.len - 1)
 
+proc isDotMessageDescriptor(name: string): bool =
+  (name.len > 1 and name[0] == '.' and not name.startsWith("..")) or
+    (name.len > 2 and name.startsWith("?."))
+
+proc hasDotMessageQualifier(node: Value): bool =
+  if node.kind != vkNode or not node.head.isSymbol("msg") or
+      node.body.len == 0:
+    return false
+  let qualifier = node.body[0]
+  if qualifier.kind == vkSymbol:
+    return qualifier.symVal.isDotMessageDescriptor
+  qualifier.kind == vkNode and qualifier.head.isSymbol("path") and
+    qualifier.body.len > 0 and qualifier.body[0].kind == vkSymbol and
+    qualifier.body[0].symVal.isDotMessageDescriptor
+
 proc compileMessageValue(c: var Compiler, node: Value) =
   ## `Proto:msg` / `Self:msg` in value position (design §3): a **message
   ## value**, not a function and not a closure.
@@ -6709,6 +6768,9 @@ proc compileMessageValue(c: var Compiler, node: Value) =
   ## *authored* is the send-site rule, evaluated one step earlier.
   ##
   ## `Self:msg` names no qualifier, so it binds NIL and dispatches bare.
+  if node.hasDotMessageQualifier:
+    raise newException(GeneError,
+      "a dot message descriptor requires a receiver; write (x .Proto:message)")
   if node.body.len == 2 and node.body[0].isSymbol("Self"):
     c.emitConst NIL
   else:
@@ -6804,7 +6866,6 @@ proc compileHashMapValue(c: var Compiler, value: Value) =
 
 proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
                  tail = false)
-proc validateMessageName(name: string)
 
 proc sendCalleeName(callee: Value): string =
   ## Display name for a non-bare send callee, used in diagnostics only.
@@ -6851,15 +6912,15 @@ proc sendMessageExpr(c: var Compiler, node, callee: Value): Value =
   callee
 
 proc emitOptionalReceiverGuard(c: var Compiler, optional: bool): int =
-  ## `?~` only: jump past the whole send when the receiver is absent, keeping
-  ## it on the stack as the result. Returns -1 for an ordinary `~`, so the
+  ## Guarded dot sends jump past the whole send when the receiver is absent,
+  ## keeping it on the stack as the result. Returns -1 for an ordinary send, so the
   ## non-optional path emits nothing at all.
   if optional: c.emitJump(opJumpIfAbsent) else: -1
 
 proc compileSend(c: var Compiler, node: Value, receiver: Value,
                  sendName: string, argsStart: int, messageExpr = NIL,
                  qualifierExpr = NIL, optional = false, tail = false) =
-  ## Message send (docs/core.md §9.1): the name after `~` resolves
+  ## Message send (docs/core.md §9.1): the dot descriptor resolves
   ## receiver-first at runtime. Stack shape matches ordinary calls:
   ## [callee, named..., receiver, args...]. `messageExpr` carries a qualified or
   ## dynamic callee (`%m` or an expression); it must evaluate to a message
@@ -6870,15 +6931,15 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
   var shortCircuit = -1
   let isSuper = receiver.kind == vkSymbol and receiver.symVal == "super"
   if isSuper:
-    # (super ~ m) dispatches m from the enclosing type's ^is parent, but calls
+    # (super .m) dispatches m from the enclosing type's ^is parent, but calls
     # it with `self` (design §10). The parent identity is stamped onto this
     # body's chunk when the type is created, so only `self` is pushed here — no
     # user-visible name is resolved, and a body-local cannot redirect the
     # delegation. Only bare-name messages are supported.
     if optional:
       raise newException(GeneError,
-        "?~ short-circuits an absent receiver, but super is never absent; " &
-        "use ~ for a super send")
+        "an optional dot send short-circuits an absent receiver, but super " &
+        "is never absent; use (super .message)")
     if c.superType.kind == vkNil:
       raise newException(GeneError,
         "super is only valid in a type message body with an ^is parent")
@@ -6892,7 +6953,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
         "' is a dynamic callee, which is not supported")
     compileExpr(c, newSym("self"))
     if qualifierExpr.kind != vkNil:
-      # `(super ~ P:m)` — the protocol names the message and the `^is` parent
+      # `(super .P:m)` — the protocol names the message and the `^is` parent
       # selects the impl, so both reach the opcode. Selection already keeps
       # providers at the nearest applicable receiver depth
       # (`docs/scoped-impls.md` §3.3), so resolving from the parent *is*
@@ -6902,7 +6963,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
     else:
       discard c.emit(opSuperSend, 0, name = sendName)
   elif qualifierExpr.kind != vkNil:
-    # `(x ~ P:msg)` — push the *protocol*, not a member of it. The protocol
+    # `(x .P:msg)` — push the *protocol*, not a member of it. The protocol
     # names the message and dispatch remains on the receiver. The name travels
     # in the instruction; a non-protocol qualifier is rejected at runtime.
     compileExpr(c, receiver)
@@ -6964,11 +7025,11 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
       parts.add (if segment.kind == vkSymbol: segment.symVal else: $segment)
     let shown = parts.join(":")
     raise newException(GeneError,
-      "a message dispatches only through ~: write (x ~ " & shown &
+      "a message dispatches only through a dot send: write (x ." & shown &
       ") instead of (" & shown & " x)")
   if node.body.len > 1 and node.body[0].kind == vkSymbol and
       (node.body[0].symVal == "~" or node.body[0].symVal == "?~"):
-    # (x ~ f a) — infix message send (docs/core.md §9.1). `?~` is the same
+    # (x .f a) — infix message send (docs/core.md §9.1). The optional marker is the same
     # send with one added rule: an absent receiver yields itself.
     let optional = node.body[0].symVal == "?~"
     if node.body[1].kind == vkSymbol and
@@ -6978,17 +7039,17 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
       compileSend(c, node, node.head, node.body[1].symVal, 2,
                   optional = optional, tail = tail)
       return
-    # A selector callee (x ~ /name) is a projection of the receiver, not a
+    # A selector callee in generated canonical AST is a projection, not a
     # message; it keeps the flipped-call lowering. Every other non-bare callee —
-    # a qualified path (x ~ P:m), `%m`, an expression, or `^protocol`/`^receiver`
+    # a qualified path (x .P:m), `%m`, an expression, or `^protocol`/`^receiver`
     # metadata — must evaluate to a message value and is dispatched by
-    # opResolveQualifiedMessage, so `~` can never invoke an ordinary function
+    # opResolveQualifiedMessage, so a dot send can never invoke an ordinary function
     # (design §3/§8).
     if node.body[1].kind == vkNode and node.body[1].head.isSymbol("select"):
       if optional:
         raise newException(GeneError,
-          "?~ guards a message send; a selector callee (x ?~ /name) is a " &
-          "projection — use ?? for an absent-valued projection")
+          "an optional dot descriptor guards a message send; selectors are " &
+          "ordinary callables — write (/name x) and use ?? if needed")
       var args = newSeqOfCap[Value](node.body.len - 1)
       args.add node.head
       for i in 2 ..< node.body.len:
@@ -6996,7 +7057,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
       compileCall(c, newNode(node.body[1], node.props, args, node.meta),
                   allowSyntax = false, tail = tail)
       return
-    # `(x ~ Q:msg)` — the qualifier names the message and never selects the
+    # `(x .Q:msg)` — the qualifier names the message and never selects the
     # impl, so dispatch is on the receiver either way (design §3, decision 5).
     # `Self` declines to name a type at all, which makes it exactly the bare
     # send; any other qualifier is a value whose kind decides at run time.
@@ -7008,7 +7069,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
         not node.props.hasKey("types"):
       let qualifier = node.body[1].body[0]
       let messageName = node.body[1].body[1].symVal
-      # `(super ~ Self:m)` names no qualifier at all, so it is exactly the bare
+      # `(super .Self:m)` names no qualifier at all, so it is exactly the bare
       # super send — same as for an ordinary receiver.
       if qualifier.isSymbol("Self"):
         compileSend(c, node, node.head, messageName, 2,
@@ -7126,7 +7187,7 @@ proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
       typeArgs: types.listItems))
   if node.props.hasKey("protocol") or node.props.hasKey("receiver"):
     # `(m ^protocol P ^receiver T recv args...)` is the pre-resolved spelling of
-    # `(recv ~ P:m args...)`, so dispatch it as a send. A message identity is
+    # `(recv .P:m args...)`, so dispatch it as a send. A message identity is
     # not callable in head position (design §3), and routing it here keeps the
     # message value out of the ordinary call opcodes.
     let messageExpr = sendMessageExpr(c, node, node.head)
@@ -7187,10 +7248,10 @@ proc compileNew(c: var Compiler, node: Value) =
 
 proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false,
                             tail = false) =
-  # (~ f a) => (self ~ f a): message send to lexical self (docs/core.md §9.1).
-  # `(?~ f a)` is the guarded form, which matters inside an `impl P for Nil`
+  # (.f a) => (self .f a): message send to lexical self (docs/core.md §9.1).
+  # `(?.f a)` is the guarded form, which matters inside an `impl P for Nil`
   # body where lexical self is itself absent.
-  let spelling = if optional: "?~" else: "~"
+  let spelling = if optional: "?.message" else: ".message"
   if node.body.len == 0:
     raise newException(GeneError, "`" & spelling & "` requires a callable")
   if not c.selfAvailable:
@@ -7205,12 +7266,12 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false,
     return
   # A selector callee projects the receiver rather than naming a message, so it
   # keeps the flipped-call lowering; everything else must be a message value and
-  # goes through the same qualified-send path as `(x ~ ...)` (design §3/§8).
+  # goes through the same qualified-send path as `(x ....)` (design §3/§8).
   if node.body[0].kind == vkNode and node.body[0].head.isSymbol("select"):
     if optional:
       raise newException(GeneError,
-        "?~ guards a message send; a selector callee (?~ /name) is a " &
-        "projection — use ?? for an absent-valued projection")
+        "an optional dot descriptor guards a message send; selectors are " &
+        "ordinary callables — write (/name self) and use ?? if needed")
     var args = newSeqOfCap[Value](node.body.len)
     args.add newSym("self")
     for i in 1 ..< node.body.len:
@@ -7221,7 +7282,7 @@ proc compileLeadingSelfCall(c: var Compiler, node: Value, optional = false,
   let resolved = sendMessageExpr(c, node, node.body[0])
   if resolved.kind == vkNode and resolved.head.isSymbol("msg") and
       resolved.body.len == 2 and resolved.body[1].kind == vkSymbol:
-    # `(~ P:m)` is `(self ~ P:m)`: same qualifier path as an explicit receiver.
+    # `(.P:m)` is `(self .P:m)`: same qualifier path as an explicit receiver.
     if resolved.body[0].isSymbol("Self"):
       compileSend(c, node, newSym("self"), resolved.body[1].symVal, 1,
                   optional = optional, tail = tail)
@@ -7754,6 +7815,10 @@ proc nativeTypeMarker(c: Compiler, node: Value,
     abi)
 
 proc validateMessageName(name: string) =
+  if '/' in name:
+    raise newException(GeneError,
+      "message names may not contain '/'; qualify a protocol as .ns/Proto:message " &
+      "or send a held message with .%message")
   if name.len > 1 and name.endsWith("!"):
     raise newException(GeneError,
       "message names may not end in !; trailing ! is reserved for fexpr calls: " &
@@ -7807,7 +7872,7 @@ proc messageParamVector(paramList: Value): Value =
   ## `self` is implicit in a message body (design §10). Inject it as the receiver
   ## parameter unless the (legacy) vector already begins with `self`, so both
   ## `(message m [x] ...)` and `(message m [self x] ...)` bind `self` as the
-  ## receiver and enable leading sends `(~ m)`.
+  ## receiver and enable leading sends `(.m)`.
   if paramList.kind == vkList and paramList.listItems.len > 0 and
       paramList.listItems[0].isSymbol("self"):
     return paramList
@@ -7932,7 +7997,7 @@ proc compileType(c: var Compiler, node: Value) =
                                 tailBody = false)
   var messages: seq[ImplMessageProto]
   var seenMessages = initTable[string, bool]()
-  # Type-direct message bodies can delegate to `(super ~ m)` (design §10). Store the
+  # Type-direct message bodies can delegate to `(super .m)` (design §10). Store the
   # *enclosing type name* (resolved at send time to the type value, then to its
   # ^is parent), not the raw `^is` expression — so a message-body local that
   # happens to shadow the parent's spelling cannot redirect the delegation.
@@ -7952,7 +8017,7 @@ proc compileType(c: var Compiler, node: Value) =
   # NB: `c.superType` stays set through the inline-impl loop below. An inline
   # impl's receiver *is* the enclosing type (docs/core.md §8), so `super` means
   # the same thing in its message bodies as in a type-direct one; restoring
-  # here left `(impl P (message m [] (super ~ P:m)))` unable to see the parent.
+  # here left `(impl P (message m [] (super .P:m)))` unable to see the parent.
   # Inline impls (docs/core.md §8): (impl P (message ...) ...) with the
   # receiver implied — the enclosing type. Each impl emits its message error
   # rows and then its protocol expression, in declaration order.
@@ -8725,6 +8790,10 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false,
     c.currentLoc = savedLoc
   case node.kind
   of vkSymbol:
+    if node.symVal.isDotMessageDescriptor:
+      raise newException(GeneError,
+        "a dot message descriptor requires a receiver; write (x " &
+          node.symVal & ") or use it as (.message) for lexical self")
     c.emitLoadBinding(node.symVal)
   of vkNode:
     compileNode(c, node, allowModDecl, tail = tail)

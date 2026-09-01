@@ -15,14 +15,14 @@
 (fn accept [candidate] candidate)
 
 (fn inspect_context [host]
-  (host ~ PluginHost:registry_names))
+  (host .PluginHost:registry_names))
 
 (fn cleanup_loop [host, candidate]
-  (host ~ PluginHost:registry_names)
+  (host .PluginHost:registry_names)
   (while true nil))
 
 (fn replace_core_event [host]
-  (host ~ PluginHost:replace_contribution "event_types"
+  (host .PluginHost:replace_contribution "event_types"
     {^name "turn/start" ^version 1 ^ignorable false
      ^origin "plugin" ^owner "callbacks" ^schema accept}))
 
@@ -33,17 +33,17 @@
 (var callbacks
   (Plugin ^id "callbacks" ^provides [] ^requires [] ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "LoopSeam" diverge)
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:provide "LoopSeam" diverge)
+      (host .PluginHost:contribute "commands"
         {^name "loop" ^doc "must be bounded" ^run diverge})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "context" ^doc "must receive PluginContext"
          ^run inspect_context})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "replace_core_event" ^doc "must be refused"
          ^run replace_core_event})
-      (host ~ PluginHost:subscribe HarnessLog diverge)
-      (host ~ PluginHost:create_registry
+      (host .PluginHost:subscribe HarnessLog diverge)
+      (host .PluginHost:create_registry
         {^name "checked" ^schema diverge})))))
 (install_with_policy h callbacks [] ^limits limits)
 (assert (== (status_of h "callbacks") "ready")
@@ -57,7 +57,7 @@ catch Any
 (assert command_failed
   "command callbacks must execute under their owner's transitive budget")
 (var context_names (invoke_registry_row h "commands" "context" [h]))
-(assert (context_names ~ contains? "seams")
+(assert (context_names .contains? "seams")
   "generated command callbacks must receive PluginContext, not raw Harness")
 (var core_replace_refused false)
 (try
@@ -90,9 +90,9 @@ catch Any
 (var cleanup
   (Plugin ^id "cleanup" ^provides [] ^requires [] ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:create_registry
+      (host .PluginHost:create_registry
         {^name "owned_callbacks" ^schema accept ^on_remove cleanup_loop})
-      (host ~ PluginHost:contribute "owned_callbacks" {^name "resource"})))))
+      (host .PluginHost:contribute "owned_callbacks" {^name "resource"})))))
 (install_with_policy h cleanup [] ^limits limits)
 (var removed (uninstall h "cleanup"))
 (assert ($str/contains? removed "recovery_required")

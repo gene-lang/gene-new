@@ -21,14 +21,14 @@
   (Plugin ^id "fs" ^provides ["HarnessFs"]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "HarnessFs"
+      (host .PluginHost:provide "HarnessFs"
         (fs_provider (MemFs ^files {^notes "hello from memory"})))))))
 
 (fn web_render_plugin [] : Plugin
   (Plugin ^id "render" ^provides ["HarnessRender"]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "HarnessRender"
+      (host .PluginHost:provide "HarnessRender"
         (render_provider (HtmlRender)))))))
 
 (fn web_profile [] : Profile

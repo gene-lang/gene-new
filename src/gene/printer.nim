@@ -159,6 +159,131 @@ proc printProps(sb: var string, props: PropTable, sigil: string) =
       sb.add ' '
       sb.add print(val)
 
+proc printMessageQualifier(value: Value): string =
+  if value.kind == vkNode and value.head.kind == vkSymbol and
+      value.head.symVal == "path":
+    for i, part in value.body:
+      if i > 0: result.add '/'
+      result.add print(part)
+  else:
+    result = print(value)
+
+proc printHeldExpression(value: Value): string =
+  if value.kind == vkNode and value.head.kind == vkSymbol and
+      value.head.symVal == "path" and value.body.len >= 2:
+    if value.body[0].kind == vkSymbol and value.body[0].symVal == "gene":
+      result = "$"
+      for i in 1 ..< value.body.len:
+        if i > 1: result.add '/'
+        result.add print(value.body[i])
+    else:
+      result = printMessageQualifier(value)
+  else:
+    result = print(value)
+
+proc printSendDescriptor(callee: Value, optional: bool): string =
+  result = if optional: "?." else: "."
+  if callee.kind == vkNode and callee.head.kind == vkSymbol and
+      callee.head.symVal == "msg" and callee.body.len == 2 and
+      callee.body[1].kind == vkSymbol:
+    result.add printMessageQualifier(callee.body[0])
+    result.add ':'
+    result.add callee.body[1].symVal
+  elif callee.kind == vkNode and callee.head.kind == vkSymbol and
+      callee.head.symVal == "unquote" and callee.body.len == 1:
+    result.add '%'
+    let expr = callee.body[0]
+    if expr.kind == vkSymbol:
+      result.add expr.symVal
+    else:
+      result.add printHeldExpression(expr)
+  elif callee.kind == vkSymbol:
+    result.add callee.symVal
+  else:
+    result.add '%' & print(callee)
+
+proc pathSendMarker(value: Value): tuple[found, optional: bool,
+                                           rest: string] =
+  if value.kind != vkSymbol:
+    return
+  if value.symVal.len > 2 and value.symVal.startsWith("?~"):
+    return (true, true, value.symVal[2 .. ^1])
+  if value.symVal.len > 1 and value.symVal[0] == '~':
+    return (true, false, value.symVal[1 .. ^1])
+
+proc printPathSegment(value: Value): string =
+  if value.kind == vkNode and value.head.kind == vkSymbol and
+      value.head.symVal == "unquote" and value.body.len == 1:
+    let expr = value.body[0]
+    if expr.kind == vkSymbol:
+      return "%" & expr.symVal
+    if expr.kind == vkNode and expr.head.kind == vkSymbol and
+        expr.head.symVal == "path" and expr.body.len >= 2 and
+        expr.body[0].kind == vkSymbol and expr.body[0].symVal == "gene":
+      result = "%$"
+      for i in 1 ..< expr.body.len:
+        if i > 1: result.add '/'
+        result.add print(expr.body[i])
+      return
+  print(value)
+
+proc printPathSend(value: Value): string =
+  ## Return an empty string when this is an ordinary canonical `path` node.
+  ## Paths containing reader-lowered sends resugar to `x/.message` so the
+  ## canonical printer never emits the removed tilde spelling.
+  if value.head.kind != vkSymbol or value.head.symVal != "path" or
+      value.body.len < 2:
+    return
+  var hasSend = false
+  for part in value.body:
+    if part.pathSendMarker.found:
+      hasSend = true
+      break
+  if not hasSend:
+    return
+  result = printPathSegment(value.body[0])
+  for i in 1 ..< value.body.len:
+    result.add '/'
+    let marker = value.body[i].pathSendMarker
+    if marker.found:
+      result.add (if marker.optional: "?." else: ".")
+      result.add marker.rest
+    else:
+      result.add printPathSegment(value.body[i])
+
+proc printSendNode(value: Value): string =
+  var optional = false
+  var callee: Value
+  var argsStart = 0
+  var receiver = NIL
+  if value.head.kind == vkSymbol and
+      value.head.symVal in ["~", "?~"] and value.body.len > 0:
+    optional = value.head.symVal == "?~"
+    callee = value.body[0]
+    argsStart = 1
+  elif value.body.len > 1 and value.body[0].kind == vkSymbol and
+      value.body[0].symVal in ["~", "?~"]:
+    receiver = value.head
+    optional = value.body[0].symVal == "?~"
+    callee = value.body[1]
+    argsStart = 2
+  else:
+    return
+  result = if value.nodeImmutable: "#(" else: "("
+  if receiver.kind != vkNil:
+    result.add print(receiver)
+    printProps(result, value.meta, "@")
+    printProps(result, value.props, "^")
+    result.add ' '
+  result.add printSendDescriptor(callee, optional)
+  if receiver.kind == vkNil:
+    printProps(result, value.meta, "@")
+    printProps(result, value.props, "^")
+  for i in argsStart ..< value.body.len:
+    result.add ' '
+    result.add print(value.body[i])
+  result.add ')'
+
 proc print*(v: Value): string =
   if v.isNil: return "nil"
   case v.kind
@@ -241,6 +366,12 @@ proc print*(v: Value): string =
         v.props.len == 0 and v.meta.len == 0 and
         v.body.len == 1 and v.body[0].kind == vkSymbol:
       return "#Deref " & v.body[0].symVal
+    let send = printSendNode(v)
+    if send.len > 0:
+      return send
+    let pathSend = printPathSend(v)
+    if pathSend.len > 0:
+      return pathSend
     var sb = if v.nodeImmutable: "#(" else: "("
     sb.add print(v.head)
     printProps(sb, v.meta, "@")

@@ -106,8 +106,8 @@
 
 (fn new_forms [] : FormRegistry (new FormRegistry))
 
-(fn form_count [f : FormRegistry] : F64 (f/counts ~ get count_forms))
-(fn element_count [f : FormRegistry] : F64 (f/counts ~ get count_elements))
+(fn form_count [f : FormRegistry] : F64 (f/counts .get count_forms))
+(fn element_count [f : FormRegistry] : F64 (f/counts .get count_elements))
 
 (type FormError
   ^props {^message Str}
@@ -125,13 +125,13 @@
   (if_yes (|| (<= cols 0.0) (<= rows 0.0))
     (fail (new FormError
                $"form ${name} is $($to_int cols)x$($to_int rows); a form needs a positive size")))
-  (f/names ~ push name)
-  (f/title ~ push title)
-  (f/cols ~ set id cols)
-  (f/rows ~ set id rows)
-  (f/first ~ set id (element_count f))
-  (f/len ~ set id 0.0)
-  (f/counts ~ set count_forms (+ id 1.0))
+  (f/names .push name)
+  (f/title .push title)
+  (f/cols .set id cols)
+  (f/rows .set id rows)
+  (f/first .set id (element_count f))
+  (f/len .set id 0.0)
+  (f/counts .set count_forms (+ id 1.0))
   id)
 
 # The validation, as a question. `add_element` raises on a bad element — that is
@@ -141,8 +141,8 @@
 (fn element_fits? [f : FormRegistry form : F64 kind : F64
                    x : F64 y : F64 w : F64 h : F64] : Bool
   (&& (&& (>= kind el_label) (<= kind el_button))
-      (&& (&& (>= x 0.0) (<= (+ x w) (f/cols ~ get form)))
-          (&& (>= y 0.0) (<= (+ y h) (f/rows ~ get form))))))
+      (&& (&& (>= x 0.0) (<= (+ x w) (f/cols .get form)))
+          (&& (>= y 0.0) (<= (+ y h) (f/rows .get form))))))
 
 # The other half of the same question, and it is separate because it is about
 # the element rather than the grid: a button that sends nothing is a control
@@ -171,21 +171,21 @@
   (if_yes (! (element_wired? kind action))
     (fail (new FormError
                $"button \"${text}\" in form ${names/%i} names no action, so pressing it would send nothing")))
-  (if_yes (|| (< x 0.0) (> (+ x w) (f/cols ~ get form)))
+  (if_yes (|| (< x 0.0) (> (+ x w) (f/cols .get form)))
     (fail (new FormError
-               $"element at column $($to_int x) width $($to_int w) leaves form ${names/%i}, which is $($to_int (f/cols ~ get form)) wide")))
-  (if_yes (|| (< y 0.0) (> (+ y h) (f/rows ~ get form)))
+               $"element at column $($to_int x) width $($to_int w) leaves form ${names/%i}, which is $($to_int (f/cols .get form)) wide")))
+  (if_yes (|| (< y 0.0) (> (+ y h) (f/rows .get form)))
     (fail (new FormError
-               $"element at row $($to_int y) height $($to_int h) leaves form ${names/%i}, which is $($to_int (f/rows ~ get form)) tall")))
-  (f/kind ~ set n kind)
-  (f/x ~ set n x)
-  (f/y ~ set n y)
-  (f/w ~ set n w)
-  (f/h ~ set n h)
-  (f/text ~ push text)
-  (f/action ~ push action)
-  (f/counts ~ set count_elements (+ n 1.0))
-  (f/len ~ set form (+ (f/len ~ get form) 1.0))
+               $"element at row $($to_int y) height $($to_int h) leaves form ${names/%i}, which is $($to_int (f/rows .get form)) tall")))
+  (f/kind .set n kind)
+  (f/x .set n x)
+  (f/y .set n y)
+  (f/w .set n w)
+  (f/h .set n h)
+  (f/text .push text)
+  (f/action .push action)
+  (f/counts .set count_elements (+ n 1.0))
+  (f/len .set form (+ (f/len .get form) 1.0))
   n)
 
 # --- reading -----------------------------------------------------------------
@@ -210,16 +210,16 @@
   (var i id)
   t/%i)
 
-(fn form_cols [f : FormRegistry id : F64] : F64 (f/cols ~ get id))
-(fn form_rows [f : FormRegistry id : F64] : F64 (f/rows ~ get id))
-(fn form_first [f : FormRegistry id : F64] : F64 (f/first ~ get id))
-(fn form_len [f : FormRegistry id : F64] : F64 (f/len ~ get id))
+(fn form_cols [f : FormRegistry id : F64] : F64 (f/cols .get id))
+(fn form_rows [f : FormRegistry id : F64] : F64 (f/rows .get id))
+(fn form_first [f : FormRegistry id : F64] : F64 (f/first .get id))
+(fn form_len [f : FormRegistry id : F64] : F64 (f/len .get id))
 
-(fn element_kind [f : FormRegistry i : F64] : F64 (f/kind ~ get i))
-(fn element_x [f : FormRegistry i : F64] : F64 (f/x ~ get i))
-(fn element_y [f : FormRegistry i : F64] : F64 (f/y ~ get i))
-(fn element_w [f : FormRegistry i : F64] : F64 (f/w ~ get i))
-(fn element_h [f : FormRegistry i : F64] : F64 (f/h ~ get i))
+(fn element_kind [f : FormRegistry i : F64] : F64 (f/kind .get i))
+(fn element_x [f : FormRegistry i : F64] : F64 (f/x .get i))
+(fn element_y [f : FormRegistry i : F64] : F64 (f/y .get i))
+(fn element_w [f : FormRegistry i : F64] : F64 (f/w .get i))
+(fn element_h [f : FormRegistry i : F64] : F64 (f/h .get i))
 
 (fn element_text [f : FormRegistry i : F64] : Str
   (var t f/text)

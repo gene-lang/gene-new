@@ -48,9 +48,9 @@
 
 (fn reversed [xs] : Any
   (var out [])
-  (var i (- xs/~size 1))
+  (var i (- xs/.size 1))
   (while (>= i 0)
-    (out ~ push xs/%i)
+    (out .push xs/%i)
     (set i (- i 1)))
   out)
 
@@ -62,5 +62,5 @@
 
 (fn plugin_names [p : Profile] : Any
   (var out [])
-  (for plugin in p/plugins (out ~ push plugin/id))
+  (for plugin in p/plugins (out .push plugin/id))
   out)

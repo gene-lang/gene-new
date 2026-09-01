@@ -26,7 +26,7 @@
     (new_harness ^event_store events ^event_scope "session"
       ^event_stream "s1"))
   (var known ($thaw #{}))
-  (for event in core_event_types (known ~ put event/name event))
+  (for event in core_event_types (known .put event/name event))
   (validate_event_catalog events known)
   (hydrate_harness_log h)
   (assert (== (assemble_request (log_events h)) ["prior request"])
@@ -35,7 +35,7 @@
   (assert (== (status_of h "agent") "ready")
     "the real LLM plugin must restore without calling the model")
   (var provider (resolve h "HarnessPrompt"))
-  (var remembered (provider/session ~ get))
+  (var remembered (provider/session .get))
   (assert (== remembered ["remembered exchange"])
     "the real LLM provider must restore its scoped conversation window")
   (shutdown_harness h)

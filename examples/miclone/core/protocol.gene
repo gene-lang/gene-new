@@ -102,7 +102,7 @@
 
 # `$to_float` because a `(Buffer U8)` read is `Int` on *both* backends, which is
 # the ordinary case the conversion is for. Contrast `core/wire.gene`'s
-# `byte_len`: `~ len` is the operation whose type differs between them, and it
+# `byte_len`: `.len` is the operation whose type differs between them, and it
 # is the only one (§D7.12).
 # --- constants, as functions -------------------------------------------------
 #
@@ -211,16 +211,16 @@
                    into : (Buffer F64)] : Nil
   (reset c)
   (read_u8 c b)
-  (into ~ set ent_id (read_u32 c b))
-  (into ~ set ent_x (/ (read_i32 c b) 1000.0))
-  (into ~ set ent_y (/ (read_i32 c b) 1000.0))
-  (into ~ set ent_z (/ (read_i32 c b) 1000.0))
-  (into ~ set ent_item (read_u16 c b))
-  (into ~ set ent_count (read_u16 c b))
-  (into ~ set ent_kind (read_u8 c b)))
+  (into .set ent_id (read_u32 c b))
+  (into .set ent_x (/ (read_i32 c b) 1000.0))
+  (into .set ent_y (/ (read_i32 c b) 1000.0))
+  (into .set ent_z (/ (read_i32 c b) 1000.0))
+  (into .set ent_item (read_u16 c b))
+  (into .set ent_count (read_u16 c b))
+  (into .set ent_kind (read_u8 c b)))
 
 (fn message_kind [b : (Buffer U8)] : F64
-  ($to_float (b ~ get 0.0)))
+  ($to_float (b .get 0.0)))
 
 (fn server_message? [kind : F64] : Bool
   (&& (>= kind 1.0) (< kind 64.0)))
@@ -280,17 +280,17 @@
 (fn decode_hello [b : (Buffer U8) c : (Buffer F64) into : (Buffer F64)] : Nil
   (reset c)
   (read_u8 c b)                    # kind, already dispatched on
-  (into ~ set hello_version (read_u8 c b))
-  (into ~ set hello_seed (read_u32 c b))
-  (into ~ set hello_bx (read_i32 c b))
-  (into ~ set hello_by (read_i32 c b))
-  (into ~ set hello_bz (read_i32 c b))
-  (into ~ set hello_span_x (read_u16 c b))
-  (into ~ set hello_span_y (read_u16 c b))
-  (into ~ set hello_span_z (read_u16 c b))
-  (into ~ set hello_spawn_x (/ (read_i32 c b) 1000.0))
-  (into ~ set hello_spawn_y (/ (read_i32 c b) 1000.0))
-  (into ~ set hello_spawn_z (/ (read_i32 c b) 1000.0)))
+  (into .set hello_version (read_u8 c b))
+  (into .set hello_seed (read_u32 c b))
+  (into .set hello_bx (read_i32 c b))
+  (into .set hello_by (read_i32 c b))
+  (into .set hello_bz (read_i32 c b))
+  (into .set hello_span_x (read_u16 c b))
+  (into .set hello_span_y (read_u16 c b))
+  (into .set hello_span_z (read_u16 c b))
+  (into .set hello_spawn_x (/ (read_i32 c b) 1000.0))
+  (into .set hello_spawn_y (/ (read_i32 c b) 1000.0))
+  (into .set hello_spawn_z (/ (read_i32 c b) 1000.0)))
 
 # --- registry ----------------------------------------------------------------
 #
@@ -545,7 +545,7 @@
       (var row (+ base (+ (* y sy) (* z sz))))
       (var x 0.0)
       (while (< x 16.0)
-        (var v (values ~ get (+ row x)))
+        (var v (values .get (+ row x)))
         (if_yes (|| (! started) (!= v previous))
           (set runs (+ runs 1.0))
           (set previous v)
@@ -582,7 +582,7 @@
       (var row (+ base (+ (* y sy) (* z sz))))
       (var x 0.0)
       (while (< x 16.0)
-        (var v (values ~ get (+ row x)))
+        (var v (values .get (+ row x)))
         (if (== run 0.0)
           (then
             (set current v)
@@ -608,9 +608,9 @@
                   content : (Buffer F32) light : (Buffer F32)] : Nil
   (reset c)
   (read_u8 c b)
-  (into ~ set block_bx (read_i32 c b))
-  (into ~ set block_by (read_i32 c b))
-  (into ~ set block_bz (read_i32 c b))
+  (into .set block_bx (read_i32 c b))
+  (into .set block_by (read_i32 c b))
+  (into .set block_bz (read_i32 c b))
   (read_runs c b content)
   (read_runs c b light))
 
@@ -632,7 +632,7 @@
     (var v (read_u16 c b))
     (var k 0.0)
     (while (&& (< k run) (< at block_nodes))
-      (into ~ set at v)
+      (into .set at v)
       (set at (+ at 1.0))
       (set k (+ k 1.0)))))
 
@@ -671,11 +671,11 @@
                        into : (Buffer F64)] : Nil
   (reset c)
   (read_u8 c b)
-  (into ~ set delta_x (read_i32 c b))
-  (into ~ set delta_y (read_i32 c b))
-  (into ~ set delta_z (read_i32 c b))
-  (into ~ set delta_id (read_u16 c b))
-  (into ~ set delta_param1 (read_u8 c b)))
+  (into .set delta_x (read_i32 c b))
+  (into .set delta_y (read_i32 c b))
+  (into .set delta_z (read_i32 c b))
+  (into .set delta_id (read_u16 c b))
+  (into .set delta_param1 (read_u8 c b)))
 
 # --- player input ------------------------------------------------------------
 #
@@ -748,13 +748,13 @@
 (fn decode_input [b : (Buffer U8) c : (Buffer F64) into : (Buffer F64)] : Nil
   (reset c)
   (read_u8 c b)
-  (into ~ set in_wish_x (/ (read_i32 c b) 1000.0))
-  (into ~ set in_wish_z (/ (read_i32 c b) 1000.0))
-  (into ~ set in_flags (read_u8 c b))
-  (into ~ set in_yaw (- (* (/ (read_u16 c b) 65535.0) two_pi) pi))
-  (into ~ set in_x (/ (read_i32 c b) 1000.0))
-  (into ~ set in_y (/ (read_i32 c b) 1000.0))
-  (into ~ set in_z (/ (read_i32 c b) 1000.0)))
+  (into .set in_wish_x (/ (read_i32 c b) 1000.0))
+  (into .set in_wish_z (/ (read_i32 c b) 1000.0))
+  (into .set in_flags (read_u8 c b))
+  (into .set in_yaw (- (* (/ (read_u16 c b) 65535.0) two_pi) pi))
+  (into .set in_x (/ (read_i32 c b) 1000.0))
+  (into .set in_y (/ (read_i32 c b) 1000.0))
+  (into .set in_z (/ (read_i32 c b) 1000.0)))
 
 (fn input_flag? [flags : F64 flag : F64] : Bool
   (var above (* 2.0 flag))
@@ -821,14 +821,14 @@
 (fn decode_edit [b : (Buffer U8) c : (Buffer F64) into : (Buffer F64)] : Nil
   (reset c)
   (var kind (read_u8 c b))
-  (into ~ set edit_x (read_i32 c b))
-  (into ~ set edit_y (read_i32 c b))
-  (into ~ set edit_z (read_i32 c b))
-  (into ~ set edit_id (if (== kind msg_place) (read_u16 c b) 0.0))
+  (into .set edit_x (read_i32 c b))
+  (into .set edit_y (read_i32 c b))
+  (into .set edit_z (read_i32 c b))
+  (into .set edit_id (if (== kind msg_place) (read_u16 c b) 0.0))
   (if_yes (== kind msg_place)
-    (into ~ set edit_at_x (read_i32 c b))
-    (into ~ set edit_at_y (read_i32 c b))
-    (into ~ set edit_at_z (read_i32 c b))))
+    (into .set edit_at_x (read_i32 c b))
+    (into .set edit_at_y (read_i32 c b))
+    (into .set edit_at_z (read_i32 c b))))
 
 # --- requesting blocks -------------------------------------------------------
 #
@@ -869,8 +869,8 @@
                            into : (Buffer F64)] : Nil
   (reset c)
   (read_u8 c b)
-  (into ~ set req_from (read_u16 c b))
-  (into ~ set req_count (read_u16 c b)))
+  (into .set req_from (read_u16 c b))
+  (into .set req_count (read_u16 c b)))
 
 # --- inventory ---------------------------------------------------------------
 #
@@ -893,9 +893,9 @@
   (write_u8 c out slots)
   (var i 0.0)
   (while (< i slots)
-    (write_u16 c out (inv ~ get (* i 3.0)))
-    (write_u16 c out (inv ~ get (+ (* i 3.0) 1.0)))
-    (write_u16 c out (inv ~ get (+ (* i 3.0) 2.0)))
+    (write_u16 c out (inv .get (* i 3.0)))
+    (write_u16 c out (inv .get (+ (* i 3.0) 1.0)))
+    (write_u16 c out (inv .get (+ (* i 3.0) 2.0)))
     (set i (+ i 1.0))))
 
 (fn decode_inventory [b : (Buffer U8) c : (Buffer F64)
@@ -905,9 +905,9 @@
   (var slots (read_u8 c b))
   (var i 0.0)
   (while (< i slots)
-    (inv ~ set (* i 3.0) (read_u16 c b))
-    (inv ~ set (+ (* i 3.0) 1.0) (read_u16 c b))
-    (inv ~ set (+ (* i 3.0) 2.0) (read_u16 c b))
+    (inv .set (* i 3.0) (read_u16 c b))
+    (inv .set (+ (* i 3.0) 1.0) (read_u16 c b))
+    (inv .set (+ (* i 3.0) 2.0) (read_u16 c b))
     (set i (+ i 1.0)))
   slots)
 
@@ -998,18 +998,18 @@
   (var lens ($buffer F64 max_wire_forms))
   (var i 0.0)
   (while (< i n)
-    (names ~ push (read_str c b))
-    (titles ~ push (read_str c b))
-    (cols ~ set i (read_u8 c b))
-    (rows ~ set i (read_u8 c b))
-    (lens ~ set i (read_u8 c b))
+    (names .push (read_str c b))
+    (titles .push (read_str c b))
+    (cols .set i (read_u8 c b))
+    (rows .set i (read_u8 c b))
+    (lens .set i (read_u8 c b))
     (set i (+ i 1.0)))
   (read_u16 c b)
   (var form 0.0)
   (while (< form n)
     (var k form)
-    (add_form f names/%k titles/%k (cols ~ get form) (rows ~ get form))
-    (var want (lens ~ get form))
+    (add_form f names/%k titles/%k (cols .get form) (rows .get form))
+    (var want (lens .get form))
     (var e 0.0)
     (while (< e want)
       (var kind (read_u8 c b))
@@ -1050,9 +1050,9 @@
   (write_u8 c out slots)
   (var i 0.0)
   (while (< i slots)
-    (write_u16 c out (inv ~ get (* i 3.0)))
-    (write_u16 c out (inv ~ get (+ (* i 3.0) 1.0)))
-    (write_u16 c out (inv ~ get (+ (* i 3.0) 2.0)))
+    (write_u16 c out (inv .get (* i 3.0)))
+    (write_u16 c out (inv .get (+ (* i 3.0) 1.0)))
+    (write_u16 c out (inv .get (+ (* i 3.0) 2.0)))
     (set i (+ i 1.0)))
   (write_str c out name))
 
@@ -1065,15 +1065,15 @@
                       inv : (Buffer F64)] : Str
   (reset c)
   (read_u8 c b)
-  (into ~ set open_x (read_i32 c b))
-  (into ~ set open_y (read_i32 c b))
-  (into ~ set open_z (read_i32 c b))
+  (into .set open_x (read_i32 c b))
+  (into .set open_y (read_i32 c b))
+  (into .set open_z (read_i32 c b))
   (var slots (read_u8 c b))
   (var i 0.0)
   (while (< i slots)
-    (inv ~ set (* i 3.0) (read_u16 c b))
-    (inv ~ set (+ (* i 3.0) 1.0) (read_u16 c b))
-    (inv ~ set (+ (* i 3.0) 2.0) (read_u16 c b))
+    (inv .set (* i 3.0) (read_u16 c b))
+    (inv .set (+ (* i 3.0) 1.0) (read_u16 c b))
+    (inv .set (+ (* i 3.0) 2.0) (read_u16 c b))
     (set i (+ i 1.0)))
   (read_str c b))
 
@@ -1121,10 +1121,10 @@
                         into : (Buffer F64)] : Str
   (reset c)
   (read_u8 c b)
-  (into ~ set act_x (read_i32 c b))
-  (into ~ set act_y (read_i32 c b))
-  (into ~ set act_z (read_i32 c b))
-  (into ~ set act_slot (read_u8 c b))
+  (into .set act_x (read_i32 c b))
+  (into .set act_y (read_i32 c b))
+  (into .set act_z (read_i32 c b))
+  (into .set act_slot (read_u8 c b))
   (read_str c b))
 
 (fn action_of [b : (Buffer U8) c : (Buffer F64)] : Str

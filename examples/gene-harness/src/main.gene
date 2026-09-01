@@ -34,21 +34,21 @@
 
 (fn arg_list [args] : Any
   (var out [])
-  (for c in args (out ~ push ($to_str c)))
+  (for c in args (out .push ($to_str c)))
   out)
 
 (fn joined_from [parts, i : Int] : Str
   (var out [])
   (var j i)
-  (while (< j parts/~size)
-    (out ~ push ($to_str parts/%j))
+  (while (< j parts/.size)
+    (out .push ($to_str parts/%j))
     (set j (+ j 1)))
   ($str/join out " "))
 
 (fn print_output_since [h, start : Int]
-  (var events (h/log ~ get))
+  (var events (h/log .get))
   (var i start)
-  (while (< i events/~size)
+  (while (< i events/.size)
     (var event events/%i)
     (if_yes (== event/kind "output") ($println event/text))
     (set i (+ i 1))))
@@ -65,13 +65,13 @@
 (fn run_view_turns [h, view] : Any
   (var current view)
   (while (!= current void)
-    (var stopped (current/value ~ HarnessView:show_prompt h))
+    (var stopped (current/value .HarnessView:show_prompt h))
     (if_not (== stopped nil) (return stopped))
     # Unbounded on purpose. A view that never reaches a prompt — the recording
     # view, for one — stops above and this never runs, so a headless deployment
     # still never touches stdin.
     (var line ($os/read_line))
-    (var result (current/value ~ HarnessView:handle_line h line))
+    (var result (current/value .HarnessView:handle_line h line))
     (if_not (== result nil) (return result))
     (set current (row h "views" "active")))
   0)
@@ -93,7 +93,7 @@
     ($println "through it cannot run without one. Nothing else was affected.")))
 
 (fn default_harness_home [] : Str
-  $"${(module_dir (module_dir this_mod/~path))}/tmp/workspace")
+  $"${(module_dir (module_dir this_mod/.path))}/tmp/workspace")
 
 (fn prepare_harness_home []
   (var home (get_env "GENE_HARNESS_HOME" (default_harness_home)))
@@ -105,7 +105,7 @@
 
 (fn main [args]
   (var names (arg_list args))
-  (var name (if (> names/~size 0) names/0 "cli"))
+  (var name (if (> names/.size 0) names/0 "cli"))
   (var p (profile_named name))
   (var home (prepare_harness_home))
   (var event_store (open_event_store $"${home}/events"))
@@ -117,8 +117,8 @@
     (new_harness ^event_store event_store ^event_scope "session"
                  ^event_stream session ^workspace workspace))
   (var prompt (joined_from names 1))
-  (var recovery_command (if (> names/~size 1) names/1 ""))
-  (var recovery_target (if (> names/~size 2) names/2 ""))
+  (var recovery_command (if (> names/.size 1) names/1 ""))
+  (var recovery_target (if (> names/.size 2) names/2 ""))
 
   (try
     # Irreducible recovery commands run before descriptor or profile
@@ -145,8 +145,8 @@
         # same seam as the interactive view.
         (if (!= prompt "")
           (then
-            (var current_log (h/log ~ get))
-            (var output_start current_log/~size)
+            (var current_log (h/log .get))
+            (var output_start current_log/.size)
             (ask h prompt)
             (print_output_since h output_start))
           (else

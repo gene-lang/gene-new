@@ -22,7 +22,7 @@
          (Plugin ^id "dependent" ^provides ["Dependent"] ^requires []
            ^contextual true
            ^activate (fn [] (fn [host]
-             (host ~ PluginHost:provide "Dependent" (answer))))))))
+             (host .PluginHost:provide "Dependent" (answer))))))))
 
   (var workspace (open_workspace args/0))
   (var h (new_harness))
@@ -53,7 +53,7 @@
   (var registered
     (register_module workspace h "dependent" root
       ^selectors [] ^dependencies [dependency]))
-  (assert (== registered/entry/closure/~size 2)
+  (assert (== registered/entry/closure/.size 2)
     "the committed closure must include root and dependency digests")
   (assert (== (resolve h "Dependent") "from-dependency")
     "the loader must execute against the committed dependency blob")

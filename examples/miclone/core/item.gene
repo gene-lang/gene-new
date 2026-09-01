@@ -101,7 +101,7 @@
     # real item. Buffers zero-initialise, so this is written rather than assumed.
     (var i 0.0)
     (while (< i max_content)
-      (self/node_item ~ set i no_item)
+      (self/node_item .set i no_item)
       (set i (+ i 1.0)))))
 
 (let count_items 0.0)
@@ -111,10 +111,10 @@
   (new ItemRegistry))
 
 (fn item_count [r : ItemRegistry] : F64
-  (r/counts ~ get count_items))
+  (r/counts .get count_items))
 
 (fn tool_entry_count [r : ItemRegistry] : F64
-  (r/counts ~ get count_tools))
+  (r/counts .get count_tools))
 
 (type ItemRegistryFull
   ^props {^message Str}
@@ -133,18 +133,18 @@
   (if_yes (>= id max_items)
     (fail (new ItemRegistryFull
                $"item registry is full at ${max_items} entries")))
-  (r/names ~ push name)
-  (r/descriptions ~ push description)
-  (r/node ~ set id node)
-  (r/stack_max ~ set id stack_max)
-  (if_yes (>= node 0.0) (r/node_item ~ set node id))
-  (r/counts ~ set count_items (+ id 1.0))
+  (r/names .push name)
+  (r/descriptions .push description)
+  (r/node .set id node)
+  (r/stack_max .set id stack_max)
+  (if_yes (>= node 0.0) (r/node_item .set node id))
+  (r/counts .set count_items (+ id 1.0))
   id)
 
 # The item a node yields when dug or picked up, or `no_item` for a node nobody
 # can hold — §1's three reserved ids, and anything a mod opted out of.
 (fn item_of_node [r : ItemRegistry node : F64] : F64
-  (r/node_item ~ get node))
+  (r/node_item .get node))
 
 (fn node_has_item? [r : ItemRegistry node : F64] : Bool
   (>= (item_of_node r node) 0.0))
@@ -162,7 +162,7 @@
   d/%i)
 
 (fn item_node [r : ItemRegistry id : F64] : F64
-  (r/node ~ get id))
+  (r/node .get id))
 
 # An item that can be placed is one that names a node. A pickaxe answers false
 # and §7.1's place never reaches the server with it.
@@ -170,7 +170,7 @@
   (>= (item_node r id) 0.0))
 
 (fn item_stack_max [r : ItemRegistry id : F64] : F64
-  (r/stack_max ~ get id))
+  (r/stack_max .get id))
 
 # Linear, like every other name lookup here: it runs once per name at
 # registration and once per name on the wire, never per node.
@@ -205,24 +205,24 @@
   (if_yes (>= n max_items)
     (fail (new ItemRegistryFull
                $"item registry is full at ${max_items} tool capabilities")))
-  (r/tool_item ~ set n item)
-  (r/tool_group ~ set n group)
-  (r/tool_time ~ set n time_ms)
-  (r/tool_level ~ set n level)
-  (r/counts ~ set count_tools (+ n 1.0)))
+  (r/tool_item .set n item)
+  (r/tool_group .set n group)
+  (r/tool_time .set n time_ms)
+  (r/tool_level .set n level)
+  (r/counts .set count_tools (+ n 1.0)))
 
-(fn tool_entry_item [r : ItemRegistry i : F64] : F64 (r/tool_item ~ get i))
-(fn tool_entry_group [r : ItemRegistry i : F64] : F64 (r/tool_group ~ get i))
-(fn tool_entry_time [r : ItemRegistry i : F64] : F64 (r/tool_time ~ get i))
-(fn tool_entry_level [r : ItemRegistry i : F64] : F64 (r/tool_level ~ get i))
+(fn tool_entry_item [r : ItemRegistry i : F64] : F64 (r/tool_item .get i))
+(fn tool_entry_group [r : ItemRegistry i : F64] : F64 (r/tool_group .get i))
+(fn tool_entry_time [r : ItemRegistry i : F64] : F64 (r/tool_time .get i))
+(fn tool_entry_level [r : ItemRegistry i : F64] : F64 (r/tool_level .get i))
 
 (fn tool_digs? [r : ItemRegistry item : F64 group : F64] : Bool
   (var found false)
   (var n (tool_entry_count r))
   (var i 0.0)
   (while (< i n)
-    (if_yes (&& (== (r/tool_item ~ get i) item)
-                (== (r/tool_group ~ get i) group))
+    (if_yes (&& (== (r/tool_item .get i) item)
+                (== (r/tool_group .get i) group))
       (set found true)
       (set i n))
     (set i (+ i 1.0)))

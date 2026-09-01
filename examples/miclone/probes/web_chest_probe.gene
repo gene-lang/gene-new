@@ -112,9 +112,9 @@
     (var kind (message_kind b))
     (if_yes (== kind msg_hello)
       (decode_hello b c hello)
-      (set world (new_world (hello ~ get hello_bx) (hello ~ get hello_by)
-                            (hello ~ get hello_bz) (hello ~ get hello_span_x)
-                            (hello ~ get hello_span_y) (hello ~ get hello_span_z)))
+      (set world (new_world (hello .get hello_bx) (hello .get hello_by)
+                            (hello .get hello_bz) (hello .get hello_span_x)
+                            (hello .get hello_span_y) (hello .get hello_span_z)))
       (set have_hello true))
     (if_yes (== kind msg_registry) (decode_registry b c reg))
     (if_yes (== kind msg_items) (decode_items b c items))
@@ -123,8 +123,8 @@
       (set have_forms true))
     (if_yes (== kind msg_block)
       (decode_block b c header block_c block_l)
-      (store_block world (header ~ get block_bx) (header ~ get block_by)
-                   (header ~ get block_bz) block_c)
+      (store_block world (header .get block_bx) (header .get block_by)
+                   (header .get block_bz) block_c)
       (set blocks_in (+ blocks_in 1.0)))
     # §7.1's reconciliation, **applied** rather than decoded and dropped as the
     # `.mjs` did.
@@ -140,8 +140,8 @@
     # them and drops them is asserting about a world it has stopped tracking.
     (if_yes (== kind msg_node_delta)
       (decode_node_delta b c delta)
-      (set_node world (delta ~ get delta_x) (delta ~ get delta_y)
-                (delta ~ get delta_z) (delta ~ get delta_id)))
+      (set_node world (delta .get delta_x) (delta .get delta_y)
+                (delta .get delta_z) (delta .get delta_id)))
     (if_yes (== kind msg_inventory)
       (decode_inventory b c inv)
       (set inv_n (+ inv_n 1.0)))
@@ -174,8 +174,8 @@
        $"$($to_int buttons)")
 
   # The world, so a chest can be placed somewhere real.
-  (var total (* (hello ~ get hello_span_x)
-                (* (hello ~ get hello_span_y) (hello ~ get hello_span_z))))
+  (var total (* (hello .get hello_span_x)
+                (* (hello .get hello_span_y) (hello .get hello_span_z))))
   (var from 0.0)
   (while (< from total)
     (var count (if (< (- total from) 64.0) (- total from) 64.0))
@@ -191,12 +191,12 @@
     (set from (+ from count)))
   (say (== blocks_in total) "the world arrived" $"$($to_int blocks_in) blocks")
 
-  (var ox (* (hello ~ get hello_bx) block_dim))
-  (var oy (* (hello ~ get hello_by) block_dim))
-  (var oz (* (hello ~ get hello_bz) block_dim))
-  (var lim_x (+ ox (- (* (hello ~ get hello_span_x) block_dim) 1.0)))
-  (var lim_z (+ oz (- (* (hello ~ get hello_span_z) block_dim) 1.0)))
-  (var top_y (+ oy (- (* (hello ~ get hello_span_y) block_dim) 2.0)))
+  (var ox (* (hello .get hello_bx) block_dim))
+  (var oy (* (hello .get hello_by) block_dim))
+  (var oz (* (hello .get hello_bz) block_dim))
+  (var lim_x (+ ox (- (* (hello .get hello_span_x) block_dim) 1.0)))
+  (var lim_z (+ oz (- (* (hello .get hello_span_z) block_dim) 1.0)))
+  (var top_y (+ oy (- (* (hello .get hello_span_y) block_dim) 2.0)))
 
   (var dig (fn [x : F64 y : F64 z : F64] : Void
     (var m ($buffer U8 (size_dig)))
@@ -221,9 +221,9 @@
     (var n 0.0)
     (var i 0.0)
     (while (< i hotbar_slots)
-      (if_yes (&& (== (inv ~ get (* i 3.0)) item)
-                  (> (inv ~ get (+ (* i 3.0) 1.0)) 0.0))
-        (set n (+ n (inv ~ get (+ (* i 3.0) 1.0)))))
+      (if_yes (&& (== (inv .get (* i 3.0)) item)
+                  (> (inv .get (+ (* i 3.0) 1.0)) 0.0))
+        (set n (+ n (inv .get (+ (* i 3.0) 1.0)))))
       (set i (+ i 1.0)))
     n))
 
@@ -397,15 +397,15 @@
   (say (> opens opens_before) "right-clicking it opens a form"
        $"$($to_int (- opens opens_before)) open message(s)")
   (say (== open_name "miclone:chest") "and it is the chest's form" open_name)
-  (say (&& (== (open_slot ~ get open_x) px)
-           (&& (== (open_slot ~ get open_y) py)
-               (== (open_slot ~ get open_z) pz)))
+  (say (&& (== (open_slot .get open_x) px)
+           (&& (== (open_slot .get open_y) py)
+               (== (open_slot .get open_z) pz)))
        "about the chest that was clicked, not the form in general"
-       $"$($math/round (open_slot ~ get open_x)), $($math/round (open_slot ~ get open_y)), $($math/round (open_slot ~ get open_z))")
+       $"$($math/round (open_slot .get open_x)), $($math/round (open_slot .get open_y)), $($math/round (open_slot .get open_z))")
   (var box_empty true)
   (set i 0.0)
   (while (< i box_cells)
-    (if_yes (!= (open_box ~ get i) 0.0) (set box_empty false))
+    (if_yes (!= (open_box .get i) 0.0) (set box_empty false))
     (set i (+ i 1.0)))
   (say box_empty "and it is empty, as a new chest is" "")
 
@@ -421,8 +421,8 @@
   (var stash -1.0)
   (set i 0.0)
   (while (< i hotbar_slots)
-    (if_yes (&& (== stash -1.0) (> (inv ~ get (+ (* i 3.0) 1.0)) 0.0))
-      (set stash (inv ~ get (* i 3.0))))
+    (if_yes (&& (== stash -1.0) (> (inv .get (+ (* i 3.0) 1.0)) 0.0))
+      (set stash (inv .get (* i 3.0))))
     (set i (+ i 1.0)))
   (var stash_before (held stash))
   (say (> stash_before 0.0) "the player has something to store"
@@ -434,9 +434,9 @@
   (say (< (held stash) stash_before) "pressing put moves it into the chest"
        $"x$($to_int stash_before) -> x$($to_int (held stash))")
   (say (&& (> opens opens2)
-           (&& (== (open_box ~ get 0.0) stash) (> (open_box ~ get 1.0) 0.0)))
+           (&& (== (open_box .get 0.0) stash) (> (open_box .get 1.0) 0.0)))
        "and the chest says so, unprompted"
-       $"slot 0 = item $($to_int (open_box ~ get 0.0)) x$($to_int (open_box ~ get 1.0))")
+       $"slot 0 = item $($to_int (open_box .get 0.0)) x$($to_int (open_box .get 1.0))")
 
   # Take it back out. Conservation, which is §7.1's rule and the one property
   # worth asserting about a container: what went in comes out.
@@ -444,8 +444,8 @@
   (await ($time/sleep 500.0))
   (say (== (held stash) stash_before) "pressing take brings all of it back"
        $"x$($to_int (held stash)) of x$($to_int stash_before)")
-  (say (== (open_box ~ get 1.0) 0.0) "and the chest slot is empty again"
-       $"x$($to_int (open_box ~ get 1.0))")
+  (say (== (open_box .get 1.0) 0.0) "and the chest slot is empty again"
+       $"x$($to_int (open_box .get 1.0))")
 
   # §7.1 once more, now that a form *is* open: an action the form never declared
   # must do nothing, because the server resolves it against the form rather than

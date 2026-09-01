@@ -20,4 +20,4 @@
   (client/acknowledge snapshot/cursor)
   (client/detach)
   ($println
-    [attached/tier snapshot/session_id (> metadata/operations/~size 0)]))
+    [attached/tier snapshot/session_id (> metadata/operations/.size 0)]))

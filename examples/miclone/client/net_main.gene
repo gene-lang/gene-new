@@ -190,9 +190,9 @@
     (while (< cy span_y)
       (var cx 0.0)
       (while (< cx span_x)
-        (vaos ~ push (new_vertex_array gl))
-        (vbos ~ push (new_buffer gl))
-        (ebos ~ push (new_buffer gl))
+        (vaos .push (new_vertex_array gl))
+        (vbos .push (new_buffer gl))
+        (ebos .push (new_buffer gl))
         (set cx (+ cx 1.0)))
       (set cy (+ cy 1.0)))
     (set cz (+ cz 1.0)))
@@ -257,9 +257,9 @@
     (var bz (+ origin_bz cz))
     (var base (block_base world bx by bz))
     (var faces (count_faces reg world/content base wdx wsz))
-    (set faces_total (+ (- faces_total (/ (counts ~ get k) indices_per_face))
+    (set faces_total (+ (- faces_total (/ (counts .get k) indices_per_face))
                         faces))
-    (counts ~ set k (* faces indices_per_face))
+    (counts .set k (* faces indices_per_face))
     (if_yes (> faces 0.0)
       (var verts ($buffer F32 (* faces (* 4.0 floats_per_vertex))))
       (var idx ($buffer U32 (* faces indices_per_face)))
@@ -390,18 +390,18 @@
     (if_yes (== kind msg_hello)
       (decode_hello b wc hello)
       # The version check §14 asks for, before anything else is read.
-      (if (!= (hello ~ get hello_version) protocol_version)
-        (then (set status $"version mismatch: server v$(hello ~ get hello_version)"))
+      (if (!= (hello .get hello_version) protocol_version)
+        (then (set status $"version mismatch: server v$(hello .get hello_version)"))
         (else
-          (if (|| (!= (hello ~ get hello_span_x) span_x)
-                  (|| (!= (hello ~ get hello_span_y) span_y)
-                      (!= (hello ~ get hello_span_z) span_z)))
+          (if (|| (!= (hello .get hello_span_x) span_x)
+                  (|| (!= (hello .get hello_span_y) span_y)
+                      (!= (hello .get hello_span_z) span_z)))
             (then (set status "world extent mismatch"))
             (else
               (set_player_position player
-                                   (hello ~ get hello_spawn_x)
-                                   (hello ~ get hello_spawn_y)
-                                   (hello ~ get hello_spawn_z))
+                                   (hello .get hello_spawn_x)
+                                   (hello .get hello_spawn_y)
+                                   (hello .get hello_spawn_z))
               (set joined true))))))
 
     (if_yes (== kind msg_tiles)
@@ -419,8 +419,8 @@
 
     (if_yes (== kind msg_block)
       (decode_block b wc header block_c block_l)
-      (store_block_and_light world (header ~ get block_bx)
-                             (header ~ get block_by) (header ~ get block_bz)
+      (store_block_and_light world (header .get block_bx)
+                             (header .get block_by) (header .get block_bz)
                              block_c block_l)
       (set blocks_in (+ blocks_in 1.0))
       (if_yes (== blocks_in requested) (request_more))
@@ -435,7 +435,7 @@
       # happens.** §7.1 keeps drops and edits off the prediction path, and a
       # thud on a dig the server refused would be the audible version of the
       # flickering hotbar that rule exists to prevent.
-      (if (== (delta ~ get delta_id) 0.0) (then (play_dig sfx))
+      (if (== (delta .get delta_id) 0.0) (then (play_dig sfx))
         (else (play_place sfx)))
       # The server is authoritative and has already relit around this node; the
       # client's optimistic apply either agreed — in which case this is a
@@ -450,8 +450,8 @@
       # thrown away, plus the HUD reporting a chunk count for a world that has
       # not arrived.
       (if_yes meshed
-        (remesh_around (delta ~ get delta_x) (delta ~ get delta_y)
-                       (delta ~ get delta_z))))
+        (remesh_around (delta .get delta_x) (delta .get delta_y)
+                       (delta .get delta_z))))
 
     (if_yes (== kind msg_entity)
       (decode_entity b wc ent)
@@ -459,10 +459,10 @@
       # of 0 *is* the removal (§10). `apply_entity` answers whether anything
       # actually changed, so a re-announcement of a position the client already
       # has does not cost a rebuild.
-      (if_yes (apply_entity seen (ent ~ get ent_id)
-                            (ent ~ get ent_x) (ent ~ get ent_y)
-                            (ent ~ get ent_z) (ent ~ get ent_item)
-                            (ent ~ get ent_count) (ent ~ get ent_kind))
+      (if_yes (apply_entity seen (ent .get ent_id)
+                            (ent .get ent_x) (ent .get ent_y)
+                            (ent .get ent_z) (ent .get ent_item)
+                            (ent .get ent_count) (ent .get ent_kind))
         (set ent_dirty true)))
 
     (if_yes (== kind msg_inventory)
@@ -480,9 +480,9 @@
     # that merely wants one to be.
     (if_yes (== kind msg_open_form)
       (set open_form (decode_open_form b wc open_msg open_inv))
-      (open_at ~ set 0.0 (open_msg ~ get open_x))
-      (open_at ~ set 1.0 (open_msg ~ get open_y))
-      (open_at ~ set 2.0 (open_msg ~ get open_z))
+      (open_at .set 0.0 (open_msg .get open_x))
+      (open_at .set 1.0 (open_msg .get open_y))
+      (open_at .set 2.0 (open_msg .get open_z))
       (set form_dirty true))))
 
   # --- §13's forms, drawn ------------------------------------------------------
@@ -505,14 +505,14 @@
   (var pool_row ($buffer F64 max_form_elements))
   (var fi 0.0)
   (while (< fi max_form_elements)
-    (pool_elem ~ set fi -1.0)
-    (pool_col ~ set fi -1.0)
-    (pool_row ~ set fi -1.0)
+    (pool_elem .set fi -1.0)
+    (pool_col .set fi -1.0)
+    (pool_row .set fi -1.0)
     (var el ($dom/create_element "div"))
     ($dom/set_class el "fe" true)
     ($dom/set_class el "off" true)
     ($dom/append form_root el)
-    (form_els ~ push el)
+    (form_els .push el)
     (set fi (+ fi 1.0)))
 
   # The panel's own size, remembered for the same reason a cell is: a class that
@@ -551,8 +551,8 @@
           (var text (element_text forms e))
           (if_yes is_item
             (if_yes (== text "")
-              (var held (open_inv ~ get (* slot 3.0)))
-              (var n (open_inv ~ get (+ (* slot 3.0) 1.0)))
+              (var held (open_inv .get (* slot 3.0)))
+              (var n (open_inv .get (+ (* slot 3.0) 1.0)))
               (set text (if (> n 0.0)
                           $"$(item_name items held) x$($to_int n)"
                           "—"))
@@ -562,8 +562,8 @@
           ($dom/set_class el "slot" is_item)
           ($dom/set_class el "off" false)
           # Move it: turn the old cell off before the new one on.
-          (var was_c (pool_col ~ get used))
-          (var was_r (pool_row ~ get used))
+          (var was_c (pool_col .get used))
+          (var was_r (pool_row .get used))
           (if_yes (>= was_c 0.0)
             ($dom/set_class el $"c$($to_int was_c)" false))
           (if_yes (>= was_r 0.0)
@@ -572,9 +572,9 @@
           (var row (element_y forms e))
           ($dom/set_class el $"c$($to_int col)" true)
           ($dom/set_class el $"r$($to_int row)" true)
-          (pool_col ~ set used col)
-          (pool_row ~ set used row)
-          (pool_elem ~ set used e)
+          (pool_col .set used col)
+          (pool_row .set used row)
+          (pool_elem .set used e)
           (set used (+ used 1.0)))
         (set e (+ e 1.0))))
     # Everything the open form did not need goes away, and stops being clickable
@@ -582,7 +582,7 @@
     (var k used)
     (while (< k max_form_elements)
       ($dom/set_class form_els/%k "off" true)
-      (pool_elem ~ set k -1.0)
+      (pool_elem .set k -1.0)
       (set k (+ k 1.0)))))
 
   # A press. There is no `target` on an event in this profile, so the pool is
@@ -595,7 +595,7 @@
     (if_yes (>= id 0.0)
       (var k 0.0)
       (while (< k max_form_elements)
-        (var e (pool_elem ~ get k))
+        (var e (pool_elem .get k))
         (if_yes (&& (>= e 0.0) (== (element_kind forms e) (kind_button)))
           (var el form_els/%k)
           (var l ($dom/rect_left el))
@@ -610,8 +610,8 @@
             (var action (element_action forms e))
             (var msg ($buffer U8 (size_form_action_for open_form action)))
             (encode_form_action msg wc
-                                (open_at ~ get 0.0) (open_at ~ get 1.0)
-                                (open_at ~ get 2.0) 0.0 open_form action)
+                                (open_at .get 0.0) (open_at .get 1.0)
+                                (open_at .get 2.0) 0.0 open_form action)
             ($ws/send_bytes sock msg)
             (set k max_form_elements)))
         (set k (+ k 1.0))))))
@@ -715,9 +715,9 @@
     # is somewhere and the server is what says you are standing there.
     (if_yes (== k "e")
       (set open_form (if (== open_form crafting_form) "" crafting_form))
-      (open_at ~ set 0.0 0.0)
-      (open_at ~ set 1.0 0.0)
-      (open_at ~ set 2.0 0.0)
+      (open_at .set 0.0 0.0)
+      (open_at .set 1.0 0.0)
+      (open_at .set 2.0 0.0)
       (set form_dirty true))
     (if_yes (== k "Escape")
       (set open_form "")
@@ -802,7 +802,7 @@
     (var drawn 0.0)
     (var i 0.0)
     (while (< i chunks)
-      (var n (counts ~ get i))
+      (var n (counts .get i))
       (if_yes (> n 0.0)
         (var k i)
         (draw_chunk gl vaos/%k n)
@@ -871,7 +871,7 @@
       (var from (+ (* y block_dim) (* z (* block_dim block_dim))))
       (var x 0.0)
       (while (< x block_dim)
-        (w/light ~ set (+ dst x) (light ~ get (+ from x)))
+        (w/light .set (+ dst x) (light .get (+ from x)))
         (set x (+ x 1.0)))
       (set y (+ y 1.0)))
     (set z (+ z 1.0))))
@@ -883,10 +883,10 @@
 (fn apply_delta [w : World reg : Registry d : (Buffer F64)
                  sky : (Buffer F32) q : (Buffer F32)
                  q_seed : (Buffer F32)] : Nil
-  (var nx (d ~ get delta_x))
-  (var ny (d ~ get delta_y))
-  (var nz (d ~ get delta_z))
-  (set_node_at w nx ny nz (d ~ get delta_id))
+  (var nx (d .get delta_x))
+  (var ny (d .get delta_y))
+  (var nz (d .get delta_z))
+  (set_node_at w nx ny nz (d .get delta_id))
   (relight_node w/light w/content (world_dx w) (world_dy w) (world_dz w) reg
                 (array_x_of nx) (array_y_of ny) (array_z_of nz)
                 sky q q_seed))
@@ -900,7 +900,7 @@
 (fn array_z_of [nz : F64] : F64 (+ (- nz (* origin_bz block_dim)) 1.0))
 
 (fn set_node_at [w : World nx : F64 ny : F64 nz : F64 id : F64] : Nil
-  (w/content ~ set
+  (w/content .set
     (+ (array_x_of nx)
        (+ (* (array_y_of ny) (world_dx w))
           (* (array_z_of nz) (world_stride_z w))))
@@ -913,6 +913,6 @@
     (var label
       (if (slot_empty? inv i) "—"
         $"$(item_name items (slot_item inv i)) x$($to_int (slot_count inv i))"))
-    (parts ~ push (if (== i selected) $"[${label}]" $" ${label} "))
+    (parts .push (if (== i selected) $"[${label}]" $" ${label} "))
     (set i (+ i 1.0)))
   ($str/join parts " "))

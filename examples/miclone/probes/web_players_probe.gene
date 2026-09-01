@@ -66,19 +66,19 @@
     (var kind (message_kind b))
     (if_yes (== kind msg_hello)
       (decode_hello b ac a_hello)
-      (a_spawn ~ set 0.0 (a_hello ~ get hello_spawn_x))
-      (a_spawn ~ set 1.0 (a_hello ~ get hello_spawn_y))
-      (a_spawn ~ set 2.0 (a_hello ~ get hello_spawn_z)))
+      (a_spawn .set 0.0 (a_hello .get hello_spawn_x))
+      (a_spawn .set 1.0 (a_hello .get hello_spawn_y))
+      (a_spawn .set 2.0 (a_hello .get hello_spawn_z)))
     (if_yes (== kind msg_registry) (decode_registry b ac a_reg))
     (if_yes (== kind msg_items)
       (decode_items b ac a_items)
       (set a_ready true))
     (if_yes (== kind msg_entity)
       (decode_entity b ac a_ent)
-      (apply_entity a_seen (a_ent ~ get ent_id) (a_ent ~ get ent_x)
-                    (a_ent ~ get ent_y) (a_ent ~ get ent_z)
-                    (a_ent ~ get ent_item) (a_ent ~ get ent_count)
-                    (a_ent ~ get ent_kind)))))
+      (apply_entity a_seen (a_ent .get ent_id) (a_ent .get ent_x)
+                    (a_ent .get ent_y) (a_ent .get ent_z)
+                    (a_ent .get ent_item) (a_ent .get ent_count)
+                    (a_ent .get ent_kind)))))
   (await ($time/sleep 1200.0))
   (say a_ready "the first client joined" "hello, registry and items")
 
@@ -117,10 +117,10 @@
   ($ws/on_bytes b_sock (fn [b : (Buffer U8)] : Void
     (if_yes (== (message_kind b) msg_entity)
       (decode_entity b bc b_ent)
-      (apply_entity b_seen (b_ent ~ get ent_id) (b_ent ~ get ent_x)
-                    (b_ent ~ get ent_y) (b_ent ~ get ent_z)
-                    (b_ent ~ get ent_item) (b_ent ~ get ent_count)
-                    (b_ent ~ get ent_kind)))))
+      (apply_entity b_seen (b_ent .get ent_id) (b_ent .get ent_x)
+                    (b_ent .get ent_y) (b_ent .get ent_z)
+                    (b_ent .get ent_item) (b_ent .get ent_count)
+                    (b_ent .get ent_kind)))))
   (var b_move (fn [x : F64 y : F64 z : F64] : Void
     (var m ($buffer U8 (size_input)))
     (encode_input m bc 0.0 0.0 false false false 0.0 x y z)
@@ -157,8 +157,8 @@
                 (== (seen_kind a_seen i) entity_player))
       (set before_x (seen_x a_seen i)))
     (set i (+ i 1.0)))
-  (b_move (+ (a_spawn ~ get 0.0) 6.0) (a_spawn ~ get 1.0)
-          (+ (a_spawn ~ get 2.0) 4.0))
+  (b_move (+ (a_spawn .get 0.0) 6.0) (a_spawn .get 1.0)
+          (+ (a_spawn .get 2.0) 4.0))
   (await ($time/sleep 900.0))
   (var after_x 0.0)
   (set i 0.0)
@@ -170,7 +170,7 @@
   (say (!= after_x before_x)
        "when the second walks, the first sees the avatar move"
        $"$($math/round before_x) -> $($math/round after_x)")
-  (say (< ($math/abs (- after_x (+ (a_spawn ~ get 0.0) 6.0))) 0.01)
+  (say (< ($math/abs (- after_x (+ (a_spawn .get 0.0) 6.0))) 0.01)
        "to where they actually are" $"x $($math/round after_x)")
 
   # And leaving removes it. A disconnected player standing in the world forever
@@ -185,7 +185,7 @@
   # always skipped the sender; the tick did not, so gravity mailed you your own
   # avatar and the client drew a cube locked to its own camera. A is alone here,
   # so any player entity it hears about at all is its own.
-  (a_move (a_spawn ~ get 0.0) (+ (a_spawn ~ get 1.0) 25.0) (a_spawn ~ get 2.0))
+  (a_move (a_spawn .get 0.0) (+ (a_spawn .get 1.0) 25.0) (a_spawn .get 2.0))
   (await ($time/sleep 2600.0))
   (say (== (others) 0.0)
        "and the server moving you does not send you your own avatar"

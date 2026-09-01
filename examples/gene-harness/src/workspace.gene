@@ -44,7 +44,7 @@
   (read_data (write_data value)))
 
 (fn require_open [workspace : Workspace]
-  (if (workspace/closed ~ get)
+  (if (workspace/closed .get)
     (fail (CompositionError ^message "workspace composition store is closed")))
   workspace)
 
@@ -57,13 +57,13 @@
   (var id ($to_str entry/id))
   (if (== id "")
     (fail (CompositionError ^message "composition entry id is empty")))
-  (if_not (["workspace" "session"] ~ contains? ($to_str entry/scope))
+  (if_not (["workspace" "session"] .contains? ($to_str entry/scope))
     (fail (CompositionError
       ^message $"composition entry ${id} has invalid scope ${entry/scope}")))
-  (if_not (== (ids ~ get id) void)
+  (if_not (== (ids .get id) void)
     (fail (CompositionError ^message $"duplicate composition entry ${id}")))
-  (ids ~ put id true)
-  (if_not (entry/closure ~ contains? entry/module_digest)
+  (ids .put id true)
+  (if_not (entry/closure .contains? entry/module_digest)
     (fail (CompositionError
       ^message $"composition entry ${id} closure omits its root digest")))
   entry)
@@ -72,17 +72,17 @@
   (var ids (fresh_map))
   (var checked (fresh_list))
   (for entry in entries
-    (checked ~ push (validate_entry entry ids)))
+    (checked .push (validate_entry entry ids)))
   checked)
 
 (fn load_composition [workspace : Workspace]
-  (var loaded (workspace/store ~ Store:load_checkpoint))
+  (var loaded (workspace/store .Store:load_checkpoint))
   (if ($absent? loaded)
     (then
-      (workspace/revision ~ set 0)
-      (workspace/entries ~ set (fresh_list)))
+      (workspace/revision .set 0)
+      (workspace/entries .set (fresh_list)))
     (else
-      (var manifest (loaded/records ~ get "composition"))
+      (var manifest (loaded/records .get "composition"))
       (if (== manifest void)
         (fail (CompositionError
           ^message "composition generation has no composition record")))
@@ -93,12 +93,12 @@
         (fail (CompositionError
           ^message "this harness ships no composition upgrade path")))
       (var checked (validate_entries manifest/entries))
-      (workspace/revision ~ set manifest/revision)
-      (workspace/entries ~ set checked)))
+      (workspace/revision .set manifest/revision)
+      (workspace/entries .set checked)))
   workspace)
 
 (fn harness_package_root [] : Str
-  (module_dir (module_dir this_mod/~path)))
+  (module_dir (module_dir this_mod/.path)))
 
 (fn open_workspace
   [root : Str,
@@ -160,24 +160,24 @@
 
 (fn composition_revision [workspace : Workspace] : Int
   (require_open workspace)
-  (workspace/revision ~ get))
+  (workspace/revision .get))
 
 (fn composition_entries [workspace : Workspace]
   (require_open workspace)
-  (data_copy (workspace/entries ~ get)))
+  (data_copy (workspace/entries .get)))
 
 (fn revision_conflict [workspace : Workspace, expected : Int]
   (refresh_workspace workspace)
-  (var actual (workspace/revision ~ get))
+  (var actual (workspace/revision .get))
   (fail (CompositionConflict
     ^message $"composition revision conflict: expected ${expected}, actual ${actual}"
     ^expected expected ^actual actual)))
 
 (fn commit_composition [workspace : Workspace, expected : Int, entries]
   (require_open workspace)
-  (if (workspace/busy ~ get)
+  (if (workspace/busy .get)
     (fail (CompositionError ^message "composition mutation is already active")))
-  (var actual (workspace/revision ~ get))
+  (var actual (workspace/revision .get))
   (if_not (== expected actual)
     (fail (CompositionConflict
       ^message $"composition revision conflict: expected ${expected}, actual ${actual}"
@@ -185,19 +185,19 @@
   (var checked (validate_entries (data_copy entries)))
   (var next (+ actual 1))
   (var manifest {^format 1 ^revision next ^entries checked})
-  (workspace/busy ~ set true)
+  (workspace/busy .set true)
   (try
     (try
-      (workspace/store ~ Store:checkpoint next {^composition manifest})
+      (workspace/store .Store:checkpoint next {^composition manifest})
     catch StoreError
       (if (== ($to_str $ex/kind) "conflict")
         (revision_conflict workspace expected)
         (fail (CompositionError ^message $ex/message))))
-    (workspace/revision ~ set next)
-    (workspace/entries ~ set checked)
+    (workspace/revision .set next)
+    (workspace/entries .set checked)
     next
   ensure
-    (workspace/busy ~ set false)))
+    (workspace/busy .set false)))
 
 (fn safe_module_id? [id : Str] : Bool
   (var safe (&& (> (byte_size id) 0) (<= (byte_size id) 64)))
@@ -228,10 +228,10 @@
                 "alias" "enum"])
   (var saw_init false)
   (var i 1)
-  (while (< i source/body/~size)
+  (while (< i source/body/.size)
     (var form source/body/%i)
     (var kind ($to_str ($head form)))
-    (if_not (allowed ~ contains? kind)
+    (if_not (allowed .contains? kind)
       (fail (CompositionError
         ^message $"generated module top level may not contain ${kind}")))
     (if_yes (&& (== kind "fn") (== ($to_str form/0) "init"))
@@ -254,10 +254,10 @@
 
 (fn validate_source_imports [source, closure]
   (var i 1)
-  (while (< i source/body/~size)
+  (while (< i source/body/.size)
     (var form source/body/%i)
     (var kind ($to_str ($head form)))
-    (if_yes (["import" "import_impl"] ~ contains? kind)
+    (if_yes (["import" "import_impl"] .contains? kind)
       (for part in form/body
         (if_yes (== ($head part) Str)
           (var path ($to_str part))
@@ -265,9 +265,9 @@
             (if_not (== kind "import_impl")
               (fail (CompositionError
                 ^message "generated modules may import only PluginHost impl identity from kernel")))
-            (if_not (["../../../src/plugin_api" "../../../src/seams"] ~ contains? path)
+            (if_not (["../../../src/plugin_api" "../../../src/seams"] .contains? path)
               (var digest (relative_import_digest path))
-              (if (|| (== digest nil) (! (closure ~ contains? digest)))
+              (if (|| (== digest nil) (! (closure .contains? digest)))
                 (fail (CompositionError
                   ^message $"generated import is outside its dependency closure: ${path}"))))))))
     (set i (+ i 1)))
@@ -287,18 +287,18 @@
 (fn write_module_blob [workspace : Workspace, digest : Str, source : Str]
   (var path (materialize_module_blob workspace digest source))
   (var key $"blob/${digest}")
-  (if_not (workspace/blob_store ~ Store:has? key)
-    (workspace/blob_store ~ Store:put key source))
+  (if_not (workspace/blob_store .Store:has? key)
+    (workspace/blob_store .Store:put key source))
   path)
 
 (fn ensure_module_blob [workspace : Workspace, digest : Str]
   (var path (module_path workspace digest))
   (var key $"blob/${digest}")
   (if_not (exists? path)
-    (if_not (workspace/blob_store ~ Store:has? key)
+    (if_not (workspace/blob_store .Store:has? key)
       (fail (CompositionError
         ^message $"module blob is missing: ${digest}")))
-    (var source (workspace/blob_store ~ Store:get key))
+    (var source (workspace/blob_store .Store:get key))
     (if_not (== $"sha256:${(sha256 source)}" digest)
       (fail (CompositionError
         ^message $"stored module blob digest mismatch: ${digest}")))
@@ -324,33 +324,33 @@
     (if (== entry/id replacement/id)
       (then
         (set found true)
-        (if replace (out ~ push replacement)
+        (if replace (out .push replacement)
           (fail (CompositionError
             ^message $"composition entry ${replacement/id} already exists"))))
-      (else (out ~ push entry))))
-  (if_not found (out ~ push replacement))
+      (else (out .push entry))))
+  (if_not found (out .push replacement))
   out)
 
 (fn stage_pending_plugin [tx, pending]
   (var next (fresh_list))
   (var replaced false)
-  (for existing in (tx/pending_plugins ~ get)
+  (for existing in (tx/pending_plugins .get)
     (if (== existing/entry/id pending/entry/id)
       (then
         (set replaced true)
-        (next ~ push
+        (next .push
           {^descriptor pending/descriptor ^entry pending/entry
            ^previous_digest existing/previous_digest}))
-      (else (next ~ push existing))))
-  (if_not replaced (next ~ push pending))
-  (tx/pending_plugins ~ set next))
+      (else (next .push existing))))
+  (if_not replaced (next .push pending))
+  (tx/pending_plugins .set next))
 
 (fn load_entry_descriptor [workspace : Workspace, h : Harness, entry]
   (for [name fingerprint] in workspace/interfaces
-    (if_not (== (entry/interfaces ~ get name) fingerprint)
+    (if_not (== (entry/interfaces .get name) fingerprint)
       (fail (CompositionError
         ^message $"plugin ${entry/id} interface ${name} fingerprint changed"))))
-  (if_not (entry/closure ~ contains? entry/module_digest)
+  (if_not (entry/closure .contains? entry/module_digest)
     (fail (CompositionError
       ^message $"plugin ${entry/id} dependency closure omits its root")))
   (for digest in entry/closure
@@ -387,10 +387,10 @@
       (fail (CompositionError
         ^message $"plugin ${descriptor/id} event schema must be callable")))
     (var name ($to_str event/name))
-    (if_not (== (seen ~ get name) void)
+    (if_not (== (seen .get name) void)
       (fail (CompositionError
         ^message $"plugin ${descriptor/id} duplicates event type ${name}")))
-    (seen ~ put name true)
+    (seen .put name true)
     (var existing (row h "event_types" name))
     (if_yes (&& (!= existing void)
                 (|| (!= existing/origin "plugin")
@@ -419,13 +419,13 @@
   (var out (fresh_list))
   (for selector in selectors
     (var kind ($to_str selector/type))
-    (if (&& (starts_with? kind "fs/") (! (out ~ contains? "fs")))
-      (out ~ push "fs")))
+    (if (&& (starts_with? kind "fs/") (! (out .contains? "fs")))
+      (out .push "fs")))
   out)
 
 (fn safe_relative_selector_path? [path : Str] : Bool
   (if (starts_with? path "/") (return false))
-  (! ((split path "/") ~ contains? "..")))
+  (! ((split path "/") .contains? "..")))
 
 (fn selector_forms [workspace : Workspace, selectors]
   (var out (fresh_list))
@@ -446,11 +446,11 @@
     (var path (if (== relative ".") base $"${base}/${relative}"))
     (var kind ($to_str selector/type))
     (if (== kind "fs/ReadDir")
-      (out ~ push `(fs/ReadDir %path))
+      (out .push `(fs/ReadDir %path))
       (elif (== kind "fs/WriteDir")
-        (out ~ push `(fs/WriteDir %path)))
+        (out .push `(fs/WriteDir %path)))
       (elif (== kind "fs/ReadWriteDir")
-        (out ~ push `(fs/ReadWriteDir %path)))
+        (out .push `(fs/ReadWriteDir %path)))
       (else
         (fail (CompositionError
           ^message $"unsupported harness selector type ${kind}")))))
@@ -476,7 +476,7 @@
   (require_open workspace)
   (if_not (safe_module_id? id)
     (fail (CompositionError ^message $"unsafe module id ${id}")))
-  (if_not (["workspace" "session"] ~ contains? scope)
+  (if_not (["workspace" "session"] .contains? scope)
     (fail (CompositionError ^message $"invalid plugin scope ${scope}")))
   # Refuse a claimed id before anything is written. `entries_with` below also
   # refuses, but only after every dependency blob and the module itself have
@@ -490,7 +490,7 @@
     (var claimed
       (if ($absent? pending)
         (composition_entries workspace)
-        (?? (pending/workspace_entries ~ get) (composition_entries workspace))))
+        (?? (pending/workspace_entries .get) (composition_entries workspace))))
     (if_not (== (find_entry_index claimed id) -1)
       (fail (CompositionError
         ^message $"composition entry ${id} already exists"))))
@@ -509,9 +509,9 @@
     (var dependency_text
       (canonical_module_source dependency ^require_init false))
     (var dependency_digest $"sha256:${(sha256 dependency_text)}")
-    (if_yes (! (closure ~ contains? dependency_digest))
-      (closure ~ push dependency_digest)
-      (dependency_blobs ~ push
+    (if_yes (! (closure .contains? dependency_digest))
+      (closure .push dependency_digest)
+      (dependency_blobs .push
         {^digest dependency_digest ^source dependency_text})
       (materialize_module_blob workspace dependency_digest dependency_text)))
   (validate_source_imports source closure)
@@ -537,20 +537,20 @@
     (write_module_blob workspace dependency/digest dependency/source))
   (write_module_blob workspace digest text)
   (if_not ($absent? tx)
-    (if (== (tx/workspace_entries ~ get) nil)
+    (if (== (tx/workspace_entries .get) nil)
       (then
-        (tx/workspace_entries ~ set (composition_entries workspace))
-        (tx/workspace_baseline ~ set (composition_entries workspace))
-        (tx/workspace_revision ~ set (composition_revision workspace))))
-    (var before (tx/workspace_entries ~ get))
+        (tx/workspace_entries .set (composition_entries workspace))
+        (tx/workspace_baseline .set (composition_entries workspace))
+        (tx/workspace_revision .set (composition_revision workspace))))
+    (var before (tx/workspace_entries .get))
     (var previous_digest (previous_module_digest before id))
     (var staged_entries (entries_with before entry replace))
-    (tx/workspace_entries ~ set staged_entries)
+    (tx/workspace_entries .set staged_entries)
     (stage_pending_plugin tx
       {^descriptor descriptor ^entry entry
        ^previous_digest previous_digest})
     (return
-      {^revision (+ (tx/workspace_revision ~ get) 1)
+      {^revision (+ (tx/workspace_revision .get) 1)
        ^digest digest ^status "staged" ^entry entry}))
   (var expected (composition_revision workspace))
   (var before (composition_entries workspace))
@@ -577,17 +577,17 @@
   (record_turn_start h id)
   (flush_harness h)
   (var tx (begin_turn h id))
-  (tx/workspace_entries ~ set (composition_entries workspace))
-  (tx/workspace_baseline ~ set (composition_entries workspace))
-  (tx/workspace_revision ~ set (composition_revision workspace))
+  (tx/workspace_entries .set (composition_entries workspace))
+  (tx/workspace_baseline .set (composition_entries workspace))
+  (tx/workspace_revision .set (composition_revision workspace))
   (try
     (var bounded
       (if ($absent? limits) (default_execution_limits) limits))
     (var result (invoke_bounded program nil (fresh_list) bounded ^inherit true))
-    (var staged_entries (tx/workspace_entries ~ get))
-    (var expected (tx/workspace_revision ~ get))
-    (var pending_plugins (tx/pending_plugins ~ get))
-    (var composition_changed (> pending_plugins/~size 0))
+    (var staged_entries (tx/workspace_entries .get))
+    (var expected (tx/workspace_revision .get))
+    (var pending_plugins (tx/pending_plugins .get))
+    (var composition_changed (> pending_plugins/.size 0))
     (var revision expected)
     (if_yes composition_changed
       (set revision (commit_composition workspace expected staged_entries)))
@@ -616,7 +616,7 @@
     (var aborted (abort_turn h tx))
     (record_turn_end h id "aborted")
     (flush_harness h)
-    (aborted ~ put "error" $ex)
+    (aborted .put "error" $ex)
     aborted
   ensure
     (if_yes (== (active_transaction h) tx)
@@ -628,9 +628,9 @@
   (! (== entry/disabled true)))
 
 (fn record_quarantine [workspace : Workspace, id : Str, message : Str]
-  (var errors (workspace/errors ~ get))
-  (errors ~ put id message)
-  (workspace/errors ~ set errors))
+  (var errors (workspace/errors .get))
+  (errors .put id message)
+  (workspace/errors .set errors))
 
 (fn register_descriptor_events [h : Harness, descriptor]
   (var descriptor_owner $"descriptor:${descriptor/id}")
@@ -641,22 +641,22 @@
       (fail (CompositionError
         ^message $"plugin ${descriptor/id} event descriptor requires name version ignorable schema")))
     (var catalog_row (fresh_map))
-    (for [name value] in event (catalog_row ~ put name value))
-    (catalog_row ~ put "origin" "plugin")
-    (catalog_row ~ put "owner" ($to_str descriptor/id))
+    (for [name value] in event (catalog_row .put name value))
+    (catalog_row .put "origin" "plugin")
+    (catalog_row .put "owner" ($to_str descriptor/id))
     (contribute h descriptor_owner "event_types" catalog_row))
   nil)
 
 (fn known_event_types [h : Harness]
   (var known (fresh_map))
   (for event in (rows h "event_types")
-    (known ~ put event/name event))
+    (known .put event/name event))
   known)
 
 (fn prepare_workspace
   [workspace : Workspace, h : Harness, ^session session : Str = "default"]
   (require_open workspace)
-  (workspace/errors ~ set (fresh_map))
+  (workspace/errors .set (fresh_map))
   (var entries (composition_entries workspace))
   (var descriptors (fresh_map))
 
@@ -667,7 +667,7 @@
       (if_yes (|| (== entry/scope "workspace") (== entry/scope "session"))
         (try
           (var descriptor (load_entry_descriptor workspace h entry))
-          (descriptors ~ put entry/id descriptor)
+          (descriptors .put entry/id descriptor)
           (register_descriptor_events h descriptor)
         catch Any
           (record_quarantine workspace ($to_str entry/id) ($to_str $ex/message))))))
@@ -694,20 +694,20 @@
   # Phase 3: settle and activate only descriptors whose load/state projection
   # survived the earlier phases.
   (for entry in plan/entries
-    (var descriptor (plan/descriptors ~ get entry/id))
-    (var errors (workspace/errors ~ get))
-    (if_yes (&& (!= descriptor void) (== (errors ~ get entry/id) void))
+    (var descriptor (plan/descriptors .get entry/id))
+    (var errors (workspace/errors .get))
+    (if_yes (&& (!= descriptor void) (== (errors .get entry/id) void))
       (try
         (var status (activate_descriptor workspace h descriptor entry))
         (if (== status "ready")
-          (then (ready ~ push entry/id))
+          (then (ready .push entry/id))
           (elif (== status "error")
             (record_quarantine workspace ($to_str entry/id)
               (plugin_error h ($to_str entry/id))))
-          (else (pending ~ push entry/id)))
+          (else (pending .push entry/id)))
       catch Any
         (record_quarantine workspace ($to_str entry/id) ($to_str $ex/message)))))
-  {^ready ready ^pending pending ^errors (data_copy (workspace/errors ~ get))
+  {^ready ready ^pending pending ^errors (data_copy (workspace/errors .get))
    ^session plan/session})
 
 (fn restore_workspace
@@ -717,8 +717,8 @@
 
 (fn doctor [workspace : Workspace]
   (var out (fresh_list))
-  (for [id message] in (workspace/errors ~ get)
-    (out ~ push $"${id}: ${message}"))
+  (for [id message] in (workspace/errors .get)
+    (out .push $"${id}: ${message}"))
   out)
 
 (fn set_entry_disabled
@@ -731,8 +731,8 @@
     (if_yes (== entry/id id)
       (set found true)
       (set next_entry (data_copy entry))
-      (next_entry ~ put "disabled" disabled))
-    (next_entries ~ push next_entry))
+      (next_entry .put "disabled" disabled))
+    (next_entries .push next_entry))
   (if_not found
     (fail (CompositionError ^message $"composition entry ${id} does not exist")))
   (var revision
@@ -751,8 +751,8 @@
   (set_entry_disabled workspace id false ^h h))
 
 (fn close_workspace [workspace : Workspace]
-  (if (workspace/closed ~ get) (return))
-  (workspace/store ~ Store:close)
-  (workspace/blob_store ~ Store:close)
-  (workspace/closed ~ set true)
+  (if (workspace/closed .get) (return))
+  (workspace/store .Store:close)
+  (workspace/blob_store .Store:close)
+  (workspace/closed .set true)
   nil)

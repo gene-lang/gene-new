@@ -249,9 +249,9 @@
     (var faces (count_faces reg world/content base wdx wsz))
     # `faces_total` is the HUD's, and an edit changes it either way — a dug
     # node usually adds faces and a placed one usually hides some.
-    (set faces_total (+ (- faces_total (/ (counts ~ get k) indices_per_face))
+    (set faces_total (+ (- faces_total (/ (counts .get k) indices_per_face))
                         faces))
-    (counts ~ set k (* faces indices_per_face))
+    (counts .set k (* faces indices_per_face))
     (if_yes (> faces 0.0)
       (var verts ($buffer F32 (* faces (* 4.0 floats_per_vertex))))
       (var idx ($buffer U32 (* faces indices_per_face)))
@@ -265,9 +265,9 @@
     (while (< cy span_y)
       (var cx 0.0)
       (while (< cx span_x)
-        (vaos ~ push (new_vertex_array gl))
-        (vbos ~ push (new_buffer gl))
-        (ebos ~ push (new_buffer gl))
+        (vaos .push (new_vertex_array gl))
+        (vbos .push (new_buffer gl))
+        (ebos .push (new_buffer gl))
         (set cx (+ cx 1.0)))
       (set cy (+ cy 1.0)))
     (set cz (+ cz 1.0)))
@@ -299,8 +299,8 @@
               (* (+ origin_bz (/ span_z 2.0)) block_dim)
               (* (+ origin_by span_y) block_dim)
               96.0 spawn_at)
-  (var player (new_player (spawn_at ~ get 0.0) (spawn_at ~ get 1.0)
-                          (spawn_at ~ get 2.0)))
+  (var player (new_player (spawn_at .get 0.0) (spawn_at .get 1.0)
+                          (spawn_at .get 2.0)))
 
   (var yaw 0.6)
   (var pitch -0.25)
@@ -441,7 +441,7 @@
         (if (slot_empty? inv i) "—"
           $"$(item_name items (slot_item inv i)) x$($to_int (slot_count inv i))"))
       (var marked (if (== i selected) $"[${label}]" $" ${label} "))
-      (parts ~ push marked)
+      (parts .push marked)
       (set i (+ i 1.0)))
     ($dom/set_text ($dom/element "hotbar") ($str/join parts " "))))
 
@@ -570,7 +570,7 @@
     (var drawn 0.0)
     (var i 0.0)
     (while (< i chunks)
-      (var n (counts ~ get i))
+      (var n (counts .get i))
       (if_yes (> n 0.0)
         (var k i)
         (draw_chunk gl vaos/%k n)
@@ -611,7 +611,7 @@
       (var cols (form_cols f id))
       (var rows (form_rows f id))
       (var out : (List Str) [])
-      (out ~ push (form_title f id))
+      (out .push (form_title f id))
       # One line per grid row, elements placed into it by column. Text rather
       # than absolute positioning keeps this readable in a HUD that is already
       # a `<div>` of text.
@@ -629,6 +629,6 @@
               (set c (+ c 1.0)))
             (set line $"${line}${pad}$(element_text f e)"))
           (set e (+ e 1.0)))
-        (if_yes (!= line "") (out ~ push line))
+        (if_yes (!= line "") (out .push line))
         (set r (+ r 1.0)))
       ($str/join out "\n"))))

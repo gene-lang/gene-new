@@ -55,17 +55,17 @@
 (fn new_seen [] : SeenEntities
   (new SeenEntities))
 
-(fn seen_rows [s : SeenEntities] : F64 (s/n ~ get 0.0))
-(fn seen_alive? [s : SeenEntities row : F64] : Bool (> (s/id ~ get row) 0.0))
-(fn seen_id [s : SeenEntities row : F64] : F64 (s/id ~ get row))
-(fn seen_x [s : SeenEntities row : F64] : F64 (s/x ~ get row))
-(fn seen_y [s : SeenEntities row : F64] : F64 (s/y ~ get row))
-(fn seen_z [s : SeenEntities row : F64] : F64 (s/z ~ get row))
-(fn seen_item [s : SeenEntities row : F64] : F64 (s/item ~ get row))
-(fn seen_count [s : SeenEntities row : F64] : F64 (s/count ~ get row))
+(fn seen_rows [s : SeenEntities] : F64 (s/n .get 0.0))
+(fn seen_alive? [s : SeenEntities row : F64] : Bool (> (s/id .get row) 0.0))
+(fn seen_id [s : SeenEntities row : F64] : F64 (s/id .get row))
+(fn seen_x [s : SeenEntities row : F64] : F64 (s/x .get row))
+(fn seen_y [s : SeenEntities row : F64] : F64 (s/y .get row))
+(fn seen_z [s : SeenEntities row : F64] : F64 (s/z .get row))
+(fn seen_item [s : SeenEntities row : F64] : F64 (s/item .get row))
+(fn seen_count [s : SeenEntities row : F64] : F64 (s/count .get row))
 # §8's entity kind, kept so the renderer can draw a player at player size and a
 # dropped stack at stack size without inferring it from the item.
-(fn seen_kind [s : SeenEntities row : F64] : F64 (s/kind ~ get row))
+(fn seen_kind [s : SeenEntities row : F64] : F64 (s/kind .get row))
 
 (fn seen_live [s : SeenEntities] : F64
   (var live 0.0)
@@ -81,7 +81,7 @@
   (var i 0.0)
   (var rows (seen_rows s))
   (while (< i rows)
-    (if_yes (&& (== found -1.0) (== (s/id ~ get i) id))
+    (if_yes (&& (== found -1.0) (== (s/id .get i) id))
       (set found i))
     (set i (+ i 1.0)))
   found)
@@ -102,8 +102,8 @@
     # where items are constantly dropped and picked up does not walk the
     # high-water mark up to the ceiling.
     (if (< row 0.0) false
-      (do (s/id ~ set row 0.0)
-          (s/count ~ set row 0.0)
+      (do (s/id .set row 0.0)
+          (s/count .set row 0.0)
           true))
     (do
       (if_yes (< row 0.0)
@@ -112,17 +112,17 @@
         # evicting a live entity would make one vanish from the screen while the
         # server still has it, and the client would never hear about it again.
         (if_yes (< row 0.0) (return false))
-        (s/id ~ set row id))
-      (var moved (|| (!= (s/x ~ get row) x)
-                     (|| (!= (s/y ~ get row) y)
-                         (|| (!= (s/z ~ get row) z)
-                             (!= (s/count ~ get row) count)))))
-      (s/x ~ set row x)
-      (s/y ~ set row y)
-      (s/z ~ set row z)
-      (s/item ~ set row item)
-      (s/count ~ set row count)
-      (s/kind ~ set row kind)
+        (s/id .set row id))
+      (var moved (|| (!= (s/x .get row) x)
+                     (|| (!= (s/y .get row) y)
+                         (|| (!= (s/z .get row) z)
+                             (!= (s/count .get row) count)))))
+      (s/x .set row x)
+      (s/y .set row y)
+      (s/z .set row z)
+      (s/item .set row item)
+      (s/count .set row count)
+      (s/kind .set row kind)
       moved)))
 
 (fn free_row [s : SeenEntities] : F64
@@ -135,7 +135,7 @@
     (set i (+ i 1.0)))
   (if (>= found 0.0) found
     (if (< rows max_seen)
-      (do (s/n ~ set 0.0 (+ rows 1.0)) rows)
+      (do (s/n .set 0.0 (+ rows 1.0)) rows)
       -1.0)))
 
 # How many of a given item are on the ground, which is what the HUD used to
@@ -147,7 +147,7 @@
   (var i 0.0)
   (var rows (seen_rows s))
   (while (< i rows)
-    (if_yes (&& (seen_alive? s i) (== (s/item ~ get i) item))
-      (set total (+ total (s/count ~ get i))))
+    (if_yes (&& (seen_alive? s i) (== (s/item .get i) item))
+      (set total (+ total (s/count .get i))))
     (set i (+ i 1.0)))
   total)

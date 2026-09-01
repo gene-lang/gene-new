@@ -15,13 +15,13 @@
     candidate))
 
 (fn record_removal [context, candidate]
-  ((cleanup_receivers ~ get) ~ push context)
-  ((removed ~ get) ~ push candidate/name))
+  ((cleanup_receivers .get) .push context)
+  ((removed .get) .push candidate/name))
 
 (fn row_names [h]
   (var out ($thaw #[]))
   (for candidate in (rows h "test_prompt")
-    (out ~ push candidate/name))
+    (out .push candidate/name))
   out)
 
 (var h (new_harness))
@@ -51,9 +51,9 @@
 (remove_owner h "plugin_a")
 (assert (== (row_names h) ["late"])
   "removing an owner must remove every row it contributed")
-(assert (== (removed ~ get) ["early" "first"])
+(assert (== (removed .get) ["early" "first"])
   "cleanup must run in reverse acquisition order")
-(for context in (cleanup_receivers ~ get)
+(for context in (cleanup_receivers .get)
   (assert (same? context h)
     "trusted cleanup hooks must receive their Harness context"))
 
@@ -62,10 +62,10 @@
 (remove_owner h "registry_plugin")
 (assert (! (registry_exists? h "owned"))
   "unloading a registry owner must remove the registry itself")
-(assert (== (removed ~ get)
+(assert (== (removed .get)
             ["early" "first" "child"])
   "registry removal must clean rows owned by other plugins")
-(for context in (cleanup_receivers ~ get)
+(for context in (cleanup_receivers .get)
   (assert (same? context h)
     "registry cleanup must use the hook owner's context"))
 

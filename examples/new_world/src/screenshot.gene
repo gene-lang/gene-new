@@ -133,7 +133,7 @@
   (var n (* (* view_w view_h) 4))
   (var i 0)
   (while (< i n)
-    (out ~ push 255)
+    (out .push 255)
     (set i (+ i 1)))
   (sky cam_y)
 
@@ -141,7 +141,7 @@
   (var cells (* map_w map_h))
   (set i 0)
   (while (< i cells)
-    (tiles ~ push 0.0)
+    (tiles .push 0.0)
     (set i (+ i 1)))
   (generate tiles ($to_float map_w) ($to_float map_h) seed)
 
@@ -201,7 +201,7 @@
   # non-integer pixel index, which the JavaScript this replaces silently
   # turned into a blank frame.
   (var argv ($body args))
-  (var argc (argv ~ size))
+  (var argc (argv .size))
   (var seed (if (> argc 0)
               ($to_float ($parse/parse_int argv/0)) 1.0))
   (var cam_x (if (> argc 1)

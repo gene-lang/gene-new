@@ -437,7 +437,7 @@ The server generates terrain on the interpreter and cannot move that work to V8
 **The generation unit is a 16³ block, and this probe is why.** Generating an 80³
 chunk — Luanti's unit, and this design's first choice — measures at 302 s against
 a 300 ms budget. The finding is not that 3D noise is expensive: a single message
-send is ~500 ns and `(buf ~ get i)` is a message send, so 512,000 nodes cannot be
+send is ~500 ns and `(buf .get i)` is a message send, so 512,000 nodes cannot be
 *written* inside 300 ms whatever is written. **The unit was wrong, not the
 terrain.** §3.1 is the consequence.
 
@@ -474,8 +474,8 @@ each lands with the spec coverage the repo requires (`nimble spec`,
 
 Typed arrays landed not as a new web-only type but as **`(Buffer T)`** — the same
 buffer the VM has — so `core/` meshing code is one module on both backends rather
-than two. `(Buffer F32)` lowers to `Float32Array`, and `(b ~ get i)` /
-`(b ~ set i v)` compile to plain indexed access. Element vocabulary is
+than two. `(Buffer F32)` lowers to `Float32Array`, and `(b .get i)` /
+`(b .set i v)` compile to plain indexed access. Element vocabulary is
 `I8 I16 I32 U8 U16 U32 F32 F64`; `I64`/`U64` are excluded because
 `BigInt64Array` elements are `bigint`. **Indices and lengths are `F64` on both
 backends** — the VM's `Buffer/get`/`set` were widened to accept an integral
@@ -625,7 +625,7 @@ construction is a click or a keypress.
 **10. The VM's call and message-send cost. Blocks nothing; raises every
 ceiling.**
 
-A `(buf ~ set i v)` costs ~0.61 µs and a trivial call ~480 ns — roughly 1,500
+A `(buf .set i v)` costs ~0.61 µs and a trivial call ~480 ns — roughly 1,500
 cycles, where a tuned bytecode interpreter spends 50–150. That single number is
 what makes 512,000 node visits impossible in 300 ms and what forced §3's
 granularity.
@@ -687,12 +687,12 @@ which is `F64`. Arithmetic coerces on both, so using a length as an *operand*
 works either way and nothing noticed for four milestones. Using it as a *value*
 fails on whichever backend you did not try.
 
-**It is `~ len` specifically.** A buffer *read* is `Int` on both backends, so
-`($to_float (b ~ get i))` is the ordinary conversion and compiles everywhere.
-`~ len` is the one operation in the portable surface whose type depends on which
+**It is `.len` specifically.** A buffer *read* is `Int` on both backends, so
+`($to_float (b .get i))` is the ordinary conversion and compiles everywhere.
+`.len` is the one operation in the portable surface whose type depends on which
 side you are on — and **the obvious fix does not exist**: `$to_float` is total on
 numbers on the VM and deliberately partial in the profile, which rejects a value
-already of the target kind. So `($to_float (b ~ len))` fails on the web, the bare
+already of the target kind. So `($to_float (b .len))` fails on the web, the bare
 form fails on the VM, and no single spelling compiles for both.
 
 The workaround is `(+ 0.0 …)`: mixed arithmetic promotes to Float on the VM and is
@@ -2106,7 +2106,7 @@ coordinates.
 
 **The server encodes a block in 17.9 ms and V8 does the same work in 0.032 ms —
 558x.** That is not a defect in the codec; it is §D6.3's finding arriving
-somewhere new. A message send is ~500 ns on the VM and `(buf ~ get i)` is a
+somewhere new. A message send is ~500 ns on the VM and `(buf .get i)` is a
 message send, so a block encode is ~16,000 sends before any arithmetic. It is what
 makes a 576-block world take ~12 s to transfer rather than the ~0.3 s the 0.32 MB
 would suggest — **the socket was never the bottleneck**, which is worth knowing

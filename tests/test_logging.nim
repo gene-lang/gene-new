@@ -195,10 +195,10 @@ suite "structured logging":
 (var logger (new_logger "app/test" ^payload {^service "spec"}))
 (var eager ($cell false))
 (var lazy ($cell false))
-(logger ~ info (do (eager ~ set true) "eager"))
-(log_debug logger (do (lazy ~ set true) "lazy"))
-(logger ~ warn "warning" ^payload {^token "hidden"})
-[(eager ~ get) (lazy ~ get) (logger ~ enabled? LogLevel/warn)]
+(logger .info (do (eager .set true) "eager"))
+(log_debug logger (do (lazy .set true) "lazy"))
+(logger .warn "warning" ^payload {^token "hidden"})
+[(eager .get) (lazy .get) (logger .enabled? LogLevel/warn)]
 """)
     check result.print == "[true false true]"
     check loggingCaptured.len == 1
@@ -216,8 +216,8 @@ suite "structured logging":
 (import $log [new_logger log_error])
 (var logger (new_logger "app/off"))
 (var touched ($cell false))
-(log_error logger (do (touched ~ set true) "suppressed"))
-(touched ~ get)
+(log_error logger (do (touched .set true) "suppressed"))
+(touched .get)
 """)
     check result == FALSE
     check loggingCaptured.len == 0
@@ -412,7 +412,7 @@ suite "structured logging":
       "(import $log [new_file_logger]) " &
       "(var logger (new_file_logger \"app/direct\" " &
         loggingGeneQuote(path) & " ^flush \"close\")) " &
-      "(logger ~ info \"direct\" ^payload {^x 1})", dir)
+      "(logger .info \"direct\" ^payload {^x 1})", dir)
     shutdownLogging()
     check fileExists(path)
     let event = read(readFile(path).strip())
@@ -432,7 +432,7 @@ suite "structured logging":
       "(import $log [new_file_logger]) " &
       "(var logger (new_file_logger \"app/direct_json\" " &
         loggingGeneQuote(path) & " ^format \"json\" ^flush \"close\")) " &
-      "(logger ~ info \"direct\" ^payload {^x 1})", dir)
+      "(logger .info \"direct\" ^payload {^x 1})", dir)
     shutdownLogging()
     let event = parseJson(readFile(path).strip())
     check event["logger"].getStr == "app/direct_json"

@@ -34,8 +34,8 @@
 
 (fn check [out : (List Str) label : Str got : Str want : Str] : Nil
   (if (== got want)
-    (then (out ~ push $"ok   ${label}"))
-    (else (out ~ push $"FAIL ${label}: got ${got}, want ${want}"))))
+    (then (out .push $"ok   ${label}"))
+    (else (out .push $"FAIL ${label}: got ${got}, want ${want}"))))
 
 (fn check_f [out : (List Str) label : Str got : F64 want : F64] : Nil
   (check out label $"$($to_int got)" $"$($to_int want)"))
@@ -524,18 +524,18 @@
   # somewhere standable, which is the property.
   (find_spawn w r 4.0 8.0 (* 2.0 side) 96.0 at)
   (check_b out "a spawn on land stays there"
-           (standable? w r ($math/floor (at ~ get 0.0)) (at ~ get 1.0)
-                       ($math/floor (at ~ get 2.0))) true)
-  (check_f out "and rests on the surface" (at ~ get 1.0) ground)
+           (standable? w r ($math/floor (at .get 0.0)) (at .get 1.0)
+                       ($math/floor (at .get 2.0))) true)
+  (check_f out "and rests on the surface" (at .get 1.0) ground)
   (check_b out "and is centred in its node"
-           (== (- (at ~ get 0.0) ($math/floor (at ~ get 0.0))) 0.5) true)
+           (== (- (at .get 0.0) ($math/floor (at .get 0.0))) 0.5) true)
 
   # And the case that has failed twice: aimed at the water.
   (find_spawn w r 20.0 8.0 (* 2.0 side) 96.0 at)
   (check_b out "a spawn aimed at the sea ends up somewhere standable"
-           (standable? w r ($math/floor (at ~ get 0.0)) (at ~ get 1.0)
-                       ($math/floor (at ~ get 2.0))) true)
-  (var p (new_player (at ~ get 0.0) (at ~ get 1.0) (at ~ get 2.0)))
+           (standable? w r ($math/floor (at .get 0.0)) (at .get 1.0)
+                       ($math/floor (at .get 2.0))) true)
+  (var p (new_player (at .get 0.0) (at .get 1.0) (at .get 2.0)))
   (step p w r 0.0 0.0 false false false dt)
   (check_b out "and is not swimming" (in_liquid? p) false)
   (check_b out "and is not inside anything"
@@ -565,7 +565,7 @@
   (collect out)
   (var bad 0.0)
   (var i 0.0)
-  (var n out/~size)
+  (var n out/.size)
   (while (< i n)
     (if_yes ($str/starts_with? out/%i "FAIL")
       (set bad (+ bad 1.0)))

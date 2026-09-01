@@ -12,14 +12,14 @@
 
 (fn main [args] : Nil
   (var argv ($body args))
-  (if (|| (< (argv ~ size) 2) (> (argv ~ size) 9))
+  (if (|| (< (argv .size) 2) (> (argv .size) 9))
     ($panic
       "usage: library_induction_export <target_seed> <donor_seed> [donor_seed ...]"))
   (var target_seed (parse_int argv/0))
   (var donor_seeds : (List Int) [])
   (var index 1)
-  (while (< index (argv ~ size))
-    (donor_seeds ~ push (parse_int argv/%index))
+  (while (< index (argv .size))
+    (donor_seeds .push (parse_int argv/%index))
     (set index (+ index 1)))
 
   (var subject (default_induction_subject))

@@ -25,7 +25,7 @@ opening line. Every body expression indents two spaces.
 
 (fn append_all [target, values...]
   (for value in values
-    (target ~ push value))
+    (target .push value))
   target)
 ```
 
@@ -51,7 +51,7 @@ arguments as syntax and receives a borrowed `CallerEnv`.
 
 Only a bare head invokes one — aliases, expression heads, and higher-order
 calls cannot. The `CallerEnv` is borrowed, so durable caller authority needs an
-explicit named snapshot: `(caller_env ~ snapshot ["x"])`.
+explicit named snapshot: `(caller_env .snapshot ["x"])`.
 
 ## Macros
 
@@ -92,7 +92,7 @@ Type-direct messages live in the type body and are sent bare:
 (type User ^props {^name Str}
   (message shout [self] : Str $"${self/name}!"))
 
-(u ~ shout)
+(u .shout)
 ```
 
 ## Enums
@@ -121,7 +121,7 @@ once an impl exists. Universal conformance is never implicit.
       self/name
       $"${self/name} (inactive)")))
 
-(u ~ Labelled:label)
+(u .Labelled:label)
 ```
 
 A protocol send is always qualified `P:msg`. `T:msg` on a *type* is a
@@ -209,5 +209,5 @@ narrows from there:
 
 `^capabilities` takes a **list** for the authority row and a **map** for a
 binding overlay — the list is resolved against the creating context, so an `Env`
-can never carry more than its creator held. A `(caller_env ~ snapshot ["x"])`
+can never carry more than its creator held. A `(caller_env .snapshot ["x"])`
 stays closed: it sees exactly the names it captured, never the evaluating scope.

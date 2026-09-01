@@ -13,7 +13,7 @@
   (if_not report/valid
     ($panic $"active-inference subject verification failed: ${report}"))
   (var invalid_subject (default_subject))
-  (invalid_subject/tests/0/positive_likelihoods ~ set 0 1.0)
+  (invalid_subject/tests/0/positive_likelihoods .set 0 1.0)
   (if (verify_subject invalid_subject)/valid
     ($panic "invalid inspection likelihood accepted"))
   ($println

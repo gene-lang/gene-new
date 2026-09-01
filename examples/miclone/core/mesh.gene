@@ -127,9 +127,9 @@
 # neighbour on the hottest loop in the renderer.
 (fn face_visible? [opaque_col : (Buffer F32) merges_col : (Buffer F32)
                    content : (Buffer F32) i : F64 mine : F64] : Bool
-  (var theirs (content ~ get i))
-  (if (== (opaque_col ~ get theirs) 1.0) false
-    (! (&& (== theirs mine) (== (merges_col ~ get mine) 1.0)))))
+  (var theirs (content .get i))
+  (if (== (opaque_col .get theirs) 1.0) false
+    (! (&& (== theirs mine) (== (merges_col .get mine) 1.0)))))
 
 # --- pass one: count ---------------------------------------------------------
 #
@@ -152,8 +152,8 @@
       (var x 0.0)
       (while (< x chunk_dim)
         (var i (+ row x))
-        (var id (content ~ get i))
-        (if_yes (!= (drawtype_col ~ get id) draw_airlike)
+        (var id (content .get i))
+        (if_yes (!= (drawtype_col .get id) draw_airlike)
           (if_yes (face_visible? opaque_col merges_col content (+ i 1.0) id)
             (set faces (+ faces 1.0)))
           (if_yes (face_visible? opaque_col merges_col content (- i 1.0) id)
@@ -179,13 +179,13 @@
                 px : F64 py : F64 pz : F64
                 u : F64 v : F64 light : F64 shade : F64] : Nil
   (var o (* at floats_per_vertex))
-  (verts ~ set o px)
-  (verts ~ set (+ o 1.0) py)
-  (verts ~ set (+ o 2.0) pz)
-  (verts ~ set (+ o 3.0) u)
-  (verts ~ set (+ o 4.0) v)
-  (verts ~ set (+ o 5.0) light)
-  (verts ~ set (+ o 6.0) shade))
+  (verts .set o px)
+  (verts .set (+ o 1.0) py)
+  (verts .set (+ o 2.0) pz)
+  (verts .set (+ o 3.0) u)
+  (verts .set (+ o 4.0) v)
+  (verts .set (+ o 5.0) light)
+  (verts .set (+ o 6.0) shade))
 
 # Two triangles over the four corners just written, in the order that makes the
 # quad front-facing from outside.
@@ -204,12 +204,12 @@
 # point out of the block, away from the node the face belongs to.
 (fn put_face_indices [idx : (Buffer U32) face : F64 base : F64] : Nil
   (var o (* face indices_per_face))
-  (idx ~ set o ($to_int base))
-  (idx ~ set (+ o 1.0) ($to_int (+ base 1.0)))
-  (idx ~ set (+ o 2.0) ($to_int (+ base 2.0)))
-  (idx ~ set (+ o 3.0) ($to_int base))
-  (idx ~ set (+ o 4.0) ($to_int (+ base 2.0)))
-  (idx ~ set (+ o 5.0) ($to_int (+ base 3.0))))
+  (idx .set o ($to_int base))
+  (idx .set (+ o 1.0) ($to_int (+ base 1.0)))
+  (idx .set (+ o 2.0) ($to_int (+ base 2.0)))
+  (idx .set (+ o 3.0) ($to_int base))
+  (idx .set (+ o 4.0) ($to_int (+ base 2.0)))
+  (idx .set (+ o 5.0) ($to_int (+ base 3.0))))
 
 # Emit one quad. The four corners arrive already in winding order; this only
 # adds the atlas offset and the shared light and shading values.
@@ -264,43 +264,43 @@
       (var x 0.0)
       (while (< x chunk_dim)
         (var i (+ row x))
-        (var id (content ~ get i))
-        (if_yes (!= (drawtype_col ~ get id) draw_airlike)
+        (var id (content .get i))
+        (if_yes (!= (drawtype_col .get id) draw_airlike)
           (var wx (+ ox x))
           (var wy (+ oy y))
           (var wz (+ oz z))
           (var x1 (+ wx 1.0))
           (var y1 (+ wy 1.0))
           (var z1 (+ wz 1.0))
-          (var side (side_col ~ get id))
+          (var side (side_col .get id))
           (if_yes (face_visible? opaque_col merges_col content (+ i 1.0) id)
             (put_quad verts idx face side
-                      (lit ~ get (+ i 1.0)) shade_side_x
+                      (lit .get (+ i 1.0)) shade_side_x
                       x1 wy z1  x1 wy wz  x1 y1 wz  x1 y1 z1)
             (set face (+ face 1.0)))
           (if_yes (face_visible? opaque_col merges_col content (- i 1.0) id)
             (put_quad verts idx face side
-                      (lit ~ get (- i 1.0)) shade_side_x
+                      (lit .get (- i 1.0)) shade_side_x
                       wx wy wz  wx wy z1  wx y1 z1  wx y1 wz)
             (set face (+ face 1.0)))
           (if_yes (face_visible? opaque_col merges_col content (+ i sy) id)
-            (put_quad verts idx face (top_col ~ get id)
-                      (lit ~ get (+ i sy)) shade_top
+            (put_quad verts idx face (top_col .get id)
+                      (lit .get (+ i sy)) shade_top
                       wx y1 z1  x1 y1 z1  x1 y1 wz  wx y1 wz)
             (set face (+ face 1.0)))
           (if_yes (face_visible? opaque_col merges_col content (- i sy) id)
-            (put_quad verts idx face (bottom_col ~ get id)
-                      (lit ~ get (- i sy)) shade_bottom
+            (put_quad verts idx face (bottom_col .get id)
+                      (lit .get (- i sy)) shade_bottom
                       wx wy wz  x1 wy wz  x1 wy z1  wx wy z1)
             (set face (+ face 1.0)))
           (if_yes (face_visible? opaque_col merges_col content (+ i sz) id)
             (put_quad verts idx face side
-                      (lit ~ get (+ i sz)) shade_side_z
+                      (lit .get (+ i sz)) shade_side_z
                       wx wy z1  x1 wy z1  x1 y1 z1  wx y1 z1)
             (set face (+ face 1.0)))
           (if_yes (face_visible? opaque_col merges_col content (- i sz) id)
             (put_quad verts idx face side
-                      (lit ~ get (- i sz)) shade_side_z
+                      (lit .get (- i sz)) shade_side_z
                       x1 wy wz  wx wy wz  wx y1 wz  x1 y1 wz)
             (set face (+ face 1.0))))
         (set x (+ x 1.0)))

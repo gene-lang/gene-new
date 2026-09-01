@@ -204,7 +204,7 @@
 
 # --- sending -----------------------------------------------------------------
 #
-# Every send is `buf/~to_bytes` then `ws_send`. That conversion is the whole
+# Every send is `buf/.to_bytes` then `ws_send`. That conversion is the whole
 # of the VM's I/O boundary: the codec works over a `(Buffer U8)` because the
 # client must run the same code, and `Bytes` is what the socket takes.
 
@@ -215,14 +215,14 @@
                 ($to_float origin_bx) ($to_float origin_by)
                 ($to_float origin_bz)
                 ($to_float span_x) ($to_float span_y) ($to_float span_z)
-                (spawn_at ~ get 0.0) (spawn_at ~ get 1.0) (spawn_at ~ get 2.0))
-  (ws_send conn b/~to_bytes))
+                (spawn_at .get 0.0) (spawn_at .get 1.0) (spawn_at .get 2.0))
+  (ws_send conn b/.to_bytes))
 
 (fn send_registry [conn reg : Registry] : Nil
   (var c (new_cursor))
   (var b ($buffer U8 (registry_size reg)))
   (encode_registry b c reg)
-  (ws_send conn b/~to_bytes))
+  (ws_send conn b/.to_bytes))
 
 # §9's appearance table. Sent before the registry, because a node's tile columns
 # are slots into this and a client that read them first would hold indices into
@@ -231,7 +231,7 @@
   (var c (new_cursor))
   (var b ($buffer U8 (tiles_size t)))
   (encode_tiles b c t)
-  (ws_send conn b/~to_bytes))
+  (ws_send conn b/.to_bytes))
 
 # §2's item registry. Sent with the rest of the join, because an inventory
 # message is meaningless before it — an item id names nothing until this lands.
@@ -239,7 +239,7 @@
   (var c (new_cursor))
   (var b ($buffer U8 (items_size r)))
   (encode_items b c r)
-  (ws_send conn b/~to_bytes))
+  (ws_send conn b/.to_bytes))
 
 # Returns `ws_send`'s drop count — see `answer_blocks` for why anything reads it.
 (fn send_block [conn w : World bx : F64 by : F64 bz : F64] : F64
@@ -249,20 +249,20 @@
   (var sz (world_stride_z w))
   (var b ($buffer U8 (block_size w/content w/light base dx sz)))
   (encode_block b c bx by bz w/content w/light base dx sz)
-  ($to_float (ws_send conn b/~to_bytes)))
+  ($to_float (ws_send conn b/.to_bytes)))
 
 (fn send_node_delta [conn nx : F64 ny : F64 nz : F64
                      id : F64 param1 : F64] : Nil
   (var c (new_cursor))
   (var b ($buffer U8 node_delta_size))
   (encode_node_delta b c nx ny nz id param1)
-  (ws_send conn b/~to_bytes))
+  (ws_send conn b/.to_bytes))
 
 (fn send_inventory [conn inv : (Buffer F64)] : Nil
   (var c (new_cursor))
   (var b ($buffer U8 (inventory_size ($to_float hotbar_slots))))
   (encode_inventory b c inv ($to_float hotbar_slots))
-  (ws_send conn b/~to_bytes))
+  (ws_send conn b/.to_bytes))
 
 # §13's forms, once on join. The networked client had no form registry at all
 # until this — a form was declared by a mod on the server, and `client/main.gene`
@@ -271,7 +271,7 @@
   (var c (new_cursor))
   (var b ($buffer U8 (forms_size forms)))
   (encode_forms b c forms)
-  (ws_send conn b/~to_bytes))
+  (ws_send conn b/.to_bytes))
 
 # §13's open. The form is a layout the client already has; what travels here is
 # *which* form, *which* node, and what is in it.
@@ -280,7 +280,7 @@
   (var c (new_cursor))
   (var b ($buffer U8 (size_open_form_for name)))
   (encode_open_form b c name x y z inv (container_slot_count))
-  (ws_send conn b/~to_bytes))
+  (ws_send conn b/.to_bytes))
 
 # Answer a client's request for blocks `[from, from + count)` in the linear
 # index the client computes from `hello`'s extent.
@@ -355,7 +355,7 @@
                  (entity_item_of e slot)
                  (if gone 0.0 (entity_count e slot))
                  (entity_kind e slot))
-  (ws_send conn b/~to_bytes))
+  (ws_send conn b/.to_bytes))
 
 # Everyone except the player this entity **is**.
 #
@@ -373,7 +373,7 @@
 # connection id is what lets one function serve both kinds of entity.
 (fn broadcast_entity [e : EntityRegistry slot : F64 gone : Bool] : Nil
   (var c 0.0)
-  (var n connections/~size)
+  (var n connections/.size)
   (while (< c n)
     (if_yes (!= connection_slots/%c slot)
       (var conn connections/%c)
@@ -427,18 +427,18 @@
 (var next_connection_id ($cell 0.0))
 
 (fn add_connection [conn id : F64] : Nil
-  (connections ~ push conn)
-  (connection_ids ~ push id)
-  (connection_slots ~ push -1.0))
+  (connections .push conn)
+  (connection_ids .push id)
+  (connection_slots .push -1.0))
 
 # Record which player entity a connection owns. Rebuilds rather than assigns in
 # place, for the same reason `drop_connection` does.
 (fn own_slot [id : F64 slot : F64] : Nil
   (var keep : (List F64) [])
   (var i 0.0)
-  (var n connection_ids/~size)
+  (var n connection_ids/.size)
   (while (< i n)
-    (keep ~ push (if (== connection_ids/%i id) slot connection_slots/%i))
+    (keep .push (if (== connection_ids/%i id) slot connection_slots/%i))
     (set i (+ i 1.0)))
   (set connection_slots keep))
 
@@ -447,12 +447,12 @@
   (var keep_ids : (List F64) [])
   (var keep_slots : (List F64) [])
   (var i 0.0)
-  (var n connection_ids/~size)
+  (var n connection_ids/.size)
   (while (< i n)
     (if_yes (!= connection_ids/%i id)
-      (keep_conns ~ push connections/%i)
-      (keep_ids ~ push connection_ids/%i)
-      (keep_slots ~ push connection_slots/%i))
+      (keep_conns .push connections/%i)
+      (keep_ids .push connection_ids/%i)
+      (keep_slots .push connection_slots/%i))
     (set i (+ i 1.0)))
   (set connections keep_conns)
   (set connection_ids keep_ids)
@@ -464,7 +464,7 @@
 (fn broadcast_entity_except [e : EntityRegistry slot : F64 gone : Bool
                              skip : F64] : Nil
   (var c 0.0)
-  (var n connections/~size)
+  (var n connections/.size)
   (while (< c n)
     (if_yes (!= connection_ids/%c skip)
       (var conn connections/%c)
@@ -572,9 +572,9 @@
     (var qid (queued_id abms j))
     (if_yes (!= (node_at world qx qy qz) qid)
       (apply_node world game/nodes qx qy qz qid sky lq lq_seed bounds)
-      (var light (world/light ~ get (block_index_of world qx qy qz)))
+      (var light (world/light .get (block_index_of world qx qy qz)))
       (var c 0.0)
-      (var cn connections/~size)
+      (var cn connections/.size)
       (while (< c cn)
         (var conn connections/%c)
         (send_node_delta conn qx qy qz qid light)
@@ -774,7 +774,7 @@
     (commit_batch store)
     ($println $"  saved $(block_count store) blocks, $(stored_bytes store) bytes"))
 
-  ($println $"  ready in $(- ($os/monotonic_ms) t0) ms; spawn at $(spawn_at ~ get 0.0), $(spawn_at ~ get 1.0), $(spawn_at ~ get 2.0)")
+  ($println $"  ready in $(- ($os/monotonic_ms) t0) ms; spawn at $(spawn_at .get 0.0), $(spawn_at .get 1.0), $(spawn_at .get 2.0)")
 
   # §4's scratch, allocated once for the process rather than per edit: the
   # queues are 10 MB at this extent and an edit happens inside a click.
@@ -798,8 +798,8 @@
   (serve (listen ^host "127.0.0.1" ^port port)
     ^tick_ms tick_ms
     ^on_tick (fn []
-      (step ~ set (+ (step ~ get) ($to_float samples_per_pass)))
-      (run_abms game world ($to_float ($os/monotonic_ms)) (step ~ get)
+      (step .set (+ (step .get) ($to_float samples_per_pass)))
+      (run_abms game world ($to_float ($os/monotonic_ms)) (step .get)
                 sky lq lq_seed bounds)
       # §8's entities, after the nodes. The order matters and it is one line of
       # reasoning: an ABM may have dug the node an item was resting on, and an
@@ -834,8 +834,8 @@
       # `^on_open` and `^on_close` close over the same one. It is what
       # `drop_connection` matches on — see the note beside `connections` for why
       # it cannot be the handle.
-      (var my_id (next_connection_id ~ get))
-      (next_connection_id ~ set (+ my_id 1.0))
+      (var my_id (next_connection_id .get))
+      (next_connection_id .set (+ my_id 1.0))
       (ws_accept req
         ^on_open (fn [conn]
           # Handshake only. The terrain follows when the client asks for it,
@@ -853,11 +853,11 @@
           # here, because otherwise a second player sees the first only once the
           # first happens to move.
           (var pid (spawn_player game/entities player_visual
-                                 (spawn_at ~ get 0.0) (spawn_at ~ get 1.0)
-                                 (spawn_at ~ get 2.0)))
+                                 (spawn_at .get 0.0) (spawn_at .get 1.0)
+                                 (spawn_at .get 2.0)))
           (if_yes (>= pid 0.0)
             (var slot (slot_of_id game/entities pid))
-            (my_slot ~ set slot)
+            (my_slot .set slot)
             # Before any broadcast: from here on the tick may move this player,
             # and `broadcast_entity` needs to know whose avatar it is.
             (own_slot my_id slot)
@@ -870,11 +870,11 @@
           # (§10), and without it a disconnected player stands in the world
           # forever — the thing §8 said entities were for, failing in the other
           # direction.
-          (var slot (my_slot ~ get))
+          (var slot (my_slot .get))
           (if_yes (>= slot 0.0)
             (broadcast_entity_except game/entities slot true my_id)
             (despawn game/entities slot)
-            (my_slot ~ set -1.0))
+            (my_slot .set -1.0))
           (drop_connection my_id)
           ($println "  client left"))
 
@@ -929,14 +929,14 @@
             (var act (new_form_action))
             (var form_name (decode_form_action b c act))
             (var action (action_of b c))
-            (var ax (act ~ get act_x))
-            (var ay (act ~ get act_y))
-            (var az (act ~ get act_z))
-            (var same_form (&& (!= (open_name ~ get) "")
-                               (== (open_name ~ get) form_name)))
-            (var open_here (&& (== (open_at ~ get 0.0) ax)
-                               (&& (== (open_at ~ get 1.0) ay)
-                                   (== (open_at ~ get 2.0) az))))
+            (var ax (act .get act_x))
+            (var ay (act .get act_y))
+            (var az (act .get act_z))
+            (var same_form (&& (!= (open_name .get) "")
+                               (== (open_name .get) form_name)))
+            (var open_here (&& (== (open_at .get 0.0) ax)
+                               (&& (== (open_at .get 1.0) ay)
+                                   (== (open_at .get 2.0) az))))
             (var form_id (form_named game/forms form_name))
             # **A form that declares this action.** That check is shared; what
             # differs below is whether the form is somewhere.
@@ -977,8 +977,8 @@
           (if_yes (== kind msg_request_blocks)
             (var req (new_request))
             (decode_request_blocks b c req)
-            (answer_blocks conn world (req ~ get req_from)
-                           (req ~ get req_count)))
+            (answer_blocks conn world (req .get req_from)
+                           (req .get req_count)))
 
           # §7.1's authority. The client has already applied the edit
           # optimistically and predicted nothing about the drop; what goes back
@@ -987,9 +987,9 @@
           (if (== kind msg_dig)
             (then
               (decode_edit b c edit)
-              (var nx (edit ~ get edit_x))
-              (var ny (edit ~ get edit_y))
-              (var nz (edit ~ get edit_z))
+              (var nx (edit .get edit_x))
+              (var ny (edit .get edit_y))
+              (var nz (edit .get edit_z))
               (if_yes (diggable? world reg nx ny nz)
                 (var was (node_at world nx ny nz))
                 (apply_node world reg nx ny nz air sky lq lq_seed bounds)
@@ -1016,7 +1016,7 @@
                       (broadcast_entity game/entities slot false)))
                   (send_inventory conn inv))
                 (send_node_delta conn nx ny nz air
-                                 (world/light ~ get
+                                 (world/light .get
                                    (block_index_of world nx ny nz)))
                 # §12: whatever was resting on it may now fall.
                 (note_change game nx ny nz)
@@ -1034,14 +1034,14 @@
               (if (== kind msg_place)
                 (then
                   (decode_edit b c edit)
-                  (var nx (edit ~ get edit_x))
-                  (var ny (edit ~ get edit_y))
-                  (var nz (edit ~ get edit_z))
+                  (var nx (edit .get edit_x))
+                  (var ny (edit .get edit_y))
+                  (var nz (edit .get edit_z))
                   # An *item* id now (§2). The server resolves it to a node,
                   # which is also the check that a client cannot place a
                   # pickaxe: an item with no node is refused here rather than
                   # trusted.
-                  (var held (edit ~ get edit_id))
+                  (var held (edit .get edit_id))
                   # §13's chest, and the first time a right-click means
                   # something other than "place". The node the ray hit travels
                   # beside the placement position (§10's `place_size` says why),
@@ -1053,18 +1053,18 @@
                   # block in hand opens the chest, which is upstream's rule and
                   # the one a player expects; placing against a chest means
                   # aiming at something else.
-                  (var ax (edit ~ get edit_at_x))
-                  (var ay (edit ~ get edit_at_y))
-                  (var az (edit ~ get edit_at_z))
+                  (var ax (edit .get edit_at_x))
+                  (var ay (edit .get edit_at_y))
+                  (var az (edit .get edit_at_z))
                   (var aimed (node_at world ax ay az))
                   (var opens (opens_form_of reg aimed))
                   (if_yes (!= opens "")
                     (var row (container_at game/containers ax ay az))
                     (if_yes (>= row 0.0)
-                      (open_at ~ set 0.0 ax)
-                      (open_at ~ set 1.0 ay)
-                      (open_at ~ set 2.0 az)
-                      (open_name ~ set opens)
+                      (open_at .set 0.0 ax)
+                      (open_at .set 1.0 ay)
+                      (open_at .set 2.0 az)
+                      (open_name .set opens)
                       (send_open_form conn opens ax ay az
                                       (container_inventory game/containers row))))
                   # The client says what it is holding and the server checks it
@@ -1080,7 +1080,7 @@
                     (apply_node world reg nx ny nz as_node sky lq lq_seed bounds)
                     (send_inventory conn inv)
                     (send_node_delta conn nx ny nz as_node
-                                     (world/light ~ get
+                                     (world/light .get
                                        (block_index_of world nx ny nz)))
                     (persist_block store reg world
                                    (block_of nx) (block_of ny) (block_of nz)
@@ -1095,14 +1095,14 @@
                 (else
                   (if_yes (== kind msg_input)
                     (decode_input b c input)
-                    (var px (input ~ get in_x))
-                    (var py (input ~ get in_y))
-                    (var pz (input ~ get in_z))
+                    (var px (input .get in_x))
+                    (var py (input .get in_y))
+                    (var pz (input .get in_z))
                     # §8's player, moved. The position already travelled in this
                     # message for §8's pickup (§8.1) — it is the same trust
                     # decision and now it has a second use, which is what makes
                     # a player visible to another player at all.
-                    (var mine (my_slot ~ get))
+                    (var mine (my_slot .get))
                     (if_yes (>= mine 0.0)
                       (var was_x (entity_x game/entities mine))
                       (var was_y (entity_y game/entities mine))
@@ -1138,7 +1138,7 @@
                               (broadcast_entity game/entities i true)
                               (despawn game/entities i))
                             (else
-                              (game/entities/count ~ set i left)
+                              (game/entities/count .set i left)
                               (broadcast_entity game/entities i false)))
                           (send_inventory conn inv)))
                       (set i (+ i 1.0)))))))))))))

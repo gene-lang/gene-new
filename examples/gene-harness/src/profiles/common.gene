@@ -28,9 +28,9 @@
     ^activate (fn [] (fn [host]
       # No defensive check, and none needed: the kernel does not run `activate`
       # until every seam in `requires` is bound.
-      (var fs (host ~ PluginHost:resolve "HarnessFs"))
-      (var r (host ~ PluginHost:resolve "HarnessRender"))
-      (host ~ PluginHost:provide "Report" (report_tool fs r "notes"))))))
+      (var fs (host .PluginHost:resolve "HarnessFs"))
+      (var r (host .PluginHost:resolve "HarnessRender"))
+      (host .PluginHost:provide "Report" (report_tool fs r "notes"))))))
 
 (fn report_of [h : Harness] : Str
   # The product of the composition, or why there isn't one. A profile whose

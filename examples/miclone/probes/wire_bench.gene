@@ -5,7 +5,7 @@
 # `tools/world_build.mjs` measures the same codec in V8 and reports 32 µs to
 # encode a block. This measures it on the VM, which is where the *server* runs
 # it — and the two numbers are not close, for the reason §D6.3 records: a
-# message send is ~500 ns on the VM, and `(buf ~ get i)` is a message send.
+# message send is ~500 ns on the VM, and `(buf .get i)` is a message send.
 #
 # A block encode reads 4,096 nodes twice (once to count runs, once to write
 # them) for both content and light, so it is ~16,000 sends before any
@@ -23,8 +23,8 @@
   (var i 0.0)
   (while (< i 4096.0)
     (var y ($math/floor (/ (- i (* 256.0 ($math/floor (/ i 256.0)))) 16.0)))
-    (content ~ set i (if (< y 8.0) 1.0 0.0))
-    (light ~ set i (if (< y 8.0) 0.0 15.0))
+    (content .set i (if (< y 8.0) 1.0 0.0))
+    (light .set i (if (< y 8.0) 0.0 15.0))
     (set i (+ i 1.0))))
 
 (fn main [args] : Nil
@@ -52,7 +52,7 @@
   (set t0 ($os/monotonic_ms))
   (set r 0.0)
   (while (< r reps)
-    b/~to_bytes
+    b/.to_bytes
     (set r (+ r 1.0)))
   (var t_bytes ($to_float (- ($os/monotonic_ms) t0)))
 
@@ -65,5 +65,5 @@
   ($println $"  total        $(/ (+ t_size (+ t_enc t_bytes)) reps) ms")
   ($println "")
   ($println "  V8 does the same work in 0.032 ms (tools/world_build.mjs).")
-  ($println "  §D6.3: a message send is ~500 ns and `(buf ~ get i)` is one;")
+  ($println "  §D6.3: a message send is ~500 ns and `(buf .get i)` is one;")
   ($println "  a block encode is ~16,000 of them before any arithmetic."))

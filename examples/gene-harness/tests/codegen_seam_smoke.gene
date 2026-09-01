@@ -33,7 +33,7 @@
          (Plugin ^id %name ^provides [["tools" (unquote name)]] ^requires []
            ^contextual true
            ^activate (fn [] (fn [host]
-             (host ~ PluginHost:contribute "tools"
+             (host .PluginHost:contribute "tools"
                {^name %name ^doc "stub" ^run run})))))))
   (message author [] : Any
     {^by "stub" ^model ""}))
@@ -42,7 +42,7 @@
   (Plugin ^id "codegen" ^provides ["HarnessCodegen"]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "HarnessCodegen"
+      (host .PluginHost:provide "HarnessCodegen"
         (codegen_provider (StubCodegen)))))))
 
 (fn main [args]

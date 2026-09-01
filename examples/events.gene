@@ -11,14 +11,14 @@
 #
 # Conventions:
 #   ($event/Bus)              a new bus; ^error_policy and ^nesting_limit
-#   (bus ~ subscribe sel h)   returns an event/Subscription; ^once true
-#   (bus ~ publish event)     returns event/PublishResult
-#   bus/~close                cancel every subscription, release handlers
-#   sub/~cancel               explicit, idempotent
+#   (bus .subscribe sel h)   returns an event/Subscription; ^once true
+#   (bus .publish event)     returns event/PublishResult
+#   bus/.close                cancel every subscription, release handlers
+#   sub/.cancel               explicit, idempotent
 #   ($event/exact T)          selector matching T but not its descendants
 #   (| A B)                   selector matching either family, as one
 #                             subscription
-#   (sink ~ EventSink:emit e) the one-message sink protocol a bus implements
+#   (sink .EventSink:emit e) the one-message sink protocol a bus implements
 #
 # Everything here is exercised by the "spec — application event bus" suite in
 # tests/spec_runner.nim.
@@ -48,9 +48,9 @@
   ($println $"   confirming ${event/order_id} for $${event/total}"))
 
 (var bus ($event/Bus))
-(var confirm_sub (bus ~ subscribe OrderPlaced confirm_order))
+(var confirm_sub (bus .subscribe OrderPlaced confirm_order))
 
-(var receipt (bus ~ publish (OrderPlaced ^order_id "o_1001" ^total 19.95)))
+(var receipt (bus .publish (OrderPlaced ^order_id "o_1001" ^total 19.95)))
 ($println $"   matched=${receipt/matched} delivered=${receipt/delivered} failed=${receipt/failed}")
 ($println "")
 
@@ -69,10 +69,10 @@
 (fn email_customer [event : OrderPlaced]
   ($println $"   emailing customer about ${event/order_id}"))
 
-(bus ~ subscribe OrderPlaced reserve_stock)
-(bus ~ subscribe OrderPlaced email_customer)
+(bus .subscribe OrderPlaced reserve_stock)
+(bus .subscribe OrderPlaced email_customer)
 
-(var fanout (bus ~ publish (OrderPlaced ^order_id "o_1002" ^total 4.50)))
+(var fanout (bus .publish (OrderPlaced ^order_id "o_1002" ^total 4.50)))
 ($println $"   ${fanout/delivered} handler(s) ran")
 ($println "")
 
@@ -110,11 +110,11 @@
   ($println $"   delivered, signed by ${event/signed_by}"))
 
 (var ship_bus ($event/Bus))
-(ship_bus ~ subscribe shipping/Event audit_shipping)
-(ship_bus ~ subscribe shipping/Delivered celebrate)
+(ship_bus .subscribe shipping/Event audit_shipping)
+(ship_bus .subscribe shipping/Delivered celebrate)
 
-(ship_bus ~ publish (shipping/Dispatched ^order_id "o_1001" ^carrier "post"))
-(ship_bus ~ publish (shipping/Delivered ^order_id "o_1001" ^signed_by "ada"))
+(ship_bus .publish (shipping/Dispatched ^order_id "o_1001" ^carrier "post"))
+(ship_bus .publish (shipping/Delivered ^order_id "o_1001" ^signed_by "ada"))
 ($println "")
 
 # `event/exact` narrows a selector to one concrete type, excluding descendants.
@@ -125,10 +125,10 @@
 (fn only_plain_dispatch [event]
   ($println "   exact handler ran"))
 
-(ship_bus ~ subscribe ($event/exact shipping/Dispatched) only_plain_dispatch)
-(ship_bus ~ publish (PriorityDispatched ^order_id "o_1003" ^carrier "air"))
+(ship_bus .subscribe ($event/exact shipping/Dispatched) only_plain_dispatch)
+(ship_bus .publish (PriorityDispatched ^order_id "o_1003" ^carrier "air"))
 ($println "   ^ the exact handler did not run for the descendant")
-(ship_bus ~ publish (shipping/Dispatched ^order_id "o_1004" ^carrier "van"))
+(ship_bus .publish (shipping/Dispatched ^order_id "o_1004" ^carrier "van"))
 ($println "")
 
 # A union selects several unrelated families at once. `(| A B)` is the same
@@ -146,13 +146,13 @@
 
 (var union_bus ($event/Bus))
 (var union_sub
-  (union_bus ~ subscribe (| shipping/Dispatched shipping/Delivered) on_either))
+  (union_bus .subscribe (| shipping/Dispatched shipping/Delivered) on_either))
 
-(union_bus ~ publish (shipping/Dispatched ^order_id "o_2001" ^carrier "rail"))
-(union_bus ~ publish (shipping/Delivered ^order_id "o_2001" ^signed_by "bo"))
-($println $"   one subscription covers both: ${union_bus/~subscription_count}")
-union_sub/~cancel
-($println $"   cancel unhooked every family: ${union_bus/~subscription_count}")
+(union_bus .publish (shipping/Dispatched ^order_id "o_2001" ^carrier "rail"))
+(union_bus .publish (shipping/Delivered ^order_id "o_2001" ^signed_by "bo"))
+($println $"   one subscription covers both: ${union_bus/.subscription_count}")
+union_sub/.cancel
+($println $"   cancel unhooked every family: ${union_bus/.subscription_count}")
 ($println "")
 
 # -----------------------------------------------------------------------------
@@ -165,8 +165,8 @@ union_sub/~cancel
 # -----------------------------------------------------------------------------
 ($println "4. cancel and one-shot subscriptions")
 
-($println $"   cancel returned ${confirm_sub/~cancel}")
-($println $"   cancel again returned ${confirm_sub/~cancel}   # idempotent")
+($println $"   cancel returned ${confirm_sub/.cancel}")
+($println $"   cancel again returned ${confirm_sub/.cancel}   # idempotent")
 
 (type ApplicationReady ^is $event/Event)
 
@@ -174,10 +174,10 @@ union_sub/~cancel
   ($println "   warming cache (once)"))
 
 (var ready_bus ($event/Bus))
-(ready_bus ~ subscribe ApplicationReady warm_cache ^once true)
-(ready_bus ~ publish (ApplicationReady))
-(ready_bus ~ publish (ApplicationReady))
-($println $"   after two publishes, subscriptions left: ${ready_bus/~subscription_count}")
+(ready_bus .subscribe ApplicationReady warm_cache ^once true)
+(ready_bus .publish (ApplicationReady))
+(ready_bus .publish (ApplicationReady))
+($println $"   after two publishes, subscriptions left: ${ready_bus/.subscription_count}")
 ($println "")
 
 # -----------------------------------------------------------------------------
@@ -193,16 +193,16 @@ union_sub/~cancel
 (var delivered_event ($cell nil))
 
 (fn remember [event]
-  (delivered_event ~ set event))
+  (delivered_event .set event))
 
 (var snap_bus ($event/Bus))
-(snap_bus ~ subscribe OrderPlaced remember)
+(snap_bus .subscribe OrderPlaced remember)
 
 (var draft (OrderPlaced ^order_id "o_2001" ^total 10.0))
-(snap_bus ~ publish draft)
+(snap_bus .publish draft)
 (set draft/order_id "o_2001_revised")
 
-(var seen delivered_event/~get)
+(var seen delivered_event/.get)
 ($println $"   publisher now holds ${draft/order_id}")
 ($println $"   subscriber still sees ${seen/order_id}")
 ($println "")
@@ -230,20 +230,20 @@ union_sub/~cancel
 
 # `collect` hands the failures back instead of raising at the publisher.
 (var pay_bus ($event/Bus ^error_policy $event/collect))
-(pay_bus ~ subscribe PaymentReceived flaky_ledger)
-(pay_bus ~ subscribe PaymentReceived always_works)
+(pay_bus .subscribe PaymentReceived flaky_ledger)
+(pay_bus .subscribe PaymentReceived always_works)
 
-(var pay_result (pay_bus ~ publish (PaymentReceived ^payment_id "p_1")))
+(var pay_result (pay_bus .publish (PaymentReceived ^payment_id "p_1")))
 ($println $"   delivered=${pay_result/delivered} failed=${pay_result/failed}")
 
 # The default policy raises after every handler has been attempted, so the
 # second handler still ran before the error reached the publisher.
 (var strict_bus ($event/Bus))
-(strict_bus ~ subscribe PaymentReceived flaky_ledger)
-(strict_bus ~ subscribe PaymentReceived always_works)
+(strict_bus .subscribe PaymentReceived flaky_ledger)
+(strict_bus .subscribe PaymentReceived always_works)
 
 (var caught
-  (try (strict_bus ~ publish (PaymentReceived ^payment_id "p_2"))
+  (try (strict_bus .publish (PaymentReceived ^payment_id "p_2"))
     catch EventPublishError $ex/failed))
 ($println $"   raise_after reported ${caught} failure(s), after running both")
 ($println "")
@@ -260,9 +260,9 @@ union_sub/~cancel
 # A recording sink is the testing tool: emit into it, then assert on what it
 # collected.
 (var recorder ($event/RecordingSink))
-(recorder ~ EventSink:emit (PaymentReceived ^payment_id "p_10"))
-(recorder ~ EventSink:emit (PaymentReceived ^payment_id "p_11"))
-($println $"   recorder holds ${recorder/~events/~size} event(s)")
+(recorder .EventSink:emit (PaymentReceived ^payment_id "p_10"))
+(recorder .EventSink:emit (PaymentReceived ^payment_id "p_11"))
+($println $"   recorder holds ${recorder/.events/.size} event(s)")
 
 # A composite fans one emission out to several sinks in order. The bus below is
 # a sink like any other, so an event reaching the composite also reaches every
@@ -270,11 +270,11 @@ union_sub/~cancel
 (var metrics_bus ($event/Bus))
 (fn count_payment [event]
   ($println $"   metrics saw ${event/payment_id}"))
-(metrics_bus ~ subscribe PaymentReceived count_payment)
+(metrics_bus .subscribe PaymentReceived count_payment)
 
 (var sink ($event/CompositeSink [recorder metrics_bus ($event/NullSink)]))
-(sink ~ EventSink:emit (PaymentReceived ^payment_id "p_12"))
-($println $"   recorder now holds ${recorder/~events/~size} event(s)")
+(sink .EventSink:emit (PaymentReceived ^payment_id "p_12"))
+($println $"   recorder now holds ${recorder/.events/.size} event(s)")
 ($println "")
 
 # -----------------------------------------------------------------------------
@@ -292,7 +292,7 @@ union_sub/~cancel
 
 (fn request_invoice [event : OrderPlaced]
   ($println "   [outer] handler A starts")
-  (saga_bus ~ publish (InvoiceRequested ^order_id event/order_id))
+  (saga_bus .publish (InvoiceRequested ^order_id event/order_id))
   ($println "   [outer] handler A resumes"))
 
 (fn write_invoice [event : InvoiceRequested]
@@ -301,11 +301,11 @@ union_sub/~cancel
 (fn notify_warehouse [event : OrderPlaced]
   ($println "   [outer] handler B"))
 
-(saga_bus ~ subscribe InvoiceRequested write_invoice)
-(saga_bus ~ subscribe OrderPlaced request_invoice)
-(saga_bus ~ subscribe OrderPlaced notify_warehouse)
+(saga_bus .subscribe InvoiceRequested write_invoice)
+(saga_bus .subscribe OrderPlaced request_invoice)
+(saga_bus .subscribe OrderPlaced notify_warehouse)
 
-(saga_bus ~ publish (OrderPlaced ^order_id "o_3001" ^total 99.0))
+(saga_bus .publish (OrderPlaced ^order_id "o_3001" ^total 99.0))
 ($println "")
 
 # -----------------------------------------------------------------------------
@@ -317,11 +317,11 @@ union_sub/~cancel
 # -----------------------------------------------------------------------------
 ($println "9. close releases the handlers")
 
-($println $"   before close: ${bus/~subscription_count} subscription(s)")
-bus/~close
-($println $"   after close:  ${bus/~subscription_count} subscription(s)")
+($println $"   before close: ${bus/.subscription_count} subscription(s)")
+bus/.close
+($println $"   after close:  ${bus/.subscription_count} subscription(s)")
 ($println
-  (try (bus ~ publish (OrderPlaced ^order_id "o_9" ^total 1.0))
+  (try (bus .publish (OrderPlaced ^order_id "o_9" ^total 1.0))
     catch EventBusClosedError $"   publish refused: ${$ex/message}"))
 
 ($println "")

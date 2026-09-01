@@ -37,7 +37,7 @@
 
 (impl Callable for TerminalOutput
   (message apply [self call]
-    (var event (call ~ /0))
+    (var event (/0 call))
     (if_yes (== event/kind "output") ($println event/text))))
 
 # The driver's half of a turn is two calls with main.gene's `$os/read_line`
@@ -54,8 +54,8 @@
   # The greeting is one-shot state on the view rather than something activation
   # prints, because activation runs in the middle of boot output and this line
   # has to be the last thing before the first prompt.
-  (if_not (greeted ~ get)
-    (greeted ~ set true)
+  (if_not (greeted .get)
+    (greeted .set true)
     ($println "Gene Agent — type `help`, or `quit` / Ctrl-D to leave"))
   # The prompt goes out with a newline rather than as `User> `. stdout is
   # line-buffered on a terminal and Gene exposes no flush, so a prompt
@@ -92,7 +92,7 @@
   (Plugin ^id "driver" ^provides [["views" "active"]]
     ^requires ["HarnessPrompt"] ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:subscribe HarnessLog (TerminalOutput))
-      (host ~ PluginHost:contribute "views"
+      (host .PluginHost:subscribe HarnessLog (TerminalOutput))
+      (host .PluginHost:contribute "views"
         {^name "active" ^implementation "terminal"
          ^value (view_provider (TerminalView ^greeted ($cell false)))})))))

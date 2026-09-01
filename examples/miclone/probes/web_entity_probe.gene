@@ -93,15 +93,15 @@
       (decode_hello b c hello)
       # The extent is the server's to state (§10), so the world is built from
       # `hello` rather than from constants this file would have to keep in step.
-      (set world (new_world (hello ~ get hello_bx) (hello ~ get hello_by)
-                            (hello ~ get hello_bz) (hello ~ get hello_span_x)
-                            (hello ~ get hello_span_y) (hello ~ get hello_span_z)))
+      (set world (new_world (hello .get hello_bx) (hello .get hello_by)
+                            (hello .get hello_bz) (hello .get hello_span_x)
+                            (hello .get hello_span_y) (hello .get hello_span_z)))
       (set have_hello true))
     (if_yes (== kind msg_registry) (decode_registry b c reg))
     (if_yes (== kind msg_block)
       (decode_block b c header block_c block_l)
-      (store_block world (header ~ get block_bx) (header ~ get block_by)
-                   (header ~ get block_bz) block_c)
+      (store_block world (header .get block_bx) (header .get block_by)
+                   (header .get block_bz) block_c)
       (set blocks_in (+ blocks_in 1.0)))
     # §7.1's reconciliation. The `.mjs` did not decode these at all, so the
     # candidate columns below were scanned out of a snapshot up to 15 s old —
@@ -109,19 +109,19 @@
     # them yields whatever is there now rather than what was scanned.
     (if_yes (== kind msg_node_delta)
       (decode_node_delta b c delta)
-      (set_node world (delta ~ get delta_x) (delta ~ get delta_y)
-                (delta ~ get delta_z) (delta ~ get delta_id)))
+      (set_node world (delta .get delta_x) (delta .get delta_y)
+                (delta .get delta_z) (delta .get delta_id)))
     (if_yes (== kind msg_inventory)
       (decode_inventory b c inv)
       (set inv_n (+ inv_n 1.0)))
     (if_yes (== kind msg_entity)
       (decode_entity b c ent)
       (if_yes (< en max_ents)
-        (elog ~ set (* en 5.0) (ent ~ get ent_id))
-        (elog ~ set (+ (* en 5.0) 1.0) (ent ~ get ent_x))
-        (elog ~ set (+ (* en 5.0) 2.0) (ent ~ get ent_y))
-        (elog ~ set (+ (* en 5.0) 3.0) (ent ~ get ent_z))
-        (elog ~ set (+ (* en 5.0) 4.0) (ent ~ get ent_count))
+        (elog .set (* en 5.0) (ent .get ent_id))
+        (elog .set (+ (* en 5.0) 1.0) (ent .get ent_x))
+        (elog .set (+ (* en 5.0) 2.0) (ent .get ent_y))
+        (elog .set (+ (* en 5.0) 3.0) (ent .get ent_z))
+        (elog .set (+ (* en 5.0) 4.0) (ent .get ent_count))
         (set en (+ en 1.0))))))
 
   (await ($time/sleep 400.0))
@@ -139,27 +139,27 @@
     (var n 0.0)
     (var i from)
     (while (< i en)
-      (if_yes (== (elog ~ get (* i 5.0)) id) (set n (+ n 1.0)))
+      (if_yes (== (elog .get (* i 5.0)) id) (set n (+ n 1.0)))
       (set i (+ i 1.0)))
     n))
   (var last_about (fn [id : F64 from : F64 out : (Buffer F64)] : Bool
     (var found false)
     (var i from)
     (while (< i en)
-      (if_yes (== (elog ~ get (* i 5.0)) id)
+      (if_yes (== (elog .get (* i 5.0)) id)
         (set found true)
-        (out ~ set 0.0 (elog ~ get (+ (* i 5.0) 1.0)))
-        (out ~ set 1.0 (elog ~ get (+ (* i 5.0) 2.0)))
-        (out ~ set 2.0 (elog ~ get (+ (* i 5.0) 3.0)))
-        (out ~ set 3.0 (elog ~ get (+ (* i 5.0) 4.0))))
+        (out .set 0.0 (elog .get (+ (* i 5.0) 1.0)))
+        (out .set 1.0 (elog .get (+ (* i 5.0) 2.0)))
+        (out .set 2.0 (elog .get (+ (* i 5.0) 3.0)))
+        (out .set 3.0 (elog .get (+ (* i 5.0) 4.0))))
       (set i (+ i 1.0)))
     found))
   (var last ($buffer F64 4.0))
 
   # The whole world, in windows of 64 — the queue drops the oldest frame past
   # 256, which is why this asks rather than being pushed (§10.1).
-  (var total (* (hello ~ get hello_span_x)
-                (* (hello ~ get hello_span_y) (hello ~ get hello_span_z))))
+  (var total (* (hello .get hello_span_x)
+                (* (hello .get hello_span_y) (hello .get hello_span_z))))
   (var from 0.0)
   (while (< from total)
     (var count (if (< (- total from) 64.0) (- total from) 64.0))
@@ -187,12 +187,12 @@
   # Buried nodes count. The ores are never exposed and they are exactly the
   # distinct items this needs, and a dig does not require line of sight — §7.1's
   # authority check is about what the client *holds*, not where it is standing.
-  (var ox (* (hello ~ get hello_bx) block_dim))
-  (var oy (* (hello ~ get hello_by) block_dim))
-  (var oz (* (hello ~ get hello_bz) block_dim))
-  (var lim_x (+ ox (- (* (hello ~ get hello_span_x) block_dim) 1.0)))
-  (var top_y (+ oy (- (* (hello ~ get hello_span_y) block_dim) 2.0)))
-  (var lim_z (+ oz (- (* (hello ~ get hello_span_z) block_dim) 1.0)))
+  (var ox (* (hello .get hello_bx) block_dim))
+  (var oy (* (hello .get hello_by) block_dim))
+  (var oz (* (hello .get hello_bz) block_dim))
+  (var lim_x (+ ox (- (* (hello .get hello_span_x) block_dim) 1.0)))
+  (var top_y (+ oy (- (* (hello .get hello_span_y) block_dim) 2.0)))
+  (var lim_z (+ oz (- (* (hello .get hello_span_z) block_dim) 1.0)))
   (var seen_kind ($buffer F64 max_content))
   (var kinds 0.0)
   (var cand ($buffer F64 (* max_candidates 4.0)))
@@ -205,13 +205,13 @@
       (while (> y (+ oy 1.0))
         (var n (node_at world x y z))
         (if_yes (&& (> n 0.0) (&& (< cn max_candidates)
-                                  (== (seen_kind ~ get n) 0.0)))
-          (seen_kind ~ set n 1.0)
+                                  (== (seen_kind .get n) 0.0)))
+          (seen_kind .set n 1.0)
           (set kinds (+ kinds 1.0))
-          (cand ~ set (* cn 4.0) x)
-          (cand ~ set (+ (* cn 4.0) 1.0) y)
-          (cand ~ set (+ (* cn 4.0) 2.0) z)
-          (cand ~ set (+ (* cn 4.0) 3.0) n)
+          (cand .set (* cn 4.0) x)
+          (cand .set (+ (* cn 4.0) 1.0) y)
+          (cand .set (+ (* cn 4.0) 2.0) z)
+          (cand .set (+ (* cn 4.0) 3.0) n)
           (set cn (+ cn 1.0)))
         (set y (- y 1.0)))
       (set z (+ z 2.0)))
@@ -220,7 +220,7 @@
   (var kind_names "")
   (var ki 0.0)
   (while (< ki cn)
-    (var nm (name_of reg (cand ~ get (+ (* ki 4.0) 3.0))))
+    (var nm (name_of reg (cand .get (+ (* ki 4.0) 3.0))))
     (set kind_names (if (== ki 0.0) nm $"${kind_names}, ${nm}"))
     (set ki (+ ki 1.0)))
   (say (>= cn 3.0) "found distinct node kinds to dig"
@@ -230,7 +230,7 @@
     (var n 0.0)
     (var i 0.0)
     (while (< i hotbar_slots)
-      (if_yes (> (inv ~ get (+ (* i 3.0) 1.0)) 0.0) (set n (+ n 1.0)))
+      (if_yes (> (inv .get (+ (* i 3.0) 1.0)) 0.0) (set n (+ n 1.0)))
       (set i (+ i 1.0)))
     n))
 
@@ -238,8 +238,8 @@
   (var di 0.0)
   (while (&& (< di cn) (== en before_ent))
     (var dm ($buffer U8 (size_dig)))
-    (encode_dig dm rc (cand ~ get (* di 4.0)) (cand ~ get (+ (* di 4.0) 1.0))
-                (cand ~ get (+ (* di 4.0) 2.0)))
+    (encode_dig dm rc (cand .get (* di 4.0)) (cand .get (+ (* di 4.0) 1.0))
+                (cand .get (+ (* di 4.0) 2.0)))
     ($ws/send_bytes sock dm)
     (await ($time/sleep 200.0))
     (set di (+ di 1.0)))
@@ -258,17 +258,17 @@
       # Where it landed. The spawn is the centre of the node that was dug, so the
       # node beneath it is what the item is resting on.
       (var spawn (- en 1.0))
-      (var eid (elog ~ get (* spawn 5.0)))
-      (var ex (elog ~ get (+ (* spawn 5.0) 1.0)))
-      (var ey (elog ~ get (+ (* spawn 5.0) 2.0)))
-      (var ez (elog ~ get (+ (* spawn 5.0) 3.0)))
-      (say (> (elog ~ get (+ (* spawn 5.0) 4.0)) 0.0) "and it carries a stack"
-           $"x$($to_int (elog ~ get (+ (* spawn 5.0) 4.0)))")
+      (var eid (elog .get (* spawn 5.0)))
+      (var ex (elog .get (+ (* spawn 5.0) 1.0)))
+      (var ey (elog .get (+ (* spawn 5.0) 2.0)))
+      (var ez (elog .get (+ (* spawn 5.0) 3.0)))
+      (say (> (elog .get (+ (* spawn 5.0) 4.0)) 0.0) "and it carries a stack"
+           $"x$($to_int (elog .get (+ (* spawn 5.0) 4.0)))")
 
       (var rest_y ey)
       (await ($time/sleep 600.0))
       (var seen_rest (last_about eid 0.0 last))
-      (say (&& seen_rest (== (last ~ get 1.0) rest_y))
+      (say (&& seen_rest (== (last .get 1.0) rest_y))
            "and it rests, because the node under it is solid"
            $"y ${rest_y}")
 
@@ -295,7 +295,7 @@
       (say (> moves 0.0) "the server moved it while the client said nothing"
            $"$($to_int moves) unsolicited entity message(s)")
       (var fell (last_about eid quiet last))
-      (var lowest (if fell (last ~ get 1.0) rest_y))
+      (var lowest (if fell (last .get 1.0) rest_y))
       (say (< lowest rest_y) "and it fell"
            $"y ${rest_y} -> ${lowest}")
 
@@ -303,7 +303,7 @@
       # second would leave it 12 nodes down if nothing caught it.
       (await ($time/sleep 1500.0))
       (var seen_settled (last_about eid 0.0 last))
-      (var settled (last ~ get 1.0))
+      (var settled (last .get 1.0))
       (say (&& seen_settled (> settled oy))
            "and it stopped inside the world rather than falling through"
            $"y ${settled}, world floor ${oy}")
@@ -313,7 +313,7 @@
       # this probe's copy of the blocks predates every dig above.
       (await ($time/sleep 1200.0))
       (var seen_later (last_about eid 0.0 last))
-      (say (&& seen_later (== (last ~ get 1.0) settled)) "and it came to rest"
+      (say (&& seen_later (== (last .get 1.0) settled)) "and it came to rest"
            $"y ${settled}, unchanged over 1.2 s")
 
       ($console/log "")

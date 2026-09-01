@@ -42,8 +42,8 @@ const cases = [
   ['(import $log [new_logger log_debug]) ' +
    '(var logger (new_logger "app/wasm")) ' +
    '(var touched ($cell false)) ' +
-   '(log_debug logger (do (touched ~ set true) "hidden")) ' +
-   '(touched ~ get)', 0, "false", ""],
+   '(log_debug logger (do (touched .set true) "hidden")) ' +
+   '(touched .get)', 0, "false", ""],
   ["($json/stringify {^a 1 ^b [true nil]})", 0, '"{\\"a\\":1,\\"b\\":[true,null]}"', ""],
   ["(foo-undefined)", 1, "undefined symbol: foo-undefined", ""],
   ["(((", 3,
@@ -71,7 +71,7 @@ for (const [src, wantStatus, wantText, wantOut] of cases) {
 const logResult = geneEval(
   '(import $log [new_logger]) ' +
   '(var logger (new_logger "app/wasm" ^payload {^token "secret"})) ' +
-  '(logger ~ warn "host warning")');
+  '(logger .warn "host warning")');
 if (logResult.status !== 0 || logResult.text !== "nil" ||
     !logResult.out.includes('^level "warn"') ||
     !logResult.out.includes('^logger "app/wasm"') ||

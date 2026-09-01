@@ -22,7 +22,7 @@
           (Plugin ^id "broken" ^provides ["Broken"] ^requires []
             ^contextual true
             ^activate (fn [] (fn [host]
-              (host ~ PluginHost:provide "Broken" "bad"))))))))
+              (host .PluginHost:provide "Broken" "bad"))))))))
   (var healthy_source
     (quote
       (mod plugin
@@ -33,7 +33,7 @@
           (Plugin ^id "healthy" ^provides ["Healthy"] ^requires []
             ^contextual true
             ^activate (fn [] (fn [host]
-              (host ~ PluginHost:provide "Healthy" "good"))))))))
+              (host .PluginHost:provide "Healthy" "good"))))))))
 
   (var workspace (open_workspace root))
   (var h (new_harness))
@@ -61,7 +61,7 @@
   (assert (== (resolve h "Healthy") "good")
     "healthy siblings must still activate")
   (var findings (doctor workspace))
-  (assert (&& (== findings/~size 1)
+  (assert (&& (== findings/.size 1)
               (contains? findings/0 "blob digest mismatch"))
     "doctor must explain the quarantined entry")
   # Keep the content-addressed fixture repeatable for later runs.

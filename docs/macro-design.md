@@ -10,7 +10,7 @@ model:
 ```text
 (foo a)       ordinary eager call
 (foo! a)      explicit runtime fexpr call
-(x ~ foo a)   eager message dispatch
+(x .foo a)   eager message dispatch
 (macro ...)   compile-time template expansion
 ```
 
@@ -34,11 +34,11 @@ This partition is intentionally narrow:
 ```gene
 (foo arg)        # evaluate arg, then call foo
 (foo! arg)       # pass arg as syntax to the fexpr foo!
-(value ~ foo arg) # evaluate arg, then dispatch foo
+(value .foo arg) # evaluate arg, then dispatch foo
 ```
 
 Fexpr semantics apply only to a lexical call head. A send such as
-`(value ~ foo! arg)` is invalid rather than becoming syntax-preserving message
+`(value .foo! arg)` is invalid rather than becoming syntax-preserving message
 dispatch.
 
 ## 2. Declaring an fexpr
@@ -128,7 +128,7 @@ explicit and selective:
 
 ```gene
 (fn capture_config! []
-  (caller_env ~ snapshot ["config"]))
+  (caller_env .snapshot ["config"]))
 ```
 
 This returns a durable `Env` containing `config`, not the caller's full

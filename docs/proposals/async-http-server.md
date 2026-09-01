@@ -278,9 +278,9 @@ Handler shape:
   (match msg
     (when (http/RequestMsg ^req req ^reply reply)
       (try
-        (reply ~ send (route req state))
+        (reply .send (route req state))
       catch Any
-        (reply ~ send
+        (reply .send
           (http/text 500 "internal server error")))
       (actor/continue state))))
 ```
@@ -428,7 +428,7 @@ For shared state, pass an immutable state bundle containing actor references or 
 (fn handle [req : http/Request, app : App] : http/Response
   (var user
     (await
-      (app/users ~ ask
+      (app/users .ask
         (fn [reply]
           (GetUser ^id req/params/id ^reply reply)))))
 
@@ -494,15 +494,15 @@ Router construction:
   (route
     ^method  r/method
     ^path    r/path
-    ^handler (ns ~ lookup decl/0)))
+    ^handler (ns .lookup decl/0)))
 
-(var app_ns (this_mod ~ root_namespace))
+(var app_ns (this_mod .root_namespace))
 
 (var routes
   (this_mod/%declarations
-    ~ filter routed?
-    ; ~ map (fn [decl] (route_entry app_ns decl))
-    ; ~ into #[]))
+    .filter routed?
+    ; .map (fn [decl] (route_entry app_ns decl))
+    ; .into #[]))
 ```
 
 Notes:
@@ -911,7 +911,7 @@ Add restart policy fields:
 MVP can use immediate `try_send` for overload behavior. Timed send is optional future runtime surface:
 
 ```gene
-(ref ~ send msg ^timeout_ms 5)
+(ref .send msg ^timeout_ms 5)
 ```
 
 Do not require timed send for the first async HTTP implementation.

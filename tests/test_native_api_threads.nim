@@ -148,9 +148,9 @@ suite "native api threaded attachment":
       "(type Ping ^is $event/Event) " &
       "(fn note [e] 1) " &
       "(var bus ($event/Bus)) " &
-      "(bus ~ subscribe Ping note)"), scope)
+      "(bus .subscribe Ping note)"), scope)
     let args = EventLaneArgs(scope: scope,
-                             chunk: compileSource("(bus ~ publish (Ping))"))
+                             chunk: compileSource("(bus .publish (Ping))"))
 
     var worker: Thread[EventLaneArgs]
     createThread(worker, publishOnWorker, args)
@@ -161,7 +161,7 @@ suite "native api threaded attachment":
     check "owned by another lane" in args.message
     # The owning lane is unaffected: the bus still works, and the refusal left
     # no partial state behind.
-    check run(compileSource("(bus ~ publish (Ping))"), scope)
+    check run(compileSource("(bus .publish (Ping))"), scope)
              .props["delivered"].intVal == 1
 
   test "foreign thread can cancel a native async task awaited at root":

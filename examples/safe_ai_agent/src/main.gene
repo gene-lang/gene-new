@@ -91,14 +91,14 @@
     (var found ($cell []))
     (for entry in (list_skill_dir ".")
       (if (== entry "SKILL.md")
-        (then ((found ~ get) ~ push entry))
+        (then ((found .get) .push entry))
         (else
           (try
             (for nested in (list_skill_dir entry)
-              ((found ~ get) ~ push $"${entry}/${nested}"))
+              ((found .get) .push $"${entry}/${nested}"))
             catch Any
             nil))))
-    (found ~ get)))
+    (found .get)))
 
 (var eval_depth ($cell 0))
 
@@ -113,18 +113,18 @@
   #
   # Nesting is refused because the tool is reachable *from* generated code, so
   # a note that runs itself would recurse until the stack goes.
-  (if_yes (>= (eval_depth ~ get) 1)
+  (if_yes (>= (eval_depth .get) 1)
     (fail (AgentError ^message "run_note may not be nested")))
-  (eval_depth ~ set (+ (eval_depth ~ get) 1))
+  (eval_depth .set (+ (eval_depth .get) 1))
   (try
     # The row keeps the whole workspace rather than just this file, because
     # `run_program` mints a fresh Env whose ambient row is resolved against
     # whatever context is active here — narrowing to one file first would leave
     # nothing for the evaluated program to run under.
-    (var forms ((read_all ($fs/read_text name)) ~ into []))
+    (var forms ((read_all ($fs/read_text name)) .into []))
     (run_program `(do %forms...))
     ensure
-    (eval_depth ~ set (- (eval_depth ~ get) 1))))
+    (eval_depth .set (- (eval_depth .get) 1))))
 
 (fn agent_tools [] : Any
   # The binding overlay — the only *names* added beyond the `$` standard
@@ -268,20 +268,20 @@ Files you can (read_skill "...") on demand:
   or (a == b) — that reads as calling `a` with two arguments.
 - Comments start with "# " — one hash then a space. "##" is a read error.
 - Bind with (var x value). Define with (fn name [a b] body). There is no `def`.
-- Call a method by sending: (xs ~ push v), (m ~ get "k"). Never xs.push(v).
-  With no arguments the shortcut is xs/~size, but only on a named binding.
+- Call a method by sending: (xs .push v), (m .get "k"). Never xs.push(v).
+  With no arguments the shortcut is xs/.size, but only on a named binding.
 - Standard library names need a $ sigil: ($println x), ($str/join xs ", "),
   ($str/trim s). A bare (println ...) is an undefined symbol. Types stay bare:
   Int, Str, List, Map.
 - map/filter work on streams, and continuation lines start with `; ~`:
-  ((xs ~ to_stream) ~ filter (fn [t] t/done) ; ~ into [])
-- Lists are [1 2 3]; (xs ~ push v) appends. Maps are {^key value}; read m/key,
-  write (m ~ put "key" v), or (m ~ assoc "key" v) for a new map.
+  ((xs .to_stream) .filter (fn [t] t/done) ; .into [])
+- Lists are [1 2 3]; (xs .push v) appends. Maps are {^key value}; read m/key,
+  write (m .put "key" v), or (m .assoc "key" v) for a new map.
 - Only nil, false and void are falsy. "" and 0 and [] are all truthy.
 - Strings interpolate with $"text ${expr}". Multi-line strings use triple quotes.
 - Conditionals: (if c a b), (if_not c body...), (if_yes c body...),
   (match v (when pat body) (else nil)). Loops: (for x in xs ...), (while c ...).
-- A list has no persistent append. (xs ~ push v) mutates xs in place; there is
+- A list has no persistent append. (xs .push v) mutates xs in place; there is
   no `append` message.
 - ^code is ONE (do ...) block, so a form may use what an earlier form defined.
   The value of its last form is what you get back.
@@ -340,7 +340,7 @@ ${(loaded_skill)}
   # `read_all` yields a Stream over the forms in the reply; the envelope is the
   # first. A model that answers in prose instead lands in the catch arm.
   (try
-    ((read_all reply) ~ next)
+    ((read_all reply) .next)
     catch Any
     nil))
 
@@ -348,13 +348,13 @@ ${(loaded_skill)}
   (var history ($cell ""))
   (var turn ($cell 0))
   (var running ($cell true))
-  (while (running ~ get)
-    (turn ~ set (+ (turn ~ get) 1))
-    (var envelope (parse_envelope (call_model task (history ~ get))))
+  (while (running .get)
+    (turn .set (+ (turn .get) 1))
+    (var envelope (parse_envelope (call_model task (history .get))))
     (if (== envelope nil)
       (do
         ($println "  the model did not return Gene data")
-        (running ~ set false))
+        (running .set false))
       (do
         (var response envelope/response)
         (if (!= response nil)
@@ -371,16 +371,16 @@ ${(loaded_skill)}
         # form drew which complaint and simply repeats the mistake. The task
         # itself is re-sent every turn by `call_model`, so it is not repeated
         # here.
-        (var prior (history ~ get))
-        (history ~ set $"${prior}\nreply: ${envelope}\noutput: ${result}")
+        (var prior (history .get))
+        (history .set $"${prior}\nreply: ${envelope}\noutput: ${result}")
         (if_not (== envelope/status "in-progress")
-          (running ~ set false))
+          (running .set false))
         # Only a model that still wants another turn can be cut off by the
         # limit. Announcing it after a reply that already said "done" would
         # blame the ceiling for a loop that ended on its own.
-        (if_yes (&& (running ~ get) (>= (turn ~ get) 16))
+        (if_yes (&& (running .get) (>= (turn .get) 16))
           ($println "  (turn limit reached)")
-          (running ~ set false))))))
+          (running .set false))))))
 
 (fn main [args]
   ^capabilities *
@@ -391,15 +391,15 @@ ${(loaded_skill)}
     ($println "offline stub mode (GENE_AGENT_STUB set)"))
   ($println "")
   (var going ($cell true))
-  (while (going ~ get)
+  (while (going .get)
     ($print "> ")
     (var line (read_line))
     (if (== line nil)
-      (going ~ set false)
+      (going .set false)
       (do
         (var task (trim line))
         (if (|| (== task "exit") (== task "quit") (== task "/quit"))
-          (going ~ set false)
+          (going .set false)
           (if (!= task "")
             (handle_task task))))))
   ($println "bye")

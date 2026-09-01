@@ -21,8 +21,8 @@ implicit sequences:
 
 ```gene
 (if_yes user/active
-  (events ~ push "activated")
-  (events ~ push "queued"))
+  (events .push "activated")
+  (events .push "queued"))
 
 (if_not cached
   (var value (load))
@@ -105,10 +105,10 @@ Lazy pull cursors. `to_stream` opens, `into` closes:
 
 ```gene
 (users
-  ~ to_stream
-  ; ~ filter (fn [u] u/active)
-  ; ~ map (fn [u] u/name)
-  ; ~ into [])
+  .to_stream
+  ; .filter (fn [u] u/active)
+  ; .map (fn [u] u/name)
+  ; .into [])
 ```
 
 The same operations exist as functions taking the stream first —
@@ -128,7 +128,7 @@ A generator is a `fn` whose name ends in `*`:
 
 ```gene
 (fn indexed_pairs* [items]
-  (repeat index in items/~size
+  (repeat index in items/.size
     (yield [index items/%index])))
 ```
 
@@ -156,10 +156,10 @@ Bounded FIFO queues — capacity is a **named** argument:
 
 ```gene
 (var ch ($channel ^capacity 2))
-(ch ~ send 1)
-(ch ~ recv)
-(ch ~ try_recv)     # TryRecv/empty or #(TryRecv/value payload)
-(ch ~ close)
+(ch .send 1)
+(ch .recv)
+(ch .try_recv)     # TryRecv/empty or #(TryRecv/value payload)
+(ch .close)
 ```
 
 Close rejects future sends and lets buffered items drain before `ChannelClosed`.
@@ -174,8 +174,8 @@ namespace (operations without one).
   ($actor/continue (+ state msg)))
 
 (var a ($actor/spawn ^init (fn [] 0) ^handle handle))
-(a ~ send 4)
-((a ~ snapshot) ~ /state)     # 4
+(a .send 4)
+(/state (a .snapshot))       # 4
 ```
 
 Messages process sequentially. `ask`/reply uses a one-shot `ReplyTo`, and

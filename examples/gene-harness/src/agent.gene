@@ -27,7 +27,7 @@
   # `$str/split` yields empty strings for repeated separators, so drop them.
   (var out ($thaw #[]))
   (for w in ($str/split ($str/trim text) " ")
-    (if_yes (!= w "") (out ~ push w)))
+    (if_yes (!= w "") (out .push w)))
   out)
 
 (fn word [parts, i : Int] : Str
@@ -37,8 +37,8 @@
 (fn words_from [parts, i : Int] : Str
   (var out ($thaw #[]))
   (var j i)
-  (while (< j parts/~size)
-    (out ~ push ($to_str parts/%j))
+  (while (< j parts/.size)
+    (out .push ($to_str parts/%j))
     (set j (+ j 1)))
   ($str/join out " "))
 
@@ -68,7 +68,7 @@
          ^provides [["tools" (unquote name)]] ^requires []
          ^contextual true
          ^activate (fn [] (fn [host]
-           (host ~ PluginHost:contribute "tools"
+           (host .PluginHost:contribute "tools"
              {^name %name ^doc %text ^run run})))))))
 
 # --- the default author ----------------------------------------------------
@@ -93,7 +93,7 @@
   (Plugin ^id "codegen" ^provides ["HarnessCodegen"]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "HarnessCodegen"
+      (host .PluginHost:provide "HarnessCodegen"
         (codegen_provider (TemplateCodegen)))))))
 
 (fn build_tool [h : Harness, name : Str, text : Str] : Str
@@ -113,12 +113,12 @@
   # therefore untrusted by construction, which is the only way an authored-by-
   # model plugin can be safe to accept.
   (var codegen (resolve h "HarnessCodegen"))
-  (var source (codegen ~ HarnessCodegen:generate name text))
+  (var source (codegen .HarnessCodegen:generate name text))
   # Provenance is provider knowledge, so `build` asks for it rather than
   # guessing. Until it did, every entry this command committed carried
   # ^by "" ^model "" ^at "" — a durable record that could not say who wrote a
   # module, while the thing that wrote it stood right there.
-  (var author (codegen ~ HarnessCodegen:author))
+  (var author (codegen .HarnessCodegen:author))
   (var registered
     (register_module h/workspace h name source
       ^scope "session" ^selectors []
@@ -167,7 +167,7 @@
 
 (fn tool_names [h : Harness] : Any
   (var out ($thaw #[]))
-  (for tool in (rows h "tools") (out ~ push tool/name))
+  (for tool in (rows h "tools") (out .push tool/name))
   out)
 
 # --- the command surface ---------------------------------------------------
@@ -190,8 +190,8 @@
 (fn help_text [h : Harness] : Str
   (var lines ($thaw #["commands:"]))
   (for command in (rows h "commands")
-    (lines ~ push $"  ${command/name}  ${command/doc}"))
-  (lines ~ push "  quit | exit | Ctrl-D  leave")
+    (lines .push $"  ${command/name}  ${command/doc}"))
+  (lines .push "  quit | exit | Ctrl-D  leave")
   ($str/join lines "\n"))
 
 (fn command_help [h, parts] (help_text h))
@@ -243,37 +243,37 @@
                ["prompt" "agent_commands"]]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "help" ^doc "show registry-derived help" ^run command_help})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "status" ^doc "show plugin lifecycle states" ^run command_status})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "seams" ^doc "show bound seams" ^run command_seams})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "log" ^doc "show lifecycle history" ^run command_log})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "read" ^doc "read through HarnessFs" ^run command_read})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "tools" ^doc "list registered tools" ^run command_tools})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "tool" ^doc "invoke a registered tool" ^run command_tool})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "build" ^doc "register a durable generated plugin" ^run command_build})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "unload" ^doc "uninstall a plugin for this run" ^run command_unload})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "retry" ^doc "retry a failed plugin" ^run command_retry})
-      (host ~ PluginHost:contribute "commands"
+      (host .PluginHost:contribute "commands"
         {^name "diff" ^doc "show the active turn's staged changes"
          ^run command_diff})
-      (host ~ PluginHost:contribute "prompt"
+      (host .PluginHost:contribute "prompt"
         {^name "agent_commands" ^text (agent_prompt_text)})))))
 
 (fn agent_plugin [] : Plugin
   (Plugin ^id "agent" ^provides ["HarnessPrompt"]
     ^contextual true
     ^activate (fn [] (fn [host]
-      (host ~ PluginHost:provide "HarnessPrompt"
+      (host .PluginHost:provide "HarnessPrompt"
         (prompt_provider (CommandAgent)))))))
 
 (fn ask [h : Harness, prompt : Str] : Str
@@ -281,7 +281,7 @@
   # because a command failed is not one you can explore a system with.
   (var out
     (try
-      ((resolve h "HarnessPrompt") ~ HarnessPrompt:handle h prompt)
+      ((resolve h "HarnessPrompt") .HarnessPrompt:handle h prompt)
     catch Any
       $"error: ${$ex/message}"))
   (if_yes (!= out "") (log_append h "output" out))

@@ -37,8 +37,8 @@
 # `$(if p "ok" "no")` does not read.
 (fn check [out : (List Str) label : Str got : Str want : Str] : Nil
   (if (== got want)
-    (then (out ~ push $"ok   ${label}"))
-    (else (out ~ push $"FAIL ${label}: got ${got}, want ${want}"))))
+    (then (out .push $"ok   ${label}"))
+    (else (out .push $"FAIL ${label}: got ${got}, want ${want}"))))
 
 (fn check_i [out : (List Str) label : Str got : Int want : Int] : Nil
   (check out label $"${got}" $"${want}"))
@@ -233,7 +233,7 @@
   (registry_checks out)
   (var bad 0.0)
   (var i 0.0)
-  (var n out/~size)
+  (var n out/.size)
   (while (< i n)
     (if_yes ($str/starts_with? out/%i "FAIL")
       (set bad (+ bad 1.0)))

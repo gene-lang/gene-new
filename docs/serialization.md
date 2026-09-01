@@ -127,7 +127,7 @@ Bucket 3, some entries gene-new-specific:
 | Value | Why not |
 |---|---|
 | **Capability values** (`Os/Exec`, `$fs/*`, `$net/Connect`, `$ffi/Load`, ...) | Authority must never round-trip through data. A deserialized payload must not be able to mint capabilities (§6). |
-| **Cells and atomic cells** | Identity-equality values (`equality.nim` compares them by identity); a reconstructed cell is a *different* cell, which would silently break the round-trip guarantee and aliasing expectations. Serialize the *contents* explicitly (`(c ~ get)`); see §7 for the opt-in snapshot wrapper in full `write`. |
+| **Cells and atomic cells** | Identity-equality values (`equality.nim` compares them by identity); a reconstructed cell is a *different* cell, which would silently break the round-trip guarantee and aliasing expectations. Serialize the *contents* explicitly (`(c .get)`); see §7 for the opt-in snapshot wrapper in full `write`. |
 | Closures (fns with captured scope), `Fexpr` values | Captured scopes reference live scope chains; snapshotting them is the fiber-continuation problem, out of scope. Top-level named fns serialize as refs (bucket 2). |
 | Channels, tasks, actor refs, streams/generators | Live scheduler state. `actor/snapshot` output (a data value) serializes fine; the actor itself does not. |
 | `Env` values | Binding environments are execution state, not data. |
@@ -302,13 +302,13 @@ and needs no protocol/impl ceremony). `serde_state` is an instance message;
 (type Conn ^props {^host Str ^live Bool}
   # Return this instance's persistent state (should be a data-bucket value).
   (message serde_state [self] {^host self/host})
-  # Reconstruct from that state, dispatched on the type: (Conn ~ serde_restore s).
+  # Reconstruct from that state, dispatched on the type: (Conn .serde_restore s).
   (message serde_restore [state] (Conn ^host state/host ^live true)))
 ```
 
 - A type with a `serde_state` message serializes as
   `(serde_hooked <type_ref> (serde_state self))` and deserializes via
-  `(T ~ serde_restore state)` — the place to drop transient fields (sockets,
+  `(T .serde_restore state)` — the place to drop transient fields (sockets,
   caches) and re-derive them.
 - **`serde_restore` executes user code, so it is off by default.** Plain
   `serde/read` raises `SerdeError` on a `serde_hooked` payload;

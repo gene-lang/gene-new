@@ -26,7 +26,7 @@
     (open_event_store root ^segment_events 2 ^retained_segments 2
       ^max_event_bytes 4096 ^max_state_bytes 4096))
   (var retained (events_for reopened "session" "s1"))
-  (assert (== retained/~size 3)
+  (assert (== retained/.size 3)
     "reopen must load only the configured retained segments")
   (assert (== retained/0/seq 3)
     "retained event sequence numbers must not be renumbered")

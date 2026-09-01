@@ -9,7 +9,7 @@
 
 (fn main [args] : Nil
   (var argv ($body args))
-  (if_not (== (argv ~ size) 4)
+  (if_not (== (argv .size) 4)
     ($panic
       "usage: active_inference_export <base|shifted> <episode_seed> <random_seed> <episode_count>"))
   (var subject (default_subject))

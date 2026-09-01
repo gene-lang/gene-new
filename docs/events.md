@@ -26,12 +26,12 @@ the VM:
   (Bus))
 
 (var subscription
-  (bus ~ subscribe UserCreated on_user_created))
+  (bus .subscribe UserCreated on_user_created))
 
-(bus ~ publish
+(bus .publish
   (UserCreated ^user_id "u_123"))
 
-(subscription ~ cancel)
+(subscription .cancel)
 ```
 
 (This first example deliberately shows both spellings side by side: `Bus` via
@@ -46,11 +46,11 @@ observability, testing, profiling, and diagnostics:
 (var bus
   ($event/Bus ^error_policy $event/collect))
 
-(bus ~ subscribe
+(bus .subscribe
   $runtime/task/Completed
   on_task_completed)
 
-(runtime_events ~ attach bus)
+(runtime_events .attach bus)
 ```
 
 `runtime_events` in this example is a host-created
@@ -196,7 +196,7 @@ It may feed any value implementing `EventSink`, normally through an adapter
 that converts native records into frozen Gene event values.
 
 ```gene
-(runtime_events ~ attach bus)
+(runtime_events .attach bus)
 ```
 
 Creating or using an application bus does not imply that a runtime stream
@@ -244,7 +244,7 @@ instead of expanding the common interface.
 Calling the protocol directly uses normal qualified message dispatch:
 
 ```gene
-(sink ~ EventSink:emit event)
+(sink .EventSink:emit event)
 ```
 
 The native VM does not invoke this protocol at emission sites. It writes
@@ -266,11 +266,11 @@ Every publishable event is an instance of `event/Event` or one of its
     ^total F64
   })
 
-(bus ~ subscribe
+(bus .subscribe
   OrderPlaced
   handle_order)
 
-(bus ~ publish
+(bus .publish
   (OrderPlaced
     ^order_id "o_123"
     ^total 19.95))
@@ -398,11 +398,11 @@ Subscribing to a type matches values of that type and its `^is`
 descendants:
 
 ```gene
-(bus ~ subscribe
+(bus .subscribe
   $runtime/task/Event
   record_task_event)
 
-(bus ~ subscribe
+(bus .subscribe
   $runtime/task/Completed
   record_completed_task)
 ```
@@ -415,7 +415,7 @@ event type.
 An exact-type selector excludes descendants:
 
 ```gene
-(bus ~ subscribe
+(bus .subscribe
   ($event/exact $runtime/task/Completed)
   record_exact_completed_task)
 ```
@@ -424,7 +424,7 @@ The root type subscribes to everything, so no separate `event/any` selector is
 needed:
 
 ```gene
-(bus ~ subscribe
+(bus .subscribe
   $event/Event
   record_everything)
 ```
@@ -432,7 +432,7 @@ needed:
 A union selects several unrelated families at once:
 
 ```gene
-(bus ~ subscribe
+(bus .subscribe
   (| UserCreated UserUpdated)
   on_user_change)
 ```
@@ -597,7 +597,7 @@ variable's list silently immutable. `publish` does not do that. Instead:
 
 ```gene
 (var e (OrderPlaced ^order_id "o_1" ^total 19.95))
-(bus ~ publish e)
+(bus .publish e)
 (set e/order_id "o_2")   # succeeds: e is unchanged, publish froze a copy
 ```
 
@@ -679,7 +679,7 @@ the same posture `$runtime/load_sandboxed` already relies on. Its members:
 ### 7.1 Subscribe
 
 ```gene
-(bus ~ subscribe
+(bus .subscribe
   event_selector
   handler)
 ```
@@ -703,7 +703,7 @@ Without this check, a narrowly annotated handler on a family selector is
 accepted and then fails once per non-matching event, at dispatch time:
 
 ```gene
-(bus ~ subscribe
+(bus .subscribe
   $runtime/task/Event
   record_completed)          # [event : $runtime/task/Completed]
 ```
@@ -719,7 +719,7 @@ An unannotated handler parameter accepts any event and always passes.
 Optional properties:
 
 ```gene
-(bus ~ subscribe
+(bus .subscribe
   UserCreated
   on_user_created
   ^once true)
@@ -735,7 +735,7 @@ subscription order.
 ### 7.2 Publish
 
 ```gene
-(bus ~ publish event)
+(bus .publish event)
 ```
 
 `publish`:
@@ -782,7 +782,7 @@ handler from aborting the others and keeps the failure away from the *publisher*
 ### 7.3 Cancel
 
 ```gene
-(subscription ~ cancel)
+(subscription .cancel)
 ```
 
 Cancellation is idempotent. It returns whether the subscription changed from
@@ -796,7 +796,7 @@ delivery unpredictable.
 ### 7.4 Close
 
 ```gene
-(bus ~ close)
+(bus .close)
 ```
 
 `close` cancels every subscription, releases the handler references, and is
@@ -1330,7 +1330,7 @@ A conceptual entry function is:
     ^runtime_events : $runtime/EventStream?
   ]
   (if runtime_events
-    (runtime_events ~ attach app_event_bus))
+    (runtime_events .attach app_event_bus))
   ...)
 ```
 
@@ -1342,7 +1342,7 @@ When a Gene sink attaches after startup, it may request buffered bootstrap
 events if they remain in the bounded stream:
 
 ```gene
-(runtime_events ~ attach
+(runtime_events .attach
   app_event_bus
   ^replay_buffer true)
 ```
@@ -1362,7 +1362,7 @@ needs a complete prefix can tell:
 
 ```gene
 (var replayed
-  (runtime_events ~ attach recorder ^replay_buffer true))
+  (runtime_events .attach recorder ^replay_buffer true))
 
 (expect replayed/dropped_before_attach 0)
 ```
@@ -1411,15 +1411,15 @@ attach operation performed at a safe point.
 (var bus
   (Bus))
 
-(bus ~ subscribe
+(bus .subscribe
   PaymentReceived
   update_balance)
 
-(bus ~ subscribe
+(bus .subscribe
   PaymentReceived
   record_payment)
 
-(bus ~ publish
+(bus .publish
   (PaymentReceived
     ^payment_id "p_123"
     ^amount 50.00))
@@ -1433,7 +1433,7 @@ Both handlers receive the same frozen event in subscription order.
 (type ApplicationReady
   ^is $event/Event)
 
-(bus ~ subscribe
+(bus .subscribe
   ApplicationReady
   warm_cache
   ^once true)
@@ -1457,11 +1457,11 @@ The entry program receives `runtime_events` explicitly:
   ($event/Bus
     ^error_policy $event/collect))
 
-(observations ~ subscribe
+(observations .subscribe
   $runtime/task/Completed
   record_task_duration)
 
-(runtime_events ~ attach observations)
+(runtime_events .attach observations)
 ```
 
 The `^error_policy` here governs direct `publish` calls on `observations`, not
@@ -1482,19 +1482,19 @@ to `observations`.
   ($event/RecordingSink))
 
 (var replayed
-  (runtime_events ~ attach recorder))
+  (runtime_events .attach recorder))
 
 (run_scenario)
-(runtime_events ~ flush)
+(runtime_events .flush)
 
 (var stats
-  (runtime_events ~ stats))
+  (runtime_events .stats))
 
 (expect replayed/dropped_before_attach 0)
 (expect stats/dropped 0)
 
 (expect
-  (recorder ~ events)
+  (recorder .events)
   ^contains_type $runtime/module/Loaded)
 ```
 
@@ -1516,7 +1516,7 @@ under-provisioned buffer.
     trace_recorder
   ]))
 
-(runtime_events ~ attach sink)
+(runtime_events .attach sink)
 ```
 
 The composite owns fan-out order and error handling. The runtime stream still
@@ -1705,7 +1705,7 @@ the observed record.
 The runtime stream should expose a cheap immutable snapshot:
 
 ```gene
-(runtime_events ~ stats)
+(runtime_events .stats)
 ```
 
 Conceptually:

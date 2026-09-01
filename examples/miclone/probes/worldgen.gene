@@ -93,7 +93,7 @@
 
 (fn zero_buffer [b : (Buffer F32) n : F64] : Nil
   (var i 0.0)
-  (while (< i n) (b ~ set i 0.0) (set i (+ i 1.0))))
+  (while (< i n) (b .set i 0.0) (set i (+ i 1.0))))
 
 # Stage 6 alone, over `reps` blocks.
 #
@@ -113,7 +113,7 @@
     (light_region param1 content block_dim block_dim block_dim reg sky q
                   registered)
     (set i (+ i 1.0)))
-  (param1 ~ get 0.0))
+  (param1 .get 0.0))
 
 # --- the timed workloads -----------------------------------------------------
 #
@@ -128,7 +128,7 @@
   (var i 0.0)
   (while (< i reps)
     (fill_region out sky block_dim (* i block_dim) oy 0.0 biomes ores decors seed air water)
-    (set acc (+ acc (out ~ get 0.0)))
+    (set acc (+ acc (out .get 0.0)))
     (set i (+ i 1.0)))
   acc)
 
@@ -141,7 +141,7 @@
   (while (< i reps)
     (fill_region out sky pad_dim (- (* i block_dim) 1.0) oy -1.0
                  biomes ores decors seed air water)
-    (set acc (+ acc (out ~ get 0.0)))
+    (set acc (+ acc (out .get 0.0)))
     (set i (+ i 1.0)))
   acc)
 
@@ -177,7 +177,7 @@
                    biomes ores decors seed air water)
       (var i 0.0)
       (while (< i block_nodes)
-        (if_yes (== (out ~ get i) air) (set holes (+ holes 1.0)))
+        (if_yes (== (out .get i) air) (set holes (+ holes 1.0)))
         (set i (+ i 1.0)))
       (set nodes (+ nodes block_nodes))
       (set bx (+ bx 1.0)))
@@ -195,16 +195,16 @@
       (var b (biome_at biomes (heat_at wx wz seed)
                               (humidity_at wx wz seed)
                               (surface_height wx wz seed)))
-      (counts ~ set b (+ (counts ~ get b) 1))
+      (counts .set b (+ (counts .get b) 1))
       (set i (+ i 1.0)))
     (set j (+ j 1.0)))
   (var total (* n n))
   (var parts : (List Str) [])
   (var k 0.0)
   (while (< k (biome_count biomes))
-    (var pct (/ ($math/round (* 1000.0 (/ ($to_float (counts ~ get k)) total)))
+    (var pct (/ ($math/round (* 1000.0 (/ ($to_float (counts .get k)) total)))
                 10.0))
-    (parts ~ push $"$(biome_name biomes k)=${pct}%")
+    (parts .push $"$(biome_name biomes k)=${pct}%")
     (set k (+ k 1.0)))
   ($str/join parts " "))
 
@@ -239,8 +239,8 @@
                      (* bz block_dim) biomes ores decors seed air water)
         (var i 0.0)
         (while (< i block_nodes)
-          (var id (out ~ get i))
-          (tally ~ set id (+ (tally ~ get id) 1))
+          (var id (out .get i))
+          (tally .set id (+ (tally .get id) 1))
           (set i (+ i 1.0)))
         (set nodes (+ nodes block_nodes))
         (set bx (+ bx 1.0)))
@@ -249,9 +249,9 @@
   (var parts : (List Str) [])
   (var k 0.0)
   (while (< k (registered_count r))
-    (var c ($to_float (tally ~ get k)))
+    (var c ($to_float (tally .get k)))
     (if_yes (> c 0.0)
       (var pct (/ ($math/round (* 1000.0 (* 100.0 (/ c nodes)))) 1000.0))
-      (parts ~ push $"$(name_of r k)=${pct}%"))
+      (parts .push $"$(name_of r k)=${pct}%"))
     (set k (+ k 1.0)))
   ($str/join parts " "))

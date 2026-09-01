@@ -81,7 +81,7 @@ when defined(geneRcStats):
         "(same? before ($deref shared))") == 0
       check leakedManaged("#Ref callable (fn [] 1) (($deref callable))") == 0
       check leakedManaged("#Ref cycle ($cell #Deref cycle) " &
-                          "(same? (($deref cycle) ~ get) ($deref cycle))") == 0
+                          "(same? (($deref cycle) .get) ($deref cycle))") == 0
 
     test "self-referential closures stored in their scope are reclaimed":
       check leakedManaged("(var f nil) (set f (fn [] f))") == 0
@@ -115,13 +115,13 @@ when defined(geneRcStats):
         "(fn reject! [] (try [caller_env] catch * nil)) (reject!)") == 0
       check leakedManaged(
         "(var x 1) " &
-        "(fn snapshot! [] (caller_env ~ snapshot [\"x\"])) " &
+        "(fn snapshot! [] (caller_env .snapshot [\"x\"])) " &
         "(snapshot!)") == 0
 
     test "namespace and stream values are reclaimed when they do not capture functions":
       check leakedManaged("(ns m (var x 1))") == 0
-      check leakedManaged("(var s ($read_all \"(a) (b)\")) (s ~ next)") == 0
-      check leakedManaged("(var s ($to_stream [1 2 3])) (s ~ next)") == 0
+      check leakedManaged("(var s ($read_all \"(a) (b)\")) (s .next)") == 0
+      check leakedManaged("(var s ($to_stream [1 2 3])) (s .next)") == 0
       check leakedManaged("(var s ($map ($to_stream [1]) (fn [x] x)))") == 0
       check leakedManaged("(var s ($filter ($to_stream [1]) (fn [x] true)))") == 0
       # Regression: a transient stream whose callable captures an inner scope
@@ -136,8 +136,8 @@ when defined(geneRcStats):
       check leakedManaged("($freeze [1 {^a [2]}])") == 0
       check leakedManaged("(fn gen [] (yield 1)) " &
                           "(var s (gen)) " &
-                          "(s ~ next) " &
-                          "(s ~ close)") == 0
+                          "(s .next) " &
+                          "(s .close)") == 0
       check leakedManaged("(scope (var t (spawn (fn [] 1))) (await t))") == 0
       check leakedManaged("(scope " &
                           "  (var t : (Task Int Never) (spawn 1)) " &
@@ -147,8 +147,8 @@ when defined(geneRcStats):
                           "    (try (await t) catch TypeError nil)) " &
                           "  (use (spawn \"bad\")))") == 0
       check leakedManaged("(var ch ($channel)) " &
-                          "(ch ~ send 1) " &
-                          "(ch ~ recv)") == 0
+                          "(ch .send 1) " &
+                          "(ch .recv)") == 0
       check leakedManaged("(var ch : (Channel Int) ($channel))") == 0
       check leakedManaged("(var a ($actor/spawn ^init (fn [] 0) " &
                           "  ^handle (fn [ctx state msg] " &
@@ -160,7 +160,7 @@ when defined(geneRcStats):
       check leakedManaged("(supervisor ^strategy restart " &
                           "  (var a ($actor/spawn ^init (fn [] 0) " &
                           "    ^handle (fn [ctx state msg] 99))) " &
-                          "  (a ~ send 1))") == 0
+                          "  (a .send 1))") == 0
       # A top-level `impl Send for Get` belongs in the global-retention test
       # below. Eval impls, tested above, remain reclaimable overlays.
 
@@ -179,7 +179,7 @@ when defined(geneRcStats):
                           "(type User ^props {^name Str} " &
                           "  ^impl [HasLabel] " &
                           "  ^derive [HasLabel]) " &
-                          "((User ^name \"Ada\") ~ HasLabel:label)") > 0 # generated impl
+                          "((User ^name \"Ada\") .HasLabel:label)") > 0 # generated impl
       # Control: the same type without an impl reclaims fully.
       check leakedManaged("(type User ^props {^name Str}) (User ^name \"Ada\")") == 0
 
@@ -284,7 +284,7 @@ when defined(geneRcStats):
         var scope = newGlobalScope()
         channel = run(compileSource(
           "(var ch ($channel)) " &
-          "(ch ~ send #[1 2]) " &
+          "(ch .send #[1 2]) " &
           "ch"), scope)
         scope = nil
       GC_fullCollect()
@@ -306,7 +306,7 @@ when defined(geneRcStats):
       block:
         var scope = newGlobalScope()
         scope.define("a", actor)
-        discard run(compileSource("(a ~ send 1)"), scope)
+        discard run(compileSource("(a .send 1)"), scope)
       check actor.actorClosed
       actor = NIL
 
@@ -331,14 +331,14 @@ when defined(geneRcStats):
     const N = 30000
 
     test "control: acyclic cell mutation does not grow the heap":
-      check heapGrowth("(var c ($cell 0)) (c ~ set 5)", N) < 100_000
+      check heapGrowth("(var c ($cell 0)) (c .set 5)", N) < 100_000
 
     test "a self-referential cell is reclaimed":
-      check heapGrowth("(var c ($cell 0)) (c ~ set c)", N) < 100_000
+      check heapGrowth("(var c ($cell 0)) (c .set c)", N) < 100_000
 
     test "a two-cell cycle is reclaimed":
       check heapGrowth(
-        "(var a ($cell 0)) (var b ($cell 0)) (a ~ set b) (b ~ set a)",
+        "(var a ($cell 0)) (var b ($cell 0)) (a .set b) (b .set a)",
         N) < 100_000
 
     test "an Env binding closure cycle is reclaimed":
@@ -348,7 +348,7 @@ when defined(geneRcStats):
 
     test "an Env extend binding closure cycle is reclaimed":
       check heapGrowth(
-        "(var e (env)) (set e (e ~ extend {^f (fn [] e)}))",
+        "(var e (env)) (set e (e .extend {^f (fn [] e)}))",
         N) < 100_000
 else:
   echo "test_rc: compile with -d:geneRcStats to run leak assertions; skipping."

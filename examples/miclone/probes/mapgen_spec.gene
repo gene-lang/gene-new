@@ -47,8 +47,8 @@
 
 (fn check [out : (List Str) label : Str got : Str want : Str] : Nil
   (if (== got want)
-    (then (out ~ push $"ok   ${label}"))
-    (else (out ~ push $"FAIL ${label}: got ${got}, want ${want}"))))
+    (then (out .push $"ok   ${label}"))
+    (else (out .push $"FAIL ${label}: got ${got}, want ${want}"))))
 
 (fn check_i [out : (List Str) label : Str got : Int want : Int] : Nil
   (check out label $"${got}" $"${want}"))
@@ -188,20 +188,20 @@
   # rather than through a shape.
   (var buf ($buffer F32 27.0))
   (var i 0.0)
-  (while (< i 27.0) (buf ~ set i 1.0) (set i (+ i 1.0)))
+  (while (< i 27.0) (buf .set i 1.0) (set i (+ i 1.0)))
 
   (place buf 3.0 0.0 0.0 0.0  1.0 1.0 1.0  40.0 1.0 0.0 10.0)
-  (check_f out "place writes where wherein matches" (buf ~ get 13.0) 40.0)
+  (check_f out "place writes where wherein matches" (buf .get 13.0) 40.0)
 
   # Wrong `wherein`: an ore may not eat another ore, a cave, or a lake.
   (place buf 3.0 0.0 0.0 0.0  1.0 1.0 1.0  41.0 1.0 0.0 10.0)
-  (check_f out "place refuses a node it may not replace" (buf ~ get 13.0) 40.0)
+  (check_f out "place refuses a node it may not replace" (buf .get 13.0) 40.0)
 
   # Outside the altitude band.
   (place buf 3.0 0.0 0.0 0.0  0.0 0.0 0.0  40.0 1.0 5.0 10.0)
-  (check_f out "place refuses below y_min" (buf ~ get 0.0) 1.0)
+  (check_f out "place refuses below y_min" (buf .get 0.0) 1.0)
   (place buf 3.0 0.0 0.0 0.0  0.0 2.0 0.0  40.0 1.0 0.0 1.0)
-  (check_f out "place refuses above y_max" (buf ~ get 6.0) 1.0)
+  (check_f out "place refuses above y_max" (buf .get 6.0) 1.0)
 
   # Outside the buffer, on each axis and each side. A cell reaches past the
   # buffer by construction, so this is the common case rather than the odd one.
@@ -211,7 +211,7 @@
   (var placed 0.0)
   (set i 0.0)
   (while (< i 27.0)
-    (if_yes (== (buf ~ get i) 40.0) (set placed (+ placed 1.0)))
+    (if_yes (== (buf .get i) 40.0) (set placed (+ placed 1.0)))
     (set i (+ i 1.0)))
   (check_f out "out-of-buffer placements write nothing" placed 1.0))
 
@@ -221,37 +221,37 @@
   # A 5³ buffer of stone with one water node and one air node in it.
   (var buf ($buffer F32 125.0))
   (var i 0.0)
-  (while (< i 125.0) (buf ~ set i 1.0) (set i (+ i 1.0)))
-  (buf ~ set 0.0 7.0)                       # water in the corner
-  (buf ~ set 124.0 0.0)                     # already air
+  (while (< i 125.0) (buf .set i 1.0) (set i (+ i 1.0)))
+  (buf .set 0.0 7.0)                       # water in the corner
+  (buf .set 124.0 0.0)                     # already air
 
   (carve_sphere buf 5.0 0.0 0.0 0.0  2.0 2.0 2.0  9.0  0.0 7.0)
-  (check_f out "carve removes rock" (buf ~ get 62.0) 0.0)
-  (check_f out "carve does not drain water" (buf ~ get 0.0) 7.0)
-  (check_f out "carve leaves air alone" (buf ~ get 124.0) 0.0)
+  (check_f out "carve removes rock" (buf .get 62.0) 0.0)
+  (check_f out "carve does not drain water" (buf .get 0.0) 7.0)
+  (check_f out "carve leaves air alone" (buf .get 124.0) 0.0)
 
   # A sphere of radius 1 centred on a node removes that node and its six
   # face neighbours, and nothing else: the radius is a distance, not a box.
   (var b2 ($buffer F32 125.0))
   (set i 0.0)
-  (while (< i 125.0) (b2 ~ set i 1.0) (set i (+ i 1.0)))
+  (while (< i 125.0) (b2 .set i 1.0) (set i (+ i 1.0)))
   (carve_sphere b2 5.0 0.0 0.0 0.0  2.0 2.0 2.0  1.0  0.0 7.0)
   (var holes 0.0)
   (set i 0.0)
   (while (< i 125.0)
-    (if_yes (== (b2 ~ get i) 0.0) (set holes (+ holes 1.0)))
+    (if_yes (== (b2 .get i) 0.0) (set holes (+ holes 1.0)))
     (set i (+ i 1.0)))
   (check_f out "radius 1 removes a node and its six neighbours" holes 7.0)
 
   # A sphere entirely outside the buffer changes nothing.
   (var b3 ($buffer F32 125.0))
   (set i 0.0)
-  (while (< i 125.0) (b3 ~ set i 1.0) (set i (+ i 1.0)))
+  (while (< i 125.0) (b3 .set i 1.0) (set i (+ i 1.0)))
   (carve_sphere b3 5.0 0.0 0.0 0.0  -20.0 -20.0 -20.0  3.0  0.0 7.0)
   (var untouched 0.0)
   (set i 0.0)
   (while (< i 125.0)
-    (if_yes (== (b3 ~ get i) 1.0) (set untouched (+ untouched 1.0)))
+    (if_yes (== (b3 .get i) 1.0) (set untouched (+ untouched 1.0)))
     (set i (+ i 1.0)))
   (check_f out "a distant sphere writes nothing" untouched 125.0))
 
@@ -284,7 +284,7 @@
   (var bad 0.0)
   (var y 0.0)
   (while (< y dim)
-    (var got (buf ~ get (* y dim)))
+    (var got (buf .get (* y dim)))
     (var depth (- surface (+ oy y)))
     (var want (if (< depth 0.0) 0.0 (column_node b id depth false)))
     (if_yes (!= got want) (set bad (+ bad 1.0)))
@@ -298,9 +298,9 @@
   (fill_run b2 dim 0.0 -50.0 -1.0 5.0)
   (fill_run b2 dim 0.0 dim (+ dim 40.0) 5.0)
   (fill_run b2 dim 0.0 -3.0 1.0 6.0)
-  (check_f out "run below the buffer writes nothing" (b2 ~ get 0.0) 6.0)
-  (check_f out "clipped run fills only what is inside" (b2 ~ get dim) 6.0)
-  (check_f out "clipped run stops where it should" (b2 ~ get (* 2.0 dim)) 0.0))
+  (check_f out "run below the buffer writes nothing" (b2 .get 0.0) 6.0)
+  (check_f out "clipped run fills only what is inside" (b2 .get dim) 6.0)
+  (check_f out "clipped run stops where it should" (b2 .get (* 2.0 dim)) 0.0))
 
 # --- the seam: two shapes of the same world must agree -----------------------
 #
@@ -343,10 +343,10 @@
   (while (< z block_dim)
     (var y 0.0)
     (while (< y block_dim)
-      (var from_block (blk ~ get (+ 15.0 (+ (* y block_dim)
+      (var from_block (blk .get (+ 15.0 (+ (* y block_dim)
                                             (* z (* block_dim block_dim))))))
       # world (15, y, z) sits at padded (0, y + 1, z + 1)
-      (var from_pad (pad ~ get (+ 0.0 (+ (* (+ y 1.0) pad_dim)
+      (var from_pad (pad .get (+ 0.0 (+ (* (+ y 1.0) pad_dim)
                                          (* (+ z 1.0) (* pad_dim pad_dim))))))
       (if_yes (!= from_block from_pad) (set bad (+ bad 1.0)))
       (set y (+ y 1.0)))
@@ -365,9 +365,9 @@
     (while (< y block_dim)
       (var x 0.0)
       (while (< x block_dim)
-        (var a (blk ~ get (+ x (+ (* y block_dim)
+        (var a (blk .get (+ x (+ (* y block_dim)
                                   (* z (* block_dim block_dim))))))
-        (var c (own ~ get (+ (+ x 1.0) (+ (* (+ y 1.0) pad_dim)
+        (var c (own .get (+ (+ x 1.0) (+ (* (+ y 1.0) pad_dim)
                                           (* (+ z 1.0) (* pad_dim pad_dim))))))
         (if_yes (!= a c) (set bad2 (+ bad2 1.0)))
         (set x (+ x 1.0)))
@@ -391,7 +391,7 @@
   (var h 2166136261.0)
   (var i 0.0)
   (while (< i n)
-    (set h (wrap32 (+ (* h 31.0) (buf ~ get i))))
+    (set h (wrap32 (+ (* h 31.0) (buf .get i))))
     (set i (+ i 1.0)))
   h)
 
@@ -543,7 +543,7 @@
   (collect out)
   (var bad 0.0)
   (var i 0.0)
-  (var n out/~size)
+  (var n out/.size)
   (while (< i n)
     (if_yes ($str/starts_with? out/%i "FAIL")
       (set bad (+ bad 1.0)))

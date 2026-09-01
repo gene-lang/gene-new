@@ -20,13 +20,13 @@
 (fn usage_summary [usage : (List Node)] : (List Map)
   (var result : (List Map) [])
   (for item in usage
-    (result ~ push
+    (result .push
       {^name item/name ^solutions item/solutions}))
   result)
 
 (fn main [args] : Nil
   (var argv ($body args))
-  (if_not (== (argv ~ size) 1)
+  (if_not (== (argv .size) 1)
     ($panic "usage: library_induction_frozen_evaluation <setup-file>"))
   (var setup (read_data (read_text argv/0)))
   (var subject (default_induction_subject))

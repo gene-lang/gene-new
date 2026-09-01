@@ -20,7 +20,7 @@ writeFile(sourcePath, """
 (fn run [] : Int
   (scope
     (let task (spawn 42))
-    (task ~ cancel)
+    (task .cancel)
     (try
       (await task)
       catch Any 99
@@ -35,7 +35,7 @@ writeFile(producerPath, """
 (fn cancelled_work [] : Int
   (scope
     (let task (spawn 42))
-    (task ~ cancel)
+    (task .cancel)
     (await task)))
 """)
 let consumerPath = workDir / "cancel_consumer.gene"

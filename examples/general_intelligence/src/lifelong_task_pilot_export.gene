@@ -27,7 +27,7 @@
 
 (fn main [args] : Nil
   (var argv ($body args))
-  (if_not (== (argv ~ size) 4)
+  (if_not (== (argv .size) 4)
     ($panic
       "usage: lifelong_task_pilot_export <catalog-seed> <order-seed> <count> <composition-arity>"))
   (var catalog_seed (parse_int argv/0))
@@ -46,7 +46,7 @@
     (var task subject/heldout_compositions/%index)
     (var operations : (List Str) [])
     (for step in (program_steps task/verifier/target_program)
-      (operations ~ push (operation_name step)))
+      (operations .push (operation_name step)))
     ($println
       (stringify
         {^schema 1

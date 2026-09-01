@@ -19,7 +19,7 @@
         (fn init [ctx : DescriptorContext] : Plugin
           ^capabilities []
           # Descriptor construction must not inspect the live registry.
-          (ctx ~ PluginHost:registry_names)
+          (ctx .PluginHost:registry_names)
           (Plugin ^id "impure" ^provides [] ^requires []
             ^contextual true ^activate (fn [] (fn [host] nil)))))))
 

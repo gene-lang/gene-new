@@ -80,7 +80,7 @@ suite "modules — file imports":
       "(import [get_shared : get_a] from \"./refs_a\") " &
       "(import [get_shared : get_b] from \"./refs_b\") " &
       "(var a (get_a)) (var b (get_b)) " &
-      "[(a ~ first) (b ~ first) (same? a b)]").print() ==
+      "[(a .first) (b .first) (same? a b)]").print() ==
       "[1 2 false]"
 
   test "a module with unresolved structural fixups is not published":
@@ -389,14 +389,14 @@ suite "modules — file imports":
   test "module reflection exposes normalized file path":
     writeModule("math.gene", "(var pi 3)")
     let expected = normalizedPath(absolutePath("math.gene", modDir))
-    check runProgram("(import * : m from \"./math\") (m ~ path)").strVal ==
+    check runProgram("(import * : m from \"./math\") (m .path)").strVal ==
       expected
 
   test "imported module roots expose declaration streams":
     writeModule("decls.gene", "(var exported 7)")
     check runProgram("(import * : m from \"./decls\") " &
       "(var ds ($filter ($declarations m) (fn [d] (== d/name \"exported\")))) " &
-      "(ds ~ next)").print() ==
+      "(ds .next)").print() ==
       "(Declaration ^name \"exported\" ^kind \"Int\" ^value 7)"
 
   test "runtime declarations exclude compile-time macros":
@@ -406,24 +406,24 @@ suite "modules — file imports":
       "(var macros ($filter ($declarations m) (fn [d] (== d/name \"twice\")))) " &
       "(var values ($filter ($declarations m) " &
       "  (fn [d] (== d/name \"runtime-value\")))) " &
-      "(var decl (values ~ next)) " &
-      "[(macros ~ has_next) decl/value]").print() ==
+      "(var decl (values .next)) " &
+      "[(macros .has_next) decl/value]").print() ==
       "[false 7]"
 
   test "file modules receive a this_mod binding":
     writeModule("self.gene",
       "(var x 9) " &
       "(var ds ($filter ($declarations this_mod) (fn [d] (== d/name \"x\")))) " &
-      "(var decl (ds ~ next)) " &
+      "(var decl (ds .next)) " &
       "(var seen decl/value)")
     check runProgram("(import [seen] from \"./self\") seen").print() == "9"
 
   test "this_mod exposes module reflection helpers":
     writeModule("selfpath.gene",
       "(var marker 42) " &
-      "(var root (this_mod ~ root_namespace)) " &
-      "(var reflected [(this_mod ~ name) " &
-      "                (this_mod ~ path) " &
+      "(var root (this_mod .root_namespace)) " &
+      "(var reflected [(this_mod .name) " &
+      "                (this_mod .path) " &
       "                (== root this_mod) " &
       "                (/marker root)])")
     let reflected = runProgram("(import [reflected] from \"./selfpath\") reflected")
@@ -436,15 +436,15 @@ suite "modules — file imports":
   test "mod metadata persists on the module value":
     writeModule("meta.gene",
       "(mod renamed @doc \"module docs\") " &
-      "(var reflected [(this_mod ~ name) " &
-      "                (/doc (this_mod ~ meta))])")
+      "(var reflected [(this_mod .name) " &
+      "                (/doc (this_mod .meta))])")
     check runProgram("(import [reflected] from \"./meta\") reflected").print() ==
       "[\"renamed\" \"module docs\"]"
 
   test "Module annotations accept module values":
     writeModule("math.gene", "(var pi 3)")
     check runProgram("(import * : m from \"./math\") " &
-      "(fn module_path [m : Module] (m ~ path)) (module_path m)").strVal ==
+      "(fn module_path [m : Module] (m .path)) (module_path m)").strVal ==
       normalizedPath(absolutePath("math.gene", modDir))
     expect GeneError:
       discard runProgram("(fn module_id [m : Module] m) (module_id [1])")
@@ -498,7 +498,7 @@ suite "modules — file imports":
       "(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
       "(impl ToJson for User (message to_json [self] : Str self/name)) " &
-      "(fn local_json [user] (user ~ ToJson:to_json))")
+      "(fn local_json [user] (user .ToJson:to_json))")
     check runProgram("(import [ToJson] from \"./json\") " &
       "(import [User] from \"./model\") " &
       "(import [local_json] from \"./json_ext\") " &
@@ -507,7 +507,7 @@ suite "modules — file imports":
       discard runProgram("(import [ToJson] from \"./json\") " &
         "(import [User] from \"./model\") " &
         "(import * : ext from \"./json_ext\") " &
-        "((User ^name \"Ada\") ~ ToJson:to_json)")
+        "((User ^name \"Ada\") .ToJson:to_json)")
 
   test "import_impl imports one exported scoped pair idempotently":
     writeModule("json.gene",
@@ -523,7 +523,7 @@ suite "modules — file imports":
       "(import [User] from \"./model\") " &
       "(import_impl ToJson for User from \"./json_ext\") " &
       "(import_impl ToJson for User from \"./json_ext\") " &
-      "((User ^name \"Ada\") ~ ToJson:to_json)").print() == "\"Ada\""
+      "((User ^name \"Ada\") .ToJson:to_json)").print() == "\"Ada\""
 
   test "only exported scoped impls are importable":
     writeModule("export_base.gene",
@@ -560,7 +560,7 @@ suite "modules — file imports":
     writeModule("typed_lib.gene",
       "(import [Named] from \"./typed_base\") " &
       "(fn accept [x : Named] true) " &
-      "(fn count [xs : (List Named)] (xs ~ size)) " &
+      "(fn count [xs : (List Named)] (xs .size)) " &
       "(type Box ^props {^item Named})")
     check runProgram(
       "(import [Named User] from \"./typed_base\") " &
@@ -610,7 +610,7 @@ suite "modules — file imports":
     discard run(compileSource(
       "(import [Render Item] from \"./reload_base\") " &
       "(import_impl Render for Item from \"./reload_ext\")"), scope)
-    check run(compileSource("((Item) ~ Render:render)"), scope).print() == "\"one\""
+    check run(compileSource("((Item) .Render:render)"), scope).print() == "\"one\""
     let before = app.implActivationEpoch
     writeModule("reload_ext.gene",
       "(import [Render Item] from \"./reload_base\") " &
@@ -618,7 +618,7 @@ suite "modules — file imports":
       "  (message render [self] : Str \"two\"))")
     discard app.reloadFileModule(modDir / "reload_ext.gene")
     check app.implActivationEpoch == before + 1
-    check run(compileSource("((Item) ~ Render:render)"), scope).print() == "\"two\""
+    check run(compileSource("((Item) .Render:render)"), scope).print() == "\"two\""
 
     let stableEpoch = app.implActivationEpoch
     writeModule("reload_ext.gene",
@@ -626,7 +626,7 @@ suite "modules — file imports":
     expect GeneError:
       discard app.reloadFileModule(modDir / "reload_ext.gene")
     check app.implActivationEpoch == stableEpoch
-    check run(compileSource("((Item) ~ Render:render)"), scope).print() == "\"two\""
+    check run(compileSource("((Item) .Render:render)"), scope).print() == "\"two\""
 
   test "reload rejects compile-interface changes":
     writeModule("reload_interface.gene", "(var value 1)")
@@ -658,8 +658,8 @@ suite "modules — file imports":
     expect GeneError:
       discard run(compileSource("(import * : bad from \"./ext_bad\")"), scope)
     expect GeneError:
-      discard run(compileSource("((A) ~ P:value)"), scope)
-    check run(compileSource("((B) ~ P:value)"), scope).print() ==
+      discard run(compileSource("((A) .P:value)"), scope)
+    check run(compileSource("((B) .P:value)"), scope).print() ==
       "\"existing\""
 
   test "package-root-relative paths (/x and bare x)":
@@ -700,9 +700,9 @@ suite "modules — file imports":
     writeModule("interface_mid.gene",
       "(import [Render T] from \"./interface_base\" ^export true)")
     check runProgram("(import * : base from \"./interface_base\") " &
-      "((base/T) ~ base/Render:render)").print() == "\"interface\""
+      "((base/T) .base/Render:render)").print() == "\"interface\""
     check runProgram("(import [Render T] from \"./interface_mid\") " &
-      "((T) ~ Render:render)").print() == "\"interface\""
+      "((T) .Render:render)").print() == "\"interface\""
 
   test "caught import failures do not establish protocol candidates":
     writeModule("candidate_type.gene", "(type T ^props {})")
@@ -710,7 +710,7 @@ suite "modules — file imports":
     try:
       discard runProgram("(import [T] from \"./candidate_type\") " &
         "(try (import [Render] from \"./missing_protocol\") catch Any nil) " &
-        "((T) ~ render)")
+        "((T) .render)")
     except GeneError as error:
       message = error.msg
     check message.contains("no message 'render' on T")
@@ -767,10 +767,10 @@ suite "modules — built-in identity and scope hygiene":
     # because built-ins live in the shared parent scope, not the module root.
     check runProgram("(import * : m from \"./decls2\") " &
       "(var ds ($filter ($declarations m) (fn [d] (== d/name \"map\")))) " &
-      "(ds ~ has_next)").print() == "false"
+      "(ds .has_next)").print() == "false"
     check runProgram("(import * : m from \"./decls2\") " &
       "(var ds ($filter ($declarations m) (fn [d] (== d/name \"this_mod\")))) " &
-      "(ds ~ has_next)").print() == "false"
+      "(ds .has_next)").print() == "false"
 
   test "selected imports cannot pull built-ins out of a module":
     writeModule("decls2.gene", "(var only-me 1)")
@@ -800,7 +800,7 @@ suite "modules — namespace-path imports and mod":
       "(protocol Show (message show [self] : Str)) " &
       "(type T ^props {}) " &
       "(ns ext (impl Show for T (message show [self] : Str \"ok\"))) " &
-      "((T) ~ Show:show)"),
+      "((T) .Show:show)"),
       newGlobalScope()).print() == "\"ok\""
 
   test "mod header runs its body":
@@ -842,7 +842,7 @@ suite "modules — Env imports":
       "(type T ^props {}) " &
       "(impl Show for T (message show [self] : Str \"ok\"))")
     check runProgram("(var e (env ^imports [\"./showlib\"])) " &
-      "(eval (quote ((T) ~ Show:show)) ^in e)").print() == "\"ok\""
+      "(eval (quote ((T) .Show:show)) ^in e)").print() == "\"ok\""
 
 suite "modules — impl activation across module paths":
   setup:
@@ -866,11 +866,11 @@ suite "modules — impl activation across module paths":
     # shared-first, then the local module that also imports it
     check runProgram("(import [Show T] from \"./shared\") " &
       "(import [marker] from \"./uses_shared\") " &
-      "[((T) ~ Show:show) (marker)]").print() == "[\"shared\" 1]"
+      "[((T) .Show:show) (marker)]").print() == "[\"shared\" 1]"
     # local-module-first (the previously working order must stay working)
     check runProgram("(import [marker] from \"./uses_shared\") " &
       "(import [Show T] from \"./shared\") " &
-      "[((T) ~ Show:show) (marker)]").print() == "[\"shared\" 1]"
+      "[((T) .Show:show) (marker)]").print() == "[\"shared\" 1]"
 
   test "conflicting impls for one protocol and receiver still raise":
     writeModule("conflict_shared.gene",

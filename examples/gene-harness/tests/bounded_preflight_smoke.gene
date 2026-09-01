@@ -80,7 +80,7 @@
   (assert (== (status_of h "activation_loop") "error")
     "effectful activation must run under the same bounded evaluator")
   (var findings (doctor workspace))
-  (assert (== findings/~size 1)
+  (assert (== findings/.size 1)
     "activation failure must be visible through the irreducible doctor surface")
   (close_workspace workspace)
   ($println "bounded_preflight_smoke: ok"))

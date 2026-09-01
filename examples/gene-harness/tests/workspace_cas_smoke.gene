@@ -48,7 +48,7 @@
   (assert (== (composition_revision reopened) 2)
     "reopen must restore the current committed generation")
   (var reopened_entries (composition_entries reopened))
-  (assert (== reopened_entries/~size 2)
+  (assert (== reopened_entries/.size 2)
     "reopen must restore the complete desired-state entry set")
   (close_workspace reopened)
 

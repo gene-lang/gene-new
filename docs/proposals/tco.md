@@ -293,11 +293,11 @@ The call through `f` is an argument and is not in tail position. The recursive
 
 ```gene
 (type Box ^props {^n Int}
-  (ctor [n] (self ~ set_prop `n n))
+  (ctor [n] (self .set_prop `n n))
   (message down []
     (if (== self/n 0)
       0
-      ((new Box (- self/n 1)) ~ down))))
+      ((new Box (- self/n 1)) .down))))
 ```
 
 `new` is ordinary construction; the final `down` send is a tail send. The

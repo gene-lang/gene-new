@@ -21,7 +21,7 @@
           (Plugin ^id "repair" ^provides ["Repair"] ^requires []
             ^contextual true
             ^activate (fn [] (fn [host]
-              (host ~ PluginHost:provide "Repair" "restored"))))))))
+              (host .PluginHost:provide "Repair" "restored"))))))))
   (var workspace (open_workspace args/0))
   (var first (new_harness ^workspace workspace))
   (var registered

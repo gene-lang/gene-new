@@ -396,7 +396,7 @@ suite "native api — roots and trampoline":
     check run(compileSource("conn/backend"), scope).print() == "\"demo\""
     check run(compileSource("($head conn)"), scope).print() == "(type Conn)"
     check run(compileSource(
-      "(try (conn ~ set_prop `handle \"junk\") catch Error $ex/message)"),
+      "(try (conn .set_prop `handle \"junk\") catch Error $ex/message)"),
       scope).print() ==
       "\"cannot set field 'handle' on Conn: native wrapper fields are " &
       "initializer-only\""
@@ -526,7 +526,7 @@ suite "native api — roots and trampoline":
       "(type Conn ^repr native_wrapper ^props {^handle Any ^label Str} " &
       "  (ctor [] (set self/handle (open_handle)))) " &
       "(type Bag ^repr native_wrapper ^body [Any] ^props {^label Str} " &
-      "  (ctor [] (self ~ push_body (open_handle))))"), scope)
+      "  (ctor [] (self .push_body (open_handle))))"), scope)
     let failed = run(compileSource(
       "(try (new Conn) catch Error $ex/message)"), scope)
     check "left required field 'label' unset" in failed.print()

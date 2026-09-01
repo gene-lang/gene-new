@@ -21,7 +21,7 @@
   (var evidence (verify_generated_corpus subject corpus))
   (var programs : (List Node) [])
   (for task in corpus/learning
-    (programs ~ push task/verifier/target_program))
+    (programs .push task/verifier/target_program))
   (var induction (induce_library subject programs))
   (var iterative (induce_library_iterative subject programs))
   (var iterative_evidence
@@ -35,10 +35,10 @@
         (== evidence/motif_task_count 140)
         learned_latent_motif
         iterative_evidence/valid
-        (== (iterative/library ~ size) 4)
+        (== (iterative/library .size) 4)
         (library_is_latent_motifs? corpus iterative/library)))
   (if_not valid
     ($panic
       $"library-induction corpus pilot invalid: evidence=${evidence} induction=${induction} iterative=${iterative} iterative_evidence=${iterative_evidence}"))
   ($println
-    $"library-induction corpus pilot: seed=${corpus/seed} tasks=${evidence/task_count} motif_tasks=${evidence/motif_task_count} learning=${(corpus/learning ~ size)} model_selection=${(corpus/model_selection ~ size)} heldout=${(corpus/heldout ~ size)} shorter_candidates=${corpus/structural_screen/candidate_count} shorter_rejections=${corpus/generation/shorter_rejections} duplicate_rejections=${corpus/generation/duplicate_rejections} learned_pattern=${induction/pattern} support=${induction/support} occurrences=${induction/occurrences} one_round_gain=${induction/mdl_gain} iterative_items=${(iterative/library ~ size)} iterative_definition_mdl=${iterative/definition_mdl} iterative_gain=${iterative/mdl_gain} iterative_stop=${iterative/stop_reason} iterative_rounds=${iterative/rounds}"))
+    $"library-induction corpus pilot: seed=${corpus/seed} tasks=${evidence/task_count} motif_tasks=${evidence/motif_task_count} learning=${(corpus/learning .size)} model_selection=${(corpus/model_selection .size)} heldout=${(corpus/heldout .size)} shorter_candidates=${corpus/structural_screen/candidate_count} shorter_rejections=${corpus/generation/shorter_rejections} duplicate_rejections=${corpus/generation/duplicate_rejections} learned_pattern=${induction/pattern} support=${induction/support} occurrences=${induction/occurrences} one_round_gain=${induction/mdl_gain} iterative_items=${(iterative/library .size)} iterative_definition_mdl=${iterative/definition_mdl} iterative_gain=${iterative/mdl_gain} iterative_stop=${iterative/stop_reason} iterative_rounds=${iterative/rounds}"))

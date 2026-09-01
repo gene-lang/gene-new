@@ -104,7 +104,7 @@ Root protocols: `Callable` `CapabilitySpec` `Error` `Send` `SerdeRef` `ToStr`.
 
 ## Type message surfaces
 
-Sent bare on the receiver: `xs/~size`, `(xs ~ push v)`.
+Sent bare on the receiver: `xs/.size`, `(xs .push v)`.
 
 | Type | Messages |
 |---|---|
@@ -138,4 +138,4 @@ code points.
 
 Where a name appears both as a root function and a message (`size`, `empty?`,
 `first`, `last`, `contains?`, `to_stream`), they are the *same* function value,
-so `($size xs)` and `xs/~size` are interchangeable.
+so `($size xs)` and `xs/.size` are interchangeable.

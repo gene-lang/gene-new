@@ -1791,14 +1791,14 @@ suite "types — declaration and construction":
        "\"x\""
   test "construction binds typed body fields":
     ck "(type Pair ^body [Int Str]) (var p (Pair 7 \"seven\")) " &
-       "[(p ~ /0) (p ~ /1)]",
+       "[(/0 p) (/1 p)]",
        "[7 \"seven\"]"
     ck "(type Values ^body [Int...]) (var v (Values 1 2 3)) " &
-       "[(v ~ /0) (v ~ /1) (v ~ /2)]",
+       "[(/0 v) (/1 v) (/2 v)]",
        "[1 2 3]"
     ck "(type Entry ^props {^name Str} ^body [Int...]) " &
        "(var e (Entry ^name \"scores\" 1 2)) " &
-       "[(e ~ /name) (e ~ /0) (e ~ /1)]",
+       "[(/name e) (/0 e) (/1 e)]",
        "[\"scores\" 1 2]"
   test "the instance head is the type value":
     ck "(type Task ^props {^id Int}) (== ($head (Task ^id 1)) Task)", "true"
@@ -1821,7 +1821,7 @@ suite "types — schema validation":
     ck "(type Task ^props {^id Int ^done Bool?}) (var t (Task ^id 1)) t/id", "1"
   test "void fields normalize as omitted at construction":
     ck "(type Task ^props {^id Int ^done Bool?}) " &
-       "(var t (Task ^id 1 ^done void)) [(t ~ /id) (t ~ /done)]",
+       "(var t (Task ^id 1 ^done void)) [(/id t) (/done t)]",
        "[1 void]"
     expect GeneError:
       discard runStr("(type Task ^props {^id Int}) (Task ^id void)")
@@ -1851,7 +1851,7 @@ suite "types — single inheritance":
   test "a child inherits parent body fields":
     ck "(type Row ^body [Int]) (type LabeledRow ^is Row ^props {^label Str} ^body [Str]) " &
        "(var r (LabeledRow ^label \"a\" 7 \"ok\")) " &
-       "[(r ~ /label) (r ~ /0) (r ~ /1)]",
+       "[(/label r) (/0 r) (/1 r)]",
        "[\"a\" 7 \"ok\"]"
   test "a child requires inherited required fields":
     expect GeneError:
@@ -1936,12 +1936,12 @@ suite "types — function boundaries":
 
   test "generic functions infer typed stream item types":
     ck "(fn nums [] : (Stream Int Never) (yield 4)) " &
-       "(fn (first item err) [s : (Stream item err)] : item (s ~ next)) " &
+       "(fn (first item err) [s : (Stream item err)] : item (s .next)) " &
        "(first (nums))",
        "4"
 
   test "generic functions infer buffer element types":
-    ck "(fn (first item) [b : (Buffer item)] : item (b ~ get 0)) " &
+    ck "(fn (first item) [b : (Buffer item)] : item (b .get 0)) " &
        "(first ($buffer [4 5]))",
        "4"
     ck "(try (fn (choose item) [b : (Buffer item) fallback : item] fallback) " &
@@ -1985,21 +1985,21 @@ suite "types — function boundaries":
                      "(fn name-of [x : Animal] x/name) (name-of (Rock ^name \"granite\"))")
 
   test "simple container annotations check elements":
-    ck "(fn size [xs : (List Int)] xs/~size) (size [1 2 3])", "3"
-    ck "(try (fn size [xs : (List Int)] xs/~size) (size [1 \"bad\"]) " &
+    ck "(fn size [xs : (List Int)] xs/.size) (size [1 2 3])", "3"
+    ck "(try (fn size [xs : (List Int)] xs/.size) (size [1 \"bad\"]) " &
        "catch TypeError $ex/expected)", "\"(List Int)\""
     ck "(fn value [m : (Map Sym Int)] m/a) (value {^a 3})", "3"
     ck "(var routes ($into ($to_stream [[\"handler\" (fn [] 7)]]) {})) " &
-       "(fn run [m : (Map Str Fn)] ((m ~ /handler))) " &
+       "(fn run [m : (Map Str Fn)] ((/handler m))) " &
        "(run routes)",
        "7"
     ck "(try (fn value [m : (Map Sym Int)] m) (value {^a \"bad\"}) " &
        "catch TypeError $ex/expected)", "\"(Map Sym Int)\""
     ck "(try (fn value [m : (Map Int Str)] m) (value {^a \"ok\"}) " &
        "catch TypeError $ex/expected)", "\"(Map Int Str)\""
-    ck "(fn value [m : (HashMap Str Int)] (m ~ get \"a\")) " &
+    ck "(fn value [m : (HashMap Str Int)] (m .get \"a\")) " &
        "(value {{\"a\" : 3}})", "3"
-    ck "(fn value [m : (Map Str Int)] (m ~ get \"a\")) " &
+    ck "(fn value [m : (Map Str Int)] (m .get \"a\")) " &
        "(value {{\"a\" : 3}})", "3"
     ck "(try (fn value [m : (HashMap Str Int)] m) (value {{1 : 2}}) " &
        "catch TypeError $ex/expected)", "\"(HashMap Str Int)\""
@@ -2118,18 +2118,18 @@ suite "types — function boundaries":
 
   test "Buffer annotations check Gene-owned typed storage":
     ck "(var b ($buffer [1 2 3])) " &
-       "[(b ~ len) (b ~ get 0) (b ~ get -1) " &
-       "(b ~ to_list) (b ~ elem_type)]",
+       "[(b .len) (b .get 0) (b .get -1) " &
+       "(b .to_list) (b .elem_type)]",
        "[3 1 3 [1 2 3] Int]"
     ck "(var b ($buffer C/UInt8 [1 2])) " &
-       "[(b ~ set 1 255) (b ~ to_list) " &
+       "[(b .set 1 255) (b .to_list) " &
        "((fn [x : (Buffer C/UInt8)] true) b)]",
        "[255 [1 255] true]"
     ck "((fn [b : (Buffer Int)] true) ($buffer [1 2]))", "true"
     ck "(try ($buffer C/UInt8 [1 256]) " &
        "catch TypeError $ex/expected)", "\"C/UInt8\""
     expect GeneError:
-      discard runStr("(var b ($buffer C/UInt8 [1])) (b ~ set 0 256)")
+      discard runStr("(var b ($buffer C/UInt8 [1])) (b .set 0 256)")
     expect GeneError:
       discard runStr("((fn [b : (Buffer C/UInt8)] b) ($buffer C/Int32 [1]))")
     expect GeneError:
@@ -6662,7 +6662,7 @@ suite "types — function boundaries":
                 scope).print() == "3"
       check run(compileSource("(buffer-first-byte byte-buffer)"),
                 scope).print() == "65"
-      check run(compileSource("(buffer-fill byte-buffer) (byte-buffer ~ to_list)"),
+      check run(compileSource("(buffer-fill byte-buffer) (byte-buffer .to_list)"),
                 scope).print() == "[90 91 92]"
       check run(compileSource("(buffer-len-i32 byte-buffer)"),
                 scope).print() == "8"

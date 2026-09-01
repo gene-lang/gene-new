@@ -96,12 +96,12 @@ suite "reader — sugars":
     check_read("(x; $parse; (or _ default))", "(or ((x) (path gene parse)) default)")
     check_read("(x; f _ y)", "(f (x) y)")
   test "pipe with message sends":
-    # Sends are preserved as read; the compiler resolves them receiver-first
-    # (docs/core.md §9), so the reader no longer erases `~`.
-    check_read("(xs ~ filter; ~ map f; ~ take 10)",
-               "(((xs ~ filter) ~ map f) ~ take 10)")
-  test "message send round-trips": check_read("(x ~ f a b)", "(x ~ f a b)")
-  test "flipped standalone": check_read("(~ f a b)",   "(~ f a b)")
+    # Dot sends lower to one canonical representation; the compiler resolves
+    # them receiver-first (docs/core.md §9).
+    check_read("(xs .filter; .map f; .take 10)",
+               "(((xs .filter) .map f) .take 10)")
+  test "message send round-trips": check_read("(x .f a b)", "(x .f a b)")
+  test "flipped standalone": check_read("(.f a b)",   "(.f a b)")
   test "spread":             check_read("x...",         "(... x)")
   test "prop and meta flags consume no values":
     check_read("(x ^^ready false @@generated nil)",
@@ -141,25 +141,37 @@ suite "reader — paths":
     expect ReadError: discard read("(!= xs/%(- i 1) \"\\n\")")
     expect ReadError: discard read("$str/%")
     check_read("xs/%i", "(path xs (unquote i))")  # a named stage still reads
-  test "send segment": check_read("xs/~size", "(path xs ~size)")
+  test "send segment": check_read("xs/.size", "xs/.size")
   test "send segment after an unquote stage":
-    check_read("users/%i/~to_html", "(path users (unquote i) ~to_html)")
+    check_read("users/%i/.to_html", "users/%i/.to_html")
+  test "qualified dynamic and optional path sends":
+    check_read("x/.Proto:msg", "(x .Proto:msg)")
+    check_read("x/.%m", "x/.%m")
+    check_read("x/?.msg", "x/?.msg")
+    check_read("x/?.%m", "x/?.%m")
 
-suite "reader — glued '~' is a symbol, spaced '~' is the send operator":
-  # The printer has no symbol-escaping syntax, so a `~name` symbol produced by
-  # path desugaring must reread as itself; otherwise printing and rereading
-  # changes the form (design §2.1 send segments).
-  test "glued tilde reads as one symbol":
+suite "reader — dot message descriptors":
+  test "a glued tilde remains an ordinary user symbol":
     check_read("(a ~b)", "(a ~b)")
-    check_read("(path xs ~size)", "(path xs ~size)")
-  test "spaced tilde still reads as the send operator":
-    check_read("(a ~ b)", "(a ~ b)")
-    check_read("(~ name)", "(~ name)")
-  test "tilde before a delimiter stays a bare symbol":
-    check_read("(a ~)", "(a ~)")
-    check_read("[~ 1]", "[~ 1]")
-  test "a glued-tilde symbol survives print and reread":
-    for src in ["xs/~size", "(a ~b)", "users/%i/~to_html", "(a ~ b)"]:
+  test "dot sends lower and print in surface syntax":
+    check_read("(a .b)", "(a .b)")
+    check_read("(.name)", "(.name)")
+    check_read("(a .Proto:name 1)", "(a .Proto:name 1)")
+    check_read("(a .%m 1)", "(a .%m 1)")
+    check_read("(a .%$str/join 1)", "(a .%$str/join 1)")
+    check_read("(a .%(choose) 1)", "(a .%(choose) 1)")
+    check_read("(a ?.name)", "(a ?.name)")
+  test "neighboring dot syntax remains distinct":
+    check_read(".5", ".5")
+    check_read("foo.bar", "foo.bar")
+    check_read("x...", "(... x)")
+  test "old tilde sends are rejected":
+    for src in ["(a ~ b)", "(~ name)", "(a ~)", "[~ 1]", "xs/~size"]:
+      expect ReadError:
+        discard read(src)
+  test "dot sends survive print and reread":
+    for src in ["xs/.size", "(a ~b)", "users/%i/.to_html", "x/.%m",
+                "x/?.msg", "(a .b)"]:
       let once = read(src).print()
       check read(once).print() == once
 

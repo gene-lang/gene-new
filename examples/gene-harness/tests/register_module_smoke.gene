@@ -22,7 +22,7 @@
             ^activate
               (fn []
                 (fn [host]
-                  (host ~ PluginHost:provide "Echo" "hello"))))))))
+                  (host .PluginHost:provide "Echo" "hello"))))))))
 
   (var workspace (open_workspace root))
   (var h (new_harness))

@@ -67,7 +67,7 @@ Mutable and shallow-immutable literals are semantically distinct:
 ```
 
 `{^a 1}` keys by symbol and reads back with a path: `m/a`. `{{"k" : 1}}` takes
-arbitrary keys and reads through `(m ~ get "k")`.
+arbitrary keys and reads through `(m .get "k")`.
 
 `freeze` is deep, `freeze_shallow` is shallow, `thaw` is deep. `assoc` returns a
 new root; `set`/`push`/`put` mutate a mutable container in place.
@@ -81,15 +81,15 @@ first-class navigation value.
 session/user/name        # navigate
 xs/0                     # index
 xs/-1                    # from the end
-xs/~size                 # zero-argument send (see SKILL.md)
+xs/.size                 # zero-argument send (see SKILL.md)
 (path m a b)             # same navigation, computed form
 ```
 
 ```gene
 (var s /a/b)             # selector literal
 (s {^a {^b 7}})          # 7 — apply it
-({^a {^b 7}} ~ /a/b)     # 7 — send it
-({^a {^b 7}} ~ (select a %field))   # computed segment
+(/a/b {^a {^b 7}})       # 7 — apply the selector
+((select a %field) {^a {^b 7}})   # computed segment
 ```
 
 A delimited `/` — whitespace on both sides — is an ordinary symbol, which is how

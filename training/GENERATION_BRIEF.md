@@ -97,9 +97,9 @@ These are real, and several are things a Lisp/Clojure reflex gets wrong.
 - **Remainder is `//`, not `%` or `mod`** (design §7.4). `%` is unquote
   sugar, so `(% x 2)` *compiles fine* and fails at runtime with
   "undefined symbol: unquote". This is the single most likely mistake.
-- **`~` is the message-send operator and needs spaces**: `(obj ~ method)`.
+- **Messages use dot descriptors**: `(obj .method)` and `obj/.method`.
   Glued to a word (`~size`) it is one ordinary symbol, which is what a path
-  send segment like `xs/~size` desugars to.
+  send segment like `xs/.size` desugars to.
 - **A `%` path stage takes a name, not an expression.** `xs/%i` is fine;
   `xs/%(- i 1)` is a read error — bind the index first.
 - **snake_case everywhere.** Never hyphens in a name.

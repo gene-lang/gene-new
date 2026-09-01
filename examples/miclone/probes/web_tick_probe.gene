@@ -69,23 +69,23 @@
       (decode_hello b c hello)
       # The extent is the server's to state (§10), so the world is built from
       # `hello` rather than from constants this file would have to keep in step.
-      (set world (new_world (hello ~ get hello_bx) (hello ~ get hello_by)
-                            (hello ~ get hello_bz) (hello ~ get hello_span_x)
-                            (hello ~ get hello_span_y) (hello ~ get hello_span_z)))
+      (set world (new_world (hello .get hello_bx) (hello .get hello_by)
+                            (hello .get hello_bz) (hello .get hello_span_x)
+                            (hello .get hello_span_y) (hello .get hello_span_z)))
       (set have_hello true))
     (if_yes (== kind msg_registry) (decode_registry b c reg))
     (if_yes (== kind msg_block)
       (decode_block b c header block_c block_l)
-      (store_block world (header ~ get block_bx) (header ~ get block_by)
-                   (header ~ get block_bz) block_c)
+      (store_block world (header .get block_bx) (header .get block_by)
+                   (header .get block_bz) block_c)
       (set blocks_in (+ blocks_in 1.0)))
     (if_yes (== kind msg_node_delta)
       (decode_node_delta b c delta)
       (if_yes (< dn max_deltas)
-        (dlog ~ set (* dn 4.0) (delta ~ get delta_x))
-        (dlog ~ set (+ (* dn 4.0) 1.0) (delta ~ get delta_y))
-        (dlog ~ set (+ (* dn 4.0) 2.0) (delta ~ get delta_z))
-        (dlog ~ set (+ (* dn 4.0) 3.0) (delta ~ get delta_id))
+        (dlog .set (* dn 4.0) (delta .get delta_x))
+        (dlog .set (+ (* dn 4.0) 1.0) (delta .get delta_y))
+        (dlog .set (+ (* dn 4.0) 2.0) (delta .get delta_z))
+        (dlog .set (+ (* dn 4.0) 3.0) (delta .get delta_id))
         (set dn (+ dn 1.0))))))
 
   (await ($time/sleep 900.0))
@@ -96,8 +96,8 @@
 
   # The whole world, in windows of 64 — the queue drops the oldest frame past
   # 256, which is why this asks rather than being pushed (§10.1).
-  (var total (* (hello ~ get hello_span_x)
-                (* (hello ~ get hello_span_y) (hello ~ get hello_span_z))))
+  (var total (* (hello .get hello_span_x)
+                (* (hello .get hello_span_y) (hello .get hello_span_z))))
   (var from 0.0)
   (while (< from total)
     (var count (if (< (- total from) 64.0) (- total from) 64.0))
@@ -119,9 +119,9 @@
   # assumed: the terrain is generated and a hardcoded coordinate is a fixture
   # that rots.
   (var sand (id_of reg "miclone:sand"))
-  (var ox (* (hello ~ get hello_bx) block_dim))
-  (var oy (* (hello ~ get hello_by) block_dim))
-  (var oz (* (hello ~ get hello_bz) block_dim))
+  (var ox (* (hello .get hello_bx) block_dim))
+  (var oy (* (hello .get hello_by) block_dim))
+  (var oz (* (hello .get hello_bz) block_dim))
   # **A flag, not a coordinate sentinel.** `-1` is a legal x here — this world
   # sits at x = -1437 — and §13.4's chest read as closed for exactly this reason.
   # Fourth time in this project; the rule is in the design doc and I still wrote
@@ -131,9 +131,9 @@
   (var ty 0.0)
   (var tz 0.0)
   (var x (+ ox 1.0))
-  (var lim_x (+ ox (- (* (hello ~ get hello_span_x) block_dim) 1.0)))
-  (var lim_y (+ oy (- (* (hello ~ get hello_span_y) block_dim) 1.0)))
-  (var lim_z (+ oz (- (* (hello ~ get hello_span_z) block_dim) 1.0)))
+  (var lim_x (+ ox (- (* (hello .get hello_span_x) block_dim) 1.0)))
+  (var lim_y (+ oy (- (* (hello .get hello_span_y) block_dim) 1.0)))
+  (var lim_z (+ oz (- (* (hello .get hello_span_z) block_dim) 1.0)))
   (while (&& (< x lim_x) (! found))
     (var z (+ oz 1.0))
     (while (&& (< z lim_z) (! found))
@@ -187,10 +187,10 @@
     (var span_ok true)
     (var i quiet)
     (while (< i dn)
-      (var dx (dlog ~ get (* i 4.0)))
-      (var dy (dlog ~ get (+ (* i 4.0) 1.0)))
-      (var dz (dlog ~ get (+ (* i 4.0) 2.0)))
-      (var did (dlog ~ get (+ (* i 4.0) 3.0)))
+      (var dx (dlog .get (* i 4.0)))
+      (var dy (dlog .get (+ (* i 4.0) 1.0)))
+      (var dz (dlog .get (+ (* i 4.0) 2.0)))
+      (var did (dlog .get (+ (* i 4.0) 3.0)))
       (if (&& (== dx tx) (== dz tz))
         (then
           (set in_col (+ in_col 1.0))

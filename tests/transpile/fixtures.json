@@ -623,8 +623,8 @@
     },
     {
       "id": "module.declaration_imports",
-      "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (type Child ^is Thing) (enum Choice none (some Int)) (fn describe [value : Named] : Str (value ~ Named:name)) (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\")))",
-      "web_source": "(mod module_declaration_imports ^profile web) (import [Thing Named Choice] from \"./fixture_decl_dep.gene\") (type Child ^is Thing) (fn describe [value : Named] : Str (value ~ Named:name)) (fn run [] : Str (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\"))))",
+      "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (type Child ^is Thing) (enum Choice none (some Int)) (fn describe [value : Named] : Str (value .Named:name)) (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\")))",
+      "web_source": "(mod module_declaration_imports ^profile web) (import [Thing Named Choice] from \"./fixture_decl_dep.gene\") (type Child ^is Thing) (fn describe [value : Named] : Str (value .Named:name)) (fn run [] : Str (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\"))))",
       "web_files": {
         "fixture_decl_dep.gene": "(mod fixture_decl_dep ^profile web) (protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (enum Choice none (some Int))"
       },
@@ -795,8 +795,8 @@
     },
     {
       "id": "type.constructor_and_message",
-      "source": "(type Counter ^props {^value Int} (ctor [start : Int] (set self/value start)) (message add [amount : Int] : Int (set self/value (+ self/value amount)))) (let counter (new Counter 2)) (counter ~ add 3)",
-      "web_source": "(mod type_constructor_and_message ^profile web) (type Counter ^props {^value Int} (ctor [start : Int] (set self/value start)) (message add [amount : Int] : Int (set self/value (+ self/value amount)))) (fn run [] : Int (let counter (new Counter 2)) (counter ~ add 3))",
+      "source": "(type Counter ^props {^value Int} (ctor [start : Int] (set self/value start)) (message add [amount : Int] : Int (set self/value (+ self/value amount)))) (let counter (new Counter 2)) (counter .add 3)",
+      "web_source": "(mod type_constructor_and_message ^profile web) (type Counter ^props {^value Int} (ctor [start : Int] (set self/value start)) (message add [amount : Int] : Int (set self/value (+ self/value amount)))) (fn run [] : Int (let counter (new Counter 2)) (counter .add 3))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -825,8 +825,8 @@
     },
     {
       "id": "protocol.symbol_dispatch",
-      "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) ((Thing ^label \"protocol\") ~ Named:name)",
-      "web_source": "(mod protocol_symbol_dispatch ^profile web) (protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (fn run [] : Str ((Thing ^label \"protocol\") ~ Named:name))",
+      "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) ((Thing ^label \"protocol\") .Named:name)",
+      "web_source": "(mod protocol_symbol_dispatch ^profile web) (protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (fn run [] : Str ((Thing ^label \"protocol\") .Named:name))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -840,8 +840,8 @@
     },
     {
       "id": "protocol.super_chain",
-      "source": "(protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog ^is Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($ \"dog+\" (super ~ Speaks:speak)))) ((Dog) ~ Speaks:speak)",
-      "web_source": "(mod protocol_super_chain ^profile web) (protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog ^is Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($ \"dog+\" (super ~ Speaks:speak)))) (fn run [] : Str ((Dog) ~ Speaks:speak))",
+      "source": "(protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog ^is Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($ \"dog+\" (super .Speaks:speak)))) ((Dog) .Speaks:speak)",
+      "web_source": "(mod protocol_super_chain ^profile web) (protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog ^is Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($ \"dog+\" (super .Speaks:speak)))) (fn run [] : Str ((Dog) .Speaks:speak))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -855,8 +855,8 @@
     },
     {
       "id": "protocol.builtin_dispatch",
-      "source": "(protocol Named (message name [self] : Str)) (impl Named for Str (message name [self] : Str self)) (\"builtin\" ~ Named:name)",
-      "web_source": "(mod protocol_builtin_dispatch ^profile web) (protocol Named (message name [self] : Str)) (impl Named for Str (message name [self] : Str self)) (fn run [] : Str (\"builtin\" ~ Named:name))",
+      "source": "(protocol Named (message name [self] : Str)) (impl Named for Str (message name [self] : Str self)) (\"builtin\" .Named:name)",
+      "web_source": "(mod protocol_builtin_dispatch ^profile web) (protocol Named (message name [self] : Str)) (impl Named for Str (message name [self] : Str self)) (fn run [] : Str (\"builtin\" .Named:name))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -894,8 +894,8 @@
     },
     {
       "id": "protocol.boundary_type",
-      "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (fn describe [value : Named] : Str (value ~ Named:name)) (describe (Thing ^label \"boundary\"))",
-      "web_source": "(mod protocol_boundary_type ^profile web) (protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (fn describe [value : Named] : Str (value ~ Named:name)) (fn run [] : Str (describe (Thing ^label \"boundary\")))",
+      "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (fn describe [value : Named] : Str (value .Named:name)) (describe (Thing ^label \"boundary\"))",
+      "web_source": "(mod protocol_boundary_type ^profile web) (protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (fn describe [value : Named] : Str (value .Named:name)) (fn run [] : Str (describe (Thing ^label \"boundary\")))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -957,8 +957,8 @@
     },
     {
       "id": "type.inheritance_super_and_ctor",
-      "source": "(type Base ^props {^value Int} (ctor [value : Int] (set self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child ^is Base (message add_twice [amount : Int] : Int (super ~ add (+ amount amount)))) (let child (new Child 5)) (child ~ add_twice 3)",
-      "web_source": "(mod type_inheritance_super ^profile web) (type Base ^props {^value Int} (ctor [value : Int] (set self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child ^is Base (message add_twice [amount : Int] : Int (super ~ add (+ amount amount)))) (fn run [] : Int (let child (new Child 5)) (child ~ add_twice 3))",
+      "source": "(type Base ^props {^value Int} (ctor [value : Int] (set self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child ^is Base (message add_twice [amount : Int] : Int (super .add (+ amount amount)))) (let child (new Child 5)) (child .add_twice 3)",
+      "web_source": "(mod type_inheritance_super ^profile web) (type Base ^props {^value Int} (ctor [value : Int] (set self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child ^is Base (message add_twice [amount : Int] : Int (super .add (+ amount amount)))) (fn run [] : Int (let child (new Child 5)) (child .add_twice 3))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1065,8 +1065,8 @@
     },
     {
       "id": "data.map_structural_key_lookup",
-      "source": "(let data {{#{^a 1} : \"found\"}}) (data ~ get #{^a 1})",
-      "web_source": "(mod data_map_structural_key ^profile web) (fn run [] : Str (let data {{#{^a 1} : \"found\"}}) (data ~ get #{^a 1}))",
+      "source": "(let data {{#{^a 1} : \"found\"}}) (data .get #{^a 1})",
+      "web_source": "(mod data_map_structural_key ^profile web) (fn run [] : Str (let data {{#{^a 1} : \"found\"}}) (data .get #{^a 1}))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -1128,8 +1128,8 @@
     },
     {
       "id": "stream.yield_skip_and_pull",
-      "source": "(fn values [] : (Stream Int Never) (yield 1) (yield void) (yield 2)) (let stream (values)) (let first (stream ~ next)) (if (stream ~ has_next) (+ first (stream ~ next)) 0)",
-      "web_source": "(mod stream_yield_pull ^profile web) (fn values [] : (Stream Int Never) (yield 1) (yield void) (yield 2)) (fn run [] : Int (let stream (values)) (let first (stream ~ next)) (if (stream ~ has_next) (+ first (stream ~ next)) 0))",
+      "source": "(fn values [] : (Stream Int Never) (yield 1) (yield void) (yield 2)) (let stream (values)) (let first (stream .next)) (if (stream .has_next) (+ first (stream .next)) 0)",
+      "web_source": "(mod stream_yield_pull ^profile web) (fn values [] : (Stream Int Never) (yield 1) (yield void) (yield 2)) (fn run [] : Int (let stream (values)) (let first (stream .next)) (if (stream .has_next) (+ first (stream .next)) 0))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1321,7 +1321,7 @@
     },
     {
       "id": "rejected.actor",
-      "source": "(fn handle [ctx state msg] ($actor/continue (+ state msg))) (var a ($actor/spawn ^init (fn [] 0) ^handle handle)) (a ~ send 2) ((a ~ snapshot) ~ /state)",
+      "source": "(fn handle [ctx state msg] ($actor/continue (+ state msg))) (var a ($actor/spawn ^init (fn [] 0) ^handle handle)) (a .send 2) (/state (a .snapshot))",
       "web_source": "(mod rejected_actor ^profile web) (fn run [] : Int ($actor/spawn ^init (fn [] 0) ^handle (fn [ctx state msg] ($actor/continue state))))",
       "expected_value": {
         "kind": "int",
@@ -1814,8 +1814,8 @@
     },
     {
       "id": "buffer.sized_f32_write_and_sum",
-      "source": "(fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b ~ set i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b ~ len)) (set s (+ s (b ~ get i))) (set i (+ i 1.0))) s) (run)",
-      "web_source": "(mod buf_f32 ^profile web) (fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b ~ set i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b ~ len)) (set s (+ s (b ~ get i))) (set i (+ i 1.0))) s)",
+      "source": "(fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b .set i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b .len)) (set s (+ s (b .get i))) (set i (+ i 1.0))) s) (run)",
+      "web_source": "(mod buf_f32 ^profile web) (fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b .set i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b .len)) (set s (+ s (b .get i))) (set i (+ i 1.0))) s)",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",
@@ -1829,8 +1829,8 @@
     },
     {
       "id": "buffer.sized_zero_filled",
-      "source": "(fn run [] : F64 (var b ($buffer F64 3.0)) (+ (b ~ get 0.0) (+ (b ~ get 1.0) (b ~ get 2.0)))) (run)",
-      "web_source": "(mod buf_zero ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (+ (b ~ get 0.0) (+ (b ~ get 1.0) (b ~ get 2.0))))",
+      "source": "(fn run [] : F64 (var b ($buffer F64 3.0)) (+ (b .get 0.0) (+ (b .get 1.0) (b .get 2.0)))) (run)",
+      "web_source": "(mod buf_zero ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (+ (b .get 0.0) (+ (b .get 1.0) (b .get 2.0))))",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",
@@ -1844,8 +1844,8 @@
     },
     {
       "id": "buffer.u16_elements_are_int",
-      "source": "(fn run [] : Int (var b ($buffer U16 2.0)) (b ~ set 0.0 65535) (b ~ set 1.0 1) (+ (b ~ get 0.0) (b ~ get 1.0))) (run)",
-      "web_source": "(mod buf_u16 ^profile web) (fn run [] : Int (var b ($buffer U16 2.0)) (b ~ set 0.0 65535) (b ~ set 1.0 1) (+ (b ~ get 0.0) (b ~ get 1.0)))",
+      "source": "(fn run [] : Int (var b ($buffer U16 2.0)) (b .set 0.0 65535) (b .set 1.0 1) (+ (b .get 0.0) (b .get 1.0))) (run)",
+      "web_source": "(mod buf_u16 ^profile web) (fn run [] : Int (var b ($buffer U16 2.0)) (b .set 0.0 65535) (b .set 1.0 1) (+ (b .get 0.0) (b .get 1.0)))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1874,8 +1874,8 @@
     },
     {
       "id": "buffer.parameterized_annotation_matches",
-      "source": "(fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b ~ set 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b ~ get 0.0)) (fn run [] : F64 (take (make))) (run)",
-      "web_source": "(mod buf_ann ^profile web) (fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b ~ set 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b ~ get 0.0)) (fn run [] : F64 (take (make)))",
+      "source": "(fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b .set 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b .get 0.0)) (fn run [] : F64 (take (make))) (run)",
+      "web_source": "(mod buf_ann ^profile web) (fn make [] : (Buffer F32) (var b ($buffer F32 2.0)) (b .set 0.0 2.5) b) (fn take [b : (Buffer F32)] : F64 (b .get 0.0)) (fn run [] : F64 (take (make)))",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",
@@ -2134,8 +2134,8 @@
     },
     {
       "id": "index.buffer_get_negative",
-      "source": "(var b ($buffer F64 3.0)) (b ~ set 2.0 42.0) (b ~ get -1.0)",
-      "web_source": "(mod index_buffer_get_negative ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (b ~ set 2.0 42.0) (b ~ get -1.0))",
+      "source": "(var b ($buffer F64 3.0)) (b .set 2.0 42.0) (b .get -1.0)",
+      "web_source": "(mod index_buffer_get_negative ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (b .set 2.0 42.0) (b .get -1.0))",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",
@@ -2149,8 +2149,8 @@
     },
     {
       "id": "index.buffer_set_negative",
-      "source": "(var b ($buffer F64 3.0)) (b ~ set -1.0 9.0) (b ~ get 2.0)",
-      "web_source": "(mod index_buffer_set_negative ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (b ~ set -1.0 9.0) (b ~ get 2.0))",
+      "source": "(var b ($buffer F64 3.0)) (b .set -1.0 9.0) (b .get 2.0)",
+      "web_source": "(mod index_buffer_set_negative ^profile web) (fn run [] : F64 (var b ($buffer F64 3.0)) (b .set -1.0 9.0) (b .get 2.0))",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",

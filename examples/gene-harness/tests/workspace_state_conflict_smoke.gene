@@ -22,11 +22,11 @@
             ^contextual true
             ^activate (fn [] (fn [host]
               (fn increment []
-                (var current (host ~ PluginHost:state))
+                (var current (host .PluginHost:state))
                 (var next (if (== current nil) 1 (+ current 1)))
-                (host ~ PluginHost:update_state next)
+                (host .PluginHost:update_state next)
                 next)
-              (host ~ PluginHost:provide "Shared" increment))))))))
+              (host .PluginHost:provide "Shared" increment))))))))
 
   (var left_workspace (open_workspace args/0))
   (var left_events (open_event_store args/1))

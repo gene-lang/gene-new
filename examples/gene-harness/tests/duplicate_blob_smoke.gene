@@ -21,12 +21,12 @@
   (if_not condition ($panic message)))
 
 (fn blob_count [workspace] : Int
-  (var keys (workspace/blob_store ~ Store:keys))
-  keys/~size)
+  (var keys (workspace/blob_store .Store:keys))
+  keys/.size)
 
 (fn file_count [workspace] : Int
   (var names (list_dir workspace/generated_dir))
-  names/~size)
+  names/.size)
 
 (fn main [args]
   (var workspace (open_workspace args/0))

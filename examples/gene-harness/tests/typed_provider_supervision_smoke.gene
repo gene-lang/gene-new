@@ -31,8 +31,8 @@
             ^requires []
             ^contextual true
             ^activate (fn [] (fn [host]
-              (host ~ PluginHost:provide "TypedSlow" (SlowRender))
-              (host ~ PluginHost:provide "TypedFs" (LimitedFs)))))))))
+              (host .PluginHost:provide "TypedSlow" (SlowRender))
+              (host .PluginHost:provide "TypedFs" (LimitedFs)))))))))
   (var workspace (open_workspace args/0))
   (var h (new_harness ^workspace workspace))
   (register_module workspace h "typed_slow" source
@@ -40,14 +40,14 @@
     ^limits {^max_steps 5000 ^max_memory_mb 64 ^timeout_ms 100})
   (var failed false)
   (try
-    ((resolve h "TypedSlow") ~ HarnessRender:render "probe")
+    ((resolve h "TypedSlow") .HarnessRender:render "probe")
   catch Any
     (set failed ($str/contains? $ex/message "max steps exceeded")))
   (assert failed
     "direct typed protocol methods must retain the sandbox module budget")
   (var refused false)
   (try
-    ((resolve h "TypedFs") ~ HarnessFs:read_text
+    ((resolve h "TypedFs") .HarnessFs:read_text
       "examples/gene-harness/README.md")
   catch Any
     (set refused true))

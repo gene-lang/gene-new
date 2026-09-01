@@ -45,12 +45,12 @@ No layer silently overrides another.
 
 ## 2. Message resolution
 
-An unqualified send `(x ~ m)` reaches only the receiver's type-direct messages,
+An unqualified send `(x .m)` reaches only the receiver's type-direct messages,
 walking `^is` (`docs/design.md` §3). It never reaches a protocol impl, so a send
 site carries no protocol candidate set and simple-name ambiguity cannot arise
 from one.
 
-A protocol message is always qualified — `(x ~ P:m)` — which names exactly one
+A protocol message is always qualified — `(x .P:m)` — which names exactly one
 message identity. `P` must resolve as an ordinary binding at the send site.
 Choosing the impl for that identity happens at dispatch time, against the
 receiver's runtime type and in the send's visibility scope (§4).

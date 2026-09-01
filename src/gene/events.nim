@@ -929,7 +929,7 @@ proc registerEventNamespace(root: Scope) =
                            acceptsNamed = false))
 
   # `event/Bus` implements `EventSink`, and so do the three shipped sinks, so
-  # `(sink ~ EventSink:emit event)` resolves for every one of them.
+  # `(sink .EventSink:emit event)` resolves for every one of them.
   let emitMessage = eventSinkProtocol.protocolMessages["emit"]
   for receiver in [busType, recordingSinkType, nullSinkType,
                    compositeSinkType]:

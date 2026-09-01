@@ -80,9 +80,9 @@ was authorized to fix, since the brief restricts edits to
   vkString"). String-sorting/binary-search examples had to carry a
   hand-written `char_code`/`str_lt?` helper (byte-by-byte comparison via
   `$str/to_utf8`) instead.
-- **Bare protocol message sends** (`(x ~ message)` for a `protocol`
+- **Bare protocol message sends** (`(x .message)` for a `protocol`
   message) — contrary to `docs/design.md` §10's examples, the current
-  binary requires the qualified form `(x ~ Protocol:message)` even with a
+  binary requires the qualified form `(x .Protocol:message)` even with a
   single unambiguous `impl`. All 67 `protocols` examples use the qualified
   form throughout.
 - **`push!`/`set!`/`put!`-style bang-suffixed mutators** — the repo's `src/`

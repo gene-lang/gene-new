@@ -153,8 +153,8 @@
 (fn new_abms [] : AbmRegistry
   (new AbmRegistry))
 
-(fn abm_count [a : AbmRegistry] : F64 (a/counts ~ get count_abms))
-(fn queued_count [a : AbmRegistry] : F64 (a/counts ~ get count_queued))
+(fn abm_count [a : AbmRegistry] : F64 (a/counts .get count_abms))
+(fn queued_count [a : AbmRegistry] : F64 (a/counts .get count_queued))
 
 (type AbmRegistryFull
   ^props {^message Str}
@@ -170,14 +170,14 @@
   (var id (abm_count a))
   (if_yes (>= id max_abms)
     (fail (new AbmRegistryFull $"abm registry is full at ${max_abms} entries")))
-  (a/labels ~ push label)
-  (a/actions ~ push action)
-  (a/trigger ~ set id trigger)
-  (a/group ~ set id group)
-  (a/interval ~ set id interval_ms)
-  (a/chance ~ set id chance)
-  (a/due ~ set id 0.0)
-  (a/counts ~ set count_abms (+ id 1.0))
+  (a/labels .push label)
+  (a/actions .push action)
+  (a/trigger .set id trigger)
+  (a/group .set id group)
+  (a/interval .set id interval_ms)
+  (a/chance .set id chance)
+  (a/due .set id 0.0)
+  (a/counts .set count_abms (+ id 1.0))
   id)
 
 (fn abm_label [a : AbmRegistry id : F64] : Str
@@ -185,7 +185,7 @@
   (var i id)
   l/%i)
 
-(fn abm_trigger [a : AbmRegistry id : F64] : F64 (a/trigger ~ get id))
+(fn abm_trigger [a : AbmRegistry id : F64] : F64 (a/trigger .get id))
 
 # The mod's code, handed back to the server that will run it. Indexed by the
 # same id as every column above, which is what keeps the action and its
@@ -195,12 +195,12 @@
   (var i id)
   acts/%i)
 
-(fn abm_group [a : AbmRegistry id : F64] : F64 (a/group ~ get id))
-(fn abm_interval [a : AbmRegistry id : F64] : F64 (a/interval ~ get id))
-(fn abm_chance [a : AbmRegistry id : F64] : F64 (a/chance ~ get id))
-(fn abm_due [a : AbmRegistry id : F64] : F64 (a/due ~ get id))
+(fn abm_group [a : AbmRegistry id : F64] : F64 (a/group .get id))
+(fn abm_interval [a : AbmRegistry id : F64] : F64 (a/interval .get id))
+(fn abm_chance [a : AbmRegistry id : F64] : F64 (a/chance .get id))
+(fn abm_due [a : AbmRegistry id : F64] : F64 (a/due .get id))
 (fn set_abm_due [a : AbmRegistry id : F64 at : F64] : Nil
-  (a/due ~ set id at))
+  (a/due .set id at))
 
 # --- the queue ---------------------------------------------------------------
 #
@@ -212,20 +212,20 @@
   (var n (queued_count a))
   (if (>= n max_queued) false
     (do
-      (a/queue_x ~ set n x)
-      (a/queue_y ~ set n y)
-      (a/queue_z ~ set n z)
-      (a/queue_id ~ set n id)
-      (a/counts ~ set count_queued (+ n 1.0))
+      (a/queue_x .set n x)
+      (a/queue_y .set n y)
+      (a/queue_z .set n z)
+      (a/queue_id .set n id)
+      (a/counts .set count_queued (+ n 1.0))
       true)))
 
-(fn queued_x [a : AbmRegistry i : F64] : F64 (a/queue_x ~ get i))
-(fn queued_y [a : AbmRegistry i : F64] : F64 (a/queue_y ~ get i))
-(fn queued_z [a : AbmRegistry i : F64] : F64 (a/queue_z ~ get i))
-(fn queued_id [a : AbmRegistry i : F64] : F64 (a/queue_id ~ get i))
+(fn queued_x [a : AbmRegistry i : F64] : F64 (a/queue_x .get i))
+(fn queued_y [a : AbmRegistry i : F64] : F64 (a/queue_y .get i))
+(fn queued_z [a : AbmRegistry i : F64] : F64 (a/queue_z .get i))
+(fn queued_id [a : AbmRegistry i : F64] : F64 (a/queue_id .get i))
 
 (fn clear_queue [a : AbmRegistry] : Nil
-  (a/counts ~ set count_queued 0.0))
+  (a/counts .set count_queued 0.0))
 
 # --- the check queue ---------------------------------------------------------
 #
@@ -233,24 +233,24 @@
 # the same reason: a cascade that filled it is a runaway rather than a busy
 # world, and dropping the overflow makes it settle instead of grow.
 
-(fn check_count [a : AbmRegistry] : F64 (a/counts ~ get count_checks))
+(fn check_count [a : AbmRegistry] : F64 (a/counts .get count_checks))
 
 (fn queue_check [a : AbmRegistry x : F64 y : F64 z : F64] : Bool
   (var n (check_count a))
   (if (>= n max_queued) false
     (do
-      (a/check_x ~ set n x)
-      (a/check_y ~ set n y)
-      (a/check_z ~ set n z)
-      (a/counts ~ set count_checks (+ n 1.0))
+      (a/check_x .set n x)
+      (a/check_y .set n y)
+      (a/check_z .set n z)
+      (a/counts .set count_checks (+ n 1.0))
       true)))
 
-(fn check_x_at [a : AbmRegistry i : F64] : F64 (a/check_x ~ get i))
-(fn check_y_at [a : AbmRegistry i : F64] : F64 (a/check_y ~ get i))
-(fn check_z_at [a : AbmRegistry i : F64] : F64 (a/check_z ~ get i))
+(fn check_x_at [a : AbmRegistry i : F64] : F64 (a/check_x .get i))
+(fn check_y_at [a : AbmRegistry i : F64] : F64 (a/check_y .get i))
+(fn check_z_at [a : AbmRegistry i : F64] : F64 (a/check_z .get i))
 
 (fn clear_checks [a : AbmRegistry] : Nil
-  (a/counts ~ set count_checks 0.0))
+  (a/counts .set count_checks 0.0))
 
 # --- sampling ----------------------------------------------------------------
 #
