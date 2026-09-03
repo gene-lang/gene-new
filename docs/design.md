@@ -2579,7 +2579,7 @@ worth making.
 confinement as `fs/write_text`, but the payload is `Bytes`, so a byte with the
 high bit set survives instead of being mangled by UTF-8 handling.
 
-`examples/new_world/src/png.gene` is the worked example — CRC32, Adler-32, a
+The archived `new_world` example carried the worked case — CRC32, Adler-32, a
 zlib stream, and PNG chunk layout, all in Gene with no host help.
 
 ### 7.10 Loop bodies are scopes; integral Floats index sequences

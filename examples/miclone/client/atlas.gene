@@ -3,8 +3,8 @@
 # Procedural rather than a shipped PNG, and drawn with the 2D canvas bindings
 # rather than encoded: `texImage2D` accepts a canvas element directly, so the
 # atlas never has to become a file. That removes a PNG encoder, an asset to
-# fetch, and a load event from the spike — `examples/new_world` needed all three
-# and writes its own encoder to get them.
+# fetch, and a load event from the spike — the archived `new_world` example
+# needed all three and wrote its own encoder to get them.
 #
 # **M7 turned the tile list into a registry.** The layout is still
 # `core/mesh.gene`'s grid, but the slot numbers and the colours are no

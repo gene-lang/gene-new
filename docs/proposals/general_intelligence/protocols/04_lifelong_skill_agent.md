@@ -16,7 +16,7 @@ design. See [`README.md`](README.md).
 ## Rejected exact-list subject pilot
 
 The first exact subject is retained in
-[`lifelong_task_subject.gene`](../../../../examples/general_intelligence/src/lifelong_task_subject.gene).
+[`lifelong_task_subject.gene`](../../../../archive/general_intelligence/src/lifelong_task_subject.gene).
 It is permanently excluded and must not be used as the experiment-4 treatment
 subject. It is a controlled tool-workflow domain, not a claim to cover
 open-ended coding.
@@ -135,7 +135,7 @@ these pilots may tune the replacement's treatment comparison.
 ## Rejected version-2 latent-workflow subject
 
 The second subject is retained in
-[`latent_workflow_subject.gene`](../../../../examples/general_intelligence/src/latent_workflow_subject.gene).
+[`latent_workflow_subject.gene`](../../../../archive/general_intelligence/src/latent_workflow_subject.gene).
 It is permanently excluded and must not be used unchanged for treatment.
 It keeps the closed 12-operation integer-list interpreter but changes the
 learning problem. Public tasks never list a target primitive expansion. Each
@@ -245,17 +245,17 @@ and commits to one component at a time.
 
 Its generator is a new versioned layer over the retained version-2 building
 blocks in
-[`latent_workflow_subject.gene`](../../../../examples/general_intelligence/src/latent_workflow_subject.gene).
+[`latent_workflow_subject.gene`](../../../../archive/general_intelligence/src/latent_workflow_subject.gene).
 The version-2 catalog, family order, replay suites, training variants, and
 retention probes are reused unchanged. The held-out compositions are redrawn
 under one additional rejection rule, defined below, and a new public projection
 exposes ordered components rather than a whole-task goal string. Version 2's
 source, exporter, harness, and immutable reports remain byte-identical negative
 evidence. The version-3 files are
-[`component_workflow_subject.gene`](../../../../examples/general_intelligence/src/component_workflow_subject.gene),
-[`component_workflow_pilot_export.gene`](../../../../examples/general_intelligence/src/component_workflow_pilot_export.gene),
+[`component_workflow_subject.gene`](../../../../archive/general_intelligence/src/component_workflow_subject.gene),
+[`component_workflow_pilot_export.gene`](../../../../archive/general_intelligence/src/component_workflow_pilot_export.gene),
 and
-[`tools/pilot_component_workflow_agent.py`](../../../../tools/pilot_component_workflow_agent.py).
+[`archive/tools/pilot_component_workflow_agent.py`](../../../../archive/tools/pilot_component_workflow_agent.py).
 
 ### Public checker contract
 
@@ -1312,7 +1312,7 @@ Preregistered procedure, fixed before its first run:
 
 | Item | Value |
 |---|---|
-| Instrument | `tools/pilot_component_workflow_agent.py`, unchanged |
+| Instrument | `archive/tools/pilot_component_workflow_agent.py`, unchanged |
 | Tasks | 10 held-out compositions |
 | Composition arity | 2 |
 | Attempts, rounds, silent cap | as the subject: 2, `3 * arity + 3`, 3 |
@@ -1415,9 +1415,9 @@ promotes a skill. Begin with lexical or structural retrieval; approximate
 indexes remain optional and cannot change exact skill semantics.
 
 The non-evaluation mechanism pilot now lives in
-[`examples/general_intelligence/src/verified_skills.gene`](../../../../examples/general_intelligence/src/verified_skills.gene)
+[`archive/general_intelligence/src/verified_skills.gene`](../../../../archive/general_intelligence/src/verified_skills.gene)
 and
-[`skill_verifier_pilot.gene`](../../../../examples/general_intelligence/src/skill_verifier_pilot.gene).
+[`skill_verifier_pilot.gene`](../../../../archive/general_intelligence/src/skill_verifier_pilot.gene).
 It executes a bounded declarative pipeline rather than evaluating arbitrary
 model-authored code. A separate verifier process owns four toy cases, promotes
 the candidate that passes all four, rejects an incomplete candidate that passes
@@ -1433,9 +1433,9 @@ model-supplied receipt. Pilot tasks and skills are permanently excluded from
 the future curriculum and evaluation.
 
 The next excluded pilot implements that shape in
-[`tools/pilot_skill_verifier_service.py`](../../../../tools/pilot_skill_verifier_service.py)
+[`archive/tools/pilot_skill_verifier_service.py`](../../../../archive/tools/pilot_skill_verifier_service.py)
 and
-[`skill_verifier_service_kernel.gene`](../../../../examples/general_intelligence/src/skill_verifier_service_kernel.gene).
+[`skill_verifier_service_kernel.gene`](../../../../archive/general_intelligence/src/skill_verifier_service_kernel.gene).
 The private service exclusively owns a suite, 32-byte-or-longer HMAC key,
 append-only canonical journal, and Unix socket, all outside the agent worktree
 with no group or other permissions. It invokes an exact Gene kernel with only a
@@ -1473,7 +1473,7 @@ authority rule. It is not evidence that the suite is secret from the
 repository's ordinary user and is not a treatment result.
 
 The qualified model was then connected through
-[`tools/pilot_verified_skill_agent.py`](../../../../tools/pilot_verified_skill_agent.py)
+[`archive/tools/pilot_verified_skill_agent.py`](../../../../archive/tools/pilot_verified_skill_agent.py)
 with only the typed submission capability. The first nested-object schema and a
 second flat schema with one enum field per step both failed all six submission
 rounds on schema conformance; their immutable reports are

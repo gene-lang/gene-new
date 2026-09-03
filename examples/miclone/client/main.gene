@@ -21,7 +21,8 @@
 #
 # Everything lives inside `main` because the profile rejects top-level `var`:
 # a module has no mutable state, so the frame loop is a closure over `main`'s
-# locals. `examples/new_world` is built the same way and for the same reason.
+# locals. The archived `new_world` example was built the same way, for the
+# same reason.
 
 (mod main ^profile web)
 

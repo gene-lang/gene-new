@@ -1,5 +1,15 @@
 # Experimentally grounded directions for a Gene learning agent
 
+> **Archived subjects (2026-09-03).** The Gene subjects, frozen consumers, and
+> pilot/freeze/evaluate harness for these experiments were moved out of the
+> repository into an untracked `archive/` directory: the example projects to
+> `archive/general_intelligence/` and the nine driver scripts to
+> `archive/tools/`. Paths below are written against that layout. The protocols
+> and results stay here as the record; nothing under `archive/` ships with a
+> clone, so none of the commands below run against a fresh checkout, and the
+> moved scripts' own internal paths were left as they were — reviving an
+> experiment means repointing them first.
+
 Research note, revised 2026-08-09. This is an architecture shortlist, not a
 claim that any listed system is AGI.
 
@@ -42,7 +52,7 @@ their semantics.
 | Program synthesis and neuro-symbolic induction | Produce executable hypotheses and reusable abstractions. ([DreamCoder](https://arxiv.org/abs/2006.08381)) | Search explodes without a bounded language and task distribution. | Strongest native match: Gene programs are already data, so candidates and learned libraries need no second symbolic representation. |
 | Active inference | Makes belief, preference, and information-gathering explicit. ([Kaplan & Friston](https://pmc.ncbi.nlm.nih.gov/articles/PMC6060791/), [discrete-state synthesis](https://pmc.ncbi.nlm.nih.gov/articles/PMC7732703/)) | A normative framework whose result depends on its supplied model and priors. | Exact discrete belief updates provide a cheap test of belief-aware exploration before neural training. |
 | Continual learning and open-endedness | Retain old capabilities and generate new challenges. ([EWC](https://doi.org/10.1073/PNAS.1611835114), [POET](https://arxiv.org/abs/1901.01753)) | Capacity remains finite; generated novelty can become trivial or evaluator-driven. | Exact skills plus replay tests can reduce forgetting; generated tasks still need independent validity gates. |
-| LLM tool agents with memory | Combine reasoning, action, reflection, curricula, and skill libraries. ([ReAct](https://arxiv.org/abs/2210.03629), [Reflexion](https://arxiv.org/abs/2303.11366), [Voyager](https://arxiv.org/abs/2305.16291)) | Fluent reflection is not learning evidence, and self-verification is not independent. | [`examples/ai_agent`](../../../examples/ai_agent/README.md) already supplies much of the loop; its missing architectural component is an independent promotion verifier. |
+| LLM tool agents with memory | Combine reasoning, action, reflection, curricula, and skill libraries. ([ReAct](https://arxiv.org/abs/2210.03629), [Reflexion](https://arxiv.org/abs/2303.11366), [Voyager](https://arxiv.org/abs/2305.16291)) | Fluent reflection is not learning evidence, and self-verification is not independent. | The archived `ai_agent` example already supplied much of the loop; its missing architectural component is an independent promotion verifier. |
 
 ## Research discipline and document boundary
 

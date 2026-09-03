@@ -8,15 +8,15 @@ been generated or opened. The remaining pre-freeze gate is independent review
 of the exact candidate digest.
 
 Implementation:
-[`examples/general_intelligence/src/exact_belief.gene`](../../../../examples/general_intelligence/src/exact_belief.gene).
+[`archive/general_intelligence/src/exact_belief.gene`](../../../../archive/general_intelligence/src/exact_belief.gene).
 Mechanism smoke:
-[`examples/general_intelligence/tests/active_inference_smoke.gene`](../../../../examples/general_intelligence/tests/active_inference_smoke.gene).
+[`archive/general_intelligence/tests/active_inference_smoke.gene`](../../../../archive/general_intelligence/tests/active_inference_smoke.gene).
 Generator/evaluator:
-[`examples/general_intelligence/src/active_inference_experiment.gene`](../../../../examples/general_intelligence/src/active_inference_experiment.gene).
+[`archive/general_intelligence/src/active_inference_experiment.gene`](../../../../archive/general_intelligence/src/active_inference_experiment.gene).
 Review/freeze tool:
-[`tools/prepare_active_inference_freeze.py`](../../../../tools/prepare_active_inference_freeze.py).
+[`archive/tools/prepare_active_inference_freeze.py`](../../../../archive/tools/prepare_active_inference_freeze.py).
 Post-freeze runner and preregistered analysis:
-[`tools/run_active_inference_evaluation.py`](../../../../tools/run_active_inference_evaluation.py).
+[`archive/tools/run_active_inference_evaluation.py`](../../../../archive/tools/run_active_inference_evaluation.py).
 
 ## Hypothesis and claim boundary
 
@@ -267,7 +267,7 @@ After independent review, record in a separate freeze manifest:
 - reviewer identity and confirmation that no evaluation output was opened.
 
 The implemented freeze procedure is
-[`tools/prepare_active_inference_freeze.py`](../../../../tools/prepare_active_inference_freeze.py).
+[`archive/tools/prepare_active_inference_freeze.py`](../../../../archive/tools/prepare_active_inference_freeze.py).
 It hashes this protocol and every subject, planner, generator, evaluator,
 exporter, smoke, pilot, and freeze-procedure source. The candidate digest also
 binds the Git revision, Gene executable hash, declared seeds, commands,
@@ -298,16 +298,16 @@ repository validates schema and digest binding but cannot self-certify reviewer
 independence. Once review is complete, the commands are:
 
 ```bash
-python3 tools/prepare_active_inference_freeze.py packet \
+python3 archive/tools/prepare_active_inference_freeze.py packet \
   --output REVIEW_DIR/review_packet.json
-python3 tools/prepare_active_inference_freeze.py attest \
+python3 archive/tools/prepare_active_inference_freeze.py attest \
   --packet REVIEW_DIR/review_packet.json \
   --approve --notes "REVIEW_NOTES" \
   --output REVIEW_DIR/review_attestation.json
-python3 tools/prepare_active_inference_freeze.py freeze \
+python3 archive/tools/prepare_active_inference_freeze.py freeze \
   --attestation REVIEW_DIR/review_attestation.json \
   --output-dir FREEZE_DIR
-python3 tools/prepare_active_inference_freeze.py verify \
+python3 archive/tools/prepare_active_inference_freeze.py verify \
   --freeze-dir FREEZE_DIR
 ```
 
@@ -322,9 +322,9 @@ regenerating its stream.
 Only after a legitimate freeze may the treatment runner execute:
 
 ```bash
-python3 tools/run_active_inference_evaluation.py run \
+python3 archive/tools/run_active_inference_evaluation.py run \
   --freeze-dir FREEZE_DIR --output-dir RESULT_DIR
-python3 tools/run_active_inference_evaluation.py verify \
+python3 archive/tools/run_active_inference_evaluation.py verify \
   --freeze-dir FREEZE_DIR --result-dir RESULT_DIR
 ```
 

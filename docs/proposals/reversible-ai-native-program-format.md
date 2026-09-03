@@ -62,8 +62,8 @@ introduced here:
   form: `(!= xs/%(- i 1) "\n")` read as a three-argument `!=` whose second
   argument was the index expression. Design §2.1 already declared that short
   syntax invalid, so it is now a read error at the right column rather than
-  a silent mis-parse. One real occurrence existed in this repo
-  (`examples/ai_agent/src/tui.gene`), a latent wrong-arity bug that raised
+  a silent mis-parse. One real occurrence existed in this repo, in the
+  since-archived `ai_agent` example, a latent wrong-arity bug that raised
   nothing; it is fixed.
 
 The Step-3 load-speed benchmark passed on a provisional corpus (this repo's

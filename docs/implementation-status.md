@@ -15,8 +15,8 @@ protocols/derivation with scoped impl visibility
 overlays, explicit capability values, native roots/calls, typed FFI
 boundaries, `^repr native_wrapper` types (design §16.6),
 serialization, the experimental `gene runurl` URL-module entry
-(design §15.9), and the AI-agent support libraries exercised by
-`examples/ai_agent`.
+(design §15.9), and the AI-agent support libraries, whose `ai_agent` example
+driver is archived.
 
 The normative implemented surface lives in `docs/spec/` and is checked by
 `nimble spec`. Unit and integration coverage runs with `nimble test`; broad

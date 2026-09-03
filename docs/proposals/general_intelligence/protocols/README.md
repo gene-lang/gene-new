@@ -1,5 +1,15 @@
 # General-intelligence experiment protocols
 
+> **Archived subjects (2026-09-03).** The Gene subjects, frozen consumers, and
+> pilot/freeze/evaluate harness for these experiments were moved out of the
+> repository into an untracked `archive/` directory: the example projects to
+> `archive/general_intelligence/` and the nine driver scripts to
+> `archive/tools/`. Paths below are written against that layout. The protocols
+> and results stay here as the record; nothing under `archive/` ships with a
+> clone, so none of the commands below run against a fresh checkout, and the
+> moved scripts' own internal paths were left as they were — reviving an
+> experiment means repointing them first.
+
 These files hold implementation and evaluation details for the experiments
 motivated by [`../architecture.md`](../architecture.md). None of the treatment
 comparisons is frozen on this candidate branch. Experiment 2 has an executable

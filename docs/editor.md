@@ -554,8 +554,10 @@ mouse events, repainting, and terminal restoration better than ad hoc ANSI
 output. It should remain an adapter, not leak into the model.
 
 The repository has one curses consumer today: `src/gene/ext/term/stdlib_term.nim`
-provides the public owned Gene `curses/Screen` surface used by
-`examples/ai_agent/src/tui.gene`. A second native REPL frontend
+provides the public owned Gene `curses/Screen` surface. Its application
+consumer, the `ai_agent` example TUI, is archived; the surface's in-tree
+coverage is the public-curses suite in `tests/test_cli.nim`. A second native
+REPL frontend
 (`src/gene/repl_curses.nim`) was removed on 2026-08-13 -- the `$repl` and
 `$curses` namespaces already expose everything it needed, so it belongs in Gene
 rather than in the runtime. The public `curses/draw` call is specialized to a

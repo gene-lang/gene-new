@@ -1392,7 +1392,7 @@ proc biEach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
 # net/http server implementation (event loop, dispatch, helpers).
 include ./ext/http_server
 
-# --- os: environment, subprocess, and line input (examples/ai_agent/design.md §3,§6) ---
+# --- os: environment, subprocess, and line input (docs/stdlib.md "Module Layout") ---
 #
 # Host authority is capability-gated exactly like fs/Net: `os/get_env` needs an
 # `Os/Env` value and `os/exec`/`os/exec_stdio` need `Os/Exec`, so a launcher can
@@ -1818,9 +1818,9 @@ proc biOsExecStdio(args: openArray[Value], call: ptr NativeCall): Value {.nimcal
 # --- os/exec_async + os/exec_stream_async: subprocess on a dedicated thread ---
 #
 # The synchronous exec natives block the scheduler thread, freezing every
-# fiber (and the net/http event loop) for the duration of the child — the
-# §12.9 gap-1 problem in examples/ai_agent/design.md. These variants run the child on a
-# dedicated OS thread and settle an external Task, following the proven
+# fiber (and the net/http event loop) for the duration of the child. These
+# variants run the child on a dedicated OS thread and settle an external
+# Task, following the proven
 # foreign-thread pattern (tests/test_native_api_threads.nim, the aio worker's
 # runAsyncIoRequest): every value crossing threads is markSharedValue'd so its
 # refcount is atomic, handoff goes through the lock-protected channel/task
@@ -3586,7 +3586,7 @@ proc biReplRun(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} 
                               ReplOptions(interactive: interactive,
                                           prompt: prompt)))
 
-# --- fs: synchronous read + directory listing (examples/ai_agent/design.md §6) ---
+# --- fs: synchronous read + directory listing (docs/stdlib.md "Module Layout") ---
 
 proc activeFilesystem(call: ptr NativeCall):
     tuple[provider: FilesystemProvider, context: CapabilityContext] =
@@ -3752,7 +3752,7 @@ proc biFsRealPath(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   except CatchableError as e:
     raiseFilesystemOperationError("fs/real_path", "fs/ReadDir", e.msg, scope)
 
-# --- json: parse and stringify over Gene value kinds (examples/ai_agent/design.md §5) ---
+# --- json: parse and stringify over Gene value kinds (docs/stdlib.md "Module Layout") ---
 
 const jsonMaxDepth = 200
 
@@ -8033,7 +8033,7 @@ proc registerStdlibNamespaces(root: Scope) =
                                                       acceptsNamed = false))
   root.define("crypto", newNamespace("crypto", cryptoScope))
 
-  # os: env, subprocess, line input (examples/ai_agent/design.md §3,§6). Capabilities are
+  # os: env, subprocess, line input (docs/stdlib.md "Module Layout"). Capabilities are
   # ambient values like net/Connect; a launcher can withhold them.
   let osScope = newScope(root)
   osScope.define("Env", newCapability(app.hostCapabilityProvider.types.osEnv))
@@ -8206,7 +8206,7 @@ proc registerStdlibNamespaces(root: Scope) =
     fsNs.nsScope.define("real_path",
       newNativeCallFn("fs/real_path", biFsRealPath, acceptsNamed = false))
 
-  # json: parse/stringify over Gene value kinds (examples/ai_agent/design.md §5).
+  # json: parse/stringify over Gene value kinds (docs/stdlib.md "Module Layout").
   let jsonScope = newScope(root)
   jsonScope.define("parse", newNativeCallFn("json/parse", biJsonParse,
                                             acceptsNamed = false))

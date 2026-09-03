@@ -151,10 +151,13 @@ proc main() =
     let chunk = compileSource(simpleProgram)
     checksum = checksum + int64(chunk.instructions.len + chunk.constants.len)
 
-  let agentUnit = readAllWithLocs(readFile("examples/ai_agent/src/tui.gene"),
-                                  "examples/ai_agent/src/tui.gene")
-  bench("compiler.ai_agent.source_unit_to_gir", 1, i):
-    let chunk = compileSourceUnit(agentUnit)
+  # The largest tracked Gene module, as a stand-in for real application source:
+  # one unit with the declaration mix and nesting depth a hand-written program
+  # actually has, which a synthetic generator does not reproduce.
+  const largeModule = "examples/gene-harness/src/kernel.gene"
+  let largeUnit = readAllWithLocs(readFile(largeModule), largeModule)
+  bench("compiler.large_module.source_unit_to_gir", 1, i):
+    let chunk = compileSourceUnit(largeUnit)
     checksum = checksum + int64(chunk.instructions.len + chunk.constants.len)
 
   let simpleChunk = compileSource(simpleProgram)

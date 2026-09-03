@@ -4,7 +4,8 @@
 #   OPENROUTER_KEY=$(cat ~/.secrets/openrouter) \
 #     gene run --allow_read_dir /tmp src/main.gene chat
 #
-# The shape is `examples/safe_ai_agent`'s, pointed at a different subject. There
+# The shape is the archived `safe_ai_agent` example's, pointed at a different
+# subject. There
 # the evaluated program's world is a workspace directory; here it is the running
 # harness — the model gets transaction-aware operations bound to the current
 # Harness, never the mutable Harness record itself, so
@@ -543,10 +544,11 @@ and end it with }.""")
 # Session memory
 # ---------------------------------------------------------------------------
 #
-# `safe_ai_agent` discards history when a task finishes, which is right for a
-# task runner and wrong for a shell: the second thing anyone types is "now
-# remove it". Without a carry-over the model guessed a plugin name out of the
-# system prompt's example and uninstalled something that was never there.
+# The archived `safe_ai_agent` example discarded history when a task finished,
+# which is right for a task runner and wrong for a shell: the second thing
+# anyone types is "now remove it". Without a carry-over the model guessed a
+# plugin name out of the system prompt's example and uninstalled something that
+# was never there.
 #
 # So a bounded window of completed exchanges rides along, separate from the
 # within-task history that already accumulates per turn. Bounded because a

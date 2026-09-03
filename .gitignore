@@ -5,7 +5,6 @@ temp/
 tests/*
 !tests/*.nim
 !tests/*.mjs
-!tests/test_ai_agent_tui.py
 !tests/transpile/
 !tests/transpile/**
 # Hand-written Gene programs the capability suite loads as entry modules. They
@@ -62,6 +61,7 @@ coverage/
 .planning/
 tmp/
 *.tmp
+archive/
 examples/ai_agent/logs/
 examples/ai_agent/home/
 *.vsix

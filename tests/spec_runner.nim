@@ -251,7 +251,7 @@ suite "spec — reader surface from design":
     for source in ["(x ^name)", "(x @doc)", "{^name}", "#{^name}"]:
       expect ReadError:
         discard read(source)
-    let manifest = readAll(readFile("examples/ai_agent/package.gene"))
+    let manifest = readAll(readFile("examples/todo_app/package.gene"))
     check manifest.len == 1
     check manifest[0].kind == vkMap
     check manifest[0].mapEntries.hasKey("name")
@@ -7794,7 +7794,7 @@ suite "spec — packages (docs/proposals/package.md)":
 
   test "the committed examples use format 1":
     check loadPackageAt("examples/todo_app", poEntry).name == "gene/todo_app"
-    check loadPackageAt("examples/ai_agent", poEntry).name == "gene/ai_agent"
+    check loadPackageAt("examples/miclone", poEntry).name == "gene/miclone"
     check loadPackageAt("examples/utils", poEntry).library.entry ==
       "src/form.gene"
 suite "spec — macros across modules (design §11/§15)":
@@ -8650,7 +8650,7 @@ suite "spec — os and json from ai-agent plan":
     check getMonoTime() - started < initDuration(milliseconds = 1200)
 
   test "scheduler stays live while an async exec child runs":
-    # The whole point of the async variants (examples/ai_agent/design.md §12.9 gap 1):
+    # The whole point of the async variants (docs/stdlib.md, `$os` async exec):
     # fibers must make progress during a subprocess. The snapshot is taken
     # right after the await — a blocking exec would leave it at 0.
     check_eval("(import $os [exec_async Exec]) " &
@@ -8692,7 +8692,7 @@ suite "spec — os and json from ai-agent plan":
       "[\"hello\" true false [\"made\" \"note.txt\"]]"
 
   test "$fs/real_path resolves an existing file and a not-yet-created path":
-    ## examples/ai_agent/design.md §8.5: workspace confinement resolves real paths before
+    ## Workspace confinement (docs/capabilities.md) resolves real paths before
     ## the containment check. An existing file and a to-be-created file under
     ## the same directory must resolve to sibling absolute paths, so a `..`
     ## detour still lands inside the resolved root.

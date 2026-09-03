@@ -11,21 +11,21 @@ and incomplete, so the treatment evaluation is not authorized. See
 [`README.md`](README.md).
 
 Implementation:
-[`examples/general_intelligence/src/library_induction.gene`](../../../../examples/general_intelligence/src/library_induction.gene).
+[`archive/general_intelligence/src/library_induction.gene`](../../../../archive/general_intelligence/src/library_induction.gene).
 Mechanism smoke:
-[`examples/general_intelligence/tests/library_induction_smoke.gene`](../../../../examples/general_intelligence/tests/library_induction_smoke.gene).
+[`archive/general_intelligence/tests/library_induction_smoke.gene`](../../../../archive/general_intelligence/tests/library_induction_smoke.gene).
 Corpus smoke and full-size pilot:
-[`library_induction_corpus_smoke.gene`](../../../../examples/general_intelligence/tests/library_induction_corpus_smoke.gene)
+[`library_induction_corpus_smoke.gene`](../../../../archive/general_intelligence/tests/library_induction_corpus_smoke.gene)
 and
-[`library_induction_corpus_pilot.gene`](../../../../examples/general_intelligence/tests/library_induction_corpus_pilot.gene).
+[`library_induction_corpus_pilot.gene`](../../../../archive/general_intelligence/tests/library_induction_corpus_pilot.gene).
 Unrelated-control pilot:
-[`library_induction_control_pilot.gene`](../../../../examples/general_intelligence/tests/library_induction_control_pilot.gene).
+[`library_induction_control_pilot.gene`](../../../../archive/general_intelligence/tests/library_induction_control_pilot.gene).
 Public-search/hidden-verifier pilot:
-[`library_induction_evaluation_pilot.gene`](../../../../examples/general_intelligence/tests/library_induction_evaluation_pilot.gene).
+[`library_induction_evaluation_pilot.gene`](../../../../archive/general_intelligence/tests/library_induction_evaluation_pilot.gene).
 Review/freeze tool:
-[`tools/prepare_library_induction_freeze.py`](../../../../tools/prepare_library_induction_freeze.py).
+[`archive/tools/prepare_library_induction_freeze.py`](../../../../archive/tools/prepare_library_induction_freeze.py).
 Post-freeze runner and preregistered analysis:
-[`tools/run_library_induction_evaluation.py`](../../../../tools/run_library_induction_evaluation.py).
+[`archive/tools/run_library_induction_evaluation.py`](../../../../archive/tools/run_library_induction_evaluation.py).
 
 ## Hypothesis and claim boundary
 

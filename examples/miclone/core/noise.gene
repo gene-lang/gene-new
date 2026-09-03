@@ -11,7 +11,7 @@
 #
 #     frac(sin(x * 12.9898 + y * 78.233) * 43758.5453)
 #
-# `examples/new_world/src/world.gene` uses exactly that, and it is fine there —
+# The archived `new_world` example used exactly that, and it was fine there —
 # that game generates its world in one place. Here it would be a latent
 # world-splitting bug, because `sin` carries no cross-runtime accuracy guarantee
 # whatsoever. `core/exact.gene` supplies an integer hash instead, and the ban is

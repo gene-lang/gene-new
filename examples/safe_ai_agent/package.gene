@@ -1,8 +1,0 @@
-{^format 1
- ^name "gene/safe_ai_agent"
- ^description "An agent whose only action is an emitted Gene program"
- ^version "0.1.0"
- ^applications [
-   (application "agent" ^entry "src/main.gene")
- ]
- ^dependencies {}}

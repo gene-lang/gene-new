@@ -10,7 +10,7 @@ the behavior users and tests can rely on.
 ## 1. Purpose and resume boundary
 
 The harness is a substrate for a general-purpose agent. It converges the useful
-parts of `examples/ai_agent`, `examples/safe_ai_agent`, and the earlier
+parts of the archived `ai_agent` and `safe_ai_agent` examples and the earlier
 in-memory harness prototype.
 
 Resume means the last flushed, committed turn boundary. It does not serialize

@@ -200,7 +200,7 @@ shell reachable means either a general N-argument FFI trampoline or a C
 extension module. Both are real projects. Neither should be on the critical path
 to seeing a voxel.
 
-**2. There is a precedent in this tree.** `examples/new_world` is a playable
+**2. There is a precedent.** The archived `new_world` example is a playable
 side-view voxel game whose world generation, physics, collision, and mining are
 Gene compiled through the web profile. Miclone is that argument in 3D.
 

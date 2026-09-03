@@ -273,9 +273,9 @@ one that needs this work.
 
 ## 8. Migrating the gateway (the first consumer)
 
-`examples/ai_agent/src/gateway.gene` milestone 11 already persists sessions to sqlite
-by hand (`write_data`/`read_data` + `insert or replace`). It becomes the
-reference `Store` consumer:
+The archived `ai_agent` example's gateway already persisted sessions to sqlite
+by hand (`write_data`/`read_data` + `insert or replace`), and that shape is the
+reference `Store` consumer this section is written against:
 
 - `GENE_GATEWAY_DB=path` → `store/sqlite/open` over the `db/sqlite`
   connection; a later `GENE_GATEWAY_STATE=dir` → `store/fs/open`. Same session
