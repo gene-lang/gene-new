@@ -1548,9 +1548,17 @@ proc geneMemberPath*(name: string): Value =
   ## `$name`, the reader's spelling for a `gene` root member (design §2.1).
   newNode(newSym("path"), body = @[newSym("gene"), newSym(name)])
 
-proc materializeIterateStage*(stage: PipelineStage, receiver: Value,
-                              itemName: string, terminal: bool,
-                              immutable = false): Value =
+proc materializeIterateCallback*(stage: PipelineStage, itemName: string,
+                                 immutable = false): Value =
+  ## The callback half of an iterate stage. Kept separate from its driver so
+  ## the compiler can close over eagerly evaluated stage components without
+  ## leaving those components in a long-lived module/REPL frame.
+  let item = newSym(itemName)
+  let call = materializePipelineStage(stage, item, immutable)
+  newNode(newSym("fn"), body = @[newList(@[item]), call])
+
+proc materializeIterateDriver*(receiver, callback: Value,
+                               terminal: bool): Value =
   ## `=>` runs its stage once per item, and a pipeline never accumulates a list
   ## to get from one stage to the next:
   ##
@@ -1559,10 +1567,6 @@ proc materializeIterateStage*(stage: PipelineStage, receiver: Value,
   ## - the final stage has no consumer for its results, so it drains the
   ##   upstream for effect and the pipeline answers `nil`.
   ##
-  ## The per-item call is an ordinary `->` stage whose slot holds the item.
-  let item = newSym(itemName)
-  let call = materializePipelineStage(stage, item, immutable)
-  let callback = newNode(newSym("fn"), body = @[newList(@[item]), call])
   if terminal:
     # `each` drives the receiver in its own kind and answers nil, so nothing is
     # collected and an eager receiver needs no conversion into the lazy tier.
@@ -1572,6 +1576,12 @@ proc materializeIterateStage*(stage: PipelineStage, receiver: Value,
   newNode(geneMemberPath("map"),
           body = @[newNode(geneMemberPath("to_stream"), body = @[receiver]),
                    callback])
+
+proc materializeIterateStage*(stage: PipelineStage, receiver: Value,
+                              itemName: string, terminal: bool,
+                              immutable = false): Value =
+  let callback = materializeIterateCallback(stage, itemName, immutable)
+  materializeIterateDriver(receiver, callback, terminal)
 
 proc isSpreadNode(value: Value): bool =
   value.kind == vkNode and value.head.kind == vkSymbol and

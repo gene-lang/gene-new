@@ -171,6 +171,7 @@ suite "reader — dot message descriptors":
     check_read("x...", "(... x)")
   test "value pipeline syntax is preserved":
     check_read("(a -> f c)", "(a -> f c)")
+    check_read("#(a -> f @trace 1)", "#(a -> f @trace 1)")
     check_read("(a -> f ^k _ -> g ^k 2)", "(a -> f ^k _ -> g ^k 2)")
     let pipeline = read("(a -> f ^k _ -> g 2)")
     check pipeline.kind == vkPipeline
@@ -181,6 +182,9 @@ suite "reader — dot message descriptors":
     check pipeline.pipelineStages[0].slot.name == "k"
     check pipeline.pipelineStages[1].body[0].intVal == 2
     check read("(a -> f [x _])").pipelineStages[0].slot.kind == pskDefault
+    let immutable = read("#(a -> f @trace 1)")
+    check immutable.pipelineImmutable
+    check immutable.pipelineStages[0].meta["trace"].intVal == 1
   test "iterate stages read as their own delimiter":
     check_read("(a => f c)", "(a => f c)")
     check_read("(a -> f => g _ -> h)", "(a -> f => g _ -> h)")

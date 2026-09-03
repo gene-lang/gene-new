@@ -6864,7 +6864,7 @@ proc compileSetPath(c: var Compiler, node: Value) =
   compileExpr(c, body[1])
   discard c.emit(opSetPath, parts.len - 1)
 
-proc isDotMessageDescriptor(name: string): bool =
+proc isDotMessageDescriptor*(name: string): bool =
   (name.len > 1 and name[0] == '.' and not name.startsWith("..")) or
     (name.len > 2 and name.startsWith("?."))
 
@@ -8992,6 +8992,32 @@ proc expandDirectPipelineStage(c: var Compiler,
       "macro expansion produced more than one direct '_' pipeline slot")
   result.slot = detected.slot
 
+proc rejectLeadingPipelineSend(stage: PipelineStage) =
+  if stage.slot.kind != pskHead and stage.head.kind == vkSymbol and
+      stage.head.symVal.isDotMessageDescriptor:
+    raise newException(GeneError,
+      "leading '" & stage.head.symVal & "' in a pipeline stage has no " &
+      "receiver; use a head slot: (a -> _ " & stage.head.symVal & ")")
+
+proc capturedIterateCallback(stage: PipelineStage,
+                             hoisted: openArray[(string, Value)],
+                             itemName: string,
+                             immutable: bool): Value =
+  ## A module/REPL frame lives for the application, so its compiler-owned
+  ## hoists must not. Pass the already ordered component expressions through a
+  ## tiny factory call: the returned per-item callback owns only that call
+  ## scope, and a lazy Stream keeps it alive for exactly as long as needed.
+  let callback = materializeIterateCallback(stage, itemName, immutable)
+  if hoisted.len == 0:
+    return callback
+  var params, arguments: seq[Value]
+  for (name, value) in hoisted:
+    params.add newSym(name)
+    arguments.add value
+  let factory = newNode(newSym("fn"),
+    body = @[newList(params), callback])
+  newNode(factory, body = arguments)
+
 proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
   if pipeline.pipelineStages.len == 0:
     compileExpr(c, pipeline.pipelineInitial, tail = tail)
@@ -9029,12 +9055,14 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
   discard c.emit(opPop)
   let tempExpr = newSym(tempName)
   for i, sourceStage in pipeline.pipelineStages:
+    let savedLoc = c.currentLoc
+    if sourceStage.sourceLoc.hasSourceLoc:
+      c.currentLoc = sourceStage.sourceLoc
     c.rejectPipelineSyntaxStage(sourceStage)
+    sourceStage.rejectLeadingPipelineSend()
     var stage = c.expandDirectPipelineStage(sourceStage)
     c.rejectPipelineSyntaxStage(stage)
-    let savedLoc = c.currentLoc
-    if stage.sourceLoc.hasSourceLoc:
-      c.currentLoc = stage.sourceLoc
+    stage.rejectLeadingPipelineSend()
     var expr, publicSite: Value
     case stage.kind
     of pstCall:
@@ -9044,20 +9072,27 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
                                             pipeline.pipelineImmutable)
     of pstIterate:
       let stageId = c.nextGensym()
+      let itemName = "\x00gene_item_" & $stageId
       var counter = 0
       let hoist = hoistIterateStage(stage, proc(): string =
         inc counter
         "\x00gene_iterate_" & $stageId & "_" & $counter)
-      for (name, value) in hoist.hoisted:
-        c.bindHidden(name, value)
+      let publicStage = stage
       stage = hoist.stage
       let terminal = i == pipeline.pipelineStages.high
-      expr = materializeIterateStage(stage, tempExpr,
-                                     "\x00gene_item_" & $stageId, terminal,
-                                     pipeline.pipelineImmutable)
+      if not c.inFunction:
+        let callback = capturedIterateCallback(
+          stage, hoist.hoisted, itemName, pipeline.pipelineImmutable)
+        expr = materializeIterateDriver(tempExpr, callback, terminal)
+      else:
+        for (name, value) in hoist.hoisted:
+          c.bindHidden(name, value)
+        expr = materializeIterateStage(stage, tempExpr, itemName, terminal,
+                                       pipeline.pipelineImmutable)
       # Diagnostics name the stage, never the compiler's own storage.
-      publicSite = materializeIterateStage(stage, newSym("_"), "_", terminal,
-                                           pipeline.pipelineImmutable)
+      publicSite = materializeIterateStage(
+        publicStage, newSym("_"), "_", terminal,
+        pipeline.pipelineImmutable)
     let firstInstruction = c.chunk.instructions.len
     compileExpr(c, expr, tail = tail and i == pipeline.pipelineStages.high)
     for instruction, site in c.chunk.callSites.mpairs:
@@ -9067,6 +9102,13 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
     if i < pipeline.pipelineStages.high:
       c.setTemp()
       discard c.emit(opPop)
+  if not c.inFunction:
+    # Module, namespace, and REPL scopes survive after evaluation. The result
+    # remains on the operand stack; overwrite only the inaccessible scratch
+    # binding so it cannot retain the last stage input for the application.
+    c.emitConst NIL
+    c.setTemp()
+    discard c.emit(opPop)
 
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false,
                  tail = false) =

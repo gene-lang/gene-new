@@ -63,6 +63,24 @@ The intended flow is:
 The surface removes temporary names without weakening evaluation-order,
 single-evaluation, error, or call semantics.
 
+The explicit sequenced spelling and the pipeline spelling are equivalent:
+
+```gene
+# Explicit locals
+(var parsed (parse source options))
+(var checked (validate parsed schema))
+(save db checked)
+
+# Pipeline
+(source
+  -> parse options
+  -> validate schema
+  -> save db _)
+```
+
+The pipeline removes only the names. It does not remove either sequencing
+edge or turn the source into an ordinary nested call.
+
 ## 3. Goals
 
 - Make left-to-right data flow explicit and compact.
@@ -109,6 +127,7 @@ single-evaluation, error, or call semantics.
 pipeline       = "(", initial_form, pipeline_stage,
                  { pipeline_stage }, ")" ;
 pipeline_stage = spacing, ( "->" | "=>" ), spacing, stage_segment ;
+stage_segment  = form, { form } ;
 ```
 
 The normative surface is integrated into `docs/design.md`. The required
@@ -117,7 +136,8 @@ lexical distinctions are:
 - a whole `->` or `=>` atom inside a node is the pipeline delimiter;
 - `->name`, `a->b`, `-->`, and `=>name` remain ordinary symbols, so the rule is
   about the atom rather than about spacing;
-- an arrow delimiter outside a pipeline-capable node is a read error;
+- only a parenthesized node, `(...)` or `#(...)`, is pipeline-capable; an arrow
+  delimiter in a list, map, or outside such a node is a read error;
 - a multi-form segment before the first delimiter, an empty stage, and more
   than one direct `_` in a stage are read errors;
 - `;` and an arrow delimiter may not occur at the same parenthesis depth in one
@@ -135,9 +155,13 @@ the ordinary grouping convention:
 (a b -> f c)     # ReadError: wrap the call in its own parentheses
 ```
 
-An implicitly wrapped leading segment would have to decide that `a b` means
-`(a b)` — reading as a call the author never wrote, in the one position where
-the reader has no delimiter to justify it.
+Under the ordinary node grammar, `(a b -> f c)` has already read `a` as the
+callee and `b` as its argument before the unexpected delimiter arrives. An
+implicitly wrapped leading segment would reinterpret that prefix as `(a b)` —
+a call the author never parenthesized — in the one position where the reader
+has no earlier delimiter to justify the reinterpretation. Clojure-style thread
+macros commonly accept that shape, so the rejection is intentional rather than
+an assumption that users will not try it.
 
 The reader must accumulate each segment separately rather than reuse one
 node-wide property table. Each raw segment owns its own head, props, meta, body,
@@ -157,6 +181,25 @@ ordinary duplicate detection within one stage:
 
 Nested nodes parse recursively, so a delimiter inside a stage argument belongs
 to the nested node rather than splitting the outer pipeline.
+
+Stage meta is ordinary stage-owned syntax just like props. It is preserved on
+the materialized call site and round-trips through the printer:
+
+```gene
+(a -> f @trace span ^mode fast c)
+```
+
+`#(...)` accepts the same grammar and retains the immutable source marker:
+
+```gene
+#(a -> f c)
+```
+
+The marker is not quotation. Executing `#(1 -> + 2)` answers `3`, just as an
+immutable ordinary call node still executes. Under quote or quasiquote it
+round-trips as `#(1 -> + 2)`, and materialized stage call-site nodes retain the
+marker for tooling. Pipeline syntax still has no runtime mutation interface;
+`quote`, not `#`, is the spelling that makes it inert.
 
 Therefore:
 
@@ -205,6 +248,7 @@ as:
 
 ```gene
 (a -> _ c)           # call the value a with c
+(a -> _)             # call the value a with no arguments
 (a -> f _ c)         # f(a, c)
 (a -> f c _)         # f(c, a)
 (a -> f ^k _)        # f(^k a)
@@ -271,6 +315,9 @@ is not a slot, and a head slot makes the item a dot-send receiver.
 (xs => _ .render c)      # per item: (item .render c)
 ```
 
+Here `=>` means **per item**, never key/value pairing. Maps have an explicit
+pair conversion described below.
+
 **A pipeline never accumulates a collection between stages.** What a `=>` stage
 does is decided by one question — does the pipeline continue after it?
 
@@ -279,6 +326,20 @@ does is decided by one question — does the pipeline continue after it?
   producer flows through one item at a time.
 - **Final.** The stage has no consumer for its results. It drains its upstream
   for effect, and the pipeline answers `nil`.
+
+The complete shape table is:
+
+| Stage position | Delimiter | When the stage runs | Value passed onward / pipeline answer |
+| --- | --- | --- | --- |
+| non-final | `->` | eagerly, once | the ordinary call result |
+| final | `->` | eagerly, once | the ordinary call result |
+| non-final | `=>` | components now; per-item calls lazily when pulled | a `Stream` |
+| final | `=>` | components now; per-item calls eagerly while draining | `nil` |
+
+Appending a stage after a final `=>` changes the old stage from an eager drain
+to a lazy map. Consequently `(rows => save -> log)` does **not** call `save`
+unless `log` consumes the Stream. Use `(rows -> $each save)` when the drain
+must remain explicit and position-independent.
 
 ```gene
 (rows => save)                              # per row, for effect; nil
@@ -296,25 +357,22 @@ with no `to_stream` — `Map` — therefore reaches a non-final `=>` only throug
 an explicit `-> $to_pairs_stream`, while a final `=>` drains it directly
 because `each` needs no conversion.
 
+Those two Map paths deliberately inherit the generic collection operations'
+different callback shapes. A final `=>`/`each` sees each Map **value**. A
+non-final path through `to_pairs_stream` sees `[key value]`, where a PropMap key
+is a `Sym` and `entry/1` is the value. Changing `each` to see pairs would be a
+stdlib migration, not a pipeline rule.
+
+Collecting stays explicit and therefore retains the standard-library `$`
+spelling: a lazy collecting chain ends in `-> $into []`. No pipeline-only
+collector alias is introduced.
+
 The two delimiters mix at one parenthesis depth. `;` mixes with neither.
 
 This is the explicit stage-level syntax that Section 4's non-goal reserved.
 The rejected feature was a `->` stage that changes meaning when the incoming
 value happens to be a stream; `=>` is a different delimiter the author writes,
 so a reader never has to know a runtime type to know what a stage does.
-
-#### Evaluating a `=>` stage
-
-A `=>` stage evaluates its callee and its non-slot arguments **once**, before
-iterating. Only the per-item call repeats:
-
-1. evaluate the incoming expression exactly once and retain it;
-2. evaluate every separately evaluated stage component — the callee unless the
-   head is the slot, each direct property value, each direct positional
-   argument — once, into compiler-owned storage;
-3. build the per-item callable over that storage;
-4. hand the retained value and the callable to `map` over `to_stream` when a
-   later stage will consume the results, or to `each` when the stage is last.
 
 Symbols and literals are left in place rather than lifted: a symbol load is
 idempotent, and keeping it in place preserves ordinary head dispatch for `+`,
@@ -371,6 +429,58 @@ The named-slot form has the same guarantee:
 make_a → make_f → load retained a → invoke selected f
 ```
 
+### 7.1 Per-item stage evaluation
+
+A `=>` stage evaluates its callee and its non-slot arguments **once**, before
+iterating. Only the per-item call repeats:
+
+1. evaluate the incoming expression exactly once and retain it;
+2. evaluate every separately evaluated stage component — the callee unless the
+   head is the slot, each direct property value, and each direct positional
+   argument — once, into compiler-owned storage;
+3. build the per-item callable over that storage;
+4. hand the retained value and callable to `map` over `to_stream` when a later
+   stage will consume results, or to `each` when the stage is last.
+
+Component evaluation is eager even if zero items will flow. Here `choose` runs
+once, while the per-item call never runs:
+
+```gene
+(var out
+  ([1 2 3]
+    => (choose) _ 10
+    -> $take 0
+    -> $into []))
+```
+
+Stage execution then interleaves per item. For
+`xs => a => b -> $into []`, the observable order is
+`a(item1), b(item1), a(item2), b(item2)`, not all `a` calls followed by all
+`b` calls.
+
+### 7.2 Failure and laziness
+
+The earlier short-circuit guarantee is stage-local for eager `->` work and
+item-local for lazy `=>` work. If the third per-item call raises, calls and
+effects already completed for items one and two remain visible. The failing
+item does not continue through later stages, no later item is pulled, and the
+pipeline provides no transaction or rollback.
+
+A lazy pipeline also inherits Stream ownership:
+
+- an adapter owns its upstream until normal exhaustion or explicit close;
+- `for` closes the Stream it consumes, and `$into []` consumes it;
+- a bounded `take` detaches its still-resumable upstream when the bound is
+  reached;
+- a returned Stream keeps its per-item callback and captured components alive
+  until it is exhausted, closed, or released; and
+- merely abandoning an unpulled Stream does not promise deterministic resource
+  cleanup. Code using a resource-backed producer must consume it in a closing
+  construct or call `close` explicitly.
+
+Closing a Stream releases both its upstream and its per-item callback. The
+pipeline does not add a second lifetime policy around that contract.
+
 ## 8. Canonical representation
 
 The reader must preserve pipeline structure in a canonical form until a
@@ -389,6 +499,11 @@ position the compiler consumes it. Under quote/quasiquote it remains inert
 syntax that macros may inspect or emit and `eval` may later compile. It has no
 constructor, message surface, serialization contract, `Send` conformance, or
 ordinary collection behavior.
+
+The representation also retains whether the parenthesized source used `#(`.
+That bit exists for faithful syntax/tooling round-trips and for the immutable
+stage call-site marker described in Section 5; it does not make executable
+pipeline syntax inert.
 
 The representation must satisfy these constraints:
 
@@ -420,6 +535,9 @@ instruction. The interface must guarantee:
 
 - no user-visible binding;
 - no duplicate evaluation;
+- compiler-owned storage is frame-bounded inside a function and does not
+  remain live in a module, namespace, or REPL scope after the pipeline result
+  no longer needs it;
 - no extra heap allocation on the runtime hot path when a frame/local slot is
   sufficient;
 - ordinary call-site metadata and diagnostics;
@@ -441,6 +559,13 @@ That spelling risks exposing or capturing a generated name, adds synthetic
 scope artifacts to diagnostics, and can interfere with slot accounting. The
 compiler should own the temporary directly.
 
+Concretely, the VM overwrites the top-level pipeline scratch slot after the
+final stage. Top-level `=>` components are captured through the generated
+callback's own call scope rather than stored in the application-long module
+frame. A returned lazy Stream retains that smaller scope because its callback
+still needs the values; `Stream/close` releases the callback. Function-local
+scratch remains in the ordinary call frame and disappears with that frame.
+
 ## 10. Macros, fexprs, and special forms
 
 The MVP targets ordinary eager call and dot-send stages, for `->` and `=>`
@@ -454,6 +579,19 @@ Dynamic callees continue through ordinary runtime call-kind checks. A dynamic
 value that turns out to be an `Fexpr` is rejected as it is in an ordinary eager
 call.
 
+`yield` and `await` are syntax heads, so `(value -> yield)` and
+`(task -> await)` are rejected by the same rule. They may still occur where an
+ordinary component expression may occur, and retain their ordinary meaning:
+
+```gene
+((await task) -> decode)
+(value -> combine (await other_task))
+```
+
+The pipeline never inserts an await. A nested `yield` makes its enclosing
+function a generator exactly as it would outside a pipeline; its yielded value
+and resumed result are governed by the ordinary `yield` contract.
+
 ## 11. Tooling and diagnostics
 
 The reader should report:
@@ -463,7 +601,14 @@ The reader should report:
 - a multi-form segment before the first delimiter;
 - more than one direct `_` slot;
 - mixed `;` and arrow delimiters at one parenthesis depth;
-- invalid standalone `->` outside a pipeline-capable node.
+- invalid standalone `->`/`=>` and delimiters inside lists or maps, explaining
+  that arrows are valid only between segments of one parenthesized form;
+- a leading send stage such as `(a -> .message)`, pointing at that stage and
+  suggesting the head-slot spelling `(a -> _ .message)`.
+
+When a non-final `=>` leaves a `Stream` at a boundary requiring `List`, the
+type error suggests the explicit `-> $into []` collector. The ordinary
+expected/actual types remain the primary diagnostic.
 
 Diagnostics from a stage call should point at that stage, not at the whole
 pipeline. Tail-fallback and call-site records should use the same stage source
@@ -533,11 +678,13 @@ it as something else. `~name` stays an ordinary glued symbol and the
 
 - default insertion;
 - explicit head, positional, and property-value slots;
+- a head slot with no arguments calls the incoming value;
 - multi-stage left association;
 - empty stage and duplicate-slot errors;
 - a multi-form segment before the first delimiter is rejected;
 - nested `_` is not captured;
 - dot-send stage through a head slot;
+- stage meta and `#(...)` immutable-marker round-trips;
 - `->` and `=>` mixed at one depth, each printing its own delimiter;
 - arrow-containing symbols and byte continuations remain unchanged;
 - canonical print/read round-trip and formatter idempotence.
@@ -546,6 +693,7 @@ it as something else. `~name` stays an ordinary glued symbol and the
 
 - incoming expression runs before the stage callee;
 - a `=>` stage's callee and non-slot arguments run once, before iterating;
+- those components still run when a later `take 0` pulls no items;
 - a non-final `=>` stage is lazy, and an unbounded producer terminates when a
   later stage bounds it;
 - a final `=>` stage drains its upstream and the pipeline answers `nil`;
@@ -555,16 +703,21 @@ it as something else. `~name` stays an ordinary glued symbol and the
 - a failing incoming expression prevents callee and argument evaluation;
 - a failing callee prevents stage argument evaluation;
 - later stages do not run after an earlier failure.
+- per-item failure preserves effects from completed earlier items and pulls no
+  later items;
 
 ### Semantics and backends
 
 - positional, named, default, rest, and spread arguments;
 - typed parameter and return boundaries;
+- a Stream-to-List mismatch suggests `-> $into []`;
 - checked errors and capabilities;
 - ordinary functions, dynamic callables, and dot sends;
 - bytecode, typed-native acceptance/rejection, and web emission;
 - final-stage TCO and intermediate-stage non-tail behavior;
 - source locations, stack traces, and tail-fallback diagnostics.
+- top-level scratch releases the last incoming value, while a returned lazy
+  Stream retains and then releases only the callback capture it needs.
 
 ## 15. Implementation outcome
 
@@ -576,10 +729,12 @@ it as something else. `~name` stays an ordinary glued symbol and the
    delimiters in one pass.
 3. **Compiler sequencing:** complete. VM GIR uses compiler-owned inaccessible
    locals, preserves source-facing call sites, and propagates tail position to
-   only the final stage. A `=>` stage adds one hidden binding per separately
-   evaluated component plus the per-item callable, and then reuses the ordinary
-   `map` send. The opcode/build table advances the executable artifact marker
-   to GIR v5.
+   only the final stage. Inside functions, a `=>` stage adds one frame-bounded
+   hidden binding per separately evaluated component. At module/namespace/REPL
+   scope, those components pass through the callback's own capture scope and
+   the pipeline scratch slot is cleared after evaluation. Both paths reuse the
+   ordinary `map` send. The opcode/build table uses executable artifact marker
+   GIR v5.
 4. **Backends:** complete for the VM and web emitter. The web profile now
    infers an inline callback's parameter and return types when the expected
    type is a known `Callback`, which is what lets a generated `=>` callback
@@ -611,6 +766,12 @@ implementations after `->` has an independently sound contract.
 - `=>` is `map`. A per-item `filter` or `each` delimiter is not proposed: both
   read clearly today as `-> $filter p` and `-> $each f`, and neither carries the
   slot ergonomics that motivate `=>`.
+- A final `=>` remains the ergonomic implicit drain. The rejected alternative
+  was to make `=>` always return a lazy Stream and require `-> $each f` for
+  every effect-only traversal. Revisit this only if real edits repeatedly ship
+  the silent-non-execution bug where appending a stage turns an old final drain
+  into a lazy map. The mechanical migration is `X => f` to `X -> $each f`;
+  there is no third delimiter to preserve.
 - Direct `;`/arrow mixing remains rejected. Explicit nesting is the composition
   syntax unless a later proposal demonstrates a clearer rule.
 - Quasiquote supports unquote in pipeline components. Direct unquote-splicing

@@ -3239,6 +3239,11 @@ proc analyzePipeline(analysis: WebAnalysis, value: Value,
   for i, sourceStage in value.pipelineStages:
     var stage = sourceStage
     if stage.slot.kind != pskHead and stage.head.kind == vkSymbol and
+        stage.head.symVal.isDotMessageDescriptor:
+      raise webError(stage.sourceLoc,
+        "leading '" & stage.head.symVal & "' in a pipeline stage has no " &
+        "receiver; use a head slot: (a -> _ " & stage.head.symVal & ")")
+    if stage.slot.kind != pskHead and stage.head.kind == vkSymbol and
         (stage.head.symVal in CoreSpecialFormNames or
          stage.head.symVal.endsWith("!")):
       raise webError(stage.sourceLoc,

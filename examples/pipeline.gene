@@ -20,9 +20,11 @@
   value)
 (show "prop slot" (7 -> tagged ^value _))
 
-(type Account ^props {^balance Int} (message deposit [amount : Int] : Int (+ self/balance amount)))
+(type Account ^props {^balance Int}
+  (message balance_after [amount : Int] : Int
+    (+ self/balance amount)))
 
-(show "head slot" ((Account ^balance 40) -> _ .deposit 2))
+(show "head slot" ((Account ^balance 40) -> _ .balance_after 2))
 
 # Slots never cross a parenthesis: each form owns its own, so a nested pipeline
 # fills its `_` from its own incoming value, not the outer one.
@@ -115,7 +117,9 @@
 (show "word count" counts)
 
 # A Map has no item order, so it reaches a non-final `=>` only through an
-# explicit pairs conversion. A final `=>` drains its values directly.
+# explicit pairs conversion. Each pair is `[key value]`; a PropMap key is a
+# Symbol and position 1 is the value. A final `=>` drains values directly,
+# without constructing pairs.
 (fn value_of [entry]
   entry/1)
 

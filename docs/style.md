@@ -237,6 +237,12 @@ pipeline is `nil`; give it a following stage when you want the values:
   -> $into [])          # lazy through parse, collected once at the end
 ```
 
+Appending a stage after a final `=>` changes the old stage from an eager drain
+to a lazy map. If the per-item call must run regardless of later edits, spell
+the drain explicitly as `(rows -> $each save)`. Remember that the callee and
+other stage arguments are still evaluated before any item is pulled, including
+when a later `$take 0` consumes nothing.
+
 Nothing accumulates between stages, so a `=>` chain reads the same on a list
 and on an endless producer — put a `-> $take n` in front of the collector when
 the source has no end.

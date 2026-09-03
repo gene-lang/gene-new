@@ -3469,6 +3469,7 @@ proc closeStream*(v: Value) =
       if firstError == nil:
         firstError = cleanupError
   data.source = NIL
+  data.callable = NIL
   data.generatorCode = nil
   data.generatorScope = nil
   data.generatorStack.setLen(0)

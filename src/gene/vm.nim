@@ -20043,6 +20043,11 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
         "Cell value types are invariant"
       else:
         ""
+    let expectedLabel = typeExpr.typeExprLabel
+    if hint.len == 0 and value.kind == vkStream and
+        (expectedLabel == "List" or expectedLabel.startsWith("(List ")):
+      hint = "collect the Stream with '$into []' (or '-> $into []' in a " &
+        "pipeline) before this boundary"
     if hint.len == 0 and scope != nil:
       let failure = explainTypeMismatch(typeExpr, value, scope)
       if failure.protocol.kind == vkProtocol:

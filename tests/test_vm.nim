@@ -507,6 +507,28 @@ suite "compiler — GIR emission":
       check not name.startsWith("\x00gene_iterate_")
       check not name.startsWith("\x00gene_item_")
 
+  test "top-level pipeline scratch does not retain values after evaluation":
+    let chunk = compileSource(
+      "(fn choose [] (fn [a b] (+ a b))) " &
+      "(var stream ([1 2 3] => (choose) _ 10 -> (fn [x] x)))")
+    let scope = newGlobalScope()
+    discard run(chunk, scope)
+    var sawPipelineTemp = false
+    for i, name in chunk.localNames:
+      if name.startsWith("\x00gene_pipeline_"):
+        sawPipelineTemp = true
+        check scope.slots[i].kind == vkNil
+      check not name.startsWith("\x00gene_iterate_")
+    check sawPipelineTemp
+
+    var stream: Value
+    check scope.lookupOptional("stream", stream)
+    check stream.streamHasNext
+    check stream.streamNext == newInt(11)
+    check stream.streamCallable.kind == vkFunction
+    stream.closeStream()
+    check stream.streamCallable.kind == vkNil
+
   test "emits a callable-first bytecode sequence":
     let chunk = compileSource("(+ 1 2)")
     check chunk.instructions.len == 3

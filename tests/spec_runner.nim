@@ -379,6 +379,8 @@ suite "spec — sequenced value pipelines":
     check_eval("(fn collect [xs...] xs) (var tail [2 3]) " &
                "(1 -> collect _ tail...)",
                "[1 2 3]")
+    check_eval("(fn answer [] 42) (answer -> _)", "42")
+    check_eval("(2 -> + @trace 1 3)", "5")
 
   test "the incoming value is evaluated first and exactly once":
     check_eval("(var log []) " &
@@ -424,6 +426,8 @@ suite "spec — sequenced value pipelines":
                         "pipeline stages must be eager calls or dot sends")
     check_compile_error("(1 -> $css/decl color)",
                         "pipeline stages must be eager calls or dot sends")
+    check_compile_error("(1 -> .to_str)",
+                        "use a head slot: (a -> _ .to_str)")
     for source in ["(a ; b -> c)", "(a -> b ; c)"]:
       expect ReadError:
         discard read(source)
@@ -440,6 +444,8 @@ suite "spec — sequenced value pipelines":
     check_eval("(try ($freeze (quote (1 -> + 2))) catch Any $ex/message)",
                "\"freeze cannot freeze pipeline syntax; quote it for syntax " &
                "or eval it as a program\"")
+    check_eval("#(1 -> + 2)", "3")
+    check_eval("(quote #(1 -> + 2))", "#(1 -> + 2)")
 
   test "macro expansion traverses and can return pipeline syntax":
     check_eval("(macro one [] `1) (0 -> + (one))", "1")
@@ -517,6 +523,24 @@ suite "spec — sequenced value pipelines":
                "(var out ([1 2 3] => (pick) (note 10) -> $into [])) " &
                "[out log]",
                "[[11 12 13] [\"callee\" 10]]")
+    check_eval("(var log []) " &
+               "(fn choose [] (log .push \"setup\") +) " &
+               "[([1 2 3] => (choose) _ 10 -> $take 0 -> $into []) log]",
+               "[[] [\"setup\"]]")
+
+  test "lazy iterate failures preserve completed per-item effects":
+    check_eval("(var log []) " &
+               "(fn validate [x] (log .push x) " &
+               "  (if_yes (== x 3) " &
+               "    (fail (RuntimeError ^message \"bad row\"))) x) " &
+               "(var message (try ([1 2 3 4] => validate -> $into []) " &
+               "  catch RuntimeError $ex/message)) [message log]",
+               "[\"bad row\" [1 2 3]]")
+
+  test "a Stream-to-List boundary points at the explicit collector":
+    check_eval_error("(fn wants_list [xs : List] xs) " &
+                     "([1 2] => + 1 -> wants_list)",
+                     "-> $into []")
 
   test "iterate stages mix with call stages and reject syntax heads":
     check_eval("(fn twice [x] (* x 2)) (fn first_of [xs] xs/0) " &

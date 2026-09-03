@@ -738,6 +738,7 @@ their callee before their arguments.
 (a -> f c _)     # call shape (f c a)
 (a -> f ^k _)    # call shape (f ^k a)
 (a -> _ c)       # call the value of a with c
+(a -> _)         # call the value of a with no arguments
 ```
 
 With no exact direct `_`, the incoming value becomes the first positional
@@ -766,7 +767,9 @@ Pipeline stages associate left-to-right, and the final stage inherits tail
 position. A pipeline is executable syntax rather than a nominal runtime data
 type: it has no constructor, message surface, serialization, or `Send`
 contract. Quote/quasiquote may carry it as inert syntax and `eval` may compile
-it later.
+it later. `#(...)` retains an immutable source/call-site marker and still
+executes; only quote makes a pipeline inert. Props and meta belong to their
+individual stage and round-trip with it.
 
 `=>` is the per-item delimiter. Its stage runs once for every item of the
 incoming value, and the slot rules are the stage's own — the item, not the
@@ -788,11 +791,21 @@ after it:
 - the **final** stage has no consumer for its results, so it drains its
   upstream for effect and the pipeline answers `nil`.
 
+| Stage | Non-final | Final |
+| --- | --- | --- |
+| `->` | eager ordinary result passed onward | eager ordinary result returned |
+| `=>` | components eager, per-item calls lazy, `Stream` passed onward | components eager, upstream drained, `nil` returned |
+
 ```gene
 (rows => save)                      # runs per row; the pipeline is nil
 (rows => parse -> $into [])         # lazy through parse; into collects
 (producer => step -> $take 5 -> $into [])   # terminates on an endless producer
 ```
+
+Appending a stage after a final `=>` changes that stage from an eager drain to
+a lazy map. `(rows => save -> log)` calls `save` only if `log` consumes the
+Stream; use `rows -> $each save` when the drain must be explicit and
+position-independent. Collecting remains the standard `-> $into []` spelling.
 
 Because a non-final `=>` works in the lazy tier, its incoming value is
 converted with `to_stream` — which is the identity on a `Stream`. A kind with
@@ -800,11 +813,22 @@ no `to_stream`, such as `Map`, therefore reaches a non-final `=>` only through
 an explicit conversion like `-> $to_pairs_stream`; a final `=>` drains it
 directly, since `each` needs no conversion.
 
+The Map shapes differ by that stdlib path: the final drain sees values, while
+`to_pairs_stream` yields `[key value]` with a `Sym` key for PropMaps. Here `=>`
+always means per item, never key/value pairing.
+
 A `=>` stage evaluates its callee and its other arguments **once**, before
 iterating; only the per-item call repeats. That is what makes it explicit
 syntax rather than implicit dispatch on the incoming value's runtime type: a
 `->` stage always receives the whole value, whatever that value turns out to
 be, and only `=>` looks inside it.
+
+Those component expressions run even when a later `take 0` pulls no items.
+Once pulling begins, stages interleave per item, and a failure leaves effects
+from completed earlier items visible; pipelines provide no rollback. Returned
+lazy Streams retain their callback and upstream until exhaustion or explicit
+close. Abandoning an unpulled resource-backed Stream does not promise
+deterministic cleanup.
 
 The two delimiters mix freely at one depth. `;` mixes with neither: nest one
 form explicitly instead. Each stage owns a separate head, props, meta, body,

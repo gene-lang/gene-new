@@ -30,6 +30,7 @@ the stage head, a positional argument, or a property value:
 (a -> f c _)     # call shape (f c a)
 (a -> f ^k _)    # call shape (f ^k a)
 (a -> _ .m c)    # call shape (a .m c)
+(a -> _)         # call the incoming callable with no arguments
 ```
 
 `=>` is the per-item delimiter: its stage runs once per item of the incoming
@@ -48,6 +49,13 @@ effect, and the pipeline answers `nil`.
 A non-final `=>` converts its incoming value with `to_stream`, which is the
 identity on a `Stream`. A `Map` has no `to_stream`, so it reaches a non-final
 `=>` only through `-> $to_pairs_stream`; a final `=>` drains it directly.
+
+Stage position is semantically significant: appending a stage after a final
+`=>` changes that old stage from an eager drain into a lazy map. Its components
+still evaluate before any item is pulled. Per-item failure preserves completed
+earlier effects, and resource-backed Streams require consumption or explicit
+close. `#(...)` retains the immutable syntax/call-site marker but executes like
+the ordinary pipeline form; quote is the inert spelling.
 
 Pipeline syntax is represented by syntax-only `vkPipeline`, associates
 left-to-right, and preserves tail position only for the final stage. The
