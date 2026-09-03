@@ -85,35 +85,77 @@ ownership, and reload rollback across every plugin and loader caller.
 
 ### Relationship to `examples/gene-harness`
 
-This repository already contains one implemented plugin runtime,
-`examples/gene-harness`, described in `examples/gene-harness/docs/design.md`.
-Anyone reading this proposal should know what it duplicates and what it does
-not, because "we already have one" is the first objection and it is only half
-right.
+`examples/gene-harness` is an implemented plugin runtime in this repository,
+described in `examples/gene-harness/docs/design.md`. It is not a competing
+design: **the harness builds on this one.** Cordis is the general plugin
+runtime; the harness is what that runtime becomes when its plugins are authored
+at runtime by a language model, must survive a crash, and must be recoverable
+by an operator afterwards.
 
-Four mechanisms are genuinely shared, and both designs reached the same answer
-independently: an ownership ledger that reverses everything a plugin acquired,
-in strict reverse acquisition order, without the plugin's cooperation;
-dependency-driven activation expressed as a lifecycle *state* that settles to a
-fixpoint rather than as a load order; sandboxed module loading through
-`$runtime/load_sandboxed` with an immutable per-module execution policy; and
-capability selectors that may only attenuate a host ceiling and can never mint
-a grant.
+That split assigns each mechanism exactly once. Cordis owns composition:
+services and realms decide which provider a consumer sees, requirements and
+dependency epochs decide when a plugin exists, effect scopes own everything an
+activation creates, hooks carry control-flow-shaped extension, the loader
+reconciles a data-only tree, and candidate swap replaces modules in a running
+process. The harness owns durability and the agent: event-sourced plugin state
+in segmented streams with projection checkpoints; a composition store whose
+desired state is written under revision CAS by more than one process;
+content-addressed module blobs closed over their dependency graph, because its
+plugin author is a model rather than a repository; per-entry quarantine,
+`doctor`, and a recovery nucleus; and the command, tool, prompt, and view
+surface an agent talks through. None of that belongs in a plugin runtime, and
+none of it is derivable from one.
 
-What differs is the question each one answers. The harness is organized around
-durability: event-sourced plugin state, resume at a committed turn boundary,
-per-entry quarantine, and a recovery nucleus no plugin can remove. It answers
-"what survives a crash." Cordis is organized around spatial composition:
-realms, intercepts, definition-site versus use-site binding, five hook dispatch
-modes, and candidate-swap hot reload. It answers "which implementation does
-this consumer see, and how does that change while the process keeps running."
-Neither set of answers is derivable from the other, which is why this is a
-second runtime rather than a feature request against the first.
+Four things the harness implements today therefore stop being its own: its seam
+table becomes services, its ownership ledger becomes effect scopes, its
+`pending`/`ready`/`error` fixpoint becomes instances and dependency epochs, and
+its sandbox loading becomes the loader. Its non-unique ordered registries —
+commands, tools, prompt sections, views — do *not* become services, because a
+service address holds one provider by construction and those hold many. They
+stay collections in the harness layer and are contributed as effects:
 
-If both are ever wanted at once, the seam is the ledger: an `EffectScope` here
-and the harness's registry ledger are the same idea at different granularities.
-Nothing in this document assumes that merge, and nothing in it should be
-implemented in a way that forecloses it.
+```gene
+(activation .effect "tool:search"
+  (fn [fx]
+    (tools .add row)
+    (fx .defer (fn [] (tools .remove row)))))
+```
+
+Reverse-order removal, owner attribution, and removal without the contributor's
+cooperation then follow from the scope instead of from a second ledger.
+
+Knowing the first consumer before implementing is worth more than the
+comparison, and it constrains this design in four places:
+
+- **Plugin-supplied calls need one supervision seam.** Activation, availability
+  predicates, schemas, binding adapters, hook handlers, and cleanup are all
+  called directly by the runtime. A host whose plugin authors are untrusted has
+  to bound every one of them with step, wall-clock, and memory budgets plus
+  panic containment. That is a property of *where the runtime calls out*, so the
+  runtime must call out through one identifiable path rather than six. This is
+  adopted as invariant 13 below.
+- **Staged commit must generalize beyond reload.** The prospective provider
+  index below stages a set of instances, validates them, and publishes at one
+  point. The harness needs that same transaction for an ordinary composition
+  change, not only for a module swap. It should be an operation the loader
+  offers, with hot reload as its first caller rather than its definition.
+- **The service-key catalog is populated at runtime.** Keys are admitted from a
+  catalog so that data cannot mint identity. A harness mints a key when a model
+  registers a tool that did not exist at boot. The rule survives — the host
+  stays the only minter, so repeating a string still forges nothing — but the
+  catalog is a live host-owned table, not a startup constant.
+- **A manifest is a source, not a file.** The harness's desired state is a
+  CAS-published store, not a data file on disk. The loader is already an adapter
+  over `Runtime`, and the verification list already requires an in-memory
+  composition test, so this costs nothing; it does mean the file adapter must
+  never quietly become the loader's only input.
+
+The sequencing runs opposite to the dependency. The harness works today and
+this runtime does not exist, so nothing here asks for a rewrite: cordis is
+implemented against the requirements above, and the harness migrates its kernel
+onto it afterwards, keeping every durable layer it already has. If that
+migration cannot be expressed, the interface in this document is wrong — which
+is the most useful thing a first consumer can tell an unimplemented design.
 
 ## 3. Required invariants
 
@@ -146,6 +188,12 @@ The implementation is correct only if all of these remain true:
     order, waits for cleanup, and releases retained callbacks.
 12. Reflection returns immutable snapshots. Observing the runtime cannot become
     a mutation back door.
+13. Every call from the runtime into plugin-supplied code — activation,
+    availability predicates, schemas, binding adapters, hook handlers, and
+    cleanup — passes through one supervision path. A host can therefore bound
+    all of them with step, wall-clock, and memory budgets and contain a panic
+    as that call's typed failure, without the runtime growing a second
+    invocation route that escapes the policy.
 
 These invariants are the interface's behavioral content, not incidental
 implementation notes.
@@ -449,6 +497,12 @@ manifest holds no values at all and passes service *ids*, which the loader
 resolves through the catalog before deriving anything. An id absent from the
 catalog is a rejected manifest, not a new realm; the data-only form can select
 among admitted keys but can never introduce one.
+
+The catalog is a live host-owned table rather than a startup constant. A host
+that mints keys while running — one per tool a model registers, in the harness
+case — extends it through an explicit host operation. Minting stays the host's
+alone, so repeating a string still forges nothing; what changes is only that
+the set of admitted ids is not fixed when the runtime starts.
 
 If `tenant_a` isolates `database_key`, a database in the root realm is not a
 fallback. The tenant's consumer stays pending until a provider exists at the
@@ -881,6 +935,15 @@ Independent siblings may load in parallel, but state publication is serialized
 by the loader. `await_settled` loops until there are no module-load or instance
 transition tasks, including work created by an earlier transition.
 
+A reconciliation may also run as a staged transaction: candidates prepared
+against a prospective provider index and published at one point, or discarded
+whole. Hot reload is the first caller of that operation, not its definition —
+any composition change whose partial application would be observable wants it.
+Publication is the whole of what the transaction covers. An activation that
+fails after publication still leaves its own instance `failed` and the rest of
+the tree running, exactly as invariant 7 requires; staging removes torn
+visibility, not the per-instance failure model.
+
 ### 12.4 Include and persistence
 
 The include adapter reads a data manifest, optionally applies host-supplied
@@ -1201,6 +1264,13 @@ temporary filesystem, so the loader seam is justified rather than hypothetical.
 Each stage adds executable interface tests before the next stage. HMR is last
 because it relies on every earlier lifetime and visibility guarantee; it must
 not define those guarantees accidentally.
+
+Stages 1 through 7 have an acceptance test better than any of their own: the
+harness kernel described in section 2 must be expressible on them, with its
+seam table as services, its ledger as effect scopes, its lifecycle as instances
+and epochs, and its loading as the loader. Attempting that migration against an
+implemented consumer is how the interface gets falsified early, and it is
+cheaper than discovering the same gap from a second example written to fit.
 
 ## 21. Deliberate non-goals
 
