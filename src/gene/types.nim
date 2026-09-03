@@ -98,7 +98,7 @@ type
     vkSet       ## immutable hash-stable element set
     vkHashMap   ## immutable any-key hashed map
     vkNode      ## general node (head + props + body + meta)
-    vkPipeline  ## reader/compiler-only sequenced `~` pipeline syntax
+    vkPipeline  ## reader/compiler-only sequenced `->`/`=>` pipeline syntax
     vkFunction  ## closure: params + body + captured scope
     vkNativeFn  ## built-in function implemented in Nim
     vkNamespace ## named binding container (`ns` or module root namespace)
@@ -276,7 +276,12 @@ type
     index*: int
     name*: string
 
+  PipelineStageKind* = enum
+    pstCall                   ## `->`: the whole incoming value enters the call
+    pstIterate                ## `=>`: each item of the incoming value enters it
+
   PipelineStage* = object
+    kind*: PipelineStageKind
     head*: Value
     props*: PropTable
     body*: seq[Value]
@@ -5245,6 +5250,7 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
       for key, item in stage.meta:
         meta[key] = patchPendingModuleRef(item, name, target, seen)
       stages.add PipelineStage(
+        kind: stage.kind,
         head: patchPendingModuleRef(stage.head, name, target, seen),
         props: props, body: body, meta: meta,
         sourceLoc: stage.sourceLoc, slot: stage.slot)
@@ -5440,6 +5446,7 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
       for key, val in stage.meta:
         meta[key] = weakenScopeFunctions(val, owner)
       stages.add PipelineStage(
+        kind: stage.kind,
         head: weakenScopeFunctions(stage.head, owner),
         props: props, body: body, meta: meta,
         sourceLoc: stage.sourceLoc, slot: stage.slot)
@@ -5595,6 +5602,7 @@ proc escapeWeakFunctions*(v: Value): Value =
       for key, val in stage.meta:
         meta[key] = escapeWeakFunctions(val)
       stages.add PipelineStage(
+        kind: stage.kind,
         head: escapeWeakFunctions(stage.head),
         props: props, body: body, meta: meta,
         sourceLoc: stage.sourceLoc, slot: stage.slot)

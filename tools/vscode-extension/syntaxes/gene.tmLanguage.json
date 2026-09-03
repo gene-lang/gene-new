@@ -155,7 +155,7 @@
       "patterns": [
         {
           "name": "keyword.operator.pipeline.gene",
-          "match": "(?<=[\\s(])~(?=\\s)"
+          "match": "(?<=[\\s(])(->|=>)(?=[\\s()\\[\\]{}])"
         },
         {
           "name": "keyword.operator.quasiquote.gene",

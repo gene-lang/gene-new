@@ -3,8 +3,12 @@
 (fn named [^value]
   value)
 
-(var arithmetic (2 ~ + 3 ~ * 4))
+(var arithmetic (2 -> + 3 -> * 4))
 
-(var named_value (7 ~ named ^value _))
+(var named_value (7 -> named ^value _))
 
-($println [arithmetic named_value])
+(var doubled ([1 2 3] => * 2))
+
+(var lazily ([1 2 3] -> $to_stream => + 1 -> $into []))
+
+($println [arithmetic named_value doubled lazily])

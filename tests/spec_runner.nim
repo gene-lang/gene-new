@@ -367,99 +367,142 @@ suite "spec — value spread from design":
 
 suite "spec — sequenced value pipelines":
   test "default and explicit slots build ordinary call shapes":
-    check_eval("[(2 ~ + 3) (2 ~ + 3 ~ * 4)]", "[5 20]")
+    check_eval("[(2 -> + 3) (2 -> + 3 -> * 4)]", "[5 20]")
     check_eval("(fn pair [a b] [a b]) (fn one [x] [x]) " &
-               "[(2 ~ pair 1 _) (one ~ _ 7)]",
+               "[(2 -> pair 1 _) (one -> _ 7)]",
                "[[1 2] [7]]")
-    check_eval("(fn named [^k] k) (7 ~ named ^k _)", "7")
+    check_eval("(fn named [^k] k) (7 -> named ^k _)", "7")
     check_eval("(fn add_named [x ^k] (+ x k)) " &
                "(fn mul_named [x ^k] (* x k)) " &
-               "(1 ~ add_named ^k 2 ~ mul_named ^k 3)",
+               "(1 -> add_named ^k 2 -> mul_named ^k 3)",
                "9")
     check_eval("(fn collect [xs...] xs) (var tail [2 3]) " &
-               "(1 ~ collect _ tail...)",
+               "(1 -> collect _ tail...)",
                "[1 2 3]")
 
   test "the incoming value is evaluated first and exactly once":
     check_eval("(var log []) " &
                "(fn note [x] (log .push x) x) " &
                "(fn make_f [] (note \"f\") (fn [a c] [a c])) " &
-               "(var out ((note \"a\") ~ (make_f) (note \"c\"))) " &
+               "(var out ((note \"a\") -> (make_f) (note \"c\"))) " &
                "[out log]",
                "[[\"a\" \"c\"] [\"a\" \"f\" \"c\"]]")
     check_eval("(var hits ($cell 0)) " &
                "(fn source [] (hits .update (fn [n] (+ n 1))) 9) " &
-               "(fn named [^k] k) [((source) ~ named ^k _) hits/.get]",
+               "(fn named [^k] k) [((source) -> named ^k _) hits/.get]",
                "[9 1]")
 
   test "failures short-circuit callees, arguments, and later stages":
     check_eval("(var hits ($cell 0)) " &
                "(fn later [x] (hits .set 1) x) " &
-               "[(try ((fail (RuntimeError ^message \"stop\")) ~ later) " &
+               "[(try ((fail (RuntimeError ^message \"stop\")) -> later) " &
                "   catch RuntimeError $ex/message) hits/.get]",
                "[\"stop\" 0]")
     check_eval("(var hits ($cell 0)) " &
                "(fn touch [] (hits .update (fn [n] (+ n 1))) 2) " &
-               "[(try (1 ~ (fail (RuntimeError ^message \"callee\")) " &
+               "[(try (1 -> (fail (RuntimeError ^message \"callee\")) " &
                "             (touch)) " &
                "   catch RuntimeError $ex/message) hits/.get]",
                "[\"callee\" 0]")
     check_eval("(var hits ($cell 0)) " &
                "(fn stop [x] (fail (RuntimeError ^message \"stage\"))) " &
                "(fn later [x] (hits .set 1) x) " &
-               "[(try (1 ~ stop ~ later) " &
+               "[(try (1 -> stop -> later) " &
                "   catch RuntimeError $ex/message) hits/.get]",
                "[\"stage\" 0]")
 
   test "a head slot composes with dot sends":
     check_eval("(type Box ^props {^n Int} " &
                "  (message add [x] : Int (+ self/n x))) " &
-               "((Box ^n 4) ~ _ .add 3)",
+               "((Box ^n 4) -> _ .add 3)",
                "7")
 
   test "syntax heads and mixed delimiter forms are rejected":
-    check_compile_error("(1 ~ if true 2)",
+    check_compile_error("(1 -> if true 2)",
                         "pipeline stages must be eager calls or dot sends")
-    check_compile_error("(macro identity [x] `%x) (1 ~ identity)",
+    check_compile_error("(macro identity [x] `%x) (1 -> identity)",
                         "pipeline stages must be eager calls or dot sends")
-    check_compile_error("(1 ~ $css/decl color)",
+    check_compile_error("(1 -> $css/decl color)",
                         "pipeline stages must be eager calls or dot sends")
-    for source in ["(a ; b ~ c)", "(a ~ b ; c)"]:
+    for source in ["(a ; b -> c)", "(a -> b ; c)"]:
       expect ReadError:
         discard read(source)
 
   test "quoted pipeline syntax prints and eval compiles it later":
-    check_eval("(quote (a ~ f ^k _ ~ g 2))", "(a ~ f ^k _ ~ g 2)")
-    check_eval("(== (quote (a ~ f 1)) (quote (a ~ f 1)))", "true")
-    check_eval("(eval (quote (1 ~ + 2)) ^in (env))", "3")
-    check_eval("(var x 2) `(1 ~ + %x)", "(1 ~ + 2)")
-    check_eval("(var x 2) (eval `(1 ~ + %x) ^in (env))", "3")
+    check_eval("(quote (a -> f ^k _ -> g 2))", "(a -> f ^k _ -> g 2)")
+    check_eval("(== (quote (a -> f 1)) (quote (a -> f 1)))", "true")
+    check_eval("(eval (quote (1 -> + 2)) ^in (env))", "3")
+    check_eval("(var x 2) `(1 -> + %x)", "(1 -> + 2)")
+    check_eval("(var x 2) (eval `(1 -> + %x) ^in (env))", "3")
     check_eval("(fn pair [a b] [a b]) (var slot (quote _)) " &
-               "(eval `(1 ~ pair 2 %slot) ^in (env))",
+               "(eval `(1 -> pair 2 %slot) ^in (env))",
                "[2 1]")
-    check_eval("(try ($freeze (quote (1 ~ + 2))) catch Any $ex/message)",
+    check_eval("(try ($freeze (quote (1 -> + 2))) catch Any $ex/message)",
                "\"freeze cannot freeze pipeline syntax; quote it for syntax " &
                "or eval it as a program\"")
 
   test "macro expansion traverses and can return pipeline syntax":
-    check_eval("(macro one [] `1) (0 ~ + (one))", "1")
-    check_eval("(macro identity [x] `%x) (identity (1 ~ + 2))", "3")
+    check_eval("(macro one [] `1) (0 -> + (one))", "1")
+    check_eval("(macro identity [x] `%x) (identity (1 -> + 2))", "3")
     check_eval("(fn pair [a b] [a b]) (macro slot [] `_) " &
-               "(1 ~ pair 2 (slot))",
+               "(1 -> pair 2 (slot))",
                "[2 1]")
-    check_compile_error("(macro slot [] `_) (1 ~ + _ (slot))",
+    check_compile_error("(macro slot [] `_) (1 -> + _ (slot))",
                         "macro expansion produced more than one direct '_'")
 
   test "typed boundaries retain the VM fallback when AOT cannot lower syntax":
     let chunk = compileSource(
-      "(fn piped [x : I64] : I64 (x ~ + 1)) (piped 2)")
+      "(fn piped [x : I64] : I64 (x -> + 1)) (piped 2)")
     check chunk.functions[0].aotExpr.kind == vkNil
     check run(chunk, newGlobalScope()).print() == "3"
 
   test "the final pipeline stage remains a tail position":
-    check_eval("(fn down [n] (if (== n 0) 0 (n ~ - 1 ~ down))) " &
+    check_eval("(fn down [n] (if (== n 0) 0 (n -> - 1 -> down))) " &
                "(down 100000)",
                "0")
+
+  test "the value before the first delimiter is a single form":
+    for source in ["(a b -> f c)", "(a b => f c)", "(a ^k 1 -> f)"]:
+      expect ReadError:
+        discard read(source)
+    check_eval("(fn pair [a b] [a b]) ((pair 1 2) -> pair 3)", "[[1 2] 3]")
+
+  test "an iterate stage runs its stage once per item and keeps the kind":
+    check_eval("(fn twice [x] (* x 2)) [([1 2 3] => twice) " &
+               " ({^a 1 ^b 2} => twice)]",
+               "[[2 4 6] {^a 2 ^b 4}]")
+    check_eval("(fn sub [a b] (- a b)) [([10 20] => sub 1) ([10 20] => sub 1 _)]",
+               "[[9 19] [-9 -19]]")
+    check_eval("(fn named [^k] k) ([1 2] => named ^k _)", "[1 2]")
+    check_eval("(type Box ^props {^n Int} " &
+               "  (message add [x] : Int (+ self/n x))) " &
+               "([(Box ^n 4) (Box ^n 5)] => _ .add 3)",
+               "[7 8]")
+    check_eval("(fn twice [x] (* x 2)) " &
+               "($into (([1 2 3] -> $to_stream) => twice) [])",
+               "[2 4 6]")
+
+  test "an iterate stage evaluates its callee and arguments once":
+    check_eval("(var log []) " &
+               "(fn note [x] (log .push x) x) " &
+               "(fn pick [] (note \"callee\") (fn [a b] (+ a b))) " &
+               "(var out ([1 2 3] => (pick) (note 10))) " &
+               "[out log]",
+               "[[11 12 13] [\"callee\" 10]]")
+
+  test "iterate stages mix with call stages and reject syntax heads":
+    check_eval("(fn twice [x] (* x 2)) (fn first_of [xs] xs/0) " &
+               "[([1 2 3] => twice -> first_of) ([1 2 3] => twice => twice)]",
+               "[2 [4 8 12]]")
+    check_compile_error("([1] => if true 2)",
+                        "pipeline stages must be eager calls or dot sends")
+    for source in ["(a ; b => c)", "(a => b ; c)", "(a => f _ _)"]:
+      expect ReadError:
+        discard read(source)
+
+  test "quoted iterate syntax prints its own delimiter":
+    check_eval("(quote (a -> f => g _))", "(a -> f => g _)")
+    check_eval("(== (quote (a => f)) (quote (a -> f)))", "false")
 
 suite "spec — enums from design":
   test "unit variants are qualified singleton values with reflection":
@@ -5978,9 +6021,10 @@ suite "spec — binding forms from design §12.1":
     check_compile_error("(enum E a b) (set E 2)",
                         "cannot set 'E'")
 
-  test "spaced tilde is pipeline syntax rather than a bindable symbol":
-    check_read("(quote (a ~ b))", "(quote (a ~ b))")
-    for source in ["(~ 5)", "[~ 5]"]:
+  test "arrow delimiters are pipeline syntax rather than bindable symbols":
+    check_read("(quote (a -> b))", "(quote (a -> b))")
+    check_read("(quote (a => b))", "(quote (a => b))")
+    for source in ["(-> 5)", "[-> 5]", "(=> 5)", "[=> 5]", "(a ~ b)"]:
       expect ReadError:
         discard read(source)
 

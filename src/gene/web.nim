@@ -929,6 +929,24 @@ proc parseParams(analysis: WebAnalysis, value: Value,
                         argName: name.symVal)
     i = j + 2
 
+proc inferredParams(analysis: WebAnalysis, value: Value, expected: WebType,
+                    fnLoc: SourceLoc): seq[WebParam] =
+  ## Parameters for a callback whose types come from the expected `Callback`
+  ## rather than from annotations. Only plain positional names are accepted;
+  ## anything else still has to say what it means.
+  let loc = analysis.locFor(value, fnLoc)
+  var index = 0
+  for item in value.listItems:
+    if item.kind != vkSymbol or item.isSym(",") or item.isSym("^") or
+        item.isSym("^^") or item.isSym(":"):
+      raise webError(loc,
+        "an inferred web callback takes plain positional parameters")
+    result.add WebParam(sourceName: item.symVal,
+                        emittedName: mangleWebName(item.symVal),
+                        typ: expected.params[index], loc: loc,
+                        argName: item.symVal)
+    inc index
+
 proc containsForm(value: Value, name: string): bool =
   if value.kind != vkNode: return false
   if value.head.isSym("quote"): return false
@@ -2761,15 +2779,26 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     #
     # A named `(fn name [...] ...)` is a declaration handled elsewhere; the
     # parameter list in body[0] is what distinguishes the two.
-    if value.body.len < 4 or not value.body[1].isSym(":"):
+    # An annotation-free callback is admitted only where the expected type
+    # already names every parameter and the result — which is exactly how the
+    # `=>` pipeline stage arrives, and the only position where there is nothing
+    # left for an annotation to say.
+    let inferred = value.body.len >= 2 and not value.body[1].isSym(":") and
+      expected != nil and expected.kind == wtkCallback and
+      value.body[0].listItems.len == expected.params.len
+    if not inferred and (value.body.len < 4 or not value.body[1].isSym(":")):
       raise webError(loc,
         "web callback requires annotated parameters, a return type, and a body")
     if containsForm(value, "yield"):
       raise webError(loc,
         "web callback cannot be a generator: name it and use (fn name ...)")
     analysis.validateCallableProps(value, loc, "callback")
-    let params = parseParams(analysis, value.body[0], loc)
-    let returnType = parseWebType(value.body[2], loc)
+    let params =
+      if inferred: inferredParams(analysis, value.body[0], expected, loc)
+      else: parseParams(analysis, value.body[0], loc)
+    let returnType =
+      if inferred: expected.returnType
+      else: parseWebType(value.body[2], loc)
     # Copied, not shared: the body may shadow and rebind freely, and those
     # bindings must not escape into the enclosing scope.
     var inner = copyBindings(bindings)
@@ -2785,7 +2814,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     let savedReturn = analysis.currentReturn
     analysis.currentReturn = returnType
     var bodyForms: seq[Value]
-    for i in 3 ..< value.body.len: bodyForms.add value.body[i]
+    for i in (if inferred: 1 else: 3) ..< value.body.len:
+      bodyForms.add value.body[i]
     let bodyExpected = if returnType.isStatementType: nil else: returnType
     let body = analysis.analyzeSequence(bodyForms, inner, bodyExpected, loc)
     analysis.currentReturn = savedReturn
@@ -3186,15 +3216,28 @@ proc analyzePipeline(analysis: WebAnalysis, value: Value,
   var tempName = freshTemp()
   forms.add newNode(newSym("let"),
     body = @[newSym(tempName), value.pipelineInitial])
-  for i, stage in value.pipelineStages:
+  for i, sourceStage in value.pipelineStages:
+    var stage = sourceStage
     if stage.slot.kind != pskHead and stage.head.kind == vkSymbol and
         (stage.head.symVal in CoreSpecialFormNames or
          stage.head.symVal.endsWith("!")):
       raise webError(stage.sourceLoc,
         "pipeline stages must be eager calls or dot sends; syntax head '" &
         stage.head.symVal & "' has no pipeline evaluation contract")
-    let expr = materializePipelineStage(stage, newSym(tempName),
-                                        value.pipelineImmutable)
+    var expr: Value
+    case stage.kind
+    of pstCall:
+      expr = materializePipelineStage(stage, newSym(tempName),
+                                      value.pipelineImmutable)
+    of pstIterate:
+      # An `=>` stage evaluates its callee and arguments once, so each one
+      # becomes its own `let` ahead of the callback the emitter inlines.
+      let hoist = hoistIterateStage(stage, freshTemp)
+      for (name, hoistedValue) in hoist.hoisted:
+        forms.add newNode(newSym("let"), body = @[newSym(name), hoistedValue])
+      stage = hoist.stage
+      expr = materializeIterateStage(stage, newSym(tempName), freshTemp(),
+                                     value.pipelineImmutable)
     if i == value.pipelineStages.high:
       forms.add expr
     else:

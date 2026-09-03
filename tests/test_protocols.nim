@@ -59,7 +59,7 @@ suite "protocols — declarations and dispatch":
     ck "(type PipelineProbe ^props {}) " &
        "(impl Callable for PipelineProbe " &
        "  (message apply [self call] call/site)) " &
-       "(var p (PipelineProbe)) (p ~ _ 7 8)",
+       "(var p (PipelineProbe)) (p -> _ 7 8)",
        "(_ 7 8)"
 
   test "Callable boundaries accept values with visible impls":

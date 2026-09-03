@@ -552,6 +552,7 @@ type
     immutable*: bool
 
   PipelineStageBuildProto* = object
+    kind*: PipelineStageKind
     metaNames*: seq[string]
     propNames*: seq[string]
     bodyCount*: int

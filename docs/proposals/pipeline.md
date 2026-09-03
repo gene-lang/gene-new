@@ -1,37 +1,36 @@
-# Sequenced value pipelines with `~`
+# Sequenced value pipelines with `->` and `=>`
 
 > **Status (2026-09-02): Accepted and implemented**
 >
-> This document specifies only the new `~` value pipeline. `docs/design.md`
-> defines `;` as head-folding reader sugar with no `_` slot behavior. This
-> proposal does not change it.
+> This document specifies the `->` value pipeline and its per-item `=>`
+> delimiter. `docs/design.md` defines `;` as head-folding reader sugar with no
+> `_` slot behavior. This proposal does not change it.
 >
 > Pipeline examples use ordinary `gene` fences and are checked by the
 > repository documentation contract.
 
 ## 1. Decision summary
 
-Gene should reuse the now-available spaced `~` token for a left-to-right value
-pipeline:
+Gene spells a left-to-right value pipeline with the reserved `->` token:
 
 ```gene
-(a ~ f c)
+(a -> f c)
 ```
 
 The stage receives the completed value of the preceding segment. With no
 explicit slot, that value becomes the first positional argument:
 
 ```gene
-(a ~ f c)          # call shape: (f a c)
+(a -> f c)          # call shape: (f a c)
 ```
 
 An exact `_` in the stage overrides the default position:
 
 ```gene
-(a ~ f _ c)        # call shape: (f a c)
-(a ~ f c _)        # call shape: (f c a)
-(a ~ f ^k _)       # call shape: (f ^k a)
-(a ~ _ c)          # call shape: (a c)
+(a -> f _ c)        # call shape: (f a c)
+(a -> f c _)        # call shape: (f c a)
+(a -> f ^k _)       # call shape: (f ^k a)
+(a -> _ c)          # call shape: (a c)
 ```
 
 The comments say **call shape**, not semantic expansion. A pipeline guarantees
@@ -44,14 +43,14 @@ reader-only substitution into an ordinary call.
 
 ## 2. Motivation
 
-`~` is introduced for value threading. It reads in data-flow order and
+`->` is introduced for value threading. It reads in data-flow order and
 complements Gene's callable-first ordinary calls:
 
 ```gene
 (source
-  ~ parse options
-  ~ validate schema
-  ~ save db _)
+  -> parse options
+  -> validate schema
+  -> save db _)
 ```
 
 The intended flow is:
@@ -90,16 +89,13 @@ single-evaluation, error, or call semantics.
 - Implicitly catching errors or converting them to result values.
 - Implicitly skipping `nil` or `void`; use `?.message`, `??`, or an explicit
   conditional.
-- **Implicitly mapping a `Stream`.** A stage whose incoming value is a stream
-  still receives the stream itself — the stage's meaning never depends on the
-  runtime type of the incoming value, at the head of the pipeline or between
-  stages. Per-item flow belongs to the Stream layer: `(source ~ map f ~
-  filter p ~ into [])` sends items through `f` and `p` one at a time, lazily,
-  with the defined error channel and close semantics (design §6.2). Implicit
-  per-item threading would make stage semantics depend on whether an
-  expression happens to yield a stream, re-evaluate stage callees and
-  arguments per item (or require loop-invariant hoisting), and break the
-  "incoming value is complete before the stage runs" guarantee of Section 7.
+- **Implicitly mapping a `Stream`.** A `->` stage whose incoming value is a
+  stream still receives the stream itself — a `->` stage's meaning never
+  depends on the runtime type of the incoming value, at the head of the
+  pipeline or between stages. Per-item flow is written, never inferred: either
+  the Stream combinators of design §6.2 — `(source -> $map f -> $filter p ->
+  $into [])` — or the `=>` delimiter of Section 6.5, which says at the stage
+  what an implicit rule would have had to guess.
 - A general placeholder/capture language inside nested syntax.
 - Duplicating the incoming value at multiple slots.
 - Defining a parallel dispatch mechanism. A stage ultimately uses the existing
@@ -107,60 +103,73 @@ single-evaluation, error, or call semantics.
 
 ## 5. Surface grammar
 
-A spaced `~` separates one pipeline segment from the next inside a node:
+`->` and `=>` separate one pipeline segment from the next inside a node:
 
 ```text
-pipeline       = "(", initial_segment, pipeline_stage,
+pipeline       = "(", initial_form, pipeline_stage,
                  { pipeline_stage }, ")" ;
-pipeline_stage = spacing, "~", spacing, stage_segment ;
+pipeline_stage = spacing, ( "->" | "=>" ), spacing, stage_segment ;
 ```
 
 The normative surface is integrated into `docs/design.md`. The required
 lexical distinctions are:
 
-- spaced `~` inside a node is the pipeline delimiter;
-- glued `~name` remains an ordinary symbol;
-- `~` inside a byte-literal continuation retains its existing byte syntax;
-- `~` outside a pipeline-capable node remains invalid;
-- an empty initial segment or empty stage is a read error.
-- `;` and `~` may not occur at the same parenthesis depth in one node; nest one
-  form explicitly instead of relying on precedence.
+- a whole `->` or `=>` atom inside a node is the pipeline delimiter;
+- `->name`, `a->b`, `-->`, and `=>name` remain ordinary symbols, so the rule is
+  about the atom rather than about spacing;
+- an arrow delimiter outside a pipeline-capable node is a read error;
+- a multi-form segment before the first delimiter, an empty stage, and more
+  than one direct `_` in a stage are read errors;
+- `;` and an arrow delimiter may not occur at the same parenthesis depth in one
+  node; nest one form explicitly instead of relying on precedence. `->` and
+  `=>` do mix at one depth.
 
-The initial segment and every stage use the same segment grouping convention:
+The value ahead of the first delimiter is a single form. A stage segment keeps
+the ordinary grouping convention:
 
 - one form is that form;
 - several forms form a call-like node.
 
+```text
+((a b) -> f c)   # the call (a b) enters the pipeline
+(a b -> f c)     # ReadError: wrap the call in its own parentheses
+```
+
+An implicitly wrapped leading segment would have to decide that `a b` means
+`(a b)` — reading as a call the author never wrote, in the one position where
+the reader has no delimiter to justify it.
+
 The reader must accumulate each segment separately rather than reuse one
 node-wide property table. Each raw segment owns its own head, props, meta, body,
-and source location. Encountering `~` flushes that segment and resets all five
-fields before reading the next stage. This preserves the compiler-visible stage
+and source location. Encountering a delimiter flushes that segment, records
+which delimiter opened the next one, and resets all five fields before reading
+the next stage. This preserves the compiler-visible stage
 order and permits the same property name in different stages while retaining
 ordinary duplicate detection within one stage:
 
 ```gene
 (a
-  ~ f ^k 1
-  ~ g ^k 2)       # valid: each ^k belongs to a different stage
+  -> f ^k 1
+  -> g ^k 2)       # valid: each ^k belongs to a different stage
 
-(a ~ f ^k 1 ^k 2) # ReadError: duplicate ^k in the f stage
+(a -> f ^k 1 ^k 2) # ReadError: duplicate ^k in the f stage
 ```
 
-Nested nodes parse recursively, so a `~` inside a stage argument belongs to the
-nested node rather than splitting the outer pipeline.
+Nested nodes parse recursively, so a delimiter inside a stage argument belongs
+to the nested node rather than splitting the outer pipeline.
 
 Therefore:
 
-```gene
-(a ~ f)             # initial value: a
-(make x ~ f)        # initial value: (make x)
-((make x) ~ f)      # initial value: (make x), with explicit grouping
+```text
+(a -> f)             # initial value: a
+((make x) -> f)      # initial value: (make x)
+(make x -> f)        # ReadError: the leading segment is not a single form
 ```
 
 Pipelines associate left-to-right:
 
 ```gene
-(a ~ f c ~ g d)
+(a -> f c -> g d)
 
 # call shape:
 (g (f a c) d)
@@ -176,10 +185,10 @@ When a stage has no direct `_` slot, the incoming value becomes its first
 positional argument:
 
 ```gene
-(a ~ f)             # f(a)
-(a ~ f c d)         # f(a, c, d)
-(a ~ f ^k v c)      # f(^k v, a, c)
-(a ~ /name)         # (/name a)
+(a -> f)             # f(a)
+(a -> f c d)         # f(a, c, d)
+(a -> f ^k v c)      # f(^k v, a, c)
+(a -> /name)         # (/name a)
 ```
 
 Properties stay properties. “First positional” refers only to the order of the
@@ -195,24 +204,24 @@ as:
 - a property value.
 
 ```gene
-(a ~ _ c)           # call the value a with c
-(a ~ f _ c)         # f(a, c)
-(a ~ f c _)         # f(c, a)
-(a ~ f ^k _)        # f(^k a)
-(a ~ f ^k _ c)      # f(^k a, c)
+(a -> _ c)           # call the value a with c
+(a -> f _ c)         # f(a, c)
+(a -> f c _)         # f(c, a)
+(a -> f ^k _)        # f(^k a)
+(a -> f ^k _ c)      # f(^k a, c)
 ```
 
 A property key is never a slot:
 
 ```gene
-(a ~ f ^_ c)        # no explicit slot; call shape: (f ^_ c a)
+(a -> f ^_ c)        # no explicit slot; call shape: (f ^_ c a)
 ```
 
 The reader must reject more than one direct slot:
 
 ```text
-(a ~ f _ _)         # ReadError: a pipeline stage accepts at most one `_`
-(a ~ f ^x _ ^y _)   # same error
+(a -> f _ _)         # ReadError: a pipeline stage accepts at most one `_`
+(a -> f ^x _ ^y _)   # same error
 ```
 
 ### 6.3 Nested `_` is not a slot
@@ -221,9 +230,9 @@ Slot detection does not descend into nested forms or containers. This prevents
 pipeline syntax from capturing wildcards, parameters, templates, or data:
 
 ```gene
-(a ~ map (fn [_] _))       # no direct slot; a is inserted first
-(a ~ f [x _])              # no direct slot; `_` remains list data/syntax
-(a ~ f (quote _))          # no direct slot
+(a -> map (fn [_] _))       # no direct slot; a is inserted first
+(a -> f [x _])              # no direct slot; `_` remains list data/syntax
+(a -> f (quote _))          # no direct slot
 ```
 
 The incoming value can be embedded more deeply with an explicit function.
@@ -240,13 +249,73 @@ the incoming value is the receiver, after which ordinary dot-send
 normalization applies:
 
 ```gene
-(a ~ _ .message c)          # call shape: (a .message c)
-(a ~ _ .Proto:message c)    # call shape: (a .Proto:message c)
-(a ~ _ .%m c)               # call shape: (a .%m c)
+(a -> _ .message c)          # call shape: (a .message c)
+(a -> _ .Proto:message c)    # call shape: (a .Proto:message c)
+(a -> _ .%m c)               # call shape: (a .%m c)
 ```
 
-This keeps one slot rule instead of teaching `~` a separate message-dispatch
+This keeps one slot rule instead of teaching `->` a separate message-dispatch
 mode.
+
+### 6.5 Per-item stages with `=>`
+
+`=>` marks a stage that runs once per item of the incoming value. Everything in
+6.1–6.4 still describes the stage: the item, not the collection, is the first
+positional argument by default, one exact direct `_` overrides that, nested `_`
+is not a slot, and a head slot makes the item a dot-send receiver.
+
+```gene
+(xs => f c)              # per item: (f item c)
+(xs => f c _)            # per item: (f c item)
+(xs => f ^k _)           # per item: (f ^k item)
+(xs => _ .render c)      # per item: (item .render c)
+```
+
+The stage's result is the `map` generic of design §6.2 applied to the incoming
+value, so the pipeline continues in the incoming kind: a `List` answers a
+`List`, a `Set` a `Set`, a `Map` maps its values, a `Stream` stays lazy, and a
+user type joins by declaring the message. `=>` therefore adds no dispatch
+mechanism of its own; `(xs => f c)` is the `map` a hand-written
+`(xs -> $map (fn [item] (f item c)))` would perform, without naming the item.
+
+Laziness is the receiver's, not the delimiter's. `-> $to_stream` in front of a
+`=>` stage is how a pipeline asks for one item at a time:
+
+```gene
+(source
+  -> $to_stream
+  => parse
+  -> $into [])
+```
+
+The two delimiters mix at one parenthesis depth. `;` mixes with neither.
+
+This is the explicit stage-level syntax that Section 4's non-goal reserved.
+The rejected feature was a `->` stage that changes meaning when the incoming
+value happens to be a stream; `=>` is a different delimiter the author writes,
+so a reader never has to know a runtime type to know what a stage does.
+
+#### Evaluating a `=>` stage
+
+A `=>` stage evaluates its callee and its non-slot arguments **once**, before
+iterating. Only the per-item call repeats:
+
+1. evaluate the incoming expression exactly once and retain it;
+2. evaluate every separately evaluated stage component — the callee unless the
+   head is the slot, each direct property value, each direct positional
+   argument — once, into compiler-owned storage;
+3. build the per-item callable over that storage;
+4. hand the retained value and the callable to `map`.
+
+Symbols and literals are left in place rather than lifted: a symbol load is
+idempotent, and keeping it in place preserves ordinary head dispatch for `+`,
+for a statically known function, and for a `.message` descriptor. A spread
+stays a spread, with its operand lifted.
+
+Loop-invariant hoisting is the reason `=>` can be a stage at all. It is exactly
+the work Section 4 said an *implicit* per-item rule would have to do silently,
+and doing it under an explicit delimiter is what makes it a contract rather
+than an optimization.
 
 ## 7. Evaluation contract
 
@@ -267,7 +336,7 @@ If any step raises, later steps and later stages do not run.
 For example, this source:
 
 ```gene
-((make_a) ~ (make_f) (make_c))
+((make_a) -> (make_f) (make_c))
 ```
 
 must evaluate in this order:
@@ -287,7 +356,7 @@ because that ordinary call evaluates `make_f` first.
 The named-slot form has the same guarantee:
 
 ```gene
-((make_a) ~ (make_f) ^k _)
+((make_a) -> (make_f) ^k _)
 
 # order:
 make_a → make_f → load retained a → invoke selected f
@@ -316,15 +385,15 @@ The representation must satisfy these constraints:
 
 - it retains stage boundaries, props, meta, positional order, and slot
   location;
-- it cannot collide with the existing internal `~`/`?~` markers used for
-  canonical message sends;
+- it cannot collide with the internal `~`/`?~` markers used for canonical
+  message sends;
 - it round-trips through the canonical printer;
 - it survives source-location and macro-provenance tracking;
 - it cannot be forged accidentally by an unrelated ordinary call;
-- it is produced only by the `~` reader surface and cannot be forged by a
+- it is produced only by the `->` reader surface and cannot be forged by a
   user-authored ordinary node.
 
-Keeping the structure also lets the human formatter preserve `~`. A direct
+Keeping the structure also lets the human formatter preserve `->`. A direct
 rewrite to `(f a c)` would be non-injective: the formatter could not know
 whether the author wrote a pipeline or an ordinary nested call.
 
@@ -365,7 +434,8 @@ compiler should own the temporary directly.
 
 ## 10. Macros, fexprs, and special forms
 
-The MVP targets ordinary eager call and dot-send stages. Statically known macro,
+The MVP targets ordinary eager call and dot-send stages, for `->` and `=>`
+alike. Statically known macro,
 fexpr, and special-form stage heads are rejected with an actionable diagnostic;
 they do not share the ordinary evaluation contract and must not acquire
 accidental pipeline semantics. A later proposal may add a narrowly specified
@@ -380,23 +450,24 @@ call.
 The reader should report:
 
 - missing initial segment;
-- missing stage after `~`;
+- missing stage after `->` or `=>`;
+- a multi-form segment before the first delimiter;
 - more than one direct `_` slot;
-- mixed `;` and `~` delimiters at one parenthesis depth;
-- invalid standalone spaced `~` outside a pipeline-capable node.
+- mixed `;` and arrow delimiters at one parenthesis depth;
+- invalid standalone `->` outside a pipeline-capable node.
 
 Diagnostics from a stage call should point at that stage, not at the whole
 pipeline. Tail-fallback and call-site records should use the same stage source
 location.
 
-The canonical printer and `gene fmt` should emit `~` pipelines from the
+The canonical printer and `gene fmt` should emit `->`/`=>` pipelines from the
 canonical representation. The formatter should use one stable multiline style:
 
 ```gene
 (source
-  ~ parse options
-  ~ validate schema
-  ~ save db _)
+  -> parse options
+  -> validate schema
+  -> save db _)
 ```
 
 LSP occurrence, completion, hover, and selection ranges should expose each
@@ -414,20 +485,25 @@ Message sends remain dot-only:
 x/.message
 ```
 
-`~` does not perform message resolution. To send inside a pipeline, use the
+`->` does not perform message resolution. To send inside a pipeline, use the
 explicit receiver slot shown in Section 6.4.
 
-### 12.2 Byte literals and glued symbols
+### 12.2 Arrows inside symbols
 
-These existing forms are unchanged:
+Only a whole `->` or `=>` atom between node segments is a delimiter, so these
+remain ordinary symbols:
 
 ```gene
-#B16#aa~ bb       # byte-literal continuation
-~name             # ordinary glued symbol where symbols are allowed
+->name            # a symbol that begins with an arrow
+a->b              # a symbol that contains one
+-->               # a longer arrow-like symbol
 ```
 
-Only the spaced token recognized between node segments is a pipeline
-delimiter.
+Spaced `~` carries no meaning after this change: `~` sends were removed with
+the dot surface, and the pipeline it briefly spelled is now `->`. The reader
+rejects it with a message naming both replacements rather than silently reading
+it as something else. `~name` stays an ordinary glued symbol and the
+`#B16#aa~ bb` byte-literal continuation keeps its byte syntax.
 
 ## 13. Performance requirements
 
@@ -450,14 +526,18 @@ delimiter.
 - explicit head, positional, and property-value slots;
 - multi-stage left association;
 - empty stage and duplicate-slot errors;
+- a multi-form segment before the first delimiter is rejected;
 - nested `_` is not captured;
 - dot-send stage through a head slot;
-- glued symbols and byte continuations remain unchanged;
+- `->` and `=>` mixed at one depth, each printing its own delimiter;
+- arrow-containing symbols and byte continuations remain unchanged;
 - canonical print/read round-trip and formatter idempotence.
 
 ### Evaluation order
 
 - incoming expression runs before the stage callee;
+- a `=>` stage's callee and non-slot arguments run once, before iterating;
+- a `=>` stage answers in the incoming kind, and stays lazy for a `Stream`;
 - stage callee runs before its other arguments;
 - incoming expression runs once with default insertion;
 - incoming expression runs once with a property slot;
@@ -480,15 +560,22 @@ delimiter.
 1. **Surface contract:** complete in `docs/design.md` and
    `docs/spec/calls.md`; `;` remains independent head-folding sugar.
 2. **Reader representation:** complete. The reader emits `vkPipeline`, owns
-   props/meta/source locations per stage, and validates direct slots and mixed
+   props/meta/source locations and a delimiter kind per stage, requires a
+   single-form leading segment, and validates direct slots and mixed
    delimiters in one pass.
 3. **Compiler sequencing:** complete. VM GIR uses compiler-owned inaccessible
    locals, preserves source-facing call sites, and propagates tail position to
-   only the final stage. The new opcode/build table intentionally advances the
-   executable artifact marker to GIR v4.
-4. **Backends:** complete for the VM and web emitter. Fixed-representation
-   typed-native analysis deliberately declines pipeline syntax, retaining the
-   checked dynamic VM fallback rather than inventing a second lowering.
+   only the final stage. A `=>` stage adds one hidden binding per separately
+   evaluated component plus the per-item callable, and then reuses the ordinary
+   `map` send. The opcode/build table advances the executable artifact marker
+   to GIR v5.
+4. **Backends:** complete for the VM and web emitter. The web profile now
+   infers an inline callback's parameter and return types when the expected
+   type is a known `Callback`, which is what lets a generated `=>` callback
+   carry no annotations; a user-written callback with nothing to infer from
+   still requires them. Fixed-representation typed-native analysis deliberately
+   declines pipeline syntax, retaining the checked dynamic VM fallback rather
+   than inventing a second lowering.
 5. **Syntax transformation and tooling:** complete for canonical printing,
    `gene fmt`, source indexing, quote/quasiquote, macro expansion, GIR
    round-tripping, and diagnostics. Slot classification is refreshed after
@@ -501,7 +588,7 @@ delimiter.
    outside this feature.
 
 No stage changes `;`. A future proposal may compare or unify their internal
-implementations after `~` has an independently sound contract.
+implementations after `->` has an independently sound contract.
 
 ## 16. Deferred extensions
 
@@ -510,16 +597,18 @@ implementations after `~` has an independently sound contract.
   11.
 - `_...` has no threaded-splice meaning. It requires a separate future use case
   and slot kind.
-- Direct `;`/`~` mixing remains rejected. Explicit nesting is the composition
+- `=>` is `map`. A per-item `filter` or `each` delimiter is not proposed: both
+  read clearly today as `-> $filter p` and `-> $each f`, and neither carries the
+  slot ergonomics that motivate `=>`.
+- Direct `;`/arrow mixing remains rejected. Explicit nesting is the composition
   syntax unless a later proposal demonstrates a clearer rule.
 - Quasiquote supports unquote in pipeline components. Direct unquote-splicing
   into a stage body is deferred because a dynamic splice can move the stage's
   direct slot and needs a dedicated reconstruction contract.
 
-None of these extensions reopens `;`; they concern only `~` pipelines.
+None of these extensions reopens `;`; they concern only `->`/`=>` pipelines.
 
 Decided 2026-09-02: streams are **not** implicitly threaded per-item through
-pipelines — see the non-goal in Section 4. If a per-item ergonomic spelling is
-ever wanted, it must be explicit syntax at the stage level (a stream-adapter
-form), never implicit dispatch on the incoming value's runtime type; §6.2's
-`map`/`filter`/`each` combinators are the designed spelling today.
+pipelines — see the non-goal in Section 4. The per-item spelling that Section 4
+required to be explicit stage-level syntax is `=>` (Section 6.5); a `->` stage
+still never inspects the incoming value's runtime type.

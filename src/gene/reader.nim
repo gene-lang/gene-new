@@ -23,7 +23,9 @@ type
     tkRef, tkDeref,          # #Ref #Deref
     tkCaret, tkCaretCaret,   # ^ ^^
     tkAt, tkAtAt,            # @ @@
-    tkTilde,                 # spaced ~ value-pipeline delimiter
+    tkTilde,                 # removed spaced ~ surface; the parser rejects it
+    tkArrow,                 # -> value-pipeline delimiter
+    tkFatArrow,              # => per-item value-pipeline delimiter
     tkDotDotDot,             # ...
     tkString, tkBytes, tkRegex, tkInt, tkFloat, tkDate, tkTime, tkDateTime,
     tkSymbol, tkChar,
@@ -1049,6 +1051,12 @@ proc tokenizeImpl(r: var Reader,
         r.addToken(tkInt, lexeme, startLine, startCol, startByte)
       elif parseutils.parseFloat(lexeme, valFloat) == lexeme.len:
         r.addToken(tkFloat, lexeme, startLine, startCol, startByte)
+      elif lexeme == "->":
+        # Only the whole atom is a delimiter, so `->name`, `a->b`, and `-->`
+        # stay ordinary symbols without a spacing rule of their own.
+        r.addToken(tkArrow, lexeme, startLine, startCol, startByte)
+      elif lexeme == "=>":
+        r.addToken(tkFatArrow, lexeme, startLine, startCol, startByte)
       else:
         r.addToken(tkSymbol, lexeme, startLine, startCol, startByte)
 
@@ -1084,6 +1092,8 @@ proc tokenKindName*(kind: TokenKind): string =
   of tkAt: "at"
   of tkAtAt: "at_at"
   of tkTilde: "tilde"
+  of tkArrow: "arrow"
+  of tkFatArrow: "fat_arrow"
   of tkDotDotDot: "dot_dot_dot"
   of tkString: "string"
   of tkBytes: "bytes"
@@ -1467,11 +1477,17 @@ proc finishNodeSegment(head: Value, props: PropTable, body: seq[Value],
   # protocol resolution, TCO, and tooling consume one representation.
   normalizeDotSend(head, props, body, meta, immutable)
 
-proc finishPipelineInitial(head: Value, props: PropTable, body: seq[Value],
-                           meta: PropTable, immutable: bool): Value =
-  if body.len == 0 and props.len == 0 and meta.len == 0:
-    return head
-  finishNodeSegment(head, props, body, meta, immutable)
+proc finishPipelineInitial(r: var Reader, head: Value, props: PropTable,
+                           body: seq[Value], meta: PropTable,
+                           tok: Token): Value =
+  ## The incoming value is a single form, never an implicitly wrapped segment.
+  ## `(a b -> f c)` would have to guess that `a b` means `(a b)`, which reads
+  ## as a call the author never wrote; the explicit `((a b) -> f c)` says it.
+  if body.len > 0 or props.len > 0 or meta.len > 0:
+    r.raiseReadErrorAt(tok,
+      "the value before '" & tok.lexeme & "' must be a single form; " &
+      "wrap the call in its own parentheses")
+  head
 
 proc isDirectPipelineSlot(value: Value): bool =
   value.kind == vkSymbol and value.symVal == "_"
@@ -1492,14 +1508,15 @@ proc detectPipelineSlot*(head: Value, props: PropTable,
       result.slot = PipelineSlot(kind: pskProp, index: -1, name: name)
       inc result.count
 
-proc finishPipelineStage(r: var Reader, head: Value, props: PropTable,
+proc finishPipelineStage(r: var Reader, kind: PipelineStageKind,
+                         head: Value, props: PropTable,
                          body: seq[Value], meta: PropTable,
                          loc: SourceLoc): PipelineStage =
   let detected = detectPipelineSlot(head, props, body)
   if detected.count > 1:
     raiseReadErrorAt(r.sourceName, loc.line, loc.col,
       "a pipeline stage accepts at most one direct '_' slot")
-  PipelineStage(head: head, props: props, body: body, meta: meta,
+  PipelineStage(kind: kind, head: head, props: props, body: body, meta: meta,
                 sourceLoc: loc, slot: detected.slot)
 
 proc materializePipelineStage*(stage: PipelineStage, replacement: Value,
@@ -1527,6 +1544,69 @@ proc materializePipelineStage*(stage: PipelineStage, replacement: Value,
     meta[name] = value
   normalizeDotSend(head, props, body, meta, immutable)
 
+proc geneMemberPath*(name: string): Value =
+  ## `$name`, the reader's spelling for a `gene` root member (design §2.1).
+  newNode(newSym("path"), body = @[newSym("gene"), newSym(name)])
+
+proc materializeIterateStage*(stage: PipelineStage, receiver: Value,
+                              itemName: string, immutable = false): Value =
+  ## `=>` runs its stage once per item and answers in the incoming kind, which
+  ## is exactly the `map` generic of design §6.2: a `List` answers a `List`, a
+  ## `Stream` stays lazy, and a user type joins by declaring the message. The
+  ## per-item call is an ordinary `->` stage whose slot holds the item.
+  let item = newSym(itemName)
+  let call = materializePipelineStage(stage, item, immutable)
+  let callback = newNode(newSym("fn"), body = @[newList(@[item]), call])
+  newNode(geneMemberPath("map"), body = @[receiver, callback])
+
+proc isSpreadNode(value: Value): bool =
+  value.kind == vkNode and value.head.kind == vkSymbol and
+    value.head.symVal == "..." and value.body.len == 1 and
+    value.props.len == 0 and value.meta.len == 0
+
+proc needsIterateHoist(value: Value): bool =
+  ## An `=>` stage evaluates its callee and arguments once, before iterating,
+  ## so anything with its own evaluation is lifted out of the callback. Symbols
+  ## and literals stay inline: a symbol load is idempotent and keeping it in
+  ## place preserves head dispatch for `+`, a known function, and a `.message`
+  ## descriptor.
+  case value.kind
+  of vkNode: not value.isSpreadNode
+  of vkPipeline, vkList, vkMap, vkSet, vkHashMap: true
+  else: false
+
+proc hoistIterateStage*(stage: PipelineStage, freshName: proc(): string):
+    tuple[stage: PipelineStage, hoisted: seq[(string, Value)]] =
+  ## Replace every separately evaluated stage component with a name bound once
+  ## outside the callback. `hoisted` lists those bindings in evaluation order.
+  var lifted: seq[(string, Value)]
+
+  proc lift(value: Value): Value =
+    if value.isSpreadNode:
+      # The spread itself is call syntax, so only its operand is lifted.
+      let inner = lift(value.body[0])
+      if inner.bits == value.body[0].bits: return value
+      return newNode(value.head, body = @[inner])
+    if not value.needsIterateHoist: return value
+    let name = freshName()
+    lifted.add (name, value)
+    newSym(name)
+
+  result.stage = stage
+  if stage.slot.kind != pskHead:
+    result.stage.head = lift(stage.head)
+  result.stage.props = initPropTable()
+  for key, value in stage.props:
+    result.stage.props[key] =
+      if stage.slot.kind == pskProp and key == stage.slot.name: value
+      else: lift(value)
+  result.stage.body = @[]
+  for i, value in stage.body:
+    result.stage.body.add(
+      if stage.slot.kind == pskBody and i == stage.slot.index: value
+      else: lift(value))
+  result.hoisted = lifted
+
 proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
   var head = NIL
   var props = initPropTable()
@@ -1538,6 +1618,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
   var inPipeline = false
   var pipelineInitial = NIL
   var pipelineStages: seq[PipelineStage]
+  var pendingStageKind = pstCall
   var segmentLoc = SourceLoc()
   while true:
     r.skipDatumComments()
@@ -1558,7 +1639,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
         let afterKey = r.peekKind()
         if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
                         tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi,
-                        tkTilde}:
+                        tkTilde, tkArrow, tkFatArrow}:
           r.raiseReadErrorAt(keyTok,
             "property '^" & key & "' requires a value")
         val = r.parseForm()
@@ -1587,7 +1668,7 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
           let afterKey = r.peekKind()
           if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
                           tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi,
-                          tkTilde}:
+                          tkTilde, tkArrow, tkFatArrow}:
             r.raiseReadErrorAt(keyTok,
               "meta property '@" & key & "' requires a value")
           val = r.parseForm()
@@ -1595,11 +1676,11 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
           r.raiseReadErrorAt(keyTok, "duplicate meta property '@" & key & "'")
         meta[key] = val
     of tkSemi:
-      # Pipe folding: (a; b) -> ((a) b)
+      # Pipe folding: (a; b) folds to ((a) b)
       if inPipeline:
         r.raiseReadErrorAt(tok,
-          "cannot mix ';' head folding and '~' value pipelines in one form; " &
-          "nest one operation in its own parentheses")
+          "cannot mix ';' head folding and '->'/'=>' value pipelines in one " &
+          "form; nest one operation in its own parentheses")
       discard r.next()
       if first:
         r.raiseReadErrorAt(tok, "';' requires a preceding segment")
@@ -1611,21 +1692,24 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
       segmentLoc = SourceLoc()
       first = false
       inPipe = true
-    of tkTilde:
+    of tkArrow, tkFatArrow:
       if inPipe:
         r.raiseReadErrorAt(tok,
-          "cannot mix ';' head folding and '~' value pipelines in one form; " &
-          "nest one operation in its own parentheses")
+          "cannot mix ';' head folding and '->'/'=>' value pipelines in one " &
+          "form; nest one operation in its own parentheses")
       if first:
-        r.raiseReadErrorAt(tok, "'~' requires a preceding pipeline segment")
+        r.raiseReadErrorAt(tok,
+          "'" & tok.lexeme & "' requires a preceding pipeline segment")
       discard r.next()
       if not inPipeline:
-        pipelineInitial = finishPipelineInitial(
-          head, props, body, meta, immutable)
+        pipelineInitial = r.finishPipelineInitial(
+          head, props, body, meta, tok)
         inPipeline = true
       else:
         pipelineStages.add r.finishPipelineStage(
-          head, props, body, meta, segmentLoc)
+          pendingStageKind, head, props, body, meta, segmentLoc)
+      pendingStageKind =
+        if tok.kind == tkFatArrow: pstIterate else: pstCall
       head = NIL
       props = initPropTable()
       meta = initPropTable()
@@ -1650,9 +1734,10 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
 
   if inPipeline:
     if first:
-      r.raiseReadError("pipeline '~' requires a following stage")
+      r.raiseReadError("a value pipeline requires a stage after its last " &
+        "'->' or '=>'")
     pipelineStages.add r.finishPipelineStage(
-      head, props, body, meta, segmentLoc)
+      pendingStageKind, head, props, body, meta, segmentLoc)
     result = newPipeline(pipelineInitial, pipelineStages, immutable)
   elif inPipe:
     result = finishNodeSegment(head, props, body, meta, immutable)
@@ -1889,8 +1974,12 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkComma: finish newSym(",")
   of tkTilde:
     r.raiseReadErrorAt(tok,
-      "spaced '~' is a value-pipeline delimiter and is only valid between " &
-      "segments of one parenthesized form")
+      "spaced '~' has no meaning; '->' is the value-pipeline delimiter and " &
+      "'.message' is the send surface")
+  of tkArrow, tkFatArrow:
+    r.raiseReadErrorAt(tok,
+      "'" & tok.lexeme & "' is a value-pipeline delimiter and is only valid " &
+      "between segments of one parenthesized form")
   of tkDotDotDot: finish newSym("...")
   of tkDollar:
     let nextTok = r.peek()

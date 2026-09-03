@@ -117,21 +117,35 @@ are executable — non-serializable, and rejected by `assoc_in`/`update_in`.
 
 ## Sequenced value pipelines
 
-A spaced `~` evaluates the incoming expression first and exactly once, then
-passes its retained value to the next eager call. It is the first positional
-argument by default:
+`->` evaluates the incoming expression first and exactly once, then passes its
+retained value to the next eager call. It is the first positional argument by
+default:
 
 ```gene
-(source ~ parse options)       # call shape (parse source options)
-(source ~ parse options _)     # call shape (parse options source)
-(source ~ parse ^input _)      # named slot
-(source ~ _ .render options)   # source is the dot-send receiver
+(source -> parse options)       # call shape (parse source options)
+(source -> parse options _)     # call shape (parse options source)
+(source -> parse ^input _)      # named slot
+(source -> _ .render options)   # source is the dot-send receiver
+((read path) -> parse)          # a leading call needs its own parentheses
 ```
 
 Only one exact direct `_` is a slot. An `_` nested in a list, map, node, quote,
 or function stays nested syntax. Several stages associate left to right and
-format one per line. `;` is separate head-folding sugar; direct `;`/`~` mixing
-in one node is a read error, while explicit nesting is allowed.
+format one per line.
+
+`=>` is the per-item delimiter. The stage runs once per item and the pipeline
+continues with the `map` result for the incoming kind:
+
+```gene
+(rows => normalize)                     # List in, List out
+(rows => parse ^strict true)            # per item: (parse row ^strict true)
+(a -> $to_stream => step -> $into [])   # Stream in, lazy Stream out
+```
+
+Its callee and non-slot arguments are evaluated once, before iterating. `->`
+and `=>` mix in one node. `;` is separate head-folding sugar; direct `;`/arrow
+mixing in one node is a read error, while explicit nesting is allowed. Only a
+whole `->` or `=>` atom is a delimiter — `->name` and `a->b` stay symbols.
 
 ## Spread and destructuring
 

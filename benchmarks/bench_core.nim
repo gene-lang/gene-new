@@ -165,7 +165,7 @@ proc main() =
 
   let pipelineScope = newGlobalScope()
   discard run(compileSource(
-    "(fn pipeline_run [] (1 ~ + 2 ~ * 3)) " &
+    "(fn pipeline_run [] (1 -> + 2 -> * 3)) " &
     "(fn pipeline_explicit [] " &
     "  (let first 1) (let second (+ first 2)) (* second 3))"),
     pipelineScope)
@@ -177,6 +177,25 @@ proc main() =
   bench("vm.pipeline_explicit.compiled_chunk", 500_000, i):
     let v = run(pipelineExplicitChunk, pipelineScope)
     checksum = checksum + v.intVal
+
+  # `=>` against the spelling it replaces, not against a nested call: the
+  # comparison that matters is whether the delimiter costs more than writing
+  # the same `map` by hand.
+  let iterateScope = newGlobalScope()
+  discard run(compileSource(
+    "(fn iterate_step [n] (+ n 1)) " &
+    "(fn iterate_run [] ([1 2 3 4] => iterate_step)) " &
+    "(fn iterate_explicit [] " &
+    "  ($map [1 2 3 4] (fn [n] (iterate_step n))))"),
+    iterateScope)
+  let iterateChunk = compileSource("(iterate_run)")
+  let iterateExplicitChunk = compileSource("(iterate_explicit)")
+  bench("vm.pipeline_iterate.compiled_chunk", 200_000, i):
+    let v = run(iterateChunk, iterateScope)
+    checksum = checksum + v.listItems.len
+  bench("vm.pipeline_iterate_explicit.compiled_chunk", 200_000, i):
+    let v = run(iterateExplicitChunk, iterateScope)
+    checksum = checksum + v.listItems.len
 
   let tailMutualChunk = compileSource(
     "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &

@@ -167,9 +167,9 @@ suite "reader — dot message descriptors":
     check_read("foo.bar", "foo.bar")
     check_read("x...", "(... x)")
   test "value pipeline syntax is preserved":
-    check_read("(a ~ f c)", "(a ~ f c)")
-    check_read("(a ~ f ^k _ ~ g ^k 2)", "(a ~ f ^k _ ~ g ^k 2)")
-    let pipeline = read("(a ~ f ^k _ ~ g 2)")
+    check_read("(a -> f c)", "(a -> f c)")
+    check_read("(a -> f ^k _ -> g ^k 2)", "(a -> f ^k _ -> g ^k 2)")
+    let pipeline = read("(a -> f ^k _ -> g 2)")
     check pipeline.kind == vkPipeline
     check pipeline.pipelineInitial.symVal == "a"
     check pipeline.pipelineStages.len == 2
@@ -177,17 +177,36 @@ suite "reader — dot message descriptors":
     check pipeline.pipelineStages[0].slot.kind == pskProp
     check pipeline.pipelineStages[0].slot.name == "k"
     check pipeline.pipelineStages[1].body[0].intVal == 2
-    check read("(a ~ f [x _])").pipelineStages[0].slot.kind == pskDefault
-  test "pipeline syntax rejects malformed and mixed forms":
-    for src in ["(~ name)", "(a ~)", "[~ 1]", "xs/~size",
-                "(a ~ f _ _)", "(a ; b ~ c)", "(a ~ b ; c)"]:
+    check read("(a -> f [x _])").pipelineStages[0].slot.kind == pskDefault
+  test "iterate stages read as their own delimiter":
+    check_read("(a => f c)", "(a => f c)")
+    check_read("(a -> f => g _ -> h)", "(a -> f => g _ -> h)")
+    let mixed = read("(a -> f => g)")
+    check mixed.pipelineStages[0].kind == pstCall
+    check mixed.pipelineStages[1].kind == pstIterate
+    check read("(a => f)").pipelineStages[0].kind == pstIterate
+  test "only a whole arrow atom delimits":
+    check_read("(a ->b)", "(a ->b)")
+    check_read("(a b->c)", "(a b->c)")
+    check_read("(a -->)", "(a -->)")
+    check_read("(a =>b)", "(a =>b)")
+  test "the value before the first delimiter is one form":
+    for src in ["(a b -> f c)", "(a b => f c)", "(a ^k 1 -> f)"]:
       expect ReadError:
         discard read(src)
-    check_read("((a; b) ~ f)", "(((a) b) ~ f)")
-    check_read("(a ~ f (b; c))", "(a ~ f ((b) c))")
+    check_read("((a b) -> f c)", "((a b) -> f c)")
+  test "pipeline syntax rejects malformed and mixed forms":
+    for src in ["(-> name)", "(a ->)", "[-> 1]", "(=> name)", "(a =>)",
+                "(a -> f _ _)", "(a ; b -> c)", "(a -> b ; c)",
+                "(a ; b => c)", "(a => b ; c)", "(a ~ b)"]:
+      expect ReadError:
+        discard read(src)
+    check_read("((a; b) -> f)", "(((a) b) -> f)")
+    check_read("(a -> f (b; c))", "(a -> f ((b) c))")
   test "dot sends survive print and reread":
     for src in ["xs/.size", "(a ~b)", "users/%i/.to_html", "x/.%m",
-                "x/?.msg", "(a .b)", "(a ~ f ^k _ ~ g 2)"]:
+                "x/?.msg", "(a .b)", "(a -> f ^k _ -> g 2)",
+                "(a => f -> g)"]:
       let once = read(src).print()
       check read(once).print() == once
 

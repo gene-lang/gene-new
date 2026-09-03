@@ -75,21 +75,21 @@ their own namespaces, mirroring `db/sqlite/open` (review: no ambiguous
 
 ```gene
 (import store/sqlite [open : store_open])
-(var s (store_open db))                     ; layered over an existing Db conn
+(var s (store_open db))             # layered over an existing Db conn
 
-;; or, filesystem:
+# or, filesystem:
 (import store/fs [open : store_open])
-(var s (store_open fs ^root ".state"))      ; fs : fs/ReadWriteDir capability
+(var s (store_open fs ^root ".state"))  # fs : fs/ReadWriteDir capability
 
-(s .put key value)          ; ^mode data|full (default data)
-(s .get key)                ; raises StoreError ^kind missing on absence
-(s .get key ^default v)     ; returns v when the key is absent
-(s .has? key)               ; -> Bool
+(s .put key value)                  # ^mode data|full (default data)
+(s .get key)                        # raises StoreError ^kind missing on absence
+(s .get key ^default v)             # returns v when the key is absent
+(s .has? key)                       # Bool
 (s .delete key)
-(s .keys)                   ; -> [Str]
-(s .clear)                  ; drop all records (for a "start fresh" init)
-(s .checkpoint generation records) ; atomically publish one Map of records
-(s .load_checkpoint)       ; newest complete valid generation, or nil
+(s .keys)                           # [Str]
+(s .clear)                          # drop all records (for a "start fresh" init)
+(s .checkpoint generation records)  # atomically publish one Map of records
+(s .load_checkpoint)                # newest complete valid generation, or nil
 (s .close)
 ```
 

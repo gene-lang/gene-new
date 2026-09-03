@@ -326,7 +326,8 @@ x : T        # annotation
 _            # wildcard / ignore
 name!        # reserved fexpr declaration/invocation marker (§3/§11.1)
 (a; b; c)    # pipe: pure reader head-folding
-(a ~ f c)    # sequenced value pipeline; previous value is first argument
+(a -> f c)   # sequenced value pipeline; previous value is first argument
+(xs => f c)  # per-item pipeline stage; each item is the first argument
 (x .f a)    # message send; see Section 3 and docs/core.md §9
 /user/name   # selector literal
 x/user/name  # apply selector to x
@@ -337,7 +338,7 @@ x/user/name  # apply selector to x
 
 Canonical forms:
 
-```gene
+```text
 ^^flag       => ^flag true
 @@flag       => @flag true
 `x           => (quasiquote x)
@@ -494,7 +495,8 @@ immutable_node = "#(", spacing, [ node_sequence ], spacing, ")" ;
 node_sequence  = segment, { segment_delimiter, segment } ;
 segment        = element, { separator, element } ;
 segment_delimiter = spacing, ";", spacing
-                  | spacing, "~", spacing ;
+                  | spacing, "->", spacing
+                  | spacing, "=>", spacing ;
 vector         = "[", spacing, [ form, { separator, form } ], spacing, "]" ;
 immutable_vector = "#[", spacing, [ form, { separator, form } ], spacing, "]" ;
 prop_map       = "{", spacing, { map_entry, spacing }, "}" ;
@@ -581,10 +583,12 @@ Ordered lexical dispatch:
 
 Lexical notes:
 
-- A node sequence uses either `;` head-folding delimiters or `~` value-pipeline
-  delimiters at one parenthesis depth, never both. Nested nodes choose
-  independently. A token-delimited `~` is a pipeline separator; glued `~name`
-  remains a symbol.
+- A node sequence uses either `;` head-folding delimiters or `->`/`=>`
+  value-pipeline delimiters at one parenthesis depth, never both; `->` and `=>`
+  may be mixed with each other. Nested nodes choose independently. Only a whole
+  `->` or `=>` atom is a delimiter; `->name` and `a->b` remain symbols.
+- The segment before the first `->`/`=>` is a single form; a multi-form
+  segment there is a read error.
 - `access_or_qualified_path` is intentionally context-neutral at reader time.
 - Short slash syntax permits `%name` segments only; complex stages use long `(select ... %(expr) ...)` syntax.
 - A delimited `/` token is a `symbol`, not a `path_segment` by itself.
@@ -720,26 +724,34 @@ segment for it:
 
 This keeps `;` one-purpose syntax: the preceding segment becomes the next
 node's head. Sequenced value threading and explicit argument slots are a
-separate feature using `~`; see `docs/proposals/pipeline.md`.
+separate feature using `->` and `=>`; see `docs/proposals/pipeline.md`.
 
 ### 2.7 Sequenced value pipelines
 
-Spaced `~` separates ordered value-pipeline stages. The reader preserves the
-initial expression and every stage as syntax-only `vkPipeline` structure; it
-does not rewrite the source directly to nested calls, because ordinary calls
-evaluate their callee before their arguments.
+`->` separates ordered value-pipeline stages. The reader preserves the initial
+expression and every stage as syntax-only `vkPipeline` structure; it does not
+rewrite the source directly to nested calls, because ordinary calls evaluate
+their callee before their arguments.
 
 ```gene
-(a ~ f c)       # call shape (f a c), but a evaluates before f
-(a ~ f c _)     # call shape (f c a)
-(a ~ f ^k _)    # call shape (f ^k a)
-(a ~ _ c)       # call the value of a with c
+(a -> f c)       # call shape (f a c), but a evaluates before f
+(a -> f c _)     # call shape (f c a)
+(a -> f ^k _)    # call shape (f ^k a)
+(a -> _ c)       # call the value of a with c
 ```
 
 With no exact direct `_`, the incoming value becomes the first positional
 argument. One exact `_` may instead occupy the stage head, a direct positional
 argument, or a direct property value. More than one direct slot is a read
 error. Slot detection does not descend into nested forms or containers.
+
+The value in front of the first delimiter is a **single form**, never an
+implicitly wrapped segment:
+
+```text
+((a b) -> f c)   # the call (a b) enters the pipeline
+(a b -> f c)     # ReadError: wrap the call in its own parentheses
+```
 
 Every stage obeys this order:
 
@@ -756,12 +768,32 @@ type: it has no constructor, message surface, serialization, or `Send`
 contract. Quote/quasiquote may carry it as inert syntax and `eval` may compile
 it later.
 
-Each stage owns a separate head, props, meta, body, slot, and source location,
-so property names may repeat across stages while duplicate properties within
-one stage remain errors. `;` and `~` may not appear at the same parenthesis
-depth; nest one form explicitly instead. Glued `~name` symbols and byte-literal
-continuations remain distinct. The detailed design and implementation contract
-is `docs/proposals/pipeline.md`.
+`=>` is the per-item delimiter. Its stage runs once for every item of the
+incoming value and the pipeline continues with the collected result, which is
+the `map` generic of §6.2: a `List` answers a `List`, a `Stream` stays lazy,
+a `Map` maps its values, and a user type joins by declaring the message. The
+slot rules are the stage's own — the item, not the collection, lands in the
+slot:
+
+```gene
+(xs => f c)              # per item: (f item c)
+(xs => f c _)            # per item: (f c item)
+(xs => _ .render)        # per item: (item .render)
+(a -> $to_stream => step -> $into [])   # lazily, one item at a time
+```
+
+A `=>` stage evaluates its callee and its other arguments **once**, before
+iterating; only the per-item call repeats. That is what makes it explicit
+syntax rather than implicit dispatch on the incoming value's runtime type: a
+`->` stage always receives the whole value, whatever that value turns out to
+be, and only `=>` looks inside it.
+
+The two delimiters mix freely at one depth. `;` mixes with neither: nest one
+form explicitly instead. Each stage owns a separate head, props, meta, body,
+slot, and source location, so property names may repeat across stages while
+duplicate properties within one stage remain errors. Only a whole `->` or `=>`
+atom delimits, so `->name`, `a->b`, and `-->` remain ordinary symbols. The
+detailed design and implementation contract is `docs/proposals/pipeline.md`.
 
 ---
 
@@ -1468,7 +1500,7 @@ parameters are inferred at call sites, are a different mechanism.
 The `Stream` methods keep the lazy contract of §6 and the close/detach rules
 of §6.1:
 
-```gene
+```text
 map              : (Stream A E, Fn [A] B) -> (Stream B E)
 filter           : (Stream A E, Fn [A] Bool) -> (Stream A E)
 take             : (Stream A E, Int) -> (Stream A E)
@@ -4059,7 +4091,7 @@ Channels are bounded by default to provide backpressure:
 
 Conceptual operations:
 
-```gene
+```text
 send      : [(Channel T), T] -> Nil ^errors [ChannelClosed]
 recv      : [(Channel T)] -> T ^errors [ChannelClosed]
 try_send  : [(Channel T), T] -> Bool
@@ -5006,7 +5038,7 @@ this_mod/%declarations
 
 `declarations` is an ordinary imported/global function stage:
 
-```gene
+```text
 declarations : Module -> (Stream Node Never)
 ```
 

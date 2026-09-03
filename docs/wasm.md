@@ -261,7 +261,7 @@ path, exactly like `GENE_LIBPQ`.
 (import wasm [open instantiate call Run WasmError])
 (var mod (open run "add.wasm"))        ; run : Wasm/Run capability
 (var inst (instantiate mod))
-(call inst "add" 2 3)                   ; -> 5
+(call inst "add" 2 3)                   # => 5
 ```
 
 - new capability `Wasm/Run` (ambient value like `$net/Connect`), gating module

@@ -456,7 +456,7 @@ suite "compiler — GIR emission":
     check loopCall.found
     check not loopCall.tail
 
-  test "GIR v4 round-trips tail metadata":
+  test "GIR v5 round-trips tail metadata":
     let chunk = compileSource(
       "(fn walk [xs] (match xs (when [] 0) (else (walk []))))")
     let iface = CompileNamespaceInterface(
@@ -466,11 +466,11 @@ suite "compiler — GIR emission":
         macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
         compileInterface: iface)])
     let payload = encodeExecutableGir(artifact)
-    check "\"gir_format\":4" in payload
+    check "\"gir_format\":5" in payload
     let decoded = decodeExecutableGir(payload)
     expect ValueError:
       discard decodeExecutableGir(
-        payload.replace("\"gir_format\":4", "\"gir_format\":3"))
+        payload.replace("\"gir_format\":5", "\"gir_format\":4"))
     let loopFn = decoded.modules[0].chunk.functions[0]
     check loopFn.chunk.matches[0].tailResult
     var sawTailCall = false
@@ -480,7 +480,7 @@ suite "compiler — GIR emission":
 
   test "GIR values round-trip quoted pipeline syntax":
     let chunk = compileSource(
-      "(fn syntax [x] `(1 ~ + %x)) (quote (1 ~ + 2))")
+      "(fn syntax [x] `(1 -> + %x)) (quote (1 -> + 2 => * 3))")
     let iface = CompileNamespaceInterface(
       entries: initTable[string, CompileInterfaceEntry]())
     let artifact = ExecutableGir(entryIdentity: "test/pipeline",
@@ -493,15 +493,19 @@ suite "compiler — GIR emission":
     for value in decoded.modules[0].chunk.constants:
       if value.kind == vkPipeline:
         found = true
-        check value.print() == "(1 ~ + 2)"
+        check value.print() == "(1 -> + 2 => * 3)"
     check found
 
   test "compiler-owned pipeline locals stay out of reflected bindings":
     let scope = newGlobalScope()
-    discard run(compileSource("(1 ~ + 2 ~ * 3)"), scope)
+    discard run(compileSource(
+      "(fn twice [n] (* n 2)) (fn wrap [n] [n]) " &
+      "((1 -> + 2) -> wrap => twice)"), scope)
     scope.materializeMirroredVars()
     for name, _ in scope.vars:
       check not name.startsWith("\x00gene_pipeline_")
+      check not name.startsWith("\x00gene_iterate_")
+      check not name.startsWith("\x00gene_item_")
 
   test "emits a callable-first bytecode sequence":
     let chunk = compileSource("(+ 1 2)")

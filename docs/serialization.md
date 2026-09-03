@@ -392,15 +392,15 @@ A `serde` namespace in `src/gene/stdlib.nim`, beside `json`:
 ```gene
 (import serde [write_data read_data write read data? SerdeError SerdePolicy])
 
-(serde/write_data value)                 ; -> Str (data bucket only)
-(serde/read_data text)                   ; -> Any (no resolution, no hooks)
+(serde/write_data value)                 # Str (data bucket only)
+(serde/read_data text)                   # Any (no resolution, no hooks)
 (serde/read_data text ^policy p)
-(serde/write value)                      ; -> Str (data + refs + instances
-                                         ;         + snapshot_cells)
-(serde/read text)                        ; -> Any (resolve vs loaded modules;
-                                         ;         no user code executed)
-(serde/read text ^policy p)              ; may enable ^allow_restore
-(serde/data? value)                      ; -> Bool
+(serde/write value)                      # Str (data + refs + instances
+                                         #      + snapshot_cells)
+(serde/read text)                        # Any (resolve vs loaded modules;
+                                         #      no user code executed)
+(serde/read text ^policy p)              # may enable ^allow_restore
+(serde/data? value)                      # Bool
 ```
 
 Round-trip guarantee: `(= v (read_data (write_data v)))` under structural

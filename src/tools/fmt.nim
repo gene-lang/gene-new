@@ -303,7 +303,8 @@ proc valuePipelineOneLine(value: Value): string =
   result = if value.pipelineImmutable: "#(" else: "("
   result.add oneLine(value.pipelineInitial)
   for stage in value.pipelineStages:
-    result.add " ~ " & valuePipelineStageLine(stage)
+    result.add " " & pipelineDelimiter(stage.kind) & " " &
+      valuePipelineStageLine(stage)
   result.add ')'
 
 proc pipelineParts(v: Value): tuple[base: Value, stages: seq[seq[Value]]] =
@@ -563,7 +564,8 @@ proc fmtValue(v: Value, indent: int): string =
     var sb = if v.pipelineImmutable: "#(" else: "("
     sb.add oneLine(v.pipelineInitial)
     for stage in v.pipelineStages:
-      sb.add "\n" & pad & "~ " & valuePipelineStageLine(stage)
+      sb.add "\n" & pad & pipelineDelimiter(stage.kind) & " " &
+        valuePipelineStageLine(stage)
     sb & ")"
   of vkList:
     let pad = repeat(' ', indent + 2)

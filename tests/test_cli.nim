@@ -8001,14 +8001,14 @@ suite "cli — gene parse/fmt/compile":
     check "#\"a#b\"im" in lexicalFmt.output
 
     let pipeline = writeCliProgram("fmt_pipeline.gene",
-      "(source ~ parse options ~ validate schema ~ save db _)\n")
+      "(source -> parse options => validate schema -> save db _)\n")
     let pipelineFmt = runGene(["fmt", pipeline])
     check pipelineFmt.exitCode == 0
     check pipelineFmt.output ==
       "(source\n" &
-      "  ~ parse options\n" &
-      "  ~ validate schema\n" &
-      "  ~ save db _)\n"
+      "  -> parse options\n" &
+      "  => validate schema\n" &
+      "  -> save db _)\n"
 
   test "fmt output is parse-equivalent and idempotent on the todo app":
     buildGeneCli()

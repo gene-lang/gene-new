@@ -1174,7 +1174,7 @@ proc scopeAtDepth(scope: Scope, depth: int, name: string): Scope =
     raiseUndefinedSymbol(name)
 
 proc storeNamedSlot(scope: Scope, name: string, v: Value,
-                    requireExisting: bool): bool =
+                    requireExisting: bool, permitRedefine = false): bool =
   if scope.slots.len == 0:
     return false
   let index = scope.slotIndex(name)
@@ -1182,7 +1182,7 @@ proc storeNamedSlot(scope: Scope, name: string, v: Value,
     return false
   if requireExisting and not scope.slotDefined(index):
     return false
-  scope.storeSlot(index, name, v, requireExisting)
+  scope.storeSlot(index, name, v, requireExisting, permitRedefine)
   true
 
 proc loadNamedSlot(scope: Scope, name: string, value: var Value): bool =
@@ -1333,11 +1333,14 @@ proc define*(scope: Scope, name: string, v: Value) =
   scope.vars[name] = functionForScopeStorage(v, scope)
 
 proc redefine*(scope: Scope, name: string, v: Value) =
-  ## `define` for a loop body's `var`: the binding exists from the previous
-  ## iteration, so overwrite it rather than reporting a duplicate. Only the
-  ## compiler's loop-body path reaches this, so a genuine redeclaration outside
-  ## a loop still errors.
-  if scope.storeNamedSlot(name, v, requireExisting = false):
+  ## `define` for a loop body's `var` and for the compiler's own pipeline
+  ## storage: the binding may exist from the previous iteration or the previous
+  ## pipeline, so overwrite it rather than reporting a duplicate. Only those two
+  ## compiler paths reach this, so a genuine redeclaration outside a loop still
+  ## errors. The mirrored-slot case has to permit it too — a name that reached a
+  ## slot is the same binding, not a second one.
+  if scope.storeNamedSlot(name, v, requireExisting = false,
+                          permitRedefine = true):
     return
   scope.vars[name] = functionForScopeStorage(v, scope)
 
@@ -14292,6 +14295,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 raise newException(GeneError,
                   "quasiquote produced more than one direct '_' pipeline slot")
               stages[stageIndex] = PipelineStage(
+                kind: stageProto.kind,
                 head: head, props: props, body: body, meta: meta,
                 sourceLoc: stageProto.sourceLoc, slot: detected.slot)
           spush newPipeline(spop(), stages, proto.immutable)

@@ -284,6 +284,11 @@ proc printSendNode(value: Value): string =
     result.add print(value.body[i])
   result.add ')'
 
+proc pipelineDelimiter*(kind: PipelineStageKind): string =
+  case kind
+  of pstCall: "->"
+  of pstIterate: "=>"
+
 proc printPipelineStage(stage: PipelineStage): string =
   result = print(stage.head)
   printProps(result, stage.meta, "@")
@@ -393,7 +398,9 @@ proc print*(v: Value): string =
     var sb = if v.pipelineImmutable: "#(" else: "("
     sb.add print(v.pipelineInitial)
     for stage in v.pipelineStages:
-      sb.add " ~ "
+      sb.add ' '
+      sb.add pipelineDelimiter(stage.kind)
+      sb.add ' '
       sb.add printPipelineStage(stage)
     sb.add ')'
     sb

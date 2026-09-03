@@ -62,7 +62,7 @@ type
     inGenerator: bool
     loopDepth: int
     loopStack: seq[LoopCompileContext]
-    gensym: int
+    gensym: ref int   # shared with child compilers; see nextGensym
     useLocalSlots: bool
     localSlots: Table[string, int]
     fastLocalLoads: Table[string, int]
@@ -843,6 +843,7 @@ proc importMacroLocals(c: Compiler, node: Value): HashSet[string]
 
 proc childCompiler(c: Compiler): Compiler =
   Compiler(chunk: newChunk(c.sourceName), sourceName: c.sourceName,
+           gensym: c.gensym,
            sourceLocs: c.sourceLocs, currentLoc: c.currentLoc,
            selfAvailable: c.selfAvailable,
            capabilitiesStrict: c.capabilitiesStrict,
@@ -877,9 +878,17 @@ proc childCompiler(c: Compiler): Compiler =
            staticTopLevelImpls: c.staticTopLevelImpls,
            overlayImplMessages: c.overlayImplMessages)
 
+proc nextGensym(c: var Compiler): int =
+  ## Generated names must be unique across a whole compilation, not per chunk:
+  ## a `try` or `ensure` body is a child compiler emitting into the *enclosing*
+  ## scope, so a per-compiler counter would hand two live bindings one name.
+  if c.gensym == nil:
+    c.gensym = new(int)
+  inc c.gensym[]
+  c.gensym[]
+
 proc nextTemp(c: var Compiler, prefix: string): string =
-  inc c.gensym
-  "__gene_" & prefix & "_" & $c.gensym
+  "__gene_" & prefix & "_" & $c.nextGensym()
 
 proc containsYield(value: Value): bool =
   case value.kind
@@ -1837,8 +1846,7 @@ proc macroSpliceExpr(value: Value, env: Table[string, Value],
     return (true, macroTemplateValue(inner.body[0], env, c))
 
 proc macroFresh(c: var Compiler, name: string): string =
-  inc c.gensym
-  "__gene_macro_" & $c.gensym & "_" & name
+  "__gene_macro_" & $c.nextGensym() & "_" & name
 
 proc hygienicSymbol(value: Value, hygiene: Table[string, string]): Value =
   if value.kind == vkSymbol and hygiene.hasKey(value.symVal):
@@ -1958,6 +1966,7 @@ proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
         raise newException(GeneError,
           "macro expansion produced more than one direct '_' pipeline slot")
       stages.add PipelineStage(
+        kind: stage.kind,
         head: head, props: props, body: body, meta: meta,
         sourceLoc: stage.sourceLoc,
         slot: detected.slot)
@@ -2502,6 +2511,7 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
         raise newException(GeneError,
           "macro expansion produced more than one direct '_' pipeline slot")
       stages.add PipelineStage(
+        kind: stage.kind,
         head: head,
         props: props, body: body, meta: meta,
         sourceLoc: stage.sourceLoc, slot: detected.slot)
@@ -6635,6 +6645,7 @@ proc compileQuasiPipeline(c: var Compiler, value: Value, depth: int) =
           "quasiquoted pipeline stages do not support body splices")
       compileQuasiTemplate(c, item, depth)
     stages.add PipelineStageBuildProto(
+      kind: stage.kind,
       metaNames: metaNames, propNames: propNames,
       bodyCount: stage.body.len, sourceLoc: stage.sourceLoc,
       slot: stage.slot)
@@ -8978,8 +8989,7 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
   if pipeline.pipelineStages.len == 0:
     compileExpr(c, pipeline.pipelineInitial, tail = tail)
     return
-  inc c.gensym
-  let tempName = "\x00gene_pipeline_" & $c.gensym
+  let tempName = "\x00gene_pipeline_" & $c.nextGensym()
   let tempSlot =
     if c.useLocalSlots: c.reserveLocal(tempName)
     else: -1
@@ -8996,23 +9006,52 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
     else:
       discard c.emit(opSetName, name = tempName)
 
+  proc bindHidden(c: var Compiler, name: string, value: Value) =
+    ## Evaluate `value` once into a compiler-owned binding user code cannot
+    ## name. Used for the `=>` components that must not re-run per item.
+    let slot = if c.useLocalSlots: c.reserveLocal(name) else: -1
+    compileExpr(c, value)
+    if slot >= 0:
+      discard c.emit(opRedefineLocal, slot, name = name)
+    else:
+      discard c.emit(opRedefineName, name = name)
+    discard c.emit(opPop)
+
   compileExpr(c, pipeline.pipelineInitial)
   c.defineTemp()
   discard c.emit(opPop)
   let tempExpr = newSym(tempName)
   for i, sourceStage in pipeline.pipelineStages:
     c.rejectPipelineSyntaxStage(sourceStage)
-    let stage = c.expandDirectPipelineStage(sourceStage)
+    var stage = c.expandDirectPipelineStage(sourceStage)
     c.rejectPipelineSyntaxStage(stage)
     let savedLoc = c.currentLoc
     if stage.sourceLoc.hasSourceLoc:
       c.currentLoc = stage.sourceLoc
-    let expr = materializePipelineStage(stage, tempExpr,
-                                        pipeline.pipelineImmutable)
+    var expr, publicSite: Value
+    case stage.kind
+    of pstCall:
+      expr = materializePipelineStage(stage, tempExpr,
+                                      pipeline.pipelineImmutable)
+      publicSite = materializePipelineStage(stage, newSym("_"),
+                                            pipeline.pipelineImmutable)
+    of pstIterate:
+      let stageId = c.nextGensym()
+      var counter = 0
+      let hoist = hoistIterateStage(stage, proc(): string =
+        inc counter
+        "\x00gene_iterate_" & $stageId & "_" & $counter)
+      for (name, value) in hoist.hoisted:
+        c.bindHidden(name, value)
+      stage = hoist.stage
+      expr = materializeIterateStage(stage, tempExpr,
+                                     "\x00gene_item_" & $stageId,
+                                     pipeline.pipelineImmutable)
+      # Diagnostics name the stage, never the compiler's own storage.
+      publicSite = materializeIterateStage(stage, newSym("_"), "_",
+                                           pipeline.pipelineImmutable)
     let firstInstruction = c.chunk.instructions.len
     compileExpr(c, expr, tail = tail and i == pipeline.pipelineStages.high)
-    let publicSite = materializePipelineStage(stage, newSym("_"),
-                                              pipeline.pipelineImmutable)
     for instruction, site in c.chunk.callSites.mpairs:
       if instruction >= firstInstruction and site.bits == expr.bits:
         site = publicSite

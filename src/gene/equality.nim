@@ -112,6 +112,7 @@ proc equal*(a, b: Value): bool =
     for i in 0 ..< a.pipelineStages.len:
       let sa = a.pipelineStages[i]
       let sb = b.pipelineStages[i]
+      if sa.kind != sb.kind: return false
       if not equal(sa.head, sb.head): return false
       if sa.body.len != sb.body.len: return false
       for j in 0 ..< sa.body.len:
@@ -229,6 +230,7 @@ proc hash*(v: Value): Hash =
   of vkPipeline:
     h = h !& hash(v.pipelineInitial)
     for stage in v.pipelineStages:
+      h = h !& hash(ord(stage.kind))
       h = h !& hash(stage.head)
       for item in stage.body:
         h = h !& hash(item)
