@@ -467,33 +467,61 @@ suite "spec — sequenced value pipelines":
         discard read(source)
     check_eval("(fn pair [a b] [a b]) ((pair 1 2) -> pair 3)", "[[1 2] 3]")
 
-  test "an iterate stage runs its stage once per item and keeps the kind":
-    check_eval("(fn twice [x] (* x 2)) [([1 2 3] => twice) " &
-               " ({^a 1 ^b 2} => twice)]",
-               "[[2 4 6] {^a 2 ^b 4}]")
-    check_eval("(fn sub [a b] (- a b)) [([10 20] => sub 1) ([10 20] => sub 1 _)]",
+  test "a final iterate stage drains for effect and the pipeline is nil":
+    check_eval("(var log []) (fn keep [x] (log .push x)) " &
+               "[([1 2 3] => keep) log]",
+               "[nil [1 2 3]]")
+    check_eval("(var log []) (fn keep [x] (log .push x)) " &
+               "[({^a 1 ^b 2} => keep) log]",
+               "[nil [1 2]]")
+    check_eval("(var log []) (fn keep [x] (log .push x)) " &
+               "[(([1 2] -> $to_stream) => keep) log]",
+               "[nil [1 2]]")
+    # Only the final stage drains; the first still maps lazily into it.
+    check_eval("(var log []) (fn keep [x] (log .push x) x) " &
+               "(fn twice [x] (* x 2)) " &
+               "[([1 2] => twice => keep) log]",
+               "[nil [2 4]]")
+
+  test "a non-final iterate stage maps lazily into the next stage":
+    check_eval("(fn twice [x] (* x 2)) ([1 2 3] => twice -> $into [])",
+               "[2 4 6]")
+    check_eval("(fn sub [a b] (- a b)) " &
+               "[([10 20] => sub 1 -> $into []) " &
+               " ([10 20] => sub 1 _ -> $into [])]",
                "[[9 19] [-9 -19]]")
-    check_eval("(fn named [^k] k) ([1 2] => named ^k _)", "[1 2]")
+    check_eval("(fn named [^k] k) ([1 2] => named ^k _ -> $into [])", "[1 2]")
     check_eval("(type Box ^props {^n Int} " &
                "  (message add [x] : Int (+ self/n x))) " &
-               "([(Box ^n 4) (Box ^n 5)] => _ .add 3)",
+               "([(Box ^n 4) (Box ^n 5)] => _ .add 3 -> $into [])",
                "[7 8]")
     check_eval("(fn twice [x] (* x 2)) " &
-               "($into (([1 2 3] -> $to_stream) => twice) [])",
-               "[2 4 6]")
+               "([1 2 3] => twice => twice -> $into [])",
+               "[4 8 12]")
+
+  test "an unbounded producer flows through without materializing":
+    check_eval("(fn nat* [] (var n 0) (while true (yield n) (set n (+ n 1)))) " &
+               "(fn twice [x] (* x 2)) " &
+               "((nat*) => twice -> $take 4 -> $into [])",
+               "[0 2 4 6]")
+    check_eval("(fn nat* [] (var n 0) (while true (yield n) (set n (+ n 1)))) " &
+               "(var runs ($cell 0)) " &
+               "(fn counted [n] (runs .update (fn [c] (+ c 1))) n) " &
+               "[((nat*) => counted -> $take 3 -> $into []) runs/.get]",
+               "[[0 1 2] 3]")
 
   test "an iterate stage evaluates its callee and arguments once":
     check_eval("(var log []) " &
                "(fn note [x] (log .push x) x) " &
                "(fn pick [] (note \"callee\") (fn [a b] (+ a b))) " &
-               "(var out ([1 2 3] => (pick) (note 10))) " &
+               "(var out ([1 2 3] => (pick) (note 10) -> $into [])) " &
                "[out log]",
                "[[11 12 13] [\"callee\" 10]]")
 
   test "iterate stages mix with call stages and reject syntax heads":
     check_eval("(fn twice [x] (* x 2)) (fn first_of [xs] xs/0) " &
-               "[([1 2 3] => twice -> first_of) ([1 2 3] => twice => twice)]",
-               "[2 [4 8 12]]")
+               "([1 2 3] => twice -> $into [] -> first_of)",
+               "2")
     check_compile_error("([1] => if true 2)",
                         "pipeline stages must be eager calls or dot sends")
     for source in ["(a ; b => c)", "(a => b ; c)", "(a => f _ _)"]:

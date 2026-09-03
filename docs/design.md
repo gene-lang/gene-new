@@ -327,7 +327,7 @@ _            # wildcard / ignore
 name!        # reserved fexpr declaration/invocation marker (§3/§11.1)
 (a; b; c)    # pipe: pure reader head-folding
 (a -> f c)   # sequenced value pipeline; previous value is first argument
-(xs => f c)  # per-item pipeline stage; each item is the first argument
+(xs => f c)  # per-item stage: lazy before another stage, a drain when last
 (x .f a)    # message send; see Section 3 and docs/core.md §9
 /user/name   # selector literal
 x/user/name  # apply selector to x
@@ -769,18 +769,36 @@ contract. Quote/quasiquote may carry it as inert syntax and `eval` may compile
 it later.
 
 `=>` is the per-item delimiter. Its stage runs once for every item of the
-incoming value and the pipeline continues with the collected result, which is
-the `map` generic of §6.2: a `List` answers a `List`, a `Stream` stays lazy,
-a `Map` maps its values, and a user type joins by declaring the message. The
-slot rules are the stage's own — the item, not the collection, lands in the
-slot:
+incoming value, and the slot rules are the stage's own — the item, not the
+collection, lands in the slot:
 
 ```gene
 (xs => f c)              # per item: (f item c)
 (xs => f c _)            # per item: (f c item)
 (xs => _ .render)        # per item: (item .render)
-(a -> $to_stream => step -> $into [])   # lazily, one item at a time
 ```
+
+**A pipeline never accumulates a collection to get from one stage to the
+next.** What a `=>` stage does depends only on whether the pipeline continues
+after it:
+
+- a stage with a later stage maps **lazily**, in the `Stream` tier of §6.2, so
+  an unbounded producer flows through one item at a time and nothing is
+  materialized in between;
+- the **final** stage has no consumer for its results, so it drains its
+  upstream for effect and the pipeline answers `nil`.
+
+```gene
+(rows => save)                      # runs per row; the pipeline is nil
+(rows => parse -> $into [])         # lazy through parse; into collects
+(producer => step -> $take 5 -> $into [])   # terminates on an endless producer
+```
+
+Because a non-final `=>` works in the lazy tier, its incoming value is
+converted with `to_stream` — which is the identity on a `Stream`. A kind with
+no `to_stream`, such as `Map`, therefore reaches a non-final `=>` only through
+an explicit conversion like `-> $to_pairs_stream`; a final `=>` drains it
+directly, since `each` needs no conversion.
 
 A `=>` stage evaluates its callee and its other arguments **once**, before
 iterating; only the per-item call repeats. That is what makes it explicit
@@ -1516,8 +1534,11 @@ The eager kinds answer in their own kind:
 | `take n`   | List        | —                          | —   | Stream       |
 
 `to_stream` converts an eager kind to the lazy tier — `List`, `Set`, and
-`Range` yield item streams (§8.1) — and `to_pairs_stream` turns a `Map` into a
-stream of `[K V]` pairs. `into` collects an iterable receiver into the target
+`Range` yield item streams (§8.1) — and is the identity on a `Stream`, so a
+caller normalizing an unknown receiver into that tier need not first ask
+whether it is already there. `to_pairs_stream` turns a `Map` into a stream of
+`[K V]` pairs; a `Map` has no `to_stream`, because there is no item order to
+invent for one. `into` collects an iterable receiver into the target
 kind named by its argument: `($into s [])` builds a `List`, `($into s {})`
 builds a `PropMap` from `[K V]` pairs. `each f` runs `f` on every item and
 returns `nil`. Void results follow §1.6: `nil` keeps its `List` position, a

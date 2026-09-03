@@ -33,14 +33,21 @@ the stage head, a positional argument, or a property value:
 ```
 
 `=>` is the per-item delimiter: its stage runs once per item of the incoming
-value, its callee and other arguments are evaluated once before iterating, and
-the pipeline continues with the `map` generic's result for the incoming kind
-(§6.2) — `List` to `List`, `Stream` lazily to `Stream`.
+value, and its callee and other arguments are evaluated once before iterating.
+A pipeline never accumulates a collection between stages. A `=>` stage with a
+later stage maps lazily in the `Stream` tier (§6.2), so an unbounded producer
+flows through it; a **final** `=>` has no consumer, drains its upstream for
+effect, and the pipeline answers `nil`.
 
 ```gene
-(xs => f c)                            # per item: (f item c)
-(a -> $to_stream => step -> $into [])  # lazily, one item at a time
+(rows => save)                              # per row, for effect; nil
+(xs => f c -> $into [])                     # lazy through f; into collects
+(producer => step -> $take 5 -> $into [])   # terminates on an endless producer
 ```
+
+A non-final `=>` converts its incoming value with `to_stream`, which is the
+identity on a `Stream`. A `Map` has no `to_stream`, so it reaches a non-final
+`=>` only through `-> $to_pairs_stream`; a final `=>` drains it directly.
 
 Pipeline syntax is represented by syntax-only `vkPipeline`, associates
 left-to-right, and preserves tail position only for the final stage. The

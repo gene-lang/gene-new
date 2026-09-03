@@ -21,7 +21,7 @@
   substitutes `_`.
 - `->` and `=>` preserve a single-form initial expression plus ordered,
   separately owned stages in syntax-only `vkPipeline`. `=>` marks a per-item
-  stage. A multi-form leading segment, an empty stage, duplicate direct `_`
+  stage: lazy before a later stage, a draining `each` when it is last. A multi-form leading segment, an empty stage, duplicate direct `_`
   slots, and same-depth `;`/arrow mixtures are read errors; `->` and `=>` mix,
   and nested forms are independent.
 - A `Value` occupies one machine word and zero initialization is `nil`.

@@ -271,22 +271,30 @@ is not a slot, and a head slot makes the item a dot-send receiver.
 (xs => _ .render c)      # per item: (item .render c)
 ```
 
-The stage's result is the `map` generic of design §6.2 applied to the incoming
-value, so the pipeline continues in the incoming kind: a `List` answers a
-`List`, a `Set` a `Set`, a `Map` maps its values, a `Stream` stays lazy, and a
-user type joins by declaring the message. `=>` therefore adds no dispatch
-mechanism of its own; `(xs => f c)` is the `map` a hand-written
-`(xs -> $map (fn [item] (f item c)))` would perform, without naming the item.
+**A pipeline never accumulates a collection between stages.** What a `=>` stage
+does is decided by one question — does the pipeline continue after it?
 
-Laziness is the receiver's, not the delimiter's. `-> $to_stream` in front of a
-`=>` stage is how a pipeline asks for one item at a time:
+- **Not final.** The stage maps *lazily*, in the `Stream` tier of design §6.2,
+  and hands the next stage a `Stream`. Nothing is materialized, so an unbounded
+  producer flows through one item at a time.
+- **Final.** The stage has no consumer for its results. It drains its upstream
+  for effect, and the pipeline answers `nil`.
 
 ```gene
-(source
-  -> $to_stream
-  => parse
-  -> $into [])
+(rows => save)                              # per row, for effect; nil
+(xs => f c -> $into [])                     # lazy through f; into collects
+(producer => step -> $take 5 -> $into [])   # terminates on an endless producer
 ```
+
+`=>` therefore adds no dispatch mechanism of its own: a non-final stage is the
+`map` a hand-written `($map ($to_stream xs) (fn [item] (f item c)))` would
+perform, and a final stage is `each`, both without naming the item.
+
+Laziness is the delimiter's, not the receiver's: a non-final `=>` converts its
+incoming value with `to_stream`, which is the identity on a `Stream`. A kind
+with no `to_stream` — `Map` — therefore reaches a non-final `=>` only through
+an explicit `-> $to_pairs_stream`, while a final `=>` drains it directly
+because `each` needs no conversion.
 
 The two delimiters mix at one parenthesis depth. `;` mixes with neither.
 
@@ -305,7 +313,8 @@ iterating. Only the per-item call repeats:
    head is the slot, each direct property value, each direct positional
    argument — once, into compiler-owned storage;
 3. build the per-item callable over that storage;
-4. hand the retained value and the callable to `map`.
+4. hand the retained value and the callable to `map` over `to_stream` when a
+   later stage will consume the results, or to `each` when the stage is last.
 
 Symbols and literals are left in place rather than lifted: a symbol load is
 idempotent, and keeping it in place preserves ordinary head dispatch for `+`,
@@ -537,7 +546,9 @@ it as something else. `~name` stays an ordinary glued symbol and the
 
 - incoming expression runs before the stage callee;
 - a `=>` stage's callee and non-slot arguments run once, before iterating;
-- a `=>` stage answers in the incoming kind, and stays lazy for a `Stream`;
+- a non-final `=>` stage is lazy, and an unbounded producer terminates when a
+  later stage bounds it;
+- a final `=>` stage drains its upstream and the pipeline answers `nil`;
 - stage callee runs before its other arguments;
 - incoming expression runs once with default insertion;
 - incoming expression runs once with a property slot;

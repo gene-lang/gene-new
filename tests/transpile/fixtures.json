@@ -2104,8 +2104,8 @@
     },
     {
       "id": "pipeline.iterate_stream",
-      "source": "(fn twice [x] (* x 2)) ($into (($to_stream [1 2 3]) => twice) [])",
-      "web_source": "(mod pipeline_iterate_stream ^profile web) (fn twice [x : Int] : Int (* x 2)) (fn run [] : (List Int) ($into (($to_stream [1 2 3]) => twice) []))",
+      "source": "(fn twice [x] (* x 2)) (($to_stream [1 2 3]) => twice -> $into [])",
+      "web_source": "(mod pipeline_iterate_stream ^profile web) (fn twice [x : Int] : Int (* x 2)) (fn run [] : (List Int) (($to_stream [1 2 3]) => twice -> $into []))",
       "web_export": "run",
       "expected_value": {
         "kind": "list",

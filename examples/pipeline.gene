@@ -7,8 +7,19 @@
 
 (var named_value (7 -> named ^value _))
 
-(var doubled ([1 2 3] => * 2))
+# A `=>` stage with a later stage maps lazily; nothing is collected until the
+# final `->` asks for it.
+(var doubled ([1 2 3] => * 2 -> $into []))
 
-(var lazily ([1 2 3] -> $to_stream => + 1 -> $into []))
+# The same shape terminates on a producer that never ends.
+(fn naturals* []
+  (var n 0)
+  (while true
+    (yield n)
+    (set n (+ n 1))))
+(var head ((naturals*) => * 2 -> $take 4 -> $into []))
 
-($println [arithmetic named_value doubled lazily])
+($println [arithmetic named_value doubled head])
+
+# A `=>` that ends the pipeline runs for effect and answers nil.
+([1 2 3] => $println)

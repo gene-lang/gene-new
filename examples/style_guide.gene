@@ -81,7 +81,9 @@ line two"""
     -> * 3))
 
 (fn iterate_example [values : (List Int)] : (List Int)
-  (values => * 2))
+  (values
+    => * 2
+    -> $into []))
 
 (fn make_user [name : Str, ^roles : (List Str) = [], ^active : Bool = true] : User
   (User ^name (normalize_name name) ^roles roles ^active active))

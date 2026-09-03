@@ -133,17 +133,20 @@ Only one exact direct `_` is a slot. An `_` nested in a list, map, node, quote,
 or function stays nested syntax. Several stages associate left to right and
 format one per line.
 
-`=>` is the per-item delimiter. The stage runs once per item and the pipeline
-continues with the `map` result for the incoming kind:
+`=>` is the per-item delimiter, and a pipeline never accumulates a collection
+between stages. A `=>` with a later stage maps lazily into it; a **final** `=>`
+drains its upstream for effect and the pipeline answers `nil`:
 
 ```gene
-(rows => normalize)                     # List in, List out
-(rows => parse ^strict true)            # per item: (parse row ^strict true)
-(a -> $to_stream => step -> $into [])   # Stream in, lazy Stream out
+(rows => save)                              # per row, for effect; nil
+(rows => parse ^strict true -> $into [])    # lazy through parse; into collects
+(producer => step -> $take 5 -> $into [])   # endless producer, bounded result
 ```
 
-Its callee and non-slot arguments are evaluated once, before iterating. `->`
-and `=>` mix in one node. `;` is separate head-folding sugar; direct `;`/arrow
+A non-final `=>` converts its incoming value with `to_stream`, the identity on
+a `Stream`; a `Map` has none, so it needs `-> $to_pairs_stream` first, while a
+final `=>` drains it directly. Its callee and non-slot arguments are evaluated
+once, before iterating. `->` and `=>` mix in one node. `;` is separate head-folding sugar; direct `;`/arrow
 mixing in one node is a read error, while explicit nesting is allowed. Only a
 whole `->` or `=>` atom is a delimiter — `->name` and `a->b` stay symbols.
 

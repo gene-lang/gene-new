@@ -86,14 +86,15 @@ schema))`, but `source` is guaranteed to finish before `parse` is evaluated.
 The value in front of the first `->` is one form: write `((read path) -> parse)`,
 not `(read path -> parse)`.
 
-**`=>` runs its stage per item** and continues with the `map` result for the
-incoming kind — `List` to `List`, `Stream` lazily to `Stream`. The item, not
-the collection, fills the slot, and the stage's callee and other arguments are
-evaluated once before iterating.
+**`=>` runs its stage per item.** The item, not the collection, fills the slot,
+and the stage's callee and other arguments are evaluated once before iterating.
+A pipeline never accumulates a collection between stages: a `=>` with a later
+stage maps lazily, and a **final** `=>` drains for effect and answers `nil`.
 
 ```gene
-(rows => normalize)                     # per item: (normalize row)
-(a -> $to_stream => step -> $into [])   # lazily, one item at a time
+(rows => save)                              # per row, for effect; nil
+(rows => parse -> $into [])                 # lazy through parse; into collects
+(producer => step -> $take 5 -> $into [])   # endless producer, bounded result
 ```
 
 `->` and `=>` mix freely; neither mixes with `;` at the same parenthesis depth.

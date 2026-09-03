@@ -1565,8 +1565,8 @@ proc materializeIterateStage*(stage: PipelineStage, receiver: Value,
   let callback = newNode(newSym("fn"), body = @[newList(@[item]), call])
   if terminal:
     # `each` drives the receiver in its own kind and answers nil, so nothing is
-    # collected and an eager receiver needs no conversion.
-    return newNode(receiver, body = @[newSym("~"), newSym("each"), callback])
+    # collected and an eager receiver needs no conversion into the lazy tier.
+    return newNode(geneMemberPath("each"), body = @[receiver, callback])
   # `to_stream` is the identity on a `Stream`, so this normalizes an unknown
   # receiver into the lazy tier without branching on its runtime kind.
   newNode(geneMemberPath("map"),

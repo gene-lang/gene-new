@@ -226,17 +226,20 @@ such as `(value -> _ .render options)`. Wrap a leading call in its own
 parentheses — `((read path) -> parse)`, never `(read path -> parse)`.
 
 Use `=>` where the stage should run per item. Reach for it instead of
-`-> $map (fn [x] ...)`, and keep `-> $to_stream` in front when the work should
-stay lazy:
+`-> $map (fn [x] ...)`. A `=>` that ends the pipeline runs for effect and the
+pipeline is `nil`; give it a following stage when you want the values:
 
 ```gene
-(rows => normalize)
+(rows => save)          # per row, for its effect
 
 (source
-  -> $to_stream
   => parse
-  -> $into [])
+  -> $into [])          # lazy through parse, collected once at the end
 ```
+
+Nothing accumulates between stages, so a `=>` chain reads the same on a list
+and on an endless producer — put a `-> $take n` in front of the collector when
+the source has no end.
 
 Do not mix `->` or `=>` with `;` at the same parenthesis depth; nest the
 operations when both are useful.

@@ -183,22 +183,35 @@ proc main() =
 
   # `=>` against the spelling it replaces, not against a nested call: the
   # comparison that matters is whether the delimiter costs more than writing
-  # the same `map` by hand.
+  # the same lazy map by hand. A collecting pipeline and a draining one are
+  # separate shapes with separate costs, so both are measured.
   let iterateScope = newGlobalScope()
   discard run(compileSource(
     "(fn iterate_step [n] (+ n 1)) " &
-    "(fn iterate_run [] ([1 2 3 4] => iterate_step)) " &
+    "(fn iterate_run [] ([1 2 3 4] => iterate_step -> $into [])) " &
     "(fn iterate_explicit [] " &
-    "  ($map [1 2 3 4] (fn [n] (iterate_step n))))"),
+    "  ($into ($map ($to_stream [1 2 3 4]) " &
+    "    (fn [n] (iterate_step n))) [])) " &
+    "(fn iterate_drain [] ([1 2 3 4] => iterate_step)) " &
+    "(fn iterate_drain_explicit [] " &
+    "  ($each [1 2 3 4] (fn [n] (iterate_step n))))"),
     iterateScope)
   let iterateChunk = compileSource("(iterate_run)")
   let iterateExplicitChunk = compileSource("(iterate_explicit)")
+  let iterateDrainChunk = compileSource("(iterate_drain)")
+  let iterateDrainExplicitChunk = compileSource("(iterate_drain_explicit)")
   bench("vm.pipeline_iterate.compiled_chunk", 200_000, i):
     let v = run(iterateChunk, iterateScope)
     checksum = checksum + v.listItems.len
   bench("vm.pipeline_iterate_explicit.compiled_chunk", 200_000, i):
     let v = run(iterateExplicitChunk, iterateScope)
     checksum = checksum + v.listItems.len
+  bench("vm.pipeline_iterate_drain.compiled_chunk", 200_000, i):
+    let v = run(iterateDrainChunk, iterateScope)
+    checksum = checksum + ord(v.kind == vkNil)
+  bench("vm.pipeline_iterate_drain_explicit.compiled_chunk", 200_000, i):
+    let v = run(iterateDrainExplicitChunk, iterateScope)
+    checksum = checksum + ord(v.kind == vkNil)
 
   let tailMutualChunk = compileSource(
     "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
