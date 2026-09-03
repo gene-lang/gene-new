@@ -330,7 +330,7 @@ proc geneWrapperField*(instance, wrapperType: Value,
     # Compare Type *identity*, never the name. Two modules may each define a
     # `Conn`, and a name check would let one module's wrapper carry its pointer
     # into the other's native code — which then dereferences memory it does not
-    # own. Ancestry, not leaf equality: a Gene-side `^is` subtype inherits the
+    # own. Ancestry, not leaf equality: a Gene-side subtype inherits the
     # wrapper rule (design §16.6), so it is a legitimate receiver here; a leaf
     # check would accept the parent and reject its own subtype.
     if instance.kind != vkNode or

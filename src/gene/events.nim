@@ -89,7 +89,7 @@ proc eventValueType(event: Value): Value =
 proc requireEventValue(scope: Scope, event: Value): Value =
   ## Returns the event's type after checking it descends from `event/Event`.
   ##
-  ## §6.1 makes the *cause* part of the contract: forgetting `^is $event/Event`
+  ## §6.1 makes the *cause* part of the contract: forgetting `: $event/Event`
   ## leaves an ordinary, perfectly valid typed value, so the rejection has to
   ## name that rather than surface as missing internal metadata.
   let typ = eventValueType(event)
@@ -99,7 +99,7 @@ proc requireEventValue(scope: Scope, event: Value): Value =
       else: "a " & $event.kind & " value"
     raiseEventError(scope, "EventTypeError",
       "publish expects an event/Event descendant, got " & shown &
-      "; declare the event type with ^is $event/Event",
+      "; declare the event type with : $event/Event",
       {"actual_value": event})
   typ
 
@@ -168,7 +168,7 @@ proc selectorTypes(scope: Scope, selector: Value): seq[Value] =
   collectSelectorTypes(scope, selector, result)
 
 proc typeIsDescendantOf(child, ancestor: Value): bool =
-  ## Nominal `^is` ancestry, inclusive of `child == ancestor`.
+  ## Nominal parent ancestry, inclusive of `child == ancestor`.
   var t = child
   while t.kind == vkType:
     if t.bits == ancestor.bits:
@@ -819,7 +819,7 @@ proc registerEventNamespace(root: Scope) =
 
   let eventScope = newScope(root)
 
-  # The root event type. `^is $event/Event` is what makes a declared type
+  # The root event type. `: $event/Event` is what makes a declared type
   # publishable, and the bus's one inexpensive recognition rule (§6.1).
   let eventRootType = newType("Event", NIL, @[], @[], eventScope,
                               eventRoot = true)

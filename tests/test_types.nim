@@ -1840,44 +1840,44 @@ suite "types — schema validation":
 
 suite "types — single inheritance":
   test "a child inherits parent fields":
-    ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
+    ck "(type Animal ^props {^name Str}) (type Dog : Animal ^props {^breed Str}) " &
        "(var d (Dog ^name \"Rex\" ^breed \"Lab\")) d/name", "\"Rex\""
   test "a child may add no fields but still requires inherited fields":
-    ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {}) " &
+    ck "(type Animal ^props {^name Str}) (type Dog : Animal ^props {}) " &
        "(var d (Dog ^name \"Rex\")) d/name", "\"Rex\""
     expect GeneError:
       discard runStr("(type Animal ^props {^name Str}) " &
-                     "(type Dog ^is Animal ^props {}) (Dog)")
+                     "(type Dog : Animal ^props {}) (Dog)")
   test "a child inherits parent body fields":
-    ck "(type Row ^body [Int]) (type LabeledRow ^is Row ^props {^label Str} ^body [Str]) " &
+    ck "(type Row ^body [Int]) (type LabeledRow : Row ^props {^label Str} ^body [Str]) " &
        "(var r (LabeledRow ^label \"a\" 7 \"ok\")) " &
        "[(/label r) (/0 r) (/1 r)]",
        "[\"a\" 7 \"ok\"]"
   test "a child requires inherited required fields":
     expect GeneError:
-      discard runStr("(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
+      discard runStr("(type Animal ^props {^name Str}) (type Dog : Animal ^props {^breed Str}) " &
                      "(Dog ^breed \"Lab\")")
   test "inherited field annotations use the parent defining scope":
     ck "(ns model (type Id ^props {^raw Int}) (type Entity ^props {^id Id})) " &
-       "(type User ^is model/Entity ^props {^name Str}) " &
+       "(type User : model/Entity ^props {^name Str}) " &
        "(var u (User ^id (model/Id ^raw 7) ^name \"Ada\")) u/id/raw", "7"
   test "child types cannot redeclare inherited fields":
     expect GeneError:
       discard runStr("(type Animal ^props {^name Str}) " &
-                     "(type Dog ^is Animal ^props {^name Any})")
+                     "(type Dog : Animal ^props {^name Any})")
     expect GeneError:
       discard runStr("(type Animal ^props {^name Str}) " &
-                     "(type Dog ^is Animal ^props {^name Str})")
-  test "^is must reference a type":
+                     "(type Dog : Animal ^props {^name Str})")
+  test "the declared parent must be a type":
     expect GeneError:
-      discard runStr("(type Dog ^is 5 ^props {^breed Str})")
+      discard runStr("(type Dog : 5 ^props {^breed Str})")
 
 suite "types — pattern matching":
   test "instances match a node-shape pattern by type":
     ck "(type Task ^props {^id Int ^title Str}) " &
        "(match (Task ^id 7 ^title \"a\") (when (Task ^id n) n))", "7"
   test "instances match parent type patterns":
-    ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
+    ck "(type Animal ^props {^name Str}) (type Dog : Animal ^props {^breed Str}) " &
        "(match (Dog ^name \"Rex\" ^breed \"Lab\") (when (Animal ^name n) n))",
        "\"Rex\""
   test "a different type does not match":
@@ -1886,7 +1886,7 @@ suite "types — pattern matching":
   test "typed binders match nominal types":
     ck "(type Task ^props {^id Int}) " &
        "(match (Task ^id 7) (when (t : Task) t/id))", "7"
-    ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
+    ck "(type Animal ^props {^name Str}) (type Dog : Animal ^props {^breed Str}) " &
        "(match (Dog ^name \"Rex\" ^breed \"Lab\") (when (a : Animal) a/name))",
        "\"Rex\""
 
@@ -1977,7 +1977,7 @@ suite "types — function boundaries":
        "8"
 
   test "nominal subtype values pass parent boundaries":
-    ck "(type Animal ^props {^name Str}) (type Dog ^is Animal ^props {^breed Str}) " &
+    ck "(type Animal ^props {^name Str}) (type Dog : Animal ^props {^breed Str}) " &
        "(fn name-of [x : Animal] x/name) (name-of (Dog ^name \"Rex\" ^breed \"Lab\"))",
        "\"Rex\""
     expect GeneError:

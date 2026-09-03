@@ -4,7 +4,7 @@
 normative subset is indexed by `docs/spec/protocols.md`; explicitly marked
 deferred and open-question sections are non-normative.
 **Scope:** protocols, messages, dispatch, protocol-local derivation, the two
-inheritance axes (type `^is` and protocol `^inherit`), type-direct messages,
+inheritance axes (the type-parent `:` header and protocol `^inherit`), type-direct messages,
 dot-send resolution semantics, and dispatch on scalar/singleton
 receivers (including `Nil`). Extends `docs/design.md §10`. Formerly
 `docs/protocol-design.md`, which replaced `docs/proposals/inheritance.md`.
@@ -66,37 +66,37 @@ Everything below assumes this base is in place.
 Gene has two independent inheritance axes, and both are needed:
 
 ```text
-^is        single-parent type inheritance   — inherits data shape + concrete behavior
+: single-parent type inheritance   — inherits data shape + concrete behavior
 ^inherit   multi-parent protocol inheritance — composes contracts, independent of type shape
 ```
 
-| | `type Dog ^is Animal` | `protocol Ord ^inherit [Comparable]` |
+| | `type Dog : Animal` | `protocol Ord ^inherit [Comparable]` |
 |---|---|---|
 | composes | props/body, type-direct messages, protocol impls | behavioral contracts |
 | parents | exactly one (`docs/design.md §7.3`) | any number, left-to-right |
 | requires shared data shape? | yes, by construction | no — sharing behavior across *unrelated* data shapes is the reason protocols exist (`docs/design.md §0`) |
 
-### 2.1 Implemented rule: protocol impl lookup walks the `^is` chain
+### 2.1 Implemented rule: protocol impl lookup walks the type-parent chain
 
 ```gene
 (type Animal ^props {^name Str})
 (impl Comparable for Animal (message compare [self other] ...))
 
-(type Dog ^is Animal ^props {^breed Str})
+(type Dog : Animal ^props {^breed Str})
 
 (d .compare)  # resolves through impl Comparable for Animal — no impl Comparable for Dog needed
 ```
 
 This was already implemented and tested before protocol inheritance existed
 (`resolveProtocolMessage`/`hasVisibleImpl` in `src/gene/vm.nim` already walk
-`T`'s `^is` chain via `isSubtypeOf`) — it closes the gap this section
+`T`'s parent chain via `isSubtypeOf`) — it closes the gap this section
 originally set out to close, and turned out not to be a gap.
 
 **Resolution is nearest-receiver-wins within one message identity** (updated
 for the scoped-impls model, `docs/scoped-impls.md` §3.3). If both
 `impl Comparable for Animal` and `impl Comparable for Dog` are visible,
 dispatching `compare` on a `Dog` selects `Dog`'s impl — the nearest receiver on
-the `^is` chain — because they supply the *same* message identity at different
+the parent chain — because they supply the *same* message identity at different
 receiver depths, and single inheritance totally orders that chain, so this axis
 is never ambiguous (see `tests/test_protocols.nim`, "nearest receiver wins
 within one message identity"). Protocol messages are always sent qualified
@@ -109,7 +109,7 @@ site ambiguity (§3.5).
 
 ### 2.2 Why `^inherit` still needs to exist
 
-`^is` is single-inheritance and ties composition to data shape. Protocols
+Type inheritance is single-parent and ties composition to data shape. Protocols
 exist precisely so unrelated types can share a contract:
 
 ```gene
@@ -117,16 +117,16 @@ exist precisely so unrelated types can share a contract:
 (protocol SortedContainer ^inherit [Container] (message min [] : item) (message max [] : item))
 
 (type SortedArray ...)     # array-backed
-(type SortedSkipList ...)  # node-backed — no shared ^is ancestor with SortedArray
+(type SortedSkipList ...)  # node-backed — no shared type ancestor with SortedArray
 ```
 
 `(fn f [x : Container] ...)` must accept both, with zero shared type
 hierarchy. `SortedContainer <: Container` is a fact about the *contract*;
-`^is` cannot express it without forcing incidental data-shape sharing between
+Type inheritance cannot express it without forcing incidental data-shape sharing between
 otherwise-unrelated types.
 
 The two axes compose without conflict: a receiver's full behavior set is
-`{type-direct messages, walking ^is} ∪ {protocol impls, walking ^is per §2.1,
+`{type-direct messages, walking type parents} ∪ {protocol impls, walking type parents per §2.1,
 closure-flattened via ^inherit per §3}`.
 
 ---
@@ -223,7 +223,7 @@ required — the subtype relationship is derived automatically from the impl
 graph. `^impl [C]` on a type declaration remains a compiler-checked
 requirement that an `impl C for T` exists, but is not itself the source of truth
 for what `T` implements; a lone `^impl [C]` and an `impl C for T` elsewhere both
-register `T → {A, B, C}` in the same way. This composes with the `^is`-walk
+register `T → {A, B, C}` in the same way. This composes with the parent walk
 rule in §2.1: `T`'s ancestors' impls contribute to the same registration.
 
 ### 3.6 Reusing a separately visible ancestor impl — **deferred, not implemented** (OQ-A)
@@ -310,7 +310,7 @@ open questions.
 
 With inheritance, looking up `B/do_b` on `T` must consider `impl C for T` where
 `C`'s closure includes `B`, not only a direct `impl B for T` — and, per §2.1,
-must also consider impls visible on `T`'s `^is` ancestors.
+must also consider impls visible on `T`'s nominal ancestors.
 
 **Message closure flattening is eager, at protocol-construction time.** `C`'s
 qualified message set is computed once when `C` is constructed (merging each
@@ -333,7 +333,7 @@ this is a deliberate deviation from an earlier draft of this section**, which
 called for registering one dispatch entry per `(protocol, type)` pair up
 front and rejected chain-walking as unacceptable for a performance-sensitive
 VM. In practice: `resolveProtocolMessage`/`hasVisibleImpl` in `src/gene/vm.nim`
-already walked `T`'s `^is` chain at dispatch time for type inheritance before
+already walked `T`'s parent chain at dispatch time for type inheritance before
 this document existed, so a from-scratch "flatten every ancestor pair at
 registration" scheme for protocols would have been the odd one out rather
 than consistent with the codebase. `impl C for T` is registered once, under `C`
@@ -448,7 +448,7 @@ simple name creates another qualified message, not an override:
 
 An implementation of `B` must account for both `A/render` and `B/render`.
 Callers choose with `(x .A:render)` or `(x .B:render)`. Type inheritance
-has its own different rule for type-direct messages — most-derived `^is`
+has its own different rule for type-direct messages — most-derived nominal
 ancestor wins — per §2.1 and §8.
 
 ---
@@ -507,7 +507,7 @@ contracts, type messages are receiver-owned nominal behavior.
 
 ### Inheritance interaction
 
-- Child types see parent type-direct messages by walking the type's `^is`
+- Child types see parent type-direct messages by walking the type's parent
   chain (§2), not by lexical binding: looking up `speak` on a `Dog` checks
   `Dog`'s own message table, then `Animal`'s — most-derived wins.
   `(Dog/speak d)` and `(d .speak)` both reach `Animal/speak` if `Dog`
@@ -578,7 +578,7 @@ Writing a receiver inside an inline impl is an error (`(impl A for T …)` insid
 3. Qualified-name resolution (`docs/design.md §2.1`, already handling
    `Stream/next`-style lookups) is extended to also check this per-type
    message table.
-4. Dot sends use receiver-first resolution (§9), walking the `^is` chain against this
+4. Dot sends use receiver-first resolution (§9), walking the parent chain against this
    same table.
 
 This does touch `TypeData`/`TypeProto`, unlike the original sketch, which
@@ -614,7 +614,7 @@ Message names are not bound in the enclosing scope (§1), so a dot send and an o
 call `(f x)` never share a resolution path.
 
 The **unqualified send** `(x .name ...)` resolves `name` against the receiver's
-**type-direct** messages only (§8), walking the `^is` chain. Protocol messages
+**type-direct** messages only (§8), walking the parent chain. Protocol messages
 are always qualified, so a bare name never reaches a protocol impl — write
 `(x .P:m)` for a protocol message. If the receiver's type declares no such
 message, the send raises a recoverable **`MessageError`** (a `TypeError`
@@ -752,7 +752,7 @@ implemented and stable, and sit at implementation-order item 13; base
   emit one complete impl for the inherited closure
 - §7, §8 — type-direct messages: `compileType` scans `(message ...)` body
   forms into a per-type table (`TypeData.messages`), reached via qualified
-  access (`Box/get`) and sends, walking `^is` with most-derived-wins
+  access (`Box/get`) and sends, walking type parents with most-derived-wins
 - §8 inline protocol impls — `(impl P (message ...) ...)` in a type body
   registers as an ordinary visible impl with the enclosing type as receiver,
   identical to a standalone `(impl P for T ...)` after the declaration (same
@@ -760,9 +760,9 @@ implemented and stable, and sit at implementation-order item 13; base
   rules; `(impl Send)` works for markers)
 - §9.1 — receiver-first sends: the reader lowers `(x .f a)` to one canonical
   send node and the printer restores the dot surface; `opResolveMessage` resolves type-direct messages
-  walking `^is`, raising `MessageError` when nothing matches (no lexical
+  walking type parents, raising `MessageError` when nothing matches (no lexical
   fallback); `(.f a)` sends to lexical `self`; `(super .f a)` delegates via
-  `opSuperSend`, reading the owner's `^is` parent from the identity stamped on
+  `opSuperSend`, reading the owner's nominal parent from the identity stamped on
   the message body's chunk when the type is created, so no user-visible name is
   resolved. A direct `P:m` send uses `opQualifiedSend`; held and expression
   callees use `opResolveQualifiedMessage`, which requires a message value and
@@ -798,9 +798,9 @@ implemented and stable, and sit at implementation-order item 13; base
 | OQ-E | Defaults (§5) and derive (§6) both feed the impl-completeness checker at compile time. Should they be one compiler pass or two? | Keep them as two separate, ordered passes: resolve default-fallback dispatch entries as a dispatch-table concern (§4/§5), and run derive expansion as a separate codegen concern, with completeness-checking happening only after both have run. A single merged pass makes it harder to tell whether a missing-message error came from a broken default or a broken derive. |
 | OQ-F | Under receiver-first resolution (§9.1), does a type message silently shadow a same-named lexical binding at dot-send sites? Error, lint, or silence? | **Moot.** The lexical fallback was removed; dot descriptors and lexical names never share a resolution path (§9.3), so there is nothing to shadow. |
 | OQ-G | Should the lexical fallback exist at all, or should dot sends be receiver-only? | **Resolved — receiver-only.** The fallback is removed. A bare name that resolves to no message is a `MessageError` (§9.1). The pipeline ops (`map`/`filter`/`take`/`into`/`each`, `to_stream`) are now type-direct messages on their receivers. |
-| OQ-H | Should bare `(x .name)` ever resolve a protocol message? | **Resolved — no.** An unqualified send reaches type-direct messages only, walking `^is`; protocol messages are always qualified (`x .P:m`). The earlier rule ("resolves iff exactly one applicable protocol message has that simple name") is superseded: it made adding a same-named protocol message silently redirect existing sends, and the compile-time candidate set it required is gone (§9.1). |
+| OQ-H | Should bare `(x .name)` ever resolve a protocol message? | **Resolved — no.** An unqualified send reaches type-direct messages only, walking type parents; protocol messages are always qualified (`x .P:m`). The earlier rule ("resolves iff exactly one applicable protocol message has that simple name") is superseded: it made adding a same-named protocol message silently redirect existing sends, and the compile-time candidate set it required is gone (§9.1). |
 | OQ-I | Should protocol declarations also bind message simple names in the enclosing scope (enabling bare calls like `(to_name x)`)? | **Settled — no, for now.** Messages are reachable via qualified access and sends only (§1). Scope binding can be added later as an additive feature; adding it would require an ambiguity-marker binding design for same-named messages across protocols in one scope. |
-| OQ-J | Does Gene need a `super` / `call-next-method` to invoke an overridden implementation from within an override? | **Resolved — implemented for type-direct messages.** `(super .m ...)` delegates to the implementation above the enclosing type on the `^is` chain, called with `self`, resolved statically and relative to the enclosing type (so `C ^is B ^is A` steps one level per body). `(super .Proto:m)` for protocol-impl delegation stays deferred: overlapping `impl P A` + `impl P B` (`B ^is A`) is an ambiguity error today, so protocols need a precedence rule first. |
+| OQ-J | Does Gene need a `super` / `call-next-method` to invoke an overridden implementation from within an override? | **Resolved — implemented for type-direct messages.** `(super .m ...)` delegates to the implementation above the enclosing type on the parent chain, called with `self`, resolved statically and relative to the enclosing type (so declarations `A`, `B : A`, and `C : B` step one level per body). `(super .Proto:m)` for protocol-impl delegation stays deferred: overlapping `impl P A` + `impl P B` where `B : A` is an ambiguity error today, so protocols need a precedence rule first. |
 
 ---
 

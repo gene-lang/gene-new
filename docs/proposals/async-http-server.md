@@ -367,7 +367,7 @@ MVP representation:
   ^impl [Send])
 
 (type Headers
-  ^is #[Header...])   # frozen list of zero or more Header values
+  : #[Header...])   # frozen list of zero or more Header values
 ```
 
 `Headers` values must be **frozen lists** (`#[...]`). A mutable `(List Header)`

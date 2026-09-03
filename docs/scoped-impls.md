@@ -46,7 +46,7 @@ No layer silently overrides another.
 ## 2. Message resolution
 
 An unqualified send `(x .m)` reaches only the receiver's type-direct messages,
-walking `^is` (`docs/design.md` §3). It never reaches a protocol impl, so a send
+walking nominal parents (`docs/design.md` §3). It never reaches a protocol impl, so a send
 site carries no protocol candidate set and simple-name ambiguity cannot arise
 from one.
 
@@ -124,7 +124,7 @@ the produced value or an explicit callback.
 
 Resolve receiver depth independently for each message identity:
 
-1. collect that identity's providers along the receiver's single `^is` chain;
+1. collect that identity's providers along the receiver's single parent chain;
 2. retain only its providers at the nearest applicable receiver depth; and
 3. require exactly one provider at that depth.
 

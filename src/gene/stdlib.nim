@@ -1251,7 +1251,7 @@ proc ownedHandleField*(scope: Scope, target: string): TypeField =
 
 proc nativeReceiverIs*(scope: Scope, value: Value, typeName: string): bool =
   ## Receiver identity for a native surface. The value's head must be *the*
-  ## canonical Type registered under that name — or an `^is` descendant of it,
+  ## canonical Type registered under that name — or a nominal descendant of it,
   ## which inherits the wrapper rule (design §16.6) and is therefore a
   ## legitimate receiver.
   ##
@@ -5705,7 +5705,7 @@ proc raiseDbError(message: string, scope: Scope) =
 
 proc dbConnHandleValue(name: string, conn: Value, expectedType: string,
                        scope: Scope): Value =
-  # Identity, not name: the one canonical Type for this backend, or an `^is`
+  # Identity, not name: the one canonical Type for this backend, or a nominal
   # descendant of it — so a look-alike `SqliteDb` declared elsewhere cannot
   # reach a pointer dereference, while a Gene-side subtype of the real one
   # still works.

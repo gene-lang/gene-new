@@ -321,7 +321,7 @@ independently of JS and lands on JS's two-absence model exactly.
 | `x/a/b` static path | `x.a.b` | none |
 | `(x .m a)` static receiver | `x.m(a)` | none |
 | `same?` | `===` | none |
-| `^is` | `extends` | none |
+| `: Parent` | `extends` | none |
 | `enum` | const singletons + discriminated union | small |
 | node `(h ^p v x)` | a `GeneNode` class | helper |
 | `(x .%m a)` dynamic receiver | `send(x, m, a)` | helper |
@@ -424,13 +424,13 @@ runtime.
 ### 4.7 Hazard 3 — protocols and dispatch
 
 A dot send is dispatch and only dispatch (§3). Bare = type-direct, qualified `P:m` =
-protocol. Both walk the `^is` chain, and impls have visibility scopes.
+protocol. Both walk the nominal parent chain, and impls have visibility scopes.
 
 In the profile, drop overlay/scoped impls and the picture collapses to something
 JS does natively:
 
 - **Type-direct messages** → prototype methods. `(x .m a)` → `x.m(a)`.
-  `^is` → `extends`. `(super .m)` → `super.m()`. Free.
+  `: Parent` → `extends`. `(super .m)` → `super.m()`. Free.
 - **Protocol impls** → methods installed under a **unique symbol** per protocol
   message, so `P:m` and `Q:m` coexist on one class without collision:
   `x[P$m](a)`. `(impl P for T …)` is `Object.defineProperty` on `T.prototype`
@@ -438,7 +438,7 @@ JS does natively:
   from the *enclosing type's* parent, not the receiver's, and an externally
   installed function has no `[[HomeObject]]`, so JS `super` is unavailable
   inside it. Protocol `super` needs an explicit chain walk from a recorded
-  parent — a runtime helper. Message identity and `^is` inheritance of impls
+  parent — a runtime helper. Message identity and type inheritance of impls
   need the same table. `Self`-typed parameters (§10) need emitted boundary
   checks, not a TS type.
 - **`(impl P for List)`, `for Str`, `for Nil`** — cannot patch builtin

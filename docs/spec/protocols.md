@@ -18,7 +18,7 @@ Executable coverage: `tests/test_protocols.nim` and protocol suites in
   and publishes impls transactionally.
 - Zero applicable visible impls is missing behavior; multiple applicable impls
   is ambiguity. Import order does not choose a winner.
-- Unqualified sends resolve only receiver type-direct behavior, walking `^is`;
+- Unqualified sends resolve only receiver type-direct behavior, walking nominal parents;
   there is no protocol or lexical fallback. Protocol sends use `P:msg`.
 - Only protocols qualify messages. Type-direct messages are sent bare and use
   the reserved `Self:msg` spelling when a message value is required; `T:msg`

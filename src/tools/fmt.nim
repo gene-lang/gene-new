@@ -167,8 +167,12 @@ proc declarationPrefixCount(head: string, body: openArray[Value]): int =
   ## nodes store props separately, so their original source position is not
   ## available after reading; the formatter chooses the language convention.
   case head
-  of "mod", "ns", "type", "enum", "protocol":
+  of "mod", "ns", "enum", "protocol":
     if body.len > 0 and body[0].kind == vkSymbol: 1 else: 0
+  of "type":
+    if body.len == 0 or body[0].kind != vkSymbol:
+      return 0
+    if body.len >= 3 and body[1].isSym(":"): 3 else: 1
   of "fn", "macro", "message", "ctor":
     var n = 0
     if head != "ctor" and n < body.len and body[n].kind == vkSymbol: inc n

@@ -108,7 +108,7 @@ suite "protocols — declarations and dispatch":
   test "parent type impl applies to child receivers":
     ck "(protocol ToName (message to_name [self] : Str)) " &
        "(type Animal ^props {^name Str}) " &
-       "(type Dog ^is Animal ^props {^breed Str}) " &
+       "(type Dog : Animal ^props {^breed Str}) " &
        "(impl ToName for Animal (message to_name [self] : Str self/name)) " &
        "((Dog ^name \"Rex\" ^breed \"Lab\") .ToName:to_name)",
        "\"Rex\""
@@ -116,7 +116,7 @@ suite "protocols — declarations and dispatch":
   test "nearest receiver wins within one message identity":
     ck "(protocol ToName (message to_name [self] : Str)) " &
        "(type Animal ^props {^name Str}) " &
-       "(type Dog ^is Animal ^props {^breed Str}) " &
+       "(type Dog : Animal ^props {^breed Str}) " &
        "(impl ToName for Animal (message to_name [self] : Str self/name)) " &
        "(impl ToName for Dog (message to_name [self] : Str self/breed)) " &
        "((Dog ^name \"Rex\" ^breed \"Lab\") .ToName:to_name)",
@@ -126,7 +126,7 @@ suite "protocols — declarations and dispatch":
     let source =
       "(protocol A (message render [self] : Str)) " &
       "(protocol B (message render [self] : Str)) " &
-      "(type Parent ^props {}) (type Child ^is Parent ^props {}) " &
+      "(type Parent ^props {}) (type Child : Parent ^props {}) " &
       "(impl B for Parent (message render [self] : Str \"parent-b\")) " &
       "(impl A for Child (message render [self] : Str \"child-a\")) " &
       "(var child (Child)) "
@@ -583,10 +583,10 @@ suite "types — type-direct messages and sends":
        "(probe (fn [x] \"shadow\"))",
        "\"via-impl\""
 
-  test "child types reach parent type-direct messages via the ^is chain":
+  test "child types reach parent type-direct messages via the parent chain":
     ck "(type Animal ^props {^name Str} " &
        "  (message speak [self] $\"${self/name} makes a sound\")) " &
-       "(type Dog ^is Animal ^props {^breed Str}) " &
+       "(type Dog : Animal ^props {^breed Str}) " &
        "(var d (Dog ^name \"Rex\" ^breed \"Lab\")) " &
        "[(d .speak) (d .Self:speak)]",
        "[\"Rex makes a sound\" \"Rex makes a sound\"]"
@@ -594,7 +594,7 @@ suite "types — type-direct messages and sends":
   test "a child's same-named message shadows the parent's":
     ck "(type Animal ^props {^name Str} " &
        "  (message speak [self] \"generic\")) " &
-       "(type Dog ^is Animal ^props {} " &
+       "(type Dog : Animal ^props {} " &
        "  (message speak [self] \"woof\")) " &
        "(var d (Dog ^name \"Rex\")) " &
        "[(d .speak) ((Animal ^name \"Generic\") .speak)]",
@@ -602,18 +602,18 @@ suite "types — type-direct messages and sends":
 
   test "type-direct overrides preserve the inherited callable signature":
     ck "(type A ^props {} (message value [self x : Int] : Int x)) " &
-       "(type B ^is A ^props {} " &
+       "(type B : A ^props {} " &
        "  (message value [self x : Int] : Int (+ x 1))) " &
        "((B) .value 2)",
        "3"
     expect GeneError:
       discard runStr("(type A ^props {} " &
                      "  (message value [self x : Int] : Int x)) " &
-                     "(type B ^is A ^props {} " &
+                     "(type B : A ^props {} " &
                      "  (message value [self x : Str] : Int 1))")
     expect GeneError:
       discard runStr("(type A ^props {} (message value [self] : Int 1)) " &
-                     "(type B ^is A ^props {} " &
+                     "(type B : A ^props {} " &
                      "  (message value [self] : Str \"x\"))")
 
   test "type-direct messages do not satisfy ^impl requirements":
@@ -764,7 +764,7 @@ suite "protocols — dispatch inline cache soundness (item D1)":
     # Warm `dv .g` against Base's impl (distance 1), then add Derived's own
     # impl (distance 0). The implEpoch bump must invalidate and pick the nearer.
     ck "(protocol Grow (message g [self] : Int)) " &
-       "(type Base ^props {}) (type Derived ^is Base ^props {}) " &
+       "(type Base ^props {}) (type Derived : Base ^props {}) " &
        "(impl Grow for Base (message g [self] : Int 1)) " &
        "(var dv (Derived)) (fn go [] (dv .Grow:g)) " &
        "(var warm [(go) (go)]) " &

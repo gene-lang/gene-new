@@ -3436,7 +3436,7 @@ suite "spec — nominal types from design":
   test "child types preserve inherited field schemas":
     expect GeneError:
       discard run(compileSource("(type Animal ^props {^name Str}) " &
-                                "(type Dog ^is Animal ^props {^name Any})"),
+                                "(type Dog : Animal ^props {^name Any})"),
                   newGlobalScope())
 
   test "type body schemas validate positional node body":
@@ -3601,7 +3601,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
 
   test "child ctor covers inherited schema; parent ctor is not chained":
     check_eval("(type Animal ^props {^name Str}) " &
-               "(type Dog ^is Animal ^props {^breed Str} " &
+               "(type Dog : Animal ^props {^breed Str} " &
                "  (ctor [name : Str, breed : Str] " &
                "    (self .set_prop `name name) " &
                "    (self .set_prop `breed breed))) " &
@@ -3611,7 +3611,7 @@ suite "spec — direct construction, new, and ctor (design §7.1.1)":
   test "new inherits the nearest ancestor ctor":
     check_eval("(type Animal ^props {^name Str} " &
                "  (ctor [name : Str] (self .set_prop `name name))) " &
-               "(type Dog ^is Animal) " &
+               "(type Dog : Animal) " &
                "(var dog (new Dog \"Rex\")) dog",
                "((type Dog) ^name \"Rex\")")
 
@@ -3734,12 +3734,12 @@ suite "spec — native wrapper types (design §16.6)":
                "[\"cannot set field 'handle' on Conn: native wrapper fields " &
                "are initializer-only\" \"no\" \"no\" \"H\"]")
 
-  test "the wrapper rule is inherited through ^is":
+  test "the wrapper rule is inherited through the nominal parent":
     # A Gene-side subtype may add messages and impls; it must not reopen
     # construction on the parent's native payload.
     check_eval("(type Conn ^repr native_wrapper ^props {^handle Str} " &
                "  (ctor [h : Str] (set self/handle h))) " &
-               "(type Tagged ^is Conn " &
+               "(type Tagged : Conn " &
                "  (message tag [self] : Str self/handle)) " &
                "[(try (Tagged ^handle \"x\") catch Any \"no\") " &
                " ((new Tagged \"H\") .tag)]",
@@ -4387,7 +4387,7 @@ suite "spec — type aliases from design §7.4.1":
     # "unknown type annotation".
     check_eval("(fn f [x : $log/LogLevel] x) ($to_str (f $log/LogLevel/info))",
                "\"LogLevel/info\"")
-    check_eval("(type A ^is $event/Event) " &
+    check_eval("(type A : $event/Event) " &
                "(fn f [e : $event/Event] 1) (f (A))", "1")
 
 suite "spec — checked errors from design":
@@ -5265,8 +5265,8 @@ suite "spec — implicit self in message bodies from design §10":
                "[(same? (p .me) p) (p .all [(P ^a 2)]) (p .maybe nil)]",
                "[true 1 true]")
     # Resolved against the receiver, not the enclosing declaration: the
-    # constraint follows the receiver down the `^is` chain, so it is asymmetric.
-    check_eval("(type Dog ^props {^n Str}) (type Pup ^is Dog ^props {}) " &
+    # constraint follows the receiver down the parent chain, so it is asymmetric.
+    check_eval("(type Dog ^props {^n Str}) (type Pup : Dog ^props {}) " &
                "(protocol Eq (message eq [other : Self] : Bool)) " &
                "(impl Eq for Dog (message eq [other : Self] : Bool true)) " &
                "[((Dog ^n \"d\") .Eq:eq (Pup ^n \"p\")) " &
@@ -5303,16 +5303,16 @@ suite "spec — implicit self in message bodies from design §10":
 
   test "super delegates to the implementation above, relative to the enclosing type":
     check_eval("(type A ^props {} (message greet [] : Str \"A\")) " &
-               "(type B ^is A ^props {} " &
+               "(type B : A ^props {} " &
                "  (message greet [] : Str ($ \"B+\" (super .greet)))) " &
-               "(type C ^is B ^props {} " &
+               "(type C : B ^props {} " &
                "  (message greet [] : Str ($ \"C+\" (super .greet)))) " &
                "[((B) .greet) ((C) .greet)]",
                "[\"B+A\" \"C+B+A\"]")
 
   test "super passes arguments to the parent implementation":
     check_eval("(type A ^props {} (message scale [n] : Int (* n 2))) " &
-               "(type B ^is A ^props {} " &
+               "(type B : A ^props {} " &
                "  (message scale [n] : Int (+ (super .scale n) 1))) " &
                "((B) .scale 10)",
                "21")
@@ -5324,29 +5324,29 @@ suite "spec — implicit self in message bodies from design §10":
 
   test "a type cannot qualify a super send":
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
-               "(type B ^is A ^props {} " &
+               "(type B : A ^props {} " &
                "  (message m [] : Str (super .A:m))) " &
                "(try ((B) .m) " &
                "catch CallKindError [$ex/where $ex/expected])",
                "[\"super send\" \"Protocol\"]")
 
-  test "super delegates a protocol message from the ^is parent":
+  test "super delegates a protocol message from the nominal parent":
     # `docs/scoped-impls.md` §3.3 already keeps only providers at the nearest
     # applicable receiver depth, so resolving from the parent *is* "continue the
     # walk from above the enclosing type" — no new precedence rule was needed.
     # The qualifier names the message; the parent selects the impl.
     check_eval("(protocol P (message m [] : Str)) " &
                "(type A ^props {}) (impl P for A (message m [] : Str \"A\")) " &
-               "(type B ^is A ^props {}) " &
+               "(type B : A ^props {}) " &
                "(impl P for B (message m [] : Str ($ \"B+\" (super .P:m)))) " &
                "((B) .P:m)",
                "\"B+A\"")
     # Three deep, and the inline-impl spelling, which shares the enclosing type.
     check_eval("(protocol P (message m [] : Str)) " &
                "(type A ^props {} (impl P (message m [] : Str \"A\"))) " &
-               "(type B ^is A ^props {} " &
+               "(type B : A ^props {} " &
                "  (impl P (message m [] : Str ($ \"B+\" (super .P:m))))) " &
-               "(type C ^is B ^props {} " &
+               "(type C : B ^props {} " &
                "  (impl P (message m [] : Str ($ \"C+\" (super .P:m))))) " &
                "((C) .P:m)",
                "\"C+B+A\"")
@@ -5354,21 +5354,21 @@ suite "spec — implicit self in message bodies from design §10":
     # applicable receiver depth, not "the immediate parent must implement it".
     check_eval("(protocol P (message m [] : Str)) " &
                "(type A ^props {}) (impl P for A (message m [] : Str \"A\")) " &
-               "(type B ^is A ^props {}) " &
-               "(type C ^is B ^props {}) " &
+               "(type B : A ^props {}) " &
+               "(type C : B ^props {}) " &
                "(impl P for C (message m [] : Str ($ \"C+\" (super .P:m)))) " &
                "((C) .P:m)",
                "\"C+A\"")
     # Nothing above at all is a recoverable MessageError naming the parent.
     check_eval("(protocol P (message m [] : Str)) " &
                "(type A ^props {}) " &
-               "(type B ^is A ^props {}) " &
+               "(type B : A ^props {}) " &
                "(impl P for B (message m [] : Str (super .P:m))) " &
                "(try ((B) .P:m) catch MessageError $ex/receiver_type)",
                "\"A\"")
     # `Self:` names no qualifier, so it is exactly the bare super send.
     check_eval("(type A ^props {} (message g [] : Str \"A\")) " &
-               "(type B ^is A ^props {} " &
+               "(type B : A ^props {} " &
                "  (message g [] : Str ($ \"B+\" (super .Self:g)))) " &
                "((B) .g)",
                "\"B+A\"")
@@ -5379,27 +5379,27 @@ suite "spec — implicit self in message bodies from design §10":
     check_compile_error(
       "(protocol P (message m [] : Str)) " &
       "(type A ^props {} (impl P (message m [] : Str \"A\"))) " &
-      "(type B ^is A ^props {} " &
+      "(type B : A ^props {} " &
       "  (message go [] : Str (var q P:m) (super .%q)))",
       "is a dynamic callee")
 
   test "super is robust against a local shadowing the parent or enclosing name":
-    # super resolves no user-visible name: the owner's ^is parent is recorded on
+    # super resolves no user-visible name: the owner's parent is recorded on
     # the message body when the type is created.
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
-               "(type B ^is A ^props {} " &
+               "(type B : A ^props {} " &
                "  (message m [] : Str (do (let A 1) (super .m)))) " &
                "((B) .m)",
                "\"A\"")
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
-               "(type B ^is A ^props {} " &
+               "(type B : A ^props {} " &
                "  (message m [] : Str (do (let B 1) (super .m)))) " &
                "((B) .m)",
                "\"A\"")
 
   test "super works inside a closure nested in the message body":
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
-               "(type B ^is A ^props {} " &
+               "(type B : A ^props {} " &
                "  (message m [] : Str (var f (fn [] (super .m))) " &
                "                      ($ \"B+\" (f)))) " &
                "((B) .m)",
@@ -5408,11 +5408,11 @@ suite "spec — implicit self in message bodies from design §10":
   test "super stays per-type when one declaration is created with two parents":
     # The parent identity lives on the message body, which the compiler emits
     # once for the declaration site. Creating that `type` again with a different
-    # ^is must not retarget the delegation of the types created before it.
+    # A computed parent must not retarget types created before it.
     check_eval("(type A ^props {} (message m [] : Str \"A\")) " &
                "(type B ^props {} (message m [] : Str \"B\")) " &
                "(fn make [p] " &
-               "  (type C ^is p ^props {} (message up [] : Str (super .m))) " &
+               "  (type C : p ^props {} (message up [] : Str (super .m))) " &
                "  C) " &
                "(let C1 (make A)) (let C2 (make B)) " &
                "[((C1) .up) ((C2) .up)]",
@@ -5565,7 +5565,7 @@ suite "spec — absence-guarded sends (design §3)":
   test "optional dot sends are rejected where a receiver cannot be absent":
     check_compile_error(
       "(type A ^props {} (message m [] : Int 1)) " &
-      "(type B ^is A ^props {} (message m [] : Int (super ?.m)))",
+      "(type B : A ^props {} (message m [] : Int (super ?.m)))",
       "super is never absent")
     check_eval("(var x {^a 1}) (/a x)", "1")
 
@@ -5641,7 +5641,7 @@ suite "spec — protocol intersection types":
   test "intersections honor protocol inheritance and receiver ancestry":
     check_eval("(protocol Shown (message show [] : Str)) " &
                "(protocol Sized (message sz [] : Int)) " &
-               "(type Parent ^props {}) (type Child ^is Parent ^props {}) " &
+               "(type Parent ^props {}) (type Child : Parent ^props {}) " &
                "(impl Shown for Parent (message show [] : Str \"p\")) " &
                "(impl Sized for Parent (message sz [] : Int 1)) " &
                "((fn [a : (& Shown Sized)] \"ok\") (Child))",
@@ -5674,7 +5674,7 @@ suite "spec — hidden impl diagnostics (docs/scoped-impls.md §4)":
       "(protocol Shown (message show [] : Str))\n" &
       "(type Widget ^props {})\n" &
       "(type Base ^props {})\n" &
-      "(type Derived ^is Base ^props {})\n")
+      "(type Derived : Base ^props {})\n")
     writeFile(result / "provider.gene",
       "(import [Shown Widget] from \"./proto\")\n" &
       "(impl Shown for Widget ^export true (message show [] : Str \"w\"))\n")
@@ -9132,7 +9132,7 @@ suite "spec — qualified message spelling":
     # `Self:msg` names no type and dispatches on the runtime receiver, so an
     # override wins and one value can be applied to unrelated receiver types.
     check_eval("(type Dog ^props {} (message bark [] : Str \"woof\")) " &
-               "(type Pup ^is Dog (message bark [] : Str \"yip\")) " &
+               "(type Pup : Dog (message bark [] : Str \"yip\")) " &
                "(type Cat ^props {} (message bark [] : Str \"meow\")) " &
                "(var xs [(Dog) (Pup) (Cat)]) " &
                "[((Pup) .bark) ((Pup) .Self:bark) " &
@@ -9478,14 +9478,14 @@ suite "spec — Tier 0 CSS data DSL (transpile proposal P0)":
 suite "spec — application event bus (docs/events.md)":
   const orderFamily =
     "(ns order " &
-    "  (type Event ^is $event/Event) " &
-    "  (type Placed ^is Event ^props {^order_id Str}) " &
-    "  (type Shipped ^is Event ^props {^order_id Str})) "
+    "  (type Event : $event/Event) " &
+    "  (type Placed : Event ^props {^order_id Str}) " &
+    "  (type Shipped : Event ^props {^order_id Str})) "
 
   test "a typed event is subscribed and published through a bus":
     check_eval(
       "(import gene/event [Bus]) " &
-      "(type PaymentReceived ^is $event/Event " &
+      "(type PaymentReceived : $event/Event " &
       "  ^props {^payment_id Str ^amount F64}) " &
       "(var seen ($cell nil)) " &
       "(fn record [e : PaymentReceived] (seen .set e/payment_id)) " &
@@ -9503,7 +9503,7 @@ suite "spec — application event bus (docs/events.md)":
       "(try (bus .publish (NotAnEvent ^x 1)) " &
       "  catch EventTypeError $ex/message)",
       "\"publish expects an event/Event descendant, got type NotAnEvent; " &
-      "declare the event type with ^is $event/Event\"")
+      "declare the event type with : $event/Event\"")
 
   test "a family base type recursively matches its nominal descendants":
     check_eval(orderFamily &
@@ -9519,7 +9519,7 @@ suite "spec — application event bus (docs/events.md)":
 
   test "event/exact excludes descendants":
     check_eval(orderFamily &
-      "(type Rush ^is order/Placed) " &
+      "(type Rush : order/Placed) " &
       "(var hits ($cell 0)) " &
       "(fn note [e] (hits .set (+ hits/.get 1))) " &
       "(var bus ($event/Bus)) " &
@@ -9532,7 +9532,7 @@ suite "spec — application event bus (docs/events.md)":
 
   test "a concrete type selector still matches its own descendants":
     check_eval(orderFamily &
-      "(type Rush ^is order/Placed) " &
+      "(type Rush : order/Placed) " &
       "(var hits ($cell 0)) " &
       "(fn note [e] (hits .set (+ hits/.get 1))) " &
       "(var bus ($event/Bus)) " &
@@ -9560,8 +9560,8 @@ suite "spec — application event bus (docs/events.md)":
     # Two separately declared types with the same printed path are different
     # events, so a subscription to one never sees the other (§6.4).
     check_eval(
-      "(ns a (type Ping ^is $event/Event)) " &
-      "(ns b (type Ping ^is $event/Event)) " &
+      "(ns a (type Ping : $event/Event)) " &
+      "(ns b (type Ping : $event/Event)) " &
       "(var hits ($cell 0)) " &
       "(fn note [e] (hits .set (+ hits/.get 1))) " &
       "(var bus ($event/Bus)) " &
@@ -9676,7 +9676,7 @@ suite "spec — application event bus (docs/events.md)":
 
   test "nested publication is depth-first":
     check_eval(
-      "(type Outer ^is $event/Event) (type Inner ^is $event/Event) " &
+      "(type Outer : $event/Event) (type Inner : $event/Event) " &
       "(var log ($cell [])) " &
       "(fn note [tag] (log/.get .push tag)) " &
       "(var bus ($event/Bus)) " &
@@ -9696,7 +9696,7 @@ suite "spec — application event bus (docs/events.md)":
     # event; under the default policy the outer publications then report it as
     # the handler failure it is.
     check_eval(
-      "(type Ping ^is $event/Event) " &
+      "(type Ping : $event/Event) " &
       "(var bus ($event/Bus ^nesting_limit 2)) " &
       "(fn recurse [e] (bus .publish (Ping))) " &
       "(bus .subscribe Ping recurse) " &
@@ -9709,7 +9709,7 @@ suite "spec — application event bus (docs/events.md)":
 
   test "handler failures do not prevent later handlers from running":
     check_eval(
-      "(type Ping ^is $event/Event) " &
+      "(type Ping : $event/Event) " &
       "(var ran ($cell false)) " &
       "(fn boom [e] (fail (Error ^message \"nope\"))) " &
       "(fn ok [e] (ran .set true)) " &
@@ -9722,7 +9722,7 @@ suite "spec — application event bus (docs/events.md)":
 
   test "raise_after is the default and reports the ordered failures":
     check_eval(
-      "(type Ping ^is $event/Event) " &
+      "(type Ping : $event/Event) " &
       "(fn boom [e] (fail (Error ^message \"nope\"))) " &
       "(var bus ($event/Bus)) " &
       "(bus .subscribe Ping boom) " &
@@ -9735,7 +9735,7 @@ suite "spec — application event bus (docs/events.md)":
     # §7.2: choosing `collect` for an attached observation bus must not hide
     # handler failures at the sink boundary.
     check_eval(
-      "(type Ping ^is $event/Event) " &
+      "(type Ping : $event/Event) " &
       "(fn boom [e] (fail (Error ^message \"nope\"))) " &
       "(var bus ($event/Bus ^error_policy $event/collect)) " &
       "(bus .subscribe Ping boom) " &
@@ -9762,7 +9762,7 @@ suite "spec — application event bus (docs/events.md)":
 
   test "a recording sink collects the events emitted to it":
     check_eval(
-      "(type Ping ^is $event/Event ^props {^n Int}) " &
+      "(type Ping : $event/Event ^props {^n Int}) " &
       "(var rec ($event/RecordingSink)) " &
       "(rec .EventSink:emit (Ping ^n 1)) " &
       "(rec .EventSink:emit (Ping ^n 2)) " &
@@ -9773,7 +9773,7 @@ suite "spec — application event bus (docs/events.md)":
 
   test "a composite sink fans out in order and the null sink discards":
     check_eval(
-      "(type Ping ^is $event/Event ^props {^n Int}) " &
+      "(type Ping : $event/Event ^props {^n Int}) " &
       "(var rec ($event/RecordingSink)) " &
       "(var bus ($event/Bus)) " &
       "(var hits ($cell 0)) " &
@@ -9786,7 +9786,7 @@ suite "spec — application event bus (docs/events.md)":
 
   test "a union selector matches every alternative and nothing else":
     check_eval(orderFamily &
-      "(type Other ^is $event/Event) " &
+      "(type Other : $event/Event) " &
       "(var hits ($cell [])) " &
       "(fn note [e] ((hits .get) .push \"x\")) " &
       "(var bus ($event/Bus)) " &
@@ -9802,7 +9802,7 @@ suite "spec — application event bus (docs/events.md)":
     # forbids deduplication, so a union must not be N subscriptions: an event
     # matching two alternatives would then invoke the handler twice.
     check_eval(orderFamily &
-      "(type Rush ^is order/Placed) " &
+      "(type Rush : order/Placed) " &
       "(var hits ($cell 0)) " &
       "(fn note [e] (hits .set (+ (hits .get) 1))) " &
       "(var bus ($event/Bus)) " &
@@ -9839,7 +9839,7 @@ suite "spec — application event bus (docs/events.md)":
 
   test "a nested union selector flattens":
     check_eval(orderFamily &
-      "(type Other ^is $event/Event) " &
+      "(type Other : $event/Event) " &
       "(alias Two (| order/Placed order/Shipped)) " &
       "(var hits ($cell 0)) " &
       "(fn note [e] (hits .set (+ (hits .get) 1))) " &
@@ -9902,7 +9902,7 @@ suite "spec — application event bus (docs/events.md)":
     # cross-lane refusal needs a real second thread and is pinned by
     # tests/test_native_api_threads.nim.
     check_eval(
-      "(type Ping ^is $event/Event) " &
+      "(type Ping : $event/Event) " &
       "(var hits ($cell 0)) " &
       "(fn note [e] (hits .set (+ (hits .get) 1))) " &
       "(var bus ($event/Bus)) " &

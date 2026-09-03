@@ -1069,13 +1069,17 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
                       loc: SourceLoc): WebTypeDecl =
   if form.body.len < 1 or form.body[0].kind != vkSymbol:
     raise webError(loc, "web type requires a name")
-  rejectUnknownProps(form, loc, "type", ["is", "props", "body"])
+  rejectUnknownProps(form, loc, "type", ["props", "body"])
   result = WebTypeDecl(sourceName: form.body[0].symVal,
     emittedName: mangleWebName(form.body[0].symVal), loc: loc)
-  if form.props.hasKey("is"):
-    if form.props["is"].kind != vkSymbol:
-      raise webError(loc, "web type ^is must be a declared type name")
-    result.parentName = form.props["is"].symVal
+  var memberStart = 1
+  if form.body.len > 1 and form.body[1].isSym(":"):
+    if form.body.len < 3:
+      raise webError(loc, "web type ':' requires a parent type")
+    if form.body[2].kind != vkSymbol:
+      raise webError(loc, "web type parent must be a declared type name")
+    result.parentName = form.body[2].symVal
+    memberStart = 3
   if form.props.hasKey("props"):
     let fields = form.props["props"]
     if fields.kind != vkMap:
@@ -1102,7 +1106,7 @@ proc parseWebTypeDecl(analysis: WebAnalysis, form: Value,
         if result.bodyRest != nil:
           raise webError(loc, "web type ^body repeated type must be final")
         result.bodyFields.add parseWebType(annotation, loc)
-  for i in 1 ..< form.body.len:
+  for i in memberStart ..< form.body.len:
     let member = form.body[i]
     if member.kind != vkNode or member.head.kind != vkSymbol:
       raise webError(loc, "web type body accepts ctor and message declarations")
@@ -2408,8 +2412,12 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         if value.body.len != 1:
           raise webError(loc, "web to_stream expects one List")
         let input = analysis.analyzeExpr(value.body[0], bindings)
+        if input.typ.kind == wtkStream:
+          # Identity, matching the VM: a `=>` stage normalizes an unknown
+          # receiver into the lazy tier and must not convert twice.
+          return input
         if input.typ.kind != wtkList:
-          raise webError(loc, "web to_stream expects a List")
+          raise webError(loc, "web to_stream expects a List or Stream")
         return WebExpr(kind: wekBuiltin, typ: webType(wtkStream, input.typ.item),
           loc: loc, text: builtin, children: @[input])
       of "map", "filter":
@@ -2430,6 +2438,18 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
                        else: callback.typ.returnType
         return WebExpr(kind: wekBuiltin, typ: webType(wtkStream, itemType),
           loc: loc, text: builtin, children: @[input, callback])
+      of "each":
+        if value.body.len != 2:
+          raise webError(loc, "web each expects a sequence and a callback")
+        let input = analysis.analyzeExpr(value.body[0], bindings)
+        if input.typ.kind notin {wtkStream, wtkList}:
+          raise webError(loc, "web each expects a List or Stream")
+        let callbackExpected = WebType(kind: wtkCallback,
+          params: @[input.typ.item], returnType: webType(wtkAny))
+        let callback = analysis.analyzeExpr(value.body[1], bindings,
+                                            callbackExpected)
+        return WebExpr(kind: wekBuiltin, typ: webType(wtkVoid), loc: loc,
+          text: builtin, children: @[input, callback])
       of "into":
         if value.body.len != 2:
           raise webError(loc, "web into expects stream and destination")
@@ -3237,6 +3257,7 @@ proc analyzePipeline(analysis: WebAnalysis, value: Value,
         forms.add newNode(newSym("let"), body = @[newSym(name), hoistedValue])
       stage = hoist.stage
       expr = materializeIterateStage(stage, newSym(tempName), freshTemp(),
+                                     i == value.pipelineStages.high,
                                      value.pipelineImmutable)
     if i == value.pipelineStages.high:
       forms.add expr
@@ -4445,6 +4466,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "map": "$gene_stream_map(" & arguments[0] & ", " & arguments[1] & ")"
     of "filter": "$gene_stream_filter(" & arguments[0] & ", " & arguments[1] & ")"
     of "into": "$gene_stream_into(" & arguments[0] & ", " & arguments[1] & ")"
+    of "each": "$gene_stream_each(" & arguments[0] & ", " & arguments[1] & ")"
     else: raise newException(WebProfileError,
       "internal portable stdlib emitter gap: " & expr.text)
   of wekCheck:
@@ -5824,7 +5846,7 @@ proc emitModule(module: WebModule, typescript: bool,
   let needsNodeBrand = needsNode or needsPath or needsDom or needsPatternFields
   for fn in module.functions:
     if fn.generator: needsStream = true
-  if moduleUsesBuiltin(module, ["to_stream", "map", "filter", "into"]):
+  if moduleUsesBuiltin(module, ["to_stream", "map", "filter", "into", "each"]):
     needsStream = true
   if needsAsync or needsGeneCatch:
     # Cancellation is branded with a registry symbol, not a `kind` string: a
@@ -6041,7 +6063,7 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line()
-    if moduleUsesBuiltin(module, ["map", "filter", "into"]):
+    if moduleUsesBuiltin(module, ["map", "filter", "into", "each"]):
       let anyType = if typescript: ": any" else: ""
       emitter.line("function $gene_stream_map(source" & anyType & ", mapper" &
         anyType & ")" & anyType & " {")
@@ -6059,6 +6081,15 @@ proc emitModule(module: WebModule, typescript: bool,
         ", destination" & anyType & ")" & anyType & " {")
       inc emitter.indent
       emitter.line("try { while (source.has_next()) { const item = source.next(); if (Array.isArray(destination)) destination.push(item); else destination[item[0]] = item[1]; } return destination; } finally { source.close(); }")
+      dec emitter.indent
+      emitter.line("}")
+      # A List receiver is drained in place: `each` never enters the lazy tier,
+      # so a terminal `=>` over an array allocates no stream.
+      emitter.line("function $gene_stream_each(source" & anyType &
+        ", visit" & anyType & ")" & anyType & " {")
+      inc emitter.indent
+      emitter.line("if (Array.isArray(source)) { for (const item of source) visit(item); return null; }")
+      emitter.line("try { while (source.has_next()) visit(source.next()); return null; } finally { source.close(); }")
       dec emitter.indent
       emitter.line("}")
       emitter.line()

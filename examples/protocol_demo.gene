@@ -3,9 +3,9 @@
 # Types, protocols, messages, and inheritance (docs/core.md)
 #
 # Demonstrates:
-#   - type declarations, single type inheritance (^is), and type-direct
+#   - type declarations, single type inheritance (`: Parent`), and type-direct
 #     messages (docs/core.md §8)
-#   - protocol declarations and impl; impl lookup walking a type's ^is chain
+#   - protocol declarations and impl; impl lookup walking a type's parent chain
 #     (docs/core.md §2.1)
 #   - protocol inheritance (^inherit): single parent, and multiple unrelated
 #     parents with same-named messages disambiguated by qualified identity
@@ -23,7 +23,7 @@
 
 # -----------------------------------------------------------------------------
 # A base type carrying a type-direct message, and a protocol implemented only
-# on that base type. Dog inherits both through ^is.
+# on that base type. Dog inherits both through its declared parent.
 # -----------------------------------------------------------------------------
 
 (type Animal ^props {^name Str}
@@ -54,7 +54,7 @@
 # `(impl Ord for Dog ...)` after the declaration.
 # -----------------------------------------------------------------------------
 
-(type Dog ^is Animal ^props {^breed Str ^weight Int} ^impl [Comparable]
+(type Dog : Animal ^props {^breed Str ^weight Int} ^impl [Comparable]
   (message tag [] $"${self/name} the ${self/breed}")
   (impl Ord
     # An impl's parameter list must match the declaration position by position,
@@ -93,13 +93,13 @@
 (var rex (Dog ^name "Rex" ^breed "Labrador" ^weight 70))
 (var fido (Dog ^name "Fido" ^breed "Pug" ^weight 18))
 
-($println (rex .greet))                  # type-direct message via ^is walk (§8)
+($println (rex .greet))                  # type-direct message via parent walk (§8)
 ($println (rex .tag))                    # Dog's own type-direct message
 ($println (Dog/tag rex))                  # a type's message is also a member
 
 # A protocol message is always qualified — bare `(rex .describe)` would look
 # for a type-direct `describe` on Dog and raise MessageError (§9.1).
-($println (rex .Describable:describe))   # impl found by walking Dog's ^is chain
+($println (rex .Describable:describe))   # impl found by walking Dog's parent chain
 
 ($println (rex .Comparable:compare fido)) # Ord's closure includes Comparable
 ($println ((rex .Ord:bigger fido) .tag)) # send chaining

@@ -68,7 +68,7 @@ Compile-time, template-shaped, using quasiquote and unquote sugar:
 (type User @doc "a small record"
   ^props {^name Str ^roles (List Str) ^active Bool?})
 
-(type Admin ^is User ^props {^level Int})     # single nominal inheritance
+(type Admin : User ^props {^level Int})     # single nominal inheritance
 ```
 
 **`(T …)` constructs directly and never runs `ctor`. `(new T …)` runs the

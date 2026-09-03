@@ -440,7 +440,7 @@ suite "native api — roots and trampoline":
       GeneWrapperField(name: "backend", typeExpr: newSym("Str"))]).value
     let scope = geneModuleScope(module)
     discard geneModuleDefine(module, "Conn", connType)
-    discard run(compileSource("(type Tagged ^is Conn)"), scope)
+    discard run(compileSource("(type Tagged : Conn)"), scope)
     var taggedType: Value
     check scope.lookupOptional("Tagged", taggedType)
 

@@ -181,7 +181,7 @@ short-circuits, but a present receiver with an unknown message still raises
 ### `event`
 
 Application pub/sub (docs/events.md). An event is an ordinary typed
-value whose `^is` ancestry reaches `event/Event`; its concrete nominal type is
+value whose parent ancestry reaches `event/Event`; its concrete nominal type is
 its identity, and that ancestry is its matching hierarchy. There is no topic
 string, no topic registry, and no global bus.
 
@@ -189,7 +189,7 @@ string, no topic registry, and no global bus.
 (import gene/event [Bus])
 
 (type UserCreated
-  ^is $event/Event
+  : $event/Event
   ^props {^user_id Str})
 
 (var bus
@@ -210,7 +210,7 @@ its `raise_after` and `collect` variants bound directly in the namespace; the
 `EventSink` protocol; and the `RecordingSink`, `NullSink`, and `CompositeSink`
 implementations of it.
 
-Subscribing to a type matches that type and its `^is` descendants, so a family
+Subscribing to a type matches that type and its nominal descendants, so a family
 base type observes the whole family and `event/Event` observes everything.
 `(event/exact T)` excludes descendants, and `(| A B)` — the same union type
 expression annotations take — selects several unrelated families at once. A

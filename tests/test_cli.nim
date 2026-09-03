@@ -1485,6 +1485,12 @@ suite "cli — gene parse/fmt/compile":
       "  => validate schema\n" &
       "  -> save db _)\n"
 
+    let typeHeader = writeCliProgram("fmt_type_parent.gene",
+      "(type Child ^props {} : Parent)\n")
+    let typeHeaderFmt = runGene(["fmt", typeHeader])
+    check typeHeaderFmt.exitCode == 0
+    check typeHeaderFmt.output == "(type Child : Parent ^props {})\n"
+
   test "fmt output is parse-equivalent and idempotent on the todo app":
     buildGeneCli()
     let f1 = execCmdEx(shellQuote(geneExe) & " fmt examples/todo_app/src/main.gene")

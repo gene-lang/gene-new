@@ -243,7 +243,7 @@ proc ownedValueFromBits*(bits: uint64): Value {.inline.} =
 type
   ## Props and meta are symbol-keyed ordered maps. Keys are the bare symbol
   ## text (without the leading `^`/`@`), stored as interned symbol ids —
-  ## `PropMap ^is (Map Sym Any)` (design §1.3), so the key id space is the
+  ## `PropMap : (Map Sym Any)` (design §1.3), so the key id space is the
   ## symbol intern table and a symbol Value's payload is directly a key id.
   ## Insertion order is preserved for deterministic printing (design §18).
   ##
@@ -1071,7 +1071,7 @@ type
     name: string
     parent: Value         # parent Type value, or NIL
     repr: TypeRepr        # representation marker (`^repr native_wrapper`);
-                          # inherited through `^is` at newType
+                          # inherited through the nominal parent at newType
     nativeIdentity: string # module-qualified `^native` identity, or "".
     nativeAbiIdentity: string
       ## The layout this Type maps to. Not derivable from `nativeIdentity`: a
@@ -1086,7 +1086,7 @@ type
                           # wrapper against the identity the compiled code was
                           # built for; comparing names instead would let one
                           # module's look-alike satisfy another's guard. Not
-                          # inherited: an `^is` descendant is a different
+                          # inherited: a nominal descendant is a different
                           # nominal type and does not share a native payload
                           # contract.
     fields: seq[TypeField]
@@ -1114,7 +1114,7 @@ type
                           # property and no publish site races for a counter.
     eventMatchIds: seq[int32]
                           # this type's id followed by every event ancestor's,
-                          # most-derived first. Immutable once assigned: `^is`
+                          # most-derived first. Immutable once assigned: parent
                           # is single and fixed, so the list is stable.
 
   EnumData = ref object of GeneObjectData
@@ -4421,7 +4421,7 @@ proc typeNativeContractFingerprint*(v: Value): string =
 
 proc typeInheritsFrom*(actual, ancestor: Value): bool =
   ## Nominal ancestry by Type *identity*: true when `actual` is `ancestor` or
-  ## one of its `^is` descendants. Every step compares `bits`, never the name —
+  ## one of its nominal descendants. Every step compares `bits`, never the name —
   ## two modules may each declare a `Conn`, and a name check would let one
   ## module's value satisfy the other's receiver guard.
   if actual.kind != vkType or ancestor.kind != vkType:
@@ -4435,7 +4435,7 @@ proc typeInheritsFrom*(actual, ancestor: Value): bool =
 
 proc isNativeWrapperType*(v: Value): bool {.inline.} =
   ## True for a `^repr native_wrapper` type and, because newType copies the
-  ## marker down, for every `^is` descendant of one. Checking the flag rather
+  ## marker down, for every nominal descendant of one. Checking the flag rather
   ## than walking the ancestry keeps the construction and write gates O(1).
   v.tagOf == OBJECT_TAG and objData(v).objKind == okType and
     TypeData(objData(v)).repr == trNativeWrapper
@@ -6544,7 +6544,7 @@ proc newType*(name: string, parent: Value, ownFields: seq[TypeField],
     bodyFields.add owned
   # Event identity is assigned here — eagerly, at declaration — so no lane bumps
   # a shared counter at first publish (events.md §6.4). A type is an event type
-  # exactly when it is the `event/Event` root or descends from one through `^is`,
+  # exactly when it is the `event/Event` root or a nominal descendant of one,
   # which is a single field read on the parent.
   var eventId: int32 = 0
   var matchIds: seq[int32]
@@ -6635,7 +6635,7 @@ proc newEnum*(name: string, typeParams: sink seq[string],
     data.variants.add variant
 
 proc typeDirectMessage*(v: Value, name: string): Value =
-  ## Type-direct message lookup, walking the ^is chain — most-derived type
+  ## Type-direct message lookup, walking the parent chain — most-derived type
   ## wins (docs/core.md §8). Returns NIL when no type in the chain defines
   ## `name`; stored messages are always functions, never NIL.
   var t = v

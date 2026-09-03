@@ -623,8 +623,8 @@
     },
     {
       "id": "module.declaration_imports",
-      "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (type Child ^is Thing) (enum Choice none (some Int)) (fn describe [value : Named] : Str (value .Named:name)) (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\")))",
-      "web_source": "(mod module_declaration_imports ^profile web) (import [Thing Named Choice] from \"./fixture_decl_dep.gene\") (type Child ^is Thing) (fn describe [value : Named] : Str (value .Named:name)) (fn run [] : Str (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\"))))",
+      "source": "(protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (type Child : Thing) (enum Choice none (some Int)) (fn describe [value : Named] : Str (value .Named:name)) (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\")))",
+      "web_source": "(mod module_declaration_imports ^profile web) (import [Thing Named Choice] from \"./fixture_decl_dep.gene\") (type Child : Thing) (fn describe [value : Named] : Str (value .Named:name)) (fn run [] : Str (let item (Child ^label \"imported\")) ($ (describe item) (match Choice/none (when Choice/none \"!\") (else \"?\"))))",
       "web_files": {
         "fixture_decl_dep.gene": "(mod fixture_decl_dep ^profile web) (protocol Named (message name [self] : Str)) (type Thing ^props {^label Str}) (impl Named for Thing (message name [self] : Str self/label)) (enum Choice none (some Int))"
       },
@@ -840,8 +840,8 @@
     },
     {
       "id": "protocol.super_chain",
-      "source": "(protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog ^is Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($ \"dog+\" (super .Speaks:speak)))) ((Dog) .Speaks:speak)",
-      "web_source": "(mod protocol_super_chain ^profile web) (protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog ^is Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($ \"dog+\" (super .Speaks:speak)))) (fn run [] : Str ((Dog) .Speaks:speak))",
+      "source": "(protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog : Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($ \"dog+\" (super .Speaks:speak)))) ((Dog) .Speaks:speak)",
+      "web_source": "(mod protocol_super_chain ^profile web) (protocol Speaks (message speak [self] : Str)) (type Animal ^props {}) (impl Speaks for Animal (message speak [self] : Str \"base\")) (type Dog : Animal ^props {}) (impl Speaks for Dog (message speak [self] : Str ($ \"dog+\" (super .Speaks:speak)))) (fn run [] : Str ((Dog) .Speaks:speak))",
       "web_export": "run",
       "expected_value": {
         "kind": "str",
@@ -957,8 +957,8 @@
     },
     {
       "id": "type.inheritance_super_and_ctor",
-      "source": "(type Base ^props {^value Int} (ctor [value : Int] (set self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child ^is Base (message add_twice [amount : Int] : Int (super .add (+ amount amount)))) (let child (new Child 5)) (child .add_twice 3)",
-      "web_source": "(mod type_inheritance_super ^profile web) (type Base ^props {^value Int} (ctor [value : Int] (set self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child ^is Base (message add_twice [amount : Int] : Int (super .add (+ amount amount)))) (fn run [] : Int (let child (new Child 5)) (child .add_twice 3))",
+      "source": "(type Base ^props {^value Int} (ctor [value : Int] (set self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child : Base (message add_twice [amount : Int] : Int (super .add (+ amount amount)))) (let child (new Child 5)) (child .add_twice 3)",
+      "web_source": "(mod type_inheritance_super ^profile web) (type Base ^props {^value Int} (ctor [value : Int] (set self/value value)) (message add [amount : Int] : Int (+ self/value amount))) (type Child : Base (message add_twice [amount : Int] : Int (super .add (+ amount amount)))) (fn run [] : Int (let child (new Child 5)) (child .add_twice 3))",
       "web_export": "run",
       "expected_value": {
         "kind": "int",
@@ -1466,7 +1466,7 @@
     {
       "id": "rejected.type_inheritance_cycle",
       "source": "1",
-      "web_source": "(mod rejected_type_cycle ^profile web) (type First ^is Second) (type Second ^is First)",
+      "web_source": "(mod rejected_type_cycle ^profile web) (type First : Second) (type Second : First)",
       "expected_value": {
         "kind": "int",
         "value": "1"

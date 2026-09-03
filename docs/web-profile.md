@@ -63,7 +63,8 @@ Nine cases in `tests/transpile/fixtures.json` hold the contract, four of them
 asserting that both backends refuse the same source.
 
 Every declaration form admits a closed property set — `mod ^profile`,
-`type ^is`/`^props`/`^body`, `js/fn ^from`/`^import`, `^errors` on callables —
+the `type Name : Parent` header plus `^props`/`^body`,
+`js/fn ^from`/`^import`, `^errors` on callables —
 and rejects anything else with a source-located reason. That is what makes the
 `derive` and `^repr native_wrapper` exclusions real: Gene spells both as
 properties on the type (`^derive [P]`, `^repr native_wrapper`), so a guard on

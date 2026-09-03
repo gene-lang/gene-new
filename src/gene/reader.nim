@@ -1549,15 +1549,29 @@ proc geneMemberPath*(name: string): Value =
   newNode(newSym("path"), body = @[newSym("gene"), newSym(name)])
 
 proc materializeIterateStage*(stage: PipelineStage, receiver: Value,
-                              itemName: string, immutable = false): Value =
-  ## `=>` runs its stage once per item and answers in the incoming kind, which
-  ## is exactly the `map` generic of design §6.2: a `List` answers a `List`, a
-  ## `Stream` stays lazy, and a user type joins by declaring the message. The
-  ## per-item call is an ordinary `->` stage whose slot holds the item.
+                              itemName: string, terminal: bool,
+                              immutable = false): Value =
+  ## `=>` runs its stage once per item, and a pipeline never accumulates a list
+  ## to get from one stage to the next:
+  ##
+  ## - a stage with something after it maps **lazily**, over the lazy tier, so
+  ##   an unbounded producer flows through a pipeline one item at a time;
+  ## - the final stage has no consumer for its results, so it drains the
+  ##   upstream for effect and the pipeline answers `nil`.
+  ##
+  ## The per-item call is an ordinary `->` stage whose slot holds the item.
   let item = newSym(itemName)
   let call = materializePipelineStage(stage, item, immutable)
   let callback = newNode(newSym("fn"), body = @[newList(@[item]), call])
-  newNode(geneMemberPath("map"), body = @[receiver, callback])
+  if terminal:
+    # `each` drives the receiver in its own kind and answers nil, so nothing is
+    # collected and an eager receiver needs no conversion.
+    return newNode(receiver, body = @[newSym("~"), newSym("each"), callback])
+  # `to_stream` is the identity on a `Stream`, so this normalizes an unknown
+  # receiver into the lazy tier without branching on its runtime kind.
+  newNode(geneMemberPath("map"),
+          body = @[newNode(geneMemberPath("to_stream"), body = @[receiver]),
+                   callback])
 
 proc isSpreadNode(value: Value): bool =
   value.kind == vkNode and value.head.kind == vkSymbol and

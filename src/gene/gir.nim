@@ -81,8 +81,8 @@ type
     opCallSplice
     opNew            # constructor keyword: type + named args + body args
     opResolveMessage  # pop receiver, resolve message name receiver-first, push callee below named args + receiver (docs/core.md §9.1)
-    opSuperSend       # pop enclosing type + self; resolve msg from the type's ^is parent, push callee + self (super delegation, design §10)
-    opSuperQualifiedSend # like opSuperSend, but pops a qualifier too: (super .Q:m) selects against the ^is parent, not the receiver
+    opSuperSend       # pop enclosing type + self; resolve msg from the type's parent, push callee + self (super delegation, design §10)
+    opSuperQualifiedSend # like opSuperSend, but pops a qualifier too: (super .Q:m) selects against the parent, not the receiver
     opSetPath         # [base, seg..., value] -> checked in-place write through setMutableChild; pushes the stored value (set, design §12.1)
     opPlaceSendReceiver # move receiver below newly evaluated named args
     opIntAdd2
@@ -702,7 +702,7 @@ type
     directProtocolCalls*: seq[DirectProtocolCallSpec]
     callSites*: Table[int, Value]   # opCall/opCallSplice index -> source node (design §3 `Call ^site`)
     superType*: Value        # for a type-direct message body (and closures
-                             # nested in it): the enclosing type's `^is` parent,
+                             # nested in it): the enclosing type's nominal parent,
                              # stamped in by opMakeType. `(super .m)` reads it
                              # here rather than resolving a user-visible name,
                              # so a body-local cannot redirect delegation. The

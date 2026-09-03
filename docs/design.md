@@ -143,7 +143,7 @@ This is homoiconicity as projection, not representation. An `Int`, `Str`, `Fn`, 
 
 ```gene
 (type PropMap
-  ^is (Map Sym Any))
+  : (Map Sym Any))
 ```
 
 General maps are `(Map K V)`. Literal `{^a 1}` creates a `PropMap`, not an arbitrary-key map.
@@ -929,7 +929,7 @@ lexical, and message names are not bound in the enclosing scope, so the two
 mechanisms never mix.
 
 An unqualified send resolves `f` against the receiver's **type-direct** messages
-only, walking the `^is` chain. Protocol messages are **always qualified** —
+only, walking the nominal parent chain. Protocol messages are **always qualified** —
 `(x .P:m)` — so a protocol impl is never reached by a bare name. If the
 receiver's type declares no such message, the send raises a recoverable
 **`MessageError`** (a subtype of `TypeError`) carrying `^where`,
@@ -1554,7 +1554,7 @@ Construction stamps the value's head with the type value. Construction schemas a
 `^repr` declares the type's representation. Its one accepted value is
 `native_wrapper`, for a type whose props hold native state: only its `ctor`
 may create an instance, its declared fields are initializer-only, and the rule
-is inherited through `^is`. See §16.6. `^sealed` remains reserved.
+is inherited through the nominal parent. See §16.6. `^sealed` remains reserved.
 
 `^capability "namespace/Type"` marks an ordinary type as the Gene facade for
 a host-admitted capability descriptor. Such a type must contain exactly one
@@ -1615,7 +1615,7 @@ Constructor invocation uses `new`:
 ```
 
 `new` is the compiler-dispatched operation for running constructor logic. It
-looks for a `ctor` on the requested type, then walks `^is` ancestors until it
+looks for a `ctor` on the requested type, then walks nominal ancestors until it
 finds the nearest one. If the hierarchy has no `ctor`, construction fails; use
 direct `(T ...)` construction for schema mapping without constructor logic.
 The construction sequence is:
@@ -1700,7 +1700,7 @@ inherited schema:
     (self .set_prop `name name)))
 
 (type Dog
-  ^is Animal)
+  : Animal)
 
 (new Dog "Rex") # runs Animal's ctor and returns a Dog
 ```
@@ -2045,22 +2045,23 @@ Gene supports single nominal inheritance only:
   ^props {^name Str})
 
 (type Dog
-  ^is Animal
+  : Animal
   ^props {^breed Str})
 ```
 
-`^is` declares one nominal parent. Multiple inheritance is not supported in MVP:
+The `: Parent` header declares one nominal parent. Multiple inheritance is not
+supported in MVP:
 
 ```gene
 (type X
-  ^is [A B]) # invalid
+  : [A B]) # invalid
 ```
 
 Multiple behaviors are expressed through protocols:
 
 ```gene
 (type Dog
-  ^is Animal
+  : Animal
   ^impl [Send ToJson Comparable])
 ```
 
@@ -2086,12 +2087,12 @@ Invalid examples:
 
 ```gene
 (type BadDog
-  ^is Animal
+  : Animal
   ^props {^name Any}) # invalid: inherited field type changed
 
 ```
 
-A child may add no fields. `(type Dog ^is Animal ^props {})` is valid; an
+A child may add no fields. `(type Dog : Animal ^props {})` is valid; an
 instance of that child must still supply every inherited required field.
 
 A message body may delegate to the implementation above it with `(super .m)`
@@ -3082,22 +3083,23 @@ declaring another `self` are compile errors, and it cannot be shadowed, so
 
 **Parent delegation uses `super` as a receiver.** Inside a type message body,
 `(super .m args…)` invokes the implementation of `m` **above the enclosing
-type** on the `^is` chain, called with `self`:
+type** on the nominal parent chain, called with `self`:
 
 ```gene runnable
 (type Animal ^props {} (message speak [] : Str "…"))
-(type Dog ^is Animal ^props {}
+(type Dog : Animal ^props {}
   (message speak [] : Str ($ "woof; " (super .speak))))
 ```
 
 `super` resolves from the *enclosing type's* parent, not the receiver's runtime
-type, so in `C ^is B ^is A` each `super` steps exactly one level relative to the
+type, so declarations `A`, `B : A`, and `C : B` make each `super` step exactly
+one level relative to the
 body it appears in. The parent identity is fixed when the type is created and
 recorded on the message body itself, so `super` resolves **no user-visible
 name** — a local binding that happens to share the parent's or the enclosing
 type's spelling cannot redirect the delegation. A closure written inside a
 message body may use `super`, and it delegates from the same parent. `super` is
-reserved and cannot be bound. Using it outside a type message body with an `^is`
+reserved and cannot be bound. Using it outside a type message body with a
 parent is a compile error.
 
 `super` delegates a **protocol** message the same way. `(super .P:m)` resolves
@@ -3109,7 +3111,7 @@ selects" rule with the parent standing in for the receiver's runtime type:
 (protocol Speaks (message speak [] : Str))
 (type Animal ^props {})
 (impl Speaks for Animal (message speak [] : Str "…"))
-(type Dog ^is Animal ^props {})
+(type Dog : Animal ^props {})
 (impl Speaks for Dog
   (message speak [] : Str ($ "woof; " (super .Speaks:speak))))
 
@@ -3147,7 +3149,7 @@ body where there is no enclosing type to name:
 ```gene runnable
 (protocol Eq (message eq [other : Self] : Bool))
 (type Dog ^props {^name Str})
-(type Pup ^is Dog ^props {})
+(type Pup : Dog ^props {})
 (impl Eq for Dog (message eq [other : Self] : Bool (== self/name other/name)))
 
 (var dog (Dog ^name "rex"))
@@ -3159,7 +3161,7 @@ body where there is no enclosing type to name:
 ```
 
 That asymmetry is the point of a self type: the constraint follows the receiver
-down the `^is` chain. `Self` works in parameter, return, and nested positions
+down the parent chain. `Self` works in parameter, return, and nested positions
 (`(List Self)`, `Self?`), and outside a message or `ctor` body it is an error,
 because there is no receiver for it to name.
 
@@ -3275,7 +3277,7 @@ A protocol message is always sent qualified — `(x .P:m)` — so the send names
 message identity and no compile-time candidate set is involved. Impl selection
 happens at dispatch time and is filtered to impls applicable in the send's own
 module: a library send cannot see a scoped impl imported only by its caller.
-Within that identity, the nearest applicable receiver on the `^is` chain wins.
+Within that identity, the nearest applicable receiver on the parent chain wins.
 Unqualified sends never reach a protocol impl (§3), so they cannot be ambiguous
 across protocols.
 
@@ -3289,7 +3291,7 @@ it may cache an impl address across activation.
 **Dispatch cost and the call-site cache.** A qualified send costs more than a
 plain call, and this cost is budgeted, not incidental: it walks the send scope's
 parent chain, scanning each scope's impls for the nearest applicable receiver on
-the `^is` chain. The sanctioned optimization is a **per-call-site inline cache**
+the parent chain. The sanctioned optimization is a **per-call-site inline cache**
 keyed by `(receiver runtime type, message identity, activation epoch)`: a hit
 returns the cached callee after a guard comparison; any key mismatch — a new
 receiver type or a bumped impl epoch — re-resolves and refills. The cache is side storage indexed by call site, never
@@ -5442,8 +5444,8 @@ c/backend    # "sqlite"
 ```
 
 Because the value is just a node whose head is a `Type`, it needs no special
-case anywhere: selectors, type-direct messages, protocol impls, `^is`
-ancestry, and nominal annotations all work. Third-party code can implement its
+case anywhere: selectors, type-direct messages, protocol impls, nominal
+ancestry, and annotations all work. Third-party code can implement its
 own protocol for a library's native type without the library's cooperation
 (§10.1).
 
@@ -5463,7 +5465,7 @@ marker changes two things:
   call read a `Str` as a pointer. `set_body` and `push_body` are rejected on
   a completed wrapper for the same reason.
 
-The rule is inherited through `^is`: a Gene-side subtype may add messages and
+The rule is inherited through the nominal parent: a Gene-side subtype may add messages and
 impls, but it does not reopen construction on the parent's native payload.
 
 So a binding is an ordinary typed FFI declaration plus an ordinary Gene type:
@@ -5494,7 +5496,7 @@ construction in Gene, and `wrapperField` reads a prop back under a nominal
 check, so a look-alike node cannot reach a pointer dereference.
 
 **Receiver admission is by Type identity, and it is ancestry, not equality.**
-The check accepts the wrapper Type or an `^is` descendant of it, comparing Type
+The check accepts the wrapper Type or a nominal descendant of it, comparing Type
 *values* rather than names — two modules may each define a `Conn`, and a name
 check would let one module's value carry its pointer into the other's native
 code, or let a hand-written look-alike index into a session table it never
@@ -5966,7 +5968,7 @@ Deferred until after the first implementation slice:
 - `Never` is the bottom type and has no runtime values. `Nil` and `Void` are singleton types under `Any`, not bottom types.
 - `nil` is explicit absence, not the default uninitialized value for typed lists, maps, or variables. Use `T?` or `(? T)` when `nil` is allowed.
 - Every value has a canonical Node representation: `head` is its runtime type and `body` its observable content — a cell `c` holding `v` projects `(Cell v)` — and the pattern engine matches that representation uniformly. A cell's pattern bind is a read-only snapshot, and `leaf?` stops walks at cells.
-- `^is` supports single nominal inheritance only. Children inherit and preserve parent schema in MVP; multiple behaviors use protocols.
+- A `: Parent` type header supports single nominal inheritance only. Children inherit and preserve parent schema in MVP; multiple behaviors use protocols.
 - Plain lists, maps, and nodes may be mutable; `#[]`, `#{}`, and `#()` create shallow immutable values. Strings are immutable.
 - `Cell T` is local/non-thread-safe mutable state; `AtomicCell T` is the explicit linearizable shared-memory escape hatch.
 - Actors are the preferred model for long-lived stateful concurrency, built on structured tasks and bounded typed channels.
@@ -5975,8 +5977,8 @@ Deferred until after the first implementation slice:
 - Standard selector-stage names are `props`, `body`, `meta`, `declarations`, `to_stream`, and `to_pairs_stream`. These are ordinary callable stages, not selector magic.
 - The collection operations — `map`, `filter`, `take`, `to_stream`, `to_pairs_stream`, `into`, `each` — are generic functions (§6.2): one message identity per operation shared by the types that serve it, with the `$name` function spelling under the `gene` root. A bare send and the `$` call are the same receiver-first dispatch; there is no lexical fallback.
 - Streams use `(Stream T E)`. `Never` contributes no errors, and error rows flatten and deduplicate.
-- Dot message sends dispatch only — no lexical fallback. `(x .f a)` resolves `f` against `x`'s **type-direct** messages, walking `^is`; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x .P:f a)` names protocol `P`'s message `f`; type-direct message values use `Self:f`, not `T:f`. `(x .%m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so a dot send never invokes an arbitrary function. Message names are not bound in the enclosing scope, so a dot descriptor and a bare call `(f x)` never mix. See `docs/core.md §9`.
-- Leading sends use lexical `self`: `(.f a)` means `(self .f a)` when `self` is in scope. `(super .f a)` delegates to the implementation above the enclosing type on the `^is` chain.
+- Dot message sends dispatch only — no lexical fallback. `(x .f a)` resolves `f` against `x`'s **type-direct** messages, walking nominal parents; a protocol impl is never reached by a bare name, and an unresolved name is a recoverable `MessageError`. `(x .P:f a)` names protocol `P`'s message `f`; type-direct message values use `Self:f`, not `T:f`. `(x .%m a)` sends a held message value; a dynamic callee that is not a message value is a `CallKindError`, so a dot send never invokes an arbitrary function. Message names are not bound in the enclosing scope, so a dot descriptor and a bare call `(f x)` never mix. See `docs/core.md §9`.
+- Leading sends use lexical `self`: `(.f a)` means `(self .f a)` when `self` is in scope. `(super .f a)` delegates to the implementation above the enclosing type on the parent chain.
 - `(T ...)` is always direct typed-data construction and never calls `ctor`; it is the canonical printable/serializable form for typed instances. `(new T ...)` invokes the nearest `ctor` in the type's ancestry with a pre-created in-progress `self`, and fails when the hierarchy has no constructor.
 - `(fn name! ...)` defines a named runtime fexpr that receives raw syntax and a borrowed `CallerEnv`; only `(name! ...)` invokes it. Durable authority requires explicit named `snapshot` (on `CallerEnv`). `macro` is reserved for limited compile-time template expansion; full compile-time function macros are future work.
 - Delegation is explicit protocol forwarding, written manually as `impl`s in MVP; future derive helpers may generate forwarding impls from selector paths.

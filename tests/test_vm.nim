@@ -284,7 +284,7 @@ suite "VM — proper tail calls":
       "(type ParentWalker ^props {} " &
       "  (message down [n] " &
       "    (if (== n 0) 0 (self .down (- n 1))))) " &
-      "(type ChildWalker ^is ParentWalker ^props {} " &
+      "(type ChildWalker : ParentWalker ^props {} " &
       "  (message down [n] (super .down n))) " &
       "((ChildWalker) .down 5000)")
     let superStats = finishTailCallStats()

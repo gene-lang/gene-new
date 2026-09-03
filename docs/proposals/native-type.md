@@ -153,7 +153,7 @@ Required changes, independent of typed-native compilation:
    `defineWrapperType` creates the same representation for fully native modules.
 2. **Reject non-ctor construction.** `(T ...)`, `construct_type`, `assoc_in`,
    `update_in`, head replacement, and other reconstruction paths reject a
-   `native_wrapper` head. Inherit this rule through `^is`, allowing Gene-side
+   `native_wrapper` head. Inherit this rule through the nominal parent, allowing Gene-side
    subtypes and messages without reopening construction.
 3. **Use the ordinary field-write policy.** Declared props are read-only after
    construction unless marked `^mut`; this is not a second wrapper-specific

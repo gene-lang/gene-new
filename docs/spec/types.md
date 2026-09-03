@@ -12,6 +12,8 @@ key”.
 - `(T ...)` performs closed-schema data construction and never runs `ctor`.
   `(new T ...)` runs the nearest `ctor` in `T`'s ancestry and fails if none is
   defined.
+- `(type Child : Parent ...)` declares the type's one nominal parent. A type
+  without a parent omits the header: `(type Root ...)`.
 - Optionality lives on the type: a prop-schema field or named parameter whose
   type explicitly admits nil (`T?`, `(? T)`, a union containing `Nil`) may be
   omitted. An absent field reads as `void`; an omitted named parameter binds
@@ -36,11 +38,11 @@ key”.
   and node literals all reject the type. Declared fields are initializer-only —
   writable on the in-progress ctor `self`, rejected afterwards — and a failed
   ctor releases the owned pointers it already installed, in props and body.
-  Both rules are inherited through `^is`.
+  Both rules are inherited through the nominal parent.
   Deep `freeze` rejects a wrapper (its reachable native state cannot be made
   immutable), while `freeze_shallow` and `thaw` return it unchanged; serde
   reopens one through `serde_state`/`serde_restore` rather than reconstructing
-  it. Native receiver guards admit a wrapper Type or an `^is` descendant, by
+  it. Native receiver guards admit a wrapper Type or a nominal descendant, by
   Type identity and never by name. `^sealed` is reserved and rejected.
 - Persistent updates return a new root; `!` operations mutate only mutable
   containers. `freeze` is deep, `freeze_shallow` is shallow, and `thaw` is deep.

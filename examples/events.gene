@@ -2,7 +2,7 @@
 # =============================================================================
 # Gene event bus tour (docs/events.md, docs/stdlib.md `event`)
 #
-# Application pub/sub. An event is an ordinary typed value whose `^is`
+# Application pub/sub. An event is an ordinary typed value whose parent
 # ancestry reaches `event/Event`: its concrete nominal type *is* its identity,
 # and that ancestry *is* its matching hierarchy. There is no topic string, no
 # topic registry, and no global bus — a bus is a value you make and hold.
@@ -30,7 +30,7 @@
 # -----------------------------------------------------------------------------
 # 1. A typed event, a bus, a subscriber
 #
-# The event type is an ordinary declaration. `^is $event/Event` is what makes
+# The event type is an ordinary declaration. `: $event/Event` is what makes
 # it publishable — and the bus's one inexpensive recognition rule. A domain
 # entity does not become an event by adding that: events are snapshots of an
 # occurrence, so you declare `OrderPlaced`, not `Order`.
@@ -38,7 +38,7 @@
 ($println "1. declare, subscribe, publish")
 
 (type OrderPlaced
-  ^is $event/Event
+  : $event/Event
   ^props {
     ^order_id Str
     ^total F64
@@ -81,7 +81,7 @@
 #
 # Layer events with a namespace and a nominal base type. The convention is the
 # whole design: **each family namespace declares its base type as `Event`.**
-# Subscribing to a base type matches it and every `^is` descendant, so one
+# Subscribing to a base type matches it and every nominal descendant, so one
 # subscription observes a whole family, and `$event/Event` observes everything.
 #
 # There is no wildcard spelling. `X/*` already means the import wildcard, and a
@@ -92,15 +92,15 @@
 
 (ns shipping
   (type Event
-    ^is $event/Event
+    : $event/Event
     ^props {^order_id Str})
 
   (type Dispatched
-    ^is Event
+    : Event
     ^props {^carrier Str})
 
   (type Delivered
-    ^is Event
+    : Event
     ^props {^signed_by Str}))
 
 (fn audit_shipping [event : shipping/Event]
@@ -120,7 +120,7 @@
 # `event/exact` narrows a selector to one concrete type, excluding descendants.
 ($println "   ($event/exact T) excludes descendants")
 
-(type PriorityDispatched ^is shipping/Dispatched)
+(type PriorityDispatched : shipping/Dispatched)
 
 (fn only_plain_dispatch [event]
   ($println "   exact handler ran"))
@@ -168,7 +168,7 @@ union_sub/.cancel
 ($println $"   cancel returned ${confirm_sub/.cancel}")
 ($println $"   cancel again returned ${confirm_sub/.cancel}   # idempotent")
 
-(type ApplicationReady ^is $event/Event)
+(type ApplicationReady : $event/Event)
 
 (fn warm_cache [event]
   ($println "   warming cache (once)"))
@@ -219,7 +219,7 @@ union_sub/.cancel
 ($println "6. one bad handler does not stop the others")
 
 (type PaymentReceived
-  ^is $event/Event
+  : $event/Event
   ^props {^payment_id Str})
 
 (fn flaky_ledger [event]
@@ -286,7 +286,7 @@ union_sub/.cancel
 # -----------------------------------------------------------------------------
 ($println "8. a handler that publishes (depth-first)")
 
-(type InvoiceRequested ^is $event/Event ^props {^order_id Str})
+(type InvoiceRequested : $event/Event ^props {^order_id Str})
 
 (var saga_bus ($event/Bus))
 

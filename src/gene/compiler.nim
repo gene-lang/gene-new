@@ -123,8 +123,8 @@ type
     # receiver (design §10). Inherited by every descendant compiler.
     selfReserved: bool
     # While compiling a type-direct message body, the enclosing type's name, so
-    # `(super .m)` resolves it to the type value then its `^is` parent at send
-    # time (design §10). NIL outside a message body with an `^is` parent.
+    # `(super .m)` resolves it to the type value then its nominal parent at send
+    # time (design §10). NIL outside a message body with a parent.
     superType: Value
     importedSyntaxFnSets: Table[string, seq[string]]
     importedInterfaces: Table[string, CompileNamespaceInterface]
@@ -7053,7 +7053,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
   var shortCircuit = -1
   let isSuper = receiver.kind == vkSymbol and receiver.symVal == "super"
   if isSuper:
-    # (super .m) dispatches m from the enclosing type's ^is parent, but calls
+    # (super .m) dispatches m from the enclosing type's parent, but calls
     # it with `self` (design §10). The parent identity is stamped onto this
     # body's chunk when the type is created, so only `self` is pushed here — no
     # user-visible name is resolved, and a body-local cannot redirect the
@@ -7064,7 +7064,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
         "is never absent; use (super .message)")
     if c.superType.kind == vkNil:
       raise newException(GeneError,
-        "super is only valid in a type message body with an ^is parent")
+        "super is only valid in a type message body with a parent")
     if messageExpr.kind != vkNil:
       # A *dynamic* callee still cannot be delegated: super's whole point is
       # that the target is fixed statically, and an expression yielding a
@@ -7075,7 +7075,7 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
         "' is a dynamic callee, which is not supported")
     compileExpr(c, newSym("self"))
     if qualifierExpr.kind != vkNil:
-      # `(super .P:m)` — the protocol names the message and the `^is` parent
+      # `(super .P:m)` — the protocol names the message and the nominal parent
       # selects the impl, so both reach the opcode. Selection already keeps
       # providers at the nearest applicable receiver depth
       # (`docs/scoped-impls.md` §3.3), so resolving from the parent *is*
@@ -7795,7 +7795,7 @@ proc parseTypeBodySchema(schema: Value): seq[TypeBodyField] =
 
 proc rejectUnknownTypeProps(node: Value) =
   for key in node.props.keys:
-    if key in ["props", "body", "impl", "derive", "is", "private", "repr",
+    if key in ["props", "body", "impl", "derive", "private", "repr",
                "native", "capability"]:
       continue
     if key == "sealed":
@@ -8052,7 +8052,7 @@ proc compileAlias(c: var Compiler, node: Value) =
   c.emitDefineBinding(body[0].symVal, immutable = true)
 
 proc compileType(c: var Compiler, node: Value) =
-  ## (type Name ^props {...} ^body [...] ^is Parent ^impl [P] ^derive [P]
+  ## (type Name : Parent ^props {...} ^body [...] ^impl [P] ^derive [P]
   ##  (message name [self] ...) ...) —
   ## field annotations and protocol references are checked at runtime. Derive
   ## requests are passed to protocol-local derive forms after the type is created.
@@ -8062,6 +8062,13 @@ proc compileType(c: var Compiler, node: Value) =
     raise newException(GeneError, "type requires a name")
   rejectUnknownTypeProps(node)
   let name = body[0].symVal
+  var parentExpr = NIL
+  var memberStart = 1
+  if body.len > 1 and body[1].isSymbol(":"):
+    if body.len < 3:
+      raise newException(GeneError, "type ':' requires a parent type")
+    parentExpr = body[2]
+    memberStart = 3
   validateDeclarationCase("type", name)
   let repr = typeReprMarker(node, name)
   let capabilityFacade = c.capabilityFacadeMarker(node, name)
@@ -8076,7 +8083,7 @@ proc compileType(c: var Compiler, node: Value) =
   var messageNodes: seq[Value]
   var implNodes: seq[Value]
   var ctorNode = NIL
-  for i in 1 ..< body.len:
+  for i in memberStart ..< body.len:
     let item = body[i]
     if item.kind == vkNode and item.head.isSymbol("message"):
       messageNodes.add item
@@ -8121,10 +8128,10 @@ proc compileType(c: var Compiler, node: Value) =
   var seenMessages = initTable[string, bool]()
   # Type-direct message bodies can delegate to `(super .m)` (design §10). Store the
   # *enclosing type name* (resolved at send time to the type value, then to its
-  # ^is parent), not the raw `^is` expression — so a message-body local that
+  # nominal parent), not the raw parent expression — so a message-body local that
   # happens to shadow the parent's spelling cannot redirect the delegation.
   let savedSuperType = c.superType
-  c.superType = if node.props.hasKey("is"): newSym(name) else: NIL
+  c.superType = if parentExpr.kind != vkNil: newSym(name) else: NIL
   for item in messageNodes:
     rejectReservedEffects(item)
     let mp = implMessageProto(c, item, nativeSelfRepr)
@@ -8205,8 +8212,8 @@ proc compileType(c: var Compiler, node: Value) =
       compileEvaluatedListItem(c, protocolExpr)
       deriveRequests.add request
       inc deriveProtocolCount
-  if node.props.hasKey("is"):
-    compileExpr(c, node.props["is"])         # parent type value
+  if parentExpr.kind != vkNil:
+    compileExpr(c, parentExpr)               # parent type value
   else:
     c.emitConst NIL
   discard c.emit(opMakeType,
@@ -8604,7 +8611,7 @@ proc compileImpl(c: var Compiler, node: Value) =
   var messages: seq[ImplMessageProto]
   var seen = initTable[string, bool]()
   # `(impl P for T …)` names its receiver, so `super` in a message body has the
-  # same meaning it has inside `T`'s own body: delegate from `T`'s `^is` parent.
+  # same meaning it has inside `T`'s own body: delegate from `T`'s parent.
   # The name is stored, not the resolved type, so a body-local that shadows the
   # parent's spelling cannot redirect the delegation — same rule as a type body.
   let savedSuperType = c.superType
@@ -9044,11 +9051,12 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
       for (name, value) in hoist.hoisted:
         c.bindHidden(name, value)
       stage = hoist.stage
+      let terminal = i == pipeline.pipelineStages.high
       expr = materializeIterateStage(stage, tempExpr,
-                                     "\x00gene_item_" & $stageId,
+                                     "\x00gene_item_" & $stageId, terminal,
                                      pipeline.pipelineImmutable)
       # Diagnostics name the stage, never the compiler's own storage.
-      publicSite = materializeIterateStage(stage, newSym("_"), "_",
+      publicSite = materializeIterateStage(stage, newSym("_"), "_", terminal,
                                            pipeline.pipelineImmutable)
     let firstInstruction = c.chunk.instructions.len
     compileExpr(c, expr, tail = tail and i == pipeline.pipelineStages.high)

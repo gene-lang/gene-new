@@ -145,7 +145,7 @@ suite "native api threaded attachment":
     # `subs` and the bucket tables concurrently with the owning lane.
     let scope = newGlobalScope()
     discard run(compileSource(
-      "(type Ping ^is $event/Event) " &
+      "(type Ping : $event/Event) " &
       "(fn note [e] 1) " &
       "(var bus ($event/Bus)) " &
       "(bus .subscribe Ping note)"), scope)

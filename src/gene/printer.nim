@@ -387,11 +387,22 @@ proc print*(v: Value): string =
       return pathSend
     var sb = if v.nodeImmutable: "#(" else: "("
     sb.add print(v.head)
+    var bodyStart = 0
+    if v.head.kind == vkSymbol and v.head.symVal == "type" and
+        v.body.len > 0 and v.body[0].kind == vkSymbol:
+      sb.add ' '
+      sb.add print(v.body[0])
+      bodyStart = 1
+      if v.body.len >= 3 and v.body[1].kind == vkSymbol and
+          v.body[1].symVal == ":":
+        sb.add " : "
+        sb.add print(v.body[2])
+        bodyStart = 3
     printProps(sb, v.meta, "@")
     printProps(sb, v.props, "^")
-    for it in v.body:
+    for i in bodyStart ..< v.body.len:
       sb.add ' '
-      sb.add print(it)
+      sb.add print(v.body[i])
     sb.add ')'
     sb
   of vkPipeline:

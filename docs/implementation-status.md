@@ -98,7 +98,7 @@ versions of one name are not.
 The application event bus (`docs/events.md` phase 1) is implemented:
 `gene/event` supplies the `Event` root, `Bus`, `Subscription`, `PublishResult`,
 `Matcher`, `exact`, the `ErrorPolicy` enum, the `EventSink` protocol, and the
-recording/null/composite sinks, with nominal `^is` matching over compact type
+recording/null/composite sinks, with nominal parent matching over compact type
 ids, copy-based deep-freeze on publish, snapshot dispatch, and both error
 policies. The runtime instrumentation half — phases 2-4, `runtime/EventStream`
 and the `runtime/...` event families, category configuration, emission sites,

@@ -3747,10 +3747,23 @@ proc biDurationSeconds(args: openArray[Value]): Value {.nimcall.} =
 
 proc biToStream(args: openArray[Value]): Value {.nimcall.} =
   requireOne("to_stream", args)
+  if args[0].kind == vkStream:
+    # A conversion into the lazy tier is the identity on something already in
+    # it. Without this a caller normalizing an unknown receiver — the `=>`
+    # pipeline stage does exactly that — would have to branch on the runtime
+    # kind to avoid raising on the case that needs no work.
+    return args[0]
   if args[0].kind == vkRange:
     return rangeStream(args[0])
+  if args[0].kind in {vkMap, vkHashMap}:
+    # A Map's lazy tier is its pairs (design §6.2); there is no item order to
+    # invent for one, so say which conversion the caller meant.
+    raise newException(GeneError,
+      "to_stream expects a List, Set, Range, or Stream; " &
+      "a Map converts with to_pairs_stream")
   if args[0].kind notin {vkList, vkSet}:
-    raise newException(GeneError, "to_stream expects a List, Set, or Range")
+    raise newException(GeneError,
+      "to_stream expects a List, Set, Range, or Stream")
   var items: seq[Value]
   case args[0].kind
   of vkList:
@@ -4637,7 +4650,7 @@ proc rejectNativeWrapperConstruction(head: Value, what: string) =
   ## publish a value that passes the nominal boundary carrying no native
   ## payload, or a forged one, and the failure would surface at its first
   ## native call instead of here. Cheap to check: the marker is merged down the
-  ## `^is` chain at newType, so this is one flag read.
+  ## parent chain at newType, so this is one flag read.
   if head.isNativeWrapperType:
     raise newException(GeneError,
       what & " cannot construct " & head.typeName &
@@ -7835,7 +7848,18 @@ proc buildBuiltins(app: Application): Scope =
     "take": takeFn,
     "into": intoFn,
     "each": exportedBinding(streamNs, "each"),
+    # Identity, so a caller normalizing an unknown receiver into the lazy tier
+    # need not first ask whether it is already there.
+    "to_stream": toStreamFn,
     "to_pairs_stream": toPairsStreamFn})
+  # `each` completes design §6.2's generic set at the root. It was the one
+  # operation reachable only as `gene/stream/each`, which left `$each` void
+  # while `$map` and `$into` resolved — and a terminal `=>` stage needs the
+  # function spelling on both backends.
+  block:
+    let eachFn = exportedBinding(streamNs, "each")
+    if eachFn.kind != vkVoid:
+      result.define("each", eachFn)
   registerEventNamespace(result)
   # The standard library lives under the unshadowable `gene` root and is reached
   # as `gene/x` or its `$x` sugar (design §2.1). Nothing else is pre-bound: a
@@ -12155,9 +12179,9 @@ proc collectProtocolMatches(scope: Scope, recvType, message: Value,
 
 proc superStampConflicts(proto: FunctionProto, parent: Value,
                          seen: var HashSet[pointer]): bool =
-  ## True when this body tree already carries a *different* `^is` parent, i.e.
+  ## True when this body tree already carries a *different* nominal parent, i.e.
   ## one `type` declaration is being created again with another parent — a type
-  ## declared inside a function with a computed `^is`. The chunk tree is shared
+  ## declared inside a function with a computed parent. The chunk tree is shared
   ## by every creation from that site, so it cannot represent both.
   if proto == nil:
     return false
@@ -12222,7 +12246,7 @@ proc stampSuperTypeInPlace(proto: FunctionProto, parent: Value,
       stampSuperTypeInPlace(nested, parent, seen)
 
 proc stampSuperType(proto: FunctionProto, parent: Value): FunctionProto =
-  ## Record a type-direct message body's `^is` parent on its chunk, and on every
+  ## Record a type-direct message body's nominal parent on its chunk, and on every
   ## chunk nested inside it, so `(super .m)` in the body — or in a closure
   ## lexically inside it — reads the owner's parent identity instead of
   ## resolving a shadowable name (design §10). Returns the body to instantiate:
@@ -12264,7 +12288,7 @@ proc tryResolveProtocolMessage(scope: Scope, recvType, message: Value): Value =
 proc resolveSuperQualifiedSend(scope: Scope, qualifier: Value, name: string,
                                superType: Value): Value =
   ## `(super .P:name)`. The protocol names the message and the enclosing
-  ## type's `^is` parent starts impl selection, while `receiver` remains the
+  ## type's nominal parent starts impl selection, while `receiver` remains the
   ## value passed as `self`. Starting the walk at the parent *is* "continue
   ## from above the enclosing type", because selection already keeps only
   ## providers at the nearest applicable receiver depth
@@ -12358,7 +12382,7 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
 # Protocol-message dispatch inline cache (design §10)
 # --------------------------------------------------------------------------
 # Qualified dispatch (`resolveProtocolMessage`) walks the whole send-scope
-# parent chain, linear-scanning every scope's `impls` with an ^is
+# parent chain, linear-scanning every scope's `impls` with a nominal
 # receiver-distance probe per impl — ~10x a plain call. A per-call-site
 # monomorphic cache turns the repeated resolution into a guard check plus a
 # pointer materialization. The guard is sound because:
@@ -14418,7 +14442,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let proto = chunk.typeProtos[inst[].intArg]
           let parent = spop()
           if parent.kind != vkNil and parent.kind != vkType:
-            raise newException(GeneError, "type ^is must be a type")
+            raise newException(GeneError, "type parent must be a type")
           var derivedProtocols = newSeq[Value](proto.deriveProtocolCount)
           if proto.deriveProtocolCount > 0:
             for i in countdown(proto.deriveProtocolCount - 1, 0):
@@ -14454,7 +14478,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 stack.popCheckedErrorTypes(sp, proto.messages[i].fn.errorTypeCount, scope)
           var messages = initTable[string, Value]()
           for i, message in proto.messages:
-            # `(super .m)` in this body delegates to the enclosing type's `^is`
+            # `(super .m)` in this body delegates to the enclosing type's
             # parent; stamp that identity on the body now that it is known. A
             # declaration site created twice with different parents gets a
             # private copy of the body rather than a re-stamp.
@@ -14502,7 +14526,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                                                 message.name)
               # An inline impl's receiver is the enclosing type, so `super` in
               # its body means what it means in a type-direct message body:
-              # stamp the same `^is` parent.
+              # stamp the same nominal parent.
               let messageFn = stampSuperType(message.fn, parent)
               let fn = newFunction(messageFn.name, messageFn.params,
                                    messageFn, scope, messageFn.checksErrors,
@@ -14666,7 +14690,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let resolved = resolveImplMessage(scope, protocol,
                                               message.protocolPath,
                                               message.name)
-            # `(impl P for T …)` delegates from `T`'s `^is` parent, exactly as
+            # `(impl P for T …)` delegates from `T`'s nominal parent, exactly as
             # a message declared inside `T` would. The receiver is in hand here,
             # so the parent is too.
             let messageFn = stampSuperType(message.fn, receiver.typeParent)
@@ -15205,7 +15229,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           ip += 4
         of opResolveMessage:
           # Receiver-first message send (docs/core.md §9.1): an unqualified send
-          # reaches only the receiver's type-direct messages (walking `^is`),
+          # reaches only the receiver's type-direct messages (walking parents),
           # then the built-in type-direct surface. There is no protocol tier and
           # no lexical fallback — protocol messages are always qualified
           # (`x .P:m`). The resolved callee is inserted below any named argument
@@ -15220,7 +15244,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var callee = NIL
           let recvType = receiver.receiverType
           # An unqualified send reaches only type-direct messages, walking the
-          # `^is` chain (design §3/§9). Protocol messages are always qualified —
+          # parent chain (design §3/§9). Protocol messages are always qualified —
           # `(x .P:m)` — so a protocol impl is never reached by a bare name.
           if recvType.kind == vkType:
             when dispatchCacheEnabled:
@@ -15314,7 +15338,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush receiver
         of opSuperQualifiedSend:
           # `(super .P:m)`. Same delegation rule as opSuperSend — resolve from
-          # the enclosing type's `^is` parent, call with `self` — but the
+          # the enclosing type's nominal parent, call with `self` — but the
           # protocol names the message, so this goes through the ordinary
           # qualified-send rule with the parent standing in as the selecting
           # type. No per-site cache here: the qualifier is an operand rather
@@ -15325,7 +15349,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           let superType = chunk.superType
           if superType.kind != vkType:
             raise newException(GeneError,
-              "super is only valid in a type message body with an ^is parent")
+              "super is only valid in a type message body with a parent")
           let callee = resolveSuperQualifiedSend(scope, qualifier, inst[].name,
                                                  superType)
           if callee.isSyntaxFn:

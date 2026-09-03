@@ -19,7 +19,7 @@ the VM:
 (import gene/event [Bus])
 
 (type UserCreated
-  ^is $event/Event
+  : $event/Event
   ^props {^user_id Str})
 
 (var bus
@@ -163,7 +163,7 @@ Version 1 does not provide:
 - cross-cutting event categories;
 - a replacement for structured concurrency, actors, channels, or streams.
 
-Matching is nominal and `^is` is single-inheritance, so an event belongs to
+Matching is nominal and type inheritance is single-parent, so an event belongs to
 exactly one family. Orthogonal categories — "security-relevant", "retryable",
 "user-initiated" — cannot be a second axis a subscription selects on. A handler
 that wants one filters after delivery (§6.3). Runtime events are a closed set
@@ -255,12 +255,12 @@ native records to `runtime/EventStream`; a Gene-facing adapter invokes
 
 ### 6.1 Events are nominal typed values
 
-Every publishable event is an instance of `event/Event` or one of its
-`^is` descendants:
+Every publishable event is an instance of `event/Event` or one of its nominal
+descendants:
 
 ```gene
 (type OrderPlaced
-  ^is $event/Event
+  : $event/Event
   ^props {
     ^order_id Str
     ^total F64
@@ -277,20 +277,20 @@ Every publishable event is an instance of `event/Event` or one of its
 ```
 
 An event needs no separate topic string, tag field, or protocol
-implementation. Its concrete nominal type is its identity and its `^is`
+implementation. Its concrete nominal type is its identity and its parent
 ancestry is its matching hierarchy.
 
 Requiring `event/Event` gives the bus one inexpensive recognition rule and
 prevents arbitrary scalars or unrelated typed data from becoming events by
 accident. A value that is not an `event/Event` descendant fails `publish` with
-`EventTypeError` before any freeze or dispatch — forgetting `^is event/Event`
+`EventTypeError` before any freeze or dispatch — forgetting `: event/Event`
 is a normal typed value, so the rejection must name that cause rather than
 surface as a missing-metadata internal error. Event payloads remain ordinary Gene typed nodes and use ordinary
 field validation.
 
-Because `^is` is single-inheritance, this also means a pre-existing domain
+Because type inheritance is single-parent, this also means a pre-existing domain
 type cannot itself be published: an `Order` cannot become an event by adding
-`^is event/Event` if it already has a domain `^is` parent, and every example
+`: event/Event` if it already has a domain parent, and every example
 in this document declares a dedicated event type (`OrderPlaced`, not `Order`)
 for exactly this reason. Events are snapshots of a domain occurrence, not the
 domain entities themselves, and that separation is enforced by the type
@@ -343,11 +343,11 @@ For example, a family is declared as:
 ```gene
 (ns order
   (type Event
-    ^is $event/Event
+    : $event/Event
     ^props {^request_id Str?})
 
   (type Placed
-    ^is Event
+    : Event
     ^props {
       ^order_id Str
       ^total F64
@@ -390,11 +390,11 @@ descendants. There is no separate single-level selector: event hierarchies are
 expected to be shallow, and adding a second recursion depth would grow the
 interface without improving dispatch. `event.*` and other dot-separated topic
 spellings are not supported either; `/` is the only hierarchy separator, and
-nominal `^is` ancestry is the only hierarchy.
+nominal parent ancestry is the only hierarchy.
 
 ### 6.3 Matching semantics
 
-Subscribing to a type matches values of that type and its `^is`
+Subscribing to a type matches values of that type and its nominal
 descendants:
 
 ```gene
@@ -441,7 +441,7 @@ That is the entire selector grammar:
 
 | Selector | Matches |
 | --- | --- |
-| `T` (any `event/Event` descendant type) | `T` and its `^is` descendants |
+| `T` (any `event/Event` descendant type) | `T` and its nominal descendants |
 | `(event/exact T)` | `T` only |
 | `(\| A B ...)` | the union of what each alternative matches |
 
@@ -500,7 +500,7 @@ IDs and `match_ids` are assigned **eagerly, when the type is finalized** — not
 lazily on first publication. Eager assignment keeps ID allocation a
 declaration-phase property of the application's type table, so no lane bumps a
 shared counter at first publish and §9's concurrency model has no race to
-describe. Gene's single immutable `^is` parent makes the list stable. It should
+describe. Gene's single immutable nominal parent makes the list stable. It should
 be stored in type metadata, not on each event instance.
 
 This requires no new `ValueKind` and no topic field in the event payload. A
@@ -697,7 +697,7 @@ The handler receives one event:
 **`subscribe` validates the handler against the selector.** The handler must
 take one parameter, and its declared parameter type must accept every value the
 selector can match — that is, the selector's type must be the parameter type or
-an `^is` descendant of it. Otherwise `subscribe` raises `EventTypeError`.
+a nominal descendant of it. Otherwise `subscribe` raises `EventTypeError`.
 
 Without this check, a narrowly annotated handler on a family selector is
 accepted and then fails once per non-matching event, at dispatch time:
@@ -1103,7 +1103,7 @@ type inside `(ns runtime ...)` and `(ns runtime (ns module ...))` /
 
 ```gene
 (type runtime/Event
-  ^is $event/Event
+  : $event/Event
   ^props {
     ^producer_id Int
     ^sequence Int
@@ -1117,10 +1117,10 @@ extend that base:
 
 ```gene
 (type runtime/module/Event
-  ^is $runtime/Event)
+  : $runtime/Event)
 
 (type runtime/module/Loaded
-  ^is $runtime/module/Event
+  : $runtime/module/Event
   ^props {
     ^module_id Int
     ^module_name Str
@@ -1128,10 +1128,10 @@ extend that base:
   })
 
 (type runtime/task/Event
-  ^is $runtime/Event)
+  : $runtime/Event)
 
 (type runtime/task/Completed
-  ^is $runtime/task/Event
+  : $runtime/task/Event
   ^props {
     ^completed_task_id Int
     ^duration_ns Int?
@@ -1140,7 +1140,7 @@ extend that base:
 
 These family base types are what a subscriber names to observe a whole
 category: `runtime/Event` for everything, `runtime/module/Event` or
-`runtime/task/Event` for one family. The nominal `^is` chain is the only
+`runtime/task/Event` for one family. The nominal parent chain is the only
 hierarchy; there is no parallel topic hierarchy to keep in sync with it.
 
 `^producer_id` and `^task_id` on `runtime/Event` identify the *observing
@@ -1229,7 +1229,7 @@ only its size:
 
 ```gene
 (type runtime/EventsDropped
-  ^is $runtime/Event
+  : $runtime/Event
   ^props {
     ^dropped_producer_id Int
     ^dropped_count Int
@@ -1394,7 +1394,7 @@ attach operation performed at a safe point.
 (import gene/event [Bus])
 
 (type PaymentReceived
-  ^is $event/Event
+  : $event/Event
   ^props {
     ^payment_id Str
     ^amount F64
@@ -1431,7 +1431,7 @@ Both handlers receive the same frozen event in subscription order.
 
 ```gene
 (type ApplicationReady
-  ^is $event/Event)
+  : $event/Event)
 
 (bus .subscribe
   ApplicationReady

@@ -90,7 +90,7 @@ suite "errors — fail and catch":
   test "Error marker impls apply to child error types":
     ck "(type BaseError ^props {^message Str} ^impl [Error]) " &
        "(impl Error for BaseError) " &
-       "(type ChildError ^is BaseError ^props {}) " &
+       "(type ChildError : BaseError ^props {}) " &
        "(try (fail (ChildError ^message \"child\")) catch BaseError $ex/message)",
        "\"child\""
   test "$ex is local to the recovery branch":

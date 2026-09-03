@@ -101,6 +101,9 @@ suite "reader — sugars":
     # them receiver-first (docs/core.md §9).
     check_read("(xs .filter; .map f; .take 10)",
                "(((xs .filter) .map f) .take 10)")
+  test "type parents use a colon header":
+    check_read("(type Dog : Animal ^props {})",
+               "(type Dog : Animal ^props {})")
   test "message send round-trips": check_read("(x .f a b)", "(x .f a b)")
   test "flipped standalone": check_read("(.f a b)",   "(.f a b)")
   test "spread":             check_read("x...",         "(... x)")

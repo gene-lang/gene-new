@@ -538,17 +538,17 @@ proc main() =
     # Box also carries a type-direct message `get` alongside its protocol impls.
     "(type Box ^props {^x Int} (message get [self] : Int self/x)) " &
     # Animal/Dog exercise inherited dispatch: the impl lives on the parent, so
-    # resolution walks the ^is chain (receiverDistance 1) before the cache warms.
+    # resolution walks the parent chain (receiverDistance 1) before the cache warms.
     "(type Animal ^props {^x Int}) " &
-    "(type Dog ^is Animal ^props {}) " &
+    "(type Dog : Animal ^props {}) " &
     "(impl ToInt for Box (message to_int [self] : Int self/x)) " &
     "(impl Adder for Box (message add [self n] : Int (+ self/x n))) " &
     "(impl Triv for Box (message triv [self] self)) " &
     "(impl ToInt for Animal (message to_int [self] : Int self/x)) " &
-    # Base/Derived measure `super`: the override delegates one level up the ^is
+    # Base/Derived measure `super`: the override delegates one parent level
     # chain, so the send pays parent lookup on top of the impl body.
     "(type Base ^props {} (message tag [] : Int 1)) " &
-    "(type Derived ^is Base ^props {} " &
+    "(type Derived : Base ^props {} " &
     "  (message tag [] : Int (super .tag))) " &
     "(var box (Box ^x 10)) " &
     "(var dog (Dog ^x 10)) " &
@@ -830,8 +830,8 @@ proc main() =
   let eventScope = newGlobalScope()
   discard run(compileSource(
     "(ns bench " &
-    "  (type Event ^is $event/Event) " &
-    "  (type Placed ^is Event ^props {^order_id Str ^total F64})) " &
+    "  (type Event : $event/Event) " &
+    "  (type Placed : Event ^props {^order_id Str ^total F64})) " &
     "(var sink ($cell 0)) " &
     "(fn note [e] (sink .set (+ sink/.get 1))) " &
     "(var bus ($event/Bus)) " &
@@ -845,7 +845,7 @@ proc main() =
     "(wide .subscribe $event/Event d) " &
     # Declared in the same setup chunk: a slot-compiled chunk owns its scope's
     # local layout, so a second chunk that declares new locals cannot share it.
-    "(type Unrelated ^is $event/Event) " &
+    "(type Unrelated : $event/Event) " &
     "(var miss ($freeze (Unrelated)))"), eventScope)
 
   let publishSmallChunk = compileSource(

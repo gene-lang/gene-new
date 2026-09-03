@@ -735,14 +735,14 @@
 # substitution is what the seams are for (design §2.2). The lifecycle is the
 # first thing worth observing: a plugin can watch its own dependencies come and
 # go without the kernel knowing anything about it.
-(type HarnessEvent ^is $event/Event)
-(type HarnessLog ^is HarnessEvent ^props {^kind Str ^text Str})
-(type ToolInvoked ^is HarnessEvent ^props {^tool Str ^arg Str})
-(type PluginInstalled ^is HarnessEvent ^props {^plugin Str})
-(type PluginActivated ^is HarnessEvent ^props {^plugin Str})
-(type PluginDeactivated ^is HarnessEvent ^props {^plugin Str ^reason Str})
-(type PluginFailed ^is HarnessEvent ^props {^plugin Str ^message Str})
-(type PluginUninstalled ^is HarnessEvent ^props {^plugin Str})
+(type HarnessEvent : $event/Event)
+(type HarnessLog : HarnessEvent ^props {^kind Str ^text Str})
+(type ToolInvoked : HarnessEvent ^props {^tool Str ^arg Str})
+(type PluginInstalled : HarnessEvent ^props {^plugin Str})
+(type PluginActivated : HarnessEvent ^props {^plugin Str})
+(type PluginDeactivated : HarnessEvent ^props {^plugin Str ^reason Str})
+(type PluginFailed : HarnessEvent ^props {^plugin Str ^message Str})
+(type PluginUninstalled : HarnessEvent ^props {^plugin Str})
 
 (fn new_harness
   [^event_store event_store = nil,
