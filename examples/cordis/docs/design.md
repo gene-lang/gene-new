@@ -1,11 +1,16 @@
 # Cordis for Gene — design
 
 **Status:** proposed; no implementation exists under `examples/cordis` yet.
+Every Gene runtime fact this document depends on was rechecked against the tree
+on 2026-09-03; where the two disagreed, this document was corrected rather than
+the runtime.
 
 This document adapts the design in `~/tools/cordis` at commit `2ceea23` to
-Gene. The reference is the behavior of Cordis's core, loader, include, HMR,
-timer, and console-logger packages and their tests—not a line-for-line port of
-their TypeScript implementation.
+Gene. That checkout is outside this repository, so the citation is provenance
+rather than something a reader can verify from a clone. The reference is the
+behavior of Cordis's core, loader, include, HMR, timer, and console-logger
+packages and their tests—not a line-for-line port of their TypeScript
+implementation.
 
 The target is semantic fidelity: spatially scoped services, dependency-driven
 plugin activation, deterministic effect ownership, configuration overlays,
@@ -27,15 +32,24 @@ Cordis is two mechanisms made to cooperate:
 The Gene module should keep those two mechanisms behind one small interface:
 
 ```gene
-(var runtime ($cordis/Runtime))
+(import [Runtime] from "./cordis")
+
+(var runtime (Runtime))
 (var root runtime/.root)
 
 (var db_instance
   (runtime .install root db_plugin {^path "app.db"}))
 
-(db_instance .await_ready)
-(runtime .close)
+db_instance/.await_ready
+runtime/.close
 ```
+
+The names arrive through an ordinary path import. `$name/member` is reserved
+for standard-library namespaces — `$x` is sugar for `gene/x`, which is why
+`$runtime`, `$os`, and `$event` are spelled that way below — and Cordis is a
+package under `examples/`, not a member of the standard library. A consumer in
+another package declares a dependency alias and imports through it:
+`(import [Runtime] from "." ^pkg "cordis")`.
 
 `Runtime`, `Context`, `PluginInstance`, and `ServiceKey` are the public model.
 The provider index, dependency graph, transition scheduler, effect ledger,
@@ -44,7 +58,7 @@ implementation details. This makes the Cordis runtime a deep module: callers
 learn a small lifecycle and resolution interface, while the hard state machine
 stays local.
 
-## 2. What is preserved and what changes
+## 2. What is preserved, what changes, and what already exists
 
 | Cordis concept | Gene form | Decision |
 | --- | --- | --- |
@@ -68,6 +82,38 @@ stays local.
 The deletion test for the runtime is strong: removing it would spread realm
 resolution, dependency epochs, transition coalescing, cleanup ordering, hook
 ownership, and reload rollback across every plugin and loader caller.
+
+### Relationship to `examples/gene-harness`
+
+This repository already contains one implemented plugin runtime,
+`examples/gene-harness`, described in `examples/gene-harness/docs/design.md`.
+Anyone reading this proposal should know what it duplicates and what it does
+not, because "we already have one" is the first objection and it is only half
+right.
+
+Four mechanisms are genuinely shared, and both designs reached the same answer
+independently: an ownership ledger that reverses everything a plugin acquired,
+in strict reverse acquisition order, without the plugin's cooperation;
+dependency-driven activation expressed as a lifecycle *state* that settles to a
+fixpoint rather than as a load order; sandboxed module loading through
+`$runtime/load_sandboxed` with an immutable per-module execution policy; and
+capability selectors that may only attenuate a host ceiling and can never mint
+a grant.
+
+What differs is the question each one answers. The harness is organized around
+durability: event-sourced plugin state, resume at a committed turn boundary,
+per-entry quarantine, and a recovery nucleus no plugin can remove. It answers
+"what survives a crash." Cordis is organized around spatial composition:
+realms, intercepts, definition-site versus use-site binding, five hook dispatch
+modes, and candidate-swap hot reload. It answers "which implementation does
+this consumer see, and how does that change while the process keeps running."
+Neither set of answers is derivable from the other, which is why this is a
+second runtime rather than a feature request against the first.
+
+If both are ever wanted at once, the seam is the ledger: an `EffectScope` here
+and the harness's registry ledger are the same idea at different granularities.
+Nothing in this document assumes that merge, and nothing in it should be
+implemented in a way that forecloses it.
 
 ## 3. Required invariants
 
@@ -171,6 +217,7 @@ Runtime
   install(context, plugin, config) -> PluginInstance
   inject(context, requirements, callback) -> PluginInstance
   inspect() -> RuntimeSnapshot
+  await_settled() -> Nil
   close() -> Nil
 
 Context
@@ -204,6 +251,29 @@ operator context may inspect or resolve any key. This turns Cordis's proxy-time
 active plugin says `(instance .await_ready)`, so merely passing or inspecting a
 handle cannot suspend.
 
+`inject` is the anonymous-consumer form. It installs an instance whose
+requirements are the supplied rows and whose activation is the callback, so a
+host or a test can hold a dependency without authoring a `PluginSpec`. It obeys
+every rule an installed plugin obeys, declared-requirement access included.
+
+`await_settled` returns once no instance has a transition task outstanding,
+including transitions started by an earlier transition. It is the runtime's
+quiescence signal; the composition loader's own `await_settled` is built on it
+rather than on a polling loop of its own.
+
+`ActivationContext` also carries the `Context` read operations — `require`,
+`get`, and `derive` — over the instance's own context. Activation code uses one
+value both to read services and to own what it creates. The split in the list
+above is by role, not two objects handed to a plugin.
+
+A "schema" in `PluginSpec/config_schema`, `ServiceKey/config_schema`, and
+`HookKey/payload_schema` is a validation *function*, not a declarative schema
+language: Gene ships no such language and this runtime does not invent one. The
+function receives the candidate value and either returns the normalized value it
+accepts or raises `ConfigValidationError`. `nil` accepts any value unchanged.
+Because normalization is the validator's return value, a schema is also the one
+place allowed to canonicalize config before it reaches the merge law.
+
 ## 6. Services are protocols plus nominal keys
 
 A Gene protocol remains the service interface. `ServiceKey` identifies a slot
@@ -211,18 +281,31 @@ in a context and carries the runtime facts needed to validate and bind that
 protocol.
 
 ```gene
+(import [service_key] from "./cordis")
+
 (protocol Clock
   (message now_ms [] : Int))
 
 (var clock_key
-  ($cordis/service_key "clock" Clock))
+  (service_key "clock" Clock))
 
 (type SystemClock)
 
 (impl Clock for SystemClock
   (message now_ms [] : Int
-    ($time/unix_ms)))
+    ($os/monotonic_ms)))
 ```
+
+`$os/monotonic_ms` requires the `clock/Monotonic` capability, which makes this
+the smallest complete illustration of the loader rule below: a provider's
+authority comes from the ceiling its module was loaded under, never from its
+manifest entry and never from the fact that it claims a service named `clock`.
+The two failure points are both intended. An entry that *requests*
+`clock/Monotonic` beyond the host ceiling is rejected at load, before any effect
+runs. An entry that requests nothing and calls anyway activates cleanly and
+fails at its first `now_ms`, because a capability is checked where it is
+exercised. What never happens is the third possibility: the runtime reading a
+service id and inferring a grant from it.
 
 The explicit key matters. The same protocol may occupy two independently
 isolated slots, and unrelated keys may intentionally use the same contract.
@@ -288,6 +371,13 @@ once before it can become `active`, and may not publish an undeclared key.
 Conditional readiness belongs in the provider availability predicate; a truly
 optional provider belongs in a separate plugin spec.
 
+A cycle among declared providers is diagnosed, never broken. Every instance in
+the cycle stays `pending` with its unmet requirement recorded, `await_ready`
+raises `DependenciesUnavailable`, and `inspect` names the address nobody
+reached. The alternative — activating one member early so its peer can observe
+a half-built provider — would make invariant 1 conditional on load order, which
+is the property this whole mechanism exists to remove.
+
 Ordinary service use remains ordinary qualified Gene dispatch:
 
 ```gene
@@ -352,6 +442,13 @@ for selected keys:
 Names in serialized loader config are resolved against the loader's admitted
 service-key catalog. Arbitrary data cannot construct a live `RealmId` or
 `ServiceKey`.
+
+That catalog is why `isolate` has two spellings for one mechanism. Live code
+passes the nominal keys it already holds — `^isolate [database_key]` — while a
+manifest holds no values at all and passes service *ids*, which the loader
+resolves through the catalog before deriving anything. An id absent from the
+catalog is a rejected manifest, not a new realm; the data-only form can select
+among admitted keys but can never introduce one.
 
 If `tenant_a` isolates `database_key`, a database in the root realm is not a
 fallback. The tenant's consumer stays pending until a provider exists at the
@@ -422,6 +519,13 @@ A contextual bound value carries its use context. Calling it after that
 context's owner has been disposed raises `ContextDisposed`. Contexts and bound
 services are lane-owned and are not `Send` unless a concrete adapter explicitly
 implements `Send` without retaining a mutable context.
+
+A plain binding carries no such marker and needs none: its validity is bounded
+by the consumer's own lifecycle. Losing the provider changes the consumer's
+dependency epoch, which unloads the consumer before a retained value can
+outlive the provider that produced it. That covers exactly the code an effect
+scope owns. A value carried into detached work is outside the plugin contract,
+and the runtime does not pretend to track it there.
 
 This preserves Cordis's two-site semantics while making the seam visible in
 code and testable with two adapters: a plain adapter and a contextual adapter.
@@ -591,7 +695,13 @@ waterfall(hook, payload, terminal, subject?) -> value
 `emit` invokes synchronously in registration order and propagates the first
 error. `parallel` starts every handler with `spawn ^lane root` in one structured
 task scope, awaits all of them, and raises an ordered aggregate error. The
-explicit lane preserves support for captured, non-`Send` local handlers.
+explicit lane preserves support for captured, non-`Send` local handlers: a
+root-lane task never migrates to a worker and may therefore retain them. `root`
+is also the only explicit `^lane` value the language offers, so version 1
+requires a runtime to be constructed on the scheduler's root lane and treats
+"the runtime's owning lane" and "the root lane" as one lane throughout.
+Construction off the root lane is rejected rather than silently dispatching
+handlers away from the tables they touch.
 `serial` awaits handlers in order and stops on the first bailed result. `bail`
 is its synchronous form.
 
@@ -727,8 +837,15 @@ plugin must restart.
 The loader resolves every entry beneath a host-supplied plugin root and calls:
 
 ```gene
-($runtime/load_sandboxed root entry namespaces shared isolation_key)
+($runtime/load_sandboxed dir entry grants shared isolation_key)
 ```
+
+The parameter names are the runtime's own: `dir` is the admitted plugin root,
+`grants` the namespace subset the entry may reach, `shared` the admitted
+shared-module list, and `isolation_key` an optional suffix on the loaded
+module's identity. Omitting the key reuses the ordinary module identity, which
+is correct for a first load and wrong for hot reload — the reload transaction
+below depends on distinct identities, so it always supplies one.
 
 The root, admitted shared modules, maximum namespace set, and capability
 ceiling come from trusted host configuration. A manifest may request a subset;
@@ -817,10 +934,10 @@ Reload is a composition transaction:
    generations.
 10. Emit one `hmr_reloaded` event containing the old and new module digests.
 
-Step 8 requires a private prospective provider index. Starting candidates in
+Step 6 requires a private prospective provider index. Starting candidates in
 the live index would create duplicate providers or briefly restart unrelated
 consumers. The prospective index is an internal adapter used only by the
-loader transaction.
+loader transaction, and step 8 is the only moment its records become visible.
 
 If a plugin owns an irreversible external resource that prevents old and new
 instances from overlapping, it declares `^reload "stop_start"`. The loader
@@ -877,8 +994,8 @@ Thresholds and sink routes remain properties of the host-installed logging
 configuration; a Cordis intercept cannot rewrite them. Plugin data cannot add
 file sinks or otherwise grant output authority.
 
-Runtime lifecycle errors log through `gene/cordis`; loader and HMR messages use
-`gene/cordis/loader` and `gene/cordis/hmr`. The in-memory diagnostic history is
+Runtime lifecycle errors log through `genex/cordis`; loader and HMR messages use
+`genex/cordis/loader` and `genex/cordis/hmr`. The in-memory diagnostic history is
 bounded. Sink failures retain Gene logging's non-recursive emergency path and
 never re-enter Cordis hooks.
 
@@ -990,6 +1107,10 @@ examples/cordis/
     hmr.gene
 ```
 
+`package.gene` names the package `genex/cordis`. That is the package's registry
+identity, not a standard-library namespace: nothing here becomes reachable as
+`$cordis`, and a dependent package picks its own alias for `^pkg` imports.
+
 `runtime.gene` and `effects.gene` may be separate implementation files but form
 one external module. Only `cordis.gene` and `plugin_api.gene` are shared with
 sandboxed plugins. Loader, include, HMR, filesystem, runtime sandbox controls,
@@ -1002,7 +1123,8 @@ private state transitions.
 
 ### Core lifecycle
 
-- functional and value-backed plugins activate;
+- specs activate whether or not their activation returns a value, and a
+  returned value never registers cleanup;
 - invalid descriptors and configs fail before effects are visible;
 - missing requirements keep an instance pending;
 - provider arrival activates all matching consumers;
