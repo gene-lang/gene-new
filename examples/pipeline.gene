@@ -1,25 +1,141 @@
-# Sequenced value pipelines evaluate each incoming value before the next stage.
+# Sequenced value pipelines: `->` threads a whole value into the next call,
+# `=>` runs a stage once per item. Every section prints what it claims.
 
-(fn named [^value]
+(fn show [label value]
+  ($println $"${label}: ${value}"))
+
+# --- 1. `->` threads a value through eager calls -------------------------
+
+# The incoming value is the first positional argument by default.
+(show "chained" (2 -> + 3 -> * 4))
+
+# One direct `_` puts it somewhere else instead: in a later position,
+# in a property, or in the head.
+(fn divide [a : Int, b : Int] : Int
+  (/ a b))
+(show "default slot" (100 -> divide 5)) # (divide 100 5)
+(show "body slot" (100 -> divide 500 _)) # (divide 500 100)
+
+(fn tagged [^value]
   value)
+(show "prop slot" (7 -> tagged ^value _))
 
-(var arithmetic (2 -> + 3 -> * 4))
+(type Account ^props {^balance Int} (message deposit [amount : Int] : Int (+ self/balance amount)))
 
-(var named_value (7 -> named ^value _))
+(show "head slot" ((Account ^balance 40) -> _ .deposit 2))
 
-# A `=>` stage with a later stage maps lazily; nothing is collected until the
-# final `->` asks for it.
-(var doubled ([1 2 3] => * 2 -> $into []))
+# Slots never cross a parenthesis: each form owns its own, so a nested pipeline
+# fills its `_` from its own incoming value, not the outer one.
+(fn pair [a, b]
+  [a b])
+(show "nested pipeline" (3 -> pair (100 -> divide _ 4)))
 
-# The same shape terminates on a producer that never ends.
+# The value before the first delimiter is a single form. `(f x -> g)` would be
+# a read error; wrap the call in its own parentheses.
+(show "leading call" ((divide 90 3) -> + 1))
+
+# --- 2. `=>` runs its stage per item -------------------------------------
+
+# A `=>` with a later stage maps lazily. Nothing is collected until a stage
+# asks for it, so the collector at the end is what materializes the result.
+(show "mapped" ([1 2 3] => * 2 -> $into []))
+
+# The item fills the slot, exactly as the whole value does for `->`.
+(show "item in a slot" ([10 20] => divide 100 _ -> $into []))
+
+# Stages compose: filter between two per-item stages.
+(var filtered ([1 2 3 4 5] => * 3 -> $filter (fn [n] (> n 6)) => + 1 -> $into []))
+(show "filtered" filtered)
+
+# --- 3. Nothing accumulates between stages -------------------------------
+
+# Because no stage builds a collection, a producer that never ends flows
+# through one item at a time and a later stage bounds it.
 (fn naturals* []
   (var n 0)
   (while true
     (yield n)
     (set n (+ n 1))))
-(var head ((naturals*) => * 2 -> $take 4 -> $into []))
 
-($println [arithmetic named_value doubled head])
+(show "endless source" ((naturals*) => * 2 -> $take 4 -> $into []))
 
-# A `=>` that ends the pipeline runs for effect and answers nil.
-([1 2 3] => $println)
+# Work happens per item, interleaved, and only for the items that are pulled.
+(var trace [])
+(fn step [tag value]
+  (trace .push tag)
+  value)
+
+(var pulled ([1 2 3 4 5] => step "a" _ => step "b" _ -> $take 2 -> $into []))
+(show "pulled result" pulled)
+(show "work done" trace)
+
+# --- 4. A final `=>` drains; a final `->` decides everything else ---------
+
+# A `=>` that ends the pipeline has no consumer for its results, so it runs
+# for effect and the pipeline answers nil.
+(show "drained" ([1 2 3] => $println))
+
+# The flip side: if the final stage never consumes what it is handed, no
+# per-item work runs at all.
+(var untouched [])
+(fn record [value]
+  (untouched .push value)
+  value)
+(fn ignores [items] "ignored")
+(var ignored ([1 2 3] => record -> ignores))
+(show "ignored result" ignored)
+(show "work done when ignored" untouched)
+
+# --- 5. A `->` stage between `=>` stages receives a Stream ---------------
+
+# Anything consuming a stream works: a `for` loop, or the stream generics.
+(fn total [items]
+  (var sum 0)
+  (for item in items
+    (set sum (+ sum item)))
+  sum)
+
+(show "folded" ([1 2 3 4] => * 10 -> total))
+
+# `reduce` is not built in; it is an ordinary function reached with `->`.
+(fn reduce [items, combine, seed]
+  (var acc seed)
+  (for item in items
+    (set acc (combine acc item)))
+  acc)
+
+(show "map then reduce" ([1 2 3 4] => * 10 -> reduce + 0))
+
+# The classic word count: the fold builds a Map, and `=>` then maps its values.
+(fn tally [counts, word]
+  (counts .put word (+ 1 (?? (counts .get word) 0)))
+  counts)
+
+(var counts (["a" "b" "a" "c" "a"] -> reduce tally {}))
+(show "word count" counts)
+
+# A Map has no item order, so it reaches a non-final `=>` only through an
+# explicit pairs conversion. A final `=>` drains its values directly.
+(fn value_of [entry]
+  entry/1)
+
+(var values (counts -> $to_pairs_stream => value_of -> $into []))
+(show "map values" values)
+
+# A final `=>` needs no conversion, because draining does not enter the
+# stream tier at all.
+(counts => $println)
+
+# --- 6. A stage's callee and arguments are evaluated once ----------------
+
+(var evaluations [])
+(fn choose []
+  (evaluations .push "callee")
+  divide)
+(fn argument []
+  (evaluations .push "argument")
+  2)
+
+(var hoisted ([10 20 30] => (choose) _ (argument) -> $into []))
+(show "hoisted result" hoisted)
+(show "evaluated once" evaluations)
