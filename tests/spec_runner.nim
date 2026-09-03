@@ -173,8 +173,10 @@ suite "spec — reader surface from design":
     check_read("(fn f [^server : Http/Server] nil)",
                "(fn f [^ server : Http/Server] nil)")
     check_read("(.f a)", "(.f a)")
-    check_read("(x; $parse; (|| _ default))", "(|| ((x) (path gene parse)) default)")
-    check_read("(x .parse; (|| _ default))", "(|| (x .parse) default)")
+    check_read("(x; $parse; (|| _ default))",
+               "(((x) (path gene parse)) (|| _ default))")
+    check_read("(x .parse; (|| _ default))",
+               "((x .parse) (|| _ default))")
 
   test "template unquote supports interpolation and dynamic paths":
     check_read("%$\"$${self/price}\"", "(unquote ($ \"$\" (path self price)))")
@@ -362,6 +364,102 @@ suite "spec — value spread from design":
     check_eval("(var xs [2 3]) [1 xs... 4]", "[1 2 3 4]")
     check_eval("[1 [2 3]... 4]", "[1 2 3 4]")
     check_eval("(var n (quote (pair 2 3))) [1 n... 4]", "[1 2 3 4]")
+
+suite "spec — sequenced value pipelines":
+  test "default and explicit slots build ordinary call shapes":
+    check_eval("[(2 ~ + 3) (2 ~ + 3 ~ * 4)]", "[5 20]")
+    check_eval("(fn pair [a b] [a b]) (fn one [x] [x]) " &
+               "[(2 ~ pair 1 _) (one ~ _ 7)]",
+               "[[1 2] [7]]")
+    check_eval("(fn named [^k] k) (7 ~ named ^k _)", "7")
+    check_eval("(fn add_named [x ^k] (+ x k)) " &
+               "(fn mul_named [x ^k] (* x k)) " &
+               "(1 ~ add_named ^k 2 ~ mul_named ^k 3)",
+               "9")
+    check_eval("(fn collect [xs...] xs) (var tail [2 3]) " &
+               "(1 ~ collect _ tail...)",
+               "[1 2 3]")
+
+  test "the incoming value is evaluated first and exactly once":
+    check_eval("(var log []) " &
+               "(fn note [x] (log .push x) x) " &
+               "(fn make_f [] (note \"f\") (fn [a c] [a c])) " &
+               "(var out ((note \"a\") ~ (make_f) (note \"c\"))) " &
+               "[out log]",
+               "[[\"a\" \"c\"] [\"a\" \"f\" \"c\"]]")
+    check_eval("(var hits ($cell 0)) " &
+               "(fn source [] (hits .update (fn [n] (+ n 1))) 9) " &
+               "(fn named [^k] k) [((source) ~ named ^k _) hits/.get]",
+               "[9 1]")
+
+  test "failures short-circuit callees, arguments, and later stages":
+    check_eval("(var hits ($cell 0)) " &
+               "(fn later [x] (hits .set 1) x) " &
+               "[(try ((fail (RuntimeError ^message \"stop\")) ~ later) " &
+               "   catch RuntimeError $ex/message) hits/.get]",
+               "[\"stop\" 0]")
+    check_eval("(var hits ($cell 0)) " &
+               "(fn touch [] (hits .update (fn [n] (+ n 1))) 2) " &
+               "[(try (1 ~ (fail (RuntimeError ^message \"callee\")) " &
+               "             (touch)) " &
+               "   catch RuntimeError $ex/message) hits/.get]",
+               "[\"callee\" 0]")
+    check_eval("(var hits ($cell 0)) " &
+               "(fn stop [x] (fail (RuntimeError ^message \"stage\"))) " &
+               "(fn later [x] (hits .set 1) x) " &
+               "[(try (1 ~ stop ~ later) " &
+               "   catch RuntimeError $ex/message) hits/.get]",
+               "[\"stage\" 0]")
+
+  test "a head slot composes with dot sends":
+    check_eval("(type Box ^props {^n Int} " &
+               "  (message add [x] : Int (+ self/n x))) " &
+               "((Box ^n 4) ~ _ .add 3)",
+               "7")
+
+  test "syntax heads and mixed delimiter forms are rejected":
+    check_compile_error("(1 ~ if true 2)",
+                        "pipeline stages must be eager calls or dot sends")
+    check_compile_error("(macro identity [x] `%x) (1 ~ identity)",
+                        "pipeline stages must be eager calls or dot sends")
+    check_compile_error("(1 ~ $css/decl color)",
+                        "pipeline stages must be eager calls or dot sends")
+    for source in ["(a ; b ~ c)", "(a ~ b ; c)"]:
+      expect ReadError:
+        discard read(source)
+
+  test "quoted pipeline syntax prints and eval compiles it later":
+    check_eval("(quote (a ~ f ^k _ ~ g 2))", "(a ~ f ^k _ ~ g 2)")
+    check_eval("(== (quote (a ~ f 1)) (quote (a ~ f 1)))", "true")
+    check_eval("(eval (quote (1 ~ + 2)) ^in (env))", "3")
+    check_eval("(var x 2) `(1 ~ + %x)", "(1 ~ + 2)")
+    check_eval("(var x 2) (eval `(1 ~ + %x) ^in (env))", "3")
+    check_eval("(fn pair [a b] [a b]) (var slot (quote _)) " &
+               "(eval `(1 ~ pair 2 %slot) ^in (env))",
+               "[2 1]")
+    check_eval("(try ($freeze (quote (1 ~ + 2))) catch Any $ex/message)",
+               "\"freeze cannot freeze pipeline syntax; quote it for syntax " &
+               "or eval it as a program\"")
+
+  test "macro expansion traverses and can return pipeline syntax":
+    check_eval("(macro one [] `1) (0 ~ + (one))", "1")
+    check_eval("(macro identity [x] `%x) (identity (1 ~ + 2))", "3")
+    check_eval("(fn pair [a b] [a b]) (macro slot [] `_) " &
+               "(1 ~ pair 2 (slot))",
+               "[2 1]")
+    check_compile_error("(macro slot [] `_) (1 ~ + _ (slot))",
+                        "macro expansion produced more than one direct '_'")
+
+  test "typed boundaries retain the VM fallback when AOT cannot lower syntax":
+    let chunk = compileSource(
+      "(fn piped [x : I64] : I64 (x ~ + 1)) (piped 2)")
+    check chunk.functions[0].aotExpr.kind == vkNil
+    check run(chunk, newGlobalScope()).print() == "3"
+
+  test "the final pipeline stage remains a tail position":
+    check_eval("(fn down [n] (if (== n 0) 0 (n ~ - 1 ~ down))) " &
+               "(down 100000)",
+               "0")
 
 suite "spec — enums from design":
   test "unit variants are qualified singleton values with reflection":
@@ -5880,8 +5978,9 @@ suite "spec — binding forms from design §12.1":
     check_compile_error("(enum E a b) (set E 2)",
                         "cannot set 'E'")
 
-  test "the removed tilde send spelling is rejected by the reader":
-    for source in ["(var ~ 5)", "(let ~ 5)", "(quote (a ~ b))"]:
+  test "spaced tilde is pipeline syntax rather than a bindable symbol":
+    check_read("(quote (a ~ b))", "(quote (a ~ b))")
+    for source in ["(~ 5)", "[~ 5]"]:
       expect ReadError:
         discard read(source)
 

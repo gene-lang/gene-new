@@ -326,6 +326,7 @@ x : T        # annotation
 _            # wildcard / ignore
 name!        # reserved fexpr declaration/invocation marker (§3/§11.1)
 (a; b; c)    # pipe: pure reader head-folding
+(a ~ f c)    # sequenced value pipeline; previous value is first argument
 (x .f a)    # message send; see Section 3 and docs/core.md §9
 /user/name   # selector literal
 x/user/name  # apply selector to x
@@ -488,8 +489,12 @@ primary        = immutable_node
                | path_form
                | atom ;
 
-node           = "(", spacing, { element, spacing }, ")" ;
-immutable_node = "#(", spacing, { element, spacing }, ")" ;
+node           = "(", spacing, [ node_sequence ], spacing, ")" ;
+immutable_node = "#(", spacing, [ node_sequence ], spacing, ")" ;
+node_sequence  = segment, { segment_delimiter, segment } ;
+segment        = element, { separator, element } ;
+segment_delimiter = spacing, ";", spacing
+                  | spacing, "~", spacing ;
 vector         = "[", spacing, [ form, { separator, form } ], spacing, "]" ;
 immutable_vector = "#[", spacing, [ form, { separator, form } ], spacing, "]" ;
 prop_map       = "{", spacing, { map_entry, spacing }, "}" ;
@@ -576,6 +581,10 @@ Ordered lexical dispatch:
 
 Lexical notes:
 
+- A node sequence uses either `;` head-folding delimiters or `~` value-pipeline
+  delimiters at one parenthesis depth, never both. Nested nodes choose
+  independently. A token-delimited `~` is a pipeline separator; glued `~name`
+  remains a symbol.
 - `access_or_qualified_path` is intentionally context-neutral at reader time.
 - Short slash syntax permits `%name` segments only; complex stages use long `(select ... %(expr) ...)` syntax.
 - A delimited `/` token is a `symbol`, not a `path_segment` by itself.
@@ -701,22 +710,58 @@ and sending a name the receiver's type does not define is still a recoverable
 `List` — so `to_stream` is how a pipeline enters the lazy stream tier when it
 wants laziness, not a gate the operations hide behind.
 
-A segment containing `_` is a slot form: the folded previous segment lands at
-`_` instead of head position.
+`;` has no placeholder or argument-slot mode. An `_` in a later segment remains
+that segment's ordinary `_` symbol; the reader never substitutes the preceding
+segment for it:
 
 ```gene
-(a; b _ c)                  # => (b (a) c)
-(x; parse; (|| _ default))  # => (|| ((x) parse) default)
+(a; b _ c)  # => ((a) b _ c), not (b (a) c)
 ```
 
-The previous segment is still wrapped as a node `(a)`, so a pipe threads a call,
-not a bare value: `(a; b _ c)` is `(b (a) c)`, not `(b a c)`.
+This keeps `;` one-purpose syntax: the preceding segment becomes the next
+node's head. Sequenced value threading and explicit argument slots are a
+separate feature using `~`; see `docs/proposals/pipeline.md`.
 
-> **Future direction (non-MVP):** a real left-to-right data-flow pipeline
-> operator, spelled `->`, is a likely addition — e.g.
-> `(xs -> (filter /odd?) -> times5)`, where each stage receives the previous
-> stage's value. It is distinct from `;` (reader-only head-folding) and from a
-> dot message send. `->` is reserved for it and unused today.
+### 2.7 Sequenced value pipelines
+
+Spaced `~` separates ordered value-pipeline stages. The reader preserves the
+initial expression and every stage as syntax-only `vkPipeline` structure; it
+does not rewrite the source directly to nested calls, because ordinary calls
+evaluate their callee before their arguments.
+
+```gene
+(a ~ f c)       # call shape (f a c), but a evaluates before f
+(a ~ f c _)     # call shape (f c a)
+(a ~ f ^k _)    # call shape (f ^k a)
+(a ~ _ c)       # call the value of a with c
+```
+
+With no exact direct `_`, the incoming value becomes the first positional
+argument. One exact `_` may instead occupy the stage head, a direct positional
+argument, or a direct property value. More than one direct slot is a read
+error. Slot detection does not descend into nested forms or containers.
+
+Every stage obeys this order:
+
+1. evaluate the incoming expression exactly once;
+2. retain its value in compiler-owned, user-inaccessible storage;
+3. evaluate the stage callee;
+4. evaluate named and positional argument expressions by the ordinary call
+   contract, loading the retained value at the selected slot;
+5. invoke the ordinary call or dot-send machinery.
+
+Pipeline stages associate left-to-right, and the final stage inherits tail
+position. A pipeline is executable syntax rather than a nominal runtime data
+type: it has no constructor, message surface, serialization, or `Send`
+contract. Quote/quasiquote may carry it as inert syntax and `eval` may compile
+it later.
+
+Each stage owns a separate head, props, meta, body, slot, and source location,
+so property names may repeat across stages while duplicate properties within
+one stage remain errors. `;` and `~` may not appear at the same parenthesis
+depth; nest one form explicitly instead. Glued `~name` symbols and byte-literal
+continuations remain distinct. The detailed design and implementation contract
+is `docs/proposals/pipeline.md`.
 
 ---
 

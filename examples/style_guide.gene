@@ -75,6 +75,11 @@ line two"""
 (fn normalize_name [name : Str] : Str
   (trim name))
 
+(fn pipeline_example [value : Int] : Int
+  (value
+    ~ + 2
+    ~ * 3))
+
 (fn make_user [name : Str, ^roles : (List Str) = [], ^active : Bool = true] : User
   (User ^name (normalize_name name) ^roles roles ^active active))
 

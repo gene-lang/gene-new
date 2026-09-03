@@ -1,0 +1,10 @@
+# Sequenced value pipelines evaluate each incoming value before the next stage.
+
+(fn named [^value]
+  value)
+
+(var arithmetic (2 ~ + 3 ~ * 4))
+
+(var named_value (7 ~ named ^value _))
+
+($println [arithmetic named_value])

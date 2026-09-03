@@ -19,6 +19,25 @@ callees must be message values. Invalid callees are rejected before send
 arguments run; message names may not end in `!`, and there is no lexical
 callable fallback.
 
+Spaced `~` forms a sequenced value pipeline. The incoming expression is
+evaluated first and exactly once; each stage then evaluates its callee and
+ordinary arguments before invoking the existing call/send machinery. With no
+direct `_`, the value is the first positional argument. One direct `_` may
+instead occupy the stage head, a positional argument, or a property value:
+
+```gene
+(a ~ f c)       # call shape (f a c), with a evaluated before f
+(a ~ f c _)     # call shape (f c a)
+(a ~ f ^k _)    # call shape (f ^k a)
+(a ~ _ .m c)    # call shape (a .m c)
+```
+
+Pipeline syntax is represented by syntax-only `vkPipeline`, associates
+left-to-right, and preserves tail position only for the final stage. Multiple
+direct slots, empty stages, syntax-call stages, and mixing `~` with `;` at one
+parenthesis depth are errors. `;` remains head-folding reader sugar and has no
+slot behavior. See `docs/design.md §2.7` and `docs/proposals/pipeline.md`.
+
 MVP compiler-dispatched heads:
 
 <!-- compiler-head-dispatch:start -->

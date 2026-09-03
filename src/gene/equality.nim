@@ -106,6 +106,18 @@ proc equal*(a, b: Value): bool =
     for i in 0 ..< a.body.len:
       if not equal(a.body[i], b.body[i]): return false
     tablesEqual(a.props, b.props)
+  of vkPipeline:
+    if not equal(a.pipelineInitial, b.pipelineInitial): return false
+    if a.pipelineStages.len != b.pipelineStages.len: return false
+    for i in 0 ..< a.pipelineStages.len:
+      let sa = a.pipelineStages[i]
+      let sb = b.pipelineStages[i]
+      if not equal(sa.head, sb.head): return false
+      if sa.body.len != sb.body.len: return false
+      for j in 0 ..< sa.body.len:
+        if not equal(sa.body[j], sb.body[j]): return false
+      if not tablesEqual(sa.props, sb.props): return false
+    true
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
@@ -127,7 +139,8 @@ proc same*(a, b: Value): bool =
   of vkNil, vkVoid, vkBool, vkInt, vkFloat, vkString, vkBytes, vkRegex, vkRange,
      vkDate, vkTime, vkDateTime, vkTimezone, vkDuration, vkChar, vkSymbol:
     equal(a, b)
-  of vkList, vkMap, vkSet, vkHashMap, vkNode, vkFunction, vkNativeFn, vkNamespace, vkModule,
+  of vkList, vkMap, vkSet, vkHashMap, vkNode, vkPipeline,
+     vkFunction, vkNativeFn, vkNamespace, vkModule,
      vkEnv, vkCallerEnv, vkCell, vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef,
      vkActorContext, vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability, vkFfiLibrary, vkFfiCallable, vkLogger,
@@ -213,6 +226,16 @@ proc hash*(v: Value): Hash =
     for id, val in v.props.idPairs:
       acc = acc xor (hash(id) !& hash(val))
     h = h !& acc
+  of vkPipeline:
+    h = h !& hash(v.pipelineInitial)
+    for stage in v.pipelineStages:
+      h = h !& hash(stage.head)
+      for item in stage.body:
+        h = h !& hash(item)
+      var acc: Hash = 0
+      for id, val in stage.props.idPairs:
+        acc = acc xor (hash(id) !& hash(val))
+      h = h !& acc
   of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv,
      vkCell, vkAtomicCell,
      vkStream, vkTask, vkChannel, vkActorRef, vkActorContext, vkActorStep,
@@ -245,6 +268,7 @@ proc isHashStable*(v: Value, seen: var HashSet[uint64]): bool =
   of vkCallerEnv, vkCell, vkAtomicCell, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability,
      vkFfiLibrary, vkFfiCallable,
+     vkPipeline,
      # A bus and the mutable sinks change under an unchanged identity, exactly
      # like a Cell, so they cannot be stable keys.
      vkEventBus, vkRecordingSink, vkNullSink, vkCompositeSink:

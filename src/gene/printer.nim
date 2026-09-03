@@ -284,6 +284,14 @@ proc printSendNode(value: Value): string =
     result.add print(value.body[i])
   result.add ')'
 
+proc printPipelineStage(stage: PipelineStage): string =
+  result = print(stage.head)
+  printProps(result, stage.meta, "@")
+  printProps(result, stage.props, "^")
+  for item in stage.body:
+    result.add ' '
+    result.add print(item)
+
 proc print*(v: Value): string =
   if v.isNil: return "nil"
   case v.kind
@@ -379,6 +387,14 @@ proc print*(v: Value): string =
     for it in v.body:
       sb.add ' '
       sb.add print(it)
+    sb.add ')'
+    sb
+  of vkPipeline:
+    var sb = if v.pipelineImmutable: "#(" else: "("
+    sb.add print(v.pipelineInitial)
+    for stage in v.pipelineStages:
+      sb.add " ~ "
+      sb.add printPipelineStage(stage)
     sb.add ')'
     sb
   # Callables are runtime values, not literals; rendered for display only.

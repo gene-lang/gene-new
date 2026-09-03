@@ -68,6 +68,23 @@ type annotations resolve structurally.
 `(a/.b c)` is not a shortcut for `(a .b c)` — it means `((a .b) c)`, a
 zero-argument send whose result is then called.
 
+**`~` sequences an incoming value before the next eager call.** With no direct
+`_`, the value becomes the first positional argument. One direct `_` may put it
+in the head, body, or a property value; nested `_` is ordinary nested syntax.
+
+```gene
+(source
+  ~ parse options
+  ~ validate schema
+  ~ save db _)
+
+(value ~ _ .render options)       # dot-send the threaded value
+```
+
+The first form has the call shape `(save db (validate (parse source options)
+schema))`, but `source` is guaranteed to finish before `parse` is evaluated.
+Do not mix `~` and `;` at the same parenthesis depth.
+
 **Sends dispatch only.** A bare name reaches a type-direct message; `P:msg`
 reaches a protocol impl. There is no lexical callable fallback, so a function
 in scope is invisible to a dot send.

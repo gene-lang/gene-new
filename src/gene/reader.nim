@@ -23,7 +23,7 @@ type
     tkRef, tkDeref,          # #Ref #Deref
     tkCaret, tkCaretCaret,   # ^ ^^
     tkAt, tkAtAt,            # @ @@
-    tkTilde,                 # legacy spaced ~ token; parser rejects it
+    tkTilde,                 # spaced ~ value-pipeline delimiter
     tkDotDotDot,             # ...
     tkString, tkBytes, tkRegex, tkInt, tkFloat, tkDate, tkTime, tkDateTime,
     tkSymbol, tkChar,
@@ -927,7 +927,7 @@ proc tokenizeImpl(r: var Reader,
     of '~':
       # Canonical/generated trees may contain compact `~name` path markers, and
       # `~name` remains a legal user symbol. Keep a glued tilde in one token.
-      # A spaced tilde gets the legacy token below and is rejected by parsing.
+      # A spaced tilde gets the pipeline-delimiter token below.
       if r.pos + 1 < r.src.len and r.src[r.pos + 1].isSymbolChar:
         let lexStart = r.pos
         r.advance()
@@ -1164,7 +1164,7 @@ proc restoreReadContext(r: var Reader, depth: int) =
 
 proc hasStableSourceIdentity(v: Value): bool =
   v.kind in {vkBytes, vkRegex, vkDate, vkTime, vkDateTime, vkTimezone,
-             vkDuration, vkList, vkMap, vkSet, vkHashMap, vkNode}
+             vkDuration, vkList, vkMap, vkSet, vkHashMap, vkNode, vkPipeline}
 
 proc recordSourceLoc(r: var Reader, value: Value, tok: Token) =
   if value.hasStableSourceIdentity:
@@ -1282,76 +1282,6 @@ proc parseList(r: var Reader, closing: TokenKind, immutable = false): Value =
     r.raiseReadIncomplete("unexpected EOF: unclosed '['")
   discard r.next() # consume closing
   result = newList(items, immutable)
-
-proc containsPipeSlot(value: Value): bool
-
-proc containsPipeSlot(entries: PropTable): bool =
-  for _, value in entries:
-    if containsPipeSlot(value):
-      return true
-
-proc containsPipeSlot(values: seq[Value]): bool =
-  for value in values:
-    if containsPipeSlot(value):
-      return true
-
-proc containsPipeSlot(value: Value): bool =
-  case value.kind
-  of vkSymbol:
-    value.symVal == "_"
-  of vkList:
-    containsPipeSlot(value.listItems)
-  of vkMap:
-    containsPipeSlot(value.mapEntries)
-  of vkSet:
-    containsPipeSlot(value.setItems)
-  of vkHashMap:
-    for entry in value.hashMapEntries:
-      if containsPipeSlot(entry.key) or containsPipeSlot(entry.val):
-        return true
-    false
-  of vkNode:
-    containsPipeSlot(value.head) or containsPipeSlot(value.props) or
-      containsPipeSlot(value.body) or containsPipeSlot(value.meta)
-  else:
-    false
-
-proc replacePipeSlot(value, replacement: Value): Value
-
-proc replacePipeSlot(entries: PropTable, replacement: Value): PropTable =
-  result = initPropTable()
-  for key, value in entries:
-    result[key] = replacePipeSlot(value, replacement)
-
-proc replacePipeSlot(values: seq[Value], replacement: Value): seq[Value] =
-  result = newSeqOfCap[Value](values.len)
-  for value in values:
-    result.add replacePipeSlot(value, replacement)
-
-proc replacePipeSlot(value, replacement: Value): Value =
-  case value.kind
-  of vkSymbol:
-    if value.symVal == "_": replacement else: value
-  of vkList:
-    newList(replacePipeSlot(value.listItems, replacement), value.listImmutable)
-  of vkMap:
-    newMap(replacePipeSlot(value.mapEntries, replacement), value.mapImmutable)
-  of vkSet:
-    newSet(replacePipeSlot(value.setItems, replacement))
-  of vkHashMap:
-    var entries: seq[HashMapEntry]
-    for entry in value.hashMapEntries:
-      entries.add HashMapEntry(key: replacePipeSlot(entry.key, replacement),
-                               val: replacePipeSlot(entry.val, replacement))
-    newHashMap(entries)
-  of vkNode:
-    newNode(replacePipeSlot(value.head, replacement),
-            replacePipeSlot(value.props, replacement),
-            replacePipeSlot(value.body, replacement),
-            replacePipeSlot(value.meta, replacement),
-            value.nodeImmutable)
-  else:
-    value
 
 type DotSendDescriptor = object
   found: bool
@@ -1495,8 +1425,8 @@ proc normalizeDotQualifiedPathMessage(value: Value): Value =
   newNode(receiver,
           body = @[newSym(if prefix.optional: "?~" else: "~"), callee])
 
-proc normalizeDotSend(head: Value, props: PropTable, body: seq[Value],
-                      meta: PropTable, immutable: bool): Value =
+proc normalizeDotSend*(head: Value, props: PropTable, body: seq[Value],
+                       meta: PropTable, immutable: bool): Value =
   let leading = dotSendDescriptor(head)
   if leading.found:
     var args: seq[Value]
@@ -1537,24 +1467,65 @@ proc finishNodeSegment(head: Value, props: PropTable, body: seq[Value],
   # protocol resolution, TCO, and tooling consume one representation.
   normalizeDotSend(head, props, body, meta, immutable)
 
-proc pipeSegmentExpr(forms: seq[Value], props: PropTable, meta: PropTable,
-                     immutable: bool): Value =
-  if forms.len == 0:
-    return NIL
-  if forms.len == 1 and props.len == 0 and meta.len == 0:
-    return forms[0]
-  var body = newSeqOfCap[Value](max(0, forms.len - 1))
-  for i in 1 ..< forms.len:
-    body.add forms[i]
-  finishNodeSegment(forms[0], props, body, meta, immutable)
-
-proc finishPipeSegment(head: Value, props: PropTable, body: seq[Value],
-                       meta: PropTable, immutable, inPipe: bool): Value =
-  if inPipe and (containsPipeSlot(body) or containsPipeSlot(props) or
-                 containsPipeSlot(meta)):
-    let segment = pipeSegmentExpr(body, props, meta, immutable)
-    return replacePipeSlot(segment, head)
+proc finishPipelineInitial(head: Value, props: PropTable, body: seq[Value],
+                           meta: PropTable, immutable: bool): Value =
+  if body.len == 0 and props.len == 0 and meta.len == 0:
+    return head
   finishNodeSegment(head, props, body, meta, immutable)
+
+proc isDirectPipelineSlot(value: Value): bool =
+  value.kind == vkSymbol and value.symVal == "_"
+
+proc detectPipelineSlot*(head: Value, props: PropTable,
+                         body: openArray[Value]): tuple[
+                           slot: PipelineSlot, count: int] =
+  result.slot = PipelineSlot(kind: pskDefault, index: -1)
+  if head.isDirectPipelineSlot:
+    result.slot = PipelineSlot(kind: pskHead, index: -1)
+    inc result.count
+  for i, item in body:
+    if item.isDirectPipelineSlot:
+      result.slot = PipelineSlot(kind: pskBody, index: i)
+      inc result.count
+  for name, value in props:
+    if value.isDirectPipelineSlot:
+      result.slot = PipelineSlot(kind: pskProp, index: -1, name: name)
+      inc result.count
+
+proc finishPipelineStage(r: var Reader, head: Value, props: PropTable,
+                         body: seq[Value], meta: PropTable,
+                         loc: SourceLoc): PipelineStage =
+  let detected = detectPipelineSlot(head, props, body)
+  if detected.count > 1:
+    raiseReadErrorAt(r.sourceName, loc.line, loc.col,
+      "a pipeline stage accepts at most one direct '_' slot")
+  PipelineStage(head: head, props: props, body: body, meta: meta,
+                sourceLoc: loc, slot: detected.slot)
+
+proc materializePipelineStage*(stage: PipelineStage, replacement: Value,
+                               immutable = false): Value =
+  let head =
+    if stage.slot.kind == pskHead: replacement
+    else: stage.head
+  var props = initPropTable()
+  for name, value in stage.props:
+    if stage.slot.kind == pskProp and name == stage.slot.name:
+      props[name] = replacement
+    else:
+      props[name] = value
+  var body = newSeqOfCap[Value](stage.body.len +
+    (if stage.slot.kind == pskDefault: 1 else: 0))
+  if stage.slot.kind == pskDefault:
+    body.add replacement
+  for i, item in stage.body:
+    if stage.slot.kind == pskBody and i == stage.slot.index:
+      body.add replacement
+    else:
+      body.add item
+  var meta = initPropTable()
+  for name, value in stage.meta:
+    meta[name] = value
+  normalizeDotSend(head, props, body, meta, immutable)
 
 proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
   var head = NIL
@@ -1564,6 +1535,10 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
 
   var first = true
   var inPipe = false
+  var inPipeline = false
+  var pipelineInitial = NIL
+  var pipelineStages: seq[PipelineStage]
+  var segmentLoc = SourceLoc()
   while true:
     r.skipDatumComments()
     let k = r.peekKind()
@@ -1571,6 +1546,8 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
     let tok = r.peek()
     case tok.kind
     of tkCaret, tkCaretCaret:
+      if not segmentLoc.hasSourceLoc:
+        segmentLoc = sourceLoc(tok, r.sourceName)
       discard r.next()
       let keyTok = r.peek()
       let key = r.parsePropKey()
@@ -1580,7 +1557,8 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
       else:
         let afterKey = r.peekKind()
         if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
-                        tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi}:
+                        tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi,
+                        tkTilde}:
           r.raiseReadErrorAt(keyTok,
             "property '^" & key & "' requires a value")
         val = r.parseForm()
@@ -1588,6 +1566,8 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
         r.raiseReadErrorAt(keyTok, "duplicate property '^" & key & "'")
       props[key] = val
     of tkAt, tkAtAt:
+      if not segmentLoc.hasSourceLoc:
+        segmentLoc = sourceLoc(tok, r.sourceName)
       if r.tokIdx + 1 >= r.tokens.len or r.tokens[r.tokIdx + 1].kind != tkSymbol:
         discard r.next()
         let form = newSym(tok.lexeme)
@@ -1606,7 +1586,8 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
         else:
           let afterKey = r.peekKind()
           if afterKey in {closing, tkRParen, tkRBracket, tkRBrace, tkEof,
-                          tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi}:
+                          tkCaret, tkCaretCaret, tkAt, tkAtAt, tkComma, tkSemi,
+                          tkTilde}:
             r.raiseReadErrorAt(keyTok,
               "meta property '@" & key & "' requires a value")
           val = r.parseForm()
@@ -1615,17 +1596,47 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
         meta[key] = val
     of tkSemi:
       # Pipe folding: (a; b) -> ((a) b)
+      if inPipeline:
+        r.raiseReadErrorAt(tok,
+          "cannot mix ';' head folding and '~' value pipelines in one form; " &
+          "nest one operation in its own parentheses")
       discard r.next()
-      let prevNode = finishPipeSegment(head, props, body, meta, immutable, inPipe)
+      if first:
+        r.raiseReadErrorAt(tok, "';' requires a preceding segment")
+      let prevNode = finishNodeSegment(head, props, body, meta, immutable)
       head = prevNode
       props = initPropTable()
       meta = initPropTable()
       body = @[]
+      segmentLoc = SourceLoc()
       first = false
       inPipe = true
+    of tkTilde:
+      if inPipe:
+        r.raiseReadErrorAt(tok,
+          "cannot mix ';' head folding and '~' value pipelines in one form; " &
+          "nest one operation in its own parentheses")
+      if first:
+        r.raiseReadErrorAt(tok, "'~' requires a preceding pipeline segment")
+      discard r.next()
+      if not inPipeline:
+        pipelineInitial = finishPipelineInitial(
+          head, props, body, meta, immutable)
+        inPipeline = true
+      else:
+        pipelineStages.add r.finishPipelineStage(
+          head, props, body, meta, segmentLoc)
+      head = NIL
+      props = initPropTable()
+      meta = initPropTable()
+      body = @[]
+      segmentLoc = SourceLoc()
+      first = true
     of tkComma:
       discard r.next()
     else:
+      if not segmentLoc.hasSourceLoc:
+        segmentLoc = sourceLoc(tok, r.sourceName)
       let form = r.parseForm()
       if first:
         head = form
@@ -1637,8 +1648,14 @@ proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =
     r.raiseReadIncomplete("unexpected EOF: unclosed '('")
   discard r.next()
 
-  if inPipe:
-    result = finishPipeSegment(head, props, body, meta, immutable, inPipe)
+  if inPipeline:
+    if first:
+      r.raiseReadError("pipeline '~' requires a following stage")
+    pipelineStages.add r.finishPipelineStage(
+      head, props, body, meta, segmentLoc)
+    result = newPipeline(pipelineInitial, pipelineStages, immutable)
+  elif inPipe:
+    result = finishNodeSegment(head, props, body, meta, immutable)
   else:
     result = finishNodeSegment(head, props, body, meta, immutable)
 
@@ -1872,7 +1889,8 @@ proc parseForm(r: var Reader, inList = false): Value =
   of tkComma: finish newSym(",")
   of tkTilde:
     r.raiseReadErrorAt(tok,
-      "'~' message sends were removed; use '.message'")
+      "spaced '~' is a value-pipeline delimiter and is only valid between " &
+      "segments of one parenthesized form")
   of tkDotDotDot: finish newSym("...")
   of tkDollar:
     let nextTok = r.peek()

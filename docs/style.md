@@ -206,6 +206,25 @@ session/user/.name
 world/content/.len
 ```
 
+Use `~` when the important order is a value flowing through eager calls. The
+incoming value is the first positional argument by default; one direct `_`
+places it elsewhere. Keep a one-stage pipeline on one line when it fits, and
+put each stage of a longer pipeline on its own indented line:
+
+```gene
+(value ~ normalize options)
+
+(source
+  ~ parse options
+  ~ validate schema
+  ~ save db _)
+```
+
+This is sequencing syntax, not a nested-call abbreviation: `source` finishes
+before `parse` is evaluated. Use an explicit head slot for a message stage,
+such as `(value ~ _ .render options)`. Do not mix `~` and `;` at the same
+parenthesis depth; nest the operations when both are useful.
+
 For a long call, keep the callee on the opening line and indent arguments one
 level. Do not vertically align arguments with arbitrary spaces.
 

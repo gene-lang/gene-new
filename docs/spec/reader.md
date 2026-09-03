@@ -17,6 +17,11 @@
   context-neutral path classified by the compiler. A delimited `/` is a normal
   symbol.
 - Ordinary `^prop` and `@meta` require values; `^^flag` and `@@flag` mean true.
+- `;` folds the preceding segment into the next segment's head and never
+  substitutes `_`.
+- Spaced `~` preserves an initial expression plus ordered, separately owned
+  stages in syntax-only `vkPipeline`. Empty stages, duplicate direct `_` slots,
+  and same-depth `;`/`~` mixtures are read errors; nested forms are independent.
 - A `Value` occupies one machine word and zero initialization is `nil`.
 - Structural equality and hash ignore meta. `same?` is scalar identity by
   value and heap/container identity by reference.

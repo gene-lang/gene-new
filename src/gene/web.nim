@@ -309,6 +309,7 @@ type
     currentLoc: SourceLoc
     callSites: seq[WebCallSite]
     functionValueRefs: seq[WebFunctionValueRef]
+    nextPipelineTemp: int
 
   WebEmitter = object
     lines: seq[string]
@@ -3168,6 +3169,41 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   result = analysis.analyzeKnownCall(value, bindings, expected, resolvedName,
                                      signature, loc)
 
+proc analyzePipeline(analysis: WebAnalysis, value: Value,
+                     bindings: var Table[string, WebBinding],
+                     expected: WebType): WebExpr =
+  var local = copyBindings(bindings)
+  var forms: seq[Value]
+  proc freshTemp(): string =
+    while true:
+      inc analysis.nextPipelineTemp
+      result = "__gene_pipeline_web_" & $analysis.nextPipelineTemp
+      if not local.hasKey(result) and
+          not analysis.signatures.hasKey(result) and
+          not analysis.constants.hasKey(result):
+        return
+
+  var tempName = freshTemp()
+  forms.add newNode(newSym("let"),
+    body = @[newSym(tempName), value.pipelineInitial])
+  for i, stage in value.pipelineStages:
+    if stage.slot.kind != pskHead and stage.head.kind == vkSymbol and
+        (stage.head.symVal in CoreSpecialFormNames or
+         stage.head.symVal.endsWith("!")):
+      raise webError(stage.sourceLoc,
+        "pipeline stages must be eager calls or dot sends; syntax head '" &
+        stage.head.symVal & "' has no pipeline evaluation contract")
+    let expr = materializePipelineStage(stage, newSym(tempName),
+                                        value.pipelineImmutable)
+    if i == value.pipelineStages.high:
+      forms.add expr
+    else:
+      let nextName = freshTemp()
+      forms.add newNode(newSym("let"),
+        body = @[newSym(nextName), expr])
+      tempName = nextName
+  analysis.analyzeSequence(forms, local, expected, analysis.locFor(value))
+
 proc analyzeExpr(analysis: WebAnalysis, value: Value,
                  bindings: var Table[string, WebBinding],
                  expected: WebType = nil): WebExpr =
@@ -3261,6 +3297,8 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
     result.typ = WebType(kind: wtkMap, params: @[keyType, valueType])
   of vkNode:
     result = analysis.analyzeCall(value, bindings, expected)
+  of vkPipeline:
+    result = analysis.analyzePipeline(value, bindings, expected)
   else:
     raise webError(loc, $value.kind & " is outside the web profile")
   if expected != nil:

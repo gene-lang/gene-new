@@ -1099,7 +1099,7 @@ proc materializeMirroredVars*(scope: Scope) =
     return
   scope.varsDirty = false
   for i, name in scope.slotNames:
-    if name.len > 0 and scope.slotDefined(i):
+    if name.len > 0 and name[0] != '\0' and scope.slotDefined(i):
       scope.vars[name] = scope.slots[i]
 
 proc hasTypeBinding(binding: TypeBinding): bool {.inline.} =
@@ -3889,6 +3889,10 @@ proc freezeValue(value: Value): Value =
      vkLogger, vkEventMatcher, vkType, vkProtocol, vkProtocolMessage,
      vkEnumVariant:
     value
+  of vkPipeline:
+    raise newException(GeneError,
+      "freeze cannot freeze pipeline syntax; quote it for syntax or eval it " &
+      "as a program")
   of vkList:
     var items = newSeq[Value](value.listItems.len)
     for i, item in value.listItems:
@@ -4038,7 +4042,8 @@ proc keySegment(name: string, segment: Value): string =
 proc sortedBindingNames(scope: Scope): seq[string] =
   scope.materializeMirroredVars()
   for key in scope.vars.keys:
-    result.add key
+    if key.len == 0 or key[0] != '\0':
+      result.add key
   result.sort()
 
 proc declarationKind*(value: Value): string =
@@ -4064,6 +4069,7 @@ proc declarationKind*(value: Value): string =
   of vkSet: "Set"
   of vkHashMap: "HashMap"
   of vkNode: "Node"
+  of vkPipeline: "PipelineSyntax"
   of vkFunction: (if value.isSyntaxFn: "Fexpr" else: "Fn")
   of vkNativeFn: "NativeFn"
   of vkNamespace: "Namespace"
@@ -11138,6 +11144,7 @@ proc isSendableValue(value: Value, scope: Scope,
   of vkModule, vkEnv, vkCallerEnv, vkCell, vkStream, vkActorContext,
      vkActorStep, vkCPtr, vkCSlice, vkBuffer,
      vkDeviceBuffer, vkCapability, vkFfiLibrary, vkFfiCallable,
+     vkPipeline,
      # A version 1 bus is lane-owned and synchronous (events.md §9.1): using
      # one from another lane is a task-boundary error, so it never crosses.
      # Cross-lane delivery is an explicit adapter (§9.2), which transfers the
@@ -12097,9 +12104,10 @@ proc materializeCallerEvalParent(callerEnv: Value): Scope =
     # vars before slots: on mirrored scopes a not-yet-materialized vars
     # entry may be stale, and the slot overlay must win.
     for name, value in item.vars:
-      result.defineOverlay(name, value)
+      if name.len == 0 or name[0] != '\0':
+        result.defineOverlay(name, value)
     for index, name in item.slotNames:
-      if name.len > 0 and item.slotDefined(index):
+      if name.len > 0 and name[0] != '\0' and item.slotDefined(index):
         result.defineOverlay(name, item.slots[index])
     for impl in item.impls:
       result.impls.add impl
@@ -14252,6 +14260,41 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             rejectCallerEnvEscape("node meta construction", value)
           spush newNode(head, props = props, body = body, meta = meta,
                             immutable = proto.immutable)
+        of opMakePipeline:
+          let proto = chunk.pipelineBuilds[inst[].intArg]
+          var stages = newSeq[PipelineStage](proto.stages.len)
+          if proto.stages.len > 0:
+            for stageIndex in countdown(proto.stages.high, 0):
+              let stageProto = proto.stages[stageIndex]
+              var body = newSeq[Value](stageProto.bodyCount)
+              if body.len > 0:
+                for i in countdown(body.high, 0):
+                  body[i] = spop()
+              var props = initPropTable()
+              if stageProto.propNames.len > 0:
+                var values = newSeq[Value](stageProto.propNames.len)
+                for i in countdown(values.high, 0):
+                  values[i] = spop()
+                for i, name in stageProto.propNames:
+                  if values[i].kind != vkVoid:
+                    props[name] = values[i]
+              var meta = initPropTable()
+              if stageProto.metaNames.len > 0:
+                var values = newSeq[Value](stageProto.metaNames.len)
+                for i in countdown(values.high, 0):
+                  values[i] = spop()
+                for i, name in stageProto.metaNames:
+                  if values[i].kind != vkVoid:
+                    meta[name] = values[i]
+              let head = spop()
+              let detected = detectPipelineSlot(head, props, body)
+              if detected.count > 1:
+                raise newException(GeneError,
+                  "quasiquote produced more than one direct '_' pipeline slot")
+              stages[stageIndex] = PipelineStage(
+                head: head, props: props, body: body, meta: meta,
+                sourceLoc: stageProto.sourceLoc, slot: detected.slot)
+          spush newPipeline(spop(), stages, proto.immutable)
         of opMakeSelector:
           var body = newSeq[Value](inst[].intArg)
           if inst[].intArg > 0:
@@ -18418,6 +18461,8 @@ proc runtimeTypeExpr(value: Value): Value =
       newSym("Selector")
     else:
       newSym("Node")
+  of vkPipeline:
+    newSym("Any")
   of vkFunction: newSym(if value.isSyntaxFn: "Fexpr" else: "Fn")
   of vkNativeFn: newSym("NativeFn")
   of vkNamespace: newSym("Namespace")

@@ -163,6 +163,21 @@ proc main() =
     let v = run(simpleChunk, simpleScope)
     checksum = checksum + v.intVal
 
+  let pipelineScope = newGlobalScope()
+  discard run(compileSource(
+    "(fn pipeline_run [] (1 ~ + 2 ~ * 3)) " &
+    "(fn pipeline_explicit [] " &
+    "  (let first 1) (let second (+ first 2)) (* second 3))"),
+    pipelineScope)
+  let pipelineChunk = compileSource("(pipeline_run)")
+  let pipelineExplicitChunk = compileSource("(pipeline_explicit)")
+  bench("vm.pipeline.compiled_chunk", 500_000, i):
+    let v = run(pipelineChunk, pipelineScope)
+    checksum = checksum + v.intVal
+  bench("vm.pipeline_explicit.compiled_chunk", 500_000, i):
+    let v = run(pipelineExplicitChunk, pipelineScope)
+    checksum = checksum + v.intVal
+
   let tailMutualChunk = compileSource(
     "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
     "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &

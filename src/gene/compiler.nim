@@ -209,7 +209,7 @@ proc emitPlainCall(c: var Compiler, argCount: int, tail = false): int =
   c.emit(op, argCount, tail = tail)
 
 proc hasStableSourceIdentity(v: Value): bool =
-  v.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode}
+  v.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode, vkPipeline}
 
 proc sourceLocFor(c: Compiler, v: Value): SourceLoc =
   if c.sourceLocs != nil and v.hasStableSourceIdentity and
@@ -883,6 +883,17 @@ proc nextTemp(c: var Compiler, prefix: string): string =
 
 proc containsYield(value: Value): bool =
   case value.kind
+  of vkPipeline:
+    if containsYield(value.pipelineInitial): return true
+    for stage in value.pipelineStages:
+      if containsYield(stage.head): return true
+      for _, item in stage.props:
+        if containsYield(item): return true
+      for item in stage.body:
+        if containsYield(item): return true
+      for _, item in stage.meta:
+        if containsYield(item): return true
+    false
   of vkNode:
     if value.head.isSymbol("yield"):
       return true
@@ -921,6 +932,17 @@ proc containsYield(value: Value): bool =
 
 proc containsAwait(value: Value): bool =
   case value.kind
+  of vkPipeline:
+    if containsAwait(value.pipelineInitial): return true
+    for stage in value.pipelineStages:
+      if containsAwait(stage.head): return true
+      for _, item in stage.props:
+        if containsAwait(item): return true
+      for item in stage.body:
+        if containsAwait(item): return true
+      for _, item in stage.meta:
+        if containsAwait(item): return true
+    false
   of vkNode:
     if value.head.isSymbol("await"):
       return true
@@ -1922,6 +1944,25 @@ proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
                       c: var Compiler,
                       hygiene: var Table[string, string]): Value =
   case value.kind
+  of vkPipeline:
+    var stages: seq[PipelineStage]
+    for stage in value.pipelineStages:
+      let head = expandMacroQuasi(stage.head, env, depth, c, hygiene)
+      let props = expandMacroQuasiMap(stage.props, env, depth, c, hygiene)
+      var body: seq[Value]
+      for item in stage.body:
+        body.add expandMacroQuasi(item, env, depth, c, hygiene)
+      let meta = expandMacroQuasiMap(stage.meta, env, depth, c, hygiene)
+      let detected = detectPipelineSlot(head, props, body)
+      if detected.count > 1:
+        raise newException(GeneError,
+          "macro expansion produced more than one direct '_' pipeline slot")
+      stages.add PipelineStage(
+        head: head, props: props, body: body, meta: meta,
+        sourceLoc: stage.sourceLoc,
+        slot: detected.slot)
+    newPipeline(expandMacroQuasi(value.pipelineInitial, env, depth, c, hygiene),
+                stages, value.pipelineImmutable)
   of vkNode:
     expandMacroQuasiNode(value, env, depth, c, hygiene)
   of vkList:
@@ -2394,6 +2435,17 @@ proc markExpandedContainers(value: Value, loc: SourceLoc, macroName: string,
     provenance[value.bits] = ExpansionProvenance(sourceLoc: loc,
                                                   macroName: macroName)
   case value.kind
+  of vkPipeline:
+    markExpandedContainers(value.pipelineInitial, loc, macroName,
+                           locs, provenance)
+    for stage in value.pipelineStages:
+      markExpandedContainers(stage.head, loc, macroName, locs, provenance)
+      for _, item in stage.props:
+        markExpandedContainers(item, loc, macroName, locs, provenance)
+      for item in stage.body:
+        markExpandedContainers(item, loc, macroName, locs, provenance)
+      for _, item in stage.meta:
+        markExpandedContainers(item, loc, macroName, locs, provenance)
   of vkNode:
     markExpandedContainers(value.head, loc, macroName, locs, provenance)
     for _, item in value.meta:
@@ -2418,6 +2470,8 @@ proc markExpandedContainers(value: Value, loc: SourceLoc, macroName: string,
   else:
     discard
 
+proc rejectPipelineSyntaxStage(c: Compiler, stage: PipelineStage)
+
 proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
                      fallback: SourceLoc,
                      locs: var Table[uint64, SourceLoc],
@@ -2425,6 +2479,35 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
                                            ExpansionProvenance]): Value =
   let loc = unit.expansionLoc(value, fallback)
   case value.kind
+  of vkPipeline:
+    var stages: seq[PipelineStage]
+    for stage in value.pipelineStages:
+      c.rejectPipelineSyntaxStage(stage)
+      var props = initPropTable()
+      for key, item in stage.props:
+        props[key] = c.expandMacroTree(unit, item, stage.sourceLoc,
+                                       locs, provenance)
+      var body: seq[Value]
+      for item in stage.body:
+        body.add c.expandMacroTree(unit, item, stage.sourceLoc,
+                                   locs, provenance)
+      var meta = initPropTable()
+      for key, item in stage.meta:
+        meta[key] = c.expandMacroTree(unit, item, stage.sourceLoc,
+                                      locs, provenance)
+      let head = c.expandMacroTree(unit, stage.head, stage.sourceLoc,
+                                  locs, provenance)
+      let detected = detectPipelineSlot(head, props, body)
+      if detected.count > 1:
+        raise newException(GeneError,
+          "macro expansion produced more than one direct '_' pipeline slot")
+      stages.add PipelineStage(
+        head: head,
+        props: props, body: body, meta: meta,
+        sourceLoc: stage.sourceLoc, slot: detected.slot)
+    result = newPipeline(
+      c.expandMacroTree(unit, value.pipelineInitial, loc, locs, provenance),
+      stages, value.pipelineImmutable)
   of vkNode:
     if value.head.kind == vkSymbol and c.hasMacros and
         c.macros.hasKey(value.head.symVal):
@@ -6533,8 +6616,36 @@ proc compileQuasiNode(c: var Compiler, node: Value, depth: int) =
   else:
     compileQuasiNodeParts(c, node, depth)
 
+proc compileQuasiPipeline(c: var Compiler, value: Value, depth: int) =
+  compileQuasiTemplate(c, value.pipelineInitial, depth)
+  var stages: seq[PipelineStageBuildProto]
+  for stage in value.pipelineStages:
+    compileQuasiTemplate(c, stage.head, depth)
+    var metaNames: seq[string]
+    for key, item in stage.meta:
+      metaNames.add key
+      compileQuasiTemplate(c, item, depth)
+    var propNames: seq[string]
+    for key, item in stage.props:
+      propNames.add key
+      compileQuasiTemplate(c, item, depth)
+    for item in stage.body:
+      if item.quasiSpliceExpr(depth).splice:
+        raise newException(GeneError,
+          "quasiquoted pipeline stages do not support body splices")
+      compileQuasiTemplate(c, item, depth)
+    stages.add PipelineStageBuildProto(
+      metaNames: metaNames, propNames: propNames,
+      bodyCount: stage.body.len, sourceLoc: stage.sourceLoc,
+      slot: stage.slot)
+  let index = c.chunk.addPipelineBuild(PipelineBuildProto(
+    stages: stages, immutable: value.pipelineImmutable))
+  discard c.emit(opMakePipeline, index)
+
 proc compileQuasiTemplate(c: var Compiler, value: Value, depth: int) =
   case value.kind
+  of vkPipeline:
+    compileQuasiPipeline(c, value, depth)
   of vkNode:
     compileQuasiNode(c, value, depth)
   of vkList:
@@ -8244,6 +8355,13 @@ proc collectWebModuleLocs(c: Compiler, value: Value,
     if c.sourceLocs != nil and c.sourceLocs[].hasKey(value.bits):
       into.add (value.bits, c.sourceLocs[][value.bits])
   case value.kind
+  of vkPipeline:
+    c.collectWebModuleLocs(value.pipelineInitial, into, seen)
+    for stage in value.pipelineStages:
+      c.collectWebModuleLocs(stage.head, into, seen)
+      for _, item in stage.meta: c.collectWebModuleLocs(item, into, seen)
+      for _, item in stage.props: c.collectWebModuleLocs(item, into, seen)
+      for item in stage.body: c.collectWebModuleLocs(item, into, seen)
   of vkNode:
     c.collectWebModuleLocs(value.head, into, seen)
     for _, item in value.meta: c.collectWebModuleLocs(item, into, seen)
@@ -8780,6 +8898,129 @@ proc compileNode(c: var Compiler, node: Value, allowModDecl: bool,
       return
   compileCall(c, node, tail = tail)
 
+proc pipelineMacroForHead(c: Compiler, head: Value): tuple[
+    found: bool, def: MacroDef] =
+  if head.kind == vkSymbol and c.hasMacros and c.macros.hasKey(head.symVal):
+    return (true, c.macros[head.symVal])
+  let imported = c.importedMacroForHead(head)
+  if imported.found:
+    return imported
+  let path = head.pathSymbolSegments
+  if path.len > 1:
+    let definitions = builtinNamespaceMacros(
+      path.toOpenArray(0, path.high - 1))
+    if definitions.hasKey(path[^1]):
+      return (true, definitions[path[^1]])
+
+proc expandDirectPipelineMacro(c: var Compiler, value: Value): Value =
+  if value.kind != vkNode:
+    return value
+  let macroDef = c.pipelineMacroForHead(value.head)
+  if not macroDef.found:
+    return value
+  if c.macroExpansionDepth >= MaxMacroExpansionDepth:
+    raise newException(GeneError, "macro expansion depth exceeded")
+  inc c.macroExpansionDepth
+  try:
+    result = c.expandDirectPipelineMacro(c.expandMacro(macroDef.def, value))
+  finally:
+    dec c.macroExpansionDepth
+
+proc rejectPipelineSyntaxStage(c: Compiler, stage: PipelineStage) =
+  if stage.slot.kind == pskHead:
+    return
+
+  var rejected = false
+  let builtinPath = stage.head.pathSymbolSegments
+  var name =
+    if builtinPath.len > 0: builtinPath.join("/")
+    else: "computed stage head"
+  if stage.head.kind == vkSymbol:
+    name = stage.head.symVal
+    rejected = name in CoreSpecialFormNames or name.endsWith("!") or
+      (c.hasMacros and c.macros.hasKey(name))
+
+  let imported = c.importedHeadCandidates(stage.head)
+  if imported.len > 1:
+    raise importedNameError(name, imported)
+  if imported.len == 1 and
+      imported[0].category in {cbcMacro, cbcSyntaxFn}:
+    rejected = true
+
+  if builtinPath.len > 1:
+    let definitions = builtinNamespaceMacros(
+      builtinPath.toOpenArray(0, builtinPath.high - 1))
+    if definitions.hasKey(builtinPath[^1]):
+      rejected = true
+
+  if rejected:
+    raise newException(GeneError,
+      "pipeline stages must be eager calls or dot sends; syntax head '" &
+      name & "' has no pipeline evaluation contract")
+
+proc expandDirectPipelineStage(c: var Compiler,
+                               stage: PipelineStage): PipelineStage =
+  result = stage
+  result.head = c.expandDirectPipelineMacro(stage.head)
+  result.props = initPropTable()
+  for key, value in stage.props:
+    result.props[key] = c.expandDirectPipelineMacro(value)
+  result.body = @[]
+  for value in stage.body:
+    result.body.add c.expandDirectPipelineMacro(value)
+  let detected = detectPipelineSlot(result.head, result.props, result.body)
+  if detected.count > 1:
+    raise newException(GeneError,
+      "macro expansion produced more than one direct '_' pipeline slot")
+  result.slot = detected.slot
+
+proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
+  if pipeline.pipelineStages.len == 0:
+    compileExpr(c, pipeline.pipelineInitial, tail = tail)
+    return
+  inc c.gensym
+  let tempName = "\x00gene_pipeline_" & $c.gensym
+  let tempSlot =
+    if c.useLocalSlots: c.reserveLocal(tempName)
+    else: -1
+
+  proc defineTemp(c: var Compiler) =
+    if tempSlot >= 0:
+      discard c.emit(opRedefineLocal, tempSlot, name = tempName)
+    else:
+      discard c.emit(opRedefineName, name = tempName)
+
+  proc setTemp(c: var Compiler) =
+    if tempSlot >= 0:
+      discard c.emit(opSetLocal, tempSlot, name = tempName)
+    else:
+      discard c.emit(opSetName, name = tempName)
+
+  compileExpr(c, pipeline.pipelineInitial)
+  c.defineTemp()
+  discard c.emit(opPop)
+  let tempExpr = newSym(tempName)
+  for i, sourceStage in pipeline.pipelineStages:
+    c.rejectPipelineSyntaxStage(sourceStage)
+    let stage = c.expandDirectPipelineStage(sourceStage)
+    c.rejectPipelineSyntaxStage(stage)
+    let savedLoc = c.currentLoc
+    if stage.sourceLoc.hasSourceLoc:
+      c.currentLoc = stage.sourceLoc
+    let expr = materializePipelineStage(stage, tempExpr,
+                                        pipeline.pipelineImmutable)
+    let firstInstruction = c.chunk.instructions.len
+    compileExpr(c, expr, tail = tail and i == pipeline.pipelineStages.high)
+    let publicSite = materializePipelineStage(stage, newSym("_"),
+                                              pipeline.pipelineImmutable)
+    for instruction, site in c.chunk.callSites.mpairs:
+      if instruction >= firstInstruction and site.bits == expr.bits:
+        site = publicSite
+    c.currentLoc = savedLoc
+    if i < pipeline.pipelineStages.high:
+      c.setTemp()
+      discard c.emit(opPop)
+
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false,
                  tail = false) =
   let savedLoc = c.currentLoc
@@ -8797,6 +9038,8 @@ proc compileExpr(c: var Compiler, node: Value, allowModDecl = false,
     c.emitLoadBinding(node.symVal)
   of vkNode:
     compileNode(c, node, allowModDecl, tail = tail)
+  of vkPipeline:
+    compilePipeline(c, node, tail)
   of vkList:
     compileListValue(c, node)
   of vkMap:
@@ -8817,6 +9060,16 @@ proc collectMutableBindingNames(value: Value,
   ## which only disables an optimization; missing a later captured mutation
   ## could leave a direct-call opcode targeting a binding whose value changed.
   case value.kind
+  of vkPipeline:
+    collectMutableBindingNames(value.pipelineInitial, names)
+    for stage in value.pipelineStages:
+      collectMutableBindingNames(stage.head, names)
+      for _, item in stage.props:
+        collectMutableBindingNames(item, names)
+      for item in stage.body:
+        collectMutableBindingNames(item, names)
+      for _, item in stage.meta:
+        collectMutableBindingNames(item, names)
   of vkNode:
     if value.head.isSymbol("set") and value.body.len > 0 and
         value.body[0].kind == vkSymbol:
@@ -8852,6 +9105,9 @@ proc topLevelFormInfo(form: Value, loc: SourceLoc): TopLevelFormInfo =
       result.label = form.head.symVal
     else:
       result.label = "expression"
+  of vkPipeline:
+    result.nodeLike = true
+    result.label = "pipeline"
   of vkList: result.label = "[…]"
   of vkMap: result.label = "{…}"
   of vkHashMap: result.label = "{{…}}"
@@ -8863,6 +9119,16 @@ proc collectModuleRefNames(value: Value, names: var seq[string],
   ## Runtime $deref is intentionally not a declaration; #Deref is, because it
   ## is the structural forward-use form.
   case value.kind
+  of vkPipeline:
+    collectModuleRefNames(value.pipelineInitial, names, seen, inFunction)
+    for stage in value.pipelineStages:
+      collectModuleRefNames(stage.head, names, seen, inFunction)
+      for _, item in stage.props:
+        collectModuleRefNames(item, names, seen, inFunction)
+      for item in stage.body:
+        collectModuleRefNames(item, names, seen, inFunction)
+      for _, item in stage.meta:
+        collectModuleRefNames(item, names, seen, inFunction)
   of vkNode:
     if value.head.isSymbol("quote") or value.head.isSymbol("quasiquote"):
       return

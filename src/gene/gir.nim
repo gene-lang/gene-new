@@ -40,6 +40,7 @@ type
     opMakeMap
     opMakeHashMap
     opMakeNode
+    opMakePipeline
     opMakeSelector
     opApplySelector
     opApplySelectorTop
@@ -550,6 +551,17 @@ type
     bodySplices*: seq[bool]
     immutable*: bool
 
+  PipelineStageBuildProto* = object
+    metaNames*: seq[string]
+    propNames*: seq[string]
+    bodyCount*: int
+    sourceLoc*: SourceLoc
+    slot*: PipelineSlot
+
+  PipelineBuildProto* = object
+    stages*: seq[PipelineStageBuildProto]
+    immutable*: bool
+
   ListBuildProto* = object
     splices*: seq[bool]
     immutable*: bool
@@ -673,6 +685,7 @@ type
     capabilityBlocks*: seq[CapabilityBlockProto]
     listBuilds*: seq[ListBuildProto]
     nodeBuilds*: seq[NodeBuildProto]
+    pipelineBuilds*: seq[PipelineBuildProto]
     typeProtos*: seq[TypeProto]
     enumProtos*: seq[EnumProto]
     webModules*: seq[WebModuleProto]
@@ -732,7 +745,7 @@ proc newChunk*(sourceName = ""): Chunk =
         imports: @[], importImpls: @[],
         diagnostics: @[], forLoops: @[], matches: @[], tries: @[],
         capabilityBlocks: @[], listBuilds: @[],
-        nodeBuilds: @[],
+        nodeBuilds: @[], pipelineBuilds: @[],
         typeProtos: @[], enumProtos: @[], protocolProtos: @[], implProtos: @[],
         ffiLibraries: @[], ffiFns: @[], ffiStructs: @[], ffiUnions: @[],
         ffiStructDependencies: @[],
@@ -747,6 +760,10 @@ proc addListBuild*(chunk: Chunk, lp: ListBuildProto): int =
 proc addNodeBuild*(chunk: Chunk, np: NodeBuildProto): int =
   result = chunk.nodeBuilds.len
   chunk.nodeBuilds.add np
+
+proc addPipelineBuild*(chunk: Chunk, pp: PipelineBuildProto): int =
+  result = chunk.pipelineBuilds.len
+  chunk.pipelineBuilds.add pp
 
 proc addType*(chunk: Chunk, tp: TypeProto): int =
   result = chunk.typeProtos.len
@@ -930,6 +947,8 @@ proc formatInstruction(inst: Instruction): string =
     result.add " count=" & $inst.intArg
   of opMakeNode:
     result.add " node=" & $inst.intArg
+  of opMakePipeline:
+    result.add " pipeline=" & $inst.intArg
   of opMakeSelector:
     result.add " count=" & $inst.intArg
   of opApplySelector:

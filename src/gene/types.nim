@@ -98,6 +98,7 @@ type
     vkSet       ## immutable hash-stable element set
     vkHashMap   ## immutable any-key hashed map
     vkNode      ## general node (head + props + body + meta)
+    vkPipeline  ## reader/compiler-only sequenced `~` pipeline syntax
     vkFunction  ## closure: params + body + captured scope
     vkNativeFn  ## built-in function implemented in Nim
     vkNamespace ## named binding container (`ns` or module root namespace)
@@ -263,6 +264,25 @@ type
     # every key id to its data position. A plain value (not ref) so copied
     # tables — detached snapshots — never share index state.
     index: Table[int32, int]
+
+  PipelineSlotKind* = enum
+    pskDefault
+    pskHead
+    pskBody
+    pskProp
+
+  PipelineSlot* = object
+    kind*: PipelineSlotKind
+    index*: int
+    name*: string
+
+  PipelineStage* = object
+    head*: Value
+    props*: PropTable
+    body*: seq[Value]
+    meta*: PropTable
+    sourceLoc*: SourceLoc
+    slot*: PipelineSlot
 
   # Managed heap objects. Manually allocated (alloc0 / dealloc); each begins with
   # a refCount header used by retain/release.
@@ -631,6 +651,7 @@ type
     okDuration
     okSet
     okHashMap
+    okPipeline
     okEnv
     okCell
     okAtomicCell
@@ -751,6 +772,11 @@ type
 
   HashMapData = ref object of GeneObjectData
     entries: seq[HashMapEntry]
+
+  PipelineData = ref object of GeneObjectData
+    initial: Value
+    stages: seq[PipelineStage]
+    immutable: bool
 
   EnvData = ref object of GeneObjectData
     cycleRefs: int            # Value-held refs, for trial-deletion collection
@@ -1717,11 +1743,12 @@ proc objectCycleRefs(data: GeneObjectData): int {.inline.} =
   else:
     0
 
-template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) =
+template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
+                        action: untyped) =
   template emit(valueExpr: Value) =
     block:
       let edgeBits {.inject.} = valueExpr.bits
-      body
+      action
 
   case data.objKind
   of okNamespace:
@@ -1748,6 +1775,17 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped, body: untyped) 
     for entry in HashMapData(data).entries:
       emit(entry.key)
       emit(entry.val)
+  of okPipeline:
+    let d = PipelineData(data)
+    emit(d.initial)
+    for stage in d.stages:
+      emit(stage.head)
+      for _, val in stage.props:
+        emit(val)
+      for val in stage.body:
+        emit(val)
+      for _, val in stage.meta:
+        emit(val)
   of okEnv:
     let d = EnvData(data)
     emit(d.parent)
@@ -1928,6 +1966,10 @@ proc clearObjectEdges(data: GeneObjectData) =
     SetData(data).items.setLen(0)
   of okHashMap:
     HashMapData(data).entries.setLen(0)
+  of okPipeline:
+    let d = PipelineData(data)
+    clearValueSlot(d.initial)
+    d.stages.setLen(0)
   of okEnv:
     let d = EnvData(data)
     clearValueSlot(d.parent)
@@ -2431,6 +2473,7 @@ const objKindValueKinds: array[ObjKind, ValueKind] = [
   okDuration: vkDuration,
   okSet: vkSet,
   okHashMap: vkHashMap,
+  okPipeline: vkPipeline,
   okEnv: vkEnv,
   okCell: vkCell,
   okAtomicCell: vkAtomicCell,
@@ -2729,6 +2772,20 @@ proc hashMapEntries*(v: Value): lent seq[HashMapEntry] =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okHashMap:
     raise newException(FieldDefect, "value is not a HashMap")
   HashMapData(objData(v)).entries
+
+proc pipelineData(v: Value): PipelineData =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okPipeline:
+    raise newException(FieldDefect, "value is not pipeline syntax")
+  PipelineData(objData(v))
+
+proc pipelineInitial*(v: Value): Value =
+  v.pipelineData.initial
+
+proc pipelineStages*(v: Value): lent seq[PipelineStage] =
+  v.pipelineData.stages
+
+proc pipelineImmutable*(v: Value): bool =
+  v.pipelineData.immutable
 
 proc head*(v: Value): Value =
   if v.tagOf != NODE_TAG:
@@ -4975,6 +5032,11 @@ proc newSet*(items: sink seq[Value] = @[]): Value =
 proc newHashMap*(entries: sink seq[HashMapEntry] = @[]): Value =
   boxObject(HashMapData(objKind: okHashMap, entries: entries))
 
+proc newPipeline*(initial: sink Value, stages: sink seq[PipelineStage],
+                  immutable = false): Value =
+  boxObject(PipelineData(objKind: okPipeline, initial: initial,
+                          stages: stages, immutable: immutable))
+
 proc newRange*(start, stop: int64, step: int64 = 1,
                inclusive = false): Value =
   if step == 0:
@@ -5119,6 +5181,16 @@ proc containsPendingModuleRef*(v: Value, name: string,
   if not v.isManaged or seen.containsOrIncl(v.bits):
     return false
   case v.kind
+  of vkPipeline:
+    if containsPendingModuleRef(v.pipelineInitial, name, seen): return true
+    for stage in v.pipelineStages:
+      if containsPendingModuleRef(stage.head, name, seen): return true
+      for _, item in stage.props:
+        if containsPendingModuleRef(item, name, seen): return true
+      for item in stage.body:
+        if containsPendingModuleRef(item, name, seen): return true
+      for _, item in stage.meta:
+        if containsPendingModuleRef(item, name, seen): return true
   of vkList:
     for item in v.listItems:
       if containsPendingModuleRef(item, name, seen): return true
@@ -5160,6 +5232,25 @@ proc patchPendingModuleRef*(v: Value, name: string, target: Value,
   if not v.isManaged or seen.containsOrIncl(v.bits):
     return v
   case v.kind
+  of vkPipeline:
+    var stages: seq[PipelineStage]
+    for stage in v.pipelineStages:
+      var props = initPropTable()
+      for key, item in stage.props:
+        props[key] = patchPendingModuleRef(item, name, target, seen)
+      var body: seq[Value]
+      for item in stage.body:
+        body.add patchPendingModuleRef(item, name, target, seen)
+      var meta = initPropTable()
+      for key, item in stage.meta:
+        meta[key] = patchPendingModuleRef(item, name, target, seen)
+      stages.add PipelineStage(
+        head: patchPendingModuleRef(stage.head, name, target, seen),
+        props: props, body: body, meta: meta,
+        sourceLoc: stage.sourceLoc, slot: stage.slot)
+    return newPipeline(
+      patchPendingModuleRef(v.pipelineInitial, name, target, seen),
+      stages, v.pipelineImmutable)
   of vkList:
     let p = cast[ptr GeneList](v.bits and PAYLOAD_MASK)
     for i in 0 ..< p.items.len:
@@ -5312,6 +5403,47 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
       entries.add HashMapEntry(key: weakenScopeFunctions(entry.key, owner),
                                val: weakenScopeFunctions(entry.val, owner))
     newHashMap(entries)
+  of vkPipeline:
+    let weakenedInitial = weakenScopeFunctions(v.pipelineInitial, owner)
+    var changed = weakenedInitial.bits != v.pipelineInitial.bits
+    if not changed:
+      for stage in v.pipelineStages:
+        if weakenScopeFunctions(stage.head, owner).bits != stage.head.bits:
+          changed = true
+          break
+        for _, val in stage.props:
+          if weakenScopeFunctions(val, owner).bits != val.bits:
+            changed = true
+            break
+        if changed: break
+        for item in stage.body:
+          if weakenScopeFunctions(item, owner).bits != item.bits:
+            changed = true
+            break
+        if changed: break
+        for _, val in stage.meta:
+          if weakenScopeFunctions(val, owner).bits != val.bits:
+            changed = true
+            break
+        if changed: break
+    if not changed:
+      return v
+    var stages: seq[PipelineStage]
+    for stage in v.pipelineStages:
+      var props = initPropTable()
+      for key, val in stage.props:
+        props[key] = weakenScopeFunctions(val, owner)
+      var body: seq[Value]
+      for item in stage.body:
+        body.add weakenScopeFunctions(item, owner)
+      var meta = initPropTable()
+      for key, val in stage.meta:
+        meta[key] = weakenScopeFunctions(val, owner)
+      stages.add PipelineStage(
+        head: weakenScopeFunctions(stage.head, owner),
+        props: props, body: body, meta: meta,
+        sourceLoc: stage.sourceLoc, slot: stage.slot)
+    newPipeline(weakenedInitial, stages, v.pipelineImmutable)
   of vkNode:
     let weakenedHead = weakenScopeFunctions(v.head, owner)
     var changed = weakenedHead.bits != v.head.bits
@@ -5426,6 +5558,47 @@ proc escapeWeakFunctions*(v: Value): Value =
       entries.add HashMapEntry(key: escapeWeakFunctions(entry.key),
                                val: escapeWeakFunctions(entry.val))
     newHashMap(entries)
+  of vkPipeline:
+    let escapedInitial = escapeWeakFunctions(v.pipelineInitial)
+    var changed = escapedInitial.bits != v.pipelineInitial.bits
+    if not changed:
+      for stage in v.pipelineStages:
+        if escapeWeakFunctions(stage.head).bits != stage.head.bits:
+          changed = true
+          break
+        for _, val in stage.props:
+          if escapeWeakFunctions(val).bits != val.bits:
+            changed = true
+            break
+        if changed: break
+        for item in stage.body:
+          if escapeWeakFunctions(item).bits != item.bits:
+            changed = true
+            break
+        if changed: break
+        for _, val in stage.meta:
+          if escapeWeakFunctions(val).bits != val.bits:
+            changed = true
+            break
+        if changed: break
+    if not changed:
+      return v
+    var stages: seq[PipelineStage]
+    for stage in v.pipelineStages:
+      var props = initPropTable()
+      for key, val in stage.props:
+        props[key] = escapeWeakFunctions(val)
+      var body: seq[Value]
+      for item in stage.body:
+        body.add escapeWeakFunctions(item)
+      var meta = initPropTable()
+      for key, val in stage.meta:
+        meta[key] = escapeWeakFunctions(val)
+      stages.add PipelineStage(
+        head: escapeWeakFunctions(stage.head),
+        props: props, body: body, meta: meta,
+        sourceLoc: stage.sourceLoc, slot: stage.slot)
+    newPipeline(escapedInitial, stages, v.pipelineImmutable)
   of vkNode:
     let escapedHead = escapeWeakFunctions(v.head)
     var changed = escapedHead.bits != v.head.bits

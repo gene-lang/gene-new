@@ -292,6 +292,20 @@ proc renderPipelineStage(stage: seq[Value]): string =
   else:
     result = joinItems(stage)
 
+proc valuePipelineStageLine(stage: PipelineStage): string =
+  result = oneLine(stage.head)
+  addProps(result, stage.meta, "@")
+  addProps(result, stage.props, "^")
+  if stage.body.len > 0:
+    result.add ' ' & joinItems(stage.body)
+
+proc valuePipelineOneLine(value: Value): string =
+  result = if value.pipelineImmutable: "#(" else: "("
+  result.add oneLine(value.pipelineInitial)
+  for stage in value.pipelineStages:
+    result.add " ~ " & valuePipelineStageLine(stage)
+  result.add ')'
+
 proc pipelineParts(v: Value): tuple[base: Value, stages: seq[seq[Value]]] =
   ## Reader pipe folding and explicitly nested receiver sends have the same
   ## value shape. Canonical human style uses pipe sugar for chains of at least
@@ -321,6 +335,8 @@ proc pipelineOneLine(v: Value): string =
 
 proc oneLine(v: Value): string =
   case v.kind
+  of vkPipeline:
+    valuePipelineOneLine(v)
   of vkNode:
     let pipeline = pipelineOneLine(v)
     if pipeline.len > 0:
@@ -380,6 +396,17 @@ proc hasMultilineString(v: Value): bool =
     for item in v.body:
       if hasMultilineString(item): return true
     false
+  of vkPipeline:
+    if hasMultilineString(v.pipelineInitial): return true
+    for stage in v.pipelineStages:
+      if hasMultilineString(stage.head): return true
+      for _, item in stage.props:
+        if hasMultilineString(item): return true
+      for item in stage.body:
+        if hasMultilineString(item): return true
+      for _, item in stage.meta:
+        if hasMultilineString(item): return true
+    false
   of vkList:
     for item in v.listItems:
       if hasMultilineString(item): return true
@@ -416,6 +443,8 @@ proc fits(v: Value, indent: int): bool =
   not hasMultilineString(v) and indent + oneLine(v).len <= MaxWidth
 
 proc prefersMultiline(v: Value): bool =
+  if v.kind == vkPipeline:
+    return v.pipelineStages.len >= 2
   if v.kind != vkNode:
     return false
   if pipelineParts(v).stages.len >= 2:
@@ -529,6 +558,13 @@ proc fmtValue(v: Value, indent: int): string =
       of "...": return fmtValue(v.body[0], indent) & "..."
       else: discard
     breakNode(v, indent)
+  of vkPipeline:
+    let pad = repeat(' ', indent + 2)
+    var sb = if v.pipelineImmutable: "#(" else: "("
+    sb.add oneLine(v.pipelineInitial)
+    for stage in v.pipelineStages:
+      sb.add "\n" & pad & "~ " & valuePipelineStageLine(stage)
+    sb & ")"
   of vkList:
     let pad = repeat(' ', indent + 2)
     var sb = if v.listImmutable: "#[" else: "["

@@ -2088,6 +2088,36 @@
       }
     },
     {
+      "id": "pipeline.sequenced_default",
+      "source": "(fn add [x y] (+ x y)) (1.0 ~ add 2.0)",
+      "web_source": "(mod pipeline_sequenced_default ^profile web) (fn add [x : F64 y : F64] : F64 (+ x y)) (fn run [] : F64 (1.0 ~ add 2.0))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "3.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "pipeline.generated_name_is_private",
+      "source": "(let __gene_pipeline_web_1 10.0) (fn add [x y] (+ x y)) (1.0 ~ add __gene_pipeline_web_1)",
+      "web_source": "(mod pipeline_generated_name_is_private ^profile web) (let __gene_pipeline_web_1 10.0) (fn add [x : F64 y : F64] : F64 (+ x y)) (fn run [] : F64 (1.0 ~ add __gene_pipeline_web_1))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "11.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
       "id": "index.list_negative",
       "source": "(var xs [1.0 2.0 3.0]) xs/-1",
       "web_source": "(mod index_list_negative ^profile web) (fn run [] : F64 (var xs [1.0 2.0 3.0]) xs/-1)",
