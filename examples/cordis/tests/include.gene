@@ -1,0 +1,41 @@
+(mod include_test)
+
+(import [RuntimeOptions LoaderOptions CompositionError invocation_limits
+         default_plugin_invoker new_runtime]
+  from "../src/cordis")
+(import [include_file] from "../src/include")
+(import [LoadedValue loaded_key] from "../fixtures/contract")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var runtime
+    (new_runtime
+      (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                      ^default_limits (invocation_limits))))
+  (runtime .admit_service_key loaded_key)
+  (var loader
+    (runtime .loader
+      (LoaderOptions ^plugin_root "fixtures/plugins"
+        ^shared ["fixtures/contract.gene" "src/plugin_api.gene"]
+        ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+        ^default_limits nil ^reload_policy nil)))
+  (var include
+    (include_file loader "fixtures/composition.gene"
+      ^patches [{^entry "provider" ^expected_module "provider.gene"
+                 ^config 43}]))
+  (var snapshot (include .load))
+  (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 43)
+    "include patches must target stable entry ids before reconciliation")
+  (var include_snapshot (include .inspect))
+  (assert (== include_snapshot/warnings #[])
+    "matching expected modules must apply without warning")
+  (assert
+    (try (include .write {^format 1 ^entries []}) false
+         catch CompositionError true)
+    "read-only includes must reject persistence")
+  (include .dispose)
+  (loader .dispose)
+  (runtime .close)
+  ($println "include: ok"))

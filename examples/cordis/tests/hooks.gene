@@ -1,0 +1,171 @@
+(mod hooks)
+
+(import [HookMode HookKey RuntimeOptions PluginSpec HookDispatchError
+         ContinuationAlreadyCalled ContextDisposed
+         invocation_limits service_key hook_key default_plugin_invoker
+         new_runtime]
+  from "../src/cordis")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(protocol SubjectService
+  (message id [] : Str))
+(type SubjectValue)
+(impl SubjectService for SubjectValue
+  (message id [] : Str "subject"))
+(fn check_subject [value : SubjectService] : SubjectService value)
+
+(var subject_key (service_key "subject" SubjectService ^check check_subject))
+(var emit_key (hook_key "emit" HookMode/emit))
+(var parallel_key (hook_key "parallel" HookMode/parallel))
+(var parallel_error_key (hook_key "parallel_error" HookMode/parallel))
+(var bail_key (hook_key "bail" HookMode/bail))
+(var serial_key (hook_key "serial" HookMode/serial))
+(var waterfall_key (hook_key "waterfall" HookMode/waterfall))
+
+(var calls ($cell ($thaw #[])))
+(var saved_next ($cell nil))
+(var private_context_cell ($cell nil))
+(fn note [value] ((calls .get) .push value))
+
+(fn first [payload] (note $"first:${payload}"))
+(fn once_handler [payload] (note $"once:${payload}"))
+(fn scoped [payload] (note $"scoped:${payload}"))
+(fn private_scoped [payload] (note $"private-scoped:${payload}"))
+(fn global_handler [payload] (note $"global:${payload}"))
+(fn slow_parallel [payload] ($sleep 10) (note "slow"))
+(fn fast_parallel [payload] (note "fast"))
+(fn panic_parallel [payload] ($panic "parallel boom"))
+(fn after_parallel_error [payload] (note "after-error"))
+
+(fn bail_false [payload] (note "false") false)
+(fn bail_stop [payload] (note "stop") "stopped")
+(fn bail_late [payload] (note "late") true)
+(fn serial_wait [payload] ($sleep 5) (note "serial-wait") false)
+(fn serial_stop [payload] (note "serial-stop") "serial-result")
+
+(fn waterfall_one [payload, next]
+  (note $"w1:${payload}")
+  (saved_next .set next)
+  (next (+ payload 1)))
+(fn waterfall_two [payload, next]
+  (note $"w2:${payload}")
+  (+ (next (+ payload 1)) 10))
+(fn waterfall_terminal [payload]
+  (note $"terminal:${payload}")
+  (* payload 2))
+
+(fn activate [ctx, config]
+  (ctx .provide subject_key (SubjectValue))
+  (ctx .on emit_key first)
+  (ctx .once emit_key once_handler)
+  (ctx .on emit_key scoped)
+  (var private_context (ctx .derive {^isolate [subject_key]}))
+  (private_context_cell .set private_context)
+  (private_context .on emit_key private_scoped)
+  (ctx .on emit_key global_handler {^global true})
+  (ctx .on parallel_key slow_parallel)
+  (ctx .on parallel_key fast_parallel)
+  (ctx .on parallel_error_key panic_parallel)
+  (ctx .on parallel_error_key after_parallel_error)
+  (ctx .on bail_key bail_false)
+  (ctx .on bail_key bail_stop)
+  (ctx .on bail_key bail_late)
+  (ctx .on serial_key serial_wait)
+  (ctx .on serial_key serial_stop)
+  (ctx .on waterfall_key waterfall_one)
+  (ctx .on waterfall_key waterfall_two))
+
+(var plugin
+  (PluginSpec ^id "hooks" ^config_schema nil ^requires []
+              ^provides [subject_key] ^reload nil ^activate activate))
+(var runtime
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                    ^default_limits (invocation_limits))))
+(runtime .admit_service_key subject_key)
+(for key in [emit_key parallel_key parallel_error_key bail_key serial_key
+             waterfall_key]
+  (runtime .admit_hook_key key))
+(var root (runtime .root))
+(var instance (runtime .install root plugin nil))
+(instance .await_ready)
+
+(root .dispatch emit_key "a")
+(root .dispatch emit_key "b")
+(assert (== (calls .get)
+            ["first:a" "once:a" "scoped:a" "private-scoped:a" "global:a"
+             "first:b" "scoped:b" "private-scoped:b" "global:b"])
+  "emit ordering and once consumption must be deterministic")
+
+(calls .set ($thaw #[]))
+(root .dispatch parallel_key nil)
+(assert (&& ((calls .get) .contains? "fast")
+            ((calls .get) .contains? "slow")
+            (== ($size (calls .get)) 2))
+  "parallel dispatch must join every handler")
+(calls .set ($thaw #[]))
+(assert
+  (try (root .dispatch parallel_error_key nil) false
+       catch HookDispatchError true)
+  "parallel dispatch must aggregate panic outcomes")
+(assert ((calls .get) .contains? "after-error")
+  "one parallel failure must not skip later handlers")
+
+(calls .set ($thaw #[]))
+(assert (== (root .dispatch bail_key nil) "stopped")
+  "bail dispatch must return the first bailed value")
+(assert (== (calls .get) ["false" "stop"])
+  "bail dispatch must stop before later handlers")
+(calls .set ($thaw #[]))
+(assert (== (root .dispatch serial_key nil) "serial-result")
+  "serial dispatch must await each handler and return its bail")
+(assert (== (calls .get) ["serial-wait" "serial-stop"])
+  "serial handlers must preserve registration order across suspension")
+
+(calls .set ($thaw #[]))
+(assert
+  (== (root .dispatch waterfall_key 1
+        {^terminal waterfall_terminal}) 16)
+  "waterfall must compose single-use continuations and terminal")
+(assert (== (calls .get) ["w1:1" "w2:2" "terminal:3"])
+  "waterfall must preserve handler order and payload changes")
+(assert
+  (try ((saved_next .get) 99) false
+       catch ContinuationAlreadyCalled true)
+  "waterfall continuations must reject every second call")
+(assert
+  (try (root .dispatch emit_key nil {^terminal waterfall_terminal}) false
+       catch HookDispatchError true)
+  "non-waterfall dispatch must reject a terminal")
+
+# A subject scopes handlers by the exact service realm; global handlers remain.
+(calls .set ($thaw #[]))
+(var private_context (private_context_cell .get))
+(var private_subject (private_context .hook_subject subject_key))
+(root .dispatch emit_key "private" {^subject private_subject})
+(assert (== (calls .get) ["private-scoped:private" "global:private"])
+  "derived effect ownership must retain the registration realm")
+(calls .set ($thaw #[]))
+(var unrelated_private (root .derive {^isolate [subject_key]}))
+(root .dispatch emit_key "other"
+  {^subject (unrelated_private .hook_subject subject_key)})
+(assert (== (calls .get) ["global:other"])
+  "independent private realms must never fall back or compare equal")
+(var forged_hook
+  (HookKey ^token ($cell nil) ^id "forged" ^mode HookMode/emit
+           ^payload_schema nil))
+(assert
+  (try (runtime .admit_hook_key forged_hook) false
+       catch HookDispatchError true)
+  "direct construction must not forge an admitted hook key")
+
+(instance .dispose)
+(runtime .await_settled)
+(assert
+  (try (private_context .hook_subject subject_key) false
+       catch ContextDisposed true)
+  "derived contexts must expire with their owner instance")
+(runtime .close)
+($println "hooks: ok")

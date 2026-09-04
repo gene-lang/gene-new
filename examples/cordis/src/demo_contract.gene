@@ -1,0 +1,10 @@
+(mod demo_contract)
+
+(import [service_key] from "./cordis")
+
+(protocol Clock
+  (message tick [] : Int))
+
+(fn check_clock [value : Clock] : Clock value)
+
+(var clock_key (service_key "clock" Clock ^check check_clock))

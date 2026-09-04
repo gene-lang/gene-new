@@ -1,0 +1,122 @@
+(mod hmr_probe)
+
+(import $fs [write_text])
+(import [RuntimeOptions LoaderOptions PluginSpec ReloadRejected
+         hmr_reloaded invocation_limits default_plugin_invoker new_runtime]
+  from "../src/cordis")
+(import [watch_loader] from "../src/hmr")
+(import [LoadedValue loaded_key] from "../fixtures/contract")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(var reload_events ($cell 0))
+(fn activate_observer [ctx, config]
+  (ctx .on hmr_reloaded
+    (fn [payload]
+      (reload_events .set (+ (reload_events .get) 1)))))
+(var observer_plugin
+  (PluginSpec ^id "hmr/observer" ^config_schema nil ^requires []
+              ^provides [] ^reload nil ^activate activate_observer))
+
+(var source_one """
+(mod reloadable_provider)
+(import [PluginSpec] from "../../src/plugin_api")
+(import [LoadedValue loaded_key] from "../contract")
+(type ReloadedValue)
+(impl LoadedValue for ReloadedValue
+  (message value [] : Int 1))
+(fn activate [ctx, config]
+  (ctx .provide loaded_key (ReloadedValue)))
+(var plugin
+  (PluginSpec ^id "fixture/reloadable" ^config_schema nil ^requires []
+              ^provides [loaded_key] ^reload nil ^activate activate))
+""")
+
+(var source_two """
+(mod reloadable_provider)
+(import [PluginSpec] from "../../src/plugin_api")
+(import [LoadedValue loaded_key] from "../contract")
+(type ReloadedValue)
+(impl LoadedValue for ReloadedValue
+  (message value [] : Int 2))
+(fn activate [ctx, config]
+  (ctx .provide loaded_key (ReloadedValue)))
+(var plugin
+  (PluginSpec ^id "fixture/reloadable" ^config_schema nil ^requires []
+              ^provides [loaded_key] ^reload nil ^activate activate))
+""")
+
+(var source_bad """
+(mod invalid_candidate)
+(var other 1)
+""")
+
+(fn main [args]
+  (var runtime
+    (new_runtime
+      (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                      ^default_limits (invocation_limits))))
+  (runtime .admit_service_key loaded_key)
+  (var observer
+    (runtime .install (runtime .root) observer_plugin nil))
+  (observer .await_ready)
+  (var loader
+    (runtime .loader
+      (LoaderOptions
+        ^plugin_root "fixtures/plugins"
+        ^shared ["fixtures/contract.gene" "src/plugin_api.gene"]
+        ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+        ^default_limits nil ^reload_policy nil)))
+  (var manifest
+    {^format 1
+     ^entries [{^id "reloadable" ^module "reloadable.gene" ^config nil}]})
+  (var initial (loader .reconcile manifest))
+  (var graph initial/entries/0/graph)
+  (var source_path nil)
+  (for node in graph/nodes
+    (if node/owned (set source_path node/path)))
+  (assert (! ($absent? source_path))
+    "generation graph must identify the owned source")
+  (try
+    (write_text source_path source_two)
+    (var reloaded (loader .reload [source_path]))
+    (assert (== reloaded/status "reloaded")
+      "owned source changes must use candidate-swap reload")
+    (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
+      "successful reload must publish the new generation")
+    (assert (== (reload_events .get) 1)
+      "successful reload must emit hmr_reloaded once")
+
+    (write_text source_path source_bad)
+    (assert
+      (try (loader .reload [source_path]) false catch ReloadRejected true)
+      "invalid source must reject before publication")
+    (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
+      "rejected reload must preserve the last live generation")
+    (assert (== (reload_events .get) 1)
+      "rejected reload must not emit hmr_reloaded")
+  ensure
+    (write_text source_path source_one))
+  # Bring the live generation back to the restored source, then prove the
+  # optional bounded watcher adapter drives the same reload seam.
+  (loader .reload [source_path])
+  (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 1)
+    "manual reload must observe the restored source")
+  (assert (== (reload_events .get) 2)
+    "restoring through reload must emit one more event")
+  (var watcher
+    (watch_loader loader "fixtures/plugins" ^debounce_ms 10))
+  (try
+    (write_text source_path source_two)
+    ($sleep 150)
+    (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
+      "filesystem watcher changes must reach Loader/reload")
+    (assert (== (reload_events .get) 3)
+      "watch-driven reload must emit hmr_reloaded")
+  ensure
+    (watcher .close)
+    (write_text source_path source_one))
+  (loader .dispose)
+  (runtime .close)
+  ($println "hmr: ok"))

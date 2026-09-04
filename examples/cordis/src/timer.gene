@@ -1,0 +1,200 @@
+# Effect-owned timer adapters. These add no scheduler: every operation is a
+# root-lane task registered through the supplied EffectOwner.
+
+(mod timer)
+
+(import [Disposable EffectOwner PluginCallKind PluginSpec] from "./model")
+(import [service_key invoke_effect_owner spawn_effect_loop] from "./runtime")
+
+(protocol Timer
+  (message timeout [callback, delay_ms : Int] : Disposable)
+  (message sleep [delay_ms : Int] : Nil)
+  (message interval [callback, delay_ms : Int] : Disposable)
+  (message ticks [delay_ms : Int] : Any)
+  (message throttle [callback, delay_ms : Int] : Any)
+  (message debounce [callback, delay_ms : Int] : Any))
+
+(type TimerProvider ^private true ^props {^owner Any}
+  (impl Timer
+    (message timeout [callback, delay_ms : Int] : Disposable
+      (timeout self/owner callback delay_ms))
+    (message sleep [delay_ms : Int] : Nil (sleep delay_ms))
+    (message interval [callback, delay_ms : Int] : Disposable
+      (interval self/owner callback delay_ms))
+    (message ticks [delay_ms : Int] : Any (ticks self/owner delay_ms))
+    (message throttle [callback, delay_ms : Int] : Any
+      (throttle self/owner callback delay_ms))
+    (message debounce [callback, delay_ms : Int] : Any
+      (debounce self/owner callback delay_ms))))
+
+(type BoundTimer
+  ^private true
+  ^props {^owner Any}
+  (impl Timer
+    (message timeout [callback, delay_ms : Int] : Disposable
+      (timeout self/owner callback delay_ms))
+    (message sleep [delay_ms : Int] : Nil (sleep delay_ms))
+    (message interval [callback, delay_ms : Int] : Disposable
+      (interval self/owner callback delay_ms))
+    (message ticks [delay_ms : Int] : Any (ticks self/owner delay_ms))
+    (message throttle [callback, delay_ms : Int] : Any
+      (throttle self/owner callback delay_ms))
+    (message debounce [callback, delay_ms : Int] : Any
+      (debounce self/owner callback delay_ms))))
+
+(type ScheduledCallable
+  ^private true
+  ^props {^owner Any ^callback Any ^delay_ms Int ^kind Str ^trailing Bool
+          ^active Any ^task Any ^busy Any ^pending Any}
+  (message dispose [] : Nil (scheduled_dispose self))
+  (impl Disposable
+    (message dispose [] : Nil (scheduled_dispose self)))
+  (impl Callable
+    (message apply [self, call] : Any (scheduled_apply self call))))
+
+(fn copy_args ^^private [source]
+  (var out ($thaw #[]))
+  (for value in source (out .push value))
+  out)
+
+(fn sleep [delay_ms : Int] : Nil
+  ($sleep delay_ms))
+
+(fn timeout [owner, callback, delay_ms : Int] : Disposable
+  (owner .effect "timeout"
+    (fn [fx]
+      (spawn_effect_loop fx "timeout-task"
+        (fn []
+          ($sleep delay_ms)
+          (invoke_effect_owner fx PluginCallKind/activate callback []))))
+  ))
+
+(fn interval [owner, callback, delay_ms : Int] : Disposable
+  (owner .effect "interval"
+    (fn [fx]
+      (spawn_effect_loop fx "interval-task"
+        (fn []
+          (while true
+            ($sleep delay_ms)
+            (invoke_effect_owner fx PluginCallKind/activate callback []))))))
+  )
+
+(fn channel_ticks* ^^private [channel]
+  (while true
+    (try
+      (yield (channel .recv))
+    catch ChannelClosed
+      (return))))
+
+(fn ticks [owner, delay_ms : Int]
+  (var lease
+    (owner .effect "ticks"
+      (fn [fx]
+        (var channel ($channel ^capacity 1))
+        (fx .defer (fn [] (channel .close)))
+        (spawn_effect_loop fx "tick-producer"
+          (fn []
+            (while true
+              ($sleep delay_ms)
+              # A full channel means one tick is already pending; coalesce.
+              (channel .try_send nil))))
+        (channel_ticks* channel))))
+  (lease .value))
+
+(fn scheduled_dispose ^^private [self : ScheduledCallable] : Nil
+  (if_not (self/active .get) (return nil))
+  (self/active .set false)
+  (var task (self/task .get))
+  (if_not ($absent? task)
+    (task .cancel)
+    (task .join))
+  (self/task .set nil)
+  (self/pending .set nil)
+  nil)
+
+(fn scheduled_fire ^^private [self, args]
+  (if_not (self/active .get) (return nil))
+  (invoke_effect_owner self/owner PluginCallKind/activate
+                       self/callback args))
+
+(fn schedule_debounce ^^private [self, args]
+  (var previous (self/task .get))
+  (if_not ($absent? previous) (previous .cancel))
+  (var task
+    (spawn_effect_loop self/owner "debounce-task"
+      (fn []
+        ($sleep self/delay_ms)
+        (if (self/active .get) (scheduled_fire self args)))))
+  (self/task .set task)
+  nil)
+
+(fn finish_throttle_window ^^private [self]
+  ($sleep self/delay_ms)
+  (if_not (self/active .get) (return nil))
+  (var pending (self/pending .swap nil))
+  (if (&& self/trailing (! ($absent? pending)))
+    (then
+      (scheduled_fire self pending)
+      (var task
+        (spawn_effect_loop self/owner "throttle-window"
+          (fn [] (finish_throttle_window self))))
+      (self/task .set task))
+    (else
+      (self/busy .set false)
+      (self/task .set nil)))
+  nil)
+
+(fn schedule_throttle ^^private [self, args]
+  (if_not (self/busy .get)
+    (self/busy .set true)
+      (scheduled_fire self args)
+      (var task
+        (spawn_effect_loop self/owner "throttle-window"
+        (fn [] (finish_throttle_window self))))
+    (self/task .set task)
+    (return nil))
+  (if self/trailing (self/pending .set args))
+  nil)
+
+(fn scheduled_apply ^^private [self : ScheduledCallable, call]
+  (if_not (self/active .get) (return nil))
+  (var args (copy_args call/body))
+  (if (== self/kind "debounce")
+    (schedule_debounce self args)
+    (schedule_throttle self args)))
+
+(fn new_scheduled_callable ^^private
+  [owner, callback, delay_ms : Int, kind : Str, trailing : Bool]
+  (var lease
+    (owner .effect kind
+      (fn [fx]
+        (var scheduled
+          (ScheduledCallable
+            ^owner fx ^callback callback ^delay_ms delay_ms ^kind kind
+            ^trailing trailing ^active ($cell true) ^task ($cell nil)
+            ^busy ($cell false) ^pending ($cell nil)))
+        (fx .defer (fn [] (scheduled .dispose)))
+        scheduled)))
+  (lease .value))
+
+(fn throttle
+  [owner, callback, delay_ms : Int, ^trailing trailing : Bool = true]
+  (new_scheduled_callable owner callback delay_ms "throttle" trailing))
+
+(fn debounce [owner, callback, delay_ms : Int]
+  (new_scheduled_callable owner callback delay_ms "debounce" true))
+
+(fn check_timer ^^private [value : Timer] : Timer value)
+
+(fn bind_timer ^^private [provider, definition_context, use_context, config]
+  (BoundTimer ^owner use_context))
+
+(var timer_key
+  (service_key "timer" Timer ^check check_timer ^bind bind_timer))
+
+(fn activate_timer ^^private [ctx, config]
+  (ctx .provide timer_key (TimerProvider ^owner ctx)))
+
+(var timer_plugin
+  (PluginSpec ^id "cordis/timer" ^config_schema nil ^requires []
+              ^provides [timer_key] ^reload nil ^activate activate_timer))

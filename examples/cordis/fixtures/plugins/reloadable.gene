@@ -1,0 +1,12 @@
+
+(mod reloadable_provider)
+(import [PluginSpec] from "../../src/plugin_api")
+(import [LoadedValue loaded_key] from "../contract")
+(type ReloadedValue)
+(impl LoadedValue for ReloadedValue
+  (message value [] : Int 1))
+(fn activate [ctx, config]
+  (ctx .provide loaded_key (ReloadedValue)))
+(var plugin
+  (PluginSpec ^id "fixture/reloadable" ^config_schema nil ^requires []
+              ^provides [loaded_key] ^reload nil ^activate activate))

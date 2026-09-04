@@ -1,0 +1,155 @@
+(mod loader_test)
+
+(import [InstanceState ReconcileMode RuntimeOptions LoaderOptions
+         Requirement PluginSpec CompositionError
+         invocation_limits default_plugin_invoker new_runtime]
+  from "../src/cordis")
+(import [LoadedValue loaded_key] from "../fixtures/contract")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn uid_for [snapshot, plugin : Str]
+  (for instance in snapshot/instances
+    (if (== instance/plugin plugin) (return instance/uid)))
+  nil)
+
+(var direct_activations ($cell 0))
+(var direct_cleanups ($cell 0))
+(var direct_value ($cell 0))
+(fn activate_direct_consumer [ctx, config]
+  (var service (ctx .require loaded_key))
+  (direct_value .set (service .LoadedValue:value))
+  (direct_activations .set (+ (direct_activations .get) 1))
+  (ctx .defer
+    (fn [] (direct_cleanups .set (+ (direct_cleanups .get) 1)))))
+(var direct_consumer_spec
+  (PluginSpec ^id "direct/consumer" ^config_schema nil
+    ^requires [(Requirement ^key loaded_key ^config nil)]
+    ^provides [] ^reload nil ^activate activate_direct_consumer))
+
+(fn main [args]
+(var runtime
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                    ^default_limits (invocation_limits))))
+(runtime .admit_service_key loaded_key)
+(var direct_consumer
+  (runtime .install (runtime .root) direct_consumer_spec nil))
+(runtime .await_settled)
+(assert (== (direct_consumer .state) InstanceState/pending)
+  "a direct consumer starts pending before loader publication")
+(var loader
+  (runtime .loader
+    (LoaderOptions
+      ^plugin_root "fixtures/plugins"
+      ^shared ["fixtures/contract.gene" "src/plugin_api.gene"]
+      ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+      ^default_limits nil ^reload_policy nil)))
+
+(var first_manifest
+  {^format 1
+   ^entries [
+     {^id "provider" ^plugin_id "fixture/provider"
+      ^module "provider.gene" ^config 40}
+   ]})
+(var first (loader .reconcile first_manifest ReconcileMode/staged))
+(assert (== first/entries/0/state "active")
+  "incremental reconcile must load and activate the sandboxed plugin")
+(assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 40)
+  "a loader provider must publish through the ordinary runtime index")
+(assert (&& (== (direct_consumer .state) InstanceState/active)
+            (== (direct_value .get) 40))
+  "staged publication must wake directly installed consumers")
+(var original_inspection (runtime .inspect))
+(var original_provider_uid
+  (uid_for original_inspection "fixture/provider"))
+(var original_consumer_uid
+  (uid_for original_inspection "direct/consumer"))
+(assert (> first/entries/0/graph/nodes/.size 0)
+  "loader snapshots must retain immutable generation graphs")
+
+(var rejected_candidate
+  {^format 1
+   ^entries [
+     {^id "provider" ^module "provider.gene" ^config "not-an-int"}
+   ]})
+(assert
+  (try (loader .reconcile rejected_candidate ReconcileMode/staged) false
+       catch CompositionError true)
+  "staged reconciliation must reject a candidate that cannot activate")
+(assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 40)
+  "a rejected staged candidate must leave the old instance active")
+
+(var invalid
+  {^format 1
+   ^entries [{^id "provider" ^module "provider.gene" ^config 99
+              ^unknown true}]})
+(assert
+  (try (loader .reconcile invalid) false catch CompositionError true)
+  "the complete manifest must validate before reconciliation")
+(assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 40)
+  "invalid manifest data must not mutate the live composition")
+
+(var updated
+  {^format 1
+   ^entries [
+     {^id "provider" ^module "provider.gene" ^config 42}
+   ]})
+(var second (loader .reconcile updated ReconcileMode/staged))
+(assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 42)
+  "config-only reconciliation must restart the retained entry")
+(assert (&& (== (direct_value .get) 42)
+            (== (direct_activations .get) 2)
+            (== (direct_cleanups .get) 1)
+            (== (direct_consumer .state) InstanceState/active))
+  "staged provider replacement must quiesce and restart direct consumers")
+(var updated_inspection (runtime .inspect))
+(assert (&& (== (uid_for updated_inspection "fixture/provider")
+                original_provider_uid)
+            (== (uid_for updated_inspection "direct/consumer")
+                original_consumer_uid))
+  "staged revisions must preserve the public instance uid")
+
+(repeat offset in 3
+  (loader .reconcile
+    {^format 1
+     ^entries [{^id "provider" ^module "provider.gene"
+                ^config (+ 50 offset)}]}
+    ReconcileMode/staged))
+(var repeated_inspection (runtime .inspect))
+(assert (&& (== ($size repeated_inspection/instances) 2)
+            (== ($size repeated_inspection/services) 1)
+            (== (((runtime .root) .require loaded_key) .LoadedValue:value) 52))
+  "repeated staged swaps must leave no duplicate instance or provider roots")
+
+(var loader_inspection (loader .inspect))
+(var shared_path nil)
+(for node in loader_inspection/entries/0/graph/nodes
+  (if_not node/owned (set shared_path node/path)))
+(assert (! ($absent? shared_path))
+  "the generation graph must retain admitted shared dependencies")
+(var shared_change (loader .reload [shared_path]))
+(assert (== shared_change/status "restart_required")
+  "a shared contract change must request full process restart")
+(assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 52)
+  "restart-required reload must not mutate the live composition")
+
+(var disabled
+  {^format 1
+   ^entries [
+     {^id "group" ^group true ^disabled true
+      ^children [{^id "provider" ^module "provider.gene" ^config 1}]}
+   ]})
+(var third (loader .reconcile disabled))
+(assert (== ((runtime .root) .get loaded_key) void)
+  "inherited disable must remove descendant plugin instances")
+(assert (== (direct_consumer .state) InstanceState/pending)
+  "withdrawing a loader provider must quiesce direct consumers")
+(assert (== third/entries/0/state "group")
+  "a disabled group remains visible in composition inspection")
+
+(loader .dispose)
+(loader .dispose)
+(runtime .close)
+($println "loader: ok"))

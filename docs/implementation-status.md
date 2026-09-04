@@ -122,6 +122,15 @@ remaining phase-1 gap is that `EventSink:emit` implements but cannot *declare*
 its `^errors [EventPublishError]` row, because natively registered protocols
 have no per-message error types.
 
+`examples/cordis` is an implemented Gene-native plugin runtime exercising the
+runtime primitives above: nominal service/hook keys, exact realms, dependency
+epochs, serialized lifecycle transitions, effect-owned tasks/timers/actors,
+bounded plugin invocation, data-only incremental and prospective staged
+composition, sandbox-generation ownership, include persistence, candidate-swap
+and stop/start HMR, filesystem watching, and post-commit recovery diagnostics.
+Its package test target and live HMR probe are the executable contract for
+`examples/cordis/docs/design.md`.
+
 Deferred work is explicitly non-normative. Major deferred areas include package
 registries and lockfiles, static effect rows, full hygienic compile-time
 function macros, partial protocol impl composition, static enum exhaustiveness,

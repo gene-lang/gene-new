@@ -1,0 +1,5 @@
+(mod loader)
+
+(import [ReconcileMode LoaderOptions Loader CompositionError ReloadRejected
+         RecoveryRequired]
+  from "./runtime" ^export true)

@@ -1,0 +1,10 @@
+(mod loader_contract)
+
+(import [service_key] from "../src/cordis")
+
+(protocol LoadedValue
+  (message value [] : Int))
+
+(fn check_loaded [value : LoadedValue] : LoadedValue value)
+
+(var loaded_key (service_key "loaded" LoadedValue ^check check_loaded))

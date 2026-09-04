@@ -1,0 +1,36 @@
+(mod loader_capabilities)
+
+(import [ReconcileMode RuntimeOptions LoaderOptions CompositionError
+         invocation_limits default_plugin_invoker new_runtime]
+  from "../src/cordis")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn main [args]
+  (var runtime
+    (new_runtime
+      (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                      ^default_limits (invocation_limits))))
+  (var loader
+    (runtime .loader
+      (LoaderOptions ^plugin_root "fixtures/plugins"
+        ^shared ["src/plugin_api.gene"] ^max_namespaces ["fs"]
+        ^capability_catalog #{} ^capability_ceiling #[]
+        ^default_limits nil ^reload_policy nil)))
+  (var manifest
+    {^format 1
+     ^entries [
+       {^id "needs_fs" ^module "needs_fs.gene" ^config nil
+        ^namespaces ["fs"] ^capabilities []}
+     ]})
+  (assert
+    (try (loader .reconcile manifest ReconcileMode/staged) false
+         catch CompositionError true)
+    "an empty manifest capability row must not inherit host filesystem access")
+  (var inspection (loader .inspect))
+  (assert (== inspection/entries #[])
+    "a capability-denied staged candidate must leave composition unchanged")
+  (loader .dispose)
+  (runtime .close)
+  ($println "loader_capabilities: ok"))

@@ -1,0 +1,48 @@
+(mod cycles)
+
+(import [InstanceState RuntimeOptions Requirement PluginSpec
+         DependenciesUnavailable invocation_limits service_key
+         default_plugin_invoker new_runtime]
+  from "../src/cordis")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(protocol Marker
+  (message name [] : Str))
+(type Mark ^props {^name Str})
+(impl Marker for Mark
+  (message name [] : Str self/name))
+(fn check_marker [value : Marker] : Marker value)
+
+(var a_key (service_key "a" Marker ^check check_marker))
+(var b_key (service_key "b" Marker ^check check_marker))
+(fn activate_a [ctx, config] (ctx .provide a_key (Mark ^name "a")))
+(fn activate_b [ctx, config] (ctx .provide b_key (Mark ^name "b")))
+
+(var a_plugin
+  (PluginSpec ^id "a" ^config_schema nil
+    ^requires [(Requirement ^key b_key ^config nil)]
+    ^provides [a_key] ^reload nil ^activate activate_a))
+(var b_plugin
+  (PluginSpec ^id "b" ^config_schema nil
+    ^requires [(Requirement ^key a_key ^config nil)]
+    ^provides [b_key] ^reload nil ^activate activate_b))
+
+(var runtime
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                    ^default_limits (invocation_limits))))
+(runtime .admit_service_key a_key)
+(runtime .admit_service_key b_key)
+(var a (runtime .install (runtime .root) a_plugin nil))
+(var b (runtime .install (runtime .root) b_plugin nil))
+(runtime .await_settled)
+(assert (&& (== (a .state) InstanceState/pending)
+            (== (b .state) InstanceState/pending))
+  "a declared provider cycle must remain pending rather than half-activate")
+(assert
+  (try (a .await_ready) false catch DependenciesUnavailable true)
+  "await_ready must diagnose an unresolved provider cycle")
+(runtime .close)
+($println "cycles: ok")

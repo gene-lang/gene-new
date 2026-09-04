@@ -1,0 +1,15 @@
+(mod loader_provider)
+
+(import [PluginSpec] from "../../src/plugin_api")
+(import [LoadedValue loaded_key] from "../contract")
+
+(type ProviderValue ^props {^n Int})
+(impl LoadedValue for ProviderValue
+  (message value [] : Int self/n))
+
+(fn activate [ctx, config]
+  (ctx .provide loaded_key (ProviderValue ^n config)))
+
+(var plugin
+  (PluginSpec ^id "fixture/provider" ^config_schema nil ^requires []
+              ^provides [loaded_key] ^reload nil ^activate activate))

@@ -1,0 +1,16 @@
+(mod stop_start_provider)
+
+(import [PluginSpec] from "../../src/plugin_api")
+(import [LoadedValue loaded_key] from "../contract")
+
+(type StopStartValue)
+(impl LoadedValue for StopStartValue
+  (message value [] : Int 5))
+
+(fn activate [ctx, config]
+  (ctx .provide loaded_key (StopStartValue)))
+
+(var plugin
+  (PluginSpec ^id "fixture/stop_start" ^config_schema nil ^requires []
+              ^provides [loaded_key] ^reload "stop_start"
+              ^activate activate))

@@ -1,0 +1,37 @@
+(mod recovery_test)
+
+(import [ReconcileMode RuntimeOptions LoaderOptions RecoveryRequired
+         invocation_limits default_plugin_invoker new_runtime]
+  from "../src/cordis")
+(import [LoadedValue loaded_key] from "../fixtures/contract")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn manifest [value : Int]
+  {^format 1
+   ^entries [{^id "provider" ^module "cleanup_fail.gene"
+              ^config value}]})
+
+(fn main [args]
+  (var runtime
+    (new_runtime
+      (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                      ^default_limits (invocation_limits))))
+  (runtime .admit_service_key loaded_key)
+  (var loader
+    (runtime .loader
+      (LoaderOptions ^plugin_root "fixtures/plugins"
+        ^shared ["fixtures/contract.gene" "src/plugin_api.gene"]
+        ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+        ^default_limits nil ^reload_policy nil)))
+  (loader .reconcile (manifest 1) ReconcileMode/staged)
+  (assert
+    (try (loader .reconcile (manifest 2) ReconcileMode/staged) false
+         catch RecoveryRequired true)
+    "cleanup failure after publication must report RecoveryRequired")
+  (assert (== (((runtime .root) .require loaded_key) .LoadedValue:value) 2)
+    "post-commit cleanup failure must not roll visibility backward")
+  (loader .dispose)
+  (runtime .close)
+  ($println "recovery: ok"))

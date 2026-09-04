@@ -1,0 +1,66 @@
+(mod timer_test)
+
+(import [RuntimeOptions PluginSpec invocation_limits
+         default_plugin_invoker new_runtime]
+  from "../src/cordis")
+(import [timeout interval ticks throttle debounce] from "../src/timer")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(var events ($cell ($thaw #[])))
+(var tick_stream ($cell nil))
+(var throttled ($cell nil))
+(var debounced ($cell nil))
+
+(fn note [value] ((events .get) .push value))
+
+(fn activate [ctx, config]
+  (timeout ctx (fn [] (note "timeout")) 5)
+  (interval ctx (fn [] (note "interval")) 5)
+  (tick_stream .set (ticks ctx 5))
+  (throttled .set (throttle ctx note 10))
+  (debounced .set (debounce ctx note 10)))
+
+(var plugin
+  (PluginSpec ^id "timer" ^config_schema nil ^requires [] ^provides []
+              ^reload nil ^activate activate))
+(var runtime
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                    ^default_limits (invocation_limits))))
+(var instance (runtime .install (runtime .root) plugin nil))
+(instance .await_ready)
+
+((throttled .get) "lead")
+((throttled .get) "trail-a")
+((throttled .get) "trail-b")
+((debounced .get) "drop")
+((debounced .get) "debounced")
+($sleep 25)
+
+(assert ((events .get) .contains? "timeout")
+  "timeout must invoke once")
+(assert ((events .get) .contains? "interval")
+  "interval must invoke while owned")
+(assert ((events .get) .contains? "lead")
+  "throttle must deliver its leading call")
+(assert ((events .get) .contains? "trail-b")
+  "throttle must coalesce to the latest trailing call")
+(assert (! ((events .get) .contains? "trail-a"))
+  "throttle must not grow an unbounded trailing queue")
+(assert ((events .get) .contains? "debounced")
+  "debounce must deliver the latest call")
+(assert (! ((events .get) .contains? "drop"))
+  "debounce must cancel the replaced call")
+(assert (== ((tick_stream .get) .next) nil)
+  "ticks must expose a bounded lazy stream")
+
+(instance .dispose)
+(runtime .await_settled)
+(var after_dispose ($size (events .get)))
+($sleep 15)
+(assert (== ($size (events .get)) after_dispose)
+  "disposing the owner must cancel interval and scheduled callbacks")
+(runtime .close)
+($println "timer: ok")

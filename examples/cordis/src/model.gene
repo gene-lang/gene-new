@@ -1,0 +1,124 @@
+# Public data vocabulary for Cordis. Runtime-issued handles and their message
+# implementations live in runtime.gene; these declarations are inert values
+# that hosts and shared plugin contract modules may construct.
+
+(mod model)
+
+(import $log [Logger])
+
+(enum InstanceState
+  pending loading active failed unloading disposed)
+
+(enum PluginCallKind
+  activate availability validate_schema validate_service merge_config
+  bind_service hook cleanup)
+
+(enum HookMode emit parallel serial bail waterfall)
+
+(enum ReconcileMode incremental staged)
+
+(protocol Disposable
+  (message dispose [] : Nil))
+
+(protocol PluginInvoker
+  (message invoke [call] : Any))
+
+(protocol EffectOwner
+  (message defer [cleanup] : Disposable)
+  (message provide [key, value, availability = nil] : Any)
+  (message effect [label : Str, acquire] : Any)
+  (message spawn [label : Str, thunk] : Task)
+  (message on [hook, handler, options = nil] : Disposable)
+  (message once [hook, handler, options = nil] : Disposable)
+  (message install [plugin, config] : Any))
+
+(type InvocationLimits
+  ^props {^max_steps Int ^max_memory_mb Int ^timeout_ms Int})
+
+(type RuntimeOptions
+  ^props {^logger Logger?
+          ^invoker PluginInvoker
+          ^default_limits InvocationLimits})
+
+(type PluginCall
+  ^props {^kind PluginCallKind
+          ^callable Any
+          ^args (List Any)
+          ^instance_uid Int
+          ^entry_id Str?
+          ^capability_selectors List
+          ^capabilities_restricted Bool
+          ^logger Logger?
+          ^limits InvocationLimits})
+
+(type LoaderOptions
+  ^props {^plugin_root Str
+          ^shared (List Str)
+          ^max_namespaces (List Str)
+          ^capability_catalog Map
+          ^capability_ceiling Any
+          ^default_limits InvocationLimits?
+          ^reload_policy Any?})
+
+# `token` is not authority by itself. The trusted constructors register its
+# identity in private module state, and every consuming operation resolves the
+# canonical registered row rather than trusting the public node's other props.
+(type ServiceKey
+  ^props {^token Any
+          ^id Str
+          ^contract Any
+          ^check Any
+          ^config_schema Any?
+          ^merge_config Any?
+          ^bind Any?})
+
+(type HookKey
+  ^props {^token Any ^id Str ^mode HookMode ^payload_schema Any?})
+
+(type Requirement
+  ^props {^key ServiceKey ^config Any?})
+
+(type PluginSpec
+  ^props {^id Str
+          ^config_schema Any?
+          ^requires (List Requirement)
+          ^provides (List ServiceKey)
+          ^reload Str?
+          ^activate Any})
+
+# One base error shape keeps structured causes and lifecycle identity intact.
+# The nominal children remain distinct so callers can catch by remedy.
+(type CordisError
+  ^props {^message Str
+          ^cause Any?
+          ^plugin Str?
+          ^instance_uid Int?
+          ^entry_id Str?}
+  ^impl [Error])
+(impl Error for CordisError)
+
+(type UndeclaredRequirement : CordisError)
+(type ServiceUnavailable : CordisError)
+(type DuplicateProvider : CordisError)
+(type ServiceContractError : CordisError)
+(type ConfigValidationError : CordisError)
+(type PluginActivationError : CordisError)
+(type PluginCleanupError : CordisError)
+(type DependenciesUnavailable : CordisError)
+(type InstanceDisposed : CordisError)
+(type ContextDisposed : CordisError)
+(type EffectDisposed : CordisError)
+(type ContinuationAlreadyCalled : CordisError)
+(type HookDispatchError : CordisError)
+(type CompositionError : CordisError)
+(type ReloadRejected : CordisError)
+(type RecoveryRequired : CordisError)
+
+(fn invocation_limits
+  [^max_steps max_steps : Int = 100000,
+   ^max_memory_mb max_memory_mb : Int = 64,
+   ^timeout_ms timeout_ms : Int = 2000] : InvocationLimits
+  (InvocationLimits
+    ^max_steps max_steps
+    ^max_memory_mb max_memory_mb
+    ^timeout_ms timeout_ms))

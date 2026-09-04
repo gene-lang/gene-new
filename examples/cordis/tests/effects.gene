@@ -1,0 +1,110 @@
+(mod effects)
+
+(import [EffectOwner RuntimeOptions PluginSpec EffectDisposed PluginCleanupError
+         PluginActivationError
+         invocation_limits default_plugin_invoker new_runtime]
+  from "../src/cordis")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(type CleanupBoom ^props {^message Str} ^impl [Error])
+(impl Error for CleanupBoom)
+
+(var order ($cell ($thaw #[])))
+(var child_lease ($cell nil))
+(var failing_lease ($cell nil))
+(var async_lease ($cell nil))
+
+(fn push_order [name : Str]
+  ((order .get) .push name))
+
+(fn accept_owner [owner : EffectOwner] : Bool true)
+
+(fn activate [ctx, config]
+  (assert (accept_owner ctx)
+    "ActivationContext must implement EffectOwner")
+  (try
+    (ctx .effect "partial"
+      (fn [fx]
+        (assert (accept_owner fx)
+          "nested EffectScope must implement EffectOwner")
+        (fx .defer (fn [] (push_order "partial")))
+        (fail (CleanupBoom ^message "acquisition failed"))))
+  catch PluginActivationError
+    nil)
+  (child_lease .set
+    (ctx .effect "child"
+      (fn [fx]
+        (fx .defer (fn [] (push_order "first")))
+        (fx .defer (fn [] (push_order "second")))
+        7)))
+  (failing_lease .set
+    (ctx .effect "failing"
+      (fn [fx]
+        (fx .defer (fn [] (push_order "after-error")))
+        (fx .defer
+          (fn []
+            (push_order "error")
+            (fail (CleanupBoom ^message "cleanup failed"))))
+        "value")))
+  (async_lease .set
+    (ctx .effect "async-cleanup"
+      (fn [fx]
+        (fx .defer
+          (fn []
+            ($sleep 5)
+            (push_order "async")))
+        nil)))
+  (ctx .spawn "worker"
+    (fn []
+      (push_order "started")
+      (try
+        ($sleep 100000)
+      ensure
+        (push_order "task")))))
+
+(var plugin
+  (PluginSpec ^id "effects" ^config_schema nil ^requires [] ^provides []
+              ^reload nil ^activate activate))
+(fn main [args]
+(var runtime
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                    ^default_limits (invocation_limits))))
+(var instance (runtime .install (runtime .root) plugin nil))
+(instance .await_ready)
+($sleep 10)
+
+(assert (== ((child_lease .get) .value) 7)
+  "an effect lease must retain the acquisition value")
+((child_lease .get) .dispose)
+(assert (== (order .get) ["partial" "started" "second" "first"])
+  "nested cleanup must run once in reverse acquisition order")
+(assert
+  (try ((child_lease .get) .value) false catch EffectDisposed true)
+  "disposed effect values must be inaccessible")
+((child_lease .get) .dispose)
+(assert (== (order .get) ["partial" "started" "second" "first"])
+  "effect disposal must be idempotent")
+
+(assert
+  (try ((failing_lease .get) .dispose) false catch PluginCleanupError true)
+  "explicit effect disposal must return aggregate cleanup failure")
+(assert (== (order .get)
+            ["partial" "started" "second" "first"
+             "error" "after-error"])
+  "cleanup must continue after an earlier failure")
+((async_lease .get) .dispose)
+(assert (== (order .get)
+            ["partial" "started" "second" "first"
+             "error" "after-error" "async"])
+  "effect disposal must await suspending cleanup")
+
+(runtime .close)
+(runtime .close)
+(assert (== (order .get)
+            ["partial" "started" "second" "first"
+             "error" "after-error" "async" "task"])
+  "instance disposal must cancel and join owned tasks")
+($println "effects: ok"))

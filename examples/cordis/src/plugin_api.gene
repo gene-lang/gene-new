@@ -1,0 +1,10 @@
+# Stable declarations a sandboxed plugin may import through the loader's
+# explicit shared-module allowlist. Constructors and runtime mutation handles
+# are intentionally absent.
+
+(mod plugin_api)
+
+(import [InstanceState PluginCallKind HookMode
+         Disposable PluginInvoker EffectOwner
+         InvocationLimits PluginCall ServiceKey HookKey Requirement PluginSpec]
+  from "./model" ^export true)

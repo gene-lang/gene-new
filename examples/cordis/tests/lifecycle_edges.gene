@@ -1,0 +1,113 @@
+(mod lifecycle_edges)
+
+(import [InstanceState PluginCallKind HookMode PluginInvoker
+         RuntimeOptions PluginSpec ConfigValidationError
+         config_update invocation_limits hook_key default_plugin_invoker
+         new_runtime]
+  from "../src/cordis")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(type ActivationBoom ^props {^message Str} ^impl [Error])
+(impl Error for ActivationBoom)
+
+(type RecordingInvoker
+  ^props {^calls Any}
+  (impl PluginInvoker
+    (message invoke [call] : Any
+      ((self/calls .get) .push call/kind)
+      (call/callable call/args...))))
+
+(fn schema [value : Int] : Int value)
+
+(fn transform_config [candidate, next]
+  (next (if (== candidate 2) 3 candidate)))
+
+(var active_config ($cell nil))
+(var cleanup_count ($cell 0))
+(fn activate [ctx, config]
+  (if (== config 13)
+    (fail (ActivationBoom ^message "unlucky")))
+  (active_config .set config)
+  (ctx .on config_update transform_config)
+  (ctx .defer
+    (fn [] (cleanup_count .set (+ (cleanup_count .get) 1)))))
+
+(fn main [args]
+(var calls ($cell ($thaw #[])))
+(var runtime
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (RecordingInvoker ^calls calls)
+                    ^default_limits (invocation_limits))))
+(var plugin
+  (PluginSpec ^id "updatable" ^config_schema schema ^requires []
+              ^provides [] ^reload nil ^activate activate))
+(var instance (runtime .install (runtime .root) plugin 1))
+(instance .await_ready)
+
+(assert
+  (try (instance .update "bad") false catch ConfigValidationError true)
+  "invalid update config must fail before unloading the old activation")
+(assert (&& (== (instance .state) InstanceState/active)
+            (== (active_config .get) 1)
+            (== (cleanup_count .get) 0))
+  "invalid config must leave the current activation untouched")
+
+(instance .update 2)
+(runtime .await_settled)
+(instance .await_ready)
+(assert (&& (== (active_config .get) 3)
+            (== (cleanup_count .get) 1))
+  "config_update may transform an accepted value before one restart")
+
+(instance .update 13)
+(runtime .await_settled)
+(assert (== (instance .state) InstanceState/failed)
+  "activation errors must settle as failed")
+(instance .update 3)
+(runtime .await_settled)
+(instance .await_ready)
+(assert (== (active_config .get) 3)
+  "explicit update must recover a failed instance")
+(assert (&& ((calls .get) .contains? PluginCallKind/validate_schema)
+            ((calls .get) .contains? PluginCallKind/activate)
+            ((calls .get) .contains? PluginCallKind/cleanup))
+  "schemas, activation, and cleanup must share the PluginInvoker seam")
+
+# A handler can request disposal of its own owner without waiting on itself.
+(var stop_hook (hook_key "stop" HookMode/emit))
+(runtime .admit_hook_key stop_hook)
+(var self_instance ($cell nil))
+(fn activate_self_disposing [ctx, config]
+  (ctx .on stop_hook
+    (fn [payload] ((self_instance .get) .dispose))))
+(var self_plugin
+  (PluginSpec ^id "self-disposing" ^config_schema nil ^requires []
+              ^provides [] ^reload nil ^activate activate_self_disposing))
+(self_instance .set (runtime .install (runtime .root) self_plugin nil))
+((self_instance .get) .await_ready)
+((runtime .root) .dispatch stop_hook nil)
+(runtime .await_settled)
+(assert (== ((self_instance .get) .state) InstanceState/disposed)
+  "self-disposal must queue until the current invocation returns")
+
+(runtime .close)
+
+(fn spin_activate [ctx, config]
+  (while true nil))
+(var bounded_plugin
+  (PluginSpec ^id "bounded" ^config_schema nil ^requires [] ^provides []
+              ^reload nil ^activate spin_activate))
+(var bounded_runtime
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+      ^default_limits
+        (invocation_limits ^max_steps 40 ^max_memory_mb 16 ^timeout_ms 1000))))
+(var bounded
+  (bounded_runtime .install (bounded_runtime .root) bounded_plugin nil))
+(bounded_runtime .await_settled)
+(assert (== (bounded .state) InstanceState/failed)
+  "the default invoker must bound plugin execution before activation")
+(bounded_runtime .close)
+($println "lifecycle_edges: ok"))

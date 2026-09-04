@@ -1,0 +1,36 @@
+# Cross-lane service adapter. The actor owns the mutable state and typed,
+# bounded mailbox; Cordis owns the supervisor task that keeps it alive.
+
+(mod actor)
+
+(import [PluginCallKind] from "./model")
+(import [invoke_effect_owner spawn_effect_loop] from "./runtime")
+
+(type GuardedActorHandler
+  ^private true
+  ^props {^owner Any ^callable Any}
+  (impl Callable
+    (message apply [self, call]
+      (invoke_effect_owner self/owner PluginCallKind/activate
+                           self/callable call/body))))
+
+(fn owned_actor
+  [owner, label : Str, init, handler,
+   ^mailbox mailbox : Int = 64, ^type message_type = nil]
+  (var ready ($channel ^capacity 1))
+  (var initial
+    (invoke_effect_owner owner PluginCallKind/activate init []))
+  (var guarded_handler (GuardedActorHandler ^owner owner ^callable handler))
+  (spawn_effect_loop owner label
+    (fn []
+      (scope
+        (var actor
+          (if ($absent? message_type)
+            ($actor/spawn ^mailbox mailbox
+              ^init (fn [] initial) ^handle guarded_handler)
+            ($actor/spawn ^mailbox mailbox ^type message_type
+              ^init (fn [] initial) ^handle guarded_handler)))
+        (ready .send actor)
+        # Cancellation of the owner unwinds this scope and closes its actor.
+        ($sleep 2147483647))))
+  (ready .recv))

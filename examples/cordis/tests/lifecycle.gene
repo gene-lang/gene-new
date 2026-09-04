@@ -1,0 +1,86 @@
+(mod lifecycle)
+
+(import [InstanceState RuntimeOptions Requirement PluginSpec
+         DependenciesUnavailable
+         invocation_limits service_key default_plugin_invoker new_runtime]
+  from "../src/cordis")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(protocol Clock
+  (message now [] : Int))
+
+(type TestClock ^props {^value Int})
+
+(impl Clock for TestClock
+  (message now [] : Int self/value))
+
+(fn check_clock [value : Clock] : Clock value)
+
+(var clock_key (service_key "clock" Clock ^check check_clock))
+(var runtime
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                    ^default_limits (invocation_limits))))
+(runtime .admit_service_key clock_key)
+(var root (runtime .root))
+
+(var observed ($cell 0))
+(var cleanup_order ($cell ($thaw #[])))
+
+(fn activate_consumer [ctx, config]
+  (var clock (ctx .require clock_key))
+  (observed .set (clock .Clock:now))
+  (ctx .defer (fn [] ((cleanup_order .get) .push "consumer"))))
+
+(fn activate_provider [ctx, config]
+  (ctx .defer (fn [] ((cleanup_order .get) .push "provider")))
+  (ctx .provide clock_key (TestClock ^value config)))
+
+(var consumer_spec
+  (PluginSpec ^id "consumer" ^config_schema nil
+              ^requires [(Requirement ^key clock_key ^config nil)]
+              ^provides [] ^reload nil ^activate activate_consumer))
+(var provider_spec
+  (PluginSpec ^id "provider" ^config_schema nil ^requires []
+              ^provides [clock_key] ^reload nil
+              ^activate activate_provider))
+
+# Installing the consumer first leaves it pending. Provider publication
+# advances only this key's dependant epoch and activates it afterwards.
+(var consumer (runtime .install root consumer_spec nil))
+(var provider (runtime .install root provider_spec 42))
+(runtime .await_settled)
+(consumer .await_ready)
+(provider .await_ready)
+
+(assert (== (consumer .state) InstanceState/active)
+  "consumer must become active after its exact provider publishes")
+(assert (== (observed .get) 42)
+  "consumer must resolve the protocol-checked provider")
+(var inspection (runtime .inspect))
+(assert
+  (try (inspection/instances .push nil) false catch Any true)
+  "runtime reflection must be deeply immutable")
+
+# Provider withdrawal quiesces the consumer before provider cleanup.
+(provider .dispose)
+(runtime .await_settled)
+(assert (== (consumer .state) InstanceState/pending)
+  "consumer must return to pending when its provider is withdrawn")
+(assert (== (cleanup_order .get) ["consumer" "provider"])
+  "consumer cleanup must precede provider cleanup")
+(assert
+  (try (consumer .await_ready) false catch DependenciesUnavailable true)
+  "await_ready must report missing dependencies")
+
+(var replacement (runtime .install root provider_spec 7))
+(runtime .await_settled)
+(replacement .await_ready)
+(consumer .await_ready)
+(assert (== (observed .get) 7)
+  "a disposed provider reservation must be reusable by a replacement")
+
+(runtime .close)
+($println "lifecycle: ok")

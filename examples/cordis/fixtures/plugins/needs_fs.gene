@@ -1,0 +1,11 @@
+(mod needs_fs)
+
+(import $fs [read_text])
+(import [PluginSpec] from "../../src/plugin_api")
+
+(fn activate [ctx, config]
+  (read_text "fixtures/composition.gene"))
+
+(var plugin
+  (PluginSpec ^id "fixture/needs_fs" ^config_schema nil ^requires []
+              ^provides [] ^reload nil ^activate activate))

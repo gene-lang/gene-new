@@ -1,0 +1,35 @@
+(mod main)
+
+(import $log [new_logger])
+(import [ReconcileMode RuntimeOptions LoaderOptions invocation_limits
+         default_plugin_invoker new_runtime]
+  from "./cordis")
+(import [Clock clock_key] from "./demo_contract")
+
+(fn main [args]
+  (var runtime
+    (new_runtime
+      (RuntimeOptions ^logger (new_logger "app/cordis")
+                      ^invoker (default_plugin_invoker)
+                      ^default_limits (invocation_limits))))
+  (runtime .admit_service_key clock_key)
+  (var loader
+    (runtime .loader
+      (LoaderOptions ^plugin_root "plugins"
+        ^shared ["src/plugin_api.gene" "src/demo_contract.gene"]
+        ^max_namespaces [] ^capability_catalog #{} ^capability_ceiling nil
+        ^default_limits nil ^reload_policy nil)))
+  (loader .reconcile
+    {^format 1
+     ^entries [
+       {^id "clock" ^plugin_id "core/clock"
+        ^module "clock.gene" ^config nil}
+       {^id "reporter" ^plugin_id "app/reporter"
+        ^module "reporter.gene" ^config nil}
+     ]}
+    ReconcileMode/staged)
+  (var clock ((runtime .root) .require clock_key))
+  ($println $"host observed tick ${(clock .Clock:tick)}")
+  (loader .dispose)
+  (runtime .close)
+  0)

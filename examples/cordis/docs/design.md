@@ -1,9 +1,18 @@
 # Cordis for Gene — design
 
-**Status:** implementation-ready design. The Gene prerequisites in
-[`tmp/gene-improvements.md`](../../../tmp/gene-improvements.md) are implemented;
-no Cordis implementation exists under `examples/cordis` yet. Gene runtime facts
-were rechecked against the tree on 2026-09-04.
+**Status:** implemented reference package. The Gene prerequisites in
+[`tmp/gene-improvements.md`](../../../tmp/gene-improvements.md) and the Cordis
+package under `examples/cordis` are implemented. Gene runtime facts and the
+package tests were rechecked against the tree on 2026-09-04.
+
+The supported import surface is `src/cordis.gene`. The core state machines live
+in `src/runtime.gene`; `effects.gene`, `hooks.gene`, `invocation.gene`, and
+`loader.gene` are focused import façades, while `include.gene`, `hmr.gene`, and
+`timer.gene` are optional adapters. `gene test` from this directory exercises
+the public lifecycle, service, effect, hook, loader, capability, recovery, and
+timer contracts. `gene run probes/hmr.gene` additionally performs a real
+source rewrite, rollback, candidate swap, and filesystem-watcher reload before
+restoring the fixture.
 
 This document adapts the design in `~/tools/cordis` at commit `2ceea23` to
 Gene. That checkout is outside this repository, so the citation is provenance
@@ -32,7 +41,7 @@ Cordis is two mechanisms made to cooperate:
 The Gene module should keep those two mechanisms behind one small interface:
 
 ```gene
-(import log [new_logger])
+(import $log [new_logger])
 (import [InvocationLimits RuntimeOptions default_plugin_invoker new_runtime]
   from "./cordis")
 
@@ -97,8 +106,8 @@ ownership, and reload rollback across every plugin and loader caller.
 
 `examples/gene-harness` is an implemented plugin runtime in this repository,
 described in `examples/gene-harness/docs/design.md`. It is the intended first
-consumer of this design, not a dependency today: Cordis is still proposed, and
-the harness currently owns its own working kernel. Cordis is the general plugin
+consumer of this package, not a dependency today: the harness currently owns
+its own working kernel. Cordis is the general plugin
 runtime the harness should later build on; the harness is what that runtime
 becomes when its plugins are authored at runtime by a language model, must
 survive a crash, and must be recoverable by an operator afterwards.
@@ -165,12 +174,12 @@ comparison, and it constrains this design in four places:
   composition test, so this costs nothing; it does mean the file adapter must
   never quietly become the loader's only input.
 
-The sequencing runs opposite to the dependency. The harness works today and
-this runtime does not exist, so nothing here asks for a rewrite: Cordis is
-implemented against the requirements above, and the harness migrates its kernel
-onto it afterwards, keeping every durable layer it already has. If that
+The sequencing runs opposite to the dependency. The harness and this runtime
+both work today, so nothing here asks for a flag-day rewrite: the harness can
+migrate its kernel onto Cordis afterwards, keeping every durable layer it
+already has. If that
 migration cannot be expressed, the interface in this document is wrong — which
-is the most useful thing a first consumer can tell an unimplemented design.
+is the most useful thing a first consumer can tell a shared runtime.
 
 ## 3. Required invariants
 
@@ -298,6 +307,8 @@ changing their behavior.
           ^instance_uid Int
           ^entry_id Str?
           ^capability_selectors List
+          ^capabilities_restricted Bool
+          ^logger Logger?
           ^limits InvocationLimits})
 
 (type LoaderOptions
@@ -410,13 +421,19 @@ anywhere else. `RuntimeOptions/logger` is the base logger described in section
 narrows them. Limits may be narrowed but never raised above the runtime value.
 
 `PluginInvoker` is a real seam because Cordis ships a default bounded adapter
-and the harness supplies an owner-aware audited adapter. The runtime gives it a
+and the harness can supply an owner-aware audited adapter. The runtime gives it a
 shallow-immutable call row containing the `PluginCallKind`, callable, argument
 list, instance and entry identities, effective capability selectors, and
-effective limits. The invoker calls the callable exactly once and either
-returns its value or raises the typed failure for that call. The default adapter
-uses a bounded `Env`, an argument-list trampoline, `with_capabilities`, and
-`$runtime/guard_call`. No other runtime path invokes plugin-supplied code. The
+effective limits. `capabilities_restricted` distinguishes trusted inheritance
+from an explicitly empty selector list; without it, a manifest requesting no
+capabilities could accidentally inherit the host context. The invoker calls the
+callable exactly once and either returns its value or raises the typed failure
+for that call. The default adapter uses a bounded `Env` to create an
+argument-list trampoline under `with_capabilities`, executes that wrapper as a
+root-lane task, and observes it through `Task/join`. This preserves suspension
+while containing recoverable errors and panics; `$runtime/guard_call` remains
+the smaller synchronous adapter seam. No other runtime path invokes
+plugin-supplied code. The
 engine acquires an owner invocation lease before calling the invoker and
 releases it in `ensure`; unloading closes the external gate and waits for its
 count to reach zero. Cleanup then uses a serialized teardown permit but still
@@ -985,9 +1002,11 @@ Internal hooks use private `HookKey` values rather than reserved
 - `hook_registered`
 - `hook_dispatched`
 
-Only documented extension hooks enter the public hook catalog. Ordinary domain
-events remain nominal `$event/Event` values on an application-owned
-`event/Bus`.
+Only documented extension hooks enter the public hook catalog. The implemented
+package exports and auto-admits the nominal `config_update` waterfall and
+`hmr_reloaded` emit keys; a sandbox sees either only through an explicitly
+shared contract module. Ordinary domain events remain nominal `$event/Event`
+values on an application-owned `event/Bus`.
 
 ## 11. Configuration and intercepts
 
@@ -1327,6 +1346,14 @@ throttle(callback, delay_ms, trailing=true) -> DisposableCallable
 debounce(callback, delay_ms) -> DisposableCallable
 ```
 
+The concrete `src/timer.gene` functions take an `EffectOwner` as their first
+argument; a bound timer service façade supplies that owner and exposes the
+short signatures above. The module exports the nominal `Timer` protocol,
+`timer_key`, and `timer_plugin`; its contextual binding places every timer in
+the consuming instance's scope. `src/actor.gene` similarly provides `owned_actor`,
+which keeps the actor inside an effect-owned supervisor task while routing its
+initializer and handler through `PluginInvoker`.
+
 Disposing the owner cancels timers, rejects or cancels pending waits with
 `ContextDisposed`, and closes tick streams. Concurrent stream reads are either
 serialized by the stream adapter or rejected explicitly; they never allocate
@@ -1452,7 +1479,7 @@ Every lifecycle error includes plugin id, instance uid, loader entry id when
 present, and the outer activation stack. Causes remain structured; formatting
 does not destroy them.
 
-## 18. Proposed filesystem layout
+## 18. Filesystem layout
 
 ```text
 examples/cordis/
@@ -1463,27 +1490,38 @@ examples/cordis/
     cordis.gene             public exports
     model.gene              public value types and errors
     runtime.gene            context, providers, dependencies, transitions
-    invocation.gene         default PluginInvoker adapter
-    effects.gene            EffectScope implementation
-    hooks.gene              HookKey and dispatch modes
-    loader.gene             Loader façade, composition tree, reconciliation
+    invocation.gene         focused invocation imports
+    effects.gene            focused effect imports
+    hooks.gene              focused hook imports
+    loader.gene             focused loader imports
     include.gene            data-file adapter and atomic persistence
     hmr.gene                dependency analysis and candidate swap
     timer.gene              task/timer service adapter
+    actor.gene              typed bounded cross-lane service adapter
     plugin_api.gene         stable sandbox/shared plugin contract
+    demo_contract.gene      shared clock service contract
     main.gene               runnable demonstration
   plugins/
     clock.gene
-    database.gene
     reporter.gene
+  fixtures/                 loader/HMR contract and plugin fixtures
+  probes/
+    hmr.gene                live source + watcher reload probe
   tests/
+    actor.gene
+    cycles.gene
     lifecycle.gene
-    isolation.gene
+    lifecycle_edges.gene
     services.gene
     effects.gene
     hooks.gene
+    quiescence.gene
     loader.gene
-    hmr.gene
+    loader_capabilities.gene
+    include.gene
+    recovery.gene
+    stop_start.gene
+    timer.gene
 ```
 
 `package.gene` names the package `genex/cordis`. That is the package's registry
@@ -1591,24 +1629,24 @@ At least one test service must have both plain and contextual adapters. At least
 one loader test uses an in-memory composition adapter and one uses a real
 temporary filesystem, so the loader seam is justified rather than hypothetical.
 
-## 20. Implementation order
+## 20. Delivered implementation order
 
-0. Use the implemented `$runtime/require_root_lane` and `Task/join` primitives
-   from `tmp/gene-improvements.md`.
-1. Implement `RuntimeOptions`, the default `PluginInvoker`, service keys,
-   immutable contexts, realm resolution, and read-only snapshots.
-2. Add effect scopes and a manually driven plugin state machine.
-3. Add the dependency reverse index, epochs, and transition coalescing.
-4. Add plain and contextual service binding plus intercept merge.
-5. Add hook keys and all dispatch modes.
-6. Add the data-only `Loader` façade, both reconciliation modes, and nested
-   group reconciliation.
-7. Integrate Gene's bounded sandbox generation prepare/commit/discard/release
-   interface and add the shared plugin contract.
-8. Add atomic include persistence and patches.
-9. Add candidate-swap HMR, explicit stop/start fallback, and the implemented
-   `$fs/watch` adapter.
-10. Add timer and actor adapters, then the runnable example.
+0. Used `$runtime/require_root_lane` and `Task/join` from
+   `tmp/gene-improvements.md`.
+1. Added `RuntimeOptions`, the bounded default `PluginInvoker`, nominal service
+   keys, immutable contexts, exact realms, and frozen snapshots.
+2. Added effect scopes and the serialized plugin state machine.
+3. Added the dependency reverse index, epochs, and transition coalescing.
+4. Added plain and contextual service binding plus key-owned config merge.
+5. Added hook keys, scoped subjects, and all dispatch modes.
+6. Added the data-only `Loader` façade, incremental and prospective staged
+   reconciliation, nested groups, and direct-consumer candidate revisions.
+7. Integrated sandbox generation prepare/commit/discard/release and the shared
+   `plugin_api.gene` contract.
+8. Added atomic include persistence and id/module-checked patches.
+9. Added candidate-swap HMR, stop/start fallback, post-commit recovery
+   diagnostics, and the `$fs/watch` adapter.
+10. Added effect-owned timer adapters and the runnable clock/reporter example.
 
 Each stage adds executable interface tests before the next stage. HMR is last
 because it relies on every earlier lifetime and visibility guarantee; it must

@@ -1,0 +1,3235 @@
+# Cordis runtime kernel.
+#
+# The public values in this file are deliberately tiny token handles. All
+# mutable state lives in private records reachable only through the module's
+# registries. Repeating a printed id or directly constructing a public handle
+# therefore cannot forge runtime membership or lifecycle authority.
+
+(mod runtime)
+
+(import [InstanceState PluginCallKind HookMode ReconcileMode
+         Disposable PluginInvoker EffectOwner
+         InvocationLimits RuntimeOptions PluginCall LoaderOptions
+         ServiceKey HookKey Requirement PluginSpec
+         CordisError UndeclaredRequirement ServiceUnavailable
+         DuplicateProvider ServiceContractError ConfigValidationError
+         PluginActivationError PluginCleanupError DependenciesUnavailable
+         InstanceDisposed ContextDisposed EffectDisposed
+         ContinuationAlreadyCalled HookDispatchError CompositionError
+         ReloadRejected RecoveryRequired invocation_limits]
+  from "./model" ^export true)
+
+# --- public handles --------------------------------------------------------
+
+(type Runtime
+  ^props {^token Any}
+  (message root [] (runtime_root self))
+  (message admit_service_key [key] (runtime_admit_service_key self key))
+  (message admit_hook_key [key] (runtime_admit_hook_key self key))
+  (message install [context, plugin, config = nil]
+    (runtime_install self context plugin config nil))
+  (message inject [context, requirements, callback]
+    (runtime_inject self context requirements callback))
+  (message loader [options] (runtime_loader self options))
+  (message inspect [] (runtime_inspect self))
+  (message await_settled [] (runtime_await_settled self))
+  (message close [] (runtime_close self)))
+
+(type Context
+  ^props {^token Any}
+  (message require [key, head_config = nil]
+    (context_require self key head_config))
+  (message get [key, head_config = nil]
+    (context_get self key head_config))
+  (message hook_subject [key] (context_hook_subject self key))
+  (message dispatch [hook, payload, options = nil]
+    (context_dispatch self hook payload options))
+  (message derive [options] (context_derive self options)))
+
+(type ActivationContext
+  : Context
+  ^props {}
+  (message defer [cleanup] (owner_defer self cleanup))
+  (message provide [key, value, availability = nil]
+    (owner_provide self key value availability))
+  (message effect [label : Str, acquire]
+    (owner_effect self label acquire))
+  (message spawn [label : Str, thunk]
+    (owner_spawn self label thunk))
+  (message on [hook, handler, options = nil]
+    (owner_on self hook handler options false))
+  (message once [hook, handler, options = nil]
+    (owner_on self hook handler options true))
+  (message install [plugin, config = nil]
+    (owner_install self plugin config)))
+
+(type EffectScope
+  ^props {^token Any}
+  (message defer [cleanup] (owner_defer self cleanup))
+  (message provide [key, value, availability = nil]
+    (owner_provide self key value availability))
+  (message effect [label : Str, acquire]
+    (owner_effect self label acquire))
+  (message spawn [label : Str, thunk]
+    (owner_spawn self label thunk))
+  (message on [hook, handler, options = nil]
+    (owner_on self hook handler options false))
+  (message once [hook, handler, options = nil]
+    (owner_on self hook handler options true))
+  (message install [plugin, config = nil]
+    (owner_install self plugin config)))
+
+(type EffectLease
+  ^props {^token Any}
+  (message value [] (effect_lease_value self))
+  (message dispose [] : Nil (effect_lease_dispose self))
+  (impl Disposable
+    (message dispose [] : Nil (effect_lease_dispose self))))
+
+(type ProviderLease
+  ^props {^token Any}
+  (message refresh [] : Bool (provider_lease_refresh self))
+  (message dispose [] : Nil (provider_lease_dispose self))
+  (impl Disposable
+    (message dispose [] : Nil (provider_lease_dispose self))))
+
+(type PluginInstance
+  ^props {^token Any}
+  (message state [] : InstanceState (instance_state self))
+  (message await_ready [] : PluginInstance (instance_await_ready self))
+  (message update [config] : Nil (instance_update self config))
+  (message restart [] : Nil (instance_restart self))
+  (message dispose [] : Nil (instance_dispose self))
+  (message effects [] : (List Any) (instance_effects self))
+  (impl Disposable
+    (message dispose [] : Nil (instance_dispose self))))
+
+(type HookSubject ^props {^token Any})
+(type RealmId ^props {^token Any})
+
+(type HookSubscription
+  ^private true
+  ^props {^token Any}
+  (message dispose [] : Nil (hook_subscription_dispose self))
+  (impl Disposable
+    (message dispose [] : Nil (hook_subscription_dispose self))))
+
+(type CleanupLease
+  ^private true
+  ^props {^token Any}
+  (message dispose [] : Nil (cleanup_lease_dispose self))
+  (impl Disposable
+    (message dispose [] : Nil (cleanup_lease_dispose self))))
+
+(type DefaultPluginInvoker
+  ^private true
+  (impl PluginInvoker
+    (message invoke [call] : Any (default_invoke call))))
+
+(type WaterfallContinuation
+  ^private true
+  ^props {^token Any}
+  (impl Callable
+    (message apply [self, call] : Any
+      (waterfall_continue self call))))
+
+# Loader is defined here so callers receive one opaque façade. Loader behavior
+# is implemented in loader.gene and installed through private function values
+# when that module initializes.
+(type Loader
+  ^props {^token Any}
+  (message reconcile [manifest, mode = nil]
+    (loader_reconcile self manifest mode))
+  (message reload [changed_paths] (loader_reload self changed_paths))
+  (message inspect [] (loader_inspect self))
+  (message await_settled [] : Nil (loader_await_settled self))
+  (message dispose [] : Nil (loader_dispose self))
+  (impl Disposable
+    (message dispose [] : Nil (loader_dispose self))))
+
+(impl EffectOwner for ActivationContext
+  (message defer [cleanup] : Disposable (owner_defer self cleanup))
+  (message provide [key, value, availability = nil] : Any
+    (owner_provide self key value availability))
+  (message effect [label : Str, acquire] : Any
+    (owner_effect self label acquire))
+  (message spawn [label : Str, thunk] : Task
+    (owner_spawn self label thunk))
+  (message on [hook, handler, options = nil] : Disposable
+    (owner_on self hook handler options false))
+  (message once [hook, handler, options = nil] : Disposable
+    (owner_on self hook handler options true))
+  (message install [plugin, config] : Any
+    (owner_install self plugin config)))
+
+(impl EffectOwner for EffectScope
+  (message defer [cleanup] : Disposable (owner_defer self cleanup))
+  (message provide [key, value, availability = nil] : Any
+    (owner_provide self key value availability))
+  (message effect [label : Str, acquire] : Any
+    (owner_effect self label acquire))
+  (message spawn [label : Str, thunk] : Task
+    (owner_spawn self label thunk))
+  (message on [hook, handler, options = nil] : Disposable
+    (owner_on self hook handler options false))
+  (message once [hook, handler, options = nil] : Disposable
+    (owner_on self hook handler options true))
+  (message install [plugin, config] : Any
+    (owner_install self plugin config)))
+
+# --- private state ---------------------------------------------------------
+
+(type RuntimeRecord
+  ^private true
+  ^props {^token Any ^options Any ^invoker Any ^default_limits Any
+          ^state Any ^root Any ^next_uid Any ^next_realm Any ^next_context Any
+          ^contexts Any ^instances Any ^service_keys Any ^hook_keys Any
+          ^providers Any ^reservations Any ^dependants Any ^hooks Any
+          ^binding_cache Any ^subjects Any ^resources Any
+          ^loaders Any ^diagnostics Any})
+
+(type ContextRecord
+  ^private true
+  ^props {^token Any ^id Int ^runtime RuntimeRecord ^parent Any ^owner Any
+          ^operator Bool ^alive Any ^realms Any ^overlays Any ^allowed Any
+          ^capabilities Any ^capabilities_restricted Bool
+          ^limits InvocationLimits ^generation Any})
+
+(type InstanceRecord
+  ^private true
+  ^props {^token Any ^runtime RuntimeRecord ^uid Int ^plugin PluginSpec
+          ^entry_id Any ^parent_context ContextRecord ^context Any
+          ^config Any ^state Any ^error Any ^desired_epoch Any
+          ^active_epoch Any ^transition Any ^dirty Any ^retry Any
+          ^dispose_requested Any ^root_effect Any ^providers Any
+          ^provided Any ^children Any ^invocations Any ^gate_open Any
+          ^teardown Any})
+
+(type EffectRecord
+  ^private true
+  ^props {^token Any ^runtime RuntimeRecord ^owner InstanceRecord
+          ^parent Any ^context Context ^label Str ^active Any ^accepting Any
+          ^entries Any ^value Any})
+
+(type CleanupRecord
+  ^private true
+  ^props {^token Any ^scope EffectRecord ^callable Any ^active Any})
+
+(type ProviderRecord
+  ^private true
+  ^props {^token Any ^runtime RuntimeRecord ^scope EffectRecord
+          ^owner InstanceRecord ^key ServiceKey ^realm Str ^address Str
+          ^value Any ^availability Any ^available Any ^active Any
+          ^generation Any ^definition_context Any})
+
+(type HookRecord
+  ^private true
+  ^props {^token Any ^runtime RuntimeRecord ^scope EffectRecord
+          ^owner InstanceRecord ^hook HookKey ^context Context
+          ^handler Any ^once Bool ^prepend Bool ^global Bool
+          ^active Any ^consumed Any})
+
+(type SubjectRecord
+  ^private true
+  ^props {^token Any ^runtime RuntimeRecord ^key ServiceKey ^realm Str})
+
+(type ContinuationRecord
+  ^private true
+  ^props {^token Any ^runtime RuntimeRecord ^context Context
+          ^hook HookKey ^handlers Any ^index Int ^payload Any
+          ^terminal Any ^used Any})
+
+(type LoaderRecord
+  ^private true
+  ^props {^token Any ^runtime RuntimeRecord ^options LoaderOptions
+          ^entries Any ^order Any ^manifest Any ^state Any
+          ^generations Any ^watchers Any})
+
+(type LoaderEntryRecord
+  ^private true
+  ^props {^id Str ^parent_id Any ^data Any ^group Bool ^disabled Bool
+          ^context Context ^context_signature Str ^module_path Any
+          ^plugin Any ^module Any ^instance Any ^generation Any ^graph Any})
+
+(type EpochRecord
+  ^private true
+  ^props {^ready Bool ^text Str ^missing Any})
+
+(var runtime_records ^private true ($cell ($thaw #[])))
+(var service_key_records ^private true ($cell ($thaw #[])))
+(var hook_key_records ^private true ($cell ($thaw #[])))
+(var continuation_records ^private true ($cell ($thaw #[])))
+
+(fn fresh_list ^^private [] ($thaw #[]))
+(fn fresh_map ^^private [] ($thaw #{}))
+
+(fn copy_list ^^private [source]
+  (var out (fresh_list))
+  (for value in source (out .push value))
+  out)
+
+(fn copy_map ^^private [source]
+  (var out (fresh_map))
+  (for [key value] in source (out .put key value))
+  out)
+
+(fn append_copy ^^private [source, value]
+  (var out (copy_list source))
+  (out .push value)
+  out)
+
+(fn without_token ^^private [source, token]
+  (var out (fresh_list))
+  (for value in source
+    (if_not (same? value/token token) (out .push value)))
+  out)
+
+(fn callable? ^^private [value] ($runtime/callable? value))
+
+(fn absent? ^^private [value] ($absent? value))
+
+(fn cordis_failure ^^private
+  [kind, message : Str, cause = nil, plugin = nil,
+   instance_uid = nil, entry_id = nil]
+  (fail (kind ^message message ^cause cause ^plugin plugin
+              ^instance_uid instance_uid ^entry_id entry_id)))
+
+(fn require_positive_limits ^^private [limits]
+  (if_not (== ($head limits) InvocationLimits)
+    (cordis_failure ConfigValidationError
+      "invocation limits must be InvocationLimits"))
+  (if (|| (<= limits/max_steps 0)
+          (<= limits/max_memory_mb 0)
+          (<= limits/timeout_ms 0))
+    (cordis_failure ConfigValidationError
+      "invocation limits must be positive"))
+  limits)
+
+(fn limits_narrower? ^^private [child, parent] : Bool
+  (&& (<= child/max_steps parent/max_steps)
+      (<= child/max_memory_mb parent/max_memory_mb)
+      (<= child/timeout_ms parent/timeout_ms)))
+
+(fn narrow_limits ^^private [candidate, parent]
+  (if (absent? candidate) (return parent))
+  (require_positive_limits candidate)
+  (if_not (limits_narrower? candidate parent)
+    (cordis_failure ConfigValidationError
+      "derived invocation limits may only narrow their parent"))
+  candidate)
+
+(fn find_runtime_record ^^private [token]
+  (for record in (runtime_records .get)
+    (if (same? record/token token) (return record)))
+  nil)
+
+(fn runtime_record ^^private [runtime : Runtime]
+  ($runtime/require_root_lane)
+  (var record (find_runtime_record runtime/token))
+  (if (absent? record)
+    (cordis_failure ContextDisposed "runtime is closed or foreign"))
+  record)
+
+(fn context_record ^^private [context : Context]
+  ($runtime/require_root_lane)
+  (for runtime in (runtime_records .get)
+    (for record in (runtime/contexts .get)
+      (if (same? record/token context/token)
+        (then
+          (if (|| (! (record/alive .get))
+                  (&& (! (absent? record/owner))
+                      (== (record/owner/state .get) InstanceState/disposed)))
+            (cordis_failure ContextDisposed "context is disposed"))
+          (return record)))))
+  (cordis_failure ContextDisposed "context is disposed or foreign"))
+
+(fn context_record_even_if_closed ^^private [context]
+  (for runtime in (runtime_records .get)
+    (for record in (runtime/contexts .get)
+      (if (same? record/token context/token) (return record))))
+  nil)
+
+(fn instance_record ^^private [instance : PluginInstance]
+  ($runtime/require_root_lane)
+  (for runtime in (runtime_records .get)
+    (for record in (runtime/instances .get)
+      (if (same? record/token instance/token) (return record))))
+  (cordis_failure InstanceDisposed "plugin instance is disposed or foreign"))
+
+(fn effect_record ^^private [handle]
+  ($runtime/require_root_lane)
+  (for runtime in (runtime_records .get)
+    (for record in (runtime/resources .get)
+      (if (&& (== ($head record) EffectRecord)
+              (same? record/token handle/token))
+        (return record))))
+  (cordis_failure EffectDisposed "effect scope is disposed or foreign"))
+
+(fn owner_effect_record ^^private [owner]
+  (if (== ($head owner) ActivationContext)
+    (then
+      (var context (context_record owner))
+      (if (absent? context/owner)
+        (cordis_failure EffectDisposed "operator context is not an effect owner"))
+      (var root (context/owner/root_effect .get))
+      (if (absent? root)
+        (cordis_failure EffectDisposed "activation effect scope is unavailable"))
+      root)
+    (else
+      (if_not (== ($head owner) EffectScope)
+        (cordis_failure EffectDisposed "value is not an effect owner"))
+      (effect_record owner))))
+
+(fn require_accepting_scope ^^private [owner]
+  (var scope (owner_effect_record owner))
+  (if_not (&& (scope/active .get) (scope/accepting .get))
+    (cordis_failure EffectDisposed "effect owner is unloading or disposed"
+      nil scope/owner/plugin/id scope/owner/uid scope/owner/entry_id))
+  scope)
+
+(fn effect_owner_context ^^private [owner, scope]
+  (if (== ($head owner) ActivationContext)
+    (then
+      (context_record owner)
+      owner)
+    (else scope/context)))
+
+(fn canonical_service_key ^^private [candidate]
+  (if_not (== ($head candidate) ServiceKey)
+    (cordis_failure ServiceContractError "expected a ServiceKey"))
+  (for key in (service_key_records .get)
+    (if (same? key/token candidate/token) (return key)))
+  (cordis_failure ServiceContractError
+    "service key was not created by service_key"))
+
+(fn canonical_hook_key ^^private [candidate]
+  (if_not (== ($head candidate) HookKey)
+    (cordis_failure HookDispatchError "expected a HookKey"))
+  (for key in (hook_key_records .get)
+    (if (same? key/token candidate/token) (return key)))
+  (cordis_failure HookDispatchError
+    "hook key was not created by hook_key"))
+
+(fn admitted_service_key ^^private [runtime, candidate]
+  (var key (canonical_service_key candidate))
+  (var admitted ((runtime/service_keys .get) .get key/id))
+  (if (|| (== admitted void) (! (same? admitted/token key/token)))
+    (cordis_failure ServiceContractError
+      $"service key ${key/id} is not admitted to this runtime"))
+  admitted)
+
+(fn admitted_hook_key ^^private [runtime, candidate]
+  (var key (canonical_hook_key candidate))
+  (var admitted ((runtime/hook_keys .get) .get key/id))
+  (if (|| (== admitted void) (! (same? admitted/token key/token)))
+    (cordis_failure HookDispatchError
+      $"hook key ${key/id} is not admitted to this runtime"))
+  admitted)
+
+# --- trusted key constructors ---------------------------------------------
+
+(fn service_key
+  [id : Str, contract, ^check check,
+   ^config_schema config_schema = nil,
+   ^merge_config merge_config = nil,
+   ^bind bind = nil] : ServiceKey
+  ($runtime/require_root_lane)
+  (if (== id "")
+    (cordis_failure ServiceContractError "service key id cannot be empty"))
+  (if_not (callable? check)
+    (cordis_failure ServiceContractError "service key check must be callable"))
+  (for [name value] in {^config_schema config_schema
+                         ^merge_config merge_config ^bind bind}
+    (if (&& (! (absent? value)) (! (callable? value)))
+      (cordis_failure ServiceContractError
+        $"service key ${name} must be callable or nil")))
+  (var key
+    (ServiceKey ^token ($cell nil) ^id id ^contract contract ^check check
+                ^config_schema config_schema ^merge_config merge_config
+                ^bind bind))
+  ((service_key_records .get) .push key)
+  key)
+
+(fn hook_key
+  [id : Str, mode : HookMode,
+   ^payload_schema payload_schema = nil] : HookKey
+  ($runtime/require_root_lane)
+  (if (== id "")
+    (cordis_failure HookDispatchError "hook key id cannot be empty"))
+  (if (&& (! (absent? payload_schema)) (! (callable? payload_schema)))
+    (cordis_failure HookDispatchError
+      "hook payload schema must be callable or nil"))
+  (var key
+    (HookKey ^token ($cell nil) ^id id ^mode mode
+             ^payload_schema payload_schema))
+  ((hook_key_records .get) .push key)
+  key)
+
+# --- default invocation supervision --------------------------------------
+
+(fn apply_argument_list ^^private [bundle]
+  (bundle/callable bundle/args...))
+
+(fn default_invoke_for ^^private [call : PluginCall, instance, registration_scope = nil]
+  # Evaluate only the wrapper declaration under the bounded Env. The callback
+  # itself runs as task bytecode so a nested await/sleep can suspend without
+  # losing its continuation; Task/join is also the panic boundary.
+  (var body (quote (fn [] (apply_argument_list bundle))))
+  (if call/capabilities_restricted
+    (set body
+      `(fn []
+         (with_capabilities [(unquote (... call/capability_selectors))]
+           (apply_argument_list bundle)))))
+  (var wrapper
+    (eval body
+      ^in (env ^bindings {^apply_argument_list apply_argument_list
+                          ^bundle {^callable call/callable ^args call/args}}
+               ^policy {^max_steps call/limits/max_steps
+                        ^max_memory_mb call/limits/max_memory_mb
+                        ^timeout_ms call/limits/timeout_ms})))
+  (var task (spawn ^lane root (wrapper)))
+  (if (&& (! (absent? instance))
+          (!= call/kind PluginCallKind/cleanup)
+          (! (absent? registration_scope)))
+    (then
+      (var owner_scope registration_scope)
+      (if (&& (! (absent? owner_scope)) (owner_scope/accepting .get))
+        ((owner_scope/entries .get) .push
+          {^kind "task" ^label "plugin-invocation" ^task task}))))
+  (var outcome nil)
+  (try
+    (set outcome (task .join))
+  ensure
+    # Cancellation of the invoker must not orphan its supervised wrapper.
+    # Task/join intentionally leaves an independent task running, so this
+    # ownership edge is explicit.
+    (if (absent? outcome)
+      (then
+        (task .cancel)
+        (task .join))))
+  (match outcome
+    (when (TaskOutcome/ok value) value)
+    (when (TaskOutcome/error error) (fail error))
+    (when (TaskOutcome/panic message)
+      (cordis_failure CordisError
+        $"plugin panic: ${message}" message
+        nil call/instance_uid call/entry_id))
+    (when TaskOutcome/cancelled
+      (cordis_failure CordisError "plugin invocation was cancelled"
+        nil nil call/instance_uid call/entry_id))))
+
+(fn default_invoke ^^private [call : PluginCall]
+  (default_invoke_for call nil nil))
+
+(fn default_plugin_invoker [] : PluginInvoker
+  (DefaultPluginInvoker))
+
+(fn logger_for_instance ^^private [runtime, instance]
+  (if (|| (absent? runtime/options)
+          (absent? runtime/options/logger))
+    (return nil))
+  (var logger (runtime/options/logger .child "cordis"))
+  (if (absent? instance)
+    (logger .with {^instance_uid 0})
+    (logger .with
+      {^plugin instance/plugin/id ^instance_uid instance/uid
+       ^entry_id instance/entry_id})))
+
+(fn invoke_call ^^private
+  [runtime, instance, kind, callable, args, registration_scope = nil,
+   owned : Bool = false, call_context = nil]
+  (if_not (callable? callable)
+    (cordis_failure CordisError "plugin callback is not callable"
+      nil instance/plugin/id instance/uid instance/entry_id))
+  (if (&& (! owned) (!= kind PluginCallKind/cleanup)
+          (! (instance/gate_open .get)))
+    (plugin_error InstanceDisposed
+      "plugin instance no longer accepts external invocations" instance))
+  (var context
+    (if (! (absent? call_context))
+      (context_record_even_if_closed call_context)
+      (if (absent? instance/context) nil
+        (context_record_even_if_closed (instance/context .get)))))
+  (var selectors
+    (if (absent? context) (fresh_list) context/capabilities))
+  (var restricted
+    (if (absent? context) false context/capabilities_restricted))
+  (var limits
+    (if (absent? context) runtime/default_limits context/limits))
+  (var call
+    ($freeze_shallow
+      (PluginCall ^kind kind ^callable callable ^args ($freeze_shallow args)
+                  ^instance_uid instance/uid ^entry_id instance/entry_id
+                  ^capability_selectors ($freeze_shallow selectors)
+                  ^capabilities_restricted restricted
+                  ^logger (logger_for_instance runtime instance)
+                  ^limits limits)))
+  (if owned
+    (return
+      (if (== ($head runtime/invoker) DefaultPluginInvoker)
+        (default_invoke_for call instance registration_scope)
+        (runtime/invoker .PluginInvoker:invoke call))))
+  (instance/invocations .set (+ (instance/invocations .get) 1))
+  (try
+    (if (== ($head runtime/invoker) DefaultPluginInvoker)
+      (default_invoke_for call instance registration_scope)
+      (runtime/invoker .PluginInvoker:invoke call))
+  ensure
+    (instance/invocations .set (- (instance/invocations .get) 1))
+    (if (&& (== (instance/invocations .get) 0)
+            (instance/dispose_requested .get))
+      (request_transition instance false))))
+
+# --- runtime and contexts --------------------------------------------------
+
+(fn new_context_record ^^private
+  [runtime, parent, owner, operator : Bool, realms, overlays, allowed,
+   capabilities, capabilities_restricted : Bool, limits]
+  (var id (runtime/next_context .get))
+  (runtime/next_context .set (+ id 1))
+  (var record
+    (ContextRecord ^token ($cell nil) ^id id ^runtime runtime ^parent parent
+                   ^owner owner ^operator operator ^alive ($cell true)
+                   ^realms realms ^overlays overlays ^allowed allowed
+                   ^capabilities capabilities
+                   ^capabilities_restricted capabilities_restricted
+                   ^limits limits
+                   ^generation ($cell 1)))
+  ((runtime/contexts .get) .push record)
+  record)
+
+(fn context_handle ^^private [record]
+  (if (absent? record/owner)
+    (Context ^token record/token)
+    (ActivationContext ^token record/token)))
+
+(fn new_runtime [options : RuntimeOptions] : Runtime
+  ($runtime/require_root_lane)
+  (var limits (require_positive_limits options/default_limits))
+  (var invoker
+    (if (absent? options/invoker) (default_plugin_invoker) options/invoker))
+  (var token ($cell nil))
+  (var record
+    (RuntimeRecord
+      ^token token ^options options ^invoker invoker ^default_limits limits
+      ^state ($cell "open") ^root ($cell nil)
+      ^next_uid ($cell 1) ^next_realm ($cell 1) ^next_context ($cell 1)
+      ^contexts ($cell (fresh_list)) ^instances ($cell (fresh_list))
+      ^service_keys ($cell (fresh_map)) ^hook_keys ($cell (fresh_map))
+      ^providers ($cell (fresh_map)) ^reservations ($cell (fresh_map))
+      ^dependants ($cell (fresh_map)) ^hooks ($cell (fresh_map))
+      ^binding_cache ($cell (fresh_map)) ^subjects ($cell (fresh_list))
+      ^resources ($cell (fresh_list))
+      ^loaders ($cell (fresh_list))
+      ^diagnostics ($cell (fresh_list))))
+  ((runtime_records .get) .push record)
+  (var root_record
+    (new_context_record record nil nil true
+      (fresh_map) (fresh_map) (fresh_map) (fresh_list) false limits))
+  (var root (Context ^token root_record/token))
+  (record/root .set root)
+  ((record/hook_keys .get) .put hmr_reloaded/id hmr_reloaded)
+  ((record/hook_keys .get) .put config_update/id config_update)
+  (Runtime ^token token))
+
+(fn runtime_root ^^private [runtime : Runtime] : Context
+  (var record (runtime_record runtime))
+  (record/root .get))
+
+(fn require_runtime_open ^^private [record]
+  (if_not (== (record/state .get) "open")
+    (cordis_failure ContextDisposed "runtime is closing or closed"))
+  record)
+
+(fn runtime_admit_service_key ^^private [handle : Runtime, candidate] : Nil
+  (var runtime (require_runtime_open (runtime_record handle)))
+  (var key (canonical_service_key candidate))
+  (var keys (runtime/service_keys .get))
+  (var existing (keys .get key/id))
+  (if_not (== existing void)
+    (if (same? existing/token key/token) (return nil))
+    (cordis_failure ServiceContractError
+      $"a different service key is already admitted as ${key/id}"))
+  (keys .put key/id key)
+  (runtime/service_keys .set keys)
+  nil)
+
+(fn runtime_admit_hook_key ^^private [handle : Runtime, candidate] : Nil
+  (var runtime (require_runtime_open (runtime_record handle)))
+  (var key (canonical_hook_key candidate))
+  (var keys (runtime/hook_keys .get))
+  (var existing (keys .get key/id))
+  (if_not (== existing void)
+    (if (same? existing/token key/token) (return nil))
+    (cordis_failure HookDispatchError
+      $"a different hook key is already admitted as ${key/id}"))
+  (keys .put key/id key)
+  (runtime/hook_keys .set keys)
+  nil)
+
+(fn context_realm ^^private [context, key] : Str
+  (?? (context/realms .get key/id) "default"))
+
+(fn service_address ^^private [key, realm : Str] : Str
+  $"${key/id}\u001f${realm}")
+
+(fn context_allows_key? ^^private [context, key] : Bool
+  (|| context/operator (== (context/allowed .get key/id) true)))
+
+(fn require_context_key ^^private [context, candidate]
+  (var key (admitted_service_key context/runtime candidate))
+  (if_not (context_allows_key? context key)
+    (cordis_failure UndeclaredRequirement
+      $"plugin did not declare service ${key/id}"
+      nil
+      (if (absent? context/owner) nil context/owner/plugin/id)
+      (if (absent? context/owner) nil context/owner/uid)
+      (if (absent? context/owner) nil context/owner/entry_id)))
+  key)
+
+(fn named_service_key ^^private [runtime, id : Str]
+  (var key ((runtime/service_keys .get) .get id))
+  (if (== key void)
+    (cordis_failure ServiceContractError
+      $"unknown admitted service id ${id}"))
+  key)
+
+(fn fresh_private_realm ^^private [runtime] : Str
+  (var id (runtime/next_realm .get))
+  (runtime/next_realm .set (+ id 1))
+  $"private:${id}")
+
+(fn normalize_isolations ^^private [runtime, value]
+  (var rows (fresh_list))
+  (if (absent? value) (return rows))
+  (if (== ($head value) List)
+    (then
+      (for item in value
+        (if (== ($head item) List)
+          (then
+            (if_not (== item/.size 2)
+              (cordis_failure ConfigValidationError
+                "an isolate pair must contain a key and realm label"))
+            (var key (admitted_service_key runtime item/0))
+            (if_not (== ($head item/1) Str)
+              (cordis_failure ConfigValidationError
+                "an isolate realm label must be Str"))
+            (rows .push [key $"named:${item/1}"]))
+          (else
+            (rows .push [(admitted_service_key runtime item)
+                         (fresh_private_realm runtime)])))))
+    (else
+      (if_not (== ($head value) Map)
+        (cordis_failure ConfigValidationError
+          "derive ^isolate must be a list or map"))
+      (for [id choice] in value
+        (var key (named_service_key runtime ($to_str id)))
+        (if (== choice true)
+          (rows .push [key (fresh_private_realm runtime)])
+          (if (== ($head choice) Str)
+            (rows .push [key $"named:${choice}"])
+            (cordis_failure ConfigValidationError
+              "isolate values must be true or a named realm string"))))))
+  rows)
+
+(fn normalize_intercepts ^^private [runtime, value]
+  (var rows (fresh_list))
+  (if (absent? value) (return rows))
+  (if (== ($head value) List)
+    (then
+      (for row in value
+        (if_not (&& (== ($head row) List) (== row/.size 2))
+          (cordis_failure ConfigValidationError
+            "an intercept row must contain a service key and config"))
+        (rows .push [(admitted_service_key runtime row/0) ($freeze row/1)])))
+    (else
+      (if_not (== ($head value) Map)
+        (cordis_failure ConfigValidationError
+          "derive ^intercept must be a list or map"))
+      (for [id config] in value
+        (rows .push [(named_service_key runtime ($to_str id))
+                     ($freeze config)]))))
+  rows)
+
+(fn list_subset? ^^private [child, parent, parent_restricted : Bool] : Bool
+  (if_not parent_restricted (return true))
+  (for candidate in child
+    (var found false)
+    (for allowed in parent
+      (if (== candidate allowed) (set found true)))
+    (if_not found (return false)))
+  true)
+
+(fn context_derive ^^private [handle : Context, options]
+  (var parent (context_record handle))
+  (if_not (== ($head options) Map)
+    (cordis_failure ConfigValidationError "Context/derive expects a map"))
+  (for [name value] in options
+    (var option_name ($to_str name))
+    (if_not (["isolate" "intercept" "capabilities" "limits"] .contains? option_name)
+      (cordis_failure ConfigValidationError
+        $"unknown Context/derive option ^${option_name}")))
+  (var realms (copy_map parent/realms))
+  (for row in (normalize_isolations parent/runtime (options .get "isolate"))
+    (realms .put row/0/id row/1))
+  (var overlays (fresh_map))
+  (for [id rows] in parent/overlays
+    (overlays .put id (copy_list rows)))
+  (for row in (normalize_intercepts parent/runtime (options .get "intercept"))
+    (var configs (?? (overlays .get row/0/id) (fresh_list)))
+    (configs .push row/1)
+    (overlays .put row/0/id configs))
+  (var capabilities parent/capabilities)
+  (var capabilities_restricted parent/capabilities_restricted)
+  (var requested (options .get "capabilities"))
+  (if_not (== requested void)
+    (if_not (== ($head requested) List)
+      (cordis_failure ConfigValidationError
+        "Context/derive ^capabilities must be a list"))
+    (if_not (list_subset? requested parent/capabilities
+                          parent/capabilities_restricted)
+      (cordis_failure ConfigValidationError
+        "derived capabilities may only narrow their parent"))
+    (set capabilities (copy_list requested))
+    (set capabilities_restricted true))
+  (var limits (narrow_limits (options .get "limits") parent/limits))
+  (var child
+    (new_context_record parent/runtime parent parent/owner parent/operator
+      realms overlays (copy_map parent/allowed) capabilities
+      capabilities_restricted limits))
+  (context_handle child))
+
+# --- descriptors and instances -------------------------------------------
+
+(fn plugin_error ^^private [kind, message, instance, cause = nil]
+  (cordis_failure kind message cause instance/plugin/id instance/uid
+                  instance/entry_id))
+
+(fn validate_plugin_spec ^^private [runtime, plugin]
+  (if_not (== ($head plugin) PluginSpec)
+    (cordis_failure PluginActivationError "install expects a PluginSpec"))
+  (if (== plugin/id "")
+    (cordis_failure PluginActivationError "plugin id cannot be empty"))
+  (if_not (callable? plugin/activate)
+    (cordis_failure PluginActivationError
+      $"plugin ${plugin/id} activate must be callable"))
+  (if (&& (! (absent? plugin/config_schema))
+          (! (callable? plugin/config_schema)))
+    (cordis_failure ConfigValidationError
+      $"plugin ${plugin/id} config_schema must be callable or nil"))
+  (if_not ([nil "candidate_swap" "stop_start"] .contains? plugin/reload)
+    (cordis_failure PluginActivationError
+      $"plugin ${plugin/id} has an invalid reload mode"))
+  (var requirement_ids (fresh_map))
+  (for requirement in plugin/requires
+    (if_not (== ($head requirement) Requirement)
+      (cordis_failure PluginActivationError
+        $"plugin ${plugin/id} has an invalid requirement"))
+    (var key (admitted_service_key runtime requirement/key))
+    (if (== (requirement_ids .get key/id) true)
+      (cordis_failure PluginActivationError
+        $"plugin ${plugin/id} requires ${key/id} more than once"))
+    (requirement_ids .put key/id true))
+  (var provision_ids (fresh_map))
+  (for candidate in plugin/provides
+    (var key (admitted_service_key runtime candidate))
+    (if (== (provision_ids .get key/id) true)
+      (cordis_failure PluginActivationError
+        $"plugin ${plugin/id} provides ${key/id} more than once"))
+    (provision_ids .put key/id true))
+  plugin)
+
+(fn instance_handle ^^private [record] : PluginInstance
+  (PluginInstance ^token record/token))
+
+(fn make_allowed_keys ^^private [plugin]
+  (var allowed (fresh_map))
+  (for requirement in plugin/requires
+    (allowed .put requirement/key/id true))
+  (for key in plugin/provides
+    (allowed .put key/id true))
+  allowed)
+
+(fn instance_requirement ^^private [instance, key]
+  (for requirement in instance/plugin/requires
+    (if (same? requirement/key/token key/token) (return requirement)))
+  nil)
+
+(fn index_instance_requirements ^^private [instance]
+  (var index (instance/runtime/dependants .get))
+  (for requirement in instance/plugin/requires
+    (var rows (?? (index .get requirement/key/id) (fresh_list)))
+    (rows .push instance)
+    (index .put requirement/key/id rows))
+  (instance/runtime/dependants .set index))
+
+(fn unindex_instance_requirements ^^private [instance]
+  (var index (instance/runtime/dependants .get))
+  (for requirement in instance/plugin/requires
+    (var kept (fresh_list))
+    (for row in (?? (index .get requirement/key/id) (fresh_list))
+      (if_not (same? row/token instance/token) (kept .push row)))
+    (if (== kept/.size 0)
+      (index .delete requirement/key/id)
+      (index .put requirement/key/id kept)))
+  (instance/runtime/dependants .set index))
+
+(fn reserve_instance_providers ^^private [instance]
+  (var reservations (instance/runtime/reservations .get))
+  (var context (context_record (instance/context .get)))
+  (for key in instance/plugin/provides
+    (var canonical (admitted_service_key instance/runtime key))
+    (var realm (context_realm context canonical))
+    (var address (service_address canonical realm))
+    (var existing (reservations .get address))
+    (if (&& (!= existing void) (!= existing instance/uid))
+      (plugin_error DuplicateProvider
+        $"service ${canonical/id} already has a provider in realm ${realm}"
+        instance))
+    (reservations .put address instance/uid))
+  (instance/runtime/reservations .set reservations))
+
+(fn release_instance_reservations ^^private [instance]
+  (var reservations (instance/runtime/reservations .get))
+  (var context (context_record_even_if_closed (instance/context .get)))
+  (if_not (absent? context)
+    (for key in instance/plugin/provides
+      (var address (service_address key (context_realm context key)))
+      (if (== (reservations .get address) instance/uid)
+        (reservations .delete address))))
+  (instance/runtime/reservations .set reservations))
+
+(fn validate_instance_config ^^private [instance, candidate]
+  (var frozen ($freeze candidate))
+  (if (absent? instance/plugin/config_schema) (return frozen))
+  (try
+    ($freeze
+      (invoke_call instance/runtime instance PluginCallKind/validate_schema
+                   instance/plugin/config_schema [frozen]))
+  catch Any
+    (plugin_error ConfigValidationError
+      $"config validation failed for ${instance/plugin/id}" instance $ex)))
+
+(fn runtime_install ^^private
+  [handle : Runtime, context_handle_value, plugin, config, entry_id]
+  (var runtime (require_runtime_open (runtime_record handle)))
+  (var parent (context_record context_handle_value))
+  (if_not (same? parent/runtime/token runtime/token)
+    (cordis_failure ContextDisposed "context belongs to another runtime"))
+  (validate_plugin_spec runtime plugin)
+  (var uid (runtime/next_uid .get))
+  (runtime/next_uid .set (+ uid 1))
+  (var record
+    (InstanceRecord
+      ^token ($cell nil) ^runtime runtime ^uid uid ^plugin plugin
+      ^entry_id entry_id ^parent_context parent ^context ($cell nil)
+      ^config ($cell nil) ^state ($cell InstanceState/pending)
+      ^error ($cell nil) ^desired_epoch ($cell "inactive")
+      ^active_epoch ($cell "") ^transition ($cell nil)
+      ^dirty ($cell true) ^retry ($cell false)
+      ^dispose_requested ($cell false) ^root_effect ($cell nil)
+      ^providers ($cell (fresh_list)) ^provided ($cell (fresh_map))
+      ^children ($cell (fresh_list)) ^invocations ($cell 0)
+      ^gate_open ($cell true) ^teardown ($cell false)))
+  (record/config .set (validate_instance_config record config))
+  (var context
+    (new_context_record runtime parent record false
+      (copy_map parent/realms) (copy_map parent/overlays)
+      (make_allowed_keys plugin) (copy_list parent/capabilities)
+      parent/capabilities_restricted parent/limits))
+  (record/context .set (ActivationContext ^token context/token))
+  (reserve_instance_providers record)
+  ((runtime/instances .get) .push record)
+  (index_instance_requirements record)
+  (request_transition record false)
+  (instance_handle record))
+
+(fn runtime_inject ^^private [handle : Runtime, context, requirements, callback]
+  (var runtime (runtime_record handle))
+  (var uid (runtime/next_uid .get))
+  (var spec
+    (PluginSpec ^id $"inject:${uid}" ^config_schema nil
+                ^requires requirements ^provides [] ^reload nil
+                ^activate callback))
+  (runtime_install handle context spec nil nil))
+
+(fn provider_for_requirement ^^private [instance, requirement]
+  (var context (context_record_even_if_closed (instance/context .get)))
+  (if (absent? context) (return nil))
+  (var key requirement/key)
+  (var address (service_address key (context_realm context key)))
+  (var provider ((instance/runtime/providers .get) .get address))
+  (if (== provider void) (return nil))
+  (if_not (&& (provider/active .get)
+              (provider/available .get)
+              (== (provider/owner/state .get) InstanceState/active))
+    (return nil))
+  provider)
+
+(fn compute_instance_epoch ^^private [instance]
+  (var rows (fresh_list))
+  (var missing (fresh_list))
+  (for requirement in instance/plugin/requires
+    (var provider (provider_for_requirement instance requirement))
+    (if (absent? provider)
+      (then
+        (var context (context_record_even_if_closed (instance/context .get)))
+        (var realm
+          (if (absent? context) "disposed"
+            (context_realm context requirement/key)))
+        (missing .push {^service requirement/key/id ^realm realm})
+        (rows .push $"missing:${requirement/key/id}:${realm}"))
+      (else
+        (rows .push
+          $"${provider/owner/uid}:${(provider/generation .get)}"))))
+  (EpochRecord ^ready (== missing/.size 0)
+               ^text ($str/join rows "|") ^missing missing))
+
+(fn record_diagnostic ^^private [runtime, kind : Str, instance, error]
+  (var rows (runtime/diagnostics .get))
+  (if (>= rows/.size 256) (rows .delete 0))
+  (var message (if (absent? error) "" error/message))
+  (rows .push
+    {^kind kind ^plugin instance/plugin/id ^instance_uid instance/uid
+     ^entry_id instance/entry_id
+     ^message message})
+  (runtime/diagnostics .set rows)
+  (if (&& (! (absent? runtime/options))
+          (! (absent? runtime/options/logger)))
+    ((logger_for_instance runtime instance) .warn message
+      ^payload {^kind kind}))
+  nil)
+
+(fn request_transition ^^private [instance, retry : Bool]
+  (if (== (instance/state .get) InstanceState/disposed) (return nil))
+  (instance/dirty .set true)
+  (if retry (instance/retry .set true))
+  (if_not (absent? (instance/transition .get)) (return nil))
+  (var task (spawn ^lane root (run_instance_transitions instance)))
+  (instance/transition .set task)
+  nil)
+
+(fn notify_service ^^private [runtime, key]
+  (runtime/binding_cache .set (fresh_map))
+  (for instance in
+       (?? ((runtime/dependants .get) .get key/id) (fresh_list))
+    (request_transition instance false)))
+
+(fn set_provider_visibility ^^private [instance, visible : Bool]
+  (var providers (instance/runtime/providers .get))
+  (for provider in (instance/providers .get)
+    (provider/active .set visible)
+    (if visible
+      (providers .put provider/address provider)
+      (if (same? (providers .get provider/address) provider)
+        (providers .delete provider/address)))
+    (notify_service instance/runtime provider/key))
+  (instance/runtime/providers .set providers))
+
+(fn new_effect_record ^^private [instance, parent, context, label : Str]
+  (var record
+    (EffectRecord ^token ($cell nil) ^runtime instance/runtime ^owner instance
+                  ^parent parent ^context context ^label label ^active ($cell true)
+                  ^accepting ($cell true) ^entries ($cell (fresh_list))
+                  ^value ($cell nil)))
+  ((instance/runtime/resources .get) .push record)
+  record)
+
+(fn activate_instance ^^private [instance]
+  (instance/state .set InstanceState/loading)
+  (instance/error .set nil)
+  (instance/gate_open .set true)
+  (instance/provided .set (fresh_map))
+  (instance/providers .set (fresh_list))
+  (var root
+    (new_effect_record instance nil (instance/context .get) "activation"))
+  (instance/root_effect .set root)
+  (var context (instance/context .get))
+  (try
+    (invoke_call instance/runtime instance PluginCallKind/activate
+                 instance/plugin/activate
+                 [context (instance/config .get)] root true root/context)
+    (for key in instance/plugin/provides
+      (if (== ((instance/provided .get) .get key/id) void)
+        (plugin_error PluginActivationError
+          $"plugin did not publish declared service ${key/id}" instance)))
+    (var epoch (compute_instance_epoch instance))
+    (if_not epoch/ready
+      (plugin_error DependenciesUnavailable
+        "dependencies changed during activation" instance))
+    (instance/state .set InstanceState/active)
+    (instance/active_epoch .set epoch/text)
+    (set_provider_visibility instance true)
+  catch Any
+    (root/accepting .set false)
+    (set_provider_visibility instance false)
+    (var cleanup_error (dispose_effect_record root false))
+    (if_not (absent? cleanup_error)
+      (record_diagnostic instance/runtime "cleanup_failed"
+                         instance cleanup_error))
+    (instance/root_effect .set nil)
+    (instance/error .set $ex)
+    (instance/state .set InstanceState/failed)
+    (record_diagnostic instance/runtime "activation_failed" instance $ex)))
+
+(fn await_transition_task ^^private [instance]
+  (var task (instance/transition .get))
+  (if_not (absent? task) (task .join))
+  nil)
+
+(fn dependent_instances ^^private [instance]
+  (var found (fresh_list))
+  (var seen (fresh_map))
+  (for provider in (instance/providers .get)
+    (for candidate in
+         (?? ((instance/runtime/dependants .get) .get provider/key/id)
+             (fresh_list))
+      (if (&& (! (same? candidate/token instance/token))
+              (!= (seen .get ($to_str candidate/uid)) true))
+        (then
+          (seen .put ($to_str candidate/uid) true)
+          (found .push candidate)))))
+  found)
+
+(fn unload_instance ^^private [instance, disposing : Bool]
+  (if (== (instance/state .get) InstanceState/disposed) (return nil))
+  (instance/state .set InstanceState/unloading)
+  (instance/gate_open .set false)
+  (var root (instance/root_effect .get))
+  (var cleanup_failure nil)
+  (if_not (absent? root) (root/accepting .set false))
+  (while (> (instance/invocations .get) 0)
+    ($sleep 0))
+  # Withdraw first, then wait for the exact consumer closure to quiesce before
+  # provider cleanup. No new binding can enter after this point.
+  (set_provider_visibility instance false)
+  (var dependants (dependent_instances instance))
+  (for consumer in dependants
+    (request_transition consumer false))
+  (for consumer in dependants
+    (await_transition_task consumer))
+  (if_not (absent? root)
+    (set cleanup_failure (dispose_effect_record root false))
+    (if_not (absent? cleanup_failure)
+      (record_diagnostic instance/runtime "cleanup_failed"
+                         instance cleanup_failure)))
+  (instance/root_effect .set nil)
+  (instance/providers .set (fresh_list))
+  (instance/provided .set (fresh_map))
+  (instance/active_epoch .set "")
+  (if disposing
+    (then
+      (instance/state .set InstanceState/disposed)
+      (for context in (instance/runtime/contexts .get)
+        (if (&& (! (absent? context/owner))
+                (same? context/owner instance))
+          (context/alive .set false)))
+      (release_instance_reservations instance)
+      (unindex_instance_requirements instance))
+    (else
+      (instance/gate_open .set true)
+      (instance/state .set InstanceState/pending)))
+  cleanup_failure)
+
+(fn run_instance_transitions ^^private [instance]
+  (try
+    (while (instance/dirty .get)
+      (instance/dirty .set false)
+      (if (instance/dispose_requested .get)
+        (then
+          (unload_instance instance true)
+          (return nil)))
+      (var epoch (compute_instance_epoch instance))
+      (instance/desired_epoch .set epoch/text)
+      (var state (instance/state .get))
+      (var retry (instance/retry .get))
+      (if retry (instance/retry .set false))
+      (if (&& (== state InstanceState/active)
+              (|| retry (!= epoch/text (instance/active_epoch .get))))
+        (then
+          (unload_instance instance false)
+          (set state (instance/state .get))))
+      (if (== state InstanceState/failed)
+        (if retry
+          (then
+            (instance/state .set InstanceState/pending)
+            (set state InstanceState/pending))
+          (else (return nil))))
+      (if_not epoch/ready
+        (if (== state InstanceState/active)
+          (unload_instance instance false))
+        (if_not (== (instance/state .get) InstanceState/disposed)
+          (instance/state .set InstanceState/pending))
+        (return nil))
+      (if (== (instance/state .get) InstanceState/pending)
+        (activate_instance instance))
+      (var newest (compute_instance_epoch instance))
+      (if (&& (== (instance/state .get) InstanceState/active)
+              (!= newest/text (instance/active_epoch .get)))
+        (instance/dirty .set true)))
+  ensure
+    (instance/transition .set nil)
+    (if (&& (instance/dirty .get)
+            (!= (instance/state .get) InstanceState/disposed))
+      (request_transition instance false))))
+
+(fn instance_state ^^private [handle : PluginInstance] : InstanceState
+  (var instance (instance_record handle))
+  (instance/state .get))
+
+(fn instance_await_ready ^^private [handle : PluginInstance] : PluginInstance
+  (var instance (instance_record handle))
+  (while (! (absent? (instance/transition .get)))
+    ((instance/transition .get) .join))
+  (match (instance/state .get)
+    (when InstanceState/active handle)
+    (when InstanceState/pending
+      (var epoch (compute_instance_epoch instance))
+      (plugin_error DependenciesUnavailable
+        $"plugin dependencies are unavailable: ${epoch/missing}"
+        instance))
+    (when InstanceState/failed
+      (var error (instance/error .get))
+      (plugin_error PluginActivationError
+        $"plugin activation failed: ${error/message}"
+        instance error))
+    (when InstanceState/disposed
+      (plugin_error InstanceDisposed "plugin instance is disposed" instance))
+    (else
+      (plugin_error PluginActivationError
+        "plugin instance did not settle" instance))))
+
+(fn instance_update ^^private [handle : PluginInstance, config] : Nil
+  (var instance (instance_record handle))
+  (if (== (instance/state .get) InstanceState/disposed)
+    (plugin_error InstanceDisposed "plugin instance is disposed" instance))
+  (var checked (validate_instance_config instance config))
+  (try
+    (set checked
+      (context_dispatch (instance/context .get) config_update checked
+        {^terminal config_update_terminal}))
+  catch Any
+    (plugin_error ConfigValidationError
+      "config_update hook rejected the candidate" instance $ex))
+  (set checked (validate_instance_config instance checked))
+  (instance/config .set checked)
+  (instance/error .set nil)
+  (request_transition instance true)
+  nil)
+
+(fn instance_restart ^^private [handle : PluginInstance] : Nil
+  (var instance (instance_record handle))
+  (if (== (instance/state .get) InstanceState/disposed)
+    (plugin_error InstanceDisposed "plugin instance is disposed" instance))
+  (instance/error .set nil)
+  (request_transition instance true)
+  nil)
+
+(fn instance_dispose ^^private [handle : PluginInstance] : Nil
+  (var instance (instance_record handle))
+  (if (== (instance/state .get) InstanceState/disposed) (return nil))
+  (instance/dispose_requested .set true)
+  (request_transition instance false)
+  # Self-disposal is queued until the current invocation releases its lease.
+  (if (== (instance/invocations .get) 0)
+    (while (! (absent? (instance/transition .get)))
+      ((instance/transition .get) .join)))
+  nil)
+
+# --- effect ownership -----------------------------------------------------
+
+(fn effect_scope_handle ^^private [record] : EffectScope
+  (EffectScope ^token record/token))
+
+(fn remove_effect_entry ^^private [scope, kind : Str, token]
+  (var kept (fresh_list))
+  (for entry in (scope/entries .get)
+    (if (|| (!= entry/kind kind)
+            (! (same? entry/record/token token)))
+      (kept .push entry)))
+  (scope/entries .set kept))
+
+(fn find_effect_entry ^^private [token, kind : Str]
+  (for runtime in (runtime_records .get)
+    (for record in (runtime/resources .get)
+      (var matches
+        (match kind
+          (when "cleanup" (== ($head record) CleanupRecord))
+          (when "provider" (== ($head record) ProviderRecord))
+          (when "hook" (== ($head record) HookRecord))
+          (else false)))
+      (if (&& matches (same? record/token token)) (return record))))
+  nil)
+
+(fn invoke_cleanup ^^private [record]
+  (if_not (record/active .get) (return nil))
+  (record/active .set false)
+  (var instance record/scope/owner)
+  (var already_tearing_down (instance/teardown .get))
+  (if_not already_tearing_down (instance/teardown .set true))
+  (try
+    (invoke_call instance/runtime instance PluginCallKind/cleanup
+                 record/callable [] nil true record/scope/context)
+  ensure
+    (set record/callable nil)
+    (if_not already_tearing_down (instance/teardown .set false))))
+
+(fn dispose_provider_record ^^private [provider]
+  (if_not (provider/active .get)
+    # A loading provider has not entered the live table, but its record still
+    # needs to become terminal.
+    (provider/available .set false)
+    (set provider/value nil)
+    (set provider/availability nil)
+    (set provider/definition_context nil)
+    (return nil))
+  (provider/active .set false)
+  (provider/available .set false)
+  (var providers (provider/runtime/providers .get))
+  (if (same? (providers .get provider/address) provider)
+    (providers .delete provider/address))
+  (provider/runtime/providers .set providers)
+  (provider/runtime/binding_cache .set (fresh_map))
+  (notify_service provider/runtime provider/key)
+  (set provider/value nil)
+  (set provider/availability nil)
+  (set provider/definition_context nil)
+  nil)
+
+(fn dispose_hook_record ^^private [hook]
+  (if_not (hook/active .get) (return nil))
+  (hook/active .set false)
+  (var table (hook/runtime/hooks .get))
+  (var kept (fresh_list))
+  (for record in (?? (table .get hook/hook/id) (fresh_list))
+    (if_not (same? record/token hook/token) (kept .push record)))
+  (if (== kept/.size 0)
+    (table .delete hook/hook/id)
+    (table .put hook/hook/id kept))
+  (hook/runtime/hooks .set table)
+  (set hook/handler nil)
+  nil)
+
+(fn task_outcome_error ^^private [outcome]
+  (match outcome
+    (when (TaskOutcome/error error) error)
+    (when (TaskOutcome/panic message)
+      (PluginCleanupError ^message $"effect task panicked: ${message}"
+                          ^cause message ^plugin nil ^instance_uid nil
+                          ^entry_id nil))
+    (else nil)))
+
+(fn dispose_owned_instance_record ^^private [owned]
+  (var resolved nil)
+  (try
+    (set resolved (instance_record (instance_handle owned)))
+  catch InstanceDisposed
+    nil)
+  (if (&& (! (absent? resolved)) (same? resolved owned))
+    (instance_dispose (instance_handle owned))
+    (unload_instance owned true)))
+
+(fn dispose_effect_record ^^private [scope, explicit : Bool]
+  (if_not (scope/active .get) (return nil))
+  (scope/accepting .set false)
+  (scope/active .set false)
+  (var errors (fresh_list))
+  (var entries (scope/entries .get))
+  (var index (- entries/.size 1))
+  (while (>= index 0)
+    (var entry entries/%index)
+    (set index (- index 1))
+    (try
+      (match entry/kind
+        (when "cleanup" (invoke_cleanup entry/record))
+        (when "provider" (dispose_provider_record entry/record))
+        (when "hook" (dispose_hook_record entry/record))
+        (when "effect"
+          (var nested (dispose_effect_record entry/record explicit))
+          (if_not (absent? nested) (errors .push nested)))
+        (when "task"
+          (entry/task .cancel)
+          (var task_error (task_outcome_error (entry/task .join)))
+          (if_not (absent? task_error) (errors .push task_error)))
+        (when "instance" (dispose_owned_instance_record entry/record))
+        (else nil))
+    catch Any
+      (errors .push $ex)))
+  (scope/entries .set (fresh_list))
+  (scope/value .set nil)
+  (if (== errors/.size 0) (return nil))
+  (PluginCleanupError
+    ^message $"${errors/.size} effect cleanup operation(s) failed: ${errors}"
+    ^cause errors ^plugin scope/owner/plugin/id
+    ^instance_uid scope/owner/uid ^entry_id scope/owner/entry_id))
+
+(fn owner_defer ^^private [owner, cleanup]
+  (var scope (require_accepting_scope owner))
+  (if_not (callable? cleanup)
+    (plugin_error PluginCleanupError "cleanup must be callable" scope/owner))
+  (var record
+    (CleanupRecord ^token ($cell nil) ^scope scope ^callable cleanup
+                   ^active ($cell true)))
+  ((scope/runtime/resources .get) .push record)
+  ((scope/entries .get) .push {^kind "cleanup" ^record record})
+  (CleanupLease ^token record/token))
+
+(fn cleanup_lease_dispose ^^private [handle : CleanupLease] : Nil
+  (var record (find_effect_entry handle/token "cleanup"))
+  (if (absent? record) (return nil))
+  (invoke_cleanup record)
+  nil)
+
+(fn owner_effect ^^private [owner, label : Str, acquire]
+  (var parent (require_accepting_scope owner))
+  (if_not (callable? acquire)
+    (plugin_error PluginActivationError
+      "effect acquisition must be callable" parent/owner))
+  (var child
+    (new_effect_record parent/owner parent parent/context label))
+  ((parent/entries .get) .push {^kind "effect" ^record child})
+  (try
+    (var value
+      (invoke_call parent/runtime parent/owner PluginCallKind/activate
+                   acquire [(effect_scope_handle child)] child true
+                   child/context))
+    (child/value .set value)
+    (EffectLease ^token child/token)
+  catch Any
+    (dispose_effect_record child false)
+    (remove_effect_entry parent "effect" child/token)
+    (plugin_error PluginActivationError
+      $"effect ${label} acquisition failed" parent/owner $ex)))
+
+(fn effect_lease_value ^^private [handle : EffectLease]
+  (var record (effect_record handle))
+  (if_not (record/active .get)
+    (plugin_error EffectDisposed "effect lease is disposed" record/owner))
+  (record/value .get))
+
+(fn effect_lease_dispose ^^private [handle : EffectLease] : Nil
+  (var record (effect_record handle))
+  (var error (dispose_effect_record record true))
+  (if_not (absent? error) (fail error))
+  nil)
+
+(fn owner_spawn ^^private [owner, label : Str, thunk]
+  (var scope (require_accepting_scope owner))
+  (if_not (callable? thunk)
+    (plugin_error PluginActivationError "effect task must be callable"
+                  scope/owner))
+  (var task
+    (spawn ^lane root
+      (invoke_call scope/runtime scope/owner PluginCallKind/activate
+                   thunk [] scope true scope/context)))
+  # Root-lane spawn returns before the body starts, so cancellation ownership
+  # is recorded before the task can create another visible effect.
+  ((scope/entries .get) .push
+    {^kind "task" ^label label ^task task})
+  # The transition task is only the acquisition turn. Move the child out of
+  # its temporary structured parent after the effect ledger owns it; otherwise
+  # returning from activation would cancel work intended to live until unload.
+  (task .detach)
+  task)
+
+(fn owner_install ^^private [owner, plugin, config]
+  (var scope (require_accepting_scope owner))
+  (var parent_context (effect_owner_context owner scope))
+  (var runtime_handle (Runtime ^token scope/runtime/token))
+  (var child
+    (runtime_install runtime_handle parent_context plugin config nil))
+  (var child_record (instance_record child))
+  ((scope/entries .get) .push {^kind "instance" ^record child_record})
+  ((scope/owner/children .get) .push child_record)
+  child)
+
+(fn invoke_effect_owner [owner, kind, callable, args]
+  (var scope (require_accepting_scope owner))
+  (invoke_call scope/runtime scope/owner kind callable args nil false
+               (effect_owner_context owner scope)))
+
+(fn spawn_effect_loop [owner, label : Str, thunk]
+  (var scope (require_accepting_scope owner))
+  (var task (spawn ^lane root (thunk)))
+  ((scope/entries .get) .push
+    {^kind "task" ^label label ^task task})
+  (task .detach)
+  task)
+
+# --- providers and service resolution ------------------------------------
+
+(fn plugin_declares_provision? ^^private [instance, key] : Bool
+  (for candidate in instance/plugin/provides
+    (if (same? candidate/token key/token) (return true)))
+  false)
+
+(fn check_service_value ^^private [instance, context, key, value]
+  (try
+    (invoke_call instance/runtime instance PluginCallKind/validate_service
+                 key/check [value] nil false context)
+  catch Any
+    (plugin_error ServiceContractError
+      $"service ${key/id} failed its conformance gate" instance $ex)))
+
+(fn evaluate_availability ^^private [provider] : Bool
+  (if (absent? provider/availability) (return true))
+  (try
+    (var answer
+      (invoke_call provider/runtime provider/owner PluginCallKind/availability
+                   provider/availability [provider/value] nil false
+                   provider/definition_context))
+    (if_not (== ($head answer) Bool)
+      (plugin_error ServiceContractError
+        $"availability for ${provider/key/id} must return Bool"
+        provider/owner))
+    answer
+  catch Any
+    (record_diagnostic provider/runtime "availability_failed"
+                       provider/owner $ex)
+    false))
+
+(fn owner_provide ^^private [owner, candidate, value, availability]
+  (var scope (require_accepting_scope owner))
+  (var key (admitted_service_key scope/runtime candidate))
+  (if_not (plugin_declares_provision? scope/owner key)
+    (plugin_error ServiceContractError
+      $"plugin did not declare provision ${key/id}" scope/owner))
+  (if_not (== ((scope/owner/provided .get) .get key/id) void)
+    (plugin_error DuplicateProvider
+      $"plugin published ${key/id} more than once" scope/owner))
+  (if (&& (! (absent? availability)) (! (callable? availability)))
+    (plugin_error ServiceContractError
+      "provider availability must be callable or nil" scope/owner))
+  (var definition_context (effect_owner_context owner scope))
+  (var context (context_record definition_context))
+  (var checked
+    (check_service_value scope/owner definition_context key value))
+  (var realm (context_realm context key))
+  (var address (service_address key realm))
+  (if_not (== ((scope/runtime/reservations .get) .get address)
+              scope/owner/uid)
+    (plugin_error DuplicateProvider
+      $"service address ${key/id}/${realm} is not reserved by this plugin"
+      scope/owner))
+  (var record
+    (ProviderRecord
+      ^token ($cell nil) ^runtime scope/runtime ^scope scope
+      ^owner scope/owner ^key key ^realm realm ^address address
+      ^value checked ^availability availability ^available ($cell false)
+      ^active ($cell false) ^generation ($cell 1)
+      ^definition_context definition_context))
+  ((scope/runtime/resources .get) .push record)
+  (record/available .set (evaluate_availability record))
+  ((scope/entries .get) .push {^kind "provider" ^record record})
+  ((scope/owner/providers .get) .push record)
+  ((scope/owner/provided .get) .put key/id record)
+  (ProviderLease ^token record/token))
+
+(fn provider_record_for_handle ^^private [handle : ProviderLease]
+  (var record (find_effect_entry handle/token "provider"))
+  (if (|| (absent? record) (! (record/scope/active .get)))
+    (cordis_failure ServiceUnavailable "provider lease is disposed"))
+  record)
+
+(fn provider_lease_refresh ^^private [handle : ProviderLease] : Bool
+  (var provider (provider_record_for_handle handle))
+  (var before (provider/available .get))
+  (var after (evaluate_availability provider))
+  (if (== before after) (return false))
+  (provider/available .set after)
+  (provider/generation .set (+ (provider/generation .get) 1))
+  (provider/runtime/binding_cache .set (fresh_map))
+  (notify_service provider/runtime provider/key)
+  true)
+
+(fn provider_lease_dispose ^^private [handle : ProviderLease] : Nil
+  (var provider (find_effect_entry handle/token "provider"))
+  (if (absent? provider) (return nil))
+  (dispose_provider_record provider)
+  nil)
+
+(fn invoke_context_call ^^private [context, kind, callable, args]
+  (if_not (absent? context/owner)
+    (return
+      (invoke_call context/runtime context/owner kind callable args
+                   nil false (context_handle context))))
+  (var call
+    ($freeze_shallow
+      (PluginCall ^kind kind ^callable callable ^args ($freeze_shallow args)
+                  ^instance_uid 0 ^entry_id nil
+                  ^capability_selectors
+                    ($freeze_shallow context/capabilities)
+                  ^capabilities_restricted context/capabilities_restricted
+                  ^logger (logger_for_instance context/runtime nil)
+                  ^limits context/limits)))
+  (context/runtime/invoker .PluginInvoker:invoke call))
+
+(fn shallow_merge ^^private [left, right]
+  (if (absent? left) (return right))
+  (if (absent? right) (return left))
+  (if (&& (== ($head left) Map) (== ($head right) Map))
+    (then
+      (var out (copy_map left))
+      (for [key value] in right (out .put key value))
+      out)
+    (else right)))
+
+(fn merge_service_config ^^private [context, key, head_config]
+  (var configs (fresh_list))
+  (for overlay in (?? (context/overlays .get key/id) (fresh_list))
+    (configs .push overlay))
+  (if_not (absent? context/owner)
+    (var requirement (instance_requirement context/owner key))
+    (if (&& (! (absent? requirement)) (! (absent? requirement/config)))
+      (configs .push requirement/config)))
+  (if_not (absent? head_config) (configs .push ($freeze head_config)))
+  (var merged nil)
+  (for config in configs
+    (if (absent? key/merge_config)
+      (set merged (shallow_merge merged config))
+      (try
+        (set merged
+          (invoke_context_call context PluginCallKind/merge_config
+                               key/merge_config [merged config]))
+      catch Any
+        (cordis_failure ConfigValidationError
+          $"service ${key/id} config merge failed" $ex
+          (if (absent? context/owner) nil context/owner/plugin/id)
+          (if (absent? context/owner) nil context/owner/uid)
+          (if (absent? context/owner) nil context/owner/entry_id)))))
+  (set merged ($freeze merged))
+  (if_not (absent? key/config_schema)
+    (try
+      (set merged
+        ($freeze
+          (invoke_context_call context PluginCallKind/validate_schema
+                               key/config_schema [merged])))
+    catch Any
+      (cordis_failure ConfigValidationError
+        $"service ${key/id} config validation failed" $ex
+        (if (absent? context/owner) nil context/owner/plugin/id)
+        (if (absent? context/owner) nil context/owner/uid)
+        (if (absent? context/owner) nil context/owner/entry_id))))
+  merged)
+
+(fn check_bound_service ^^private [context, key, value]
+  (try
+    (invoke_context_call context PluginCallKind/validate_service
+                         key/check [value])
+  catch Any
+    (cordis_failure ServiceContractError
+      $"bound service ${key/id} failed its conformance gate" $ex
+      (if (absent? context/owner) nil context/owner/plugin/id)
+      (if (absent? context/owner) nil context/owner/uid)
+      (if (absent? context/owner) nil context/owner/entry_id))))
+
+(fn context_require ^^private [handle : Context, candidate, head_config]
+  (var context (context_record handle))
+  (var key (require_context_key context candidate))
+  (var realm (context_realm context key))
+  (var address (service_address key realm))
+  (var provider ((context/runtime/providers .get) .get address))
+  (if (|| (== provider void)
+          (! (provider/active .get))
+          (! (provider/available .get))
+          (!= (provider/owner/state .get) InstanceState/active))
+    (cordis_failure ServiceUnavailable
+      $"service ${key/id} is unavailable in realm ${realm}"
+      nil
+      (if (absent? context/owner) nil context/owner/plugin/id)
+      (if (absent? context/owner) nil context/owner/uid)
+      (if (absent? context/owner) nil context/owner/entry_id)))
+  (var config (merge_service_config context key head_config))
+  (var cache_key
+    $"${address}|${context/id}:${(context/generation .get)}|${(provider/generation .get)}|${($hash config)}")
+  (var cached ((context/runtime/binding_cache .get) .get cache_key))
+  (if_not (== cached void) (return cached))
+  (var bound provider/value)
+  (if_not (absent? key/bind)
+    (try
+      (set bound
+        (invoke_context_call context PluginCallKind/bind_service key/bind
+          [provider/value provider/definition_context handle config]))
+    catch Any
+      (cordis_failure ServiceContractError
+        $"service ${key/id} binding failed" $ex
+        (if (absent? context/owner) nil context/owner/plugin/id)
+        (if (absent? context/owner) nil context/owner/uid)
+        (if (absent? context/owner) nil context/owner/entry_id))))
+  (set bound (check_bound_service context key bound))
+  ((context/runtime/binding_cache .get) .put cache_key bound)
+  bound)
+
+(fn context_get ^^private [handle : Context, candidate, head_config]
+  (try
+    (context_require handle candidate head_config)
+  catch ServiceUnavailable
+    void))
+
+# --- hooks ----------------------------------------------------------------
+
+(fn context_hook_subject ^^private [handle : Context, candidate] : HookSubject
+  (var context (context_record handle))
+  (var key (require_context_key context candidate))
+  (var record
+    (SubjectRecord ^token ($cell nil) ^runtime context/runtime ^key key
+                   ^realm (context_realm context key)))
+  ((context/runtime/subjects .get) .push record)
+  (HookSubject ^token record/token))
+
+(fn subject_record ^^private [handle]
+  (if_not (== ($head handle) HookSubject)
+    (cordis_failure HookDispatchError "dispatch subject must be HookSubject"))
+  (for runtime in (runtime_records .get)
+    (for record in (runtime/subjects .get)
+      (if (same? record/token handle/token) (return record))))
+  (cordis_failure HookDispatchError "hook subject is foreign or expired"))
+
+(fn owner_on ^^private [owner, candidate, handler, options, once : Bool]
+  (var scope (require_accepting_scope owner))
+  (var registration_context (effect_owner_context owner scope))
+  (var hook (admitted_hook_key scope/runtime candidate))
+  (if_not (callable? handler)
+    (plugin_error HookDispatchError "hook handler must be callable"
+                  scope/owner))
+  (var prepend false)
+  (var global false)
+  (if_not (absent? options)
+    (if_not (== ($head options) Map)
+      (plugin_error HookDispatchError "hook options must be a map"
+                    scope/owner))
+    (for [name value] in options
+      (var option_name ($to_str name))
+      (if_not (["prepend" "global"] .contains? option_name)
+        (plugin_error HookDispatchError
+          $"unknown hook option ^${option_name}" scope/owner))
+      (if_not (== ($head value) Bool)
+        (plugin_error HookDispatchError
+          $"hook option ^${option_name} must be Bool" scope/owner)))
+    (set prepend (== (options .get "prepend") true))
+    (set global (== (options .get "global") true)))
+  (var record
+    (HookRecord ^token ($cell nil) ^runtime scope/runtime ^scope scope
+                ^owner scope/owner ^hook hook
+                ^context registration_context ^handler handler
+                ^once once ^prepend prepend ^global global
+                ^active ($cell true) ^consumed ($cell false)))
+  ((scope/runtime/resources .get) .push record)
+  (var table (scope/runtime/hooks .get))
+  (var rows (?? (table .get hook/id) (fresh_list)))
+  (if prepend
+    (then
+      (var next (fresh_list))
+      (next .push record)
+      (for row in rows (next .push row))
+      (set rows next))
+    (else (rows .push record)))
+  (table .put hook/id rows)
+  (scope/runtime/hooks .set table)
+  ((scope/entries .get) .push {^kind "hook" ^record record})
+  (HookSubscription ^token record/token))
+
+(fn hook_subscription_dispose ^^private [handle : HookSubscription] : Nil
+  (var record (find_effect_entry handle/token "hook"))
+  (if_not (absent? record) (dispose_hook_record record))
+  nil)
+
+(fn hook_visible? ^^private [record, subject] : Bool
+  (if_not (&& (record/active .get)
+              (! (record/consumed .get))
+              (== (record/owner/state .get) InstanceState/active))
+    (return false))
+  (if (absent? subject) (return true))
+  (if record/global (return true))
+  (var context (context_record_even_if_closed record/context))
+  (if (|| (absent? context) (! (context/alive .get))) (return false))
+  (== (context_realm context subject/key) subject/realm))
+
+(fn hook_snapshot ^^private [context, hook, subject]
+  (var out (fresh_list))
+  (for record in
+       (?? ((context/runtime/hooks .get) .get hook/id) (fresh_list))
+    (if (hook_visible? record subject) (out .push record)))
+  out)
+
+(fn invoke_hook_record ^^private [record, payload]
+  (if record/once (record/consumed .set true))
+  (try
+    (invoke_call record/runtime record/owner PluginCallKind/hook
+                 record/handler [payload] nil false record/context)
+  catch Any
+    (plugin_error HookDispatchError
+      $"hook ${record/hook/id} handler failed" record/owner $ex)))
+
+(fn bailed? ^^private [value] : Bool
+  (&& (! (absent? value)) (!= value false)))
+
+(fn dispatch_emit ^^private [handlers, payload]
+  (for record in handlers (invoke_hook_record record payload))
+  nil)
+
+(fn dispatch_bail ^^private [handlers, payload]
+  (for record in handlers
+    (var value (invoke_hook_record record payload))
+    (if (bailed? value) (return value)))
+  nil)
+
+(fn dispatch_parallel ^^private [context, handlers, payload]
+  (var tasks (fresh_list))
+  (for record in handlers
+    (if record/once (record/consumed .set true))
+    (tasks .push
+      (spawn ^lane root
+        (try
+          (invoke_call record/runtime record/owner PluginCallKind/hook
+                       record/handler [payload] nil false record/context)
+        catch Any
+          (plugin_error HookDispatchError
+            $"hook ${record/hook/id} handler failed" record/owner $ex)))))
+  (var errors (fresh_list))
+  (for task in tasks
+    (match (task .join)
+      (when (TaskOutcome/error error) (errors .push error))
+      (when (TaskOutcome/panic message) (errors .push message))
+      (when TaskOutcome/cancelled (errors .push "hook task cancelled"))
+      (else nil)))
+  (if (> errors/.size 0)
+    (cordis_failure HookDispatchError
+      $"${errors/.size} parallel hook handler(s) failed" errors))
+  nil)
+
+(fn continuation_record ^^private [handle]
+  (for record in (continuation_records .get)
+    (if (same? record/token handle/token) (return record)))
+  (cordis_failure ContinuationAlreadyCalled
+    "waterfall continuation is expired"))
+
+(fn release_continuation ^^private [record]
+  (var kept (fresh_list))
+  (for candidate in (continuation_records .get)
+    (if_not (same? candidate/token record/token) (kept .push candidate)))
+  (continuation_records .set kept)
+  (set record/handlers nil)
+  (set record/terminal nil)
+  nil)
+
+(fn dispatch_waterfall_at ^^private
+  [context, hook, handlers, index : Int, payload, terminal]
+  (if (>= index handlers/.size)
+    (return (invoke_context_call context PluginCallKind/hook
+                                 terminal [payload])))
+  (var record handlers/%index)
+  (if record/once (record/consumed .set true))
+  (var continuation
+    (ContinuationRecord ^token ($cell nil) ^runtime context/runtime
+      ^context (context_handle context) ^hook hook ^handlers handlers
+      ^index (+ index 1) ^payload payload ^terminal terminal
+      ^used ($cell false)))
+  ((continuation_records .get) .push continuation)
+  (var handle (WaterfallContinuation ^token continuation/token))
+  (try
+    (invoke_call record/runtime record/owner PluginCallKind/hook
+                 record/handler [payload handle] nil false record/context)
+  catch Any
+    (plugin_error HookDispatchError
+      $"waterfall hook ${hook/id} handler failed" record/owner $ex)))
+
+(fn waterfall_continue ^^private [handle : WaterfallContinuation, call]
+  (var record (continuation_record handle))
+  (if (record/used .get)
+    (cordis_failure ContinuationAlreadyCalled
+      "waterfall continuation may be called only once"))
+  (if (> call/body/.size 1)
+    (cordis_failure HookDispatchError
+      "waterfall continuation accepts at most one payload"))
+  (record/used .set true)
+  (var payload
+    (if (== call/body/.size 0) record/payload call/body/0))
+  (var context (context_record record/context))
+  (try
+    (dispatch_waterfall_at context record/hook record/handlers record/index
+                           payload record/terminal)
+  ensure
+    (release_continuation record)))
+
+(fn context_dispatch ^^private [handle : Context, candidate, payload, options]
+  (var context (context_record handle))
+  (var hook (admitted_hook_key context/runtime candidate))
+  (var subject nil)
+  (var terminal nil)
+  (if_not (absent? options)
+    (if_not (== ($head options) Map)
+      (cordis_failure HookDispatchError "dispatch options must be a map"))
+    (for [name value] in options
+      (var option_name ($to_str name))
+      (if_not (["subject" "terminal"] .contains? option_name)
+        (cordis_failure HookDispatchError
+          $"unknown dispatch option ^${option_name}")))
+    (if_not (== (options .get "subject") void)
+      (set subject (subject_record (options .get "subject"))))
+    (if_not (== (options .get "terminal") void)
+      (set terminal (options .get "terminal"))))
+  (if_not (absent? subject)
+    (if_not (same? subject/runtime/token context/runtime/token)
+      (cordis_failure HookDispatchError
+        "hook subject belongs to another runtime")))
+  (if (== hook/mode HookMode/waterfall)
+    (if (|| (absent? terminal) (! (callable? terminal)))
+      (cordis_failure HookDispatchError
+        "waterfall dispatch requires a callable ^terminal"))
+    (if_not (absent? terminal)
+      (cordis_failure HookDispatchError
+        "^terminal is valid only for waterfall hooks")))
+  (var checked ($freeze payload))
+  (if_not (absent? hook/payload_schema)
+    (try
+      (set checked
+        ($freeze
+          (invoke_context_call context PluginCallKind/validate_schema
+                               hook/payload_schema [checked])))
+    catch Any
+      (cordis_failure HookDispatchError
+        $"hook ${hook/id} payload validation failed" $ex)))
+  (var handlers (hook_snapshot context hook subject))
+  (match hook/mode
+    (when HookMode/emit (dispatch_emit handlers checked))
+    (when HookMode/parallel (dispatch_parallel context handlers checked))
+    (when HookMode/serial (dispatch_bail handlers checked))
+    (when HookMode/bail (dispatch_bail handlers checked))
+    (when HookMode/waterfall
+      (dispatch_waterfall_at context hook handlers 0 checked terminal))))
+
+# --- snapshots and shutdown ----------------------------------------------
+
+(fn state_name ^^private [state] : Str
+  (match state
+    (when InstanceState/pending "pending")
+    (when InstanceState/loading "loading")
+    (when InstanceState/active "active")
+    (when InstanceState/failed "failed")
+    (when InstanceState/unloading "unloading")
+    (when InstanceState/disposed "disposed")))
+
+(fn effect_snapshot ^^private [scope]
+  (var children (fresh_list))
+  (for entry in (scope/entries .get)
+    (if (== entry/kind "effect")
+      (children .push (effect_snapshot entry/record))))
+  {^label scope/label ^active (scope/active .get)
+   ^children children})
+
+(fn instance_effects ^^private [handle : PluginInstance]
+  (var instance (instance_record handle))
+  (var root (instance/root_effect .get))
+  (if (absent? root) (return #[]))
+  ($freeze [ (effect_snapshot root) ]))
+
+(fn requirement_snapshot ^^private [instance, requirement]
+  (var context (context_record_even_if_closed (instance/context .get)))
+  (var realm
+    (if (absent? context) "disposed"
+      (context_realm context requirement/key)))
+  (var provider (provider_for_requirement instance requirement))
+  {^service requirement/key/id ^realm realm
+   ^provider (if (absent? provider) void provider/owner/uid)
+   ^status (if (absent? provider) "missing" "active")})
+
+(fn instance_snapshot ^^private [instance]
+  (var requirements (fresh_list))
+  (for requirement in instance/plugin/requires
+    (requirements .push (requirement_snapshot instance requirement)))
+  (var effects (fresh_list))
+  (var root (instance/root_effect .get))
+  (if_not (absent? root) (effects .push (effect_snapshot root)))
+  (var error (instance/error .get))
+  {^uid instance/uid ^plugin instance/plugin/id
+   ^state (state_name (instance/state .get))
+   ^entry instance/entry_id ^requirements requirements ^effects effects
+   ^error (if (absent? error) nil error/message)})
+
+(fn runtime_inspect ^^private [handle : Runtime]
+  (var runtime (runtime_record handle))
+  (var instances (fresh_list))
+  (for instance in (runtime/instances .get)
+    (instances .push (instance_snapshot instance)))
+  (var services (fresh_list))
+  (for [address provider] in (runtime/providers .get)
+    (services .push
+      {^service provider/key/id ^realm provider/realm
+       ^provider provider/owner/uid
+       ^generation (provider/generation .get)
+       ^active (&& (provider/active .get) (provider/available .get))}))
+  (var realms (fresh_list))
+  (for context in (runtime/contexts .get)
+    (realms .push
+      {^context context/id ^alive (context/alive .get)
+       ^services ($freeze (copy_map context/realms))}))
+  (var hooks (fresh_list))
+  (for [id rows] in (runtime/hooks .get)
+    (var active 0)
+    (for record in rows
+      (if (&& (record/active .get) (! (record/consumed .get)))
+        (set active (+ active 1))))
+    (hooks .push {^hook id ^active active}))
+  (var transitions (fresh_list))
+  (for instance in (runtime/instances .get)
+    (if_not (absent? (instance/transition .get))
+      (transitions .push
+        {^instance_uid instance/uid
+         ^state (state_name (instance/state .get))})))
+  ($freeze
+    {^state (runtime/state .get) ^instances instances ^services services
+     ^realms realms ^hooks hooks ^transitions transitions
+     ^diagnostics (copy_list (runtime/diagnostics .get))}))
+
+(fn runtime_await_settled ^^private [handle : Runtime] : Nil
+  (var runtime (runtime_record handle))
+  (var pending true)
+  (while pending
+    (set pending false)
+    (var tasks (fresh_list))
+    (for instance in (runtime/instances .get)
+      (var task (instance/transition .get))
+      (if_not (absent? task)
+        (tasks .push task)
+        (set pending true)))
+    (for task in tasks (task .join)))
+  nil)
+
+(fn live_dependant_of? ^^private [runtime, provider_instance] : Bool
+  (for candidate in (runtime/instances .get)
+    (if (&& (! (same? candidate/token provider_instance/token))
+            (!= (candidate/state .get) InstanceState/disposed))
+      (for requirement in candidate/plugin/requires
+        (var provider (provider_for_requirement candidate requirement))
+        (if (&& (! (absent? provider))
+                (same? provider/owner/token provider_instance/token))
+          (return true)))))
+  false)
+
+(fn runtime_close ^^private [handle : Runtime] : Nil
+  (var runtime (runtime_record handle))
+  (if (== (runtime/state .get) "closed") (return nil))
+  (if_yes (== (runtime/state .get) "closing")
+    (runtime_await_settled handle)
+    (return nil))
+  (runtime/state .set "closing")
+  (for loader in (copy_list (runtime/loaders .get))
+    (try (loader_dispose (Loader ^token loader/token)) catch Any
+      ((runtime/diagnostics .get) .push
+        {^kind "loader_close_failed" ^message $ex/message})))
+  (var remaining true)
+  (while remaining
+    (set remaining false)
+    (var selected nil)
+    (for instance in (runtime/instances .get)
+      (if (!= (instance/state .get) InstanceState/disposed)
+        (then
+          (set remaining true)
+          (if (&& (absent? selected)
+                  (! (live_dependant_of? runtime instance)))
+            (set selected instance)))))
+    (if (&& remaining (absent? selected))
+      (for instance in (runtime/instances .get)
+        (if (&& (absent? selected)
+                (!= (instance/state .get) InstanceState/disposed))
+          (set selected instance))))
+    (if_not (absent? selected)
+      (instance_dispose (instance_handle selected))
+      (runtime_await_settled handle)))
+  (runtime_await_settled handle)
+  (for context in (runtime/contexts .get) (context/alive .set false))
+  (runtime/instances .set (fresh_list))
+  (runtime/contexts .set (fresh_list))
+  (runtime/service_keys .set (fresh_map))
+  (runtime/hook_keys .set (fresh_map))
+  (runtime/providers .set (fresh_map))
+  (runtime/reservations .set (fresh_map))
+  (runtime/dependants .set (fresh_map))
+  (runtime/hooks .set (fresh_map))
+  (runtime/binding_cache .set (fresh_map))
+  (runtime/subjects .set (fresh_list))
+  (runtime/resources .set (fresh_list))
+  (runtime/loaders .set (fresh_list))
+  (var retained_continuations (fresh_list))
+  (for continuation in (continuation_records .get)
+    (if_not (same? continuation/runtime/token runtime/token)
+      (retained_continuations .push continuation)))
+  (continuation_records .set retained_continuations)
+  (set runtime/invoker nil)
+  (set runtime/options nil)
+  (runtime/state .set "closed")
+  nil)
+
+# --- composition loader ---------------------------------------------------
+
+(fn loader_record ^^private [handle : Loader]
+  ($runtime/require_root_lane)
+  (for runtime in (runtime_records .get)
+    (for record in (runtime/loaders .get)
+      (if (same? record/token handle/token) (return record))))
+  (cordis_failure CompositionError "loader is disposed or foreign"))
+
+(fn validate_loader_options ^^private [runtime, options]
+  (if_not (== ($head options) LoaderOptions)
+    (cordis_failure CompositionError
+      "Runtime/loader expects LoaderOptions"))
+  (if (== options/plugin_root "")
+    (cordis_failure CompositionError "loader plugin_root cannot be empty"))
+  (if_not (== ($head options/shared) List)
+    (cordis_failure CompositionError "loader shared must be a list"))
+  (for path in options/shared
+    (if_not (== ($head path) Str)
+      (cordis_failure CompositionError
+        "loader shared entries must be Str")))
+  (if_not (== ($head options/max_namespaces) List)
+    (cordis_failure CompositionError
+      "loader max_namespaces must be a list"))
+  (for name in options/max_namespaces
+    (if_not (== ($head name) Str)
+      (cordis_failure CompositionError
+        "loader max_namespaces entries must be Str")))
+  (if_not (== ($head options/capability_catalog) Map)
+    (cordis_failure CompositionError
+      "loader capability_catalog must be a map"))
+  (if (&& (! (absent? options/capability_ceiling))
+          (!= ($head options/capability_ceiling) List)
+          (!= ($head options/capability_ceiling) Map))
+    (cordis_failure CompositionError
+      "loader capability_ceiling must be a list, map, or nil"))
+  (var limits
+    (if (absent? options/default_limits)
+      runtime/default_limits
+      (narrow_limits options/default_limits runtime/default_limits)))
+  (LoaderOptions
+    ^plugin_root options/plugin_root
+    ^shared ($freeze (copy_list options/shared))
+    ^max_namespaces ($freeze (copy_list options/max_namespaces))
+    ^capability_catalog ($freeze_shallow options/capability_catalog)
+    ^capability_ceiling options/capability_ceiling
+    ^default_limits limits ^reload_policy options/reload_policy))
+
+(fn runtime_loader ^^private [handle : Runtime, options]
+  (var runtime (require_runtime_open (runtime_record handle)))
+  (var normalized (validate_loader_options runtime options))
+  (var current (runtime/loaders .get))
+  (if (> current/.size 0)
+    (then
+      (var existing current/0)
+      (if (== existing/options normalized)
+        (return (Loader ^token existing/token)))
+      (cordis_failure CompositionError
+        "runtime already owns a loader with incompatible options")))
+  (var record
+    (LoaderRecord ^token ($cell nil) ^runtime runtime ^options normalized
+                  ^entries ($cell (fresh_map)) ^order ($cell (fresh_list))
+                  ^manifest ($cell nil) ^state ($cell "open")
+                  ^generations ($cell (fresh_list))
+                  ^watchers ($cell (fresh_list))))
+  (current .push record)
+  (runtime/loaders .set current)
+  (Loader ^token record/token))
+
+(fn manifest_value ^^private [entry, name : Str, fallback]
+  (var value (entry .get name))
+  (if (== value void) fallback value))
+
+(fn validate_manifest_limit_map ^^private [loader, value]
+  (if (absent? value) (return loader/options/default_limits))
+  (if_not (== ($head value) Map)
+    (cordis_failure CompositionError "entry limits must be a map"))
+  (for [name item] in value
+    (var key ($to_str name))
+    (if_not (["max_steps" "max_memory_mb" "timeout_ms"] .contains? key)
+      (cordis_failure CompositionError
+        $"unknown entry limit ^${key}"))
+    (if_not (== ($head item) Int)
+      (cordis_failure CompositionError
+        $"entry limit ^${key} must be Int")))
+  (var parent loader/options/default_limits)
+  (var limits
+    (InvocationLimits
+      ^max_steps (manifest_value value "max_steps" parent/max_steps)
+      ^max_memory_mb
+        (manifest_value value "max_memory_mb" parent/max_memory_mb)
+      ^timeout_ms (manifest_value value "timeout_ms" parent/timeout_ms)))
+  (narrow_limits limits parent))
+
+(fn resolve_manifest_namespaces ^^private [loader, value]
+  (var requested (if (absent? value) (fresh_list) value))
+  (if_not (== ($head requested) List)
+    (cordis_failure CompositionError "entry namespaces must be a list"))
+  (var out (fresh_list))
+  (for name in requested
+    (if_not (== ($head name) Str)
+      (cordis_failure CompositionError
+        "entry namespace names must be Str"))
+    (if_not (loader/options/max_namespaces .contains? name)
+      (cordis_failure CompositionError
+        $"entry requests namespace outside loader ceiling: ${name}"))
+    (out .push name))
+  out)
+
+(fn resolve_manifest_capabilities ^^private [loader, value]
+  (var requested (if (absent? value) (fresh_list) value))
+  (if_not (== ($head requested) List)
+    (cordis_failure CompositionError "entry capabilities must be a list"))
+  (var out (fresh_list))
+  (for id in requested
+    (if_not (== ($head id) Str)
+      (cordis_failure CompositionError
+        "entry capability ids must be Str"))
+    (var selector (loader/options/capability_catalog .get id))
+    (if (== selector void)
+      (cordis_failure CompositionError
+        $"entry requests unknown capability selector ${id}"))
+    (var ceiling loader/options/capability_ceiling)
+    (if_not (absent? ceiling)
+      (var allowed
+        (if (== ($head ceiling) List)
+          (ceiling .contains? id)
+          (if (== ($head ceiling) Map)
+            (!= (ceiling .get id) void)
+            false)))
+      (if_not allowed
+        (cordis_failure CompositionError
+          $"entry capability ${id} exceeds the loader ceiling")))
+    (out .push selector))
+  out)
+
+(fn validate_service_id_map ^^private [loader, value, field : Str]
+  (if (absent? value) (return #{}))
+  (if_not (== ($head value) Map)
+    (cordis_failure CompositionError
+      $"entry ${field} must be a map"))
+  (for [id config] in value
+    (named_service_key loader/runtime ($to_str id)))
+  ($freeze value))
+
+(fn validate_manifest_entry_fields ^^private [entry]
+  (if_not (== ($head entry) Map)
+    (cordis_failure CompositionError "manifest entries must be maps"))
+  (var allowed
+    ["id" "plugin_id" "module" "config" "disabled" "group" "children"
+     "isolate" "intercept" "namespaces" "capabilities" "limits"])
+  (for [name value] in entry
+    (var key ($to_str name))
+    (if_not (allowed .contains? key)
+      (cordis_failure CompositionError
+        $"unknown manifest entry field ^${key}"))))
+
+(fn flatten_manifest_entries ^^private
+  [loader, entries, parent_id, inherited_disabled : Bool, out]
+  (if_not (== ($head entries) List)
+    (cordis_failure CompositionError "manifest entries must be a list"))
+  (var siblings (fresh_map))
+  (for entry in entries
+    (validate_manifest_entry_fields entry)
+    (var local_id (entry .get "id"))
+    (if (|| (== local_id void) (!= ($head local_id) Str)
+            (== local_id "") ($str/contains? local_id ":"))
+      (cordis_failure CompositionError
+        "manifest entry id must be a non-empty colon-free Str"))
+    (if (== (siblings .get local_id) true)
+      (cordis_failure CompositionError
+        $"duplicate sibling entry id ${local_id}"))
+    (siblings .put local_id true)
+    (var id (if (absent? parent_id) local_id $"${parent_id}:${local_id}"))
+    (var group_value (entry .get "group"))
+    (if (&& (!= group_value void) (!= ($head group_value) Bool))
+      (cordis_failure CompositionError
+        $"entry ${id} ^group must be Bool"))
+    (var disabled_value (entry .get "disabled"))
+    (if (&& (!= disabled_value void) (!= ($head disabled_value) Bool))
+      (cordis_failure CompositionError
+        $"entry ${id} ^disabled must be Bool"))
+    (var expected_plugin (entry .get "plugin_id"))
+    (if (&& (!= expected_plugin void) (!= ($head expected_plugin) Str))
+      (cordis_failure CompositionError
+        $"entry ${id} ^plugin_id must be Str"))
+    (var group (== (manifest_value entry "group" false) true))
+    (var disabled
+      (|| inherited_disabled
+          (== (manifest_value entry "disabled" false) true)))
+    (var children (manifest_value entry "children" #[]))
+    (if group
+      (then
+        (if_not (== ($head children) List)
+          (cordis_failure CompositionError
+            $"group ${id} children must be a list"))
+        (if_not (== (entry .get "module") void)
+          (cordis_failure CompositionError
+            $"group ${id} cannot declare a module")))
+      (else
+        (if_not (== ($head (entry .get "module")) Str)
+          (cordis_failure CompositionError
+            $"plugin entry ${id} requires a module"))
+        (if (> children/.size 0)
+          (cordis_failure CompositionError
+            $"plugin entry ${id} cannot contain children"))))
+    (var isolate
+      (validate_service_id_map loader (entry .get "isolate") "isolate"))
+    (var intercept
+      (validate_service_id_map loader (entry .get "intercept") "intercept"))
+    (var namespaces
+      (resolve_manifest_namespaces loader (entry .get "namespaces")))
+    (var capabilities
+      (resolve_manifest_capabilities loader (entry .get "capabilities")))
+    (var limits (validate_manifest_limit_map loader (entry .get "limits")))
+    (var normalized
+      ($freeze
+        {^id id ^local_id local_id ^parent_id parent_id ^group group
+         ^disabled disabled ^plugin_id (manifest_value entry "plugin_id" nil)
+         ^module (manifest_value entry "module" nil)
+         ^config ($freeze (manifest_value entry "config" nil))
+         ^isolate isolate ^intercept intercept
+         ^namespaces ($freeze namespaces)
+         ^capabilities ($freeze_shallow capabilities)
+         ^limits limits}))
+    (out .push normalized)
+    (if group
+      (flatten_manifest_entries loader children id disabled out)))
+  out)
+
+(fn validate_manifest ^^private [loader, manifest]
+  (if_not (== ($head manifest) Map)
+    (cordis_failure CompositionError "manifest must be a map"))
+  (for [name value] in manifest
+    (var key ($to_str name))
+    (if_not (["format" "entries"] .contains? key)
+      (cordis_failure CompositionError
+        $"unknown manifest field ^${key}")))
+  (if_not (== (manifest .get "format") 1)
+    (cordis_failure CompositionError "manifest ^format must be 1"))
+  (var out (fresh_list))
+  (flatten_manifest_entries loader (manifest .get "entries") nil false out)
+  out)
+
+(fn entry_context_signature ^^private [row, parent_signature : Str] : Str
+  $"${parent_signature}|${row/isolate}|${row/intercept}|${row/capabilities}|${row/limits/max_steps}:${row/limits/max_memory_mb}:${row/limits/timeout_ms}")
+
+(fn derive_loader_context ^^private [loader, parent, row]
+  (parent .derive
+    {^isolate row/isolate ^intercept row/intercept
+     ^capabilities row/capabilities ^limits row/limits}))
+
+(fn prepare_loader_entry ^^private [loader, row, transaction]
+  (var generation
+    (transaction .prepare
+      {^dir loader/options/plugin_root ^entry row/module
+       ^grants row/namespaces ^shared loader/options/shared ^label row/id
+       ^policy {^max_steps row/limits/max_steps
+                ^max_memory_mb row/limits/max_memory_mb
+                ^timeout_ms row/limits/timeout_ms}}))
+  (var module (generation .module))
+  (var plugin
+    (try module/plugin catch Any
+      (cordis_failure CompositionError
+        $"entry ${row/id} module must export one plugin binding" $ex)))
+  (validate_plugin_spec loader/runtime plugin)
+  (if (&& (! (absent? row/plugin_id)) (!= row/plugin_id plugin/id))
+    (cordis_failure CompositionError
+      $"entry ${row/id} expected plugin ${row/plugin_id}, got ${plugin/id}"))
+  {^generation generation ^module module ^plugin plugin
+   ^graph (generation .graph)})
+
+(fn dispose_loader_entry ^^private [loader, entry]
+  (if_not (absent? entry/instance)
+    (instance_dispose entry/instance)
+    (runtime_await_settled (Runtime ^token loader/runtime/token)))
+  (if_not (absent? entry/generation)
+    (entry/generation .release))
+  (var context (context_record_even_if_closed entry/context))
+  (if_not (absent? context) (context/alive .set false))
+  nil)
+
+(fn install_loader_entry ^^private [loader, row, context]
+  (var transaction ($runtime/sandbox_transaction))
+  (var prepared nil)
+  (try
+    (set prepared (prepare_loader_entry loader row transaction))
+  catch Any
+    (transaction .discard)
+    (cordis_failure CompositionError
+      $"entry ${row/id} preparation failed" $ex))
+  (transaction .commit)
+  (var instance nil)
+  (try
+    (set instance
+      (runtime_install (Runtime ^token loader/runtime/token) context
+                       prepared/plugin row/config row/id))
+  catch Any
+    (prepared/generation .release)
+    (cordis_failure CompositionError
+      $"entry ${row/id} installation failed" $ex))
+  ((loader/generations .get) .push prepared/generation)
+  (loader_entry_from_source loader row context prepared instance))
+
+(fn loader_entry_from_source ^^private [loader, row, context, source, instance = nil]
+  (var installed instance)
+  (if (absent? installed)
+    (set installed
+      (runtime_install (Runtime ^token loader/runtime/token) context
+                       source/plugin row/config row/id)))
+  (LoaderEntryRecord
+    ^id row/id ^parent_id row/parent_id ^data row ^group false
+    ^disabled false ^context context
+    ^context_signature "" ^module_path row/module
+    ^plugin source/plugin ^module source/module ^instance installed
+    ^generation source/generation ^graph source/graph))
+
+(fn loader_entry_snapshot ^^private [entry]
+  (var state "group")
+  (if_not (absent? entry/instance)
+    (var instance (instance_record entry/instance))
+    (set state (state_name (instance/state .get))))
+  {^id entry/id ^group entry/group ^disabled entry/disabled
+   ^module entry/module_path
+   ^plugin (if (absent? entry/plugin) nil entry/plugin/id)
+   ^state state ^graph entry/graph})
+
+(fn loader_snapshot ^^private [loader, mode, changed]
+  (var entries (fresh_list))
+  (for id in (loader/order .get)
+    (var entry ((loader/entries .get) .get id))
+    (if_not (== entry void) (entries .push (loader_entry_snapshot entry))))
+  ($freeze
+    {^state (loader/state .get) ^mode mode ^changed changed
+     ^entries entries}))
+
+(fn next_parent_context ^^private [loader, next_entries, parent_id]
+  (if (absent? parent_id) (return (loader/runtime/root .get)))
+  (var parent (next_entries .get parent_id))
+  (if (== parent void)
+    (cordis_failure CompositionError
+      $"manifest parent ${parent_id} was not reconciled"))
+  parent/context)
+
+(fn loader_reconcile_incremental ^^private [loader, manifest, rows]
+  (var old_entries (loader/entries .get))
+  (var desired_ids (fresh_map))
+  (for row in rows (desired_ids .put row/id row))
+  # Remove deleted, disabled, or structurally changed entries from leaves to
+  # roots so child effects never outlive their composition context.
+  (var old_order (loader/order .get))
+  (var index (- old_order/.size 1))
+  (while (>= index 0)
+    (var id old_order/%index)
+    (set index (- index 1))
+    (var entry (old_entries .get id))
+    (var desired (desired_ids .get id))
+    (var remove
+      (|| (== desired void) desired/disabled
+          (!= desired/group entry/group)
+          (!= desired/module entry/module_path)))
+    (if remove
+      (then
+        (dispose_loader_entry loader entry)
+        (old_entries .delete id))))
+  (var next_entries (fresh_map))
+  (var next_order (fresh_list))
+  (var signatures (fresh_map))
+  (var changed (fresh_list))
+  (for row in rows
+    (var parent_context
+      (next_parent_context loader next_entries row/parent_id))
+    (var parent_signature
+      (if (absent? row/parent_id) "root"
+        (signatures .get row/parent_id)))
+    (var signature (entry_context_signature row parent_signature))
+    (signatures .put row/id signature)
+    (var existing (old_entries .get row/id))
+    (if (&& (!= existing void)
+            (!= existing/context_signature signature))
+      (then
+        (dispose_loader_entry loader existing)
+        (old_entries .delete row/id)
+        (set existing void)))
+    (if row/disabled
+      (then
+        (var disabled_context
+          (derive_loader_context loader parent_context row))
+        (var disabled_entry
+          (LoaderEntryRecord
+            ^id row/id ^parent_id row/parent_id ^data row ^group row/group
+            ^disabled true ^context disabled_context
+            ^context_signature signature ^module_path row/module
+            ^plugin nil ^module nil ^instance nil ^generation nil ^graph nil))
+        (next_entries .put row/id disabled_entry)
+        (next_order .push row/id))
+      (else
+        (if (== existing void)
+          (then
+            (var context (derive_loader_context loader parent_context row))
+            (var created
+              (if row/group
+                (LoaderEntryRecord
+                  ^id row/id ^parent_id row/parent_id ^data row ^group true
+                  ^disabled false ^context context
+                  ^context_signature signature ^module_path nil ^plugin nil
+                  ^module nil ^instance nil ^generation nil ^graph nil)
+                (install_loader_entry loader row context)))
+            (set created/context_signature signature)
+            (next_entries .put row/id created)
+            (next_order .push row/id)
+            (changed .push row/id))
+          (else
+            (if (&& (! existing/group)
+                    (!= existing/data/config row/config))
+              (then
+                (instance_update existing/instance row/config)
+                (changed .push row/id)))
+            (set existing/data row)
+            (next_entries .put row/id existing)
+            (next_order .push row/id))))))
+  (loader/entries .set next_entries)
+  (loader/order .set next_order)
+  (loader/manifest .set ($freeze manifest))
+  (runtime_await_settled (Runtime ^token loader/runtime/token))
+  (loader_snapshot loader "incremental" ($freeze changed)))
+
+(fn runtime_instance_is_loader_owned? ^^private [instance] : Bool
+  (! (absent? instance/entry_id)))
+
+(fn clone_direct_provider_layer ^^private [live, candidate, replaced_direct]
+  (var providers (fresh_map))
+  (var reservations (fresh_map))
+  (for [address provider] in (live/providers .get)
+    (if (&& (! (runtime_instance_is_loader_owned? provider/owner))
+            (! (instance_in_records? replaced_direct provider/owner)))
+      (providers .put address provider)))
+  # Reservations exist even for unavailable or failed providers, so cloning
+  # only the visible provider table would let a candidate claim a live slot.
+  (for [address uid] in (live/reservations .get)
+    (var owner nil)
+    (for instance in (live/instances .get)
+      (if (== instance/uid uid) (set owner instance)))
+    (if (&& (! (absent? owner))
+            (! (runtime_instance_is_loader_owned? owner))
+            (! (instance_in_records? replaced_direct owner)))
+      (reservations .put address uid)))
+  (candidate/providers .set providers)
+  (candidate/reservations .set reservations)
+  (var hooks (fresh_map))
+  (for [id rows] in (live/hooks .get)
+    (var retained (fresh_list))
+    (for record in rows
+      (if (&& (! (runtime_instance_is_loader_owned? record/owner))
+              (! (instance_in_records? replaced_direct record/owner)))
+        (retained .push record)))
+    (if (> retained/.size 0) (hooks .put id retained)))
+  (candidate/hooks .set hooks))
+
+(fn new_candidate_runtime ^^private [loader, replaced_direct]
+  (var live loader/runtime)
+  (var handle (new_runtime live/options))
+  (var candidate (runtime_record handle))
+  (candidate/service_keys .set (copy_map (live/service_keys .get)))
+  (candidate/hook_keys .set (copy_map (live/hook_keys .get)))
+  (candidate/next_uid .set (live/next_uid .get))
+  (candidate/next_context .set (live/next_context .get))
+  (clone_direct_provider_layer live candidate replaced_direct)
+  candidate)
+
+(fn discard_candidate_runtime ^^private [candidate]
+  (if_not (absent? candidate)
+    (try (runtime_close (Runtime ^token candidate/token)) catch Any nil)
+    (runtime_records .set
+      (without_token (runtime_records .get) candidate/token)))
+  nil)
+
+(fn staged_candidate_source ^^private [old_entries, row, transaction, loader, force_ids]
+  (var existing (old_entries .get row/id))
+  (if (&& (!= existing void) (! existing/group)
+          (! existing/disabled) (== existing/module_path row/module)
+          (! (force_ids .contains? row/id)))
+    (return
+      {^generation existing/generation ^module existing/module
+       ^plugin existing/plugin ^graph existing/graph ^prepared false}))
+  (var prepared (prepare_loader_entry loader row transaction))
+  {^generation prepared/generation ^module prepared/module
+   ^plugin prepared/plugin ^graph prepared/graph ^prepared true})
+
+(fn build_staged_entries ^^private [loader, candidate, transaction, rows, force_ids]
+  (var old_entries (loader/entries .get))
+  (var entries (fresh_map))
+  (var order (fresh_list))
+  (var signatures (fresh_map))
+  (var prepared_generations (fresh_list))
+  (for row in rows
+    (var parent_context
+      (if (absent? row/parent_id)
+        (candidate/root .get)
+        (next_parent_context loader entries row/parent_id)))
+    (var parent_signature
+      (if (absent? row/parent_id) "root"
+        (signatures .get row/parent_id)))
+    (var signature (entry_context_signature row parent_signature))
+    (signatures .put row/id signature)
+    (var context (derive_loader_context loader parent_context row))
+    # `derive_loader_context` receives only the parent handle and row values;
+    # use the candidate record for service/catalog lookups through that handle.
+    (var context_record_value (context_record context))
+    (if_not (same? context_record_value/runtime/token candidate/token)
+      (cordis_failure CompositionError
+        "candidate context escaped its prospective runtime"))
+    (var entry nil)
+    (if (|| row/group row/disabled)
+      (then
+        (set entry
+          (LoaderEntryRecord
+            ^id row/id ^parent_id row/parent_id ^data row ^group row/group
+            ^disabled row/disabled ^context context
+            ^context_signature signature ^module_path row/module
+            ^plugin nil ^module nil ^instance nil ^generation nil ^graph nil)))
+      (else
+        (var source
+          (staged_candidate_source old_entries row transaction loader
+                                   force_ids))
+        (if source/prepared (prepared_generations .push source/generation))
+        (var instance
+          (runtime_install (Runtime ^token candidate/token) context
+                           source/plugin row/config row/id))
+        (set entry
+          (LoaderEntryRecord
+            ^id row/id ^parent_id row/parent_id ^data row ^group false
+            ^disabled false ^context context
+            ^context_signature signature ^module_path row/module
+            ^plugin source/plugin ^module source/module ^instance instance
+            ^generation source/generation ^graph source/graph))))
+    (entries .put row/id entry)
+    (order .push row/id))
+  {^entries entries ^order order ^prepared_generations prepared_generations})
+
+(fn require_candidate_active ^^private [candidate]
+  (runtime_await_settled (Runtime ^token candidate/token))
+  (for instance in (candidate/instances .get)
+    (if_not (== (instance/state .get) InstanceState/active)
+      (var epoch (compute_instance_epoch instance))
+      (plugin_error CompositionError
+        $"staged candidate did not activate; missing ${epoch/missing}"
+        instance (instance/error .get))))
+  nil)
+
+(fn old_entry_context_tokens ^^private [entries]
+  (var tokens (fresh_list))
+  (for [id entry] in entries
+    (tokens .push entry/context/token))
+  tokens)
+
+(fn token_in? ^^private [tokens, token] : Bool
+  (for candidate in tokens
+    (if (same? candidate token) (return true)))
+  false)
+
+(fn direct_contexts ^^private [live, old_entries, replaced_direct = #[]]
+  (var out (fresh_list))
+  (var old_tokens (old_entry_context_tokens old_entries))
+  (var root_handle (live/root .get))
+  (for context in (live/contexts .get)
+    (var loader_activation
+      (&& (! (absent? context/owner))
+          (runtime_instance_is_loader_owned? context/owner)))
+    (var replaced_activation
+      (&& (! (absent? context/owner))
+          (instance_in_records? replaced_direct context/owner)))
+    (if (&& (! loader_activation) (! replaced_activation)
+            (! (token_in? old_tokens context/token))
+            (|| (! (absent? context/parent))
+                (same? context/token root_handle/token)))
+      (out .push context)))
+  out)
+
+(fn resource_loader_owned? ^^private [resource] : Bool
+  (var kind ($head resource))
+  (if (== kind CleanupRecord)
+    (return (runtime_instance_is_loader_owned? resource/scope/owner)))
+  (if (|| (== kind EffectRecord) (== kind ProviderRecord)
+          (== kind HookRecord))
+    (return (runtime_instance_is_loader_owned? resource/owner)))
+  false)
+
+(fn resource_owner ^^private [resource]
+  (var kind ($head resource))
+  (if (== kind CleanupRecord) (return resource/scope/owner))
+  (if (|| (== kind EffectRecord) (== kind ProviderRecord)
+          (== kind HookRecord))
+    (return resource/owner))
+  nil)
+
+(fn direct_resources ^^private [live, replaced_direct = #[]]
+  (var out (fresh_list))
+  (for resource in (live/resources .get)
+    (var owner (resource_owner resource))
+    (if (&& (! (resource_loader_owned? resource))
+            (|| (absent? owner)
+                (! (instance_in_records? replaced_direct owner))))
+      (out .push resource)))
+  out)
+
+(fn direct_instances ^^private [live, replaced_direct = #[]]
+  (var out (fresh_list))
+  (for instance in (live/instances .get)
+    (if (&& (! (runtime_instance_is_loader_owned? instance))
+            (! (instance_in_records? replaced_direct instance)))
+      (out .push instance)))
+  out)
+
+(fn rebuild_runtime_indexes ^^private [runtime]
+  (var dependants (fresh_map))
+  (var reservations (fresh_map))
+  (for instance in (runtime/instances .get)
+    (if_not (== (instance/state .get) InstanceState/disposed)
+      (for requirement in instance/plugin/requires
+        (var rows (?? (dependants .get requirement/key/id) (fresh_list)))
+        (rows .push instance)
+        (dependants .put requirement/key/id rows))
+      (var context (context_record_even_if_closed (instance/context .get)))
+      (if_not (absent? context)
+        (for key in instance/plugin/provides
+          (reservations .put
+            (service_address key (context_realm context key)) instance/uid)))))
+  (runtime/dependants .set dependants)
+  (runtime/reservations .set reservations))
+
+(fn preserve_staged_instance_identities ^^private [old_entries, staged_entries]
+  (for [id staged] in staged_entries
+    (var old (old_entries .get id))
+    (if (&& (!= old void) (! (absent? old/instance))
+            (! (absent? staged/instance)))
+      (then
+        (var old_record (instance_record old/instance))
+        (var staged_record (instance_record staged/instance))
+        (set staged_record/token old_record/token)
+        (set staged_record/uid old_record/uid)
+        (for staged_provider in (staged_record/providers .get)
+          (for old_provider in (old_record/providers .get)
+            (if (== staged_provider/address old_provider/address)
+              (staged_provider/generation .set
+                (+ (old_provider/generation .get) 1)))))
+        (set staged/instance (PluginInstance ^token old_record/token))))))
+
+(fn move_candidate_state ^^private [candidate, live]
+  (var candidate_root
+    (context_record_even_if_closed (candidate/root .get)))
+  (var live_root (context_record_even_if_closed (live/root .get)))
+  (for context in (candidate/contexts .get)
+    (if (&& (! (absent? context/parent))
+            (same? context/parent/token candidate_root/token))
+      (set context/parent live_root))
+    (set context/runtime live))
+  (for instance in (candidate/instances .get)
+    (set instance/runtime live))
+  (for resource in (candidate/resources .get)
+    (var kind ($head resource))
+    (if (|| (== kind EffectRecord) (== kind ProviderRecord)
+            (== kind HookRecord))
+      (set resource/runtime live)))
+  nil)
+
+(fn generation_reused? ^^private [entries, generation] : Bool
+  (if (absent? generation) (return false))
+  (for [id entry] in entries
+    (if (&& (! (absent? entry/generation))
+            (same? entry/generation generation))
+      (return true)))
+  false)
+
+(fn instance_in_records? ^^private [records, instance] : Bool
+  (for candidate in records
+    (if (same? candidate/token instance/token) (return true)))
+  false)
+
+(fn instance_object_in_records? ^^private [records, instance] : Bool
+  (for candidate in records
+    (if (same? candidate instance) (return true)))
+  false)
+
+(fn retiring_consumer_closure ^^private [live, retiring]
+  (var closure (fresh_list))
+  (for [id instance] in retiring (closure .push instance))
+  (var changed true)
+  (while changed
+    (set changed false)
+    (for candidate in (live/instances .get)
+      (if (&& (!= (candidate/state .get) InstanceState/disposed)
+              (! (instance_in_records? closure candidate)))
+        (for requirement in candidate/plugin/requires
+          (var provider (provider_for_requirement candidate requirement))
+          (if (&& (! (absent? provider))
+                  (instance_in_records? closure provider/owner))
+            (then
+              (closure .push candidate)
+              (set changed true)))))))
+  closure)
+
+(fn stageable_direct_closure ^^private [closure]
+  (var out (fresh_list))
+  (for instance in closure
+    (if (&& (! (runtime_instance_is_loader_owned? instance))
+            (absent? instance/parent_context/owner))
+      (out .push instance)))
+  out)
+
+(fn expand_owned_replacements ^^private [roots]
+  (var out (copy_list roots))
+  (var index 0)
+  (while (< index out/.size)
+    (var owner out/%index)
+    (set index (+ index 1))
+    (for child in (owner/children .get)
+      (if_not (instance_object_in_records? out child) (out .push child))))
+  out)
+
+(fn clone_direct_parent_context ^^private [candidate, source]
+  (var candidate_root
+    (context_record_even_if_closed (candidate/root .get)))
+  (var cloned
+    (new_context_record candidate candidate_root nil source/operator
+      (copy_map source/realms) (copy_map source/overlays)
+      (copy_map source/allowed) (copy_list source/capabilities)
+      source/capabilities_restricted source/limits))
+  (Context ^token cloned/token))
+
+(fn build_direct_candidate_revisions ^^private [candidate, replaced_direct]
+  (var revisions (fresh_list))
+  (for old in replaced_direct
+    (var parent
+      (clone_direct_parent_context candidate old/parent_context))
+    (var handle
+      (runtime_install (Runtime ^token candidate/token) parent
+                       old/plugin (old/config .get) nil))
+    (revisions .push {^old old ^handle handle}))
+  revisions)
+
+(fn preserve_direct_revision_identities ^^private [revisions]
+  (fn preserve_tree [old, candidate]
+    (set candidate/token old/token)
+    (set candidate/uid old/uid)
+    (for staged_provider in (candidate/providers .get)
+      (for old_provider in (old/providers .get)
+        (if (== staged_provider/address old_provider/address)
+          (staged_provider/generation .set
+            (+ (old_provider/generation .get) 1)))))
+    (var old_children (old/children .get))
+    (var candidate_children (candidate/children .get))
+    (var limit
+      (if (< old_children/.size candidate_children/.size)
+        old_children/.size candidate_children/.size))
+    (repeat index in limit
+      (if (== old_children/%index/plugin/id
+              candidate_children/%index/plugin/id)
+        (preserve_tree old_children/%index candidate_children/%index))))
+  (for revision in revisions
+    (var old revision/old)
+    (var candidate (instance_record revision/handle))
+    (preserve_tree old candidate)
+    (revision .put "handle" (PluginInstance ^token old/token)))
+  nil)
+
+(fn direct_revision_olds ^^private [revisions]
+  (var out (fresh_list))
+  (for revision in revisions (out .push revision/old))
+  out)
+
+(fn withdraw_closure_providers ^^private [providers, closure]
+  (var next (copy_map providers))
+  (for [address provider] in providers
+    (if (&& (! (runtime_instance_is_loader_owned? provider/owner))
+            (instance_object_in_records? closure provider/owner))
+      (next .delete address)))
+  next)
+
+(fn notify_published_provider_keys ^^private [runtime, closure, candidate]
+  (var keys (fresh_map))
+  (for instance in closure
+    (for provider in (instance/providers .get)
+      (keys .put provider/key/id provider/key)))
+  (for [address provider] in (candidate/providers .get)
+    (if (runtime_instance_is_loader_owned? provider/owner)
+      (keys .put provider/key/id provider/key)))
+  (for [id key] in keys (notify_service runtime key)))
+
+(fn publish_staged_runtime ^^private
+  [loader, candidate, staged, old_entries, old_order, manifest]
+  (var live loader/runtime)
+  (var retiring (fresh_map))
+  (for [id entry] in old_entries
+    (if_not (absent? entry/instance)
+      (retiring .put id (instance_record entry/instance))))
+  (var closure (retiring_consumer_closure live retiring))
+  (var replaced_direct staged/direct_replaced)
+  (for old in replaced_direct
+    (if_not (instance_object_in_records? closure old) (closure .push old)))
+  (preserve_staged_instance_identities old_entries staged/entries)
+  (preserve_direct_revision_identities staged/direct_revisions)
+  (move_candidate_state candidate live)
+  # Close every old external/effect gate before replacing public indexes.
+  (for old_instance in closure
+    (old_instance/gate_open .set false)
+    (var root (old_instance/root_effect .get))
+    (if_not (absent? root) (root/accepting .set false))
+    (for provider in (old_instance/providers .get)
+      (provider/active .set false)))
+  (var contexts (direct_contexts live old_entries replaced_direct))
+  (var retiring_contexts (copy_list (live/contexts .get)))
+  (var old_entry_tokens (old_entry_context_tokens old_entries))
+  (for context in retiring_contexts
+    (if (|| (token_in? old_entry_tokens context/token)
+            (&& (! (absent? context/owner))
+                (instance_object_in_records? closure context/owner)))
+      (context/alive .set false)))
+  (var during_contexts (copy_list retiring_contexts))
+  (var candidate_root_handle (candidate/root .get))
+  (for context in (candidate/contexts .get)
+    (if_not (same? context/token candidate_root_handle/token)
+      (contexts .push context)
+      (during_contexts .push context)))
+  (var resources (direct_resources live replaced_direct))
+  (for resource in (candidate/resources .get) (resources .push resource))
+  (var instances (direct_instances live replaced_direct))
+  (for instance in (candidate/instances .get) (instances .push instance))
+  (live/contexts .set during_contexts)
+  (live/resources .set resources)
+  (live/instances .set instances)
+  (live/providers .set
+    (withdraw_closure_providers (candidate/providers .get) closure))
+  (live/hooks .set (copy_map (candidate/hooks .get)))
+  (live/next_uid .set (candidate/next_uid .get))
+  (live/next_context .set (candidate/next_context .get))
+  (live/binding_cache .set (fresh_map))
+  (loader/entries .set staged/entries)
+  (loader/order .set staged/order)
+  (loader/manifest .set ($freeze manifest))
+  (rebuild_runtime_indexes live)
+  (for instance in (candidate/instances .get)
+    (var epoch (compute_instance_epoch instance))
+    (instance/desired_epoch .set epoch/text)
+    (instance/active_epoch .set epoch/text))
+  (notify_published_provider_keys live closure candidate)
+  # Candidate handles now resolve through the live record only.
+  (runtime_records .set
+    (without_token (runtime_records .get) candidate/token))
+
+  # Visibility has committed. Old closures are now retired from consumers to
+  # providers, and only then are their module generations released.
+  (var retirement_errors (fresh_list))
+  (var index (- closure/.size 1))
+  (while (>= index 0)
+    (var old_instance closure/%index)
+    (set index (- index 1))
+    (if (|| (runtime_instance_is_loader_owned? old_instance)
+            (instance_in_records? replaced_direct old_instance))
+      (then
+        (var cleanup_error
+          (unload_instance old_instance true))
+        (if_not (absent? cleanup_error)
+          (retirement_errors .push cleanup_error)))))
+  (for [id entry] in old_entries
+    (if (&& (! (absent? entry/generation))
+            (! (generation_reused? staged/entries entry/generation)))
+      (try (entry/generation .release) catch Any
+        (retirement_errors .push $ex))))
+  (live/contexts .set contexts)
+  # Old unload removes reservations sharing preserved uids; reconstruct the
+  # committed indexes after retirement.
+  (rebuild_runtime_indexes live)
+  (runtime_await_settled (Runtime ^token live/token))
+  (var generations (fresh_list))
+  (for [id entry] in staged/entries
+    (if_not (absent? entry/generation)
+      (if_not (generations .contains? entry/generation)
+        (generations .push entry/generation))))
+  (loader/generations .set generations)
+  (if (> retirement_errors/.size 0)
+    (cordis_failure RecoveryRequired
+      "candidate published but old generation retirement failed"
+      retirement_errors))
+  nil)
+
+(fn staged_changed_ids ^^private [old_entries, staged_entries]
+  (var changed (fresh_list))
+  (for [id entry] in staged_entries
+    (var old (old_entries .get id))
+    (if (|| (== old void) (!= old/data entry/data)
+            (! (same? old/generation entry/generation)))
+      (changed .push id)))
+  (for [id old] in old_entries
+    (if (== (staged_entries .get id) void) (changed .push id)))
+  changed)
+
+(fn loader_reconcile_staged ^^private [loader, manifest, rows, force_ids = #[]]
+  (var old_entries (copy_map (loader/entries .get)))
+  (var old_order (copy_list (loader/order .get)))
+  (var retiring (fresh_map))
+  (for [id entry] in old_entries
+    (if_not (absent? entry/instance)
+      (retiring .put id (instance_record entry/instance))))
+  (var closure (retiring_consumer_closure loader/runtime retiring))
+  (var direct_roots (stageable_direct_closure closure))
+  (var replaced_direct (expand_owned_replacements direct_roots))
+  (var transaction ($runtime/sandbox_transaction))
+  (var candidate nil)
+  (var staged nil)
+  (try
+    (set candidate (new_candidate_runtime loader replaced_direct))
+    (set staged
+      (build_staged_entries loader candidate transaction rows force_ids))
+    (staged .put "direct_revisions"
+      (build_direct_candidate_revisions candidate direct_roots))
+    (staged .put "direct_replaced" replaced_direct)
+    (require_candidate_active candidate)
+  catch Any
+    (discard_candidate_runtime candidate)
+    (transaction .discard)
+    (cordis_failure CompositionError
+      "staged composition rejected before publication" $ex))
+  (var changed (staged_changed_ids old_entries staged/entries))
+  # Gene publishes every prepared module graph first; the following Cordis
+  # table replacement is a non-yielding turn containing no plugin call.
+  (transaction .commit)
+  (publish_staged_runtime loader candidate staged old_entries old_order manifest)
+  (loader_snapshot loader "staged" ($freeze changed)))
+
+(fn loader_reconcile ^^private [handle : Loader, manifest, mode]
+  (var loader (loader_record handle))
+  (if_not (== (loader/state .get) "open")
+    (cordis_failure CompositionError "loader is disposed"))
+  (var rows (validate_manifest loader manifest))
+  (var selected_mode
+    (if (absent? mode) ReconcileMode/incremental mode))
+  (match selected_mode
+    (when ReconcileMode/incremental
+      (loader_reconcile_incremental loader manifest rows))
+    (when ReconcileMode/staged
+      (loader_reconcile_staged loader manifest rows #[]))))
+
+(fn affected_uses_stop_start? ^^private [loader, affected] : Bool
+  (for id in affected
+    (var entry ((loader/entries .get) .get id))
+    (if (&& (!= entry void) (! (absent? entry/plugin))
+            (== entry/plugin/reload "stop_start"))
+      (return true)))
+  false)
+
+(fn prepare_stop_start_sources ^^private [loader, rows, affected, transaction]
+  (var sources (fresh_map))
+  (for row in rows
+    (if (&& (affected .contains? row/id) (! row/group) (! row/disabled))
+      (sources .put row/id
+        (prepare_loader_entry loader row transaction))))
+  sources)
+
+(fn loader_reload_stop_start ^^private [loader, manifest, rows, affected]
+  (var old_entries (copy_map (loader/entries .get)))
+  (var old_order (copy_list (loader/order .get)))
+  (var transaction ($runtime/sandbox_transaction))
+  (var sources nil)
+  (try
+    (set sources
+      (prepare_stop_start_sources loader rows affected transaction))
+  catch Any
+    (transaction .discard)
+    (cordis_failure ReloadRejected
+      "stop_start reload preparation failed; old composition remains live"
+      $ex))
+  # The reduced guarantee begins only after every module descriptor validates.
+  (transaction .commit)
+  (for [id entry] in old_entries
+    (if_not (absent? entry/instance)
+      (var instance (instance_record entry/instance))
+      (instance/gate_open .set false)
+      (var root (instance/root_effect .get))
+      (if_not (absent? root) (root/accepting .set false))))
+  (var index (- old_order/.size 1))
+  (var teardown_errors (fresh_list))
+  (while (>= index 0)
+    (var entry (old_entries .get old_order/%index))
+    (set index (- index 1))
+    (if (&& (!= entry void) (! (absent? entry/instance)))
+      (then
+        (var cleanup_error
+          (unload_instance (instance_record entry/instance) true))
+        (if_not (absent? cleanup_error)
+          (teardown_errors .push cleanup_error)))))
+  (var live loader/runtime)
+  (live/instances .set (direct_instances live))
+  (live/contexts .set (direct_contexts live old_entries))
+  (live/resources .set (direct_resources live))
+  (rebuild_runtime_indexes live)
+
+  (var next_entries (fresh_map))
+  (var next_order (fresh_list))
+  (var signatures (fresh_map))
+  (var generations (fresh_list))
+  (try
+    (for row in rows
+      (var parent_context
+        (next_parent_context loader next_entries row/parent_id))
+      (var parent_signature
+        (if (absent? row/parent_id) "root"
+          (signatures .get row/parent_id)))
+      (var signature (entry_context_signature row parent_signature))
+      (signatures .put row/id signature)
+      (var context (derive_loader_context loader parent_context row))
+      (var entry nil)
+      (if (|| row/group row/disabled)
+        (then
+          (set entry
+            (LoaderEntryRecord
+              ^id row/id ^parent_id row/parent_id ^data row ^group row/group
+              ^disabled row/disabled ^context context
+              ^context_signature signature ^module_path row/module
+              ^plugin nil ^module nil ^instance nil ^generation nil ^graph nil)))
+        (else
+          (var source (sources .get row/id))
+          (if_yes (== source void)
+            (var old (old_entries .get row/id))
+            (if (== old void)
+              (cordis_failure RecoveryRequired
+                $"stop_start reload lost source for ${row/id}"))
+            (set source
+              {^generation old/generation ^module old/module
+               ^plugin old/plugin ^graph old/graph}))
+          (set entry (loader_entry_from_source loader row context source))
+          (set entry/context_signature signature)
+          (if_not (generations .contains? source/generation)
+            (generations .push source/generation))))
+      (next_entries .put row/id entry)
+      (next_order .push row/id))
+    (loader/entries .set next_entries)
+    (loader/order .set next_order)
+    (loader/manifest .set ($freeze manifest))
+    (loader/generations .set generations)
+    (runtime_await_settled (Runtime ^token live/token))
+    (for instance in (live/instances .get)
+      (if (&& (runtime_instance_is_loader_owned? instance)
+              (!= (instance/state .get) InstanceState/active))
+        (plugin_error RecoveryRequired
+          "stop_start replacement failed after teardown" instance
+          (instance/error .get))))
+  catch Any
+    (loader/entries .set next_entries)
+    (loader/order .set next_order)
+    (loader/manifest .set ($freeze manifest))
+    (loader/generations .set generations)
+    (cordis_failure RecoveryRequired
+      "stop_start reload failed after old composition teardown" $ex))
+  (for [id old] in old_entries
+    (if (&& (! (absent? old/generation))
+            (! (generation_reused? next_entries old/generation)))
+      (old/generation .release)))
+  (if (> teardown_errors/.size 0)
+    (cordis_failure RecoveryRequired
+      "stop_start replacement activated but old cleanup failed"
+      teardown_errors))
+  ($freeze {^status "reloaded_stop_start" ^affected affected
+            ^reduced_guarantee true}))
+
+(fn entry_root_digests ^^private [loader, ids]
+  (var out (fresh_list))
+  (for id in ids
+    (var entry ((loader/entries .get) .get id))
+    (if (&& (!= entry void) (! (absent? entry/graph)))
+      (var root_id entry/graph/root)
+      (for node in entry/graph/nodes
+        (if (== node/identity root_id)
+          (out .push
+            {^entry id ^source_digest node/source_digest
+             ^compile_interface_digest node/compile_interface_digest})))))
+  ($freeze out))
+
+(fn emit_hmr_reloaded ^^private [loader, affected, old_digests, new_digests]
+  (try
+    (context_dispatch (loader/runtime/root .get) hmr_reloaded
+      {^affected affected ^old old_digests ^new new_digests} nil)
+  catch Any
+    (cordis_failure RecoveryRequired
+      "reload published but hmr_reloaded hook failed" $ex)))
+
+(fn loader_reload ^^private [handle : Loader, changed_paths]
+  (var loader (loader_record handle))
+  (if_not (== ($head changed_paths) List)
+    (cordis_failure ReloadRejected "Loader/reload expects a path list"))
+  (var affected (fresh_list))
+  (var restart false)
+  (for id in (loader/order .get)
+    (var entry ((loader/entries .get) .get id))
+    (if (&& (! entry/group) (! entry/disabled)
+            (! (absent? entry/graph)))
+      (for node in entry/graph/nodes
+        (for path in changed_paths
+          (if (== path "*")
+            (if_not (affected .contains? id) (affected .push id))
+            (if (== node/path path)
+              (if node/owned
+                (if_not (affected .contains? id) (affected .push id))
+                (set restart true))))))))
+  (if restart
+    (return ($freeze {^status "restart_required" ^affected affected})))
+  (if (== affected/.size 0)
+    (return ($freeze {^status "unchanged" ^affected #[]})))
+  (var manifest (loader/manifest .get))
+  (var rows (validate_manifest loader manifest))
+  (var old_digests (entry_root_digests loader affected))
+  (if (affected_uses_stop_start? loader affected)
+    (then
+      (var result
+        (loader_reload_stop_start loader manifest rows affected))
+      (emit_hmr_reloaded loader affected old_digests
+                         (entry_root_digests loader affected))
+      (return result)))
+  (var snapshot nil)
+  (try
+    (set snapshot
+      (loader_reconcile_staged loader manifest rows affected))
+  catch RecoveryRequired
+    (fail $ex)
+  catch Any
+    (cordis_failure ReloadRejected
+      "hot reload candidate was rejected; old composition remains live" $ex))
+  (emit_hmr_reloaded loader affected old_digests
+                     (entry_root_digests loader affected))
+  ($freeze {^status "reloaded" ^affected affected ^composition snapshot}))
+
+(fn loader_inspect ^^private [handle : Loader]
+  (loader_snapshot (loader_record handle) "inspect" #[]))
+
+(fn loader_await_settled ^^private [handle : Loader] : Nil
+  (var loader (loader_record handle))
+  (runtime_await_settled (Runtime ^token loader/runtime/token)))
+
+(fn register_loader_watcher [handle : Loader, watcher]
+  (var loader (loader_record handle))
+  (if_not (== (loader/state .get) "open")
+    (cordis_failure CompositionError "loader is disposed"))
+  ((loader/watchers .get) .push watcher)
+  watcher)
+
+(fn loader_dispose ^^private [handle : Loader] : Nil
+  (var loader (loader_record handle))
+  (if (== (loader/state .get) "disposed") (return nil))
+  (loader/state .set "disposing")
+  (for watcher in (loader/watchers .get)
+    (try (watcher .close) catch Any nil))
+  (var order (loader/order .get))
+  (var index (- order/.size 1))
+  (while (>= index 0)
+    (var entry ((loader/entries .get) .get order/%index))
+    (set index (- index 1))
+    (if_not (== entry void) (dispose_loader_entry loader entry)))
+  (loader/entries .set (fresh_map))
+  (loader/order .set (fresh_list))
+  (loader/generations .set (fresh_list))
+  (loader/watchers .set (fresh_list))
+  (loader/manifest .set nil)
+  (loader/state .set "disposed")
+  nil)
+
+# Public documented extension hook. Each runtime admits this exact nominal key
+# automatically; sandboxed plugins see it only through an explicitly shared
+# contract module.
+(var hmr_reloaded (hook_key "hmr_reloaded" HookMode/emit))
+(var config_update (hook_key "config_update" HookMode/waterfall))
+
+(fn config_update_terminal ^^private [candidate] candidate)

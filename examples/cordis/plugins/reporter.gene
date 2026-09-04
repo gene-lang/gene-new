@@ -1,0 +1,14 @@
+(mod reporter_plugin)
+
+(import [PluginSpec Requirement] from "../src/plugin_api")
+(import [Clock clock_key] from "../src/demo_contract")
+
+(fn activate [ctx, config]
+  (var clock (ctx .require clock_key))
+  ($println $"reporter observed tick ${(clock .Clock:tick)}"))
+
+(var plugin
+  (PluginSpec
+    ^id "app/reporter" ^config_schema nil
+    ^requires [(Requirement ^key clock_key ^config nil)]
+    ^provides [] ^reload nil ^activate activate))

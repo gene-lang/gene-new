@@ -1,0 +1,43 @@
+(mod timer_service_test)
+
+(import [RuntimeOptions Requirement PluginSpec invocation_limits
+         default_plugin_invoker new_runtime]
+  from "../src/cordis")
+(import [Timer timer_key timer_plugin] from "../src/timer")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(var events ($cell 0))
+(fn activate_consumer [ctx, config]
+  (var timer (ctx .require timer_key))
+  (timer .Timer:interval
+    (fn [] (events .set (+ (events .get) 1))) 5))
+
+(var consumer_plugin
+  (PluginSpec ^id "timer/consumer" ^config_schema nil
+    ^requires [(Requirement ^key timer_key ^config nil)]
+    ^provides [] ^reload nil ^activate activate_consumer))
+
+(var runtime
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                    ^default_limits (invocation_limits))))
+(runtime .admit_service_key timer_key)
+(var provider (runtime .install (runtime .root) timer_plugin nil))
+(var consumer (runtime .install (runtime .root) consumer_plugin nil))
+(runtime .await_settled)
+(consumer .await_ready)
+($sleep 15)
+(assert (> (events .get) 0)
+  "timer service callbacks must run through the consumer binding")
+(consumer .dispose)
+(runtime .await_settled)
+(var stopped (events .get))
+($sleep 15)
+(assert (== (events .get) stopped)
+  "contextual timer bindings must own work in the consumer effect scope")
+(provider .dispose)
+(runtime .await_settled)
+(runtime .close)
+($println "timer_service: ok")

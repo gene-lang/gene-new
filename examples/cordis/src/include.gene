@@ -1,0 +1,132 @@
+# Data-only composition include adapter. Reading, patching, persistence, and
+# runtime reconciliation remain separate operations so a Store-backed host can
+# bypass this file adapter and call Loader/reconcile directly.
+
+(mod include)
+
+(import $fs [real_path read_text write_text_atomic])
+(import [Disposable ReconcileMode CompositionError] from "./model")
+
+(type IncludeHandle
+  ^props {^loader Any ^path Str ^patches Any ^writable Bool
+          ^active Any ^warnings Any}
+  (message load [mode = nil] (include_load self mode))
+  (message write [manifest, mode = nil] (include_write self manifest mode))
+  (message inspect [] (include_inspect self))
+  (message dispose [] : Nil (include_dispose self))
+  (impl Disposable
+    (message dispose [] : Nil (include_dispose self))))
+
+(fn include_failure ^^private [message : Str]
+  (fail (CompositionError ^message message ^cause nil ^plugin nil
+                          ^instance_uid nil ^entry_id nil)))
+
+(fn copy_list ^^private [source]
+  (var out ($thaw #[]))
+  (for value in source (out .push value))
+  out)
+
+(fn validate_patch ^^private [patch]
+  (if_not (== ($head patch) Map)
+    (include_failure "composition patches must be maps"))
+  (var allowed
+    ["entry" "expected_module" "config" "disabled" "isolate"
+     "intercept" "children"])
+  (for [name value] in patch
+    (var key ($to_str name))
+    (if_not (allowed .contains? key)
+      (include_failure $"unknown composition patch field ^${key}")))
+  (if_not (== ($head (patch .get "entry")) Str)
+    (include_failure "composition patch ^entry must be Str"))
+  patch)
+
+(fn patch_entry ^^private [entry, patch, warnings]
+  (var expected (patch .get "expected_module"))
+  (var target (patch .get "entry"))
+  (if (&& (!= expected void) (!= expected (entry .get "module")))
+    (then
+      (warnings .push
+        $"patch for ${target} skipped: expected module ${expected}")
+      (return false)))
+  (for field in ["config" "disabled" "isolate" "intercept"]
+    (var value (patch .get field))
+    (if_not (== value void) (entry .put field value)))
+  (var inserted (patch .get "children"))
+  (if_not (== inserted void)
+    (if_not (== (entry .get "group") true)
+      (include_failure
+        $"patch target ${target} is not a group"))
+    (if_not (== ($head inserted) List)
+      (include_failure "patch ^children must be a list"))
+    (var children (copy_list (?? (entry .get "children") #[])))
+    (for child in inserted (children .push child))
+    (entry .put "children" children))
+  true)
+
+(fn apply_patch_in_entries ^^private [entries, target : Str, prefix, patch, warnings]
+  (for entry in entries
+    (var local_id (entry .get "id"))
+    (var full_id (if ($absent? prefix) local_id $"${prefix}:${local_id}"))
+    (if (== full_id target)
+      (then
+        (patch_entry entry patch warnings)
+        (return true)))
+    (if (== (entry .get "group") true)
+      (if (apply_patch_in_entries
+            (?? (entry .get "children") #[]) target full_id patch warnings)
+        (return true))))
+  false)
+
+(fn apply_patches ^^private [manifest, patches, warnings]
+  (var candidate ($thaw manifest))
+  (for patch_value in patches
+    (var patch (validate_patch patch_value))
+    (var target (patch .get "entry"))
+    (if_not (apply_patch_in_entries
+              (candidate .get "entries") target nil
+              patch warnings)
+      (include_failure
+        $"composition patch target not found: ${target}")))
+  ($freeze candidate))
+
+(fn include_file
+  [loader, path : Str, ^patches patches = #[],
+   ^writable writable : Bool = false] : IncludeHandle
+  (IncludeHandle ^loader loader ^path (real_path path)
+                 ^patches ($freeze patches) ^writable writable
+                 ^active ($cell true) ^warnings ($cell ($thaw #[]))))
+
+(fn require_active ^^private [include : IncludeHandle]
+  (if_not (include/active .get)
+    (include_failure "composition include is disposed"))
+  include)
+
+(fn include_load ^^private [include : IncludeHandle, mode]
+  (require_active include)
+  # Reader data is never evaluated: a manifest containing a call remains a
+  # node and is rejected by loader validation rather than executed.
+  (var parsed ($read_one (read_text include/path)))
+  (var manifest
+    (apply_patches parsed include/patches (include/warnings .get)))
+  (if ($absent? mode)
+    (include/loader .reconcile manifest)
+    (include/loader .reconcile manifest mode)))
+
+(fn include_write ^^private [include : IncludeHandle, manifest, mode]
+  (require_active include)
+  (if_not include/writable
+    (include_failure "composition include is read-only"))
+  (var checked ($freeze manifest))
+  (write_text_atomic include/path ($to_str checked))
+  (if ($absent? mode)
+    (include/loader .reconcile checked)
+    (include/loader .reconcile checked mode)))
+
+(fn include_inspect ^^private [include : IncludeHandle]
+  ($freeze {^path include/path ^writable include/writable
+            ^active (include/active .get)
+            ^warnings (copy_list (include/warnings .get))}))
+
+(fn include_dispose ^^private [include : IncludeHandle] : Nil
+  (include/active .set false)
+  nil)

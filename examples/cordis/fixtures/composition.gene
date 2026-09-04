@@ -1,0 +1,5 @@
+{^format 1
+ ^entries [
+   {^id "provider" ^plugin_id "fixture/provider"
+    ^module "provider.gene" ^config 40}
+ ]}

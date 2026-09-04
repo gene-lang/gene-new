@@ -1,0 +1,42 @@
+(mod quiescence)
+
+(import [HookMode RuntimeOptions PluginSpec invocation_limits hook_key
+         default_plugin_invoker new_runtime]
+  from "../src/cordis")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(var hook (hook_key "slow" HookMode/emit))
+(var events ($cell ($thaw #[])))
+(fn record [name : Str] ((events .get) .push name))
+
+(fn slow_handler [payload]
+  (record "handler-start")
+  ($sleep 20)
+  (record "handler-end"))
+
+(fn activate [ctx, config]
+  (ctx .defer (fn [] (record "cleanup")))
+  (ctx .on hook slow_handler))
+
+(var plugin
+  (PluginSpec ^id "quiescence" ^config_schema nil ^requires []
+              ^provides [] ^reload nil ^activate activate))
+(var runtime
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                    ^default_limits (invocation_limits))))
+(runtime .admit_hook_key hook)
+(var instance (runtime .install (runtime .root) plugin nil))
+(instance .await_ready)
+(var dispatch
+  (spawn ^lane root ((runtime .root) .dispatch hook nil)))
+($sleep 2)
+(instance .dispose)
+(runtime .await_settled)
+(dispatch .join)
+(assert (== (events .get) ["handler-start" "handler-end" "cleanup"])
+  "unload must wait for entered calls before running cleanup")
+(runtime .close)
+($println "quiescence: ok")

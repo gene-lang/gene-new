@@ -1,0 +1,5 @@
+(mod hooks)
+
+(import [HookMode HookKey HookSubject HookDispatchError
+         ContinuationAlreadyCalled hook_key]
+  from "./runtime" ^export true)

@@ -1,0 +1,10 @@
+{^format 1
+ ^name "genex/cordis"
+ ^description "Spatial services, deterministic plugin lifetimes, and recoverable composition for Gene"
+ ^version "0.1.0"
+ ^library {^entry "src/cordis.gene"}
+ ^applications [
+   (application "cordis_demo" ^entry "src/main.gene")
+ ]
+ ^tests {^root "tests"}
+ ^dependencies {}}

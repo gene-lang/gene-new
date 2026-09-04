@@ -1,0 +1,20 @@
+# Supported host-facing Cordis surface. Implementation partitions remain
+# private behind this module.
+
+(mod cordis)
+
+(import [InstanceState PluginCallKind HookMode ReconcileMode
+         Disposable PluginInvoker EffectOwner
+         InvocationLimits RuntimeOptions PluginCall LoaderOptions
+         ServiceKey HookKey Requirement PluginSpec
+         CordisError UndeclaredRequirement ServiceUnavailable
+         DuplicateProvider ServiceContractError ConfigValidationError
+         PluginActivationError PluginCleanupError DependenciesUnavailable
+         InstanceDisposed ContextDisposed EffectDisposed
+         ContinuationAlreadyCalled HookDispatchError CompositionError
+         ReloadRejected RecoveryRequired
+         Runtime Context ActivationContext EffectScope EffectLease
+         ProviderLease PluginInstance HookSubject RealmId Loader
+         invocation_limits service_key hook_key default_plugin_invoker
+         config_update hmr_reloaded new_runtime]
+  from "./runtime" ^export true)

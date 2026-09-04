@@ -96,11 +96,13 @@ $ ./bin/gene run demo.gene Gene
 Hello, Gene
 ```
 
-Two larger programs worth reading:
+Three larger programs worth reading:
 [`examples/style_guide.gene`](examples/style_guide.gene) is an end-to-end language
 showcase, and [`examples/todo_app/src/main.gene`](examples/todo_app/src/main.gene)
 is a complete web application — routes, SQLite, HTML, CSS, and browser
-behavior — in one file.
+behavior — in one file. [`examples/cordis`](examples/cordis) is a tested
+Gene-native plugin runtime with spatial services, deterministic effects,
+sandboxed composition, and recoverable hot reload.
 
 ### Other commands
 

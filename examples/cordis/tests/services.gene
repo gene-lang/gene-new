@@ -1,0 +1,151 @@
+(mod services)
+
+(import [InstanceState RuntimeOptions ServiceKey Requirement PluginSpec
+         DuplicateProvider DependenciesUnavailable ServiceContractError
+         ConfigValidationError
+         invocation_limits service_key default_plugin_invoker new_runtime]
+  from "../src/cordis")
+
+(fn assert [condition, message : Str]
+  (if_not condition ($panic message)))
+
+(fn new_test_runtime []
+  (new_runtime
+    (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
+                    ^default_limits (invocation_limits))))
+
+(protocol Greeting
+  (message text [] : Str))
+
+(type RawGreeting ^props {^base Str})
+(impl Greeting for RawGreeting
+  (message text [] : Str self/base))
+
+(type BoundGreeting ^props {^base Str ^prefix Str ^suffix Str})
+(impl Greeting for BoundGreeting
+  (message text [] : Str $"${self/prefix}:${self/base}${self/suffix}"))
+
+(fn check_greeting [value : Greeting] : Greeting value)
+(var bind_count ($cell 0))
+(var merge_count ($cell 0))
+(fn merge_greeting [left, right]
+  (merge_count .set (+ (merge_count .get) 1))
+  (var out ($thaw #{}))
+  (if_not ($absent? left)
+    (for [key value] in left (out .put key value)))
+  (if_not ($absent? right)
+    (for [key value] in right (out .put key value)))
+  out)
+(fn bind_greeting [provider, definition_context, use_context, config]
+  (bind_count .set (+ (bind_count .get) 1))
+  (BoundGreeting ^base provider/base
+                 ^prefix (?? config/prefix "")
+                 ^suffix (?? config/suffix "")))
+
+(var greeting_key
+  (service_key "greeting" Greeting ^check check_greeting
+               ^merge_config merge_greeting ^bind bind_greeting))
+
+(var available ($cell false))
+(var lease_cell ($cell nil))
+(fn provider_available [value] (available .get))
+(fn activate_provider [ctx, config]
+  (lease_cell .set
+    (ctx .provide greeting_key (RawGreeting ^base config)
+         provider_available)))
+
+(var seen ($cell ""))
+(fn activate_consumer [ctx, config]
+  (var greeting (ctx .require greeting_key {^suffix "?"}))
+  (seen .set (greeting .Greeting:text))
+  # The second lookup has the same normalized config and must use the cache.
+  (assert (same? greeting (ctx .require greeting_key {^suffix "?"}))
+    "equal bindings must use the provider/context/config cache"))
+
+(var provider_spec
+  (PluginSpec ^id "provider" ^config_schema nil ^requires []
+              ^provides [greeting_key] ^reload nil
+              ^activate activate_provider))
+(var consumer_spec
+  (PluginSpec ^id "consumer" ^config_schema nil
+              ^requires [(Requirement ^key greeting_key
+                                      ^config {^prefix "hello"})]
+              ^provides [] ^reload nil ^activate activate_consumer))
+
+(var runtime (new_test_runtime))
+(runtime .admit_service_key greeting_key)
+(var root (runtime .root))
+(assert
+  (try (root .derive {^limits (invocation_limits ^max_steps 200000)})
+       false catch ConfigValidationError true)
+  "derived invocation limits must never exceed their parent")
+(var consumer (runtime .install root consumer_spec nil))
+(var provider (runtime .install root provider_spec "world"))
+(runtime .await_settled)
+
+(assert (== (provider .state) InstanceState/active)
+  "an unavailable service does not make its provider plugin inactive")
+(assert (== (consumer .state) InstanceState/pending)
+  "cached false availability must keep consumers pending")
+(available .set true)
+(assert ((lease_cell .get) .refresh)
+  "refresh must report an availability edge")
+(var root_lease (lease_cell .get))
+(runtime .await_settled)
+(consumer .await_ready)
+(assert (== (seen .get) "hello:world?")
+  "require must merge requirement and head config before contextual binding")
+(assert (== (bind_count .get) 1)
+  "repeated equal lookup must not rerun the binding adapter")
+(assert (== (merge_count .get) 4)
+  "service config must pass through the key-owned merge law")
+
+# Isolation is an exact address, not a fallback preference.
+(var isolated (root .derive {^isolate [greeting_key]}))
+(var isolated_consumer (runtime .install isolated consumer_spec nil))
+(runtime .await_settled)
+(assert (== (isolated_consumer .state) InstanceState/pending)
+  "a private realm must not fall back to the root provider")
+
+# A named realm is shared by independently derived branches.
+(var tenant_provider_context
+  (root .derive {^isolate {^greeting "tenant"}}))
+(var tenant_consumer_context
+  (root .derive {^isolate {^greeting "tenant"}}))
+(var tenant_provider
+  (runtime .install tenant_provider_context provider_spec "tenant"))
+(var tenant_consumer
+  (runtime .install tenant_consumer_context consumer_spec nil))
+(var tenant_consumer_two
+  (runtime .install
+    (root .derive {^isolate {^greeting "tenant"}})
+    consumer_spec nil))
+(runtime .await_settled)
+(tenant_provider .await_ready)
+(tenant_consumer .await_ready)
+(tenant_consumer_two .await_ready)
+(assert (== (bind_count .get) 3)
+  "distinct use contexts must not share one contextual façade cache entry")
+
+(assert
+  (try (runtime .install root provider_spec "duplicate") false
+       catch DuplicateProvider true)
+  "duplicate provider reservations must fail before activation")
+(var forged
+  (ServiceKey ^token ($cell nil) ^id "forged" ^contract Greeting
+              ^check check_greeting ^config_schema nil ^merge_config nil
+              ^bind nil))
+(assert
+  (try (runtime .admit_service_key forged) false
+       catch ServiceContractError true)
+  "direct construction must not forge an admitted service key")
+
+(root_lease .dispose)
+(runtime .await_settled)
+(assert (&& (== (consumer .state) InstanceState/pending)
+            (== (tenant_consumer .state) InstanceState/active)
+            (== (tenant_consumer_two .state) InstanceState/active))
+  "withdrawing one provider lease must refresh only its exact realm")
+
+(runtime .close)
+($println "services: ok")

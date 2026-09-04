@@ -1,0 +1,63 @@
+# Optional filesystem-watch input adapter for Loader/reload. Dependency
+# analysis, candidate activation, and publication remain Loader behavior.
+
+(mod hmr)
+
+(import $fs [watch real_path WatcherClosed])
+(import [Disposable] from "./model")
+(import [hmr_reloaded register_loader_watcher] from "./runtime"
+  ^export true)
+
+(type LoaderWatcher
+  ^props {^loader Any ^watcher Any ^root Str ^task Any ^active Any}
+  (message close [] : Nil (close_loader_watcher self))
+  (message dispose [] : Nil (close_loader_watcher self))
+  (impl Disposable
+    (message dispose [] : Nil (close_loader_watcher self))))
+
+(fn changed_paths ^^private [adapter, change]
+  (if (== change/kind `rescan_required) (return ["*"]))
+  (var paths ($thaw #[]))
+  (if_not (== change/path void)
+    (paths .push $"${adapter/root}/${change/path}"))
+  (if_not (== change/from void)
+    (paths .push $"${adapter/root}/${change/from}"))
+  paths)
+
+(fn watch_loop ^^private [adapter, debounce_ms : Int]
+  (while (adapter/active .get)
+    (try
+      (var change (adapter/watcher .recv))
+      (if (> debounce_ms 0) ($sleep debounce_ms))
+      (adapter/loader .reload (changed_paths adapter change))
+    catch WatcherClosed
+      (return)
+    catch Any
+      # A rejected candidate leaves the old composition live. The adapter
+      # continues observing so a later save can repair it.
+      nil)))
+
+(fn watch_loader
+  [loader, root : Str, ^recursive recursive : Bool = true,
+   ^capacity capacity : Int = 256,
+   ^debounce_ms debounce_ms : Int = 50] : LoaderWatcher
+  (var canonical (real_path root))
+  (var native (watch canonical ^recursive recursive ^capacity capacity))
+  (var adapter
+    (LoaderWatcher ^loader loader ^watcher native ^root canonical
+                   ^task ($cell nil) ^active ($cell true)))
+  (var task (spawn ^lane root (watch_loop adapter debounce_ms)))
+  (task .detach)
+  (adapter/task .set task)
+  (register_loader_watcher loader adapter))
+
+(fn close_loader_watcher ^^private [adapter : LoaderWatcher] : Nil
+  (if_not (adapter/active .get) (return nil))
+  (adapter/active .set false)
+  (adapter/watcher .close)
+  (var task (adapter/task .get))
+  (if_not ($absent? task)
+    (task .cancel)
+    (task .join))
+  (adapter/task .set nil)
+  nil)
