@@ -8,6 +8,7 @@ include test_vterm
 include test_pty_process
 include test_terminal_session
 include test_values
+include test_buffers
 include test_capabilities
 include test_vm
 include test_modules

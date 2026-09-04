@@ -105,10 +105,7 @@ proc biBytesToBuffer(args: openArray[Value]): Value {.nimcall.} =
   requireOne("binary/to_buffer", args)
   requireBytes("binary/to_buffer bytes", args[0])
   let raw = args[0].bytesVal
-  var items = newSeq[Value](raw.len)
-  for i in 0 ..< raw.len:
-    items[i] = newInt(int(byte(raw[i])))
-  newBuffer(newSym("U8"), items)
+  newByteBuffer(raw, newSym("U8"))
 
 proc biBytesToList(args: openArray[Value]): Value {.nimcall.} =
   requireOne("binary/to_list", args)
@@ -547,19 +544,18 @@ proc biStrToUtf8(args: openArray[Value]): Value {.nimcall.} =
   requireOne("str/to_utf8", args)
   requireStr("str/to_utf8", args[0])
   let raw = args[0].strVal
-  var items = newSeq[Value](raw.len)
-  for i in 0 ..< raw.len:
-    items[i] = newInt(int(byte(raw[i])))
-  newBuffer(newSym("U8"), items)
+  newByteBuffer(raw, newSym("U8"))
 
 proc biStrFromUtf8(args: openArray[Value]): Value {.nimcall.} =
   requireOne("str/from_utf8", args)
   if args[0].kind != vkBuffer:
     raise newException(GeneError,
       "str/from_utf8 expects a (Buffer U8), got " & $args[0].kind)
-  let items = args[0].bufferItems
-  var raw = newString(items.len)
-  for i, item in items:
+  if args[0].bufferStorageKind == bskU8:
+    return newStr(args[0].bufferByteString)
+  var raw = newString(args[0].bufferLen)
+  for i in 0 ..< raw.len:
+    let item = args[0].bufferItem(i)
     if item.kind != vkInt:
       raise newException(GeneError,
         "str/from_utf8 element " & $i & " is not an Int")

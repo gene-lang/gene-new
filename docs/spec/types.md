@@ -44,5 +44,29 @@ key”.
   reopens one through `serde_state`/`serde_restore` rather than reconstructing
   it. Native receiver guards admit a wrapper Type or a nominal descendant, by
   Type identity and never by name. `^sealed` is reserved and rejected.
-- Persistent updates return a new root; `!` operations mutate only mutable
+- Persistent updates return a new root; explicit mutation operations change only mutable
   containers. `freeze` is deep, `freeze_shallow` is shallow, and `thaw` is deep.
+
+## Numeric buffer storage
+
+`Buffer` remains mutable, identity-bearing Gene-owned storage. The built-in
+fixed-width element types `I8` through `U64`, `F32`, and `F64` use packed
+storage at their declared byte width. The corresponding explicit fixed-width
+C ABI element types use the same storage. `Int`, `Any`, and other element
+types retain general Gene values; an unrelated nominal type never gains a
+numeric representation merely by sharing a built-in type's name.
+
+Writes validate before changing the addressed element. F32 buffer storage
+rounds once to IEEE binary32, and reads widen that stored value to the ordinary
+Gene float representation. F32 scalar annotations continue to perform range
+checks. Integer buffers reject overflow rather than truncate or wrap.
+
+Negative indexing, missing reads returning `void`, alias identity, explicit
+list conversion, and overlap-safe bulk copies are unchanged. A packed byte
+buffer copies directly to/from `Bytes` and UTF-8 at the I/O boundary; the
+result is detached from mutable buffer storage. Buffers remain non-Send by
+default. Native buffer leases keep their existing copy-back and ownership
+contracts.
+
+Representation and boundary regression coverage is in `tests/test_buffers.nim`
+and the native API/type suites.

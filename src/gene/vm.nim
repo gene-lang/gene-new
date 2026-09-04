@@ -5776,6 +5776,28 @@ proc bufferTypeExprArg(name: string, value: Value): Value =
 proc isAnyTypeValue(expr: Value): bool =
   expr.kind == vkNil or (expr.kind == vkSymbol and expr.symVal == "Any")
 
+proc numericBufferStorage(elemType: Value): BufferStorageKind =
+  # A nominal type with the same spelling must never acquire a primitive
+  # representation. Closed built-in refinements have authenticated identities;
+  # the C ABI names are reserved type expressions.
+  var name = ""
+  if elemType.kind == vkType and elemType.bits in gRefinementTypes:
+    name = elemType.typeName
+  elif elemType.kind == vkSymbol and elemType.symVal.startsWith("C/"):
+    name = elemType.symVal
+  case name
+  of "I8", "C/Int8": bskI8
+  of "U8", "C/UInt8": bskU8
+  of "I16", "C/Int16": bskI16
+  of "U16", "C/UInt16": bskU16
+  of "I32", "C/Int32": bskI32
+  of "U32", "C/UInt32": bskU32
+  of "I64", "C/Int64": bskI64
+  of "U64", "C/UInt64": bskU64
+  of "F32", "C/Float": bskF32
+  of "F64", "C/Double": bskF64
+  else: bskValues
+
 proc checkedBufferItem(buffer, item: Value, where: string,
                        fallbackScope: Scope): Value =
   let stored = if item.kind == vkVoid: NIL else: item
@@ -5795,6 +5817,14 @@ proc newCheckedBuffer*(elemType: Value, items: openArray[Value],
     else:
       bufferTypeExprArg("buffer", elemType)
   checkedType = closeTypeExpr(checkedType, scope)
+  let storage = numericBufferStorage(checkedType)
+  if storage != bskValues:
+    result = newPackedBuffer(checkedType, storage, items.len)
+    for i, item in items:
+      let stored = if item.kind == vkVoid: NIL else: item
+      result.setBufferItem(i, adaptBoundary("buffer item", checkedType,
+                                           stored, scope))
+    return
   var checkedItems: seq[Value]
   for item in items:
     let stored = if item.kind == vkVoid: NIL else: item
@@ -5807,7 +5837,10 @@ proc newCheckedBuffer*(elemType: Value, items: openArray[Value],
 proc getCheckedBufferItem*(buffer: Value, index: int): Value =
   if buffer.kind != vkBuffer:
     raise newException(GeneError, "Buffer/get expects a Buffer")
-  readIndex(buffer.bufferItems, int64(index))
+  let length = buffer.bufferLen
+  let actual = if index < 0: length + index else: index
+  if actual < 0 or actual >= length: VOID
+  else: buffer.bufferItem(actual)
 
 proc setCheckedBufferItem*(buffer: Value, index: int, item: Value,
                            scope: Scope = nil): Value =
@@ -5891,6 +5924,9 @@ proc biBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
           "buffer length must be non-negative, got " & $length)
       let elemType = closeTypeExpr(bufferTypeExprArg("buffer", args[0]), scope)
       let zero = zeroForElementType(elemType, scope)
+      let storage = numericBufferStorage(elemType)
+      if storage != bskValues:
+        return newPackedBuffer(elemType, storage, int(length))
       var items = newSeq[Value](int(length))
       for i in 0 ..< int(length):
         items[i] = zero
@@ -6018,7 +6054,7 @@ proc biBufferCopyFromBang(args: openArray[Value],
 proc biBufferToList(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Buffer/to_list", args)
   requireBuffer("Buffer/to_list", args[0])
-  newList(copyItems(args[0].bufferItems))
+  newList(args[0].bufferToItems)
 
 proc biBufferElemType(args: openArray[Value]): Value {.nimcall.} =
   requireOne("Buffer/elem_type", args)
@@ -6069,9 +6105,11 @@ proc biBufferToBytes(args: openArray[Value]): Value {.nimcall.} =
       (if elemType.kind == vkNil: "an untyped buffer"
        elif elemName.len > 0: "(Buffer " & elemName & ")"
        else: elemType.print()))
-  let items = args[0].bufferItems
-  var raw = newString(items.len)
-  for i, item in items:
+  if args[0].bufferStorageKind == bskU8:
+    return newBytes(args[0].bufferByteString)
+  var raw = newString(args[0].bufferLen)
+  for i in 0 ..< raw.len:
+    let item = args[0].bufferItem(i)
     if item.kind != vkInt:
       raise newException(GeneError,
         "Buffer/to_bytes element " & $i & " is not an Int")
@@ -12001,8 +12039,9 @@ proc publishSpawnValue(value: Value, seenScopes: var HashSet[pointer],
   of vkBuffer:
     publishSpawnValue(value.bufferElemType, seenScopes, seenValues, seenChunks)
     publishSpawnScope(value.bufferElemScope, seenScopes, seenValues, seenChunks)
-    for item in value.bufferItems:
-      publishSpawnValue(item, seenScopes, seenValues, seenChunks)
+    if value.bufferStorageKind == bskValues:
+      for item in value.bufferItems:
+        publishSpawnValue(item, seenScopes, seenValues, seenChunks)
   of vkDeviceBuffer:
     publishSpawnValue(value.deviceBufferElemType, seenScopes, seenValues,
                       seenChunks)
@@ -21131,9 +21170,9 @@ proc ffiBufferArg(name, label: string, typeExpr, value: Value): FfiBufferArg =
       name & " only supports dynamic FFI buffers of byte-compatible C types")
   result.buffer = checked
   result.elementLabel = elementLabel
-  let items = checked.bufferItems
-  result.bytes = newSeq[uint8](items.len)
-  for i, item in items:
+  result.bytes = newSeq[uint8](checked.bufferLen)
+  for i in 0 ..< result.bytes.len:
+    let item = checked.bufferItem(i)
     let itemName = name & " item " & $i
     result.bytes[i] =
       case elementLabel
@@ -21188,9 +21227,9 @@ proc ffiAotBufferLease*(where, label: string, value: Value): FfiBufferLease =
       where & " only supports dynamic FFI buffers of byte-compatible C types")
   result.buffer = value
   result.elementLabel = elementLabel
-  let items = value.bufferItems
-  result.bytes = newSeq[uint8](items.len)
-  for i, item in items:
+  result.bytes = newSeq[uint8](value.bufferLen)
+  for i in 0 ..< result.bytes.len:
+    let item = value.bufferItem(i)
     let itemName = where & " item " & $i
     result.bytes[i] =
       case elementLabel

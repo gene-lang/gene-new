@@ -942,10 +942,17 @@ type
     targetType: Value
     mutable: bool
 
+  BufferStorageKind* = enum
+    bskValues, bskI8, bskU8, bskI16, bskU16, bskI32, bskU32,
+    bskI64, bskU64, bskF32, bskF64
+
   BufferData = ref object of GeneObjectData
     elemType: Value
     elemScope: Scope
+    storage: BufferStorageKind
+    length: int
     items: seq[Value]
+    packed: seq[byte]
 
   DeviceBufferData = ref object of GeneObjectData
     backend: string
@@ -2045,6 +2052,7 @@ proc clearObjectEdges(data: GeneObjectData) =
     clearValueSlot(d.elemType)
     d.elemScope = nil
     d.items.setLen(0)
+    d.packed.setLen(0)
   of okDeviceBuffer:
     clearValueSlot(DeviceBufferData(data).elemType)
   of okCapability, okFfiLibrary:
@@ -4269,70 +4277,47 @@ proc bufferElemScope*(v: Value): Scope =
   checkBuffer(v)
   bufferView(v).elemScope
 
-proc bufferLen*(v: Value): int =
-  checkBuffer(v)
-  bufferView(v).items.len
+func bufferElementBytes*(storage: BufferStorageKind): int =
+  case storage
+  of bskValues: sizeof(Value)
+  of bskI8, bskU8: 1
+  of bskI16, bskU16: 2
+  of bskI32, bskU32, bskF32: 4
+  of bskI64, bskU64, bskF64: 8
 
-proc bufferItems*(v: Value): lent seq[Value] =
-  ## `lent`, and it is load-bearing rather than tidiness. Returning the seq by
-  ## value copied the whole backing store on every call, so `Buffer/get` — which
-  ## reached it through `readIndex` — was **O(n) per element read**, and any
-  ## scan over a buffer was O(n^2). A 512,000-element chunk copied 4 MB per
-  ## read; one full pass moved roughly 2 TB and never finished.
-  ##
-  ## Callers that need their own copy still say so (`copyItems`), which is the
-  ## right place for that decision to be visible.
+proc bufferStorageKind*(v: Value): BufferStorageKind =
   checkBuffer(v)
-  bufferView(v).items
+  bufferView(v).storage
 
-proc bufferItem*(v: Value, index: int): Value =
+proc bufferLen*(v: Value): int {.inline.} =
   checkBuffer(v)
   let data {.cursor.} = bufferView(v)
-  if index < 0 or index >= data.items.len:
-    raise newException(FieldDefect, "buffer index out of range")
-  data.items[index]
+  if data.storage == bskValues: data.items.len
+  else: data.length
 
-proc setBufferItem*(v: Value, index: int, item: Value) =
+proc bufferStorageBytes*(v: Value): int =
+  ## Backing payload only, excluding the fixed-size buffer descriptor.
   checkBuffer(v)
   let data {.cursor.} = bufferView(v)
-  if index < 0 or index >= data.items.len:
-    raise newException(FieldDefect, "buffer index out of range")
-  data.items[index] = escapeWeakFunctions(item)
+  if data.storage == bskValues: data.items.len * sizeof(Value)
+  else: data.packed.len
 
-proc fillBufferItems*(v: Value, first, last: int, item: Value) =
-  ## Write one already-validated value across `[first, last)`.
-  ##
-  ## The element boundary is a property of the value, not of the slot, so the
-  ## caller checks `item` once and this writes it `last - first` times. That is
-  ## the entire reason a bulk fill can beat the equivalent loop by more than the
-  ## interpreter overhead it saves.
-  checkBuffer(v)
-  let data {.cursor.} = bufferView(v)
-  for i in first ..< last:
-    data.items[i] = item
-
+proc bufferItem*(v: Value, index: int): Value {.inline.}
+proc setBufferItem*(v: Value, index: int, item: Value) {.inline.}
+proc fillBufferItems*(v: Value, first, last: int, item: Value)
 proc copyBufferItems*(dst: Value, dstStart: int,
-                      src: Value, srcStart, srcEnd: int) =
-  ## Copy `src[srcStart ..< srcEnd]` to `dst[dstStart ..< ]`.
-  ##
-  ## **Overlap-safe**, on `memmove` terms rather than `memcpy` terms: when the
-  ## two are the same buffer and the ranges overlap, a naive forward loop would
-  ## read slots it had already written. Shifting a buffer along itself is a
-  ## reasonable thing to ask for, so the direction is chosen instead of the
-  ## aliasing being refused.
-  checkBuffer(dst)
-  checkBuffer(src)
-  let d {.cursor.} = bufferView(dst)
-  let s {.cursor.} = bufferView(src)
-  let n = srcEnd - srcStart
-  if n <= 0:
-    return
-  if cast[pointer](d) == cast[pointer](s) and dstStart > srcStart:
-    for k in countdown(n - 1, 0):
-      d.items[dstStart + k] = s.items[srcStart + k]
-  else:
-    for k in 0 ..< n:
-      d.items[dstStart + k] = s.items[srcStart + k]
+                      src: Value, srcStart, srcEnd: int)
+
+iterator bufferItems*(v: Value): Value =
+  ## Walk without materializing a boxed copy of packed storage.
+  for i in 0 ..< v.bufferLen:
+    yield v.bufferItem(i)
+
+proc bufferToItems*(v: Value): seq[Value] =
+  ## An explicit detached conversion, used by Buffer/to_list.
+  result = newSeq[Value](v.bufferLen)
+  for i in 0 ..< result.len:
+    result[i] = v.bufferItem(i)
 
 proc deviceBufferData(v: Value): DeviceBufferData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okDeviceBuffer:
@@ -6109,6 +6094,142 @@ proc newCSlice*(address: pointer, length: int, targetType: Value = NIL,
     raise newException(GeneError, "C slice length must be non-negative")
   boxObject(CSliceData(objKind: okCSlice, address: address, length: length,
                        targetType: targetType, mutable: mutable))
+
+proc packedUInt64(item: Value): uint64 =
+  if item.intFitsInt64:
+    let n = item.intVal
+    if n < 0:
+      raise newException(FieldDefect, "negative value in unsigned buffer")
+    return uint64(n)
+  let n = item.intBigValue
+  if n.sign < 0:
+    raise newException(FieldDefect, "negative value in unsigned buffer")
+  for i in countdown(n.digits.high, 0):
+    let digit = uint64(n.digits[i])
+    if result > (high(uint64) - digit) div BIG_BASE:
+      raise newException(FieldDefect, "value does not fit in unsigned buffer")
+    result = result * BIG_BASE + digit
+
+proc bufferItem*(v: Value, index: int): Value {.inline.} =
+  checkBuffer(v)
+  let data {.cursor.} = bufferView(v)
+  if index < 0 or index >= v.bufferLen:
+    raise newException(FieldDefect, "buffer index out of range")
+  template readPacked(T: typedesc): untyped =
+    block:
+      var value: T
+      copyMem(addr value, unsafeAddr data.packed[index * sizeof(T)], sizeof(T))
+      value
+  case data.storage
+  of bskValues: data.items[index]
+  of bskI8: newInt(int64(readPacked(int8)))
+  of bskU8: newInt(int64(readPacked(uint8)))
+  of bskI16: newInt(int64(readPacked(int16)))
+  of bskU16: newInt(int64(readPacked(uint16)))
+  of bskI32: newInt(int64(readPacked(int32)))
+  of bskU32: newInt(int64(readPacked(uint32)))
+  of bskI64: newInt(readPacked(int64))
+  of bskU64:
+    let value = readPacked(uint64)
+    if value <= uint64(high(int64)): newInt(int64(value))
+    else: bigToValue(bigFromUInt64(value, 1))
+  of bskF32: newFloat(float64(readPacked(float32)))
+  of bskF64: newFloat(readPacked(float64))
+
+proc setBufferItem*(v: Value, index: int, item: Value) {.inline.} =
+  ## The VM/native boundary validates the element before entering this storage
+  ## operation. The element representation is fixed when the buffer is made.
+  checkBuffer(v)
+  let data {.cursor.} = bufferView(v)
+  if index < 0 or index >= v.bufferLen:
+    raise newException(FieldDefect, "buffer index out of range")
+  template writePacked(T: typedesc, expression: untyped) =
+    var value = T(expression)
+    copyMem(addr data.packed[index * sizeof(T)], addr value, sizeof(T))
+  case data.storage
+  of bskValues: data.items[index] = escapeWeakFunctions(item)
+  of bskI8: writePacked(int8, item.intVal)
+  of bskU8: writePacked(uint8, item.intVal)
+  of bskI16: writePacked(int16, item.intVal)
+  of bskU16: writePacked(uint16, item.intVal)
+  of bskI32: writePacked(int32, item.intVal)
+  of bskU32: writePacked(uint32, item.intVal)
+  of bskI64: writePacked(int64, item.intVal)
+  of bskU64: writePacked(uint64, packedUInt64(item))
+  of bskF32: writePacked(float32, item.floatVal)
+  of bskF64: writePacked(float64, item.floatVal)
+
+proc fillBufferItems*(v: Value, first, last: int, item: Value) =
+  checkBuffer(v)
+  if first < 0 or last < first or last > v.bufferLen:
+    raise newException(FieldDefect, "buffer fill range out of bounds")
+  if first == last:
+    return
+  let data {.cursor.} = bufferView(v)
+  if data.storage == bskValues:
+    let stored = escapeWeakFunctions(item)
+    for i in first ..< last:
+      data.items[i] = stored
+  else:
+    v.setBufferItem(first, item)
+    let width = bufferElementBytes(data.storage)
+    # Copy the already-converted element, doubling the initialized run.
+    var filled = 1
+    let count = last - first
+    while filled < count:
+      let copying = min(filled, count - filled)
+      copyMem(addr data.packed[(first + filled) * width],
+              addr data.packed[first * width], copying * width)
+      filled += copying
+
+proc copyBufferItems*(dst: Value, dstStart: int,
+                      src: Value, srcStart, srcEnd: int) =
+  checkBuffer(dst)
+  checkBuffer(src)
+  let n = srcEnd - srcStart
+  if srcStart < 0 or n < 0 or srcEnd > src.bufferLen or dstStart < 0 or
+      dstStart > dst.bufferLen or n > dst.bufferLen - dstStart:
+    raise newException(FieldDefect, "buffer copy range out of bounds")
+  if n == 0:
+    return
+  let d {.cursor.} = bufferView(dst)
+  let s {.cursor.} = bufferView(src)
+  if d.storage == s.storage and d.storage != bskValues:
+    let width = bufferElementBytes(d.storage)
+    moveMem(addr d.packed[dstStart * width],
+            unsafeAddr s.packed[srcStart * width], n * width)
+  elif cast[pointer](d) == cast[pointer](s) and dstStart > srcStart:
+    for k in countdown(n - 1, 0):
+      dst.setBufferItem(dstStart + k, src.bufferItem(srcStart + k))
+  else:
+    for k in 0 ..< n:
+      dst.setBufferItem(dstStart + k, src.bufferItem(srcStart + k))
+
+proc newPackedBuffer*(elemType: Value, storage: BufferStorageKind, length: int,
+                      elemScope: Scope = nil): Value =
+  if storage == bskValues or length < 0 or
+      length > high(int) div bufferElementBytes(storage):
+    raise newException(GeneError, "invalid packed buffer storage or length")
+  boxObject(BufferData(objKind: okBuffer, elemType: elemType,
+                       elemScope: elemScope, storage: storage, length: length,
+                       packed: newSeq[byte](length * bufferElementBytes(storage))))
+
+proc newByteBuffer*(raw: string, elemType: Value): Value =
+  result = newPackedBuffer(elemType, bskU8, raw.len)
+  if raw.len > 0:
+    let data {.cursor.} = bufferView(result)
+    copyMem(addr data.packed[0], unsafeAddr raw[0], raw.len)
+
+proc bufferByteString*(v: Value): string =
+  ## The caller has checked the U8 element contract. Generic host-created
+  ## buffers still need element validation at the boundary.
+  checkBuffer(v)
+  let data {.cursor.} = bufferView(v)
+  if data.storage != bskU8:
+    raise newException(FieldDefect, "buffer does not have packed byte storage")
+  result = newString(data.packed.len)
+  if result.len > 0:
+    copyMem(addr result[0], unsafeAddr data.packed[0], result.len)
 
 proc newBuffer*(elemType: Value = NIL, items: sink seq[Value] = @[],
                 elemScope: Scope = nil): Value =
