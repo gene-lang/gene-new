@@ -3617,6 +3617,247 @@ proc raiseFilesystemOperationError(name, capability, message: string,
       name & ": " & message, capability, name)
   raiseOsError(name & ": " & message, scope)
 
+proc fsWatcherRecord(name: string, handle: Value,
+                     call: ptr NativeCall): FsWatcherRecord =
+  if handle.kind != vkNode or handle.resourceAuthorityId == 0:
+    raise newException(GeneError, name & " expects an FsWatcher")
+  let id = handle.resourceAuthorityId
+  acquire(resourceAuthorityLock)
+  try:
+    if fsWatcherRecords.hasKey(id):
+      result = fsWatcherRecords[id]
+  finally:
+    release(resourceAuthorityLock)
+  if result == nil:
+    raise newException(GeneError, name & " received an invalid FsWatcher")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  if result.application != nil and
+      (scope == nil or scope.application != result.application):
+    raise newException(GeneError, name & " watcher belongs to another application")
+  if currentEventLane() != result.ownerLane:
+    raise newException(GeneError, name & " watcher is owned by another lane")
+
+proc fsWatchRelative(root, path: string): string =
+  relativePath(path, root).replace(DirSep, '/')
+
+proc fsWatchScan(record: FsWatcherRecord,
+                 context: CapabilityContext): Table[string, FsWatchStamp] =
+  discard record.provider.realPath(context, record.root)
+  var pending = @[record.root]
+  var index = 0
+  while index < pending.len:
+    let directory = pending[index]
+    inc index
+    # Resolve every recursive directory through the retained ReadDir grant.
+    # Admission only at `record.root` would let a directory replaced by a
+    # symlink after watcher creation redirect a later raw `walkDir` outside the
+    # sealed root. `listDir` opens the directory through the provider's anchored
+    # no-follow path on each scan.
+    for name in record.provider.listDir(context, directory):
+      let path = directory / name
+      var info: FileInfo
+      try:
+        info = getFileInfo(path, followSymlink = false)
+      except OSError:
+        # The entry disappeared between the descriptor-backed directory read
+        # and metadata sampling. The next scan observes the stable result.
+        continue
+      let kind = info.kind
+      let relative = fsWatchRelative(record.root, path)
+      result[relative] = FsWatchStamp(
+        kind: info.kind,
+        size: info.size,
+        device: info.id.device,
+        fileId: info.id.file,
+        modified: info.lastWriteTime)
+      if record.recursive and kind == pcDir:
+        discard record.provider.realPath(context, path)
+        pending.add path
+
+proc sameFsWatchStamp(a, b: FsWatchStamp): bool =
+  a.kind == b.kind and a.size == b.size and a.device == b.device and
+    a.fileId == b.fileId and a.modified == b.modified
+
+proc sameFsWatchIdentity(a, b: FsWatchStamp): bool =
+  a.kind == b.kind and a.device == b.device and a.fileId == b.fileId
+
+proc fsChange(record: FsWatcherRecord, kind, path: string,
+              fromPath = ""): Value =
+  var props = initPropTable()
+  props["kind"] = newSym(kind)
+  if path.len > 0:
+    props["path"] = newStr(path)
+  if fromPath.len > 0:
+    props["from"] = newStr(fromPath)
+  newNode(record.changeType, props = props, immutable = true,
+          deepFrozen = true)
+
+proc refreshFsWatcher(record: FsWatcherRecord,
+                      context: CapabilityContext) =
+  let current = record.fsWatchScan(context)
+  var removed: seq[string]
+  var created: seq[string]
+  var modified: seq[string]
+  for path, oldStamp in record.snapshot:
+    if not current.hasKey(path):
+      removed.add path
+    elif not sameFsWatchStamp(oldStamp, current[path]):
+      modified.add path
+  for path in current.keys:
+    if not record.snapshot.hasKey(path):
+      created.add path
+  removed.sort()
+  created.sort()
+  modified.sort()
+
+  var changes: seq[Value]
+  var usedCreated = initHashSet[string]()
+  for oldPath in removed:
+    var renamed = ""
+    for newPath in created:
+      if newPath notin usedCreated and
+          sameFsWatchIdentity(record.snapshot[oldPath], current[newPath]):
+        renamed = newPath
+        break
+    if renamed.len > 0:
+      usedCreated.incl renamed
+      changes.add record.fsChange("renamed", renamed, oldPath)
+    else:
+      changes.add record.fsChange("removed", oldPath)
+  for path in created:
+    if path notin usedCreated:
+      changes.add record.fsChange("created", path)
+  for path in modified:
+    changes.add record.fsChange("modified", path)
+
+  record.snapshot = current
+  if changes.len > record.capacity:
+    record.queue.setLen(0)
+    record.queue.add record.fsChange("rescan_required", "")
+  else:
+    for change in changes:
+      record.queue.add change
+
+proc raiseWatcherClosed(scope: Scope) {.noreturn.} =
+  let message = "filesystem watcher is closed"
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  var head = newSym("WatcherClosed")
+  let typ = builtinBinding(scope, "WatcherClosed")
+  if typ.kind == vkType:
+    head = typ
+  var error: ref GeneError
+  new(error)
+  error.msg = message
+  error.errVal = newNode(head, props = props)
+  error.hasErrVal = true
+  raise error
+
+proc biFsWatch(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 1:
+    raise newException(GeneError, "fs/watch expects one path")
+  requireStr("fs/watch path", args[0])
+  var recursive = false
+  var capacity = 256
+  if call != nil:
+    for i, name in call[].namedNames:
+      let value = call[].namedValues[i]
+      case name
+      of "recursive":
+        if value.kind != vkBool:
+          raise newException(GeneError, "fs/watch ^recursive must be Bool")
+        recursive = value.boolVal
+      of "capacity":
+        if value.kind != vkInt or not value.intFitsInt64 or
+            value.intVal <= 0 or value.intVal > 65536:
+          raise newException(GeneError,
+            "fs/watch ^capacity must be an Int from 1 through 65536")
+        capacity = int(value.intVal)
+      else:
+        raise newException(GeneError,
+          "fs/watch got unexpected named argument: " & name)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  try:
+    let fs = activeFilesystem(call)
+    let root = fs.provider.realPath(fs.context, args[0].strVal)
+    let changeType = builtinBinding(scope, "FsChange")
+    if changeType.kind != vkType:
+      raise newException(GeneError, "FsChange type is unavailable")
+    let record = FsWatcherRecord(
+      application: scope.application(),
+      ownerLane: currentEventLane(),
+      provider: fs.provider,
+      capabilities: fs.context,
+      root: root,
+      recursive: recursive,
+      capacity: capacity,
+      changeType: changeType)
+    record.snapshot = record.fsWatchScan(fs.context)
+    let id = nextRuntimeResourceId()
+    acquire(resourceAuthorityLock)
+    try:
+      fsWatcherRecords[id] = record
+    finally:
+      release(resourceAuthorityLock)
+    newRuntimeResourceHandle(scope, "FsWatcher", id)
+  except CatchableError as error:
+    raiseFilesystemOperationError("fs/watch", "fs/ReadDir", error.msg, scope)
+
+proc biFsWatcherRecv(args: openArray[Value],
+                     call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("FsWatcher/recv", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let record = fsWatcherRecord("FsWatcher/recv", args[0], call)
+  let context = requireRetainedCapabilities(
+    "FsWatcher/recv", call, record.capabilities)
+  var workerLease: SchedulerWorkerLease
+  var workerLeaseOpen = false
+  defer:
+    if workerLeaseOpen:
+      endSchedulerWorkerLease(workerLease)
+  while true:
+    if record.queue.len > 0:
+      result = record.queue[0]
+      record.queue.delete(0)
+      return
+    if record.closed:
+      raiseWatcherClosed(scope)
+    try:
+      record.refreshFsWatcher(context)
+    except CatchableError as error:
+      raiseFilesystemOperationError("FsWatcher/recv", "fs/ReadDir",
+                                    error.msg, scope)
+    if record.queue.len > 0:
+      continue
+    let deadline = timerDeadline(25)
+    if currentFiberActive:
+      var suspended: ref SuspendError
+      new(suspended)
+      suspended.msg = "FsWatcher/recv waits for a filesystem change"
+      suspended.timer = true
+      suspended.retry = true
+      suspended.resourceId = args[0].resourceAuthorityId
+      suspended.deadline = deadline
+      raise suspended
+    if not workerLeaseOpen:
+      workerLease = beginSchedulerWorkerLease()
+      workerLeaseOpen = true
+    if not schedulerRunOneRootUntil(deadline, workerLease):
+      os.sleep(25)
+
+proc biFsWatcherClose(args: openArray[Value],
+                      call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("FsWatcher/close", args)
+  let record = fsWatcherRecord("FsWatcher/close", args[0], call)
+  record.closed = true
+  record.snapshot.clear()
+  record.application = nil
+  record.provider = nil
+  record.capabilities = nil
+  record.changeType = NIL
+  wakeResourceWaiters(args[0].resourceAuthorityId)
+  NIL
+
 proc biFsReadTextSync(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 1:
     raise newException(GeneError, "fs/read_text expects (path)")
@@ -7505,6 +7746,26 @@ proc registerStdlibNamespaces(root: Scope) =
   let httpClientError = defineErrorType("HttpClientError")
   let jsonError = defineErrorType("JsonError")
   let serdeError = defineErrorType("SerdeError")
+  let watcherClosed = defineErrorType("WatcherClosed")
+  let fsChangeType = newType("FsChange", NIL,
+    @[TypeField(name: "kind", optional: false,
+                typeExpr: newSym("Sym"), scope: root),
+      TypeField(name: "path", optional: true,
+                typeExpr: newSym("Str"), scope: root),
+      TypeField(name: "from", optional: true,
+                typeExpr: newSym("Str"), scope: root)],
+    @[], root)
+  root.define("FsChange", fsChangeType)
+  var fsWatcherMessages = initTable[string, Value]()
+  fsWatcherMessages["recv"] =
+    newNativeCallFn("FsWatcher/recv", biFsWatcherRecv,
+                    acceptsNamed = false)
+  fsWatcherMessages["close"] =
+    newNativeCallFn("FsWatcher/close", biFsWatcherClose,
+                    acceptsNamed = false)
+  let fsWatcherType = newType("FsWatcher", NIL, @[], @[], root,
+                              messages = fsWatcherMessages)
+  root.define("FsWatcher", fsWatcherType)
   # Structured diagnostic logging (docs/logging.md). Logger methods
   # are receiver-dispatched through builtinReceiverMessage; lazy `*!` forms
   # are compiler-known macros selected from this same namespace.
@@ -8184,6 +8445,11 @@ proc registerStdlibNamespaces(root: Scope) =
   # agent file tools need.
   let fsNs = root.vars.getOrDefault("fs", VOID)
   if fsNs.kind == vkNamespace:
+    fsNs.nsScope.define("FsWatcher", fsWatcherType)
+    fsNs.nsScope.define("FsChange", fsChangeType)
+    fsNs.nsScope.define("WatcherClosed", watcherClosed)
+    fsNs.nsScope.define("watch",
+      newNativeCallFn("fs/watch", biFsWatch))
     fsNs.nsScope.define("read_text",
       newNativeCallFn("fs/read_text", biFsReadTextSync, acceptsNamed = false))
     fsNs.nsScope.define("write_text",

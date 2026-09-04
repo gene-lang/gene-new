@@ -6,6 +6,13 @@ suites in `tests/test_vm.nim`.
 
 - `scope` owns child tasks; normal exit waits, while error/cancellation cancels
   and waits for cleanup. Detached tasks are explicit exceptions.
+- `Task/join` waits without propagating the joined task's outcome. It returns
+  `TaskOutcome/ok`, `error`, `panic`, or `cancelled`, does not consume the
+  ordinary `await` result, and may be repeated. Cancellation of the joining
+  task still propagates normally.
+- `spawn ^lane root` enqueues and returns its `Task` before the child body can
+  begin. `$runtime/require_root_lane` returns `nil` on that lane and raises the
+  typed `RuntimeLaneError` everywhere else.
 - Worker publication requires Send-safe captured snapshots. Runtime worker
   lanes may not allocate or release shared Gene heap objects unsafely.
 - Channel and actor sends enforce `Send` independently of nominal message type.

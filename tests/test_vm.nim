@@ -352,7 +352,10 @@ suite "VM — proper tail calls":
     let value = runStr(
       "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &
       "(fn is_odd [n] (if (== n 0) false (is_even (- n 1)))) " &
-      "(scope (var task (spawn (is_even 10000))) (await task))")
+      # Tail-call counters are thread-local. Keep this continuation on the
+      # observing lane so the atomicArc worker build measures the same fiber
+      # whose stats are read below.
+      "(scope (var task (spawn ^lane root (is_even 10000))) (await task))")
     let stats = finishTailCallStats()
     check value == TRUE
     check stats.transfers >= 9_000

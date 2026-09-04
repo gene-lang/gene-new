@@ -1,6 +1,6 @@
 # Implementation status
 
-**Status date:** 2026-08-29
+**Status date:** 2026-09-04
 
 The current VM implements the reader/value/printer pipeline, callable-first
 bytecode execution, runtime fexprs and template macros, selectors and streams,
@@ -17,6 +17,13 @@ boundaries, `^repr native_wrapper` types (design §16.6),
 serialization, the experimental `gene runurl` URL-module entry
 (design §15.9), and the AI-agent support libraries, whose `ai_agent` example
 driver is archived.
+
+Cordis prerequisites are implemented. `Task/join` exposes repeatable
+`TaskOutcome` data without consuming `await`; `runtime/require_root_lane`
+provides a typed ownership assertion; sandbox transactions prepare, atomically
+commit, discard, graph, and release bounded module generations; and `fs/watch`
+provides a capability-gated bounded polling watcher with rename pairing,
+recursive no-follow traversal, explicit overflow, and cancellable receives.
 
 The normative implemented surface lives in `docs/spec/` and is checked by
 `nimble spec`. Unit and integration coverage runs with `nimble test`; broad

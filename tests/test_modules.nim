@@ -1103,6 +1103,16 @@ suite "modules — the capability sandbox (design §D5)":
                                   "[\"runtime\"]") & ") (m/escalate)")
     check not fileExists(modDir / "gene_sandbox_escape")
 
+  test "a granted `runtime` cannot create a sandbox transaction":
+    let modRoot = modDir / "mods" / "transaction_climber"
+    createDir(modRoot)
+    writeFile(modRoot / "plugin.gene",
+      "(fn escalate [] ($runtime/sandbox_transaction))")
+    expect GeneError:
+      discard runSandboxProgram(
+        "(var m " & loadSandboxed(modRoot, "plugin.gene", "[\"runtime\"]") &
+        ") (m/escalate)")
+
   test "and the host's own loader is not reachable to launder that call":
     ## The other half, and the one the allowlist owns. A mod cannot be stopped
     ## from calling a *host* function that loads sandboxes — that call's scope
@@ -1144,3 +1154,428 @@ suite "modules — the capability sandbox (design §D5)":
     writeModule("compute.gene",
       "(fn f [] : Int ($math/abs -3))")
     discard runSandboxProgram(loadSandboxed(modDir, "compute.gene", "[]"))
+
+  test "sandbox generations stay prospective until commit and release cleanly":
+    let root = modDir / "generation_basic"
+    createDir(root)
+    writeFile(root / "plugin.gene", "(var answer 42)")
+    let app = newApplication(modDir)
+    app.setRootCapabilities(newCapabilityContext(
+      @(app.rootCapabilities.grants) &
+      @[app.filesystemCapabilities.grantReadWriteDir(modDir)]))
+    let scope = newGlobalScope(app)
+    let beforeModules = app.moduleCacheEntryCount()
+    let beforeHeaders = app.moduleCompileHeaderCount()
+    let beforeArtifacts = app.moduleCompileArtifactCount()
+    check run(compileSource(
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var generation " &
+      "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"plugin.gene\" ^grants [] ^shared [] ^label \"basic\" " &
+      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "(var candidate (generation .module)) " &
+      "candidate/answer"), scope).print() == "42"
+    check app.moduleCacheEntryCount() == beforeModules
+    check app.moduleCompileHeaderCount() == beforeHeaders
+    check app.moduleCompileArtifactCount() == beforeArtifacts
+
+    discard run(compileSource("(tx .commit)"), scope)
+    check app.moduleCacheEntryCount() == beforeModules + 1
+    check app.moduleCompileHeaderCount() == beforeHeaders + 1
+    check app.moduleCompileArtifactCount() == beforeArtifacts + 1
+
+    discard run(compileSource("(generation .release)"), scope)
+    check app.moduleCacheEntryCount() == beforeModules
+    check app.moduleCompileHeaderCount() == beforeHeaders
+    check app.moduleCompileArtifactCount() == beforeArtifacts
+    discard run(compileSource("(generation .release)"), scope)
+
+  test "discard is idempotent and invalidates prepared generations":
+    let root = modDir / "generation_discard"
+    createDir(root)
+    writeFile(root / "plugin.gene", "(var answer 7)")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    let beforeModules = app.moduleCacheEntryCount()
+    let beforeHeaders = app.moduleCompileHeaderCount()
+    let beforeArtifacts = app.moduleCompileArtifactCount()
+    let beforeImpls = app.canonicalImplCount()
+    discard run(compileSource(
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var generation " &
+      "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"plugin.gene\" ^grants [] ^shared [] " &
+      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}))"),
+      scope)
+    discard run(compileSource("(tx .discard) (tx .discard)"), scope)
+    check app.moduleCacheEntryCount() == beforeModules
+    check app.moduleCompileHeaderCount() == beforeHeaders
+    check app.moduleCompileArtifactCount() == beforeArtifacts
+    check app.canonicalImplCount() == beforeImpls
+    check run(compileSource(
+      "(try (generation .module) false catch Any true)"), scope).boolVal
+    check run(compileSource(
+      "(try (tx .commit) false catch Any true)"), scope).boolVal
+
+  test "one sandbox transaction commits several generations atomically":
+    let root = modDir / "generation_batch"
+    createDir(root)
+    writeFile(root / "left.gene", "(var answer 20)")
+    writeFile(root / "right.gene", "(var answer 22)")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    let beforeModules = app.moduleCacheEntryCount()
+    discard run(compileSource(
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var left (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "  ^entry \"left.gene\" ^grants [] ^shared [] " &
+      "  ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "(var right (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "  ^entry \"right.gene\" ^grants [] ^shared [] " &
+      "  ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}))"),
+      scope)
+    check app.moduleCacheEntryCount() == beforeModules
+    discard run(compileSource("(tx .commit) (tx .commit)",
+                              useLocalSlots = false), scope)
+    check app.moduleCacheEntryCount() == beforeModules + 2
+    check run(compileSource(
+      "(var left_module (left .module)) " &
+      "(var right_module (right .module)) " &
+      "(+ left_module/answer right_module/answer)",
+      useLocalSlots = false), scope).intVal == 42
+    discard run(compileSource("(left .release) (right .release)",
+                              useLocalSlots = false), scope)
+    check app.moduleCacheEntryCount() == beforeModules
+
+  test "sandbox transaction commit rejects a changed live module base":
+    let root = modDir / "generation_stale"
+    createDir(root)
+    writeFile(root / "candidate.gene", "(var answer 1)")
+    writeFile(root / "live.gene", "(var answer 2)")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    discard run(compileSource(
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var generation (tx .prepare {^dir \"" &
+      root.replace("\\", "/") & "\" ^entry \"candidate.gene\" " &
+      "^grants [] ^shared [] " &
+      "^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}))"),
+      scope)
+    discard app.loadFileModule(root / "live.gene")
+    check run(compileSource(
+      "(try (tx .commit) false catch Any true)"), scope).boolVal
+    discard run(compileSource("(tx .discard)"), scope)
+
+  test "sandbox generation policy bounds initialization and escaped calls":
+    let root = modDir / "generation_policy"
+    createDir(root)
+    writeFile(root / "bad_top.gene", "(while true nil)")
+    writeFile(root / "bad_call.gene",
+      "(fn spin [] (while true nil))")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    let topMessage = run(compileSource(
+      "(var top_tx ($runtime/sandbox_transaction)) " &
+      "(var top_error (try " &
+      "  (top_tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"bad_top.gene\" ^grants [] ^shared [] " &
+      "    ^policy {^max_steps 20 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
+      "  \"missing\" catch Any $ex/message)) " &
+      "(top_tx .discard) top_error"), scope).strVal
+    check "max steps" in topMessage
+    let callMessage = run(compileSource(
+      "(var call_tx ($runtime/sandbox_transaction)) " &
+      "(var call_generation " &
+      "  (call_tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"bad_call.gene\" ^grants [] ^shared [] " &
+      "    ^policy {^max_steps 20 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "(var call_module (call_generation .module)) " &
+      "(var call_error (try (call_module/spin) \"missing\" " &
+      "  catch Any $ex/message)) " &
+      "(call_tx .discard) call_error",
+      useLocalSlots = false), scope).strVal
+    check "max steps" in callMessage
+
+  test "sandbox generation policy bounds macro expansion and compilation":
+    let root = modDir / "generation_compile_policy"
+    createDir(root)
+    writeFile(root / "large_macro.gene",
+      "(macro many [] `[" & repeat(" 1", 200) & "]) " &
+      "(var expanded (many))")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    let beforeModules = app.moduleCacheEntryCount()
+    let beforeHeaders = app.moduleCompileHeaderCount()
+    let beforeArtifacts = app.moduleCompileArtifactCount()
+    let beforeImpls = app.canonicalImplCount()
+    let message = run(compileSource(
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var compile_error (try " &
+      "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"large_macro.gene\" ^grants [] ^shared [] " &
+      "    ^policy {^max_steps 40 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
+      "  \"missing\" catch Any $ex/message)) " &
+      "(tx .discard) compile_error"), scope).strVal
+    check "compile max steps" in message
+    check app.moduleCacheEntryCount() == beforeModules
+    check app.moduleCompileHeaderCount() == beforeHeaders
+    check app.moduleCompileArtifactCount() == beforeArtifacts
+    check app.canonicalImplCount() == beforeImpls
+
+  test "failed preparation leaves the transaction candidate unchanged":
+    let root = modDir / "generation_failed_prepare"
+    createDir(root)
+    writeFile(root / "dependency.gene", "(var leaked 1)")
+    writeFile(root / "bad.gene",
+      "(import [leaked] from \"./dependency\") (while true nil)")
+    writeFile(root / "good.gene", "(var answer 42)")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    let beforeModules = app.moduleCacheEntryCount()
+    let beforeHeaders = app.moduleCompileHeaderCount()
+    let beforeArtifacts = app.moduleCompileArtifactCount()
+    let beforeImpls = app.canonicalImplCount()
+    check run(compileSource(
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(try " &
+      "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"bad.gene\" ^grants [] ^shared [] " &
+      "    ^policy {^max_steps 20 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
+      "  false catch Any true)", useLocalSlots = false), scope).boolVal
+    discard run(compileSource(
+      "(var generation " &
+      "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"good.gene\" ^grants [] ^shared [] " &
+      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "(tx .commit)", useLocalSlots = false), scope)
+    check app.moduleCacheEntryCount() == beforeModules + 1
+    check app.moduleCompileHeaderCount() == beforeHeaders + 1
+    check app.moduleCompileArtifactCount() == beforeArtifacts + 1
+    check app.canonicalImplCount() == beforeImpls
+    check run(compileSource(
+      "(var candidate (generation .module)) candidate/answer",
+      useLocalSlots = false),
+      scope).intVal == 42
+    discard run(compileSource("(generation .release)"), scope)
+    check app.moduleCacheEntryCount() == beforeModules
+    check app.moduleCompileHeaderCount() == beforeHeaders
+    check app.moduleCompileArtifactCount() == beforeArtifacts
+
+  test "sandbox compilation enforces timeout and memory policies":
+    let root = modDir / "generation_compile_limits"
+    createDir(root)
+    writeFile(root / "simple.gene", "(var answer 1)")
+    writeFile(root / "large.gene",
+      "(var values [" & repeat(" 1", 100000) & "])")
+
+    proc prepareError(entry, policy: string): string =
+      let app = newApplication(modDir)
+      let scope = newGlobalScope(app)
+      run(compileSource(
+        "(var tx ($runtime/sandbox_transaction)) " &
+        "(var message (try " &
+        "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+        "    ^entry \"" & entry & "\" ^grants [] ^shared [] " &
+        "    ^policy " & policy & "}) " &
+        "  \"missing\" catch Any $ex/message)) " &
+        "(tx .discard) message"), scope).strVal
+
+    check "compile timeout" in prepareError(
+      "simple.gene",
+      "{^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 0}")
+    check "compile memory" in prepareError(
+      "large.gene",
+      "{^max_steps 1000000 ^max_memory_mb 0 ^timeout_ms 1000}")
+
+  test "sandbox generation policy rejects native declarations":
+    let root = modDir / "generation_native_policy"
+    createDir(root)
+    writeFile(root / "native.gene",
+      "(ffi/struct CPoint ^fields [[x C/Int]])")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    let message = run(compileSource(
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var message (try " &
+      "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"native.gene\" ^grants [\"ffi\"] ^shared [] " &
+      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}}) " &
+      "  \"missing\" catch Any $ex/message)) " &
+      "(tx .discard) message"), scope).strVal
+    check "disables FFI" in message
+
+  test "sandbox preparation does not run unrelated root-lane tasks":
+    let root = modDir / "generation_quiescence"
+    createDir(root)
+    writeFile(root / "plugin.gene",
+      "(var candidate_seen ($cell 0)) " &
+      "(var candidate_task " &
+      "  (spawn ^lane root (candidate_seen .set 1))) " &
+      "(await candidate_task) (var answer candidate_seen/.get)")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    check run(compileSource(
+      "(var observed ($cell 0)) " &
+      "(var unrelated (spawn ^lane root (observed .set 1))) " &
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var generation " &
+      "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"plugin.gene\" ^grants [] ^shared [] " &
+      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "(var during (observed .get)) " &
+      "(tx .discard) (await unrelated) [during (observed .get)]"),
+      scope).print() == "[0 1]"
+
+  test "generation graphs include owned, shared, runtime, and compile edges":
+    let root = modDir / "generation_graph"
+    createDir(root)
+    writeFile(root / "macros.gene",
+      "(macro add_one [value] `(+ %value 1))")
+    writeFile(root / "dep.gene", "(var dep 20)")
+    writeModule("generation_shared.gene", "(var shared_value 21)")
+    writeFile(root / "plugin.gene",
+      "(import [add_one] from \"./macros\") " &
+      "(import [dep] from \"./dep\") " &
+      "(import [shared_value] from \"../generation_shared\") " &
+      "(var answer (add_one (+ dep shared_value)))")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    let sharedPath = (modDir / "generation_shared.gene").replace("\\", "/")
+    let graph = run(compileSource(
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var generation " &
+      "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"plugin.gene\" ^grants [] " &
+      "    ^shared [\"" & sharedPath & "\"] " &
+      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "(generation .graph)"), scope)
+    check graph.kind == vkMap
+    check graph.mapImmutable
+    check graph.mapEntries["nodes"].listImmutable
+    var sawOwned = false
+    var sawShared = false
+    var sawRuntime = false
+    var sawCompile = false
+    var previousPath = ""
+    for node in graph.mapEntries["nodes"].listItems:
+      check node.mapImmutable
+      let nodePath = node.mapEntries["path"].strVal
+      check previousPath.len == 0 or previousPath <= nodePath
+      previousPath = nodePath
+      let digest = node.mapEntries["source_digest"].strVal
+      let interfaceDigest = node.mapEntries["compile_interface_digest"].strVal
+      check digest.startsWith("sha256:") and digest.len == 71
+      check interfaceDigest.startsWith("sha256:") and interfaceDigest.len == 71
+      if node.mapEntries["owned"].boolVal:
+        sawOwned = true
+      else:
+        sawShared = true
+      var previousDependency = ""
+      for dependency in node.mapEntries["dependencies"].listItems:
+        let dependencyKey = dependency.mapEntries["identity"].strVal & "\x1f" &
+          dependency.mapEntries["phase"].strVal
+        check previousDependency.len == 0 or
+          previousDependency <= dependencyKey
+        previousDependency = dependencyKey
+        case dependency.mapEntries["phase"].strVal
+        of "runtime": sawRuntime = true
+        of "compile": sawCompile = true
+        else: discard
+    check sawOwned
+    check sawShared
+    check sawRuntime
+    check sawCompile
+    discard run(compileSource("(tx .discard)"), scope)
+
+  test "generation graph digests separate source from compile interface":
+    let root = modDir / "generation_digests"
+    createDir(root)
+    let path = root / "plugin.gene"
+
+    proc graphFor(source: string): Value =
+      writeFile(path, source)
+      let app = newApplication(modDir)
+      let scope = newGlobalScope(app)
+      run(compileSource(
+        "(var tx ($runtime/sandbox_transaction)) " &
+        "(var generation " &
+        "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+        "    ^entry \"plugin.gene\" ^grants [] ^shared [] " &
+        "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+        "(var graph (generation .graph)) (tx .discard) graph"), scope)
+
+    proc rootNode(graph: Value): Value =
+      let rootIdentity = graph.mapEntries["root"].strVal
+      for node in graph.mapEntries["nodes"].listItems:
+        if node.mapEntries["identity"].strVal == rootIdentity:
+          return node
+      NIL
+
+    let first = rootNode(graphFor("(fn answer [] : Int 1)"))
+    let implementationOnly = rootNode(graphFor("(fn answer [] : Int 2)"))
+    let interfaceChange = rootNode(graphFor(
+      "(fn answer [] : Int 2) (var added true)"))
+    check first.kind == vkMap
+    check first.mapEntries["source_digest"].strVal !=
+      implementationOnly.mapEntries["source_digest"].strVal
+    check first.mapEntries["compile_interface_digest"].strVal ==
+      implementationOnly.mapEntries["compile_interface_digest"].strVal
+    check implementationOnly.mapEntries["compile_interface_digest"].strVal !=
+      interfaceChange.mapEntries["compile_interface_digest"].strVal
+
+  test "prepared candidate protocols work without publishing to live scopes":
+    let root = modDir / "generation_protocol"
+    createDir(root)
+    writeModule("generation_contract.gene",
+      "(protocol Readable (message read [] : Int)) " &
+      "(fn check [value : Readable] : Readable value)")
+    writeFile(root / "plugin.gene",
+      "(import [Readable] from \"../generation_contract\") " &
+      "(type Item) " &
+      "(impl Readable for Item (message read [] : Int 42)) " &
+      "(fn make [] (Item))")
+    let app = newApplication(modDir)
+    let scope = newGlobalScope(app)
+    let contractPath = (modDir / "generation_contract.gene").replace("\\", "/")
+    check run(compileSource(
+      "(import [Readable check] from \"./generation_contract\") " &
+      "(var tx ($runtime/sandbox_transaction)) " &
+      "(var generation " &
+      "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+      "    ^entry \"plugin.gene\" ^grants [] " &
+      "    ^shared [\"" & contractPath & "\"] " &
+      "    ^policy {^max_steps 1000 ^max_memory_mb 16 ^timeout_ms 1000}})) " &
+      "(var candidate (generation .module)) " &
+      "(var item (candidate/make)) " &
+      "[(same? (check item) item) (item .Readable:read)]"), scope).print() ==
+      "[true 42]"
+    discard run(compileSource("(tx .discard)"), scope)
+
+  test "repeated generation commit and release leaves no runtime roots":
+    let root = modDir / "generation_repeated"
+    createDir(root)
+    writeFile(root / "plugin.gene",
+      "(protocol Local (message value [] : Int)) " &
+      "(type Item) " &
+      "(impl Local for Item (message value [] : Int 1)) " &
+      "(var item (Item))")
+    let app = newApplication(modDir)
+    discard app.builtinsScope()
+    let beforeModules = app.moduleCacheEntryCount()
+    let beforeHeaders = app.moduleCompileHeaderCount()
+    let beforeArtifacts = app.moduleCompileArtifactCount()
+    let beforeImpls = app.canonicalImplCount()
+    for i in 0 ..< 5:
+      let scope = newGlobalScope(app)
+      discard run(compileSource(
+        "(var tx ($runtime/sandbox_transaction)) " &
+        "(var generation " &
+        "  (tx .prepare {^dir \"" & root.replace("\\", "/") & "\" " &
+        "    ^entry \"plugin.gene\" ^grants [] ^shared [] ^label \"cycle-" &
+        $i & "\" ^policy {^max_steps 1000 ^max_memory_mb 16 " &
+        "    ^timeout_ms 1000}})) " &
+        "(tx .commit) (generation .release)"), scope)
+      check app.moduleCacheEntryCount() == beforeModules
+      check app.moduleCompileHeaderCount() == beforeHeaders
+      check app.moduleCompileArtifactCount() == beforeArtifacts
+      check app.canonicalImplCount() == beforeImpls

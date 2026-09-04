@@ -55,6 +55,31 @@ Implementation status:
   early-exit API, and `os/process_id` used by ownership advisories are also public,
   dependency-free primitives. `crypto/random_hex` reads the operating-system
   cryptographic random source and is unavailable on WASM targets.
+- `fs/watch` — implemented as a capability-gated, bounded polling watcher over
+  `fs/ReadDir`. `FsWatcher/recv` suspends and reports frozen `FsChange` values
+  for create, modify, remove, rename, or `rescan_required`; recursive watches
+  do not follow symlinks, overflow is explicit, and `close` is idempotent.
+
+### Filesystem watching
+
+```gene
+(import $fs [watch FsWatcher FsChange WatcherClosed])
+(var watcher (watch "plugins" ^recursive true ^capacity 256))
+(var change watcher/.recv)
+watcher/.close
+```
+
+`watch` requires `fs/ReadDir` for the canonical root. `recv` returns a frozen
+`FsChange` with `^kind` equal to `created`, `modified`, `removed`, `renamed`, or
+`rescan_required`; ordinary changes carry root-relative `^path`, and rename
+also carries `^from`. The queue is bounded. A scan producing more changes than
+its capacity collapses to one `rescan_required` marker instead of
+silently dropping paths. `close` drains already-buffered changes and then makes
+`recv` raise `WatcherClosed`.
+
+The polling implementation records stable filesystem identity to pair renames,
+revalidates retained authority on each receive, discovers new directories under
+a recursive root, and records symlinks without traversing them.
 
 ## Goals
 

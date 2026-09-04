@@ -6809,6 +6809,107 @@ suite "spec — structured tasks from design":
     check_eval("(scope (var t (spawn ^lane root (+ 20 22))) (await t))",
                "42")
 
+  test "root-lane spawn returns its task before the child body begins":
+    check_eval("(var out ($cell 0)) " &
+               "(var t (spawn ^lane root (out .set 1))) " &
+               "[(out .get) (await t) (out .get)]",
+               "[0 1 1]")
+
+  test "runtime require_root_lane accepts root-lane calls":
+    check_eval("(fn check_lane [] ($runtime/require_root_lane) 42) " &
+               "(scope (var t (spawn ^lane root (check_lane))) (await t))",
+               "42")
+
+  test "runtime require_root_lane is stable through protocol dispatch":
+    check_eval("(protocol LaneCheck (message check [] : Int)) " &
+               "(type Checker) " &
+               "(impl LaneCheck for Checker " &
+               "  (message check [] : Int " &
+               "    ($runtime/require_root_lane) 42)) " &
+               "((Checker) .LaneCheck:check)",
+               "42")
+
+  test "sandbox transaction handles are opaque, non-freezable, and non-Send":
+    check_eval("(var tx ($runtime/sandbox_transaction)) " &
+               "(var ch ($channel ^capacity 1)) " &
+               "(var checks [" &
+               "  (try ($freeze tx) false catch Error true) " &
+               "  (try (ch .send tx) false catch TypeError true) " &
+               "  (try ((SandboxTransaction) .commit) false catch Any true)]) " &
+               "(tx .discard) checks",
+               "[true true true]")
+
+  test "Task/join returns repeatable successful outcomes without consuming await":
+    check_eval("(var t (spawn 42)) " &
+               "(var first (t .join)) " &
+               "(var second (t .join)) " &
+               "[(match first (when (TaskOutcome/ok v) v)) " &
+               " (match second (when (TaskOutcome/ok v) v)) " &
+               " (await t)]",
+               "[42 42 42]")
+
+  test "Task/join turns recoverable errors and panics into outcomes":
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error for Boom) " &
+               "(var failed (spawn (fail (Boom ^message \"boom\")))) " &
+               "(var panicked (spawn (panic \"crash\"))) " &
+               "[(match (failed .join) " &
+               "   (when (TaskOutcome/error e) e/message)) " &
+               " (match (panicked .join) " &
+               "   (when (TaskOutcome/panic message) message))]",
+               "[\"boom\" \"\\\"crash\\\"\"]")
+
+  test "Task/join repeats failed, panicked, and cancelled outcomes":
+    check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
+               "(impl Error for Boom) " &
+               "(var failed (spawn (fail (Boom ^message \"boom\")))) " &
+               "(var panicked (spawn (panic \"crash\"))) " &
+               "(var pending (spawn ^lane root ($sleep 1000))) " &
+               "(pending .cancel) " &
+               "[(== (failed .join) (failed .join)) " &
+               " (== (panicked .join) (panicked .join)) " &
+               " (== (pending .join) (pending .join))]",
+               "[true true true]")
+
+  test "Task/join bounds panic summaries":
+    let payload = repeat('x', 5000)
+    check_eval("(import $str [byte_size ends_with?]) " &
+               "(var task (spawn (panic \"" & payload & "\"))) " &
+               "(match (task .join) " &
+               "  (when (TaskOutcome/panic message) " &
+               "    [(byte_size message) (ends_with? message \"[truncated]\")]))",
+               "[4096 true]")
+
+  test "Task/join waits for cancellation cleanup and returns cancelled":
+    check_eval("(var ch ($channel ^capacity 1)) " &
+               "(var cleaned ($cell false)) " &
+               "(var t (spawn ^lane root " &
+               "  (try (ch .recv) ensure (cleaned .set true)))) " &
+               "($sleep 0) " &
+               "(t .cancel) " &
+               "[(match (t .join) (when TaskOutcome/cancelled true)) " &
+               " (cleaned .get)]",
+               "[true true]")
+
+  test "Task/join suspends a scheduled joiner until its task settles":
+    check_eval("(scope (var ch ($channel ^capacity 1)) " &
+               "  (var producer (spawn ^lane root (do (ch .recv) 21))) " &
+               "  (var joiner (spawn ^lane root " &
+               "    (match (producer .join) " &
+               "      (when (TaskOutcome/ok value) (* value 2))))) " &
+               "  (ch .send 1) " &
+               "  (await joiner))",
+               "42")
+
+  test "cancelling a joining task does not cancel the joined task":
+    check_eval("(scope (var ch ($channel ^capacity 1)) " &
+               "  (var target (spawn ^lane root (do (ch .recv) 42))) " &
+               "  (var joiner (spawn ^lane root (target .join))) " &
+               "  ($sleep 0) (joiner .cancel) " &
+               "  (match (joiner .join) (when TaskOutcome/cancelled nil)) " &
+               "  (ch .send 1) (await target))",
+               "42")
+
   test "await propagates recoverable task errors":
     check_eval("(type Boom ^props {^message Str} ^impl [Error]) " &
                "(impl Error for Boom) " &
@@ -8560,6 +8661,192 @@ suite "spec — store persistence protocol":
                " (try (s .Store:checkpoint 2 {^state 2}) " &
                "  catch StoreError $ex/kind)]",
                "[corrupt corrupt]", dir)
+
+suite "spec — capability-gated filesystem watching":
+  test "watch reports create, modify, and remove in order":
+    let root = getTempDir() / "gene-fs-watch-basic"
+    removeDir(root)
+    createDir(root)
+    let path = root / "item.txt"
+    check_eval_at(
+      "(import $fs [watch write_text remove FsWatcher FsChange WatcherClosed]) " &
+      "(var watcher (watch \"" & root.replace("\\", "/") &
+      "\" ^capacity 16)) " &
+      "(var create_task (spawn ^lane root " &
+      "  (do ($sleep 30) (write_text \"" & path.replace("\\", "/") &
+      "\" \"a\")))) " &
+      "(var created (watcher .recv)) (await create_task) " &
+      "(var modify_task (spawn ^lane root " &
+      "  (do ($sleep 30) (write_text \"" & path.replace("\\", "/") &
+      "\" \"longer\")))) " &
+      "(var modified (watcher .recv)) (await modify_task) " &
+      "(var remove_task (spawn ^lane root " &
+      "  (do ($sleep 30) (remove \"" & path.replace("\\", "/") & "\")))) " &
+      "(var removed (watcher .recv)) (await remove_task) " &
+      "(watcher .close) " &
+      "[[created/kind created/path] [modified/kind modified/path] " &
+      " [removed/kind removed/path] " &
+      " (try (watcher .recv) false catch WatcherClosed true)]",
+      "[[created \"item.txt\"] [modified \"item.txt\"] " &
+      "[removed \"item.txt\"] true]",
+      root)
+    removeDir(root)
+
+  test "watch overflow requests a rescan":
+    let root = getTempDir() / "gene-fs-watch-overflow"
+    removeDir(root)
+    createDir(root)
+    check_eval_at(
+      "(import $fs [watch write_text]) " &
+      "(var watcher (watch \"" & root.replace("\\", "/") &
+      "\" ^capacity 1)) " &
+      "(write_text \"" & (root / "a").replace("\\", "/") & "\" \"a\") " &
+      "(write_text \"" & (root / "b").replace("\\", "/") & "\" \"b\") " &
+      "(var change (watcher .recv)) " &
+      "(watcher .close) change/kind",
+      "rescan_required",
+      root)
+    removeFile(root / "a")
+    removeFile(root / "b")
+    removeDir(root)
+
+  test "watch pairs a filesystem rename by stable identity":
+    let root = getTempDir() / "gene-fs-watch-rename"
+    removeDir(root)
+    createDir(root)
+    let oldPath = root / "old.txt"
+    let newPath = root / "new.txt"
+    writeFile(oldPath, "same inode")
+    check_eval_at(
+      "(import $fs [watch]) " &
+      "(import $os [exec]) " &
+      "(var watcher (watch \"" & root.replace("\\", "/") & "\")) " &
+      "(var mover (spawn ^lane root (do ($sleep 30) " &
+      "  (exec ^cmd \"mv\" ^args [\"" & oldPath.replace("\\", "/") &
+      "\" \"" & newPath.replace("\\", "/") & "\"])))) " &
+      "(var change (watcher .recv)) (await mover) " &
+      "(watcher .close) [change/kind change/from change/path]",
+      "[renamed \"old.txt\" \"new.txt\"]",
+      root)
+    removeFile(newPath)
+    removeDir(root)
+
+  test "recursive watch discovers files in newly created directories":
+    let root = getTempDir() / "gene-fs-watch-recursive"
+    removeDir(root)
+    createDir(root)
+    let child = root / "child"
+    let item = child / "item.txt"
+    check_eval_at(
+      "(import $fs [watch make_dir write_text]) " &
+      "(var watcher (watch \"" & root.replace("\\", "/") &
+      "\" ^recursive true)) " &
+      "(var writer (spawn ^lane root (do ($sleep 30) " &
+      "  (make_dir \"" & child.replace("\\", "/") & "\") " &
+      "  (write_text \"" & item.replace("\\", "/") & "\" \"x\")))) " &
+      "(var first (watcher .recv)) " &
+      "(var second (watcher .recv)) (await writer) " &
+      "(watcher .close) [[first/kind first/path] [second/kind second/path]]",
+      "[[created \"child\"] [created \"child/item.txt\"]]",
+      root)
+    removeFile(item)
+    removeDir(child)
+    removeDir(root)
+
+  test "recursive watch never follows a symlink outside its root":
+    let root = getTempDir() / "gene-fs-watch-symlink"
+    let outside = getTempDir() / "gene-fs-watch-symlink-outside"
+    removeDir(root)
+    removeDir(outside)
+    createDir(root)
+    createDir(outside)
+    createSymlink(outside, root / "outside-link")
+    let outsideFile = outside / "hidden.txt"
+    check_eval_at(
+      "(import $fs [watch write_text]) " &
+      "(var watcher (watch \"" & root.replace("\\", "/") &
+      "\" ^recursive true)) " &
+      "(spawn ^lane root (do ($sleep 30) " &
+      "  (write_text \"" & outsideFile.replace("\\", "/") & "\" \"x\") " &
+      "  ($sleep 50) (watcher .close))) " &
+      "(try (watcher .recv) false catch WatcherClosed true)",
+      "true",
+      getTempDir())
+    removeFile(outsideFile)
+    removeFile(root / "outside-link")
+    removeDir(outside)
+    removeDir(root)
+
+  test "a cancelled receive leaves the watcher usable":
+    let root = getTempDir() / "gene-fs-watch-cancel"
+    removeDir(root)
+    createDir(root)
+    let path = root / "next.txt"
+    check_eval_at(
+      "(import $fs [watch write_text]) " &
+      "(var watcher (watch \"" & root.replace("\\", "/") & "\")) " &
+      "(var waiting (spawn ^lane root (watcher .recv))) " &
+      "($sleep 30) (waiting .cancel) " &
+      "(var cancelled_outcome (waiting .join)) " &
+      "(var writer (spawn ^lane root " &
+      "  (do ($sleep 30) (write_text \"" & path.replace("\\", "/") &
+      "\" \"ok\")))) " &
+      "(var change (watcher .recv)) (await writer) " &
+      "(watcher .close) [cancelled_outcome change/kind change/path]",
+      "[TaskOutcome/cancelled created \"next.txt\"]",
+      root)
+    removeFile(path)
+    removeDir(root)
+
+  test "close wakes a pending receiver and is idempotent":
+    let root = getTempDir() / "gene-fs-watch-close"
+    removeDir(root)
+    createDir(root)
+    check_eval_at(
+      "(import $fs [watch]) " &
+      "(var watcher (watch \"" & root.replace("\\", "/") & "\")) " &
+      "(var waiting (spawn ^lane root " &
+      "  (try (watcher .recv) false catch WatcherClosed true))) " &
+      "($sleep 0) (watcher .close) (watcher .close) (await waiting)",
+      "true",
+      root)
+    removeDir(root)
+
+  test "close drains buffered watcher changes before WatcherClosed":
+    let root = getTempDir() / "gene-fs-watch-drain"
+    removeDir(root)
+    createDir(root)
+    check_eval_at(
+      "(import $fs [watch write_text]) " &
+      "(var watcher (watch \"" & root.replace("\\", "/") &
+      "\" ^capacity 4)) " &
+      "(write_text \"" & (root / "a").replace("\\", "/") & "\" \"a\") " &
+      "(write_text \"" & (root / "b").replace("\\", "/") & "\" \"b\") " &
+      "(var first (watcher .recv)) (watcher .close) " &
+      "(var second (watcher .recv)) " &
+      "[[first/kind first/path] [second/kind second/path] " &
+      " (try (watcher .recv) false catch WatcherClosed true)]",
+      "[[created \"a\"] [created \"b\"] true]",
+      root)
+    removeFile(root / "a")
+    removeFile(root / "b")
+    removeDir(root)
+
+  test "watch requires ReadDir authority for the watched root":
+    let root = getTempDir() / "gene-fs-watch-authority"
+    let outside = getTempDir() / "gene-fs-watch-outside"
+    removeDir(root)
+    removeDir(outside)
+    createDir(root)
+    createDir(outside)
+    check_eval_at(
+      "(import $fs [watch]) " &
+      "(try (watch \"" & outside.replace("\\", "/") &
+      "\") false catch MissingCapability true)",
+      "true",
+      root)
+    removeDir(outside)
+    removeDir(root)
 
 suite "spec — os and json from ai-agent plan":
   test "os/get_env reads, defaults, and errors under ambient os/Env":

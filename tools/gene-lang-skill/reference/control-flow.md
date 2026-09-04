@@ -148,7 +148,24 @@ cancels and waits for cleanup.
 ```
 
 `(spawn ^lane root …)` keeps thread-affine work off the worker lane. `Task`
-messages: `cancel`, `detach`.
+messages: `cancel`, `detach`, `join`. Root-lane spawn enqueues and returns its
+task before the child body can begin. Use `($runtime/require_root_lane)` when a
+lane-owned module must reject construction or mutation from a worker/foreign
+lane.
+
+`await` returns or propagates and consumes the task payload. `join` instead
+returns repeatable data without consuming `await`:
+
+```gene
+(match (task .join)
+  (when (TaskOutcome/ok value) value)
+  (when (TaskOutcome/error error) (handle error))
+  (when (TaskOutcome/panic summary) (report summary))
+  (when TaskOutcome/cancelled nil))
+```
+
+Cancelling the task performing a join still propagates cancellation normally;
+it does not cancel an otherwise independent joined task.
 
 ## Channels
 

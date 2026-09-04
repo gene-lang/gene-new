@@ -30,6 +30,26 @@ entrypoint, serde, native API, and CLI suites.
   binding beside `this_mod`.
 - Runtime imports initialize a dependency once. Compile-time macro discovery
   does not execute dependency top-level forms or grant host runtime authority.
+- `$runtime/sandbox_transaction` creates a root-lane-owned prospective module
+  transaction. `prepare` may add several isolated `SandboxGeneration` roots;
+  compilation, macro expansion, initialization, and escaped calls obey the
+  supplied step, memory, and timeout policy. Prepared caches, compile artifacts,
+  protocol impls, serde origins, and module scopes are invisible to the live
+  application until the transaction commits.
+- Preparation pauses worker module readers and restricts scheduler pumping to
+  candidate-owned tasks. FFI, native/capability type, and embedded web-module
+  declarations are rejected.
+- Transaction commit publishes every prepared generation in one non-yielding
+  turn and rejects a changed module/impl base. Discard releases all prospective
+  roots. A committed generation is removed explicitly with `release`; both
+  discard and release are idempotent in their valid lifecycle state.
+- `SandboxGeneration/graph` is a deeply frozen, deterministically ordered
+  snapshot with normalized module identities and paths, authenticated source
+  and compile-interface digests, runtime/compile dependency phases, and
+  `^owned false` reference nodes for admitted shared modules.
+- `$runtime/load_sandboxed` remains the non-transactional compatibility path.
+  Sandboxed code cannot create or manage either kind of sandbox load, even when
+  the `runtime` namespace was granted accidentally.
 - Runtime `declarations` exposes only bindings with real runtime `^value`;
   macros/derives remain compiler artifacts.
 - `gene run [--allow_read_dir dir] [--allow_write_dir dir]

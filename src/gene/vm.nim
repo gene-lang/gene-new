@@ -254,6 +254,7 @@ type
     waitSendValue: Value   # value to deliver when a parked send resumes
     waitActor: Value       # actor the fiber is parked on, when send hit a full mailbox
     waitTask: Value        # task the fiber is parked on, when suspended in `await`
+    waitResourceId: uint64 # opaque runtime resource whose state wakes this fiber
     waitTimer: bool        # fiber is parked until `waitDeadline`
     waitDeadline: MonoTime
 
@@ -297,6 +298,7 @@ type
 
   SchedulerState = ref object of RuntimeContext
     lock: Lock
+    rootLane: int
     runQueue: seq[Fiber]
     waiters: seq[Fiber]
     askTimeouts: seq[AskTimeout]
@@ -316,6 +318,7 @@ type
       asyncIoQueue: seq[AsyncIoRequest]
       asyncIoHead: int
       activeAsyncIoWorkers: int
+      moduleMutationPaused: bool
 
   SchedulerWorkerContext = ref object of RuntimeContext
     scheduler: SchedulerState
@@ -326,6 +329,7 @@ type
     active: bool
 
   ModuleCompileHeader = ref object
+    path: string
     unit: SourceUnit
     compileInterface: CompileNamespaceInterface
 
@@ -334,6 +338,8 @@ type
     macroExports: Table[string, MacroDef]
     syntaxFnExports: seq[string]
     compileInterface: CompileNamespaceInterface
+    runtimeDependencies: seq[string]
+    compileDependencies: seq[string]
 
   ResourceCapabilityRecord = object
     application: RuntimeContext
@@ -377,6 +383,7 @@ type
     capabilityFacades: Table[string, CapabilityFacadeBinding]
     capabilityCanonicalCache: Table[string, CapabilitySpec]
     moduleCache: Table[string, Value]
+    moduleEpoch: uint64
     moduleLoading: HashSet[string]
     moduleCompileHeaders: Table[string, ModuleCompileHeader]
     moduleCompileArtifacts: Table[string, ModuleCompileArtifact]
@@ -463,6 +470,91 @@ type
     # while N+1 is being published.
     webSourceMaps: bool
     webSourceMapsSet: bool
+
+  SandboxTransactionState = enum
+    stsOpen
+    stsCommitted
+    stsDiscarded
+
+  SandboxGenerationState = enum
+    sgsPrepared
+    sgsCommitted
+    sgsDiscarded
+    sgsReleased
+
+  SandboxAppState = object
+    capabilityFacades: Table[string, CapabilityFacadeBinding]
+    capabilityCanonicalCache: Table[string, CapabilitySpec]
+    moduleCache: Table[string, Value]
+    moduleEpoch: uint64
+    moduleLoading: HashSet[string]
+    moduleCompileHeaders: Table[string, ModuleCompileHeader]
+    moduleCompileArtifacts: Table[string, ModuleCompileArtifact]
+    moduleCompileLoading: HashSet[string]
+    implEpoch: uint64
+    rootImpls: seq[ProtocolImpl]
+    implScopeIndex: Table[tuple[receiver, message: uint64], seq[Scope]]
+    baseScopes: seq[Scope]
+    boundedModulePaths: HashSet[string]
+    requireStrictDependencies: bool
+    serdeOrigins: Table[uint64, tuple[module, path: string]]
+    serdeValueOrigins: Table[uint64, tuple[module, path: string]]
+    serdeOriginBuiltinsDone: bool
+    serdeOriginModules: HashSet[string]
+    when not defined(geneWasm):
+      webAssets: Table[string, WebAsset]
+      webRoutes: Table[string, WebAssetRoute]
+    webMountCache: Table[string, string]
+    webAssetBaseValue: string
+    webAssetBaseSet: bool
+    webSourceMaps: bool
+    webSourceMapsSet: bool
+
+  SandboxTransactionRecord = ref object
+    application: Application
+    ownerLane: int
+    state: SandboxTransactionState
+    baseModuleEpoch: uint64
+    baseImplEpoch: uint64
+    candidate: SandboxAppState
+    generations: seq[uint64]
+
+  SandboxGenerationRecord = ref object
+    application: Application
+    ownerLane: int
+    transactionId: uint64
+    state: SandboxGenerationState
+    label: string
+    sandboxKey: string
+    sandboxDir: string
+    entryPath: string
+    module: Value
+    graph: Value
+    moduleKeys: seq[string]
+    moduleEntries: Table[string, Value]
+    compileKeys: seq[string]
+    scopes: seq[Scope]
+    canonicalImpls: seq[ProtocolImpl]
+
+  FsWatchStamp = object
+    kind: PathComponent
+    size: BiggestInt
+    device: DeviceId
+    fileId: FileId
+    modified: times.Time
+
+  FsWatcherRecord = ref object
+    application: Application
+    ownerLane: int
+    provider: FilesystemProvider
+    capabilities: CapabilityContext
+    root: string
+    recursive: bool
+    capacity: int
+    closed: bool
+    snapshot: Table[string, FsWatchStamp]
+    queue: seq[Value]
+    changeType: Value
 
 # Current threaded scheduler queues are lock-protected seqs shared with worker
 # threads. Reserve enough room up front so worker parking/enqueue paths do not
@@ -654,10 +746,13 @@ type
     ## `try/catch` never catches it; the dispatch loop turns it into rskSuspend and
     ## the scheduler parks the fiber until its wait condition is ready.
     channel: Value
+    task: Value
     isSend: bool
     sendValue: Value
     actor: Value      # actor whose full mailbox parked this send (xor `channel`)
     timer: bool
+    retry: bool       # true when the suspending native must be re-executed
+    resourceId: uint64
     deadline: MonoTime
 
 # `currentFiberActive` gates suspension: only a fiber the scheduler is running
@@ -671,6 +766,11 @@ var activeWorkerThread {.threadvar.}: bool
 var activeConstructionDepth {.threadvar.}: int
 var activeCapabilityContext {.threadvar.}: CapabilityContext
 var activeCapabilityPresence {.threadvar.}: CapabilityPresence
+var activeSandboxCompileKey {.threadvar.}: string
+var activeSandboxCompileDir {.threadvar.}: string
+var activeSandboxGenerationId {.threadvar.}: uint64
+var activeSandboxPolicy {.threadvar.}: ModuleExecutionPolicy
+var activeSandboxCompileBudget {.threadvar.}: CompileBudget
 var reportTailFallbacks {.threadvar.}: bool
 
 type TailFallbackReason* = enum
@@ -708,12 +808,24 @@ proc finishTailCallStats*(): TailCallStats =
 var nextResourceAuthorityId {.global.}: Atomic[uint64]
 var resourceAuthorityLock: Lock
 var resourceAuthorityRecords = initTable[uint64, ResourceCapabilityRecord]()
+var sandboxTransactionRecords = initTable[uint64, SandboxTransactionRecord]()
+var sandboxGenerationRecords = initTable[uint64, SandboxGenerationRecord]()
+var fsWatcherRecords = initTable[uint64, FsWatcherRecord]()
 
 proc releaseResourceAuthorityRecord(id: uint64) {.nimcall, raises: [].} =
   if id == 0:
     return
   acquire(resourceAuthorityLock)
   resourceAuthorityRecords.del(id)
+  let transaction = sandboxTransactionRecords.getOrDefault(id)
+  if transaction != nil and transaction.state != stsOpen:
+    sandboxTransactionRecords.del(id)
+  let generation = sandboxGenerationRecords.getOrDefault(id)
+  if generation != nil and generation.state in {sgsDiscarded, sgsReleased}:
+    sandboxGenerationRecords.del(id)
+  let watcher = fsWatcherRecords.getOrDefault(id)
+  if watcher != nil and watcher.closed:
+    fsWatcherRecords.del(id)
   release(resourceAuthorityLock)
 
 proc resourceAuthorityRecordCount*(): int =
@@ -723,6 +835,72 @@ proc resourceAuthorityRecordCount*(): int =
 
 initLock(resourceAuthorityLock)
 installResourceAuthorityReleaseHook(releaseResourceAuthorityRecord)
+
+proc sandboxGenerationPrepared(id: uint64): bool =
+  if id == 0:
+    return false
+  acquire(resourceAuthorityLock)
+  try:
+    result = sandboxGenerationRecords.hasKey(id) and
+      sandboxGenerationRecords[id].state == sgsPrepared
+  finally:
+    release(resourceAuthorityLock)
+
+proc captureSandboxAppState(app: Application): SandboxAppState =
+  result.capabilityFacades = app.capabilityFacades
+  result.capabilityCanonicalCache = app.capabilityCanonicalCache
+  result.moduleCache = app.moduleCache
+  result.moduleEpoch = app.moduleEpoch
+  result.moduleLoading = app.moduleLoading
+  result.moduleCompileHeaders = app.moduleCompileHeaders
+  result.moduleCompileArtifacts = app.moduleCompileArtifacts
+  result.moduleCompileLoading = app.moduleCompileLoading
+  result.implEpoch = app.implEpoch
+  result.rootImpls = app.builtinsScope().impls
+  result.implScopeIndex = app.implScopeIndex
+  result.baseScopes = app.baseScopes
+  result.boundedModulePaths = app.boundedModulePaths
+  result.requireStrictDependencies = app.requireStrictDependencies
+  result.serdeOrigins = app.serdeOrigins
+  result.serdeValueOrigins = app.serdeValueOrigins
+  result.serdeOriginBuiltinsDone = app.serdeOriginBuiltinsDone
+  result.serdeOriginModules = app.serdeOriginModules
+  when not defined(geneWasm):
+    result.webAssets = app.webAssets
+    result.webRoutes = app.webRoutes
+  result.webMountCache = app.webMountCache
+  result.webAssetBaseValue = app.webAssetBaseValue
+  result.webAssetBaseSet = app.webAssetBaseSet
+  result.webSourceMaps = app.webSourceMaps
+  result.webSourceMapsSet = app.webSourceMapsSet
+
+proc installSandboxAppState(app: Application, state: SandboxAppState) =
+  app.capabilityFacades = state.capabilityFacades
+  app.capabilityCanonicalCache = state.capabilityCanonicalCache
+  app.moduleCache = state.moduleCache
+  app.moduleEpoch = state.moduleEpoch
+  app.moduleLoading = state.moduleLoading
+  app.moduleCompileHeaders = state.moduleCompileHeaders
+  app.moduleCompileArtifacts = state.moduleCompileArtifacts
+  app.moduleCompileLoading = state.moduleCompileLoading
+  app.implEpoch = state.implEpoch
+  app.builtinsScope().impls = state.rootImpls
+  app.implScopeIndex = state.implScopeIndex
+  app.baseScopes = state.baseScopes
+  app.boundedModulePaths = state.boundedModulePaths
+  app.requireStrictDependencies = state.requireStrictDependencies
+  app.serdeOrigins = state.serdeOrigins
+  app.serdeValueOrigins = state.serdeValueOrigins
+  app.serdeOriginBuiltinsDone = state.serdeOriginBuiltinsDone
+  app.serdeOriginModules = state.serdeOriginModules
+  when not defined(geneWasm):
+    app.webAssets = state.webAssets
+    app.webRoutes = state.webRoutes
+  app.webMountCache = state.webMountCache
+  app.webAssetBaseValue = state.webAssetBaseValue
+  app.webAssetBaseSet = state.webAssetBaseSet
+  app.webSourceMaps = state.webSourceMaps
+  app.webSourceMapsSet = state.webSourceMapsSet
 
 proc currentScheduler(): SchedulerState
 
@@ -764,6 +942,7 @@ proc wakeChannelWaitersIn(s: SchedulerState, channel: Value, wakeSenders: bool)
 proc wakeAllChannelWaitersIn(s: SchedulerState, channel: Value,
                              wakeSenders: bool)
 proc wakeTaskWaitersIn(s: SchedulerState, task: Value)
+proc wakeResourceWaiters(id: uint64)
 proc enqueueRunnable(f: Fiber)
 proc drainSupervisorFailures()
 
@@ -862,6 +1041,8 @@ proc newScope*(parent: Scope = nil,
   Scope(application: owner, parent: parent, evalBudget: budget,
         moduleRefs: (if parent != nil: parent.moduleRefs else: nil),
         moduleBase: (if parent != nil: parent.moduleBase else: nil),
+        sandboxGenerationId:
+          (if parent != nil: parent.sandboxGenerationId else: 0),
         borrowedCallerEnv: parent != nil and parent.borrowedCallerEnv)
 
 proc registerOwnedActor(scope: Scope, actor: Value) =
@@ -2077,6 +2258,9 @@ proc biTaskDetach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall
   let scope = if call == nil: nil else: call[].dispatchScope
   discard scope.unregisterOwnedTask(args[0])
   args[0]
+
+proc biTaskJoin(args: openArray[Value],
+                call: ptr NativeCall): Value {.nimcall.}
 
 proc requireChannel(name: string, value: Value) =
   if value.kind != vkChannel:
@@ -3932,6 +4116,9 @@ proc freezeValue(value: Value): Value =
                                val: freezeValue(entry.val))
     buildHashMap("freeze", entries)
   of vkNode:
+    if value.resourceAuthorityId != 0:
+      raise newException(GeneError,
+        "freeze cannot freeze a retained runtime resource")
     if value.head.isNativeWrapperType:
       # `freeze` is deep, and a wrapper cannot satisfy that contract either way:
       # rebuilding it would mint a second node over one handle through a path
@@ -6729,6 +6916,27 @@ proc biRuntimeCallable(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeConfigureModule(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.}
+proc biRuntimeRequireRootLane(args: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.}
+proc biRuntimeSandboxTransaction(args: openArray[Value],
+                                 call: ptr NativeCall): Value {.nimcall.}
+proc biSandboxTransactionPrepare(args: openArray[Value],
+                                 call: ptr NativeCall): Value {.nimcall.}
+proc biSandboxTransactionCommit(args: openArray[Value],
+                                call: ptr NativeCall): Value {.nimcall.}
+proc biSandboxTransactionDiscard(args: openArray[Value],
+                                 call: ptr NativeCall): Value {.nimcall.}
+proc biSandboxGenerationModule(args: openArray[Value],
+                               call: ptr NativeCall): Value {.nimcall.}
+proc biSandboxGenerationGraph(args: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.}
+proc biSandboxGenerationRelease(args: openArray[Value],
+                                call: ptr NativeCall): Value {.nimcall.}
+proc runtimePanicSummary(message: string, hasValue: bool,
+                         value: Value): string
+proc nextRuntimeResourceId(): uint64
+proc newRuntimeResourceHandle(scope: Scope, typeName: string,
+                              id: uint64): Value
 
 proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
   if args.len != 0:
@@ -6751,6 +6959,30 @@ proc biRuntimeGcStats(args: openArray[Value]): Value {.nimcall.} =
     entries["supervisor_retry_drops"] =
       newIntFromDecimal($scheduler.supervisorRetryDrops)
   newMap(entries, immutable = true)
+
+proc biRuntimeRequireRootLane(args: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError,
+      "runtime/require_root_lane expects no arguments")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let scheduler = schedulerForScope(scope)
+  if currentEventLane() != scheduler.rootLane:
+    let message = "operation requires the scheduler root lane"
+    var props = initPropTable()
+    props["message"] = newStr(message)
+    var head = newSym("RuntimeLaneError")
+    var runtimeLaneError: Value
+    if builtinTypeBinding(scope, "RuntimeLaneError", runtimeLaneError) and
+        runtimeLaneError.kind == vkType:
+      head = runtimeLaneError
+    var e: ref GeneError
+    new(e)
+    e.msg = message
+    e.errVal = newNode(head, props = props)
+    e.hasErrVal = true
+    raise e
+  NIL
 
 proc biCPtrClose(args: openArray[Value]): Value {.nimcall.} =
   requireOne("C/close", args)
@@ -7183,6 +7415,9 @@ proc buildBuiltins(app: Application): Scope =
   result.define("RuntimeError", runtimeError)
   result.impls.add ProtocolImpl(protocol: errorProtocol,
                                 receiver: runtimeError)
+  let runtimeLaneError = newType("RuntimeLaneError", runtimeError,
+                                 @[], @[], result)
+  result.define("RuntimeLaneError", runtimeLaneError)
   var typeErrorFields: seq[TypeField]
   for name in ["message", "where", "expected", "actual"]:
     typeErrorFields.add TypeField(name: name, optional: false,
@@ -7620,6 +7855,40 @@ proc buildBuiltins(app: Application): Scope =
       ImplMessage(
         message: capabilitySpecProtocol.protocolMessages["describe"],
         fn: capabilityDescribeDefault)])
+  var sandboxTransactionMessages = initTable[string, Value]()
+  sandboxTransactionMessages["prepare"] =
+    newNativeCallFn("SandboxTransaction/prepare",
+                    biSandboxTransactionPrepare,
+                    acceptsNamed = false)
+  sandboxTransactionMessages["commit"] =
+    newNativeCallFn("SandboxTransaction/commit",
+                    biSandboxTransactionCommit,
+                    acceptsNamed = false)
+  sandboxTransactionMessages["discard"] =
+    newNativeCallFn("SandboxTransaction/discard",
+                    biSandboxTransactionDiscard,
+                    acceptsNamed = false)
+  let sandboxTransactionType = newType(
+    "SandboxTransaction", NIL, @[], @[], result,
+    messages = sandboxTransactionMessages)
+  result.define("SandboxTransaction", sandboxTransactionType)
+  var sandboxGenerationMessages = initTable[string, Value]()
+  sandboxGenerationMessages["module"] =
+    newNativeCallFn("SandboxGeneration/module",
+                    biSandboxGenerationModule,
+                    acceptsNamed = false)
+  sandboxGenerationMessages["graph"] =
+    newNativeCallFn("SandboxGeneration/graph",
+                    biSandboxGenerationGraph,
+                    acceptsNamed = false)
+  sandboxGenerationMessages["release"] =
+    newNativeCallFn("SandboxGeneration/release",
+                    biSandboxGenerationRelease,
+                    acceptsNamed = false)
+  let sandboxGenerationType = newType(
+    "SandboxGeneration", NIL, @[], @[], result,
+    messages = sandboxGenerationMessages)
+  result.define("SandboxGeneration", sandboxGenerationType)
   let runtimeScope = newScope(result)
   runtimeScope.define("gc_stats",
                       newNativeFn("runtime/gc_stats", biRuntimeGcStats))
@@ -7630,6 +7899,14 @@ proc buildBuiltins(app: Application): Scope =
   runtimeScope.define("callable?",
                       newNativeCallFn("runtime/callable?",
                                       biRuntimeCallable,
+                                      acceptsNamed = false))
+  runtimeScope.define("require_root_lane",
+                      newNativeCallFn("runtime/require_root_lane",
+                                      biRuntimeRequireRootLane,
+                                      acceptsNamed = false))
+  runtimeScope.define("sandbox_transaction",
+                      newNativeCallFn("runtime/sandbox_transaction",
+                                      biRuntimeSandboxTransaction,
                                       acceptsNamed = false))
   runtimeScope.define("configure_module",
                       newNativeCallFn("runtime/configure_module",
@@ -7728,7 +8005,20 @@ proc buildBuiltins(app: Application): Scope =
   result.defineBuiltinType(vkTask, "Task", {
     "cancel": newNativeFn("Task/cancel", biTaskCancel),
     "detach": newNativeCallFn("Task/detach", biTaskDetach,
-                                             acceptsNamed = false)})
+                                             acceptsNamed = false),
+    "join": newNativeCallFn("Task/join", biTaskJoin,
+                                         acceptsNamed = false)})
+  let taskOutcomeType = newEnum("TaskOutcome", @["T", "E"],
+    [(name: "ok", payloadTypes: @[newSym("T")],
+      hasBacking: false, backing: NIL),
+     (name: "error", payloadTypes: @[newSym("E")],
+      hasBacking: false, backing: NIL),
+     (name: "panic", payloadTypes: @[newSym("Str")],
+      hasBacking: false, backing: NIL),
+     (name: "cancelled", payloadTypes: newSeq[Value](),
+      hasBacking: false, backing: NIL)],
+    NIL, result)
+  result.define("TaskOutcome", taskOutcomeType)
   let tryRecvType = newEnum("TryRecv", @["T"],
     [(name: "empty", payloadTypes: newSeq[Value](),
       hasBacking: false, backing: NIL),
@@ -7894,6 +8184,7 @@ proc normalizedDir(path: string): string =
 
 proc newSchedulerState(): SchedulerState =
   new(result)
+  result.rootLane = currentEventLane()
   result.runQueue = newSeqOfCap[Fiber](schedulerSharedQueueInitialCap)
   result.waiters = newSeqOfCap[Fiber](schedulerSharedQueueInitialCap)
   result.askTimeouts = newSeqOfCap[AskTimeout](schedulerSharedQueueInitialCap)
@@ -8108,6 +8399,18 @@ proc dependencyEdgesOf*(app: Application,
     return
   for alias in app.packageGraph.dependencyAliases(packageId):
     result.add (alias, app.packagesById[packageId].dependencyEdges[alias])
+
+proc moduleCacheEntryCount*(app: Application): int =
+  app.moduleCache.len
+
+proc moduleCompileHeaderCount*(app: Application): int =
+  app.moduleCompileHeaders.len
+
+proc moduleCompileArtifactCount*(app: Application): int =
+  app.moduleCompileArtifacts.len
+
+proc canonicalImplCount*(app: Application): int =
+  app.builtinsScope().impls.len
 
 proc locatePackage*(app: Application, alias: string): Package =
   ## Resolve an alias exactly as an import from the active package does.
@@ -8685,10 +8988,8 @@ proc biRuntimeGuardCall(args: openArray[Value],
     entries["value"] = value
     newMap(entries)
   except GenePanic as error:
-    let message =
-      if error.hasErrVal: error.errVal.print()
-      elif error.msg.len > 0: error.msg
-      else: "panic"
+    let message = runtimePanicSummary(error.msg, error.hasErrVal,
+                                      error.errVal)
     var entries = initPropTable()
     entries["ok"] = FALSE
     entries["kind"] = newSym("panic")
@@ -10547,10 +10848,18 @@ proc activateStagedImpls(stage: Scope) =
 
   var retained: seq[ProtocolImpl]
   var changed = false
+  let retainCandidateCanonical = stage.sandboxGenerationId != 0
   for pending in stage.impls:
     case pending.visibility
     of ivCanonical:
       root.impls.add pending
+      if retainCandidateCanonical:
+        # A prepared sandbox generation is not yet present in the live
+        # application registry. Retain its canonical impl on the generation's
+        # own module scope so candidate calls can dispatch before commit. The
+        # sandbox root does not inherit the application's impl table, so this
+        # copy remains the candidate's only visible one and is not ambiguous.
+        retained.add pending
       changed = true
     of ivScoped:
       retained.add pending
@@ -10755,7 +11064,14 @@ proc scopeChainContains(scope, target: Scope): bool =
 proc typeImplementsProtocol(scope: Scope, typ, protocol: Value): bool =
   if protocol.kind == vkProtocol and protocol.protocolUniversal:
     return true
-  scope != nil and scope.hasVisibleImpl(protocol, typ)
+  if scope != nil and scope.hasVisibleImpl(protocol, typ):
+    return true
+  if typ.kind == vkType:
+    let home = typ.typeScope.moduleRootScope()
+    if home != nil and
+        sandboxGenerationPrepared(home.sandboxGenerationId):
+      return home.hasVisibleImpl(protocol, typ)
+  false
 
 proc builtinBinding(scope: Scope, name: string): Value =
   ## Resolve a standard-library name for the VM's own use. This reads the
@@ -11113,6 +11429,8 @@ proc isSendableValue(value: Value, scope: Scope,
     functionCapturesSendable(value, scope, seen, mode)
   of vkNode:
     if value.nodeConstructing:
+      return false
+    if value.resourceAuthorityId != 0:
       return false
     var sendProtocol: Value
     if value.head.kind == vkType and scope != nil and
@@ -11976,6 +12294,95 @@ proc awaitTaskValue(task: Value): Value =
   finally:
     task.clearTaskPayload()
 
+const maxRuntimePanicSummaryBytes = 4096
+
+proc boundedRuntimeSummary(text: string): string =
+  const suffix = "[truncated]"
+  if text.len <= maxRuntimePanicSummaryBytes:
+    return text
+  let limit = maxRuntimePanicSummaryBytes - suffix.len
+  for rune in text.runes:
+    let encoded = rune.toUTF8()
+    if result.len + encoded.len > limit:
+      break
+    result.add encoded
+  result.add suffix
+
+proc runtimePanicSummary(message: string, hasValue: bool,
+                         value: Value): string =
+  let rendered =
+    if hasValue: value.print()
+    elif message.len > 0: message
+    else: "panic"
+  boundedRuntimeSummary(rendered)
+
+proc taskOutcomeVariant(scope: Scope, name: string): Value =
+  let outcome = builtinBinding(scope, "TaskOutcome")
+  if not outcome.isEnumType:
+    raise newException(GeneError, "TaskOutcome result type is unavailable")
+  result = outcome.enumVariantDescriptor(name)
+  if result.kind != vkEnumVariant:
+    raise newException(GeneError,
+      "TaskOutcome result variant is unavailable: " & name)
+
+proc taskOutcomeValue(scope: Scope, name: string, value = NIL): Value =
+  let variant = taskOutcomeVariant(scope, name)
+  if name == "cancelled":
+    return variant
+  newNode(variant, body = @[value], immutable = true)
+
+proc runtimeErrorValue(scope: Scope, message: string): Value =
+  var props = initPropTable()
+  props["message"] = newStr(message)
+  newNode(builtInTypeHead(scope, "RuntimeError"), props = props,
+          immutable = true)
+
+proc taskJoinOutcome(task: Value, scope: Scope): Value =
+  if task.taskAwaited:
+    raise newException(GeneError,
+      "task result has already been consumed by await")
+  if task.taskHasPanic:
+    return taskOutcomeValue(scope, "panic",
+      newStr(runtimePanicSummary(task.taskPanicMsg,
+                                 task.taskHasPanicValue,
+                                 task.taskPanicValue)))
+  if task.taskHasError:
+    var errorValue =
+      if task.taskHasErrorValue: task.taskErrorValue
+      else: runtimeErrorValue(scope,
+        if task.taskErrorMsg.len > 0: task.taskErrorMsg else: "task failed")
+    try:
+      checkTaskError(task, task.taskHasErrorValue, errorValue)
+    except GeneError as boundaryError:
+      errorValue =
+        if boundaryError.hasErrVal: boundaryError.errVal
+        else: runtimeErrorValue(scope, boundaryError.msg)
+    return taskOutcomeValue(scope, "error", errorValue)
+  if task.taskCancelled:
+    return taskOutcomeValue(scope, "cancelled")
+  try:
+    taskOutcomeValue(scope, "ok", checkedTaskResult(task, task.taskResult))
+  except GeneError as boundaryError:
+    taskOutcomeValue(scope, "error",
+      if boundaryError.hasErrVal: boundaryError.errVal
+      else: runtimeErrorValue(scope, boundaryError.msg))
+
+proc biTaskJoin(args: openArray[Value],
+                call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("Task/join", args)
+  requireTask("Task/join", args[0])
+  let task = args[0]
+  if not task.taskDone:
+    if currentFiberActive:
+      var se: ref SuspendError
+      new(se)
+      se.msg = "Task/join suspends on an unfinished task"
+      se.task = task
+      raise se
+    pumpUntilDone(task)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  taskJoinOutcome(task, scope)
+
 proc raiseMatchError(scope: Scope, message: string) =
   var props = initPropTable()
   props["message"] = newStr(message)
@@ -12371,6 +12778,11 @@ proc resolveProtocolMessage(scope: Scope, message, receiver: Value): Value =
                       scope, protocol = protocol.protocolName, missingImpl = true)
   result = scope.tryResolveProtocolMessage(recvType, message)
   if result.kind == vkNil:
+    let home = recvType.typeScope.moduleRootScope()
+    if home != nil and
+        sandboxGenerationPrepared(home.sandboxGenerationId):
+      result = home.tryResolveProtocolMessage(recvType, message)
+  if result.kind == vkNil:
     # A qualified send with no visible impl is a recoverable MessageError (§9).
     raiseMessageError(message.protocolMessageName, recvType.typeName, scope,
                       protocol = protocol.protocolName, missingImpl = true,
@@ -12688,6 +13100,7 @@ proc clearWaitReason(f: Fiber) =
   f.waitChannel = NIL
   f.waitActor = NIL
   f.waitTask = NIL
+  f.waitResourceId = 0
   f.waitTimer = false
 
 proc workerCandidate(f: Fiber): bool {.inline.} =
@@ -14736,6 +15149,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let app = scope.application()
             let dependencyPath =
               app.resolveModuleRef(spec.modulePath, spec.pkgName)
+            var importer: Value
+            if scope.moduleRootScope().lookupOptional("this_mod", importer) and
+                importer.kind == vkModule:
+              importer.recordModuleDependency(dependencyPath)
             if spec.hasCapabilityRow:
               # §5.3.1. Recorded before the load, because the dependency has
               # to *initialize* under the bound too — a call-boundary
@@ -14744,7 +15161,6 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               # retracted. The path set is consulted by
               # `moduleInitializationCapabilities`.
               app.boundedModulePaths.incl dependencyPath
-              var importer: Value
               if scope.moduleRootScope().lookupOptional("this_mod", importer) and
                   importer.kind == vkModule:
                 importer.recordImportCapabilityRow(dependencyPath,
@@ -14821,8 +15237,12 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             raise newException(GeneError,
               "import_impl receiver must be a type")
           let app = scope.application()
-          let source = loadModuleValue(app,
-            app.resolveModulePath(spec.modulePath))
+          let dependencyPath = app.resolveModulePath(spec.modulePath)
+          var importer: Value
+          if scope.moduleRootScope().lookupOptional("this_mod", importer) and
+              importer.kind == vkModule:
+            importer.recordModuleDependency(dependencyPath)
+          let source = loadModuleValue(app, dependencyPath)
           scope.importScopedImpl(source.moduleRootNamespace.nsScope,
                                  protocol, receiver)
           spush NIL
@@ -14910,7 +15330,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             value = applyCall(callee, [], NamedArgs(), scope, site,
                               instructionLocAt(chunk, ip - 1))
           except SuspendError as se:
-            if not se.timer:
+            if not se.timer or se.retry:
               raise
             if fiber == nil:
               raise newException(GeneError, "internal: suspended outside a fiber")
@@ -15136,7 +15556,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                           NamedArgs(), scope, site,
                           instructionLocAt(chunk, ip - 1))
           except SuspendError as se:
-            if not se.timer:
+            if not se.timer or se.retry:
               raise
             if fiber == nil:
               raise newException(GeneError, "internal: suspended outside a fiber")
@@ -15588,7 +16008,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                           named, scope, site,
                           instructionLocAt(chunk, ip - 1))
           except SuspendError as se:
-            if not se.timer:
+            if not se.timer or se.retry:
               raise
             if fiber == nil:
               raise newException(GeneError, "internal: suspended outside a fiber")
@@ -15755,7 +16175,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 applyCall(callee, args, named, scope, site,
                           instructionLocAt(chunk, ip - 1))
           except SuspendError as se:
-            if not se.timer:
+            if not se.timer or se.retry:
               raise
             if fiber == nil:
               raise newException(GeneError, "internal: suspended outside a fiber")
@@ -17015,7 +17435,8 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       fiber.waitActor = se.actor
       fiber.waitIsSend = se.isSend
       fiber.waitSendValue = se.sendValue
-      fiber.waitTask = NIL
+      fiber.waitTask = if se.task.kind == vkTask: se.task else: NIL
+      fiber.waitResourceId = se.resourceId
       fiber.waitTimer = se.timer
       fiber.waitDeadline = se.deadline
       return RunStop(kind: rskSuspend, value: NIL)
@@ -17264,6 +17685,14 @@ proc popRunnableFiber(workerOnly = false, skipWorkerSafe = false,
     while i < s.runQueue.len:
       let f = s.runQueue[i]
       let isWorkerCandidate = f.workerCandidate
+      if activeSandboxGenerationId != 0 and
+          (f.scope == nil or
+           f.scope.sandboxGenerationId != activeSandboxGenerationId):
+        inc i
+        continue
+      when compileOption("threads") and defined(gcAtomicArc):
+        if workerOnly and s.moduleMutationPaused:
+          return nil
       if workerOnly and not isWorkerCandidate:
         inc i
         continue
@@ -17412,6 +17841,23 @@ proc wakeTaskWaitersIn(s: SchedulerState, task: Value) =
 
 proc wakeTaskWaiters(task: Value) =
   wakeTaskWaitersIn(currentScheduler(), task)
+
+proc wakeResourceWaiters(id: uint64) =
+  if id == 0:
+    return
+  let scheduler = currentScheduler()
+  withSchedulerLock(scheduler):
+    var i = 0
+    while i < scheduler.waiters.len:
+      let fiber {.cursor.} = scheduler.waiters[i]
+      if fiber.waitResourceId == id:
+        when compileOption("threads") and defined(gcAtomicArc):
+          if fiber.workerCandidate:
+            broadcast(scheduler.workerCond)
+        scheduler.runQueue.add(move scheduler.waiters[i])
+        scheduler.waiters.delete(i)
+      else:
+        inc i
 
 proc scopeHasActorOwner(scope: Scope): bool =
   var current = scope
@@ -17711,6 +18157,25 @@ when compileOption("threads") and defined(gcAtomicArc):
       if cleared:
         broadcast(s.workerCond)
 
+  proc pauseSchedulerWorkersForModuleMutation(s: SchedulerState) =
+    withSchedulerLock(s):
+      s.moduleMutationPaused = true
+      broadcast(s.workerCond)
+      while true:
+        var active = false
+        for fiber in s.activeWorkerFibers:
+          if fiber != nil:
+            active = true
+            break
+        if not active:
+          break
+        wait(s.workerCond, s.lock)
+
+  proc resumeSchedulerWorkersAfterModuleMutation(s: SchedulerState) =
+    withSchedulerLock(s):
+      s.moduleMutationPaused = false
+      broadcast(s.workerCond)
+
   proc schedulerHasWorkerProgressUnlocked(s: SchedulerState): bool =
     if s.activeAsyncIoWorkers > 0 or s.pendingAsyncIoRequestsUnlocked() > 0:
       return true
@@ -17828,7 +18293,12 @@ when compileOption("threads") and defined(gcAtomicArc):
   proc waitForSchedulerWorkerCandidate(s: SchedulerState) =
     var pollTimer = false
     withSchedulerLock(s):
-      if s.workerStop or s.schedulerHasWorkerCandidateUnlocked():
+      if s.workerStop:
+        return
+      if s.moduleMutationPaused:
+        wait(s.workerCond, s.lock)
+        return
+      if s.schedulerHasWorkerCandidateUnlocked():
         return
       for f in s.waiters:
         if f.workerCandidate and f.waitTimer:
@@ -17919,6 +18389,13 @@ when compileOption("threads") and defined(gcAtomicArc):
         s.workerLeaseCount = 0
         s.workerStop = false
         s.activeWorkerFibers.setLen(0)
+
+else:
+  proc pauseSchedulerWorkersForModuleMutation(s: SchedulerState) =
+    discard s
+
+  proc resumeSchedulerWorkersAfterModuleMutation(s: SchedulerState) =
+    discard s
 
 proc beginSchedulerWorkerLease(): SchedulerWorkerLease =
   when compileOption("threads") and defined(gcAtomicArc):
@@ -25963,9 +26440,17 @@ proc collectStaticImportForms(forms: openArray[Value], first = 0): seq[Value] =
     else:
       discard
 
+proc moduleCompileCacheIdentity(app: Application, absPath: string): string =
+  let base = app.moduleIdentityFor(absPath)
+  if activeSandboxCompileKey.len > 0 and
+      absPath.isRelativeTo(activeSandboxCompileDir):
+    "sandbox:" & activeSandboxCompileKey & "\x1f" & base
+  else:
+    base
+
 proc moduleCompileHeader(app: Application,
                          absPath: string): ModuleCompileHeader =
-  let identity = app.moduleIdentityFor(absPath)
+  let identity = app.moduleCompileCacheIdentity(absPath)
   if app.moduleCompileHeaders.hasKey(identity):
     return app.moduleCompileHeaders[identity]
   let source =
@@ -25978,10 +26463,11 @@ proc moduleCompileHeader(app: Application,
   let sourceName =
     if app.portableCompileNames: identity else: absPath
   let unit = readAllWithLocs(source, sourceName)
-  result = ModuleCompileHeader(unit: unit,
+  result = ModuleCompileHeader(path: absPath, unit: unit,
                                compileInterface:
                                  buildCompileInterface(unit.forms, sourceName))
   app.moduleCompileHeaders[identity] = result
+  inc app.moduleEpoch
 
 proc compileModuleArtifact(app: Application,
                            absPath: string): ModuleCompileArtifact =
@@ -25989,7 +26475,7 @@ proc compileModuleArtifact(app: Application,
   ## executing top-level code. Wildcards and aliases consume lightweight
   ## headers; macros and explicit re-exports may require a dependency artifact.
   ## Value-only cycles remain runtime cycles.
-  let identity = app.moduleIdentityFor(absPath)
+  let identity = app.moduleCompileCacheIdentity(absPath)
   if app.moduleCompileArtifacts.hasKey(identity):
     return app.moduleCompileArtifacts[identity]
   if identity in app.moduleCompileLoading:
@@ -26008,6 +26494,8 @@ proc compileModuleArtifact(app: Application,
       initTable[string, CompileNamespaceInterface]()
     var dependencies = initTable[string, ModuleCompileArtifact]()
     var importSpecs: seq[ImportSpec]
+    var runtimeDependencies: seq[string]
+    var compileDependencies: seq[string]
     var ownInterface = cloneCompileInterface(header.compileInterface)
     for form in collectStaticImportForms(header.unit.forms):
       if importFromPath(form).len == 0:
@@ -26018,7 +26506,8 @@ proc compileModuleArtifact(app: Application,
       let depPath = app.resolveModuleRef(importSpec.modulePath,
                                          importSpec.pkgName)
       var dependency: ModuleCompileArtifact
-      let depIdentity = app.moduleIdentityFor(depPath)
+      var compileDependency = importSpec.reexport
+      let depIdentity = app.moduleCompileCacheIdentity(depPath)
       var depInterface: CompileNamespaceInterface
       if app.moduleCompileArtifacts.hasKey(depIdentity):
         # A verified dependency artifact is the authoritative compiler input.
@@ -26038,12 +26527,15 @@ proc compileModuleArtifact(app: Application,
         let needsDependency = importSpec.reexport or depHasReexports or
           compileInterfaceNeedsArtifact(depInterface)
         if needsDependency:
+          compileDependency = true
           dependency = compileModuleArtifact(app, depPath)
           dependencies[raw] = dependency
           depInterface = dependency.compileInterface
       if depInterface == nil:
         raise newException(GeneError,
           "dependency artifact has no compile interface: " & depIdentity)
+      if compileInterfaceNeedsArtifact(depInterface):
+        compileDependency = true
       importedInterfaces[raw] = depInterface
       importedSyntaxFns[raw] = compileInterfacePaths(
         depInterface, cbcSyntaxFn)
@@ -26060,12 +26552,31 @@ proc compileModuleArtifact(app: Application,
         if resolved.found and resolved.entry.category == cbcMacro:
           needsMacroArtifact = true
           break
+      var hasRuntimeImport = importSpec.alias.len > 0 or importSpec.wildcard
+      if not hasRuntimeImport:
+        for selection in importSpec.selections:
+          let resolved = compileInterfaceEntryAt(
+            depInterface, selection.name.split('/'))
+          if resolved.found and resolved.entry.category != cbcMacro:
+            hasRuntimeImport = true
+            break
+      for selection in importSpec.selections:
+        let resolved = compileInterfaceEntryAt(
+          depInterface, selection.name.split('/'))
+        if resolved.found and resolved.entry.category == cbcProtocol:
+          compileDependency = true
+          break
+      if hasRuntimeImport and depPath notin runtimeDependencies:
+        runtimeDependencies.add depPath
       if needsMacroArtifact:
+        compileDependency = true
         if dependency == nil:
           dependency = compileModuleArtifact(app, depPath)
           dependencies[raw] = dependency
           importedInterfaces[raw] = dependency.compileInterface
         importedMacros[raw] = dependency.macroExports
+      if compileDependency and depPath notin compileDependencies:
+        compileDependencies.add depPath
       if importSpec.reexport:
         let publicInterface = importedInterfaces[raw]
         if importSpec.alias.len > 0:
@@ -26094,7 +26605,8 @@ proc compileModuleArtifact(app: Application,
                                           importedSyntaxFns,
                                           importedInterfaces,
                                           capabilityCatalog,
-                                          enforceCapabilityCatalog = true)
+                                          enforceCapabilityCatalog = true,
+                                          budget = activeSandboxCompileBudget)
     attachCompiledNativeMetadata(ownInterface, compiled.chunk,
                                  header.unit.sourceName)
     var macroExports = compiled.macroExports
@@ -26130,11 +26642,16 @@ proc compileModuleArtifact(app: Application,
             if exported notin syntaxFnExports:
               syntaxFnExports.add exported
     syntaxFnExports.sort()
+    runtimeDependencies.sort()
+    compileDependencies.sort()
     result = ModuleCompileArtifact(chunk: compiled.chunk,
                                    macroExports: macroExports,
                                    syntaxFnExports: syntaxFnExports,
-                                   compileInterface: ownInterface)
+                                   compileInterface: ownInterface,
+                                   runtimeDependencies: runtimeDependencies,
+                                   compileDependencies: compileDependencies)
     app.moduleCompileArtifacts[identity] = result
+    inc app.moduleEpoch
   finally:
     app.currentModuleDir = savedDir
     app.currentPackage = savedPkg
@@ -26259,6 +26776,24 @@ proc materializeScriptCapabilities(app: Application) =
         app.resolvedModuleCeiling(module, app.applicationCapabilityContext))
   app.capabilitiesMaterialized = true
 
+proc rejectSandboxNativeDeclarations(chunk: Chunk) =
+  if chunk == nil:
+    return
+  if chunk.ffiLibraries.len > 0 or chunk.ffiFns.len > 0 or
+      chunk.ffiStructs.len > 0 or chunk.ffiUnions.len > 0 or
+      chunk.ffiSignatures.len > 0:
+    raise newException(GeneError,
+      "sandbox policy disables FFI and native declarations")
+  for typ in chunk.typeProtos:
+    if typ.nativeType != nil or typ.capabilityName.len > 0:
+      raise newException(GeneError,
+        "sandbox policy disables native and capability type declarations")
+  if chunk.webModules.len > 0:
+    raise newException(GeneError,
+      "sandbox policy disables embedded web module declarations")
+  for child in chunk.subchunks:
+    rejectSandboxNativeDeclarations(child)
+
 proc loadModuleValue(app: Application, absPath: string): Value =
   ## Initialize/cache the runtime phase of a compiled module. Compile-time
   ## macro discovery has a separate artifact cache and cycle set above and does
@@ -26341,6 +26876,15 @@ proc loadModuleValue(app: Application, absPath: string): Value =
   app.sandboxRestricting = inSandbox
   let modScope = newGlobalScope(app)
   modScope.implStageRoot = true
+  if inSandbox and activeSandboxGenerationId != 0:
+    modScope.sandboxGenerationId = activeSandboxGenerationId
+    if activeSandboxPolicy != nil:
+      modScope.moduleExecutionPolicy = activeSandboxPolicy
+      modScope.evalBudget = evalBudgetForLimits(
+        activeSandboxPolicy.maxSteps,
+        activeSandboxPolicy.maxMemoryMb,
+        activeSandboxPolicy.timeoutMs,
+        nil)
   let savedDir = app.currentModuleDir
   let savedPkg = app.currentPackage
   app.currentModuleDir = app.moduleSourceDir(absPath)
@@ -26349,6 +26893,10 @@ proc loadModuleValue(app: Application, absPath: string): Value =
                           app.currentPackage)
   try:
     let artifact = compileModuleArtifact(app, absPath)
+    if inSandbox and activeSandboxGenerationId != 0:
+      rejectSandboxNativeDeclarations(artifact.chunk)
+    if modScope.evalBudget != nil:
+      consumeEvalStep(modScope.evalBudget)
     result.setModuleCapabilities(artifact.chunk.moduleCapabilityRow)
     result.setModuleCapabilitiesStrict(artifact.chunk.capabilitiesStrict)
     if artifact.chunk.requireStrictDependencies:
@@ -26369,6 +26917,7 @@ proc loadModuleValue(app: Application, absPath: string): Value =
     app.currentPackage = savedPkg
     app.moduleLoading.excl identity
   app.moduleCache[identity] = result
+  inc app.moduleEpoch
   if app.capabilitiesMaterialized:
     app.materializeLoadedModule(result)
 
@@ -26459,6 +27008,7 @@ proc reloadFileModule*(app: Application, path: string): Value =
   let oldBaseScopes = app.baseScopes
   let oldIndex = app.implScopeIndex
   let oldEpoch = app.implEpoch
+  let oldModuleEpoch = app.moduleEpoch
   let oldSerdeOrigins = app.serdeOrigins
   let oldSerdeValueOrigins = app.serdeValueOrigins
   let oldSerdeOriginModules = app.serdeOriginModules
@@ -26533,6 +27083,7 @@ proc reloadFileModule*(app: Application, path: string): Value =
     for update in updatedScopes:
       update.scope.impls = update.impls
     app.moduleCache[identity] = replacement
+    inc app.moduleEpoch
     var bases: seq[Scope]
     for scope in app.baseScopes:
       if scope != oldScope:
@@ -26553,6 +27104,7 @@ proc reloadFileModule*(app: Application, path: string): Value =
     app.baseScopes = oldBaseScopes
     app.implScopeIndex = oldIndex
     app.implEpoch = oldEpoch
+    app.moduleEpoch = oldModuleEpoch
     app.serdeOrigins = oldSerdeOrigins
     app.serdeValueOrigins = oldSerdeValueOrigins
     app.serdeOriginModules = oldSerdeOriginModules
@@ -26794,6 +27346,649 @@ proc biRuntimeLoadSandboxed(args: openArray[Value],
   app.loadSandboxedModule(args[0].strVal, args[1].strVal, grants, shared,
     if args.len == 5: args[4].strVal else: "")
 
+proc nextRuntimeResourceId(): uint64 =
+  result = nextResourceAuthorityId.fetchAdd(1'u64) + 1'u64
+  if result == 0:
+    raise newException(GeneError,
+      "runtime resource identity space is exhausted")
+
+proc newRuntimeResourceHandle(scope: Scope, typeName: string,
+                              id: uint64): Value =
+  let typ = builtinBinding(scope, typeName)
+  if typ.kind != vkType:
+    raise newException(GeneError, typeName & " type is unavailable")
+  result = newNode(typ, immutable = true)
+  result.setResourceAuthorityId(id)
+
+proc scopeInsideSandbox(app: Application, scope: Scope): bool =
+  var current = scope
+  while current != nil:
+    for _, sandboxRoot in app.sandboxRoots:
+      if current == sandboxRoot:
+        return true
+    current = current.parent
+
+proc requireSandboxHostScope(name: string, call: ptr NativeCall): Scope =
+  result = if call == nil: nil else: call[].dispatchScope
+  if result == nil or result.application == nil:
+    raise newException(GeneError,
+      name & " cannot resolve the calling application")
+  let app = Application(result.application)
+  if app.scopeInsideSandbox(result):
+    raise newException(GeneError,
+      "a sandboxed module cannot manage sandbox transactions")
+
+proc sandboxTransactionRecord(name: string, handle: Value,
+                              scope: Scope): tuple[id: uint64,
+                                                   record: SandboxTransactionRecord] =
+  if handle.kind != vkNode or handle.resourceAuthorityId == 0:
+    raise newException(GeneError, name & " expects a SandboxTransaction")
+  result.id = handle.resourceAuthorityId
+  acquire(resourceAuthorityLock)
+  try:
+    if sandboxTransactionRecords.hasKey(result.id):
+      result.record = sandboxTransactionRecords[result.id]
+  finally:
+    release(resourceAuthorityLock)
+  if result.record == nil:
+    raise newException(GeneError,
+      name & " received an invalid SandboxTransaction")
+  if result.record.application != nil and
+      (scope == nil or scope.application != result.record.application):
+    raise newException(GeneError,
+      name & " transaction belongs to another application")
+  if currentEventLane() != result.record.ownerLane:
+    raise newException(GeneError,
+      name & " transaction is owned by another lane")
+
+proc sandboxGenerationRecord(name: string, handle: Value,
+                             scope: Scope): tuple[id: uint64,
+                                                  record: SandboxGenerationRecord] =
+  if handle.kind != vkNode or handle.resourceAuthorityId == 0:
+    raise newException(GeneError, name & " expects a SandboxGeneration")
+  result.id = handle.resourceAuthorityId
+  acquire(resourceAuthorityLock)
+  try:
+    if sandboxGenerationRecords.hasKey(result.id):
+      result.record = sandboxGenerationRecords[result.id]
+  finally:
+    release(resourceAuthorityLock)
+  if result.record == nil:
+    raise newException(GeneError,
+      name & " received an invalid SandboxGeneration")
+  if result.record.application != nil and
+      (scope == nil or scope.application != result.record.application):
+    raise newException(GeneError,
+      name & " generation belongs to another application")
+  if currentEventLane() != result.record.ownerLane:
+    raise newException(GeneError,
+      name & " generation is owned by another lane")
+
+proc sandboxOption(options: Value, name: string): Value =
+  case options.kind
+  of vkMap:
+    options.mapEntries.getOrDefault(name, VOID)
+  of vkNode:
+    options.props.getOrDefault(name, VOID)
+  else:
+    VOID
+
+proc validateSandboxOptionNames(options: Value) =
+  const known = ["dir", "entry", "grants", "shared", "label", "policy"]
+  if options.kind notin {vkMap, vkNode}:
+    raise newException(GeneError,
+      "SandboxTransaction/prepare options must be a map or node")
+  case options.kind
+  of vkMap:
+    for name, _ in options.mapEntries:
+      if name notin known:
+        raise newException(GeneError,
+          "unknown SandboxTransaction/prepare option: ^" & name)
+  of vkNode:
+    for name, _ in options.props:
+      if name notin known:
+        raise newException(GeneError,
+          "unknown SandboxTransaction/prepare option: ^" & name)
+  else:
+    discard
+
+proc sandboxStringOption(options: Value, name: string,
+                         optional = false): string =
+  let value = options.sandboxOption(name)
+  if optional and value.kind in {vkVoid, vkNil}:
+    return ""
+  if value.kind != vkString:
+    raise newException(GeneError,
+      "SandboxTransaction/prepare ^" & name & " must be a Str")
+  value.strVal
+
+proc sandboxStringListOption(options: Value, name: string): seq[string] =
+  let value = options.sandboxOption(name)
+  if value.kind != vkList:
+    raise newException(GeneError,
+      "SandboxTransaction/prepare ^" & name & " must be a List")
+  for item in value.listItems:
+    if item.kind != vkString:
+      raise newException(GeneError,
+        "SandboxTransaction/prepare ^" & name & " entries must be Str")
+    result.add item.strVal
+
+proc appendCompileInterfaceRows(iface: CompileNamespaceInterface,
+                                prefix: string,
+                                rows: var seq[string]) =
+  if iface == nil:
+    return
+  var names: seq[string]
+  for name in iface.entries.keys:
+    names.add name
+  names.sort()
+  for name in names:
+    let entry = iface.entries[name]
+    let path = if prefix.len == 0: name else: prefix & "/" & name
+    var messages: seq[string]
+    for message in entry.protocolMessages:
+      messages.add message
+    messages.sort()
+    var row = path & "\x1f" & $entry.category & "\x1f" &
+      messages.join("\x1e")
+    if entry.ffiStruct != nil:
+      row.add "\x1f" & entry.ffiStruct.fingerprint
+    if entry.nativeType != nil:
+      row.add "\x1f" & entry.nativeType.contractFingerprint
+    if entry.typeForm.kind != vkNil:
+      row.add "\x1f" & entry.typeForm.print()
+    if entry.nativeSpec.kind != vkNil:
+      row.add "\x1f" & entry.nativeSpec.print()
+    rows.add row
+    if entry.category == cbcNamespace:
+      appendCompileInterfaceRows(entry.namespace, path, rows)
+
+proc compileInterfaceDigest(iface: CompileNamespaceInterface): string =
+  var rows: seq[string]
+  appendCompileInterfaceRows(iface, "", rows)
+  "sha256:" & sha256Hex(rows.join("\n"))
+
+proc sandboxRuntimeIdentity(app: Application, path, sandboxDir,
+                            sandboxKey: string): string =
+  let base = app.moduleIdentityFor(path)
+  if path.isRelativeTo(sandboxDir):
+    "sandbox:" & sandboxKey & "\x1f" & base
+  else:
+    base
+
+proc sandboxHeaderForPath(app: Application, path, sandboxDir,
+                          sandboxKey: string): ModuleCompileHeader =
+  let base = app.moduleIdentityFor(path)
+  let key =
+    if path.isRelativeTo(sandboxDir):
+      "sandbox:" & sandboxKey & "\x1f" & base
+    else:
+      base
+  app.moduleCompileHeaders.getOrDefault(key)
+
+proc sandboxArtifactForPath(app: Application, path, sandboxDir,
+                            sandboxKey: string): ModuleCompileArtifact =
+  let base = app.moduleIdentityFor(path)
+  let key =
+    if path.isRelativeTo(sandboxDir):
+      "sandbox:" & sandboxKey & "\x1f" & base
+    else:
+      base
+  app.moduleCompileArtifacts.getOrDefault(key)
+
+proc sandboxModuleForPath(app: Application, path, sandboxDir,
+                          sandboxKey: string): Value =
+  app.moduleCache.getOrDefault(
+    app.sandboxRuntimeIdentity(path, sandboxDir, sandboxKey), NIL)
+
+proc sandboxGraph(app: Application, entryPath, sandboxDir, sandboxKey: string,
+                  moduleKeys, compileKeys: openArray[string]): Value =
+  var pending: seq[string]
+  var paths = initHashSet[string]()
+  for key in moduleKeys:
+    let module = app.moduleCache.getOrDefault(key, NIL)
+    if module.kind == vkModule and not paths.containsOrIncl(module.modulePath):
+      pending.add module.modulePath
+  for key in compileKeys:
+    let header = app.moduleCompileHeaders.getOrDefault(key)
+    if header != nil and not paths.containsOrIncl(header.path):
+      pending.add header.path
+
+  var index = 0
+  while index < pending.len:
+    let path = pending[index]
+    inc index
+    let artifact = app.sandboxArtifactForPath(path, sandboxDir, sandboxKey)
+    let module = app.sandboxModuleForPath(path, sandboxDir, sandboxKey)
+    var dependencies: seq[string]
+    if artifact != nil:
+      for dependency in artifact.runtimeDependencies:
+        if dependency notin dependencies:
+          dependencies.add dependency
+      for dependency in artifact.compileDependencies:
+        if dependency notin dependencies:
+          dependencies.add dependency
+    if module.kind == vkModule:
+      for dependency in module.moduleDependencies:
+        if dependency notin dependencies:
+          dependencies.add dependency
+    for dependency in dependencies:
+      if not paths.containsOrIncl(dependency):
+        pending.add dependency
+
+  var orderedPaths: seq[string]
+  for path in paths:
+    orderedPaths.add path
+  orderedPaths.sort()
+  var nodes: seq[Value]
+  for path in orderedPaths:
+    let owned = path.isRelativeTo(sandboxDir)
+    let identity = app.sandboxRuntimeIdentity(path, sandboxDir, sandboxKey)
+    let header = app.sandboxHeaderForPath(path, sandboxDir, sandboxKey)
+    let artifact = app.sandboxArtifactForPath(path, sandboxDir, sandboxKey)
+    var dependencyRows: seq[tuple[key: string, value: Value]]
+    if artifact != nil:
+      for dependency in artifact.runtimeDependencies:
+        let depIdentity = app.sandboxRuntimeIdentity(
+          dependency, sandboxDir, sandboxKey)
+        var entries = initPropTable()
+        entries["identity"] = newStr(depIdentity)
+        entries["phase"] = newStr("runtime")
+        dependencyRows.add((depIdentity & "\x1fruntime",
+                            newMap(entries, immutable = true)))
+      for dependency in artifact.compileDependencies:
+        let depIdentity = app.sandboxRuntimeIdentity(
+          dependency, sandboxDir, sandboxKey)
+        var entries = initPropTable()
+        entries["identity"] = newStr(depIdentity)
+        entries["phase"] = newStr("compile")
+        dependencyRows.add((depIdentity & "\x1fcompile",
+                            newMap(entries, immutable = true)))
+    let module = app.sandboxModuleForPath(path, sandboxDir, sandboxKey)
+    if module.kind == vkModule:
+      for dependency in module.moduleDependencies:
+        let depIdentity = app.sandboxRuntimeIdentity(
+          dependency, sandboxDir, sandboxKey)
+        let rowKey = depIdentity & "\x1fruntime"
+        var duplicate = false
+        for row in dependencyRows:
+          if row.key == rowKey:
+            duplicate = true
+            break
+        if not duplicate:
+          var entries = initPropTable()
+          entries["identity"] = newStr(depIdentity)
+          entries["phase"] = newStr("runtime")
+          dependencyRows.add((rowKey, newMap(entries, immutable = true)))
+    dependencyRows.sort(proc(a, b: tuple[key: string, value: Value]): int =
+      cmp(a.key, b.key))
+    var deps: seq[Value]
+    for row in dependencyRows:
+      deps.add row.value
+    let source =
+      if header != nil: header.unit.source
+      elif fileExists(path): readFile(path)
+      else: ""
+    let iface =
+      if artifact != nil: artifact.compileInterface
+      elif header != nil: header.compileInterface
+      else: nil
+    var entries = initPropTable()
+    entries["identity"] = newStr(identity)
+    entries["owned"] = newBool(owned)
+    entries["path"] = newStr(path)
+    entries["source_digest"] = newStr("sha256:" & sha256Hex(source))
+    entries["compile_interface_digest"] =
+      newStr(compileInterfaceDigest(iface))
+    entries["dependencies"] = newList(deps, immutable = true)
+    nodes.add newMap(entries, immutable = true)
+  var graphEntries = initPropTable()
+  graphEntries["root"] = newStr(
+    app.sandboxRuntimeIdentity(entryPath, sandboxDir, sandboxKey))
+  graphEntries["nodes"] = newList(nodes, immutable = true)
+  freezeValue(newMap(graphEntries, immutable = true))
+
+proc biRuntimeSandboxTransaction(args: openArray[Value],
+                                 call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError,
+      "runtime/sandbox_transaction expects no arguments")
+  let scope = requireSandboxHostScope("runtime/sandbox_transaction", call)
+  let app = scope.application()
+  let scheduler = schedulerForScope(scope)
+  if currentEventLane() != scheduler.rootLane:
+    raise newException(GeneError,
+      "runtime/sandbox_transaction requires the scheduler root lane")
+  if app.moduleLoading.len != 0 or app.moduleCompileLoading.len != 0:
+    raise newException(GeneError,
+      "cannot begin a sandbox transaction during module loading")
+  discard app.builtinsScope()
+  let id = nextRuntimeResourceId()
+  let state = captureSandboxAppState(app)
+  let record = SandboxTransactionRecord(
+    application: app,
+    ownerLane: currentEventLane(),
+    state: stsOpen,
+    baseModuleEpoch: app.moduleEpoch,
+    baseImplEpoch: app.implEpoch,
+    candidate: state)
+  acquire(resourceAuthorityLock)
+  try:
+    sandboxTransactionRecords[id] = record
+  finally:
+    release(resourceAuthorityLock)
+  newRuntimeResourceHandle(scope, "SandboxTransaction", id)
+
+proc biSandboxTransactionPrepare(args: openArray[Value],
+                                 call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2:
+    raise newException(GeneError,
+      "SandboxTransaction/prepare expects options")
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let resolved = sandboxTransactionRecord(
+    "SandboxTransaction/prepare", args[0], scope)
+  let transaction = resolved.record
+  if transaction.state != stsOpen:
+    raise newException(GeneError,
+      "SandboxTransaction/prepare requires an open transaction")
+  let options = args[1]
+  validateSandboxOptionNames(options)
+  let dir = sandboxStringOption(options, "dir")
+  let entry = sandboxStringOption(options, "entry")
+  let grants = sandboxStringListOption(options, "grants")
+  let shared = sandboxStringListOption(options, "shared")
+  let label = sandboxStringOption(options, "label", optional = true)
+  let policyValue = options.sandboxOption("policy")
+  if policyValue.kind in {vkVoid, vkNil}:
+    raise newException(GeneError,
+      "SandboxTransaction/prepare requires ^policy")
+  let limits = validateEvalPolicy(policyValue)
+  let policy = ModuleExecutionPolicy(maxSteps: limits.maxSteps,
+                                     maxMemoryMb: limits.maxMemoryMb,
+                                     timeoutMs: limits.timeoutMs)
+  let app = transaction.application
+  let sandboxDir =
+    if dir.isAbsolute: normalizedDir(dir)
+    else: normalizedDir(app.appPackage.root / dir)
+  let generationId = nextRuntimeResourceId()
+  let isolationKey = "generation:" & $generationId
+  let sandboxKey = grants.sorted().join(",") & "\x1e" & isolationKey
+  var working = transaction.candidate
+  var beforeModuleKeys = initHashSet[string]()
+  for key in working.moduleCache.keys:
+    beforeModuleKeys.incl key
+  var beforeCompileKeys = initHashSet[string]()
+  for key in working.moduleCompileHeaders.keys:
+    beforeCompileKeys.incl key
+  for key in working.moduleCompileArtifacts.keys:
+    beforeCompileKeys.incl key
+  let beforeScopeCount = working.baseScopes.len
+  let beforeImplCount = working.rootImpls.len
+  let live = captureSandboxAppState(app)
+  let scheduler = schedulerForScope(scope)
+  let savedCompileKey = activeSandboxCompileKey
+  let savedCompileDir = activeSandboxCompileDir
+  let savedGenerationId = activeSandboxGenerationId
+  let savedPolicy = activeSandboxPolicy
+  let savedCompileBudget = activeSandboxCompileBudget
+  var module = NIL
+  var nextState: SandboxAppState
+  var moduleKeys: seq[string]
+  var moduleEntries = initTable[string, Value]()
+  var compileKeys: seq[string]
+  var scopes: seq[Scope]
+  var canonicalImpls: seq[ProtocolImpl]
+  var graph = NIL
+  pauseSchedulerWorkersForModuleMutation(scheduler)
+  try:
+    installSandboxAppState(app, working)
+    activeSandboxCompileKey = sandboxKey
+    activeSandboxCompileDir = sandboxDir
+    activeSandboxGenerationId = generationId
+    activeSandboxPolicy = policy
+    activeSandboxCompileBudget = newCompileBudget(
+      limits.maxSteps, limits.maxMemoryMb, limits.timeoutMs)
+    module = app.loadSandboxedModule(dir, entry, grants, shared, isolationKey)
+    nextState = captureSandboxAppState(app)
+    for key, value in nextState.moduleCache:
+      if key notin beforeModuleKeys and
+          key.startsWith("sandbox:" & sandboxKey & "\x1f"):
+        moduleKeys.add key
+        moduleEntries[key] = value
+    for key in nextState.moduleCompileHeaders.keys:
+      let header = nextState.moduleCompileHeaders[key]
+      if key notin beforeCompileKeys and key notin compileKeys and
+          header != nil and header.path.isRelativeTo(sandboxDir):
+        compileKeys.add key
+    for key in nextState.moduleCompileArtifacts.keys:
+      let header = nextState.moduleCompileHeaders.getOrDefault(key)
+      if key notin beforeCompileKeys and key notin compileKeys and
+          header != nil and header.path.isRelativeTo(sandboxDir):
+        compileKeys.add key
+    if nextState.baseScopes.len > beforeScopeCount:
+      for i in beforeScopeCount ..< nextState.baseScopes.len:
+        if nextState.baseScopes[i].sandboxGenerationId == generationId:
+          scopes.add nextState.baseScopes[i]
+    if nextState.rootImpls.len > beforeImplCount:
+      for i in beforeImplCount ..< nextState.rootImpls.len:
+        let pending = nextState.rootImpls[i]
+        if pending.originPath.len > 0 and
+            pending.originPath.isRelativeTo(sandboxDir):
+          canonicalImpls.add pending
+    graph = sandboxGraph(app, module.modulePath, sandboxDir, sandboxKey,
+                         moduleKeys, compileKeys)
+  finally:
+    activeSandboxCompileKey = savedCompileKey
+    activeSandboxCompileDir = savedCompileDir
+    activeSandboxGenerationId = savedGenerationId
+    activeSandboxPolicy = savedPolicy
+    activeSandboxCompileBudget = savedCompileBudget
+    installSandboxAppState(app, live)
+    resumeSchedulerWorkersAfterModuleMutation(scheduler)
+  transaction.candidate = nextState
+  transaction.generations.add generationId
+  let generation = SandboxGenerationRecord(
+    application: app,
+    ownerLane: transaction.ownerLane,
+    transactionId: resolved.id,
+    state: sgsPrepared,
+    label: label,
+    sandboxKey: sandboxKey,
+    sandboxDir: sandboxDir,
+    entryPath: module.modulePath,
+    module: module,
+    graph: graph,
+    moduleKeys: moduleKeys,
+    moduleEntries: moduleEntries,
+    compileKeys: compileKeys,
+    scopes: scopes,
+    canonicalImpls: canonicalImpls)
+  acquire(resourceAuthorityLock)
+  try:
+    sandboxGenerationRecords[generationId] = generation
+  finally:
+    release(resourceAuthorityLock)
+  newRuntimeResourceHandle(scope, "SandboxGeneration", generationId)
+
+proc biSandboxTransactionCommit(args: openArray[Value],
+                                call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("SandboxTransaction/commit", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let resolved = sandboxTransactionRecord(
+    "SandboxTransaction/commit", args[0], scope)
+  let transaction = resolved.record
+  case transaction.state
+  of stsCommitted:
+    return NIL
+  of stsDiscarded:
+    raise newException(GeneError,
+      "cannot commit a discarded SandboxTransaction")
+  of stsOpen:
+    discard
+  let app = transaction.application
+  if app.moduleEpoch != transaction.baseModuleEpoch or
+      app.implEpoch != transaction.baseImplEpoch:
+    raise newException(GeneError,
+      "sandbox transaction base changed before commit")
+  acquire(resourceAuthorityLock)
+  try:
+    for generationId in transaction.generations:
+      if not sandboxGenerationRecords.hasKey(generationId) or
+          sandboxGenerationRecords[generationId].state != sgsPrepared:
+        raise newException(GeneError,
+          "sandbox transaction contains an invalid generation")
+  finally:
+    release(resourceAuthorityLock)
+  # Everything fallible is complete. These assignments form one non-yielding
+  # owning-lane publication turn, so no Gene task can observe a partial graph.
+  let scheduler = schedulerForScope(scope)
+  pauseSchedulerWorkersForModuleMutation(scheduler)
+  try:
+    installSandboxAppState(app, transaction.candidate)
+    acquire(resourceAuthorityLock)
+    try:
+      for generationId in transaction.generations:
+        sandboxGenerationRecords[generationId].state = sgsCommitted
+    finally:
+      release(resourceAuthorityLock)
+    transaction.state = stsCommitted
+    transaction.application = nil
+    transaction.candidate = SandboxAppState()
+  finally:
+    resumeSchedulerWorkersAfterModuleMutation(scheduler)
+  NIL
+
+proc biSandboxTransactionDiscard(args: openArray[Value],
+                                 call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("SandboxTransaction/discard", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let resolved = sandboxTransactionRecord(
+    "SandboxTransaction/discard", args[0], scope)
+  let transaction = resolved.record
+  case transaction.state
+  of stsDiscarded:
+    return NIL
+  of stsCommitted:
+    raise newException(GeneError,
+      "cannot discard a committed SandboxTransaction")
+  of stsOpen:
+    discard
+  acquire(resourceAuthorityLock)
+  try:
+    for generationId in transaction.generations:
+      if sandboxGenerationRecords.hasKey(generationId):
+        let generation = sandboxGenerationRecords[generationId]
+        generation.state = sgsDiscarded
+        generation.application = nil
+        generation.module = NIL
+        generation.graph = NIL
+        generation.moduleEntries.clear()
+        generation.moduleKeys.setLen(0)
+        generation.compileKeys.setLen(0)
+        generation.scopes.setLen(0)
+        generation.canonicalImpls.setLen(0)
+  finally:
+    release(resourceAuthorityLock)
+  transaction.state = stsDiscarded
+  transaction.application = nil
+  transaction.candidate = SandboxAppState()
+  NIL
+
+proc biSandboxGenerationModule(args: openArray[Value],
+                               call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("SandboxGeneration/module", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let generation = sandboxGenerationRecord(
+    "SandboxGeneration/module", args[0], scope).record
+  if generation.state notin {sgsPrepared, sgsCommitted}:
+    raise newException(GeneError,
+      "SandboxGeneration/module requires a live generation")
+  generation.module
+
+proc biSandboxGenerationGraph(args: openArray[Value],
+                              call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("SandboxGeneration/graph", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let generation = sandboxGenerationRecord(
+    "SandboxGeneration/graph", args[0], scope).record
+  if generation.state notin {sgsPrepared, sgsCommitted, sgsReleased}:
+    raise newException(GeneError,
+      "SandboxGeneration/graph requires a prepared generation")
+  generation.graph
+
+proc removeGenerationImpls(app: Application,
+                           owned: openArray[ProtocolImpl]) =
+  var retained: seq[ProtocolImpl]
+  for candidate in app.builtinsScope().impls:
+    var remove = false
+    for target in owned:
+      if candidate.protocol.bits == target.protocol.bits and
+          candidate.receiver.bits == target.receiver.bits and
+          candidate.originPath == target.originPath and
+          sameImplMessages(candidate, target):
+        remove = true
+        break
+    if not remove:
+      retained.add candidate
+  app.builtinsScope().impls = retained
+
+proc biSandboxGenerationRelease(args: openArray[Value],
+                                call: ptr NativeCall): Value {.nimcall.} =
+  requireOne("SandboxGeneration/release", args)
+  let scope = if call == nil: nil else: call[].dispatchScope
+  let generation = sandboxGenerationRecord(
+    "SandboxGeneration/release", args[0], scope).record
+  case generation.state
+  of sgsReleased:
+    return NIL
+  of sgsPrepared:
+    raise newException(GeneError,
+      "cannot release an uncommitted SandboxGeneration; discard its transaction")
+  of sgsDiscarded:
+    raise newException(GeneError,
+      "cannot release a discarded SandboxGeneration")
+  of sgsCommitted:
+    discard
+  let app = generation.application
+  let scheduler = schedulerForScope(scope)
+  pauseSchedulerWorkersForModuleMutation(scheduler)
+  try:
+    for key, value in generation.moduleEntries:
+      if app.moduleCache.hasKey(key) and app.moduleCache[key].bits == value.bits:
+        app.moduleCache.del(key)
+    for key in generation.compileKeys:
+      app.moduleCompileHeaders.del(key)
+      app.moduleCompileArtifacts.del(key)
+    removeGenerationImpls(app, generation.canonicalImpls)
+    var retainedScopes: seq[Scope]
+    for candidate in app.baseScopes:
+      var remove = false
+      for owned in generation.scopes:
+        if candidate == owned:
+          remove = true
+          break
+      if not remove:
+        retainedScopes.add candidate
+    app.baseScopes = retainedScopes
+    app.rebuildImplScopeIndex()
+    inc app.moduleEpoch
+    inc app.implEpoch
+    app.serdeOrigins.clear()
+    app.serdeValueOrigins.clear()
+    app.serdeOriginModules.clear()
+    app.serdeOriginBuiltinsDone = false
+    generation.state = sgsReleased
+    generation.application = nil
+    generation.module = NIL
+    generation.moduleEntries.clear()
+    generation.moduleKeys.setLen(0)
+    generation.compileKeys.setLen(0)
+    generation.scopes.setLen(0)
+    generation.canonicalImpls.setLen(0)
+  finally:
+    resumeSchedulerWorkersAfterModuleMutation(scheduler)
+  NIL
+
 proc loadCompiledFileModule*(app: Application, path: string,
                              chunk: Chunk): Value =
   ## Initialize an entry module from the exact chunk produced by BuildEngine.
@@ -26830,6 +28025,7 @@ proc loadCompiledFileModule*(app: Application, path: string,
     app.currentPackage = savedPkg
     app.moduleLoading.excl identity
   app.moduleCache[identity] = result
+  inc app.moduleEpoch
   app.materializeApplicationCapabilities(result)
 
 proc compileFileModule*(app: Application, path: string): Chunk =

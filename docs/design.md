@@ -4071,6 +4071,8 @@ Rules:
 - `scope` owns tasks spawned directly inside it;
 - `spawn expr` evaluates `expr` in a child task and returns `(Task T E)`;
 - `await task` suspends the current task and returns its value or propagates its recoverable error;
+- `task/.join` suspends without propagating or consuming the task payload and
+  returns repeatable `TaskOutcome/ok`, `error`, `panic`, or `cancelled` data;
 - leaving a scope normally waits for its live child tasks;
 - leaving because of an error or cancellation cancels remaining children, waits for cleanup, and then propagates;
 - cancellation is cooperative and is observed at suspension points and compiler/runtime safepoints;
@@ -4088,6 +4090,10 @@ Use this for UI frameworks and other thread-affine native APIs. It disables
 worker-candidate placement and capture snapshotting even when static analysis
 would otherwise consider the body worker-safe. `root` is currently the only
 explicit `^lane` value; omitting `^lane` retains automatic placement.
+Root-lane spawn enqueues the child and returns its `Task` before the child body
+can begin. Lane-owned modules assert their call site with
+`$runtime/require_root_lane`, which raises `RuntimeLaneError` off the scheduler
+root lane without exposing thread or scheduler ids.
 
 Task placement has two paths. A root-lane cooperative task may retain local,
 non-`Send` captures such as `Cell`; it never migrates. A worker-candidate task
@@ -4108,6 +4114,13 @@ A task may be cancelled explicitly:
 ```gene
 (t .cancel)
 ```
+
+Lifetime owners that must observe every child use `(t .join)`. Unlike `await`,
+`join` converts the target's terminal state to immutable `TaskOutcome` data,
+may be repeated, and leaves a successful/error payload available to a later
+`await`. Cancelling the joining task still propagates cancellation normally and
+does not cancel an otherwise independent target task. Panic summaries are
+bounded to 4096 UTF-8 bytes.
 
 Cancellation is represented separately from ordinary domain errors, but may be caught only by APIs that deliberately expose cancellation handling. Code should normally allow it to propagate. Concretely:
 
@@ -5185,7 +5198,7 @@ libcurl binding as `net/http_client`. Design decisions:
 - This is a script-running feature, not the package story: packages and
   registries (`docs/proposals/distribution.md`) remain the dependency answer.
 
-### 15.10 Sandboxed module loading
+### 15.10 Sandboxed module loading and generations
 
 ```gene
 ($runtime/load_sandboxed dir entry grants shared [isolation_key])
@@ -5202,12 +5215,60 @@ never withheld. An unknown grant name is an error, not a silently tighter
 sandbox.
 
 The optional `isolation_key` separates module-cache identity for two trusted
-host entries that load the same bytes under different immutable policies. After
-the declaration-only load, a trusted host may call
-`$runtime/configure_module` under an attenuated capability context with an eval
-policy. Configuration is immutable. Every later external function or protocol
-method entry receives that module ceiling and a fresh transitive budget, so an
-escaped value cannot outlive its sandbox policy.
+host entries that load the same bytes. `load_sandboxed` is the compatibility
+path: it initializes and publishes immediately. A trusted host loading a
+declaration-only module may subsequently call `$runtime/configure_module` under
+an attenuated capability context, but that cannot retroactively bound module
+initialization and is not the interface for untrusted transactional plugins.
+
+Transactional loaders use a sandbox transaction:
+
+```gene
+(var transaction ($runtime/sandbox_transaction))
+(var generation
+  (transaction .prepare
+    {^dir plugin_root
+     ^entry "plugin.gene"
+     ^grants []
+     ^shared shared_contracts
+     ^label "tenant:plugin"
+     ^policy {^max_steps 100000
+              ^max_memory_mb 64
+              ^timeout_ms 2000}}))
+
+(var candidate generation/.module)
+(var graph generation/.graph)
+transaction/.commit       # publish every prepared generation
+# or: transaction/.discard
+
+generation/.release       # after all callers are quiescent
+```
+
+`SandboxTransaction/prepare` may add several generation roots. Each receives a
+fresh runtime identity; `label` is diagnostic only. Compilation, template-macro
+expansion, module initialization, and every later external function or protocol
+entry are bounded by the supplied policy. Prepared module/compile caches,
+protocol registrations, serde origins, and module scopes remain prospective.
+Candidate code sees its own definitions, while unrelated live code does not.
+Preparation pauses worker module readers and restricts any scheduler pumping
+performed by candidate initialization to candidate-owned tasks. FFI and native
+or capability type declarations, plus embedded `web_module` blocks, are
+rejected; the policy provides no enable flag for them.
+
+Commit first verifies that the live module and impl epochs still match the
+transaction base, then publishes every generation in one non-yielding root-lane
+turn. Discard drops all prospective roots. Both are idempotent in their valid
+terminal state and reject the opposite terminal operation. A committed
+generation remains explicitly owned until `release` removes its cache,
+compile-artifact, impl, serde-origin, and scope roots. Handles are opaque,
+non-`Send`, non-freezable, application-bound, and lane-owned; dropping one does
+not substitute for commit, discard, or release.
+
+`generation/graph` is deeply frozen and deterministically ordered. Every node
+contains normalized identity/path, the sha256 of the bytes actually compiled,
+a compile-interface digest, dependency edges tagged `runtime` or `compile`, and
+an `^owned` bit. Admitted shared modules appear as `^owned false` reference
+nodes and retain their host identity and policy.
 
 What makes it a boundary rather than a convention is that `$fs` is sugar for
 `gene/fs` and `gene` is resolved by a **scope-chain lookup**, so a module root

@@ -537,10 +537,13 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
   const MaxRetainedAnchorHandles = 64
 
   proc openAnchor(grant: CapabilityGrant): cint =
-    ## A descriptor for the grant's anchor directory, duplicated from a handle
-    ## the provider opened once and retains. Callers close what they get back;
-    ## the retained handle stays open, so every later operation walks from the
-    ## *same* directory inode rather than re-resolving the anchor's ancestors.
+    ## A descriptor for the grant's anchor directory, reopened relative to a
+    ## handle the provider opened once and retains. Callers close what they get
+    ## back; the retained handle stays open, so every later operation walks from
+    ## the *same* directory inode rather than re-resolving the anchor's
+    ## ancestors. Reopening through `openat` also gives directory readers an
+    ## independent stream offset. A plain `dup` shares that offset, causing a
+    ## second `listDir` on the anchor to remain stuck at end-of-directory.
     let provider = FilesystemProvider(grant.owningProvider)
     let anchor = grant.operationAnchor
     if provider == nil:
@@ -562,10 +565,10 @@ when defined(posix) and not defined(emscripten) and not defined(geneWasm):
             discard posix.close(handle)
           provider.anchorHandles.clear()
         provider.anchorHandles[anchor] = retained
-      result = posix.dup(retained)
+      result = openDirAt(retained, ".".cstring)
       if result < 0:
         raise newException(FilesystemCapabilityError,
-          "filesystem capability root handle could not be duplicated")
+          "filesystem capability root handle could not be opened")
     finally:
       release(provider.anchorLock)
 

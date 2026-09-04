@@ -1,5 +1,5 @@
 import gene/ext/logging
-import gene/[compiler, gir, native_api, types, vm]
+import gene/[compiler, gir, native_api, printer, types, vm]
 import std/[os, strutils, tables]
 import std/unittest
 
@@ -44,6 +44,7 @@ type EventLaneArgs = ref object
   lane: int
   raised: bool
   message: string
+  output: string
 
 proc publishOnWorker(args: EventLaneArgs) {.thread.} =
   ## An embedding host thread reaching a bus the way `geneCall` lets it: no
@@ -52,7 +53,7 @@ proc publishOnWorker(args: EventLaneArgs) {.thread.} =
     let attachment = geneAttachThread()
     args.lane = currentEventLane()
     try:
-      discard run(args.chunk, args.scope)
+      args.output = run(args.chunk, args.scope).print()
     except CatchableError as e:
       args.raised = true
       args.message = e.msg
@@ -163,6 +164,40 @@ suite "native api threaded attachment":
     # no partial state behind.
     check run(compileSource("(bus .publish (Ping))"), scope)
              .props["delivered"].intVal == 1
+
+  test "runtime require_root_lane rejects a non-owner lane with a typed error":
+    let scope = newGlobalScope()
+    let args = EventLaneArgs(
+      scope: scope,
+      chunk: compileSource(
+        "(try (do ($runtime/require_root_lane) `root) " &
+        " catch RuntimeLaneError `other)"))
+
+    var worker: Thread[EventLaneArgs]
+    createThread(worker, publishOnWorker, args)
+    joinThread(worker)
+
+    check args.lane != currentEventLane()
+    check not args.raised
+    check args.output == "other"
+
+  test "sandbox transaction handles reject a non-owner lane":
+    let scope = newGlobalScope()
+    discard run(compileSource(
+      "(var tx ($runtime/sandbox_transaction))"), scope)
+    let args = EventLaneArgs(
+      scope: scope,
+      chunk: compileSource(
+        "(try (tx .discard) \"missing\" catch Any $ex/message)"))
+
+    var worker: Thread[EventLaneArgs]
+    createThread(worker, publishOnWorker, args)
+    joinThread(worker)
+
+    check args.lane != currentEventLane()
+    check not args.raised
+    check "owned by another lane" in args.output
+    discard run(compileSource("(tx .discard)", useLocalSlots = false), scope)
 
   test "foreign thread can cancel a native async task awaited at root":
     let scope = newGlobalScope()

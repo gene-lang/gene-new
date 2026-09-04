@@ -1,10 +1,19 @@
 ## AST-to-GIR compiler for the MVP execution surface.
 
-import std/[algorithm, os, sets, strutils, tables]
+import std/[algorithm, monotimes, os, sets, strutils, tables, times]
 import ./[capabilities, equality, gir, reader, types]
 export gir.MacroDef, gir.MacroDefault, gir.MacroParam, gir.MacroNamedParam
 
 type
+  CompileBudget* = ref object
+    remaining*: int64
+    hasDeadline*: bool
+    deadline*: MonoTime
+    hasMemoryLimit*: bool
+    memoryBaseline*: int64
+    memoryLimitBytes*: int64
+    sampleCountdown*: int
+
   CapabilityCompileDescriptor* = object
     facadeIdentity*: string
     schemaHash*: string
@@ -148,6 +157,7 @@ type
     ## Message names declared by overlay-only impls anywhere in this unit.
     ## Collected up front so the check does not depend on compilation order.
     overlayImplMessages: HashSet[string]
+    budget: CompileBudget
 
   ParamSpecs = object
     positional: seq[string]
@@ -175,6 +185,39 @@ type
     expanded*: SourceUnit
     provenance*: Table[uint64, ExpansionProvenance]
     macroExports*: Table[string, MacroDef]
+
+proc newCompileBudget*(maxSteps, maxMemoryMb, timeoutMs: int64): CompileBudget =
+  if maxSteps < 0 and maxMemoryMb < 0 and timeoutMs < 0:
+    return nil
+  result = CompileBudget(
+    remaining: if maxSteps < 0: high(int64) else: maxSteps)
+  if timeoutMs >= 0:
+    result.hasDeadline = true
+    result.deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
+  if maxMemoryMb >= 0:
+    if maxMemoryMb > high(int64) div (1024 * 1024):
+      raise newException(GeneError, "compile memory limit is too large")
+    result.hasMemoryLimit = true
+    result.memoryBaseline = getOccupiedMem().int64
+    result.memoryLimitBytes = maxMemoryMb * 1024 * 1024
+
+proc consumeCompileStep(budget: CompileBudget) =
+  if budget == nil:
+    return
+  if budget.remaining <= 0:
+    raise newException(GeneError, "compile max steps exceeded")
+  if budget.hasDeadline or budget.hasMemoryLimit:
+    if budget.sampleCountdown <= 0:
+      budget.sampleCountdown = 64
+      if budget.hasDeadline and getMonoTime() >= budget.deadline:
+        raise newException(GeneError, "compile timeout exceeded")
+      if budget.hasMemoryLimit and
+          getOccupiedMem().int64 - budget.memoryBaseline >
+            budget.memoryLimitBytes:
+        raise newException(GeneError, "compile memory limit exceeded")
+    else:
+      dec budget.sampleCountdown
+  dec budget.remaining
 
 proc parseImportSpec*(node: Value): ImportSpec
 
@@ -876,7 +919,8 @@ proc childCompiler(c: Compiler): Compiler =
            moduleMacroExports: c.moduleMacroExports,
            moduleSyntaxFnExports: c.moduleSyntaxFnExports,
            staticTopLevelImpls: c.staticTopLevelImpls,
-           overlayImplMessages: c.overlayImplMessages)
+           overlayImplMessages: c.overlayImplMessages,
+           budget: c.budget)
 
 proc nextGensym(c: var Compiler): int =
   ## Generated names must be unique across a whole compilation, not per chunk:
@@ -1951,6 +1995,7 @@ proc expandMacroQuasiNode(node: Value, env: Table[string, Value],
 proc expandMacroQuasi(value: Value, env: Table[string, Value], depth: int,
                       c: var Compiler,
                       hygiene: var Table[string, string]): Value =
+  consumeCompileStep(c.budget)
   case value.kind
   of vkPipeline:
     var stages: seq[PipelineStage]
@@ -2486,6 +2531,7 @@ proc expandMacroTree(c: var Compiler, unit: SourceUnit, value: Value,
                      locs: var Table[uint64, SourceLoc],
                      provenance: var Table[uint64,
                                            ExpansionProvenance]): Value =
+  consumeCompileStep(c.budget)
   let loc = unit.expansionLoc(value, fallback)
   case value.kind
   of vkPipeline:
@@ -9112,6 +9158,7 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
 
 proc compileExpr(c: var Compiler, node: Value, allowModDecl = false,
                  tail = false) =
+  consumeCompileStep(c.budget)
   let savedLoc = c.currentLoc
   let exprLoc = c.sourceLocFor(node)
   if exprLoc.hasSourceLoc:
@@ -9318,7 +9365,8 @@ proc compileSourceUnit*(unit: SourceUnit,
 proc compileFormsWithMacros*(forms: openArray[Value],
     importedMacros: Table[string, Table[string, MacroDef]],
     importedSyntaxFns = initTable[string, seq[string]](),
-    importedInterfaces = initTable[string, CompileNamespaceInterface]()):
+    importedInterfaces = initTable[string, CompileNamespaceInterface](),
+    budget: CompileBudget = nil):
     tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
           syntaxFnExports: seq[string]] =
   ## Module-loader entry point (design §11/§15): compile a source unit with the
@@ -9341,7 +9389,8 @@ proc compileFormsWithMacros*(forms: openArray[Value],
                    importedSyntaxFnSets: importedSyntaxFns,
                    importedInterfaces: importedInterfaces,
                    moduleMacroExports: moduleMacroExports,
-                   moduleSyntaxFnExports: moduleSyntaxFnExports)
+                   moduleSyntaxFnExports: moduleSyntaxFnExports,
+                   budget: budget)
   result.chunk = compileFormsInto(c, forms, useLocalSlots = true)
   result.macroExports = moduleMacroExports[]
   for name in moduleSyntaxFnExports[]:
@@ -9353,7 +9402,8 @@ proc compileFormsWithMacros*(unit: SourceUnit,
     importedSyntaxFns = initTable[string, seq[string]](),
     importedInterfaces = initTable[string, CompileNamespaceInterface](),
     capabilityCatalog = initTable[string, CapabilityCompileDescriptor](),
-    enforceCapabilityCatalog = false):
+    enforceCapabilityCatalog = false,
+    budget: CompileBudget = nil):
     tuple[chunk: Chunk, macroExports: Table[string, MacroDef],
           syntaxFnExports: seq[string]] =
   var moduleMacroExports: ref Table[string, MacroDef]
@@ -9375,7 +9425,8 @@ proc compileFormsWithMacros*(unit: SourceUnit,
                    importedSyntaxFnSets: importedSyntaxFns,
                    importedInterfaces: importedInterfaces,
                    moduleMacroExports: moduleMacroExports,
-                   moduleSyntaxFnExports: moduleSyntaxFnExports)
+                   moduleSyntaxFnExports: moduleSyntaxFnExports,
+                   budget: budget)
   result.chunk = compileFormsInto(c, unit.forms, useLocalSlots = true)
   result.macroExports = moduleMacroExports[]
   for name in moduleSyntaxFnExports[]:

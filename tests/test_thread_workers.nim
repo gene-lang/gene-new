@@ -1,4 +1,4 @@
-import gene/[compiler, printer, types, vm]
+import gene/[capabilities, compiler, fs_capabilities, printer, types, vm]
 import std/[locks, net, os, sets, strutils, unittest]
 
 var probeLock: Lock
@@ -112,6 +112,13 @@ template withGeneAsyncIoQueueSetting(value: string, body: untyped) =
 template withGeneWorkers(body: untyped) =
   withGeneWorkerSetting("2"):
     body
+
+proc newTempScope(): Scope =
+  let app = newApplication(getTempDir())
+  app.setRootCapabilities(newCapabilityContext(
+    @(app.rootCapabilities.grants) &
+    @[app.filesystemCapabilities.grantReadWriteDir(getTempDir())]))
+  newGlobalScope(app)
 
 suite "threaded scheduler workers":
   test "threaded build starts default worker pool":
@@ -468,7 +475,7 @@ suite "threaded scheduler workers":
     defer:
       if fileExists(path):
         removeFile(path)
-    let scope = newGlobalScope()
+    let scope = newTempScope()
     scope.define("path", newStr(path))
     withGeneWorkerSetting "2":
       check run(compileSource(
@@ -487,7 +494,7 @@ suite "threaded scheduler workers":
     defer:
       if fileExists(path):
         removeFile(path)
-    let scope = newGlobalScope(newApplication(getTempDir()))
+    let scope = newTempScope()
     scope.define("path", newStr(path))
     var src = "(scope "
     for i in 0 ..< burst:
@@ -513,7 +520,7 @@ suite "threaded scheduler workers":
     defer:
       if fileExists(path):
         removeFile(path)
-    let scope = newGlobalScope(newApplication(getTempDir()))
+    let scope = newTempScope()
     scope.define("path", newStr(path))
     withGeneWorkerSetting "2":
       withGeneAsyncIoQueueSetting "0":
@@ -527,7 +534,7 @@ suite "threaded scheduler workers":
     defer:
       if fileExists(path):
         removeFile(path)
-    let scope = newGlobalScope(newApplication(getTempDir()))
+    let scope = newTempScope()
     scope.define("path", newStr(path))
     withGeneWorkerSetting "2":
       check run(compileSource(
@@ -593,7 +600,7 @@ suite "threaded scheduler workers":
     defer:
       if fileExists(path):
         removeFile(path)
-    let scope = newGlobalScope()
+    let scope = newTempScope()
     scope.define("port", newInt(port))
     scope.define("path", newStr(path))
     withGeneWorkerSetting "1":
@@ -623,7 +630,7 @@ suite "threaded scheduler workers":
         removeFile(cancelledPath)
       if fileExists(nextPath):
         removeFile(nextPath)
-    let scope = newGlobalScope(newApplication(getTempDir()))
+    let scope = newTempScope()
     scope.define("port", newInt(port))
     scope.define("cancelledPath", newStr(cancelledPath))
     scope.define("nextPath", newStr(nextPath))

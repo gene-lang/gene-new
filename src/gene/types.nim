@@ -468,6 +468,7 @@ type
     ## external call enters this module, so escaped functions and protocol
     ## methods cannot bypass the loader's supervision boundary.
     moduleExecutionPolicy*: ModuleExecutionPolicy
+    sandboxGenerationId*: uint64
     ownsTasks*: bool
     ownedTasks*: seq[Value]
     ownsActors*: bool
@@ -718,6 +719,7 @@ type
     ## specifies it as precomputed and §13.2 requires that a bound add no
     ## second lookup at the boundary.
     importCapabilityFolded: Table[string, CapabilityContext]
+    dependencies: seq[string]
 
   BigIntData = ref object of GeneObjectData
     value: BigIntValue
@@ -3066,6 +3068,18 @@ proc moduleRootNamespace*(v: Value): Value =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
     raise newException(FieldDefect, "value is not a Module")
   ModuleData(objData(v)).root
+
+proc recordModuleDependency*(v: Value, dependencyPath: string) =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  let data = ModuleData(objData(v))
+  if dependencyPath notin data.dependencies:
+    data.dependencies.add dependencyPath
+
+proc moduleDependencies*(v: Value): lent seq[string] =
+  if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
+    raise newException(FieldDefect, "value is not a Module")
+  ModuleData(objData(v)).dependencies
 
 proc moduleMeta*(v: Value): lent PropTable =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okModule:
