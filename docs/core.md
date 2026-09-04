@@ -37,8 +37,8 @@ as follow-on patches.
   type; it never resolves to a protocol impl (§9).
 - **Message names are not bound in the enclosing lexical scope.** Declaring
   `(protocol ToName (message to_name ...))` binds `ToName` only; `to_name`
-  is reachable as `ToName/to_name` (qualified member access, like
-  `Stream/next`) and through sends (`(x .to_name)`), never as a bare
+  is reachable as `ToName:to_name` (qualified member access, like
+  `Stream:next`) and through sends (`(x .to_name)`), never as a bare
   lexical binding. Bare calls `(to_name x)` are therefore undefined-symbol
   errors — use a send or the qualified spelling. This is a deliberate
   revision (earlier drafts and the pre-revision implementation bound each
@@ -150,7 +150,7 @@ placement in §6, not for message resolution.
 ### 3.2 Transitive closure and qualified message ownership
 
 A protocol message is identified by its **defining protocol plus local
-message name**, not by simple name alone. `A/do_x` and `B/do_x` are distinct
+message name**, not by simple name alone. `A:do_x` and `B:do_x` are distinct
 messages even though both have the local name `do_x`.
 
 When `C ^inherit [A B]`, `C`'s message closure is the union of `A`, `B`, and
@@ -160,7 +160,7 @@ two paths does not duplicate them.
 
 `impl C for T` must provide (directly, or via §3.6/§5) every message in `C`'s
 transitive closure. Missing one is a compile error: `"impl C for T is missing
-message A/do_a"`.
+message A:do_a"`.
 
 ### 3.3 Same-name messages across independent parents
 
@@ -200,14 +200,14 @@ ancestor. It creates a new qualified message owned by the child protocol:
 
 ```gene
 (protocol B ^inherit [A]
-  (message do_a [] : Any))  # B/do_a, distinct from A/do_a
+  (message do_a [] : Any))  # B:do_a, distinct from A:do_a
 ```
 
-`B/do_a` does not override `A/do_a`; both messages are in `B`'s closure and
+`B:do_a` does not override `A:do_a`; both messages are in `B`'s closure and
 both must be implemented by the one complete `impl B`, unless one is
 satisfied by a default. There is still no override/MRO mechanism for protocol
 inheritance. If a default body or implementation needs one of the operations,
-it should call the qualified message (`A/do_a` or `B/do_a`) rather than rely
+it should call the qualified message (`A:do_a` or `B:do_a`) rather than rely
 on the simple name.
 
 ### 3.5 Subtyping is structural from the impl
@@ -236,7 +236,7 @@ revisited, treat everything below as design intent only.
 
 ```gene
 (impl A for T (message do_a [self] "from A impl"))
-(impl B for T (message do_b [self] ...))  # omits A/do_a — rejected today
+(impl B for T (message do_b [self] ...))  # omits A:do_a — rejected today
 ```
 
 If `impl A for T` is already visible when `impl B for T` is compiled, `impl B for T` may
@@ -246,8 +246,8 @@ ancestor impls}` covers `B`'s full transitive closure; otherwise it is a
 missing-message error.
 
 Two separately visible impls providing the *same* `(protocol, type)` pair
-(e.g. both `impl A for T` and `impl B for T` defining `A/do_a`) is an ordinary
-duplicate-impl ambiguity error at the use site of `A/do_a` on `T` — the
+(e.g. both `impl A for T` and `impl B for T` defining `A:do_a`) is an ordinary
+duplicate-impl ambiguity error at the use site of `A:do_a` on `T` — the
 existing coherence rule applies unchanged, it does not get a new rule for
 inheritance.
 
@@ -308,7 +308,7 @@ open questions.
 
 ## 4. Dispatch table design
 
-With inheritance, looking up `B/do_b` on `T` must consider `impl C for T` where
+With inheritance, looking up `B:do_b` on `T` must consider `impl C for T` where
 `C`'s closure includes `B`, not only a direct `impl B for T` — and, per §2.1,
 must also consider impls visible on `T`'s nominal ancestors.
 
@@ -322,7 +322,7 @@ per-call cost.
 Simple names are a secondary index, not the dispatch key. A protocol can have
 more than one closure message whose local name is `do_x`; the key used by
 completeness checking and dispatch is the message value / qualified identity
-(`A/do_x`, `B/do_x`). The simple-name index is useful for diagnostics and for
+(`A:do_x`, `B:do_x`). The simple-name index is useful for diagnostics and for
 the unique-name shorthand in impl bodies, but it must be able to represent
 "ambiguous: qualify this name" rather than storing only one message. It is not
 a send-resolution path: an unqualified send never reaches a protocol message
@@ -361,7 +361,7 @@ time, unchanged.
 ```gene
 (protocol B ^inherit [A]
   (message do_b [] : Any
-    (A/do_a self)))  # default body, calls an inherited message
+    (self .A:do_a)))  # default body, calls an inherited message
 ```
 
 A message may carry a default implementation in its own protocol body. If
@@ -384,7 +384,7 @@ mechanism that is supposed to be free.
 Ancestor defaults are visible to descendants. A descendant protocol declaring
 the same simple name creates a distinct qualified message (§3.4); it does
 not override or replace the ancestor default. If a protocol closure contains
-both `A/do_x` and `B/do_x`, each message independently either has an explicit
+both `A:do_x` and `B:do_x`, each message independently either has an explicit
 impl body, a default body, or a missing-message error.
 
 Defaults do **not** establish conformance. Even when every message has a
@@ -443,10 +443,10 @@ simple name creates another qualified message, not an override:
 ```gene
 (protocol A (message render [] : Node))
 (protocol B ^inherit [A]
-  (message render [] : Str))  # B/render, not an override of A/render
+  (message render [] : Str))  # B:render, not an override of A:render
 ```
 
-An implementation of `B` must account for both `A/render` and `B/render`.
+An implementation of `B` must account for both `A:render` and `B:render`.
 Callers choose with `(x .A:render)` or `(x .B:render)`. Type inheritance
 has its own different rule for type-direct messages — most-derived nominal
 ancestor wins — per §2.1 and §8.
@@ -465,7 +465,6 @@ protocol + impl pair:
 
 (var b (Box ^val 7))
 (b .get)         # => 7   (message send, §9)
-(Box/get b)       # => 7   (explicit qualified form)
 (b .doubled)     # => 14
 ```
 
@@ -481,19 +480,19 @@ protocol.
 
 An earlier draft of this design bound `get` bare in the enclosing module
 scope, exactly like a standalone `fn`. That doesn't scale: two types in the
-same module both defining a message with the same name (say, `Dog/speak` and
-`Cat/speak`) would collide as duplicate bindings of the same bare name.
+same module both defining a message with the same name (say, `Dog:speak` and
+`Cat:speak`) would collide as duplicate bindings of the same bare name.
 **Type-direct messages are namespaced under their declaring type instead** —
-`Box/get` is a qualified name resolved exactly like `Stream/next` or
-`Color/red` (`docs/design.md §2.1`), never a bare binding in the enclosing
+`Box:get` is a qualified name resolved exactly like `Stream:next` or
+`Color:red` (`docs/design.md §2.1`), never a bare binding in the enclosing
 scope. This is what lets unrelated types define same-named messages without
 collision, and it's why dot sends need the resolution rule in §9.
 
 ### Dispatch
 
 `(type X (message do_a [self] …))` binds `do_a` as a qualified member of `X`
-— `X/do_a` — not a plain function in the enclosing scope. `(x .do_a)`
-reaches it through dot-send resolution (§9); `(X/do_a x)` reaches
+— `X:do_a` — not a plain function in the enclosing scope. `(x .do_a)`
+reaches it through dot-send resolution (§9); `(X:do_a x)` reaches
 it directly through ordinary qualified-name resolution, unchanged from how
 any other qualified member works.
 
@@ -510,7 +509,7 @@ contracts, type messages are receiver-owned nominal behavior.
 - Child types see parent type-direct messages by walking the type's parent
   chain (§2), not by lexical binding: looking up `speak` on a `Dog` checks
   `Dog`'s own message table, then `Animal`'s — most-derived wins.
-  `(Dog/speak d)` and `(d .speak)` both reach `Animal/speak` if `Dog`
+  `(Dog:speak d)` and `(d .speak)` both reach `Animal:speak` if `Dog`
   doesn't define its own.
 - A child's same-named message overrides the parent's during that same walk —
   first match wins. The override must preserve the inherited callable
@@ -576,7 +575,7 @@ Writing a receiver inside an inline impl is an error (`(impl A for T …)` insid
    name→function member table — rather than binding it in the enclosing
    scope.
 3. Qualified-name resolution (`docs/design.md §2.1`, already handling
-   `Stream/next`-style lookups) is extended to also check this per-type
+   `Stream:next`-style lookups) is extended to also check this per-type
    message table.
 4. Dot sends use receiver-first resolution (§9), walking the parent chain against this
    same table.
@@ -624,14 +623,14 @@ points at the call form (`did you mean to call it, not send it?`), and when it
 names a protocol message it hints to qualify.
 
 The **qualified send** `(x .P:name ...)` names protocol `P`'s message identity
-and dispatches it on `x`. Slash does not spell a message: `P/name` is rejected,
+and dispatches it on `x`. Slash does not spell a message: `P:name` is rejected,
 while `P:name` in value position is a message value suitable for higher-order
 use such as `(map xs P:name)`.
 Only a protocol gives a message a qualified spelling, so the qualifier is a
 reliable signal — **bare means type-direct, qualified means protocol.** The
 built-in type operations are type-direct, hence bare: `(c .get)`, never
 `(c .Cell:get)`. `Cell` is a real type, not a protocol, so `Cell:get` is
-rejected with `^expected "Protocol"`; `Cell/get` is not a callable path either.
+rejected with `^expected "Protocol"`; `Cell:get` is not a callable path either.
 Use `Self:get` when a type-direct message is needed as a value.
 
 The **held-value send** `(x .%m ...)` evaluates `m` to a message value and
@@ -752,7 +751,7 @@ implemented and stable, and sit at implementation-order item 13; base
   emit one complete impl for the inherited closure
 - §7, §8 — type-direct messages: `compileType` scans `(message ...)` body
   forms into a per-type table (`TypeData.messages`), reached via qualified
-  access (`Box/get`) and sends, walking type parents with most-derived-wins
+  access (`Box:get`) and sends, walking type parents with most-derived-wins
 - §8 inline protocol impls — `(impl P (message ...) ...)` in a type body
   registers as an ordinary visible impl with the enclosing type as receiver,
   identical to a standalone `(impl P for T ...)` after the declaration (same
@@ -809,7 +808,7 @@ implemented and stable, and sit at implementation-order item 13; base
 - **Qualified message identity (§3-§4)** touches the core protocol storage
   and impl-lookup mechanism all protocol dispatch depends on. The central
   invariant is that completeness and dispatch are keyed by message identity
-  (`Protocol/name`), while simple names are only a possibly-ambiguous index
+  (`Protocol:name`), while simple names are only a possibly-ambiguous index
   for diagnostics and shorthand. This is the piece to get right first.
 - **Type-direct message namespacing and receiver-first dot-send resolution
   (§8-§9)** add a per-type message table and make unqualified dot descriptors mean

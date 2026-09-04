@@ -86,11 +86,12 @@ ownership, and reload rollback across every plugin and loader caller.
 ### Relationship to `examples/gene-harness`
 
 `examples/gene-harness` is an implemented plugin runtime in this repository,
-described in `examples/gene-harness/docs/design.md`. It is not a competing
-design: **the harness builds on this one.** Cordis is the general plugin
-runtime; the harness is what that runtime becomes when its plugins are authored
-at runtime by a language model, must survive a crash, and must be recoverable
-by an operator afterwards.
+described in `examples/gene-harness/docs/design.md`. It is the intended first
+consumer of this design, not a dependency today: Cordis is still proposed, and
+the harness currently owns its own working kernel. Cordis is the general plugin
+runtime the harness should later build on; the harness is what that runtime
+becomes when its plugins are authored at runtime by a language model, must
+survive a crash, and must be recoverable by an operator afterwards.
 
 That split assigns each mechanism exactly once. Cordis owns composition:
 services and realms decide which provider a consumer sees, requirements and
@@ -106,10 +107,10 @@ plugin author is a model rather than a repository; per-entry quarantine,
 surface an agent talks through. None of that belongs in a plugin runtime, and
 none of it is derivable from one.
 
-Four things the harness implements today therefore stop being its own: its seam
-table becomes services, its ownership ledger becomes effect scopes, its
-`pending`/`ready`/`error` fixpoint becomes instances and dependency epochs, and
-its sandbox loading becomes the loader. Its non-unique ordered registries —
+Four things the harness implements today should move during that later
+migration: its seam table becomes services, its ownership ledger becomes effect
+scopes, its `pending`/`ready`/`error` fixpoint becomes instances and dependency
+epochs, and its sandbox loading becomes the loader. Its non-unique ordered registries —
 commands, tools, prompt sections, views — do *not* become services, because a
 service address holds one provider by construction and those hold many. They
 stay collections in the harness layer and are contributed as effects:
@@ -140,10 +141,12 @@ comparison, and it constrains this design in four places:
   change, not only for a module swap. It should be an operation the loader
   offers, with hot reload as its first caller rather than its definition.
 - **The service-key catalog is populated at runtime.** Keys are admitted from a
-  catalog so that data cannot mint identity. A harness mints a key when a model
-  registers a tool that did not exist at boot. The rule survives — the host
-  stays the only minter, so repeating a string still forges nothing — but the
-  catalog is a live host-owned table, not a startup constant.
+  catalog so that data cannot mint identity. A harness may mint a key when a
+  model introduces a new single-provider seam that did not exist at boot; its
+  multi-row tool registry remains a harness collection, as stated above. The
+  rule survives — the host stays the only minter, so repeating a string still
+  forges nothing — but the catalog is a live host-owned table, not a startup
+  constant.
 - **A manifest is a source, not a file.** The harness's desired state is a
   CAS-published store, not a data file on disk. The loader is already an adapter
   over `Runtime`, and the verification list already requires an in-memory
@@ -151,7 +154,7 @@ comparison, and it constrains this design in four places:
   never quietly become the loader's only input.
 
 The sequencing runs opposite to the dependency. The harness works today and
-this runtime does not exist, so nothing here asks for a rewrite: cordis is
+this runtime does not exist, so nothing here asks for a rewrite: Cordis is
 implemented against the requirements above, and the harness migrates its kernel
 onto it afterwards, keeping every durable layer it already has. If that
 migration cannot be expressed, the interface in this document is wrong — which
@@ -189,11 +192,11 @@ The implementation is correct only if all of these remain true:
 12. Reflection returns immutable snapshots. Observing the runtime cannot become
     a mutation back door.
 13. Every call from the runtime into plugin-supplied code — activation,
-    availability predicates, schemas, binding adapters, hook handlers, and
-    cleanup — passes through one supervision path. A host can therefore bound
-    all of them with step, wall-clock, and memory budgets and contain a panic
-    as that call's typed failure, without the runtime growing a second
-    invocation route that escapes the policy.
+    availability predicates, schemas, config merge functions, binding adapters,
+    hook handlers, and cleanup — passes through one supervision path. A host can
+    therefore bound all of them with step, wall-clock, and memory budgets and
+    contain a panic as that call's typed failure, without the runtime growing a
+    second invocation route that escapes the policy.
 
 These invariants are the interface's behavioral content, not incidental
 implementation notes.
@@ -238,6 +241,9 @@ changing their behavior.
 (enum InstanceState
   pending loading active failed unloading disposed)
 
+(protocol Disposable
+  (message dispose [] : Nil))
+
 (type ServiceKey
   ^props {^id Str
           ^contract Any
@@ -253,6 +259,7 @@ changing their behavior.
           ^config_schema Any?
           ^requires (List Requirement)
           ^provides (List ServiceKey)
+          ^reload Str?
           ^activate Any})
 ```
 
@@ -261,6 +268,8 @@ The public operations are conceptually:
 ```text
 Runtime
   root() -> Context
+  admit_service_key(key) -> Nil
+  admit_hook_key(key) -> Nil
   child(parent, context_options) -> Context
   install(context, plugin, config) -> PluginInstance
   inject(context, requirements, callback) -> PluginInstance
@@ -271,10 +280,11 @@ Runtime
 Context
   require(key, head_config?) -> service
   get(key, head_config?) -> service | void
+  hook_subject(key) -> HookSubject
   derive(options) -> Context
 
 ActivationContext
-  provide(key, value, available?) -> Disposable
+  provide(key, value, availability?) -> ProviderLease
   effect(label, acquire) -> Disposable
   spawn(label, thunk) -> Task
   on(hook, handler, options?) -> Disposable
@@ -287,7 +297,26 @@ PluginInstance
   restart() -> Nil
   dispose() -> Nil
   effects() -> (List EffectSnapshot)
+
+ProviderLease implements Disposable
+  refresh() -> Bool
 ```
+
+`ServiceKey`, `RealmId`, `HookKey`, `Context`, and `ProviderLease` are opaque
+runtime-issued values. The property lists in this document describe their
+logical data and reflection shape, not public direct-construction schemas.
+Trusted host code creates keys with `service_key`/`hook_key`, admits them to a
+runtime, and shares only the resulting values and their protocol modules with
+plugins. An activation context deliberately exposes no key-admission operation.
+Each catalog is unique by both nominal identity and string id. Re-admitting the
+same key is idempotent; admitting a different key under an existing id is an
+error.
+
+`Disposable` is the one-message lifetime protocol: `dispose` is idempotent and
+may await cleanup. `ProviderLease/refresh` re-runs the availability predicate;
+when its answer changes, the runtime advances the provider generation and
+refreshes affected dependency epochs. A mutable predicate without an explicit
+`refresh` call cannot wake pending consumers by magic.
 
 `get` is the optional lookup. `require` raises a `ServiceUnavailable` error with
 the service id, realm, consumer instance, and nearest visible provider state.
@@ -360,6 +389,12 @@ isolated slots, and unrelated keys may intentionally use the same contract.
 The key id is stable data for manifests and diagnostics; the key value is the
 nominal in-process identity. Two modules cannot create equivalent keys merely
 by repeating the string.
+
+`service_key` is a trusted-host constructor and is not part of the shared
+plugin module. A contract module creates the key, the host admits it to each
+runtime that should recognize its serialized id, and sandboxed plugins import
+the already-created key from that contract module. This keeps the live catalog
+runtime-local without cloning protocol or key identity between plugins.
 
 A service shared by separately sandboxed plugins defines its protocol and key
 in an admitted shared contract module. Every provider and consumer imports that
@@ -447,13 +482,16 @@ A `Context` is an immutable view containing:
 - the owner instance whose effect scope receives use-site effects;
 - a persistent service-key-to-realm map;
 - persistent config-overlay rows;
-- an allowed requirement set; and
-- the current Gene module ceiling and capability attenuation policy.
+- the allowed service-key set derived from requirements and provisions; and
+- the entry/call-site capability attenuation policy.
 
 The last item is opaque runtime metadata, not a capability grant stored in a
-Gene object. Entering plugin code intersects the host context, module ceiling,
-entry policy, and any call-site `with_capabilities` selector. Derivation can
-only add another intersection.
+Gene object. A module ceiling remains attached to the loaded module and its
+escaped callables by `$runtime/configure_module`; it is not copied into or
+replaced by a Cordis context. Entering plugin code intersects the host context,
+that callee's module ceiling, the entry policy, and any call-site
+`with_capabilities` selector. Context derivation can only add another
+intersection.
 
 Derivation returns a new view and does not mutate the parent:
 
@@ -499,10 +537,10 @@ catalog is a rejected manifest, not a new realm; the data-only form can select
 among admitted keys but can never introduce one.
 
 The catalog is a live host-owned table rather than a startup constant. A host
-that mints keys while running — one per tool a model registers, in the harness
-case — extends it through an explicit host operation. Minting stays the host's
-alone, so repeating a string still forges nothing; what changes is only that
-the set of admitted ids is not fixed when the runtime starts.
+that mints keys while running — for example, for a newly authored single-provider
+seam — extends it through `Runtime/admit_service_key`. Minting stays the host's
+alone, so repeating a string still forges nothing; what changes is only that the
+set of admitted ids is not fixed when the runtime starts.
 
 If `tenant_a` isolates `database_key`, a database in the root realm is not a
 fallback. The tenant's consumer stays pending until a provider exists at the
@@ -518,13 +556,19 @@ lookup preference.
    explicit exception.
 3. Read the exact realm mapped for the key and form the service address.
 4. Find its provider record and require the owner instance to be `active`.
-5. Run the provider's availability predicate, if present. An error is logged
-   and treated as unavailable.
+5. Require the provider record's cached availability to be true. Registration
+   and `ProviderLease/refresh` run the predicate; an error is logged and cached
+   as unavailable.
 6. Merge config overlays from outermost to innermost, then the requirement
    row, then `head_config`. The key's merge function owns the merge law;
    otherwise shallow map replacement is used.
 7. Bind the provider at the definition/use-site seam described below.
 8. Validate the bound result against the key's protocol and return it.
+
+Availability is cached on the provider record, not polled on every service
+call. Registration computes it once; `ProviderLease/refresh` is the explicit
+edge that recomputes it and notifies dependants. This keeps ordinary resolved
+service calls free of an arbitrary plugin callback.
 
 Provider generation, context generation, and normalized merged config form the
 binding-cache key. Provider removal or context invalidation makes cached
@@ -724,7 +768,8 @@ have additional control-flow modes and should not overload that module's
 `publish` contract. The Cordis runtime therefore owns a separate lane-local
 `Hooks` module.
 
-A hook is a nominal value admitted by the host or a loaded plugin descriptor:
+A hook is a nominal value created and admitted by trusted host code, then
+referenced by loaded plugins through shared contract modules:
 
 ```gene
 (enum HookMode emit parallel serial bail waterfall)
@@ -732,6 +777,10 @@ A hook is a nominal value admitted by the host or a loaded plugin descriptor:
 (type HookKey
   ^props {^id Str ^mode HookMode ^payload_schema Any?})
 ```
+
+Like a service key, a `HookKey` is opaque and becomes usable only after
+`Runtime/admit_hook_key`. A sandboxed descriptor may reference an admitted key
+from a shared contract module; it cannot mint one by repeating the id.
 
 The public operations preserve Cordis semantics but take one payload value
 instead of variadic arguments:
@@ -768,11 +817,15 @@ Registration through an activation is effect-owned. `once` marks itself
 consumed before calling the handler. Dispatch takes a handler snapshot, so
 registration or cancellation during a dispatch affects only the next one.
 
-`subject` replaces Cordis's overloaded `thisArg`. A scoped handler records its
-registration context. Dispatch with a subject includes global handlers and
-handlers whose service-realm projection matches the subject. Dispatch without
-a subject includes all handlers. Filtering is a runtime operation; user
-payloads cannot supply a forged filter function.
+`subject` replaces Cordis's overloaded `thisArg`. It is an opaque `HookSubject`
+created by `(ctx .hook_subject key)` and identifies one admitted service key and
+the realm that context maps it to. A scoped handler records its registration
+context. Dispatch with a subject includes global handlers and handlers whose
+context maps that key to the same realm. Dispatch without a subject includes
+all handlers. Filtering is a runtime operation; user payloads cannot supply a
+forged subject or filter function. Plugin code may create a subject only for a
+declared requirement or provision; root/operator code retains the explicit
+all-key exception used by `require`.
 
 Internal hooks use private `HookKey` values rather than reserved
 `"internal/"` strings:
@@ -782,7 +835,6 @@ Internal hooks use private `HookKey` values rather than reserved
 - `service_changed`
 - `config_update`
 - `service_resolve`
-- `service_assign`
 - `hook_registered`
 - `hook_dispatched`
 
@@ -842,6 +894,7 @@ The default format is one Gene data value, never evaluated:
 {^format 1
  ^entries [
    {^id "clock"
+    ^plugin_id "core/clock"
     ^module "./plugins/clock.gene"
     ^config {}}
 
@@ -865,6 +918,7 @@ An entry supports:
 
 ```text
 id              stable among siblings
+plugin_id       optional expected PluginSpec id
 module          module path inside the admitted plugin root
 config          inert plugin config
 disabled        inherited disable flag
@@ -912,10 +966,16 @@ Modules outside the root must be in the explicit shared list. A plugin cannot
 call `$runtime/load_sandboxed` itself, and the sandbox loader module must not be
 shared with plugins.
 
-The plugin module exports one `plugin` binding. Its id must match the loader
-entry's expected descriptor id when the manifest supplies one. Config schema,
-requirements, service keys, and hooks are validated without activating the
+The plugin module exports one `plugin` binding. `plugin_id`, when present, must
+match `PluginSpec/id`; the entry's own `id` remains the instance address, so one
+plugin spec can be installed more than once. Config schema, requirements,
+provisions, and every referenced key are validated without activating the
 plugin.
+
+Manifest capability selectors are inert data resolved through a host-admitted
+capability catalog. Trusted loader code expands only those known rows into
+selector forms and invokes `$runtime/configure_module` under
+`with_capabilities`; it never evaluates an arbitrary manifest expression.
 
 ### 12.3 Reconciliation
 
@@ -1002,11 +1062,21 @@ the live index would create duplicate providers or briefly restart unrelated
 consumers. The prospective index is an internal adapter used only by the
 loader transaction, and step 8 is the only moment its records become visible.
 
+Staging covers Cordis-visible publication, not arbitrary external effects. A
+candidate may still log, read a file, or contact a remote system before commit
+within its admitted authority. Plugins whose activation cannot be repeated or
+overlapped must declare `stop_start`; `candidate_swap` is not a transaction over
+the outside world.
+
 If a plugin owns an irreversible external resource that prevents old and new
-instances from overlapping, it declares `^reload "stop_start"`. The loader
+instances from overlapping, its `PluginSpec` declares
+`^reload "stop_start"`. The loader
 then cannot promise rollback after teardown and reports that reduced guarantee
 before reloading. The default `"candidate_swap"` mode is allowed only when
 staged activation is valid.
+
+`nil` and `"candidate_swap"` select the default; `"stop_start"` is the only
+other version-1 value. Descriptor validation rejects every other spelling.
 
 HMR preserves loader entry identity and config. It does not serialize live
 tasks, sockets, or arbitrary plugin state. A plugin that needs state migration
@@ -1042,11 +1112,12 @@ growing an unbounded queue.
 Cordis's logger service should map onto Gene's existing `log` module rather than
 fork its routing, redaction, sink, failure, and concurrency contracts.
 
-Each plugin instance receives a logger derived with stable fields:
+The embedding host supplies the runtime's base logger. Each plugin instance
+receives a child enriched with stable fields:
 
 ```gene
 (var logger
-  (runtime_logger .with
+  ((base_logger .child "cordis") .with
     {^plugin plugin/id
      ^instance instance/uid
      ^entry entry/id}))
@@ -1057,10 +1128,12 @@ Thresholds and sink routes remain properties of the host-installed logging
 configuration; a Cordis intercept cannot rewrite them. Plugin data cannot add
 file sinks or otherwise grant output authority.
 
-Runtime lifecycle errors log through `genex/cordis`; loader and HMR messages use
-`genex/cordis/loader` and `genex/cordis/hmr`. The in-memory diagnostic history is
-bounded. Sink failures retain Gene logging's non-recursive emergency path and
-never re-enter Cordis hooks.
+Logging identity does not come from the package name. A standalone application
+may supply `app/cordis`; an extension host may supply a permitted
+`extension/...` logger. Runtime, loader, and HMR derive child names from that
+handle instead of claiming `gene/*` or `genex/*`. The in-memory diagnostic
+history is bounded. Sink failures retain Gene logging's non-recursive emergency
+path and never re-enter Cordis hooks.
 
 The console renderer, colors, timestamps, and target-specific formatting stay
 logging adapters. None belong in the Cordis kernel.
@@ -1175,9 +1248,11 @@ identity, not a standard-library namespace: nothing here becomes reachable as
 `$cordis`, and a dependent package picks its own alias for `^pkg` imports.
 
 `runtime.gene` and `effects.gene` may be separate implementation files but form
-one external module. Only `cordis.gene` and `plugin_api.gene` are shared with
-sandboxed plugins. Loader, include, HMR, filesystem, runtime sandbox controls,
-and host capability objects are never shared.
+one external module. Only `plugin_api.gene` and specifically admitted service
+or hook contract modules are shared with sandboxed plugins; the host-facing
+`cordis.gene` module, including key constructors and admission operations, is
+not. Loader, include, HMR, filesystem, runtime sandbox controls, and host
+capability objects are never shared.
 
 ## 19. Verification
 
@@ -1212,7 +1287,11 @@ private state transitions.
 - contextual bindings receive use-site intercepts and effect ownership;
 - cached bindings invalidate on provider/context generation changes;
 - duplicate providers are rejected deterministically; and
-- availability predicate errors are contained and diagnosed.
+- availability predicate errors are contained and diagnosed;
+- changing availability has no effect until `ProviderLease/refresh`, which
+  advances exactly the affected epochs; and
+- forged service keys, hook keys, realms, subjects, contexts, and leases are
+  rejected by nominal runtime identity.
 
 ### Effects and hooks
 
@@ -1233,11 +1312,14 @@ private state transitions.
 - config persistence is atomic and path-relative;
 - patches cannot silently target the wrong module;
 - manifests cannot enlarge namespace or capability ceilings;
+- loader entry ids remain distinct from optional expected plugin ids;
 - sandbox restrictions follow escaped callbacks;
 - changed dependencies reload every affected plugin root;
 - shared/runtime changes request full restart;
 - candidate import or activation failure leaves old instances working;
 - successful swap does not expose duplicate providers;
+- candidate staging documents external effects and rejects an unsupported
+  reload mode;
 - old cleanup failure reports `recovery_required`; and
 - repeated rapid reloads leave no stale hooks, effects, tasks, or module
   identities reachable.

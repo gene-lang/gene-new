@@ -804,7 +804,7 @@ after it:
 
 Appending a stage after a final `=>` changes that stage from an eager drain to
 a lazy map. `(rows => save -> log)` calls `save` only if `log` consumes the
-Stream; use `rows -> $each save` when the drain must be explicit and
+Stream; use `(rows -> $each save)` when the drain must be explicit and
 position-independent. Collecting remains the standard `-> $into []` spelling.
 
 Because a non-final `=>` works in the lazy tier, its incoming value is

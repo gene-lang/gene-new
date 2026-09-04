@@ -67,13 +67,13 @@ The explicit sequenced spelling and the pipeline spelling are equivalent:
 
 ```gene
 # Explicit locals
-(var parsed (parse source options))
+(var parsed (parse_record source options))
 (var checked (validate parsed schema))
 (save db checked)
 
 # Pipeline
 (source
-  -> parse options
+  -> parse_record options
   -> validate schema
   -> save db _)
 ```
@@ -564,7 +564,9 @@ final stage. Top-level `=>` components are captured through the generated
 callback's own call scope rather than stored in the application-long module
 frame. A returned lazy Stream retains that smaller scope because its callback
 still needs the values; `Stream/close` releases the callback. Function-local
-scratch remains in the ordinary call frame and disappears with that frame.
+scratch remains in the ordinary call frame and disappears with that frame; a
+returned lazy Stream may intentionally retain the frame through its callback
+until the Stream is closed or released.
 
 ## 10. Macros, fexprs, and special forms
 

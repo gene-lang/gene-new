@@ -1539,8 +1539,12 @@ proc statementUnit(typ: WebType): string {.inline.} =
 proc requireType(analysis: WebAnalysis, loc: SourceLoc, actual,
                  expected: WebType, label: string) =
   if not accepts(analysis, expected, actual):
-    raise webError(loc, label & " expected " & typeName(expected) &
-      ", got " & typeName(actual))
+    var message = label & " expected " & typeName(expected) &
+      ", got " & typeName(actual)
+    if actual.kind == wtkStream and expected.kind == wtkList:
+      message.add "; collect the Stream with '$into []' (or '-> $into []' " &
+        "in a pipeline) before this boundary"
+    raise webError(loc, message)
 
 proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
                       bindings: var Table[string, WebBinding],

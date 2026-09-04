@@ -5,7 +5,7 @@
 ##   nimble spec
 
 import gene/[capabilities, compiler, fs_capabilities, gir, package, printer,
-             reader, types, vm]
+             reader, types, vm, web]
 # Side-effect import: puts the {.exportc, dynlib.} AOT boundary helpers into
 # this test binary's dynamic symbol table so a dlopened AOT library resolves
 # them, exactly as the gene executable does.
@@ -541,6 +541,17 @@ suite "spec — sequenced value pipelines":
     check_eval_error("(fn wants_list [xs : List] xs) " &
                      "([1 2] => + 1 -> wants_list)",
                      "-> $into []")
+    var raised = false
+    try:
+      discard analyzeWebModule(
+        "(mod pipeline_hint ^profile web) " &
+        "(fn wants_list [xs : (List Int)] : (List Int) xs) " &
+        "(fn run [] : (List Int) ([1 2] => + 1 -> wants_list))",
+        "<pipeline_hint>")
+    except WebProfileError as error:
+      raised = true
+      check "-> $into []" in error.msg
+    check raised
 
   test "iterate stages mix with call stages and reject syntax heads":
     check_eval("(fn twice [x] (* x 2)) (fn first_of [xs] xs/0) " &
