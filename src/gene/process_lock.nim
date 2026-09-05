@@ -40,7 +40,14 @@ proc removeStaleLock(path: string) =
   except ValueError, IOError:
     # A malformed lock cannot be live under this implementation. Give a
     # concurrent publisher ample time to finish its atomic hard-link step.
-    if (getTime() - getLastModificationTime(path)).inSeconds <= 300:
+    # The live owner may have released the lock between fileExists/readFile
+    # and this metadata query. A vanished lock is a retry, not a build error.
+    var modified: times.Time
+    try:
+      modified = getLastModificationTime(path)
+    except OSError:
+      return
+    if (getTime() - modified).inSeconds <= 300:
       return
   if owner > 0 and processAlive(owner):
     return
