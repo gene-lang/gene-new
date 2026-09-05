@@ -832,10 +832,12 @@ type
     closed: bool
     source: Value
     callable: Value
+    capabilityCeiling: CapabilityContext
     remaining: int64
     pull: StreamPullProc
     close: StreamCloseProc
     buffered: bool
+    pulling: bool
     buffer: Value
     itemType: Value
     errType: Value
@@ -3399,8 +3401,14 @@ proc skipStreamVoids(data: StreamData) =
 proc closeStream*(v: Value)
 
 proc fillStreamBuffer(stream: Value, data: StreamData): bool =
+  if data.closed:
+    return false
   if data.buffered:
     return true
+  if data.pulling:
+    raise newException(GeneError, "a Stream cannot be pulled reentrantly")
+  data.pulling = true
+  defer: data.pulling = false
   while not data.closed:
     var pulled: StreamPullResult
     try:
@@ -3413,6 +3421,8 @@ proc fillStreamBuffer(stream: Value, data: StreamData): bool =
       except CatchableError:
         discard
       raise producerError
+    if data.closed:
+      return false
     if not pulled.has:
       stream.closeStream()
       return false
@@ -3492,12 +3502,14 @@ proc closeStream*(v: Value) =
         firstError = cleanupError
   data.source = NIL
   data.callable = NIL
+  data.capabilityCeiling = nil
   data.generatorCode = nil
   data.generatorScope = nil
   data.generatorStack.setLen(0)
   data.generatorIp = 0
   data.generatorContinuation = nil
-  data.index = data.items.len
+  data.items.setLen(0)
+  data.index = 0
   if firstError != nil:
     raise firstError
 
@@ -3510,6 +3522,9 @@ proc streamSource*(v: Value): Value =
 
 proc streamCallable*(v: Value): Value =
   streamData(v).callable
+
+proc streamCapabilityCeiling*(v: Value): CapabilityContext =
+  streamData(v).capabilityCeiling
 
 proc streamRemaining*(v: Value): int64 =
   streamData(v).remaining
@@ -5502,6 +5517,31 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
   else:
     v
 
+proc escapeStreamReturn*(value: Value, caller: Scope): Value =
+  ## Returning to a caller that still owns every weak callback scope does not
+  ## require an escaping copy. Preserve the actual cursor (and its lookahead)
+  ## rather than forking it merely to retain already-live lexical scopes.
+  if value.kind == vkStream and caller != nil:
+    var current = value
+    var safe = true
+    var seen = initHashSet[uint64]()
+    while current.kind == vkStream and not seen.containsOrIncl(current.bits):
+      let data = streamData(current)
+      if data.callable.kind == vkFunction and data.callable.fnHasWeakScope:
+        var owner = caller
+        while owner != nil and owner != data.callable.fnScope:
+          owner = owner.parent
+        if owner == nil:
+          safe = false
+          break
+      if escapeWeakFunctions(data.buffer).bits != data.buffer.bits:
+        safe = false
+        break
+      current = data.source
+    if safe:
+      return value
+  escapeWeakFunctions(value)
+
 proc escapeWeakFunctions*(v: Value): Value =
   ## Values that leave their defining run/eval boundary must keep weakly-stored
   ## lexical scopes alive. Rebuild only the containers that actually contain a
@@ -5653,6 +5693,7 @@ proc escapeWeakFunctions*(v: Value): Value =
     boxObject(StreamData(objKind: okStream, source: escapedSource,
                          items: data.items, index: data.index,
                          callable: escapedCallable, remaining: data.remaining,
+                         capabilityCeiling: data.capabilityCeiling,
                          pull: data.pull, closed: data.closed,
                          close: data.close,
                          buffered: data.buffered, buffer: escapedBuffer,
@@ -6563,7 +6604,9 @@ proc newCheckedStream*(source, itemType, errType: Value, itemScope: Scope): Valu
 proc newLazyStream*(source: Value, pull: StreamPullProc,
                     callable: Value = NIL, remaining: int64 = -1,
                     itemType: Value = NIL, errType: Value = NIL,
-                    itemScope: Scope = nil): Value =
+                    itemScope: Scope = nil,
+                    close: StreamCloseProc = nil,
+                    capabilityCeiling: CapabilityContext = nil): Value =
   # The stream owns its callable strongly, like every other heap container
   # (channels, cells, actor state). Weakening the captured-scope edge here
   # dangles when the operand stack held the only strong reference to an
@@ -6571,7 +6614,8 @@ proc newLazyStream*(source: Value, pull: StreamPullProc,
   # back is a leak, not a crash, matching the container-wide tradeoff.
   let storedCallable = escapeWeakFunctions(callable)
   boxObject(StreamData(objKind: okStream, source: source, callable: storedCallable,
-                       remaining: remaining, pull: pull, itemType: itemType,
+                       capabilityCeiling: capabilityCeiling,
+                       remaining: remaining, pull: pull, close: close, itemType: itemType,
                        errType: errType, itemScope: itemScope, closed: false))
 
 proc newGeneratorStream*(code: FunctionCode, scope: Scope,

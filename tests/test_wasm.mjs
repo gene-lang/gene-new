@@ -38,6 +38,17 @@ const cases = [
   ["(if true 1 2)", 0, "1", ""],
   ["[true false nil]", 0, "[true false nil]", ""],
   ['($println "hi")', 0, "nil", "hi\n"],
+  ['(let pending ([1 2] => $println)) (pending .close)', 0, "nil", ""],
+  ['([1 2] -> $each $println)', 0, "nil", "1\n2\n"],
+  ['(var factor 2) (let pending ([1 2] => * factor)) ' +
+   '(set factor 10) (pending -> $into [])', 0, "[2 4]", ""],
+  ['([1 2 3] => * 2 -> $take 2 => + 1 -> $into [])', 0, "[3 5]", ""],
+  ['(let source ($to_stream [1 2])) (let bounded ($take source 0)) ' +
+   '(bounded .close) (source .next)', 0, "1", ""],
+  ['(type Rows ^props {} (message to_stream [] ($to_stream [1 2]))) ' +
+   '((Rows) => + 1 -> $into [])', 0, "[2 3]", ""],
+  ['(fn drop [x] (if (== x 1) void nil)) ' +
+   '([1 2] => drop -> $into [])', 0, "[nil]", ""],
   ['($str/join ["a" "b"] "-")', 0, '"a-b"', ""],
   ['(import $log [new_logger log_debug]) ' +
    '(var logger (new_logger "app/wasm")) ' +

@@ -540,6 +540,16 @@ proc withoutAbsent(typ: WebType): WebType =
   elif members.len == 1: members[0]
   else: WebType(kind: wtkUnion, members: members)
 
+proc withoutVoid(typ: WebType): WebType =
+  if typ.kind == wtkVoid: return webType(wtkNever)
+  if typ.kind != wtkUnion: return typ
+  var members: seq[WebType]
+  for member in typ.members:
+    if member.kind != wtkVoid: members.add member
+  if members.len == 0: webType(wtkNever)
+  elif members.len == 1: members[0]
+  else: WebType(kind: wtkUnion, members: members)
+
 proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
   if expected == nil or actual == nil or expected.kind == wtkAny or
       actual.kind == wtkNever:
@@ -1589,6 +1599,9 @@ proc requireType(analysis: WebAnalysis, loc: SourceLoc, actual,
     if actual.kind == wtkStream and expected.kind == wtkList:
       message.add "; collect the Stream with '$into []' (or '-> $into []' " &
         "in a pipeline) before this boundary"
+    elif actual.kind == wtkStream and expected.kind != wtkStream:
+      message.add "; if this function should receive individual items, " &
+        "use '=>' in the pipeline"
     raise webError(loc, message)
 
 proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
@@ -1779,7 +1792,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       let returnType = case messageName
         of "has_next": webType(wtkBool)
         of "peek", "next": receiver.typ.item
-        else: webType(wtkVoid)
+        else: webType(wtkNil)
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, returnType: returnType, loc: loc)
     if methodDecl == nil and receiver.typ.kind == wtkTask and
@@ -2487,7 +2500,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         let callback = analysis.analyzeExpr(value.body[1], bindings,
                                              callbackExpected)
         let itemType = if builtin == "filter": input.typ.item
-                       else: callback.typ.returnType
+                       else: withoutVoid(callback.typ.returnType)
         return WebExpr(kind: wekBuiltin, typ: webType(wtkStream, itemType),
           loc: loc, text: builtin, children: @[input, callback])
       of "each":
@@ -2500,15 +2513,31 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           params: @[input.typ.item], returnType: webType(wtkAny))
         let callback = analysis.analyzeExpr(value.body[1], bindings,
                                             callbackExpected)
-        return WebExpr(kind: wekBuiltin, typ: webType(wtkVoid), loc: loc,
+        return WebExpr(kind: wekBuiltin, typ: webType(wtkNil), loc: loc,
           text: builtin, children: @[input, callback])
+      of "take":
+        if value.body.len != 2:
+          raise webError(loc, "web take expects a List or Stream and an Int")
+        let input = analysis.analyzeExpr(value.body[0], bindings)
+        if input.typ.kind notin {wtkList, wtkStream}:
+          raise webError(loc, "web take expects a List or Stream")
+        let count = analysis.analyzeExpr(value.body[1], bindings,
+                                          webType(wtkInt))
+        return WebExpr(kind: wekBuiltin, typ: input.typ, loc: loc,
+          text: builtin, children: @[input, count])
       of "into":
         if value.body.len != 2:
           raise webError(loc, "web into expects stream and destination")
         let input = analysis.analyzeExpr(value.body[0], bindings)
         if input.typ.kind != wtkStream:
           raise webError(loc, "web into expects a Stream")
-        let destination = analysis.analyzeExpr(value.body[1], bindings, expected)
+        let destinationExpected =
+          if value.body[1].kind == vkList and
+              (expected == nil or expected.kind != wtkList):
+            webType(wtkList, input.typ.item)
+          else: expected
+        let destination = analysis.analyzeExpr(value.body[1], bindings,
+                                                destinationExpected)
         if destination.typ.kind notin {wtkList, wtkPropMap}:
           raise webError(loc, "web into supports mutable List and PropMap destinations")
         return WebExpr(kind: wekBuiltin, typ: destination.typ, loc: loc,
@@ -2901,7 +2930,11 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         "web callback cannot await: Callback types carry no asyncness")
     var callbackType = webType(wtkCallback)
     for param in params: callbackType.params.add param.typ
-    callbackType.returnType = returnType
+    callbackType.returnType =
+      if inferred and returnType.kind == wtkAny and
+          not containsForm(value, "return"):
+        body.typ
+      else: returnType
     return WebExpr(kind: wekLambda, typ: callbackType, loc: loc,
                    params: params, children: @[body])
   if name == "do":
@@ -3329,12 +3362,21 @@ proc analyzePipeline(analysis: WebAnalysis, value: Value,
     of pstIterate:
       # An `=>` stage evaluates its callee and arguments once, so each one
       # becomes its own `let` ahead of the callback the emitter inlines.
-      let hoist = hoistIterateStage(stage, freshTemp)
+      let hoist = hoistIterateStage(stage, freshTemp,
+        proc(head: Value): bool =
+          # Declared web functions and compiler arithmetic heads cannot be
+          # rebound. Keeping those heads preserves their static signatures;
+          # actual callback bindings and every fixed argument are captured.
+          (head.kind == vkNode and head.head.isSym("fn") and
+             stage.body.len == 0 and stage.props.len == 0) or
+          (head.kind == vkSymbol and not local.hasKey(head.symVal) and
+            (analysis.signatures.hasKey(head.symVal) or
+             head.symVal in ["+", "-", "*", "/", "%", "==", "!=", "<",
+                            "<=", ">", ">="])))
       for (name, hoistedValue) in hoist.hoisted:
         forms.add newNode(newSym("let"), body = @[newSym(name), hoistedValue])
       stage = hoist.stage
       expr = materializeIterateStage(stage, newSym(tempName), freshTemp(),
-                                     i == value.pipelineStages.high,
                                      value.pipelineImmutable)
     if i == value.pipelineStages.high:
       forms.add expr
@@ -4572,18 +4614,14 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     of "http/post_form":
       "$gene_http_request(\"POST\", " & arguments[0] & ", " & arguments[1] &
         ", " & arguments[2] & ")"
-    of "size": "BigInt(Array.isArray(" & arguments[0] & ") || typeof " &
-      arguments[0] & " === \"string\" ? " &
-      (if emitter.typescript: "(" & arguments[0] & " as any)" else: arguments[0]) &
-      ".length : " &
-      (if emitter.typescript: "(" & arguments[0] & " as any)" else: arguments[0]) &
-      ".size)"
+    of "size": "$gene_size(" & arguments[0] & ")"
     of "node/head": arguments[0] & ".head"
     of "node/props": arguments[0] & ".props"
     of "node/body": arguments[0] & ".body"
-    of "to_stream": "new GeneStream(" & arguments[0] & "[Symbol.iterator]())"
+    of "to_stream": "new GeneStream(" & arguments[0] & ".slice()[Symbol.iterator]())"
     of "map": "$gene_stream_map(" & arguments[0] & ", " & arguments[1] & ")"
     of "filter": "$gene_stream_filter(" & arguments[0] & ", " & arguments[1] & ")"
+    of "take": "$gene_stream_take(" & arguments[0] & ", " & arguments[1] & ")"
     of "into": "$gene_stream_into(" & arguments[0] & ", " & arguments[1] & ")"
     of "each": "$gene_stream_each(" & arguments[0] & ", " & arguments[1] & ")"
     else: raise newException(WebProfileError,
@@ -5981,7 +6019,7 @@ proc emitModule(module: WebModule, typescript: bool,
   let needsNodeBrand = needsNode or needsPath or needsDom or needsPatternFields
   for fn in module.functions:
     if fn.generator: needsStream = true
-  if moduleUsesBuiltin(module, ["to_stream", "map", "filter", "into", "each"]):
+  if moduleUsesBuiltin(module, ["to_stream", "map", "filter", "take", "into", "each"]):
     needsStream = true
   if needsAsync or needsGeneCatch:
     # Cancellation is branded with a registry symbol, not a `kind` string: a
@@ -6201,6 +6239,11 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line()
+  if moduleUsesBuiltin(module, ["size"]):
+    emitter.line("function $gene_size(value" &
+      (if typescript: ": any" else: "") & ")" &
+      (if typescript: ": bigint" else: "") &
+      " { return BigInt(Array.isArray(value) || typeof value === \"string\" ? value.length : value.size); }")
   if needsStream:
     emitter.line("export class GeneEndOfStream extends Error {")
     inc emitter.indent
@@ -6213,17 +6256,22 @@ proc emitModule(module: WebModule, typescript: bool,
     if typescript:
       emitter.line("private buffered: IteratorResult<T> | undefined;")
       emitter.line("private closed = false;")
+      emitter.line("private pulling = false;")
+      emitter.line("private source: Iterator<T> | undefined;")
+      emitter.line("private upstream: GeneStream<any> | undefined;")
     let privateField = if typescript: "private " else: ""
-    emitter.line("constructor(" & privateField & "source" &
+    emitter.line("constructor(source" &
       (if typescript: ": Iterator<T>" else: "") &
-      ") { this.source = source; this.buffered = undefined; this.closed = false; }")
+      ", upstream" & (if typescript: "?: GeneStream<any>" else: "") &
+      ") { this.source = source; this.upstream = upstream; this.buffered = undefined; this.closed = false; this.pulling = false; }")
     emitter.line(privateField & "pull()" &
       (if typescript: ": IteratorResult<T>" else: "") & " {")
     inc emitter.indent
-    emitter.line("if (this.closed) return { done: true, value: undefined }" &
-      (if typescript: " as IteratorReturnResult<any>" else: "") & ";")
-    emitter.line("if (this.buffered === undefined) this.buffered = this.source.next();")
-    emitter.line("return this.buffered;")
+    emitter.line("if (this.buffered !== undefined) return this.buffered;")
+    emitter.line("if (this.closed) return { done: true, value: undefined };")
+    emitter.line("if (this.pulling) throw new Error(\"a Stream cannot be pulled reentrantly\");")
+    emitter.line("this.pulling = true;")
+    emitter.line("try { while (!this.closed && this.source) { const item = this.source.next(); if (this.closed) break; if (item.done) { this.close(); break; } if (item.value !== undefined) { this.buffered = item; return item; } } return { done: true, value: undefined }; } catch (primary) { try { this.close(); } catch (_) {} throw primary; } finally { this.pulling = false; }")
     dec emitter.indent
     emitter.line("}")
     emitter.line("has_next()" & (if typescript: ": boolean" else: "") &
@@ -6238,11 +6286,17 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("const item = this.pull(); if (item.done) throw new GeneEndOfStream(); this.buffered = undefined; return item.value;")
     dec emitter.indent
     emitter.line("}")
-    emitter.line("close()" & (if typescript: ": void" else: "") & " {")
+    emitter.line("close()" & (if typescript: ": null" else: "") & " {")
     inc emitter.indent
-    emitter.line("if (this.closed) return; this.closed = true; this.buffered = undefined; if (typeof this.source.return === \"function\") this.source.return();")
+    emitter.line("if (this.closed) return null; this.closed = true; this.buffered = undefined;")
+    emitter.line("const source = this.source, upstream = this.upstream; this.source = undefined; this.upstream = undefined;")
+    emitter.line("let failed = false, first" & (if typescript: ": unknown" else: "") & ";")
+    emitter.line("try { if (source && typeof source.return === \"function\") source.return(); } catch (error) { failed = true; first = error; }")
+    emitter.line("try { if (upstream) upstream.close(); } catch (error) { if (!failed) { failed = true; first = error; } } if (failed) throw first; return null;")
     dec emitter.indent
     emitter.line("}")
+    emitter.line("detach()" & (if typescript: ": void" else: "") &
+      " { this.upstream = undefined; }")
     emitter.line("*[Symbol.iterator]()" &
       (if typescript: ": Generator<T, void, unknown>" else: "") & " {")
     inc emitter.indent
@@ -6252,33 +6306,42 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line()
-    if moduleUsesBuiltin(module, ["map", "filter", "into", "each"]):
+    if moduleUsesBuiltin(module, ["map", "filter", "take", "into", "each"]):
       let anyType = if typescript: ": any" else: ""
       emitter.line("function $gene_stream_map(source" & anyType & ", mapper" &
         anyType & ")" & anyType & " {")
       inc emitter.indent
-      emitter.line("function* mapped() { try { while (source.has_next()) yield mapper(source.next()); } finally { source.close(); } } return new GeneStream(mapped());")
+      emitter.line("function* mapped() { while (source.has_next()) yield mapper(source.next()); } return new GeneStream(mapped(), source);")
       dec emitter.indent
       emitter.line("}")
       emitter.line("function $gene_stream_filter(source" & anyType &
         ", predicate" & anyType & ")" & anyType & " {")
       inc emitter.indent
-      emitter.line("function* filtered() { try { while (source.has_next()) { const item = source.next(); const keep = predicate(item); if (keep !== false && keep != null) yield item; } } finally { source.close(); } } return new GeneStream(filtered());")
+      emitter.line("function* filtered() { while (source.has_next()) { const item = source.next(); const keep = predicate(item); if (keep !== false && keep != null) yield item; } } return new GeneStream(filtered(), source);")
+      dec emitter.indent
+      emitter.line("}")
+      emitter.line("function $gene_stream_take(source" & anyType & ", count" &
+        anyType & ")" & anyType & " {")
+      inc emitter.indent
+      emitter.line("if (typeof count !== \"bigint\" || count < 0n) throw new RangeError(\"take count must be a non-negative Int\");")
+      emitter.line("if (Array.isArray(source)) return source.slice(0, Number(count));")
+      emitter.line("let remaining = count, bounded" & anyType & ";")
+      emitter.line("function* taken() { while (remaining > 0n && source.has_next()) { const item = source.next(); remaining -= 1n; if (remaining === 0n) bounded.detach(); yield item; } }")
+      emitter.line("bounded = new GeneStream(taken(), count === 0n ? undefined : source); return bounded;")
       dec emitter.indent
       emitter.line("}")
       emitter.line("function $gene_stream_into(source" & anyType &
         ", destination" & anyType & ")" & anyType & " {")
       inc emitter.indent
-      emitter.line("try { while (source.has_next()) { const item = source.next(); if (Array.isArray(destination)) destination.push(item); else destination[item[0]] = item[1]; } return destination; } finally { source.close(); }")
+      emitter.line("try { while (source.has_next()) { const item = source.next(); if (Array.isArray(destination)) destination.push(item); else destination[item[0]] = item[1]; } } catch (primary) { try { source.close(); } catch (_) {} throw primary; } source.close(); return destination;")
       dec emitter.indent
       emitter.line("}")
-      # A List receiver is drained in place: `each` never enters the lazy tier,
-      # so a terminal `=>` over an array allocates no stream.
+      # Explicit `each` over a List does not enter the stream tier.
       emitter.line("function $gene_stream_each(source" & anyType &
         ", visit" & anyType & ")" & anyType & " {")
       inc emitter.indent
       emitter.line("if (Array.isArray(source)) { for (const item of source) visit(item); return null; }")
-      emitter.line("try { while (source.has_next()) visit(source.next()); return null; } finally { source.close(); }")
+      emitter.line("try { while (source.has_next()) visit(source.next()); } catch (primary) { try { source.close(); } catch (_) {} throw primary; } source.close(); return null;")
       dec emitter.indent
       emitter.line("}")
       emitter.line()
@@ -6958,7 +7021,7 @@ proc emitDeclarations(module: WebModule): string =
     result.add "export declare class GeneEndOfStream extends Error {}\n"
     result.add "export declare class GeneStream<T> implements Iterable<T> {\n"
     result.add "  constructor(source: Iterator<T>);\n"
-    result.add "  has_next(): boolean; peek(): T; next(): T; close(): void;\n"
+    result.add "  has_next(): boolean; peek(): T; next(): T; close(): null;\n"
     result.add "  [Symbol.iterator](): Generator<T, void, unknown>;\n"
     result.add "}\n"
   if moduleUsesTypeKind(module, wtkTask):

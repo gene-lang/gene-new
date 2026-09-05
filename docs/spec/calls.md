@@ -100,29 +100,38 @@ the stage head, a positional argument, or a property value:
 (a -> _)         # call the incoming callable with no arguments
 ```
 
-`=>` is the per-item delimiter: its stage runs once per item of the incoming
-value, and its callee and other arguments are evaluated once before iterating.
-A pipeline never accumulates a collection between stages. A `=>` stage with a
-later stage maps lazily in the `Stream` tier (§6.2), so an unbounded producer
-flows through it; a **final** `=>` has no consumer, drains its upstream for
-effect, and the pipeline answers `nil`.
+`=>` prepares a per-item invocation once, converts the input with normal
+`to_stream`, and returns a new lazy Stream in every position, including the
+final stage. It never drains, collects, flattens, or awaits implicitly.
 
 ```gene
-(rows => save)                              # per row, for effect; nil
-(xs => f c -> $into [])                     # lazy through f; into collects
-(producer => step -> $take 5 -> $into [])   # terminates on an endless producer
+(rows => save)                              # lazy; no save calls yet
+(rows -> $each save)                        # immediate per-row effects; nil
+(xs => f c -> $into [])                     # explicit collection
+(producer => step -> $take 5 -> $into [])   # bounded demand
 ```
 
-A non-final `=>` converts its incoming value with `to_stream`, which is the
-identity on a `Stream`. A `Map` has no `to_stream`, so it reaches a non-final
-`=>` only through `-> $to_pairs_stream`; a final `=>` drains it directly.
+Fixed callee, message-value, and argument expressions run once in ordinary
+component order, before conversion. This includes mutable symbol reads.
+Spreads expand once after the fixed expressions have evaluated; their captured
+layout and element references do not track later source-container edits.
+Omitted callee defaults still run per invocation. A direct guarded item send
+prepares its fixed expressions even if all receivers are absent; its guard
+suppresses item-time message resolution and invocation. Use an ordinary lambda
+when argument evaluation itself must be guarded per item.
 
-Stage position is semantically significant: appending a stage after a final
-`=>` changes that old stage from an eager drain into a lazy map. Its components
-still evaluate before any item is pulled. Per-item failure preserves completed
-earlier effects, and resource-backed Streams require consumption or explicit
-close. `#(...)` retains the immutable syntax/call-site marker but executes like
-the ordinary pipeline form; quote is the inert spelling.
+`to_stream` preserves a Stream's identity and cursor position. Lists, Sets,
+Ranges, and user types with a type-direct conversion are accepted; a Map needs
+explicit `-> $to_pairs_stream`, with `[key value]` as one item. Unsupported
+scalars and nil are not singleton or empty streams. Conversion must produce a
+Stream and must not pull items. Per-item `void` results are skipped; `nil`,
+Lists, Streams, and Tasks remain individual results.
+
+Preparation can fail immediately. Callback/dispatch/boundary failures occur
+on demand, are terminal, preserve completed effects, and propagate once.
+Explicit consumers and lexical resource scopes govern cleanup. `#(...)`
+retains its immutable syntax/call-site marker but executes normally; quote is
+the inert spelling. See the lifecycle contract in `docs/spec/streams.md`.
 
 Pipeline syntax is represented by syntax-only `vkPipeline`, associates
 left-to-right, and preserves tail position only for the final stage. The

@@ -1359,30 +1359,42 @@ proc biEach(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   if args.len != 2:
     raise newException(GeneError, "each expects 2 arguments, got " & $args.len)
   let receiver = args[0]
-  case receiver.kind
-  of vkStream:
-    while receiver.streamHasNext:
-      var callArgs = [checkedStreamNext(receiver, "each item")]
-      discard applyCall(args[1], callArgs, NamedArgs(), scope)
-  of vkList:
-    for item in receiver.listItems:
-      var callArgs = [item]
-      discard applyCall(args[1], callArgs, NamedArgs(), scope)
-  of vkMap:
-    for _, val in receiver.mapEntries:
-      var callArgs = [val]
-      discard applyCall(args[1], callArgs, NamedArgs(), scope)
-  of vkHashMap:
-    for entry in receiver.hashMapEntries:
-      var callArgs = [entry.val]
-      discard applyCall(args[1], callArgs, NamedArgs(), scope)
-  of vkSet:
-    for item in receiver.setItems:
-      var callArgs = [item]
-      discard applyCall(args[1], callArgs, NamedArgs(), scope)
-  else:
+  if receiver.kind notin {vkStream, vkList, vkMap, vkHashMap, vkSet}:
     return dispatchGenericForward("each", receiver, args[1 .. args.high], scope)
+  # The private driver stays within this consuming call. Its resumable item
+  # frame allows ordinary callbacks to await even inside a spawned consumer.
+  let driver = newLazyStream(receiver, pullMapStream,
+    callable = args[1], close = closeStreamCallback,
+    capabilityCeiling = activeCapabilityContext)
+  try:
+    case receiver.kind
+    of vkStream:
+      while receiver.streamHasNext:
+        discard invokeStreamCallback(driver,
+          checkedStreamNext(receiver, "each item"))
+    of vkList:
+      for item in receiver.listItems:
+        discard invokeStreamCallback(driver, item)
+    of vkMap:
+      for _, item in receiver.mapEntries:
+        discard invokeStreamCallback(driver, item)
+    of vkHashMap:
+      for entry in receiver.hashMapEntries:
+        discard invokeStreamCallback(driver, entry.val)
+    of vkSet:
+      for item in receiver.setItems:
+        discard invokeStreamCallback(driver, item)
+    else:
+      discard
+  except CatchableError as primaryError:
+    try:
+      driver.closeStream()
+    except CatchableError:
+      discard
+    raise primaryError
+  driver.closeStream()
   NIL
+
 
 
 # net/http server implementation (event loop, dispatch, helpers).
@@ -7811,7 +7823,8 @@ proc registerStdlibNamespaces(root: Scope) =
   # `(import std/stream [map])` / `(import str [join])` today and swap in
   # file-backed modules later without changing call sites.
   let stdStreamScope = newScope(root)
-  stdStreamScope.define("to_stream", newNativeFn("to_stream", biToStream))
+  stdStreamScope.define("to_stream",
+    newNativeCallFn("to_stream", biToStream, acceptsNamed = false))
   stdStreamScope.define("to_pairs_stream",
                         newNativeFn("to_pairs_stream", biToPairsStream))
   # The generic collection operations (§6.2) must bind the same process-wide

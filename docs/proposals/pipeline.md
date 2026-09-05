@@ -1,6 +1,6 @@
 # Sequenced value pipelines with `->` and `=>`
 
-> **Status (2026-09-02): Accepted and implemented**
+> **Status (2026-09-05): Revised lazy-stage contract; accepted and implemented**
 >
 > This document specifies the `->` value pipeline and its per-item `=>`
 > delimiter. `docs/design.md` defines `;` as head-folding reader sugar with no
@@ -318,71 +318,48 @@ is not a slot, and a head slot makes the item a dot-send receiver.
 Here `=>` means **per item**, never key/value pairing. Maps have an explicit
 pair conversion described below.
 
-**A pipeline never accumulates a collection between stages.** What a `=>` stage
-does is decided by one question — does the pipeline continue after it?
+**Every `=>` returns a new lazy Stream, including the final stage.** Stage
+position never selects a different operation. A `->` passes its whole input to
+an ordinary call; a `=>` prepares an item invocation and normalizes its input
+through `to_stream`. Collection and effects require explicit consumers.
 
-- **Not final.** The stage maps *lazily*, in the `Stream` tier of design §6.2,
-  and hands the next stage a `Stream`. Nothing is materialized, so an unbounded
-  producer flows through one item at a time.
-- **Final.** The stage has no consumer for its results. It drains its upstream
-  for effect, and the pipeline answers `nil`.
-
-The complete shape table is:
-
-| Stage position | Delimiter | When the stage runs | Value passed onward / pipeline answer |
-| --- | --- | --- | --- |
-| non-final | `->` | eagerly, once | the ordinary call result |
-| final | `->` | eagerly, once | the ordinary call result |
-| non-final | `=>` | components now; per-item calls lazily when pulled | a `Stream` |
-| final | `=>` | components now; per-item calls eagerly while draining | `nil` |
-
-Appending a stage after a final `=>` changes the old stage from an eager drain
-to a lazy map. Consequently `(rows => save -> log)` does **not** call `save`
-unless `log` consumes the Stream. Use `(rows -> $each save)` when the drain
-must remain explicit and position-independent.
+| Delimiter | When it runs | Result in every position |
+| --- | --- | --- |
+| `->` | ordinary eager call after evaluating the input | ordinary call result |
+| `=>` | fixed components now; item calls when pulled | lazy Stream |
 
 ```gene
-(rows => save)                              # per row, for effect; nil
-(xs => f c -> $into [])                     # lazy through f; into collects
-(producer => step -> $take 5 -> $into [])   # terminates on an endless producer
+(rows => save)                             # lazy, including the final stage
+(rows -> $each save)                       # explicit per-row effects; nil
+(xs => f c -> $into [])                    # explicit List materialization
+(producer => step -> $take 5 -> $into [])  # bounded lazy processing
 ```
 
-`=>` therefore adds no dispatch mechanism of its own: a non-final stage is the
-`map` a hand-written `($map ($to_stream xs) (fn [item] (f item c)))` would
-perform, and a final stage is `each`, both without naming the item.
+The conversion is the language-defined normal operation, independent of
+source-level shadowing of generated helper names. A Stream is reused as the
+upstream cursor, without restarting or copying it; the mapping adapter itself
+is new. Lists, Sets, Ranges, and user types with a type-direct `to_stream`
+message participate. A Map needs explicit `-> $to_pairs_stream`, yielding
+`[key value]` as one item with a `Sym` key for a PropMap. Explicit Map `$each`
+still visits values. Unsupported scalars and nil fail conversion.
 
-Laziness is the delimiter's, not the receiver's: a non-final `=>` converts its
-incoming value with `to_stream`, which is the identity on a `Stream`. A kind
-with no `to_stream` — `Map` — therefore reaches a non-final `=>` only through
-an explicit `-> $to_pairs_stream`, while a final `=>` drains it directly
-because `each` needs no conversion.
+Fixed callee, message-value, and non-slot argument expressions are captured
+once, including symbol reads. Capture is shallow; object mutation remains
+visible, while rebinding a captured scalar does not change its saved value.
+Spreads expand once after fixed argument evaluation and retain their resulting
+layout. Callee defaults execute per actual invocation. A proven immutable head
+may remain statically resolved where a backend preserves equivalent behavior.
 
-Those two Map paths deliberately inherit the generic collection operations'
-different callback shapes. A final `=>`/`each` sees each Map **value**. A
-non-final path through `to_pairs_stream` sees `[key value]`, where a PropMap key
-is a `Sym` and `entry/1` is the value. Changing `each` to see pairs would be a
-stdlib migration, not a pipeline rule.
+A guarded `=>` send prepares fixed expressions even for empty input or absent
+receivers. Its item-time guard skips message resolution and invocation. Use a
+lambda for argument expressions that must run only for each present receiver.
+Whole-value `->` guarded sends keep ordinary short-circuit argument evaluation.
 
-Collecting stays explicit and therefore retains the standard-library `$`
-spelling: a lazy collecting chain ends in `-> $into []`. No pipeline-only
-collector alias is introduced.
-
-The two delimiters mix at one parenthesis depth. `;` mixes with neither.
-
-This is the explicit stage-level syntax that Section 4's non-goal reserved.
-The rejected feature was a `->` stage that changes meaning when the incoming
-value happens to be a stream; `=>` is a different delimiter the author writes,
-so a reader never has to know a runtime type to know what a stage does.
-
-Symbols and literals are left in place rather than lifted: a symbol load is
-idempotent, and keeping it in place preserves ordinary head dispatch for `+`,
-for a statically known function, and for a `.message` descriptor. A spread
-stays a spread, with its operand lifted.
-
-Loop-invariant hoisting is the reason `=>` can be a stage at all. It is exactly
-the work Section 4 said an *implicit* per-item rule would have to do silently,
-and doing it under an explicit delimiter is what makes it a contract rather
-than an optimization.
+A callback returning void skips an item; nil remains an item. Lists, Streams,
+and Tasks remain single results unless an explicit operation flattens or awaits
+them. Stream-handling functions use ordinary `->` calls and may aggregate,
+return a new Stream, or return an unrelated value. There is no implicit
+collection boundary, role inference from signatures, or automatic parallelism.
 
 ## 7. Evaluation contract
 
@@ -438,9 +415,9 @@ iterating. Only the per-item call repeats:
 2. evaluate every separately evaluated stage component — the callee unless the
    head is the slot, each direct property value, and each direct positional
    argument — once, into compiler-owned storage;
-3. build the per-item callable over that storage;
-4. hand the retained value and callable to `map` over `to_stream` when a later
-   stage will consume results, or to `each` when the stage is last.
+3. expand the fixed argument layout and build the prepared invocation;
+4. convert the input through normal `to_stream` and create a lazy mapping
+   adapter, without pulling items, regardless of stage position.
 
 Component evaluation is eager even if zero items will flow. Here `choose` runs
 once, while the per-item call never runs:
@@ -559,14 +536,14 @@ That spelling risks exposing or capturing a generated name, adds synthetic
 scope artifacts to diagnostics, and can interfere with slot accounting. The
 compiler should own the temporary directly.
 
-Concretely, the VM overwrites the top-level pipeline scratch slot after the
-final stage. Top-level `=>` components are captured through the generated
-callback's own call scope rather than stored in the application-long module
-frame. A returned lazy Stream retains that smaller scope because its callback
-still needs the values; `Stream/close` releases the callback. Function-local
-scratch remains in the ordinary call frame and disappears with that frame; a
-returned lazy Stream may intentionally retain the frame through its callback
-until the Stream is closed or released.
+Concretely, the VM overwrites top-level pipeline scratch after the final
+stage. Each `=>` prepares a compact private scope holding its evaluated target,
+message descriptor, and expanded positional/named argument layout. A compiled
+item entry point uses ordinary call/send instructions with that layout and the
+current item. The Stream owns this environment and releases it on close.
+Authored dispatch scope and the creating capability ceiling remain effective
+when another caller consumes the Stream. No callback environment is allocated
+per item; each observable `Call` envelope still has independent identity.
 
 ## 10. Macros, fexprs, and special forms
 
@@ -608,7 +585,7 @@ The reader should report:
 - a leading send stage such as `(a -> .message)`, pointing at that stage and
   suggesting the head-slot spelling `(a -> _ .message)`.
 
-When a non-final `=>` leaves a `Stream` at a boundary requiring `List`, the
+When a `=>` leaves a `Stream` at a boundary requiring `List`, the
 type error suggests the explicit `-> $into []` collector. The ordinary
 expected/actual types remain the primary diagnostic.
 
@@ -696,9 +673,10 @@ it as something else. `~name` stays an ordinary glued symbol and the
 - incoming expression runs before the stage callee;
 - a `=>` stage's callee and non-slot arguments run once, before iterating;
 - those components still run when a later `take 0` pulls no items;
-- a non-final `=>` stage is lazy, and an unbounded producer terminates when a
+- every `=>` stage is lazy, and an unbounded producer terminates when a
   later stage bounds it;
-- a final `=>` stage drains its upstream and the pipeline answers `nil`;
+- a final `=>` returns a lazy Stream; `$each` explicitly drives effects;
+- custom `to_stream` dispatch and zero-bound construction-time detachment;
 - stage callee runs before its other arguments;
 - incoming expression runs once with default insertion;
 - incoming expression runs once with a property slot;
@@ -729,14 +707,16 @@ it as something else. `~name` stays an ordinary glued symbol and the
    props/meta/source locations and a delimiter kind per stage, requires a
    single-form leading segment, and validates direct slots and mixed
    delimiters in one pass.
-3. **Compiler sequencing:** complete. VM GIR uses compiler-owned inaccessible
-   locals, preserves source-facing call sites, and propagates tail position to
-   only the final stage. Inside functions, a `=>` stage adds one frame-bounded
-   hidden binding per separately evaluated component. At module/namespace/REPL
-   scope, those components pass through the callback's own capture scope and
-   the pipeline scratch slot is cleared after evaluation. Both paths reuse the
-   ordinary `map` send. The opcode/build table uses executable artifact marker
-   GIR v5.
+3. **Compiler sequencing:** VM GIR keeps compiler-owned input storage and
+   ordinary whole-value calls. `opPreparePipelineCall` captures components and
+   expands spreads once, `opCallPrepared` reuses the ordinary invocation path,
+   and `opMakePipelineStream` performs normal conversion and lazy mapping.
+   Every item stage uses the same lowering, with source-facing call sites and
+   private captures. Executable artifacts use GIR v6.
+   Demanded item calls use private resumable frames, driven sequentially to
+   completion, so native consumers retain their accumulator across callback
+   suspension. Closing a cursor cancels and unwinds its active item frame;
+   consuming-task cancellation and instruction budgets propagate into it.
 4. **Backends:** complete for the VM and web emitter. The web profile now
    infers an inline callback's parameter and return types when the expected
    type is a known `Callback`, which is what lets a generated `=>` callback
@@ -768,12 +748,12 @@ implementations after `->` has an independently sound contract.
 - `=>` is `map`. A per-item `filter` or `each` delimiter is not proposed: both
   read clearly today as `-> $filter p` and `-> $each f`, and neither carries the
   slot ergonomics that motivate `=>`.
-- A final `=>` remains the ergonomic implicit drain. The rejected alternative
-  was to make `=>` always return a lazy Stream and require `-> $each f` for
-  every effect-only traversal. Revisit this only if real edits repeatedly ship
-  the silent-non-execution bug where appending a stage turns an old final drain
-  into a lazy map. The mechanical migration is `X => f` to `X -> $each f`;
-  there is no third delimiter to preserve.
+- The former final-`=>` drain is removed. Migrate effect-only traversals to
+  `X -> $each f`. With fixed arguments, capture them outside an explicit lambda
+  so setup remains once per stage. Map item stages require explicit pairs.
+- Fusion and typed specialization remain optional, after the generic contract
+  passes trace/pull/error/cleanup tests. They must preserve void boundaries,
+  aliases, preparation order, dispatch scope, and take detachment timing.
 - Direct `;`/arrow mixing remains rejected. Explicit nesting is the composition
   syntax unless a later proposal demonstrates a clearer rule.
 - Quasiquote supports unquote in pipeline components. Direct unquote-splicing

@@ -202,6 +202,9 @@ type
                             # truncates back to it before running catch clauses
 
   Fiber = ref object of RootObj
+    privateCall: bool
+    callError: ref CatchableError
+    callResult: Value
     ## A suspendable Gene task: the full runLoop continuation captured on the heap.
     ## A fresh fiber carries just chunk/scope (started = false); once it suspends,
     ## every register, the operand stack, and the frame/handler stacks are saved
@@ -357,6 +360,7 @@ type
   Application* = ref object of RuntimeContext
     builtins: Scope
     boundCallTemplate: FunctionProto
+    streamCallbackTemplate: FunctionProto
     # The whole standard library, i.e. the scope behind the `gene` namespace.
     # `builtins` is only the *lexical* root, which deliberately exposes almost
     # nothing (design §2.1): user code reaches the library as `gene/x` / `$x`.
@@ -767,6 +771,9 @@ var activeWorkerThread {.threadvar.}: bool
 var activeConstructionDepth {.threadvar.}: int
 var activeCapabilityContext {.threadvar.}: CapabilityContext
 var activeCapabilityPresence {.threadvar.}: CapabilityPresence
+var activeVmBudget {.threadvar.}: ptr EvalBudget
+var activeVmScope {.threadvar.}: ptr Scope
+var activeTask {.threadvar.}: Value
 var activeSandboxCompileKey {.threadvar.}: string
 var activeSandboxCompileDir {.threadvar.}: string
 var activeSandboxGenerationId {.threadvar.}: uint64
@@ -1009,7 +1016,7 @@ proc timerDeadline(milliseconds: int64): MonoTime
 proc scheduleAskTimeout(task, reply: Value, scope: Scope, timeoutMs: int64)
 
 # Drive the scheduler until the given task settles, or raise on deadlock.
-proc pumpUntilDone(task: Value)
+proc pumpUntilDone(task: Value, parentTask: Value = NIL)
 proc pollHttpClientCompletions()
 proc pollCursesInputCompletions()
 proc pollOsExecAsyncCompletions()
@@ -3957,7 +3964,10 @@ proc biDurationSeconds(args: openArray[Value]): Value {.nimcall.} =
   requireDuration("Duration/seconds", args[0])
   newFloat(float64(args[0].durationMicroseconds) / 1_000_000.0)
 
-proc biToStream(args: openArray[Value]): Value {.nimcall.} =
+proc dispatchGenericForward(name: string, receiver: Value,
+                            rest: openArray[Value], scope: Scope): Value
+
+proc biToStream(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   requireOne("to_stream", args)
   if args[0].kind == vkStream:
     # A conversion into the lazy tier is the identity on something already in
@@ -3974,8 +3984,11 @@ proc biToStream(args: openArray[Value]): Value {.nimcall.} =
       "to_stream expects a List, Set, Range, or Stream; " &
       "a Map converts with to_pairs_stream")
   if args[0].kind notin {vkList, vkSet}:
-    raise newException(GeneError,
-      "to_stream expects a List, Set, Range, or Stream")
+    let scope = if call == nil: nil else: call.dispatchScope
+    result = dispatchGenericForward("to_stream", args[0], [], scope)
+    if result.kind != vkStream:
+      raiseTypeError("to_stream result", "Stream", result, scope)
+    return
   var items: seq[Value]
   case args[0].kind
   of vkList:
@@ -4560,22 +4573,42 @@ proc biEnvSnapshot(args: openArray[Value]): Value {.nimcall.} =
   result = newEnv(bindings)
   result.setEnvClosedScope(true)
 
+proc invokeStreamCallback(stream, item: Value): Value
+proc closeStreamCallback(stream: Value) {.nimcall.}
+
 proc pullMapStream(stream: Value): StreamPullResult {.nimcall.} =
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
+  if stream.streamCapabilityCeiling != nil and
+      activeCapabilityContext != stream.streamCapabilityCeiling:
+    activeCapabilityContext = intersectContexts(activeCapabilityContext,
+      stream.streamCapabilityCeiling)
+    activeCapabilityPresence = nil
+  defer:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
   let source = stream.streamSource
   while source.streamHasNext:
     let item = checkedStreamNext(source, "map item")
-    var callArgs = [item]
-    return StreamPullResult(
-      has: true,
-      item: applyCall(stream.streamCallable, callArgs, NamedArgs()))
+    return StreamPullResult(has: true,
+      item: invokeStreamCallback(stream, item))
   StreamPullResult(has: false, item: NIL)
 
 proc pullFilterStream(stream: Value): StreamPullResult {.nimcall.} =
+  let savedCapabilities = activeCapabilityContext
+  let savedPresence = activeCapabilityPresence
+  if stream.streamCapabilityCeiling != nil and
+      activeCapabilityContext != stream.streamCapabilityCeiling:
+    activeCapabilityContext = intersectContexts(activeCapabilityContext,
+      stream.streamCapabilityCeiling)
+  activeCapabilityPresence = nil
+  defer:
+    activeCapabilityContext = savedCapabilities
+    activeCapabilityPresence = savedPresence
   let source = stream.streamSource
   while source.streamHasNext:
     let item = checkedStreamNext(source, "filter item")
-    var callArgs = [item]
-    if applyCall(stream.streamCallable, callArgs, NamedArgs()).isTruthy:
+    if invokeStreamCallback(stream, item).isTruthy:
       return StreamPullResult(has: true, item: item)
   StreamPullResult(has: false, item: NIL)
 
@@ -4635,7 +4668,9 @@ proc biMap(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let receiver = args[0]
   case receiver.kind
   of vkStream:
-    result = newLazyStream(receiver, pullMapStream, callable = args[1])
+    result = newLazyStream(receiver, pullMapStream,
+      callable = args[1], close = closeStreamCallback,
+      capabilityCeiling = activeCapabilityContext)
   of vkList:
     # Eager kinds answer in their own kind (§6.2). A void result keeps its
     # position as nil (§1.6).
@@ -4684,7 +4719,9 @@ proc biFilter(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   let receiver = args[0]
   case receiver.kind
   of vkStream:
-    result = newLazyStream(receiver, pullFilterStream, callable = args[1])
+    result = newLazyStream(receiver, pullFilterStream,
+      callable = args[1], close = closeStreamCallback,
+      capabilityCeiling = activeCapabilityContext)
   of vkList:
     var items: seq[Value]
     for item in receiver.listItems:
@@ -4764,8 +4801,16 @@ proc biInto(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
   var source: seq[Value]
   case receiver.kind
   of vkStream:
-    while receiver.streamHasNext:
-      source.add checkedStreamNext(receiver, "into item")
+    try:
+      while receiver.streamHasNext:
+        source.add checkedStreamNext(receiver, "into item")
+    except CatchableError as primaryError:
+      try:
+        receiver.closeStream()
+      except CatchableError:
+        discard
+      raise primaryError
+    receiver.closeStream()
   of vkList:
     source = copyItems(receiver.listItems)
   of vkSet:
@@ -7428,6 +7473,9 @@ proc buildBuiltins(app: Application): Scope =
   app.boundCallTemplate = compileSource(
     "(fn [] (__bound_target __bound_arguments...))",
     "<runtime/bind_call>").functions[0]
+  app.streamCallbackTemplate = compileSource(
+    "(fn [callback item] (callback item))", "<stream callback>").functions[0]
+  app.streamCallbackTemplate.chunk.callSites.clear()
   let errorProtocol = newProtocol("Error", [])
   result.define("Error", errorProtocol)
   let sendProtocol = newProtocol("Send", [])
@@ -7777,7 +7825,8 @@ proc buildBuiltins(app: Application): Scope =
   let emptyFn = sharedBuiltinNative("empty?", newNativeFn("empty?", biListEmpty))
   let firstFn = sharedBuiltinNative("first", newNativeFn("first", biListFirst))
   let lastFn = sharedBuiltinNative("last", newNativeFn("last", biListLast))
-  let toStreamFn = sharedBuiltinNative("to_stream", newNativeFn("to_stream", biToStream))
+  let toStreamFn = sharedBuiltinNative("to_stream",
+    newNativeCallFn("to_stream", biToStream, acceptsNamed = false))
   let toPairsStreamFn = sharedBuiltinNative("to_pairs_stream",
                                             newNativeFn("to_pairs_stream", biToPairsStream))
   # The generic collection operations (design §6.2) are call-fns so the
@@ -8770,7 +8819,8 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
   var parent = incoming
   var parentPresence = incomingPresence
   if proto != nil and proto.boundCapabilityCeiling != nil:
-    parent = intersectContexts(parent, proto.boundCapabilityCeiling)
+    if parent != proto.boundCapabilityCeiling:
+      parent = intersectContexts(parent, proto.boundCapabilityCeiling)
     parentPresence = nil
   # Policy-limited eval is transitive across calls. A call scope normally
   # inherits from the callee's lexical scope, which is correct for bindings but
@@ -8784,7 +8834,12 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
   let callerRoot =
     if rootsKnown: callerRootHint else: callerScope.moduleRootScope()
   let crossesModule = calleeRoot != nil and calleeRoot != callerRoot
-  let callerBudget = if callerScope == nil: nil else: callerScope.evalBudget
+  let callerBudget =
+    if callerScope != nil and callerScope.evalBudget != nil:
+      callerScope.evalBudget
+    elif activeVmBudget != nil:
+      activeVmBudget[]
+    else: nil
   let entersPolicy = crossesModule and calleeRoot.moduleExecutionPolicy != nil
   let boundPolicy = if proto == nil: nil else: proto.boundExecutionPolicy
   if callerBudget != nil or entersPolicy or boundPolicy != nil:
@@ -13573,6 +13628,22 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
              ipArg: var int, stopOnYield: bool,
              validateArg = true, fiber: Fiber = nil,
              injectCancel = false, instructionBudget = 0): RunStop =
+  # Native stream adapters can re-enter bytecode without an explicit calling
+  # Scope. Carry the live dispatch budget through that boundary, including
+  # generator pulls, without pinning it on a captured lexical environment.
+  # An independently scheduled task uses its own scope/budget instead.
+  let previousVmBudget = activeVmBudget
+  let generatorCallerCeiling =
+    if stopOnYield: activeCapabilityContext else: nil
+  template restrictGeneratorContext(context: CapabilityContext): CapabilityContext =
+    (if generatorCallerCeiling == nil or context == generatorCallerCeiling: context
+     else: intersectContexts(context, generatorCallerCeiling))
+  let inheritedBudget =
+    if previousVmBudget != nil and (fiber == nil or stopOnYield):
+      previousVmBudget[]
+    else: nil
+  template executionBudget(s: Scope): EvalBudget =
+    (if s.evalBudget != nil: s.evalBudget else: inheritedBudget)
   # Stage 1 of structured concurrency: the "current frame" lives in registers
   # below, and simple Gene function calls push the caller onto `frames` and
   # switch registers to the callee instead of recursing through Nim. A call chain
@@ -13582,7 +13653,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var frames: seq[Frame]
   var chunk = chunkArg
   var scope = scopeArg
-  var capabilityContext = executionCapabilities(scope)
+  let previousVmScope = activeVmScope
+  activeVmScope = addr scope
+  defer: activeVmScope = previousVmScope
+  var capabilityContext = restrictGeneratorContext(executionCapabilities(scope))
   var capabilityPresence = activeCapabilityPresence
   var recycleScope = false
   var stack = move stackArg
@@ -13627,7 +13701,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   var curStackBase = 0
   var ip = ipArg
   var validateImplRequirements = validateArg
-  var evalBudget = scope.evalBudget
+  var evalBudget = executionBudget(scope)
+  activeVmBudget = addr evalBudget
+  defer: activeVmBudget = previousVmBudget
   var returnType = NIL          # current frame's return-type to adapt, or NIL
   var returnLabel = ""
   var returnDepth = 0
@@ -13698,18 +13774,18 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curForBody = fiber.forBody
     curOwnedScope = fiber.ownedScope
     curNamespaceName = fiber.namespaceName
-    capabilityContext = fiber.capabilityContext
+    capabilityContext = restrictGeneratorContext(fiber.capabilityContext)
     if capabilityContext == nil:
-      capabilityContext = executionCapabilities(scope)
+      capabilityContext = restrictGeneratorContext(executionCapabilities(scope))
     activeCapabilityContext = capabilityContext
     capabilityPresence = fiber.capabilityPresence
     activeCapabilityPresence = capabilityPresence
-    evalBudget = scope.evalBudget
+    evalBudget = executionBudget(scope)
   elif fiber != nil:
     frames = acquireFrameStack(gVmPools)
     recycleScope = fiber.recycleScope
     if fiber.capabilityContext != nil:
-      capabilityContext = fiber.capabilityContext
+      capabilityContext = restrictGeneratorContext(fiber.capabilityContext)
       activeCapabilityContext = capabilityContext
     capabilityPresence = fiber.capabilityPresence
     activeCapabilityPresence = capabilityPresence
@@ -13767,11 +13843,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curOwnedScope = f.extra.ownedScope
       curNamespaceName = f.extra.namespaceName
       if f.extra.restoresCapabilityState:
-        capabilityContext = f.extra.restoreCapabilities
+        capabilityContext = restrictGeneratorContext(f.extra.restoreCapabilities)
         activeCapabilityContext = capabilityContext
         capabilityPresence = f.extra.restoreCapabilityPresence
         activeCapabilityPresence = capabilityPresence
-    evalBudget = scope.evalBudget
+    evalBudget = executionBudget(scope)
 
   template pushFrame() =
     let frameExtra =
@@ -13848,7 +13924,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       frames[^1].extra.restoresCapabilityState = true
       frames[^1].extra.restoreCapabilities = capabilityContext
       frames[^1].extra.restoreCapabilityPresence = capabilityPresence
-      capabilityContext = nextTransition.context
+      capabilityContext = restrictGeneratorContext(nextTransition.context)
       capabilityPresence = nextTransition.presence
       activeCapabilityContext = capabilityContext
       activeCapabilityPresence = capabilityPresence
@@ -13882,7 +13958,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curForBody = nil
     curOwnedScope = nil
     curNamespaceName = ""
-    evalBudget = scope.evalBudget
+    evalBudget = executionBudget(scope)
 
   template captureContinuation(resumeIp: int) =
     ## Save the whole running continuation into `fiber` so the scheduler can resume
@@ -14056,7 +14132,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         curErrorTypes = @[]
         curFnName = ""
         curFrameKind = fkForBody
-        evalBudget = scope.evalBudget
+        evalBudget = executionBudget(scope)
       else:
         curForStream.closeStream()
         curForStream = NIL
@@ -14085,7 +14161,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       curErrorTypes = @[]
       curFnName = ""
       curFrameKind = fkForBody
-      evalBudget = scope.evalBudget
+      evalBudget = executionBudget(scope)
     else:
       var owner = frames.pop()
       strunc(curStackBase)
@@ -14267,7 +14343,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
       # body left behind. No trailing `nil`, and `(return)` needs no argument.
       retValue = if returnType.isBareNilType: NIL else: VOID
     else:
-      retValue = escapeWeakFunctions(rawValue)
+      let protectedCaller =
+        if frames.len > 0: frames[^1].scope
+        elif previousVmScope != nil: previousVmScope[]
+        else: nil
+      retValue = escapeStreamReturn(rawValue, protectedCaller)
       if returnType.kind != vkNil:
         if not (bareScalarSatisfied(returnType, retValue)):
           let label =
@@ -14320,7 +14400,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curErrorTypes = @[]
     curFnName = proto.name
     curFrameKind = fkNormal
-    evalBudget = callScope.evalBudget
+    evalBudget = executionBudget(callScope)
     continue
 
   template enterRecur1SameScopeFrame(arg: Value, argKnownBareInt: bool) =
@@ -14359,7 +14439,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curFnName = proto.name
     curFrameKind = fkNormal
     recycleScope = false
-    evalBudget = scope.evalBudget
+    evalBudget = executionBudget(scope)
     continue
 
   template restartRecur1SameScopeFrame(arg: Value, argKnownBareInt: bool) =
@@ -14370,7 +14450,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     scope.slots[proto.positionalSlots[0]] = arg
     strunc(curStackBase)
     ip = 0
-    evalBudget = scope.evalBudget
+    evalBudget = executionBudget(scope)
     continue
 
   template canReplaceCurrentTailCall(calleeScope: Scope, tailMarked: bool,
@@ -14491,7 +14571,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curErrorTypes = nextErrorTypes
     curFnName = nextFnName
     curFrameKind = fkNormal
-    evalBudget = nextScope.evalBudget
+    evalBudget = executionBudget(nextScope)
     continue
 
   proc tailFallbackReasonCode(reason: TailFallbackReason): string =
@@ -14602,7 +14682,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     curErrorTypes = nextErrorTypes
     curFnName = nextFnName
     curFrameKind = fkNormal
-    evalBudget = nextScope.evalBudget
+    evalBudget = executionBudget(nextScope)
     continue
 
   template maybeEnterUserCallableBytecode(calleeValue: Value,
@@ -14942,6 +15022,81 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           spush newFunction(proto.name, proto.params, proto, scope,
                                 proto.checksErrors, errorTypes,
                                 syntaxFn = proto.isSyntaxFn)
+        of opPreparePipelineCall:
+          let plan = chunk.pipelineCalls[inst[].intArg]
+          let partsStart = sp - plan.bodySplices.len
+          let namedStart = partsStart - plan.namedNames.len
+          let captureStart = namedStart - 2
+          if captureStart < 0:
+            raise newException(GeneError,
+              "VM stack underflow preparing pipeline call")
+          # A private identity marks the slot while ordinary splice merging
+          # decides whether a later named argument overrides it.
+          let marker = newList()
+          var named: NamedArgs
+          for i, name in plan.namedNames:
+            named.putArg(name,
+              if i == plan.namedSlot: marker else: stack[namedStart + i])
+          var positional: seq[Value]
+          for i, splice in plan.bodySplices:
+            if i == plan.bodySlot:
+              positional.add marker
+            elif splice:
+              appendSplicedCall(positional, named, stack[partsStart + i])
+            else:
+              positional.add stack[partsStart + i]
+          var bodySlot = -1
+          var namedSlot = -1
+          for i in 0 ..< positional.len:
+            if positional[i].bits == marker.bits:
+              bodySlot = i
+              positional[i] = NIL
+          var namedNames, namedValues: seq[Value]
+          for i, name in named.names:
+            let value = named.valueAt(i)
+            namedNames.add newStr(name)
+            if value.bits == marker.bits:
+              namedSlot = i
+              namedValues.add NIL
+            else:
+              namedValues.add value
+          let arguments = newList(@[
+            newList(positional, immutable = true),
+            newList(namedNames, immutable = true),
+            newList(namedValues, immutable = true),
+            newInt(bodySlot), newInt(namedSlot)], immutable = true)
+          let target = stack[captureStart]
+          let descriptor = stack[captureStart + 1]
+          rejectCallerEnvEscape("pipeline target capture", target)
+          rejectCallerEnvEscape("pipeline message capture", descriptor)
+          rejectCallerEnvEscape("pipeline argument capture", arguments)
+          let bound = newScope(scope)
+          bound.define(PipelineTargetName, escapeWeakFunctions(target))
+          bound.define(PipelineMessageName, escapeWeakFunctions(descriptor))
+          bound.define(PipelineArgumentsName, escapeWeakFunctions(arguments))
+          let proto = FunctionProto()
+          proto[] = chunk.functions[plan.functionIndex][]
+          proto.chunk = newChunk()
+          proto.chunk[] = chunk.functions[plan.functionIndex].chunk[]
+          proto.chunk.owner = proto
+          proto.chunk.dispatchCache = @[]
+          proto.boundCapabilityCeiling = capabilityContext
+          let callback = newFunction(proto.name, proto.params, proto, bound)
+          rejectCallerEnvEscape("pipeline callback capture", callback)
+          strunc(captureStart)
+          spush callback
+        of opMakePipelineStream:
+          if sp < 2:
+            raise newException(GeneError,
+              "VM stack underflow constructing pipeline stream")
+          let callback = spop()
+          let incoming = spop()
+          var conversionCall = NativeCall(dispatchScope: scope)
+          let upstream = biToStream([incoming], addr conversionCall)
+          requireStream("pipeline to_stream result", upstream)
+          spush newLazyStream(upstream, pullMapStream, callable = callback,
+            close = closeStreamCallback,
+            capabilityCeiling = FunctionProto(callback.fnCode).boundCapabilityCeiling)
         of opMakeEnv:
           let policy = spop()
           let capabilities = spop()
@@ -16228,24 +16383,42 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             chunk.callSites.getOrDefault(ip - 1, NIL))
           strunc(typeIndex)
           spush value
-        of opCallSplice:
+        of opCallSplice, opCallPrepared:
           var named: NamedArgs
-          let proto = chunk.listBuilds[inst[].intArg]
-          let partCount = proto.splices.len
-          let namedCount = inst[].names.len
-          let partsStart = sp - partCount
-          if partsStart < 0 or partsStart < namedCount + 1:
-            raise newException(GeneError, "VM stack underflow in call")
-          let calleeIndex = partsStart - namedCount - 1
-          var callee = stack[calleeIndex]
-          if namedCount > 0:
-            named = namedArgsFromStack(inst[].names, stack, calleeIndex + 1)
+          var calleeIndex: int
           var args: seq[Value]
-          for i, part in stack.toOpenArray(partsStart, (sp - 1)):
-            if proto.splices[i]:
-              appendSplicedCall(args, named, part)
-            else:
-              args.add part
+          if inst[].op == opCallPrepared:
+            calleeIndex = sp - (if inst[].flag: 4 else: 3)
+            if calleeIndex < 0:
+              raise newException(GeneError,
+                "VM stack underflow in prepared call")
+            let item = stack[sp - 1]
+            let bundle = stack[sp - 2].listItems
+            let bodySlot = int(bundle[3].intVal)
+            let namedSlot = int(bundle[4].intVal)
+            if inst[].flag:
+              args.add stack[calleeIndex + 1]
+            for i, value in bundle[0].listItems:
+              args.add(if i == bodySlot: item else: value)
+            for i, name in bundle[1].listItems:
+              named.putArg(name.strVal,
+                if i == namedSlot: item else: bundle[2].listItems[i])
+          else:
+            let proto = chunk.listBuilds[inst[].intArg]
+            let partCount = proto.splices.len
+            let namedCount = inst[].names.len
+            let partsStart = sp - partCount
+            if partsStart < 0 or partsStart < namedCount + 1:
+              raise newException(GeneError, "VM stack underflow in call")
+            calleeIndex = partsStart - namedCount - 1
+            if namedCount > 0:
+              named = namedArgsFromStack(inst[].names, stack, calleeIndex + 1)
+            for i, part in stack.toOpenArray(partsStart, (sp - 1)):
+              if proto.splices[i]:
+                appendSplicedCall(args, named, part)
+              else:
+                args.add part
+          var callee = stack[calleeIndex]
           var callValuesMayCapture = false
           for arg in args:
             if valueMayRetainScope(arg):
@@ -16976,7 +17149,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           curErrorTypes = @[]
           curFnName = ""
           curFrameKind = fkTryBody
-          evalBudget = scope.evalBudget
+          evalBudget = executionBudget(scope)
           continue
         of opWithCapabilities:
           let capBlock = chunk.capabilityBlocks[inst[].intArg]
@@ -17013,7 +17186,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           curErrorTypes = @[]
           curFnName = ""
           curFrameKind = fkCapabilityBody
-          evalBudget = scope.evalBudget
+          evalBudget = executionBudget(scope)
           continue
         of opTaskScope:
           let taskScope = newScope(scope)
@@ -17725,8 +17898,13 @@ proc runReplSession*(scope: Scope,
           # Drop any interrupt that landed after the previous eval finished so
           # it cannot spuriously abort this line.
           volatileStore(addr gVmInterrupt, false)
-        writeOut(run(compileEvalSource(source, useLocalSlots = false,
-                                       sourceName = "<repl>"), scope).print() & "\n")
+        let chunk = compileEvalSource(source, useLocalSlots = false,
+                                       sourceName = "<repl>")
+        for diagnostic in chunk.compilerDiagnostics:
+          if diagnostic.message.startsWith("unused lazy pipeline:"):
+            writeErr(formatDiagnostic("Warning", diagnostic.message,
+                                      diagnostic.loc) & "\n")
+        writeOut(run(chunk, scope).print() & "\n")
         pendingSource = ""
         pendingError = ""
       except ReadIncompleteError as e:
@@ -18144,11 +18322,14 @@ proc runFiber(f: Fiber) =
   var dummyStack: seq[Value]
   var dummyIp = 0
   let savedActive = currentFiberActive
+  let savedTask = activeTask
   let savedCapabilities = activeCapabilityContext
   let savedPresence = activeCapabilityPresence
   currentFiberActive = true
+  activeTask = f.task
   defer:
     currentFiberActive = savedActive
+    activeTask = savedTask
     activeCapabilityContext = savedCapabilities
     activeCapabilityPresence = savedPresence
   let actor = f.actorOwner
@@ -18202,7 +18383,11 @@ proc runFiber(f: Fiber) =
           if not isSendableValue(stop.value, f.scope, seen, csmWorker):
             raiseTypeError("worker task result", "Send", stop.value, f.scope)
           markSharedValue(stop.value)
-        completeTask(f.task, stop.value)
+        if f.privateCall:
+          f.callResult = stop.value
+          completeTask(f.task, NIL)
+        else:
+          completeTask(f.task, stop.value)
         wakeTaskWaiters(f.task)
       of rskSuspend:
         parkFiber(f)
@@ -18215,6 +18400,8 @@ proc runFiber(f: Fiber) =
         failTask(f.task, "yield is only valid in a generator")
         wakeTaskWaiters(f.task)
   except GeneError as e:
+    if f.privateCall:
+      f.callError = e
     if isActorFiber:
       let askSettled = failReplyTask(f.actorAskReply, e)
       var errorValue = if e.hasErrVal: e.errVal else: newStr(e.msg)
@@ -18276,6 +18463,8 @@ proc runFiber(f: Fiber) =
         failTask(f.task, e.msg)
       wakeTaskWaiters(f.task)
   except GenePanic as e:
+    if f.privateCall:
+      f.callError = e
     if isActorFiber:
       closeActorAndCancelMailbox(actor)
       discard panicReplyTask(f.actorAskReply, e)
@@ -18705,7 +18894,7 @@ proc cancelScheduledTask(task: Value): bool =
         if f != nil and f.task.taskSharesState(task):
           result = true
 
-proc pumpUntilDone(task: Value) =
+proc pumpUntilDone(task: Value, parentTask: Value) =
   ## Drive the run queue until `task` settles. Each runnable fiber advances to its
   ## next park/completion; a parked fiber resumes only when a channel op wakes it.
   ## If the queue drains with the task unfinished, it can never finish.
@@ -18713,6 +18902,9 @@ proc pumpUntilDone(task: Value) =
   defer:
     endSchedulerWorkerLease(workerLease)
   while not task.taskDone:
+    if parentTask.kind == vkTask and parentTask.taskCancelRequested and
+        not task.taskCancelRequested:
+      task.requestTaskCancellation()
     pollOsExecAsyncCompletions()
     # Completion polling may settle the exact task we are awaiting. Do not
     # enter the scheduler afterward: the poll also ends the external-op count,
@@ -18758,6 +18950,80 @@ proc pumpUntilDone(task: Value) =
           continue
       raise newException(GeneError,
         "deadlock: awaited task is blocked with no runnable task to unblock it")
+
+proc closeStreamCallback(stream: Value) {.nimcall.} =
+  let continuation = stream.streamGeneratorContinuation
+  if continuation == nil:
+    return
+  let pending = Fiber(continuation).task
+  if pending.taskDone:
+    return
+  pending.requestTaskCancellation()
+  if activeTask.kind == vkTask and activeTask.taskSharesState(pending):
+    raise newException(GeneCancel, "pipeline stream was closed")
+  pumpUntilDone(pending)
+  if pending.taskHasError:
+    var error: ref GeneError
+    new(error)
+    error.msg = pending.taskErrorMsg
+    error.hasErrVal = pending.taskHasErrorValue
+    error.errVal = pending.taskErrorValue
+    raise error
+
+proc invokeStreamCallback(stream, item: Value): Value =
+  ## The native pull shell cannot save a Nim stack when a callback awaits.
+  ## Give the ordinary item call a private resumable frame and drive that one
+  ## invocation to completion. No next item starts in parallel, and closing
+  ## the cursor can cancel/unwind this frame while it is suspended.
+  let callback = stream.streamCallable
+  let prepared = callback.kind == vkFunction and
+    callback.fnCode of FunctionProto and
+    FunctionProto(callback.fnCode).preparedPipelineItem
+  let caller =
+    if activeVmScope != nil: activeVmScope[]
+    elif callback.kind == vkFunction: callback.fnScope
+    elif callback.kind == vkProtocolMessage: callback.protocolMessageScope
+    else: nil
+  let lexical = if prepared: callback.fnScope else: caller
+  let app = lexical.application()
+  let proto = if prepared: FunctionProto(callback.fnCode)
+              else: app.streamCallbackTemplate
+  var callScope = acquireSimpleCallScope(lexical, proto.localNames,
+    proto.callScopeNeedsSlotNames, proto.callScopeNeedsSlotReset)
+  if prepared:
+    callScope.bindSimpleCallSlots(proto, [item])
+  else:
+    callScope.bindSimpleCallSlots(proto, [callback, item])
+  let transition = functionCapabilityTransition(proto, callScope,
+    lexical, caller, callScope.executionCapabilities(),
+    activeCapabilityPresence)
+  let parentTask = activeTask
+  let pending = newPendingTask()
+  let frame = Fiber(chunk: proto.chunk, scope: callScope, task: pending,
+    privateCall: true,
+    capabilityContext: transition.context,
+    capabilityPresence: transition.presence)
+  stream.setStreamGeneratorContinuation(frame)
+  try:
+    runFiber(frame)
+    pumpUntilDone(pending, parentTask)
+    if frame.callError != nil:
+      raise frame.callError
+    discard awaitTaskValue(pending)
+    result = frame.callResult
+  except CatchableError as primaryError:
+    if not pending.taskDone:
+      pending.requestTaskCancellation()
+      try:
+        pumpUntilDone(pending)
+      except CatchableError:
+        discard
+    raise primaryError
+  finally:
+    if pending.taskDone and not pending.taskAwaited:
+      pending.clearTaskPayload()
+    stream.clearStreamGeneratorContinuation()
+    releaseCallScope(callScope)
 
 proc wakeActorSenders(actor: Value) =
   ## Wake one fiber parked on a previously-full mailbox of `actor` (FIFO), now that
@@ -20708,6 +20974,11 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
       if failure.protocol.kind == vkProtocol:
         hint = hiddenImplHint(scope.application(), failure.protocol,
                               receiverType(failure.receiver), scope)
+    if hint.len == 0 and value.kind == vkStream and
+        where.startsWith("parameter") and expectedLabel != "Stream" and
+        not expectedLabel.startsWith("(Stream "):
+      hint = "if this function should receive individual items, use '=>' " &
+        "in the pipeline"
     raiseTypeError(where, typeExpr.typeExprLabel, value, scope, hint)
   let closedType = closeTypeExpr(typeExpr, scope)
   if closedType.bits != typeExpr.bits:

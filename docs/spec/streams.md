@@ -13,6 +13,19 @@ channel suites in `tests/spec_runner.nim` and `tests/test_vm.nim`.
   Close is idempotent and preserves the first cleanup error.
 - A naturally exhausted `take` detaches from its upstream so normal loop
   cleanup leaves that upstream resumable. Early close/break/error closes it.
+  Bounds are nonnegative Ints. A zero bound detaches during construction,
+  without pulling; closing it before its first pull leaves upstream resumable.
+- Mapping adapters acquire their upstream at construction. Close releases
+  captured callbacks/arguments and closes an attached upstream even before
+  the first pull. Lookahead caches one result without repeating callbacks;
+  reentrant pulls are rejected. Void is skipped and nil remains an item.
+- Stream `each` and `into` close their immediate consumed cursor on success,
+  callback/boundary failure, or cancellation. A cleanup error does not replace
+  an already propagating producer or consumer error.
+- Normal `to_stream` preserves Stream cursor identity, adapts List/Set/Range,
+  and dispatches to a user type's type-direct conversion message. A conversion
+  returns a Stream without pulling. Maps require explicit `to_pairs_stream`;
+  scalar/nil inputs are not implicitly singleton/empty Streams.
 - `try_next` returns `TryNext/exhausted`, `#(TryNext/value item)`, or
   `#(TryNext/error err)` — a tagged result that distinguishes end-of-stream,
   pulled item, and producer error without raising.

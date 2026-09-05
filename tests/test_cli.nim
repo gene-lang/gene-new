@@ -1295,6 +1295,18 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as srv:
     check "main return Int must fit in int64" in ran.output
 
 suite "cli — gene eval":
+  test "unused lazy pipelines warn without running their callbacks":
+    let ran = runGene(["eval", "([1 2] => $println)"])
+    check ran.exitCode == 0
+    check "Warning: unused lazy pipeline" in ran.output
+    check "(stream)" in ran.output
+    check "\n1\n2\n" notin ran.output
+    let path = writeCliProgram("lazy_pipeline_warning.gene",
+      "([1 2] => $println)\n")
+    let executed = runGene(["run", path])
+    check executed.exitCode == 0
+    check "Warning: unused lazy pipeline" in executed.output
+
   setup:
     createDir(cliDir)
 
@@ -1365,6 +1377,11 @@ suite "cli — gene repl":
     let ran = runGeneInput(["repl"], "(var x 2)\n(+ x 3)\n")
     check ran.exitCode == 0
     check ran.output.strip.splitLines == @["2", "5"]
+
+  test "warns when a lazy pipeline is discarded in the repl":
+    let ran = runGeneInput(["repl"], "([1 2] => $println)\n")
+    check ran.exitCode == 0
+    check "Warning: unused lazy pipeline" in ran.output
 
   test "continues reading after incomplete input":
     let ran = runGeneInput(["repl"], "(+ 1\n2)\n")

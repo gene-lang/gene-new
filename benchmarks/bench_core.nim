@@ -192,7 +192,7 @@ proc main() =
     "(fn iterate_explicit [] " &
     "  ($into ($map ($to_stream [1 2 3 4]) " &
     "    (fn [n] (iterate_step n))) [])) " &
-    "(fn iterate_drain [] ([1 2 3 4] => iterate_step)) " &
+    "(fn iterate_drain [] ([1 2 3 4] -> $each iterate_step)) " &
     "(fn iterate_drain_explicit [] " &
     "  ($each [1 2 3 4] (fn [n] (iterate_step n))))"),
     iterateScope)

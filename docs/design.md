@@ -333,7 +333,7 @@ _            # wildcard / ignore
 name!        # reserved fexpr declaration/invocation marker (§3/§11.1)
 (a; b; c)    # pipe: pure reader head-folding
 (a -> f c)   # sequenced value pipeline; previous value is first argument
-(xs => f c)  # per-item stage: lazy before another stage, a drain when last
+(xs => f c)  # per-item stage: prepares once and always returns a lazy Stream
 (x .f a)    # message send; see Section 3 and docs/core.md §9
 /user/name   # selector literal
 x/user/name  # apply selector to x
@@ -787,54 +787,46 @@ collection, lands in the slot:
 (xs => _ .render)        # per item: (item .render)
 ```
 
-**A pipeline never accumulates a collection to get from one stage to the
-next.** What a `=>` stage does depends only on whether the pipeline continues
-after it:
+**Every `=>` returns a new lazy Stream, including the final stage.** A `->`
+passes its whole input to one ordinary call and returns that call's actual
+result. Neither arrow collects, flattens, awaits, or restores a source kind.
 
-- a stage with a later stage maps **lazily**, in the `Stream` tier of §6.2, so
-  an unbounded producer flows through one item at a time and nothing is
-  materialized in between;
-- the **final** stage has no consumer for its results, so it drains its
-  upstream for effect and the pipeline answers `nil`.
-
-| Stage | Non-final | Final |
+| Stage | Preparation | Result |
 | --- | --- | --- |
-| `->` | eager ordinary result passed onward | eager ordinary result returned |
-| `=>` | components eager, per-item calls lazy, `Stream` passed onward | components eager, upstream drained, `nil` returned |
+| `->` | input, then ordinary callee and argument sequencing | ordinary call result |
+| `=>` | fixed components once, then normal stream conversion | lazy Stream of per-item results |
 
 ```gene
-(rows => save)                      # runs per row; the pipeline is nil
-(rows => parse -> $into [])         # lazy through parse; into collects
-(producer => step -> $take 5 -> $into [])   # terminates on an endless producer
+(rows => save)                      # lazy; no save calls before consumption
+(rows -> $each save)                # explicit immediate per-row effects
+(rows => parse -> $into [])         # explicit collection
+(producer => step -> $take 5 -> $into [])   # bounded demand
 ```
 
-Appending a stage after a final `=>` changes that stage from an eager drain to
-a lazy map. `(rows => save -> log)` calls `save` only if `log` consumes the
-Stream; use `(rows -> $each save)` when the drain must be explicit and
-position-independent. Collecting remains the standard `-> $into []` spelling.
+Every `=>` converts through the ordinary `to_stream` operation (§6.2). A Stream
+retains its identity and position; a user type joins by declaring a type-direct
+conversion returning a Stream. Map inputs require explicit `to_pairs_stream`,
+which yields one `[key value]` item with a `Sym` key for a PropMap. An explicit
+Map `$each` still visits values. Unsupported scalars and nil fail conversion.
 
-Because a non-final `=>` works in the lazy tier, its incoming value is
-converted with `to_stream` — which is the identity on a `Stream`. A kind with
-no `to_stream`, such as `Map`, therefore reaches a non-final `=>` only through
-an explicit conversion like `-> $to_pairs_stream`; a final `=>` drains it
-directly, since `each` needs no conversion.
+Fixed callees, message-value expressions, and arguments are captured once,
+including symbol reads. Spread layout is expanded once after fixed expression
+evaluation, preserving shallow element identity. Defaults run per invocation.
+Direct guarded item sends still prepare their fixed expressions once; a
+lambda provides per-item guarded evaluation when that is wanted.
 
-The Map shapes differ by that stdlib path: the final drain sees values, while
-`to_pairs_stream` yields `[key value]` with a `Sym` key for PropMaps. Here `=>`
-always means per item, never key/value pairing.
+Preparation precedes conversion and happens even with empty input or a later
+`take 0`. Item calls run only when demanded, retaining nil and skipping void;
+List, Stream, and Task results remain individual items. A consuming `->` call
+completes before the next stage prepares. Errors are terminal on the demand
+path, preserve earlier effects, and provide no rollback.
 
-A `=>` stage evaluates its callee and its other arguments **once**, before
-iterating; only the per-item call repeats. That is what makes it explicit
-syntax rather than implicit dispatch on the incoming value's runtime type: a
-`->` stage always receives the whole value, whatever that value turns out to
-be, and only `=>` looks inside it.
-
-Those component expressions run even when a later `take 0` pulls no items.
-Once pulling begins, stages interleave per item, and a failure leaves effects
-from completed earlier items visible; pipelines provide no rollback. Returned
-lazy Streams retain their callback and upstream until exhaustion or explicit
-close. Abandoning an unpulled resource-backed Stream does not promise
-deterministic cleanup.
+Adapters retain their prepared environment until exhaustion or close, and
+closing a mapping adapter closes its attached upstream even before its first
+pull. `take` detaches at its limit; `take 0` detaches during construction.
+Resource-backed original sources still need lexical ownership when a bound
+leaves them resumable. Abandoning an unpulled Stream does not promise
+deterministic resource cleanup.
 
 The two delimiters mix freely at one depth. `;` mixes with neither: nest one
 form explicitly instead. Each stage owns a separate head, props, meta, body,
@@ -1480,7 +1472,8 @@ channel, or future — not symmetric yield.
   its requested count. Its later local close (including `for` cleanup after
   normal exhaustion) does not close upstream, so a second consumer can resume
   pulling. Explicit close, loop `break`, producer error, or cancellation before
-  the count is reached still closes upstream exactly once.
+  the count is reached still closes upstream exactly once. A zero bound
+  detaches during construction; closing it before a pull leaves upstream open.
 - `filter`, `map`, and other stream combinators all close their upstream
   source when closed (directly or transitively) — see `Stream/close`
   in the protocol above.
@@ -1571,7 +1564,9 @@ whether it is already there. `to_pairs_stream` turns a `Map` into a stream of
 invent for one. `into` collects an iterable receiver into the target
 kind named by its argument: `($into s [])` builds a `List`, `($into s {})`
 builds a `PropMap` from `[K V]` pairs. `each f` runs `f` on every item and
-returns `nil`. Void results follow §1.6: `nil` keeps its `List` position, a
+returns `nil`. Stream `each` and `into` close their immediate source on
+success or failure, preserving a primary failure if cleanup also fails.
+Void results follow §1.6: `nil` keeps its `List` position, a
 void value removes its `Map` entry, and a void result is skipped in a `Set`.
 A `Map`'s `map`/`filter`/`each` callback sees the value; pair-wise work goes
 through `to_pairs_stream` or `for`.

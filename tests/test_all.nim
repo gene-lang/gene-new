@@ -10,6 +10,7 @@ include test_terminal_session
 include test_values
 include test_buffers
 include test_bound_call
+include test_pipeline
 include test_capabilities
 include test_vm
 include test_modules

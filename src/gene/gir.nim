@@ -7,6 +7,12 @@
 import std/[sets, strutils, tables]
 import ./[capabilities, printer, types]
 
+const
+  PipelineTargetName* = "\x00gene_prepared_target"
+  PipelineMessageName* = "\x00gene_prepared_message"
+  PipelineArgumentsName* = "\x00gene_prepared_arguments"
+  PipelineItemName* = "\x00gene_prepared_item"
+
 type
   OpCode* = enum
     opNoop
@@ -141,6 +147,9 @@ type
     opResolveQualifiedMessage # pop receiver + message value; resolve the impl, push callee + receiver
     opQualifiedSend # pop receiver + protocol (`P` of `P:msg`); dispatch `name` on the receiver
     opBindMessage # pop qualifier; push a message value bound to the current scope
+    opPreparePipelineCall # snapshot fixed components and expanded call layout
+    opCallPrepared        # invoke a prepared layout with the current item
+    opMakePipelineStream  # normal conversion followed by a lazy mapping adapter
 
   Instruction* = object
     op*: OpCode
@@ -275,6 +284,7 @@ type
     fastBindRequiredNamed*: bool
     isGenerator*: bool
     isSyntaxFn*: bool
+    preparedPipelineItem*: bool
     selfParentSlot*: int
     nativeOp*: NativeCompileOp
     nativeParamIndex*: int
@@ -565,6 +575,15 @@ type
     stages*: seq[PipelineStageBuildProto]
     immutable*: bool
 
+  PipelineCallProto* = object
+    ## The ordinary invocation entry point lives in functions[functionIndex].
+    ## Preparation consumes target, descriptor, named values, and body parts.
+    functionIndex*: int
+    namedNames*: seq[string]
+    bodySplices*: seq[bool]
+    bodySlot*: int
+    namedSlot*: int
+
   ListBuildProto* = object
     splices*: seq[bool]
     immutable*: bool
@@ -689,6 +708,7 @@ type
     listBuilds*: seq[ListBuildProto]
     nodeBuilds*: seq[NodeBuildProto]
     pipelineBuilds*: seq[PipelineBuildProto]
+    pipelineCalls*: seq[PipelineCallProto]
     typeProtos*: seq[TypeProto]
     enumProtos*: seq[EnumProto]
     webModules*: seq[WebModuleProto]
@@ -1051,6 +1071,12 @@ proc formatInstruction(inst: Instruction): string =
     result.add " list=" & $inst.intArg
     if inst.names.len > 0:
       result.add " names=" & formatNames(inst.names)
+  of opPreparePipelineCall:
+    result.add " plan=" & $inst.intArg
+  of opCallPrepared:
+    result.add " receiver=" & $inst.flag
+  of opMakePipelineStream:
+    discard
   of opNew:
     if inst.flag:
       result.add " list=" & $inst.intArg
@@ -1112,7 +1138,33 @@ proc formatInstruction(inst: Instruction): string =
   if inst.tail:
     result.add " tail=true"
 
+proc compilerDiagnostics*(root: Chunk): seq[CompileDiagnostic] =
+  var seen = initHashSet[pointer]()
+  var found: seq[CompileDiagnostic]
+  proc visit(chunk: Chunk) =
+    if chunk == nil or seen.containsOrIncl(cast[pointer](chunk)):
+      return
+    found.add chunk.diagnostics
+    for fn in chunk.functions:
+      visit(fn.chunk)
+      for value in fn.paramDefaults: visit(value.defaultChunk)
+      for param in fn.namedParams: visit(param.defaultValue.defaultChunk)
+    for body in chunk.subchunks: visit(body)
+    for loop in chunk.forLoops: visit(loop.body)
+    for branch in chunk.matches:
+      for clause in branch.clauses: visit(clause.body)
+      visit(branch.elseBody)
+    for attempt in chunk.tries:
+      visit(attempt.body)
+      for clause in attempt.catches: visit(clause.body)
+      visit(attempt.ensureBody)
+    for capabilityBlock in chunk.capabilityBlocks: visit(capabilityBlock.body)
+  visit(root)
+  found
+
 proc addDisassembly(lines: var seq[string], chunk: Chunk, indent = "") =
+  for diagnostic in chunk.diagnostics:
+    lines.add indent & "warning: " & diagnostic.message
   lines.add indent & "constants:"
   if chunk.constants.len == 0:
     lines.add indent & "  <none>"

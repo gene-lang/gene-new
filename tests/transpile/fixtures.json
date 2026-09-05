@@ -2933,6 +2933,205 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "pipeline.stored_final_is_lazy",
+      "source": " (fn run [] (let seen : (List Int) []) (let pending ([1 2] => (fn [x] (seen .push x) x))) (let before ($size seen)) (pending .close) before) (run)",
+      "web_source": "(mod pipeline_stored_final_is_lazy ^profile web)  (fn run [] : Int (let seen : (List Int) []) (let pending ([1 2] => (fn [x] (seen .push x) x))) (let before ($size seen)) (pending .close) before)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "pipeline.captures_mutable_binding",
+      "source": " (fn run [] (var factor 2) (let pending ([1 2] => * factor)) (set factor 10) (pending -> $into [])) (run)",
+      "web_source": "(mod pipeline_captures_mutable_binding ^profile web)  (fn run [] : (List Int) (var factor 2) (let pending ([1 2] => * factor)) (set factor 10) (pending -> $into []))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "4"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "pipeline.take_zero_detaches_at_creation",
+      "source": " (fn run [] (let source ($to_stream [1 2])) (let bounded ($take source 0)) (bounded .close) (source .next)) (run)",
+      "web_source": "(mod pipeline_take_zero_detaches_at_creation ^profile web)  (fn run [] : Int (let source ($to_stream [1 2])) (let bounded ($take source 0)) (bounded .close) (source .next))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "1"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "pipeline.take_lookahead_preserves_last",
+      "source": " (fn run [] (let source ($to_stream [1 2 3])) (let bounded ($take source 2)) (bounded .peek) (bounded .peek) (let first (bounded .next)) (bounded .has_next) (bounded .has_next) (let second (bounded .next)) (bounded .close) [first second (source .next)]) (run)",
+      "web_source": "(mod pipeline_take_lookahead_preserves_last ^profile web)  (fn run [] : (List Int) (let source ($to_stream [1 2 3])) (let bounded ($take source 2)) (bounded .peek) (bounded .peek) (let first (bounded .next)) (bounded .has_next) (bounded .has_next) (let second (bounded .next)) (bounded .close) [first second (source .next)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "1"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "3"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "pipeline.close_before_first_pull",
+      "source": " (fn run [] (let source ($to_stream [1 2])) (let pending (source => + 1)) (pending .close) (source .has_next)) (run)",
+      "web_source": "(mod pipeline_close_before_first_pull ^profile web)  (fn run [] : Bool (let source ($to_stream [1 2])) (let pending (source => + 1)) (pending .close) (source .has_next))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": false
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "pipeline.drop_void",
+      "source": "(fn drop [x : Int] : (| Int Void) (if (== x 1) void x)) (fn run [] ([1 2 3] => drop -> $into [])) (run)",
+      "web_source": "(mod pipeline_drop_void ^profile web) (fn drop [x : Int] : (| Int Void) (if (== x 1) void x)) (fn run [] : (List Int) ([1 2 3] => drop -> $into []))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "3"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "pipeline.retain_nil",
+      "source": "(fn absent [x : Int] : Nil nil) (fn run [] (let pending ([1 2] => absent)) ($size (pending -> $into []))) (run)",
+      "web_source": "(mod pipeline_retain_nil ^profile web) (fn absent [x : Int] : Nil nil) (fn run [] : Int (let pending ([1 2] => absent)) ($size (pending -> $into [])))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "2"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "pipeline.source_conversion_snapshot",
+      "source": " (fn run [] (let input [1 2]) (let pending (input => + 1)) (input .push 3) (pending -> $into [])) (run)",
+      "web_source": "(mod pipeline_source_conversion_snapshot ^profile web)  (fn run [] : (List Int) (let input [1 2]) (let pending (input => + 1)) (input .push 3) (pending -> $into []))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "3"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "pipeline.bounded_map",
+      "source": " (fn run [] ([1 2 3 4] => * 2 -> $take 2 => + 1 -> $into [])) (run)",
+      "web_source": "(mod pipeline_bounded_map ^profile web)  (fn run [] : (List Int) ([1 2 3 4] => * 2 -> $take 2 => + 1 -> $into []))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "3"
+          },
+          {
+            "kind": "int",
+            "value": "5"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "pipeline.close_result_is_nil",
+      "source": "(fn run [] (let first ($to_stream [1])) (let second ($to_stream [2])) (let results ([first second] => _ .close -> $into [])) ($size results)) (run)",
+      "web_source": "(mod pipeline_close_result_is_nil ^profile web) (fn run [] : Int (let first ($to_stream [1])) (let second ($to_stream [2])) (let results ([first second] => _ .close -> $into [])) ($size results))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "2"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     }
   ]
 }

@@ -67,6 +67,17 @@ when defined(geneRcStats):
         " (try (bound) catch Any nil ensure (set bound nil))) " &
         "(repeat 100 (invoke))") == 0
 
+    test "prepared pipeline captures are released on close and exhaustion":
+      check leakedManaged("(let s ([1 2] => + 3)) (s .close)") == 0
+      check leakedManaged("([1 2] => + 3 -> $into [])") == 0
+      check leakedManaged("(fn make [n] ([1 2] => + n)) " &
+        "(repeat 100 (let s (make 3)) (s .close))") == 0
+      check leakedManaged("(let args [2 3]) " &
+        "(fn collect [items...] items) " &
+        "(let s ([1] => collect args...)) (s .close)") == 0
+      check leakedManaged("(fn broken [x] (fail \"expected\")) " &
+        "(let s ([1] => broken)) (try (s .next) catch Any nil)") == 0
+
     test "packed and generic buffer backing values are reclaimed":
       check leakedManaged("(repeat 100 (var b ($buffer U8 65536)) (b .fill 7))") == 0
       check leakedManaged("(var b ($buffer [(fn [] 7)])) " &

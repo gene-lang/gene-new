@@ -459,7 +459,7 @@ suite "compiler — GIR emission":
     check loopCall.found
     check not loopCall.tail
 
-  test "GIR v5 round-trips tail metadata":
+  test "GIR v6 round-trips tail metadata":
     let chunk = compileSource(
       "(fn walk [xs] (match xs (when [] 0) (else (walk []))))")
     let iface = CompileNamespaceInterface(
@@ -469,11 +469,11 @@ suite "compiler — GIR emission":
         macroExports: initTable[string, MacroDef](), syntaxFnExports: @[],
         compileInterface: iface)])
     let payload = encodeExecutableGir(artifact)
-    check "\"gir_format\":5" in payload
+    check "\"gir_format\":6" in payload
     let decoded = decodeExecutableGir(payload)
     expect ValueError:
       discard decodeExecutableGir(
-        payload.replace("\"gir_format\":5", "\"gir_format\":4"))
+        payload.replace("\"gir_format\":6", "\"gir_format\":5"))
     let loopFn = decoded.modules[0].chunk.functions[0]
     check loopFn.chunk.matches[0].tailResult
     var sawTailCall = false

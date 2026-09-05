@@ -38,7 +38,7 @@
 
 # --- 2. `=>` runs its stage per item -------------------------------------
 
-# A `=>` with a later stage maps lazily. Nothing is collected until a stage
+# Every `=>` maps lazily. Nothing is collected until a stage
 # asks for it, so the collector at the end is what materializes the result.
 (show "mapped" ([1 2 3] => * 2 -> $into []))
 
@@ -71,13 +71,16 @@
 (show "pulled result" pulled)
 (show "work done" trace)
 
-# --- 4. A final `=>` drains; a final `->` decides everything else ---------
+# --- 4. A final `=>` stays lazy; consumers drive effects -----------------
 
-# A `=>` that ends the pipeline has no consumer for its results, so it runs
-# for effect and the pipeline answers nil.
-(show "drained" ([1 2 3] => $println))
+# A final `=>` returns a Stream. `$each` explicitly runs effects now and
+# returns nil.
+(show "drained" ([1 2 3] -> $each $println))
 
-# The flip side: if the final stage never consumes what it is handed, no
+(var pending ([1 2 3] => * 2))
+(show "saved lazy result" (pending -> $into []))
+
+# If the final stage never consumes what it is handed, no
 # per-item work runs at all.
 (var untouched [])
 (fn record [value]
@@ -108,7 +111,7 @@
 
 (show "map then reduce" ([1 2 3 4] => * 10 -> reduce + 0))
 
-# The classic word count: the fold builds a Map, and `=>` then maps its values.
+# The classic word count: the fold builds a Map, then explicit pairs expose it.
 (fn tally [counts, word]
   (counts .put word (+ 1 (?? (counts .get word) 0)))
   counts)
@@ -116,19 +119,17 @@
 (var counts (["a" "b" "a" "c" "a"] -> reduce tally {}))
 (show "word count" counts)
 
-# A Map has no item order, so it reaches a non-final `=>` only through an
+# A Map reaches any `=>` only through an
 # explicit pairs conversion. Each pair is `[key value]`; a PropMap key is a
-# Symbol and position 1 is the value. A final `=>` drains values directly,
-# without constructing pairs.
+# Symbol and position 1 is the value.
 (fn value_of [entry]
   entry/1)
 
 (var values (counts -> $to_pairs_stream => value_of -> $into []))
 (show "map values" values)
 
-# A final `=>` needs no conversion, because draining does not enter the
-# stream tier at all.
-(counts => $println)
+# Explicit Map `each` visits values without converting to pairs.
+(counts -> $each $println)
 
 # --- 6. A stage's callee and arguments are evaluated once ----------------
 

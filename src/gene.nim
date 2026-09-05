@@ -109,11 +109,19 @@ proc maybeReplOnError(scope: Scope, app: Application = nil) =
     if code != 0:
       quit(code)
 
+proc reportPipelineWarnings(chunk: Chunk) =
+  for diagnostic in chunk.compilerDiagnostics:
+    if diagnostic.message.startsWith("unused lazy pipeline:"):
+      stderr.writeLine formatDiagnostic("Warning", diagnostic.message,
+                                         diagnostic.loc)
+
 proc cmdEval(src: string) =
   let app = initModuleContext(getCurrentDir())
   let scope = newGlobalScope(app)
   try:
-    echo run(compileEvalSource(src, sourceName = "<eval>"), scope).print()
+    let chunk = compileEvalSource(src, sourceName = "<eval>")
+    reportPipelineWarnings(chunk)
+    echo run(chunk, scope).print()
   except ReadError as e:
     stderr.writeLine formatDiagnostic("Read error", e.msg, e.readErrorLoc)
     maybeReplOnError(scope, app)
@@ -392,6 +400,7 @@ proc cmdRun(path: string, args: openArray[string] = [],
     let absPath = normalizedPath(absolutePath(path))
     app = applicationForEntry(absPath, packageRootOverride)
     app.applyRunCapabilityPolicy(options)
+    reportPipelineWarnings(app.compileFileModule(absPath))
     let entryModule = app.loadFileModule(absPath)
     let scope = entryModule.moduleRootNamespace.nsScope
     replScope = scope

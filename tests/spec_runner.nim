@@ -473,21 +473,20 @@ suite "spec — sequenced value pipelines":
         discard read(source)
     check_eval("(fn pair [a b] [a b]) ((pair 1 2) -> pair 3)", "[[1 2] 3]")
 
-  test "a final iterate stage drains for effect and the pipeline is nil":
+  test "a final iterate stage is lazy and explicit each drives effects":
+    check_eval("(var log []) (fn keep [x] (log .push x) x) " &
+               "(let pending ([1 2 3] => keep)) " &
+               "(let before ($size log)) " &
+               "[before (pending -> $into []) log]",
+               "[0 [1 2 3] [1 2 3]]")
     check_eval("(var log []) (fn keep [x] (log .push x)) " &
-               "[([1 2 3] => keep) log]",
-               "[nil [1 2 3]]")
-    check_eval("(var log []) (fn keep [x] (log .push x)) " &
-               "[({^a 1 ^b 2} => keep) log]",
+               "[({^a 1 ^b 2} -> $each keep) log]",
                "[nil [1 2]]")
-    check_eval("(var log []) (fn keep [x] (log .push x)) " &
-               "[(([1 2] -> $to_stream) => keep) log]",
-               "[nil [1 2]]")
-    # Only the final stage drains; the first still maps lazily into it.
     check_eval("(var log []) (fn keep [x] (log .push x) x) " &
                "(fn twice [x] (* x 2)) " &
-               "[([1 2] => twice => keep) log]",
-               "[nil [2 4]]")
+               "(let pending ([1 2] => twice => keep)) " &
+               "[(pending -> $into []) log]",
+               "[[2 4] [2 4]]")
 
   test "a non-final iterate stage maps lazily into the next stage":
     check_eval("(fn twice [x] (* x 2)) ([1 2 3] => twice -> $into [])",

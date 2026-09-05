@@ -21,7 +21,8 @@
   substitutes `_`.
 - `->` and `=>` preserve a single-form initial expression plus ordered,
   separately owned stages in syntax-only `vkPipeline`. `=>` marks a per-item
-  stage: lazy before a later stage, a draining `each` when it is last.
+  stage that prepares once and returns a lazy Stream in every position.
+  Consumption is explicit and does not change the reader representation.
   Parenthesized `#(...)` retains its immutable syntax marker without becoming
   quoted or inert. A multi-form leading segment, an empty stage, duplicate direct `_`
   slots, and same-depth `;`/arrow mixtures are read errors; `->` and `=>` mix,

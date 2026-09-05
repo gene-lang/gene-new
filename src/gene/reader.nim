@@ -1555,22 +1555,16 @@ proc materializeIterateCallback*(stage: PipelineStage, itemName: string,
   ## leaving those components in a long-lived module/REPL frame.
   let item = newSym(itemName)
   let call = materializePipelineStage(stage, item, immutable)
+  if call.head.kind == vkNode and call.head.head.kind == vkSymbol and
+      call.head.head.symVal == "fn" and call.props.len == 0 and
+      call.body.len == 1 and call.body[0].bits == item.bits:
+    # A direct lambda already is the required callback. Keeping it here also
+    # lets profiles infer its parameter from the upstream item type.
+    return call.head
   newNode(newSym("fn"), body = @[newList(@[item]), call])
 
-proc materializeIterateDriver*(receiver, callback: Value,
-                               terminal: bool): Value =
-  ## `=>` runs its stage once per item, and a pipeline never accumulates a list
-  ## to get from one stage to the next:
-  ##
-  ## - a stage with something after it maps **lazily**, over the lazy tier, so
-  ##   an unbounded producer flows through a pipeline one item at a time;
-  ## - the final stage has no consumer for its results, so it drains the
-  ##   upstream for effect and the pipeline answers `nil`.
-  ##
-  if terminal:
-    # `each` drives the receiver in its own kind and answers nil, so nothing is
-    # collected and an eager receiver needs no conversion into the lazy tier.
-    return newNode(geneMemberPath("each"), body = @[receiver, callback])
+proc materializeIterateDriver*(receiver, callback: Value): Value =
+  ## Every `=>` is lazy, including the final stage. Consumers are explicit.
   # `to_stream` is the identity on a `Stream`, so this normalizes an unknown
   # receiver into the lazy tier without branching on its runtime kind.
   newNode(geneMemberPath("map"),
@@ -1578,10 +1572,10 @@ proc materializeIterateDriver*(receiver, callback: Value,
                    callback])
 
 proc materializeIterateStage*(stage: PipelineStage, receiver: Value,
-                              itemName: string, terminal: bool,
+                              itemName: string,
                               immutable = false): Value =
   let callback = materializeIterateCallback(stage, itemName, immutable)
-  materializeIterateDriver(receiver, callback, terminal)
+  materializeIterateDriver(receiver, callback)
 
 proc isSpreadNode(value: Value): bool =
   value.kind == vkNode and value.head.kind == vkSymbol and
@@ -1589,17 +1583,15 @@ proc isSpreadNode(value: Value): bool =
     value.props.len == 0 and value.meta.len == 0
 
 proc needsIterateHoist(value: Value): bool =
-  ## An `=>` stage evaluates its callee and arguments once, before iterating,
-  ## so anything with its own evaluation is lifted out of the callback. Symbols
-  ## and literals stay inline: a symbol load is idempotent and keeping it in
-  ## place preserves head dispatch for `+`, a known function, and a `.message`
-  ## descriptor.
+  ## A binding read is an evaluation too. Backends may separately prove a
+  ## particular immutable head safe to leave in place.
   case value.kind
   of vkNode: not value.isSpreadNode
-  of vkPipeline, vkList, vkMap, vkSet, vkHashMap: true
+  of vkSymbol, vkPipeline, vkList, vkMap, vkSet, vkHashMap: true
   else: false
 
-proc hoistIterateStage*(stage: PipelineStage, freshName: proc(): string):
+proc hoistIterateStage*(stage: PipelineStage, freshName: proc(): string,
+                       stableHead: proc(value: Value): bool = nil):
     tuple[stage: PipelineStage, hoisted: seq[(string, Value)]] =
   ## Replace every separately evaluated stage component with a name bound once
   ## outside the callback. `hoisted` lists those bindings in evaluation order.
@@ -1616,19 +1608,47 @@ proc hoistIterateStage*(stage: PipelineStage, freshName: proc(): string):
     lifted.add (name, value)
     newSym(name)
 
+  # Normalize sends before choosing evaluated components: bare message names
+  # are syntax, while held descriptors and qualified-message expressions have
+  # their own preparation point before the arguments.
+  let call = materializePipelineStage(stage, newSym("_"))
   result.stage = stage
-  if stage.slot.kind != pskHead:
-    result.stage.head = lift(stage.head)
-  result.stage.props = initPropTable()
-  for key, value in stage.props:
-    result.stage.props[key] =
-      if stage.slot.kind == pskProp and key == stage.slot.name: value
-      else: lift(value)
+  result.stage.head = call.head
+  if not call.head.isDirectPipelineSlot and
+      not (stableHead != nil and stableHead(call.head)):
+    result.stage.head = lift(call.head)
   result.stage.body = @[]
-  for i, value in stage.body:
+  var argsStart = 0
+  if call.body.len > 1 and call.body[0].kind == vkSymbol and
+      call.body[0].symVal in ["~", "?~"]:
+    argsStart = 2
+    result.stage.body.add call.body[0]
+    let message = call.body[1]
+    if message.kind == vkSymbol:
+      result.stage.body.add message
+    elif message.kind == vkNode and message.head.kind == vkSymbol and
+        message.head.symVal == "msg":
+      # Static protocol names have identity in the web profile. Dynamic
+      # protocol qualifiers are rejected by that profile's ordinary analysis.
+      result.stage.body.add message
+    elif message.kind == vkNode and message.head.kind == vkSymbol and
+        message.head.symVal == "unquote":
+      result.stage.body.add newNode(message.head,
+        body = @[lift(message.body[0])])
+    else:
+      result.stage.body.add lift(message)
+  result.stage.props = initPropTable()
+  for key, value in call.props:
+    result.stage.props[key] =
+      if value.isDirectPipelineSlot or key in ["types", "protocol", "receiver"]: value
+      else: lift(value)
+  for i in argsStart ..< call.body.len:
+    let value = call.body[i]
     result.stage.body.add(
-      if stage.slot.kind == pskBody and i == stage.slot.index: value
+      if value.isDirectPipelineSlot: value
       else: lift(value))
+  result.stage.slot = detectPipelineSlot(result.stage.head,
+    result.stage.props, result.stage.body).slot
   result.hoisted = lifted
 
 proc parseNode(r: var Reader, closing: TokenKind, immutable = false): Value =

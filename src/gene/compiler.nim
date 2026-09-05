@@ -1181,13 +1181,24 @@ proc collectPatternBindingNames(pat: Value, names: var seq[string],
   else:
     discard
 
+proc warnDiscardedPipeline(c: var Compiler, value: Value) =
+  if value.kind == vkPipeline and value.pipelineStages.len > 0 and
+      value.pipelineStages[^1].kind == pstIterate:
+    c.chunk.diagnostics.add CompileDiagnostic(
+      message: "unused lazy pipeline: item callbacks run only when consumed; " &
+        "use -> $each for effects or -> $into [] to collect results",
+      loc: value.pipelineStages[^1].sourceLoc)
+
 proc compileBody(c: var Compiler, body: openArray[Value], tail = false) =
   if body.len == 0:
     c.emitConst NIL
     return
   for i in 0 ..< body.len:
     compileExpr(c, body[i], tail = tail and i == body.high)
+    if i == body.high and c.inStatementFn:
+      c.warnDiscardedPipeline(body[i])
     if i < body.high:
+      c.warnDiscardedPipeline(body[i])
       discard c.emit(opPop)
 
 proc compileBodyFrom(c: var Compiler, body: openArray[Value], first: int,
@@ -1197,7 +1208,10 @@ proc compileBodyFrom(c: var Compiler, body: openArray[Value], first: int,
     return
   for i in first .. body.high:
     compileExpr(c, body[i], tail = tail and i == body.high)
+    if i == body.high and c.inStatementFn:
+      c.warnDiscardedPipeline(body[i])
     if i < body.high:
+      c.warnDiscardedPipeline(body[i])
       discard c.emit(opPop)
 
 proc symbolText(v: Value): string =
@@ -1220,7 +1234,7 @@ proc chunkNeedsCallScope(chunk: Chunk): bool =
     case inst.op
     of opLoadOuterLocal, opCallParentLocal0, opCallOuterLocal0,
        opCallParentLocal1, opCallOuterLocal1, opSetOuterLocal, opDefineName,
-       opDefineLocal, opSetModuleName, opMakeFn,
+       opDefineLocal, opSetModuleName, opMakeFn, opPreparePipelineCall,
        opMakeNamespace, opMakeType, opMakeEnum, opMakeProtocol, opMakeImpl,
        opImport, opImportImpl,
        opMatch, opMatchBind, opMatchBindReplace, opForEach, opTry,
@@ -1267,7 +1281,7 @@ proc chunkCanPoolCallScope(chunk: Chunk): bool =
     return false
   for inst in chunk.instructions:
     case inst.op
-    of opMakeFn, opMakeEnv, opMakeNamespace, opMakeType, opMakeEnum, opMakeProtocol,
+    of opMakeFn, opPreparePipelineCall, opMakeEnv, opMakeNamespace, opMakeType, opMakeEnum, opMakeProtocol,
        opMakeImpl, opImport, opImportImpl, opMatch, opMatchBind,
        opMatchBindReplace,
        opForEach, opTry, opTaskScope, opSupervisor, opSpawn, opAwait, opYield:
@@ -9052,24 +9066,150 @@ proc rejectLeadingPipelineSend(stage: PipelineStage) =
       "leading '" & stage.head.symVal & "' in a pipeline stage has no " &
       "receiver; use a head slot: (a -> _ " & stage.head.symVal & ")")
 
-proc capturedIterateCallback(stage: PipelineStage,
-                             hoisted: openArray[(string, Value)],
-                             itemName: string,
-                             immutable: bool): Value =
-  ## A module/REPL frame lives for the application, so its compiler-owned
-  ## hoists must not. Pass the already ordered component expressions through a
-  ## tiny factory call: the returned per-item callback owns only that call
-  ## scope, and a lazy Stream keeps it alive for exactly as long as needed.
-  let callback = materializeIterateCallback(stage, itemName, immutable)
-  if hoisted.len == 0:
-    return callback
-  var params, arguments: seq[Value]
-  for (name, value) in hoisted:
-    params.add newSym(name)
-    arguments.add value
-  let factory = newNode(newSym("fn"),
-    body = @[newList(params), callback])
-  newNode(factory, body = arguments)
+proc compilePreparedPipelineCall(c: var Compiler, stage: PipelineStage,
+                                 immutable: bool) =
+  ## Compile the target/dispatch using ordinary instructions. Only argument
+  ## layout preparation is new: it happens now, including all symbol reads and
+  ## spread expansion, rather than on each invocation of the retained callback.
+  let item = newSym(PipelineItemName)
+  let call = materializePipelineStage(stage, item, immutable)
+  let publicSite = materializePipelineStage(stage, newSym("_"), immutable)
+  if call.props.hasKey("types") and call.head.kind == vkSymbol:
+    let types = call.props["types"]
+    if types.kind != vkList:
+      raise newException(GeneError, "call ^types must be a list")
+    discard c.chunk.addMonomorphization(MonomorphizationSpec(
+      functionName: call.head.symVal, typeArgs: types.listItems))
+  var target = call.head
+  var descriptor = NIL
+  var sendName = ""
+  var resolveOp = opNoop
+  var optional = false
+  var argsStart = 0
+  if call.head.kind == vkNode and call.head.head.isSymbol("msg"):
+    # Capturing a literal P:message must not turn an invalid source head into
+    # an accepted held-message application.
+    compileCall(c, call)
+    return
+  if call.body.len > 1 and
+      (call.body[0].isSymbol("~") or call.body[0].isSymbol("?~")):
+    optional = call.body[0].isSymbol("?~")
+    argsStart = 2
+    let message = call.body[1]
+    if message.kind == vkSymbol and
+        not call.props.hasKey("protocol") and
+        not call.props.hasKey("receiver"):
+      sendName = message.symVal
+      resolveOp = opResolveMessage
+    else:
+      let resolved = c.sendMessageExpr(call, message)
+      sendName = sendCalleeName(message)
+      if resolved.kind == vkNode and resolved.head.isSymbol("msg") and
+          resolved.body.len == 2 and resolved.body[1].kind == vkSymbol:
+        sendName = resolved.body[1].symVal
+        if resolved.body[0].isSymbol("Self"):
+          resolveOp = opResolveMessage
+        else:
+          descriptor = resolved.body[0]
+          resolveOp = opQualifiedSend
+      else:
+        descriptor = resolved
+        resolveOp = opResolveQualifiedMessage
+  elif call.props.hasKey("protocol") or call.props.hasKey("receiver"):
+    let resolved = c.sendMessageExpr(call, call.head)
+    if call.body.len == 0:
+      raise newException(GeneError,
+        "direct protocol call metadata requires a receiver argument")
+    target = call.body[0]
+    argsStart = 1
+    descriptor = resolved.body[0]
+    sendName = resolved.body[1].symVal
+    resolveOp = opQualifiedSend
+
+  let isSend = resolveOp != opNoop
+  if isSend:
+    validateMessageName(sendName)
+  let isSuper = isSend and target.isSymbol("super")
+  if isSuper:
+    if optional:
+      raise newException(GeneError,
+        "an optional dot send short-circuits an absent receiver, but super " &
+        "is never absent; use (super .message)")
+    if c.superType.kind == vkNil:
+      raise newException(GeneError,
+        "super is only valid in a type message body with a parent")
+    if resolveOp == opResolveQualifiedMessage:
+      raise newException(GeneError,
+        "super delegates to a statically named message")
+    target = newSym("self")
+    resolveOp = if resolveOp == opQualifiedSend:
+      opSuperQualifiedSend else: opSuperSend
+
+  # The first two preparation values are always target and descriptor. A slot
+  # is represented only in the plan; NIL here is never substituted into a call.
+  if target.isSymbol(PipelineItemName): c.emitConst NIL
+  else: compileExpr(c, target)
+  if descriptor.isSymbol(PipelineItemName): c.emitConst NIL
+  else: compileExpr(c, descriptor)
+  var plan = PipelineCallProto(bodySlot: -1, namedSlot: -1)
+  for name, value in call.props:
+    if name in ["types", "protocol", "receiver"]:
+      continue
+    if value.isSymbol(PipelineItemName):
+      plan.namedSlot = plan.namedNames.len
+      c.emitConst NIL
+    else:
+      compileExpr(c, value)
+    plan.namedNames.add name
+  for index in argsStart ..< call.body.len:
+    let value = call.body[index]
+    if value.isSymbol(PipelineItemName):
+      plan.bodySlot = plan.bodySplices.len
+      c.emitConst NIL
+      plan.bodySplices.add false
+    else:
+      var hasSplice = false
+      compileSpreadValues(c, @[value], 0, forList = false,
+                          plan.bodySplices, hasSplice)
+
+  var callback = c.childCompiler()
+  callback.inFunction = true
+  callback.enableLocalSlots()
+  let itemSlot = callback.reserveLocal(PipelineItemName)
+  template loadComponent(value: Value, captureName: string) =
+    if value.isSymbol(PipelineItemName):
+      discard callback.emit(opLoadLocal, itemSlot, name = PipelineItemName)
+    else:
+      discard callback.emit(opLoadName, name = captureName)
+  loadComponent(target, PipelineTargetName)
+  let guard = callback.emitOptionalReceiverGuard(optional)
+  if isSend:
+    if resolveOp in {opQualifiedSend, opResolveQualifiedMessage,
+                     opSuperQualifiedSend}:
+      loadComponent(descriptor, PipelineMessageName)
+    discard callback.emit(resolveOp, name = sendName)
+  discard callback.emit(opLoadName, name = PipelineArgumentsName)
+  discard callback.emit(opLoadLocal, itemSlot, name = PipelineItemName)
+  let invoke = callback.emit(opCallPrepared, flag = isSend, tail = true)
+  callback.chunk.callSites[invoke] = publicSite
+  if guard >= 0:
+    callback.patchJump(guard)
+  discard callback.emit(opReturn)
+  callback.chunk.localNames = @[PipelineItemName]
+  let proto = FunctionProto(
+    name: "pipeline item", sourceLoc: c.currentLoc,
+    params: @[PipelineItemName], localNames: @[PipelineItemName],
+    positionalSlots: @[itemSlot], positionalSlotMaySet: @[false],
+    requiredPositional: 1, simpleCall: true, needsCallScope: true,
+    preparedPipelineItem: true,
+    poolCallScope: true, paramTypes: @[NIL], restSlot: -1,
+    restType: NIL, returnType: NIL, aotExpr: NIL,
+    capabilityRow: CapabilityRow(kind: crkInherit), chunk: callback.chunk)
+  proto.chunk.owner = proto
+  plan.functionIndex = c.chunk.addFunction(proto)
+  let planIndex = c.chunk.pipelineCalls.len
+  c.chunk.pipelineCalls.add plan
+  discard c.emit(opPreparePipelineCall, planIndex)
 
 proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
   if pipeline.pipelineStages.len == 0:
@@ -9092,17 +9232,6 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
     else:
       discard c.emit(opSetName, name = tempName)
 
-  proc bindHidden(c: var Compiler, name: string, value: Value) =
-    ## Evaluate `value` once into a compiler-owned binding user code cannot
-    ## name. Used for the `=>` components that must not re-run per item.
-    let slot = if c.useLocalSlots: c.reserveLocal(name) else: -1
-    compileExpr(c, value)
-    if slot >= 0:
-      discard c.emit(opRedefineLocal, slot, name = name)
-    else:
-      discard c.emit(opRedefineName, name = name)
-    discard c.emit(opPop)
-
   compileExpr(c, pipeline.pipelineInitial)
   c.defineTemp()
   discard c.emit(opPop)
@@ -9124,28 +9253,14 @@ proc compilePipeline(c: var Compiler, pipeline: Value, tail: bool) =
       publicSite = materializePipelineStage(stage, newSym("_"),
                                             pipeline.pipelineImmutable)
     of pstIterate:
-      let stageId = c.nextGensym()
-      let itemName = "\x00gene_item_" & $stageId
-      var counter = 0
-      let hoist = hoistIterateStage(stage, proc(): string =
-        inc counter
-        "\x00gene_iterate_" & $stageId & "_" & $counter)
-      let publicStage = stage
-      stage = hoist.stage
-      let terminal = i == pipeline.pipelineStages.high
-      if not c.inFunction:
-        let callback = capturedIterateCallback(
-          stage, hoist.hoisted, itemName, pipeline.pipelineImmutable)
-        expr = materializeIterateDriver(tempExpr, callback, terminal)
-      else:
-        for (name, value) in hoist.hoisted:
-          c.bindHidden(name, value)
-        expr = materializeIterateStage(stage, tempExpr, itemName, terminal,
-                                       pipeline.pipelineImmutable)
-      # Diagnostics name the stage, never the compiler's own storage.
-      publicSite = materializeIterateStage(
-        publicStage, newSym("_"), "_", terminal,
-        pipeline.pipelineImmutable)
+      compileExpr(c, tempExpr)
+      c.compilePreparedPipelineCall(stage, pipeline.pipelineImmutable)
+      discard c.emit(opMakePipelineStream)
+      c.currentLoc = savedLoc
+      if i < pipeline.pipelineStages.high:
+        c.setTemp()
+        discard c.emit(opPop)
+      continue
     let firstInstruction = c.chunk.instructions.len
     compileExpr(c, expr, tail = tail and i == pipeline.pipelineStages.high)
     for instruction, site in c.chunk.callSites.mpairs:
@@ -9334,6 +9449,7 @@ proc compileFormsInto(c: var Compiler, forms: openArray[Value],
         c.currentLoc = c.formLocs[i]
       try:
         compileExpr(c, forms[i], allowModDecl = true)
+        c.warnDiscardedPipeline(forms[i])
         if i < forms.high:
           discard c.emit(opPop)
       except GeneError as e:
