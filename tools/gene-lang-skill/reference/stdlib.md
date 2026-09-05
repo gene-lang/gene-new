@@ -79,7 +79,7 @@ Root protocols: `Callable` `CapabilitySpec` `Error` `Send` `SerdeRef` `ToStr`.
 | `$parse` | `parse_int` `read_all` | `ParseError` |
 | `$node` | `body` `declarations` `head` `meta` `props` | — |
 | `$binary` | `concat` `from_list` `from_str` `get` `get_f32` `get_f64` `get_i32` `get_u16` `get_u32` `put_f32` `put_f64` `put_i32` `put_u16` `put_u32` `put_u8` `size` `slice` `to_buffer` `to_list` `to_str` | — |
-| `$os` | `begin_interrupt` `close_input` `end_interrupt` `env?` `exec` `exec_async` `exec_stdio` `exec_stdio_async` `exec_stream` `exec_stream_async` `executable_path` `get_env` `monotonic_ms` `process_id` `read_input` `read_line` `refresh_input` `stdin_tty?` `take_interrupt` | `Env` `Exec` `OsError` `Process` `Pty` |
+| `$os` | `begin_interrupt` `close_input` `end_interrupt` `env?` `exec` `exec_async` `exec_stdio` `exec_stdio_async` `exec_stream` `exec_stream_async` `executable_path` `get_env` `launch_dir` `monotonic_ms` `process_id` `read_input` `read_line` `refresh_input` `stdin_tty?` `take_interrupt` | `Env` `Exec` `OsError` `Process` `Pty` |
 | `$actor` | `continue` `spawn` `stop` | — |
 | `$log` | `child` `debug` `emit` `enabled?` `error` `info` `new_file_logger` `new_logger` `trace` `warn` `with` | `LogLevel` `Logger` |
 | `$crypto` | `random_hex` `secure_equal?` `sha256` | `Random` |
@@ -99,7 +99,7 @@ Root protocols: `Callable` `CapabilitySpec` `Error` `Send` `SerdeRef` `ToStr`.
 | `$ffi` | `bind` `open` | `Callable` `Library` `Load` |
 | `$aot` | `load` | — |
 | `$device` | `buffer` | `Buffer` `Compute` |
-| `$runtime` | `callable?` `configure_module` `gc_stats` `guard_call` `load_sandboxed` `require_root_lane` `sandbox_transaction` | `RuntimeLaneError` `SandboxGeneration` `SandboxTransaction` |
+| `$runtime` | `bind_call` `callable?` `configure_module` `gc_stats` `guard_call` `load_sandboxed` `require_root_lane` `sandbox_transaction` | `RuntimeLaneError` `SandboxGeneration` `SandboxTransaction` |
 | `$C` | — | C ABI type constructors for FFI (`Int`, `Ptr`, `CStr`, `Slice`, …) |
 
 `$fs` calls require a capability grant — see `reference/declarations.md`.

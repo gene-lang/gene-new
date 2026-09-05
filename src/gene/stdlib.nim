@@ -1437,6 +1437,13 @@ proc biOsExecutablePath(args: openArray[Value], call: ptr NativeCall): Value {.n
   discard requireActiveCapability("os/executable_path", "os/Process", call)
   newStr(getAppFilename())
 
+proc biOsLaunchDir(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 0:
+    raise newException(GeneError,
+      "os/launch_dir expects no arguments, got " & $args.len)
+  discard requireActiveCapability("os/launch_dir", "os/Process", call)
+  newStr(activeCapabilitiesForCall(call).app.launchDir)
+
 const osExecDefaultOutputCap = 1024 * 1024
 const osExecPollMs = 5
 
@@ -8304,6 +8311,9 @@ proc registerStdlibNamespaces(root: Scope) =
                  acceptsNamed = false))
   osScope.define("executable_path",
                  newNativeCallFn("os/executable_path", biOsExecutablePath,
+                                 acceptsNamed = false))
+  osScope.define("launch_dir",
+                 newNativeCallFn("os/launch_dir", biOsLaunchDir,
                                  acceptsNamed = false))
   osScope.define("exec", newNativeCallFn("os/exec", biOsExec))
   osScope.define("exec_stream", newNativeCallFn("os/exec_stream", biOsExecStream))

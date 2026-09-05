@@ -1815,7 +1815,7 @@
     {
       "id": "buffer.sized_f32_write_and_sum",
       "source": "(fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b .set i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b .len)) (set s (+ s (b .get i))) (set i (+ i 1.0))) s) (run)",
-      "web_source": "(mod buf_f32 ^profile web) (fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b .set i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i (b .len)) (set s (+ s (b .get i))) (set i (+ i 1.0))) s)",
+      "web_source": "(mod buf_f32 ^profile web) (fn run [] : F64 (var b ($buffer F32 4.0)) (var i 0.0) (while (< i 4.0) (b .set i (* i 1.5)) (set i (+ i 1.0))) (var s 0.0) (set i 0.0) (while (< i ($to_float (b .len))) (set s (+ s (b .get i))) (set i (+ i 1.0))) s)",
       "web_export": "run",
       "expected_value": {
         "kind": "f64",
@@ -2213,6 +2213,720 @@
       "expected_value": {
         "kind": "f64",
         "value": "9.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.buffer_length_int",
+      "source": "(fn run [] : Int (var b ($buffer U8 7)) (b .len)) (run)",
+      "web_source": "(mod portable_buffer_length_int ^profile web) (fn run [] : Int (var b ($buffer U8 7)) (b .len))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.list_size_int",
+      "source": "(fn run [] : Int (var xs [1 2 3]) xs/.size) (run)",
+      "web_source": "(mod portable_list_size_int ^profile web) (fn run [] : Int (var xs [1 2 3]) xs/.size)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "3"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.idempotent_to_float",
+      "source": "(fn run [] : F64 ($to_float 1.5)) (run)",
+      "web_source": "(mod portable_idempotent_to_float ^profile web) (fn run [] : F64 ($to_float 1.5))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "1.5"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.idempotent_to_int",
+      "source": "(fn run [] : Int ($to_int 18446744073709551616)) (run)",
+      "web_source": "(mod portable_idempotent_to_int ^profile web) (fn run [] : Int ($to_int 18446744073709551616))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "18446744073709551616"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.missing_integer_buffer_read",
+      "source": "(fn run [] : Bool (var b ($buffer U16 2)) ($void? (b .get 9.0))) (run)",
+      "web_source": "(mod portable_missing_integer_buffer_read ^profile web) (fn run [] : Bool (var b ($buffer U16 2)) ($void? (b .get 9.0)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.f32_storage_rounding",
+      "source": "(fn run [] : Bool (var b ($buffer F32 1)) (b .set 0.0 0.1) (== (b .get 0.0) 0.10000000149011612)) (run)",
+      "web_source": "(mod portable_f32_storage_rounding ^profile web) (fn run [] : Bool (var b ($buffer F32 1)) (b .set 0.0 0.1) (== (b .get 0.0) 0.10000000149011612))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.prop_map_pairs",
+      "source": "(fn run [] : (List Sym) (var keys : (List Sym) []) (for [key value] in {^b 2 ^a 1} (keys .push key)) keys) (run)",
+      "web_source": "(mod portable_prop_map_pairs ^profile web) (fn run [] : (List Sym) (var keys : (List Sym) []) (for [key value] in {^b 2 ^a 1} (keys .push key)) keys)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "sym",
+            "value": "b"
+          },
+          {
+            "kind": "sym",
+            "value": "a"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.prop_map_numeric_key_order",
+      "source": "(fn run [] : (List Sym) (var m {^a 3}) (var ten \"10\") (var two \"2\") (set m/%ten 1) (set m/%two 2) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys) (run)",
+      "web_source": "(mod portable_prop_map_numeric_key_order ^profile web) (fn run [] : (List Sym) (var m {^a 3}) (var ten \"10\") (var two \"2\") (set m/%ten 1) (set m/%two 2) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "sym",
+            "value": "a"
+          },
+          {
+            "kind": "sym",
+            "value": "10"
+          },
+          {
+            "kind": "sym",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.prop_map_mutation_snapshot",
+      "source": "(fn run [] : Int (var m {^a 1 ^b 2}) (var total 0) (for [key value] in m (set total (+ total value)) (set m/b 99)) total) (run)",
+      "web_source": "(mod portable_prop_map_mutation_snapshot ^profile web) (fn run [] : Int (var m {^a 1 ^b 2}) (var total 0) (for [key value] in m (set total (+ total value)) (set m/b 99)) total)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "3"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.prop_map_delete_reinsert",
+      "source": "(fn run [] : (List Sym) (var m {^a 1 ^b 2}) (set m/a void) (set m/a 3) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys) (run)",
+      "web_source": "(mod portable_prop_map_delete_reinsert ^profile web) (fn run [] : (List Sym) (var m {^a 1 ^b 2}) (set m/a void) (set m/a 3) (var keys : (List Sym) []) (for [key value] in m (keys .push key)) keys)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "sym",
+            "value": "b"
+          },
+          {
+            "kind": "sym",
+            "value": "a"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.typed_map_pairs",
+      "source": "(fn run [] : Int (var m : (Map Str Int) {{\"a\" : 1 \"b\" : 2}}) (var total 0) (for [key value] in m (set total (+ total value))) total) (run)",
+      "web_source": "(mod portable_typed_map_pairs ^profile web) (fn run [] : Int (var m : (Map Str Int) {{\"a\" : 1 \"b\" : 2}}) (var total 0) (for [key value] in m (set total (+ total value))) total)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "3"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.map_void_entry_removed",
+      "source": "(fn run [] : Int (var m : (Map Str Int) {{\"a\" : 1 \"b\" : void}}) (var total 0) (for [key value] in m (set total (+ total value))) total) (run)",
+      "web_source": "(mod portable_map_void_entry_removed ^profile web) (fn run [] : Int (var m : (Map Str Int) {{\"a\" : 1 \"b\" : void}}) (var total 0) (for [key value] in m (set total (+ total value))) total)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "1"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.for_shadows_outer_binding",
+      "source": "(fn run [] : Int (var key 42) (for [key value] in {^a 1} nil) key) (run)",
+      "web_source": "(mod portable_for_shadows_outer_binding ^profile web) (fn run [] : Int (var key 42) (for [key value] in {^a 1} nil) key)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "42"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.for_snapshots_list",
+      "source": "(fn run [] : Int (var xs [1 2]) (var total 0) (for value in xs (set total (+ total value)) (xs .push 3)) total) (run)",
+      "web_source": "(mod portable_for_snapshots_list ^profile web) (fn run [] : Int (var xs [1 2]) (var total 0) (for value in xs (set total (+ total value)) (xs .push 3)) total)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "3"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.for_absence_is_empty",
+      "source": "(fn run [] : Int (var total 7) (for value in nil (set total 0)) (for value in void (set total 0)) total) (run)",
+      "web_source": "(mod portable_for_absence_is_empty ^profile web) (fn run [] : Int (var total 7) (for value in nil (set total 0)) (for value in void (set total 0)) total)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.buffer_fractional_index_rejected",
+      "source": "(fn run [] : Bool (var b ($buffer F64 3)) (try (b .set 0.5 1.0) false catch Any true)) (run)",
+      "web_source": "(mod portable_buffer_fractional_index_rejected ^profile web) (fn run [] : Bool (var b ($buffer F64 3)) (try (b .set 0.5 1.0) false catch Any true))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.buffer_integer_indices",
+      "source": "(fn run [] : Int (var b ($buffer U8 2)) (b .set 1 9) (b .get -1)) (run)",
+      "web_source": "(mod portable_buffer_integer_indices ^profile web) (fn run [] : Int (var b ($buffer U8 2)) (b .set 1 9) (b .get -1))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "9"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.buffer_integer_write_checked",
+      "source": "(fn run [] : Int (var b ($buffer U8 1)) (b .set 0 7) (try (b .set 0 256) nil catch TypeError nil) (b .get 0)) (run)",
+      "web_source": "(mod portable_buffer_integer_write_checked ^profile web) (fn run [] : Int (var b ($buffer U8 1)) (b .set 0 7) (try (b .set 0 256) nil catch TypeError nil) (b .get 0))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.buffer_f32_write_checked",
+      "source": "(fn run [] : F64 (var b ($buffer F32 1)) (b .set 0 7.0) (try (b .set 0 1e39) nil catch TypeError nil) (b .get 0)) (run)",
+      "web_source": "(mod portable_buffer_f32_write_checked ^profile web) (fn run [] : F64 (var b ($buffer F32 1)) (b .set 0 7.0) (try (b .set 0 1e39) nil catch TypeError nil) (b .get 0))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "f64",
+        "value": "7.0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.buffer_fill_range_checked",
+      "source": "(fn run [] : Int (var b ($buffer U8 2)) (b .fill 7) (try (b .fill 8 0 3) nil catch Any nil) (b .get 1)) (run)",
+      "web_source": "(mod portable_buffer_fill_range_checked ^profile web) (fn run [] : Int (var b ($buffer U8 2)) (b .fill 7) (try (b .fill 8 0 3) nil catch Any nil) (b .get 1))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.buffer_copy_requires_equal_lengths",
+      "source": "(fn run [] : Int (var a ($buffer U8 1)) (var b ($buffer U8 2)) (b .fill 7) (try (b .copy_from a) nil catch Any nil) (b .get 0)) (run)",
+      "web_source": "(mod portable_buffer_copy_requires_equal_lengths ^profile web) (fn run [] : Int (var a ($buffer U8 1)) (var b ($buffer U8 2)) (b .fill 7) (try (b .copy_from a) nil catch Any nil) (b .get 0))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.buffer_copy_overlap",
+      "source": "(fn run [] : Int (var b ($buffer U8 4)) (b .set 0 1) (b .set 1 2) (b .set 2 3) (b .set 3 4) (b .copy_from b 0 3 1) (+ (* (b .get 0) 1000) (+ (* (b .get 1) 100) (+ (* (b .get 2) 10) (b .get 3))))) (run)",
+      "web_source": "(mod portable_buffer_copy_overlap ^profile web) (fn run [] : Int (var b ($buffer U8 4)) (b .set 0 1) (b .set 1 2) (b .set 2 3) (b .set 3 4) (b .copy_from b 0 3 1) (+ (* (b .get 0) 1000) (+ (* (b .get 1) 100) (+ (* (b .get 2) 10) (b .get 3)))))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "1123"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.absence_predicates",
+      "source": "(fn run [] : Bool (&& ($nil? nil) ($void? void) ($absent? nil) ($absent? void) ($present? false) ($present? 0) (! ($nil? void)) (! ($void? nil)))) (run)",
+      "web_source": "(mod portable_absence_predicates ^profile web) (fn run [] : Bool (&& ($nil? nil) ($void? void) ($absent? nil) ($absent? void) ($present? false) ($present? 0) (! ($nil? void)) (! ($void? nil))))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.buffer_set_result",
+      "source": "(fn run [] : Int (var b ($buffer U8 1)) (b .set 0 7)) (run)",
+      "web_source": "(mod portable_buffer_set_result ^profile web) (fn run [] : Int (var b ($buffer U8 1)) (b .set 0 7))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.list_push_result",
+      "source": "(fn run [] : Int (var xs : (List Int) []) (xs .push 7)) (run)",
+      "web_source": "(mod portable_list_push_result ^profile web) (fn run [] : Int (var xs : (List Int) []) (xs .push 7))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "portable.buffer_argument_evaluation_before_error",
+      "source": "(fn mark [b : (Buffer U8)] : Int (b .set 0 1)) (fn run [] : Int (var log ($buffer U8 1)) (var b ($buffer U8 1)) (try (b .set 99 (mark log)) nil catch Any nil) (log .get 0)) (run)",
+      "web_source": "(mod portable_buffer_argument_evaluation_before_error ^profile web) (fn mark [b : (Buffer U8)] : Int (b .set 0 1)) (fn run [] : Int (var log ($buffer U8 1)) (var b ($buffer U8 1)) (try (b .set 99 (mark log)) nil catch Any nil) (log .get 0))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "1"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named.default_literal",
+      "source": "(fn f [x : Int ^extra : Int = 2] : Int (+ x extra)) (fn run [] : Int (+ (f 3) (f 3 ^extra 0))) (run)",
+      "web_source": "(mod named_default_literal ^profile web) (fn f [x : Int ^extra : Int = 2] : Int (+ x extra)) (fn run [] : Int (+ (f 3) (f 3 ^extra 0)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "8"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named.default_previous_parameter",
+      "source": "(fn f [x : Int ^a : Int = (+ x 1) ^b : Int = (+ a 1)] : Int (+ a b)) (fn run [] : Int (f 3)) (run)",
+      "web_source": "(mod named_default_previous_parameter ^profile web) (fn f [x : Int ^a : Int = (+ x 1) ^b : Int = (+ a 1)] : Int (+ a b)) (fn run [] : Int (f 3))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "9"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named.argument_and_default_order",
+      "source": "(fn mark [out : (List Str) label : Str] : Int (out .push label) 1) (fn f [out : (List Str) x : Int ^a : Int = (mark out \"a\") ^b : Int = (mark out \"b\")] : Nil nil) (fn run [] : (List Str) (var out : (List Str) []) (f out (mark out \"x\") ^b (mark out \"provided\")) out) (run)",
+      "web_source": "(mod named_argument_and_default_order ^profile web) (fn mark [out : (List Str) label : Str] : Int (out .push label) 1) (fn f [out : (List Str) x : Int ^a : Int = (mark out \"a\") ^b : Int = (mark out \"b\")] : Nil nil) (fn run [] : (List Str) (var out : (List Str) []) (f out (mark out \"x\") ^b (mark out \"provided\")) out)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "provided"
+          },
+          {
+            "kind": "str",
+            "value": "x"
+          },
+          {
+            "kind": "str",
+            "value": "a"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named.declaration_order_does_not_reorder_arguments",
+      "source": "(fn mark [out : (List Str) label : Str] : Int (out .push label) 1) (fn f [x : Int ^a : Int ^b : Int] : Nil nil) (fn run [] : (List Str) (var out : (List Str) []) (f (mark out \"x\") ^b (mark out \"b\") ^a (mark out \"a\")) out) (run)",
+      "web_source": "(mod named_declaration_order_does_not_reorder_arguments ^profile web) (fn mark [out : (List Str) label : Str] : Int (out .push label) 1) (fn f [x : Int ^a : Int ^b : Int] : Nil nil) (fn run [] : (List Str) (var out : (List Str) []) (f (mark out \"x\") ^b (mark out \"b\") ^a (mark out \"a\")) out)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "b"
+          },
+          {
+            "kind": "str",
+            "value": "a"
+          },
+          {
+            "kind": "str",
+            "value": "x"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named.default_fresh_collection",
+      "source": "(fn f [^xs : (List Int) = []] : (List Int) (xs .push 1) xs) (fn run [] : Int (var a (f)) (var b (f)) (+ a/.size b/.size)) (run)",
+      "web_source": "(mod named_default_fresh_collection ^profile web) (fn f [^xs : (List Int) = []] : (List Int) (xs .push 1) xs) (fn run [] : Int (var a (f)) (var b (f)) (+ a/.size b/.size))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "2"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named.default_nil_and_void",
+      "source": "(fn f [^value : Int? = 2] : Int? value) (fn run [] : (List Any) [(f) (f ^value nil) (f ^value void)]) (run)",
+      "web_source": "(mod named_default_nil_and_void ^profile web) (fn f [^value : Int? = 2] : Int? value) (fn run [] : (List Any) [(f) (f ^value nil) (f ^value void)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "nil"
+          },
+          {
+            "kind": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named.default_binding_alias",
+      "source": "(fn f [^external local : Int = 3] : Int local) (fn run [] : Int (+ (f) (f ^external 4))) (run)",
+      "web_source": "(mod named_default_binding_alias ^profile web) (fn f [^external local : Int = 3] : Int local) (fn run [] : Int (+ (f) (f ^external 4)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "named.default_definition_scope",
+      "source": "(let factor 2) (fn f [^scale : Int = factor] : Int scale) (fn run [] : Int (let factor 99) (f)) (run)",
+      "web_source": "(mod default_scope ^profile web) (import [f] from \"./provider.gene\") (let factor 99) (fn run [] : Int (f))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "2"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (let factor 2) (fn f [^scale : Int = factor] : Int scale)"
+      }
+    },
+    {
+      "id": "named.validate_before_default",
+      "source": "(fn mark [out : (List Int)] : Int (out .push 1) 7) (fn bad [] : Any \"bad\") (fn f [out : (List Int) x : Int ^extra : Int = (mark out)] : Nil nil) (fn run [] : Int (var out : (List Int) []) (try (f out (bad)) nil catch TypeError nil) out/.size) (run)",
+      "web_source": "(mod named_validate_before_default ^profile web) (fn mark [out : (List Int)] : Int (out .push 1) 7) (fn bad [] : Any \"bad\") (fn f [out : (List Int) x : Int ^extra : Int = (mark out)] : Nil nil) (fn run [] : Int (var out : (List Int) []) (try (f out (bad)) nil catch TypeError nil) out/.size)",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "0"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "modules.explicit_reexports",
+      "source": "(type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor) (fn run [] : Int (+ count (read (make)))) (run)",
+      "web_source": "(mod reexports ^profile web) (import [Point Value count make read scale] from \"./facade.gene\") (fn run [] : Int (+ count (read (make))))",
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor)",
+        "facade.gene": "(mod facade ^profile web) (import [Point Value count make read scale] from \"./provider.gene\" ^export true)"
+      },
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "10"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "modules.reexport_aliases_and_chain",
+      "source": "(type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor) (fn run [] : Int (+ count (read (make)))) (run)",
+      "web_source": "(mod aliases ^profile web) (import [PublicPoint Value amount build inspect] from \"./outer.gene\") (fn run [] : Int (+ amount (inspect (build))))",
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor)",
+        "facade.gene": "(mod facade ^profile web) (import [Point : PublicPoint Value count : amount make : build read : inspect scale] from \"./provider.gene\" ^export true)",
+        "outer.gene": "(mod outer ^profile web) (import [PublicPoint Value amount build inspect scale] from \"./facade.gene\" ^export true)"
+      },
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "10"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "modules.reexport_protocol_identity",
+      "source": "(type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor) (fn run [] : Int ((Point ^x 9) .Value:value)) (run)",
+      "web_source": "(mod identity ^profile web) (import [PublicPoint Value] from \"./outer.gene\") (fn run [] : Int ((PublicPoint ^x 9) .Value:value))",
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor)",
+        "facade.gene": "(mod facade ^profile web) (import [Point : PublicPoint Value count : amount make : build read : inspect scale] from \"./provider.gene\" ^export true)",
+        "outer.gene": "(mod outer ^profile web) (import [PublicPoint Value amount build inspect scale] from \"./facade.gene\" ^export true)"
+      },
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "9"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "modules.reexport_default_scope",
+      "source": "(type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor) (fn run [] : Int (let count 99) (scale)) (run)",
+      "web_source": "(mod default_reexport ^profile web) (import [scale] from \"./outer.gene\") (let count 99) (fn run [] : Int (scale))",
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (type Point ^props {^x Int}) (protocol Value (message value [] : Int)) (impl Value for Point (message value [] : Int self/x)) (let count 3) (fn make [] : Point (Point ^x 7)) (fn read [point : Point] : Int (point .Value:value)) (fn scale [^factor : Int = count] : Int factor)",
+        "facade.gene": "(mod facade ^profile web) (import [Point : PublicPoint Value count : amount make : build read : inspect scale] from \"./provider.gene\" ^export true)",
+        "outer.gene": "(mod outer ^profile web) (import [PublicPoint Value amount build inspect scale] from \"./facade.gene\" ^export true)"
+      },
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "3"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "modules.imported_constant_identity",
+      "source": "(const values #[1 2]) (fn get [] : (List Int) values) (fn run [] : Bool (same? values (get))) (run)",
+      "web_source": "(mod constant_identity ^profile web) (import [values get] from \"./facade.gene\") (fn run [] : Bool (same? values (get)))",
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (const values #[1 2]) (fn get [] : (List Int) values)",
+        "facade.gene": "(mod facade ^profile web) (import [values get] from \"./provider.gene\" ^export true)"
+      },
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "modules.reexport_protocol_parameter_alias",
+      "source": "(type Box ^props {^n Int}) (protocol Add (message add [other : Box] : Int)) (impl Add for Box (message add [other : Box] : Int (+ self/n other/n))) (fn run [] : Int ((Box ^n 2) .Add:add (Box ^n 3))) (run)",
+      "web_source": "(mod alias_protocol ^profile web) (import [PublicBox Add] from \"./facade.gene\") (fn run [] : Int ((PublicBox ^n 2) .Add:add (PublicBox ^n 3)))",
+      "web_files": {
+        "provider.gene": "(mod provider ^profile web) (type Box ^props {^n Int}) (protocol Add (message add [other : Box] : Int)) (impl Add for Box (message add [other : Box] : Int (+ self/n other/n)))",
+        "facade.gene": "(mod facade ^profile web) (import [Box : PublicBox Add] from \"./provider.gene\" ^export true)"
+      },
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "5"
       },
       "expected_error": null,
       "expected_stdout": "",

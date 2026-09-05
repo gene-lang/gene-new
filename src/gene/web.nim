@@ -85,6 +85,7 @@ type
     keys*: seq[string]
     patterns*: seq[Value]
     params*: seq[WebParam]     # wekLambda: the inline callback's parameters
+    argumentOrder*: seq[int]  # named-call evaluation order, before slot reordering
 
   WebParam* = object
     sourceName*: string      ## the name the body binds
@@ -94,6 +95,9 @@ type
     named*: bool             ## declared `^name`; supplied by a prop at the call
     optional*: bool          ## `^name : T?` — omitting it binds nil
     argName*: string         ## the call-site prop key; `^name local : T` differs
+    hasDefault*: bool
+    defaultSource*: Value
+    defaultExpr*: WebExpr
 
   WebFunction* = ref object
     sourceName*: string
@@ -121,6 +125,7 @@ type
     sourcePath*: string
     resolvedPath*: string
     selections*: seq[WebImportSelection]
+    reexport*: bool
     loc*: SourceLoc
 
   WebExtern* = object
@@ -157,6 +162,7 @@ type
     sourceName*: string
     emittedName*: string
     parentName*: string
+    originId*: string
     fields*: seq[WebField]
     bodyFields*: seq[WebType]
     bodyRest*: WebType
@@ -212,6 +218,7 @@ type
     emittedName*: string
     typ*: WebType
     value*: WebExpr
+    imported*: bool
     loc*: SourceLoc
 
   WebModule* = ref object
@@ -537,14 +544,21 @@ proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
   if expected == nil or actual == nil or expected.kind == wtkAny or
       actual.kind == wtkNever:
     return true
-  if expected.kind == wtkUnion:
-    for member in expected.members:
-      if accepts(analysis, member, actual): return true
-    return false
   if actual.kind == wtkUnion:
     for member in actual.members:
       if not accepts(analysis, expected, member): return false
     return true
+  if expected.kind == wtkUnion:
+    for member in expected.members:
+      if accepts(analysis, member, actual): return true
+    return false
+  if expected.kind == wtkNominal and actual.kind == wtkNominal and
+      analysis.typeDecls.hasKey(expected.name) and
+      analysis.typeDecls.hasKey(actual.name):
+    let expectedOrigin = analysis.typeDecls[expected.name].originId
+    if expectedOrigin.len > 0 and
+        expectedOrigin == analysis.typeDecls[actual.name].originId:
+      return true
   if expected.kind == actual.kind:
     case expected.kind
     of wtkList, wtkTask, wtkStream:
@@ -919,15 +933,22 @@ proc parseParams(analysis: WebAnalysis, value: Value,
       raise webError(loc, "web parameter '" & name.symVal &
         "' cannot have a default; annotate it `: T?` to make it optional")
     let typ = parseWebType(items[j + 1], loc)
-    if named and j + 2 < items.len and items[j + 2].isSym("="):
-      raise webError(loc, "web parameter '" & name.symVal &
-        "' cannot have a default; annotate it `: T?` to make it optional")
+    let hasDefault = j + 2 < items.len and items[j + 2].isSym("=")
+    var defaultSource = NIL
+    if hasDefault:
+      if not named:
+        raise webError(loc, "web positional parameter '" & name.symVal &
+          "' cannot have a default; defaults are supported on named parameters")
+      if j + 3 >= items.len or items[j + 3].isSym(","):
+        raise webError(loc, "web parameter default requires a value")
+      defaultSource = items[j + 3]
     result.add WebParam(sourceName: local,
                         emittedName: mangleWebName(local), typ: typ,
                         loc: loc, named: named,
-                        optional: named and typeAllowsNil(typ),
-                        argName: name.symVal)
-    i = j + 2
+                        optional: named and (typeAllowsNil(typ) or hasDefault),
+                        argName: name.symVal, hasDefault: hasDefault,
+                        defaultSource: defaultSource)
+    i = j + (if hasDefault: 4 else: 2)
 
 proc inferredParams(analysis: WebAnalysis, value: Value, expected: WebType,
                     fnLoc: SourceLoc): seq[WebParam] =
@@ -956,6 +977,26 @@ proc containsForm(value: Value, name: string): bool =
     if containsForm(item, name): return true
   for item in value.body:
     if containsForm(item, name): return true
+
+proc containsDefaultControl(value: Value): bool =
+  if value.kind == vkList:
+    for item in value.listItems:
+      if containsDefaultControl(item): return true
+    return false
+  if value.kind == vkMap:
+    for _, item in value.mapEntries:
+      if containsDefaultControl(item): return true
+    return false
+  if value.kind != vkNode: return false
+  if value.head.isSym("quote") or value.head.isSym("fn"): return false
+  if value.head.kind == vkSymbol and
+      value.head.symVal in ["return", "yield", "break", "continue"]:
+    return true
+  if containsDefaultControl(value.head): return true
+  for _, item in value.props:
+    if containsDefaultControl(item): return true
+  for item in value.body:
+    if containsDefaultControl(item): return true
 
 proc parseFunctionHeader(analysis: WebAnalysis, form: Value): WebFunction =
   let loc = analysis.locFor(form)
@@ -1002,7 +1043,11 @@ proc parseWebImport(form: Value, loc: SourceLoc,
       not form.body[1].isSym("from") or form.body[2].kind != vkString:
     raise webError(loc,
       "web imports must be `(import [names] from \"./relative.gene\")`")
-  rejectUnknownProps(form, loc, "import", [])
+  rejectUnknownProps(form, loc, "import", ["export"])
+  if form.props.hasKey("export"):
+    if form.props["export"].kind != vkBool:
+      raise webError(loc, "web import ^export must be a literal Bool")
+    result.reexport = form.props["export"].boolVal
   result.sourcePath = form.body[2].strVal
   if not (result.sourcePath.startsWith("./") or
           result.sourcePath.startsWith("../")):
@@ -1580,7 +1625,6 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
   if not signature.external and analysis.signatures.hasKey(sourceName):
     analysis.callSites.add WebCallSite(expr: result, callee: sourceName,
                                        caller: analysis.currentFunction)
-  if result.typ.kind == wtkAny and expected != nil: result.typ = expected
   if signature.namedParams.len == 0:
     for i, argument in value.body:
       let analyzed = analysis.analyzeExpr(argument, bindings,
@@ -1589,12 +1633,13 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
                   "argument " & $(i + 1) & " of " & sourceName)
       result.children.add analyzed
     return
-  # Named parameters. The emitted call is positional in declaration order, so
-  # the props are placed into their slots here and an omitted optional one
-  # becomes an explicit `nil` rather than a missing argument — a JavaScript
-  # hole would arrive as `undefined`, which is a *different value* from nil in
-  # this profile and would slip past a `T?` annotation.
+  # Named parameters occupy positional JavaScript slots in declaration order.
+  # Missing slots carry void; the checked callee entry evaluates defaults or
+  # binds nil for optional parameters. argumentOrder preserves the VM's supplied
+  # argument evaluation order independently of those slots.
   var supplied = initHashSet[string]()
+  var namedSlots = initTable[string, int]()
+  var positionalSlots: seq[int]
   for key, _ in value.props:
     supplied.incl key
   var positional = 0
@@ -1605,17 +1650,21 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
       requireType(analysis, loc, analyzed.typ, param.typ,
                   "argument " & $(positional + 1) & " of " & sourceName)
       result.children.add analyzed
+      positionalSlots.add index
       inc positional
       continue
     if value.props.hasKey(param.argName):
       supplied.excl param.argName
+      let accepted = WebType(kind: wtkUnion,
+        members: @[param.typ, webType(wtkVoid)])
       let analyzed = analysis.analyzeExpr(value.props[param.argName], bindings,
-                                          param.typ)
-      requireType(analysis, loc, analyzed.typ, param.typ,
+                                          accepted)
+      requireType(analysis, loc, analyzed.typ, accepted,
                   "named argument ^" & param.argName & " of " & sourceName)
       result.children.add analyzed
+      namedSlots[param.argName] = index
     elif param.optional:
-      result.children.add WebExpr(kind: wekNil, typ: webType(wtkNil), loc: loc)
+      result.children.add WebExpr(kind: wekVoid, typ: webType(wtkVoid), loc: loc)
     else:
       # Phrased to share a substring with the VM's "function 'f' missing named
       # argument: b", so one fixture can assert both backends refuse the same
@@ -1626,6 +1675,9 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
   for key in supplied:
     raise webError(loc, "web call '" & sourceName &
       "' got unexpected named argument: " & key)
+  for key, _ in value.props:
+    result.argumentOrder.add namedSlots[key]
+  result.argumentOrder.add positionalSlots
 
 proc analyzeCall(analysis: WebAnalysis, value: Value,
                  bindings: var Table[string, WebBinding], expected: WebType): WebExpr =
@@ -1755,18 +1807,15 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
                                typ: receiver.typ.item, loc: loc)]
         else: newSeq[WebParam]()
       let returnType = case messageName
-        of "pop": receiver.typ.item
-        of "size": webType(wtkF64)   # F64, so a length composes with F64 math
-        else: webType(wtkVoid)
+        of "pop", "push": receiver.typ.item
+        of "size": webType(wtkInt)
+        else: webType(wtkNil)
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, params: params, returnType: returnType, loc: loc)
     if methodDecl == nil and receiver.typ.kind == wtkBuffer and
         messageName in ["get", "set", "len", "fill", "copy_from"]:
-      # Index and length are F64, matching `List/size` just above and the VM's
-      # widened `Buffer/get`/`set`. An Int index would be a `bigint` here, so
-      # every element access in a mesh-building loop would allocate one — the
-      # hazard the whole F64 discipline exists to avoid, in the one loop that
-      # can least afford it.
+      # Length is Int, as on the VM. Indices accept Int or integral F64 so a
+      # numerical kernel can keep an F64 cursor without converting each access.
       #
       # Elements are F64 for the float buffers and Int for the integer ones,
       # because that is what the element *is*: a `(Buffer U16)` holds whole
@@ -1782,7 +1831,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       # rejects anything that is neither.
       let argc = value.body.len - 2
       template bound(n: string): WebParam =
-        WebParam(sourceName: n, emittedName: n, typ: webType(wtkF64), loc: loc)
+        WebParam(sourceName: n, emittedName: n,
+          typ: WebType(kind: wtkUnion,
+            members: @[webType(wtkInt), webType(wtkF64)]), loc: loc)
       let params = case messageName
         of "get": @[bound("index")]
         of "set": @[bound("index"),
@@ -1802,9 +1853,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
           else: @[src]
         else: newSeq[WebParam]()
       let returnType = case messageName
-        of "get": element
-        of "len": webType(wtkF64)
-        else: webType(wtkVoid)
+        of "get", "set": element
+        of "len": webType(wtkInt)
+        else: webType(wtkNil)
       methodDecl = WebMethod(sourceName: messageName,
         emittedName: messageName, params: params, returnType: returnType,
         loc: loc)
@@ -1934,19 +1985,15 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "math/clamp":
         paramTypes = @[webType(wtkF64), webType(wtkF64), webType(wtkF64)]
         returnType = webType(wtkF64)
-      # The explicit Int <-> Float hops of design.md §7.8. One direction each,
-      # deliberately. The VM's versions are kind-preserving and accept either
-      # kind, but here `Int` is `bigint` and `Float` is `number`, so a
-      # polymorphic signature would have to accept a union the profile cannot
-      # narrow — the same reasoning that keeps `gene/math` F64-only just above.
-      # Each name therefore means the conversion it is named for, and applying
-      # one to a value that is already the target kind is a compile error rather
-      # than a no-op that would compile here and mean something else on the VM.
+      # Numeric conversions are idempotent, as on the VM. A length can be
+      # converted without the caller needing to know its host representation.
       of "to_int":
-        paramTypes = @[webType(wtkF64)]
+        paramTypes = @[WebType(kind: wtkUnion,
+          members: @[webType(wtkInt), webType(wtkF64)])]
         returnType = webType(wtkInt)
       of "to_float":
-        paramTypes = @[webType(wtkInt)]
+        paramTypes = @[WebType(kind: wtkUnion,
+          members: @[webType(wtkInt), webType(wtkF64)])]
         returnType = webType(wtkF64)
       of "console/log", "console/warn", "console/error":
         # `Any` rather than `Str`, deliberately: the values worth logging from a
@@ -2376,6 +2423,9 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       of "size":
         paramTypes = @[webType(wtkAny)]
         returnType = webType(wtkInt)
+      of "nil?", "void?", "absent?", "present?":
+        paramTypes = @[webType(wtkAny)]
+        returnType = webType(wtkBool)
       of "buffer":
         # `(buffer T n)` — n zeroed elements, lowered to `new Float32Array(n)`
         # and friends. Handled here rather than through `paramTypes` because the
@@ -2397,10 +2447,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
             bufferElementTypes.join(", ") & ", got " & value.body[0].print())
         let bufferType = WebType(kind: wtkBuffer, name: value.body[0].symVal)
         let length = analysis.analyzeExpr(value.body[1], bindings,
-                                          webType(wtkF64))
-        if length.typ.kind notin {wtkF64, wtkAny}:
-          raise webError(loc, "web buffer length must be F64, got " &
-            typeName(length.typ))
+          WebType(kind: wtkUnion,
+            members: @[webType(wtkInt), webType(wtkF64)]))
         return WebExpr(kind: wekBuiltin, typ: bufferType, loc: loc,
           text: "buffer", keys: @[bufferType.name], children: @[length])
       of "node/head":
@@ -2962,13 +3010,33 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     var itemType: WebType
     case iterable.typ.kind
     of wtkList, wtkStream: itemType = iterable.typ.item
+    of wtkPropMap, wtkMap: itemType = webType(wtkList, webType(wtkAny))
     of wtkRange: itemType = webType(wtkInt)
     of wtkStr: itemType = webType(wtkStr)
     of wtkNil, wtkVoid: itemType = webType(wtkAny)
     else: raise webError(loc, "web for cannot iterate " & typeName(iterable.typ))
     inc analysis.loopDepth
     var loopBindings = copyBindings(bindings)
-    bindPattern(analysis, value.body[0], itemType, loopBindings)
+    var patternBindings = initTable[string, WebBinding]()
+    let pattern = value.body[0]
+    var pairParts: seq[Value]
+    if pattern.kind == vkList:
+      for part in pattern.listItems:
+        if not part.isSym(","): pairParts.add part
+    if iterable.typ.kind in {wtkPropMap, wtkMap} and pairParts.len == 2 and
+        not (pairParts[1].kind == vkSymbol and
+             pairParts[1].symVal.endsWith("...")) and
+        not (pairParts[1].kind == vkNode and pairParts[1].head.isSym("...")):
+      let keyType = if iterable.typ.kind == wtkPropMap: webType(wtkSym)
+                    else: iterable.typ.params[0]
+      let valueType = if iterable.typ.kind == wtkPropMap: webType(wtkAny)
+                      else: iterable.typ.params[1]
+      bindPattern(analysis, pairParts[0], keyType, patternBindings)
+      bindPattern(analysis, pairParts[1], valueType, patternBindings)
+    else:
+      bindPattern(analysis, pattern, itemType, patternBindings)
+    for name, binding in patternBindings:
+      loopBindings[name] = binding
     var bodyForms: seq[Value]
     for i in 3 ..< value.body.len: bodyForms.add value.body[i]
     let body = analysis.analyzeSequence(bodyForms, loopBindings, nil, loc)
@@ -3352,14 +3420,24 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
       result.children.add analysis.analyzeExpr(item, bindings)
   of vkHashMap:
     var keyType, valueType: WebType
+    if expected != nil and expected.kind == wtkMap:
+      keyType = expected.params[0]
+      valueType = expected.params[1]
     result = WebExpr(kind: wekMap, loc: loc)
     for entry in value.hashMapEntries:
       let key = analysis.analyzeExpr(entry.key, bindings, keyType)
-      let item = analysis.analyzeExpr(entry.val, bindings, valueType)
+      let acceptedValue =
+        if valueType == nil: nil
+        else: WebType(kind: wtkUnion,
+          members: @[valueType, webType(wtkVoid)])
+      let item = analysis.analyzeExpr(entry.val, bindings, acceptedValue)
       if keyType == nil: keyType = key.typ
-      if valueType == nil: valueType = item.typ
+      if valueType == nil and item.typ.kind != wtkVoid: valueType = item.typ
       requireType(analysis, loc, key.typ, keyType, "map key")
-      requireType(analysis, loc, item.typ, valueType, "map value")
+      if valueType != nil:
+        requireType(analysis, loc, item.typ,
+          WebType(kind: wtkUnion, members: @[valueType, webType(wtkVoid)]),
+          "map value")
       result.children.add key
       result.children.add item
     if keyType == nil or valueType == nil:
@@ -3433,6 +3511,9 @@ proc resolveAsync(analysis: WebAnalysis, functions: openArray[WebFunction]) =
     if signature.async: mark(name)
   for fn in functions:
     if usesAsyncPrimitive(fn.body): mark(fn.sourceName)
+    for param in fn.params:
+      if param.defaultExpr != nil and usesAsyncPrimitive(param.defaultExpr):
+        mark(fn.sourceName)
   while pending.len > 0:
     let callee = pending.pop()
     if not callers.hasKey(callee): continue
@@ -3630,8 +3711,9 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       params: paramTypes,
       namedParams: (if anyNamed: fn.params else: @[]),
       returnType: fn.returnType,
-      callName: "$gene_impl_" & fn.emittedName,
-      valueName: fn.emittedName, generator: fn.generator, async: fn.async)
+      callName: (if anyNamed: fn.emittedName else: "$gene_impl_" & fn.emittedName),
+      valueName: fn.emittedName, generator: fn.generator and not anyNamed,
+      async: fn.async)
     headers.add (form, fn)
 
   proc registerNamespace(form: Value, parentPath: seq[string],
@@ -3733,13 +3815,19 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     registerFunction(form, @[], loc)
   for header in headers:
     var bindings = initTable[string, WebBinding]()
-    for param in header.fn.params:
-      if bindings.hasKey(param.sourceName):
-        raise webError(param.loc, "duplicate web parameter: " & param.sourceName)
-      bindings[param.sourceName] = WebBinding(typ: param.typ)
     analysis.currentReturn = header.fn.returnType
     analysis.currentNamespace = header.fn.namespacePath
     analysis.currentFunction = header.fn.sourceName
+    for i, param in header.fn.params:
+      if bindings.hasKey(param.sourceName):
+        raise webError(param.loc, "duplicate web parameter: " & param.sourceName)
+      if param.hasDefault:
+        if containsDefaultControl(param.defaultSource):
+          raise webError(param.loc,
+            "web parameter defaults must produce a value, without non-local control flow")
+        header.fn.params[i].defaultExpr =
+          analysis.analyzeExpr(param.defaultSource, bindings, param.typ)
+      bindings[param.sourceName] = WebBinding(typ: param.typ)
     if header.fn.generator:
       if header.fn.returnType.kind != wtkStream:
         raise webError(header.fn.loc,
@@ -4157,8 +4245,8 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   of wekPropMap:
     var entries: seq[string]
     for i, child in expr.children:
-      entries.add jsString(expr.keys[i]) & ": " & emitter.emitExpr(child)
-    let literal = "({" & entries.join(", ") & "})"
+      entries.add "[" & jsString(expr.keys[i]) & ", " & emitter.emitExpr(child) & "]"
+    let literal = "$gene_prop_map([" & entries.join(", ") & "])"
     if expr.immutable: "Object.freeze(" & literal & ")" else: literal
   of wekMap:
     var entries: seq[string]
@@ -4186,13 +4274,31 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       (if expr.boolValue: "true" else: "false") & ")"
   of wekCall:
     var arguments: seq[string]
-    for i, child in expr.children:
-      let argument = emitter.emitExpr(child)
-      if expr.external:
-        arguments.add validatorName(expr.paramTypes[i]) & "(" & argument &
-          ", " & jsString(expr.text & " JS argument " & $(i + 1)) & ")"
-      else:
-        arguments.add argument
+    if expr.argumentOrder.len > 0:
+      arguments.setLen(expr.children.len)
+      for index in expr.argumentOrder:
+        # The checked entry validates after every argument expression ran.
+        # Moving an Any boundary into argument evaluation would suppress later
+        # argument effects when an early value has the wrong type.
+        let child = expr.children[index]
+        let value = emitter.emitExpr(
+          if child.kind == wekCheck: child.children[0] else: child)
+        let stored = emitter.temp()
+        emitter.line("const " & stored & " = " & value & ";")
+        arguments[index] =
+          if emitter.typescript and child.kind == wekCheck:
+            "(" & stored & " as any)" # validated by the checked entry
+          else: stored
+      for i, child in expr.children:
+        if arguments[i].len == 0: arguments[i] = emitter.emitExpr(child)
+    else:
+      for i, child in expr.children:
+        let argument = emitter.emitExpr(child)
+        if expr.external:
+          arguments.add validatorName(expr.paramTypes[i]) & "(" & argument &
+            ", " & jsString(expr.text & " JS argument " & $(i + 1)) & ")"
+        else:
+          arguments.add argument
     var call = expr.text & "(" & arguments.join(", ") & ")"
     if expr.immutable: call = "new GeneStream(" & call & ")"
     if expr.boolValue: call = "await " & call
@@ -4254,11 +4360,15 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       "$gene_math_clamp(" & arguments[0] & ", " & arguments[1] & ", " &
         arguments[2] & ")"
     of "buffer": "new " & jsTypedArrayName(expr.keys[0]) & "(" &
-      arguments[0] & ")"
+      "$gene_buffer_length(" & arguments[0] & "))"
     of "to_int": "$gene_to_int(" & arguments[0] & ")"
     # Widening needs no guard: `Number` on a bigint is exact below 2^53 and the
     # nearest double above it, which is what the VM's `float64(intVal)` does.
     of "to_float": "Number(" & arguments[0] & ")"
+    of "nil?": "(" & arguments[0] & " === null)"
+    of "void?": "(" & arguments[0] & " === undefined)"
+    of "absent?": "(" & arguments[0] & " == null)"
+    of "present?": "(" & arguments[0] & " != null)"
     of "console/log": "console.log(" & arguments[0] & ")"
     of "console/warn": "console.warn(" & arguments[0] & ")"
     of "console/error": "console.error(" & arguments[0] & ")"
@@ -4603,8 +4713,15 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     "null"
   of wekFor:
     let itemName = if expr.text.len > 0: expr.text else: emitter.temp()
+    let source = emitter.emitExpr(expr.children[0])
+    let iterable = case expr.children[0].typ.kind
+      of wtkPropMap: "$gene_prop_pairs(" & source & ")"
+      of wtkMap: "Array.from(" & source & ", entry => [...entry])"
+      of wtkList: "(" & source & ").slice()"
+      of wtkNil, wtkVoid: "(" & source & ", [])"
+      else: source
     emitter.line("for (const " & itemName & " of " &
-      emitter.emitExpr(expr.children[0]) & ") {")
+      iterable & ") {")
     inc emitter.indent
     if expr.text.len == 0:
       var declarations: seq[string]
@@ -4731,17 +4848,16 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
     var arguments: seq[string]
     for i in 1 ..< expr.children.len:
       arguments.add emitter.emitExpr(expr.children[i])
-    # List messages lower to the JS array operations they name. `size` is F64
-    # rather than bigint so a length composes with the rest of F64 arithmetic;
-    # a JS array length is already a `number`.
+    # Lengths are Gene Int values on every backend. Numeric conversion is an
+    # explicit, idempotent operation when a caller wants F64 arithmetic.
     if expr.children[0].typ != nil and expr.children[0].typ.kind == wtkList:
       let target = if emitter.typescript: "(" & receiver & " as any[])"
                    else: receiver
       case expr.text
-      of "push": return "(" & target & ".push(" & arguments[0] & "), undefined)"
+      of "push": return "$gene_list_push(" & target & ", " & arguments[0] & ")"
       of "pop": return target & ".pop()"
-      of "size": return target & ".length"
-      of "clear": return "(" & target & ".splice(0), undefined)"
+      of "size": return "BigInt(" & target & ".length)"
+      of "clear": return "(" & target & ".splice(0), null)"
       else: discard
     # Buffer messages lower to plain indexed access on the typed array. `get`
     # and `set` become `a[i]` and `a[i] = v` rather than method calls, which is
@@ -4752,7 +4868,7 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
                    else: receiver
       let element = expr.children[0].typ.name
       case expr.text
-      of "len": return target & ".length"
+      of "len": return "BigInt(" & target & ".length)"
       of "get":
         # `$gene_at`, not `target[i]`: a negative index counts from the end on
         # the VM (`readIndex`) and reads `undefined` in JS. Out of range yields
@@ -4762,38 +4878,26 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
         # read is converted on the way out. The float buffers are already F64
         # and convert nothing.
         return if bufferElementIsFloat(element): read
-               else: "BigInt(" & read & ")"
+               else: "$gene_buffer_int_at(" & target & ", " & arguments[0] & ")"
       of "set":
-        let written = if bufferElementIsFloat(element): arguments[1]
-                      else: "Number(" & arguments[1] & ")"
-        # A plain identifier is re-emitted for `.length` rather than hoisted:
-        # it is free and side-effect-free, and it keeps the assignment shape
-        # (measured +26% against a bare store, where routing the whole write
-        # through `$gene_put` costs +137%). Anything else goes through the
-        # helper, which evaluates the receiver once.
-        if isJsIdent(target):
-          return "(" & target & "[$gene_index(\"Buffer/set\", " & target &
-            ".length, " & arguments[0] & ")] = " & written & ", undefined)"
-        return "($gene_put(" & target & ", " & arguments[0] & ", " & written &
-          ", \"Buffer/set\"), undefined)"
+        # Evaluate all call arguments before checking or mutating, and return
+        # the checked input value like the VM rather than JavaScript's length
+        # or an invented Void result.
+        return "$gene_buffer_set(" & target & ", " & arguments[0] & ", " &
+          arguments[1] & ", " & jsString(element) & ")"
       of "fill":
-        # `TypedArray.prototype.fill(value, start, end)` is the same half-open
-        # range this message declares, so the bulk write is the runtime's own.
-        let written = if bufferElementIsFloat(element): arguments[0]
-                      else: "Number(" & arguments[0] & ")"
         if arguments.len == 3:
-          return "(" & target & ".fill(" & written & ", " & arguments[1] &
-            ", " & arguments[2] & "), undefined)"
-        return "(" & target & ".fill(" & written & "), undefined)"
+          return "$gene_buffer_fill(" & target & ", " & arguments[0] &
+            ", " & jsString(element) & ", " & arguments[1] & ", " & arguments[2] & ")"
+        return "$gene_buffer_fill(" & target & ", " & arguments[0] &
+          ", " & jsString(element) & ")"
       of "copy_from":
         # `set` with a `subarray` view, which the spec requires to behave as a
         # move when the two share a buffer — the same overlap guarantee
         # `copyBufferItems` gives on the VM.
         if arguments.len == 4:
-          return "(" & target & ".set(" & arguments[0] & ".subarray(" &
-            arguments[1] & ", " & arguments[2] & "), " & arguments[3] &
-            "), undefined)"
-        return "(" & target & ".set(" & arguments[0] & "), undefined)"
+          return "$gene_buffer_copy(" & target & ", " & arguments.join(", ") & ")"
+        return "$gene_buffer_copy(" & target & ", " & arguments[0] & ")"
       else: discard
     if expr.keys.len == 2 and expr.keys[1] == "$builtin":
       return expr.keys[0] & "(" & receiver &
@@ -5004,7 +5108,10 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
 
   var wrapperParams: seq[string]
   for param in fn.params:
-    let annotation = if emitter.typescript: ": " & tsType(param.typ) else: ""
+    let annotation = if emitter.typescript:
+      ": " & (if param.named: "(" & tsType(param.typ) & ") | undefined"
+              else: tsType(param.typ))
+      else: ""
     wrapperParams.add param.emittedName & annotation
   let wrapperReturn = if fn.async and emitter.typescript:
                         ": Promise<" & tsType(fn.returnType) & ">"
@@ -5016,9 +5123,24 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
   inc emitter.indent
   var checkedArgs: seq[string]
   for param in fn.params:
+    if param.named:
+      emitter.line("if (" & param.emittedName & " === undefined) {")
+      inc emitter.indent
+      if param.hasDefault:
+        let defaultValue = emitter.emitExpr(param.defaultExpr)
+        emitter.line(param.emittedName & " = " & defaultValue & ";")
+      elif param.optional:
+        emitter.line(param.emittedName & " = null;")
+      else:
+        emitter.line("throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: " &
+          jsString("function '" & fn.sourceName & "' missing named argument: " &
+            param.argName) & " }, [], true);")
+      dec emitter.indent
+      emitter.line("}")
     let checked = validatorName(param.typ) & "(" & param.emittedName &
       ", " & jsString(fn.sourceName & " argument " & param.sourceName) & ")"
-    checkedArgs.add checked
+    emitter.line(param.emittedName & " = " & checked & ";")
+    checkedArgs.add param.emittedName
   var call = "$gene_impl_" & fn.emittedName & "(" & checkedArgs.join(", ") & ")"
   if fn.generator: call = "new GeneStream(" & call & ")"
   if fn.async: call = "await " & call
@@ -5049,6 +5171,8 @@ iterator expressionRoots(module: WebModule): WebExpr =
   ## needs — are all "does any expression anywhere do X", so they share this one
   ## definition of "anywhere" rather than each restating it.
   for fn in module.functions:
+    for param in fn.params:
+      if param.defaultExpr != nil: yield param.defaultExpr
     if fn.body != nil: yield fn.body
   for declaration in module.types:
     for methodDecl in declaration.methods:
@@ -5556,6 +5680,7 @@ proc emitTypeDeclaration(emitter: var WebEmitter, module: WebModule,
         (if field.optional: "?" else: "") &
         ": " & tsType(field.typ) & ";")
     emitter.line("declare $gene_body: unknown[];")
+    emitter.line("declare $gene_in_progress?: boolean;")
     for implementation in module.impls:
       if implementation.targetName != declaration.sourceName: continue
       for implMethod in implementation.methods:
@@ -5787,15 +5912,6 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.currentLoc = imported.loc
     var selections: seq[string]
     for selection in imported.selections:
-      # A module constant is copied by value at analysis time, so it is
-      # emitted as a local `const` and must not appear in the import list —
-      # the other module has no binding to export.
-      var isConstant = false
-      for constant in module.constants:
-        if constant.sourceName == selection.localName:
-          isConstant = true
-          break
-      if isConstant: continue
       let sourceName = mangleWebName(selection.sourceName)
       let localName = mangleWebName(selection.localName)
       if sourceName == localName: selections.add sourceName
@@ -5805,6 +5921,11 @@ proc emitModule(module: WebModule, typescript: bool,
     if selections.len > 0:
       emitter.line("import { " & selections.join(", ") & " } from " &
                    jsString(target) & ";")
+      if imported.reexport:
+        var names: seq[string]
+        for selection in imported.selections:
+          names.add mangleWebName(selection.localName)
+        emitter.line("export { " & names.join(", ") & " };")
   for extern in module.externs:
     emitter.currentLoc = extern.loc
     emitter.line("import { " & extern.importName & " as " &
@@ -5835,6 +5956,9 @@ proc emitModule(module: WebModule, typescript: bool,
     moduleUsesExprKind(module, {wekNode}) or
     needsIntDivisor or needsF64Divisor or # the divisor guards raise a Gene node
     needsIndex                            # and so does the index-range guard
+  for fn in module.functions:
+    for param in fn.params:
+      if param.named and not param.optional: needsNode = true
   needsRange = moduleUsesTypeKind(module, wtkRange) or
     moduleUsesExprKind(module, {wekRange})
   needsPath = moduleUsesExprKind(module, {wekPath, wekSelector, wekSetPath})
@@ -5843,6 +5967,8 @@ proc emitModule(module: WebModule, typescript: bool,
     moduleUsesTypeKind(module, wtkDomTarget)
   needsMap = moduleUsesTypeKind(module, wtkMap) or
     moduleUsesExprKind(module, {wekMap})
+  let needsPropMap = moduleUsesTypeKind(module, wtkPropMap) or
+    moduleExprUsesTypeKind(module, wtkPropMap) or needsPath
   needsStream = moduleUsesTypeKind(module, wtkStream)
   # Keyed on what the emitted code actually references, not on `fn.async`: a
   # function is async as soon as it calls one, and such a caller may never touch
@@ -5903,6 +6029,27 @@ proc emitModule(module: WebModule, typescript: bool,
       (if typescript: " as { $gene_body: unknown[] }" else: "") &
       ").$gene_body; }")
     emitter.line()
+  if needsPropMap:
+    let dynamic = if typescript: ": any" else: ""
+    emitter.line("const $gene_prop_order = Symbol.for(\"gene.prop-order\");")
+    emitter.line("function $gene_prop_map(entries" & dynamic & ")" & dynamic & " {")
+    inc emitter.indent
+    emitter.line("const value = Object.fromEntries(entries.filter((entry" & dynamic & ") => entry[1] !== undefined));")
+    emitter.line("Object.defineProperty(value, $gene_prop_order, { value: entries.filter((entry" & dynamic & ") => entry[1] !== undefined).map((entry" & dynamic & ") => entry[0]) });")
+    emitter.line("return value;")
+    dec emitter.indent
+    emitter.line("}")
+    emitter.line("function $gene_prop_pairs(value" & dynamic & ")" & dynamic & " {")
+    inc emitter.indent
+    emitter.line("const keys = value[$gene_prop_order] ?? Object.keys(value);")
+    emitter.line("return keys.filter((key" & dynamic & ") => Object.prototype.hasOwnProperty.call(value, key) && value[key] !== undefined).map((key" & dynamic & ") => [Symbol.for(key), value[key]]);")
+    dec emitter.indent
+    emitter.line("}")
+    emitter.line()
+  if moduleUsesTypeKind(module, wtkList) or moduleExprUsesTypeKind(module, wtkList):
+    let dynamic = if typescript: ": any" else: ""
+    emitter.line("function $gene_list_push(target" & dynamic & ", value" & dynamic & ")" & dynamic & " { const stored = value === undefined ? null : value; target.push(stored); return stored; }")
+    emitter.line()
   if needsMap:
     emitter.line("export class GeneMap" &
       (if typescript: "<K, V>" else: "") & " {")
@@ -5926,7 +6073,7 @@ proc emitModule(module: WebModule, typescript: bool,
       " { return this.indexOf(key) >= 0; }")
     emitter.line("#insert(key" & (if typescript: ": K, value: V" else: ", value") &
       ")" & (if typescript: ": this" else: "") &
-      " { const index = this.indexOf(key); if (index < 0) this.items.push([key, value]); else this.items[index][1] = value; return this; }")
+      " { const index = this.indexOf(key); if (value === undefined) { if (index >= 0) this.items.splice(index, 1); } else if (index < 0) this.items.push([key, value]); else this.items[index][1] = value; return this; }")
     emitter.line("[Symbol.iterator]()" &
       (if typescript: ": Iterator<[K, V]>" else: "") &
       " { return this.items[Symbol.iterator](); }")
@@ -5980,13 +6127,24 @@ proc emitModule(module: WebModule, typescript: bool,
     let anyType = if typescript: ": any" else: ""
     let numType = if typescript: ": number" else: ""
     let strType = if typescript: ": string" else: ""
-    emitter.line("function $gene_at(seq" & anyType & ", index" & numType &
+    emitter.line("function $gene_index_value(index" & anyType & ")" & numType & " {")
+    inc emitter.indent
+    emitter.line("if (typeof index === \"bigint\") { if (index < -9223372036854775808n || index > 9223372036854775807n) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"index is out of range\" }, [], true); return Number(index); }")
+    emitter.line("if (!Number.isInteger(index)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"index must be a whole number\" }, [], true);")
+    emitter.line("if (index >= 9223372036854775808 || index < -9223372036854775808) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"index is out of range\" }, [], true);")
+    emitter.line("return index;")
+    dec emitter.indent
+    emitter.line("}")
+    emitter.line("function $gene_buffer_length(length" & anyType & ")" & numType & " { const n = $gene_index_value(length); if (n < 0) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"buffer length must be non-negative\" }, [], true); return n; }")
+    emitter.line("function $gene_at(seq" & anyType & ", index" & anyType &
       ")" & anyType &
-      " { return index < 0 ? seq[seq.length + index] : seq[index]; }")
+      " { index = $gene_index_value(index); return index < 0 ? seq[seq.length + index] : seq[index]; }")
+    emitter.line("function $gene_buffer_int_at(seq" & anyType & ", index" & anyType & ")" & anyType &
+      " { const value = $gene_at(seq, index); return value === undefined ? undefined : BigInt(value); }")
     emitter.line("function $gene_index(name" & strType & ", length" & numType &
-      ", index" & numType & ")" & numType &
-      " { const at = index < 0 ? length + index : index;" &
-      " if (at < 0 || at >= length) throw new GeneNode(Symbol.for(\"Error\")," &
+      ", index" & anyType & ")" & numType &
+      " { index = $gene_index_value(index); const at = index < 0 ? length + index : index;" &
+      " if (at < 0 || at >= length) throw new GeneNode(Symbol.for(\"RuntimeError\")," &
       " { message: name + \" index out of range: \" + index }, [], true);" &
       " return at; }")
     # The receiver-is-not-a-simple-name fallback: `$gene_index` needs the length,
@@ -5996,6 +6154,28 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("function $gene_put(seq" & anyType & ", index" & numType &
       ", value" & anyType & ", name" & strType & ")" & anyType &
       " { seq[$gene_index(name, seq.length, index)] = value; }")
+    emitter.line("const $gene_buffer_limits" & (if typescript: ": Record<string, [bigint, bigint]>" else: "") & " = { I8: [-128n, 127n], U8: [0n, 255n], I16: [-32768n, 32767n], U16: [0n, 65535n], I32: [-2147483648n, 2147483647n], U32: [0n, 4294967295n] };")
+    emitter.line("function $gene_buffer_value(value" & anyType & ", kind" & strType & ", where" & strType & ")" & numType & " {")
+    inc emitter.indent
+    emitter.line("if (kind === \"F32\" || kind === \"F64\") { if (typeof value !== \"number\" || (kind === \"F32\" && Number.isFinite(value) && Math.abs(value) > 3.4028234663852886e38)) $gene_type_error(where, kind, value); return value; }")
+    emitter.line("const bounds = $gene_buffer_limits[kind]; if (typeof value !== \"bigint\" || value < bounds[0] || value > bounds[1]) $gene_type_error(where, kind, value); return Number(value);")
+    dec emitter.indent
+    emitter.line("}")
+    emitter.line("function $gene_buffer_bound(value" & anyType & ", length" & numType & ", where" & strType & ")" & numType & " { const n = $gene_index_value(value); if (n < 0 || n > length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: where + \" range endpoint is out of range\" }, [], true); return n; }")
+    emitter.line("function $gene_buffer_set(target" & anyType & ", index" & anyType & ", value" & anyType & ", kind" & strType & ")" & anyType & " { const at = $gene_index(\"Buffer/set\", target.length, index); const stored = $gene_buffer_value(value, kind, \"Buffer/set item\"); target[at] = stored; return value; }")
+    emitter.line("function $gene_buffer_fill(target" & anyType & ", value" & anyType & ", kind" & strType & ", first" & anyType & " = 0, last" & anyType & " = target.length)" & anyType & " {")
+    inc emitter.indent
+    emitter.line("const stored = $gene_buffer_value(value, kind, \"Buffer/fill item\"); first = $gene_buffer_bound(first, target.length, \"Buffer/fill\"); last = $gene_buffer_bound(last, target.length, \"Buffer/fill\");")
+    emitter.line("if (last < first) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"Buffer/fill: end is before start\" }, [], true); target.fill(stored, first, last); return null;")
+    dec emitter.indent
+    emitter.line("}")
+    emitter.line("function $gene_buffer_copy(target" & anyType & ", source" & anyType & ", first" & anyType & " = undefined, last" & anyType & " = undefined, offset" & anyType & " = 0)" & anyType & " {")
+    inc emitter.indent
+    emitter.line("if (first === undefined) { if (target.length !== source.length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"Buffer/copy_from: whole-buffer copy needs equal lengths\" }, [], true); first = 0; last = source.length; }")
+    emitter.line("first = $gene_buffer_bound(first, source.length, \"Buffer/copy_from\"); last = $gene_buffer_bound(last, source.length, \"Buffer/copy_from\"); offset = $gene_buffer_bound(offset, target.length, \"Buffer/copy_from\");")
+    emitter.line("if (last < first || last - first > target.length - offset) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"Buffer/copy_from: invalid range or destination capacity\" }, [], true); target.set(source.subarray(first, last), offset); return null;")
+    dec emitter.indent
+    emitter.line("}")
     emitter.line()
   if needsRange:
     emitter.line("export class GeneRange {")
@@ -6256,10 +6436,10 @@ proc emitModule(module: WebModule, typescript: bool,
   # A portable builtin that accepted here what raises there would be a
   # divergence the shared fixtures exist to prevent.
   if moduleUsesBuiltin(module, ["to_int"]):
-    let numParam = if typescript: "x: number" else: "x"
+    let numParam = if typescript: "x: number | bigint" else: "x"
     let bigReturn = if typescript: ": bigint" else: ""
     emitter.line("function $gene_to_int(" & numParam & ")" & bigReturn &
-      " { if (Number.isNaN(x)) throw new RangeError(\"to_int got NaN\"); " &
+      " { if (typeof x === \"bigint\") return x; if (Number.isNaN(x)) throw new RangeError(\"to_int got NaN\"); " &
       "const t = Math.trunc(x); " &
       "if (t >= 9223372036854775808 || t < -9223372036854775808) " &
       "throw new RangeError(\"to_int is out of Int range: \" + x); " &
@@ -6579,6 +6759,7 @@ proc emitModule(module: WebModule, typescript: bool,
       dynamic & " {")
     inc emitter.indent
     emitter.line("if (value == null) return undefined;")
+    emitter.line("if (value[$gene_prop_order]) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); return Object.prototype.hasOwnProperty.call(value, key) ? value[key] : undefined; }")
     emitter.line("if (typeof key === \"bigint\") key = Number(key);")
     emitter.line("if (value?.$gene_map === true) return value.get(key);")
     # A static path segment is emitted as a string, so `xs/-1` arrives here as
@@ -6599,6 +6780,7 @@ proc emitModule(module: WebModule, typescript: bool,
     inc emitter.indent
     emitter.line("if (value == null) throw new TypeError(\"cannot mutate an absent value\");")
     emitter.line("if (Object.isFrozen(value)) throw new TypeError(\"cannot mutate a frozen value\");")
+    emitter.line("if (value[$gene_prop_order]) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); const order = value[$gene_prop_order]; const at = order.indexOf(key); if (next === undefined) { delete value[key]; if (at >= 0) order.splice(at, 1); } else { if (at < 0) order.push(key); Object.defineProperty(value, key, { value: next, enumerable: true, writable: true, configurable: true }); } return next; }")
     emitter.line("if (typeof key === \"bigint\") key = Number(key);")
     emitter.line("if (value?.$gene_map === true) throw new TypeError(\"cannot mutate an immutable Map\");")
     # A negative index is resolved against the length *before* anything else
@@ -6699,6 +6881,7 @@ proc emitModule(module: WebModule, typescript: bool,
   # Constants first: a literal has no dependencies, so one pass in source
   # order is enough and no ordering contract is needed.
   for constant in module.constants:
+    if constant.imported: continue
     emitter.currentLoc = constant.loc
     let annotation = if typescript: " : " & tsType(constant.typ) else: ""
     let rendered = emitter.emitExpr(constant.value)
@@ -6709,7 +6892,7 @@ proc emitModule(module: WebModule, typescript: bool,
       if constant.value.kind in {wekList, wekPropMap, wekMap}:
         "Object.freeze(" & rendered & ")"
       else: rendered
-    emitter.line("const " & constant.emittedName & annotation & " = " &
+    emitter.line("export const " & constant.emittedName & annotation & " = " &
                  body & ";")
   if module.constants.len > 0:
     emitter.line()
@@ -6736,6 +6919,23 @@ proc emitModule(module: WebModule, typescript: bool,
 
 proc emitDeclarations(module: WebModule): string =
   result.add "// Generated Gene web-profile declarations (TypeScript 5.9.2).\n"
+  for imported in module.imports:
+    var names: seq[string]
+    var locals: seq[string]
+    for selection in imported.selections:
+      let original = mangleWebName(selection.sourceName)
+      let local = mangleWebName(selection.localName)
+      names.add(if original == local: original else: original & " as " & local)
+      locals.add local
+    if names.len > 0:
+      result.add "import { " & names.join(", ") & " } from " &
+        jsString("./" & splitFile(imported.resolvedPath).name & ".js") & ";\n"
+      if imported.reexport:
+        result.add "export { " & locals.join(", ") & " };\n"
+  for constant in module.constants:
+    if not constant.imported:
+      result.add "export declare const " & constant.emittedName & ": " &
+        tsType(constant.typ) & ";\n"
   if moduleUsesTypeKind(module, wtkMap):
     result.add "export declare class GeneMap<K, V> implements Iterable<[K, V]> {\n"
     result.add "  constructor(entries?: Iterable<[K, V]>);\n"
@@ -6843,7 +7043,9 @@ proc emitDeclarations(module: WebModule): string =
     if not fn.publicExport: continue
     var params: seq[string]
     for param in fn.params:
-      params.add param.emittedName & ": " & tsType(param.typ)
+      params.add param.emittedName & ": " &
+        (if param.named: "(" & tsType(param.typ) & ") | undefined"
+         else: tsType(param.typ))
     result.add "export declare function " & fn.emittedName & "(" &
       params.join(", ") & "): " &
       (if fn.async: "Promise<" & tsType(fn.returnType) & ">"
@@ -6855,7 +7057,9 @@ proc emitDeclarations(module: WebModule): string =
     for fn in namespace.functions:
       var params: seq[string]
       for param in fn.params:
-        params.add param.emittedName & ": " & tsType(param.typ)
+        params.add param.emittedName & ": " &
+          (if param.named: "(" & tsType(param.typ) & ") | undefined"
+           else: tsType(param.typ))
       result.add "  " & mangleWebName(fn.sourceName.split('/')[^1]) & ": (" &
         params.join(", ") & ") => " &
         (if fn.async: "Promise<" & tsType(fn.returnType) & ">"
@@ -7191,6 +7395,57 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
   var order: seq[string]
   var basenames = initTable[string, string]()
 
+  proc resolveExport(module: WebModule, name: string):
+      tuple[owner: WebModule, name: string] =
+    for fn in module.functions:
+      if fn.publicExport and fn.sourceName == name: return (module, name)
+    for constant in module.constants:
+      if not constant.imported and constant.sourceName == name:
+        return (module, name)
+    for declaration in module.types:
+      if declaration.sourceName == name: return (module, name)
+    for declaration in module.enums:
+      if declaration.sourceName == name: return (module, name)
+    for declaration in module.protocols:
+      if declaration.sourceName == name: return (module, name)
+    for imported in module.imports:
+      if not imported.reexport: continue
+      for selection in imported.selections:
+        if selection.localName == name:
+          return resolveExport(modules[imported.resolvedPath], selection.sourceName)
+    raise webError(module.loc, "web module has no exported declaration: " & name)
+
+  proc typeOrigin(module: WebModule, name: string): string =
+    for declaration in module.types:
+      if declaration.sourceName == name: return module.sourcePath & "\x1f" & name
+    for declaration in module.enums:
+      if declaration.sourceName == name: return module.sourcePath & "\x1f" & name
+    for declaration in module.protocols:
+      if declaration.sourceName == name: return module.sourcePath & "\x1f" & name
+    for imported in module.imports:
+      for selection in imported.selections:
+        if selection.localName == name:
+          return typeOrigin(modules[imported.resolvedPath], selection.sourceName)
+    module.sourcePath & "\x1f" & name
+
+  proc remapType(typ: WebType, owner: WebModule,
+                 aliases: Table[string, string]): WebType =
+    if typ == nil: return nil
+    result = WebType(kind: typ.kind, name: typ.name)
+    if typ.kind == wtkNominal:
+      result.name = aliases.getOrDefault(typeOrigin(owner, typ.name), typ.name)
+    result.item = remapType(typ.item, owner, aliases)
+    result.returnType = remapType(typ.returnType, owner, aliases)
+    for param in typ.params: result.params.add remapType(param, owner, aliases)
+    for member in typ.members: result.members.add remapType(member, owner, aliases)
+
+  proc remapParams(params: seq[WebParam], owner: WebModule,
+                   aliases: Table[string, string]): seq[WebParam] =
+    for param in params:
+      var mapped = param
+      mapped.typ = remapType(param.typ, owner, aliases)
+      result.add mapped
+
   proc visit(path: string) =
     if states.getOrDefault(path) == 1:
       raise newException(WebProfileError,
@@ -7217,70 +7472,108 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
     var importedEnums = initTable[string, WebEnumDecl]()
     var importedProtocols = initTable[string, WebProtocolDecl]()
     var importedMacros = initTable[string, Table[string, MacroDef]]()
+    var typeAliases = initTable[string, string]()
     for spec in importSpecs:
-      let dependency = modules[spec.resolvedPath]
+      for selection in spec.selections:
+        if macroArtifacts[spec.resolvedPath].hasKey(selection.sourceName): continue
+        let resolved = resolveExport(modules[spec.resolvedPath], selection.sourceName)
+        typeAliases[typeOrigin(resolved.owner, resolved.name)] = selection.localName
+    for spec in importSpecs:
+      let importedModule = modules[spec.resolvedPath]
       let dependencyMacros = macroArtifacts[spec.resolvedPath]
       importedMacros[spec.sourcePath] = dependencyMacros
       var protocolAliases = initTable[string, string]()
       for selection in spec.selections:
-        for declaration in dependency.protocols:
-          if declaration.sourceName == selection.sourceName:
-            protocolAliases[selection.sourceName] = selection.localName
+        if dependencyMacros.hasKey(selection.sourceName): continue
+        let resolved = resolveExport(importedModule, selection.sourceName)
+        for declaration in resolved.owner.protocols:
+          if declaration.sourceName == resolved.name:
+            protocolAliases[resolved.name] = selection.localName
       for selection in spec.selections:
         if dependencyMacros.hasKey(selection.sourceName):
+          if spec.reexport:
+            raise webError(spec.loc, "macro re-exports are outside the web profile")
           continue
+        let resolved = resolveExport(importedModule, selection.sourceName)
+        let dependency = resolved.owner
+        let resolvedName = resolved.name
         var found: WebFunction = nil
         for fn in dependency.functions:
-          if fn.sourceName == selection.sourceName:
+          if fn.sourceName == resolvedName:
             found = fn
             break
         if found == nil:
           var foundConstant: WebConstant = nil
           for constant in dependency.constants:
-            if constant.sourceName == selection.sourceName:
+            if constant.sourceName == resolvedName:
               foundConstant = constant
               break
           if foundConstant != nil:
-            # A constant is a literal, so importing it copies the value rather
-            # than referencing the other module. There is no initialization
-            # order to get wrong, which is the whole reason literals are the
-            # only thing allowed at module level.
+            # Keep the literal for static analysis, but reference the exported
+            # ESM binding at runtime so collection constants retain identity.
             importedConstants[selection.localName] = WebConstant(
               sourceName: selection.localName,
               emittedName: mangleWebName(selection.localName),
               typ: foundConstant.typ, value: foundConstant.value,
-              loc: spec.loc)
+              imported: true, loc: spec.loc)
             continue
           var foundDeclaration = false
           for declaration in dependency.types:
-            if declaration.sourceName == selection.sourceName:
+            if declaration.sourceName == resolvedName:
               let bodySchema = allBodySchema(dependency, declaration)
               var implementedProtocols: seq[string]
               for protocolName in allImplementedProtocols(dependency,
                                                           declaration):
                 implementedProtocols.add protocolAliases.getOrDefault(
                   protocolName, protocolName)
+              var fields = allFields(dependency, declaration)
+              for field in fields.mitems:
+                field.typ = remapType(field.typ, dependency, typeAliases)
+              var bodyFields: seq[WebType]
+              for field in bodySchema.fixed:
+                bodyFields.add remapType(field, dependency, typeAliases)
+              var methods: seq[WebMethod]
+              for methodDecl in declaration.methods:
+                methods.add WebMethod(sourceName: methodDecl.sourceName,
+                  emittedName: methodDecl.emittedName,
+                  params: remapParams(methodDecl.params, dependency, typeAliases),
+                  returnType: remapType(methodDecl.returnType, dependency, typeAliases),
+                  body: methodDecl.body, loc: methodDecl.loc,
+                  sourceForm: methodDecl.sourceForm)
+              let originalCtor = inheritedConstructor(dependency, declaration)
+              let constructor = if originalCtor == nil: nil
+                else: WebConstructor(params: remapParams(originalCtor.params,
+                                       dependency, typeAliases),
+                  body: originalCtor.body, loc: originalCtor.loc,
+                  sourceForm: originalCtor.sourceForm)
               importedTypes[selection.localName] = WebTypeDecl(
                 sourceName: selection.localName,
                 emittedName: mangleWebName(selection.localName),
-                fields: allFields(dependency, declaration),
-                bodyFields: bodySchema.fixed, bodyRest: bodySchema.rest,
-                methods: declaration.methods,
-                constructor: inheritedConstructor(dependency, declaration),
+                originId: dependency.sourcePath & "\x1f" & resolvedName,
+                fields: fields, bodyFields: bodyFields,
+                bodyRest: remapType(bodySchema.rest, dependency, typeAliases),
+                methods: methods, constructor: constructor,
                 implementedProtocols: implementedProtocols,
                 implementsError: declaration.implementsError,
                 loc: spec.loc)
               foundDeclaration = true
           for declaration in dependency.enums:
-            if declaration.sourceName == selection.sourceName:
+            if declaration.sourceName == resolvedName:
+              var variants: seq[WebEnumVariant]
+              for variant in declaration.variants:
+                var mapped = WebEnumVariant(sourceName: variant.sourceName,
+                  emittedName: variant.emittedName)
+                for payload in variant.payload:
+                  mapped.payload.add remapType(payload, dependency, typeAliases)
+                variants.add mapped
               importedEnums[selection.localName] = WebEnumDecl(
                 sourceName: selection.localName,
                 identityName: declaration.identityName,
                 emittedName: mangleWebName(selection.localName),
-                variants: declaration.variants, loc: spec.loc)
+                variants: variants, loc: spec.loc)
               foundDeclaration = true
           for declaration in dependency.protocols:
-            if declaration.sourceName == selection.sourceName:
+            if declaration.sourceName == resolvedName:
               let importedProtocol = WebProtocolDecl(
                 sourceName: selection.localName,
                 emittedName: mangleWebName(selection.localName), loc: spec.loc)
@@ -7289,19 +7582,21 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
                   sourceName: messageDecl.sourceName,
                   symbolName: mangleWebName(selection.localName) & "." &
                     mangleWebName(messageDecl.sourceName),
-                  params: messageDecl.params,
-                  returnType: messageDecl.returnType, loc: spec.loc)
+                  params: remapParams(messageDecl.params, dependency, typeAliases),
+                  returnType: remapType(messageDecl.returnType, dependency, typeAliases),
+                  loc: spec.loc)
               importedProtocols[selection.localName] = importedProtocol
               foundDeclaration = true
           if not foundDeclaration:
             raise webError(spec.loc, "web module has no exported declaration: " &
-              selection.sourceName)
+              resolvedName)
           continue
         if imported.hasKey(selection.localName):
           raise webError(spec.loc, "duplicate web import: " & selection.localName)
         var paramTypes: seq[WebType]
         var anyNamed = false
-        for param in found.params:
+        let mappedParams = remapParams(found.params, dependency, typeAliases)
+        for param in mappedParams:
           paramTypes.add param.typ
           if param.named: anyNamed = true
         # The named parameters travel with the import. Without this an imported
@@ -7311,8 +7606,8 @@ proc buildWebModule*(sourcePath, outDir: string): seq[string] =
         # act on.
         imported[selection.localName] = WebFunctionSig(
           params: paramTypes,
-          namedParams: (if anyNamed: found.params else: @[]),
-          returnType: found.returnType,
+          namedParams: (if anyNamed: mappedParams else: @[]),
+          returnType: remapType(found.returnType, dependency, typeAliases),
           callName: mangleWebName(selection.localName),
           valueName: mangleWebName(selection.localName),
           generator: false, async: found.async)

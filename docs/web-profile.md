@@ -30,30 +30,37 @@ reserved JS words. `eval` and `arguments` take the reserved-word prefix too:
 they are not keywords, but ES modules are always strict and strict mode forbids
 binding either name.
 
-**Module functions take named parameters**, spelled `^name : T` as on the VM,
-with `^name local : T` to bind under a different name and `^name : T?` to make
-one optional (omitting it binds nil). They lower to ordinary positional
-JavaScript slots in declaration order: the profile always knows the callee
-statically, so a call's props are placed into their slots at analysis time.
-That keeps the lowering allocation-free — an options object per call is a cost
-the hot paths refuse — and it means a JS caller sees the declared order and can
-call the same export positionally.
+Selected imports may use `^export true` to expose functions, types, enums,
+protocols, and constants through a facade. Ordinary imports stay private.
+Re-exports retain the defining declaration and runtime identity; imported
+constants are shared ESM bindings rather than reconstructed local copies.
+Aliases are retained in both emitted code and declaration metadata. Macro
+re-exports remain outside the profile.
 
-Four things follow from the lowering, and each is a diagnostic rather than a
-surprise:
+**Module functions take named parameters**, spelled `^name : T`, with
+`^name local : T` for a different local binding and `^name : T?` for an optional
+nil-admitting value. Named defaults use `^name : T = expression`. Defaults run
+in the callee's scope after the supplied argument expressions and may refer to
+earlier parameters. Provided nil remains nil when its type admits it; missing
+or void named values select the default, or nil for an optional parameter
+without a default. Required named values are still required.
 
-- Named parameters are for **module functions**. A `message`, a `ctor`, a
-  `js/fn` extern, and an inline callback take positional parameters, since a
-  `(Fn [A ...] R)` type has nowhere to put a name.
-- A positional parameter may not follow a named one. The VM admits either
-  order; here a positional argument's slot is its position among the positional
-  parameters, and interleaving would make that ordering something a reader
-  reconstructs rather than reads.
-- A function declaring a named parameter **cannot be used as a value**: through
-  an `(Fn [A ...] R)` it would be invoked positionally, which is the call the VM
-  refuses with `expects 0..0 argument(s)`.
-- Defaults are not admitted, on named or positional parameters. `: T?` is the
-  spelling for optional.
+Calls evaluate named expressions in their written property order, followed by
+positionals, matching the VM, before placing values into declaration-order
+JavaScript slots. This uses temporary bindings, not an options object.
+JavaScript callers use those positional slots and `undefined` for omission.
+Generated declarations include the imported names needed by public signatures.
+
+The remaining restrictions are explicit:
+
+- Named parameters are for module functions; messages, constructors, externs,
+  and inline callbacks still take positional parameters.
+- Positional declarations may not follow named declarations.
+- Functions with named parameters cannot be used as values through the
+  profile's positional `Fn` signature model.
+- Positional defaults remain outside the profile. Named defaults produce a
+  value; non-local `return`, `yield`, `break`, and `continue` in a default are
+  rejected.
 
 **Every call now accounts for every prop.** Props on a call used to be dropped
 silently — `(add 1.0 2.0 ^oops 9.0)` compiled and threw `^oops` away, while the
@@ -112,11 +119,24 @@ lower through a `$gene_at` helper and writes through `$gene_index`, which is
 what keeps `xs/-1` and `(b .set -1 v)` from meaning two different things by
 backend. `tests/transpile/fixtures.json` carries the agreement as `index.*`.
 
-This is not free: it costs roughly 22% on a buffer-indexing hot loop
-(`examples/miclone`'s meshing benchmark, 0.249 → 0.305 ms/chunk). A list segment
-whose index is a non-negative literal still emits a bare `a[i]`, since neither
-half of the rule can apply to it; `Buffer` access always goes through the
-helpers, because its index is a runtime value at every call site that matters.
+Numeric buffer indices and sizes accept Int or integral F64 values. Invalid
+fractional or out-of-range indices are checked before mutation. Integer-buffer
+misses preserve void instead of passing it to `BigInt`. Integer writes reject
+out-of-range values, and F32 storage rounds to binary32 after range validation,
+as on the VM. `fill` and `copy_from` validate ranges instead of inheriting
+JavaScript's clamping behavior; copies preserve overlap semantics.
+
+`List/size` and `Buffer/len` return Int on both backends. `$to_int` and
+`$to_float` accept either numeric kind, including values already in the target
+kind. A numerical kernel can explicitly convert a count to F64 without a
+backend-specific arithmetic workaround. The four absence predicates
+`$nil?`, `$void?`, `$absent?`, and `$present?` are portable too.
+
+`for` snapshots eager list/map contents, like the VM, while streams remain lazy.
+PropMap iteration yields `[Sym Any]` pairs in insertion order; general Map
+iteration preserves its declared key/value types. An insertion-order record
+also preserves numeric-looking property keys. Loop bindings may shadow an
+outer binding without changing it. Nil and void iterate as empty inputs.
 
 Supported control/data forms include mutable and immutable locals, `set` and
 path `set`, compact and clause `if`, guards, short-circuit operators, all core

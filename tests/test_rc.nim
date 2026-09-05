@@ -49,6 +49,29 @@ when defined(geneRcStats):
       check leakedManaged("(fn make [] (var x 1) (fn [] x)) (make)") == 0
       check leakedManaged("(fn fac [n] (if (== n 0) 1 (* n (fac (- n 1))))) (fac 5)") == 0
 
+    test "released bound calls reclaim captures arguments and policy metadata":
+      check leakedManaged("(fn target [x] (+ x 1)) " &
+        "(var bound ($runtime/bind_call target [2] ^policy {^max_steps 100})) " &
+        "(bound) (set bound nil)") == 0
+      check leakedManaged("(fn make [x] " &
+        " ($runtime/bind_call (fn [y] (+ x y)) [2])) " &
+        "((make 40))") == 0
+      check leakedManaged("(fn target [] 1) " &
+        "(repeat 100 (var bound ($runtime/bind_call target [])) " &
+        " (try (bound) ensure (set bound nil)))") == 0
+      # Model an invocation adapter that owns a durable binding only until the
+      # call settles. Ordinary factory closures also need their local cycle
+      # broken; GC of arbitrary mixed scope/Value cycles is not implemented.
+      check leakedManaged("(fn target [] (fail \"expected\")) " &
+        "(fn invoke [] (var bound ($runtime/bind_call target [])) " &
+        " (try (bound) catch Any nil ensure (set bound nil))) " &
+        "(repeat 100 (invoke))") == 0
+
+    test "packed and generic buffer backing values are reclaimed":
+      check leakedManaged("(repeat 100 (var b ($buffer U8 65536)) (b .fill 7))") == 0
+      check leakedManaged("(var b ($buffer [(fn [] 7)])) " &
+        "((b .get 0)) (set b nil)") == 0
+
     test "proper tail transfers reclaim frames scopes and trace windows":
       check leakedManaged(
         "(fn is_even [n] (if (== n 0) true (is_odd (- n 1)))) " &

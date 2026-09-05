@@ -19,6 +19,73 @@ callees must be message values. Invalid callees are rejected before send
 arguments run; message names may not end in `!`, and there is no lexical
 callable fallback.
 
+Call and `new` spreads merge the operand's anatomy: List elements become
+positionals, PropMap entries become named arguments, and a node contributes
+both props and body while dropping its head. A spliced prop replaces an
+earlier named value with the same key. Use `$body` explicitly when only a
+node's positional contents are wanted. Named properties must not disappear
+merely because a call uses a spread.
+
+## Binding an invocation
+
+`runtime/bind_call` returns an ordinary zero-argument function that invokes an
+existing callable with a bound argument shape:
+
+```gene
+(var invoke
+  ($runtime/bind_call handler [context payload]
+    ^policy {^max_steps 100000 ^max_memory_mb 64 ^timeout_ms 2000}))
+(invoke)
+```
+
+`^named` optionally supplies a PropMap of named arguments. The positional list
+and named map are shallow snapshots: later edits to their shape do not alter
+the invocation, while nested mutable values retain identity. The calling
+lexical environment supplies scoped implementation visibility, as for a
+closure. Fexprs, borrowed `CallerEnv` authority, and in-progress construction
+values cannot become durable bound calls.
+
+The binder does not execute the target or start a task. Invocation uses normal
+bytecode calls, preserving suspension, error types and fields, panic behavior,
+and cancellation cleanup. A caller can spawn the resulting function and inspect
+`TaskOutcome` through `join`, without compiling a Gene wrapper via `eval`.
+
+Each invocation receives fresh step, memory, and elapsed-time limits. Time
+starts when execution enters the binding. Nested calls consume the caller's
+budget as well as any narrower bound/module budget; scope-free and tail calls
+must not drop those limits or leave a depleted budget on a lexical scope.
+Enforcement uses the VM's existing dispatch and safe-point checks, including
+its sampled memory/time checks. This operation does not isolate native code.
+The policy accepts the three budget fields above; sandbox loading remains the
+boundary for feature-admission flags such as `allow_ffi`.
+
+`^capabilities` optionally supplies an inert selector list, using the same
+selector vocabulary as `with_capabilities`. It resolves at binding time in the
+creating scope and can only select from that scope's active context. Omitting
+it retains that context as a ceiling; `[]` selects no authority. Each later
+invocation intersects that captured ceiling with its actual caller's context,
+so moving a bound function cannot recover removed authority.
+
+```gene
+($runtime/bind_call read_config []
+  ^capabilities (quote [(fs/ReadFile filename)])
+  ^policy {^max_steps 10000})
+```
+
+The `filename` reference is resolved while binding. No declaration is added
+to a source module. The runtime compiles its private trampoline once per
+application and gives each binding separate mutable dispatch caches.
+
+Current retention limitation: the runtime does not collect every mixed
+scope/closure cycle. Keeping a bound call in the scope it captures can form
+such a cycle, as can storing a returned ordinary closure in an ancestor scope.
+An adapter that keeps a local binding should clear it in `ensure` once the
+invocation or supervising task has settled. Cordis does this after `Task/join`.
+Temporary bindings and explicitly released bindings reclaim their captures;
+this API does not add a general closure-cycle collector.
+
+## Pipelines and core forms
+
 `->` forms a sequenced value pipeline. The incoming expression is evaluated
 first and exactly once; each stage then evaluates its callee and ordinary
 arguments before invoking the existing call/send machinery. With no direct `_`,

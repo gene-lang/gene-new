@@ -1,0 +1,15 @@
+(mod web_foundations ^profile web)
+
+(import [Counter : Box factor values make read]
+  from "./web_foundations_api.gene")
+
+(fn inspect_box [box : Box] : Int (read box))
+
+(fn with_default [^value : Int = factor] : Int value)
+(fn checked [value : Any] : Int (with_default ^value value))
+
+(fn run [] : Int
+  (var total 0)
+  (for [key value] in {^a 1 ^b 2}
+    (set total (+ total value)))
+  (+ total (+ (inspect_box (make)) values/.size)))

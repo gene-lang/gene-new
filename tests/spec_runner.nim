@@ -8872,6 +8872,20 @@ suite "spec — os and json from ai-agent plan":
                "(> (byte_size (executable_path)) 0)",
                "true")
 
+  test "os/launch_dir reports the application's captured launch directory":
+    let app = newApplication()
+    let value = run(compileSource("($os/launch_dir)"), newGlobalScope(app))
+    check value.kind == vkString
+    check value.strVal == app.launchDirectory()
+    check value.strVal.isAbsolute
+    check_eval("(try ($os/launch_dir 1) false catch Any true)", "true")
+
+  test "os/launch_dir requires the active os/Process capability":
+    let app = newApplication()
+    app.setRootCapabilities(newCapabilityContext())
+    expect GeneError:
+      discard run(compileSource("($os/launch_dir)"), newGlobalScope(app))
+
   test "os/exec runs a program, captures output, and enforces timeout":
     check_eval("(import $os [exec Exec]) " &
                "(var r (exec ^cmd \"echo\" ^args [\"hi\"])) " &

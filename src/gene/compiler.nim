@@ -4150,6 +4150,13 @@ proc compileCapabilityRow(c: Compiler, value: Value,
     result.selectors.add c.compileCapabilitySelector(
       selector, proto, allowLexical)
 
+proc compileCapabilitySelection*(value: Value): CapabilityRow =
+  ## Parse inert selector data for runtime boundaries. Resolution still happens
+  ## against the calling application's admitted providers and active ceiling;
+  ## this does not evaluate Gene code or create grants.
+  let c = Compiler()
+  c.compileCapabilityRow(value, allowLexical = true)
+
 proc normalizedFunctionCapabilityRow(c: Compiler, node: Value,
                                      proto: FunctionProto,
                                      isPublic: bool): CapabilityRow =

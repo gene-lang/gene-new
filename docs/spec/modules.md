@@ -12,6 +12,11 @@ entrypoint, serde, native API, and CLI suites.
   directory for file-less entries — or a synthesized ad-hoc package when there
   is none. `--package-root` replaces the start directory; nothing changes the
   process working directory.
+- `($os/launch_dir)` returns the application's captured absolute launch
+  directory as a Str and requires `os/Process`, like `os/executable_path`.
+  It differs from `this_pkg/root`, which may name an authenticated build
+  snapshot. A host can use it to select its launch-directory filesystem grant
+  before resolving relative data paths when it also holds other grants.
 - A manifest is exactly one map datum read as data, never executed. `^name` is
   required and is `<owner>/<name>` in lowercase `snake_case`; unknown fields are
   rejected; dependency forms have the literal head `dep`.

@@ -289,6 +289,8 @@ type
     checksErrors*: bool
     errorTypeCount*: int
     capabilityRow*: CapabilityRow
+    boundExecutionPolicy*: ModuleExecutionPolicy
+    boundCapabilityCeiling*: CapabilityContext
     capabilityCacheRegistryId*: uint64
     capabilityCacheEpoch*: uint64
     capabilityCacheParent*: CapabilityContext

@@ -1,0 +1,10 @@
+(mod web_foundations_dep ^profile web)
+
+(type Counter ^props {^value Int})
+(let factor 2)
+(const values #[1 2])
+
+(fn make [^initial : Int = factor] : Counter
+  (Counter ^value initial))
+
+(fn read [counter : Counter] : Int counter/value)

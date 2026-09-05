@@ -100,3 +100,10 @@ suite "packed numeric buffers":
     expect GeneError:
       discard setCheckedBufferItem(buffer, 1, newInt(256))
     check buffer.bufferItem(1).intVal == 255
+
+  test "oversized lengths fail before allocating and wide misses stay missing":
+    expect GeneError:
+      discard newPackedBuffer(newSym("F64"), bskF64, high(int) div 8 + 1)
+    let buffer = newPackedBuffer(newSym("U8"), bskU8, 1)
+    check getCheckedBufferItem(buffer, high(int64)).kind == vkVoid
+    check getCheckedBufferItem(buffer, low(int64)).kind == vkVoid

@@ -356,6 +356,7 @@ type
 
   Application* = ref object of RuntimeContext
     builtins: Scope
+    boundCallTemplate: FunctionProto
     # The whole standard library, i.e. the scope behind the `gene` namespace.
     # `builtins` is only the *lexical* root, which deliberately exposes almost
     # nothing (design §2.1): user code reaches the library as `gene/x` / `$x`.
@@ -1599,6 +1600,33 @@ proc getArg(named: NamedArgs, name: string): Value =
   for i, key in named.names:
     if key == name: return named.valueAt(i)
   raise newException(GeneError, "missing named argument: " & name)
+
+proc putArg(named: var NamedArgs, name: string, value: Value) =
+  let index = named.argIndex(name)
+  let count = named.len
+  if index >= 0:
+    if value.kind == vkVoid:
+      named.names.delete(index)
+      if named.values.len == count:
+        named.values.delete(index)
+      else:
+        for i in index ..< count - 1:
+          named.inlineValues[i] = named.inlineValues[i + 1]
+        named.inlineValues[count - 1] = NIL
+    elif named.values.len == count:
+      named.values[index] = value
+    else:
+      named.inlineValues[index] = value
+  elif value.kind != vkVoid:
+    if count < MaxInlineNamedArgs and named.values.len == 0:
+      named.names.add name
+      named.inlineValues[count] = value
+    else:
+      if named.values.len == 0:
+        named.values = named.toSeq()
+        for i in 0 ..< MaxInlineNamedArgs: named.inlineValues[i] = NIL
+      named.names.add name
+      named.values.add value
 
 proc rejectSyntaxCallWithoutSite(callee: Value, scope: Scope) {.noreturn.} =
   ## Ordinary calls are always eager. A held fexpr remains inspectable as a
@@ -5834,15 +5862,15 @@ proc newCheckedBuffer*(elemType: Value, items: openArray[Value],
       checkedItems.add adaptBoundary("buffer item", checkedType, stored, scope)
   newBuffer(checkedType, checkedItems)
 
-proc getCheckedBufferItem*(buffer: Value, index: int): Value =
+proc getCheckedBufferItem*(buffer: Value, index: int64): Value =
   if buffer.kind != vkBuffer:
     raise newException(GeneError, "Buffer/get expects a Buffer")
-  let length = buffer.bufferLen
+  let length = int64(buffer.bufferLen)
   let actual = if index < 0: length + index else: index
   if actual < 0 or actual >= length: VOID
-  else: buffer.bufferItem(actual)
+  else: buffer.bufferItem(int(actual))
 
-proc setCheckedBufferItem*(buffer: Value, index: int, item: Value,
+proc setCheckedBufferItem*(buffer: Value, index: int64, item: Value,
                            scope: Scope = nil): Value =
   if buffer.kind != vkBuffer:
     raise newException(GeneError, "Buffer/set expects a Buffer")
@@ -5857,10 +5885,9 @@ proc requireBufferIndex(where: string, value: Value): int64 =
   ## The Float arm is deliberate rather than lax. Buffer indices live in the
   ## innermost loops in a program — mesh building, voxel scans — and in the web
   ## profile `Int` is `bigint`, so requiring `Int` would make every element
-  ## access in such a loop allocate a BigInt. The profile already resolved the
-  ## same tension the same way by giving `List/size` an F64 result, so an
-  ## F64-indexed buffer is what lets one module index a buffer on both backends
-  ## without a per-access conversion.
+  ## access in such a loop require a BigInt conversion. Integral F64 indices
+  ## let one module keep a floating-point cursor on both backends. Collection
+  ## lengths still return Int; a kernel can convert its loop bound once.
   ##
   ## What is *not* accepted is a fractional index: 2.5 is a mistake, not a
   ## rounding opportunity, and silently truncating it would put the write one
@@ -5922,6 +5949,8 @@ proc biBuffer(args: openArray[Value], call: ptr NativeCall): Value {.nimcall.} =
       if length < 0:
         raise newException(GeneError,
           "buffer length must be non-negative, got " & $length)
+      if length > int64(high(int)):
+        raise newException(GeneError, "buffer length is too large for this host")
       let elemType = closeTypeExpr(bufferTypeExprArg("buffer", args[0]), scope)
       let zero = zeroForElementType(elemType, scope)
       let storage = numericBufferStorage(elemType)
@@ -5948,7 +5977,7 @@ proc biBufferGet(args: openArray[Value]): Value {.nimcall.} =
     raise newException(GeneError,
       "Buffer/get expects 2 arguments, got " & $args.len)
   requireBuffer("Buffer/get", args[0])
-  getCheckedBufferItem(args[0], int(requireBufferIndex("Buffer/get", args[1])))
+  getCheckedBufferItem(args[0], requireBufferIndex("Buffer/get", args[1]))
 
 proc biBufferSetBang(args: openArray[Value],
                      call: ptr NativeCall): Value {.nimcall.} =
@@ -5957,7 +5986,7 @@ proc biBufferSetBang(args: openArray[Value],
       "Buffer/set expects 3 arguments, got " & $args.len)
   requireBuffer("Buffer/set", args[0])
   let scope = if call == nil: nil else: call.dispatchScope
-  setCheckedBufferItem(args[0], int(requireBufferIndex("Buffer/set", args[1])),
+  setCheckedBufferItem(args[0], requireBufferIndex("Buffer/set", args[1]),
                        args[2], scope)
 
 # --- bulk element moves ------------------------------------------------------
@@ -6952,6 +6981,8 @@ proc biRuntimeGuardCall(args: openArray[Value],
                         call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeCallable(args: openArray[Value],
                        call: ptr NativeCall): Value {.nimcall.}
+proc biRuntimeBindCall(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeConfigureModule(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.}
 proc biRuntimeRequireRootLane(args: openArray[Value],
@@ -7394,6 +7425,9 @@ proc buildBuiltins(app: Application): Scope =
   ## these is shared per application (see `builtinsScope`) so built-in identity is
   ## stable across modules.
   result = newScope(application = app)
+  app.boundCallTemplate = compileSource(
+    "(fn [] (__bound_target __bound_arguments...))",
+    "<runtime/bind_call>").functions[0]
   let errorProtocol = newProtocol("Error", [])
   result.define("Error", errorProtocol)
   let sendProtocol = newProtocol("Send", [])
@@ -7938,6 +7972,8 @@ proc buildBuiltins(app: Application): Scope =
                       newNativeCallFn("runtime/callable?",
                                       biRuntimeCallable,
                                       acceptsNamed = false))
+  runtimeScope.define("bind_call",
+                      newNativeCallFn("runtime/bind_call", biRuntimeBindCall))
   runtimeScope.define("require_root_lane",
                       newNativeCallFn("runtime/require_root_lane",
                                       biRuntimeRequireRootLane,
@@ -8723,14 +8759,19 @@ proc resolveCapabilityRow(app: Application, row: CapabilityRow,
                           boundScope: Scope): CapabilityContext =
   resolveCapabilityTransition(app, row, parent, nil, boundScope).context
 
-proc functionCapabilityTransition(proto: FunctionProto, boundScope: Scope,
-                                  callerScope: Scope,
-                                  parent: CapabilityContext,
-                                  parentPresence: CapabilityPresence,
+proc functionCapabilityTransition(proto: FunctionProto, boundScope: var Scope,
+                                  lexicalScope: Scope, callerScope: Scope,
+                                  incoming: CapabilityContext,
+                                  incomingPresence: CapabilityPresence,
                                   calleeRootHint: Scope = nil,
                                   callerRootHint: Scope = nil,
                                   rootsKnown = false):
                                   CapabilityTransition =
+  var parent = incoming
+  var parentPresence = incomingPresence
+  if proto != nil and proto.boundCapabilityCeiling != nil:
+    parent = intersectContexts(parent, proto.boundCapabilityCeiling)
+    parentPresence = nil
   # Policy-limited eval is transitive across calls. A call scope normally
   # inherits from the callee's lexical scope, which is correct for bindings but
   # used to drop the caller's EvalBudget when evaluated code invoked an
@@ -8738,19 +8779,30 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: Scope,
   # {^max_steps N})` escape its limit through one ordinary call. Only mutate a
   # per-call scope; scopeless functions execute in the caller scope already and
   # an escaped lexical scope must not retain a depleted caller budget forever.
-  if proto != nil and proto.needsCallScope and callerScope != nil and
-      callerScope.evalBudget != nil:
-    boundScope.evalBudget = callerScope.evalBudget
   let calleeRoot =
     if rootsKnown: calleeRootHint else: boundScope.moduleRootScope()
   let callerRoot =
     if rootsKnown: callerRootHint else: callerScope.moduleRootScope()
   let crossesModule = calleeRoot != nil and calleeRoot != callerRoot
-  if crossesModule and calleeRoot.moduleExecutionPolicy != nil:
+  let callerBudget = if callerScope == nil: nil else: callerScope.evalBudget
+  let entersPolicy = crossesModule and calleeRoot.moduleExecutionPolicy != nil
+  let boundPolicy = if proto == nil: nil else: proto.boundExecutionPolicy
+  if callerBudget != nil or entersPolicy or boundPolicy != nil:
+    # A scope-free function normally runs against its lexical scope. A budget
+    # is dynamic invocation state: give that call a child scope rather than
+    # dropping the budget or storing a depleted budget on a shared closure.
+    if boundScope == lexicalScope:
+      boundScope = newScope(lexicalScope)
+    boundScope.evalBudget = callerBudget
+  if entersPolicy:
     let policy = calleeRoot.moduleExecutionPolicy
     boundScope.evalBudget = evalBudgetForLimits(
       policy.maxSteps, policy.maxMemoryMb, policy.timeoutMs,
-      if callerScope == nil: nil else: callerScope.evalBudget)
+      callerBudget)
+  if boundPolicy != nil:
+    boundScope.evalBudget = evalBudgetForLimits(
+      boundPolicy.maxSteps, boundPolicy.maxMemoryMb, boundPolicy.timeoutMs,
+      boundScope.evalBudget)
   if not crossesModule and
       (proto == nil or proto.capabilityRow.inheritsCapabilities):
     return CapabilityTransition(context: parent, presence: parentPresence)
@@ -8792,6 +8844,10 @@ proc functionCapabilityTransition(proto: FunctionProto, boundScope: Scope,
               importer.setFoldedImportCeiling(dependencyPath, folded)
         if folded != nil:
           ceiling = folded
+    elif proto != nil and proto.boundCapabilityCeiling != nil:
+      # A bound call created in a host program/REPL has its own explicit
+      # ceiling even though that root has no file Module declaration.
+      ceiling = proto.boundCapabilityCeiling
 
   when not (compileOption("threads") and defined(gcAtomicArc)):
     if proto != nil and proto.capabilityRow.isStatic and
@@ -8839,6 +8895,7 @@ proc canBypassCapabilityBoundary(proto: FunctionProto, calleeScope,
   ## and skip a boundary the transition would have applied. A security check
   ## must not depend on when some other call path warmed a cache.
   if proto == nil or not proto.capabilityRow.inheritsCapabilities or
+      proto.boundExecutionPolicy != nil or proto.boundCapabilityCeiling != nil or
       calleeScope == nil or callerScope == nil:
     return false
   let calleeRoot = calleeScope.moduleRootScope()
@@ -9039,6 +9096,76 @@ proc biRuntimeCallable(args: openArray[Value],
   requireOne("runtime/callable?", args)
   let scope = if call == nil: nil else: call[].dispatchScope
   newBool(args[0].valueImplementsCallable(scope))
+
+proc biRuntimeBindCall(args: openArray[Value],
+                       call: ptr NativeCall): Value {.nimcall.} =
+  if args.len != 2 or args[1].kind != vkList:
+    raise newException(GeneError,
+      "runtime/bind_call expects a callable and a positional argument List")
+  let caller = if call == nil: nil else: call[].dispatchScope
+  if caller == nil:
+    raise newException(GeneError, "runtime/bind_call requires a calling scope")
+  if not args[0].valueImplementsCallable(caller):
+    raiseTypeError("runtime/bind_call target", "Callable", args[0], caller)
+  rejectCallerEnvEscape("runtime/bind_call target", args[0])
+  rejectCallerEnvEscape("runtime/bind_call arguments", args[1])
+  var policy = NIL
+  var selectors = NIL
+  var hasSelectors = false
+  var named = initPropTable()
+  for i, name in call[].namedNames:
+    let value = call[].namedValues[i]
+    case name
+    of "policy": policy = value
+    of "capabilities":
+      if value.kind != vkList:
+        raise newException(GeneError,
+          "runtime/bind_call ^capabilities must be a selector List")
+      selectors = value
+      hasSelectors = true
+    of "named":
+      if value.kind != vkMap:
+        raise newException(GeneError, "runtime/bind_call ^named must be a PropMap")
+      rejectCallerEnvEscape("runtime/bind_call named arguments", value)
+      named = copyEntries(value.mapEntries)
+    else:
+      raise newException(GeneError, "runtime/bind_call got unexpected argument: " & name)
+  let limits = validateEvalPolicy(policy)
+  for flag in ["allow_ffi", "allow_native_compile"]:
+    if evalPolicyProp(policy, flag).kind notin {vkNil, vkVoid}:
+      raise newException(GeneError,
+        "runtime/bind_call policy supports execution budgets; use sandbox " &
+        "loading to restrict " & flag)
+  let app = caller.application()
+  let parentCapabilities = caller.executionCapabilities()
+  let ceiling =
+    if hasSelectors:
+      resolveCapabilityRow(app, compileCapabilitySelection(selectors),
+                           parentCapabilities, caller)
+    else: parentCapabilities
+  let bound = newScope(caller, application = app)
+  bound.evalBudget = nil  # A fresh budget starts on invocation, not binding.
+  bound.define("__bound_target", escapeWeakFunctions(args[0]))
+  bound.define("__bound_arguments",
+    newNode(newSym("arguments"), props = named,
+            body = copyItems(args[1].listItems), immutable = true))
+  # Each binding owns its mutable dispatch caches. The template is compiled
+  # once per application and never executed, so cloning does not copy a prior
+  # caller's cached resolution or capability transition.
+  let proto = FunctionProto()
+  proto[] = app.boundCallTemplate[]
+  proto.chunk = newChunk()
+  proto.chunk[] = app.boundCallTemplate.chunk[]
+  proto.chunk.owner = proto
+  proto.scopelessChunk = nil
+  proto.needsCallScope = true
+  proto.capabilityRow = CapabilityRow(kind: crkInherit)
+  proto.boundExecutionPolicy = ModuleExecutionPolicy(
+    maxSteps: limits.maxSteps, maxMemoryMb: limits.maxMemoryMb,
+    timeoutMs: limits.timeoutMs)
+  proto.boundCapabilityCeiling = ceiling
+  result = newFunction("bound_call", @[], proto, bound)
+  rejectCallerEnvEscape("runtime/bind_call result", result)
 
 proc biRuntimeConfigureModule(args: openArray[Value],
                               call: ptr NativeCall): Value {.nimcall.} =
@@ -12917,6 +13044,18 @@ proc appendSplicedBody(target: var seq[Value], value: Value) =
   else:
     raise newException(GeneError, "splice expects a list or node")
 
+proc appendSplicedCall(body: var seq[Value], named: var NamedArgs, value: Value) =
+  case value.kind
+  of vkList:
+    for item in value.listItems: body.add item
+  of vkMap:
+    for key, item in value.mapEntries: named.putArg(key, item)
+  of vkNode:
+    for key, item in value.props: named.putArg(key, item)
+    for item in value.body: body.add item
+  else:
+    raise newException(GeneError, "call splice expects a list, map, or node")
+
 proc mergeSplicedNodePart(props: var PropTable, body: var seq[Value],
                           value: Value) =
   case value.kind
@@ -14486,10 +14625,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             let envelope = callEnvelope(scope, originalArgs, originalNamed,
                                         callSite)
             var implArgs = [calleeValue, envelope]
-            let bound = bindCallScope(implFn, implProto, implArgs,
+            var bound = bindCallScope(implFn, implProto, implArgs,
                                       NamedArgs())
             let nextTransition = functionCapabilityTransition(
-              implProto, bound.scope, scope, capabilityContext,
+              implProto, bound.scope, implFn.fnScope, scope, capabilityContext,
               capabilityPresence)
             let frameReturnType =
               implProto.checkedFrameReturnType(bound.returnType)
@@ -14525,11 +14664,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         if targetCode != nil and targetCode of FunctionProto:
           let targetProto = FunctionProto(targetCode)
           if not targetProto.isGenerator:
-            let bound = bindCallScope(target, targetProto, originalArgs,
+            var bound = bindCallScope(target, targetProto, originalArgs,
                                       originalNamed)
             let nextTransition = functionCapabilityTransition(
-              targetProto, bound.scope, boundDispatch,
-              bound.scope.executionCapabilities(),
+              targetProto, bound.scope, target.fnScope, scope,
+              scope.executionCapabilities(),
               capabilityPresence)
             let frameReturnType =
               targetProto.checkedFrameReturnType(bound.returnType)
@@ -15318,7 +15457,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     "function '" & callee.fnName & "' expects " &
                     $proto.requiredPositional & ".." & $proto.params.len &
                     " argument(s), got 0")
-                let callScope =
+                var callScope =
                   if proto.needsCallScope:
                     if proto.poolCallScope:
                       acquireSimpleCallScope(gVmPools, callee.fnScope, proto.localNames,
@@ -15332,7 +15471,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     callee.fnScope
                 callScope.seedFunctionProtocolEntry(callee)
                 let nextTransition = functionCapabilityTransition(
-                  proto, callScope, scope, capabilityContext,
+                  proto, callScope, callee.fnScope, scope, capabilityContext,
                   capabilityPresence)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
@@ -15341,9 +15480,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
               elif not proto.isGenerator:
                 if callee.isSyntaxFn:
                   rejectSyntaxCallWithoutSite(callee, scope)
-                let bound = bindCallScope(callee, proto, [], NamedArgs())
+                var bound = bindCallScope(callee, proto, [], NamedArgs())
                 let nextTransition = functionCapabilityTransition(
-                  proto, bound.scope, scope, capabilityContext,
+                  proto, bound.scope, callee.fnScope, scope, capabilityContext,
                   capabilityPresence)
                 let frameReturnType = proto.checkedFrameReturnType(bound.returnType)
                 var lbl = ""
@@ -15473,7 +15612,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     "function '" & callee.fnName & "' expects " &
                     $proto.requiredPositional & ".." & $positionalLen &
                     " argument(s), got " & $argCount)
-                let callScope =
+                var callScope =
                   if proto.needsCallScope:
                     let created =
                       if proto.poolCallScope:
@@ -15493,7 +15632,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(argsStart)
                 let nextTransition = functionCapabilityTransition(
-                  proto, callScope, scope, capabilityContext,
+                  proto, callScope, callee.fnScope, scope, capabilityContext,
                   capabilityPresence)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
@@ -15554,7 +15693,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
                 let nextTransition = functionCapabilityTransition(
-                  proto, boundScope, scope, capabilityContext,
+                  proto, boundScope, callee.fnScope, scope, capabilityContext,
                   capabilityPresence)
                 strunc(argsStart)
                 boundReturnType = proto.checkedFrameReturnType(boundReturnType)
@@ -15937,7 +16076,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                     "function '" & callee.fnName & "' expects " &
                     $proto.requiredPositional & ".." & $positionalLen &
                     " argument(s), got " & $argCount)
-                let callScope =
+                var callScope =
                   if proto.needsCallScope:
                     let created =
                       if proto.poolCallScope:
@@ -15957,7 +16096,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)        # consume callee + args
                 let nextTransition = functionCapabilityTransition(
-                  proto, callScope, scope, capabilityContext,
+                  proto, callScope, callee.fnScope, scope, capabilityContext,
                   capabilityPresence)
                 enterBytecodeCall(proto.chunk, callScope, proto.poolCallScope,
                   proto.frameNeedsImplValidation, NIL, "", false, @[],
@@ -15995,7 +16134,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
                 let nextTransition = functionCapabilityTransition(
-                  proto, boundScope, scope, capabilityContext,
+                  proto, boundScope, callee.fnScope, scope, capabilityContext,
                   capabilityPresence)
                 let frameReturnType = proto.checkedFrameReturnType(boundReturnType)
                 strunc(calleeIndex)
@@ -16070,20 +16209,20 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           if partsStart < 0 or partsStart < namedCount + 1:
             raise newException(GeneError, "VM stack underflow in new")
           let typeIndex = partsStart - namedCount - 1
+          var named: NamedArgs
+          if namedCount > 0:
+            named = namedArgsFromStack(inst[].names, stack, typeIndex + 1)
           var args = newSeqOfCap[Value](partCount)
           if inst[].flag:
             let build = chunk.listBuilds[inst[].intArg]
             for i, part in stack.toOpenArray(partsStart, sp - 1):
               if build.splices[i]:
-                appendSplicedBody(args, part)
+                appendSplicedCall(args, named, part)
               else:
                 args.add part
           elif partCount > 0:
             for part in stack.toOpenArray(partsStart, sp - 1):
               args.add part
-          var named: NamedArgs
-          if namedCount > 0:
-            named = namedArgsFromStack(inst[].names, stack, typeIndex + 1)
           let value = constructNew(
             stack[typeIndex], args, named, scope,
             chunk.callSites.getOrDefault(ip - 1, NIL))
@@ -16104,7 +16243,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var args: seq[Value]
           for i, part in stack.toOpenArray(partsStart, (sp - 1)):
             if proto.splices[i]:
-              appendSplicedBody(args, part)
+              appendSplicedCall(args, named, part)
             else:
               args.add part
           var callValuesMayCapture = false
@@ -16137,9 +16276,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   strunc(calleeIndex)
                   spush native.value
                   continue
-              if namedCount == 0 and fnProto.simpleCall and
+              if named.len == 0 and fnProto.simpleCall and
                   args.len == fnProto.params.len:
-                let callScope =
+                var callScope =
                   if fnProto.needsCallScope:
                     let created =
                       if fnProto.poolCallScope:
@@ -16158,7 +16297,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 callScope.seedFunctionProtocolEntry(callee)
                 strunc(calleeIndex)
                 let nextTransition = functionCapabilityTransition(
-                  fnProto, callScope, scope, capabilityContext,
+                  fnProto, callScope, callee.fnScope, scope, capabilityContext,
                   capabilityPresence)
                 enterBytecodeCall(fnProto.chunk, callScope,
                   fnProto.poolCallScope, fnProto.frameNeedsImplValidation,
@@ -16170,17 +16309,17 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                   rejectSyntaxCallWithoutSite(callee, scope)
                 var boundScope: Scope
                 var boundReturnType: Value
-                if namedCount == 0 and fnProto.canFastBindPositionalInt and
+                if named.len == 0 and fnProto.canFastBindPositionalInt and
                     args.len == fnProto.params.len:
                   boundScope = bindPositionalIntCallScope(callee, fnProto,
                                                           args)
                   boundReturnType = fnProto.returnType
                 else:
-                  let bound = bindCallScope(callee, fnProto, args, named)
+                  var bound = bindCallScope(callee, fnProto, args, named)
                   boundScope = bound.scope
                   boundReturnType = bound.returnType
                 let nextTransition = functionCapabilityTransition(
-                  fnProto, boundScope, scope, capabilityContext,
+                  fnProto, boundScope, callee.fnScope, scope, capabilityContext,
                   capabilityPresence)
                 let frameReturnType = fnProto.checkedFrameReturnType(boundReturnType)
                 strunc(calleeIndex)
@@ -17953,7 +18092,7 @@ proc makeActorFiber(actor: Value, item: ActorMessage, scope: Scope): Fiber =
     return nil
   let state = actor.actorState
   let args = [newActorContext(actor), state, item.message]
-  let bound = bindCallScope(handler, proto, args, NamedArgs())
+  var bound = bindCallScope(handler, proto, args, NamedArgs())
   let workerSafe =
     item.workerAllowed and actorFiberWorkerSafe(actor, handler, state,
                                                 item.message, item.reply, scope)
@@ -25677,7 +25816,7 @@ proc bindCallScope(callee: Value, proto: FunctionProto, args: openArray[Value],
       raise newException(GeneError,
         "function '" & callee.fnName & "' got unexpected named argument: " & key)
 
-  let callScope =
+  var callScope =
     if proto.poolCallScope:
       acquireCallScope(callee.fnScope, proto.localNames)
     else:
@@ -25833,7 +25972,7 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
       if hasModulePolicy: callerScope.moduleRootScope() else: nil
     let needsPolicyScope = hasModulePolicy and policyRoot != callerRoot
     let policyPooledScope = needsPolicyScope and not proto.needsCallScope
-    let callScope =
+    var callScope =
       if proto.needsCallScope or needsPolicyScope:
         let created =
           if proto.poolCallScope or policyPooledScope:
@@ -25853,11 +25992,11 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     let callTransition =
       if hasModulePolicy:
         functionCapabilityTransition(
-          proto, callScope, callerScope, callScope.executionCapabilities(),
+          proto, callScope, callee.fnScope, callerScope, callScope.executionCapabilities(),
           activeCapabilityPresence, policyRoot, callerRoot, rootsKnown = true)
       else:
         functionCapabilityTransition(
-          proto, callScope, callerScope, callScope.executionCapabilities(),
+          proto, callScope, callee.fnScope, callerScope, callScope.executionCapabilities(),
           activeCapabilityPresence)
     let savedCapabilities = activeCapabilityContext
     let savedPresence = activeCapabilityPresence
@@ -25882,12 +26021,12 @@ proc applyFunctionCall(callee: Value, args: openArray[Value], named: NamedArgs,
     callScope = bindPositionalIntCallScope(callee, proto, args)
     returnType = proto.returnType
   else:
-    let bound = bindCallScope(callee, proto, args, named)
+    var bound = bindCallScope(callee, proto, args, named)
     callScope = bound.scope
     returnType = bound.returnType
   let frameReturnType = proto.checkedFrameReturnType(returnType)
   let callTransition = functionCapabilityTransition(
-    proto, callScope, callerScope, callScope.executionCapabilities(),
+    proto, callScope, callee.fnScope, callerScope, callScope.executionCapabilities(),
     activeCapabilityPresence)
   if proto.isGenerator:
     let fiber = Fiber(chunk: proto.chunk, scope: callScope,
@@ -26345,7 +26484,8 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
       else: callee.protocolMessageProtocol
     let target = resolveQualifiedSend(bound, qualifier,
                                       callee.protocolMessageName, args[0])
-    return applyCall(target, args, named, bound, site, loc)
+    return applyCall(target, args, named,
+      if dispatchScope == nil: bound else: dispatchScope, site, loc)
   of vkNativeFn:
     if named.len == 0 and args.len == 2:
       let fast = tryFastNative2(callee, args[0], args[1])
@@ -27213,8 +27353,8 @@ proc loadSandboxedModule*(app: Application, dir, entry: string,
   ## set so nothing crosses.
   ##
   ## **`shared` is the only way out of `dir`, and the host writes it.** It is the
-  ## module surface a mod is written against — for miclone, `core/api.gene` and
-  ## the four modules whose vocabulary the API cannot re-export. Those load as the
+  ## module surface a mod is written against — for miclone, `core/api.gene`
+  ## explicitly re-exports the public vocabulary. Shared modules load as the
   ## host's own instances, unrestricted and shared, which is what type identity
   ## requires: a recompiled `core/api.gene` brings its own `Game` and
   ## `register_all` could not be called at all.
