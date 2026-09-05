@@ -1,6 +1,9 @@
 # Gene
 
-A homoiconic, general-purpose programming language implemented in [Nim](https://nim-lang.org).
+Gene aims to be a fast, general-purpose, gradually typed language covering the
+range of applications supported by Python. It is implemented in
+[Nim](https://nim-lang.org), with design influences from Lisp, Clojure,
+XML/HTML, and Ruby/Smalltalk.
 
 Gene has **one syntactic and semantic unit: the node**. A node can be read as
 data, code, type/shape, or selector/navigation plan, so code is data and data is

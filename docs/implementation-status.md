@@ -25,6 +25,17 @@ commit, discard, graph, and release bounded module generations; and `fs/watch`
 provides a capability-gated bounded polling watcher with rename pairing,
 recursive no-follow traversal, explicit overflow, and cancellable receives.
 
+Application foundations include packed fixed-width numeric buffers with checked
+writes and direct byte bridges, and `runtime/bind_call` for policy-bound
+invocations without an application-generated eval wrapper. Call spreads retain
+named props, and dynamic execution budgets propagate through scope-free calls
+and message application. The web profile now supports map iteration, consistent
+integer lengths, idempotent numeric conversions, checked numeric-buffer
+operations, named defaults, and explicit declaration re-exports. Cordis uses
+the binding API; Miclone's mod imports its vocabulary through one public facade.
+Measured results, validation, and known retention failures are recorded in
+[Application foundations](proposals/application-foundations.md).
+
 The normative implemented surface lives in `docs/spec/` and is checked by
 `nimble spec`. Unit and integration coverage runs with `nimble test`; broad
 runtime verification uses `nimble verify`.

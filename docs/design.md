@@ -53,6 +53,12 @@ The standalone `query` feature is removed from the core. Traversal, extraction, 
 
 ## 0. Thesis
 
+Gene aims to be a fast, general-purpose, gradually typed language able to
+support the range of applications and workflows supported by Python. Its
+syntax and design draw on Lisp, Clojure, XML/HTML, and Ruby/Smalltalk. Practical
+progress is measured through ordinary scripting, services, data and numerical
+work, and platform integration, including Cordis and Miclone.
+
 Gene has one syntactic and semantic unit: the **node**. A node can be read as data, code, type/shape, or selector/navigation plan. Gene uses one canonical node representation plus reader sugars. Each sugar desugars to ordinary nodes or first-class values with known heads.
 
 Core consequences:
@@ -2155,7 +2161,7 @@ Int     # arbitrary-precision integer at the language level
 Fixnum  # immediate Int in the inclusive range -140737488355328..140737488355327
 Float   # abstract floating-point family
 F64     # 64-bit IEEE float; representation of unannotated runtime floats
-F32     # 32-bit IEEE range boundary for typed buffers/native code
+F32     # IEEE binary32 storage; a range boundary in scalar annotations
 ```
 
 `Int` has mathematical integer semantics. The MVP VM implements this as a
@@ -3785,7 +3791,7 @@ Immutable containers support persistent functional updates with structural shari
 
 `assoc_in` and `update_in` never mutate their input. They return a new root and preserve the root's mutable/immutable class unless an API explicitly requests another representation. Missing intermediate paths are errors unless the chosen operation explicitly permits construction. Writing `void` into a map or untyped/optional prop removes it; writing `void` into a list/body position stores `nil`. Every typed instance reconstructed along the path is revalidated, including a node whose `head` is changed to a `Type`; functional updates cannot forge an invalid nominal value.
 
-Mutable containers use explicit mutating operations, conventionally named with `!`:
+Mutable containers use explicit mutating messages:
 
 ```gene
 (xs .set 1 20)

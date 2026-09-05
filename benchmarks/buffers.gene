@@ -1,0 +1,27 @@
+# End-to-end buffer allocation and byte export through ordinary Gene calls.
+# Run the same file with both release binaries when comparing representations:
+#   gene run benchmarks/buffers.gene
+# Miclone's wire_bench separately measures its scalar-heavy block codec.
+
+(mod buffers)
+
+(fn main [args] : Nil
+  (let iterations 1000)
+  (let length 65536)
+  (var started ($os/monotonic_ms))
+  (repeat iterations
+    (var allocated ($buffer U8 length))
+    (if (!= (allocated .len) length) (panic "buffer length changed")))
+  (var construction (- ($os/monotonic_ms) started))
+
+  (var value ($buffer U8 length))
+  (value .fill 123)
+  (set started ($os/monotonic_ms))
+  (repeat iterations
+    (var bytes (value .to_bytes))
+    (if (!= ($size bytes) length) (panic "byte export length changed")))
+  (var export_time (- ($os/monotonic_ms) started))
+
+  ($println $"iterations=${iterations} bytes=${length}")
+  ($println $"construction_ms=${construction}")
+  ($println $"byte_export_ms=${export_time}"))
