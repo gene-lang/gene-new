@@ -37,7 +37,16 @@
 ((throttled .get) "trail-b")
 ((debounced .get) "drop")
 ((debounced .get) "debounced")
-($sleep 25)
+# A timer's callback can need a further scheduler turn after its timer wakes.
+# Wait for the observable deliveries, with a deadline, rather than assuming
+# every owned callback has completed after one fixed sleep.
+(var delivery_deadline (+ ($os/monotonic_ms) 500))
+(while (&& (< ($os/monotonic_ms) delivery_deadline)
+           (! (&& ((events .get) .contains? "timeout")
+                  ((events .get) .contains? "interval")
+                  ((events .get) .contains? "trail-b")
+                  ((events .get) .contains? "debounced"))))
+  ($sleep 1))
 
 (assert ((events .get) .contains? "timeout")
   "timeout must invoke once")
@@ -46,7 +55,7 @@
 (assert ((events .get) .contains? "lead")
   "throttle must deliver its leading call")
 (assert ((events .get) .contains? "trail-b")
-  "throttle must coalesce to the latest trailing call")
+  $"throttle must coalesce to the latest trailing call: ${(events .get)}")
 (assert (! ((events .get) .contains? "trail-a"))
   "throttle must not grow an unbounded trailing queue")
 (assert ((events .get) .contains? "debounced")

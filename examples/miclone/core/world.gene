@@ -28,8 +28,9 @@
 # what the storage holds rather than eliding a conversion out of it: every value
 # is a float, everywhere, so there is no second representation to disagree with.
 #
-# It costs 2 bytes per node in the client's memory and nothing on the VM, whose
-# `Buffer` is a boxed `seq[Value]` either way (§D7.2). `F32` represents every
+# It costs 2 bytes per content id over packed U16 storage on both hosts.
+# The VM now packs numeric buffers too (§D7.2), so F32 occupies four bytes
+# per element there as well. `F32` represents every
 # integer below 2^24 exactly and `core/registry.gene` caps content at 4,096, so
 # no id is ever rounded and the two backends cannot disagree about one.
 #

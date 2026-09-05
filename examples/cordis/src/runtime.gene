@@ -186,7 +186,16 @@
           ^contexts Any ^instances Any ^service_keys Any ^hook_keys Any
           ^providers Any ^reservations Any ^dependants Any ^hooks Any
           ^binding_cache Any ^subjects Any ^resources Any
-          ^loaders Any ^diagnostics Any})
+          ^loaders Any ^diagnostics Any ^executor Any ^owns_executor Bool})
+
+(type HostExecutor
+  ^^private
+  ^props {^queue Cell ^wake Channel ^task Cell ^active Cell})
+
+(type HostRequest
+  ^^private
+  ^props {^scope Any ^label Str ^callable Any ^args List
+          ^ready Channel ^result Cell ^error Cell ^cancelled Cell})
 
 (type ContextRecord
   ^private true
@@ -467,46 +476,44 @@
 
 # --- default invocation supervision --------------------------------------
 
-(fn apply_argument_list ^^private [bundle]
-  (bundle/callable bundle/args...))
-
 (fn default_invoke_for ^^private [call : PluginCall, instance, registration_scope = nil]
-  # Evaluate only the wrapper declaration under the bounded Env. The callback
-  # itself runs as task bytecode so a nested await/sleep can suspend without
-  # losing its continuation; Task/join is also the panic boundary.
-  (var body (quote (fn [] (apply_argument_list bundle))))
-  (if call/capabilities_restricted
-    (set body
-      `(fn []
-         (with_capabilities [(unquote (... call/capability_selectors))]
-           (apply_argument_list bundle)))))
+  # Binding snapshots the call shape and installs per-invocation limits. The
+  # resulting ordinary function can suspend on the VM frame stack; Task/join
+  # remains the explicit panic and cancellation supervision boundary.
+  (var policy {^max_steps call/limits/max_steps
+               ^max_memory_mb call/limits/max_memory_mb
+               ^timeout_ms call/limits/timeout_ms})
   (var wrapper
-    (eval body
-      ^in (env ^bindings {^apply_argument_list apply_argument_list
-                          ^bundle {^callable call/callable ^args call/args}}
-               ^policy {^max_steps call/limits/max_steps
-                        ^max_memory_mb call/limits/max_memory_mb
-                        ^timeout_ms call/limits/timeout_ms})))
-  (var task (spawn ^lane root (wrapper)))
-  (if (&& (! (absent? instance))
-          (!= call/kind PluginCallKind/cleanup)
-          (! (absent? registration_scope)))
-    (then
-      (var owner_scope registration_scope)
-      (if (&& (! (absent? owner_scope)) (owner_scope/accepting .get))
-        ((owner_scope/entries .get) .push
-          {^kind "task" ^label "plugin-invocation" ^task task}))))
+    (if call/capabilities_restricted
+      ($runtime/bind_call call/callable call/args
+        ^policy policy ^capabilities call/capability_selectors)
+      ($runtime/bind_call call/callable call/args ^policy policy)))
+  (var task nil)
   (var outcome nil)
   (try
+    (set task (spawn ^lane root (wrapper)))
+    (if (&& (! (absent? instance))
+            (!= call/kind PluginCallKind/cleanup)
+            (! (absent? registration_scope)))
+      (then
+        (var owner_scope registration_scope)
+        (if (owner_scope/accepting .get)
+          ((owner_scope/entries .get) .push
+            {^kind "task" ^label "plugin-invocation" ^task task}))))
     (set outcome (task .join))
   ensure
     # Cancellation of the invoker must not orphan its supervised wrapper.
     # Task/join intentionally leaves an independent task running, so this
     # ownership edge is explicit.
-    (if (absent? outcome)
-      (then
-        (task .cancel)
-        (task .join))))
+    (try
+      (if (&& (absent? outcome) (! (absent? task)))
+        (then
+          (task .cancel)
+          (task .join)))
+    ensure
+      # A binding captures this invocation scope. Release the local edge after
+      # joining, including failed calls, instead of leaving a closure cycle.
+      (set wrapper nil)))
   (match outcome
     (when (TaskOutcome/ok value) value)
     (when (TaskOutcome/error error) (fail error))
@@ -603,7 +610,65 @@
     (Context ^token record/token)
     (ActivationContext ^token record/token)))
 
-(fn new_runtime [options : RuntimeOptions] : Runtime
+(fn finish_host_request ^^private [request]
+  (try (request/ready .try_send nil) catch ChannelClosed nil))
+
+(fn reject_host_request ^^private [request]
+  (if (&& (absent? (request/result .get)) (absent? (request/error .get)))
+    (request/error .set
+      (EffectDisposed ^message "effect no longer accepts background work")))
+  (finish_host_request request))
+
+(fn host_executor_loop ^^private [executor]
+  (var pending (fresh_list))
+  (try
+    (while true
+      (executor/wake .recv)
+      (set pending (executor/queue .swap (fresh_list)))
+      (for request in pending
+        (if (|| (request/cancelled .get)
+                (! (request/scope/accepting .get)))
+          (reject_host_request request)
+          (try
+            (scope
+              (var task
+                (spawn ^lane root (request/callable request/args...)))
+              ((request/scope/entries .get) .push
+                {^kind "task" ^label request/label ^task task})
+              (request/result .set task)
+              (if (|| (request/cancelled .get)
+                      (! (request/scope/accepting .get)))
+                (task .cancel))
+              (task .detach))
+            (finish_host_request request)
+          catch Any
+            (request/error .set $ex)
+            (finish_host_request request))))
+      (set pending (fresh_list)))
+  ensure
+    (executor/active .set false)
+    (executor/wake .close)
+    (for request in pending (reject_host_request request))
+    (for request in (executor/queue .swap (fresh_list))
+      (reject_host_request request))))
+
+(fn new_host_executor ^^private []
+  (var executor
+    (HostExecutor ^queue ($cell (fresh_list)) ^wake ($channel ^capacity 1)
+                  ^task ($cell nil) ^active ($cell true)))
+  (var task (spawn ^lane root (host_executor_loop executor)))
+  (executor/task .set task)
+  (task .detach)
+  executor)
+
+(fn close_host_executor ^^private [executor]
+  (var task (executor/task .get))
+  (if_not (absent? task)
+    (task .cancel)
+    (task .join))
+  (executor/task .set nil))
+
+(fn create_runtime ^^private [options : RuntimeOptions, executor = nil] : Runtime
   ($runtime/require_root_lane)
   (var limits (require_positive_limits options/default_limits))
   (var invoker
@@ -621,7 +686,9 @@
       ^binding_cache ($cell (fresh_map)) ^subjects ($cell (fresh_list))
       ^resources ($cell (fresh_list))
       ^loaders ($cell (fresh_list))
-      ^diagnostics ($cell (fresh_list))))
+      ^diagnostics ($cell (fresh_list))
+      ^executor (if (absent? executor) (new_host_executor) executor)
+      ^owns_executor (absent? executor)))
   ((runtime_records .get) .push record)
   (var root_record
     (new_context_record record nil nil true
@@ -631,6 +698,9 @@
   ((record/hook_keys .get) .put hmr_reloaded/id hmr_reloaded)
   ((record/hook_keys .get) .put config_update/id config_update)
   (Runtime ^token token))
+
+(fn new_runtime [options : RuntimeOptions] : Runtime
+  (create_runtime options))
 
 (fn runtime_root ^^private [runtime : Runtime] : Context
   (var record (runtime_record runtime))
@@ -1413,24 +1483,16 @@
   (if_not (absent? error) (fail error))
   nil)
 
+(fn run_owned_invocation ^^private [scope, thunk]
+  (invoke_call scope/runtime scope/owner PluginCallKind/activate
+               thunk [] scope true scope/context))
+
 (fn owner_spawn ^^private [owner, label : Str, thunk]
   (var scope (require_accepting_scope owner))
   (if_not (callable? thunk)
     (plugin_error PluginActivationError "effect task must be callable"
                   scope/owner))
-  (var task
-    (spawn ^lane root
-      (invoke_call scope/runtime scope/owner PluginCallKind/activate
-                   thunk [] scope true scope/context)))
-  # Root-lane spawn returns before the body starts, so cancellation ownership
-  # is recorded before the task can create another visible effect.
-  ((scope/entries .get) .push
-    {^kind "task" ^label label ^task task})
-  # The transition task is only the acquisition turn. Move the child out of
-  # its temporary structured parent after the effect ledger owns it; otherwise
-  # returning from activation would cancel work intended to live until unload.
-  (task .detach)
-  task)
+  (spawn_effect_call owner label run_owned_invocation [scope thunk]))
 
 (fn owner_install ^^private [owner, plugin, config]
   (var scope (require_accepting_scope owner))
@@ -1448,13 +1510,35 @@
   (invoke_call scope/runtime scope/owner kind callable args nil false
                (effect_owner_context owner scope)))
 
-(fn spawn_effect_loop [owner, label : Str, thunk]
+(fn spawn_effect_call [owner, label : Str, callable, args : List]
+  # Host adapters submit module-defined work to the runtime's owned executor.
+  # Its execution context predates plugin invocations, so a timer loop does
+  # not inherit the deadline of the activation that registered it. Plugin
+  # callbacks inside that loop still pass through invoke_effect_owner.
+  ($runtime/require_root_lane)
   (var scope (require_accepting_scope owner))
-  (var task (spawn ^lane root (thunk)))
-  ((scope/entries .get) .push
-    {^kind "task" ^label label ^task task})
-  (task .detach)
-  task)
+  (var executor scope/runtime/executor)
+  (if_not (executor/active .get)
+    (plugin_error EffectDisposed "runtime executor is closed" scope/owner))
+  (var request
+    (HostRequest ^scope scope ^label label ^callable callable ^args (copy_list args)
+      ^ready ($channel ^capacity 1) ^result ($cell nil) ^error ($cell nil)
+      ^cancelled ($cell false)))
+  ((executor/queue .get) .push request)
+  (executor/wake .try_send nil)
+  (var accepted false)
+  (try
+    (request/ready .recv)
+    (var error (request/error .get))
+    (if_not (absent? error) (fail error))
+    (set accepted true)
+    (request/result .get)
+  ensure
+    (if_not accepted
+      (request/cancelled .set true)
+      (var task (request/result .get))
+      (if_not (absent? task) (task .cancel)))
+    (request/ready .close)))
 
 # --- providers and service resolution ------------------------------------
 
@@ -2038,6 +2122,7 @@
       (instance_dispose (instance_handle selected))
       (runtime_await_settled handle)))
   (runtime_await_settled handle)
+  (if runtime/owns_executor (close_host_executor runtime/executor))
   (for context in (runtime/contexts .get) (context/alive .set false))
   (runtime/instances .set (fresh_list))
   (runtime/contexts .set (fresh_list))
@@ -2058,6 +2143,7 @@
   (continuation_records .set retained_continuations)
   (set runtime/invoker nil)
   (set runtime/options nil)
+  (set runtime/executor nil)
   (runtime/state .set "closed")
   nil)
 
@@ -2522,7 +2608,7 @@
 
 (fn new_candidate_runtime ^^private [loader, replaced_direct]
   (var live loader/runtime)
-  (var handle (new_runtime live/options))
+  (var handle (create_runtime live/options live/executor))
   (var candidate (runtime_record handle))
   (candidate/service_keys .set (copy_map (live/service_keys .get)))
   (candidate/hook_keys .set (copy_map (live/hook_keys .get)))

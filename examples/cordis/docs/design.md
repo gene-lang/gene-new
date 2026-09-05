@@ -428,9 +428,11 @@ effective limits. `capabilities_restricted` distinguishes trusted inheritance
 from an explicitly empty selector list; without it, a manifest requesting no
 capabilities could accidentally inherit the host context. The invoker calls the
 callable exactly once and either returns its value or raises the typed failure
-for that call. The default adapter uses a bounded `Env` to create an
-argument-list trampoline under `with_capabilities`, executes that wrapper as a
-root-lane task, and observes it through `Task/join`. This preserves suspension
+for that call. The default adapter uses `$runtime/bind_call` to bind the existing
+callable and arguments to its execution limits and capability ceiling. It
+executes the resulting zero-argument function as a root-lane task and observes
+it through `Task/join`, then clears the local bound-function reference in
+`ensure` to break its captured-scope cycle. This preserves suspension
 while containing recoverable errors and panics; `$runtime/guard_call` remains
 the smaller synchronous adapter seam. No other runtime path invokes
 plugin-supplied code. The
@@ -1363,6 +1365,22 @@ Timer callbacks execute under their captured use context and owner effect
 scope. A callback cannot create effects after that owner begins unloading.
 Intervals use bounded delivery: a slow consumer coalesces ticks rather than
 growing an unbounded queue.
+
+The lifetime of a timer or actor supervisor can exceed one plugin invocation's
+timeout. A private host executor, created with the runtime, starts these owned
+tasks from the runtime's context. Adapters submit a module-defined host function
+and its arguments; the executor registers each task in the effect ledger before
+releasing it. Every plugin callback still passes through `PluginInvoker` and
+receives fresh per-call limits, intersected with any enclosing execution policy.
+Tick streams are also created in the host task so their lazy execution does not
+retain the activation call's deadline. Interrupted submissions cancel any task
+already created, and runtime shutdown rejects pending submissions and closes the
+executor after effect cleanup. Reload candidates share the live executor and
+do not own its shutdown.
+
+`spawn_effect_call` is a trusted host-adapter seam. The shared `plugin_api`
+facade exposes `EffectOwner`; its `spawn` operation routes plugin work through
+the bounded invoker. It does not expose the runtime module's host executor API.
 
 ## 15. Logging
 

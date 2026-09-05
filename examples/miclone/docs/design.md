@@ -109,8 +109,9 @@ bidirectional transport Gene code can hold is the RFC 6455 **WebSocket server**
 in `src/gene/http_server.nim` — server side only, no client.
 
 **Two smaller gaps** that matter later: `fs` has `write_bytes` but no
-`read_bytes`, and `Buffer` is a `seq[Value]` — boxed, 8 bytes per element
-whatever the declared element type.
+`read_bytes`, and `Buffer` was a `seq[Value]` — boxed, 8 bytes per element
+whatever the declared element type. This is the initial platform audit;
+§D7 records the subsequent byte-I/O and packed-buffer implementations.
 
 The conclusion is not that this is impossible. It is that **the platform edge is
 the project's real content**, and a design that treats rendering as a detail to
@@ -475,12 +476,13 @@ each lands with the spec coverage the repo requires (`nimble spec`,
 Typed arrays landed not as a new web-only type but as **`(Buffer T)`** — the same
 buffer the VM has — so `core/` meshing code is one module on both backends rather
 than two. `(Buffer F32)` lowers to `Float32Array`, and `(b .get i)` /
-`(b .set i v)` compile to plain indexed access. Element vocabulary is
+`(b .set i v)` lower to typed-array access with portable index and value checks.
+Element vocabulary is
 `I8 I16 I32 U8 U16 U32 F32 F64`; `I64`/`U64` are excluded because
-`BigInt64Array` elements are `bigint`. **Indices and lengths are `F64` on both
-backends** — the VM's `Buffer/get`/`set` were widened to accept an integral
-Float — because an `Int` index is a `bigint` in the profile and would allocate one
-per element write in the meshing loop.
+`BigInt64Array` elements are `bigint`. **Indices accept Int or integral F64 on
+both backends; lengths return Int.** Kernels explicitly convert a count to F64
+once where needed, while keeping F64 cursors so element access does not require
+a BigInt conversion.
 
 WebGL2 is 39 bindings covering context, buffers, shaders, programs, attributes,
 uniforms, vertex arrays, textures, state, and draw calls. `Gl` is its own type,
@@ -490,26 +492,14 @@ strings** — `($gl/bind_buffer gl "array" vbo)` — resolved to their WebGL con
 during analysis, so a typo is a compile error naming the argument rather than an
 `INVALID_ENUM` on a frame that renders nothing.
 
-**2. Packed typed `Buffer` (VM). Open.**
+**2. Packed typed `Buffer` (VM). Implemented.**
 
-`Buffer` is `seq[Value]`: 8 bytes per element and a boxed write per `set`. A 16³
-block is 4,096 nodes; at 4 bytes per node that is 16 KB packed and 32 KB boxed for
-content ids alone, before the two parameter arrays. The consumers are all
-server-side — holding loaded blocks resident, light, and the storage and protocol
-codecs, which both want a packed byte run and both pay an element-by-element pack
-and unpack today.
-
-Wanted: unboxed storage for `U8 U16 I32 F32 F64`, with `Buffer/get`/`set`
-compiling to a direct indexed access on the known-element-type path. This is the
-item most likely to need care — it touches the NaN-boxed value layer, and
-`AGENTS.md`'s rules about `sizeof(Value)`, zero initialization, and
-allocation-free hot paths all apply.
-
-It was listed as §D6.3's escape hatch and was not needed: the granularity change
-plus the cheap rungs of the mitigation ladder were enough. On the *web* side the
-element type turned out not to be a footprint question at all but a
-representation one (§D6.1), which is a source change rather than a VM change and
-leaves this item where it was.
+Fixed-width numeric buffers now use their declared byte widths on the VM.
+Generic and arbitrary-precision buffers retain Gene values. F32 storage rounds
+once to binary32 on both hosts, and integer writes remain range checked.
+`fill` and `copy_from` use bulk storage operations; the U8 byte bridge avoids an
+intermediate per-byte Value sequence. The application's three-array layout is
+unchanged. See `docs/spec/types.md` and `benchmarks/buffers.gene`.
 
 **3. `fs/read_bytes` + binary integer/float codecs. Blocked M4. Landed.**
 
@@ -680,29 +670,20 @@ unit, so `noise.gene` calling `exact.gene` does not lower), and **`(/ sum norm)`
 by a computed divisor**, which is what `fbm2`/`fbm3` end in — lowering them needs
 a way for compiled code to raise.
 
-**12. `Buffer/len` answers a different type on each backend. Open.**
+**12. Portable lengths and conversions. Implemented.**
 
-The VM returns an `Int`; the web profile's underlying `.length` is a `number`,
-which is `F64`. Arithmetic coerces on both, so using a length as an *operand*
-works either way and nothing noticed for four milestones. Using it as a *value*
-fails on whichever backend you did not try.
-
-**It is `.len` specifically.** A buffer *read* is `Int` on both backends, so
-`($to_float (b .get i))` is the ordinary conversion and compiles everywhere.
-`.len` is the one operation in the portable surface whose type depends on which
-side you are on — and **the obvious fix does not exist**: `$to_float` is total on
-numbers on the VM and deliberately partial in the profile, which rejects a value
-already of the target kind. So `($to_float (b .len))` fails on the web, the bare
-form fails on the VM, and no single spelling compiles for both.
-
-The workaround is `(+ 0.0 …)`: mixed arithmetic promotes to Float on the VM and is
-a no-op on a JavaScript number. `core/wire.gene` wraps it once as `byte_len`
-rather than spreading the idiom. The fix is for `Buffer/len` to answer `F64` on
-both sides, matching item 1's reasoning — but it is a VM-surface change with
-existing callers, so it wants doing deliberately rather than inside a game
-milestone.
+`Buffer/len` and `List/size` return Int on both hosts. Indices accept Int and
+integral F64, and numeric conversions are idempotent. `core/wire.gene` now uses
+`($to_float b/.len)` for its F64 cursor calculations. The old `(+ 0.0 …)`
+compatibility workaround is gone. Numeric-buffer misses and invalid writes
+also follow the same rules instead of inheriting JavaScript coercion.
 
 **13. Named parameters in the web profile. Blocked M7. Landed.**
+
+Application-foundations follow-up: named defaults (`^name : T = expression`)
+now run in the callee's scope, with supplied argument evaluation order preserved.
+The current restrictions are recorded in `docs/web-profile.md`.
+
 
 `^name : T` was a VM-only parameter form: a module function declaring one failed
 to transpile. That is a small hole with a large consequence, because `^name` is
@@ -713,13 +694,14 @@ can read, and a definition is read far more often than written.
 The profile takes named parameters on **module functions**, with `^name local : T`
 and `^name : T?` as on the VM, and lowers them to positional JavaScript slots in
 declaration order — the profile knows every callee statically, so a call's props
-are placed into their slots during analysis. No options object and no allocation,
-and an exported function stays positionally callable from JavaScript. Four
+are placed into their slots during analysis. No options object is needed,
+and an exported function stays positionally callable from JavaScript. Three
 refusals fall out of the lowering, each source-located: no named parameters on a
 `message`, `ctor`, extern or callback, since an `(Fn [A …] R)` type has nowhere to
 put a name; no positional parameter after a named one; no
-function-with-named-parameters used as a value; and no defaults, since `: T?` is
-the spelling for optional.
+function-with-named-parameters used as a value. A named parameter may have a
+default expression; an omitted optional parameter without a default binds nil.
+Positional defaults remain outside the web profile.
 
 **It also closed a silent divergence.** Props on a call were being *dropped*:
 `(add 1.0 2.0 ^oops 9.0)` compiled and threw `^oops` away, while the VM raised
@@ -728,43 +710,24 @@ because the profile emitted working code — the exact failure mode §D3.1's rul
 exists to prevent. Nine cases now hold the contract, four of them asserting that
 both backends refuse the same source.
 
-**14. Neither backend re-exports an imported binding the same way. Open.**
+**14. Explicit public re-exports. Implemented.**
 
-`core/api.gene` was written to be a mod's only import: it would import the tile
-kinds, drawtypes and ore shapes from the engine modules and a mod would import
-them from it. That compiles in the web profile and fails on the VM with
-`module/namespace has no export`.
+`(import [names] from "./module.gene" ^export true)` exposes a curated facade
+on both backends. Types, protocols, functions, and constants retain their
+origin identity through aliases and re-export chains. Ordinary imports remain
+private. `core/api.gene` now exports the mod vocabulary, `mods/default` uses
+one public import, and the sandbox shares only that facade. Existing JavaScript
+constant getter functions remain compatible; direct constant exports are also
+available.
 
-The profile allows it because a `let` constant is a literal, so importing one
-*copies the value* rather than referencing the other module — and a copied value
-is trivially re-exportable. The VM resolves an import against a module's own
-exports, and a binding that arrived by import is not one. **A *type* re-exports on
-neither**, which is a third behaviour again, and it is why §D5.2's shared list is
-six modules rather than one.
+**15. Portable map iteration. Implemented.**
 
-This is item 12's shape exactly — one operation in the portable surface whose
-meaning depends on which side you are on — with the same tell: the code that hits
-it looks completely ordinary. The workaround is to import a constant from the
-module that defines it, which has the accidental virtue that every import names
-where a number is defined rather than where it was passed through.
-
-The fix wants a decision rather than a patch. Making the **profile refuse** it
-matches the VM and is the safe direction; making the **VM re-export** is the more
-useful language and is how most module systems behave, but it is a semantics
-change with a visibility question attached (is every import re-exported, or only a
-declared set?).
-
-**15. The web profile cannot iterate a `PropMap`. Open.**
-
-`(for [k v] in m …)` over a `PropMap` is rejected. The profile has `get` and
-`size`, so a map can be *read* by a key already known and cannot be walked.
-
-It costs a spelling rather than a capability. §2 writes a node's groups as
-`^groups {^cracky 3 ^falling_node 1}`, which is upstream's shape and the one a
-registration site wants; a portable API cannot accept it, so `register_group`
-takes one group per call. That is not a bad API — each rating is independently
-diagnosable, and it matches `register_tile` and `register_drop_rule` — but it is a
-shape chosen by a compiler gap rather than by design.
+PropMap loops yield symbol/value pairs in insertion order, and general Map
+loops preserve their key/value types. Eager loops snapshot their input as the
+VM does. `register_groups` consequently accepts ordinary data such as
+`{^crumbly 2 ^falling_node 1}` and uses the existing registration validators.
+The default mod's gravel declaration exercises this path without changing
+its group order or IDs.
 
 **16. A tick hook on the HTTP serve loop. Blocked M8. Landed.**
 
@@ -1070,12 +1033,12 @@ column is what makes it a mod's to use; nothing in the engine mentions obsidian.
 Nothing in `mods/default` declares `level`, so every node stays diggable by hand,
 and the spec asserts that directly.
 
-**`^groups {^cracky 3}` is not the spelling.** §2 writes a node's groups as a
-map, which is upstream's shape and the one a registration site wants. A portable
-API cannot take one — the web profile cannot iterate a `PropMap` (§D7.15) — so
-`register_group` is one call per fact. That matches `register_tile` and
-`register_drop_rule` and makes each rating independently diagnosable, but it is a
-shape chosen by a compiler gap rather than by design.
+**Groups can be registered as a map.** §2 writes a node's groups as a map,
+which is upstream's shape and the one a registration site wants. With portable
+`PropMap` iteration (§D7.15), `register_groups` accepts that shape:
+`(register_groups game "miclone:gravel" {^crumbly 2 ^falling_node 1})`.
+`register_group` remains available for one fact at a time. This is a separate
+registration call; `register_node` does not yet take a `^groups` argument.
 
 **Not built:** the inventory image. An item that is a node draws as its node's
 tile; an item that is not needs an image §6's atlas has no room for. And

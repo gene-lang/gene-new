@@ -4,7 +4,7 @@
 (mod actor)
 
 (import [PluginCallKind] from "./model")
-(import [invoke_effect_owner spawn_effect_loop] from "./runtime")
+(import [invoke_effect_owner spawn_effect_call] from "./runtime")
 
 (type GuardedActorHandler
   ^private true
@@ -14,6 +14,19 @@
       (invoke_effect_owner self/owner PluginCallKind/activate
                            self/callable call/body))))
 
+(fn supervise_actor ^^private [ready, initial, handler, mailbox, message_type]
+  (scope
+    (var actor
+      (if ($absent? message_type)
+        ($actor/spawn ^mailbox mailbox
+          ^init (fn [] initial) ^handle handler)
+        ($actor/spawn ^mailbox mailbox ^type message_type
+          ^init (fn [] initial) ^handle handler)))
+    (ready .send actor)
+    # This supervisor is host-owned. Each handler invocation has its own
+    # policy; the actor lifetime is not the initialization call's deadline.
+    ($sleep 2147483647)))
+
 (fn owned_actor
   [owner, label : Str, init, handler,
    ^mailbox mailbox : Int = 64, ^type message_type = nil]
@@ -21,16 +34,6 @@
   (var initial
     (invoke_effect_owner owner PluginCallKind/activate init []))
   (var guarded_handler (GuardedActorHandler ^owner owner ^callable handler))
-  (spawn_effect_loop owner label
-    (fn []
-      (scope
-        (var actor
-          (if ($absent? message_type)
-            ($actor/spawn ^mailbox mailbox
-              ^init (fn [] initial) ^handle guarded_handler)
-            ($actor/spawn ^mailbox mailbox ^type message_type
-              ^init (fn [] initial) ^handle guarded_handler)))
-        (ready .send actor)
-        # Cancellation of the owner unwinds this scope and closes its actor.
-        ($sleep 2147483647))))
+  (spawn_effect_call owner label supervise_actor
+    [ready initial guarded_handler mailbox message_type])
   (ready .recv))

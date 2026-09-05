@@ -57,10 +57,8 @@
 (let el_box 2.0)        # a filled rectangle, for grouping
 (let el_button 3.0)     # sends its action to the server when pressed
 
-# **The web profile exports functions, not `let` bindings**, so the kinds above
-# are invisible to a JavaScript caller. `core/protocol.gene` solved the same
-# problem the same way for message kinds and says why: a harness that restates
-# one is a second definition of the thing being checked.
+# Compatibility getters remain for existing JavaScript consumers. Constants
+# are also direct ESM exports, with one definition shared by both surfaces.
 (fn kind_label [] : F64 el_label)
 (fn kind_item [] : F64 el_item)
 (fn kind_box [] : F64 el_box)

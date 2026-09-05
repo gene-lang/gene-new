@@ -51,8 +51,10 @@ off the stale artifact.
 
 ```sh
 gene build --target web client/net_main.gene --out-dir dist
-gene run server                  # opens or generates the world, listens on 8790
-                                 # GENE_MICLONE_WORLD=/tmp/w for a throwaway one
+mkdir -p /tmp/miclone_server_world
+gene run --allow_read_write_dir /tmp/miclone_server_world server
+                                 # opens or generates the world, listens on 8790
+                                 # a custom GENE_MICLONE_WORLD needs its own grant
 python3 -m http.server 8000      # then open http://localhost:8000/net.html
 ```
 
@@ -153,7 +155,9 @@ node tools/net_client_smoke.mjs  # boots its own server and plays it, ~40 s
 gene run worldgen                # §D6.3's three budget readings
 gene run wire_bench              # what a block message costs to encode
 gene run loader                  # the mod, read off disk and sandboxed (§9.3)
-gene run persistence create && gene run persistence verify   # §11, two processes
+mkdir -p /tmp/miclone_world
+gene run --allow_read_write_dir /tmp/miclone_world persistence create
+gene run --allow_read_write_dir /tmp/miclone_world persistence verify  # §11
 ```
 
 ### Network probes
@@ -180,7 +184,8 @@ generate.
 ```sh
 lsof -tnP -iTCP:8790 -sTCP:LISTEN | xargs -r kill   # and wait for it to go
 rm -rf /tmp/miclone_play_world
-( cd examples/miclone && GENE_MICLONE_WORLD=/tmp/miclone_play_world gene run server & )
+mkdir -p /tmp/miclone_play_world
+( cd examples/miclone && GENE_MICLONE_WORLD=/tmp/miclone_play_world gene run --allow_read_write_dir /tmp/miclone_play_world server & )
 ```
 
 **Wait on the port, not the log.** The server's stdout is block-buffered when it

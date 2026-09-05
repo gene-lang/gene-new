@@ -35,7 +35,6 @@
 
 (mod mods_runtime)
 
-(import $fs [read_text ReadDir])
 (import $os [get_env Env])
 (import [Game new_game] from "../core/api.gene")
 
@@ -48,17 +47,7 @@
 # VM. **The host writes this and a mod cannot add to it** — that is the whole
 # point, because the previous rule let the mod pick any path in the package and
 # get a host module with host authority.
-(let mod_api : (List Str)
-  ["core/api.gene"
-   # A type re-exports on neither backend (§D7.14), so these four carry the
-   # vocabulary `core/api.gene` cannot pass through: `World` for an ABM action,
-   # the tile kinds, the drawtypes, and the ore shapes.
-   "core/loaded.gene"
-   "core/tiles.gene"
-   "core/registry.gene"
-   "core/ore.gene"
-   # §12's ABM helpers a mod names to register one.
-   "core/abm.gene"])
+(let mod_api : (List Str) ["core/api.gene"])
 
 (type ModLoadError
   ^props {^message Str}
@@ -91,7 +80,14 @@
 # compiled in.
 (fn load_mod_at [game : Game dir : Str] : Str
   (var manifest_path $"${dir}/${manifest_name}")
-  (var text (read_text manifest_path))
+  # Select the host's launch directory before reading a relative manifest.
+  # Otherwise a second grant for the world gives that same relative path two
+  # meanings. this_pkg/root may name a build snapshot rather than the host's
+  # working tree; load_sandboxed still resolves code against that snapshot.
+  (var launch_dir ($os/launch_dir))
+  (var text
+    (with_capabilities [(fs/ReadDir launch_dir)]
+      ($fs/read_text manifest_path)))
   # A manifest is Gene data, so reading it is `read_all` and a prop lookup —
   # there is no parser here and there should not be one. `read_all` answers a
   # stream of top-level forms and a manifest is exactly one.
@@ -113,10 +109,9 @@
   # `load_mod_at` a mod used to call to re-enter the sandbox under a manifest it
   # shipped itself with `^grants ["fs"]`.
   #
-  # So this list is §9's API surface, stated once. It is longer than
-  # `core/api.gene` alone because neither backend re-exports an imported *type*
-  # (§D7.14), so a mod must import `World`, the tile kinds, the drawtypes and the
-  # ore shapes from the modules that declare them.
+  # The facade explicitly re-exports the public types and constants while
+  # retaining their defining modules' identities. Registry implementation
+  # modules no longer need independent entries in this allowlist.
   (var mod_value ($runtime/load_sandboxed dir entry grants mod_api))
   # The mod's own entry point, called with the `Game` it registers into. What a
   # mod can reach *through* `game` is `core/api.gene`'s surface and nothing

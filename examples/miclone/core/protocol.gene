@@ -106,14 +106,9 @@
 # is the only one (§D7.12).
 # --- constants, as functions -------------------------------------------------
 #
-# **The web profile exports functions, not `let` bindings**, so every constant
-# above is invisible to a JavaScript caller. `tools/mesh_bench.mjs` handles that
-# by restating the geometry it needs, which is fine for one number and wrong for
-# a protocol: a harness that restates a message kind is a second definition of
-# the wire format, which is the thing this module exists not to have.
-#
-# So the numbers a non-Gene peer needs are readable. Nothing in Gene calls
-# these — Gene sees the `let`s directly.
+# Compatibility getters for existing JavaScript peers and harnesses. The web
+# profile also exports the constants directly now; both surfaces refer to the
+# same definitions, so peers need not restate the wire vocabulary.
 (fn kind_hello [] : F64 msg_hello)
 (fn kind_registry [] : F64 msg_registry)
 (fn kind_block [] : F64 msg_block)

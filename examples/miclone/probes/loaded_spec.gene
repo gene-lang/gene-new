@@ -437,7 +437,7 @@
   (collect out)
   (var bad 0.0)
   (var i 0.0)
-  (var n out/.size)
+  (var n ($to_float out/.size))
   (while (< i n)
     (if_yes ($str/starts_with? out/%i "FAIL")
       (set bad (+ bad 1.0)))

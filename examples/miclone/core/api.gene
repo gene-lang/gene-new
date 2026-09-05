@@ -35,34 +35,25 @@
 
 (mod api ^profile web)
 
-# **Registration is what this module stands in front of, not the vocabulary.**
-# A mod imports `register_*` and `Game` from here, and imports the tile kinds,
-# drawtypes and ore shapes from the modules that define them. That is not the
-# shape I wanted — one import per mod was — and it is the shape both backends
-# agree on: neither re-exports an imported binding the same way. The VM refuses
-# it (`module/namespace has no export`) and the web profile silently copies the
-# literal, so a re-exporting API would compile in a browser and fail on the
-# server. Naming where a number is defined is the honest fallback.
-#
-# The five registries *are* reached through one `Game`, and that is the better
-# shape regardless of what forced it: §9's sketch writes
-# `(register_node "default:stone" …)` with no registry in sight, and upstream
-# reaches the same registries through an implicit global. `Game` is that, made
-# explicit — and one context parameter is also what keeps a mod from having to
-# import five type names it never mentions.
-(import [Registry new_registry register id_of
-         draw_normal draw_airlike draw_glasslike draw_allfaces draw_plantlike
-         draw_liquid]
-        from "./registry.gene")
+# Registration and its public vocabulary share this facade on both backends.
+# Only these explicit selections are re-exported; implementation helpers stay
+# private imports. A mod can use one API module, and the sandbox needs to share
+# that one module rather than expose each registry's implementation surface.
+(import [draw_normal draw_airlike draw_glasslike draw_allfaces draw_plantlike
+         draw_liquid] from "./registry.gene" ^export true)
+(import [tile_solid tile_ore tile_overlay] from "./tiles.gene" ^export true)
+(import [shape_scatter shape_sheet shape_blob] from "./ore.gene" ^export true)
+(import [abm_on_change abm_sampled] from "./abm.gene" ^export true)
+(import [World] from "./loaded.gene" ^export true)
+
+(import [Registry new_registry register id_of] from "./registry.gene")
 (import [content_unknown world_limit] from "./world.gene")
-(import [TileRegistry new_tiles add_tile tile_id
-         tile_solid tile_ore tile_overlay]
-        from "./tiles.gene")
+(import [TileRegistry new_tiles add_tile tile_id] from "./tiles.gene")
 (import [BiomeRegistry register_biome] from "./biome.gene")
-(import [OreRegistry register_ore shape_scatter shape_sheet shape_blob]
+(import [OreRegistry register_ore]
         from "./ore.gene")
 (import [DropTable new_drop_table register_drop] from "./drops.gene")
-(import [AbmRegistry new_abms add_abm queue_node abm_on_change abm_sampled]
+(import [AbmRegistry new_abms add_abm queue_node]
         from "./abm.gene")
 (import [DecorRegistry new_decors add_decor] from "./decor.gene")
 (import [CraftRegistry new_crafts add_recipe] from "./craft.gene")
@@ -73,7 +64,7 @@
          el_label el_item el_box el_button]
         from "./formspec.gene")
 (import [ContainerStore new_containers] from "./container.gene")
-(import [World node_at] from "./loaded.gene")
+(import [node_at] from "./loaded.gene")
 (import [GroupRegistry new_groups intern_group group_named set_rating rating_of]
         from "./groups.gene")
 (import [ItemRegistry new_items add_item add_tool_cap item_named item_of_node
@@ -206,7 +197,7 @@
                    ^light_source : F64?
                    ^is_item : Bool?
                    ^stack_max : F64?] : F64
-  (var given tiles/.size)
+  (var given ($to_float tiles/.size))
   (if_yes (|| (< given 1.0) (> given 3.0))
     (fail (new UnknownTile
                $"node ${name} names $($to_int given) tiles; it takes one, two, or three")))
@@ -232,13 +223,9 @@
 
 # --- groups ------------------------------------------------------------------
 #
-# §2 spells a node's groups as a map — `^groups {^cracky 3 ^falling_node 1}` —
-# and that spelling is not available here: **the web profile cannot iterate a
-# `PropMap`**, so a portable API cannot take one and read it back. One call per
-# fact is the portable form, and it is the shape `register_tile` and
-# `register_drop_rule` already have. It also makes each rating independently
-# diagnosable: a group on a node nobody registered fails here, with a position,
-# rather than at the first dig. §D7.15 tracks the profile gap.
+# Both a named single-group registration and a property-map registration use
+# the same validation path. Maps retain insertion order on both backends, so
+# a declaration such as {^crumbly 2 ^falling_node 1} is portable.
 #
 # A group name is interned on first use rather than declared, because a group
 # has no definition — only a name two mods happen to agree on (`core/groups.gene`).
@@ -249,6 +236,12 @@
   (set_rating game/groups (node_id game node)
               (intern_group game/groups group)
               (?? rating 3.0)))
+
+# A property map keeps multi-group declarations readable. Registration order
+# is the map's insertion order, so assigned group IDs remain deterministic.
+(fn register_groups [game : Game node : Str groups : PropMap] : Nil
+  (for [group rating] in groups
+    (register_group game node ^group $"${group}" ^rating ($to_float rating))))
 
 # --- items -------------------------------------------------------------------
 #
@@ -383,10 +376,10 @@
 (fn nth_num [xs : (List F64) i : F64] : F64 xs/%i)
 
 (fn ingredient_id [game : Game names : (List Str) i : F64] : F64
-  (if (> names/.size i) (item_id game (nth_str names i)) no_item))
+  (if (> ($to_float names/.size) i) (item_id game (nth_str names i)) no_item))
 
 (fn ingredient_n [counts : (List F64) i : F64] : F64
-  (if (> counts/.size i) (nth_num counts i) 0.0))
+  (if (> ($to_float counts/.size) i) (nth_num counts i) 0.0))
 
 (fn item_id [game : Game name : Str] : F64
   (var id (item_named game/items name))
@@ -399,7 +392,7 @@
                     ^from : (List Str)
                     ^counts : (List F64)
                     ^yield : F64?] : F64
-  (if_yes (> from/.size 4.0)
+  (if_yes (> from/.size 4)
     (fail (new UnknownNode
                $"recipe for ${makes} names $($to_int from/.size) ingredients; four is the ceiling")))
   (add_recipe game/crafts (item_id game makes) (?? yield 1.0)

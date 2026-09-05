@@ -126,7 +126,7 @@
 
 (fn clear_inventory [inv : (Buffer F64)] : Nil
   (var i 0.0)
-  (var n inv/.len)
+  (var n ($to_float inv/.len))
   (while (< i n)
     (inv .set i 0.0)
     (set i (+ i 1.0))))

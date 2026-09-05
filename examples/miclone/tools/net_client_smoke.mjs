@@ -40,7 +40,7 @@
 
 import { spawn } from "node:child_process";
 import net from "node:net";
-import { rm, stat } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import { hud, hotbar, fire, tick, key, click, lookDown, glDraws,
          created, form, formTitle } from "./dom_stub.mjs";
 
@@ -54,10 +54,8 @@ const { new_cursor } = await import(D + "wire.mjs");
 const P = await import(D + "protocol.mjs");
 const IT = await import(D + "item.mjs");
 
-// The wire format has one definition and it is `core/protocol.gene`; the web
-// profile exports functions rather than `let` bindings, which is why these are
-// calls. Restating a message kind here would be a second definition of the
-// thing this whole harness is checking.
+// The wire format has one definition in `core/protocol.gene`. These stable
+// getter functions remain available alongside its exported constants.
 const KIND = {
   hello: P.kind_hello(), registry: P.kind_registry(), block: P.kind_block(),
   delta: P.kind_node_delta(), inventory: P.kind_inventory(),
@@ -139,7 +137,10 @@ async function bootServer() {
   console.log(`  starting \`gene run server\` on ${WORLD}` +
     (fresh ? " — generating a world, about a minute" : " — loading, about 30 s"));
 
-  child = spawn(GENE, ["run", "server"], {
+  // The CLI grants filesystem access explicitly outside the package. Create
+  // and grant only this harness's world directory, not the surrounding /tmp.
+  await mkdir(WORLD, { recursive: true });
+  child = spawn(GENE, ["run", "--allow_read_write_dir", WORLD, "server"], {
     cwd: MICLONE,
     env: { ...process.env, GENE_MICLONE_WORLD: WORLD },
     stdio: ["ignore", "pipe", "pipe"],

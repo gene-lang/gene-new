@@ -10,6 +10,7 @@
 #   tools/build_web.sh            # incremental
 #   tools/build_web.sh --clean    # after a module was added or removed
 set -e
+GENE_EXE=${GENE_EXE:-gene}
 cd "$(dirname "$0")/.."
 
 if [ "$1" = "--clean" ]; then
@@ -38,7 +39,7 @@ probes/web_entity_probe probes/web_net_probe probes/web_chest_probe
 "
 
 for m in $MODULES; do
-  gene build --target web "$m.gene" --out-dir dist >/dev/null
+  "$GENE_EXE" build --target web "$m.gene" --out-dir dist >/dev/null
 done
 
 echo "built $(echo $MODULES | wc -w | tr -d ' ') modules into dist/"

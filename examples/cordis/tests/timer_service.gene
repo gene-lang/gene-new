@@ -9,8 +9,10 @@
   (if_not condition ($panic message)))
 
 (var events ($cell 0))
+(var tick_stream ($cell nil))
 (fn activate_consumer [ctx, config]
   (var timer (ctx .require timer_key))
+  (tick_stream .set (timer .Timer:ticks 5))
   (timer .Timer:interval
     (fn [] (events .set (+ (events .get) 1))) 5))
 
@@ -22,15 +24,30 @@
 (var runtime
   (new_runtime
     (RuntimeOptions ^logger nil ^invoker (default_plugin_invoker)
-                    ^default_limits (invocation_limits))))
+                    ^default_limits (invocation_limits ^timeout_ms 250))))
 (runtime .admit_service_key timer_key)
 (var provider (runtime .install (runtime .root) timer_plugin nil))
 (var consumer (runtime .install (runtime .root) consumer_plugin nil))
 (runtime .await_settled)
 (consumer .await_ready)
-($sleep 15)
+(var first_deadline (+ ($os/monotonic_ms) 1000))
+(while (&& (== (events .get) 0) (< ($os/monotonic_ms) first_deadline))
+  ($sleep 1))
 (assert (> (events .get) 0)
   "timer service callbacks must run through the consumer binding")
+# A host timer and its lazy stream outlive the short activation that created
+# them. Each callback is bounded separately, and consumer disposal still owns
+# the whole service lifetime.
+($sleep 400)
+(assert (== ((tick_stream .get) .next) nil)
+  "tick streams must outlive the activation deadline")
+(var before_late_tick (events .get))
+(var later_deadline (+ ($os/monotonic_ms) 1000))
+(while (&& (== (events .get) before_late_tick)
+           (< ($os/monotonic_ms) later_deadline))
+  ($sleep 1))
+(assert (> (events .get) before_late_tick)
+  "timer host work must outlive the activation deadline")
 (consumer .dispose)
 (runtime .await_settled)
 (var stopped (events .get))

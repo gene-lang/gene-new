@@ -4,7 +4,7 @@
 (mod timer)
 
 (import [Disposable EffectOwner PluginCallKind PluginSpec] from "./model")
-(import [service_key invoke_effect_owner spawn_effect_loop] from "./runtime")
+(import [service_key invoke_effect_owner spawn_effect_call] from "./runtime")
 
 (protocol Timer
   (message timeout [callback, delay_ms : Int] : Disposable)
@@ -60,24 +60,24 @@
 (fn sleep [delay_ms : Int] : Nil
   ($sleep delay_ms))
 
+(fn run_timeout ^^private [owner, callback, delay_ms]
+  ($sleep delay_ms)
+  (invoke_effect_owner owner PluginCallKind/activate callback []))
+
+(fn run_interval ^^private [owner, callback, delay_ms]
+  (while true
+    ($sleep delay_ms)
+    (invoke_effect_owner owner PluginCallKind/activate callback [])))
+
 (fn timeout [owner, callback, delay_ms : Int] : Disposable
   (owner .effect "timeout"
     (fn [fx]
-      (spawn_effect_loop fx "timeout-task"
-        (fn []
-          ($sleep delay_ms)
-          (invoke_effect_owner fx PluginCallKind/activate callback []))))
-  ))
+      (spawn_effect_call fx "timeout-task" run_timeout [fx callback delay_ms]))))
 
 (fn interval [owner, callback, delay_ms : Int] : Disposable
   (owner .effect "interval"
     (fn [fx]
-      (spawn_effect_loop fx "interval-task"
-        (fn []
-          (while true
-            ($sleep delay_ms)
-            (invoke_effect_owner fx PluginCallKind/activate callback []))))))
-  )
+      (spawn_effect_call fx "interval-task" run_interval [fx callback delay_ms]))))
 
 (fn channel_ticks* ^^private [channel]
   (while true
@@ -86,19 +86,27 @@
     catch ChannelClosed
       (return))))
 
+(fn run_ticks ^^private [channel, delay_ms, stream, ready]
+  # Construct the lazy continuation in the host execution context too; it must
+  # not retain the activation call's deadline for the rest of its lifetime.
+  (stream .set (channel_ticks* channel))
+  (ready .send nil)
+  (while true
+    ($sleep delay_ms)
+    (channel .try_send nil)))
+
 (fn ticks [owner, delay_ms : Int]
   (var lease
     (owner .effect "ticks"
       (fn [fx]
         (var channel ($channel ^capacity 1))
+        (var stream ($cell nil))
+        (var ready ($channel ^capacity 1))
         (fx .defer (fn [] (channel .close)))
-        (spawn_effect_loop fx "tick-producer"
-          (fn []
-            (while true
-              ($sleep delay_ms)
-              # A full channel means one tick is already pending; coalesce.
-              (channel .try_send nil))))
-        (channel_ticks* channel))))
+        (spawn_effect_call fx "tick-producer" run_ticks
+          [channel delay_ms stream ready])
+        (ready .recv)
+        (stream .get))))
   (lease .value))
 
 (fn scheduled_dispose ^^private [self : ScheduledCallable] : Nil
@@ -117,14 +125,15 @@
   (invoke_effect_owner self/owner PluginCallKind/activate
                        self/callback args))
 
+(fn run_debounce ^^private [self, args]
+  ($sleep self/delay_ms)
+  (if (self/active .get) (scheduled_fire self args)))
+
 (fn schedule_debounce ^^private [self, args]
   (var previous (self/task .get))
   (if_not ($absent? previous) (previous .cancel))
   (var task
-    (spawn_effect_loop self/owner "debounce-task"
-      (fn []
-        ($sleep self/delay_ms)
-        (if (self/active .get) (scheduled_fire self args)))))
+    (spawn_effect_call self/owner "debounce-task" run_debounce [self args]))
   (self/task .set task)
   nil)
 
@@ -136,8 +145,8 @@
     (then
       (scheduled_fire self pending)
       (var task
-        (spawn_effect_loop self/owner "throttle-window"
-          (fn [] (finish_throttle_window self))))
+        (spawn_effect_call self/owner "throttle-window"
+          finish_throttle_window [self]))
       (self/task .set task))
     (else
       (self/busy .set false)
@@ -149,8 +158,8 @@
     (self/busy .set true)
       (scheduled_fire self args)
       (var task
-        (spawn_effect_loop self/owner "throttle-window"
-        (fn [] (finish_throttle_window self))))
+        (spawn_effect_call self/owner "throttle-window"
+          finish_throttle_window [self]))
     (self/task .set task)
     (return nil))
   (if self/trailing (self/pending .set args))

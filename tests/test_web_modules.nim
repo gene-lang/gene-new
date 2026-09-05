@@ -33,4 +33,3 @@ suite "web module export boundaries":
     checkWebExportRejection(
       "(import [Thing] from \"./provider.gene\" ^export \"yes\")", "Thing",
       "^export must be a literal Bool")
-
