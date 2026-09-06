@@ -3,7 +3,7 @@
 ## This module owns a web-only semantic IR. It deliberately does not consume or
 ## mutate GIR; unsupported forms fail while building the IR, before emission.
 
-import std/[algorithm, json, os, sets, strutils, tables]
+import std/[algorithm, json, os, sequtils, sets, strutils, tables]
 import ./[compiler, printer, reader, types]
 
 type
@@ -12,7 +12,7 @@ type
   WebTypeKind* = enum
     wtkNil, wtkVoid, wtkBool, wtkStr, wtkSym, wtkInt, wtkF64,
     wtkAny, wtkNever, wtkList, wtkPropMap, wtkMap, wtkNode, wtkRange,
-    wtkCallback, wtkTask, wtkStream, wtkNominal, wtkUnion,
+    wtkCallback, wtkCallable, wtkTask, wtkStream, wtkNominal, wtkUnion,
     ## The one host type the profile names. It exists so an entry point and a
     ## listener registration can be *checked* rather than taking `Any`, whose
     ## generated validator is `return value;` and therefore validates nothing.
@@ -58,6 +58,11 @@ type
     returnType*: WebType
     name*: string
     members*: seq[WebType]
+    namedKeys*: seq[string]
+    namedTypes*: seq[WebType]
+    restType*: WebType
+    checkedErrors*: bool
+    errorTypes*: seq[WebType]
 
   WebExprKind* = enum
     wekNil, wekVoid, wekBool, wekStr, wekSym, wekInt, wekF64,
@@ -68,7 +73,7 @@ type
     wekBreak, wekContinue, wekReturn, wekMatch, wekTry, wekFail,
     wekPath, wekSelector, wekSend, wekNew, wekEnum, wekDomRender,
     wekDomListener, wekLambda, wekAwait,
-    wekSpawn, wekScope, wekYield, wekMessage
+    wekSpawn, wekScope, wekYield, wekMessage, wekCallableCall, wekMissing
 
   WebExpr* = ref object
     kind*: WebExprKind
@@ -481,16 +486,34 @@ proc sameType(a, b: WebType): bool =
   if a == nil or b == nil or a.kind != b.kind:
     return false
   case a.kind
-  of wtkList, wtkTask, wtkStream:
+  of wtkList:
     sameType(a.item, b.item)
+  of wtkTask, wtkStream:
+    if not sameType(a.item, b.item) or a.checkedErrors != b.checkedErrors:
+      return false
+    if a.checkedErrors: sameType(a.errorTypes[0], b.errorTypes[0]) else: true
   of wtkMap:
     a.params.len == 2 and b.params.len == 2 and
       sameType(a.params[0], b.params[0]) and sameType(a.params[1], b.params[1])
   of wtkCallback:
+    if a.name != b.name: return false
     if a.params.len != b.params.len or not sameType(a.returnType, b.returnType):
       return false
     for i in 0 ..< a.params.len:
       if not sameType(a.params[i], b.params[i]): return false
+    true
+  of wtkCallable:
+    if a.name != b.name or a.params.len != b.params.len or a.namedKeys != b.namedKeys or
+        a.checkedErrors != b.checkedErrors or a.errorTypes.len != b.errorTypes.len or
+        not sameType(a.returnType, b.returnType): return false
+    if (a.restType == nil) != (b.restType == nil): return false
+    if a.restType != nil and not sameType(a.restType, b.restType): return false
+    for i in 0 ..< a.params.len:
+      if not sameType(a.params[i], b.params[i]): return false
+    for i in 0 ..< a.namedTypes.len:
+      if not sameType(a.namedTypes[i], b.namedTypes[i]): return false
+    for i in 0 ..< a.errorTypes.len:
+      if not sameType(a.errorTypes[i], b.errorTypes[i]): return false
     true
   of wtkNominal:
     a.name == b.name
@@ -554,6 +577,13 @@ proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
   if expected == nil or actual == nil or expected.kind == wtkAny or
       actual.kind == wtkNever:
     return true
+  if expected.kind == wtkCallback and expected.name == "callable context" and
+      actual.kind == wtkCallable:
+    return true
+  if expected.kind == wtkCallable:
+    # Admission installs a checked view; it is not a proof of an opaque
+    # target's argument/result contract.
+    return true
   if actual.kind == wtkUnion:
     for member in actual.members:
       if not accepts(analysis, expected, member): return false
@@ -574,6 +604,8 @@ proc accepts(analysis: WebAnalysis, expected, actual: WebType): bool =
     of wtkList, wtkTask, wtkStream:
       return accepts(analysis, expected.item, actual.item)
     of wtkCallback:
+      if expected.name != "callable context" and actual.name in ["message", "selector"]:
+        return false
       if expected.params.len != actual.params.len: return false
       for i in 0 ..< expected.params.len:
         if not accepts(analysis, expected.params[i], actual.params[i]): return false
@@ -632,6 +664,12 @@ proc typeName(typ: WebType): string =
     # `Fn`, because that is the spelling a reader can write back into the
     # source. A diagnostic naming a type the profile refuses would be a puzzle.
     "(Fn [" & params.join(" ") & "] " & typeName(typ.returnType) & ")"
+  of wtkCallable:
+    if typ.name == "bare": return "Callable"
+    var params: seq[string]
+    for item in typ.params: params.add typeName(item)
+    if typ.restType != nil: params.add typeName(typ.restType) & "..."
+    "(Callable [" & params.join(" ") & "] " & typeName(typ.returnType) & ")"
 
 proc mangleWebName*(name: string): string
 
@@ -659,7 +697,9 @@ proc tsType(typ: WebType): string =
   of wtkBuffer: jsTypedArrayName(typ.name)
   of wtkGl: "WebGL2RenderingContext"
   of wtkGlObject: glObjectTsType(typ.name)
-  of wtkNominal: mangleWebName(typ.name)
+  of wtkNominal:
+    if typ.name in ["Call", "RuntimeError", "MessageError"]: "GeneNode"
+    else: mangleWebName(typ.name)
   of wtkUnion:
     var parts: seq[string]
     for member in typ.members: parts.add tsType(member)
@@ -668,6 +708,8 @@ proc tsType(typ: WebType): string =
     var params: seq[string]
     for i, item in typ.params: params.add "arg" & $i & ": " & tsType(item)
     "(" & params.join(", ") & ") => " & tsType(typ.returnType)
+  of wtkCallable:
+    if typ.name == "bare": "unknown" else: "GeneCallableView"
 
 proc validatorSuffix(typ: WebType): string =
   case typ.kind
@@ -688,8 +730,9 @@ proc validatorSuffix(typ: WebType): string =
   of wtkDomTarget: "event_target"
   of wtkDomCanvas: "canvas2d"
   of wtkDomGradient: "gradient"
-  of wtkTask: "task_" & validatorSuffix(typ.item)
-  of wtkStream: "stream_" & validatorSuffix(typ.item)
+  of wtkTask, wtkStream:
+    (if typ.kind == wtkTask: "task_" else: "stream_") & validatorSuffix(typ.item) &
+      (if typ.checkedErrors: "_error_" & validatorSuffix(typ.errorTypes[0]) else: "")
   of wtkBuffer: "buffer_" & toLowerAscii(typ.name)
   of wtkGl: "gl"
   of wtkGlObject: "gl_" & toLowerAscii(typ.name)
@@ -701,8 +744,20 @@ proc validatorSuffix(typ: WebType): string =
   of wtkCallback:
     var parts: seq[string]
     for param in typ.params: parts.add validatorSuffix(param)
-    "callback_" & parts.join("_") & "_to_" &
+    "callback_" & (if typ.name.len > 0: mangleWebName(typ.name) & "_" else: "") &
+      parts.join("_") & "_to_" &
       validatorSuffix(typ.returnType)
+  of wtkCallable:
+    if typ.name == "bare": return "callable"
+    var parts: seq[string]
+    for item in typ.params: parts.add validatorSuffix(item)
+    if typ.restType != nil: parts.add "rest_" & validatorSuffix(typ.restType)
+    for i, key in typ.namedKeys:
+      parts.add "named_" & mangleWebName(key) & "_" & validatorSuffix(typ.namedTypes[i])
+    if typ.checkedErrors:
+      parts.add "checked"
+      for item in typ.errorTypes: parts.add validatorSuffix(item)
+    "callable_" & parts.join("_") & "_to_" & validatorSuffix(typ.returnType)
 
 proc validatorName(typ: WebType): string =
   "$gene_check_" & validatorSuffix(typ)
@@ -774,6 +829,8 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
     of "Int": return webType(wtkInt)
     of "F64": return webType(wtkF64)
     of "Any": return webType(wtkAny)
+    of "Callable": return WebType(kind: wtkCallable, name: "bare",
+                                    returnType: webType(wtkAny))
     of "Never": return webType(wtkNever)
     of "PropMap": return webType(wtkPropMap)
     of "Node": return webType(wtkNode)
@@ -814,6 +871,35 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
       raise webError(loc, "Buffer element type must be one of " &
         bufferElementTypes.join(", ") & ", got " & value.body[0].print())
     return WebType(kind: wtkBuffer, name: value.body[0].symVal)
+  if value.kind == vkNode and value.head.isSym("Callable"):
+    if value.body.len != 2 or value.body[0].kind != vkList:
+      raise webError(loc, "Callable signature expects a parameter vector and result type")
+    result = WebType(kind: wtkCallable, returnType: parseWebType(value.body[1], loc))
+    for i, parameter in value.body[0].listItems:
+      var rest = NIL
+      if parameter.kind == vkSymbol and parameter.symVal.len > 3 and parameter.symVal.endsWith("..."):
+        rest = newSym(parameter.symVal[0 ..< parameter.symVal.len - 3])
+      elif parameter.kind == vkNode and parameter.head.isSym("...") and parameter.body.len == 1:
+        rest = parameter.body[0]
+      if rest.kind != vkNil:
+        if i != value.body[0].listItems.high:
+          raise webError(loc, "Callable repeated parameter must be last")
+        result.restType = parseWebType(rest, loc)
+      else:
+        result.params.add parseWebType(parameter, loc)
+    for key, item in value.props:
+      case key
+      of "named":
+        if item.kind != vkMap: raise webError(loc, "Callable ^named must be a map")
+        for name, typ in item.mapEntries:
+          result.namedKeys.add name
+          result.namedTypes.add parseWebType(typ, loc)
+      of "errors":
+        if item.kind != vkList: raise webError(loc, "Callable ^errors must be a list")
+        result.checkedErrors = true
+        for typ in item.listItems: result.errorTypes.add parseWebType(typ, loc)
+      else: raise webError(loc, "Callable signature got unexpected argument: " & key)
+    return
   if value.kind == vkNode and value.head.isSym("Callback"):
     # `Callback` was a profile-only synonym for `Fn` and it is refused here so
     # that one spelling means one thing on both backends. The VM never had it:
@@ -837,10 +923,15 @@ proc parseWebType(value: Value, loc: SourceLoc): WebType =
   if value.kind == vkNode and value.head.isSym("Map") and value.body.len == 2:
     return WebType(kind: wtkMap,
       params: @[parseWebType(value.body[0], loc), parseWebType(value.body[1], loc)])
-  if value.kind == vkNode and value.head.isSym("Task") and value.body.len == 1:
-    return webType(wtkTask, parseWebType(value.body[0], loc))
-  if value.kind == vkNode and value.head.isSym("Stream") and value.body.len >= 1:
-    return webType(wtkStream, parseWebType(value.body[0], loc))
+  if value.kind == vkNode and (value.head.isSym("Task") or value.head.isSym("Stream")):
+    if value.body.len notin [1, 2]:
+      raise webError(loc, "web Task/Stream type expects an item and optional error type")
+    result = webType(if value.head.isSym("Task"): wtkTask else: wtkStream,
+      parseWebType(value.body[0], loc))
+    if value.body.len == 2:
+      result.checkedErrors = true
+      result.errorTypes = @[parseWebType(value.body[1], loc)]
+    return
   if value.kind == vkNode and value.head.isSym("?") and value.body.len == 1:
     return unionType(parseWebType(value.body[0], loc), webType(wtkNil))
   if value.kind == vkNode and value.head.isSym("|") and value.body.len >= 2:
@@ -1520,13 +1611,15 @@ proc analyzeDatum(analysis: WebAnalysis, value: Value,
     result = WebExpr(kind: wekNode, typ: webType(wtkNode), loc: loc,
                      immutable: value.nodeImmutable)
     if value.head.kind == vkSymbol: result.text = value.head.symVal
-    else: result.text = value.head.print()
+    else: result.external = true
     for key, item in value.props:
       result.keys.add key
       result.children.add analysis.analyzeDatum(item, loc)
       inc result.propCount
     for item in value.body:
       result.children.add analysis.analyzeDatum(item, loc)
+    if result.external:
+      result.children.add analysis.analyzeDatum(value.head, loc)
   else:
     raise webError(loc, "quoted " & $value.kind & " is outside the web profile")
 
@@ -1588,6 +1681,12 @@ proc isStatementType(typ: WebType): bool {.inline.} =
   ## means different things on the two backends.
   typ != nil and (typ.kind == wtkNil or typ.kind == wtkVoid)
 
+proc explicitlyAdmitsNil(typ: WebType): bool =
+  if typ.kind == wtkNil: return true
+  if typ.kind == wtkUnion:
+    for member in typ.members:
+      if explicitlyAdmitsNil(member): return true
+
 proc statementUnit(typ: WebType): string {.inline.} =
   if typ != nil and typ.kind == wtkVoid: "undefined" else: "null"
 
@@ -1647,7 +1746,7 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
       result.children.add analyzed
     return
   # Named parameters occupy positional JavaScript slots in declaration order.
-  # Missing slots carry void; the checked callee entry evaluates defaults or
+  # Missing slots carry an omission marker; the checked callee evaluates defaults or
   # binds nil for optional parameters. argumentOrder preserves the VM's supplied
   # argument evaluation order independently of those slots.
   var supplied = initHashSet[string]()
@@ -1668,8 +1767,7 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
       continue
     if value.props.hasKey(param.argName):
       supplied.excl param.argName
-      let accepted = WebType(kind: wtkUnion,
-        members: @[param.typ, webType(wtkVoid)])
+      let accepted = param.typ
       let analyzed = analysis.analyzeExpr(value.props[param.argName], bindings,
                                           accepted)
       requireType(analysis, loc, analyzed.typ, accepted,
@@ -1677,7 +1775,7 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
       result.children.add analyzed
       namedSlots[param.argName] = index
     elif param.optional:
-      result.children.add WebExpr(kind: wekVoid, typ: webType(wtkVoid), loc: loc)
+      result.children.add WebExpr(kind: wekMissing, typ: webType(wtkVoid), loc: loc)
     else:
       # Phrased to share a substring with the VM's "function 'f' missing named
       # argument: b", so one fixture can assert both backends refuse the same
@@ -1692,11 +1790,63 @@ proc analyzeKnownCall(analysis: WebAnalysis, value: Value,
     result.argumentOrder.add namedSlots[key]
   result.argumentOrder.add positionalSlots
 
+proc analyzeCallableInvocation(analysis: WebAnalysis, value: Value,
+    callee: WebExpr, bindings: var Table[string, WebBinding], loc: SourceLoc): WebExpr =
+  result = WebExpr(kind: wekCallableCall, typ: callee.typ.returnType, loc: loc,
+    children: @[callee])
+  for key, argument in value.props:
+    result.keys.add key
+    result.children.add analysis.analyzeExpr(argument, bindings)
+  result.propCount = result.keys.len
+  var i = 0
+  while i < value.body.len:
+    var argument = value.body[i]
+    var spread = false
+    if argument.isSym("..."):
+      raise webError(loc, "spread marker requires a preceding value")
+    if i + 1 < value.body.len and value.body[i + 1].isSym("..."):
+      spread = true
+      inc i
+    elif argument.kind == vkNode and argument.head.isSym("...") and
+        argument.body.len == 1:
+      spread = true
+      argument = argument.body[0]
+    elif argument.kind == vkSymbol and argument.symVal.len > 3 and
+        argument.symVal.endsWith("..."):
+      spread = true
+      argument = newSym(argument.symVal[0 ..< argument.symVal.len - 3])
+    result.patterns.add newBool(spread)
+    result.children.add analysis.analyzeExpr(argument, bindings)
+    inc i
+  result.children.add analysis.analyzeDatum(value, loc)
+  return
+
 proc analyzeCall(analysis: WebAnalysis, value: Value,
                  bindings: var Table[string, WebBinding], expected: WebType): WebExpr =
   let loc = analysis.locFor(value)
+  var directSend: Value
+  try:
+    directSend = normalizeMessageHeadCall(value)
+  except GeneError as error:
+    raise webError(loc, error.msg)
+  if directSend.bits != value.bits:
+    result = analysis.analyzeCall(directSend, bindings, expected)
+    result.loc = loc
+    return
+  if value.head.kind == vkSymbol and bindings.hasKey(value.head.symVal) and
+      bindings[value.head.symVal].typ.kind == wtkCallable:
+    return analysis.analyzeCallableInvocation(value,
+      analysis.analyzeExpr(value.head, bindings), bindings, loc)
+  if value.head.kind == vkNode and value.head.head.isSym("path") and
+      value.head.body.len > 0 and value.head.body[0].kind == vkSymbol and
+      bindings.hasKey(value.head.body[0].symVal):
+    let callee = analysis.analyzeExpr(value.head, bindings)
+    if callee.typ.kind == wtkCallable:
+      return analysis.analyzeCallableInvocation(value, callee, bindings, loc)
   if value.body.len >= 2 and (value.body[0].isSym("~") or
       value.body[0].isSym("?~")):
+    if value.props.len > 0:
+      raise webError(loc, "named message arguments are outside the web profile")
     let isSuper = value.head.isSym("super")
     var receiver: WebExpr
     if isSuper:
@@ -1724,14 +1874,22 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       elif qualifier.kind == vkNode and qualifier.head.isSym("path") and
           qualifier.body.len == 1 and qualifier.body[0].kind == vkSymbol:
         protocolName = qualifier.body[0].symVal
-      if not analysis.protocolDecls.hasKey(protocolName):
-        raise webError(loc, "unknown web protocol in qualified send")
       messageName = value.body[1].body[1].symVal
-      protocolMessage = findProtocolMessage(
-        analysis.protocolDecls[protocolName], messageName)
+      if protocolName != "Self":
+        if not analysis.protocolDecls.hasKey(protocolName):
+          raise webError(loc, "unknown web protocol in qualified send")
+        protocolMessage = findProtocolMessage(
+          analysis.protocolDecls[protocolName], messageName)
     else:
       raise webError(loc, "web send requires a statically known message")
     validateWebMessageName(messageName, loc)
+    if protocolMessage == nil and messageName == "to_stream" and
+        receiver.typ.kind in {wtkList, wtkStream}:
+      if value.body.len != 2 or value.props.len != 0:
+        raise webError(loc, "web to_stream expects no message arguments")
+      if receiver.typ.kind == wtkStream: return receiver
+      return WebExpr(kind: wekBuiltin, typ: webType(wtkStream, receiver.typ.item),
+        loc: loc, text: "to_stream", children: @[receiver])
     var methodDecl = if protocolMessage == nil:
                        analysis.findMethod(receiver.typ, messageName)
                      else: nil
@@ -2491,7 +2649,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         let input = analysis.analyzeExpr(value.body[0], bindings)
         if input.typ.kind != wtkStream:
           raise webError(loc, "web " & builtin & " expects a Stream")
-        let callbackExpected = WebType(kind: wtkCallback,
+        let callbackExpected = WebType(kind: wtkCallback, name: "callable context",
           params: @[input.typ.item],
           returnType: if builtin == "filter": webType(wtkBool)
                       elif expected != nil and expected.kind == wtkList:
@@ -2509,7 +2667,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
         let input = analysis.analyzeExpr(value.body[0], bindings)
         if input.typ.kind notin {wtkStream, wtkList}:
           raise webError(loc, "web each expects a List or Stream")
-        let callbackExpected = WebType(kind: wtkCallback,
+        let callbackExpected = WebType(kind: wtkCallback, name: "callable context",
           params: @[input.typ.item], returnType: webType(wtkAny))
         let callback = analysis.analyzeExpr(value.body[1], bindings,
                                             callbackExpected)
@@ -2615,16 +2773,38 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       name & " is outside the web profile: actors and channels require the VM scheduler")
   else: discard
   if name == "msg":
+    if value.body.len == 2 and value.body[0].isSym("Self") and
+        value.body[1].kind == vkSymbol:
+      if expected == nil or expected.kind notin {wtkCallable, wtkCallback} or
+          expected.params.len == 0 or expected.restType != nil or
+          expected.namedKeys.len > 0:
+        raise webError(loc, "web Self message value requires a fixed Callable signature with a statically typed receiver")
+      var inner = copyBindings(bindings)
+      var args: seq[Value]
+      var params: seq[WebParam]
+      for i, typ in expected.params:
+        let name = "$message_arg_" & $i
+        inner[name] = WebBinding(typ: typ)
+        args.add newSym(name)
+        params.add WebParam(sourceName: name, emittedName: mangleWebName(name), typ: typ)
+      let send = newNode(args[0], body = @[newSym("~"), value.body[1]] & args[1 .. ^1])
+      let body = analysis.analyzeCall(send, inner, nil)
+      let callbackType = WebType(kind: wtkCallback, name: "message",
+        params: expected.params, returnType: body.typ)
+      return WebExpr(kind: wekMessage, typ: callbackType, loc: loc,
+        children: @[WebExpr(kind: wekLambda, typ: callbackType, loc: loc,
+          params: params, children: @[body])])
     if value.body.len != 2 or value.body[0].kind != vkSymbol or
         value.body[1].kind != vkSymbol or
         not analysis.protocolDecls.hasKey(value.body[0].symVal):
       raise webError(loc, "web message value requires static Protocol:message")
     let protocol = analysis.protocolDecls[value.body[0].symVal]
     let messageDecl = findProtocolMessage(protocol, value.body[1].symVal)
-    var callbackType = WebType(kind: wtkCallback,
+    var callbackType = WebType(kind: wtkCallback, name: "message",
       params: @[webType(wtkAny)], returnType: messageDecl.returnType)
     for param in messageDecl.params: callbackType.params.add param.typ
     if expected != nil and expected.kind == wtkCallback and
+        expected.name == "callable context" and
         expected.params.len == callbackType.params.len and
         accepts(analysis, expected.returnType, callbackType.returnType):
       callbackType = expected
@@ -2726,6 +2906,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     let baseType = result.children[0].typ
     if baseType.kind == wtkList and result.keys.len == 1:
       result.typ = baseType.item
+    elif baseType.kind == wtkNominal and baseType.name == "Call":
+      result.typ = if expected != nil: expected else: webType(wtkAny)
     elif baseType.kind == wtkNominal and result.keys.len == 1:
       if result.keys[0].len > 0 and
           result.keys[0].allCharsInSet({'0'..'9'}):
@@ -2743,10 +2925,12 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
   if name == "select":
     if value.body.len == 0:
       raise webError(loc, "web selector requires at least one segment")
-    result = WebExpr(kind: wekSelector,
-      typ: if expected != nil: expected
-           else: WebType(kind: wtkCallback, params: @[webType(wtkAny)],
-                         returnType: webType(wtkAny)), loc: loc)
+    let selectorType = WebType(kind: wtkCallback, name: "selector",
+      params: @[webType(wtkAny)], returnType: webType(wtkAny))
+    if expected != nil and expected.kind in {wtkCallback, wtkCallable}:
+      selectorType.params = expected.params
+      selectorType.returnType = expected.returnType
+    result = WebExpr(kind: wekSelector, typ: selectorType, loc: loc)
     if value.props.hasKey("strict"):
       if value.props["strict"].kind != vkBool:
         raise webError(loc, "web selector ^strict must be Bool")
@@ -2885,7 +3069,7 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     # `=>` pipeline stage arrives, and the only position where there is nothing
     # left for an annotation to say.
     let inferred = value.body.len >= 2 and not value.body[1].isSym(":") and
-      expected != nil and expected.kind == wtkCallback and
+      expected != nil and expected.kind in {wtkCallback, wtkCallable} and
       value.body[0].listItems.len == expected.params.len
     if not inferred and (value.body.len < 4 or not value.body[1].isSym(":")):
       raise webError(loc,
@@ -2898,7 +3082,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
       if inferred: inferredParams(analysis, value.body[0], expected, loc)
       else: parseParams(analysis, value.body[0], loc)
     let returnType =
-      if inferred: expected.returnType
+      if inferred and expected.kind == wtkCallable: webType(wtkAny)
+      elif inferred: expected.returnType
       else: parseWebType(value.body[2], loc)
     # Copied, not shared: the body may shadow and rebind freely, and those
     # bindings must not escape into the enclosing scope.
@@ -3266,7 +3451,8 @@ proc analyzeCall(analysis: WebAnalysis, value: Value,
     if value.body.len != 2:
       raise webError(loc, "web operator '" & name & "' expects two operands")
     let left = analysis.analyzeExpr(value.body[0], bindings)
-    let right = analysis.analyzeExpr(value.body[1], bindings, left.typ)
+    let right = analysis.analyzeExpr(value.body[1], bindings,
+      if left.typ.kind == wtkCallable: nil else: left.typ)
     if not sameType(left.typ, right.typ):
       raise webError(loc, "web operator '" & name & "' requires identical types")
     if name in ["+", "-", "*", "/", "//", "<", "<=", ">", ">="] and
@@ -3421,7 +3607,8 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
       # which is precisely the call the VM refuses ("expects 0..0 argument(s),
       # got 1"). Reaching the callee by name is the only way to supply a named
       # argument, so a reference that leaves the name behind is rejected here.
-      if signature.namedParams.len > 0:
+      if signature.namedParams.len > 0 and
+          (expected == nil or expected.kind != wtkCallable):
         raise webError(loc, "web function '" & value.symVal &
           "' declares named parameters and cannot be used as a value; " &
           "a Callback type is positional")
@@ -3439,6 +3626,27 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
       let constant = analysis.constants[value.symVal]
       result = WebExpr(kind: wekBinding, typ: constant.typ, loc: loc,
                        text: constant.emittedName)
+    elif expected != nil and expected.kind == wtkCallable and
+        analysis.typeDecls.hasKey(value.symVal):
+      result = WebExpr(kind: wekBinding, typ: webType(wtkAny), loc: loc,
+        text: analysis.typeDecls[value.symVal].emittedName)
+    elif expected != nil and expected.kind == wtkCallable and
+        value.symVal in ["+", "-", "*", "/", "//", "<", "<=", ">", ">=", "==", "!="]:
+      if expected.name == "bare" or expected.restType != nil or
+          expected.namedKeys.len > 0:
+        raise webError(loc, "web native callable value requires a fixed positional Callable signature")
+      var inner = copyBindings(bindings)
+      var arguments: seq[Value]
+      var params: seq[WebParam]
+      for i, typ in expected.params:
+        let name = "$callable_arg_" & $i
+        inner[name] = WebBinding(typ: typ)
+        arguments.add newSym(name)
+        params.add WebParam(sourceName: name, emittedName: mangleWebName(name), typ: typ)
+      let body = analysis.analyzeCall(newNode(value, body = arguments), inner, nil)
+      result = WebExpr(kind: wekLambda,
+        typ: WebType(kind: wtkCallback, params: expected.params, returnType: body.typ),
+        loc: loc, params: params, children: @[body])
     else:
       raise webError(loc, "unresolved web binding: " & value.symVal)
   of vkList:
@@ -3495,7 +3703,9 @@ proc analyzeExpr(analysis: WebAnalysis, value: Value,
   else:
     raise webError(loc, $value.kind & " is outside the web profile")
   if expected != nil:
-    if result.typ.kind == wtkAny and expected.kind != wtkAny:
+    if expected.kind == wtkCallable:
+      result = WebExpr(kind: wekCheck, typ: expected, loc: loc, children: @[result])
+    elif result.typ.kind == wtkAny and expected.kind != wtkAny:
       result = WebExpr(kind: wekCheck, typ: expected, loc: loc,
         children: @[result])
     requireType(analysis, loc, result.typ, expected, "web expression")
@@ -3614,6 +3824,12 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
       analysis.protocolImplTargets.incl(protocolName & "\x1f" & name)
   analysis.protocolDecls["Error"] = WebProtocolDecl(
     sourceName: "Error", emittedName: "Error")
+  analysis.protocolDecls["Callable"] = WebProtocolDecl(
+    sourceName: "Callable", emittedName: "Callable",
+    messages: @[WebProtocolMessage(sourceName: "apply",
+      symbolName: "$gene_callable_apply",
+      params: @[WebParam(sourceName: "call", emittedName: "call",
+        typ: WebType(kind: wtkNominal, name: "Call"))], returnType: webType(wtkAny))])
   if analysis.unit.forms.len == 0:
     raise webError(SourceLoc(sourceName: sourcePath, line: 1, col: 1),
       "web build requires a module")
@@ -3673,6 +3889,9 @@ proc analyzeWebUnitWithImports(unit: SourceUnit, sourcePath: string,
     if form.kind == vkNode and form.head.isSym("impl"):
       let implementation = parseWebImplDecl(analysis, form, loc)
       result.impls.add implementation
+      if implementation.protocolName == "Callable" and
+          not result.protocols.anyIt(it.sourceName == "Callable"):
+        result.protocols.add analysis.protocolDecls["Callable"]
       analysis.protocolImplTargets.incl(
         implementation.protocolName & "\x1f" & implementation.targetName)
       if implementation.protocolName == "Error":
@@ -4273,6 +4492,23 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   case expr.kind
   of wekNil: "null"
   of wekVoid: "undefined"
+  of wekMissing: "$gene_missing"
+  of wekCallableCall:
+    let target = emitter.temp()
+    emitter.line("const " & target & " = " & emitter.emitExpr(expr.children[0]) & ";")
+    var named, args, splices: seq[string]
+    for i, key in expr.keys:
+      let saved = emitter.temp()
+      emitter.line("const " & saved & " = " & emitter.emitExpr(expr.children[i + 1]) & ";")
+      named.add "[" & jsString(key) & "]: " & saved
+    for i in expr.propCount + 1 ..< expr.children.high:
+      let saved = emitter.temp()
+      emitter.line("const " & saved & " = " & emitter.emitExpr(expr.children[i]) & ";")
+      args.add saved
+    for flag in expr.patterns: splices.add(if flag.boolVal: "true" else: "false")
+    "$gene_invoke_callable(" & target & ", [" & args.join(", ") & "], {" &
+      named.join(", ") & "}, " & emitter.emitExpr(expr.children[^1]) &
+      ", [" & splices.join(", ") & "])"
   of wekBool: (if expr.boolValue: "true" else: "false")
   of wekStr: jsString(expr.text)
   of wekSym: "Symbol.for(" & jsString(expr.text) & ")"
@@ -4281,7 +4517,16 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   of wekBinding: expr.text
   of wekList:
     var items: seq[string]
-    for child in expr.children: items.add emitter.emitExpr(child)
+    for child in expr.children:
+      let item = emitter.emitExpr(child)
+      if child.kind in {wekNil, wekVoid, wekBool, wekStr, wekSym, wekInt, wekF64}:
+        items.add item
+      else:
+        # Later children may emit statements (try, if, lazy pulls). Evaluate
+        # this child now so those statements cannot overtake it.
+        let saved = emitter.temp()
+        emitter.line("const " & saved & " = " & item & ";")
+        items.add saved
     let literal = "[" & items.join(", ") & "]"
     if expr.immutable: "Object.freeze(" & literal & ")" else: literal
   of wekPropMap:
@@ -4301,11 +4546,13 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
   of wekNode:
     var props: seq[string]
     for i in 0 ..< expr.propCount:
-      props.add jsString(expr.keys[i]) & ": " & emitter.emitExpr(expr.children[i])
+      props.add "[" & jsString(expr.keys[i]) & "]: " & emitter.emitExpr(expr.children[i])
     var body: seq[string]
-    for i in expr.propCount ..< expr.children.len:
+    for i in expr.propCount ..< expr.children.len - (if expr.external: 1 else: 0):
       body.add emitter.emitExpr(expr.children[i])
-    "new GeneNode(Symbol.for(" & jsString(expr.text) & "), {" &
+    let head = if expr.external: emitter.emitExpr(expr.children[^1])
+               else: "Symbol.for(" & jsString(expr.text) & ")"
+    "new GeneNode(" & head & ", {" &
       props.join(", ") &
       "}, [" & body.join(", ") & "], " &
       (if expr.immutable: "true" else: "false") & ")"
@@ -4852,16 +5099,19 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
           defaultName & "; "
       else:
         statements.add "if (" & current & " === undefined) return undefined; "
-    "(" & receiver & ") => { " & statements & "return " & current & "; }"
+    "$gene_selector_value((" & receiver & (if emitter.typescript: ": any" else: "") &
+      ") => { " & statements & "return " & current & "; })"
   of wekMessage:
+    if expr.children.len > 0:
+      return "$gene_message_value(" & emitter.emitExpr(expr.children[0]) & ")"
     var params, args: seq[string]
     for i, typ in expr.paramTypes:
       let name = if i == 0: "$receiver" else: "$arg" & $i
       params.add name & (if emitter.typescript: ": " & tsType(typ) else: "")
       if i > 0: args.add name
     let receiver = if emitter.typescript: "($receiver as any)" else: "$receiver"
-    "(" & params.join(", ") & ") => " & receiver & "[" & expr.text & "](" &
-      args.join(", ") & ")"
+    "$gene_message_value((" & params.join(", ") & ") => " & receiver & "[" & expr.text & "](" &
+      args.join(", ") & "))"
   of wekSetPath:
     var container = emitter.emitExpr(expr.children[0])
     var dynamicIndex = 1
@@ -4883,9 +5133,43 @@ proc emitExpr(emitter: var WebEmitter, expr: WebExpr): string =
       emitter.emitExpr(expr.children[^1]) & ")"
   of wekSend:
     var receiver = emitter.emitExpr(expr.children[0])
+    if expr.boolValue:
+      let target = emitter.temp()
+      let resultName = emitter.temp()
+      emitter.line("const " & target & " = " & receiver & ";")
+      emitter.line("let " & resultName & " = " & target & ";")
+      emitter.line("if (" & target & " != null) {")
+      inc emitter.indent
+      var unguarded = WebExpr()
+      unguarded[] = expr[]
+      unguarded.boolValue = false
+      unguarded.children = @[WebExpr(kind: wekBinding,
+        typ: expr.children[0].typ, text: target, loc: expr.loc)]
+      for i in 1 ..< expr.children.len: unguarded.children.add expr.children[i]
+      let sent = emitter.emitExpr(unguarded)
+      emitter.line(resultName & " = " & sent & ";")
+      dec emitter.indent
+      emitter.line("}")
+      return resultName
+    if receiver != "super":
+      let saved = emitter.temp()
+      emitter.line("const " & saved & " = " & receiver & ";")
+      receiver = saved
+    var resolvedMethod = ""
+    if expr.keys.len == 1:
+      resolvedMethod = emitter.temp()
+      let target = if emitter.typescript: "(" & receiver & " as any)" else: receiver
+      emitter.line("const " & resolvedMethod & " = " & target & "?.[" & expr.keys[0] & "];")
+      emitter.line("if (typeof " & resolvedMethod & " !== \"function\") throw new GeneNode(Symbol.for(\"MessageError\"), { message: \"no applicable message implementation\" });")
     var arguments: seq[string]
     for i in 1 ..< expr.children.len:
-      arguments.add emitter.emitExpr(expr.children[i])
+      let argument = emitter.emitExpr(expr.children[i])
+      let saved = emitter.temp()
+      emitter.line("const " & saved & " = " & argument & ";")
+      arguments.add saved
+    if resolvedMethod.len > 0:
+      return resolvedMethod & ".call(" & receiver &
+        (if arguments.len > 0: ", " & arguments.join(", ") else: "") & ")"
     # Lengths are Gene Int values on every backend. Numeric conversion is an
     # explicit, idempotent operation when a caller wants F64 arithmetic.
     if expr.children[0].typ != nil and expr.children[0].typ.kind == wtkList:
@@ -5137,7 +5421,7 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
     if fn.body.typ.kind != wtkNever:
       emitter.line("void " & value & ";")
       emitter.line("return " & statementUnit(fn.returnType) & ";")
-  else:
+  elif fn.body.typ.kind != wtkNever:
     emitter.line("return " & value & ";")
   dec emitter.indent
   emitter.line("}")
@@ -5159,26 +5443,41 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
                fn.emittedName & "(" & wrapperParams.join(", ") & ")" &
                wrapperReturn & " {")
   inc emitter.indent
-  var checkedArgs: seq[string]
-  for param in fn.params:
-    if param.named:
-      emitter.line("if (" & param.emittedName & " === undefined) {")
-      inc emitter.indent
-      if param.hasDefault:
-        let defaultValue = emitter.emitExpr(param.defaultExpr)
-        emitter.line(param.emittedName & " = " & defaultValue & ";")
-      elif param.optional:
-        emitter.line(param.emittedName & " = null;")
-      else:
-        emitter.line("throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: " &
-          jsString("function '" & fn.sourceName & "' missing named argument: " &
-            param.argName) & " }, [], true);")
-      dec emitter.indent
-      emitter.line("}")
+  var checkedArgs, omitted: seq[string]
+  # Validate every supplied value before any default expression can run.
+  # A runtime Void is supplied; the reader alone removes literal void props.
+  for index, param in fn.params:
     let checked = validatorName(param.typ) & "(" & param.emittedName &
       ", " & jsString(fn.sourceName & " argument " & param.sourceName) & ")"
-    emitter.line(param.emittedName & " = " & checked & ";")
-    checkedArgs.add param.emittedName
+    if param.named:
+      let missing = emitter.temp()
+      omitted.add missing
+      emitter.line("const " & missing & " = arguments.length <= " & $index &
+        " || $gene_is_missing(" & param.emittedName & ");")
+      emitter.line("if (!" & missing & ") " & param.emittedName & " = " & checked & ";")
+    else:
+      omitted.add ""
+      emitter.line(param.emittedName & " = " & checked & ";")
+    checkedArgs.add param.emittedName &
+      (if emitter.typescript and param.named: " as " & tsType(param.typ) else: "")
+  for index, param in fn.params:
+    if not param.named: continue
+    emitter.line("if (" & omitted[index] & ") {")
+    inc emitter.indent
+    if param.hasDefault:
+      let defaultValue = emitter.emitExpr(param.defaultExpr)
+      emitter.line(param.emittedName & " = " & defaultValue & ";")
+    elif param.optional:
+      emitter.line(param.emittedName & " = null;")
+    else:
+      emitter.line("throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: " &
+        jsString("function '" & fn.sourceName & "' missing named argument: " &
+          param.argName) & " }, [], true);")
+    emitter.line(param.emittedName & " = " & validatorName(param.typ) & "(" &
+      param.emittedName & ", " & jsString(fn.sourceName & " argument " &
+        param.sourceName) & ");")
+    dec emitter.indent
+    emitter.line("}")
   var call = "$gene_impl_" & fn.emittedName & "(" & checkedArgs.join(", ") & ")"
   if fn.generator: call = "new GeneStream(" & call & ")"
   if fn.async: call = "await " & call
@@ -5186,19 +5485,36 @@ proc emitFunction(emitter: var WebEmitter, fn: WebFunction) =
                ", " & jsString(fn.sourceName & " return") & ");")
   dec emitter.indent
   emitter.line("}")
+  var order, names: seq[string]
+  var positional = 0
+  for param in fn.params:
+    if param.named:
+      order.add jsString(param.argName)
+      names.add jsString(param.argName)
+    else:
+      order.add $positional
+      inc positional
+  emitter.line("Object.defineProperty(" & fn.emittedName &
+    ", Symbol.for(\"gene.callable_shape\"), { value: { positionals: " &
+    $positional & ", names: [" & names.join(", ") & "], order: [" &
+    order.join(", ") & "] } });")
   emitter.line()
 
 proc collectValidatorTypes(typ: WebType, types: var seq[WebType]) =
   if typ.kind in {wtkList, wtkTask, wtkStream}:
     collectValidatorTypes(typ.item, types)
+    for errorType in typ.errorTypes: collectValidatorTypes(errorType, types)
   elif typ.kind == wtkMap:
     collectValidatorTypes(typ.params[0], types)
     collectValidatorTypes(typ.params[1], types)
   elif typ.kind == wtkUnion:
     for member in typ.members: collectValidatorTypes(member, types)
-  elif typ.kind == wtkCallback:
+  elif typ.kind in {wtkCallback, wtkCallable}:
     for param in typ.params: collectValidatorTypes(param, types)
     collectValidatorTypes(typ.returnType, types)
+    if typ.restType != nil: collectValidatorTypes(typ.restType, types)
+    for item in typ.namedTypes: collectValidatorTypes(item, types)
+    for item in typ.errorTypes: collectValidatorTypes(item, types)
   for existing in types:
     if sameType(existing, typ): return
   types.add typ
@@ -5348,13 +5664,22 @@ proc containsTypeKind(typ: WebType, kind: WebTypeKind): bool =
   if typ == nil: return false
   if typ.kind == kind: return true
   case typ.kind
-  of wtkList, wtkTask, wtkStream: containsTypeKind(typ.item, kind)
+  of wtkList, wtkTask, wtkStream:
+    if containsTypeKind(typ.item, kind): return true
+    for errorType in typ.errorTypes:
+      if containsTypeKind(errorType, kind): return true
+    false
   of wtkMap:
     containsTypeKind(typ.params[0], kind) or
       containsTypeKind(typ.params[1], kind)
-  of wtkCallback:
+  of wtkCallback, wtkCallable:
     for param in typ.params:
       if containsTypeKind(param, kind): return true
+    if typ.restType != nil and containsTypeKind(typ.restType, kind): return true
+    for item in typ.namedTypes:
+      if containsTypeKind(item, kind): return true
+    for item in typ.errorTypes:
+      if containsTypeKind(item, kind): return true
     containsTypeKind(typ.returnType, kind)
   of wtkUnion:
     for member in typ.members:
@@ -5425,6 +5750,7 @@ proc emitStructuralEquality(emitter: var WebEmitter,
     (if emitter.typescript: ": boolean" else: "") & " {")
   inc emitter.indent
   emitter.line("if (a === b) return true;")
+  emitter.line("if (a?.[Symbol.for(\"gene.callable_view\")] === true || b?.[Symbol.for(\"gene.callable_view\")] === true) return false;")
   emitter.line("if (typeof a === \"symbol\" && typeof b === \"symbol\") return Symbol.keyFor(a) === Symbol.keyFor(b);")
   emitter.line("if (Array.isArray(a) || Array.isArray(b)) {")
   inc emitter.indent
@@ -5536,8 +5862,11 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
     of wtkList:
       emitter.line("if (!Array.isArray(value)) $gene_type_error(where, \"" &
         typeName(typ) & "\", value);")
-      emitter.line("for (const item of value) " & validatorName(typ.item) &
-        "(item, `${where} item`);")
+      emitter.line("const adapted = value.map(item => " & validatorName(typ.item) &
+        "(item, `${where} item`));")
+      emitter.line("if (adapted.some((item, index) => item !== " &
+        (if emitter.typescript: "(value as any[])" else: "value") &
+        "[index])) value = Object.isFrozen(value) ? Object.freeze(adapted) : adapted;")
     of wtkBuffer:
       # The constructor check is the whole validator. A typed array cannot hold
       # an element outside its own range — the runtime coerces on write — so
@@ -5555,17 +5884,50 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
       emitter.line("if (value === null || typeof value !== \"object\") " &
         "$gene_type_error(where, \"" & typeName(typ) & "\", value);")
     of wtkCallback:
-      emitter.line("if (typeof value !== \"function\") $gene_type_error(where, \"Callback\", value);")
+      let excluded = if typ.name == "callable context": ""
+        else: " || " & (if emitter.typescript: "(value as any)" else: "value") &
+          "[Symbol.for(\"gene.message_value\")] === true || " &
+          (if emitter.typescript: "(value as any)" else: "value") &
+          "[Symbol.for(\"gene.selector_value\")] === true"
+      emitter.line("if (typeof value !== \"function\"" & excluded &
+        ") $gene_type_error(where, \"Fn\", value);")
+    of wtkCallable:
+      if typ.name == "bare":
+        emitter.line("if (!$gene_is_callable(value)) $gene_type_error(where, \"Callable\", value);")
+      else:
+        var positional, named, errors: seq[string]
+        for item in typ.params: positional.add validatorName(item)
+        for i, key in typ.namedKeys:
+          let item = typ.namedTypes[i]
+          let optional = explicitlyAdmitsNil(item)
+          named.add "[" & jsString(key) & "]: [" & validatorName(item) & ", " &
+            (if optional: "false" else: "true") & "]"
+        for item in typ.errorTypes:
+          if item.kind != wtkNominal or
+              (item.name notin emitter.errorTypes and
+               item.name notin ["TypeError", "RuntimeError", "MessageError"]):
+            raise newException(WebProfileError,
+              "Callable ^errors entries must name supported Error types")
+          errors.add validatorName(item)
+        let rest = if typ.restType == nil: "null" else: validatorName(typ.restType)
+        let allowed = if typ.checkedErrors: "[" & errors.join(", ") & "]" else: "null"
+        emitter.line("return new GeneCallableView(value, [" & positional.join(", ") &
+          "], " & rest & ", {" & named.join(", ") & "}, " &
+          validatorName(typ.returnType) & ", " & allowed & ");")
     of wtkPropMap:
       emitter.line("if (value === null || typeof value !== \"object\" || Array.isArray(value)) $gene_type_error(where, \"PropMap\", value);")
     of wtkMap:
       emitter.line("if (!(value instanceof GeneMap)) $gene_type_error(where, \"Map\", value);")
+      emitter.line("let changed = false; const adapted" &
+        (if emitter.typescript: ": [any, any][]" else: "") & " = [];")
       emitter.line("for (const [key, item] of value) {")
       inc emitter.indent
       emitter.line(validatorName(typ.params[0]) & "(key, `${where} key`);")
-      emitter.line(validatorName(typ.params[1]) & "(item, `${where} value`);")
+      emitter.line("const checked = " & validatorName(typ.params[1]) & "(item, `${where} value`);")
+      emitter.line("changed ||= checked !== item; adapted.push([key, checked]);")
       dec emitter.indent
       emitter.line("}")
+      emitter.line("if (changed) value = new GeneMap(adapted);")
     of wtkNode:
       emitter.line("if (!$gene_is_node(value)) $gene_type_error(where, \"Node\", value);")
     of wtkDomTarget:
@@ -5596,12 +5958,37 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
       emitter.line("if (!(value instanceof GeneRange)) $gene_type_error(where, \"Range\", value);")
     of wtkTask:
       emitter.line("if (!(value instanceof GeneTask)) $gene_type_error(where, \"Task\", value);")
+      if typ.checkedErrors:
+        let errorCheck = validatorName(typ.errorTypes[0])
+        emitter.line("const source = value;")
+        emitter.line("const checked = new GeneTask(source.promise.then(item => " &
+          validatorName(typ.item) & "(item, `${where} result`), error => { if (!(error instanceof TypeError) && !error?.[Symbol.for(\"gene.cancellation\")]) " &
+          errorCheck & "(error, `${where} error`); throw error; }));")
+        emitter.line("Object.defineProperty(checked, \"cancelled\", { get: () => source.cancelled, set: (cancelled" &
+          (if emitter.typescript: ": boolean" else: "") & ") => { source.cancelled = cancelled; } });")
+        emitter.line("checked.cancel = () => source.cancel(); value = checked;")
     of wtkStream:
       let nextAccess = if emitter.typescript:
                          "(value as { next?: unknown }).next"
                        else: "value.next"
       emitter.line("if (value === null || typeof value !== \"object\" || typeof " &
         nextAccess & " !== \"function\") $gene_type_error(where, \"Stream\", value);")
+      if typ.checkedErrors:
+        emitter.line("const source = value" &
+          (if emitter.typescript: " as GeneStream<any>" else: "") & ";")
+        emitter.line("function* checked() {")
+        inc emitter.indent
+        emitter.line("try { while (source.has_next()) yield " &
+          validatorName(typ.item) & "(source.next(), `${where} item`); } catch (error) {")
+        inc emitter.indent
+        let err = if emitter.typescript: "(error as any)" else: "error"
+        emitter.line("if (!(error instanceof TypeError) && !" & err & "?.[Symbol.for(\"gene.cancellation\")]) " &
+          validatorName(typ.errorTypes[0]) & "(error, `${where} error`); throw error;")
+        dec emitter.indent
+        emitter.line("}")
+        dec emitter.indent
+        emitter.line("}")
+        emitter.line("value = new GeneStream(checked(), source);")
     of wtkNominal:
       var isEnum = false
       var protocol: WebProtocolDecl
@@ -5609,7 +5996,10 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
         if declaration.sourceName == typ.name: isEnum = true
       for declaration in module.visibleProtocols:
         if declaration.sourceName == typ.name: protocol = declaration
-      if protocol != nil:
+      if typ.name in ["Call", "RuntimeError", "MessageError"]:
+        emitter.line("if (!$gene_is_node(value) || value.head !== Symbol.for(" &
+          jsString(typ.name) & ")) $gene_type_error(where, " & jsString(typ.name) & ", value);")
+      elif protocol != nil:
         emitter.line("if (value == null) $gene_type_error(where, " &
           jsString(typ.name) & ", value);")
         for messageDecl in protocol.messages:
@@ -5636,7 +6026,7 @@ proc emitValidators(emitter: var WebEmitter, module: WebModule) =
       emitter.line("let $gene_ok = false;")
       emitter.line("for (const check of [" & names.join(", ") & "]) {")
       inc emitter.indent
-      emitter.line("try { check(value, where); $gene_ok = true; break; } catch {}");
+      emitter.line("try { value = check(value, where); $gene_ok = true; break; } catch {}");
       dec emitter.indent
       emitter.line("}")
       emitter.line("if (!$gene_ok) $gene_type_error(where, " & jsString(typeName(typ)) & ", value);")
@@ -5873,8 +6263,9 @@ proc emitProtocolDeclaration(emitter: var WebEmitter,
                              declaration: WebProtocolDecl) =
   emitter.currentLoc = declaration.loc
   for messageDecl in declaration.messages:
-    emitter.line("export const " & messageDecl.symbolName & " = Symbol(" &
-      jsString(declaration.sourceName & ":" & messageDecl.sourceName) & ");")
+    if declaration.sourceName != "Callable":
+      emitter.line("export const " & messageDecl.symbolName & " = Symbol(" &
+        jsString(declaration.sourceName & ":" & messageDecl.sourceName) & ");")
   if emitter.typescript:
     emitter.line("export interface " & declaration.emittedName & " {")
     inc emitter.indent
@@ -5939,6 +6330,67 @@ proc emitImplDeclaration(emitter: var WebEmitter,
     emitter.line(if builtinTarget: "}" else: "} });")
   if implementation.methods.len > 0: emitter.line()
 
+proc emitCallableRuntime(emitter: var WebEmitter) =
+  let a = if emitter.typescript: ": any" else: ""
+  let arr = if emitter.typescript: ": any[]" else: ""
+  emitter.line("export const $gene_callable_apply = Symbol.for(\"gene.Callable.apply\");")
+  emitter.line("const $gene_callable_shape = Symbol.for(\"gene.callable_shape\");")
+  emitter.line("function $gene_is_callable(value" & a & ") { return typeof value === \"function\" || (value != null && (value[Symbol.for(\"gene.callable_view\")] === true || typeof value[$gene_callable_apply] === \"function\")); }")
+  emitter.line("function $gene_message_value(value" & a & ") { Object.defineProperty(value, Symbol.for(\"gene.message_value\"), { value: true }); return value; }")
+  emitter.line("function $gene_selector_value(value" & a & ") { Object.defineProperty(value, Symbol.for(\"gene.selector_value\"), { value: true }); return value; }")
+  emitter.line("function $gene_invoke_callable(target" & a & ", parts" & arr & ", supplied" & a & " = {}, site" & a & " = null, splices" & arr & " = [])" & a & " {")
+  inc emitter.indent
+  emitter.line("const args" & arr & " = []; const named = Object.assign(Object.create(null), supplied);")
+  emitter.line("const merge = (props" & a & ") => { for (const key of Object.keys(props)) { if (props[key] === undefined) delete named[key]; else named[key] = props[key]; } };")
+  emitter.line("for (let i = 0; i < parts.length; i++) { const part = parts[i]; if (!splices[i]) { args.push(part); } else if (Array.isArray(part)) { args.push(...part); } else if ($gene_is_node(part)) { merge(part.props); args.push(...part.body); } else if (part != null && Array.isArray(part.$gene_body)) { for (const key of Object.keys(part)) if (key !== \"$gene_body\") { if (part[key] === undefined) delete named[key]; else named[key] = part[key]; } args.push(...part.$gene_body); } else if (part != null && (Object.getPrototypeOf(part) === Object.prototype || Object.getPrototypeOf(part) === null)) { merge(part); } else { $gene_type_error(\"Callable spread\", \"List, Map, or Node\", part); } }")
+  emitter.line("if (target != null && target[Symbol.for(\"gene.callable_view\")] === true) return target.invoke(args, named, site);")
+  emitter.line("if (typeof target === \"function\") {")
+  inc emitter.indent
+  emitter.line("if (target.prototype && typeof target.prototype.$gene_validate === \"function\") return new target(named, args);")
+  emitter.line("const shape = target[$gene_callable_shape];")
+  emitter.line("if (shape) { if (args.length !== shape.positionals) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function expects \" + shape.positionals + \" positional arguments\" }); for (const key of Object.keys(named)) if (!shape.names.includes(key)) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"unexpected named argument: \" + key }); return target(...shape.order.map((entry" & a & ") => typeof entry === \"number\" ? args[entry] : Object.prototype.hasOwnProperty.call(named, entry) ? named[entry] : $gene_missing)); }")
+  emitter.line("if (Object.keys(named).length !== 0) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"unexpected named argument\" });")
+  emitter.line("if (args.length !== target.length) throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function expects \" + target.length + \" positional arguments\" });")
+  emitter.line("return target(...args);")
+  dec emitter.indent
+  emitter.line("}")
+  emitter.line("if (target != null && typeof target[$gene_callable_apply] === \"function\") return target[$gene_callable_apply](new GeneNode(Symbol.for(\"Call\"), { named, site }, args));")
+  emitter.line("return $gene_type_error(\"Callable target\", \"Callable\", target);")
+  dec emitter.indent
+  emitter.line("}")
+  emitter.line("export class GeneCallableView {")
+  inc emitter.indent
+  emitter.line(if emitter.typescript:
+    "#target: any; #positional: any[]; #rest: any; #named: Record<string, any>; #result: any; #errors: any[] | null;"
+    else: "#target; #positional; #rest; #named; #result; #errors;")
+  emitter.line("constructor(target" & a & ", positional" & arr & ", rest" & a & ", named" & a & ", result" & a & ", errors" & a & ") {")
+  inc emitter.indent
+  emitter.line("if (!$gene_is_callable(target)) $gene_type_error(\"Callable target\", \"Callable\", target);")
+  emitter.line("this.#target = target; this.#positional = positional; this.#rest = rest; this.#named = named; this.#result = result; this.#errors = errors;")
+  emitter.line("Object.defineProperty(this, Symbol.for(\"gene.callable_view\"), { value: true });")
+  dec emitter.indent
+  emitter.line("}")
+  emitter.line("invoke(args" & arr & ", named" & a & " = {}, site" & a & " = null)" & a & " {")
+  inc emitter.indent
+  emitter.line("if (args.length < this.#positional.length || (this.#rest === null && args.length !== this.#positional.length)) $gene_type_error(\"Callable arguments\", \"the declared positional call shape\", args);")
+  emitter.line("const checked = args.map((value, i) => (i < this.#positional.length ? this.#positional[i] : this.#rest)(value, \"Callable argument \" + i));")
+  emitter.line("const checkedNamed" & a & " = {};")
+  emitter.line("for (const key of Object.keys(named)) { if (!Object.prototype.hasOwnProperty.call(this.#named, key)) $gene_type_error(\"Callable named argument '\" + key + \"'\", \"a declared name\", named[key]); Object.defineProperty(checkedNamed, key, { value: this.#named[key][0](named[key], \"Callable named argument '\" + key + \"'\"), enumerable: true }); }")
+  emitter.line("for (const key of Object.keys(this.#named)) if (this.#named[key][1] && !Object.prototype.hasOwnProperty.call(named, key)) $gene_type_error(\"Callable named argument '\" + key + \"'\", \"a supplied value\", undefined);")
+  emitter.line("try { return this.#result($gene_invoke_callable(this.#target, checked, checkedNamed, site), \"Callable result\"); } catch (error) {")
+  inc emitter.indent
+  let err = if emitter.typescript: "(error as any)" else: "error"
+  emitter.line("if (this.#errors === null || error instanceof globalThis.TypeError || " & err & "?.head === Symbol.for(\"TypeError\") || " & err & "?.[Symbol.for(\"gene.cancellation\")]) throw error;")
+  emitter.line("for (const check of this.#errors) { try { check(error, \"Callable error\"); } catch (_) { continue; } throw error; }")
+  emitter.line("throw new GeneNode(Symbol.for(\"RuntimeError\"), { message: \"function 'Callable contract' raised an undeclared error\" });")
+  dec emitter.indent
+  emitter.line("}")
+  dec emitter.indent
+  emitter.line("}")
+  emitter.line("toJSON() { throw new TypeError(\"Callable views are not serializable\"); }")
+  dec emitter.indent
+  emitter.line("}")
+
 proc emitModule(module: WebModule, typescript: bool,
                 lineLocs: var seq[SourceLoc]): string =
   let nominalTypes = nominalTypeNames(module)
@@ -5978,6 +6430,19 @@ proc emitModule(module: WebModule, typescript: bool,
   var needsAsync = false
   var needsDom = false
   var needsMap = false
+  let needsCallable = moduleUsesTypeKind(module, wtkCallable) or
+    moduleExprUsesTypeKind(module, wtkCallable) or
+    moduleUsesExprKind(module, {wekCallableCall, wekMessage, wekSelector}) or
+    moduleUsesTypeKind(module, wtkStream) or
+    module.functions.anyIt(it.generator) or
+    moduleUsesBuiltin(module, ["to_stream", "map", "filter", "take", "into", "each"]) or
+    module.impls.anyIt(it.protocolName == "Callable")
+  let needsMissing = needsCallable or moduleUsesExprKind(module, {wekMissing}) or
+    module.functions.anyIt(it.params.anyIt(it.named))
+  if needsMissing:
+    let a = if typescript: ": any" else: ""
+    emitter.line("const $gene_missing" & a & " = Object.freeze({ [Symbol.for(\"gene.call.missing\")]: true });")
+    emitter.line("function $gene_is_missing(value" & a & ") { return value != null && value[Symbol.for(\"gene.call.missing\")] === true; }")
   let needsIntDivisor = moduleUsesDivision(module, wtkInt)
   let needsF64Divisor = moduleUsesDivision(module, wtkF64)
   # A negative index counts from the end (design §1/§2, `users/-1/name`), and
@@ -5990,8 +6455,8 @@ proc emitModule(module: WebModule, typescript: bool,
     moduleUsesExprKind(module, {wekPath, wekSelector, wekSetPath}) or
     moduleUsesTypeKind(module, wtkBuffer) or
     moduleExprUsesTypeKind(module, wtkBuffer)
-  needsNode = moduleUsesTypeKind(module, wtkNode) or
-    moduleUsesExprKind(module, {wekNode}) or
+  needsNode = needsCallable or moduleUsesTypeKind(module, wtkNode) or
+    moduleUsesExprKind(module, {wekNode, wekSend}) or
     needsIntDivisor or needsF64Divisor or # the divisor guards raise a Gene node
     needsIndex                            # and so does the index-range guard
   for fn in module.functions:
@@ -6039,7 +6504,7 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("function $gene_is_node(value" &
       (if typescript: ": unknown" else: "") & ")" &
       (if typescript:
-         ": value is { head: symbol; props: Record<string, unknown>; body: unknown[] }"
+         ": value is { head: any; props: Record<string, unknown>; body: unknown[] }"
        else: "") &
       " { return typeof value === \"object\" && value !== null && " &
       "$gene_node in value; }")
@@ -6125,7 +6590,7 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line((if typescript: "readonly " else: "") &
       "[$gene_node] = true;")
     emitter.line("constructor(" & publicField & "head" &
-      (if typescript: ": symbol" else: "") & ", " & publicField & "props" &
+      (if typescript: ": any" else: "") & ", " & publicField & "props" &
       (if typescript: ": Record<string, unknown> = {}" else: " = {}") &
       ", " & publicField & "body" &
       (if typescript: ": unknown[] = []" else: " = []") & ", immutable" &
@@ -6311,13 +6776,13 @@ proc emitModule(module: WebModule, typescript: bool,
       emitter.line("function $gene_stream_map(source" & anyType & ", mapper" &
         anyType & ")" & anyType & " {")
       inc emitter.indent
-      emitter.line("function* mapped() { while (source.has_next()) yield mapper(source.next()); } return new GeneStream(mapped(), source);")
+      emitter.line("function* mapped() { while (source.has_next()) yield $gene_invoke_callable(mapper, [source.next()]); } return new GeneStream(mapped(), source);")
       dec emitter.indent
       emitter.line("}")
       emitter.line("function $gene_stream_filter(source" & anyType &
         ", predicate" & anyType & ")" & anyType & " {")
       inc emitter.indent
-      emitter.line("function* filtered() { while (source.has_next()) { const item = source.next(); const keep = predicate(item); if (keep !== false && keep != null) yield item; } } return new GeneStream(filtered(), source);")
+      emitter.line("function* filtered() { while (source.has_next()) { const item = source.next(); const keep = $gene_invoke_callable(predicate, [item]); if (keep !== false && keep != null) yield item; } } return new GeneStream(filtered(), source);")
       dec emitter.indent
       emitter.line("}")
       emitter.line("function $gene_stream_take(source" & anyType & ", count" &
@@ -6340,8 +6805,8 @@ proc emitModule(module: WebModule, typescript: bool,
       emitter.line("function $gene_stream_each(source" & anyType &
         ", visit" & anyType & ")" & anyType & " {")
       inc emitter.indent
-      emitter.line("if (Array.isArray(source)) { for (const item of source) visit(item); return null; }")
-      emitter.line("try { while (source.has_next()) visit(source.next()); } catch (primary) { try { source.close(); } catch (_) {} throw primary; } source.close(); return null;")
+      emitter.line("if (Array.isArray(source)) { for (const item of source) $gene_invoke_callable(visit, [item]); return null; }")
+      emitter.line("try { while (source.has_next()) $gene_invoke_callable(visit, [source.next()]); } catch (primary) { try { source.close(); } catch (_) {} throw primary; } source.close(); return null;")
       dec emitter.indent
       emitter.line("}")
       emitter.line()
@@ -6825,6 +7290,8 @@ proc emitModule(module: WebModule, typescript: bool,
     emitter.line("if (value[$gene_prop_order]) { key = typeof key === \"symbol\" ? Symbol.keyFor(key) ?? key.description : String(key); return Object.prototype.hasOwnProperty.call(value, key) ? value[key] : undefined; }")
     emitter.line("if (typeof key === \"bigint\") key = Number(key);")
     emitter.line("if (value?.$gene_map === true) return value.get(key);")
+    emitter.line("if (typeof key === \"string\" && /^-?\\d+$/.test(key) && (Array.isArray(value?.$gene_body) || $gene_is_node(value))) key = Number(key);")
+    emitter.line("if ($gene_is_node(value) && typeof key === \"number\") return $gene_at(value.body, key);")
     # A static path segment is emitted as a string, so `xs/-1` arrives here as
     # `"-1"`. JS coerces `"2"` to an index by itself but not `"-1"`, which is
     # how the from-the-end form went silently missing. Coerce only for indexed
@@ -6884,6 +7351,7 @@ proc emitModule(module: WebModule, typescript: bool,
     dec emitter.indent
     emitter.line("}")
     emitter.line()
+  if needsCallable: emitter.emitCallableRuntime()
   for declaration in module.enums:
     emitter.emitEnumDeclaration(declaration)
   for declaration in module.protocols:
@@ -6982,6 +7450,10 @@ proc emitModule(module: WebModule, typescript: bool,
 
 proc emitDeclarations(module: WebModule): string =
   result.add "// Generated Gene web-profile declarations (TypeScript 5.9.2).\n"
+  if moduleUsesTypeKind(module, wtkCallable):
+    result.add "export declare class GeneCallableView {\n"
+    result.add "  invoke(args: unknown[], named?: Record<string, unknown>, site?: unknown): unknown;\n"
+    result.add "}\n"
   for imported in module.imports:
     var names: seq[string]
     var locals: seq[string]
@@ -7009,8 +7481,8 @@ proc emitDeclarations(module: WebModule): string =
     result.add "}\n"
   if moduleUsesTypeKind(module, wtkNode):
     result.add "export declare class GeneNode {\n"
-    result.add "  head: symbol; props: Record<string, unknown>; body: unknown[];\n"
-    result.add "  constructor(head: symbol, props?: Record<string, unknown>, body?: unknown[], immutable?: boolean);\n"
+    result.add "  head: any; props: Record<string, unknown>; body: unknown[];\n"
+    result.add "  constructor(head: any, props?: Record<string, unknown>, body?: unknown[], immutable?: boolean);\n"
     result.add "}\n"
   if moduleUsesTypeKind(module, wtkRange):
     result.add "export declare class GeneRange implements Iterable<bigint> {\n"

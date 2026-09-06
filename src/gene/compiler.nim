@@ -1587,7 +1587,7 @@ proc isParamTerminator(s: string): bool =
 proc isRestParam(s: string): bool =
   s.len > 3 and s.endsWith("...")
 
-proc typeExprAdmitsNil(expr: Value): bool =
+proc typeExprAdmitsNil*(expr: Value): bool =
   ## True when a type expression *explicitly* admits nil — `T?`, `(? ...)`,
   ## `Nil`, or a union with a nil-admitting alternative. Such a type marks an
   ## optional prop-schema field or named parameter (omitted binds nil).
@@ -3826,11 +3826,12 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
     ## Requiring exactly one form here meant every typed-native function with
     ## more than one statement had to be wrapped in an explicit `(do ...)`,
     ## which nothing else in the language asks for.
-    let lowerBody =
+    let rawLowerBody =
       if body.len == start + 1: body[start]
       elif body.len > start + 1:
         newNode(newSym("do"), body = body[start .. ^1])
       else: NIL
+    let lowerBody = normalizeMessageCallTree(rawLowerBody)
     let cannotLower = typeParams.len != 0 or checksErrors or fnCompiler.sawYield or
         specs.rest.len != 0 or specs.named.len != 0 or
         specs.hasOptionalPositional or lowerBody.kind == vkNil or
@@ -3871,9 +3872,10 @@ proc buildFunctionProto(c: Compiler, name: string, paramList: Value,
       specs.rest.len == 0 and specs.named.len == 0 and
       not specs.hasOptionalPositional
     if scalarLowerable and start < body.len:
-      let lowerBody =
+      let rawLowerBody =
         if body.len == start + 1: body[start]
         else: newNode(newSym("do"), body = body[start .. ^1])
+      let lowerBody = normalizeMessageCallTree(rawLowerBody)
       var scalarLocals: seq[AotLocal]
       if c.isTypedNativeAotExpr(lowerBody, specs.positional, aotParamReprs,
                                 aotReturnRepr, c.chunk.ffiFns, scalarLocals):
@@ -7202,20 +7204,14 @@ proc compileSend(c: var Compiler, node: Value, receiver: Value,
 
 proc compileCall(c: var Compiler, node: Value, allowSyntax = true,
                  tail = false) =
-  if node.head.kind == vkNode and node.head.head.isSymbol("msg"):
-    # A message in head position (design §3, decision 3). This used to be a
-    # runtime `CallKindError` because `Proto:msg` was indistinguishable from a
-    # member path until it evaluated; now that `:` reads as its own node the
-    # check runs at compile time, where the habit is actually being redirected.
-    # It only rejects — it never picks between two meanings — so it stays on the
-    # safe side of the line the first message-model attempt crossed.
-    var parts: seq[string]
-    for segment in node.head.body:
-      parts.add (if segment.kind == vkSymbol: segment.symVal else: $segment)
-    let shown = parts.join(":")
-    raise newException(GeneError,
-      "a message dispatches only through a dot send: write (x ." & shown &
-      ") instead of (" & shown & " x)")
+  let directSend = normalizeMessageHeadCall(node)
+  if directSend.bits != node.bits:
+    let firstInstruction = c.chunk.instructions.len
+    compileCall(c, directSend, allowSyntax = false, tail = tail)
+    for instruction, site in c.chunk.callSites.mpairs:
+      if instruction >= firstInstruction and site.bits == directSend.bits:
+        site = node
+    return
   if node.body.len > 1 and node.body[0].kind == vkSymbol and
       (node.body[0].symVal == "~" or node.body[0].symVal == "?~"):
     # (x .f a) — infix message send (docs/core.md §9.1). The optional marker is the same
@@ -9072,7 +9068,8 @@ proc compilePreparedPipelineCall(c: var Compiler, stage: PipelineStage,
   ## layout preparation is new: it happens now, including all symbol reads and
   ## spread expansion, rather than on each invocation of the retained callback.
   let item = newSym(PipelineItemName)
-  let call = materializePipelineStage(stage, item, immutable)
+  let call = normalizeMessageHeadCall(
+    materializePipelineStage(stage, item, immutable))
   let publicSite = materializePipelineStage(stage, newSym("_"), immutable)
   if call.props.hasKey("types") and call.head.kind == vkSymbol:
     let types = call.props["types"]
@@ -9086,11 +9083,6 @@ proc compilePreparedPipelineCall(c: var Compiler, stage: PipelineStage,
   var resolveOp = opNoop
   var optional = false
   var argsStart = 0
-  if call.head.kind == vkNode and call.head.head.isSymbol("msg"):
-    # Capturing a literal P:message must not turn an invalid source head into
-    # an accepted held-message application.
-    compileCall(c, call)
-    return
   if call.body.len > 1 and
       (call.body[0].isSymbol("~") or call.body[0].isSymbol("?~")):
     optional = call.body[0].isSymbol("?~")

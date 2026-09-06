@@ -1405,6 +1405,18 @@ int main(void) {
     check "return gene_native_impl_0_read_value(node);" in c
     checkCCompiles(c, "typed_native_specialized_send")
 
+  test "typed-native prefix sends use the same specialized implementation":
+    let chunk = compileSource(
+      "(protocol ReadValue (message read_value [] : I64)) " &
+      "(ffi/struct CNode ^fields [[value C/Int64]]) " &
+      "(type Node ^native {^abi CNode ^lifecycle manual}) " &
+      "(impl ReadValue for Node (message read_value [] : I64 self/value)) " &
+      "(fn read [node : Node] : I64 (ReadValue:read_value node))")
+    let c = chunk.emitExperimentalC()
+    check chunk.directProtocolCalls.len == 1
+    check "return gene_native_impl_0_read_value(node);" in c
+    checkCCompiles(c, "typed_native_prefix_send")
+
   test "two slot-compiled chunks cannot silently share one scope":
     ## Each slot layout numbers its locals from zero, so a second such chunk
     ## in the same scope read the resident layout's slot 0: `join` resolved to
@@ -5219,12 +5231,10 @@ suite "spec — implicit self in message bodies from design §10":
                "catch MessageError $ex/receiver_type)",
                "\"P\"")
 
-  test "a message in head position is rejected at compile time":
-    # `:` reads as its own node, so the head-position ban no longer waits for
-    # the callee to evaluate (design §3, decision 3). It only rejects; it never
-    # picks between two meanings.
-    check_compile_error("(protocol P (message m [] : Str)) (P:m 1)",
-                        "dispatches only through a dot send")
+  test "a message in head position normalizes to a send":
+    check_eval("(protocol P (message m [] : Str)) " &
+      "(type T ^props {} (impl P (message m [] : Str \"ok\"))) " &
+      "[(P:m (T)) ((T) .P:m)]", "[\"ok\" \"ok\"]")
 
   test "a message in value position is a dispatching message value":
     # Decision 2. `Proto:msg` is a *message*, not a function: it prints as one,

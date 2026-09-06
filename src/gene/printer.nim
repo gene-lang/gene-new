@@ -423,6 +423,8 @@ proc print*(v: Value): string =
       (if v.fnName.len > 0: "(fn " & v.fnName & ")" else: "(fn)")
   of vkNativeFn:
     "(native-fn " & v.nativeFnName & ")"
+  of vkCallableView:
+    "(callable " & print(v.callableViewSignature) & ")"
   of vkNamespace:
     "(ns " & v.nsName & ")"
   of vkModule:

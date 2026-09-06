@@ -1040,10 +1040,12 @@ and `^actual_value` diagnostics. An ordinary non-message callee reports
 send argument is evaluated. Fexprs are invoked only in explicit trailing-`!`
 call-head position; send syntax is never reinterpreted as a syntax call.
 
-**Head position is rejected; value position dispatches.** `(P:msg x)` is a
-compile-time error — `:` reads as its own node, so the check does not wait for
-the callee to evaluate — and the diagnostic names the fix, `(x .P:msg)`. This
-only rejects; it never picks between two meanings.
+**Direct message heads normalize to sends.** `(P:msg x a)` is equivalent to
+`(x .P:msg a)`, including receiver-first evaluation, descriptor resolution,
+argument evaluation, and failure timing. `(Self:msg x a)` likewise means
+`(x .msg a)`. Normalization happens before pipeline preparation. The receiver
+must be the first explicit positional form; a leading receiver spread or no
+receiver is rejected. Bind the message first for ordinary eager spread calls.
 
 **`Self` is the reserved value spelling for a type-direct message.** It names
 no qualifier, so `(x .Self:msg)` is exactly the bare send `(x .msg)` and
@@ -1067,8 +1069,8 @@ higher-order callable consumer applies one to its first argument, so
 is `(receiver, ...send args)`. The standard collection operations are this
 shape at stdlib scale: `$map` and friends are message identities shared across
 the built-in collection types (§6.2), so `($map xs f)` and `(xs .map f)` are
-one dispatch. Direct source syntax `(P:msg x)` remains rejected
-as described above.
+one dispatch. Direct source syntax `(P:msg x)` uses the same canonical send
+operation as its dot spelling.
 
 The value carries the scope it was **written** in. Higher-order application has
 no send site, so it resolves in that authored scope. A held send `(x .%m)` is
@@ -1533,8 +1535,8 @@ fallback: a type without the method raises `MessageError`, and a user type
 joins the generic by declaring the message — after which `$map` dispatches to
 it like any other receiver. The function spelling is an ordinary callable; it
 is the `Self:map` message-value spelling that is `Callable` rather than `Fn`
-(§3), and a direct head application `(Self:map xs f)` is rejected like any
-`(P:msg x)` — bind the value first. This kind of generic function is
+(§3). A direct head application `(Self:map xs f)` is the send `(xs .map f)`.
+This kind of generic function is
 receiver-dispatched; the type-parameterized functions of §7.4, whose type
 parameters are inferred at call sites, are a different mechanism.
 
@@ -3226,9 +3228,10 @@ Message dispatch is on the first argument's head/type. Messages are ordinary cal
 (render item)             # a held message value applies to its first argument
 ```
 
-The direct head spelling `(ToHtml:to_html item)` is intentionally rejected: in
-head position it looks like static implementation selection. Bind or pass the
-message value first when a higher-order API needs a callable.
+The direct head spelling `(ToHtml:to_html item)` is the qualified send
+`(item .ToHtml:to_html)`. `ToHtml` identifies a protocol message; the receiver's
+runtime type and visible implementations determine dispatch. Concrete types
+remain invalid qualifiers; explicit parent delegation uses `super`.
 
 A type can require manual implementations:
 

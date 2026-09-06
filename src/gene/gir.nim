@@ -150,6 +150,8 @@ type
     opPreparePipelineCall # snapshot fixed components and expanded call layout
     opCallPrepared        # invoke a prepared layout with the current item
     opMakePipelineStream  # normal conversion followed by a lazy mapping adapter
+    opCheckCallableArguments # checked view payload -> target, prepared args, slot
+    opCheckCallableResult    # result + checked view payload -> checked result
 
   Instruction* = object
     op*: OpCode
@@ -1075,7 +1077,7 @@ proc formatInstruction(inst: Instruction): string =
     result.add " plan=" & $inst.intArg
   of opCallPrepared:
     result.add " receiver=" & $inst.flag
-  of opMakePipelineStream:
+  of opMakePipelineStream, opCheckCallableArguments, opCheckCallableResult:
     discard
   of opNew:
     if inst.flag:

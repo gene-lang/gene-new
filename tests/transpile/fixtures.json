@@ -3132,6 +3132,506 @@
       "profile": {
         "status": "eligible"
       }
+    },
+    {
+      "id": "callable.prefix_protocol",
+      "source": "(protocol Label (message label [] : Str)) (type Box ^props {^n Str}) (impl Label for Box (message label [] : Str self/n)) (fn run [] : (List Str) (let x (Box ^n \"ok\")) [(Label:label x) (x .Label:label)]) (run)",
+      "web_source": "(mod callable_prefix_protocol ^profile web) (protocol Label (message label [] : Str)) (type Box ^props {^n Str}) (impl Label for Box (message label [] : Str self/n)) (fn run [] : (List Str) (let x (Box ^n \"ok\")) [(Label:label x) (x .Label:label)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "str",
+            "value": "ok"
+          },
+          {
+            "kind": "str",
+            "value": "ok"
+          }
+        ]
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.prefix_pipeline",
+      "source": "(type Box ^props {^n Int} (message plus [x : Int] : Int (+ self/n x))) (fn run [] : (List Int) (let boxes [(Box ^n 2) (Box ^n 3)]) (boxes -> Self:to_stream => Self:plus 1 -> $into [])) (run)",
+      "web_source": "(mod callable_prefix_pipeline ^profile web) (type Box ^props {^n Int} (message plus [x : Int] : Int (+ self/n x))) (fn run [] : (List Int) (let boxes [(Box ^n 2) (Box ^n 3)]) (boxes -> Self:to_stream => Self:plus 1 -> $into []))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "3"
+          },
+          {
+            "kind": "int",
+            "value": "4"
+          }
+        ]
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.native_and_fn",
+      "source": "(fn inc [x : Int] : Int (+ x 1)) (fn run [] : (List Int) (let f : (Callable [Int] Int) inc) (let add : (Callable [Int Int] Int) +) [(f 2) (add 3 4)]) (run)",
+      "web_source": "(mod callable_native_and_fn ^profile web) (fn inc [x : Int] : Int (+ x 1)) (fn run [] : (List Int) (let f : (Callable [Int] Int) inc) (let add : (Callable [Int Int] Int) +) [(f 2) (add 3 4)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "3"
+          },
+          {
+            "kind": "int",
+            "value": "7"
+          }
+        ]
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.named_defaults",
+      "source": "(fn target [x : Int ^n : Int = (+ x 1)] : Int (+ x n)) (fn run [] : (List Int) (let f : (Callable [Int] Int ^named {^n Int?}) target) [(f 2) (f 3) (f 3 ^n 8)]) (run)",
+      "web_source": "(mod callable_named_defaults ^profile web) (fn target [x : Int ^n : Int = (+ x 1)] : Int (+ x n)) (fn run [] : (List Int) (let f : (Callable [Int] Int ^named {^n Int?}) target) [(f 2) (f 3) (f 3 ^n 8)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "5"
+          },
+          {
+            "kind": "int",
+            "value": "7"
+          },
+          {
+            "kind": "int",
+            "value": "11"
+          }
+        ]
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.named_void",
+      "source": "(fn target [^value : Void] : Bool true) (fn run [] : Bool (let f : (Callable [] Bool ^named {^value Void}) target) (f ^value (do void))) (run)",
+      "web_source": "(mod callable_named_void ^profile web) (fn target [^value : Void] : Bool true) (fn run [] : Bool (let f : (Callable [] Bool ^named {^value Void}) target) (f ^value (do void)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.targets",
+      "source": "(type Box ^props {^n Int}) (type Add ^props {^n Int}) (impl Callable for Add (message apply [call : Call] : Int (+ self/n call/0))) (fn run [] : (List Int) (let construct : (Callable [] Box ^named {^n Int}) Box) (let get_n : (Callable [Box] Int) /n) (let add : (Callable [Int] Int) (Add ^n 4)) [(get_n (construct ^n 3)) (add 5)]) (run)",
+      "web_source": "(mod callable_targets ^profile web) (type Box ^props {^n Int}) (type Add ^props {^n Int}) (impl Callable for Add (message apply [call : Call] : Int (+ self/n call/0))) (fn run [] : (List Int) (let construct : (Callable [] Box ^named {^n Int}) Box) (let get_n : (Callable [Box] Int) /n) (let add : (Callable [Int] Int) (Add ^n 4)) [(get_n (construct ^n 3)) (add 5)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "3"
+          },
+          {
+            "kind": "int",
+            "value": "9"
+          }
+        ]
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.result_checks",
+      "source": "(fn wrong [x : Int] : Any \"bad\") (fn run [] : (List Bool) (let f : (Callable [Int] Int) wrong) [(try (f \"bad\") false catch TypeError true) (try (f 1) false catch TypeError true)]) (run)",
+      "web_source": "(mod callable_result_checks ^profile web) (fn wrong [x : Int] : Any \"bad\") (fn run [] : (List Bool) (let f : (Callable [Int] Int) wrong) [(try (f \"bad\") false catch TypeError true) (try (f 1) false catch TypeError true)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          }
+        ]
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.message_view",
+      "source": "(type Box ^props {^n Int} (message value [] : Int self/n)) (fn run [] : Int (let f : (Callable [Box] Int) Self:value) (f (Box ^n 7))) (run)",
+      "web_source": "(mod callable_message_view ^profile web) (type Box ^props {^n Int} (message value [] : Int self/n)) (fn run [] : Int (let f : (Callable [Box] Int) Self:value) (f (Box ^n 7)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "7"
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.rest_shape",
+      "source": "(fn sum3 [a : Int b : Int c : Int] : Int (+ a (+ b c))) (fn run [] : Int (let f : (Callable [Int Int...] Int) sum3) (f 1 [2 3]...)) (run)",
+      "web_source": "(mod callable_rest_shape ^profile web) (fn sum3 [a : Int b : Int c : Int] : Int (+ a (+ b c))) (fn run [] : Int (let f : (Callable [Int Int...] Int) sum3) (f 1 [2 3]...))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "6"
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.nested_view",
+      "source": "(fn wrong [x : Int] : Any \"bad\") (fn run [] : Bool (let fs : (List (Callable [Int] Int)) [wrong]) (try (fs/0 1) false catch TypeError true)) (run)",
+      "web_source": "(mod callable_nested_view ^profile web) (fn wrong [x : Int] : Any \"bad\") (fn run [] : Bool (let fs : (List (Callable [Int] Int)) [wrong]) (try (fs/0 1) false catch TypeError true))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.error_row",
+      "source": "(type Boom ^props {^n Int}) (impl Error for Boom) (fn bad [x : Int] : Int (fail (Boom ^n x))) (fn run [] : (List Bool) (let allow : (Callable [Int] Int ^errors [Boom]) bad) (let deny : (Callable [Int] Int ^errors []) bad) [(try (allow 1) false catch Boom true) (try (deny 1) false catch RuntimeError true)]) (run)",
+      "web_source": "(mod callable_error_row ^profile web) (type Boom ^props {^n Int}) (impl Error for Boom) (fn bad [x : Int] : Int (fail (Boom ^n x))) (fn run [] : (List Bool) (let allow : (Callable [Int] Int ^errors [Boom]) bad) (let deny : (Callable [Int] Int ^errors []) bad) [(try (allow 1) false catch Boom true) (try (deny 1) false catch RuntimeError true)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          }
+        ]
+      },
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      },
+      "expected_error": null
+    },
+    {
+      "id": "callable.lazy_result",
+      "source": "(fn make [] : (Stream Any Any) (yield \"bad\")) (fn run [] : Bool (let f : (Callable [] (Stream Int Any)) make) (let stream (f)) (try (stream .next) false catch TypeError true)) (run)",
+      "web_source": "(mod callable_lazy_result ^profile web) (fn make [] : (Stream Any Any) (yield \"bad\")) (fn run [] : Bool (let f : (Callable [] (Stream Int Any)) make) (let stream (f)) (try (stream .next) false catch TypeError true))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.deferred_errors",
+      "source": "(type Boom ^props {}) (impl Error for Boom) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : (List Bool) (let f : (Callable [] (Stream Int Any) ^errors []) make) (let stream (f)) [(== (stream .next) 1) (try (stream .next) false catch Boom true)]) (run)",
+      "web_source": "(mod callable_deferred_errors ^profile web) (type Boom ^props {}) (impl Error for Boom) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : (List Bool) (let f : (Callable [] (Stream Int Any) ^errors []) make) (let stream (f)) [(== (stream .next) 1) (try (stream .next) false catch Boom true)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.view_pipeline",
+      "source": "(fn inc [x : Int] : Int (+ x 1)) (fn run [] : (List Int) (let f : (Callable [Int] Int) inc) ([1 2] => f -> $into [])) (run)",
+      "web_source": "(mod callable_view_pipeline ^profile web) (fn inc [x : Int] : Int (+ x 1)) (fn run [] : (List Int) (let f : (Callable [Int] Int) inc) ([1 2] => f -> $into []))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "int",
+            "value": "2"
+          },
+          {
+            "kind": "int",
+            "value": "3"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.task_result",
+      "source": "(fn identity [x : Any] : Any x) (fn run [] : Int (scope (let task (spawn 3)) (let f : (Callable [Any] (Task Int Any) ^errors []) identity) (let result (f task)) (await result))) (run)",
+      "web_source": "(mod callable_task_result ^profile web) (fn identity [x : Any] : Any x) (fn run [] : Int (scope (let task (spawn 3)) (let f : (Callable [Any] (Task Int Any) ^errors []) identity) (let result (f task)) (await result)))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "3"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.stream_callbacks",
+      "source": "(fn wrong [x : Int] : Any \"bad\") (fn make [] : (Stream Any Any) (yield wrong)) (fn run [] : Bool (let f : (Callable [] (Stream (Callable [Int] Int) Any)) make) (let stream (f)) (let item (stream .next)) (try (item 1) false catch TypeError true)) (run)",
+      "web_source": "(mod callable_stream_callbacks ^profile web) (fn wrong [x : Int] : Any \"bad\") (fn make [] : (Stream Any Any) (yield wrong)) (fn run [] : Bool (let f : (Callable [] (Stream (Callable [Int] Int) Any)) make) (let stream (f)) (let item (stream .next)) (try (item 1) false catch TypeError true))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.closed_named",
+      "source": "(fn target [x : Int ^n : Int = 2] : Int (+ x n)) (fn run [] : (List Bool) (let f : (Callable [Int] Int ^named {^n Any}) target) [(try (f 1) false catch TypeError true) (try (f 1 ^n 2 ^extra 3) false catch TypeError true)]) (run)",
+      "web_source": "(mod callable_closed_named ^profile web) (fn target [x : Int ^n : Int = 2] : Int (+ x n)) (fn run [] : (List Bool) (let f : (Callable [Int] Int ^named {^n Any}) target) [(try (f 1) false catch TypeError true) (try (f 1 ^n 2 ^extra 3) false catch TypeError true)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": true
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.message_not_fn",
+      "source": "(protocol P (message value [] : Int)) (fn require_fn [f : (Fn [Any] Int)] : Int 1) (fn run [] : Int (require_fn P:value)) (run)",
+      "web_source": "(mod callable_message_not_fn ^profile web) (protocol P (message value [] : Int)) (fn require_fn [f : (Fn [Any] Int)] : Int 1) (fn run [] : Int (require_fn P:value))",
+      "web_export": "run",
+      "expected_value": null,
+      "expected_error": "Fn",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "Messages remain distinct from ordinary functions.",
+        "diagnostic": "Fn"
+      }
+    },
+    {
+      "id": "callable.authored_site",
+      "source": "(type Probe ^props {}) (impl Callable for Probe (message apply [call : Call] : Node call/site)) (fn run [] : Node (let fs : (List (Callable [Int] Node)) [(Probe)]) (fs/0 7)) (run)",
+      "web_source": "(mod callable_authored_site ^profile web) (type Probe ^props {}) (impl Callable for Probe (message apply [call : Call] : Node call/site)) (fn run [] : Node (let fs : (List (Callable [Int] Node)) [(Probe)]) (fs/0 7))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "node",
+        "head": {
+          "kind": "node",
+          "head": {
+            "kind": "sym",
+            "value": "path"
+          },
+          "props": [],
+          "body": [
+            {
+              "kind": "sym",
+              "value": "fs"
+            },
+            {
+              "kind": "int",
+              "value": "0"
+            }
+          ]
+        },
+        "props": [],
+        "body": [
+          {
+            "kind": "int",
+            "value": "7"
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.view_does_not_discard_result",
+      "source": "(fn run [] : Bool (let f : (Callable [Int] Void) (fn [x] (+ x 1))) (try (f 1) false catch TypeError true)) (run)",
+      "web_source": "(mod callable_view_does_not_discard_result ^profile web) (fn run [] : Bool (let f : (Callable [Int] Void) (fn [x] (+ x 1))) (try (f 1) false catch TypeError true))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.named_spread_keys",
+      "source": "(fn target [^__proto__ : Int ^constructor : Int] : Int (+ __proto__ constructor)) (fn run [] : Int (let f : (Callable [] Int ^named {^__proto__ Int ^constructor Int}) target) (f {^__proto__ 2 ^constructor 3}...)) (run)",
+      "web_source": "(mod callable_named_spread_keys ^profile web) (fn target [^__proto__ : Int ^constructor : Int] : Int (+ __proto__ constructor)) (fn run [] : Int (let f : (Callable [] Int ^named {^__proto__ Int ^constructor Int}) target) (f {^__proto__ 2 ^constructor 3}...))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "5"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.view_identity",
+      "source": "(fn target [] : Int 1) (fn run [] : (List Bool) (let f : (Callable [] Int) target) (let g : (Callable [] Int) target) [(== f f) (== f g)]) (run)",
+      "web_source": "(mod callable_view_identity ^profile web) (fn target [] : Int 1) (fn run [] : (List Bool) (let f : (Callable [] Int) target) (let g : (Callable [] Int) target) [(== f f) (== f g)])",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "list",
+        "items": [
+          {
+            "kind": "bool",
+            "value": true
+          },
+          {
+            "kind": "bool",
+            "value": false
+          }
+        ]
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.selector_not_fn",
+      "source": "(fn require_fn [f : (Fn [Any] Any)] : Int 1) (fn run [] : Int (require_fn /name)) (run)",
+      "web_source": "(mod callable_selector_not_fn ^profile web) (fn require_fn [f : (Fn [Any] Any)] : Int 1) (fn run [] : Int (require_fn /name))",
+      "web_export": "run",
+      "expected_value": null,
+      "expected_error": "Fn",
+      "expected_stdout": "",
+      "profile": {
+        "status": "rejected",
+        "reason": "Selectors are Callable and retain their distinct runtime category.",
+        "diagnostic": "Fn"
+      }
+    },
+    {
+      "id": "callable.stream_error_contract",
+      "source": "(type Boom ^props {}) (impl Error for Boom) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : Bool (let f : (Callable [] (Stream Int Never)) make) (let stream (f)) (stream .next) (try (stream .next) false catch TypeError true)) (run)",
+      "web_source": "(mod callable_stream_error_contract ^profile web) (type Boom ^props {}) (impl Error for Boom) (fn make [] : (Stream Int Any) (yield 1) (fail (Boom))) (fn run [] : Bool (let f : (Callable [] (Stream Int Never)) make) (let stream (f)) (stream .next) (try (stream .next) false catch TypeError true))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "bool",
+        "value": true
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
+    },
+    {
+      "id": "callable.nested_optional_named",
+      "source": "(fn target [^n : Int = 2] : Int n) (fn run [] : Int (let f : (Callable [] Int ^named {^n (| Int (| Str Nil))}) target) (f)) (run)",
+      "web_source": "(mod callable_nested_optional_named ^profile web) (fn target [^n : Int = 2] : Int n) (fn run [] : Int (let f : (Callable [] Int ^named {^n (| Int (| Str Nil))}) target) (f))",
+      "web_export": "run",
+      "expected_value": {
+        "kind": "int",
+        "value": "2"
+      },
+      "expected_error": null,
+      "expected_stdout": "",
+      "profile": {
+        "status": "eligible"
+      }
     }
   ]
 }

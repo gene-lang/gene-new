@@ -100,6 +100,7 @@ type
     vkNode      ## general node (head + props + body + meta)
     vkPipeline  ## reader/compiler-only sequenced `->`/`=>` pipeline syntax
     vkFunction  ## closure: params + body + captured scope
+    vkCallableView ## checked invocation view, distinct from its original target
     vkNativeFn  ## built-in function implemented in Nim
     vkNamespace ## named binding container (`ns` or module root namespace)
     vkModule    ## first-class module value with a root namespace
@@ -658,6 +659,7 @@ type
     okSet
     okHashMap
     okPipeline
+    okCallableView
     okEnv
     okCell
     okAtomicCell
@@ -819,12 +821,19 @@ type
     ## load/store/swap/compare_exchange linearizable (design Section 12.3).
     lock: Lock
 
+  CallableViewData = ref object of GeneObjectData
+    target: Value
+    signature: Value
+    typeScope: Scope
+    ceiling: CapabilityContext
+
   StreamPullResult* = object
     has*: bool
     item*: Value
 
   StreamPullProc* = proc(stream: Value): StreamPullResult {.nimcall.}
   StreamCloseProc* = proc(stream: Value) {.nimcall.}
+  StreamFailureCheckProc* = proc(stream: Value, error: ref CatchableError) {.nimcall.}
 
   StreamData = ref object of GeneObjectData
     items: seq[Value]
@@ -836,6 +845,7 @@ type
     remaining: int64
     pull: StreamPullProc
     close: StreamCloseProc
+    checkFailure: StreamFailureCheckProc
     buffered: bool
     pulling: bool
     buffer: Value
@@ -1802,6 +1812,10 @@ template forObjectEdges(data: GeneObjectData, edgeBits: untyped,
         emit(val)
       for _, val in stage.meta:
         emit(val)
+  of okCallableView:
+    let d = CallableViewData(data)
+    emit(d.target)
+    emit(d.signature)
   of okEnv:
     let d = EnvData(data)
     emit(d.parent)
@@ -1986,6 +2000,12 @@ proc clearObjectEdges(data: GeneObjectData) =
     let d = PipelineData(data)
     clearValueSlot(d.initial)
     d.stages.setLen(0)
+  of okCallableView:
+    let d = CallableViewData(data)
+    clearValueSlot(d.target)
+    clearValueSlot(d.signature)
+    d.typeScope = nil
+    d.ceiling = nil
   of okEnv:
     let d = EnvData(data)
     clearValueSlot(d.parent)
@@ -2491,6 +2511,7 @@ const objKindValueKinds: array[ObjKind, ValueKind] = [
   okSet: vkSet,
   okHashMap: vkHashMap,
   okPipeline: vkPipeline,
+  okCallableView: vkCallableView,
   okEnv: vkEnv,
   okCell: vkCell,
   okAtomicCell: vkAtomicCell,
@@ -3304,6 +3325,21 @@ proc atomicCellCompareExchange*(v, expected, newValue: Value,
     else:
       result = false
 
+proc callableViewData(v: Value): CallableViewData =
+  if v.kind != vkCallableView:
+    raise newException(FieldDefect, "value is not a checked callable")
+  CallableViewData(objData(v))
+
+proc callableViewTarget*(v: Value): Value = v.callableViewData.target
+proc callableViewSignature*(v: Value): Value = v.callableViewData.signature
+proc callableViewScope*(v: Value): Scope = v.callableViewData.typeScope
+proc callableViewCeiling*(v: Value): CapabilityContext = v.callableViewData.ceiling
+
+proc newCallableView*(target, signature: Value, typeScope: Scope,
+                       ceiling: CapabilityContext): Value =
+  boxObject(CallableViewData(objKind: okCallableView, target: target,
+    signature: signature, typeScope: typeScope, ceiling: ceiling))
+
 proc streamData(v: Value): StreamData =
   if v.tagOf != OBJECT_TAG or objData(v).objKind != okStream:
     raise newException(FieldDefect, "value is not a Stream")
@@ -3446,6 +3482,8 @@ proc streamHasNext*(v: Value): bool =
         v.closeStream()
       except CatchableError:
         discard
+      if data.checkFailure != nil:
+        data.checkFailure(v, producerError)
       raise producerError
   data.skipStreamVoids()
   not data.closed and data.index < data.items.len
@@ -3464,6 +3502,8 @@ proc streamPeek*(v: Value): Value =
         v.closeStream()
       except CatchableError:
         discard
+      if data.checkFailure != nil:
+        data.checkFailure(v, producerError)
       raise producerError
   data.items[data.index]
 
@@ -5351,6 +5391,11 @@ proc functionForScopeStorage*(v: Value, owner: Scope): Value =
   ## reclaimed after its ordinary references are dropped.
   if v.kind == vkFunction and not v.fnHasWeakScope and v.fnScope == owner:
     return cloneFunctionCapture(v, owner, weak = true)
+  if v.kind == vkCallableView:
+    let target = functionForScopeStorage(v.callableViewTarget, owner)
+    if target.bits != v.callableViewTarget.bits:
+      return newCallableView(target, v.callableViewSignature,
+        v.callableViewScope, v.callableViewCeiling)
   if v.kind == vkStream:
     # Same cycle, one hop removed: a lazy stream stored into the scope its
     # callables capture (scope -> stream -> callable -> scope). Weaken the
@@ -5370,7 +5415,7 @@ proc weakenScopeFunctions(v: Value, owner: Scope): Value =
   if owner == nil or not v.isManaged:
     return v
   case v.kind
-  of vkFunction:
+  of vkFunction, vkCallableView:
     functionForScopeStorage(v, owner)
   of vkList:
     for i, item in v.listItems:
@@ -5549,6 +5594,12 @@ proc escapeWeakFunctions*(v: Value): Value =
   if not v.isManaged:
     return v
   case v.kind
+  of vkCallableView:
+    let target = escapeWeakFunctions(v.callableViewTarget)
+    if target.bits == v.callableViewTarget.bits:
+      return v
+    newCallableView(target, v.callableViewSignature,
+      v.callableViewScope, v.callableViewCeiling)
   of vkFunction:
     if v.fnHasWeakScope:
       return cloneFunctionCapture(v, v.fnScope, weak = false)
@@ -5696,6 +5747,7 @@ proc escapeWeakFunctions*(v: Value): Value =
                          capabilityCeiling: data.capabilityCeiling,
                          pull: data.pull, closed: data.closed,
                          close: data.close,
+                         checkFailure: data.checkFailure,
                          buffered: data.buffered, buffer: escapedBuffer,
                          itemType: data.itemType, errType: data.errType,
                          itemScope: data.itemScope,
@@ -6597,9 +6649,11 @@ proc newTypedStream*(items: sink seq[Value], itemType, errType: Value,
                        itemType: itemType, errType: errType,
                        itemScope: itemScope, closed: false))
 
-proc newCheckedStream*(source, itemType, errType: Value, itemScope: Scope): Value =
+proc newCheckedStream*(source, itemType, errType: Value, itemScope: Scope,
+                       checkFailure: StreamFailureCheckProc = nil): Value =
   boxObject(StreamData(objKind: okStream, source: source, itemType: itemType,
-                       errType: errType, itemScope: itemScope, closed: false))
+                       errType: errType, itemScope: itemScope, closed: false,
+                       checkFailure: checkFailure))
 
 proc newLazyStream*(source: Value, pull: StreamPullProc,
                     callable: Value = NIL, remaining: int64 = -1,

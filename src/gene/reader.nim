@@ -1519,6 +1519,61 @@ proc finishPipelineStage(r: var Reader, kind: PipelineStageKind,
   PipelineStage(kind: kind, head: head, props: props, body: body, meta: meta,
                 sourceLoc: loc, slot: detected.slot)
 
+proc normalizeMessageHeadCall*(value: Value): Value =
+  ## Prefix message calls are send syntax. Keep the reader's original tree for
+  ## tooling, and share this receiver-first lowering across execution backends.
+  if value.kind != vkNode or value.head.kind != vkNode or
+      value.head.head.kind != vkSymbol or value.head.head.symVal != "msg":
+    return value
+  if value.head.body.len != 2 or value.head.body[1].kind != vkSymbol:
+    raise newException(GeneError, "a direct message call requires a named message")
+  if value.body.len == 0:
+    raise newException(GeneError, "a direct message call requires a receiver")
+  let receiver = value.body[0]
+  if (receiver.kind == vkNode and receiver.head.kind == vkSymbol and
+      receiver.head.symVal == "...") or
+      (receiver.kind == vkSymbol and receiver.symVal.endsWith("...")) or
+      (value.body.len > 1 and value.body[1].kind == vkSymbol and
+       value.body[1].symVal == "..."):
+    raise newException(GeneError,
+      "a direct message call requires an explicit receiver before spreads; " &
+      "bind the message value to apply a spread receiver")
+  let qualifier = value.head.body[0]
+  let descriptor =
+    if qualifier.kind == vkSymbol and qualifier.symVal == "Self":
+      value.head.body[1]
+    else: value.head
+  var body = @[newSym("~"), descriptor]
+  for i in 1 ..< value.body.len:
+    body.add value.body[i]
+  newNode(receiver, props = value.props, body = body, meta = value.meta,
+          immutable = value.nodeImmutable)
+
+proc normalizeMessageCallTree*(value: Value): Value =
+  ## A backend may need a normalized executable snapshot before analyzing an
+  ## entire body. Quoted data stays untouched, as does the original source tree.
+  if value.kind != vkNode:
+    return value
+  if value.head.kind == vkSymbol and value.head.symVal in ["quote", "quasiquote"]:
+    return value
+  let call = normalizeMessageHeadCall(value)
+  let head = normalizeMessageCallTree(call.head)
+  var changed = call.bits != value.bits or head.bits != call.head.bits
+  var body: seq[Value]
+  for item in call.body:
+    let normalized = normalizeMessageCallTree(item)
+    body.add normalized
+    changed = changed or normalized.bits != item.bits
+  var props = initPropTable()
+  for key, item in call.props:
+    let normalized = normalizeMessageCallTree(item)
+    props[key] = normalized
+    changed = changed or normalized.bits != item.bits
+  if changed:
+    newNode(head, props = props, body = body, meta = call.meta,
+      immutable = call.nodeImmutable)
+  else: value
+
 proc materializePipelineStage*(stage: PipelineStage, replacement: Value,
                                immutable = false): Value =
   let head =
@@ -1611,7 +1666,8 @@ proc hoistIterateStage*(stage: PipelineStage, freshName: proc(): string,
   # Normalize sends before choosing evaluated components: bare message names
   # are syntax, while held descriptors and qualified-message expressions have
   # their own preparation point before the arguments.
-  let call = materializePipelineStage(stage, newSym("_"))
+  let call = normalizeMessageHeadCall(
+    materializePipelineStage(stage, newSym("_")))
   result.stage = stage
   result.stage.head = call.head
   if not call.head.isDirectPipelineSlot and

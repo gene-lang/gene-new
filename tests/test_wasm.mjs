@@ -43,6 +43,13 @@ const cases = [
   ['(var factor 2) (let pending ([1 2] => * factor)) ' +
    '(set factor 10) (pending -> $into [])', 0, "[2 4]", ""],
   ['([1 2 3] => * 2 -> $take 2 => + 1 -> $into [])', 0, "[3 5]", ""],
+  ['(type Box ^props {^n Int} (message value [] self/n)) ' +
+   '([(Box ^n 2) (Box ^n 3)] => Self:value -> $into [])', 0, "[2 3]", ""],
+  ['(let f : (Callable [Int Int] Int) +) (f 2 3)', 0, "5", ""],
+  ['(type Box ^props {^n Int} (message value [] self/n)) ' +
+   '(let f : (Callable [Box] Int) Self:value) (f (Box ^n 7))', 0, "7", ""],
+  ['(let f : (Callable [Int] Int) (fn [x] "bad")) ' +
+   '(try (f 1) false catch TypeError true)', 0, "true", ""],
   ['(let source ($to_stream [1 2])) (let bounded ($take source 0)) ' +
    '(bounded .close) (source .next)', 0, "1", ""],
   ['(type Rows ^props {} (message to_stream [] ($to_stream [1 2]))) ' +

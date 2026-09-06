@@ -42,14 +42,35 @@ re-exports remain outside the profile.
 nil-admitting value. Named defaults use `^name : T = expression`. Defaults run
 in the callee's scope after the supplied argument expressions and may refer to
 earlier parameters. Provided nil remains nil when its type admits it; missing
-or void named values select the default, or nil for an optional parameter
-without a default. Required named values are still required.
+named values select the default, or nil for an optional parameter without a
+default. A literal void prop is removed by the reader. A computed Void remains
+supplied and must satisfy the target parameter type. Required names remain
+required.
 
 Calls evaluate named expressions in their written property order, followed by
 positionals, matching the VM, before placing values into declaration-order
 JavaScript slots. This uses temporary bindings, not an options object.
-JavaScript callers use those positional slots and `undefined` for omission.
+JavaScript callers use those positional slots; fewer arguments omit trailing
+slots. Generated Gene calls use a distinct omission marker, preserving a
+supplied `undefined` as Gene Void.
 Generated declarations include the imported names needed by public signatures.
+
+`(Callable [A B] R ^named {^option T?} ^errors [E])` uses a checked callable
+view in generated JavaScript and TypeScript. It accepts functions, messages,
+selectors, constructor-capable types, and values implementing `Callable/apply`.
+Fixed and repeated positional arguments, closed named sets, omitted defaults,
+inputs, results, and invocation errors follow the VM contract. Bare `Callable`
+checks callability. `Fn` continues to exclude messages, selectors, and checked views.
+
+Direct `(P:msg receiver args...)` and `(Self:msg receiver args...)` normalize to
+the corresponding sends before pipeline preparation. Held Self message values
+need a fixed callback signature with a receiver type supported by ordinary web
+sends. Scoped/dynamic implementation discovery remains outside the web profile.
+Native operator values require a fixed positional Callable signature. Functions
+that implicitly suspend remain excluded as first-class callback targets; this
+profile does not turn their JavaScript Promise into an implicit Gene await.
+A returned Task or Stream remains a value. Two-parameter Task/Stream contracts
+apply their item/error checks when that result is observed.
 
 The remaining restrictions are explicit:
 

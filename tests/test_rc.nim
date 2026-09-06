@@ -67,6 +67,16 @@ when defined(geneRcStats):
         " (try (bound) catch Any nil ensure (set bound nil))) " &
         "(repeat 100 (invoke))") == 0
 
+    test "checked callable views reclaim targets and invocation scopes":
+      check leakedManaged("(let f : (Callable [Int] Int) (fn [x] (+ x 1))) (f 2)") == 0
+      check leakedManaged("(fn make [n] : (Callable [Int] Int) (fn [x] (+ n x))) " &
+        "(repeat 100 ((make 3) 2))") == 0
+      check leakedManaged("(fn use [f : (Callable [Int] Int)] (f 1)) " &
+        "(repeat 100 (use (fn [x] x)))") == 0
+      check leakedManaged("(fn bad [x] (fail \"expected\")) " &
+        "(fn use [f : (Callable [Int] Int)] (try (f 1) catch Any nil)) " &
+        "(repeat 100 (use bad))") == 0
+
     test "prepared pipeline captures are released on close and exhaustion":
       check leakedManaged("(let s ([1 2] => + 3)) (s .close)") == 0
       check leakedManaged("([1 2] => + 3 -> $into [])") == 0

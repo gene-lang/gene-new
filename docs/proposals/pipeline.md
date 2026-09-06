@@ -712,7 +712,7 @@ it as something else. `~name` stays an ordinary glued symbol and the
    expands spreads once, `opCallPrepared` reuses the ordinary invocation path,
    and `opMakePipelineStream` performs normal conversion and lazy mapping.
    Every item stage uses the same lowering, with source-facing call sites and
-   private captures. Executable artifacts use GIR v6.
+   private captures. Executable artifacts now use GIR v7, which also includes checked callable invocation.
    Demanded item calls use private resumable frames, driven sequentially to
    completion, so native consumers retain their accumulator across callback
    suspension. Closing a cursor cancels and unwinds its active item frame;

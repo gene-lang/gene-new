@@ -26,6 +26,48 @@ earlier named value with the same key. Use `$body` explicitly when only a
 node's positional contents are wanted. Named properties must not disappear
 merely because a call uses a spread.
 
+## Direct message calls and checked callable signatures
+
+`(P:msg receiver args...)` normalizes to `(receiver .P:msg args...)`.
+`(Self:msg receiver args...)` normalizes to `(receiver .msg args...)`.
+The receiver runs before qualifier resolution and remaining arguments. This
+normalization is mandatory, including before `=>` captures a stage. Concrete
+type qualifiers remain invalid, and a direct receiver cannot be supplied by a
+leading spread. The reader preserves authored syntax for quotes and Call.site.
+
+Held-message application `(m x)` retains the message's authored dispatch scope;
+`(x .%m)` uses the send site's scope. Ordinary held calls remain eager, so their
+failure timing need not match a send.
+
+`(Callable [A B] R)` creates a checked invocation view of any ordinary callable:
+functions, native callables, messages, selectors, constructor-capable types,
+and user values implementing `Callable`. Fexprs are excluded. Bare `Callable`
+only tests callability; `Fn` and `(Fn ...)` retain their function-only matching.
+A checked view itself is Callable and is neither Fn nor Message. A held send
+requires a raw Message. Views are not serializable or automatically Send.
+
+The positional vector is exact unless it ends in `T...`, which checks zero or
+more further arguments. `^named {^key T}` is a closed named shape. Explicitly
+nil-admitting types permit omission; `Any` remains required. Omitted arguments
+stay omitted, so target defaults run per invocation. Supplied runtime Void
+remains supplied; literal void props follow the reader's normal removal rule.
+The target's own arity and parameter checks still apply after view checks.
+
+Inputs and results cross ordinary typed boundaries using the signature's
+authored type/implementation scope. Calls respect the actual caller's authority
+and the creating context's capability ceiling. Adaptation may create a distinct
+view without changing the target. Reapplying an equivalent contract may reuse
+a view; adaptation does not promise identity preservation or function variance.
+
+`^errors [E]` bounds recoverable invocation errors; `^errors []` admits no domain
+errors. An omitted row leaves errors unchecked. Type-boundary failures remain
+TypeErrors; panic and cancellation retain their normal behavior. Returned
+Streams and Tasks remain values with their own deferred contracts. The callable
+error row does not apply to later consumption or execution of those values.
+
+Executable coverage: `tests/test_unify_callable.nim` and shared `callable.*`
+fixtures in `tests/transpile/fixtures.json`.
+
 ## Binding an invocation
 
 `runtime/bind_call` returns an ordinary zero-argument function that invokes an

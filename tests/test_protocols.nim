@@ -800,13 +800,9 @@ suite "protocols — dispatch inline cache soundness (item D1)":
        "[(apply A:m) (apply B:m) (apply A:m) (apply B:m)]",
        "[10 20 10 20]"
 
-  test "a message is rejected in head position but applies as a value":
-    # Head position is a compile error (design §3, decision 3); applying a
-    # message dispatches on its first argument (decision 2).
-    expect GeneError:
-      discard compileSource("(protocol A (message m [self] : Int)) (A:m 1)")
+  test "a message applies directly and as a held value":
     ck "(protocol A (message m [self] : Int)) " &
        "(type W ^props {}) (impl A for W (message m [self] : Int 10)) " &
        "(fn apply [f x] (f x)) " &
-       "(apply A:m (W))",
-       "10"
+       "[(A:m (W)) (apply A:m (W))]",
+       "[10 10]"

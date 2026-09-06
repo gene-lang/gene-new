@@ -409,8 +409,8 @@ suite "pipeline — prepared lazy invocation":
   test "ordinary source call restrictions survive preparation":
     expect GeneError:
       discard compileSource("([1] => + ^types 1)")
-    expect GeneError:
-      discard compileSource("([1] => Self:to_str)")
+    check run(compileSource("(let s ([1] => Self:to_str)) (s .close)"),
+      newGlobalScope()).print() == "nil"
 
   test "callback errors retain the authored source location":
     try:

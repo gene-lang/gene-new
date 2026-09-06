@@ -361,6 +361,7 @@ type
     builtins: Scope
     boundCallTemplate: FunctionProto
     streamCallbackTemplate: FunctionProto
+    callableViewTemplate: FunctionProto
     # The whole standard library, i.e. the scope behind the `gene` namespace.
     # `builtins` is only the *lexical* root, which deliberately exposes almost
     # nothing (design §2.1): user code reaches the library as `gene/x` / `$x`.
@@ -706,7 +707,13 @@ proc registerAotModuleRequirements*(path: string,
     AotModuleRequirements {.discardable.}
 proc ensureAotModuleValid*(module: AotModuleRequirements): string
 proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value
+proc validateCallableSignature(signature: Value, scope: Scope): Value
+proc adaptCallableView(signature, target: Value, scope: Scope): Value
+proc checkedCallableArguments(payload: Value): Value
+proc checkedCallableResult(payload, value: Value): Value
+proc callableViewErrors(view: Value): seq[Value]
 proc typeExprNeedsBoundaryScope(typeExpr: Value): bool
+proc typeExprNeedsNestedAdaptation(typeExpr: Value): bool
 proc closeTypeExpr(expr: Value, scope: Scope): Value
 proc commonRuntimeTypeExpr(values: openArray[Value]): Value
 proc matchesBufferType(args: openArray[Value], value: Value,
@@ -1565,6 +1572,9 @@ type
     names: seq[string]
     values: seq[Value]
     inlineValues: array[MaxInlineNamedArgs, Value]
+
+proc callableViewPayload(view: Value, args: openArray[Value], named: NamedArgs,
+                         site: Value, loc: SourceLoc): Value
 
 proc len(named: NamedArgs): int =
   named.names.len
@@ -3217,6 +3227,8 @@ proc checkedStreamItem(stream, item: Value, where: string): Value =
       except CatchableError:
         discard
       raiseTypeError(where, itemType.typeExprLabel, item, itemScope)
+    if typeExprNeedsNestedAdaptation(itemType):
+      return adaptBoundary(where, itemType, item, itemScope)
   item
 
 proc checkedStreamPeek(stream: Value, where: string): Value =
@@ -3251,6 +3263,8 @@ proc carriesCallerEnv(value: Value, seen: var HashSet[uint64]): bool =
   case value.kind
   of vkFunction:
     value.fnCapturesCallerEnv
+  of vkCallableView:
+    carriesCallerEnv(value.callableViewTarget, seen)
   of vkList:
     for item in value.listItems:
       if carriesCallerEnv(item, seen): return true
@@ -3348,6 +3362,8 @@ proc carriesConstruction(value: Value, seenValues: var HashSet[uint64],
   case value.kind
   of vkFunction:
     scopeCarriesConstruction(value.fnScope, seenValues, seenScopes)
+  of vkCallableView:
+    carriesConstruction(value.callableViewTarget, seenValues, seenScopes)
   of vkList:
     for item in value.listItems:
       if carriesConstruction(item, seenValues, seenScopes): return true
@@ -4095,6 +4111,7 @@ proc thawEntries(entries: PropTable): PropTable =
 
 proc freezeRejectName(value: Value): string =
   case value.kind
+  of vkCallableView: "CallableView"
   of vkFunction: (if value.isSyntaxFn: "Fexpr" else: "Fn")
   of vkNativeFn: "NativeFn"
   of vkNamespace: "Namespace"
@@ -4183,7 +4200,7 @@ proc freezeValue(value: Value): Value =
             meta = freezeEntries(value.meta),
             immutable = true,
             deepFrozen = true)
-  of vkFunction, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv, vkCell,
+  of vkFunction, vkCallableView, vkNativeFn, vkNamespace, vkModule, vkEnv, vkCallerEnv, vkCell,
      vkAtomicCell, vkStream, vkTask, vkChannel, vkActorRef, vkActorContext,
      vkActorStep, vkReplyTo, vkCPtr, vkCSlice, vkBuffer, vkDeviceBuffer, vkCapability,
      vkFfiLibrary, vkFfiCallable,
@@ -4314,6 +4331,7 @@ proc declarationKind*(value: Value): string =
   of vkHashMap: "HashMap"
   of vkNode: "Node"
   of vkPipeline: "PipelineSyntax"
+  of vkCallableView: "CallableView"
   of vkFunction: (if value.isSyntaxFn: "Fexpr" else: "Fn")
   of vkNativeFn: "NativeFn"
   of vkNamespace: "Namespace"
@@ -7476,6 +7494,22 @@ proc buildBuiltins(app: Application): Scope =
   app.streamCallbackTemplate = compileSource(
     "(fn [callback item] (callback item))", "<stream callback>").functions[0]
   app.streamCallbackTemplate.chunk.callSites.clear()
+  app.callableViewTemplate = FunctionProto(
+    name: "Callable contract", params: @["payload"], localNames: @["payload"],
+    positionalSlots: @[0], positionalSlotMaySet: @[false],
+    requiredPositional: 1, simpleCall: true, needsCallScope: true,
+    poolCallScope: true, paramTypes: @[NIL], restSlot: -1,
+    restType: NIL, returnType: NIL, aotExpr: NIL,
+    capabilityRow: CapabilityRow(kind: crkInherit), chunk: newChunk())
+  let checkedChunk = app.callableViewTemplate.chunk
+  checkedChunk.owner = app.callableViewTemplate
+  checkedChunk.localNames = @["payload"]
+  discard checkedChunk.emit(Instruction(op: opLoadLocal, intArg: 0, name: "payload"))
+  discard checkedChunk.emit(Instruction(op: opCheckCallableArguments))
+  discard checkedChunk.emit(Instruction(op: opCallPrepared))
+  discard checkedChunk.emit(Instruction(op: opLoadLocal, intArg: 0, name: "payload"))
+  discard checkedChunk.emit(Instruction(op: opCheckCallableResult))
+  discard checkedChunk.emit(Instruction(op: opReturn))
   let errorProtocol = newProtocol("Error", [])
   result.define("Error", errorProtocol)
   let sendProtocol = newProtocol("Send", [])
@@ -7526,6 +7560,7 @@ proc buildBuiltins(app: Application): Scope =
   result.define("SyntaxCall", syntaxCallType)
   let callableProtocol = newProtocol("Callable", ["apply"])
   result.define("Callable", callableProtocol)
+  discard defineBuiltinType(result, vkCallableView, "CallableView", [])
   let toStrProtocol = newProtocol("ToStr", ["to_str"])
   result.define("ToStr", toStrProtocol)
   let runtimeError = newType("RuntimeError", NIL,
@@ -10450,6 +10485,10 @@ proc releaseCallScope(pools: var VmPools, scope: Scope) =
     return
   for i in 0 ..< scope.slots.len:
     scope.slots[i] = NIL
+  # Composite annotations own managed values too. A pooled scope must not
+  # retain the last invocation's contract until the next acquisition.
+  if scope.slotTypes.len != 0:
+    scope.slotTypes.setLen(0)
   scope.slotDefinedBits = 0
   if scope.slotDefinedOverflow.len != 0:
     for i in 0 ..< scope.slotDefinedOverflow.len:
@@ -11316,7 +11355,7 @@ proc isBuiltinCallable(value: Value): bool =
   # Fexpr values have their own explicit lexical call kind, not Callable
   # (design §3).
   (value.kind == vkFunction and not value.isSyntaxFn) or
-    value.kind in {vkNativeFn, vkFfiCallable, vkType,
+    value.kind in {vkCallableView, vkNativeFn, vkFfiCallable, vkType,
                    vkProtocolMessage, vkEnumVariant} or
     (value.kind == vkNode and value.isSelector)
 
@@ -11645,6 +11684,10 @@ proc isSendableValue(value: Value, scope: Scope,
      vkNativeFn, vkAtomicCell, vkTask, vkChannel, vkActorRef, vkReplyTo,
      vkLogger, vkType, vkProtocol, vkProtocolMessage, vkEnumVariant:
     true
+  of vkCallableView:
+    # A checked view retains an authored contract scope and authority ceiling.
+    # Do not infer transferability merely from the wrapped target's category.
+    false
   of vkFunction:
     functionCapturesSendable(value, scope, seen, mode)
   of vkNode:
@@ -12470,6 +12513,23 @@ proc checkTaskError(task: Value, hasValue: bool, value: Value) =
     return
   discard adaptBoundary("await task error", errorType, value,
                         taskBoundaryScopeOr(task))
+
+proc checkStreamBoundaryFailure(stream: Value,
+                                error: ref CatchableError) {.nimcall.} =
+  # The invocation that returned this stream has already completed. Validate
+  # producer errors against the stream's E, preserving panic/cancellation and
+  # boundary TypeErrors just as a checked Task does.
+  if not (error of GeneError): return
+  let failure = cast[ref GeneError](error)
+  let scope = stream.streamItemScope
+  let value = if failure.hasErrVal: failure.errVal
+    else:
+      block:
+        var props = initPropTable()
+        props["message"] = newStr(failure.msg)
+        newNode(builtInTypeHead(scope, "RuntimeError"), props = props)
+  if isBoundaryTypeError(value, scope): return
+  discard adaptBoundary("Stream error", stream.streamErrType, value, scope)
 
 proc awaitTaskValue(task: Value): Value =
   if task.kind != vkTask:
@@ -14017,12 +14077,15 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
   proc valueCapturesScope(value: Value, target: Scope,
                           seen: var HashSet[uint64]): bool =
     if value.kind in {vkList, vkMap, vkSet, vkHashMap, vkNode, vkModule,
-                      vkEnv, vkCell, vkAtomicCell, vkStream}:
+                      vkEnv, vkCell, vkAtomicCell, vkStream, vkCallableView}:
       if seen.containsOrIncl(value.bits):
         return false
     case value.kind
     of vkFunction:
       scopeChainContains(value.fnScope, target)
+    of vkCallableView:
+      scopeChainContains(value.callableViewScope, target) or
+        valueCapturesScope(value.callableViewTarget, target, seen)
     of vkList:
       for item in value.listItems:
         if valueCapturesScope(item, target, seen): return true
@@ -14086,7 +14149,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     false
 
   proc valueMayRetainScope(value: Value): bool {.inline.} =
-    value.kind in {vkFunction, vkList, vkMap, vkSet, vkHashMap, vkNode,
+    value.kind in {vkFunction, vkCallableView, vkList, vkMap, vkSet, vkHashMap, vkNode,
                    vkNamespace, vkModule, vkEnv, vkCell, vkAtomicCell,
                    vkStream}
 
@@ -14694,6 +14757,28 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
     ## A source-level custom call is protocol dispatch to Callable/apply. Keep
     ## that bytecode implementation on the same explicit VM frame stack rather
     ## than hiding it inside a nested applyCall/runLoop invocation.
+    if calleeValue.kind == vkCallableView:
+      let checkedView = calleeValue
+      let callPayload = callableViewPayload(checkedView, originalArgs,
+        originalNamed, callSite, instructionLocAt(chunk, ip - 1))
+      let contractProto = scope.application().callableViewTemplate
+      var checkedScope = acquireSimpleCallScope(scope, contractProto.localNames,
+        contractProto.callScopeNeedsSlotNames,
+        contractProto.callScopeNeedsSlotReset)
+      checkedScope.bindSimpleCallSlots(contractProto, [callPayload])
+      var nextTransition = functionCapabilityTransition(contractProto,
+        checkedScope, scope, scope, capabilityContext, capabilityPresence)
+      if checkedView.callableViewCeiling != nil and
+          nextTransition.context != checkedView.callableViewCeiling:
+        nextTransition.context = intersectContexts(nextTransition.context,
+          checkedView.callableViewCeiling)
+        nextTransition.presence = nil
+      let checks = checkedView.callableViewSignature.props.hasKey("errors")
+      let errors = callableViewErrors(checkedView)
+      strunc(operandBase)
+      enterBytecodeCall(contractProto.chunk, checkedScope, true, false,
+        NIL, "", checks, errors, "Callable contract", nextTransition,
+        operandBase, tailMarked)
     if calleeValue.kind == vkNode and not calleeValue.isSelector and
         calleeValue.valueImplementsCallable(scope):
       let implFn = resolveUserCallableImpl(calleeValue, scope)
@@ -14790,6 +14875,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
         case op
         of opNoop:
           discard
+        of opCheckCallableArguments:
+          let payload = spop()
+          let arguments = checkedCallableArguments(payload)
+          spush payload.listItems[0].callableViewTarget
+          spush arguments
+          spush NIL
+        of opCheckCallableResult:
+          let payload = spop()
+          let value = spop()
+          spush checkedCallableResult(payload, value)
         of opPushConst:
           spush chunk.constants[inst[].intArg]
         of opLoadName:
@@ -16387,6 +16482,9 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
           var named: NamedArgs
           var calleeIndex: int
           var args: seq[Value]
+          var hasAuthoredSite = false
+          var authoredSite = NIL
+          var authoredLoc = instructionLocAt(chunk, ip - 1)
           if inst[].op == opCallPrepared:
             calleeIndex = sp - (if inst[].flag: 4 else: 3)
             if calleeIndex < 0:
@@ -16394,6 +16492,11 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
                 "VM stack underflow in prepared call")
             let item = stack[sp - 1]
             let bundle = stack[sp - 2].listItems
+            if bundle.len >= 9:
+              hasAuthoredSite = true
+              authoredSite = bundle[5]
+              authoredLoc = SourceLoc(sourceName: bundle[6].strVal,
+                line: int(bundle[7].intVal), col: int(bundle[8].intVal))
             let bodySlot = int(bundle[3].intVal)
             let namedSlot = int(bundle[4].intVal)
             if inst[].flag:
@@ -16401,8 +16504,16 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             for i, value in bundle[0].listItems:
               args.add(if i == bodySlot: item else: value)
             for i, name in bundle[1].listItems:
-              named.putArg(name.strVal,
-                if i == namedSlot: item else: bundle[2].listItems[i])
+              if hasAuthoredSite:
+                # A checked invocation already has a resolved named layout.
+                # Preserve supplied Void just as the ordinary opCall path does;
+                # putArg implements splice removal and is inappropriate here.
+                named.names.add name.strVal
+              else:
+                named.putArg(name.strVal,
+                  if i == namedSlot: item else: bundle[2].listItems[i])
+            if hasAuthoredSite:
+              named.values = copyItems(bundle[2].listItems)
           else:
             let proto = chunk.listBuilds[inst[].intArg]
             let partCount = proto.splices.len
@@ -16510,6 +16621,7 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             if callee.kind == vkFunction or
                 (callee.kind == vkNativeFn and callee.nativeCallImpl == nil):
               NIL
+            elif hasAuthoredSite: authoredSite
             else:
               chunk.callSites.getOrDefault(ip - 1, NIL)
           maybeEnterBoundMessageBytecode(callee, args, named, calleeIndex,
@@ -16521,10 +16633,10 @@ proc runLoop(chunkArg: Chunk, scopeArg: Scope, stackArg: var seq[Value],
             value =
               if args.len == 0:
                 applyCall(callee, [], named, scope, site,
-                          instructionLocAt(chunk, ip - 1))
+                          authoredLoc)
               else:
                 applyCall(callee, args, named, scope, site,
-                          instructionLocAt(chunk, ip - 1))
+                          authoredLoc)
           except SuspendError as se:
             if not se.timer or se.retry:
               raise
@@ -19413,6 +19525,7 @@ proc runtimeTypeExpr(value: Value): Value =
   of vkPipeline:
     newSym("Any")
   of vkFunction: newSym(if value.isSyntaxFn: "Fexpr" else: "Fn")
+  of vkCallableView: value.callableViewSignature
   of vkNativeFn: newSym("NativeFn")
   of vkNamespace: newSym("Namespace")
   of vkModule: newSym("Module")
@@ -20029,8 +20142,10 @@ proc matchesBuiltinType(name: string, value: Value): tuple[known, ok: bool] =
     # Fexpr values have their own explicit lexical call kind, not Callable
     # (design §3).
     (true, (value.kind == vkFunction and not value.isSyntaxFn) or
-      value.kind in {vkNativeFn, vkFfiCallable, vkType, vkProtocolMessage} or
+      value.kind in {vkCallableView, vkNativeFn, vkFfiCallable, vkType, vkProtocolMessage} or
       (value.kind == vkNode and value.isSelector))
+  of "CallableView":
+    (true, value.kind == vkCallableView)
   of "Type":
     (true, value.kind == vkType)
   of "Protocol":
@@ -20565,6 +20680,9 @@ proc matchesTypeExpr(expr, value: Value, scope: Scope): bool =
           if not matchesTypeExpr(itemType, value.listItems[i], scope):
             return false
         return true
+      of "Callable":
+        discard validateCallableSignature(expr, scope)
+        return value.valueImplementsCallable(scope)
       of "Fn":
         if expr.body.len != 2 or expr.body[0].kind != vkList:
           raise newException(GeneError,
@@ -20870,28 +20988,28 @@ proc typeExprNeedsBoundaryScope(typeExpr: Value): bool =
   else:
     false
 
-proc typeExprContainsCell(typeExpr: Value): bool =
+proc typeExprNeedsNestedAdaptation(typeExpr: Value): bool =
   case typeExpr.kind
   of vkType:
-    typeExpr.isTypeAlias and typeExprContainsCell(typeExpr.typeAliasExpr)
+    typeExpr.isTypeAlias and typeExprNeedsNestedAdaptation(typeExpr.typeAliasExpr)
   of vkList:
     for item in typeExpr.listItems:
-      if typeExprContainsCell(item):
+      if typeExprNeedsNestedAdaptation(item):
         return true
     false
   of vkMap:
     for _, item in typeExpr.mapEntries:
-      if typeExprContainsCell(item):
+      if typeExprNeedsNestedAdaptation(item):
         return true
     false
   of vkNode:
-    if typeExpr.head.isSymbol("Cell"):
+    if typeExpr.head.isSymbol("Cell") or typeExpr.head.isSymbol("Callable"):
       return true
     for _, item in typeExpr.props:
-      if typeExprContainsCell(item):
+      if typeExprNeedsNestedAdaptation(item):
         return true
     for item in typeExpr.body:
-      if typeExprContainsCell(item):
+      if typeExprNeedsNestedAdaptation(item):
         return true
     false
   else:
@@ -20985,6 +21103,8 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
     return adaptBoundary(where, closedType, value, scope)
   if typeExpr.kind == vkType and typeExpr.isTypeAlias:
     return adaptBoundary(where, typeExpr.typeAliasExpr, value, scope)
+  if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Callable"):
+    return adaptCallableView(typeExpr, value, scope)
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Cell") and
       typeExpr.body.len == 1 and value.kind == vkCell:
     if value.cellValueType.kind == vkNil:
@@ -21002,39 +21122,60 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
   if typeExpr.kind == vkNode and typeExpr.head.kind == vkSymbol:
     case typeExpr.head.symVal
     of "List":
-      if typeExpr.body.len == 1 and typeExprContainsCell(typeExpr.body[0]):
+      if typeExpr.body.len == 1 and typeExprNeedsNestedAdaptation(typeExpr.body[0]):
+        var items: seq[Value]
+        var changed = false
         for item in value.listItems:
-          discard adaptBoundary(where & " item", typeExpr.body[0], item, scope)
+          let checked = adaptBoundary(where & " item", typeExpr.body[0], item, scope)
+          items.add checked
+          changed = changed or checked.bits != item.bits
+        if changed: return newList(items, immutable = value.listImmutable)
     of "Tuple":
+      var items: seq[Value]
+      var changed = false
       for i, itemType in typeExpr.body:
-        if typeExprContainsCell(itemType):
-          discard adaptBoundary(where & " item " & $i, itemType,
-                                value.listItems[i], scope)
+        let item = value.listItems[i]
+        let checked = if typeExprNeedsNestedAdaptation(itemType):
+          adaptBoundary(where & " item " & $i, itemType, item, scope)
+          else: item
+        items.add checked
+        changed = changed or checked.bits != item.bits
+      if changed: return newList(items, immutable = value.listImmutable)
     of "Map", "PropMap", "HashMap":
-      if typeExpr.body.len > 0 and typeExprContainsCell(typeExpr.body[^1]):
+      if typeExpr.body.len > 0 and typeExprNeedsNestedAdaptation(typeExpr.body[^1]):
         let valueType = typeExpr.body[^1]
         case value.kind
         of vkMap:
-          for _, item in value.mapEntries:
-            discard adaptBoundary(where & " value", valueType, item, scope)
+          var entries = initPropTable()
+          var changed = false
+          for key, item in value.mapEntries:
+            let checked = adaptBoundary(where & " value", valueType, item, scope)
+            entries[key] = checked
+            changed = changed or checked.bits != item.bits
+          if changed: return newMap(entries, immutable = value.mapImmutable)
         of vkHashMap:
+          var entries: seq[HashMapEntry]
+          var changed = false
           for entry in value.hashMapEntries:
-            discard adaptBoundary(where & " value", valueType,
-                                  entry.val, scope)
+            let checked = adaptBoundary(where & " value", valueType, entry.val, scope)
+            entries.add HashMapEntry(key: entry.key, val: checked)
+            changed = changed or checked.bits != entry.val.bits
+          if changed: return newHashMap(entries)
         else:
           discard
     of "|", "?":
       if value.kind != vkNil:
         for alternative in typeExpr.body:
           if matchesTypeExpr(alternative, value, scope):
-            if typeExprContainsCell(alternative):
-              discard adaptBoundary(where, alternative, value, scope)
+            if typeExprNeedsNestedAdaptation(alternative):
+              return adaptBoundary(where, alternative, value, scope)
             break
     else:
       discard
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Stream") and
       typeExpr.body.len == 2:
-    return newCheckedStream(value, typeExpr.body[0], typeExpr.body[1], scope)
+    return newCheckedStream(value, typeExpr.body[0], typeExpr.body[1], scope,
+      checkStreamBoundaryFailure)
   if typeExpr.kind == vkNode and typeExpr.head.isSymbol("Task") and
       typeExpr.body.len == 2:
     let boundaryScope =
@@ -21059,6 +21200,146 @@ proc adaptBoundary(where: string, typeExpr, value: Value, scope: Scope): Value =
       discard adaptBoundary(where, resultType, value.replyToResult, scope)
     value.setReplyToResultType(resultType, scope)
   value
+
+proc callableRestType(value: Value): Value =
+  if value.kind == vkSymbol and value.symVal.len > 3 and
+      value.symVal.endsWith("..."):
+    return newSym(value.symVal[0 ..< value.symVal.len - 3])
+  if value.kind == vkNode and value.head.isSymbol("...") and value.body.len == 1:
+    return value.body[0]
+  NIL
+
+proc validateCallableSignature(signature: Value, scope: Scope): Value =
+  if signature.kind != vkNode or not signature.head.isSymbol("Callable") or
+      signature.body.len != 2 or signature.body[0].kind != vkList:
+    raise newException(GeneError,
+      "(Callable [A ...] R ^named {...} ^errors [...]) expects parameters and a result type")
+  for key, _ in signature.props:
+    if key notin ["named", "errors"]:
+      raise newException(GeneError, "Callable signature got unexpected argument: " & key)
+  if signature.props.hasKey("named") and signature.props["named"].kind != vkMap:
+    raise newException(GeneError, "Callable signature ^named must be a map")
+  if signature.props.hasKey("errors") and signature.props["errors"].kind != vkList:
+    raise newException(GeneError, "Callable signature ^errors must be a list")
+  proc checkedType(value: Value): Value =
+    if value.kind notin {vkSymbol, vkNode, vkType, vkProtocol}:
+      raise newException(GeneError, "Callable signature requires type expressions")
+    closeTypeExpr(value, scope)
+  var parameters: seq[Value]
+  for i, parameter in signature.body[0].listItems:
+    let rest = callableRestType(parameter)
+    if rest.kind != vkNil:
+      if i != signature.body[0].listItems.high:
+        raise newException(GeneError, "Callable repeated parameter must be last")
+      parameters.add newNode(newSym("..."),
+        body = @[checkedType(rest)], immutable = true)
+    else:
+      parameters.add checkedType(parameter)
+  var props = initPropTable()
+  if signature.props.hasKey("named"):
+    var named = initPropTable()
+    for key, typ in signature.props["named"].mapEntries:
+      named[key] = checkedType(typ)
+    props["named"] = newMap(named, immutable = true)
+  if signature.props.hasKey("errors"):
+    var errors: seq[Value]
+    for typ in signature.props["errors"].listItems:
+      let closed = closeTypeExpr(typ, scope)
+      let resolved = if closed.kind == vkSymbol: scope.lookup(closed.symVal) else: closed
+      if not scope.isErrorType(resolved):
+        raise newException(GeneError, "Callable ^errors entries must be Error types")
+      errors.add resolved
+    props["errors"] = newList(errors, immutable = true)
+  newNode(newSym("Callable"), props = props,
+    body = @[newList(parameters, immutable = true), checkedType(signature.body[1])],
+    immutable = true)
+
+proc adaptCallableView(signature, target: Value, scope: Scope): Value =
+  let closed = validateCallableSignature(signature, scope)
+  if not target.valueImplementsCallable(scope):
+    raiseTypeError("Callable target", "Callable", target, scope)
+  rejectCallerEnvEscape("Callable view target", target)
+  var scoped = false
+  for item in closed.body:
+    scoped = scoped or typeExprNeedsBoundaryScope(item)
+  for _, item in closed.props:
+    scoped = scoped or typeExprNeedsBoundaryScope(item)
+  let typeScope =
+    if scoped: captureTypeBoundaryScope(scope)
+    else: scope.application().builtinsScope()
+  let ceiling = scope.executionCapabilities()
+  if target.kind == vkCallableView and
+      typeExprEqual(target.callableViewSignature, closed) and
+      sameTypeBoundaryScope(target.callableViewScope, typeScope) and
+      target.callableViewCeiling == ceiling:
+    return target
+  newCallableView(escapeWeakFunctions(target), closed, typeScope, ceiling)
+
+proc callableViewPayload(view: Value, args: openArray[Value], named: NamedArgs,
+                         site: Value, loc: SourceLoc): Value =
+  var names: seq[Value]
+  for name in named.names: names.add newStr(name)
+  newList(@[view, newList(copyItems(args)), newList(names), newList(named.toSeq()),
+    site, newStr(loc.sourceName), newInt(loc.line), newInt(loc.col)])
+
+proc callablePayloadLoc(payload: Value): SourceLoc =
+  SourceLoc(sourceName: payload.listItems[5].strVal,
+    line: int(payload.listItems[6].intVal), col: int(payload.listItems[7].intVal))
+
+proc checkedCallableArguments(payload: Value): Value =
+  let view = payload.listItems[0]
+  let signature = view.callableViewSignature
+  let scope = view.callableViewScope
+  let parameters = signature.body[0].listItems
+  let rest = if parameters.len > 0: callableRestType(parameters[^1]) else: NIL
+  let required = parameters.len - (if rest.kind != vkNil: 1 else: 0)
+  let args = payload.listItems[1].listItems
+  try:
+    if args.len < required or (rest.kind == vkNil and args.len != required):
+      raiseTypeError("Callable arguments", "the declared positional call shape",
+                     payload.listItems[1], scope)
+    var checkedArgs: seq[Value]
+    for i, value in args:
+      checkedArgs.add adaptBoundary("Callable argument " & $i,
+        if i < required: parameters[i] else: rest, value, scope)
+    let namedTypes = if signature.props.hasKey("named"):
+      signature.props["named"].mapEntries else: initPropTable()
+    var seen = initHashSet[string]()
+    var checkedNamed: seq[Value]
+    for i, name in payload.listItems[2].listItems:
+      let key = name.strVal
+      if not namedTypes.hasKey(key):
+        raiseTypeError("Callable named argument '" & key & "'",
+          "a name declared in ^named", payload.listItems[3].listItems[i], scope)
+      seen.incl key
+      checkedNamed.add adaptBoundary("Callable named argument '" & key & "'",
+        namedTypes[key], payload.listItems[3].listItems[i], scope)
+    for key, typ in namedTypes:
+      if key notin seen and not typeExprAdmitsNil(typ):
+        raiseTypeError("Callable named argument '" & key & "'", "a supplied value",
+          VOID, scope)
+    newList(@[newList(checkedArgs), payload.listItems[2], newList(checkedNamed),
+      newInt(-1), newInt(-1), payload.listItems[4], payload.listItems[5],
+      payload.listItems[6], payload.listItems[7]])
+  except GeneError as error:
+    attachSourceLoc(error, callablePayloadLoc(payload))
+    raise
+
+proc checkedCallableResult(payload, value: Value): Value =
+  let view = payload.listItems[0]
+  try:
+    adaptBoundary("Callable result", view.callableViewSignature.body[1],
+      value, view.callableViewScope)
+  except GeneError as error:
+    attachSourceLoc(error, callablePayloadLoc(payload))
+    raise
+
+proc callableViewErrors(view: Value): seq[Value] =
+  let signature = view.callableViewSignature
+  if signature.props.hasKey("errors"):
+    result = copyItems(signature.props["errors"].listItems)
+    # Gradual boundary failures are typing errors, not declared domain errors.
+    result.add builtinBinding(view.callableViewScope, "TypeError")
 
 proc errorAllowed(allowed: openArray[Value], errVal: Value): bool =
   if errVal.kind != vkNode or errVal.head.kind != vkType:
@@ -26734,6 +27015,34 @@ proc applyCall(callee: Value, args: openArray[Value], named: NamedArgs,
                dispatchScope: Scope = nil, site: Value = NIL,
                loc = SourceLoc()): Value =
   case callee.kind
+  of vkCallableView:
+    let caller =
+      if dispatchScope != nil: dispatchScope
+      elif activeVmScope != nil: activeVmScope[]
+      else: callee.callableViewScope
+    let proto = caller.application().callableViewTemplate
+    let payload = callableViewPayload(callee, args, named, site, loc)
+    var callScope = acquireSimpleCallScope(caller, proto.localNames,
+      proto.callScopeNeedsSlotNames, proto.callScopeNeedsSlotReset)
+    callScope.bindSimpleCallSlots(proto, [payload])
+    let transition = functionCapabilityTransition(proto, callScope, caller,
+      caller, caller.executionCapabilities(), activeCapabilityPresence)
+    let savedCapabilities = activeCapabilityContext
+    let savedPresence = activeCapabilityPresence
+    activeCapabilityContext = intersectContexts(transition.context,
+      callee.callableViewCeiling)
+    activeCapabilityPresence = nil
+    try:
+      try:
+        result = runPooled(proto.chunk, callScope)
+      except GeneError as error:
+        raise translateErrorBoundary(callee.callableViewSignature.props.hasKey("errors"),
+          callableViewErrors(callee), "Callable contract", caller, error)
+    finally:
+      activeCapabilityContext = savedCapabilities
+      activeCapabilityPresence = savedPresence
+      releaseCallScope(callScope)
+    return result
   of vkProtocolMessage:
     # Applying a message dispatches on its first argument (design §3, decision
     # 2): `(map xs P:m)` works, and the signature is (receiver, …send args).

@@ -71,7 +71,7 @@ function envelope(value) {
   if (typeof value === "symbol") return {kind: "sym", value: Symbol.keyFor(value) ?? value.description};
   if (Array.isArray(value)) return {kind: "list", items: value.map(envelope)};
   if (value instanceof Map || value?.constructor?.name === "GeneMap") return {kind: "map", entries: [...value].map(([key, item]) => ({key: envelope(key), value: envelope(item)}))};
-  if (value && typeof value.head === "symbol" && value.props && Array.isArray(value.body)) return {kind: "node", head: envelope(value.head), props: Object.entries(value.props).map(([key, item]) => ({key, value: envelope(item)})), body: value.body.map(envelope)};
+  if (value && (typeof value.head === "symbol" || value[Symbol.for("gene.node")] === true) && value.props && Array.isArray(value.body)) return {kind: "node", head: envelope(value.head), props: Object.entries(value.props).map(([key, item]) => ({key, value: envelope(item)})), body: value.body.map(envelope)};
   if (value && value.constructor === Object) return {kind: "prop_map", entries: Object.entries(value).map(([key, item]) => ({key, value: envelope(item)}))};
   throw new TypeError(`unsupported fixture result: ${typeof value}`);
 }
